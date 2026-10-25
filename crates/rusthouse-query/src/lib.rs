@@ -46,9 +46,16 @@ pub enum Operator {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub enum Predicate::Comparison {
-    Comparison { column: String, operator: Operator, value: String },
-    In { column: String, values: Vec<String> },
+pub enum Predicate {
+    Comparison {
+        column: String,
+        operator: Operator,
+        value: String,
+    },
+    In {
+        column: String,
+        values: Vec<String>,
+    },
 }
 
 impl Predicate {
@@ -742,13 +749,23 @@ mod tests {
 
     #[test]
     fn parses_in_and_checks_list_bounds() {
-        let query = parse_select(
-            "SELECT number FROM numbers(9) WHERE number IN (1, 4, 7) AND number > 2",
-        ).unwrap();
-        assert_eq!(query.predicates, vec![
-            Predicate::In { column: "number".into(), values: vec!["1".into(), "4".into(), "7".into()] },
-            Predicate::Comparison { column: "number".into(), operator: Operator::Gt, value: "2".into() },
-        ]);
+        let query =
+            parse_select("SELECT number FROM numbers(9) WHERE number IN (1, 4, 7) AND number > 2")
+                .unwrap();
+        assert_eq!(
+            query.predicates,
+            vec![
+                Predicate::In {
+                    column: "number".into(),
+                    values: vec!["1".into(), "4".into(), "7".into()],
+                },
+                Predicate::Comparison {
+                    column: "number".into(),
+                    operator: Operator::Gt,
+                    value: "2".into(),
+                },
+            ]
+        );
         for sql in [
             "SELECT number FROM numbers(5) WHERE number IN ()",
             "SELECT number FROM numbers(5) WHERE number IN (1,)",
@@ -759,7 +776,10 @@ mod tests {
         ] {
             assert!(parse_select(sql).is_err(), "{sql}");
         }
-        let too_many = format!("SELECT number FROM numbers(9) WHERE number IN ({})", vec!["1"; 33].join(","));
+        let too_many = format!(
+            "SELECT number FROM numbers(9) WHERE number IN ({})",
+            vec!["1"; 33].join(",")
+        );
         assert!(parse_select(&too_many).is_err());
     }
 

@@ -608,18 +608,23 @@ enum CompiledTest {
     Comparison { operator: Operator, target: Number },
     In(Vec<Number>),
 }
+
 impl CompiledTest {
     fn matches(&self, value: Number) -> bool {
         match self {
             Self::Comparison { operator, target } => number_matches(value, *target, *operator),
-            Self::In(targets) => targets.iter().any(|target| number_matches(value, *target, Operator::Eq)),
+            Self::In(targets) => targets
+                .iter()
+                .any(|target| number_matches(value, *target, Operator::Eq)),
         }
     }
 }
+
 struct CompiledPredicate {
     index: usize,
     test: CompiledTest,
 }
+
 fn compile_part_predicates(
     predicates: &[Predicate],
     scan_columns: &mut Vec<String>,
@@ -629,15 +634,23 @@ fn compile_part_predicates(
     for predicate in predicates {
         let column = predicate.column();
         let test = match predicate {
-            Predicate::Comparison { operator, value, .. } => CompiledTest::Comparison {
+            Predicate::Comparison {
+                operator, value, ..
+            } => CompiledTest::Comparison {
                 operator: *operator,
                 target: convert(column, value)?,
             },
             Predicate::In { values, .. } => CompiledTest::In(
-                values.iter().map(|value| convert(column, value)).collect::<Result<Vec<_>, _>>()?
+                values
+                    .iter()
+                    .map(|value| convert(column, value))
+                    .collect::<Result<Vec<_>, _>>()?,
             ),
         };
-        let index = if let Some(index) = scan_columns.iter().position(|candidate| candidate.as_str() == column) {
+        let index = if let Some(index) = scan_columns
+            .iter()
+            .position(|candidate| candidate.as_str() == column)
+        {
             index
         } else {
             scan_columns.push(column.to_owned());
@@ -647,18 +660,27 @@ fn compile_part_predicates(
     }
     Ok(compiled)
 }
+
 fn batch_matches(batch: &[NumericColumn], row: usize, predicates: &[CompiledPredicate]) -> bool {
-    predicates.iter().all(|predicate| predicate.test.matches(number_at(&batch[predicate.index], row)))
+    predicates
+        .iter()
+        .all(|predicate| predicate.test.matches(number_at(&batch[predicate.index], row)))
 }
-fn compile_numbers_predicates(predicates: &[Predicate]) -> Result<Vec<CompiledPredicate>, ExecutionError> {
+
+fn compile_numbers_predicates(
+    predicates: &[Predicate],
+) -> Result<Vec<CompiledPredicate>, ExecutionError> {
     let mut scan_columns = vec!["number".into()];
     compile_part_predicates(predicates, &mut scan_columns, |column, value| {
         if column != "number" {
-            return Err(ExecutionError::Invalid("numbers(N) exposes only the number column".into()));
+            return Err(ExecutionError::Invalid(
+                "numbers(N) exposes only the number column".into(),
+            ));
         }
         parse_numeric("UInt64", value)
     })
 }
+
 fn number_matches_all(value: Number, predicates: &[CompiledPredicate]) -> bool {
     predicates.iter().all(|predicate| predicate.test.matches(value))
 }
@@ -963,22 +985,34 @@ mod tests {
     #[test]
     fn in_lists_filter_numbers_aggregates_and_empty_inputs() {
         assert_eq!(
-            run("SELECT number FROM numbers(10) WHERE number IN (2, 4, 7) ORDER BY number DESC LIMIT 2 OFFSET 1", None).unwrap(),
+            run(
+                "SELECT number FROM numbers(10) WHERE number IN (2, 4, 7) ORDER BY number DESC LIMIT 2 OFFSET 1",
+                None,
+            )
+            .unwrap(),
             "number\n4\n2\n"
         );
         assert_eq!(
-            run("SELECT count(*) FROM numbers(10) WHERE number IN (1, 4, 8) AND number > 2", None).unwrap(),
+            run(
+                "SELECT count(*) FROM numbers(10) WHERE number IN (1, 4, 8) AND number > 2",
+                None,
+            )
+            .unwrap(),
             "count\n2\n"
         );
         assert_eq!(
-            run("SELECT sum(number) FROM numbers(10) WHERE number IN (3, 5, 7)", None).unwrap(),
+            run("SELECT sum(number) FROM numbers(10) WHERE number IN (3, 5, 7)", None)
+                .unwrap(),
             "sum(number)\n15\n"
         );
-        assert_eq!(run("SELECT number FROM numbers(0) WHERE number IN (1)", None).unwrap(), "number\n");
+        assert_eq!(
+            run("SELECT number FROM numbers(0) WHERE number IN (1)", None).unwrap(),
+            "number\n"
+        );
         assert!(run("SELECT number FROM numbers(0) WHERE number IN (-1)", None).is_err());
         assert!(run("SELECT number FROM numbers(0) WHERE missing IN (1)", None).is_err());
     }
-    
+
     #[test]
     fn pagination_applies_after_filtering_and_sorting() {
         assert_eq!(
