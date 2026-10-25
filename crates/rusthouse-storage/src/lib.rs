@@ -3,6 +3,7 @@ mod compression;
 mod granules;
 mod mark_validation;
 mod marks;
+mod nullable;
 mod numeric;
 mod stream;
 mod strings;
@@ -12,6 +13,10 @@ pub use compression::{CompressedBlock, CompressedBlockReader, DecodedBlock};
 pub use granules::{read_mark_bytes, read_u64_granule};
 pub use mark_validation::validate_wide_marks;
 pub use marks::{WideMark, WideMarkFormat, WideMarks, read_wide_marks};
+pub use nullable::{
+    NullableColumn, NullableReadError, read_null_map, read_nullable_legacy_strings,
+    read_nullable_numeric_column, read_nullable_sized_strings,
+};
 pub use numeric::{NumericColumn, NumericReadError, read_numeric_column};
 pub use stream::UInt64ColumnReader;
 pub use strings::{StringColumn, StringReadError, read_legacy_strings, read_sized_strings};
