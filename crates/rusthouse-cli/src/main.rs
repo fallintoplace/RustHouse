@@ -13,7 +13,7 @@ use std::ffi::OsString;
 use std::path::PathBuf;
 use std::process::ExitCode;
 
-const USAGE: &str = "Usage:\n  rusthouse inspect-part <path>\n  rusthouse verify-part <path-to-wide-part>\n  rusthouse verify-file-sizes <path-to-part>\n  rusthouse inspect-checksums <path-to-checksums.txt>\n  rusthouse inspect-marks <path-to-wide-marks>\n  rusthouse inspect-blocks <path-to-.bin>\n  rusthouse verify-blocks <path-to-.bin>\n  rusthouse validate-marks <path-to-wide-marks> <path-to-.bin>\n  rusthouse read-u64 <data.bin> <marks.mrk2> <mark-index>\n  rusthouse scan-u64 <path-to-UInt64-.bin>\n  rusthouse read-numeric <data.bin> <marks.mrk2> <mark-index> <type>\n  rusthouse sql <SQL> [--part <path-to-wide-part>] [--format tsv|csv|csv-no-header|jsonl] [--output <path>] [--show-ast]\n  rusthouse sql --file <path.sql> [--part <path-to-wide-part>] [--format tsv|csv|csv-no-header|jsonl] [--output <path>] [--show-ast]\n  rusthouse --help\n\nInspect local MergeTree metadata, marks, and compressed blocks.";
+const USAGE: &str = "Usage:\n  rusthouse inspect-part <path>\n  rusthouse verify-part <path-to-wide-part>\n  rusthouse verify-file-sizes <path-to-part>\n  rusthouse inspect-checksums <path-to-checksums.txt>\n  rusthouse inspect-marks <path-to-wide-marks>\n  rusthouse inspect-blocks <path-to-.bin>\n  rusthouse verify-blocks <path-to-.bin>\n  rusthouse validate-marks <path-to-wide-marks> <path-to-.bin>\n  rusthouse read-u64 <data.bin> <marks.mrk2> <mark-index>\n  rusthouse scan-u64 <path-to-UInt64-.bin>\n  rusthouse read-numeric <data.bin> <marks.mrk2> <mark-index> <type>\n  rusthouse sql <SQL> [--part <path-to-wide-part>] [--format tsv|csv|csv-no-header|jsonl] [--output <path>] [--show-ast]\n  rusthouse sql --stdin [--part <path-to-wide-part>] [--format tsv|csv|csv-no-header|jsonl] [--output <path>] [--show-ast]\n  rusthouse sql --file <path.sql> [--part <path-to-wide-part>] [--format tsv|csv|csv-no-header|jsonl] [--output <path>] [--show-ast]\n  rusthouse --help\n\nInspect local MergeTree metadata, marks, and compressed blocks.";
 
 #[derive(Clone, Copy)]
 enum SqlOutputFormat {
@@ -344,6 +344,7 @@ fn run_sql_args(mut args: impl Iterator<Item = OsString>) -> Result<(), String> 
 
     let mut query = None;
     let mut file = None;
+    let mut read_stdin = false;
     let mut part = None;
     let mut format = None;
     let mut output_path = None;
@@ -354,6 +355,13 @@ fn run_sql_args(mut args: impl Iterator<Item = OsString>) -> Result<(), String> 
                 return Err("duplicate --show-ast option".into());
             }
             show_ast = true;
+            continue;
+        }
+        if arg.to_str() == Some("--stdin") {
+            if read_stdin {
+                return Err("duplicate --stdin option".into());
+            }
+            read_stdin = true;
             continue;
         }
         if arg.to_str() == Some("--format") {
@@ -387,7 +395,20 @@ fn run_sql_args(mut args: impl Iterator<Item = OsString>) -> Result<(), String> 
             return Err("unexpected SQL argument".into());
         }
     }
-    let query = if let Some(file) = file {
+    if read_stdin && (query.is_some() || file.is_some()) {
+        return Err("provide SQL text, --file, or --stdin, not both".into());
+    }
+    let query = if read_stdin {
+        let mut bytes = Vec::new();
+        std::io::stdin()
+            .take(4097)
+            .read_to_end(&mut bytes)
+            .map_err(|error| format!("cannot read SQL from stdin: {error}"))?;
+        if bytes.len() > 4096 {
+            return Err("SQL from stdin exceeds the 4096-byte statement limit".into());
+        }
+        String::from_utf8(bytes).map_err(|_| "SQL from stdin must be valid UTF-8".to_string())?
+    } else if let Some(file) = file {
         let mut input = std::fs::File::open(&file)
             .map_err(|error| format!("cannot open {}: {error}", file.display()))?;
         let mut bytes = Vec::new();
