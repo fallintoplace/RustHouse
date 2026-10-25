@@ -45,9 +45,13 @@ fn main() -> ExitCode {
         };
         read_u64_and_print(data_path, marks_path, index)
     } else if command == "read-numeric" {
-        let (Some(data_path), Some(marks_path), Some(index), Some(data_type), None) =
-            (args.next(), args.next(), args.next(), args.next(), args.next())
-        else {
+        let (Some(data_path), Some(marks_path), Some(index), Some(data_type), None) = (
+            args.next(),
+            args.next(),
+            args.next(),
+            args.next(),
+            args.next(),
+        ) else {
             eprintln!("{USAGE}");
             return ExitCode::from(2);
         };

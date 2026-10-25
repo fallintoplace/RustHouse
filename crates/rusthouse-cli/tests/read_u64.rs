@@ -56,10 +56,8 @@ fn rejects_non_numeric_mark_index() {
 fn reads_typed_numeric_granule_from_lz4_fixture() {
     let bin = Path::new(env!("CARGO_MANIFEST_DIR"))
         .join("../rusthouse-storage/tests/fixtures/blocks/lz4-none.bin");
-    let marks = std::env::temp_dir().join(format!(
-        "rusthouse-numeric-{}-cli.mrk2",
-        std::process::id()
-    ));
+    let marks =
+        std::env::temp_dir().join(format!("rusthouse-numeric-{}-cli.mrk2", std::process::id()));
     let mut mark_bytes = Vec::new();
     mark_bytes.extend_from_slice(&0u64.to_le_bytes());
     mark_bytes.extend_from_slice(&6u64.to_le_bytes());
@@ -91,8 +89,7 @@ fn reads_typed_numeric_granule_from_lz4_fixture() {
     );
     assert_eq!(unsupported.status.code(), Some(1));
     assert!(
-        String::from_utf8_lossy(&unsupported.stderr)
-            .contains("unsupported plain numeric type")
+        String::from_utf8_lossy(&unsupported.stderr).contains("unsupported plain numeric type")
     );
 }
 

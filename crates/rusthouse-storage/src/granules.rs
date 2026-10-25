@@ -1,5 +1,6 @@
 use crate::{
-    CompressedBlockReader, NumericColumn, NumericReadError, PartError, WideMark, read_numeric_column,
+    CompressedBlockReader, NumericColumn, NumericReadError, PartError, WideMark,
+    read_numeric_column,
 };
 use std::io::{Read, Seek};
 
@@ -390,8 +391,7 @@ mod tests {
             })
         ));
         assert_eq!(
-            read_numeric_granule(&mut blocks, &mark(u64::MAX, 0, Some(0)), "Float64")
-                .unwrap(),
+            read_numeric_granule(&mut blocks, &mark(u64::MAX, 0, Some(0)), "Float64").unwrap(),
             NumericColumn::Float64(vec![])
         );
     }
