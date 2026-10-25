@@ -437,7 +437,9 @@ pub fn parse_select(sql: &str) -> Result<Select, ParseError> {
             && !parser.take(Token::RParen)
             && !(parser.take(Token::Star) && parser.take(Token::RParen))
         {
-            return Err(ParseError("expected COUNT() or COUNT(*) in ORDER BY".into()));
+            return Err(ParseError(
+                "expected COUNT() or COUNT(*) in ORDER BY".into(),
+            ));
         }
         let column = if matches!(projection, Projection::GroupedCount { .. })
             && column.eq_ignore_ascii_case("count")
