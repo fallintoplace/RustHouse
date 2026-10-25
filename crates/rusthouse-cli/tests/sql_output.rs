@@ -24,7 +24,13 @@ fn writes_sql_formats_to_a_new_file() {
     ] {
         let output_path = path();
         let result = Command::new(env!("CARGO_BIN_EXE_rusthouse"))
-            .args(["sql", "SELECT number FROM numbers(3)", "--format", format, "--output"])
+            .args([
+                "sql",
+                "SELECT number FROM numbers(3)",
+                "--format",
+                format,
+                "--output",
+            ])
             .arg(&output_path)
             .output()
             .unwrap();
