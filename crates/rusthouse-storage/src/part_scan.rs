@@ -1,8 +1,8 @@
+use crate::numeric::numeric_storage_type;
 use crate::{
     CompressedBlockReader, NumericColumn, PartError, WideMark, inspect_part, read_numeric_granule,
     read_wide_marks,
 };
-use crate::numeric::numeric_storage_type;
 use std::fs::File;
 use std::path::Path;
 

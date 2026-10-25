@@ -83,8 +83,8 @@ impl From<io::Error> for NumericReadError {
 
 pub(crate) fn numeric_storage_type(data_type: &str) -> Option<&str> {
     match data_type {
-        "UInt8" | "UInt16" | "UInt32" | "UInt64" | "UInt128" | "Int8" | "Int16"
-        | "Int32" | "Int64" | "Int128" | "Float32" | "Float64" => Some(data_type),
+        "UInt8" | "UInt16" | "UInt32" | "UInt64" | "UInt128" | "Int8" | "Int16" | "Int32"
+        | "Int64" | "Int128" | "Float32" | "Float64" => Some(data_type),
         "Date" => Some("UInt16"),
         "Date32" => Some("Int32"),
         "DateTime" => Some("UInt32"),
@@ -96,9 +96,7 @@ pub(crate) fn numeric_storage_type(data_type: &str) -> Option<&str> {
                 return (!zone.is_empty() && !zone.contains('\'')).then_some("UInt32");
             }
 
-            let value = data_type
-                .strip_prefix("DateTime64(")?
-                .strip_suffix(')')?;
+            let value = data_type.strip_prefix("DateTime64(")?.strip_suffix(')')?;
             let (scale, zone) = match value.split_once(',') {
                 Some((scale, zone)) => (scale, Some(zone.trim())),
                 None => (value, None),

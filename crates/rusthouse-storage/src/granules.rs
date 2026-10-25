@@ -1,8 +1,8 @@
+use crate::numeric::numeric_storage_type;
 use crate::{
     CompressedBlockReader, NumericColumn, NumericReadError, PartError, WideMark,
     read_numeric_column,
 };
-use crate::numeric::numeric_storage_type;
 use std::io::{Read, Seek};
 
 const MAX_GRANULE_BYTES: usize = 64 * 1024 * 1024;
