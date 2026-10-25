@@ -157,8 +157,7 @@ fn verify_blocks_accepts_lz4_and_none_fixture() {
 
 #[test]
 fn scan_u64_reads_values_without_loading_entire_column() {
-    let fixture =
-        include_bytes!("../../rusthouse-storage/tests/fixtures/blocks/lz4-none.bin");
+    let fixture = include_bytes!("../../rusthouse-storage/tests/fixtures/blocks/lz4-none.bin");
     let path = std::env::temp_dir().join(format!("rusthouse-u64-{}.bin", std::process::id()));
     std::fs::write(&path, &fixture[..36]).unwrap();
 
@@ -179,9 +178,9 @@ fn scan_u64_reads_values_without_loading_entire_column() {
 
 #[test]
 fn scan_u64_rejects_trailing_bytes() {
-    let fixture =
-        include_bytes!("../../rusthouse-storage/tests/fixtures/blocks/lz4-none.bin");
-    let path = std::env::temp_dir().join(format!("rusthouse-u64-invalid-{}.bin", std::process::id()));
+    let fixture = include_bytes!("../../rusthouse-storage/tests/fixtures/blocks/lz4-none.bin");
+    let path =
+        std::env::temp_dir().join(format!("rusthouse-u64-invalid-{}.bin", std::process::id()));
     std::fs::write(&path, fixture).unwrap();
 
     let output = Command::new(env!("CARGO_BIN_EXE_rusthouse"))
