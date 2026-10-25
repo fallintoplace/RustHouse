@@ -96,6 +96,9 @@ pub fn parse_columns(content: &str) -> Result<Vec<Column>, PartError> {
     if lines.next().is_some() {
         return Err(invalid(expected + 3, "more columns than declared"));
     }
+    if !content.ends_with('\n') {
+        return Err(invalid(expected + 2, "missing final newline"));
+    }
 
     Ok(columns)
 }
@@ -148,18 +151,28 @@ fn parse_column(line: &str, line_number: usize) -> Result<Column, PartError> {
                             .ok_or_else(|| invalid(line_number, "invalid hex identifier escape"))?;
                         (high * 16 + low) as u8
                     }
+                    'N' => continue,
                     '\\' => b'\\',
                     '`' => b'`',
                     '\'' => b'\'',
+                    '"' => b'"',
+                    '/' => b'/',
+                    '=' => b'=',
                     'n' => b'\n',
                     'r' => b'\r',
                     't' => b'\t',
                     '0' => b'\0',
                     'a' => b'\x07',
                     'b' => b'\x08',
+                    'e' => b'\x1b',
                     'f' => b'\x0c',
                     'v' => b'\x0b',
-                    _ => return Err(invalid(line_number, "unsupported identifier escape")),
+                    _ => {
+                        name.push(b'\\');
+                        let mut encoded = [0; 4];
+                        name.extend_from_slice(escaped.encode_utf8(&mut encoded).as_bytes());
+                        continue;
+                    }
                 };
                 name.push(decoded);
             }
@@ -234,6 +247,42 @@ mod tests {
     }
 
     #[test]
+    fn supports_clickhouse_compatible_escapes() {
+        let columns = parse_columns(
+            "columns format version: 1\n3 columns:\n`unknown\\q` String\n`equal\\=slash\\/quote\\\"` UInt8\n`a\\Nb` UInt16\n",
+        )
+        .unwrap();
+
+        assert_eq!(columns[0].name, r"unknown\q");
+        assert_eq!(columns[1].name, "equal=slash/quote\"");
+        assert_eq!(columns[2].name, "ab");
+    }
+
+    #[test]
+    fn rejects_truncated_last_line() {
+        for content in [
+            "columns format version: 1\n0 columns:",
+            "columns format version: 1\n1 columns:\n`id` UInt64",
+        ] {
+            assert!(matches!(
+                parse_columns(content),
+                Err(PartError::InvalidColumns { message: "missing final newline", .. })
+            ));
+        }
+    }
+
+    #[test]
+    fn supports_empty_column_lists_and_unicode_identifiers() {
+        assert!(parse_columns("columns format version: 1\n0 columns:\n")
+            .unwrap()
+            .is_empty());
+
+        let columns = parse_columns("columns format version: 1\n1 columns:\n`測試` String\n")
+            .unwrap();
+        assert_eq!(columns[0].name, "測試");
+    }
+
+    #[test]
     fn rejects_invalid_headers() {
         assert!(matches!(
             parse_columns("columns format version: 2\n0 columns:\n"),
@@ -265,7 +314,6 @@ mod tests {
             "`a`",
             "`` String",
             "`a` ",
-            "`a\\q` String",
         ] {
             let content = format!("columns format version: 1\n1 columns:\n{row}\n");
             assert!(parse_columns(&content).is_err(), "accepted: {row:?}");
