@@ -690,6 +690,7 @@ fn compare_numbers(left: Number, right: Number) -> Ordering {
 enum CompiledTest {
     Comparison { operator: Operator, target: Number },
     In(Vec<Number>),
+    NotIn(Vec<Number>),
 }
 
 impl CompiledTest {
@@ -699,6 +700,9 @@ impl CompiledTest {
             Self::In(targets) => targets
                 .iter()
                 .any(|target| number_matches(value, *target, Operator::Eq)),
+            Self::NotIn(targets) => targets
+                .iter()
+                .all(|target| !number_matches(value, *target, Operator::Eq)),
         }
     }
 }
@@ -732,6 +736,12 @@ fn compile_part_predicates(
                 }
             }
             Predicate::In { values, .. } => CompiledTest::In(
+                values
+                    .iter()
+                    .map(|value| convert(column, value))
+                    .collect::<Result<Vec<_>, _>>()?,
+            ),
+            Predicate::NotIn { values, .. } => CompiledTest::NotIn(
                 values
                     .iter()
                     .map(|value| convert(column, value))
@@ -950,6 +960,26 @@ mod tests {
             )
             .unwrap(),
             "count\n5\n"
+        );
+    }
+
+    #[test]
+    fn evaluates_not_in_with_filters_and_aggregates() {
+        assert_eq!(
+            run(
+                "SELECT number FROM numbers(10) WHERE number NOT IN (1, 3, 5) LIMIT 4",
+                None,
+            )
+            .unwrap(),
+            "number\n0\n2\n4\n6\n"
+        );
+        assert_eq!(
+            run(
+                "SELECT count(*) FROM numbers(10) WHERE number NOT IN (1, 3, 5)",
+                None,
+            )
+            .unwrap(),
+            "count\n7\n"
         );
     }
 

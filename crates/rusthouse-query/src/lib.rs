@@ -57,12 +57,18 @@ pub enum Predicate {
         column: String,
         values: Vec<String>,
     },
+    NotIn {
+        column: String,
+        values: Vec<String>,
+    },
 }
 
 impl Predicate {
     fn column(&self) -> &str {
         match self {
-            Self::Comparison { column, .. } | Self::In { column, .. } => column,
+            Self::Comparison { column, .. }
+            | Self::In { column, .. }
+            | Self::NotIn { column, .. } => column,
         }
     }
 }
@@ -287,7 +293,11 @@ pub fn parse_select(sql: &str) -> Result<Select, ParseError> {
                 return Err(ParseError("WHERE supports at most 16 conditions".into()));
             }
             let column = parser.word()?;
+            let negate_in = parser.keyword("NOT");
             if parser.keyword("BETWEEN") {
+                if negate_in {
+                    return Err(ParseError("NOT BETWEEN is not supported".into()));
+                }
                 if predicates.len() + 2 > 16 {
                     return Err(ParseError("WHERE supports at most 16 conditions".into()));
                 }
@@ -323,8 +333,15 @@ pub fn parse_select(sql: &str) -> Result<Select, ParseError> {
                 if !parser.take(Token::RParen) {
                     return Err(ParseError("expected ')' after IN list".into()));
                 }
-                predicates.push(Predicate::In { column, values });
+                predicates.push(if negate_in {
+                    Predicate::NotIn { column, values }
+                } else {
+                    Predicate::In { column, values }
+                });
             } else {
+                if negate_in {
+                    return Err(ParseError("NOT requires IN".into()));
+                }
                 let operator = if parser.take(Token::Percent) {
                     let modulus = parser.number()?;
                     let modulus = modulus
@@ -900,7 +917,6 @@ mod tests {
             "SELECT number FROM numbers(5) WHERE number IN (1 2)",
             "SELECT number FROM numbers(5) WHERE number IN 1",
             "SELECT number FROM numbers(5) WHERE number IN (1, 2",
-            "SELECT number FROM numbers(5) WHERE number NOT IN (1)",
         ] {
             assert!(parse_select(sql).is_err(), "{sql}");
         }
@@ -927,6 +943,27 @@ mod tests {
             "SELECT number FROM numbers(10) WHERE number % 2 > 0",
             "SELECT number FROM numbers(10) WHERE number % 2.5 = 1",
             "SELECT number FROM numbers(10) WHERE number % 2 =",
+        ] {
+            assert!(parse_select(sql).is_err(), "{sql}");
+        }
+    }
+
+    #[test]
+    fn parses_not_in_numeric_lists() {
+        let query =
+            parse_select("SELECT number FROM numbers(10) WHERE number NOT IN (1, 4, 7)").unwrap();
+        assert_eq!(
+            query.predicates,
+            vec![Predicate::NotIn {
+                column: "number".into(),
+                values: vec!["1".into(), "4".into(), "7".into()],
+            }]
+        );
+        for sql in [
+            "SELECT number FROM numbers(10) WHERE number NOT IN ()",
+            "SELECT number FROM numbers(10) WHERE number NOT IN (1,)",
+            "SELECT number FROM numbers(10) WHERE number NOT = 1",
+            "SELECT number FROM numbers(10) WHERE number NOT BETWEEN 1 AND 2",
         ] {
             assert!(parse_select(sql).is_err(), "{sql}");
         }
