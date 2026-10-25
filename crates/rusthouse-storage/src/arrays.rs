@@ -13,13 +13,13 @@ pub enum ArrayOffsetsEncoding {
     Absolute { previous_offset: u64 },
 }
 
-#[derive(Debug, PartialEq)]
-pub struct NumericArrayColumn {
+#[derive(Debug, PartialEq, Eq)]
+pub struct ArrayOffsets {
     offsets: Vec<usize>,
-    values: NumericColumn,
+    last_absolute_offset: u64,
 }
 
-impl NumericArrayColumn {
+impl ArrayOffsets {
     pub fn len(&self) -> usize {
         self.offsets.len() - 1
     }
@@ -32,14 +32,46 @@ impl NumericArrayColumn {
         &self.offsets
     }
 
-    pub fn values(&self) -> &NumericColumn {
-        &self.values
+    pub fn element_count(&self) -> usize {
+        *self.offsets.last().unwrap()
+    }
+
+    pub fn last_absolute_offset(&self) -> u64 {
+        self.last_absolute_offset
     }
 
     pub fn row_range(&self, row: usize) -> Option<Range<usize>> {
         let begin = *self.offsets.get(row)?;
         let end = *self.offsets.get(row.checked_add(1)?)?;
         Some(begin..end)
+    }
+}
+
+#[derive(Debug, PartialEq)]
+pub struct NumericArrayColumn {
+    offsets: ArrayOffsets,
+    values: NumericColumn,
+}
+
+impl NumericArrayColumn {
+    pub fn len(&self) -> usize {
+        self.offsets.len()
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.offsets.is_empty()
+    }
+
+    pub fn offsets(&self) -> &[usize] {
+        self.offsets.offsets()
+    }
+
+    pub fn values(&self) -> &NumericColumn {
+        &self.values
+    }
+
+    pub fn row_range(&self, row: usize) -> Option<Range<usize>> {
+        self.offsets.row_range(row)
     }
 }
 
@@ -82,19 +114,11 @@ impl Error for ArrayReadError {
     }
 }
 
-pub fn read_numeric_array_column<O: Read, D: Read>(
+pub fn read_array_offsets<O: Read>(
     offset_stream: &mut O,
-    data_stream: &mut D,
-    data_type: &str,
     rows: usize,
     encoding: ArrayOffsetsEncoding,
-) -> Result<NumericArrayColumn, ArrayReadError> {
-    let nested_type = data_type
-        .strip_prefix("Array(")
-        .and_then(|inner| inner.strip_suffix(')'))
-        .filter(|inner| !inner.is_empty())
-        .ok_or_else(|| ArrayReadError::UnsupportedType(data_type.to_owned()))?;
-
+) -> Result<ArrayOffsets, ArrayReadError> {
     if rows > MAX_BATCH_ROWS {
         return Err(ArrayReadError::TooManyRows(rows));
     }
@@ -145,7 +169,27 @@ pub fn read_numeric_array_column<O: Read, D: Read>(
         }
     }
 
-    let values = read_numeric_column(data_stream, nested_type, (absolute - base) as usize)
+    Ok(ArrayOffsets {
+        offsets,
+        last_absolute_offset: absolute,
+    })
+}
+
+pub fn read_numeric_array_column<O: Read, D: Read>(
+    offset_stream: &mut O,
+    data_stream: &mut D,
+    data_type: &str,
+    rows: usize,
+    encoding: ArrayOffsetsEncoding,
+) -> Result<NumericArrayColumn, ArrayReadError> {
+    let nested_type = data_type
+        .strip_prefix("Array(")
+        .and_then(|inner| inner.strip_suffix(')'))
+        .filter(|inner| !inner.is_empty())
+        .ok_or_else(|| ArrayReadError::UnsupportedType(data_type.to_owned()))?;
+
+    let offsets = read_array_offsets(offset_stream, rows, encoding)?;
+    let values = read_numeric_column(data_stream, nested_type, offsets.element_count())
         .map_err(ArrayReadError::Values)?;
     Ok(NumericArrayColumn { offsets, values })
 }
@@ -384,4 +428,55 @@ mod tests {
         assert_eq!(column.offsets(), &[0]);
         assert_eq!(column.values(), &NumericColumn::UInt64(Vec::new()));
     }
+    #[test]
+    fn reads_offsets_without_a_numeric_value_stream() {
+        let sizes = encoded_offsets(&[2, 0, 3]);
+        let mut sizes = OneByte(Cursor::new(sizes));
+        let offsets = read_array_offsets(&mut sizes, 3, ArrayOffsetsEncoding::Sizes).unwrap();
+        assert_eq!(offsets.len(), 3);
+        assert!(!offsets.is_empty());
+        assert_eq!(offsets.element_count(), 5);
+        assert_eq!(offsets.last_absolute_offset(), 5);
+        assert_eq!(offsets.offsets(), &[0, 2, 2, 5]);
+        assert_eq!(offsets.row_range(0), Some(0..2));
+        assert_eq!(offsets.row_range(1), Some(2..2));
+        assert_eq!(offsets.row_range(2), Some(2..5));
+        assert_eq!(offsets.row_range(usize::MAX), None);
+
+        let absolute = encoded_offsets(&[12, 12, 15]);
+        let offsets = read_array_offsets(
+            &mut absolute.as_slice(),
+            3,
+            ArrayOffsetsEncoding::Absolute {
+                previous_offset: 10,
+            },
+        )
+        .unwrap();
+        assert_eq!(offsets.offsets(), &[0, 2, 2, 5]);
+        assert_eq!(offsets.last_absolute_offset(), 15);
+    }
+
+    #[test]
+    fn reads_consecutive_offset_batches_with_a_running_base() {
+        let encoded = encoded_offsets(&[2, 5, 5, 9]);
+        let mut reader = encoded.as_slice();
+        let first = read_array_offsets(
+            &mut reader,
+            2,
+            ArrayOffsetsEncoding::Absolute { previous_offset: 0 },
+        )
+        .unwrap();
+        let second = read_array_offsets(
+            &mut reader,
+            2,
+            ArrayOffsetsEncoding::Absolute {
+                previous_offset: first.last_absolute_offset(),
+            },
+        )
+        .unwrap();
+        assert_eq!(first.offsets(), &[0, 2, 5]);
+        assert_eq!(second.offsets(), &[0, 0, 4]);
+        assert!(reader.is_empty());
+    }
+
 }
