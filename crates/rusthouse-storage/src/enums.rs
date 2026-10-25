@@ -187,7 +187,7 @@ fn parse_enum_type(data_type: &str) -> Option<(u8, BTreeMap<i16, String>)> {
         skip_space(bytes, &mut position);
 
         let start = position;
-        if matches!(bytes.get(position), Some(b'-' | b'+')) {
+        if bytes.get(position) == Some(&b'-') || bytes.get(position) == Some(&b'+') {
             position += 1;
         }
         let digit_start = position;
@@ -204,7 +204,8 @@ fn parse_enum_type(data_type: &str) -> Option<(u8, BTreeMap<i16, String>)> {
         if !names.insert(name.clone()) || variants.insert(code, name).is_some() {
             return None;
         }
-        if variants.len() > if width == 8 { 256 } else { 65_536 } {
+        let max_variants = if width == 8 { 256 } else { 65_536 };
+        if variants.len() > max_variants {
             return None;
         }
 
