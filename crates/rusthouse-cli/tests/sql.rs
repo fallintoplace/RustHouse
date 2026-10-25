@@ -78,7 +78,9 @@ fn groups_repeated_part_values_from_the_cli() {
         format!("id\tcount\n{id}\t10\n")
     );
     let filtered = sql(
-        &format!("SELECT id, count(*) FROM part WHERE id IN (0, {id}) GROUP BY id ORDER BY id DESC"),
+        &format!(
+            "SELECT id, count(*) FROM part WHERE id IN (0, {id}) GROUP BY id ORDER BY id DESC"
+        ),
         Some(&dir),
     );
     assert!(filtered.status.success(), "{filtered:?}");

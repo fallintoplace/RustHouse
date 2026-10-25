@@ -163,7 +163,7 @@ fn execute_into<W: Write>(
         Projection::Count => Vec::new(),
         Projection::Aggregate { .. } | Projection::GroupedCount { .. } | Projection::Literal(_) => {
             unreachable!()
-        },
+        }
     };
     if query.distinct
         && query
@@ -536,7 +536,7 @@ fn execute_numbers<W: Write>(
         Projection::Count => Vec::new(),
         Projection::Aggregate { .. } | Projection::GroupedCount { .. } | Projection::Literal(_) => {
             unreachable!()
-        },
+        }
     };
     let comparisons = compile_numbers_predicates(&query.predicates)?;
     let is_count = matches!(query.projection, Projection::Count);
@@ -1217,11 +1217,19 @@ mod tests {
             "number\tcount\n5\t1\n4\t1\n"
         );
         assert_eq!(
-            run("SELECT number, COUNT(*) FROM numbers(0) GROUP BY number", None).unwrap(),
+            run(
+                "SELECT number, COUNT(*) FROM numbers(0) GROUP BY number",
+                None
+            )
+            .unwrap(),
             "number\tcount\n"
         );
         assert_eq!(
-            run("SELECT number, COUNT(*) FROM numbers(3) GROUP BY number LIMIT 0", None).unwrap(),
+            run(
+                "SELECT number, COUNT(*) FROM numbers(3) GROUP BY number LIMIT 0",
+                None
+            )
+            .unwrap(),
             "number\tcount\n"
         );
         assert!(run("SELECT bad, COUNT(*) FROM numbers(0) GROUP BY bad", None).is_err());

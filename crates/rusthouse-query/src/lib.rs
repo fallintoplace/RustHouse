@@ -351,9 +351,7 @@ pub fn parse_select(sql: &str) -> Result<Select, ParseError> {
                 return Err(ParseError("GROUP BY must match the selected key".into()));
             }
             _ => {
-                return Err(ParseError(
-                    "GROUP BY requires SELECT key, COUNT(*)".into(),
-                ));
+                return Err(ParseError("GROUP BY requires SELECT key, COUNT(*)".into()));
             }
         }
     } else if matches!(projection, Projection::GroupedCount { .. }) {
