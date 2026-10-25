@@ -1,3 +1,3 @@
 # RustHouse
 
-Experimental read-only ClickHouse MergeTree metadata and uncompressed mark inspection. No SQL or column decoding. Run `cargo run -p rusthouse-cli -- --help`.
+Experimental read-only ClickHouse MergeTree metadata, mark, and compressed-block header inspection. No SQL or column decoding. Run `cargo run -p rusthouse-cli -- --help`.

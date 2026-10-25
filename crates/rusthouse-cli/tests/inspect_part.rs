@@ -83,3 +83,37 @@ fn inspect_marks_rejects_compressed_files() {
     assert_eq!(output.status.code(), Some(1));
     assert!(String::from_utf8_lossy(&output.stderr).contains("only uncompressed wide-part"));
 }
+
+#[test]
+fn inspect_blocks_rejects_directories() {
+    let output = Command::new(env!("CARGO_BIN_EXE_rusthouse"))
+        .arg("inspect-blocks")
+        .arg(env!("CARGO_MANIFEST_DIR"))
+        .output()
+        .unwrap();
+    assert_eq!(output.status.code(), Some(1));
+    assert!(String::from_utf8_lossy(&output.stderr).contains("expected a regular file"));
+}
+
+#[test]
+fn inspect_blocks_reports_offsets_and_sizes() {
+    let path = std::env::temp_dir().join(format!("rusthouse-blocks-{}.bin", std::process::id()));
+    let mut bytes = vec![0; 16];
+    bytes.push(0x82);
+    bytes.extend_from_slice(&13u32.to_le_bytes());
+    bytes.extend_from_slice(&42u32.to_le_bytes());
+    bytes.extend_from_slice(&[1, 2, 3, 4]);
+    std::fs::write(&path, bytes).unwrap();
+
+    let output = Command::new(env!("CARGO_BIN_EXE_rusthouse"))
+        .arg("inspect-blocks")
+        .arg(&path)
+        .output()
+        .unwrap();
+    std::fs::remove_file(path).unwrap();
+
+    assert!(output.status.success(), "{output:?}");
+    let stdout = String::from_utf8(output.stdout).unwrap();
+    assert!(stdout.contains("offset=0, method=0x82, compressed=13, decompressed=42"));
+    assert!(stdout.contains("Blocks: 1 (headers only; checksums not verified)"));
+}

@@ -1,10 +1,10 @@
-use rusthouse_storage::{inspect_part, read_wide_marks};
+use rusthouse_storage::{CompressedBlockReader, inspect_part, read_wide_marks};
 use std::env;
 use std::ffi::OsString;
 use std::path::PathBuf;
 use std::process::ExitCode;
 
-const USAGE: &str = "Usage:\n  rusthouse inspect-part <path>\n  rusthouse inspect-marks <path-to-.mrk-or-.mrk2>\n  rusthouse --help\n\nRead local MergeTree metadata and uncompressed wide-part marks.";
+const USAGE: &str = "Usage:\n  rusthouse inspect-part <path>\n  rusthouse inspect-marks <path-to-.mrk-or-.mrk2>\n  rusthouse inspect-blocks <path-to-.bin>\n  rusthouse --help\n\nInspect local MergeTree metadata, marks, and compressed block headers.";
 
 fn main() -> ExitCode {
     let mut args = env::args_os().skip(1);
@@ -17,7 +17,7 @@ fn main() -> ExitCode {
         println!("{USAGE}");
         return ExitCode::SUCCESS;
     }
-    if command != "inspect-part" && command != "inspect-marks" {
+    if command != "inspect-part" && command != "inspect-marks" && command != "inspect-blocks" {
         eprintln!("unknown command: {command:?}\n{USAGE}");
         return ExitCode::from(2);
     }
@@ -28,8 +28,10 @@ fn main() -> ExitCode {
 
     let result = if command == "inspect-part" {
         inspect_and_print(path)
-    } else {
+    } else if command == "inspect-marks" {
         inspect_marks_and_print(path)
+    } else {
+        inspect_blocks_and_print(path)
     };
     match result {
         Ok(()) => ExitCode::SUCCESS,
@@ -72,5 +74,22 @@ fn inspect_marks_and_print(path: OsString) -> Result<(), rusthouse_storage::Part
             ),
         }
     }
+    Ok(())
+}
+
+fn inspect_blocks_and_print(path: OsString) -> Result<(), rusthouse_storage::PartError> {
+    let path = PathBuf::from(path);
+    let reader = CompressedBlockReader::open(&path)?;
+    println!("Compressed file: {}", path.display());
+    let mut count = 0;
+    for block in reader {
+        let block = block?;
+        println!(
+            "  {count}: offset={}, method=0x{:02x}, compressed={}, decompressed={}",
+            block.offset, block.method, block.compressed_size, block.decompressed_size
+        );
+        count += 1;
+    }
+    println!("Blocks: {count} (headers only; checksums not verified)");
     Ok(())
 }
