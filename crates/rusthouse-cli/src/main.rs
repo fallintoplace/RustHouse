@@ -1,10 +1,10 @@
-use rusthouse_storage::{CompressedBlockReader, inspect_part, read_wide_marks};
+use rusthouse_storage::{CompressedBlockReader, UInt64ColumnReader, inspect_part, read_wide_marks};
 use std::env;
 use std::ffi::OsString;
 use std::path::PathBuf;
 use std::process::ExitCode;
 
-const USAGE: &str = "Usage:\n  rusthouse inspect-part <path>\n  rusthouse inspect-marks <path-to-.mrk-or-.mrk2>\n  rusthouse inspect-blocks <path-to-.bin>\n  rusthouse verify-blocks <path-to-.bin>\n  rusthouse --help\n\nInspect local MergeTree metadata, marks, and compressed blocks.";
+const USAGE: &str = "Usage:\n  rusthouse inspect-part <path>\n  rusthouse inspect-marks <path-to-.mrk-or-.mrk2>\n  rusthouse inspect-blocks <path-to-.bin>\n  rusthouse verify-blocks <path-to-.bin>\n  rusthouse scan-u64 <path-to-UInt64-.bin>\n  rusthouse --help\n\nInspect local MergeTree metadata, marks, and compressed blocks.";
 
 fn main() -> ExitCode {
     let mut args = env::args_os().skip(1);
@@ -21,6 +21,7 @@ fn main() -> ExitCode {
         && command != "inspect-marks"
         && command != "inspect-blocks"
         && command != "verify-blocks"
+        && command != "scan-u64"
     {
         eprintln!("unknown command: {command:?}\n{USAGE}");
         return ExitCode::from(2);
@@ -36,8 +37,10 @@ fn main() -> ExitCode {
         inspect_marks_and_print(path)
     } else if command == "inspect-blocks" {
         inspect_blocks_and_print(path)
-    } else {
+    } else if command == "verify-blocks" {
         verify_blocks_and_print(path)
+    } else {
+        scan_u64_and_print(path)
     };
     match result {
         Ok(()) => ExitCode::SUCCESS,
@@ -109,5 +112,24 @@ fn verify_blocks_and_print(path: OsString) -> Result<(), rusthouse_storage::Part
         count += 1;
     }
     println!("Verified {count} blocks, {total_bytes} decompressed bytes");
+    Ok(())
+}
+
+fn scan_u64_and_print(path: OsString) -> Result<(), rusthouse_storage::PartError> {
+    let reader = UInt64ColumnReader::open(PathBuf::from(path))?;
+    let mut count = 0u64;
+    let mut min = u64::MAX;
+    let mut max = 0u64;
+    for value in reader {
+        let value = value?;
+        count += 1;
+        min = min.min(value);
+        max = max.max(value);
+    }
+    println!("Rows: {count}");
+    if count > 0 {
+        println!("Min: {min}");
+        println!("Max: {max}");
+    }
     Ok(())
 }

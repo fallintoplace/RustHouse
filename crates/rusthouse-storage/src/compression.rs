@@ -83,6 +83,10 @@ impl<R: Read + Seek> CompressedBlockReader<R> {
         })
     }
 
+    pub fn path(&self) -> &Path {
+        &self.path
+    }
+
     pub fn seek_to_block(&mut self, offset: u64) -> Result<(), PartError> {
         if offset >= self.file_len {
             return Err(PartError::InvalidCompressedBlock {

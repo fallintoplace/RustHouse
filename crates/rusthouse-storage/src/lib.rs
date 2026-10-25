@@ -1,10 +1,12 @@
 mod columns;
 mod compression;
 mod marks;
+mod numeric;
 
 pub use columns::parse_columns;
 pub use compression::{CompressedBlock, CompressedBlockReader, DecodedBlock};
 pub use marks::{WideMark, WideMarkFormat, WideMarks, read_wide_marks};
+pub use numeric::UInt64ColumnReader;
 
 use std::error::Error;
 use std::fmt;
@@ -47,6 +49,11 @@ pub enum PartError {
         offset: u64,
         reason: &'static str,
     },
+    InvalidColumnLength {
+        path: PathBuf,
+        width: usize,
+        trailing_bytes: usize,
+    },
     UnsupportedMarksFormat(PathBuf),
 }
 
@@ -79,6 +86,15 @@ impl fmt::Display for PartError {
                     path.display()
                 )
             }
+            Self::InvalidColumnLength {
+                path,
+                width,
+                trailing_bytes,
+            } => write!(
+                f,
+                "{}: incomplete {width}-byte column value ({trailing_bytes} trailing bytes)",
+                path.display()
+            ),
             Self::UnsupportedMarksFormat(path) => write!(
                 f,
                 "{}: only uncompressed wide-part .mrk and .mrk2 files are supported",
