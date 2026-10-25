@@ -96,6 +96,9 @@ pub fn read_nullable_numeric_column<N: Read, D: Read>(
         .and_then(|inner| inner.strip_suffix(')'))
         .filter(|inner| !inner.is_empty())
         .ok_or_else(|| NullableReadError::InvalidType(data_type.to_owned()))?;
+    if read_numeric_column(&mut io::empty(), nested_type, 0).is_err() {
+        return Err(NullableReadError::InvalidType(data_type.to_owned()));
+    }
     let null_map = read_null_map(nulls, rows)?;
     let values =
         read_numeric_column(data, nested_type, rows).map_err(NullableReadError::Numeric)?;
@@ -408,9 +411,22 @@ mod tests {
         let error =
             read_nullable_numeric_column(&mut io::empty(), &mut io::empty(), "Nullable(String)", 0)
                 .unwrap_err();
+        assert!(matches!(error, NullableReadError::InvalidType(_)));
+    }
+
+    #[test]
+    fn rejects_unsupported_types_before_consuming_null_maps() {
+        struct NoRead;
+
+        impl Read for NoRead {
+            fn read(&mut self, _: &mut [u8]) -> io::Result<usize> {
+                panic!("invalid type must fail before reading")
+            }
+        }
+
         assert!(matches!(
-            error,
-            NullableReadError::Numeric(NumericReadError::UnsupportedType(_))
+            read_nullable_numeric_column(&mut NoRead, &mut NoRead, "Nullable(String)", 1),
+            Err(NullableReadError::InvalidType(_))
         ));
     }
 
