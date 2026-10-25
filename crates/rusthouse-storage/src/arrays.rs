@@ -230,13 +230,14 @@ mod tests {
     #[test]
     fn decodes_float_bits_without_conversion() {
         let bits = [0x8000_0000u32, 0x7fc0_1234];
-        let mut values = bits
+        let values = bits
             .iter()
             .flat_map(|value| value.to_le_bytes())
             .collect::<Vec<_>>();
+        let mut data = values.as_slice();
         let column = read_numeric_array_column(
             &mut encoded_offsets(&[2]).as_slice(),
-            &mut values.as_mut_slice(),
+            &mut data,
             "Array(Float32)",
             1,
             ArrayOffsetsEncoding::Sizes,
