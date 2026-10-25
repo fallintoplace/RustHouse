@@ -10,6 +10,7 @@ mod nullable;
 mod numeric;
 mod primary_index;
 mod stream;
+mod string_arrays;
 mod strings;
 
 pub use arrays::{
@@ -32,6 +33,10 @@ pub use nullable::{
 pub use numeric::{NumericColumn, NumericReadError, read_numeric_column};
 pub use primary_index::{FixedPrimaryIndex, read_fixed_primary_index};
 pub use stream::UInt64ColumnReader;
+pub use string_arrays::{
+    StringArrayColumn, StringArrayReadError, read_legacy_string_array_column,
+    read_sized_string_array_column,
+};
 pub use strings::{StringColumn, StringReadError, read_legacy_strings, read_sized_strings};
 
 use std::error::Error;
