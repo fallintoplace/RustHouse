@@ -71,6 +71,7 @@ pub struct Select {
     pub predicate: Option<Predicate>,
     pub order_by: Option<OrderBy>,
     pub limit: Option<usize>,
+    pub offset: Option<usize>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -283,6 +284,23 @@ pub fn parse_select(sql: &str) -> Result<Select, ParseError> {
         None
     };
 
+    let offset = if parser.keyword("OFFSET") {
+        if limit.is_none() {
+            return Err(ParseError("OFFSET requires LIMIT".into()));
+        }
+        let value = parser.number()?;
+        if !value.bytes().all(|byte| byte.is_ascii_digit()) {
+            return Err(ParseError("OFFSET must be a non-negative integer".into()));
+        }
+        Some(
+            value
+                .parse::<usize>()
+                .map_err(|_| ParseError("OFFSET is too large".into()))?,
+        )
+    } else {
+        None
+    };
+
     parser.take(Token::Semicolon);
     if parser.index != parser.tokens.len() {
         return Err(ParseError(
@@ -295,6 +313,7 @@ pub fn parse_select(sql: &str) -> Result<Select, ParseError> {
         predicate,
         order_by,
         limit,
+        offset,
     })
 }
 
@@ -421,6 +440,7 @@ mod tests {
                 predicate: None,
                 order_by: None,
                 limit: None,
+                offset: None,
             }
         );
         assert_eq!(
@@ -431,6 +451,7 @@ mod tests {
                 predicate: None,
                 order_by: None,
                 limit: Some(2),
+                offset: None,
             }
         );
         assert_eq!(
@@ -581,6 +602,32 @@ mod tests {
             "SELECT id FROM part WHERE id =",
             "SELECT id FROM part LIMIT 184467440737095516161",
             "SELECT 1 + 2",
+        ] {
+            assert!(parse_select(sql).is_err(), "{sql}");
+        }
+    }
+
+    #[test]
+    fn parses_limit_offset_and_rejects_invalid_pagination() {
+        let query =
+            parse_select("SELECT number FROM numbers(10) ORDER BY number DESC LIMIT 3 OFFSET 2;")
+                .unwrap();
+        assert_eq!(query.limit, Some(3));
+        assert_eq!(query.offset, Some(2));
+        assert_eq!(
+            parse_select("SELECT id FROM part LIMIT 0 OFFSET 0")
+                .unwrap()
+                .offset,
+            Some(0)
+        );
+        for sql in [
+            "SELECT number FROM numbers(10) OFFSET 2",
+            "SELECT number FROM numbers(10) LIMIT 2 OFFSET -1",
+            "SELECT number FROM numbers(10) LIMIT 2 OFFSET 1.5",
+            "SELECT number FROM numbers(10) LIMIT 2 OFFSET",
+            "SELECT number FROM numbers(10) LIMIT 2 OFFSET 184467440737095516160",
+            "SELECT number FROM numbers(10) LIMIT 2 OFFSET 1 OFFSET 2",
+            "SELECT number FROM numbers(10) LIMIT 2 OFFSET 1 ORDER BY number",
         ] {
             assert!(parse_select(sql).is_err(), "{sql}");
         }
