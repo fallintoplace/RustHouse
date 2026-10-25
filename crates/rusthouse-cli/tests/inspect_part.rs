@@ -119,6 +119,43 @@ fn inspect_blocks_reports_offsets_and_sizes() {
 }
 
 #[test]
+fn verify_blocks_rejects_checksum_mismatch() {
+    let path = std::env::temp_dir().join(format!("rusthouse-verify-{}.bin", std::process::id()));
+    let mut bytes = vec![0; 16];
+    bytes.push(0x02);
+    bytes.extend_from_slice(&14u32.to_le_bytes());
+    bytes.extend_from_slice(&5u32.to_le_bytes());
+    bytes.extend_from_slice(b"hello");
+    std::fs::write(&path, bytes).unwrap();
+
+    let output = Command::new(env!("CARGO_BIN_EXE_rusthouse"))
+        .arg("verify-blocks")
+        .arg(&path)
+        .output()
+        .unwrap();
+    std::fs::remove_file(path).unwrap();
+
+    assert_eq!(output.status.code(), Some(1));
+    assert!(String::from_utf8_lossy(&output.stderr).contains("checksum mismatch"));
+}
+
+#[test]
+fn verify_blocks_accepts_lz4_and_none_fixture() {
+    let fixture = Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("../rusthouse-storage/tests/fixtures/blocks/lz4-none.bin");
+    let output = Command::new(env!("CARGO_BIN_EXE_rusthouse"))
+        .arg("verify-blocks")
+        .arg(fixture)
+        .output()
+        .unwrap();
+    assert!(output.status.success(), "{output:?}");
+    assert_eq!(
+        String::from_utf8(output.stdout).unwrap(),
+        "Verified 2 blocks, 85 decompressed bytes\n"
+    );
+}
+
+#[test]
 fn validate_marks_checks_offsets_against_blocks() {
     let directory = std::env::temp_dir().join(format!("rusthouse-validate-{}", std::process::id()));
     std::fs::create_dir_all(&directory).unwrap();

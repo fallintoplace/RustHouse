@@ -3,6 +3,18 @@
 version = 4
 
 [[package]]
+name = "ch_cityhash102"
+version = "0.1.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "1eb857418fd28c9e70581e1ec52450a3ad6564e1d83f1806450a5128dadbf927"
+
+[[package]]
+name = "lz4_flex"
+version = "0.14.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "ecbdfe44b1bd960b68170b417450a628c43f7cf56bb3c5317e61cb230ee7f226"
+
+[[package]]
 name = "rusthouse-cli"
 version = "0.1.0"
 dependencies = [
@@ -12,3 +24,7 @@ dependencies = [
 [[package]]
 name = "rusthouse-storage"
 version = "0.1.0"
+dependencies = [
+ "ch_cityhash102",
+ "lz4_flex",
+]
