@@ -78,6 +78,14 @@ impl NumericPartReader {
                             "mark offsets are not ordered for {name}"
                         )));
                     }
+                    if mark.rows != Some(0)
+                        && (mark.compressed_offset, mark.decompressed_offset)
+                            == (previous.compressed_offset, previous.decompressed_offset)
+                    {
+                        return Err(PartError::InvalidScan(format!(
+                            "duplicate live mark offsets for {name}"
+                        )));
+                    }
                 }
             }
             let row_counts = marks
@@ -412,6 +420,21 @@ mod tests {
             Err(PartError::InvalidScan(_))
         ));
 
+        fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn rejects_duplicate_live_mark_positions() {
+        let dir = fixture();
+        let mut duplicate = marks(4, &[2, 1]);
+        duplicate[32..40].copy_from_slice(&0u64.to_le_bytes());
+        fs::write(dir.join("id.mrk2"), duplicate).unwrap();
+
+        assert!(matches!(
+            NumericPartReader::open(&dir, &["id".into()]),
+            Err(PartError::InvalidScan(reason))
+                if reason.contains("duplicate live mark offsets")
+        ));
         fs::remove_dir_all(dir).unwrap();
     }
 
