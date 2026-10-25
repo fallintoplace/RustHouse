@@ -39,6 +39,7 @@ pub enum PartError {
         size: usize,
         record_size: usize,
     },
+    EmptyMarksFile(PathBuf),
     UnsupportedMarksFormat(PathBuf),
 }
 
@@ -59,6 +60,7 @@ impl fmt::Display for PartError {
                 "{}: {size} bytes is not a multiple of {record_size} bytes per mark",
                 path.display()
             ),
+            Self::EmptyMarksFile(path) => write!(f, "{}: empty marks file", path.display()),
             Self::UnsupportedMarksFormat(path) => write!(
                 f,
                 "{}: only uncompressed wide-part .mrk and .mrk2 files are supported",

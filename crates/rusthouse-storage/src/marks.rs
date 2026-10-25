@@ -55,6 +55,10 @@ fn parse_wide_marks(
     format: WideMarkFormat,
     path: &Path,
 ) -> Result<Vec<WideMark>, PartError> {
+    if content.is_empty() {
+        return Err(PartError::EmptyMarksFile(path.to_path_buf()));
+    }
+
     let record_size = format.record_size();
     if content.len() % record_size != 0 {
         return Err(PartError::InvalidMarksLength {
@@ -143,13 +147,12 @@ mod tests {
     }
 
     #[test]
-    fn accepts_empty_marks() {
+    fn rejects_empty_marks() {
         for format in [WideMarkFormat::Fixed, WideMarkFormat::Adaptive] {
-            assert!(
-                parse_wide_marks(&[], format, Path::new("empty"))
-                    .unwrap()
-                    .is_empty()
-            );
+            assert!(matches!(
+                parse_wide_marks(&[], format, Path::new("empty")),
+                Err(PartError::EmptyMarksFile(_))
+            ));
         }
     }
 
