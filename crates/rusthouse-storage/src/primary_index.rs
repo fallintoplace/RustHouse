@@ -4,6 +4,7 @@ use std::io::Read;
 use std::path::Path;
 
 const MAX_INDEX_BYTES: usize = 256 * 1024 * 1024;
+const MAX_INDEX_FIELDS: usize = 4096;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct FixedPrimaryIndex {
@@ -37,6 +38,9 @@ pub fn read_fixed_primary_index(
     let path = path.as_ref();
     if field_widths.is_empty() {
         return Err(invalid(path, "at least one key field is required"));
+    }
+    if field_widths.len() > MAX_INDEX_FIELDS {
+        return Err(invalid(path, "too many primary-key fields"));
     }
     let mut field_offsets = Vec::new();
     field_offsets.push(0usize);
@@ -228,6 +232,13 @@ mod tests {
                 Err(PartError::InvalidPrimaryIndex { .. })
             ));
         }
+        assert!(matches!(
+            temporary_file("idx", &[], &vec![1; MAX_INDEX_FIELDS + 1]),
+            Err(PartError::InvalidPrimaryIndex {
+                reason: "too many primary-key fields",
+                ..
+            })
+        ));
         assert!(matches!(
             temporary_file("mrk2", &[], &[8]),
             Err(PartError::InvalidPrimaryIndex {
