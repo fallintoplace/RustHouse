@@ -459,7 +459,6 @@ mod tests {
         fs::remove_dir_all(dir).unwrap();
     }
 
-
     #[test]
     fn rejects_corrupt_blocks_during_scan() {
         let dir = fixture();
