@@ -106,8 +106,19 @@ mod tests {
 
     #[test]
     fn rejects_malformed_counts() {
-        for input in ["", "\n", " 42\n", "42 \n", "42\n\n", "-1\n", "18446744073709551616\n"] {
-            assert!(matches!(parse_count(input), Err(PartError::InvalidCount(_))), "{input:?}");
+        for input in [
+            "",
+            "\n",
+            " 42\n",
+            "42 \n",
+            "42\n\n",
+            "-1\n",
+            "18446744073709551616\n",
+        ] {
+            assert!(
+                matches!(parse_count(input), Err(PartError::InvalidCount(_))),
+                "{input:?}"
+            );
         }
     }
 }
