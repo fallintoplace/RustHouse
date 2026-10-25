@@ -4,6 +4,7 @@ use std::io::{self, Read};
 
 const MAX_BATCH_ROWS: usize = 1_000_000;
 const MAX_BATCH_BYTES: usize = 64 * 1024 * 1024;
+const MAX_FIXED_STRING_WIDTH: usize = 0xFF_FFFF;
 
 #[derive(Debug, PartialEq, Eq)]
 pub struct StringColumn {
@@ -53,12 +54,42 @@ impl StringColumn {
     }
 }
 
+#[derive(Debug, PartialEq, Eq)]
+pub struct FixedStringColumn {
+    data: Vec<u8>,
+    width: usize,
+}
+
+impl FixedStringColumn {
+    pub fn len(&self) -> usize {
+        self.data.len() / self.width
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.data.is_empty()
+    }
+
+    pub fn width(&self) -> usize {
+        self.width
+    }
+
+    pub fn data(&self) -> &[u8] {
+        &self.data
+    }
+
+    pub fn get(&self, row: usize) -> Option<&[u8]> {
+        let begin = row.checked_mul(self.width)?;
+        self.data.get(begin..begin.checked_add(self.width)?)
+    }
+}
+
 #[derive(Debug)]
 pub enum StringReadError {
     Io(io::Error),
     TooManyRows(usize),
     TooManyBytes,
     InvalidVarUInt,
+    InvalidFixedWidth(usize),
 }
 
 impl fmt::Display for StringReadError {
@@ -68,6 +99,7 @@ impl fmt::Display for StringReadError {
             Self::TooManyRows(rows) => write!(f, "String batch exceeds the row limit: {rows}"),
             Self::TooManyBytes => write!(f, "String batch exceeds the 64 MiB size limit"),
             Self::InvalidVarUInt => write!(f, "invalid String length encoding"),
+            Self::InvalidFixedWidth(width) => write!(f, "invalid FixedString width: {width}"),
         }
     }
 }
@@ -101,6 +133,32 @@ fn checked_end(current: usize, length: u64) -> Result<usize, StringReadError> {
         return Err(StringReadError::TooManyBytes);
     }
     Ok(current + length as usize)
+}
+
+pub fn read_fixed_strings<R: Read>(
+    reader: &mut R,
+    width: usize,
+    rows: usize,
+) -> Result<FixedStringColumn, StringReadError> {
+    if width == 0 || width > MAX_FIXED_STRING_WIDTH {
+        return Err(StringReadError::InvalidFixedWidth(width));
+    }
+    checked_rows(rows)?;
+    let byte_count = rows
+        .checked_mul(width)
+        .filter(|count| *count <= MAX_BATCH_BYTES)
+        .ok_or(StringReadError::TooManyBytes)?;
+
+    let mut data = Vec::new();
+    let mut buffer = [0u8; 16 * 1024];
+    let mut remaining = byte_count;
+    while remaining > 0 {
+        let count = remaining.min(buffer.len());
+        reader.read_exact(&mut buffer[..count])?;
+        data.extend_from_slice(&buffer[..count]);
+        remaining -= count;
+    }
+    Ok(FixedStringColumn { data, width })
 }
 
 pub fn read_legacy_strings<R: Read>(
@@ -303,5 +361,97 @@ mod tests {
 
         let legacy = read_legacy_strings(&mut io::empty(), 0).unwrap();
         assert!(legacy.is_empty());
+    }
+    #[test]
+    fn reads_fixed_strings_as_raw_padded_bytes_across_short_reads() {
+        let mut reader = Bytewise(Cursor::new([b'A', 0, 0, 0xff, b'B', 0, 17]));
+        let column = read_fixed_strings(&mut reader, 3, 2).unwrap();
+
+        assert_eq!(column.len(), 2);
+        assert!(!column.is_empty());
+        assert_eq!(column.width(), 3);
+        assert_eq!(column.data(), &[b'A', 0, 0, 0xff, b'B', 0]);
+        assert_eq!(column.get(0), Some(&[b'A', 0, 0][..]));
+        assert_eq!(column.get(1), Some(&[0xff, b'B', 0][..]));
+        assert_eq!(column.get(2), None);
+        assert_eq!(column.get(usize::MAX), None);
+        let mut trailing = [0];
+        reader.read_exact(&mut trailing).unwrap();
+        assert_eq!(trailing, [17]);
+    }
+
+    #[test]
+    fn fixed_strings_consume_only_requested_rows() {
+        let mut reader = &b"abcde"[..];
+        let first = read_fixed_strings(&mut reader, 2, 1).unwrap();
+        let second = read_fixed_strings(&mut reader, 1, 2).unwrap();
+
+        assert_eq!(first.get(0), Some(&b"ab"[..]));
+        assert_eq!(second.get(0), Some(&b"c"[..]));
+        assert_eq!(second.get(1), Some(&b"d"[..]));
+        assert_eq!(reader, &b"e"[..]);
+    }
+
+    #[test]
+    fn fixed_strings_keep_rows_aligned_across_read_buffers() {
+        let rows = 16 * 1024 / 3 + 1;
+        let mut bytes = vec![0u8; rows * 3];
+        bytes[(rows - 1) * 3..].copy_from_slice(&[10, 20, 30]);
+        let mut stream = bytes.as_slice();
+        let column = read_fixed_strings(&mut stream, 3, rows).unwrap();
+
+        assert_eq!(column.get(rows - 2), Some(&[0, 0, 0][..]));
+        assert_eq!(column.get(rows - 1), Some(&[10, 20, 30][..]));
+        assert!(stream.is_empty());
+    }
+
+    #[test]
+    fn fixed_strings_reject_truncated_rows() {
+        let mut reader = &[1, 2, 3, 4, 5][..];
+        assert!(matches!(
+            read_fixed_strings(&mut reader, 3, 2),
+            Err(StringReadError::Io(error)) if error.kind() == io::ErrorKind::UnexpectedEof
+        ));
+    }
+
+    #[test]
+    fn fixed_strings_reject_invalid_widths_and_unbounded_batches_before_reading() {
+        struct NoRead;
+
+        impl Read for NoRead {
+            fn read(&mut self, _: &mut [u8]) -> io::Result<usize> {
+                panic!("must reject before reading")
+            }
+        }
+
+        for width in [0, MAX_FIXED_STRING_WIDTH + 1] {
+            assert!(matches!(
+                read_fixed_strings(&mut NoRead, width, 1),
+                Err(StringReadError::InvalidFixedWidth(value)) if value == width
+            ));
+        }
+        assert!(matches!(
+            read_fixed_strings(&mut NoRead, 1, MAX_BATCH_ROWS + 1),
+            Err(StringReadError::TooManyRows(_))
+        ));
+        assert!(matches!(
+            read_fixed_strings(&mut NoRead, 123, 600_000),
+            Err(StringReadError::TooManyBytes)
+        ));
+        assert!(matches!(
+            read_fixed_strings(&mut NoRead, MAX_FIXED_STRING_WIDTH, 5),
+            Err(StringReadError::TooManyBytes)
+        ));
+    }
+
+    #[test]
+    fn fixed_strings_accept_empty_batches_without_reading() {
+        let mut reader = &[42u8][..];
+        let column = read_fixed_strings(&mut reader, MAX_FIXED_STRING_WIDTH, 0).unwrap();
+
+        assert!(column.is_empty());
+        assert_eq!(column.len(), 0);
+        assert_eq!(column.get(0), None);
+        assert_eq!(reader, &[42]);
     }
 }

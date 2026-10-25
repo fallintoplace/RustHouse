@@ -14,7 +14,10 @@ pub use mark_validation::validate_wide_marks;
 pub use marks::{WideMark, WideMarkFormat, WideMarks, read_wide_marks};
 pub use numeric::{NumericColumn, NumericReadError, read_numeric_column};
 pub use stream::UInt64ColumnReader;
-pub use strings::{StringColumn, StringReadError, read_legacy_strings, read_sized_strings};
+pub use strings::{
+    FixedStringColumn, StringColumn, StringReadError, read_fixed_strings, read_legacy_strings,
+    read_sized_strings,
+};
 
 use std::error::Error;
 use std::fmt;
