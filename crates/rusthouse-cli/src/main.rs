@@ -42,8 +42,7 @@ fn main() -> ExitCode {
         };
         read_u64_and_print(data_path, marks_path, index)
     } else if command == "validate-marks" {
-        let (Some(marks_path), Some(data_path), None) =
-            (args.next(), args.next(), args.next())
+        let (Some(marks_path), Some(data_path), None) = (args.next(), args.next(), args.next())
         else {
             eprintln!("{USAGE}");
             return ExitCode::from(2);
