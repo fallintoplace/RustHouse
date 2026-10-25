@@ -70,15 +70,14 @@ impl Error for NullableReadError {
     }
 }
 
-pub fn read_null_map<R: Read>(
-    reader: &mut R,
-    rows: usize,
-) -> Result<Vec<u8>, NullableReadError> {
+pub fn read_null_map<R: Read>(reader: &mut R, rows: usize) -> Result<Vec<u8>, NullableReadError> {
     if rows > MAX_BATCH_ROWS {
         return Err(NullableReadError::TooManyRows(rows));
     }
     let mut null_map = vec![0; rows];
-    reader.read_exact(&mut null_map).map_err(NullableReadError::Io)?;
+    reader
+        .read_exact(&mut null_map)
+        .map_err(NullableReadError::Io)?;
     Ok(null_map)
 }
 
@@ -94,7 +93,8 @@ pub fn read_nullable_numeric_column<N: Read, D: Read>(
         .filter(|inner| !inner.is_empty())
         .ok_or_else(|| NullableReadError::InvalidType(data_type.to_owned()))?;
     let null_map = read_null_map(nulls, rows)?;
-    let values = read_numeric_column(data, nested_type, rows).map_err(NullableReadError::Numeric)?;
+    let values =
+        read_numeric_column(data, nested_type, rows).map_err(NullableReadError::Numeric)?;
     Ok(NullableColumn { null_map, values })
 }
 
@@ -128,7 +128,8 @@ mod tests {
 
     impl<R: Read> Read for Bytewise<R> {
         fn read(&mut self, bytes: &mut [u8]) -> io::Result<usize> {
-            self.0.read(&mut bytes[..bytes.len().min(1)])
+            let count = bytes.len().min(1);
+            self.0.read(&mut bytes[..count])
         }
     }
 
@@ -180,8 +181,7 @@ mod tests {
         let mut nulls = Bytewise(Cursor::new([1, 0, 1, 90]));
         let mut sizes = Bytewise(Cursor::new(sizes));
         let mut data = Bytewise(Cursor::new([b'a', 0, 0xff, 91]));
-        let column =
-            read_nullable_sized_strings(&mut nulls, &mut sizes, &mut data, 3).unwrap();
+        let column = read_nullable_sized_strings(&mut nulls, &mut sizes, &mut data, 3).unwrap();
 
         assert_eq!(column.null_map(), &[1, 0, 1]);
         assert_eq!(column.values().get(0), Some(&b""[..]));
@@ -205,21 +205,17 @@ mod tests {
 
     #[test]
     fn rejects_truncated_nested_values() {
-        let error = read_nullable_numeric_column(
-            &mut &[0, 1][..],
-            &mut &[10u8][..],
-            "Nullable(UInt16)",
-            2,
-        )
-        .unwrap_err();
+        let error =
+            read_nullable_numeric_column(&mut &[0, 1][..], &mut &[10u8][..], "Nullable(UInt16)", 2)
+                .unwrap_err();
         assert!(matches!(
             error,
             NullableReadError::Numeric(NumericReadError::Io(source))
                 if source.kind() == io::ErrorKind::UnexpectedEof
         ));
 
-        let error = read_nullable_legacy_strings(&mut &[1][..], &mut &[2, b'x'][..], 1)
-            .unwrap_err();
+        let error =
+            read_nullable_legacy_strings(&mut &[1][..], &mut &[2, b'x'][..], 1).unwrap_err();
         assert!(matches!(
             error,
             NullableReadError::String(StringReadError::Io(source))
@@ -251,12 +247,7 @@ mod tests {
             Err(NullableReadError::TooManyRows(_))
         ));
         assert!(matches!(
-            read_nullable_sized_strings(
-                &mut NoRead,
-                &mut NoRead,
-                &mut NoRead,
-                MAX_BATCH_ROWS + 1,
-            ),
+            read_nullable_sized_strings(&mut NoRead, &mut NoRead, &mut NoRead, MAX_BATCH_ROWS + 1,),
             Err(NullableReadError::TooManyRows(_))
         ));
     }
@@ -269,13 +260,9 @@ mod tests {
                     .unwrap_err();
             assert!(matches!(error, NullableReadError::InvalidType(_)));
         }
-        let error = read_nullable_numeric_column(
-            &mut io::empty(),
-            &mut io::empty(),
-            "Nullable(String)",
-            0,
-        )
-        .unwrap_err();
+        let error =
+            read_nullable_numeric_column(&mut io::empty(), &mut io::empty(), "Nullable(String)", 0)
+                .unwrap_err();
         assert!(matches!(
             error,
             NullableReadError::Numeric(NumericReadError::UnsupportedType(_))
