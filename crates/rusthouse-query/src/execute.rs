@@ -1,5 +1,7 @@
 use crate::{Operator, Projection, Select, Source};
 use rusthouse_storage::{NumericColumn, NumericPartReader, PartError, inspect_part};
+use std::cmp::Ordering;
+use std::collections::BinaryHeap;
 use std::error::Error;
 use std::fmt;
 use std::io::{self, BufWriter, Write};
@@ -155,7 +157,47 @@ fn execute_into<W: Write>(
             parse_numeric(&column.data_type, &predicate.value)
         })
         .transpose()?;
+    let sort_index = query.order_by.as_ref().map(|order| {
+        if let Some(index) = scan_columns
+            .iter()
+            .position(|column| column == &order.column)
+        {
+            index
+        } else {
+            scan_columns.push(order.column.clone());
+            scan_columns.len() - 1
+        }
+    });
     let mut reader = NumericPartReader::open(part, &scan_columns)?;
+
+    if let (Some(order), Some(index)) = (&query.order_by, sort_index) {
+        let mut sorted = SortedRows::new(query.limit, order.descending);
+        writeln!(output, "{}", projected.join("\t"))?;
+        if query.limit == Some(0) {
+            return Ok(());
+        }
+        while let Some(batch) = reader.next_batch()? {
+            for row in 0..batch[0].len() {
+                if let (Some(predicate), Some(predicate_index), Some(target)) =
+                    (&query.predicate, predicate_index, comparison)
+                {
+                    if !number_matches(
+                        number_at(&batch[predicate_index], row),
+                        target,
+                        predicate.operator,
+                    ) {
+                        continue;
+                    }
+                }
+                let values = projected_indices
+                    .iter()
+                    .map(|projected_index| number_at(&batch[*projected_index], row))
+                    .collect();
+                sorted.push(number_at(&batch[index], row), values)?;
+            }
+        }
+        return sorted.write(output);
+    }
 
     let is_count = matches!(query.projection, Projection::Count);
     if is_count {
@@ -244,6 +286,18 @@ fn execute_numbers<W: Write>(
         })
         .transpose()?;
     let is_count = matches!(query.projection, Projection::Count);
+    let mut sorting = query
+        .order_by
+        .as_ref()
+        .map(|order| {
+            if order.column != "number" {
+                return Err(ExecutionError::Invalid(
+                    "numbers(N) exposes only the number column".into(),
+                ));
+            }
+            Ok(SortedRows::new(query.limit, order.descending))
+        })
+        .transpose()?;
     if is_count {
         writeln!(output, "count")?;
         if comparison.is_none() {
@@ -268,6 +322,11 @@ fn execute_numbers<W: Write>(
                 continue;
             }
         }
+        if let Some(sorted) = sorting.as_mut() {
+            let value = Number::Unsigned(u128::from(number));
+            sorted.push(value, vec![value; projected.len()])?;
+            continue;
+        }
         if is_count {
             matched += 1;
         } else {
@@ -284,10 +343,118 @@ fn execute_numbers<W: Write>(
             }
         }
     }
+    if let Some(sorted) = sorting {
+        return sorted.write(output);
+    }
     if is_count {
         writeln!(output, "{matched}")?;
     }
     Ok(())
+}
+
+const MAX_SORTED_ROWS: usize = 100_000;
+
+struct SortedRow {
+    key: Number,
+    values: Vec<Number>,
+    sequence: usize,
+    descending: bool,
+}
+
+impl PartialEq for SortedRow {
+    fn eq(&self, other: &Self) -> bool {
+        self.cmp(other) == Ordering::Equal
+    }
+}
+
+impl Eq for SortedRow {}
+
+impl PartialOrd for SortedRow {
+    fn partial_cmp(&self, other: &Self) -> Option<Ordering> {
+        Some(self.cmp(other))
+    }
+}
+
+impl Ord for SortedRow {
+    fn cmp(&self, other: &Self) -> Ordering {
+        let ordering = compare_numbers(self.key, other.key);
+        let ordering = if self.descending {
+            ordering.reverse()
+        } else {
+            ordering
+        };
+        ordering.then_with(|| self.sequence.cmp(&other.sequence))
+    }
+}
+
+struct SortedRows {
+    rows: BinaryHeap<SortedRow>,
+    requested: usize,
+    seen: usize,
+    descending: bool,
+}
+
+impl SortedRows {
+    fn new(limit: Option<usize>, descending: bool) -> Self {
+        Self {
+            rows: BinaryHeap::new(),
+            requested: limit.unwrap_or(usize::MAX),
+            seen: 0,
+            descending,
+        }
+    }
+
+    fn push(&mut self, key: Number, values: Vec<Number>) -> Result<(), ExecutionError> {
+        if self.requested > MAX_SORTED_ROWS && self.seen >= MAX_SORTED_ROWS {
+            return Err(ExecutionError::Invalid(
+                "ORDER BY requires LIMIT <= 100000 for large results".into(),
+            ));
+        }
+        let sequence = self.seen;
+        self.seen = self
+            .seen
+            .checked_add(1)
+            .ok_or_else(|| ExecutionError::Invalid("too many rows to sort".into()))?;
+        let row = SortedRow {
+            key,
+            values,
+            sequence,
+            descending: self.descending,
+        };
+        let retained = self.requested.min(MAX_SORTED_ROWS);
+        if self.rows.len() < retained {
+            self.rows.push(row);
+        } else if self.rows.peek().is_some_and(|worst| row < *worst) {
+            self.rows.pop();
+            self.rows.push(row);
+        }
+        Ok(())
+    }
+
+    fn write<W: Write>(self, output: &mut W) -> Result<(), ExecutionError> {
+        for row in self.rows.into_sorted_vec() {
+            for (index, value) in row.values.iter().enumerate() {
+                if index != 0 {
+                    write!(output, "\t")?;
+                }
+                write!(output, "{value}")?;
+            }
+            writeln!(output)?;
+        }
+        Ok(())
+    }
+}
+
+fn compare_numbers(left: Number, right: Number) -> Ordering {
+    match (left, right) {
+        (Number::Unsigned(a), Number::Unsigned(b)) => a.cmp(&b),
+        (Number::Signed(a), Number::Signed(b)) => a.cmp(&b),
+        (Number::Float(a), Number::Float(b)) => a.total_cmp(&b),
+        (Number::Unsigned(_), _) => Ordering::Less,
+        (_, Number::Unsigned(_)) => Ordering::Greater,
+        (Number::Signed(_), _) => Ordering::Less,
+        (_, Number::Signed(_)) => Ordering::Greater,
+    }
 }
 
 fn parse_numeric(data_type: &str, text: &str) -> Result<Number, ExecutionError> {
@@ -405,6 +572,62 @@ mod tests {
         assert!(run("SELECT number FROM numbers(0) WHERE missing = 1", None).is_err());
         assert!(run("SELECT number FROM numbers(0) WHERE number = -1", None).is_err());
         assert!(run("SELECT number FROM numbers(2)", Some(Path::new("."))).is_err());
+    }
+
+    #[test]
+    fn sorts_numbers_with_top_k_and_filtered_rows() {
+        assert_eq!(
+            run(
+                "SELECT number FROM numbers(10) ORDER BY number DESC LIMIT 3",
+                None,
+            )
+            .unwrap(),
+            "number\n9\n8\n7\n"
+        );
+        assert_eq!(
+            run(
+                "SELECT number FROM numbers(8) WHERE number >= 4 ORDER BY number ASC LIMIT 2",
+                None,
+            )
+            .unwrap(),
+            "number\n4\n5\n"
+        );
+        assert_eq!(
+            run("SELECT number FROM numbers(3) ORDER BY number DESC", None).unwrap(),
+            "number\n2\n1\n0\n"
+        );
+        assert_eq!(
+            run(
+                "SELECT number FROM numbers(3) ORDER BY number LIMIT 0",
+                None,
+            )
+            .unwrap(),
+            "number\n"
+        );
+        assert!(run("SELECT number FROM numbers(0) ORDER BY missing", None).is_err());
+    }
+
+    #[test]
+    fn sorting_keeps_stable_ties_and_large_integer_precision() {
+        let mut sorted = SortedRows::new(Some(3), true);
+        for (key, value) in [(4, 0), (2, 1), (4, 2), (5, 3)] {
+            sorted
+                .push(Number::Signed(key), vec![Number::Unsigned(value)])
+                .unwrap();
+        }
+        let mut output = Vec::new();
+        sorted.write(&mut output).unwrap();
+        assert_eq!(output, b"3\n0\n2\n");
+
+        let mut sorted = SortedRows::new(Some(1), false);
+        for key in [u128::MAX, 0, u128::MAX - 1] {
+            sorted
+                .push(Number::Unsigned(key), vec![Number::Unsigned(key)])
+                .unwrap();
+        }
+        let mut output = Vec::new();
+        sorted.write(&mut output).unwrap();
+        assert_eq!(output, b"0\n");
     }
 
     #[test]

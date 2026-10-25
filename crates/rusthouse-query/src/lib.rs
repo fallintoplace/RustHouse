@@ -36,10 +36,17 @@ pub enum Source {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+pub struct OrderBy {
+    pub column: String,
+    pub descending: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Select {
     pub projection: Projection,
     pub source: Option<Source>,
     pub predicate: Option<Predicate>,
+    pub order_by: Option<OrderBy>,
     pub limit: Option<usize>,
 }
 
@@ -200,6 +207,25 @@ pub fn parse_select(sql: &str) -> Result<Select, ParseError> {
         None
     };
 
+    let order_by = if parser.keyword("ORDER") {
+        if !parser.keyword("BY") {
+            return Err(ParseError("expected BY after ORDER".into()));
+        }
+        let column = parser.word()?;
+        let descending = if parser.keyword("DESC") {
+            true
+        } else {
+            parser.keyword("ASC");
+            false
+        };
+        Some(OrderBy { column, descending })
+    } else {
+        None
+    };
+    if order_by.is_some() && matches!(projection, Projection::Count | Projection::Literal(_)) {
+        return Err(ParseError("ORDER BY requires column projections".into()));
+    }
+
     let limit = if parser.keyword("LIMIT") {
         let value = parser.number()?;
         if !value.bytes().all(|byte| byte.is_ascii_digit()) {
@@ -224,6 +250,7 @@ pub fn parse_select(sql: &str) -> Result<Select, ParseError> {
         projection,
         source,
         predicate,
+        order_by,
         limit,
     })
 }
@@ -349,6 +376,7 @@ mod tests {
                 projection: Projection::Literal(-42),
                 source: None,
                 predicate: None,
+                order_by: None,
                 limit: None,
             }
         );
@@ -358,6 +386,7 @@ mod tests {
                 projection: Projection::Columns(vec!["id".into(), "price".into()]),
                 source: Some(Source::Table("part".into())),
                 predicate: None,
+                order_by: None,
                 limit: Some(2),
             }
         );
@@ -399,6 +428,40 @@ mod tests {
             "SELECT number FROM numbers(18446744073709551616)",
             "SELECT number FROM numbers(3",
             "SELECT number FROM numbers",
+        ] {
+            assert!(parse_select(sql).is_err(), "{sql}");
+        }
+    }
+
+    #[test]
+    fn parses_order_by_and_rejects_invalid_ordering() {
+        let select = parse_select(
+            "SELECT number FROM numbers(10) WHERE number > 2 ORDER BY number DESC LIMIT 3",
+        )
+        .unwrap();
+        assert_eq!(
+            select.order_by,
+            Some(OrderBy {
+                column: "number".into(),
+                descending: true,
+            })
+        );
+        assert_eq!(
+            parse_select("SELECT id FROM part ORDER BY price ASC")
+                .unwrap()
+                .order_by,
+            Some(OrderBy {
+                column: "price".into(),
+                descending: false,
+            })
+        );
+        for sql in [
+            "SELECT number FROM numbers(3) ORDER number",
+            "SELECT number FROM numbers(3) ORDER BY",
+            "SELECT number FROM numbers(3) ORDER BY number DESC ASC",
+            "SELECT number FROM numbers(3) LIMIT 1 ORDER BY number",
+            "SELECT count(*) FROM numbers(3) ORDER BY number",
+            "SELECT 1 ORDER BY number",
         ] {
             assert!(parse_select(sql).is_err(), "{sql}");
         }
