@@ -29,7 +29,7 @@ pub enum Projection {
     Count,
     CountDistinct {
         column: String,
-    }
+    },
     GroupedCount {
         column: String,
     },
