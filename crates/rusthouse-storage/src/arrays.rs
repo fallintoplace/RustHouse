@@ -119,10 +119,12 @@ pub fn read_numeric_array_column<O: Read, D: Read>(
             let encoded = u64::from_le_bytes(bytes.try_into().unwrap());
             let next = match encoding {
                 ArrayOffsetsEncoding::Sizes => {
-                    absolute.checked_add(encoded).ok_or(ArrayReadError::InvalidOffset {
-                        row,
-                        reason: "array size overflows u64",
-                    })?
+                    absolute
+                        .checked_add(encoded)
+                        .ok_or(ArrayReadError::InvalidOffset {
+                            row,
+                            reason: "array size overflows u64",
+                        })?
                 }
                 ArrayOffsetsEncoding::Absolute { .. } => encoded,
             };
@@ -171,7 +173,10 @@ mod tests {
     }
 
     fn encoded_offsets(values: &[u64]) -> Vec<u8> {
-        values.iter().flat_map(|value| value.to_le_bytes()).collect()
+        values
+            .iter()
+            .flat_map(|value| value.to_le_bytes())
+            .collect()
     }
 
     #[test]
@@ -242,7 +247,10 @@ mod tests {
             panic!("wrong nested type");
         };
         assert_eq!(
-            values.iter().map(|value| value.to_bits()).collect::<Vec<_>>(),
+            values
+                .iter()
+                .map(|value| value.to_bits())
+                .collect::<Vec<_>>(),
             bits
         );
     }
