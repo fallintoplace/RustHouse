@@ -25,3 +25,5 @@ Execute SQL from a saved file with `cargo run -p rusthouse-cli -- sql --file que
 Export numeric query results as CSV with `cargo run -p rusthouse-cli -- sql "SELECT number FROM numbers(10)" --format csv`.
 
 Export numeric rows as JSON Lines with `cargo run -p rusthouse-cli -- sql "SELECT number FROM numbers(10)" --format jsonl`. JSONL emits values as strings to preserve 128-bit integer precision.
+
+Inspect the parsed SQL structure without touching data using `cargo run -p rusthouse-cli -- sql --show-ast "SELECT id FROM part WHERE id >= 3"`.
