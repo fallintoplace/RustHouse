@@ -1,3 +1,4 @@
+use rusthouse_query::{execute, parse_select};
 use rusthouse_storage::{
     CompressedBlockReader, NumericColumn, UInt64ColumnReader, inspect_part, read_checksums,
     read_numeric_granule, read_u64_granule, read_wide_marks, validate_wide_marks,
@@ -7,7 +8,7 @@ use std::ffi::OsString;
 use std::path::PathBuf;
 use std::process::ExitCode;
 
-const USAGE: &str = "Usage:\n  rusthouse inspect-part <path>\n  rusthouse inspect-checksums <path-to-checksums.txt>\n  rusthouse inspect-marks <path-to-wide-marks>\n  rusthouse inspect-blocks <path-to-.bin>\n  rusthouse verify-blocks <path-to-.bin>\n  rusthouse validate-marks <path-to-wide-marks> <path-to-.bin>\n  rusthouse read-u64 <data.bin> <marks.mrk2> <mark-index>\n  rusthouse scan-u64 <path-to-UInt64-.bin>\n  rusthouse read-numeric <data.bin> <marks.mrk2> <mark-index> <type>\n  rusthouse --help\n\nInspect local MergeTree metadata, marks, and compressed blocks.";
+const USAGE: &str = "Usage:\n  rusthouse inspect-part <path>\n  rusthouse inspect-checksums <path-to-checksums.txt>\n  rusthouse inspect-marks <path-to-wide-marks>\n  rusthouse inspect-blocks <path-to-.bin>\n  rusthouse verify-blocks <path-to-.bin>\n  rusthouse validate-marks <path-to-wide-marks> <path-to-.bin>\n  rusthouse read-u64 <data.bin> <marks.mrk2> <mark-index>\n  rusthouse scan-u64 <path-to-UInt64-.bin>\n  rusthouse read-numeric <data.bin> <marks.mrk2> <mark-index> <type>\n  rusthouse sql <SQL> [--part <path-to-wide-part>]\n  rusthouse --help\n\nInspect local MergeTree metadata, marks, and compressed blocks.";
 
 fn main() -> ExitCode {
     let mut args = env::args_os().skip(1);
@@ -29,11 +30,15 @@ fn main() -> ExitCode {
         && command != "read-u64"
         && command != "scan-u64"
         && command != "read-numeric"
+        && command != "sql"
     {
         eprintln!("unknown command: {command:?}\n{USAGE}");
         return ExitCode::from(2);
     }
-    let result = if command == "read-u64" {
+    let result = if command == "sql" {
+        run_sql_args(args)
+    } else {
+    let outcome = if command == "read-u64" {
         let (Some(data_path), Some(marks_path), Some(index), None) =
             (args.next(), args.next(), args.next(), args.next())
         else {
@@ -90,6 +95,8 @@ fn main() -> ExitCode {
         } else {
             scan_u64_and_print(path)
         }
+    };
+    outcome.map_err(|error| error.to_string())
     };
     match result {
         Ok(()) => ExitCode::SUCCESS,
@@ -278,4 +285,30 @@ fn print_values<T: std::fmt::Display>(values: Vec<T>) {
     for value in values {
         println!("{value}");
     }
+}
+
+fn run_sql_args(mut args: impl Iterator<Item = OsString>) -> Result<(), String> {
+    let mut query = None;
+    let mut part = None;
+    while let Some(arg) = args.next() {
+        if arg.to_str() == Some("--part") {
+            if part.is_some() {
+                return Err("duplicate --part option".into());
+            }
+            part = Some(PathBuf::from(
+                args.next().ok_or("missing --part directory")?,
+            ));
+        } else if query.is_none() {
+            query = Some(
+                arg.into_string()
+                    .map_err(|_| "SQL statement must be valid UTF-8")?,
+            );
+        } else {
+            return Err("unexpected SQL argument".into());
+        }
+    }
+    let query = query.ok_or("missing SQL statement")?;
+    let select = parse_select(&query).map_err(|error| error.to_string())?;
+    execute(&select, part.as_deref(), &mut std::io::stdout())
+        .map_err(|error| error.to_string())
 }
