@@ -93,10 +93,7 @@ impl From<StringReadError> for NullableReadError {
     }
 }
 
-pub fn read_null_map<R: Read>(
-    reader: &mut R,
-    rows: usize,
-) -> Result<Vec<u8>, NullableReadError> {
+pub fn read_null_map<R: Read>(reader: &mut R, rows: usize) -> Result<Vec<u8>, NullableReadError> {
     if rows > MAX_NULL_MAP_ROWS {
         return Err(NullableReadError::TooManyRows(rows));
     }
@@ -290,7 +287,9 @@ mod tests {
                 "Nullable(UInt64)",
                 MAX_NULL_MAP_ROWS + 1
             ),
-            Err(NullableReadError::Numeric(NumericReadError::BatchTooLarge { .. }))
+            Err(NullableReadError::Numeric(
+                NumericReadError::BatchTooLarge { .. }
+            ))
         ));
     }
 
@@ -308,8 +307,7 @@ mod tests {
     #[test]
     fn handles_empty_batches_without_reading() {
         let numeric =
-            read_nullable_numeric_column(&mut NoRead, &mut NoRead, "Nullable(Float32)", 0)
-                .unwrap();
+            read_nullable_numeric_column(&mut NoRead, &mut NoRead, "Nullable(Float32)", 0).unwrap();
         assert_eq!(numeric.len(), 0);
         assert!(numeric.is_empty());
 
