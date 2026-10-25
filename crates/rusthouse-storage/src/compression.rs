@@ -463,8 +463,10 @@ mod tests {
         let bytes = checked_block(0x02, b"hello", 5);
         let mut reader = CompressedBlockReader::new(Cursor::new(bytes), "data.bin").unwrap();
         reader.reader.get_mut().truncate(PREFIX_SIZE);
-        assert!(matches!(reader.next_decoded(), Some(Err(PartError::Io { .. }))));
+        assert!(matches!(
+            reader.next_decoded(),
+            Some(Err(PartError::Io { .. }))
+        ));
         assert!(reader.next_decoded().is_none());
     }
-
 }
