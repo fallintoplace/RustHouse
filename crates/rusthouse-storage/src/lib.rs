@@ -46,8 +46,11 @@ pub use strings::{StringColumn, StringReadError, read_legacy_strings, read_sized
 use std::error::Error;
 use std::fmt;
 use std::fs;
-use std::io;
+use std::io::{self, Read};
 use std::path::{Path, PathBuf};
+
+const MAX_COUNT_BYTES: u64 = 64;
+const MAX_COLUMNS_BYTES: u64 = 16 * 1024 * 1024;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Column {
@@ -209,8 +212,11 @@ impl Error for PartError {
 
 pub fn inspect_part(path: impl AsRef<Path>) -> Result<PartMetadata, PartError> {
     let path = path.as_ref();
-    let rows = parse_count(&read_metadata(&path.join("count.txt"))?)?;
-    let columns = parse_columns(&read_metadata(&path.join("columns.txt"))?)?;
+    let rows = parse_count(&read_metadata(&path.join("count.txt"), MAX_COUNT_BYTES)?)?;
+    let columns = parse_columns(&read_metadata(
+        &path.join("columns.txt"),
+        MAX_COLUMNS_BYTES,
+    )?)?;
 
     Ok(PartMetadata {
         path: path.to_path_buf(),
@@ -219,10 +225,27 @@ pub fn inspect_part(path: impl AsRef<Path>) -> Result<PartMetadata, PartError> {
     })
 }
 
-fn read_metadata(path: &Path) -> Result<String, PartError> {
-    fs::read_to_string(path).map_err(|source| PartError::Io {
+fn read_metadata(path: &Path, max_bytes: u64) -> Result<String, PartError> {
+    let file = fs::File::open(path).map_err(|source| PartError::Io {
         path: path.to_path_buf(),
         source,
+    })?;
+    let mut bytes = Vec::new();
+    file.take(max_bytes + 1)
+        .read_to_end(&mut bytes)
+        .map_err(|source| PartError::Io {
+            path: path.to_path_buf(),
+            source,
+        })?;
+    if bytes.len() as u64 > max_bytes {
+        return Err(PartError::Io {
+            path: path.to_path_buf(),
+            source: io::Error::new(io::ErrorKind::InvalidData, "metadata exceeds size limit"),
+        });
+    }
+    String::from_utf8(bytes).map_err(|source| PartError::Io {
+        path: path.to_path_buf(),
+        source: io::Error::new(io::ErrorKind::InvalidData, source),
     })
 }
 
@@ -260,6 +283,57 @@ mod tests {
         assert_eq!(parse_count("42").unwrap(), 42);
         assert_eq!(parse_count("42\n").unwrap(), 42);
         assert_eq!(parse_count("18446744073709551615\n").unwrap(), u64::MAX);
+    }
+
+    #[test]
+    fn limits_count_and_column_metadata_before_parsing() {
+        let dir =
+            std::env::temp_dir().join(format!("rusthouse-bounded-metadata-{}", std::process::id()));
+        fs::create_dir_all(&dir).unwrap();
+        fs::write(
+            dir.join("columns.txt"),
+            "columns format version: 1\n0 columns:\n",
+        )
+        .unwrap();
+        fs::write(
+            dir.join("count.txt"),
+            vec![b'1'; MAX_COUNT_BYTES as usize + 1],
+        )
+        .unwrap();
+        assert!(matches!(
+            inspect_part(&dir),
+            Err(PartError::Io { path, source })
+                if path.ends_with("count.txt")
+                    && source.kind() == io::ErrorKind::InvalidData
+        ));
+
+        fs::write(dir.join("count.txt"), "0\n").unwrap();
+        let file = fs::File::create(dir.join("columns.txt")).unwrap();
+        file.set_len(MAX_COLUMNS_BYTES + 1).unwrap();
+        assert!(matches!(
+            inspect_part(&dir),
+            Err(PartError::Io { path, source })
+                if path.ends_with("columns.txt")
+                    && source.kind() == io::ErrorKind::InvalidData
+        ));
+        fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn rejects_invalid_utf8_metadata() {
+        let dir = std::env::temp_dir().join(format!(
+            "rusthouse-invalid-utf8-metadata-{}",
+            std::process::id()
+        ));
+        fs::create_dir_all(&dir).unwrap();
+        fs::write(dir.join("count.txt"), "1\n").unwrap();
+        fs::write(dir.join("columns.txt"), [0xff, 0xfe]).unwrap();
+        assert!(matches!(
+            inspect_part(&dir),
+            Err(PartError::Io { source, .. })
+                if source.kind() == io::ErrorKind::InvalidData
+        ));
+        fs::remove_dir_all(dir).unwrap();
     }
 
     #[test]
