@@ -174,6 +174,19 @@ fn pages_sorted_results_from_the_cli() {
 }
 
 #[test]
+fn excludes_numeric_values_with_not_in() {
+    let result = sql(
+        "SELECT number FROM numbers(10) WHERE number NOT IN (1, 4, 9) LIMIT 3",
+        None,
+    );
+    assert!(result.status.success(), "{result:?}");
+    assert_eq!(
+        String::from_utf8(result.stdout).unwrap(),
+        "number\n0\n2\n3\n"
+    );
+}
+
+#[test]
 fn calculates_aggregates_from_the_cli() {
     let output = sql(
         "SELECT sum(number) FROM numbers(1000) WHERE number >= 900",
