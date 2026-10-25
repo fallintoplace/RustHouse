@@ -43,6 +43,7 @@ pub enum Operator {
     Le,
     Gt,
     Ge,
+    Modulo(u64),
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -106,6 +107,7 @@ enum Token {
     Word(String),
     Number(String),
     Star,
+    Percent,
     Comma,
     LParen,
     RParen,
@@ -323,9 +325,24 @@ pub fn parse_select(sql: &str) -> Result<Select, ParseError> {
                 }
                 predicates.push(Predicate::In { column, values });
             } else {
+                let operator = if parser.take(Token::Percent) {
+                    let modulus = parser.number()?;
+                    let modulus = modulus
+                        .parse::<u64>()
+                        .map_err(|_| ParseError("modulus must be a positive UInt64".into()))?;
+                    if modulus == 0 {
+                        return Err(ParseError("modulus must be positive".into()));
+                    }
+                    if parser.operator()? != Operator::Eq {
+                        return Err(ParseError("modulo predicates require =".into()));
+                    }
+                    Operator::Modulo(modulus)
+                } else {
+                    parser.operator()?
+                };
                 predicates.push(Predicate::Comparison {
                     column,
-                    operator: parser.operator()?,
+                    operator,
                     value: parser.number()?,
                 });
             }
@@ -445,6 +462,10 @@ fn tokenize(sql: &str) -> Result<Vec<Token>, ParseError> {
             b'*' => {
                 index += 1;
                 Token::Star
+            }
+            b'%' => {
+                index += 1;
+                Token::Percent
             }
             b',' => {
                 index += 1;
@@ -888,6 +909,27 @@ mod tests {
             vec!["1"; 33].join(",")
         );
         assert!(parse_select(&too_many).is_err());
+    }
+
+    #[test]
+    fn parses_modulo_filters_and_rejects_invalid_divisors() {
+        let query = parse_select("SELECT number FROM numbers(10) WHERE number % 3 = 1").unwrap();
+        assert!(matches!(
+            query.predicates[0],
+            Predicate::Comparison {
+                operator: Operator::Modulo(3),
+                ..
+            }
+        ));
+        for sql in [
+            "SELECT number FROM numbers(10) WHERE number % 0 = 1",
+            "SELECT number FROM numbers(10) WHERE number % -1 = 0",
+            "SELECT number FROM numbers(10) WHERE number % 2 > 0",
+            "SELECT number FROM numbers(10) WHERE number % 2.5 = 1",
+            "SELECT number FROM numbers(10) WHERE number % 2 =",
+        ] {
+            assert!(parse_select(sql).is_err(), "{sql}");
+        }
     }
 
     #[test]
