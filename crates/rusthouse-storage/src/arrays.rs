@@ -188,6 +188,10 @@ pub fn read_numeric_array_column<O: Read, D: Read>(
         .filter(|inner| !inner.is_empty())
         .ok_or_else(|| ArrayReadError::UnsupportedType(data_type.to_owned()))?;
 
+    if read_numeric_column(&mut io::empty(), nested_type, 0).is_err() {
+        return Err(ArrayReadError::UnsupportedType(data_type.to_owned()));
+    }
+
     let offsets = read_array_offsets(offset_stream, rows, encoding)?;
     let values = read_numeric_column(data_stream, nested_type, offsets.element_count())
         .map_err(ArrayReadError::Values)?;
@@ -409,7 +413,29 @@ mod tests {
                 1,
                 ArrayOffsetsEncoding::Sizes,
             ),
-            Err(ArrayReadError::Values(NumericReadError::UnsupportedType(_)))
+            Err(ArrayReadError::UnsupportedType(_))
+        ));
+    }
+
+    #[test]
+    fn rejects_unsupported_element_types_before_reading_offsets() {
+        struct NoRead;
+
+        impl Read for NoRead {
+            fn read(&mut self, _: &mut [u8]) -> io::Result<usize> {
+                panic!("invalid type must fail before reading")
+            }
+        }
+
+        assert!(matches!(
+            read_numeric_array_column(
+                &mut NoRead,
+                &mut NoRead,
+                "Array(String)",
+                1,
+                ArrayOffsetsEncoding::Sizes,
+            ),
+            Err(ArrayReadError::UnsupportedType(_))
         ));
     }
 

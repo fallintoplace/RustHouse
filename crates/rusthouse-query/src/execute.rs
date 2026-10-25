@@ -1,7 +1,7 @@
 use crate::{AggregateFunction, Operator, Predicate, Projection, Select, Source};
 use rusthouse_storage::{NumericColumn, NumericPartReader, PartError, inspect_part};
 use std::cmp::Ordering;
-use std::collections::{BinaryHeap, HashSet};
+use std::collections::{BinaryHeap, HashMap, HashSet};
 use std::error::Error;
 use std::fmt;
 use std::io::{self, BufWriter, Write};
@@ -143,6 +143,9 @@ fn execute_into<W: Write>(
     if let Projection::Aggregate { function, column } = &query.projection {
         return execute_aggregate_part(query, part, *function, column, output);
     }
+    if let Projection::GroupedCount { column } = &query.projection {
+        return execute_grouped_part(query, part, column, output);
+    }
     let metadata = inspect_part(part)?;
 
     if matches!(query.projection, Projection::Count)
@@ -164,7 +167,9 @@ fn execute_into<W: Write>(
             .collect::<Vec<_>>(),
         Projection::Columns(names) => names.clone(),
         Projection::Count => Vec::new(),
-        Projection::Aggregate { .. } | Projection::Literal(_) => unreachable!(),
+        Projection::Aggregate { .. } | Projection::GroupedCount { .. } | Projection::Literal(_) => {
+            unreachable!()
+        }
     };
     if query.distinct
         && query
@@ -305,6 +310,127 @@ fn execute_into<W: Write>(
     Ok(())
 }
 
+const MAX_GROUPS: usize = 100_000;
+
+#[derive(Default)]
+struct GroupedCounts {
+    by_key: HashMap<NumberKey, usize>,
+    rows: Vec<(Number, u64)>,
+}
+
+impl GroupedCounts {
+    fn push(&mut self, value: Number) -> Result<(), ExecutionError> {
+        let key = NumberKey::from(value);
+        if let Some(&index) = self.by_key.get(&key) {
+            self.rows[index].1 = self.rows[index]
+                .1
+                .checked_add(1)
+                .ok_or_else(|| ExecutionError::Invalid("group count overflow".into()))?;
+        } else {
+            if self.rows.len() >= MAX_GROUPS {
+                return Err(ExecutionError::Invalid(
+                    "GROUP BY supports at most 100000 groups".into(),
+                ));
+            }
+            self.by_key.insert(key, self.rows.len());
+            self.rows.push((value, 1));
+        }
+        Ok(())
+    }
+
+    fn write<W: Write>(
+        mut self,
+        query: &Select,
+        column: &str,
+        output: &mut W,
+    ) -> Result<(), ExecutionError> {
+        if let Some(order) = &query.order_by {
+            if order.column != column {
+                return Err(ExecutionError::Invalid(
+                    "grouped ORDER BY must use the group key".into(),
+                ));
+            }
+            self.rows.sort_by(|(left, _), (right, _)| {
+                let ordering = compare_numbers(*left, *right);
+                if order.descending {
+                    ordering.reverse()
+                } else {
+                    ordering
+                }
+            });
+        }
+        writeln!(output, "{column}\tcount")?;
+        for (value, count) in self
+            .rows
+            .into_iter()
+            .skip(query.offset.unwrap_or(0))
+            .take(query.limit.unwrap_or(usize::MAX))
+        {
+            writeln!(output, "{value}\t{count}")?;
+        }
+        Ok(())
+    }
+}
+
+fn execute_grouped_part<W: Write>(
+    query: &Select,
+    part: &Path,
+    column: &str,
+    output: &mut W,
+) -> Result<(), ExecutionError> {
+    let metadata = inspect_part(part)?;
+    let mut scan_columns = vec![column.to_owned()];
+    let comparisons = compile_part_where(query, &mut scan_columns, |column_name, literal| {
+        let metadata_column = metadata
+            .columns
+            .iter()
+            .find(|candidate| candidate.name == column_name)
+            .ok_or_else(|| {
+                ExecutionError::Invalid(format!("unknown WHERE column: {column_name}"))
+            })?;
+        parse_numeric(&metadata_column.data_type, literal)
+    })?;
+    let mut reader = NumericPartReader::open(part, &scan_columns)?;
+    let mut groups = GroupedCounts::default();
+    if query.limit == Some(0) {
+        return groups.write(query, column, output);
+    }
+    while let Some(batch) = reader.next_batch()? {
+        for row in 0..batch[0].len() {
+            if batch_matches(&batch, row, &comparisons) {
+                groups.push(number_at(&batch[0], row))?;
+            }
+        }
+    }
+    groups.write(query, column, output)
+}
+
+fn execute_grouped_numbers<W: Write>(
+    query: &Select,
+    start: u64,
+    rows: u64,
+    column: &str,
+    output: &mut W,
+) -> Result<(), ExecutionError> {
+    if column != "number" {
+        return Err(ExecutionError::Invalid(
+            "numbers(N) exposes only the number column".into(),
+        ));
+    }
+    let comparisons = compile_numbers_predicates(query)?;
+    let mut groups = GroupedCounts::default();
+    if query.limit == Some(0) {
+        return groups.write(query, column, output);
+    }
+    for number in start..start + rows {
+        let value = Number::Unsigned(u128::from(number));
+        if number_matches_all(value, &comparisons) {
+            groups.push(value)?;
+        }
+    }
+    groups.write(query, column, output)
+}
+
 fn execute_aggregate_part<W: Write>(
     query: &Select,
     part: &Path,
@@ -391,6 +517,9 @@ fn execute_numbers<W: Write>(
     if let Projection::Aggregate { function, column } = &query.projection {
         return execute_aggregate_numbers(query, start, rows, *function, column, output);
     }
+    if let Projection::GroupedCount { column } = &query.projection {
+        return execute_grouped_numbers(query, start, rows, column, output);
+    }
     let projected: Vec<&str> = match &query.projection {
         Projection::All => vec!["number"],
         Projection::Columns(names) => {
@@ -402,7 +531,9 @@ fn execute_numbers<W: Write>(
             names.iter().map(String::as_str).collect()
         }
         Projection::Count => Vec::new(),
-        Projection::Aggregate { .. } | Projection::Literal(_) => unreachable!(),
+        Projection::Aggregate { .. } | Projection::GroupedCount { .. } | Projection::Literal(_) => {
+            unreachable!()
+        }
     };
     let comparisons = compile_numbers_predicates(query)?;
     let is_count = matches!(query.projection, Projection::Count);
@@ -420,7 +551,7 @@ fn execute_numbers<W: Write>(
         .transpose()?;
     if is_count {
         writeln!(output, "count")?;
-        if comparisons.is_empty() {
+        if query.predicates.is_empty() && query.or_predicates.is_empty() {
             if query.limit != Some(0) && query.offset.unwrap_or(0) == 0 {
                 writeln!(output, "{rows}")?;
             }
@@ -435,10 +566,20 @@ fn execute_numbers<W: Write>(
 
     let mut matched = 0u64;
     let mut emitted = 0usize;
-    let mut skipped = 0usize;
     let offset = query.offset.unwrap_or(0);
     let limit = query.limit.unwrap_or(usize::MAX);
-    for number in start..start + rows {
+    // Generated rows are unique and ordered. A filter-free scan can start at OFFSET.
+    let fast_skip = if !is_count
+        && sorting.is_none()
+        && query.predicates.is_empty()
+        && query.or_predicates.is_empty()
+    {
+        offset.min(rows as usize)
+    } else {
+        0
+    };
+    let mut skipped = fast_skip;
+    for number in start + fast_skip as u64..start + rows {
         if !number_matches_all(Number::Unsigned(u128::from(number)), &comparisons) {
             continue;
         }
@@ -682,10 +823,35 @@ fn compare_numbers(left: Number, right: Number) -> Ordering {
     }
 }
 
+// Short IN lists are cheap to scan; long lists benefit from constant-time lookups.
+const HASHED_IN_MIN_VALUES: usize = 16;
+
 enum CompiledTest {
-    Comparison { operator: Operator, target: Number },
+    Comparison {
+        operator: Operator,
+        target: Number,
+    },
     In(Vec<Number>),
     NotIn(Vec<Number>),
+    InSet {
+        targets: HashSet<NumberKey>,
+        negated: bool,
+    },
+}
+
+fn compile_in_test(targets: Vec<Number>, negated: bool) -> CompiledTest {
+    if targets.len() < HASHED_IN_MIN_VALUES {
+        if negated {
+            CompiledTest::NotIn(targets)
+        } else {
+            CompiledTest::In(targets)
+        }
+    } else {
+        CompiledTest::InSet {
+            targets: targets.into_iter().map(NumberKey::from).collect(),
+            negated,
+        }
+    }
 }
 
 impl CompiledTest {
@@ -698,6 +864,12 @@ impl CompiledTest {
             Self::NotIn(targets) => targets
                 .iter()
                 .all(|target| !number_matches(value, *target, Operator::Eq)),
+            Self::InSet { targets, negated } => {
+                // Float NaN does not compare equal to any IN-list value.
+                let contains = !matches!(value, Number::Float(number) if number.is_nan())
+                    && targets.contains(&NumberKey::from(value));
+                contains != *negated
+            }
         }
     }
 }
@@ -730,17 +902,19 @@ fn compile_part_predicates(
                     target,
                 }
             }
-            Predicate::In { values, .. } => CompiledTest::In(
+            Predicate::In { values, .. } => compile_in_test(
                 values
                     .iter()
                     .map(|value| convert(column, value))
                     .collect::<Result<Vec<_>, _>>()?,
+                false,
             ),
-            Predicate::NotIn { values, .. } => CompiledTest::NotIn(
+            Predicate::NotIn { values, .. } => compile_in_test(
                 values
                     .iter()
                     .map(|value| convert(column, value))
                     .collect::<Result<Vec<_>, _>>()?,
+                true,
             ),
         };
         let index = if let Some(index) = scan_columns
@@ -1203,6 +1377,69 @@ mod tests {
     }
 
     #[test]
+    fn groups_numeric_rows_after_filtering_before_pagination() {
+        assert_eq!(
+            run(
+                "SELECT number, COUNT(*) FROM numbers(5) GROUP BY number",
+                None,
+            )
+            .unwrap(),
+            "number\tcount\n0\t1\n1\t1\n2\t1\n3\t1\n4\t1\n"
+        );
+        assert_eq!(
+            run(
+                "SELECT number, COUNT(*) FROM numbers(10) WHERE number BETWEEN 2 AND 6 GROUP BY number ORDER BY number DESC LIMIT 2 OFFSET 1",
+                None,
+            )
+            .unwrap(),
+            "number\tcount\n5\t1\n4\t1\n"
+        );
+        assert_eq!(
+            run(
+                "SELECT number, COUNT(*) FROM numbers(0) GROUP BY number",
+                None
+            )
+            .unwrap(),
+            "number\tcount\n"
+        );
+        assert_eq!(
+            run(
+                "SELECT number, COUNT(*) FROM numbers(3) GROUP BY number LIMIT 0",
+                None
+            )
+            .unwrap(),
+            "number\tcount\n"
+        );
+        assert!(run("SELECT bad, COUNT(*) FROM numbers(0) GROUP BY bad", None).is_err());
+    }
+
+    #[test]
+    fn grouped_counts_support_ranges_and_or_filters() {
+        assert_eq!(
+            run(
+                "SELECT number, COUNT(*) FROM numbers(8, 4) WHERE number = 8 OR number = 11 GROUP BY number ORDER BY number DESC",
+                None
+            )
+            .unwrap(),
+            "number\tcount\n11\t1\n8\t1\n"
+        );
+    }
+
+    #[test]
+    fn grouped_counts_merge_equal_values_without_precision_loss() {
+        let mut groups = GroupedCounts::default();
+        groups.push(Number::Unsigned(u128::MAX)).unwrap();
+        groups.push(Number::Unsigned(u128::MAX)).unwrap();
+        groups.push(Number::Unsigned(u128::MAX - 1)).unwrap();
+        groups.push(Number::Float(0.0)).unwrap();
+        groups.push(Number::Float(-0.0)).unwrap();
+        assert_eq!(groups.rows.len(), 3);
+        assert_eq!(groups.rows[0].1, 2);
+        assert_eq!(groups.rows[1].1, 1);
+        assert_eq!(groups.rows[2].1, 2);
+    }
+
+    #[test]
     fn distinct_keys_preserve_numeric_identity() {
         let mut seen = HashSet::new();
         assert!(remember_distinct(&mut seen, &[Number::Unsigned(u128::MAX)]).unwrap());
@@ -1283,6 +1520,45 @@ mod tests {
     }
 
     #[test]
+    fn large_in_and_not_in_lists_use_hash_lookups_without_changing_results() {
+        let values = (0..32).map(|number| number.to_string()).collect::<Vec<_>>();
+        let in_query = format!(
+            "SELECT count(*) FROM numbers(1000000) WHERE number IN ({})",
+            values.join(", ")
+        );
+        assert_eq!(run(&in_query, None).unwrap(), "count\n32\n");
+        let not_in_query = format!(
+            "SELECT count(*) FROM numbers(1000000) WHERE number NOT IN ({})",
+            values.join(", ")
+        );
+        assert_eq!(run(&not_in_query, None).unwrap(), "count\n999968\n");
+
+        let float_values = (0..16)
+            .map(|number| Number::Float(number as f64))
+            .collect::<Vec<_>>();
+        let positive = compile_in_test(float_values.clone(), false);
+        let negative = compile_in_test(float_values, true);
+        assert!(matches!(&positive, CompiledTest::InSet { .. }));
+        assert!(positive.matches(Number::Float(-0.0)));
+        assert!(positive.matches(Number::Float(15.0)));
+        assert!(!positive.matches(Number::Float(16.0)));
+        assert!(!positive.matches(Number::Float(f64::NAN)));
+        assert!(!positive.matches(Number::Unsigned(1)));
+        assert!(!negative.matches(Number::Float(-0.0)));
+        assert!(negative.matches(Number::Float(16.0)));
+        assert!(negative.matches(Number::Float(f64::NAN)));
+        assert!(negative.matches(Number::Unsigned(1)));
+
+        let mut large_values = (0..16)
+            .map(|number| Number::Unsigned(number as u128))
+            .collect::<Vec<_>>();
+        large_values.push(Number::Unsigned(u128::MAX));
+        let test = compile_in_test(large_values, false);
+        assert!(test.matches(Number::Unsigned(u128::MAX)));
+        assert!(!test.matches(Number::Unsigned(u128::MAX - 1)));
+    }
+
+    #[test]
     fn pagination_applies_after_filtering_and_sorting() {
         assert_eq!(
             run("SELECT number FROM numbers(10) LIMIT 3 OFFSET 4", None).unwrap(),
@@ -1318,6 +1594,56 @@ mod tests {
         );
         assert_eq!(run("SELECT 1 LIMIT 1 OFFSET 1", None).unwrap(), "1\n");
         assert!(SortedRows::with_offset(Some(usize::MAX), 1, false).is_err());
+    }
+
+    #[test]
+    fn unfiltered_number_offsets_skip_directly_to_the_first_result() {
+        assert_eq!(
+            run(
+                "SELECT number FROM numbers(1000000) LIMIT 1 OFFSET 999999",
+                None
+            )
+            .unwrap(),
+            "number\n999999\n"
+        );
+        assert_eq!(
+            run("SELECT number FROM numbers(7, 4) LIMIT 2 OFFSET 2", None).unwrap(),
+            "number\n9\n10\n"
+        );
+        assert_eq!(
+            run("SELECT number FROM numbers(7, 4) LIMIT 2 OFFSET 1000", None).unwrap(),
+            "number\n"
+        );
+        assert_eq!(
+            run(
+                "SELECT number FROM numbers(18446744073709551613, 2) LIMIT 1 OFFSET 1",
+                None
+            )
+            .unwrap(),
+            "number\n18446744073709551614\n"
+        );
+        // Filtered, disjunctive, and sorted queries apply OFFSET to matched rows.
+        assert_eq!(
+            run(
+                "SELECT number FROM numbers(7, 4) WHERE number >= 8 LIMIT 2 OFFSET 1",
+                None
+            )
+            .unwrap(),
+            "number\n9\n10\n"
+        );
+        assert_eq!(
+            run(
+                "SELECT number FROM numbers(10) WHERE number < 3 OR number > 6 LIMIT 2 OFFSET 1",
+                None
+            )
+            .unwrap(),
+            "number\n1\n2\n"
+        );
+        // The OR compiler always builds one branch, even for an empty WHERE.
+        assert_eq!(
+            run("SELECT count(*) FROM numbers(1000000)", None).unwrap(),
+            "count\n1000000\n"
+        );
     }
 
     #[test]
