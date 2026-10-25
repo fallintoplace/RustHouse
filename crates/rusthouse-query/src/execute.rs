@@ -161,9 +161,10 @@ fn execute_into<W: Write>(
         Projection::Aggregate { .. } | Projection::Literal(_) => unreachable!(),
     };
     if query.distinct
-        && query.order_by.as_ref().is_some_and(|order| {
-            !projected.iter().any(|column| column == &order.column)
-        })
+        && query
+            .order_by
+            .as_ref()
+            .is_some_and(|order| !projected.iter().any(|column| column == &order.column))
     {
         return Err(ExecutionError::Invalid(
             "DISTINCT ORDER BY column must appear in SELECT".into(),
@@ -1083,7 +1084,11 @@ mod tests {
             "number\n0\n1\n2\n"
         );
         assert_eq!(
-            run("SELECT DISTINCT number, number FROM numbers(3) LIMIT 2 OFFSET 1", None).unwrap(),
+            run(
+                "SELECT DISTINCT number, number FROM numbers(3) LIMIT 2 OFFSET 1",
+                None
+            )
+            .unwrap(),
             "number\tnumber\n1\t1\n2\t2\n"
         );
         assert_eq!(

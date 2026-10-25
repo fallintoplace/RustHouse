@@ -767,7 +767,11 @@ mod tests {
             query.projection,
             Projection::Columns(vec!["id".into(), "price".into()])
         );
-        assert!(parse_select("SELECT DISTINCT * FROM part").unwrap().distinct);
+        assert!(
+            parse_select("SELECT DISTINCT * FROM part")
+                .unwrap()
+                .distinct
+        );
         for sql in [
             "SELECT DISTINCT 1",
             "SELECT DISTINCT count(*) FROM part",
