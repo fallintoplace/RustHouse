@@ -140,8 +140,7 @@ impl<R: Read + Seek> CompressedBlockReader<R> {
         }
 
         let mut encoded = vec![0u8; block.compressed_size as usize];
-        encoded[..HEADER_SIZE as usize]
-            .copy_from_slice(&header.prefix[CHECKSUM_SIZE as usize..]);
+        encoded[..HEADER_SIZE as usize].copy_from_slice(&header.prefix[CHECKSUM_SIZE as usize..]);
         if let Err(source) = self.reader.read_exact(&mut encoded[HEADER_SIZE as usize..]) {
             return self.io_error(source);
         }
