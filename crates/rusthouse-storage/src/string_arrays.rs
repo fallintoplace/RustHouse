@@ -116,7 +116,8 @@ mod tests {
 
     impl<R: Read> Read for Bytewise<R> {
         fn read(&mut self, buffer: &mut [u8]) -> io::Result<usize> {
-            self.0.read(&mut buffer[..buffer.len().min(1)])
+            let count = buffer.len().min(1);
+            self.0.read(&mut buffer[..count])
         }
     }
 
@@ -276,7 +277,9 @@ mod tests {
                 1,
                 ArrayOffsetsEncoding::Sizes,
             ),
-            Err(StringArrayReadError::Values(StringReadError::TooManyRows(1_000_001)))
+            Err(StringArrayReadError::Values(StringReadError::TooManyRows(
+                1_000_001
+            )))
         ));
         assert!(matches!(
             read_legacy_string_array_column(
@@ -286,7 +289,9 @@ mod tests {
                 1,
                 ArrayOffsetsEncoding::Sizes,
             ),
-            Err(StringArrayReadError::Offsets(ArrayReadError::TooManyElements(_)))
+            Err(StringArrayReadError::Offsets(
+                ArrayReadError::TooManyElements(_)
+            ))
         ));
         assert!(matches!(
             read_legacy_string_array_column(
@@ -296,7 +301,9 @@ mod tests {
                 1_000_001,
                 ArrayOffsetsEncoding::Sizes,
             ),
-            Err(StringArrayReadError::Offsets(ArrayReadError::TooManyRows(_)))
+            Err(StringArrayReadError::Offsets(ArrayReadError::TooManyRows(
+                _
+            )))
         ));
     }
 
