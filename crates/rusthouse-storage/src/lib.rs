@@ -3,6 +3,7 @@ mod checksums;
 mod columns;
 mod compression;
 mod fixed_strings;
+mod file_sizes;
 mod granules;
 mod mark_validation;
 mod marks;
@@ -22,6 +23,7 @@ pub use arrays::{
 pub use checksums::{FileChecksum, PartChecksums, UncompressedChecksum, read_checksums};
 pub use columns::parse_columns;
 pub use compression::{CompressedBlock, CompressedBlockReader, DecodedBlock};
+pub use file_sizes::{FileSizeVerification, verify_part_file_sizes};
 pub use fixed_strings::{
     FixedStringColumn, FixedStringReadError, read_fixed_string_granule, read_fixed_strings,
 };
