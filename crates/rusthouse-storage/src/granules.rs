@@ -1,4 +1,7 @@
-use crate::{CompressedBlockReader, PartError, WideMark};
+use crate::{
+    CompressedBlockReader, NumericColumn, NumericReadError, PartError, WideMark,
+    read_numeric_column,
+};
 use std::io::{Read, Seek};
 
 const MAX_GRANULE_BYTES: usize = 64 * 1024 * 1024;
@@ -53,6 +56,33 @@ pub fn read_u64_granule<R: Read + Seek>(
         .chunks_exact(size_of::<u64>())
         .map(|chunk| u64::from_le_bytes(chunk.try_into().unwrap()))
         .collect())
+}
+
+pub fn read_numeric_granule<R: Read + Seek>(
+    reader: &mut CompressedBlockReader<R>,
+    mark: &WideMark,
+    data_type: &str,
+) -> Result<NumericColumn, PartError> {
+    let width = match data_type {
+        "UInt8" | "Int8" => 1,
+        "UInt16" | "Int16" => 2,
+        "UInt32" | "Int32" | "Float32" => 4,
+        "UInt64" | "Int64" | "Float64" => 8,
+        _ => {
+            return Err(PartError::NumericRead(NumericReadError::UnsupportedType(
+                data_type.to_owned(),
+            )));
+        }
+    };
+    let rows = mark
+        .rows
+        .ok_or_else(|| invalid_mark(mark, "numeric granules require adaptive marks"))?;
+    let rows = usize::try_from(rows).map_err(|_| invalid_mark(mark, "granule size overflows"))?;
+    let byte_count = rows
+        .checked_mul(width)
+        .ok_or_else(|| invalid_mark(mark, "granule size overflows"))?;
+    let bytes = read_mark_bytes(reader, mark, byte_count)?;
+    read_numeric_column(&mut bytes.as_slice(), data_type, rows).map_err(PartError::NumericRead)
 }
 
 fn invalid_mark(mark: &WideMark, reason: &'static str) -> PartError {
@@ -221,6 +251,148 @@ mod tests {
         assert_eq!(
             read_u64_granule(&mut reader, &mark(u64::MAX, 0, Some(0))).unwrap(),
             Vec::<u64>::new()
+        );
+    }
+
+    #[test]
+    fn reads_all_plain_numeric_types_from_adaptive_marks() {
+        let cases = vec![
+            ("UInt8", vec![0, 255], NumericColumn::UInt8(vec![0, 255])),
+            ("Int8", vec![0, 255], NumericColumn::Int8(vec![0, -1])),
+            (
+                "UInt16",
+                vec![0x34, 0x12, 0xff, 0xff],
+                NumericColumn::UInt16(vec![0x1234, u16::MAX]),
+            ),
+            (
+                "Int16",
+                vec![0, 0x80, 0xff, 0x7f],
+                NumericColumn::Int16(vec![i16::MIN, i16::MAX]),
+            ),
+            (
+                "UInt32",
+                [0x1234_5678u32, u32::MAX]
+                    .into_iter()
+                    .flat_map(u32::to_le_bytes)
+                    .collect(),
+                NumericColumn::UInt32(vec![0x1234_5678, u32::MAX]),
+            ),
+            (
+                "Int32",
+                [i32::MIN, 1_000]
+                    .into_iter()
+                    .flat_map(i32::to_le_bytes)
+                    .collect(),
+                NumericColumn::Int32(vec![i32::MIN, 1_000]),
+            ),
+            (
+                "UInt64",
+                [0x0102_0304_0506_0708u64, u64::MAX]
+                    .into_iter()
+                    .flat_map(u64::to_le_bytes)
+                    .collect(),
+                NumericColumn::UInt64(vec![0x0102_0304_0506_0708, u64::MAX]),
+            ),
+            (
+                "Int64",
+                [i64::MIN, i64::MAX]
+                    .into_iter()
+                    .flat_map(i64::to_le_bytes)
+                    .collect(),
+                NumericColumn::Int64(vec![i64::MIN, i64::MAX]),
+            ),
+            (
+                "Float32",
+                [-0.0f32, 1.5f32]
+                    .into_iter()
+                    .flat_map(f32::to_le_bytes)
+                    .collect(),
+                NumericColumn::Float32(vec![-0.0, 1.5]),
+            ),
+            (
+                "Float64",
+                [-0.0f64, 1.5f64]
+                    .into_iter()
+                    .flat_map(f64::to_le_bytes)
+                    .collect(),
+                NumericColumn::Float64(vec![-0.0, 1.5]),
+            ),
+        ];
+        for (data_type, data, expected) in cases {
+            let mut blocks = reader(checked_block(0x02, &data));
+            assert_eq!(
+                read_numeric_granule(&mut blocks, &mark(0, 0, Some(2)), data_type).unwrap(),
+                expected,
+                "{data_type}"
+            );
+        }
+    }
+
+    #[test]
+    fn reads_signed_values_across_lz4_and_plain_blocks() {
+        let bytes: Vec<u8> = [-10i32, 20, 30, 40]
+            .into_iter()
+            .flat_map(i32::to_le_bytes)
+            .collect();
+        let mut encoded = checked_block(0x82, &bytes[..7]);
+        encoded.extend(checked_block(0x02, &bytes[7..]));
+        let mut blocks = reader(encoded);
+
+        assert_eq!(
+            read_numeric_granule(&mut blocks, &mark(0, 4, Some(3)), "Int32").unwrap(),
+            NumericColumn::Int32(vec![20, 30, 40])
+        );
+    }
+
+    #[test]
+    fn preserves_float_bits_in_marked_numeric_values() {
+        let expected = [0x8000_0000u32, 0x7fc0_1234u32];
+        let bytes: Vec<u8> = expected.into_iter().flat_map(u32::to_le_bytes).collect();
+        let mut blocks = reader(checked_block(0x02, &bytes));
+        let NumericColumn::Float32(values) =
+            read_numeric_granule(&mut blocks, &mark(0, 0, Some(2)), "Float32").unwrap()
+        else {
+            panic!("unexpected numeric type");
+        };
+        assert_eq!(values[0].to_bits(), expected[0]);
+        assert_eq!(values[1].to_bits(), expected[1]);
+    }
+
+    #[test]
+    fn validates_type_and_size_before_reading_blocks() {
+        let mut blocks = reader(Vec::new());
+        assert!(matches!(
+            read_numeric_granule(&mut blocks, &mark(0, 0, Some(1)), "Nullable(UInt8)"),
+            Err(PartError::NumericRead(NumericReadError::UnsupportedType(_)))
+        ));
+        assert!(matches!(
+            read_numeric_granule(&mut blocks, &mark(0, 0, None), "Int16"),
+            Err(PartError::InvalidWideMark {
+                reason: "numeric granules require adaptive marks",
+                ..
+            })
+        ));
+        assert!(matches!(
+            read_numeric_granule(
+                &mut blocks,
+                &mark(0, 0, Some(MAX_GRANULE_BYTES as u64 / 2 + 1)),
+                "Int16"
+            ),
+            Err(PartError::InvalidWideMark {
+                reason: "granule exceeds the 64 MiB read limit",
+                ..
+            })
+        ));
+        assert!(matches!(
+            read_numeric_granule(&mut blocks, &mark(0, 0, Some(u64::MAX)), "Int64"),
+            Err(PartError::InvalidWideMark {
+                reason: "granule size overflows",
+                ..
+            })
+        ));
+        assert_eq!(
+            read_numeric_granule(&mut blocks, &mark(u64::MAX, 0, Some(0)), "Float64").unwrap(),
+            NumericColumn::Float64(vec![])
         );
     }
 
