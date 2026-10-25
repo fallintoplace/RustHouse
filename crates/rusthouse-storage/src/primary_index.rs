@@ -115,7 +115,11 @@ mod tests {
 
     static NEXT_FILE: AtomicUsize = AtomicUsize::new(0);
 
-    fn temporary_file(extension: &str, data: &[u8], widths: &[usize]) -> Result<FixedPrimaryIndex, PartError> {
+    fn temporary_file(
+        extension: &str,
+        data: &[u8],
+        widths: &[usize],
+    ) -> Result<FixedPrimaryIndex, PartError> {
         let path = temporary_path(extension);
         std::fs::write(&path, data).unwrap();
         let result = read_fixed_primary_index(&path, widths);
@@ -153,10 +157,7 @@ mod tests {
     #[test]
     fn reads_uncompressed_fixed_width_tuple_fields() {
         let mut data = Vec::new();
-        for (first, second, last) in [
-            (12u32, 99u64, &b"abc"[..]),
-            (42u32, u64::MAX, &b"xyz"[..]),
-        ] {
+        for (first, second, last) in [(12u32, 99u64, &b"abc"[..]), (42u32, u64::MAX, &b"xyz"[..])] {
             data.extend_from_slice(&first.to_le_bytes());
             data.extend_from_slice(&second.to_le_bytes());
             data.extend_from_slice(last);
