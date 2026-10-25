@@ -482,21 +482,18 @@ impl AggregateState {
             AggregateFunction::Sum => {
                 let sum = match (self.value, value) {
                     (None, value) => value,
-                    (Some(Number::Unsigned(a)), Number::Unsigned(b)) => Number::Unsigned(
-                        a.checked_add(b).ok_or_else(|| {
+                    (Some(Number::Unsigned(a)), Number::Unsigned(b)) => {
+                        Number::Unsigned(a.checked_add(b).ok_or_else(|| {
                             ExecutionError::Invalid("unsigned SUM overflow".into())
-                        })?,
-                    ),
+                        })?)
+                    }
                     (Some(Number::Signed(a)), Number::Signed(b)) => Number::Signed(
-                        a.checked_add(b).ok_or_else(|| {
-                            ExecutionError::Invalid("signed SUM overflow".into())
-                        })?,
+                        a.checked_add(b)
+                            .ok_or_else(|| ExecutionError::Invalid("signed SUM overflow".into()))?,
                     ),
                     (Some(Number::Float(a)), Number::Float(b)) => Number::Float(a + b),
                     _ => {
-                        return Err(ExecutionError::Invalid(
-                            "incompatible types in SUM".into(),
-                        ));
+                        return Err(ExecutionError::Invalid("incompatible types in SUM".into()));
                     }
                 };
                 self.value = Some(sum);
@@ -533,7 +530,9 @@ impl AggregateState {
         }
         match self.function {
             AggregateFunction::Avg => self.mean.to_string(),
-            _ => self.value.map_or_else(String::new, |value| value.to_string()),
+            _ => self
+                .value
+                .map_or_else(String::new, |value| value.to_string()),
         }
     }
 }
