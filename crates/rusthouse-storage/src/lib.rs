@@ -1,10 +1,12 @@
 mod columns;
 mod compression;
 mod marks;
+mod strings;
 
 pub use columns::parse_columns;
 pub use compression::{CompressedBlock, CompressedBlockReader};
 pub use marks::{WideMark, WideMarkFormat, WideMarks, read_wide_marks};
+pub use strings::{StringColumn, StringReadError, read_legacy_strings, read_sized_strings};
 
 use std::error::Error;
 use std::fmt;
