@@ -7,9 +7,9 @@ mod fixed_strings;
 mod granules;
 mod mark_validation;
 mod marks;
+mod nested_arrays;
 mod nullable;
 mod nullable_arrays;
-mod nested_arrays;
 mod numeric;
 mod part_scan;
 mod part_verify;
@@ -32,15 +32,15 @@ pub use fixed_strings::{
 pub use granules::{read_mark_bytes, read_numeric_granule, read_u64_granule};
 pub use mark_validation::validate_wide_marks;
 pub use marks::{WideMark, WideMarkFormat, WideMarks, read_wide_marks};
+pub use nested_arrays::{
+    NestedArrayReadError, NestedNumericArrayColumn, read_nested_numeric_array_column,
+};
 pub use nullable::{
     NullableColumn, NullableReadError, read_null_map, read_nullable_fixed_strings,
     read_nullable_legacy_strings, read_nullable_numeric_column, read_nullable_sized_strings,
 };
 pub use nullable_arrays::{
     NullableArrayReadError, NullableNumericArrayColumn, read_nullable_numeric_array_column,
-};
-pub use nested_arrays::{
-    NestedArrayReadError, NestedNumericArrayColumn, read_nested_numeric_array_column,
 };
 pub use numeric::{NumericColumn, NumericReadError, read_numeric_column};
 pub use part_scan::NumericPartReader;
