@@ -135,16 +135,20 @@ fn execute_into<W: Write>(
             }
         })
         .collect::<Vec<_>>();
-    let comparisons = compile_part_predicates(&query.predicates, &mut scan_columns, |column_name, literal| {
-        let column = metadata
-            .columns
-            .iter()
-            .find(|column| column.name == column_name)
-            .ok_or_else(|| {
-                ExecutionError::Invalid(format!("unknown WHERE column: {column_name}"))
-            })?;
-        parse_numeric(&column.data_type, literal)
-    })?;
+    let comparisons = compile_part_predicates(
+        &query.predicates,
+        &mut scan_columns,
+        |column_name, literal| {
+            let column = metadata
+                .columns
+                .iter()
+                .find(|column| column.name == column_name)
+                .ok_or_else(|| {
+                    ExecutionError::Invalid(format!("unknown WHERE column: {column_name}"))
+                })?;
+            parse_numeric(&column.data_type, literal)
+        },
+    )?;
     let sort_index = query.order_by.as_ref().map(|order| {
         if let Some(index) = scan_columns
             .iter()
@@ -238,16 +242,20 @@ fn execute_aggregate_part<W: Write>(
 ) -> Result<(), ExecutionError> {
     let metadata = inspect_part(part)?;
     let mut scan_columns = vec![column.to_owned()];
-    let comparisons = compile_part_predicates(&query.predicates, &mut scan_columns, |column_name, literal| {
-        let metadata_column = metadata
-            .columns
-            .iter()
-            .find(|candidate| candidate.name == column_name)
-            .ok_or_else(|| {
-                ExecutionError::Invalid(format!("unknown WHERE column: {column_name}"))
-            })?;
-        parse_numeric(&metadata_column.data_type, literal)
-    })?;
+    let comparisons = compile_part_predicates(
+        &query.predicates,
+        &mut scan_columns,
+        |column_name, literal| {
+            let metadata_column = metadata
+                .columns
+                .iter()
+                .find(|candidate| candidate.name == column_name)
+                .ok_or_else(|| {
+                    ExecutionError::Invalid(format!("unknown WHERE column: {column_name}"))
+                })?;
+            parse_numeric(&metadata_column.data_type, literal)
+        },
+    )?;
     let mut reader = NumericPartReader::open(part, &scan_columns)?;
     writeln!(output, "{}({column})", function.name())?;
     if query.limit == Some(0) {
@@ -662,9 +670,11 @@ fn compile_part_predicates(
 }
 
 fn batch_matches(batch: &[NumericColumn], row: usize, predicates: &[CompiledPredicate]) -> bool {
-    predicates
-        .iter()
-        .all(|predicate| predicate.test.matches(number_at(&batch[predicate.index], row)))
+    predicates.iter().all(|predicate| {
+        predicate
+            .test
+            .matches(number_at(&batch[predicate.index], row))
+    })
 }
 
 fn compile_numbers_predicates(
@@ -682,7 +692,9 @@ fn compile_numbers_predicates(
 }
 
 fn number_matches_all(value: Number, predicates: &[CompiledPredicate]) -> bool {
-    predicates.iter().all(|predicate| predicate.test.matches(value))
+    predicates
+        .iter()
+        .all(|predicate| predicate.test.matches(value))
 }
 
 fn parse_numeric(data_type: &str, text: &str) -> Result<Number, ExecutionError> {
@@ -1001,8 +1013,11 @@ mod tests {
             "count\n2\n"
         );
         assert_eq!(
-            run("SELECT sum(number) FROM numbers(10) WHERE number IN (3, 5, 7)", None)
-                .unwrap(),
+            run(
+                "SELECT sum(number) FROM numbers(10) WHERE number IN (3, 5, 7)",
+                None
+            )
+            .unwrap(),
             "sum(number)\n15\n"
         );
         assert_eq!(
