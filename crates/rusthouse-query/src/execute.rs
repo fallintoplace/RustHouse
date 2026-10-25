@@ -551,7 +551,7 @@ fn execute_numbers<W: Write>(
         .transpose()?;
     if is_count {
         writeln!(output, "count")?;
-        if comparisons.is_empty() {
+        if query.predicates.is_empty() && query.or_predicates.is_empty() {
             if query.limit != Some(0) && query.offset.unwrap_or(0) == 0 {
                 writeln!(output, "{rows}")?;
             }
@@ -566,10 +566,20 @@ fn execute_numbers<W: Write>(
 
     let mut matched = 0u64;
     let mut emitted = 0usize;
-    let mut skipped = 0usize;
     let offset = query.offset.unwrap_or(0);
     let limit = query.limit.unwrap_or(usize::MAX);
-    for number in start..start + rows {
+    // Generated rows are unique and ordered. A filter-free scan can start at OFFSET.
+    let fast_skip = if !is_count
+        && sorting.is_none()
+        && query.predicates.is_empty()
+        && query.or_predicates.is_empty()
+    {
+        offset.min(rows as usize)
+    } else {
+        0
+    };
+    let mut skipped = fast_skip;
+    for number in start + fast_skip as u64..start + rows {
         if !number_matches_all(Number::Unsigned(u128::from(number)), &comparisons) {
             continue;
         }
@@ -1584,6 +1594,56 @@ mod tests {
         );
         assert_eq!(run("SELECT 1 LIMIT 1 OFFSET 1", None).unwrap(), "1\n");
         assert!(SortedRows::with_offset(Some(usize::MAX), 1, false).is_err());
+    }
+
+    #[test]
+    fn unfiltered_number_offsets_skip_directly_to_the_first_result() {
+        assert_eq!(
+            run(
+                "SELECT number FROM numbers(1000000) LIMIT 1 OFFSET 999999",
+                None
+            )
+            .unwrap(),
+            "number\n999999\n"
+        );
+        assert_eq!(
+            run("SELECT number FROM numbers(7, 4) LIMIT 2 OFFSET 2", None).unwrap(),
+            "number\n9\n10\n"
+        );
+        assert_eq!(
+            run("SELECT number FROM numbers(7, 4) LIMIT 2 OFFSET 1000", None).unwrap(),
+            "number\n"
+        );
+        assert_eq!(
+            run(
+                "SELECT number FROM numbers(18446744073709551613, 2) LIMIT 1 OFFSET 1",
+                None
+            )
+            .unwrap(),
+            "number\n18446744073709551614\n"
+        );
+        // Filtered, disjunctive, and sorted queries apply OFFSET to matched rows.
+        assert_eq!(
+            run(
+                "SELECT number FROM numbers(7, 4) WHERE number >= 8 LIMIT 2 OFFSET 1",
+                None
+            )
+            .unwrap(),
+            "number\n9\n10\n"
+        );
+        assert_eq!(
+            run(
+                "SELECT number FROM numbers(10) WHERE number < 3 OR number > 6 LIMIT 2 OFFSET 1",
+                None
+            )
+            .unwrap(),
+            "number\n1\n2\n"
+        );
+        // The OR compiler always builds one branch, even for an empty WHERE.
+        assert_eq!(
+            run("SELECT count(*) FROM numbers(1000000)", None).unwrap(),
+            "count\n1000000\n"
+        );
     }
 
     #[test]
