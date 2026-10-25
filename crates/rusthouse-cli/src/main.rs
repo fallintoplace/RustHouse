@@ -1,5 +1,6 @@
 mod csv;
 mod csv_no_header;
+mod json_array;
 mod jsonl;
 
 use rusthouse_query::{execute, parse_select};
@@ -13,7 +14,7 @@ use std::ffi::OsString;
 use std::path::PathBuf;
 use std::process::ExitCode;
 
-const USAGE: &str = "Usage:\n  rusthouse inspect-part <path>\n  rusthouse verify-part <path-to-wide-part>\n  rusthouse verify-file-sizes <path-to-part>\n  rusthouse inspect-checksums <path-to-checksums.txt>\n  rusthouse inspect-marks <path-to-wide-marks>\n  rusthouse inspect-blocks <path-to-.bin>\n  rusthouse verify-blocks <path-to-.bin>\n  rusthouse validate-marks <path-to-wide-marks> <path-to-.bin>\n  rusthouse read-u64 <data.bin> <marks.mrk2> <mark-index>\n  rusthouse scan-u64 <path-to-UInt64-.bin>\n  rusthouse read-numeric <data.bin> <marks.mrk2> <mark-index> <type>\n  rusthouse sql <SQL> [--part <path-to-wide-part>] [--format tsv|csv|csv-no-header|jsonl] [--output <path>] [--show-ast]\n  rusthouse sql --stdin [--part <path-to-wide-part>] [--format tsv|csv|csv-no-header|jsonl] [--output <path>] [--show-ast]\n  rusthouse sql --file <path.sql> [--part <path-to-wide-part>] [--format tsv|csv|csv-no-header|jsonl] [--output <path>] [--show-ast]\n  rusthouse --help\n\nInspect local MergeTree metadata, marks, and compressed blocks.";
+const USAGE: &str = "Usage:\n  rusthouse inspect-part <path>\n  rusthouse verify-part <path-to-wide-part>\n  rusthouse verify-file-sizes <path-to-part>\n  rusthouse inspect-checksums <path-to-checksums.txt>\n  rusthouse inspect-marks <path-to-wide-marks>\n  rusthouse inspect-blocks <path-to-.bin>\n  rusthouse verify-blocks <path-to-.bin>\n  rusthouse validate-marks <path-to-wide-marks> <path-to-.bin>\n  rusthouse read-u64 <data.bin> <marks.mrk2> <mark-index>\n  rusthouse scan-u64 <path-to-UInt64-.bin>\n  rusthouse read-numeric <data.bin> <marks.mrk2> <mark-index> <type>\n  rusthouse sql <SQL> [--part <path-to-wide-part>] [--format tsv|csv|csv-no-header|jsonl|json] [--output <path>] [--show-ast]\n  rusthouse sql --stdin [--part <path-to-wide-part>] [--format tsv|csv|csv-no-header|jsonl|json] [--output <path>] [--show-ast]\n  rusthouse sql --file <path.sql> [--part <path-to-wide-part>] [--format tsv|csv|csv-no-header|jsonl|json] [--output <path>] [--show-ast]\n  rusthouse --help\n\nInspect local MergeTree metadata, marks, and compressed blocks.";
 
 #[derive(Clone, Copy)]
 enum SqlOutputFormat {
@@ -21,6 +22,7 @@ enum SqlOutputFormat {
     Csv,
     CsvNoHeader,
     Jsonl,
+    Json,
 }
 
 impl SqlOutputFormat {
@@ -30,7 +32,8 @@ impl SqlOutputFormat {
             Some("csv") => Ok(Self::Csv),
             Some("csv-no-header") => Ok(Self::CsvNoHeader),
             Some("jsonl") => Ok(Self::Jsonl),
-            _ => Err("--format must be tsv, csv, csv-no-header, or jsonl".into()),
+            Some("json") => Ok(Self::Json),
+            _ => Err("--format must be tsv, csv, csv-no-header, jsonl, or json".into()),
         }
     }
 }
@@ -459,6 +462,15 @@ fn run_sql_args(mut args: impl Iterator<Item = OsString>) -> Result<(), String> 
             part.as_deref(),
             &mut jsonl::JsonlWriter::new(&mut output),
         ),
+        SqlOutputFormat::Json => {
+            let mut writer = json_array::JsonArrayWriter::new(&mut output);
+            execute(&select, part.as_deref(), &mut writer).and_then(|()| {
+                writer
+                    .finish()
+                    .map(|_| ())
+                    .map_err(rusthouse_query::ExecutionError::Io)
+            })
+        }
     };
     if result.is_err() {
         drop(output);
