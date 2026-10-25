@@ -448,8 +448,8 @@ mod tests {
         let valid = &include_bytes!("../tests/fixtures/blocks/lz4-none.bin")[PREFIX_SIZE..36];
         for bytes in [
             checked_block(0x82, &[0xff], 100),
-            checked_block(0x82, &valid, 100),
-            checked_block(0x82, &valid, 2),
+            checked_block(0x82, valid, 100),
+            checked_block(0x82, valid, 2),
         ] {
             let mut reader = CompressedBlockReader::new(Cursor::new(bytes), "data.bin").unwrap();
             assert!(matches!(
