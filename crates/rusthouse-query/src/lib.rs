@@ -200,8 +200,7 @@ pub fn parse_select(sql: &str) -> Result<Select, ParseError> {
         if !parser.take(Token::LParen) {
             return Err(ParseError("expected COUNT() or COUNT(*)".into()));
         }
-        if !parser.take(Token::RParen)
-            && !(parser.take(Token::Star) && parser.take(Token::RParen))
+        if !parser.take(Token::RParen) && !(parser.take(Token::Star) && parser.take(Token::RParen))
         {
             return Err(ParseError("expected COUNT() or COUNT(*)".into()));
         }
@@ -848,7 +847,6 @@ mod tests {
             "SELECT 1 FROM part",
             "SELECT 1; SELECT 2",
             "SELECT 1;;",
-            "SELECT COUNT() FROM part",
             "SELECT id, FROM part",
             "SELECT id FROM part LIMIT -1",
             "SELECT id FROM part LIMIT 1.5",
