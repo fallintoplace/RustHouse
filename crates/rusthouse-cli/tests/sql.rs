@@ -68,6 +68,19 @@ fn sorts_generated_numbers_from_the_cli() {
 }
 
 #[test]
+fn runs_in_filters_through_cli() {
+    let result = sql("SELECT number FROM numbers(10) WHERE number IN (1, 3, 7) ORDER BY number DESC LIMIT 2", None);
+    assert!(result.status.success(), "{result:?}");
+    assert_eq!(String::from_utf8(result.stdout).unwrap(), "number\n7\n3\n");
+    let dir = sample_part();
+    let id = u64::from_le_bytes(*b"aaaaaaaa");
+    let result = sql(&format!("SELECT count(*) FROM part WHERE id IN (0, {id})"), Some(&dir));
+    assert!(result.status.success(), "{result:?}");
+    assert_eq!(String::from_utf8(result.stdout).unwrap(), "count\n10\n");
+    fs::remove_dir_all(dir).unwrap();
+}
+
+#[test]
 fn runs_between_queries_on_generated_numbers_and_parts() {
     let result = sql(
         "SELECT number FROM numbers(10) WHERE number BETWEEN 3 AND 8 ORDER BY number DESC LIMIT 2 OFFSET 1",

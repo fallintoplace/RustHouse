@@ -135,15 +135,15 @@ fn execute_into<W: Write>(
             }
         })
         .collect::<Vec<_>>();
-    let comparisons = compile_part_predicates(&query.predicates, &mut scan_columns, |predicate| {
+    let comparisons = compile_part_predicates(&query.predicates, &mut scan_columns, |column_name, literal| {
         let column = metadata
             .columns
             .iter()
-            .find(|column| column.name == predicate.column)
+            .find(|column| column.name == column_name)
             .ok_or_else(|| {
-                ExecutionError::Invalid(format!("unknown WHERE column: {}", predicate.column))
+                ExecutionError::Invalid(format!("unknown WHERE column: {column_name}"))
             })?;
-        parse_numeric(&column.data_type, &predicate.value)
+        parse_numeric(&column.data_type, literal)
     })?;
     let sort_index = query.order_by.as_ref().map(|order| {
         if let Some(index) = scan_columns
@@ -238,15 +238,15 @@ fn execute_aggregate_part<W: Write>(
 ) -> Result<(), ExecutionError> {
     let metadata = inspect_part(part)?;
     let mut scan_columns = vec![column.to_owned()];
-    let comparisons = compile_part_predicates(&query.predicates, &mut scan_columns, |predicate| {
+    let comparisons = compile_part_predicates(&query.predicates, &mut scan_columns, |column_name, literal| {
         let metadata_column = metadata
             .columns
             .iter()
-            .find(|candidate| candidate.name == predicate.column)
+            .find(|candidate| candidate.name == column_name)
             .ok_or_else(|| {
-                ExecutionError::Invalid(format!("unknown WHERE column: {}", predicate.column))
+                ExecutionError::Invalid(format!("unknown WHERE column: {column_name}"))
             })?;
-        parse_numeric(&metadata_column.data_type, &predicate.value)
+        parse_numeric(&metadata_column.data_type, literal)
     })?;
     let mut reader = NumericPartReader::open(part, &scan_columns)?;
     writeln!(output, "{}({column})", function.name())?;
@@ -604,72 +604,63 @@ fn compare_numbers(left: Number, right: Number) -> Ordering {
     }
 }
 
-#[derive(Clone, Copy)]
+enum CompiledTest {
+    Comparison { operator: Operator, target: Number },
+    In(Vec<Number>),
+}
+impl CompiledTest {
+    fn matches(&self, value: Number) -> bool {
+        match self {
+            Self::Comparison { operator, target } => number_matches(value, *target, *operator),
+            Self::In(targets) => targets.iter().any(|target| number_matches(value, *target, Operator::Eq)),
+        }
+    }
+}
 struct CompiledPredicate {
     index: usize,
-    operator: Operator,
-    target: Number,
+    test: CompiledTest,
 }
-
 fn compile_part_predicates(
     predicates: &[Predicate],
     scan_columns: &mut Vec<String>,
-    mut convert: impl FnMut(&Predicate) -> Result<Number, ExecutionError>,
+    mut convert: impl FnMut(&str, &str) -> Result<Number, ExecutionError>,
 ) -> Result<Vec<CompiledPredicate>, ExecutionError> {
     let mut compiled = Vec::with_capacity(predicates.len());
     for predicate in predicates {
-        let target = convert(predicate)?;
-        let index = if let Some(index) = scan_columns
-            .iter()
-            .position(|column| *column == predicate.column)
-        {
+        let column = predicate.column();
+        let test = match predicate {
+            Predicate::Comparison { operator, value, .. } => CompiledTest::Comparison {
+                operator: *operator,
+                target: convert(column, value)?,
+            },
+            Predicate::In { values, .. } => CompiledTest::In(
+                values.iter().map(|value| convert(column, value)).collect::<Result<Vec<_>, _>>()?
+            ),
+        };
+        let index = if let Some(index) = scan_columns.iter().position(|candidate| candidate.as_str() == column) {
             index
         } else {
-            scan_columns.push(predicate.column.clone());
+            scan_columns.push(column.to_owned());
             scan_columns.len() - 1
         };
-        compiled.push(CompiledPredicate {
-            index,
-            operator: predicate.operator,
-            target,
-        });
+        compiled.push(CompiledPredicate { index, test });
     }
     Ok(compiled)
 }
-
 fn batch_matches(batch: &[NumericColumn], row: usize, predicates: &[CompiledPredicate]) -> bool {
-    predicates.iter().all(|predicate| {
-        number_matches(
-            number_at(&batch[predicate.index], row),
-            predicate.target,
-            predicate.operator,
-        )
+    predicates.iter().all(|predicate| predicate.test.matches(number_at(&batch[predicate.index], row)))
+}
+fn compile_numbers_predicates(predicates: &[Predicate]) -> Result<Vec<CompiledPredicate>, ExecutionError> {
+    let mut scan_columns = vec!["number".into()];
+    compile_part_predicates(predicates, &mut scan_columns, |column, value| {
+        if column != "number" {
+            return Err(ExecutionError::Invalid("numbers(N) exposes only the number column".into()));
+        }
+        parse_numeric("UInt64", value)
     })
 }
-
-fn compile_numbers_predicates(
-    predicates: &[Predicate],
-) -> Result<Vec<(Operator, Number)>, ExecutionError> {
-    predicates
-        .iter()
-        .map(|predicate| {
-            if predicate.column != "number" {
-                return Err(ExecutionError::Invalid(
-                    "numbers(N) exposes only the number column".into(),
-                ));
-            }
-            Ok((
-                predicate.operator,
-                parse_numeric("UInt64", &predicate.value)?,
-            ))
-        })
-        .collect()
-}
-
-fn number_matches_all(value: Number, predicates: &[(Operator, Number)]) -> bool {
-    predicates
-        .iter()
-        .all(|(operator, target)| number_matches(value, *target, *operator))
+fn number_matches_all(value: Number, predicates: &[CompiledPredicate]) -> bool {
+    predicates.iter().all(|predicate| predicate.test.matches(value))
 }
 
 fn parse_numeric(data_type: &str, text: &str) -> Result<Number, ExecutionError> {
@@ -969,6 +960,25 @@ mod tests {
         );
     }
 
+    #[test]
+    fn in_lists_filter_numbers_aggregates_and_empty_inputs() {
+        assert_eq!(
+            run("SELECT number FROM numbers(10) WHERE number IN (2, 4, 7) ORDER BY number DESC LIMIT 2 OFFSET 1", None).unwrap(),
+            "number\n4\n2\n"
+        );
+        assert_eq!(
+            run("SELECT count(*) FROM numbers(10) WHERE number IN (1, 4, 8) AND number > 2", None).unwrap(),
+            "count\n2\n"
+        );
+        assert_eq!(
+            run("SELECT sum(number) FROM numbers(10) WHERE number IN (3, 5, 7)", None).unwrap(),
+            "sum(number)\n15\n"
+        );
+        assert_eq!(run("SELECT number FROM numbers(0) WHERE number IN (1)", None).unwrap(), "number\n");
+        assert!(run("SELECT number FROM numbers(0) WHERE number IN (-1)", None).is_err());
+        assert!(run("SELECT number FROM numbers(0) WHERE missing IN (1)", None).is_err());
+    }
+    
     #[test]
     fn pagination_applies_after_filtering_and_sorting() {
         assert_eq!(
