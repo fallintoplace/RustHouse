@@ -130,7 +130,11 @@ fn execute_into<W: Write>(
         Some(Source::NumbersRange { start, count }) => {
             return execute_numbers(query, *start, *count, 1, part, output);
         }
-        Some(Source::NumbersStepped { start, length, step }) => {
+        Some(Source::NumbersStepped {
+            start,
+            length,
+            step,
+        }) => {
             let rows = length / step + u64::from(length % step != 0);
             return execute_numbers(query, *start, rows, *step, part, output);
         }
@@ -1191,7 +1195,11 @@ mod tests {
             "number\n3\n7\n11\n"
         );
         assert_eq!(
-            run("SELECT number FROM numbers(3, 10, 4) LIMIT 1 OFFSET 2", None).unwrap(),
+            run(
+                "SELECT number FROM numbers(3, 10, 4) LIMIT 1 OFFSET 2",
+                None
+            )
+            .unwrap(),
             "number\n11\n"
         );
         assert_eq!(
