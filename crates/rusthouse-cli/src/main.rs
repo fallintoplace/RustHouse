@@ -1,10 +1,10 @@
-use rusthouse_storage::{CompressedBlockReader, inspect_part, read_wide_marks};
+use rusthouse_storage::{CompressedBlockReader, inspect_part, read_u64_granule, read_wide_marks};
 use std::env;
 use std::ffi::OsString;
 use std::path::PathBuf;
 use std::process::ExitCode;
 
-const USAGE: &str = "Usage:\n  rusthouse inspect-part <path>\n  rusthouse inspect-marks <path-to-.mrk-or-.mrk2>\n  rusthouse inspect-blocks <path-to-.bin>\n  rusthouse verify-blocks <path-to-.bin>\n  rusthouse --help\n\nInspect local MergeTree metadata, marks, and compressed blocks.";
+const USAGE: &str = "Usage:\n  rusthouse inspect-part <path>\n  rusthouse inspect-marks <path-to-.mrk-or-.mrk2>\n  rusthouse inspect-blocks <path-to-.bin>\n  rusthouse verify-blocks <path-to-.bin>\n  rusthouse read-u64 <data.bin> <marks.mrk2> <mark-index>\n  rusthouse --help\n\nInspect local MergeTree metadata, marks, and compressed blocks.";
 
 fn main() -> ExitCode {
     let mut args = env::args_os().skip(1);
@@ -21,23 +21,37 @@ fn main() -> ExitCode {
         && command != "inspect-marks"
         && command != "inspect-blocks"
         && command != "verify-blocks"
+        && command != "read-u64"
     {
         eprintln!("unknown command: {command:?}\n{USAGE}");
         return ExitCode::from(2);
     }
-    let (Some(path), None) = (args.next(), args.next()) else {
-        eprintln!("{USAGE}");
-        return ExitCode::from(2);
-    };
-
-    let result = if command == "inspect-part" {
-        inspect_and_print(path)
-    } else if command == "inspect-marks" {
-        inspect_marks_and_print(path)
-    } else if command == "inspect-blocks" {
-        inspect_blocks_and_print(path)
+    let result = if command == "read-u64" {
+        let (Some(data_path), Some(marks_path), Some(index), None) =
+            (args.next(), args.next(), args.next(), args.next())
+        else {
+            eprintln!("{USAGE}");
+            return ExitCode::from(2);
+        };
+        let Some(index) = index.to_str().and_then(|index| index.parse::<usize>().ok()) else {
+            eprintln!("{USAGE}");
+            return ExitCode::from(2);
+        };
+        read_u64_and_print(data_path, marks_path, index)
     } else {
-        verify_blocks_and_print(path)
+        let (Some(path), None) = (args.next(), args.next()) else {
+            eprintln!("{USAGE}");
+            return ExitCode::from(2);
+        };
+        if command == "inspect-part" {
+            inspect_and_print(path)
+        } else if command == "inspect-marks" {
+            inspect_marks_and_print(path)
+        } else if command == "inspect-blocks" {
+            inspect_blocks_and_print(path)
+        } else {
+            verify_blocks_and_print(path)
+        }
     };
     match result {
         Ok(()) => ExitCode::SUCCESS,
@@ -109,5 +123,27 @@ fn verify_blocks_and_print(path: OsString) -> Result<(), rusthouse_storage::Part
         count += 1;
     }
     println!("Verified {count} blocks, {total_bytes} decompressed bytes");
+    Ok(())
+}
+
+fn read_u64_and_print(
+    data_path: OsString,
+    marks_path: OsString,
+    index: usize,
+) -> Result<(), rusthouse_storage::PartError> {
+    let marks = read_wide_marks(PathBuf::from(marks_path))?;
+    let mark = marks
+        .marks
+        .get(index)
+        .ok_or(rusthouse_storage::PartError::InvalidGranuleIndex {
+            index,
+            marks: marks.marks.len(),
+        })?;
+    let mut reader = CompressedBlockReader::open(PathBuf::from(data_path))?;
+    let values = read_u64_granule(&mut reader, mark)?;
+    println!("Rows: {}", values.len());
+    for value in values {
+        println!("{value}");
+    }
     Ok(())
 }
