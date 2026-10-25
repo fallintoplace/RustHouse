@@ -325,7 +325,6 @@ mod tests {
                 limit: Some(2),
             }
         );
-        assert_eq!(parse_select("SELECT * FROM part").unwrap().projection, Projection::All);
         assert_eq!(
             parse_select("SELECT * FROM part").unwrap().projection,
             Projection::All
