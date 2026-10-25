@@ -1,3 +1,4 @@
+mod arrays;
 mod columns;
 mod compression;
 mod granules;
@@ -8,6 +9,10 @@ mod numeric;
 mod stream;
 mod strings;
 
+pub use arrays::{
+    ArrayOffsets, ArrayOffsetsEncoding, ArrayReadError, NumericArrayColumn, read_array_offsets,
+    read_numeric_array_column,
+};
 pub use columns::parse_columns;
 pub use compression::{CompressedBlock, CompressedBlockReader, DecodedBlock};
 pub use granules::{read_mark_bytes, read_u64_granule};
