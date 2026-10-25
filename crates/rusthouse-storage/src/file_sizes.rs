@@ -54,7 +54,10 @@ fn verify_listed_file(
                 return Err(invalid(manifest_path, "listed entry is not a regular file"));
             }
             if metadata.len() != expected_size {
-                return Err(invalid(manifest_path, "file size differs from checksums.txt"));
+                return Err(invalid(
+                    manifest_path,
+                    "file size differs from checksums.txt",
+                ));
             }
         }
     }
