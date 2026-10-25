@@ -1,7 +1,7 @@
 use crate::{PartError, read_checksums};
 use std::fs;
 use std::io;
-use std::path::{Path, PathBuf};
+use std::path::Path;
 
 /// Counts manifest entries whose stored sizes match the actual local files.
 /// File hashes are not checked.
@@ -74,6 +74,7 @@ fn io_error(path: &Path, source: io::Error) -> PartError {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::path::PathBuf;
     use std::sync::atomic::{AtomicUsize, Ordering};
 
     static NEXT_DIR: AtomicUsize = AtomicUsize::new(0);
