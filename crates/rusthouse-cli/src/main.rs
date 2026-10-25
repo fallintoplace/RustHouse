@@ -14,6 +14,24 @@ use std::process::ExitCode;
 
 const USAGE: &str = "Usage:\n  rusthouse inspect-part <path>\n  rusthouse verify-part <path-to-wide-part>\n  rusthouse verify-file-sizes <path-to-part>\n  rusthouse inspect-checksums <path-to-checksums.txt>\n  rusthouse inspect-marks <path-to-wide-marks>\n  rusthouse inspect-blocks <path-to-.bin>\n  rusthouse verify-blocks <path-to-.bin>\n  rusthouse validate-marks <path-to-wide-marks> <path-to-.bin>\n  rusthouse read-u64 <data.bin> <marks.mrk2> <mark-index>\n  rusthouse scan-u64 <path-to-UInt64-.bin>\n  rusthouse read-numeric <data.bin> <marks.mrk2> <mark-index> <type>\n  rusthouse sql <SQL> [--part <path-to-wide-part>] [--format tsv|csv|jsonl] [--show-ast]\n  rusthouse sql --file <path.sql> [--part <path-to-wide-part>] [--format tsv|csv|jsonl] [--show-ast]\n  rusthouse --help\n\nInspect local MergeTree metadata, marks, and compressed blocks.";
 
+#[derive(Clone, Copy)]
+enum SqlOutputFormat {
+    Tsv,
+    Csv,
+    Jsonl,
+}
+
+impl SqlOutputFormat {
+    fn from_arg(value: Option<OsString>) -> Result<Self, String> {
+        match value.and_then(|value| value.into_string().ok()).as_deref() {
+            Some("tsv") => Ok(Self::Tsv),
+            Some("csv") => Ok(Self::Csv),
+            Some("jsonl") => Ok(Self::Jsonl),
+            _ => Err("--format must be tsv, csv, or jsonl".into()),
+        }
+    }
+}
+
 fn main() -> ExitCode {
     let mut args = env::args_os().skip(1);
     let Some(command) = args.next() else {
@@ -324,9 +342,7 @@ fn run_sql_args(mut args: impl Iterator<Item = OsString>) -> Result<(), String> 
     let mut query = None;
     let mut file = None;
     let mut part = None;
-    let mut csv = false;
-    let mut jsonl = false;
-    let mut seen_format = false;
+    let mut format = None;
     let mut show_ast = false;
     while let Some(arg) = args.next() {
         if arg.to_str() == Some("--show-ast") {
@@ -337,20 +353,10 @@ fn run_sql_args(mut args: impl Iterator<Item = OsString>) -> Result<(), String> 
             continue;
         }
         if arg.to_str() == Some("--format") {
-            if seen_format {
+            if format.is_some() {
                 return Err("duplicate --format option".into());
             }
-            seen_format = true;
-            match args
-                .next()
-                .and_then(|value| value.into_string().ok())
-                .as_deref()
-            {
-                Some("tsv") => {}
-                Some("csv") => csv = true,
-                Some("jsonl") => jsonl = true,
-                _ => return Err("--format must be tsv, csv, or jsonl".into()),
-            }
+            format = Some(SqlOutputFormat::from_arg(args.next())?);
         } else if arg.to_str() == Some("--part") {
             if part.is_some() {
                 return Err("duplicate --part option".into());
@@ -393,20 +399,18 @@ fn run_sql_args(mut args: impl Iterator<Item = OsString>) -> Result<(), String> 
         println!("{select:#?}");
         return Ok(());
     }
-    if csv {
-        execute(
+    match format.unwrap_or(SqlOutputFormat::Tsv) {
+        SqlOutputFormat::Tsv => execute(&select, part.as_deref(), &mut std::io::stdout()),
+        SqlOutputFormat::Csv => execute(
             &select,
             part.as_deref(),
             &mut csv::CsvWriter::new(std::io::stdout()),
-        )
-    } else if jsonl {
-        execute(
+        ),
+        SqlOutputFormat::Jsonl => execute(
             &select,
             part.as_deref(),
             &mut jsonl::JsonlWriter::new(std::io::stdout()),
-        )
-    } else {
-        execute(&select, part.as_deref(), &mut std::io::stdout())
+        ),
     }
     .map_err(|error| error.to_string())
 }
