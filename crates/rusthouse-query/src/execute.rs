@@ -380,20 +380,16 @@ fn execute_grouped_part<W: Write>(
 ) -> Result<(), ExecutionError> {
     let metadata = inspect_part(part)?;
     let mut scan_columns = vec![column.to_owned()];
-    let comparisons = compile_part_where(
-        query,
-        &mut scan_columns,
-        |column_name, literal| {
-            let metadata_column = metadata
-                .columns
-                .iter()
-                .find(|candidate| candidate.name == column_name)
-                .ok_or_else(|| {
-                    ExecutionError::Invalid(format!("unknown WHERE column: {column_name}"))
-                })?;
-            parse_numeric(&metadata_column.data_type, literal)
-        },
-    )?;
+    let comparisons = compile_part_where(query, &mut scan_columns, |column_name, literal| {
+        let metadata_column = metadata
+            .columns
+            .iter()
+            .find(|candidate| candidate.name == column_name)
+            .ok_or_else(|| {
+                ExecutionError::Invalid(format!("unknown WHERE column: {column_name}"))
+            })?;
+        parse_numeric(&metadata_column.data_type, literal)
+    })?;
     let mut reader = NumericPartReader::open(part, &scan_columns)?;
     let mut groups = GroupedCounts::default();
     if query.limit == Some(0) {
@@ -537,7 +533,7 @@ fn execute_numbers<W: Write>(
         Projection::Count => Vec::new(),
         Projection::Aggregate { .. } | Projection::GroupedCount { .. } | Projection::Literal(_) => {
             unreachable!()
-        },
+        }
     };
     let comparisons = compile_numbers_predicates(query)?;
     let is_count = matches!(query.projection, Projection::Count);
@@ -1382,7 +1378,7 @@ mod tests {
                 None
             )
             .unwrap(),
-            "number\\tcount\\n11\\t1\\n8\\t1\\n"
+            "number\tcount\n11\t1\n8\t1\n"
         );
     }
 
