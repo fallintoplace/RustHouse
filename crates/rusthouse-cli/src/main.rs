@@ -89,7 +89,10 @@ fn inspect_and_print(path: OsString) -> Result<(), rusthouse_storage::PartError>
 
 fn inspect_marks_and_print(path: OsString) -> Result<(), rusthouse_storage::PartError> {
     let metadata = read_wide_marks(PathBuf::from(path))?;
-    let extension = metadata.path.extension().and_then(|extension| extension.to_str());
+    let extension = metadata
+        .path
+        .extension()
+        .and_then(|extension| extension.to_str());
     let format = match (metadata.format, extension) {
         (rusthouse_storage::WideMarkFormat::Fixed, Some("cmrk")) => "fixed (.cmrk)",
         (rusthouse_storage::WideMarkFormat::Adaptive, Some("cmrk2")) => "adaptive (.cmrk2)",

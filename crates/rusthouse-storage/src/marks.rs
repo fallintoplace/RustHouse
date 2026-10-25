@@ -107,7 +107,11 @@ fn read_compressed_wide_marks<R: Read + Seek>(
         }
 
         let mut chunks = bytes.chunks_exact(record_size);
-        marks.extend(chunks.by_ref().map(|record| parse_mark_record(record, format)));
+        marks.extend(
+            chunks
+                .by_ref()
+                .map(|record| parse_mark_record(record, format)),
+        );
         let remainder = chunks.remainder();
         fragment[..remainder.len()].copy_from_slice(remainder);
         fragment_len = remainder.len();
@@ -163,10 +167,7 @@ mod tests {
         bytes
     }
 
-    fn read_compressed(
-        bytes: Vec<u8>,
-        format: WideMarkFormat,
-    ) -> Result<Vec<WideMark>, PartError> {
+    fn read_compressed(bytes: Vec<u8>, format: WideMarkFormat) -> Result<Vec<WideMark>, PartError> {
         let path = Path::new("wide.cmrk2");
         let reader = CompressedBlockReader::new(Cursor::new(bytes), path)?;
         read_compressed_wide_marks(reader, path, format)
@@ -369,12 +370,7 @@ mod tests {
 
     #[test]
     fn refuses_compact_mark_formats() {
-        for path in [
-            "marks.mrk3",
-            "marks.mrk4",
-            "marks.cmrk3",
-            "marks.cmrk4",
-        ] {
+        for path in ["marks.mrk3", "marks.mrk4", "marks.cmrk3", "marks.cmrk4"] {
             assert!(
                 matches!(
                     read_wide_marks(path),
