@@ -64,6 +64,11 @@ pub enum Predicate {
         column: String,
         values: Vec<String>,
     },
+    NotBetween {
+        column: String,
+        lower: String,
+        upper: String,
+    },
 }
 
 impl Predicate {
@@ -71,7 +76,8 @@ impl Predicate {
         match self {
             Self::Comparison { column, .. }
             | Self::In { column, .. }
-            | Self::NotIn { column, .. } => column,
+            | Self::NotIn { column, .. }
+            | Self::NotBetween { column, .. } => column,
         }
     }
 }
@@ -322,28 +328,34 @@ pub fn parse_select(sql: &str) -> Result<Select, ParseError> {
             let column = parser.word()?;
             let negate_in = parser.keyword("NOT");
             if parser.keyword("BETWEEN") {
-                if negate_in {
-                    return Err(ParseError("NOT BETWEEN is not supported".into()));
-                }
-                if total_conditions + 2 > 16 {
-                    return Err(ParseError("WHERE supports at most 16 conditions".into()));
-                }
                 let lower = parser.number()?;
                 if !parser.keyword("AND") {
                     return Err(ParseError("BETWEEN requires AND".into()));
                 }
                 let upper = parser.number()?;
-                branches.last_mut().unwrap().push(Predicate::Comparison {
-                    column: column.clone(),
-                    operator: Operator::Ge,
-                    value: lower,
-                });
-                branches.last_mut().unwrap().push(Predicate::Comparison {
-                    column,
-                    operator: Operator::Le,
-                    value: upper,
-                });
-                total_conditions += 2;
+                if negate_in {
+                    branches.last_mut().unwrap().push(Predicate::NotBetween {
+                        column,
+                        lower,
+                        upper,
+                    });
+                    total_conditions += 1;
+                } else {
+                    if total_conditions + 2 > 16 {
+                        return Err(ParseError("WHERE supports at most 16 conditions".into()));
+                    }
+                    branches.last_mut().unwrap().push(Predicate::Comparison {
+                        column: column.clone(),
+                        operator: Operator::Ge,
+                        value: lower,
+                    });
+                    branches.last_mut().unwrap().push(Predicate::Comparison {
+                        column,
+                        operator: Operator::Le,
+                        value: upper,
+                    });
+                    total_conditions += 2;
+                }
             } else if parser.keyword("IN") {
                 if !parser.take(Token::LParen) {
                     return Err(ParseError("expected '(' after IN".into()));
@@ -919,7 +931,6 @@ mod tests {
             "SELECT number FROM numbers(5) WHERE number BETWEEN 1 OR 2",
             "SELECT number FROM numbers(5) WHERE number BETWEEN 1 AND",
             "SELECT number FROM numbers(5) WHERE number BETWEEN 1 AND 3 AND",
-            "SELECT number FROM numbers(5) WHERE number NOT BETWEEN 1 AND 3",
         ] {
             assert!(parse_select(sql).is_err(), "{sql}");
         }
@@ -928,6 +939,23 @@ mod tests {
             vec!["number > 0"; 15].join(" AND ")
         );
         assert!(parse_select(&too_many).is_err());
+    }
+
+    #[test]
+    fn parses_not_between_with_other_predicates() {
+        let parsed = parse_select(
+            "SELECT number FROM numbers(10) WHERE number NOT BETWEEN 3 AND 6 AND number < 9",
+        )
+        .unwrap();
+        assert_eq!(
+            parsed.predicates[0],
+            Predicate::NotBetween {
+                column: "number".into(),
+                lower: "3".into(),
+                upper: "6".into(),
+            }
+        );
+        assert!(parse_select("SELECT number FROM numbers(5) WHERE number NOT BETWEEN 2").is_err());
     }
 
     #[test]
@@ -1079,7 +1107,6 @@ mod tests {
             "SELECT number FROM numbers(10) WHERE number NOT IN ()",
             "SELECT number FROM numbers(10) WHERE number NOT IN (1,)",
             "SELECT number FROM numbers(10) WHERE number NOT = 1",
-            "SELECT number FROM numbers(10) WHERE number NOT BETWEEN 1 AND 2",
         ] {
             assert!(parse_select(sql).is_err(), "{sql}");
         }
