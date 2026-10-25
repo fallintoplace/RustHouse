@@ -230,6 +230,19 @@ fn excludes_numeric_values_with_not_in() {
 }
 
 #[test]
+fn supports_or_filters_from_the_cli() {
+    let result = sql(
+        "SELECT number FROM numbers(10) WHERE number = 1 OR number >= 8 ORDER BY number DESC",
+        None,
+    );
+    assert!(result.status.success(), "{result:?}");
+    assert_eq!(
+        String::from_utf8(result.stdout).unwrap(),
+        "number\n9\n8\n1\n"
+    );
+}
+
+#[test]
 fn calculates_aggregates_from_the_cli() {
     let output = sql(
         "SELECT sum(number) FROM numbers(1000) WHERE number >= 900",
