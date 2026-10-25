@@ -1,6 +1,7 @@
 mod arrays;
 mod columns;
 mod compression;
+mod fixed_strings;
 mod granules;
 mod mark_validation;
 mod marks;
@@ -16,6 +17,9 @@ pub use arrays::{
 };
 pub use columns::parse_columns;
 pub use compression::{CompressedBlock, CompressedBlockReader, DecodedBlock};
+pub use fixed_strings::{
+    FixedStringColumn, FixedStringReadError, read_fixed_string_granule, read_fixed_strings,
+};
 pub use granules::{read_mark_bytes, read_u64_granule};
 pub use mark_validation::validate_wide_marks;
 pub use marks::{WideMark, WideMarkFormat, WideMarks, read_wide_marks};
@@ -92,6 +96,7 @@ pub enum PartError {
         index: usize,
         marks: usize,
     },
+    FixedStringRead(FixedStringReadError),
     UnsupportedMarksFormat(PathBuf),
 }
 
@@ -152,6 +157,7 @@ impl fmt::Display for PartError {
             Self::InvalidGranuleIndex { index, marks } => {
                 write!(f, "granule index {index} is outside {marks} marks")
             }
+            Self::FixedStringRead(source) => write!(f, "{source}"),
             Self::UnsupportedMarksFormat(path) => write!(
                 f,
                 "{}: only wide-part .mrk, .mrk2, .cmrk, and .cmrk2 files are supported",
@@ -165,6 +171,7 @@ impl Error for PartError {
     fn source(&self) -> Option<&(dyn Error + 'static)> {
         match self {
             Self::Io { source, .. } => Some(source),
+            Self::FixedStringRead(source) => Some(source),
             _ => None,
         }
     }
