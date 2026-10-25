@@ -116,7 +116,10 @@ fn execute_into<W: Write>(
     let projected_len = projected.len();
     let mut scan_columns = projected.clone();
     let predicate_index = query.predicate.as_ref().map(|predicate| {
-        if let Some(index) = scan_columns.iter().position(|name| *name == predicate.column) {
+        if let Some(index) = scan_columns
+            .iter()
+            .position(|name| *name == predicate.column)
+        {
             index
         } else {
             scan_columns.push(predicate.column.clone());
@@ -140,7 +143,8 @@ fn execute_into<W: Write>(
     let mut matched = 0u64;
     while let Some(batch) = reader.next_batch()? {
         let rows = batch[0].len();
-        let comparison = if let (Some(predicate), Some(index)) = (&query.predicate, predicate_index) {
+        let comparison = if let (Some(predicate), Some(index)) = (&query.predicate, predicate_index)
+        {
             Some(parse_numeric(&batch[index], &predicate.value)?)
         } else {
             None
@@ -193,9 +197,7 @@ fn parse_numeric(column: &NumericColumn, text: &str) -> Result<Number, Execution
             .map(|value| Number::Float(f64::from(value))),
         NumericColumn::Float64(_) => text.parse::<f64>().ok().map(Number::Float),
     };
-    value.ok_or_else(|| {
-        ExecutionError::Invalid(format!("invalid numeric WHERE value: {text}"))
-    })
+    value.ok_or_else(|| ExecutionError::Invalid(format!("invalid numeric WHERE value: {text}")))
 }
 
 fn number_at(column: &NumericColumn, row: usize) -> Number {
@@ -269,8 +271,14 @@ mod tests {
             "columns format version: 1\n1 columns:\n\u{0060}city\u{0060} String\n",
         )
         .unwrap();
-        assert_eq!(run("SELECT count(*) FROM part", Some(&dir)).unwrap(), "count\n42\n");
-        assert_eq!(run("SELECT count(*) FROM part LIMIT 0", Some(&dir)).unwrap(), "count\n");
+        assert_eq!(
+            run("SELECT count(*) FROM part", Some(&dir)).unwrap(),
+            "count\n42\n"
+        );
+        assert_eq!(
+            run("SELECT count(*) FROM part LIMIT 0", Some(&dir)).unwrap(),
+            "count\n"
+        );
         assert!(run("SELECT city FROM part", Some(&dir)).is_err());
         fs::remove_dir_all(dir).unwrap();
     }

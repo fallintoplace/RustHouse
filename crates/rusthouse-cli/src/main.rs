@@ -38,63 +38,65 @@ fn main() -> ExitCode {
     let result = if command == "sql" {
         run_sql_args(args)
     } else {
-    let outcome = if command == "read-u64" {
-        let (Some(data_path), Some(marks_path), Some(index), None) =
-            (args.next(), args.next(), args.next(), args.next())
-        else {
-            eprintln!("{USAGE}");
-            return ExitCode::from(2);
-        };
-        let Some(index) = index.to_str().and_then(|index| index.parse::<usize>().ok()) else {
-            eprintln!("{USAGE}");
-            return ExitCode::from(2);
-        };
-        read_u64_and_print(data_path, marks_path, index)
-    } else if command == "read-numeric" {
-        let (Some(data_path), Some(marks_path), Some(index), Some(data_type), None) = (
-            args.next(),
-            args.next(),
-            args.next(),
-            args.next(),
-            args.next(),
-        ) else {
-            eprintln!("{USAGE}");
-            return ExitCode::from(2);
-        };
-        let Some(index) = index.to_str().and_then(|value| value.parse::<usize>().ok()) else {
-            eprintln!("{USAGE}");
-            return ExitCode::from(2);
-        };
-        let Some(data_type) = data_type.to_str() else {
-            eprintln!("{USAGE}");
-            return ExitCode::from(2);
-        };
-        read_numeric_and_print(data_path, marks_path, index, data_type)
-    } else if command == "validate-marks" {
-        let (Some(marks_path), Some(data_path), None) = (args.next(), args.next(), args.next())
-        else {
-            eprintln!("{USAGE}");
-            return ExitCode::from(2);
-        };
-        validate_marks_and_print(marks_path, data_path)
-    } else {
-        let (Some(path), None) = (args.next(), args.next()) else {
-            eprintln!("{USAGE}");
-            return ExitCode::from(2);
-        };
-        if command == "inspect-part" {
-            inspect_and_print(path)
-        } else if command == "inspect-checksums" {
-            inspect_checksums_and_print(path)
-        } else if command == "inspect-marks" {
-            inspect_marks_and_print(path)
-        } else if command == "inspect-blocks" {
-            inspect_blocks_and_print(path)
-        } else if command == "verify-blocks" {
-            verify_blocks_and_print(path)
+        let outcome = if command == "read-u64" {
+            let (Some(data_path), Some(marks_path), Some(index), None) =
+                (args.next(), args.next(), args.next(), args.next())
+            else {
+                eprintln!("{USAGE}");
+                return ExitCode::from(2);
+            };
+            let Some(index) = index.to_str().and_then(|index| index.parse::<usize>().ok()) else {
+                eprintln!("{USAGE}");
+                return ExitCode::from(2);
+            };
+            read_u64_and_print(data_path, marks_path, index)
+        } else if command == "read-numeric" {
+            let (Some(data_path), Some(marks_path), Some(index), Some(data_type), None) = (
+                args.next(),
+                args.next(),
+                args.next(),
+                args.next(),
+                args.next(),
+            ) else {
+                eprintln!("{USAGE}");
+                return ExitCode::from(2);
+            };
+            let Some(index) = index.to_str().and_then(|value| value.parse::<usize>().ok()) else {
+                eprintln!("{USAGE}");
+                return ExitCode::from(2);
+            };
+            let Some(data_type) = data_type.to_str() else {
+                eprintln!("{USAGE}");
+                return ExitCode::from(2);
+            };
+            read_numeric_and_print(data_path, marks_path, index, data_type)
+        } else if command == "validate-marks" {
+            let (Some(marks_path), Some(data_path), None) = (args.next(), args.next(), args.next())
+            else {
+                eprintln!("{USAGE}");
+                return ExitCode::from(2);
+            };
+            validate_marks_and_print(marks_path, data_path)
         } else {
-            scan_u64_and_print(path)
-        }
+            let (Some(path), None) = (args.next(), args.next()) else {
+                eprintln!("{USAGE}");
+                return ExitCode::from(2);
+            };
+            if command == "inspect-part" {
+                inspect_and_print(path)
+            } else if command == "inspect-checksums" {
+                inspect_checksums_and_print(path)
+            } else if command == "inspect-marks" {
+                inspect_marks_and_print(path)
+            } else if command == "inspect-blocks" {
+                inspect_blocks_and_print(path)
+            } else if command == "verify-blocks" {
+                verify_blocks_and_print(path)
+            } else {
+                scan_u64_and_print(path)
+            }
+        };
+        outcome.map_err(|error| error.to_string())
     };
     outcome.map_err(|error| error.to_string())
     };
@@ -309,6 +311,5 @@ fn run_sql_args(mut args: impl Iterator<Item = OsString>) -> Result<(), String> 
     }
     let query = query.ok_or("missing SQL statement")?;
     let select = parse_select(&query).map_err(|error| error.to_string())?;
-    execute(&select, part.as_deref(), &mut std::io::stdout())
-        .map_err(|error| error.to_string())
+    execute(&select, part.as_deref(), &mut std::io::stdout()).map_err(|error| error.to_string())
 }

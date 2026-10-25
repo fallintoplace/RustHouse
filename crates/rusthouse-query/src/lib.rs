@@ -1,5 +1,5 @@
 mod execute;
-pub use execute::{execute, ExecutionError};
+pub use execute::{ExecutionError, execute};
 
 use std::error::Error;
 use std::fmt;
