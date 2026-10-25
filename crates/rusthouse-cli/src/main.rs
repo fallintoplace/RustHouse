@@ -4,7 +4,7 @@ use std::ffi::OsString;
 use std::path::PathBuf;
 use std::process::ExitCode;
 
-const USAGE: &str = "Usage:\n  rusthouse inspect-part <path>\n  rusthouse inspect-marks <path-to-.mrk-or-.mrk2>\n  rusthouse inspect-blocks <path-to-.bin>\n  rusthouse --help\n\nInspect local MergeTree metadata, marks, and compressed block headers.";
+const USAGE: &str = "Usage:\n  rusthouse inspect-part <path>\n  rusthouse inspect-marks <path-to-.mrk-or-.mrk2>\n  rusthouse inspect-blocks <path-to-.bin>\n  rusthouse verify-blocks <path-to-.bin>\n  rusthouse --help\n\nInspect local MergeTree metadata, marks, and compressed blocks.";
 
 fn main() -> ExitCode {
     let mut args = env::args_os().skip(1);
@@ -17,7 +17,11 @@ fn main() -> ExitCode {
         println!("{USAGE}");
         return ExitCode::SUCCESS;
     }
-    if command != "inspect-part" && command != "inspect-marks" && command != "inspect-blocks" {
+    if command != "inspect-part"
+        && command != "inspect-marks"
+        && command != "inspect-blocks"
+        && command != "verify-blocks"
+    {
         eprintln!("unknown command: {command:?}\n{USAGE}");
         return ExitCode::from(2);
     }
@@ -30,8 +34,10 @@ fn main() -> ExitCode {
         inspect_and_print(path)
     } else if command == "inspect-marks" {
         inspect_marks_and_print(path)
-    } else {
+    } else if command == "inspect-blocks" {
         inspect_blocks_and_print(path)
+    } else {
+        verify_blocks_and_print(path)
     };
     match result {
         Ok(()) => ExitCode::SUCCESS,
@@ -91,5 +97,17 @@ fn inspect_blocks_and_print(path: OsString) -> Result<(), rusthouse_storage::Par
         count += 1;
     }
     println!("Blocks: {count} (headers only; checksums not verified)");
+    Ok(())
+}
+
+fn verify_blocks_and_print(path: OsString) -> Result<(), rusthouse_storage::PartError> {
+    let mut reader = CompressedBlockReader::open(PathBuf::from(path))?;
+    let mut count = 0u64;
+    let mut total_bytes = 0u64;
+    while let Some(block) = reader.next_decoded() {
+        total_bytes += block?.data.len() as u64;
+        count += 1;
+    }
+    println!("Verified {count} blocks, {total_bytes} decompressed bytes");
     Ok(())
 }
