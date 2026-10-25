@@ -84,6 +84,8 @@ pub struct Select {
     pub distinct: bool,
     pub source: Option<Source>,
     pub predicates: Vec<Predicate>,
+    /// Additional OR branches, each containing AND-connected predicates.
+    pub or_predicates: Vec<Vec<Predicate>>,
     pub order_by: Option<OrderBy>,
     pub limit: Option<usize>,
     pub offset: Option<usize>,
@@ -253,18 +255,19 @@ pub fn parse_select(sql: &str) -> Result<Select, ParseError> {
         return Err(ParseError("literal SELECT does not support FROM".into()));
     }
 
-    let predicates = if parser.keyword("WHERE") {
+    let (predicates, or_predicates) = if parser.keyword("WHERE") {
         if source.is_none() {
             return Err(ParseError("WHERE requires a table source".into()));
         }
-        let mut predicates = Vec::new();
+        let mut branches: Vec<Vec<Predicate>> = vec![Vec::new()];
+        let mut total_conditions = 0usize;
         loop {
-            if predicates.len() == 16 {
+            if total_conditions == 16 {
                 return Err(ParseError("WHERE supports at most 16 conditions".into()));
             }
             let column = parser.word()?;
             if parser.keyword("BETWEEN") {
-                if predicates.len() + 2 > 16 {
+                if total_conditions + 2 > 16 {
                     return Err(ParseError("WHERE supports at most 16 conditions".into()));
                 }
                 let lower = parser.number()?;
@@ -272,16 +275,17 @@ pub fn parse_select(sql: &str) -> Result<Select, ParseError> {
                     return Err(ParseError("BETWEEN requires AND".into()));
                 }
                 let upper = parser.number()?;
-                predicates.push(Predicate::Comparison {
+                branches.last_mut().unwrap().push(Predicate::Comparison {
                     column: column.clone(),
                     operator: Operator::Ge,
                     value: lower,
                 });
-                predicates.push(Predicate::Comparison {
+                branches.last_mut().unwrap().push(Predicate::Comparison {
                     column,
                     operator: Operator::Le,
                     value: upper,
                 });
+                total_conditions += 2;
             } else if parser.keyword("IN") {
                 if !parser.take(Token::LParen) {
                     return Err(ParseError("expected '(' after IN".into()));
@@ -299,21 +303,29 @@ pub fn parse_select(sql: &str) -> Result<Select, ParseError> {
                 if !parser.take(Token::RParen) {
                     return Err(ParseError("expected ')' after IN list".into()));
                 }
-                predicates.push(Predicate::In { column, values });
+                branches.last_mut().unwrap().push(Predicate::In { column, values });
+                total_conditions += 1;
             } else {
-                predicates.push(Predicate::Comparison {
+                branches.last_mut().unwrap().push(Predicate::Comparison {
                     column,
                     operator: parser.operator()?,
                     value: parser.number()?,
                 });
+                total_conditions += 1;
             }
-            if !parser.keyword("AND") {
-                break;
+            if parser.keyword("AND") {
+                continue;
             }
+            if parser.keyword("OR") {
+                branches.push(Vec::new());
+                continue;
+            }
+            break;
         }
-        predicates
+        let first = branches.remove(0);
+        (first, branches)
     } else {
-        Vec::new()
+        (Vec::new(), Vec::new())
     };
 
     let order_by = if parser.keyword("ORDER") {
@@ -382,6 +394,7 @@ pub fn parse_select(sql: &str) -> Result<Select, ParseError> {
         distinct,
         source,
         predicates,
+        or_predicates,
         order_by,
         limit,
         offset,
@@ -510,6 +523,7 @@ mod tests {
                 distinct: false,
                 source: None,
                 predicates: Vec::new(),
+                or_predicates: Vec::new(),
                 order_by: None,
                 limit: None,
                 offset: None,
@@ -522,6 +536,7 @@ mod tests {
                 distinct: false,
                 source: Some(Source::Table("part".into())),
                 predicates: Vec::new(),
+                or_predicates: Vec::new(),
                 order_by: None,
                 limit: Some(2),
                 offset: None,
@@ -778,6 +793,23 @@ mod tests {
             "SELECT DISTINCT sum(id) FROM part",
             "SELECT DISTINCT DISTINCT id FROM part",
             "SELECT DISTINCT FROM part",
+        ] {
+            assert!(parse_select(sql).is_err(), "{sql}");
+        }
+    }
+
+    #[test]
+    fn parses_or_with_and_precedence() {
+        let query = parse_select(
+            "SELECT number FROM numbers(10) WHERE number = 1 OR number >= 4 AND number < 6",
+        )
+        .unwrap();
+        assert_eq!(query.predicates.len(), 1);
+        assert_eq!(query.or_predicates.len(), 1);
+        assert_eq!(query.or_predicates[0].len(), 2);
+        for sql in [
+            "SELECT number FROM numbers(10) WHERE number = 1 OR",
+            "SELECT number FROM numbers(10) WHERE number = 1 OR OR number = 2",
         ] {
             assert!(parse_select(sql).is_err(), "{sql}");
         }

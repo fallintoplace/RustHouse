@@ -142,7 +142,10 @@ fn execute_into<W: Write>(
     }
     let metadata = inspect_part(part)?;
 
-    if matches!(query.projection, Projection::Count) && query.predicates.is_empty() {
+    if matches!(query.projection, Projection::Count)
+        && query.predicates.is_empty()
+        && query.or_predicates.is_empty()
+    {
         writeln!(output, "count")?;
         if query.limit != Some(0) && query.offset.unwrap_or(0) == 0 {
             writeln!(output, "{}", metadata.rows)?;
@@ -183,8 +186,8 @@ fn execute_into<W: Write>(
             }
         })
         .collect::<Vec<_>>();
-    let comparisons = compile_part_predicates(
-        &query.predicates,
+    let comparisons = compile_part_where(
+        query,
         &mut scan_columns,
         |column_name, literal| {
             let column = metadata
@@ -312,8 +315,8 @@ fn execute_aggregate_part<W: Write>(
 ) -> Result<(), ExecutionError> {
     let metadata = inspect_part(part)?;
     let mut scan_columns = vec![column.to_owned()];
-    let comparisons = compile_part_predicates(
-        &query.predicates,
+    let comparisons = compile_part_where(
+        query,
         &mut scan_columns,
         |column_name, literal| {
             let metadata_column = metadata
@@ -358,7 +361,7 @@ fn execute_aggregate_numbers<W: Write>(
             "numbers(N) exposes only the number column".into(),
         ));
     }
-    let comparisons = compile_numbers_predicates(&query.predicates)?;
+    let comparisons = compile_numbers_predicates(query)?;
     writeln!(output, "{}(number)", function.name())?;
     if query.limit == Some(0) {
         return Ok(());
@@ -404,7 +407,7 @@ fn execute_numbers<W: Write>(
         Projection::Count => Vec::new(),
         Projection::Aggregate { .. } | Projection::Literal(_) => unreachable!(),
     };
-    let comparisons = compile_numbers_predicates(&query.predicates)?;
+    let comparisons = compile_numbers_predicates(query)?;
     let is_count = matches!(query.projection, Projection::Count);
     let mut sorting = query
         .order_by
@@ -739,19 +742,43 @@ fn compile_part_predicates(
     Ok(compiled)
 }
 
-fn batch_matches(batch: &[NumericColumn], row: usize, predicates: &[CompiledPredicate]) -> bool {
-    predicates.iter().all(|predicate| {
-        predicate
-            .test
-            .matches(number_at(&batch[predicate.index], row))
+fn batch_matches(
+    batch: &[NumericColumn],
+    row: usize,
+    branches: &[Vec<CompiledPredicate>],
+) -> bool {
+    branches.iter().any(|predicates| {
+        predicates.iter().all(|predicate| {
+            predicate
+                .test
+                .matches(number_at(&batch[predicate.index], row))
+        })
     })
 }
 
-fn compile_numbers_predicates(
-    predicates: &[Predicate],
-) -> Result<Vec<CompiledPredicate>, ExecutionError> {
+fn compile_part_where(
+    query: &Select,
+    scan_columns: &mut Vec<String>,
+    mut convert: impl FnMut(&str, &str) -> Result<Number, ExecutionError>,
+) -> Result<Vec<Vec<CompiledPredicate>>, ExecutionError> {
+    let mut result = vec![compile_part_predicates(
+        &query.predicates,
+        scan_columns,
+        |column, value| convert(column, value),
+    )?];
+    for predicates in &query.or_predicates {
+        result.push(compile_part_predicates(
+            predicates,
+            scan_columns,
+            |column, value| convert(column, value),
+        )?);
+    }
+    Ok(result)
+}
+
+fn compile_numbers_predicates(query: &Select) -> Result<Vec<Vec<CompiledPredicate>>, ExecutionError> {
     let mut scan_columns = vec!["number".into()];
-    compile_part_predicates(predicates, &mut scan_columns, |column, value| {
+    compile_part_where(query, &mut scan_columns, |column, value| {
         if column != "number" {
             return Err(ExecutionError::Invalid(
                 "numbers(N) exposes only the number column".into(),
@@ -761,10 +788,12 @@ fn compile_numbers_predicates(
     })
 }
 
-fn number_matches_all(value: Number, predicates: &[CompiledPredicate]) -> bool {
-    predicates
-        .iter()
-        .all(|predicate| predicate.test.matches(value))
+fn number_matches_all(value: Number, branches: &[Vec<CompiledPredicate>]) -> bool {
+    branches.iter().any(|predicates| {
+        predicates
+            .iter()
+            .all(|predicate| predicate.test.matches(value))
+    })
 }
 
 fn parse_numeric(data_type: &str, text: &str) -> Result<Number, ExecutionError> {
@@ -882,6 +911,26 @@ mod tests {
         assert!(run("SELECT number FROM numbers(0) WHERE missing = 1", None).is_err());
         assert!(run("SELECT number FROM numbers(0) WHERE number = -1", None).is_err());
         assert!(run("SELECT number FROM numbers(2)", Some(Path::new("."))).is_err());
+    }
+
+    #[test]
+    fn evaluates_or_across_generated_rows() {
+        assert_eq!(
+            run(
+                "SELECT number FROM numbers(10) WHERE number = 1 OR number >= 4 AND number < 6",
+                None,
+            )
+            .unwrap(),
+            "number\n1\n4\n5\n"
+        );
+        assert_eq!(
+            run(
+                "SELECT count(*) FROM numbers(10) WHERE number = 0 OR number = 9",
+                None,
+            )
+            .unwrap(),
+            "count\n2\n"
+        );
     }
 
     #[test]
