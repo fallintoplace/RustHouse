@@ -122,12 +122,7 @@ fn parse_enum_type(data_type: &str) -> Option<(u8, BTreeMap<i16, String>)> {
     {
         (8, inner)
     } else {
-        (
-            16,
-            data_type
-                .strip_prefix("Enum16(")?
-                .strip_suffix(')')?,
-        )
+        (16, data_type.strip_prefix("Enum16(")?.strip_suffix(')')?)
     };
 
     let bytes = inner.as_bytes();
@@ -251,18 +246,17 @@ mod tests {
     #[test]
     fn reads_enum8_positive_negative_and_escaped_names() {
         let mut input = OneByte(Cursor::new([255u8, 2, 77]));
-        let column = read_enum_column(
-            &mut input,
-            r"Enum8('it\'s' = -1, 'ok\x20now' = 2)",
-            2,
-        )
-        .unwrap();
+        let column =
+            read_enum_column(&mut input, r"Enum8('it\'s' = -1, 'ok\x20now' = 2)", 2).unwrap();
         assert_eq!(column.len(), 2);
         assert_eq!(column.codes(), &[-1, 2]);
         assert_eq!(column.name(0), Some("it's"));
         assert_eq!(column.name(1), Some("ok now"));
         assert_eq!(column.name(2), None);
-        assert_eq!(column.variants().get(&2).map(String::as_str), Some("ok now"));
+        assert_eq!(
+            column.variants().get(&2).map(String::as_str),
+            Some("ok now")
+        );
         assert_eq!(input.0.position(), 2);
     }
 
