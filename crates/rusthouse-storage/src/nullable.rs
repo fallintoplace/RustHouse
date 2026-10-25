@@ -411,10 +411,7 @@ mod tests {
         let error =
             read_nullable_numeric_column(&mut io::empty(), &mut io::empty(), "Nullable(String)", 0)
                 .unwrap_err();
-        assert!(matches!(
-            error,
-            NullableReadError::InvalidType(_)
-        ));
+        assert!(matches!(error, NullableReadError::InvalidType(_)));
     }
 
     #[test]
