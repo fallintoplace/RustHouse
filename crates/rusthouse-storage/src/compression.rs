@@ -391,7 +391,12 @@ mod tests {
     #[test]
     fn decodes_checked_lz4_and_none_blocks() {
         let expected = b"rusthouse compressed columns ".repeat(40);
-        let compressed = lz4_flex::block::compress(&expected);
+        let compressed = [
+            0xff, 0x0e, 0x72, 0x75, 0x73, 0x74, 0x68, 0x6f, 0x75, 0x73, 0x65, 0x20, 0x63, 0x6f,
+            0x6d, 0x70, 0x72, 0x65, 0x73, 0x73, 0x65, 0x64, 0x20, 0x63, 0x6f, 0x6c, 0x75, 0x6d,
+            0x6e, 0x73, 0x20, 0x1d, 0x00, 0xff, 0xff, 0xff, 0xff, 0x57, 0x50, 0x75, 0x6d, 0x6e,
+            0x73, 0x20,
+        ];
         let mut bytes = checked_block(0x82, &compressed, expected.len() as u32);
         let second_offset = bytes.len() as u64;
         bytes.extend(checked_block(0x02, b"plain", 5));
@@ -440,11 +445,11 @@ mod tests {
 
     #[test]
     fn rejects_invalid_lz4_payload_and_wrong_decompressed_size() {
-        let valid = lz4_flex::block::compress(b"compressed content");
+        let valid = &include_bytes!("../tests/fixtures/blocks/lz4-none.bin")[PREFIX_SIZE..36];
         for bytes in [
             checked_block(0x82, &[0xff], 100),
-            checked_block(0x82, &valid, 100),
-            checked_block(0x82, &valid, 2),
+            checked_block(0x82, valid, 100),
+            checked_block(0x82, valid, 2),
         ] {
             let mut reader = CompressedBlockReader::new(Cursor::new(bytes), "data.bin").unwrap();
             assert!(matches!(
