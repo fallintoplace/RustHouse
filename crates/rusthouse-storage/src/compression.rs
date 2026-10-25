@@ -48,14 +48,18 @@ impl CompressedBlockReader<File> {
 impl<R: Read + Seek> CompressedBlockReader<R> {
     pub fn new(mut reader: R, path: impl AsRef<Path>) -> Result<Self, PartError> {
         let path = path.as_ref().to_path_buf();
-        let file_len = reader.seek(SeekFrom::End(0)).map_err(|source| PartError::Io {
-            path: path.clone(),
-            source,
-        })?;
-        reader.seek(SeekFrom::Start(0)).map_err(|source| PartError::Io {
-            path: path.clone(),
-            source,
-        })?;
+        let file_len = reader
+            .seek(SeekFrom::End(0))
+            .map_err(|source| PartError::Io {
+                path: path.clone(),
+                source,
+            })?;
+        reader
+            .seek(SeekFrom::Start(0))
+            .map_err(|source| PartError::Io {
+                path: path.clone(),
+                source,
+            })?;
         Ok(Self {
             reader,
             path,
@@ -196,8 +200,8 @@ mod tests {
     #[test]
     fn rejects_truncated_prefix_and_stops_after_failure() {
         for size in [1, 16, 24] {
-            let mut reader = CompressedBlockReader::new(Cursor::new(vec![0u8; size]), "bad.bin")
-                .unwrap();
+            let mut reader =
+                CompressedBlockReader::new(Cursor::new(vec![0u8; size]), "bad.bin").unwrap();
             assert!(matches!(
                 reader.next(),
                 Some(Err(PartError::InvalidCompressedBlock { offset: 0, .. }))
@@ -266,11 +270,9 @@ mod tests {
 
     #[test]
     fn reports_truncated_reads_if_file_changes_after_opening() {
-        let mut reader = CompressedBlockReader::new(
-            Cursor::new(vec![0u8; PREFIX_SIZE]),
-            "modified.bin",
-        )
-        .unwrap();
+        let mut reader =
+            CompressedBlockReader::new(Cursor::new(vec![0u8; PREFIX_SIZE]), "modified.bin")
+                .unwrap();
         reader.reader.get_mut().truncate(1);
         assert!(matches!(reader.next(), Some(Err(PartError::Io { .. }))));
         assert!(reader.next().is_none());
