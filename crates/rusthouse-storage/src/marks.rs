@@ -1,7 +1,10 @@
 use crate::{CompressedBlockReader, PartError};
-use std::fs;
-use std::io::{Read, Seek};
+use std::fs::{self, File};
+use std::io::{self, Read, Seek};
+
 use std::path::{Path, PathBuf};
+
+const MAX_MARKS_BYTES: usize = 64 * 1024 * 1024;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum WideMarkFormat {
@@ -44,10 +47,20 @@ pub fn read_wide_marks(path: impl AsRef<Path>) -> Result<WideMarks, PartError> {
     let marks = if compressed {
         read_compressed_wide_marks(CompressedBlockReader::open(path)?, path, format)?
     } else {
-        let content = fs::read(path).map_err(|source| PartError::Io {
+        let file = File::open(path).map_err(|source| PartError::Io {
             path: path.to_path_buf(),
             source,
         })?;
+        let mut content = Vec::new();
+        file.take(MAX_MARKS_BYTES as u64 + 1)
+            .read_to_end(&mut content)
+            .map_err(|source| PartError::Io {
+                path: path.to_path_buf(),
+                source,
+            })?;
+        if content.len() > MAX_MARKS_BYTES {
+            return Err(marks_too_large(path));
+        }
         parse_wide_marks(&content, format, path)?
     };
     Ok(WideMarks {
@@ -90,9 +103,14 @@ fn read_compressed_wide_marks<R: Read + Seek>(
     let mut marks = Vec::new();
     let mut fragment = [0u8; 24];
     let mut fragment_len = 0;
+    let mut decoded_bytes = 0usize;
 
     while let Some(block) = reader.next_decoded() {
         let data = block?.data;
+        if data.len() > MAX_MARKS_BYTES - decoded_bytes {
+            return Err(marks_too_large(path));
+        }
+        decoded_bytes += data.len();
         let mut bytes = data.as_slice();
 
         if fragment_len > 0 {
@@ -117,7 +135,7 @@ fn read_compressed_wide_marks<R: Read + Seek>(
         fragment_len = remainder.len();
     }
 
-    let size = marks.len() * record_size + fragment_len;
+    let size = decoded_bytes;
     if size == 0 {
         return Err(PartError::EmptyMarksFile(path.to_path_buf()));
     }
@@ -129,6 +147,13 @@ fn read_compressed_wide_marks<R: Read + Seek>(
         });
     }
     Ok(marks)
+}
+
+fn marks_too_large(path: &Path) -> PartError {
+    PartError::Io {
+        path: path.to_path_buf(),
+        source: io::Error::new(io::ErrorKind::InvalidData, "marks file exceeds 64 MiB"),
+    }
 }
 
 fn parse_mark_record(record: &[u8], format: WideMarkFormat) -> WideMark {
