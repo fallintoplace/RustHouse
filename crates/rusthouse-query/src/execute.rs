@@ -813,10 +813,35 @@ fn compare_numbers(left: Number, right: Number) -> Ordering {
     }
 }
 
+// Short IN lists are cheap to scan; long lists benefit from constant-time lookups.
+const HASHED_IN_MIN_VALUES: usize = 16;
+
 enum CompiledTest {
-    Comparison { operator: Operator, target: Number },
+    Comparison {
+        operator: Operator,
+        target: Number,
+    },
     In(Vec<Number>),
     NotIn(Vec<Number>),
+    InSet {
+        targets: HashSet<NumberKey>,
+        negated: bool,
+    },
+}
+
+fn compile_in_test(targets: Vec<Number>, negated: bool) -> CompiledTest {
+    if targets.len() < HASHED_IN_MIN_VALUES {
+        if negated {
+            CompiledTest::NotIn(targets)
+        } else {
+            CompiledTest::In(targets)
+        }
+    } else {
+        CompiledTest::InSet {
+            targets: targets.into_iter().map(NumberKey::from).collect(),
+            negated,
+        }
+    }
 }
 
 impl CompiledTest {
@@ -829,6 +854,12 @@ impl CompiledTest {
             Self::NotIn(targets) => targets
                 .iter()
                 .all(|target| !number_matches(value, *target, Operator::Eq)),
+            Self::InSet { targets, negated } => {
+                // Float NaN does not compare equal to any IN-list value.
+                let contains = !matches!(value, Number::Float(number) if number.is_nan())
+                    && targets.contains(&NumberKey::from(value));
+                contains != *negated
+            }
         }
     }
 }
@@ -861,17 +892,19 @@ fn compile_part_predicates(
                     target,
                 }
             }
-            Predicate::In { values, .. } => CompiledTest::In(
+            Predicate::In { values, .. } => compile_in_test(
                 values
                     .iter()
                     .map(|value| convert(column, value))
                     .collect::<Result<Vec<_>, _>>()?,
+                false,
             ),
-            Predicate::NotIn { values, .. } => CompiledTest::NotIn(
+            Predicate::NotIn { values, .. } => compile_in_test(
                 values
                     .iter()
                     .map(|value| convert(column, value))
                     .collect::<Result<Vec<_>, _>>()?,
+                true,
             ),
         };
         let index = if let Some(index) = scan_columns
@@ -1474,6 +1507,45 @@ mod tests {
         );
         assert!(run("SELECT number FROM numbers(0) WHERE number IN (-1)", None).is_err());
         assert!(run("SELECT number FROM numbers(0) WHERE missing IN (1)", None).is_err());
+    }
+
+    #[test]
+    fn large_in_and_not_in_lists_use_hash_lookups_without_changing_results() {
+        let values = (0..32).map(|number| number.to_string()).collect::<Vec<_>>();
+        let in_query = format!(
+            "SELECT count(*) FROM numbers(1000000) WHERE number IN ({})",
+            values.join(", ")
+        );
+        assert_eq!(run(&in_query, None).unwrap(), "count\n32\n");
+        let not_in_query = format!(
+            "SELECT count(*) FROM numbers(1000000) WHERE number NOT IN ({})",
+            values.join(", ")
+        );
+        assert_eq!(run(&not_in_query, None).unwrap(), "count\n999968\n");
+
+        let float_values = (0..16)
+            .map(|number| Number::Float(number as f64))
+            .collect::<Vec<_>>();
+        let positive = compile_in_test(float_values.clone(), false);
+        let negative = compile_in_test(float_values, true);
+        assert!(matches!(&positive, CompiledTest::InSet { .. }));
+        assert!(positive.matches(Number::Float(-0.0)));
+        assert!(positive.matches(Number::Float(15.0)));
+        assert!(!positive.matches(Number::Float(16.0)));
+        assert!(!positive.matches(Number::Float(f64::NAN)));
+        assert!(!positive.matches(Number::Unsigned(1)));
+        assert!(!negative.matches(Number::Float(-0.0)));
+        assert!(negative.matches(Number::Float(16.0)));
+        assert!(negative.matches(Number::Float(f64::NAN)));
+        assert!(negative.matches(Number::Unsigned(1)));
+
+        let mut large_values = (0..16)
+            .map(|number| Number::Unsigned(number as u128))
+            .collect::<Vec<_>>();
+        large_values.push(Number::Unsigned(u128::MAX));
+        let test = compile_in_test(large_values, false);
+        assert!(test.matches(Number::Unsigned(u128::MAX)));
+        assert!(!test.matches(Number::Unsigned(u128::MAX - 1)));
     }
 
     #[test]
