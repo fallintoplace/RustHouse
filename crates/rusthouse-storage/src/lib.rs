@@ -3,6 +3,7 @@ mod checksums;
 mod columns;
 mod compression;
 mod decimal;
+mod enums;
 mod file_sizes;
 mod fixed_strings;
 mod granules;
@@ -27,6 +28,7 @@ pub use checksums::{FileChecksum, PartChecksums, UncompressedChecksum, read_chec
 pub use columns::parse_columns;
 pub use compression::{CompressedBlock, CompressedBlockReader, DecodedBlock};
 pub use decimal::{DecimalColumn, DecimalReadError, read_decimal_column};
+pub use enums::{EnumColumn, EnumReadError, read_enum_column};
 pub use file_sizes::{FileSizeVerification, verify_part_file_sizes};
 pub use fixed_strings::{
     FixedStringColumn, FixedStringReadError, read_fixed_string_granule, read_fixed_strings,
