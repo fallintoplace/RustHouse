@@ -1,10 +1,12 @@
-use rusthouse_storage::{CompressedBlockReader, inspect_part, read_wide_marks};
+use rusthouse_storage::{
+    CompressedBlockReader, inspect_part, read_wide_marks, validate_wide_marks,
+};
 use std::env;
 use std::ffi::OsString;
 use std::path::PathBuf;
 use std::process::ExitCode;
 
-const USAGE: &str = "Usage:\n  rusthouse inspect-part <path>\n  rusthouse inspect-marks <path-to-.mrk-or-.mrk2>\n  rusthouse inspect-blocks <path-to-.bin>\n  rusthouse verify-blocks <path-to-.bin>\n  rusthouse --help\n\nInspect local MergeTree metadata, marks, and compressed blocks.";
+const USAGE: &str = "Usage:\n  rusthouse inspect-part <path>\n  rusthouse inspect-marks <path-to-.mrk-or-.mrk2>\n  rusthouse inspect-blocks <path-to-.bin>\n  rusthouse verify-blocks <path-to-.bin>\n  rusthouse validate-marks <path-to-.mrk-or-.mrk2> <path-to-.bin>\n  rusthouse --help\n\nInspect local MergeTree metadata, marks, and compressed blocks.";
 
 fn main() -> ExitCode {
     let mut args = env::args_os().skip(1);
@@ -21,14 +23,20 @@ fn main() -> ExitCode {
         && command != "inspect-marks"
         && command != "inspect-blocks"
         && command != "verify-blocks"
+        && command != "validate-marks"
     {
         eprintln!("unknown command: {command:?}\n{USAGE}");
         return ExitCode::from(2);
     }
-    let (Some(path), None) = (args.next(), args.next()) else {
+    let Some(path) = args.next() else {
         eprintln!("{USAGE}");
         return ExitCode::from(2);
     };
+    let second = args.next();
+    if args.next().is_some() || (command == "validate-marks") != second.is_some() {
+        eprintln!("{USAGE}");
+        return ExitCode::from(2);
+    }
 
     let result = if command == "inspect-part" {
         inspect_and_print(path)
@@ -36,8 +44,10 @@ fn main() -> ExitCode {
         inspect_marks_and_print(path)
     } else if command == "inspect-blocks" {
         inspect_blocks_and_print(path)
-    } else {
+    } else if command == "verify-blocks" {
         verify_blocks_and_print(path)
+    } else {
+        validate_marks_and_print(path, second.expect("validated mark and data paths"))
     };
     match result {
         Ok(()) => ExitCode::SUCCESS,
@@ -109,5 +119,19 @@ fn verify_blocks_and_print(path: OsString) -> Result<(), rusthouse_storage::Part
         count += 1;
     }
     println!("Verified {count} blocks, {total_bytes} decompressed bytes");
+    Ok(())
+}
+
+fn validate_marks_and_print(
+    marks_path: OsString,
+    data_path: OsString,
+) -> Result<(), rusthouse_storage::PartError> {
+    let marks = read_wide_marks(PathBuf::from(marks_path))?;
+    let blocks = CompressedBlockReader::open(PathBuf::from(data_path))?;
+    validate_wide_marks(&marks, blocks)?;
+    println!(
+        "Validated {} mark offsets (compressed block headers only; checksums not verified)",
+        marks.marks.len()
+    );
     Ok(())
 }
