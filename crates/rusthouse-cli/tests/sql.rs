@@ -68,6 +68,21 @@ fn sorts_generated_numbers_from_the_cli() {
 }
 
 #[test]
+fn selects_distinct_numeric_rows_through_cli() {
+    let dir = sample_part();
+    let id = u64::from_le_bytes(*b"aaaaaaaa");
+    let result = sql("SELECT DISTINCT id FROM part ORDER BY id DESC LIMIT 5", Some(&dir));
+    assert!(result.status.success(), "{result:?}");
+    assert_eq!(String::from_utf8(result.stdout).unwrap(), format!("id\n{id}\n"));
+    let page = sql("SELECT DISTINCT id FROM part LIMIT 1 OFFSET 1", Some(&dir));
+    assert!(page.status.success(), "{page:?}");
+    assert_eq!(String::from_utf8(page.stdout).unwrap(), "id\n");
+    let wrong_order = sql("SELECT DISTINCT id FROM part ORDER BY missing", Some(&dir));
+    assert!(!wrong_order.status.success());
+    fs::remove_dir_all(dir).unwrap();
+}
+
+#[test]
 fn runs_in_filters_through_cli() {
     let result = sql(
         "SELECT number FROM numbers(10) WHERE number IN (1, 3, 7) ORDER BY number DESC LIMIT 2",
