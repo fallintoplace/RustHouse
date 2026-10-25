@@ -81,6 +81,42 @@ impl From<io::Error> for NumericReadError {
     }
 }
 
+pub(crate) fn numeric_storage_type(data_type: &str) -> Option<&str> {
+    match data_type {
+        "UInt8" | "UInt16" | "UInt32" | "UInt64" | "UInt128" | "Int8" | "Int16" | "Int32"
+        | "Int64" | "Int128" | "Float32" | "Float64" => Some(data_type),
+        "Date" => Some("UInt16"),
+        "Date32" => Some("Int32"),
+        "DateTime" => Some("UInt32"),
+        _ => {
+            if let Some(zone) = data_type
+                .strip_prefix("DateTime('")
+                .and_then(|value| value.strip_suffix("')"))
+            {
+                return (!zone.is_empty() && !zone.contains('\'')).then_some("UInt32");
+            }
+
+            let value = data_type.strip_prefix("DateTime64(")?.strip_suffix(')')?;
+            let (scale, zone) = match value.split_once(',') {
+                Some((scale, zone)) => (scale, Some(zone.trim())),
+                None => (value, None),
+            };
+            if scale.parse::<u8>().ok()? > 9 {
+                return None;
+            }
+            if let Some(zone) = zone {
+                let zone = zone
+                    .strip_prefix('\'')
+                    .and_then(|zone| zone.strip_suffix('\''))?;
+                if zone.is_empty() || zone.contains('\'') {
+                    return None;
+                }
+            }
+            Some("Int64")
+        }
+    }
+}
+
 pub fn read_numeric_column<R: Read>(
     reader: &mut R,
     data_type: &str,
@@ -100,7 +136,7 @@ pub fn read_numeric_column<R: Read>(
         }};
     }
 
-    match data_type {
+    match numeric_storage_type(data_type).unwrap_or(data_type) {
         "UInt8" => decode!(u8, UInt8),
         "UInt16" => decode!(u16, UInt16),
         "UInt32" => decode!(u32, UInt32),
@@ -228,6 +264,56 @@ mod tests {
             panic!("wrong type");
         };
         assert_eq!(values[0].to_bits(), value.to_bits());
+    }
+
+    #[test]
+    fn decodes_date_and_timestamp_physical_values() {
+        assert_eq!(
+            decode("Date", &19_000u16.to_le_bytes(), 1),
+            NumericColumn::UInt16(vec![19_000])
+        );
+        assert_eq!(
+            decode("Date32", &(-100i32).to_le_bytes(), 1),
+            NumericColumn::Int32(vec![-100])
+        );
+        for ty in ["DateTime", "DateTime('UTC')", "DateTime('Europe/Berlin')"] {
+            assert_eq!(
+                decode(ty, &1_700_000_000u32.to_le_bytes(), 1),
+                NumericColumn::UInt32(vec![1_700_000_000]),
+                "{ty}"
+            );
+        }
+        for ty in ["DateTime64(3)", "DateTime64(9, 'UTC')"] {
+            assert_eq!(
+                decode(ty, &(-1_234_567i64).to_le_bytes(), 1),
+                NumericColumn::Int64(vec![-1_234_567]),
+                "{ty}"
+            );
+        }
+    }
+
+    #[test]
+    fn rejects_invalid_date_time_precision_and_timezones() {
+        for ty in [
+            "DateTime('')",
+            "DateTime('UTC' extra)",
+            "DateTime64()",
+            "DateTime64(-1)",
+            "DateTime64(10)",
+            "DateTime64(foo)",
+            "DateTime64(3,)",
+            "DateTime64(3, '')",
+            "DateTime64(3, UTC)",
+            "DateTime64(3, 'UTC' extra)",
+        ] {
+            assert!(
+                matches!(
+                    read_numeric_column(&mut &[][..], ty, 0),
+                    Err(NumericReadError::UnsupportedType(_))
+                ),
+                "{ty}"
+            );
+        }
     }
 
     #[test]
