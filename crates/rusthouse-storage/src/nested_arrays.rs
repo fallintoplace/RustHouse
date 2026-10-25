@@ -109,8 +109,8 @@ pub fn read_nested_numeric_array_column<O: Read, I: Read, D: Read>(
         return Err(NestedArrayReadError::InvalidType(data_type.to_owned()));
     }
 
-    let outer =
-        read_array_offsets(outer_stream, rows, outer_encoding).map_err(NestedArrayReadError::OuterOffsets)?;
+    let outer = read_array_offsets(outer_stream, rows, outer_encoding)
+        .map_err(NestedArrayReadError::OuterOffsets)?;
     let inner = read_array_offsets(inner_stream, outer.element_count(), inner_encoding)
         .map_err(NestedArrayReadError::InnerOffsets)?;
     let values = read_numeric_column(data_stream, leaf_type, inner.element_count())
@@ -185,7 +185,10 @@ mod tests {
         assert_eq!(batch.inner_array_range(1), Some(2..2));
         assert_eq!(batch.inner_array_range(2), Some(2..5));
         assert_eq!(batch.inner_array_range(3), None);
-        assert_eq!(batch.values(), &NumericColumn::UInt16(vec![7, 8, 9, 10, 11]));
+        assert_eq!(
+            batch.values(),
+            &NumericColumn::UInt16(vec![7, 8, 9, 10, 11])
+        );
         assert_eq!(batch.last_outer_absolute_offset(), 3);
         assert_eq!(batch.last_inner_absolute_offset(), 5);
         assert_eq!(outer.0.position(), 24);
@@ -290,10 +293,12 @@ mod tests {
                 ArrayOffsetsEncoding::Sizes,
                 ArrayOffsetsEncoding::Absolute { previous_offset: 0 },
             ),
-            Err(NestedArrayReadError::InnerOffsets(ArrayReadError::InvalidOffset {
-                row: 1,
-                reason: "offset moves backwards"
-            }))
+            Err(NestedArrayReadError::InnerOffsets(
+                ArrayReadError::InvalidOffset {
+                    row: 1,
+                    reason: "offset moves backwards"
+                }
+            ))
         ));
     }
 
