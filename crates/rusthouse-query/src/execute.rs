@@ -1,4 +1,4 @@
-use crate::{Operator, Projection, Select};
+use crate::{Operator, Projection, Select, Source};
 use rusthouse_storage::{NumericColumn, NumericPartReader, PartError, inspect_part};
 use std::error::Error;
 use std::fmt;
@@ -85,10 +85,14 @@ fn execute_into<W: Write>(
         return Ok(());
     }
 
-    if query.source.as_deref() != Some("part") {
-        return Err(ExecutionError::Invalid(
-            "only FROM part is supported".into(),
-        ));
+    match query.source.as_ref() {
+        Some(Source::Numbers(rows)) => return execute_numbers(query, *rows, part, output),
+        Some(Source::Table(table)) if table == "part" => {}
+        _ => {
+            return Err(ExecutionError::Invalid(
+                "only FROM part and FROM numbers(N) are supported".into(),
+            ));
+        }
     }
     let part = part.ok_or_else(|| {
         ExecutionError::Invalid("pass --part <directory> for table queries".into())
@@ -200,6 +204,92 @@ fn execute_into<W: Write>(
     Ok(())
 }
 
+fn execute_numbers<W: Write>(
+    query: &Select,
+    rows: u64,
+    part: Option<&Path>,
+    output: &mut W,
+) -> Result<(), ExecutionError> {
+    if part.is_some() {
+        return Err(ExecutionError::Invalid(
+            "--part cannot be used with numbers(N)".into(),
+        ));
+    }
+    let projected: Vec<&str> = match &query.projection {
+        Projection::All => vec!["number"],
+        Projection::Columns(names) => {
+            if names.iter().any(|name| name != "number") {
+                return Err(ExecutionError::Invalid(
+                    "numbers(N) exposes only the number column".into(),
+                ));
+            }
+            names.iter().map(String::as_str).collect()
+        }
+        Projection::Count => Vec::new(),
+        Projection::Literal(_) => unreachable!(),
+    };
+    let comparison = query
+        .predicate
+        .as_ref()
+        .map(|predicate| {
+            if predicate.column != "number" {
+                return Err(ExecutionError::Invalid(
+                    "numbers(N) exposes only the number column".into(),
+                ));
+            }
+            Ok((
+                predicate.operator,
+                parse_numeric("UInt64", &predicate.value)?,
+            ))
+        })
+        .transpose()?;
+    let is_count = matches!(query.projection, Projection::Count);
+    if is_count {
+        writeln!(output, "count")?;
+        if comparison.is_none() {
+            if query.limit != Some(0) {
+                writeln!(output, "{rows}")?;
+            }
+            return Ok(());
+        }
+    } else {
+        writeln!(output, "{}", projected.join("\t"))?;
+    }
+    if query.limit == Some(0) {
+        return Ok(());
+    }
+
+    let mut matched = 0u64;
+    let mut emitted = 0usize;
+    let limit = query.limit.unwrap_or(usize::MAX);
+    for number in 0..rows {
+        if let Some((operator, target)) = comparison {
+            if !number_matches(Number::Unsigned(u128::from(number)), target, operator) {
+                continue;
+            }
+        }
+        if is_count {
+            matched += 1;
+        } else {
+            for (index, _) in projected.iter().enumerate() {
+                if index != 0 {
+                    write!(output, "\t")?;
+                }
+                write!(output, "{number}")?;
+            }
+            writeln!(output)?;
+            emitted += 1;
+            if emitted == limit {
+                break;
+            }
+        }
+    }
+    if is_count {
+        writeln!(output, "{matched}")?;
+    }
+    Ok(())
+}
+
 fn parse_numeric(data_type: &str, text: &str) -> Result<Number, ExecutionError> {
     let value = match data_type {
         "UInt8" | "UInt16" | "UInt32" | "UInt64" | "UInt128" => {
@@ -279,6 +369,42 @@ mod tests {
     fn runs_scalar_queries_without_a_part() {
         assert_eq!(run("SELECT 1", None).unwrap(), "1\n1\n");
         assert_eq!(run("SELECT -5 LIMIT 0", None).unwrap(), "-5\n");
+    }
+
+    #[test]
+    fn runs_generated_numbers_with_projection_filter_count_and_limit() {
+        assert_eq!(
+            run("SELECT * FROM numbers(4)", None).unwrap(),
+            "number\n0\n1\n2\n3\n"
+        );
+        assert_eq!(
+            run(
+                "SELECT number, number FROM numbers(5) WHERE number >= 3 LIMIT 1",
+                None,
+            )
+            .unwrap(),
+            "number\tnumber\n3\t3\n"
+        );
+        assert_eq!(
+            run("SELECT count(*) FROM numbers(5)", None).unwrap(),
+            "count\n5\n"
+        );
+        assert_eq!(
+            run("SELECT count(*) FROM numbers(5) WHERE number < 3", None).unwrap(),
+            "count\n3\n"
+        );
+        assert_eq!(
+            run("SELECT number FROM numbers(0)", None).unwrap(),
+            "number\n"
+        );
+        assert_eq!(
+            run("SELECT number FROM numbers(4) LIMIT 0", None).unwrap(),
+            "number\n"
+        );
+        assert!(run("SELECT missing FROM numbers(0)", None).is_err());
+        assert!(run("SELECT number FROM numbers(0) WHERE missing = 1", None).is_err());
+        assert!(run("SELECT number FROM numbers(0) WHERE number = -1", None).is_err());
+        assert!(run("SELECT number FROM numbers(2)", Some(Path::new("."))).is_err());
     }
 
     #[test]
