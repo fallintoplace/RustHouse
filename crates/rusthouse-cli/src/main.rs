@@ -470,7 +470,8 @@ fn run_sql_args(mut args: impl Iterator<Item = OsString>) -> Result<(), String> 
                     .map(|_| ())
                     .map_err(rusthouse_query::ExecutionError::Io)
             })
-        }    };
+        }
+    };
     if result.is_err() {
         drop(output);
         if let Some(path) = output_path {
