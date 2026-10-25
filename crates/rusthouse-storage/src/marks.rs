@@ -1,5 +1,5 @@
 use crate::{CompressedBlockReader, PartError};
-use std::fs::{self, File};
+use std::fs::File;
 use std::io::{self, Read, Seek};
 
 use std::path::{Path, PathBuf};
@@ -173,6 +173,7 @@ fn read_u64(bytes: &[u8]) -> u64 {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::fs;
     use ch_cityhash102::cityhash128;
     use std::io::Cursor;
 
