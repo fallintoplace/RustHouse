@@ -99,7 +99,10 @@ mod tests {
     #[test]
     fn reads_selected_values_from_inside_a_block() {
         let values = [11u64, 22, 33, 44, 55, 66];
-        let data: Vec<u8> = values.iter().flat_map(|value| value.to_le_bytes()).collect();
+        let data: Vec<u8> = values
+            .iter()
+            .flat_map(|value| value.to_le_bytes())
+            .collect();
         let mut reader = reader(checked_block(0x02, &data));
         let selected_mark = mark(0, 16, Some(3));
 
@@ -116,7 +119,10 @@ mod tests {
     #[test]
     fn reads_values_crossing_lz4_and_uncompressed_blocks() {
         let values = [10u64, 20, 30, 40, 50];
-        let data: Vec<u8> = values.iter().flat_map(|value| value.to_le_bytes()).collect();
+        let data: Vec<u8> = values
+            .iter()
+            .flat_map(|value| value.to_le_bytes())
+            .collect();
         let mut blocks = checked_block(0x82, &data[..20]);
         let second_block_offset = blocks.len() as u64;
         blocks.extend(checked_block(0x02, &data[20..]));
