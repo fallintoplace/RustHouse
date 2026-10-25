@@ -839,6 +839,10 @@ enum CompiledTest {
     },
     In(Vec<Number>),
     NotIn(Vec<Number>),
+    NotBetween {
+        lower: Number,
+        upper: Number,
+    },
     InSet {
         targets: HashSet<NumberKey>,
         negated: bool,
@@ -870,6 +874,10 @@ impl CompiledTest {
             Self::NotIn(targets) => targets
                 .iter()
                 .all(|target| !number_matches(value, *target, Operator::Eq)),
+            Self::NotBetween { lower, upper } => {
+                !number_matches(value, *lower, Operator::Ge)
+                    || !number_matches(value, *upper, Operator::Le)
+            }
             Self::InSet { targets, negated } => {
                 // Float NaN does not compare equal to any IN-list value.
                 let contains = !matches!(value, Number::Float(number) if number.is_nan())
@@ -922,6 +930,10 @@ fn compile_part_predicates(
                     .collect::<Result<Vec<_>, _>>()?,
                 true,
             ),
+            Predicate::NotBetween { lower, upper, .. } => CompiledTest::NotBetween {
+                lower: convert(column, lower)?,
+                upper: convert(column, upper)?,
+            },
         };
         let index = if let Some(index) = scan_columns
             .iter()
@@ -1306,6 +1318,34 @@ mod tests {
             "number\n"
         );
         assert!(run("SELECT number FROM numbers(0) ORDER BY missing", None).is_err());
+    }
+
+    #[test]
+    fn not_between_filters_generated_numbers_and_combines_with_or() {
+        assert_eq!(
+            run(
+                "SELECT number FROM numbers(10) WHERE number NOT BETWEEN 3 AND 6",
+                None
+            )
+            .unwrap(),
+            "number\n0\n1\n2\n7\n8\n9\n"
+        );
+        assert_eq!(
+            run(
+                "SELECT number FROM numbers(10) WHERE number NOT BETWEEN 3 AND 6 AND number < 9 OR number = 9",
+                None
+            )
+            .unwrap(),
+            "number\n0\n1\n2\n7\n8\n9\n"
+        );
+        assert_eq!(
+            run(
+                "SELECT count(*) FROM numbers(10) WHERE number NOT BETWEEN 0 AND 9",
+                None
+            )
+            .unwrap(),
+            "count\n0\n"
+        );
     }
 
     #[test]
