@@ -15,7 +15,13 @@ pub struct FileSizeVerification {
 /// Symlinks are not followed, including symlinks in nested paths.
 pub fn verify_part_file_sizes(part: impl AsRef<Path>) -> Result<FileSizeVerification, PartError> {
     let part = part.as_ref();
-    let manifest = read_checksums(part.join("checksums.txt"))?;
+    let checksums_path = part.join("checksums.txt");
+    let metadata = fs::symlink_metadata(&checksums_path)
+        .map_err(|source| io_error(&checksums_path, source))?;
+    if !metadata.file_type().is_file() {
+        return Err(invalid(&checksums_path, "checksums.txt is not a regular file"));
+    }
+    let manifest = read_checksums(&checksums_path)?;
     let mut total_bytes = 0u64;
 
     for entry in &manifest.files {
@@ -195,6 +201,26 @@ mod tests {
             verify_part_file_sizes(&dir),
             Err(PartError::InvalidChecksums {
                 reason: "listed file parent is not a directory",
+                ..
+            })
+        ));
+        fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn refuses_symlinked_checksums_manifest() {
+        use std::os::unix::fs::symlink;
+
+        let dir = temp_dir();
+        let target = dir.join("actual-checksums.txt");
+        fs::write(&target, manifest(&[])).unwrap();
+        symlink(&target, dir.join("checksums.txt")).unwrap();
+
+        assert!(matches!(
+            verify_part_file_sizes(&dir),
+            Err(PartError::InvalidChecksums {
+                reason: "checksums.txt is not a regular file",
                 ..
             })
         ));
