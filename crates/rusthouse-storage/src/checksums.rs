@@ -82,8 +82,8 @@ fn parse_checksums(content: &[u8], path: &Path) -> Result<PartChecksums, PartErr
         return Err(invalid(path, "file count exceeds remaining data"));
     }
 
-    let mut files = Vec::with_capacity(count);
-    let mut names = HashSet::with_capacity(count);
+    let mut files = Vec::new();
+    let mut names = HashSet::new();
     for _ in 0..count {
         let length = usize::try_from(reader.varuint()?)
             .map_err(|_| invalid(path, "file name length exceeds address space"))?;
