@@ -111,14 +111,14 @@ pub fn read_nullable_fixed_strings<N: Read, D: Read>(
     let nested_type = data_type
         .strip_prefix("Nullable(")
         .and_then(|inner| inner.strip_suffix(')'))
-        .filter(|inner| inner.starts_with("FixedString("))
+        .filter(|inner| inner.starts_with("FixedString(") && inner.ends_with(')'))
         .ok_or_else(|| NullableReadError::InvalidType(data_type.to_owned()))?;
     crate::fixed_strings::checked_size(nested_type, rows)
         .map_err(NullableReadError::FixedString)?;
 
     let null_map = read_null_map(nulls, rows)?;
-    let values = read_fixed_strings(data, nested_type, rows)
-        .map_err(NullableReadError::FixedString)?;
+    let values =
+        read_fixed_strings(data, nested_type, rows).map_err(NullableReadError::FixedString)?;
     Ok(NullableColumn { null_map, values })
 }
 
@@ -218,13 +218,9 @@ mod tests {
     fn reads_nullable_fixed_strings_with_null_placeholders_and_short_reads() {
         let mut nulls = Bytewise(Cursor::new([1u8, 0, 1, 77]));
         let mut data = Bytewise(Cursor::new([0, 0, 0, b'a', 0, b'b', 5, 4, 3, 99]));
-        let column = read_nullable_fixed_strings(
-            &mut nulls,
-            &mut data,
-            "Nullable(FixedString(3))",
-            3,
-        )
-        .unwrap();
+        let column =
+            read_nullable_fixed_strings(&mut nulls, &mut data, "Nullable(FixedString(3))", 3)
+                .unwrap();
 
         assert_eq!(column.null_map(), &[1, 0, 1]);
         assert_eq!(column.len(), 3);
@@ -268,7 +264,9 @@ mod tests {
         ] {
             assert!(matches!(
                 read_nullable_fixed_strings(&mut NoRead, &mut NoRead, data_type, 1),
-                Err(NullableReadError::FixedString(FixedStringReadError::InvalidType(_)))
+                Err(NullableReadError::FixedString(
+                    FixedStringReadError::InvalidType(_)
+                ))
             ));
         }
         assert!(matches!(
@@ -278,7 +276,9 @@ mod tests {
                 "Nullable(FixedString(1))",
                 MAX_BATCH_ROWS + 1,
             ),
-            Err(NullableReadError::FixedString(FixedStringReadError::TooManyRows(_)))
+            Err(NullableReadError::FixedString(
+                FixedStringReadError::TooManyRows(_)
+            ))
         ));
         assert!(matches!(
             read_nullable_fixed_strings(
@@ -287,7 +287,9 @@ mod tests {
                 "Nullable(FixedString(128))",
                 64 * 1024 * 1024 / 128 + 1,
             ),
-            Err(NullableReadError::FixedString(FixedStringReadError::TooManyBytes))
+            Err(NullableReadError::FixedString(
+                FixedStringReadError::TooManyBytes
+            ))
         ));
     }
 
@@ -295,13 +297,9 @@ mod tests {
     fn rejects_truncated_nullable_fixed_string_streams() {
         let mut nulls = &[1u8][..];
         let mut data = &[0u8; 6][..];
-        let error = read_nullable_fixed_strings(
-            &mut nulls,
-            &mut data,
-            "Nullable(FixedString(3))",
-            2,
-        )
-        .unwrap_err();
+        let error =
+            read_nullable_fixed_strings(&mut nulls, &mut data, "Nullable(FixedString(3))", 2)
+                .unwrap_err();
         assert!(matches!(
             error,
             NullableReadError::Io(source) if source.kind() == io::ErrorKind::UnexpectedEof
@@ -326,13 +324,9 @@ mod tests {
     fn empty_fixed_string_batch_leaves_streams_untouched() {
         let mut nulls = &[77u8][..];
         let mut data = &[42u8][..];
-        let column = read_nullable_fixed_strings(
-            &mut nulls,
-            &mut data,
-            "Nullable(FixedString(4))",
-            0,
-        )
-        .unwrap();
+        let column =
+            read_nullable_fixed_strings(&mut nulls, &mut data, "Nullable(FixedString(4))", 0)
+                .unwrap();
 
         assert!(column.is_empty());
         assert_eq!(column.null_map(), &[]);
