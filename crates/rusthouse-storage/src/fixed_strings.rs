@@ -315,5 +315,4 @@ mod tests {
         assert_eq!(second.get(2), Some(&b"e"[..]));
         assert_eq!(bytes, b"fg");
     }
-
 }
