@@ -27,7 +27,9 @@ impl AggregateFunction {
 pub enum Projection {
     Literal(i64),
     Count,
-    CountDistinct { column: String },
+    CountDistinct {
+        column: String,
+    }
     GroupedCount {
         column: String,
     },
@@ -210,7 +212,9 @@ pub fn parse_select(sql: &str) -> Result<Select, ParseError> {
         if parser.keyword("DISTINCT") {
             let column = parser.word()?;
             if !parser.take(Token::RParen) {
-                return Err(ParseError("expected ')' after COUNT(DISTINCT column)".into()));
+                return Err(ParseError(
+                    "expected ')' after COUNT(DISTINCT column)".into(),
+                ));
             }
             Projection::CountDistinct { column }
         } else {
