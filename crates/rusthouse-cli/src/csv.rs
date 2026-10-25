@@ -60,9 +60,6 @@ impl<W: Write> Write for CsvWriter<W> {
     }
 
     fn flush(&mut self) -> io::Result<()> {
-        if !self.field.is_empty() {
-            self.finish_field(b"")?;
-        }
         self.output.flush()
     }
 }
@@ -90,5 +87,14 @@ mod tests {
     fn rejects_oversized_fields() {
         let mut csv = CsvWriter::new(Vec::new());
         assert!(csv.write_all(&vec![b'a'; MAX_FIELD_BYTES + 1]).is_err());
+    }
+
+    #[test]
+    fn flush_does_not_split_a_quoted_field() {
+        let mut csv = CsvWriter::new(Vec::new());
+        csv.write_all(b"a,").unwrap();
+        csv.flush().unwrap();
+        csv.write_all(b"bc\n").unwrap();
+        assert_eq!(csv.output, b"\"a,bc\"\r\n");
     }
 }

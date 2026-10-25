@@ -18,6 +18,8 @@ Filter chosen values with `cargo run -p rusthouse-cli -- sql "SELECT number FROM
 
 Deduplicate numeric rows with `cargo run -p rusthouse-cli -- sql "SELECT DISTINCT id FROM part ORDER BY id" --part /path/to/wide-part`.
 
+Count occurrences of numeric keys with `cargo run -p rusthouse-cli -- sql "SELECT id, count(*) FROM part GROUP BY id ORDER BY id DESC" --part /path/to/wide-part`.
+
 Filter alternatives with `cargo run -p rusthouse-cli -- sql "SELECT number FROM numbers(10) WHERE number = 1 OR number >= 8"`.
 
 Start at a chosen number with `cargo run -p rusthouse-cli -- sql "SELECT number FROM numbers(100, 5)"`.
