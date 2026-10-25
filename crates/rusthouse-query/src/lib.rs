@@ -328,7 +328,9 @@ mod tests {
             }
         );
         assert_eq!(
-            parse_select("SELECT count, id FROM part").unwrap().projection,
+            parse_select("SELECT count, id FROM part")
+                .unwrap()
+                .projection,
             Projection::Columns(vec!["count".into(), "id".into()])
         );
         assert_eq!(
