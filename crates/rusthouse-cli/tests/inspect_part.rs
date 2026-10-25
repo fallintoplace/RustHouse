@@ -156,6 +156,64 @@ fn verify_blocks_accepts_lz4_and_none_fixture() {
 }
 
 #[test]
+fn validate_marks_checks_offsets_against_blocks() {
+    let directory = std::env::temp_dir().join(format!("rusthouse-validate-{}", std::process::id()));
+    std::fs::create_dir_all(&directory).unwrap();
+    let marks_path = directory.join("id.mrk2");
+    let data_path = directory.join("id.bin");
+
+    let mut data = vec![0u8; 16];
+    data.push(0x82);
+    data.extend_from_slice(&10u32.to_le_bytes());
+    data.extend_from_slice(&16u32.to_le_bytes());
+    data.push(0);
+    std::fs::write(&data_path, &data).unwrap();
+
+    let mut marks = Vec::new();
+    marks.extend_from_slice(&0u64.to_le_bytes());
+    marks.extend_from_slice(&0u64.to_le_bytes());
+    marks.extend_from_slice(&16u64.to_le_bytes());
+    std::fs::write(&marks_path, &marks).unwrap();
+
+    let output = Command::new(env!("CARGO_BIN_EXE_rusthouse"))
+        .arg("validate-marks")
+        .arg(&marks_path)
+        .arg(&data_path)
+        .output()
+        .unwrap();
+    assert!(output.status.success(), "{output:?}");
+    assert!(String::from_utf8_lossy(&output.stdout).contains("Validated 1 mark offsets"));
+
+    marks[..8].copy_from_slice(&2u64.to_le_bytes());
+    std::fs::write(&marks_path, marks).unwrap();
+    let output = Command::new(env!("CARGO_BIN_EXE_rusthouse"))
+        .arg("validate-marks")
+        .arg(&marks_path)
+        .arg(&data_path)
+        .output()
+        .unwrap();
+    std::fs::remove_dir_all(directory).unwrap();
+
+    assert_eq!(output.status.code(), Some(1));
+    assert!(String::from_utf8_lossy(&output.stderr).contains("invalid mark 0"));
+}
+
+#[test]
+fn validate_marks_requires_two_file_paths() {
+    for args in [
+        vec!["validate-marks"],
+        vec!["validate-marks", "marks.mrk2"],
+        vec!["validate-marks", "marks.mrk2", "column.bin", "extra"],
+    ] {
+        let output = Command::new(env!("CARGO_BIN_EXE_rusthouse"))
+            .args(args)
+            .output()
+            .unwrap();
+        assert_eq!(output.status.code(), Some(2));
+    }
+}
+
+#[test]
 fn scan_u64_reads_values_without_loading_entire_column() {
     let fixture = include_bytes!("../../rusthouse-storage/tests/fixtures/blocks/lz4-none.bin");
     let path = std::env::temp_dir().join(format!("rusthouse-u64-{}.bin", std::process::id()));
