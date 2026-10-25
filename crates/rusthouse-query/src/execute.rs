@@ -1077,6 +1077,26 @@ mod tests {
     }
 
     #[test]
+    fn clickhouse_count_empty_parentheses_matches_count_star() {
+        assert_eq!(
+            run("SELECT count() FROM numbers(17) WHERE number >= 12", None).unwrap(),
+            run("SELECT count(*) FROM numbers(17) WHERE number >= 12", None).unwrap()
+        );
+        assert_eq!(
+            run(
+                "SELECT number, count() FROM numbers(3) GROUP BY number",
+                None
+            )
+            .unwrap(),
+            run(
+                "SELECT number, count(*) FROM numbers(3) GROUP BY number",
+                None
+            )
+            .unwrap()
+        );
+    }
+
+    #[test]
     fn runs_generated_numbers_with_projection_filter_count_and_limit() {
         assert_eq!(
             run("SELECT * FROM numbers(4)", None).unwrap(),
