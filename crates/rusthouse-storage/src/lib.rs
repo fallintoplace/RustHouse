@@ -9,6 +9,7 @@ mod mark_validation;
 mod marks;
 mod nullable;
 mod nullable_arrays;
+mod nested_arrays;
 mod numeric;
 mod part_scan;
 mod part_verify;
@@ -37,6 +38,9 @@ pub use nullable::{
 };
 pub use nullable_arrays::{
     NullableArrayReadError, NullableNumericArrayColumn, read_nullable_numeric_array_column,
+};
+pub use nested_arrays::{
+    NestedArrayReadError, NestedNumericArrayColumn, read_nested_numeric_array_column,
 };
 pub use numeric::{NumericColumn, NumericReadError, read_numeric_column};
 pub use part_scan::NumericPartReader;
