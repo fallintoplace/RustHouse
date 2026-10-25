@@ -145,8 +145,14 @@ mod tests {
 
     #[test]
     fn decodes_signed_and_unsigned_values_in_little_endian_order() {
-        assert_eq!(decode("UInt8", &[0, 255], 2), NumericColumn::UInt8(vec![0, 255]));
-        assert_eq!(decode("Int8", &[0, 255], 2), NumericColumn::Int8(vec![0, -1]));
+        assert_eq!(
+            decode("UInt8", &[0, 255], 2),
+            NumericColumn::UInt8(vec![0, 255])
+        );
+        assert_eq!(
+            decode("Int8", &[0, 255], 2),
+            NumericColumn::Int8(vec![0, -1])
+        );
         assert_eq!(
             decode("UInt16", &[0x34, 0x12, 0xff, 0xff], 2),
             NumericColumn::UInt16(vec![0x1234, u16::MAX])
@@ -188,8 +194,7 @@ mod tests {
         assert_eq!(values[1].to_bits(), nan.to_bits());
 
         let value = f64::from_bits(0xfff0_0000_0000_0000);
-        let NumericColumn::Float64(values) =
-            decode("Float64", &value.to_bits().to_le_bytes(), 1)
+        let NumericColumn::Float64(values) = decode("Float64", &value.to_bits().to_le_bytes(), 1)
         else {
             panic!("wrong type");
         };
