@@ -78,7 +78,9 @@ fn read_null_map<R: Read>(reader: &mut R, rows: usize) -> Result<Vec<u8>, Nullab
     }
 
     let mut null_map = vec![0u8; rows];
-    reader.read_exact(&mut null_map).map_err(NullableReadError::Io)?;
+    reader
+        .read_exact(&mut null_map)
+        .map_err(NullableReadError::Io)?;
     for (row, value) in null_map.iter().copied().enumerate() {
         if value > 1 {
             return Err(NullableReadError::InvalidNullMap { row, value });
@@ -94,7 +96,8 @@ pub fn read_basic_nullable_numeric<N: Read, D: Read>(
     rows: usize,
 ) -> Result<NullableColumn<NumericColumn>, NullableReadError> {
     let null_map = read_null_map(nulls, rows)?;
-    let values = read_numeric_column(data, nested_type, rows).map_err(NullableReadError::Numeric)?;
+    let values =
+        read_numeric_column(data, nested_type, rows).map_err(NullableReadError::Numeric)?;
     Ok(NullableColumn { null_map, values })
 }
 
@@ -261,7 +264,9 @@ mod tests {
     fn rejects_unsupported_types_and_untrusted_row_counts() {
         assert!(matches!(
             read_basic_nullable_numeric(&mut &[0][..], &mut NoRead, "Array(UInt8)", 1),
-            Err(NullableReadError::Numeric(NumericReadError::UnsupportedType(_)))
+            Err(NullableReadError::Numeric(
+                NumericReadError::UnsupportedType(_)
+            ))
         ));
         assert!(matches!(
             read_basic_nullable_numeric(&mut NoRead, &mut NoRead, "UInt8", MAX_BATCH_ROWS + 1),
@@ -296,7 +301,8 @@ mod tests {
         let legacy = read_basic_nullable_legacy_strings(&mut nulls, &mut data, 0).unwrap();
         assert!(legacy.is_empty());
         let mut sizes = &[44][..];
-        let sized = read_basic_nullable_sized_strings(&mut nulls, &mut sizes, &mut data, 0).unwrap();
+        let sized =
+            read_basic_nullable_sized_strings(&mut nulls, &mut sizes, &mut data, 0).unwrap();
         assert!(sized.is_empty());
         assert_eq!(nulls, &[42]);
         assert_eq!(sizes, &[44]);
