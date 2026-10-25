@@ -289,4 +289,31 @@ mod tests {
         assert!(empty.is_empty());
         assert_eq!(unread, &[42]);
     }
+    #[test]
+    fn preserves_fixed_string_row_boundaries_across_short_reads() {
+        let rows = 16 * 1024 / 3 + 1;
+        let mut bytes = vec![0u8; rows * 3];
+        bytes[..3].copy_from_slice(&[1, 2, 3]);
+        bytes[(rows - 1) * 3..].copy_from_slice(&[4, 5, 6]);
+        let mut reader = OneByte(Cursor::new(bytes));
+        let column = read_fixed_strings(&mut reader, "FixedString(3)", rows).unwrap();
+
+        assert_eq!(column.len(), rows);
+        assert_eq!(column.get(0), Some(&[1, 2, 3][..]));
+        assert_eq!(column.get(1), Some(&[0, 0, 0][..]));
+        assert_eq!(column.get(rows - 1), Some(&[4, 5, 6][..]));
+    }
+
+    #[test]
+    fn reads_consecutive_fixed_string_batches() {
+        let mut bytes = &b"abcdefg"[..];
+        let first = read_fixed_strings(&mut bytes, "FixedString(2)", 1).unwrap();
+        let second = read_fixed_strings(&mut bytes, "FixedString(1)", 3).unwrap();
+
+        assert_eq!(first.get(0), Some(&b"ab"[..]));
+        assert_eq!(second.get(0), Some(&b"c"[..]));
+        assert_eq!(second.get(2), Some(&b"e"[..]));
+        assert_eq!(bytes, b"fg");
+    }
+
 }
