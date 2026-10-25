@@ -55,6 +55,19 @@ fn executes_generated_numbers_without_a_part() {
 }
 
 #[test]
+fn queries_generated_numbers_from_a_start_offset() {
+    let result = sql(
+        "SELECT number FROM numbers(100, 5) ORDER BY number DESC LIMIT 2",
+        None,
+    );
+    assert!(result.status.success(), "{result:?}");
+    assert_eq!(
+        String::from_utf8(result.stdout).unwrap(),
+        "number\n104\n103\n"
+    );
+}
+
+#[test]
 fn sorts_generated_numbers_from_the_cli() {
     let output = sql(
         "SELECT number FROM numbers(10) ORDER BY number DESC LIMIT 3",
