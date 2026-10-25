@@ -94,15 +94,10 @@ pub fn read_nullable_numeric_array_column<O: Read, N: Read, D: Read>(
         return Err(NullableArrayReadError::InvalidType(data_type.to_owned()));
     }
 
-    let offsets = read_array_offsets(offsets, rows, encoding)
-        .map_err(NullableArrayReadError::Offsets)?;
-    let values = read_nullable_numeric_column(
-        nulls,
-        data,
-        nullable_type,
-        offsets.element_count(),
-    )
-    .map_err(NullableArrayReadError::Elements)?;
+    let offsets =
+        read_array_offsets(offsets, rows, encoding).map_err(NullableArrayReadError::Offsets)?;
+    let values = read_nullable_numeric_column(nulls, data, nullable_type, offsets.element_count())
+        .map_err(NullableArrayReadError::Elements)?;
 
     Ok(NullableNumericArrayColumn { offsets, values })
 }
@@ -122,14 +117,22 @@ mod tests {
     }
 
     fn offsets(values: &[u64]) -> Vec<u8> {
-        values.iter().flat_map(|value| value.to_le_bytes()).collect()
+        values
+            .iter()
+            .flat_map(|value| value.to_le_bytes())
+            .collect()
     }
 
     #[test]
     fn decodes_array_nullable_values_and_empty_rows() {
         let mut encoded_offsets = Cursor::new(offsets(&[2, 0, 1, 99]));
         let mut nulls = Cursor::new([0, 1, 0, 99]);
-        let mut values = Cursor::new([10u16, 0, 30, 99].into_iter().flat_map(u16::to_le_bytes).collect::<Vec<_>>());
+        let mut values = Cursor::new(
+            [10u16, 0, 30, 99]
+                .into_iter()
+                .flat_map(u16::to_le_bytes)
+                .collect::<Vec<_>>(),
+        );
 
         let batch = read_nullable_numeric_array_column(
             &mut encoded_offsets,
@@ -150,7 +153,10 @@ mod tests {
         assert_eq!(batch.last_absolute_offset(), 3);
         assert_eq!(batch.values().null_map(), &[0, 1, 0]);
         assert_eq!(batch.values().is_null(1), Some(true));
-        assert_eq!(batch.values().values(), &NumericColumn::UInt16(vec![10, 0, 30]));
+        assert_eq!(
+            batch.values().values(),
+            &NumericColumn::UInt16(vec![10, 0, 30])
+        );
         assert_eq!(encoded_offsets.position(), 24);
         assert_eq!(nulls.position(), 3);
         assert_eq!(values.position(), 6);
@@ -176,7 +182,10 @@ mod tests {
         assert_eq!(batch.offsets(), &[0, 2, 2, 4]);
         assert_eq!(batch.last_absolute_offset(), 9);
         assert_eq!(batch.values().null_map(), &[1, 0, 0, 1]);
-        assert_eq!(batch.values().values(), &NumericColumn::Int32(vec![0, -4, 9, 0]));
+        assert_eq!(
+            batch.values().values(),
+            &NumericColumn::Int32(vec![0, -4, 9, 0])
+        );
     }
 
     #[test]
@@ -188,13 +197,20 @@ mod tests {
             "Array(Nullable(Float16))",
             "Array(Nullable(UInt8)",
         ] {
-            assert!(matches!(
-                read_nullable_numeric_array_column(
-                    &mut NoRead, &mut NoRead, &mut NoRead, ty, 1,
-                    ArrayOffsetsEncoding::Sizes,
+            assert!(
+                matches!(
+                    read_nullable_numeric_array_column(
+                        &mut NoRead,
+                        &mut NoRead,
+                        &mut NoRead,
+                        ty,
+                        1,
+                        ArrayOffsetsEncoding::Sizes,
+                    ),
+                    Err(NullableArrayReadError::InvalidType(_))
                 ),
-                Err(NullableArrayReadError::InvalidType(_))
-            ), "{ty}");
+                "{ty}"
+            );
         }
     }
 
@@ -238,10 +254,16 @@ mod tests {
         let encoded = offsets(&[1_000_001]);
         assert!(matches!(
             read_nullable_numeric_array_column(
-                &mut encoded.as_slice(), &mut NoRead, &mut NoRead,
-                "Array(Nullable(UInt8))", 1, ArrayOffsetsEncoding::Sizes,
+                &mut encoded.as_slice(),
+                &mut NoRead,
+                &mut NoRead,
+                "Array(Nullable(UInt8))",
+                1,
+                ArrayOffsetsEncoding::Sizes,
             ),
-            Err(NullableArrayReadError::Elements(NullableReadError::TooManyRows(1_000_001)))
+            Err(NullableArrayReadError::Elements(
+                NullableReadError::TooManyRows(1_000_001)
+            ))
         ));
     }
 
