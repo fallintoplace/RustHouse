@@ -1,0 +1,13 @@
+[package]
+name = "rusthouse-cli"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+description = "RustHouse command-line entry point"
+
+[[bin]]
+name = "rusthouse"
+path = "src/main.rs"
+
+[dependencies]
+rusthouse-storage = { path = "../rusthouse-storage" }
