@@ -1454,10 +1454,7 @@ mod tests {
         }
         let mut result = Vec::new();
         groups.write(&query, "number", &mut result).unwrap();
-        assert_eq!(
-            String::from_utf8(result).unwrap(),
-            "number\tcount\n1\t2\n"
-        );
+        assert_eq!(String::from_utf8(result).unwrap(), "number\tcount\n1\t2\n");
         assert_eq!(
             run(
                 "SELECT number, count(*) FROM numbers(3) GROUP BY number HAVING count(*) > 1",
