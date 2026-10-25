@@ -55,6 +55,19 @@ fn executes_generated_numbers_without_a_part() {
 }
 
 #[test]
+fn sorts_generated_numbers_from_the_cli() {
+    let output = sql(
+        "SELECT number FROM numbers(10) ORDER BY number DESC LIMIT 3",
+        None,
+    );
+    assert!(output.status.success(), "{output:?}");
+    assert_eq!(
+        String::from_utf8(output.stdout).unwrap(),
+        "number\n9\n8\n7\n"
+    );
+}
+
+#[test]
 fn executes_count_projection_filter_and_limit_on_real_checked_blocks() {
     let dir = sample_part();
     let value = u64::from_le_bytes(*b"aaaaaaaa");
