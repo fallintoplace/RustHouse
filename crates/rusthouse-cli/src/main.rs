@@ -12,7 +12,7 @@ use std::ffi::OsString;
 use std::path::PathBuf;
 use std::process::ExitCode;
 
-const USAGE: &str = "Usage:\n  rusthouse inspect-part <path>\n  rusthouse verify-part <path-to-wide-part>\n  rusthouse verify-file-sizes <path-to-part>\n  rusthouse inspect-checksums <path-to-checksums.txt>\n  rusthouse inspect-marks <path-to-wide-marks>\n  rusthouse inspect-blocks <path-to-.bin>\n  rusthouse verify-blocks <path-to-.bin>\n  rusthouse validate-marks <path-to-wide-marks> <path-to-.bin>\n  rusthouse read-u64 <data.bin> <marks.mrk2> <mark-index>\n  rusthouse scan-u64 <path-to-UInt64-.bin>\n  rusthouse read-numeric <data.bin> <marks.mrk2> <mark-index> <type>\n  rusthouse sql <SQL> [--part <path-to-wide-part>] [--format tsv|csv|jsonl] [--show-ast]\n  rusthouse sql --file <path.sql> [--part <path-to-wide-part>] [--format tsv|csv|jsonl] [--show-ast]\n  rusthouse --help\n\nInspect local MergeTree metadata, marks, and compressed blocks.";
+const USAGE: &str = "Usage:\n  rusthouse inspect-part <path>\n  rusthouse verify-part <path-to-wide-part>\n  rusthouse verify-file-sizes <path-to-part>\n  rusthouse inspect-checksums <path-to-checksums.txt>\n  rusthouse inspect-marks <path-to-wide-marks>\n  rusthouse inspect-blocks <path-to-.bin>\n  rusthouse verify-blocks <path-to-.bin>\n  rusthouse validate-marks <path-to-wide-marks> <path-to-.bin>\n  rusthouse read-u64 <data.bin> <marks.mrk2> <mark-index>\n  rusthouse scan-u64 <path-to-UInt64-.bin>\n  rusthouse read-numeric <data.bin> <marks.mrk2> <mark-index> <type>\n  rusthouse sql <SQL> [--part <path-to-wide-part>] [--format tsv|csv|jsonl] [--output <path>] [--show-ast]\n  rusthouse sql --file <path.sql> [--part <path-to-wide-part>] [--format tsv|csv|jsonl] [--output <path>] [--show-ast]\n  rusthouse --help\n\nInspect local MergeTree metadata, marks, and compressed blocks.";
 
 #[derive(Clone, Copy)]
 enum SqlOutputFormat {
@@ -343,6 +343,7 @@ fn run_sql_args(mut args: impl Iterator<Item = OsString>) -> Result<(), String> 
     let mut file = None;
     let mut part = None;
     let mut format = None;
+    let mut output_path = None;
     let mut show_ast = false;
     while let Some(arg) = args.next() {
         if arg.to_str() == Some("--show-ast") {
@@ -357,6 +358,11 @@ fn run_sql_args(mut args: impl Iterator<Item = OsString>) -> Result<(), String> 
                 return Err("duplicate --format option".into());
             }
             format = Some(SqlOutputFormat::from_arg(args.next())?);
+        } else if arg.to_str() == Some("--output") {
+            if output_path.is_some() {
+                return Err("duplicate --output option".into());
+            }
+            output_path = Some(PathBuf::from(args.next().ok_or("missing --output path")?));
         } else if arg.to_str() == Some("--part") {
             if part.is_some() {
                 return Err("duplicate --part option".into());
@@ -396,21 +402,40 @@ fn run_sql_args(mut args: impl Iterator<Item = OsString>) -> Result<(), String> 
     };
     let select = parse_select(&query).map_err(|error| error.to_string())?;
     if show_ast {
+        if output_path.is_some() {
+            return Err("--output cannot be combined with --show-ast".into());
+        }
         println!("{select:#?}");
         return Ok(());
     }
-    match format.unwrap_or(SqlOutputFormat::Tsv) {
-        SqlOutputFormat::Tsv => execute(&select, part.as_deref(), &mut std::io::stdout()),
+    let mut output: Box<dyn std::io::Write> = match &output_path {
+        Some(path) => Box::new(
+            std::fs::OpenOptions::new()
+                .write(true)
+                .create_new(true)
+                .open(path)
+                .map_err(|error| format!("cannot create {}: {error}", path.display()))?,
+        ),
+        None => Box::new(std::io::stdout()),
+    };
+    let result = match format.unwrap_or(SqlOutputFormat::Tsv) {
+        SqlOutputFormat::Tsv => execute(&select, part.as_deref(), &mut output),
         SqlOutputFormat::Csv => execute(
             &select,
             part.as_deref(),
-            &mut csv::CsvWriter::new(std::io::stdout()),
+            &mut csv::CsvWriter::new(&mut output),
         ),
         SqlOutputFormat::Jsonl => execute(
             &select,
             part.as_deref(),
-            &mut jsonl::JsonlWriter::new(std::io::stdout()),
+            &mut jsonl::JsonlWriter::new(&mut output),
         ),
+    };
+    if result.is_err() {
+        drop(output);
+        if let Some(path) = output_path {
+            let _ = std::fs::remove_file(path);
+        }
     }
-    .map_err(|error| error.to_string())
+    result.map_err(|error| error.to_string())
 }
