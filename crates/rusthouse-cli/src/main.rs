@@ -1,7 +1,6 @@
 use rusthouse_storage::{
     CompressedBlockReader, UInt64ColumnReader, inspect_part, read_checksums, read_u64_granule,
-    read_wide_marks,
-    validate_wide_marks,
+    read_wide_marks, validate_wide_marks,
 };
 use std::env;
 use std::ffi::OsString;
