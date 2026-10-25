@@ -266,19 +266,24 @@ mod tests {
         ] {
             assert!(matches!(
                 parse_columns(content),
-                Err(PartError::InvalidColumns { message: "missing final newline", .. })
+                Err(PartError::InvalidColumns {
+                    message: "missing final newline",
+                    ..
+                })
             ));
         }
     }
 
     #[test]
     fn supports_empty_column_lists_and_unicode_identifiers() {
-        assert!(parse_columns("columns format version: 1\n0 columns:\n")
-            .unwrap()
-            .is_empty());
+        assert!(
+            parse_columns("columns format version: 1\n0 columns:\n")
+                .unwrap()
+                .is_empty()
+        );
 
-        let columns = parse_columns("columns format version: 1\n1 columns:\n`測試` String\n")
-            .unwrap();
+        let columns =
+            parse_columns("columns format version: 1\n1 columns:\n`測試` String\n").unwrap();
         assert_eq!(columns[0].name, "測試");
     }
 
@@ -308,13 +313,7 @@ mod tests {
 
     #[test]
     fn rejects_broken_column_definitions() {
-        for row in [
-            "a String",
-            "`a String",
-            "`a`",
-            "`` String",
-            "`a` ",
-        ] {
+        for row in ["a String", "`a String", "`a`", "`` String", "`a` "] {
             let content = format!("columns format version: 1\n1 columns:\n{row}\n");
             assert!(parse_columns(&content).is_err(), "accepted: {row:?}");
         }
