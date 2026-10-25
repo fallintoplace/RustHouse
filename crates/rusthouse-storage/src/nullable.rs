@@ -142,7 +142,10 @@ mod tests {
         assert_eq!(column.len(), 3);
         assert!(!column.is_empty());
         assert_eq!(column.null_map(), &[0, 1, 0]);
-        assert_eq!(column.values(), &NumericColumn::UInt64(vec![5, 0, u64::MAX]));
+        assert_eq!(
+            column.values(),
+            &NumericColumn::UInt64(vec![5, 0, u64::MAX])
+        );
         assert_eq!(column.is_null(0), Some(false));
         assert_eq!(column.is_null(1), Some(true));
         assert_eq!(column.is_null(2), Some(false));
@@ -186,8 +189,8 @@ mod tests {
         sizes.push(88);
         let mut size_reader = Bytewise(Cursor::new(sizes));
         let mut data_reader = &[0x80u8, 0x00, 99][..];
-        let column = read_nullable_sized_strings(&mut nulls, &mut size_reader, &mut data_reader, 3)
-            .unwrap();
+        let column =
+            read_nullable_sized_strings(&mut nulls, &mut size_reader, &mut data_reader, 3).unwrap();
 
         assert_eq!(column.null_map(), &[1, 0, 0]);
         assert_eq!(column.values().offsets(), &[0, 0, 2, 2]);
@@ -237,8 +240,8 @@ mod tests {
     #[test]
     fn preserves_nested_decoder_type_errors() {
         let mut nulls = &[0u8][..];
-        let error = read_nullable_numeric_column(&mut nulls, &mut io::empty(), "DateTime", 1)
-            .unwrap_err();
+        let error =
+            read_nullable_numeric_column(&mut nulls, &mut io::empty(), "DateTime", 1).unwrap_err();
         assert!(matches!(
             error,
             NullableReadError::Numeric(NumericReadError::UnsupportedType(_))
@@ -282,13 +285,9 @@ mod tests {
 
         let strings = read_nullable_legacy_strings(&mut io::empty(), &mut io::empty(), 0).unwrap();
         assert!(strings.is_empty());
-        let strings = read_nullable_sized_strings(
-            &mut io::empty(),
-            &mut io::empty(),
-            &mut io::empty(),
-            0,
-        )
-        .unwrap();
+        let strings =
+            read_nullable_sized_strings(&mut io::empty(), &mut io::empty(), &mut io::empty(), 0)
+                .unwrap();
         assert!(strings.is_empty());
     }
 }
