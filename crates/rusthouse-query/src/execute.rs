@@ -350,19 +350,20 @@ impl GroupedCounts {
                     "grouped ORDER BY must use the group key or count".into(),
                 ));
             }
-            self.rows.sort_by(|(left_key, left_count), (right_key, right_count)| {
-                let ordering = if order.column == "count" {
-                    left_count.cmp(right_count)
-                } else {
-                    compare_numbers(*left_key, *right_key)
-                };
-                let ordering = if order.descending {
-                    ordering.reverse()
-                } else {
-                    ordering
-                };
-                ordering.then_with(|| compare_numbers(*left_key, *right_key))
-            });
+            self.rows
+                .sort_by(|(left_key, left_count), (right_key, right_count)| {
+                    let ordering = if order.column == "count" {
+                        left_count.cmp(right_count)
+                    } else {
+                        compare_numbers(*left_key, *right_key)
+                    };
+                    let ordering = if order.descending {
+                        ordering.reverse()
+                    } else {
+                        ordering
+                    };
+                    ordering.then_with(|| compare_numbers(*left_key, *right_key))
+                });
         }
         writeln!(output, "{column}\tcount")?;
         for (value, count) in self
