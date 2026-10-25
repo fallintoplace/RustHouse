@@ -74,7 +74,11 @@ fn parse_checksums(content: &[u8], path: &Path) -> Result<PartChecksums, PartErr
         }
     }
 
-    let bytes = if version == 4 { &decoded[..] } else { payload };
+    let bytes = if version == 4 {
+        &decoded[..]
+    } else {
+        payload
+    };
     let mut reader = BinaryReader::new(bytes, path);
     let count = usize::try_from(reader.varuint()?)
         .map_err(|_| invalid(path, "file count exceeds address space"))?;
@@ -125,7 +129,8 @@ fn parse_checksums(content: &[u8], path: &Path) -> Result<PartChecksums, PartErr
 
 fn valid_name(name: &str) -> bool {
     !name.is_empty()
-        && !name.contains(['\\', '\0'])
+        && !name.contains('\\')
+        && !name.contains('\0')
         && name
             .split('/')
             .all(|part| !part.is_empty() && part != "." && part != "..")
