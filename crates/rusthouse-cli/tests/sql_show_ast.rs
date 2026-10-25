@@ -3,7 +3,11 @@ use std::process::Command;
 #[test]
 fn shows_parsed_sql_without_touching_part_files() {
     let output = Command::new(env!("CARGO_BIN_EXE_rusthouse"))
-        .args(["sql", "--show-ast", "SELECT id FROM part WHERE id >= 3 LIMIT 2"])
+        .args([
+            "sql",
+            "--show-ast",
+            "SELECT id FROM part WHERE id >= 3 LIMIT 2",
+        ])
         .output()
         .unwrap();
     assert!(output.status.success(), "{output:?}");
