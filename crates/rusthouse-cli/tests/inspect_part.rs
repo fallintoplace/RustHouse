@@ -42,8 +42,8 @@ fn missing_part_reports_file_path() {
 
 #[test]
 fn inspect_marks_prints_adaptive_offsets_and_rows() {
-    let fixture =
-        Path::new(env!("CARGO_MANIFEST_DIR")).join("../rusthouse-storage/tests/fixtures/marks/wide.mrk2");
+    let fixture = Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("../rusthouse-storage/tests/fixtures/marks/wide.mrk2");
     let output = Command::new(env!("CARGO_BIN_EXE_rusthouse"))
         .arg("inspect-marks")
         .arg(fixture)
@@ -59,8 +59,8 @@ fn inspect_marks_prints_adaptive_offsets_and_rows() {
 
 #[test]
 fn inspect_marks_prints_fixed_offsets() {
-    let fixture =
-        Path::new(env!("CARGO_MANIFEST_DIR")).join("../rusthouse-storage/tests/fixtures/marks/fixed.mrk");
+    let fixture = Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("../rusthouse-storage/tests/fixtures/marks/fixed.mrk");
     let output = Command::new(env!("CARGO_BIN_EXE_rusthouse"))
         .arg("inspect-marks")
         .arg(fixture)

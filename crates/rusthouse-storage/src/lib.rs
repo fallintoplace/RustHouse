@@ -25,9 +25,15 @@ pub struct PartMetadata {
 
 #[derive(Debug)]
 pub enum PartError {
-    Io { path: PathBuf, source: io::Error },
+    Io {
+        path: PathBuf,
+        source: io::Error,
+    },
     InvalidCount(String),
-    InvalidColumns { line: usize, message: &'static str },
+    InvalidColumns {
+        line: usize,
+        message: &'static str,
+    },
     InvalidMarksLength {
         path: PathBuf,
         size: usize,

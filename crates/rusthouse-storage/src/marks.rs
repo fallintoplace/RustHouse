@@ -135,8 +135,8 @@ mod tests {
         content.extend_from_slice(&0x0102030405060708u64.to_le_bytes());
         content.extend_from_slice(&17u64.to_le_bytes());
         content.extend_from_slice(&0u64.to_le_bytes());
-        let marks = parse_wide_marks(&content, WideMarkFormat::Adaptive, Path::new("test.mrk2"))
-            .unwrap();
+        let marks =
+            parse_wide_marks(&content, WideMarkFormat::Adaptive, Path::new("test.mrk2")).unwrap();
         assert_eq!(marks[0].compressed_offset, 0x0102030405060708);
         assert_eq!(marks[0].decompressed_offset, 17);
         assert_eq!(marks[0].rows, Some(0));
