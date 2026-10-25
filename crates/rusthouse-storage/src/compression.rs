@@ -31,10 +31,13 @@ impl CompressedBlockReader<File> {
             path: path.to_path_buf(),
             source,
         })?;
-        let file_len = file.metadata().map_err(|source| PartError::Io {
-            path: path.to_path_buf(),
-            source,
-        })?.len();
+        let file_len = file
+            .metadata()
+            .map_err(|source| PartError::Io {
+                path: path.to_path_buf(),
+                source,
+            })?
+            .len();
         Ok(Self::new(file, path.to_path_buf(), file_len))
     }
 }
@@ -95,7 +98,10 @@ impl<R: Read + Seek> Iterator for CompressedBlockReader<R> {
             return self.invalid("decompressed size is zero");
         }
 
-        let Some(end) = self.offset.checked_add(CHECKSUM_SIZE + u64::from(compressed_size)) else {
+        let Some(end) = self
+            .offset
+            .checked_add(CHECKSUM_SIZE + u64::from(compressed_size))
+        else {
             return self.invalid("compressed block offset overflows");
         };
         if end > self.file_len {
@@ -140,12 +146,33 @@ mod tests {
         let mut bytes = block(0x82, &[1, 2, 3, 4], 100);
         bytes.extend(block(0x90, &[5, 6], 200));
         bytes.extend(block(0xfe, &[7], 300));
-        let blocks = read(bytes).into_iter().collect::<Result<Vec<_>, _>>().unwrap();
-        assert_eq!(blocks, vec![
-            CompressedBlock { offset: 0, method: 0x82, compressed_size: 13, decompressed_size: 100 },
-            CompressedBlock { offset: 29, method: 0x90, compressed_size: 11, decompressed_size: 200 },
-            CompressedBlock { offset: 56, method: 0xfe, compressed_size: 10, decompressed_size: 300 },
-        ]);
+        let blocks = read(bytes)
+            .into_iter()
+            .collect::<Result<Vec<_>, _>>()
+            .unwrap();
+        assert_eq!(
+            blocks,
+            vec![
+                CompressedBlock {
+                    offset: 0,
+                    method: 0x82,
+                    compressed_size: 13,
+                    decompressed_size: 100
+                },
+                CompressedBlock {
+                    offset: 29,
+                    method: 0x90,
+                    compressed_size: 11,
+                    decompressed_size: 200
+                },
+                CompressedBlock {
+                    offset: 56,
+                    method: 0xfe,
+                    compressed_size: 10,
+                    decompressed_size: 300
+                },
+            ]
+        );
     }
 
     #[test]

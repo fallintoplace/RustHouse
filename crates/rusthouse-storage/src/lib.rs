@@ -68,8 +68,16 @@ impl fmt::Display for PartError {
                 path.display()
             ),
             Self::EmptyMarksFile(path) => write!(f, "{}: empty marks file", path.display()),
-            Self::InvalidCompressedBlock { path, offset, reason } => {
-                write!(f, "{}: invalid compressed block at byte {offset}: {reason}", path.display())
+            Self::InvalidCompressedBlock {
+                path,
+                offset,
+                reason,
+            } => {
+                write!(
+                    f,
+                    "{}: invalid compressed block at byte {offset}: {reason}",
+                    path.display()
+                )
             }
             Self::UnsupportedMarksFormat(path) => write!(
                 f,
