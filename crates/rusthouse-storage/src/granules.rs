@@ -2,6 +2,7 @@ use crate::{
     CompressedBlockReader, NumericColumn, NumericReadError, PartError, WideMark,
     read_numeric_column,
 };
+use crate::numeric::numeric_storage_type;
 use std::io::{Read, Seek};
 
 const MAX_GRANULE_BYTES: usize = 64 * 1024 * 1024;
@@ -63,7 +64,7 @@ pub fn read_numeric_granule<R: Read + Seek>(
     mark: &WideMark,
     data_type: &str,
 ) -> Result<NumericColumn, PartError> {
-    let width = match data_type {
+    let width = match numeric_storage_type(data_type).unwrap_or(data_type) {
         "UInt8" | "Int8" => 1,
         "UInt16" | "Int16" => 2,
         "UInt32" | "Int32" | "Float32" => 4,
@@ -342,6 +343,26 @@ mod tests {
         assert_eq!(
             read_numeric_granule(&mut blocks, &mark(0, 4, Some(3)), "Int32").unwrap(),
             NumericColumn::Int32(vec![20, 30, 40])
+        );
+    }
+
+    #[test]
+    fn reads_date_and_timestamp_granules() {
+        let days = [0u16, 19_000u16];
+        let bytes: Vec<_> = days.into_iter().flat_map(u16::to_le_bytes).collect();
+        let mut blocks = reader(checked_block(0x82, &bytes));
+        assert_eq!(
+            read_numeric_granule(&mut blocks, &mark(0, 0, Some(2)), "Date").unwrap(),
+            NumericColumn::UInt16(vec![0, 19_000])
+        );
+
+        let ticks = [-1i64, 1_700_000_000_123i64];
+        let bytes: Vec<_> = ticks.into_iter().flat_map(i64::to_le_bytes).collect();
+        let mut blocks = reader(checked_block(0x02, &bytes));
+        assert_eq!(
+            read_numeric_granule(&mut blocks, &mark(0, 0, Some(2)), "DateTime64(3, 'UTC')")
+                .unwrap(),
+            NumericColumn::Int64(ticks.to_vec())
         );
     }
 
