@@ -43,6 +43,7 @@ pub enum Operator {
     Le,
     Gt,
     Ge,
+    Modulo(u64),
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -56,12 +57,18 @@ pub enum Predicate {
         column: String,
         values: Vec<String>,
     },
+    NotIn {
+        column: String,
+        values: Vec<String>,
+    },
 }
 
 impl Predicate {
     fn column(&self) -> &str {
         match self {
-            Self::Comparison { column, .. } | Self::In { column, .. } => column,
+            Self::Comparison { column, .. }
+            | Self::In { column, .. }
+            | Self::NotIn { column, .. } => column,
         }
     }
 }
@@ -70,6 +77,7 @@ impl Predicate {
 pub enum Source {
     Table(String),
     Numbers(u64),
+    NumbersRange { start: u64, count: u64 },
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -107,6 +115,7 @@ enum Token {
     Word(String),
     Number(String),
     Star,
+    Percent,
     Comma,
     LParen,
     RParen,
@@ -232,16 +241,37 @@ pub fn parse_select(sql: &str) -> Result<Select, ParseError> {
             if !count.bytes().all(|byte| byte.is_ascii_digit()) {
                 return Err(ParseError("numbers row count must be non-negative".into()));
             }
-            let count = count
+            let first = count
                 .parse::<u64>()
-                .map_err(|_| ParseError("numbers row count is too large".into()))?;
-            if count > 1_000_000 {
-                return Err(ParseError("numbers supports at most 1000000 rows".into()));
-            }
+                .map_err(|_| ParseError("numbers argument is too large".into()))?;
+            let source = if parser.take(Token::Comma) {
+                let count = parser.number()?;
+                if !count.bytes().all(|byte| byte.is_ascii_digit()) {
+                    return Err(ParseError("numbers row count must be non-negative".into()));
+                }
+                let count = count
+                    .parse::<u64>()
+                    .map_err(|_| ParseError("numbers row count is too large".into()))?;
+                if count > 1_000_000 {
+                    return Err(ParseError("numbers supports at most 1000000 rows".into()));
+                }
+                if first.checked_add(count).is_none() {
+                    return Err(ParseError("numbers range overflows UInt64".into()));
+                }
+                Source::NumbersRange {
+                    start: first,
+                    count,
+                }
+            } else {
+                if first > 1_000_000 {
+                    return Err(ParseError("numbers supports at most 1000000 rows".into()));
+                }
+                Source::Numbers(first)
+            };
             if !parser.take(Token::RParen) {
                 return Err(ParseError("expected ')' after numbers row count".into()));
             }
-            Some(Source::Numbers(count))
+            Some(source)
         } else {
             Some(Source::Table(name))
         }
@@ -266,7 +296,11 @@ pub fn parse_select(sql: &str) -> Result<Select, ParseError> {
                 return Err(ParseError("WHERE supports at most 16 conditions".into()));
             }
             let column = parser.word()?;
+            let negate_in = parser.keyword("NOT");
             if parser.keyword("BETWEEN") {
+                if negate_in {
+                    return Err(ParseError("NOT BETWEEN is not supported".into()));
+                }
                 if total_conditions + 2 > 16 {
                     return Err(ParseError("WHERE supports at most 16 conditions".into()));
                 }
@@ -303,15 +337,34 @@ pub fn parse_select(sql: &str) -> Result<Select, ParseError> {
                 if !parser.take(Token::RParen) {
                     return Err(ParseError("expected ')' after IN list".into()));
                 }
-                branches
-                    .last_mut()
-                    .unwrap()
-                    .push(Predicate::In { column, values });
+                branches.last_mut().unwrap().push(if negate_in {
+                    Predicate::NotIn { column, values }
+                } else {
+                    Predicate::In { column, values }
+                });
                 total_conditions += 1;
             } else {
+                if negate_in {
+                    return Err(ParseError("NOT requires IN".into()));
+                }
+                let operator = if parser.take(Token::Percent) {
+                    let modulus = parser.number()?;
+                    let modulus = modulus
+                        .parse::<u64>()
+                        .map_err(|_| ParseError("modulus must be a positive UInt64".into()))?;
+                    if modulus == 0 {
+                        return Err(ParseError("modulus must be positive".into()));
+                    }
+                    if parser.operator()? != Operator::Eq {
+                        return Err(ParseError("modulo predicates require =".into()));
+                    }
+                    Operator::Modulo(modulus)
+                } else {
+                    parser.operator()?
+                };
                 branches.last_mut().unwrap().push(Predicate::Comparison {
                     column,
-                    operator: parser.operator()?,
+                    operator,
                     value: parser.number()?,
                 });
                 total_conditions += 1;
@@ -355,21 +408,39 @@ pub fn parse_select(sql: &str) -> Result<Select, ParseError> {
         return Err(ParseError("ORDER BY requires column projections".into()));
     }
 
+    let mut comma_offset = None;
     let limit = if parser.keyword("LIMIT") {
         let value = parser.number()?;
         if !value.bytes().all(|byte| byte.is_ascii_digit()) {
             return Err(ParseError("LIMIT must be a non-negative integer".into()));
         }
-        Some(
-            value
-                .parse::<usize>()
-                .map_err(|_| ParseError("LIMIT is too large".into()))?,
-        )
+        let first = value
+            .parse::<usize>()
+            .map_err(|_| ParseError("LIMIT is too large".into()))?;
+        if parser.take(Token::Comma) {
+            let value = parser.number()?;
+            if !value.bytes().all(|byte| byte.is_ascii_digit()) {
+                return Err(ParseError("LIMIT must be a non-negative integer".into()));
+            }
+            comma_offset = Some(first);
+            Some(
+                value
+                    .parse::<usize>()
+                    .map_err(|_| ParseError("LIMIT is too large".into()))?,
+            )
+        } else {
+            Some(first)
+        }
     } else {
         None
     };
 
     let offset = if parser.keyword("OFFSET") {
+        if comma_offset.is_some() {
+            return Err(ParseError(
+                "cannot combine LIMIT comma syntax with OFFSET".into(),
+            ));
+        }
         if limit.is_none() {
             return Err(ParseError("OFFSET requires LIMIT".into()));
         }
@@ -383,7 +454,7 @@ pub fn parse_select(sql: &str) -> Result<Select, ParseError> {
                 .map_err(|_| ParseError("OFFSET is too large".into()))?,
         )
     } else {
-        None
+        comma_offset
     };
 
     parser.take(Token::Semicolon);
@@ -421,6 +492,10 @@ fn tokenize(sql: &str) -> Result<Vec<Token>, ParseError> {
             b'*' => {
                 index += 1;
                 Token::Star
+            }
+            b'%' => {
+                index += 1;
+                Token::Percent
             }
             b',' => {
                 index += 1;
@@ -583,6 +658,37 @@ mod tests {
             "SELECT number FROM numbers(18446744073709551616)",
             "SELECT number FROM numbers(3",
             "SELECT number FROM numbers",
+        ] {
+            assert!(parse_select(sql).is_err(), "{sql}");
+        }
+    }
+
+    #[test]
+    fn parses_numbers_start_count_with_checked_bounds() {
+        assert_eq!(
+            parse_select("SELECT number FROM numbers(10, 3)")
+                .unwrap()
+                .source,
+            Some(Source::NumbersRange {
+                start: 10,
+                count: 3
+            })
+        );
+        assert_eq!(
+            parse_select("SELECT count(*) FROM numbers(18446744073709551615, 0)")
+                .unwrap()
+                .source,
+            Some(Source::NumbersRange {
+                start: u64::MAX,
+                count: 0
+            })
+        );
+        for sql in [
+            "SELECT number FROM numbers(1,)",
+            "SELECT number FROM numbers(1,-1)",
+            "SELECT number FROM numbers(1,1000001)",
+            "SELECT number FROM numbers(18446744073709551615,2)",
+            "SELECT number FROM numbers(1,2,3)",
         ] {
             assert!(parse_select(sql).is_err(), "{sql}");
         }
@@ -842,7 +948,6 @@ mod tests {
             "SELECT number FROM numbers(5) WHERE number IN (1 2)",
             "SELECT number FROM numbers(5) WHERE number IN 1",
             "SELECT number FROM numbers(5) WHERE number IN (1, 2",
-            "SELECT number FROM numbers(5) WHERE number NOT IN (1)",
         ] {
             assert!(parse_select(sql).is_err(), "{sql}");
         }
@@ -851,6 +956,48 @@ mod tests {
             vec!["1"; 33].join(",")
         );
         assert!(parse_select(&too_many).is_err());
+    }
+
+    #[test]
+    fn parses_modulo_filters_and_rejects_invalid_divisors() {
+        let query = parse_select("SELECT number FROM numbers(10) WHERE number % 3 = 1").unwrap();
+        assert!(matches!(
+            query.predicates[0],
+            Predicate::Comparison {
+                operator: Operator::Modulo(3),
+                ..
+            }
+        ));
+        for sql in [
+            "SELECT number FROM numbers(10) WHERE number % 0 = 1",
+            "SELECT number FROM numbers(10) WHERE number % -1 = 0",
+            "SELECT number FROM numbers(10) WHERE number % 2 > 0",
+            "SELECT number FROM numbers(10) WHERE number % 2.5 = 1",
+            "SELECT number FROM numbers(10) WHERE number % 2 =",
+        ] {
+            assert!(parse_select(sql).is_err(), "{sql}");
+        }
+    }
+
+    #[test]
+    fn parses_not_in_numeric_lists() {
+        let query =
+            parse_select("SELECT number FROM numbers(10) WHERE number NOT IN (1, 4, 7)").unwrap();
+        assert_eq!(
+            query.predicates,
+            vec![Predicate::NotIn {
+                column: "number".into(),
+                values: vec!["1".into(), "4".into(), "7".into()],
+            }]
+        );
+        for sql in [
+            "SELECT number FROM numbers(10) WHERE number NOT IN ()",
+            "SELECT number FROM numbers(10) WHERE number NOT IN (1,)",
+            "SELECT number FROM numbers(10) WHERE number NOT = 1",
+            "SELECT number FROM numbers(10) WHERE number NOT BETWEEN 1 AND 2",
+        ] {
+            assert!(parse_select(sql).is_err(), "{sql}");
+        }
     }
 
     #[test]
@@ -874,6 +1021,21 @@ mod tests {
             "SELECT number FROM numbers(10) LIMIT 2 OFFSET 184467440737095516160",
             "SELECT number FROM numbers(10) LIMIT 2 OFFSET 1 OFFSET 2",
             "SELECT number FROM numbers(10) LIMIT 2 OFFSET 1 ORDER BY number",
+        ] {
+            assert!(parse_select(sql).is_err(), "{sql}");
+        }
+    }
+
+    #[test]
+    fn supports_clickhouse_limit_offset_count_syntax() {
+        let query = parse_select("SELECT number FROM numbers(20) LIMIT 3, 2").unwrap();
+        assert_eq!(query.limit, Some(2));
+        assert_eq!(query.offset, Some(3));
+        for sql in [
+            "SELECT number FROM numbers(20) LIMIT 1,",
+            "SELECT number FROM numbers(20) LIMIT 1, -2",
+            "SELECT number FROM numbers(20) LIMIT 1, 2 OFFSET 3",
+            "SELECT number FROM numbers(20) LIMIT 1, 184467440737095516160",
         ] {
             assert!(parse_select(sql).is_err(), "{sql}");
         }

@@ -126,7 +126,10 @@ fn execute_into<W: Write>(
     }
 
     match query.source.as_ref() {
-        Some(Source::Numbers(rows)) => return execute_numbers(query, *rows, part, output),
+        Some(Source::Numbers(rows)) => return execute_numbers(query, 0, *rows, part, output),
+        Some(Source::NumbersRange { start, count }) => {
+            return execute_numbers(query, *start, *count, part, output);
+        }
         Some(Source::Table(table)) if table == "part" => {}
         _ => {
             return Err(ExecutionError::Invalid(
@@ -343,6 +346,7 @@ fn execute_aggregate_part<W: Write>(
 
 fn execute_aggregate_numbers<W: Write>(
     query: &Select,
+    start: u64,
     rows: u64,
     function: AggregateFunction,
     column: &str,
@@ -359,7 +363,7 @@ fn execute_aggregate_numbers<W: Write>(
         return Ok(());
     }
     let mut state = AggregateState::new(function);
-    for number in 0..rows {
+    for number in start..start + rows {
         let value = Number::Unsigned(u128::from(number));
         if !number_matches_all(value, &comparisons) {
             continue;
@@ -374,6 +378,7 @@ fn execute_aggregate_numbers<W: Write>(
 
 fn execute_numbers<W: Write>(
     query: &Select,
+    start: u64,
     rows: u64,
     part: Option<&Path>,
     output: &mut W,
@@ -384,7 +389,7 @@ fn execute_numbers<W: Write>(
         ));
     }
     if let Projection::Aggregate { function, column } = &query.projection {
-        return execute_aggregate_numbers(query, rows, *function, column, output);
+        return execute_aggregate_numbers(query, start, rows, *function, column, output);
     }
     let projected: Vec<&str> = match &query.projection {
         Projection::All => vec!["number"],
@@ -433,7 +438,7 @@ fn execute_numbers<W: Write>(
     let mut skipped = 0usize;
     let offset = query.offset.unwrap_or(0);
     let limit = query.limit.unwrap_or(usize::MAX);
-    for number in 0..rows {
+    for number in start..start + rows {
         if !number_matches_all(Number::Unsigned(u128::from(number)), &comparisons) {
             continue;
         }
@@ -680,6 +685,7 @@ fn compare_numbers(left: Number, right: Number) -> Ordering {
 enum CompiledTest {
     Comparison { operator: Operator, target: Number },
     In(Vec<Number>),
+    NotIn(Vec<Number>),
 }
 
 impl CompiledTest {
@@ -689,6 +695,9 @@ impl CompiledTest {
             Self::In(targets) => targets
                 .iter()
                 .any(|target| number_matches(value, *target, Operator::Eq)),
+            Self::NotIn(targets) => targets
+                .iter()
+                .all(|target| !number_matches(value, *target, Operator::Eq)),
         }
     }
 }
@@ -709,11 +718,25 @@ fn compile_part_predicates(
         let test = match predicate {
             Predicate::Comparison {
                 operator, value, ..
-            } => CompiledTest::Comparison {
-                operator: *operator,
-                target: convert(column, value)?,
-            },
+            } => {
+                let target = convert(column, value)?;
+                if matches!(*operator, Operator::Modulo(_)) && matches!(target, Number::Float(_)) {
+                    return Err(ExecutionError::Invalid(
+                        "modulo requires integer columns".into(),
+                    ));
+                }
+                CompiledTest::Comparison {
+                    operator: *operator,
+                    target,
+                }
+            }
             Predicate::In { values, .. } => CompiledTest::In(
+                values
+                    .iter()
+                    .map(|value| convert(column, value))
+                    .collect::<Result<Vec<_>, _>>()?,
+            ),
+            Predicate::NotIn { values, .. } => CompiledTest::NotIn(
                 values
                     .iter()
                     .map(|value| convert(column, value))
@@ -826,6 +849,17 @@ fn number_at(column: &NumericColumn, row: usize) -> Number {
 }
 
 fn number_matches(value: Number, target: Number, operator: Operator) -> bool {
+    if let Operator::Modulo(modulus) = operator {
+        return match (value, target) {
+            (Number::Unsigned(value), Number::Unsigned(target)) => {
+                value % u128::from(modulus) == target
+            }
+            (Number::Signed(value), Number::Signed(target)) => {
+                value % i128::from(modulus) == target
+            }
+            _ => false,
+        };
+    }
     match (value, target) {
         (Number::Unsigned(value), Number::Unsigned(target)) => compare(value, target, operator),
         (Number::Signed(value), Number::Signed(target)) => compare(value, target, operator),
@@ -842,6 +876,7 @@ fn compare<T: PartialOrd>(value: T, target: T, operator: Operator) -> bool {
         Operator::Le => value <= target,
         Operator::Gt => value > target,
         Operator::Ge => value >= target,
+        Operator::Modulo(_) => unreachable!("modulo handled before comparison"),
     }
 }
 
@@ -901,6 +936,70 @@ mod tests {
         assert!(run("SELECT number FROM numbers(0) WHERE missing = 1", None).is_err());
         assert!(run("SELECT number FROM numbers(0) WHERE number = -1", None).is_err());
         assert!(run("SELECT number FROM numbers(2)", Some(Path::new("."))).is_err());
+    }
+
+    #[test]
+    fn queries_numbers_with_start_and_count() {
+        assert_eq!(
+            run(
+                "SELECT number FROM numbers(7, 4) WHERE number >= 8 LIMIT 2",
+                None
+            )
+            .unwrap(),
+            "number\n8\n9\n"
+        );
+        assert_eq!(
+            run("SELECT count(*) FROM numbers(7, 4)", None).unwrap(),
+            "count\n4\n"
+        );
+        assert_eq!(
+            run("SELECT sum(number) FROM numbers(7, 4)", None).unwrap(),
+            "sum(number)\n34\n"
+        );
+        assert_eq!(
+            run("SELECT number FROM numbers(7, 0)", None).unwrap(),
+            "number\n"
+        );
+    }
+
+    #[test]
+    fn filters_with_modulo_for_generated_numbers() {
+        assert_eq!(
+            run(
+                "SELECT number FROM numbers(12) WHERE number % 3 = 1 ORDER BY number DESC LIMIT 2",
+                None,
+            )
+            .unwrap(),
+            "number\n10\n7\n"
+        );
+        assert_eq!(
+            run(
+                "SELECT count(*) FROM numbers(10) WHERE number % 2 = 0",
+                None
+            )
+            .unwrap(),
+            "count\n5\n"
+        );
+    }
+
+    #[test]
+    fn evaluates_not_in_with_filters_and_aggregates() {
+        assert_eq!(
+            run(
+                "SELECT number FROM numbers(10) WHERE number NOT IN (1, 3, 5) LIMIT 4",
+                None,
+            )
+            .unwrap(),
+            "number\n0\n2\n4\n6\n"
+        );
+        assert_eq!(
+            run(
+                "SELECT count(*) FROM numbers(10) WHERE number NOT IN (1, 3, 5)",
+                None,
+            )
+            .unwrap(),
+            "count\n7\n"
+        );
     }
 
     #[test]

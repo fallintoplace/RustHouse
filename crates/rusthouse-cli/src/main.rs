@@ -1,3 +1,6 @@
+mod csv;
+mod jsonl;
+
 use rusthouse_query::{execute, parse_select};
 use rusthouse_storage::{
     CompressedBlockReader, NumericColumn, UInt64ColumnReader, inspect_part, read_checksums,
@@ -9,7 +12,7 @@ use std::ffi::OsString;
 use std::path::PathBuf;
 use std::process::ExitCode;
 
-const USAGE: &str = "Usage:\n  rusthouse inspect-part <path>\n  rusthouse verify-part <path-to-wide-part>\n  rusthouse verify-file-sizes <path-to-part>\n  rusthouse inspect-checksums <path-to-checksums.txt>\n  rusthouse inspect-marks <path-to-wide-marks>\n  rusthouse inspect-blocks <path-to-.bin>\n  rusthouse verify-blocks <path-to-.bin>\n  rusthouse validate-marks <path-to-wide-marks> <path-to-.bin>\n  rusthouse read-u64 <data.bin> <marks.mrk2> <mark-index>\n  rusthouse scan-u64 <path-to-UInt64-.bin>\n  rusthouse read-numeric <data.bin> <marks.mrk2> <mark-index> <type>\n  rusthouse sql <SQL> [--part <path-to-wide-part>]\n  rusthouse --help\n\nInspect local MergeTree metadata, marks, and compressed blocks.";
+const USAGE: &str = "Usage:\n  rusthouse inspect-part <path>\n  rusthouse verify-part <path-to-wide-part>\n  rusthouse verify-file-sizes <path-to-part>\n  rusthouse inspect-checksums <path-to-checksums.txt>\n  rusthouse inspect-marks <path-to-wide-marks>\n  rusthouse inspect-blocks <path-to-.bin>\n  rusthouse verify-blocks <path-to-.bin>\n  rusthouse validate-marks <path-to-wide-marks> <path-to-.bin>\n  rusthouse read-u64 <data.bin> <marks.mrk2> <mark-index>\n  rusthouse scan-u64 <path-to-UInt64-.bin>\n  rusthouse read-numeric <data.bin> <marks.mrk2> <mark-index> <type>\n  rusthouse sql <SQL> [--part <path-to-wide-part>] [--format tsv|csv|jsonl] [--show-ast]\n  rusthouse sql --file <path.sql> [--part <path-to-wide-part>] [--format tsv|csv|jsonl] [--show-ast]\n  rusthouse --help\n\nInspect local MergeTree metadata, marks, and compressed blocks.";
 
 fn main() -> ExitCode {
     let mut args = env::args_os().skip(1);
@@ -316,17 +319,51 @@ fn print_values<T: std::fmt::Display>(values: Vec<T>) {
 }
 
 fn run_sql_args(mut args: impl Iterator<Item = OsString>) -> Result<(), String> {
+    use std::io::Read;
+
     let mut query = None;
+    let mut file = None;
     let mut part = None;
+    let mut csv = false;
+    let mut jsonl = false;
+    let mut seen_format = false;
+    let mut show_ast = false;
     while let Some(arg) = args.next() {
-        if arg.to_str() == Some("--part") {
+        if arg.to_str() == Some("--show-ast") {
+            if show_ast {
+                return Err("duplicate --show-ast option".into());
+            }
+            show_ast = true;
+            continue;
+        }
+        if arg.to_str() == Some("--format") {
+            if seen_format {
+                return Err("duplicate --format option".into());
+            }
+            seen_format = true;
+            match args
+                .next()
+                .and_then(|value| value.into_string().ok())
+                .as_deref()
+            {
+                Some("tsv") => {}
+                Some("csv") => csv = true,
+                Some("jsonl") => jsonl = true,
+                _ => return Err("--format must be tsv, csv, or jsonl".into()),
+            }
+        } else if arg.to_str() == Some("--part") {
             if part.is_some() {
                 return Err("duplicate --part option".into());
             }
             part = Some(PathBuf::from(
                 args.next().ok_or("missing --part directory")?,
             ));
-        } else if query.is_none() {
+        } else if arg.to_str() == Some("--file") {
+            if file.is_some() || query.is_some() {
+                return Err("provide SQL text or --file, not both".into());
+            }
+            file = Some(PathBuf::from(args.next().ok_or("missing SQL file")?));
+        } else if query.is_none() && file.is_none() {
             query = Some(
                 arg.into_string()
                     .map_err(|_| "SQL statement must be valid UTF-8")?,
@@ -335,7 +372,41 @@ fn run_sql_args(mut args: impl Iterator<Item = OsString>) -> Result<(), String> 
             return Err("unexpected SQL argument".into());
         }
     }
-    let query = query.ok_or("missing SQL statement")?;
+    let query = if let Some(file) = file {
+        let mut input = std::fs::File::open(&file)
+            .map_err(|error| format!("cannot open {}: {error}", file.display()))?;
+        let mut bytes = Vec::new();
+        input
+            .by_ref()
+            .take(4097)
+            .read_to_end(&mut bytes)
+            .map_err(|error| format!("cannot read {}: {error}", file.display()))?;
+        if bytes.len() > 4096 {
+            return Err("SQL file exceeds the 4096-byte statement limit".into());
+        }
+        String::from_utf8(bytes).map_err(|_| "SQL file must be valid UTF-8".to_string())?
+    } else {
+        query.ok_or("missing SQL statement")?
+    };
     let select = parse_select(&query).map_err(|error| error.to_string())?;
-    execute(&select, part.as_deref(), &mut std::io::stdout()).map_err(|error| error.to_string())
+    if show_ast {
+        println!("{select:#?}");
+        return Ok(());
+    }
+    if csv {
+        execute(
+            &select,
+            part.as_deref(),
+            &mut csv::CsvWriter::new(std::io::stdout()),
+        )
+    } else if jsonl {
+        execute(
+            &select,
+            part.as_deref(),
+            &mut jsonl::JsonlWriter::new(std::io::stdout()),
+        )
+    } else {
+        execute(&select, part.as_deref(), &mut std::io::stdout())
+    }
+    .map_err(|error| error.to_string())
 }
