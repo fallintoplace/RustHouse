@@ -29,12 +29,7 @@ pub fn check_wide_mark_offsets(
     })
 }
 
-fn invalid_mark(
-    path: &Path,
-    index: usize,
-    mark: &WideMark,
-    reason: &'static str,
-) -> PartError {
+fn invalid_mark(path: &Path, index: usize, mark: &WideMark, reason: &'static str) -> PartError {
     PartError::InvalidMarkOffset {
         path: path.to_path_buf(),
         index,
@@ -149,7 +144,11 @@ mod tests {
         }
     }
 
-    fn check(marks: &[WideMark], blocks: &[CompressedBlock], file_size: u64) -> Result<usize, PartError> {
+    fn check(
+        marks: &[WideMark],
+        blocks: &[CompressedBlock],
+        file_size: u64,
+    ) -> Result<usize, PartError> {
         check_positions(
             marks,
             blocks.iter().copied().map(Ok),
@@ -182,8 +181,7 @@ mod tests {
 
     #[test]
     fn rejects_interior_compressed_offsets() {
-        let error = check(&[mark(15, 0)], &[block(0, 13, 100), block(29, 10, 80)], 55)
-            .unwrap_err();
+        let error = check(&[mark(15, 0)], &[block(0, 13, 100), block(29, 10, 80)], 55).unwrap_err();
         assert!(matches!(
             error,
             PartError::InvalidMarkOffset {
@@ -212,8 +210,7 @@ mod tests {
             (29, 1, "end-of-file mark has a nonzero decompressed offset"),
             (30, 0, "compressed offset exceeds file size"),
         ] {
-            let error = check(&[mark(offset, decompressed)], &[block(0, 13, 100)], 29)
-                .unwrap_err();
+            let error = check(&[mark(offset, decompressed)], &[block(0, 13, 100)], 29).unwrap_err();
             assert!(matches!(
                 error,
                 PartError::InvalidMarkOffset { reason: actual, .. } if actual == reason
