@@ -81,6 +81,7 @@ pub struct OrderBy {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Select {
     pub projection: Projection,
+    pub distinct: bool,
     pub source: Option<Source>,
     pub predicates: Vec<Predicate>,
     pub order_by: Option<OrderBy>,
@@ -175,6 +176,7 @@ pub fn parse_select(sql: &str) -> Result<Select, ParseError> {
     if !parser.keyword("SELECT") {
         return Err(ParseError("only SELECT statements are supported".into()));
     }
+    let distinct = parser.keyword("DISTINCT");
 
     let projection = if parser.take(Token::Star) {
         Projection::All
@@ -213,6 +215,10 @@ pub fn parse_select(sql: &str) -> Result<Select, ParseError> {
         }
         Projection::Columns(columns)
     };
+
+    if distinct && !matches!(projection, Projection::All | Projection::Columns(_)) {
+        return Err(ParseError("DISTINCT supports only row projections".into()));
+    }
 
     let source = if parser.keyword("FROM") {
         let name = parser.word()?;
@@ -373,6 +379,7 @@ pub fn parse_select(sql: &str) -> Result<Select, ParseError> {
     }
     Ok(Select {
         projection,
+        distinct,
         source,
         predicates,
         order_by,
@@ -500,6 +507,7 @@ mod tests {
             parse_select(" SELECT -42; ").unwrap(),
             Select {
                 projection: Projection::Literal(-42),
+                distinct: false,
                 source: None,
                 predicates: Vec::new(),
                 order_by: None,
@@ -511,6 +519,7 @@ mod tests {
             parse_select("select id, price from part limit 2;").unwrap(),
             Select {
                 projection: Projection::Columns(vec!["id".into(), "price".into()]),
+                distinct: false,
                 source: Some(Source::Table("part".into())),
                 predicates: Vec::new(),
                 order_by: None,
@@ -745,6 +754,33 @@ mod tests {
             vec!["number > 0"; 15].join(" AND ")
         );
         assert!(parse_select(&too_many).is_err());
+    }
+
+    #[test]
+    fn parses_distinct_and_rejects_invalid_projections() {
+        let query = parse_select(
+            "SELECT DISTINCT id, price FROM part WHERE id > 1 ORDER BY price DESC LIMIT 3",
+        )
+        .unwrap();
+        assert!(query.distinct);
+        assert_eq!(
+            query.projection,
+            Projection::Columns(vec!["id".into(), "price".into()])
+        );
+        assert!(
+            parse_select("SELECT DISTINCT * FROM part")
+                .unwrap()
+                .distinct
+        );
+        for sql in [
+            "SELECT DISTINCT 1",
+            "SELECT DISTINCT count(*) FROM part",
+            "SELECT DISTINCT sum(id) FROM part",
+            "SELECT DISTINCT DISTINCT id FROM part",
+            "SELECT DISTINCT FROM part",
+        ] {
+            assert!(parse_select(sql).is_err(), "{sql}");
+        }
     }
 
     #[test]

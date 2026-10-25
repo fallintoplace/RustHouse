@@ -1,7 +1,7 @@
 use crate::{AggregateFunction, Operator, Predicate, Projection, Select, Source};
 use rusthouse_storage::{NumericColumn, NumericPartReader, PartError, inspect_part};
 use std::cmp::Ordering;
-use std::collections::BinaryHeap;
+use std::collections::{BinaryHeap, HashSet};
 use std::error::Error;
 use std::fmt;
 use std::io::{self, BufWriter, Write};
@@ -63,6 +63,44 @@ impl fmt::Display for Number {
     }
 }
 
+#[derive(PartialEq, Eq, Hash)]
+enum NumberKey {
+    Unsigned(u128),
+    Signed(i128),
+    Float(u64),
+}
+
+impl From<Number> for NumberKey {
+    fn from(value: Number) -> Self {
+        match value {
+            Number::Unsigned(value) => Self::Unsigned(value),
+            Number::Signed(value) => Self::Signed(value),
+            Number::Float(0.0) => Self::Float(0),
+            Number::Float(value) if value.is_nan() => Self::Float(f64::NAN.to_bits()),
+            Number::Float(value) => Self::Float(value.to_bits()),
+        }
+    }
+}
+
+const MAX_DISTINCT_ROWS: usize = 100_000;
+
+fn remember_distinct(
+    seen: &mut HashSet<Vec<NumberKey>>,
+    values: &[Number],
+) -> Result<bool, ExecutionError> {
+    let key = values.iter().copied().map(NumberKey::from).collect();
+    // At capacity, duplicates are still valid but new unique rows are not.
+    if seen.len() >= MAX_DISTINCT_ROWS {
+        if seen.contains(&key) {
+            return Ok(false);
+        }
+        return Err(ExecutionError::Invalid(
+            "DISTINCT supports at most 100000 unique rows".into(),
+        ));
+    }
+    Ok(seen.insert(key))
+}
+
 pub fn execute<W: Write>(
     query: &Select,
     part: Option<&Path>,
@@ -122,6 +160,16 @@ fn execute_into<W: Write>(
         Projection::Count => Vec::new(),
         Projection::Aggregate { .. } | Projection::Literal(_) => unreachable!(),
     };
+    if query.distinct
+        && query
+            .order_by
+            .as_ref()
+            .is_some_and(|order| !projected.iter().any(|column| column == &order.column))
+    {
+        return Err(ExecutionError::Invalid(
+            "DISTINCT ORDER BY column must appear in SELECT".into(),
+        ));
+    }
     let mut scan_columns = Vec::new();
     let projected_indices = projected
         .iter()
@@ -161,6 +209,7 @@ fn execute_into<W: Write>(
         }
     });
     let mut reader = NumericPartReader::open(part, &scan_columns)?;
+    let mut distinct: Option<HashSet<Vec<NumberKey>>> = query.distinct.then(HashSet::new);
 
     if let (Some(order), Some(index)) = (&query.order_by, sort_index) {
         let mut sorted =
@@ -174,10 +223,15 @@ fn execute_into<W: Write>(
                 if !batch_matches(&batch, row, &comparisons) {
                     continue;
                 }
-                let values = projected_indices
+                let values: Vec<Number> = projected_indices
                     .iter()
                     .map(|projected_index| number_at(&batch[*projected_index], row))
                     .collect();
+                if let Some(seen) = distinct.as_mut() {
+                    if !remember_distinct(seen, &values)? {
+                        continue;
+                    }
+                }
                 sorted.push(number_at(&batch[index], row), values)?;
             }
         }
@@ -208,6 +262,18 @@ fn execute_into<W: Write>(
             if is_count {
                 matched += 1;
             } else {
+                let distinct_values = if let Some(seen) = distinct.as_mut() {
+                    let values = projected_indices
+                        .iter()
+                        .map(|index| number_at(&batch[*index], row))
+                        .collect::<Vec<_>>();
+                    if !remember_distinct(seen, &values)? {
+                        continue;
+                    }
+                    Some(values)
+                } else {
+                    None
+                };
                 if skipped < offset {
                     skipped += 1;
                     continue;
@@ -216,7 +282,11 @@ fn execute_into<W: Write>(
                     if column_number != 0 {
                         write!(output, "\t")?;
                     }
-                    write!(output, "{}", number_at(&batch[*index], row))?;
+                    let value = match &distinct_values {
+                        Some(values) => values[column_number],
+                        None => number_at(&batch[*index], row),
+                    };
+                    write!(output, "{value}")?;
                 }
                 writeln!(output)?;
                 emitted += 1;
@@ -991,6 +1061,52 @@ mod tests {
                 None
             )
             .is_err()
+        );
+    }
+
+    #[test]
+    fn distinct_keys_preserve_numeric_identity() {
+        let mut seen = HashSet::new();
+        assert!(remember_distinct(&mut seen, &[Number::Unsigned(u128::MAX)]).unwrap());
+        assert!(!remember_distinct(&mut seen, &[Number::Unsigned(u128::MAX)]).unwrap());
+        assert!(remember_distinct(&mut seen, &[Number::Unsigned(u128::MAX - 1)]).unwrap());
+        assert!(remember_distinct(&mut seen, &[Number::Float(0.0)]).unwrap());
+        assert!(!remember_distinct(&mut seen, &[Number::Float(-0.0)]).unwrap());
+        assert!(remember_distinct(&mut seen, &[Number::Float(f64::NAN)]).unwrap());
+        assert!(!remember_distinct(&mut seen, &[Number::Float(-f64::NAN)]).unwrap());
+        assert!(remember_distinct(&mut seen, &[Number::Signed(-1)]).unwrap());
+    }
+
+    #[test]
+    fn distinct_limit_rejects_new_rows_but_accepts_existing_rows() {
+        let mut seen = HashSet::new();
+        for index in 0..MAX_DISTINCT_ROWS {
+            assert!(remember_distinct(&mut seen, &[Number::Unsigned(index as u128)]).unwrap());
+        }
+        assert!(!remember_distinct(&mut seen, &[Number::Unsigned(0)]).unwrap());
+        assert!(matches!(
+            remember_distinct(&mut seen, &[Number::Unsigned(MAX_DISTINCT_ROWS as u128)]),
+            Err(ExecutionError::Invalid(_))
+        ));
+    }
+
+    #[test]
+    fn distinct_on_generated_numbers_preserves_unique_rows() {
+        assert_eq!(
+            run("SELECT DISTINCT number FROM numbers(3)", None).unwrap(),
+            "number\n0\n1\n2\n"
+        );
+        assert_eq!(
+            run(
+                "SELECT DISTINCT number, number FROM numbers(3) LIMIT 2 OFFSET 1",
+                None
+            )
+            .unwrap(),
+            "number\tnumber\n1\t1\n2\t2\n"
+        );
+        assert_eq!(
+            run("SELECT DISTINCT * FROM numbers(0)", None).unwrap(),
+            "number\n"
         );
     }
 
