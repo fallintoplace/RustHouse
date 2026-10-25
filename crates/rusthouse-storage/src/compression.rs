@@ -199,7 +199,7 @@ mod tests {
     #[test]
     fn rejects_invalid_sizes_without_allocating_payloads() {
         for (compressed, decompressed) in [
-            (8, 10),
+            (8u32, 10u32),
             (9, 0),
             (0x4000_0001, 10),
             (9, 0x4000_0001),
