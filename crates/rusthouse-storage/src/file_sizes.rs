@@ -26,14 +26,23 @@ pub fn verify_part_file_sizes(part: impl AsRef<Path>) -> Result<FileSizeVerifica
             let metadata = fs::symlink_metadata(&path).map_err(|source| io_error(&path, source))?;
             if components.peek().is_some() {
                 if !metadata.file_type().is_dir() {
-                    return Err(invalid(&manifest.path, "listed file parent is not a directory"));
+                    return Err(invalid(
+                        &manifest.path,
+                        "listed file parent is not a directory",
+                    ));
                 }
             } else {
                 if !metadata.file_type().is_file() {
-                    return Err(invalid(&manifest.path, "listed entry is not a regular file"));
+                    return Err(invalid(
+                        &manifest.path,
+                        "listed entry is not a regular file",
+                    ));
                 }
                 if metadata.len() != entry.size {
-                    return Err(invalid(&manifest.path, "file size differs from checksums.txt"));
+                    return Err(invalid(
+                        &manifest.path,
+                        "file size differs from checksums.txt",
+                    ));
                 }
             }
         }
