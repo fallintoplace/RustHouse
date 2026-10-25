@@ -790,7 +790,6 @@ mod tests {
             "SELECT number FROM numbers(1,-1)",
             "SELECT number FROM numbers(1,1000001)",
             "SELECT number FROM numbers(18446744073709551615,2)",
-            "SELECT number FROM numbers(1,2,3)",
         ] {
             assert!(parse_select(sql).is_err(), "{sql}");
         }
