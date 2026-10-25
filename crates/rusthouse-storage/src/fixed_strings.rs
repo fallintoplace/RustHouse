@@ -70,7 +70,7 @@ impl From<io::Error> for FixedStringReadError {
     }
 }
 
-fn checked_size(data_type: &str, rows: usize) -> Result<(usize, usize), FixedStringReadError> {
+pub(crate) fn checked_size(data_type: &str, rows: usize) -> Result<(usize, usize), FixedStringReadError> {
     let width = data_type
         .strip_prefix("FixedString(")
         .and_then(|value| value.strip_suffix(')'))
