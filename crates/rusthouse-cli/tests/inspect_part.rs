@@ -212,3 +212,42 @@ fn validate_marks_requires_two_file_paths() {
         assert_eq!(output.status.code(), Some(2));
     }
 }
+
+#[test]
+fn scan_u64_reads_values_without_loading_entire_column() {
+    let fixture = include_bytes!("../../rusthouse-storage/tests/fixtures/blocks/lz4-none.bin");
+    let path = std::env::temp_dir().join(format!("rusthouse-u64-{}.bin", std::process::id()));
+    std::fs::write(&path, &fixture[..36]).unwrap();
+
+    let output = Command::new(env!("CARGO_BIN_EXE_rusthouse"))
+        .arg("scan-u64")
+        .arg(&path)
+        .output()
+        .unwrap();
+    std::fs::remove_file(path).unwrap();
+
+    assert!(output.status.success(), "{output:?}");
+    let stdout = String::from_utf8(output.stdout).unwrap();
+    let value = u64::from_le_bytes(*b"aaaaaaaa");
+    assert!(stdout.contains("Rows: 10"));
+    assert!(stdout.contains(&format!("Min: {value}")));
+    assert!(stdout.contains(&format!("Max: {value}")));
+}
+
+#[test]
+fn scan_u64_rejects_trailing_bytes() {
+    let fixture = include_bytes!("../../rusthouse-storage/tests/fixtures/blocks/lz4-none.bin");
+    let path =
+        std::env::temp_dir().join(format!("rusthouse-u64-invalid-{}.bin", std::process::id()));
+    std::fs::write(&path, fixture).unwrap();
+
+    let output = Command::new(env!("CARGO_BIN_EXE_rusthouse"))
+        .arg("scan-u64")
+        .arg(&path)
+        .output()
+        .unwrap();
+    std::fs::remove_file(path).unwrap();
+
+    assert_eq!(output.status.code(), Some(1));
+    assert!(String::from_utf8_lossy(&output.stderr).contains("incomplete 8-byte column value"));
+}

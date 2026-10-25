@@ -4,6 +4,7 @@ mod granules;
 mod mark_validation;
 mod marks;
 mod numeric;
+mod stream;
 mod strings;
 
 pub use columns::parse_columns;
@@ -12,6 +13,7 @@ pub use granules::{read_mark_bytes, read_u64_granule};
 pub use mark_validation::validate_wide_marks;
 pub use marks::{WideMark, WideMarkFormat, WideMarks, read_wide_marks};
 pub use numeric::{NumericColumn, NumericReadError, read_numeric_column};
+pub use stream::UInt64ColumnReader;
 pub use strings::{StringColumn, StringReadError, read_legacy_strings, read_sized_strings};
 
 use std::error::Error;
@@ -60,6 +62,11 @@ pub enum PartError {
         offset: u64,
         reason: &'static str,
     },
+    InvalidColumnLength {
+        path: PathBuf,
+        width: usize,
+        trailing_bytes: usize,
+    },
     InvalidWideMark {
         compressed_offset: u64,
         decompressed_offset: u64,
@@ -106,6 +113,15 @@ impl fmt::Display for PartError {
                     path.display()
                 )
             }
+            Self::InvalidColumnLength {
+                path,
+                width,
+                trailing_bytes,
+            } => write!(
+                f,
+                "{}: incomplete {width}-byte column value ({trailing_bytes} trailing bytes)",
+                path.display()
+            ),
             Self::InvalidWideMark {
                 compressed_offset,
                 decompressed_offset,
