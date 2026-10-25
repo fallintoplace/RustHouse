@@ -113,8 +113,19 @@ fn execute_into<W: Write>(
         Projection::Count => Vec::new(),
         Projection::Literal(_) => unreachable!(),
     };
-    let projected_len = projected.len();
-    let mut scan_columns = projected.clone();
+    let mut scan_columns = Vec::new();
+    let projected_indices = projected
+        .iter()
+        .map(|name| {
+            if let Some(index) = scan_columns.iter().position(|column| column == name) {
+                index
+            } else {
+                let index = scan_columns.len();
+                scan_columns.push(name.clone());
+                index
+            }
+        })
+        .collect::<Vec<_>>();
     let predicate_index = query.predicate.as_ref().map(|predicate| {
         if let Some(index) = scan_columns
             .iter()
@@ -126,6 +137,20 @@ fn execute_into<W: Write>(
             scan_columns.len() - 1
         }
     });
+    let comparison = query
+        .predicate
+        .as_ref()
+        .map(|predicate| {
+            let column = metadata
+                .columns
+                .iter()
+                .find(|column| column.name == predicate.column)
+                .ok_or_else(|| {
+                    ExecutionError::Invalid(format!("unknown WHERE column: {}", predicate.column))
+                })?;
+            parse_numeric(&column.data_type, &predicate.value)
+        })
+        .transpose()?;
     let mut reader = NumericPartReader::open(part, &scan_columns)?;
 
     let is_count = matches!(query.projection, Projection::Count);
@@ -143,12 +168,6 @@ fn execute_into<W: Write>(
     let mut matched = 0u64;
     while let Some(batch) = reader.next_batch()? {
         let rows = batch[0].len();
-        let comparison = if let (Some(predicate), Some(index)) = (&query.predicate, predicate_index)
-        {
-            Some(parse_numeric(&batch[index], &predicate.value)?)
-        } else {
-            None
-        };
         for row in 0..rows {
             if let (Some(predicate), Some(index), Some(target)) =
                 (&query.predicate, predicate_index, comparison)
@@ -160,11 +179,11 @@ fn execute_into<W: Write>(
             if is_count {
                 matched += 1;
             } else {
-                for (index, column) in batch.iter().take(projected_len).enumerate() {
-                    if index != 0 {
+                for (column_number, index) in projected_indices.iter().enumerate() {
+                    if column_number != 0 {
                         write!(output, "\t")?;
                     }
-                    write!(output, "{}", number_at(column, row))?;
+                    write!(output, "{}", number_at(&batch[*index], row))?;
                 }
                 writeln!(output)?;
                 emitted += 1;
@@ -181,21 +200,24 @@ fn execute_into<W: Write>(
     Ok(())
 }
 
-fn parse_numeric(column: &NumericColumn, text: &str) -> Result<Number, ExecutionError> {
-    let value = match column {
-        NumericColumn::UInt8(_)
-        | NumericColumn::UInt16(_)
-        | NumericColumn::UInt32(_)
-        | NumericColumn::UInt64(_) => text.parse::<u64>().ok().map(Number::Unsigned),
-        NumericColumn::Int8(_)
-        | NumericColumn::Int16(_)
-        | NumericColumn::Int32(_)
-        | NumericColumn::Int64(_) => text.parse::<i64>().ok().map(Number::Signed),
-        NumericColumn::Float32(_) => text
+fn parse_numeric(data_type: &str, text: &str) -> Result<Number, ExecutionError> {
+    let value = match data_type {
+        "UInt8" | "UInt16" | "UInt32" | "UInt64" => {
+            text.parse::<u64>().ok().map(Number::Unsigned)
+        }
+        "Int8" | "Int16" | "Int32" | "Int64" => {
+            text.parse::<i64>().ok().map(Number::Signed)
+        }
+        "Float32" => text
             .parse::<f32>()
             .ok()
             .map(|value| Number::Float(f64::from(value))),
-        NumericColumn::Float64(_) => text.parse::<f64>().ok().map(Number::Float),
+        "Float64" => text.parse::<f64>().ok().map(Number::Float),
+        other => {
+            return Err(ExecutionError::Invalid(format!(
+                "unsupported WHERE column type: {other}"
+            )));
+        }
     };
     value.ok_or_else(|| ExecutionError::Invalid(format!("invalid numeric WHERE value: {text}")))
 }
@@ -280,6 +302,41 @@ mod tests {
             "count\n"
         );
         assert!(run("SELECT city FROM part", Some(&dir)).is_err());
+        fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn checks_predicates_on_empty_parts_and_before_limit_zero() {
+        let dir = std::env::temp_dir().join(format!(
+            "rusthouse-empty-where-{}-{}",
+            std::process::id(),
+            NEXT_DIR.fetch_add(1, Ordering::Relaxed)
+        ));
+        fs::create_dir(&dir).unwrap();
+        fs::write(dir.join("count.txt"), "0\n").unwrap();
+        fs::write(
+            dir.join("columns.txt"),
+            "columns format version: 1\n1 columns:\n`id` UInt64\n",
+        )
+        .unwrap();
+
+        for statement in [
+            "SELECT id FROM part WHERE id = -1",
+            "SELECT id FROM part WHERE id = -1 LIMIT 0",
+            "SELECT count(*) FROM part WHERE id = -1",
+        ] {
+            let select = parse_select(statement).unwrap();
+            let mut output = Vec::new();
+            assert!(
+                matches!(
+                    execute(&select, Some(&dir), &mut output),
+                    Err(ExecutionError::Invalid(_))
+                ),
+                "{statement}"
+            );
+            assert!(output.is_empty());
+        }
+
         fs::remove_dir_all(dir).unwrap();
     }
 
