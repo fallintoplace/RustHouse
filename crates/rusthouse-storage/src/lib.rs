@@ -1,9 +1,3 @@
-//! Read-only access to metadata from ClickHouse MergeTree data parts.
-//!
-//! This crate does not decode compressed column files, verify checksums, or
-//! provide a SQL engine. A part must contain modern `count.txt` and
-//! `columns.txt` files to be inspected.
-
 use std::error::Error;
 use std::fmt;
 use std::fs;
@@ -13,7 +7,6 @@ use std::path::{Path, PathBuf};
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Column {
     pub name: String,
-    /// ClickHouse type expression, retained as text (not yet type-checked).
     pub data_type: String,
 }
 
@@ -52,10 +45,6 @@ impl Error for PartError {
     }
 }
 
-/// Inspect a local MergeTree data part without modifying it.
-///
-/// Supports parts with `count.txt` and the version-1 `columns.txt` format.
-/// Older part layouts without `count.txt` are currently unsupported.
 pub fn inspect_part(path: impl AsRef<Path>) -> Result<PartMetadata, PartError> {
     let path = path.as_ref();
     let count_path = path.join("count.txt");
@@ -82,10 +71,6 @@ pub fn inspect_part(path: impl AsRef<Path>) -> Result<PartMetadata, PartError> {
     })
 }
 
-/// Parse the version-1 `columns.txt` text representation.
-///
-/// Column types are preserved verbatim. SQL-style doubled backticks and common
-/// ClickHouse backslash escapes in column identifiers are supported.
 pub fn parse_columns(content: &str) -> Result<Vec<Column>, PartError> {
     let mut lines = content.lines();
     if lines.next() != Some("columns format version: 1") {
@@ -124,22 +109,24 @@ fn parse_column(line: &str, line_number: usize) -> Result<Column, PartError> {
         .strip_prefix('`')
         .ok_or_else(|| invalid(line_number, "expected a backtick-quoted column name"))?
         .chars();
-    let mut name = String::new();
+    let mut name = Vec::new();
 
     while let Some(ch) = chars.next() {
         match ch {
             '`' if chars.as_str().starts_with('`') => {
                 chars.next();
-                name.push('`');
+                name.push(b'`');
             }
             '`' => {
                 let data_type = chars
                     .as_str()
                     .strip_prefix(' ')
                     .ok_or_else(|| invalid(line_number, "expected a space after column name"))?;
-                if name.is_empty() || data_type.trim().is_empty() {
-                    return Err(invalid(line_number, "empty column name or type"));
+                if name.is_empty() || data_type.is_empty() || data_type.trim() != data_type {
+                    return Err(invalid(line_number, "empty column name or invalid type"));
                 }
+                let name = String::from_utf8(name)
+                    .map_err(|_| invalid(line_number, "column name is not valid UTF-8"))?;
                 return Ok(Column {
                     name,
                     data_type: data_type.to_owned(),
@@ -150,18 +137,36 @@ fn parse_column(line: &str, line_number: usize) -> Result<Column, PartError> {
                     .next()
                     .ok_or_else(|| invalid(line_number, "trailing identifier escape"))?;
                 let decoded = match escaped {
-                    '\\' => '\\',
-                    '`' => '`',
-                    '\'' => '\'',
-                    'n' => '\n',
-                    'r' => '\r',
-                    't' => '\t',
-                    '0' => '\0',
+                    'x' => {
+                        let high = chars
+                            .next()
+                            .and_then(|digit| digit.to_digit(16))
+                            .ok_or_else(|| invalid(line_number, "invalid hex identifier escape"))?;
+                        let low = chars
+                            .next()
+                            .and_then(|digit| digit.to_digit(16))
+                            .ok_or_else(|| invalid(line_number, "invalid hex identifier escape"))?;
+                        (high * 16 + low) as u8
+                    }
+                    '\\' => b'\\',
+                    '`' => b'`',
+                    '\'' => b'\'',
+                    'n' => b'\n',
+                    'r' => b'\r',
+                    't' => b'\t',
+                    '0' => b'\0',
+                    'a' => b'\x07',
+                    'b' => b'\x08',
+                    'f' => b'\x0c',
+                    'v' => b'\x0b',
                     _ => return Err(invalid(line_number, "unsupported identifier escape")),
                 };
                 name.push(decoded);
             }
-            _ => name.push(ch),
+            _ => {
+                let mut encoded = [0; 4];
+                name.extend_from_slice(ch.encode_utf8(&mut encoded).as_bytes());
+            }
         }
     }
 
@@ -196,6 +201,36 @@ mod tests {
     fn supports_sql_style_doubled_backticks() {
         let content = "columns format version: 1\n1 columns:\n`a``b` String\n";
         assert_eq!(parse_columns(content).unwrap()[0].name, "a`b");
+    }
+
+    #[test]
+    fn supports_hex_and_control_escapes() {
+        let content =
+            "columns format version: 1\n2 columns:\n`caf\\xC3\\xA9` String\n`bell\\a` UInt8\n";
+        let columns = parse_columns(content).unwrap();
+        assert_eq!(columns[0].name, "café");
+        assert_eq!(columns[1].name, "bell\u{7}");
+    }
+
+    #[test]
+    fn rejects_invalid_hex_and_non_utf8_names() {
+        for column in [
+            r"`a\x` String",
+            r"`a\x0` String",
+            r"`a\xQ1` String",
+            r"`a\xFF` String",
+        ] {
+            let content = format!("columns format version: 1\n1 columns:\n{column}\n");
+            assert!(parse_columns(&content).is_err(), "accepted: {column:?}");
+        }
+    }
+
+    #[test]
+    fn rejects_extra_whitespace_in_column_types() {
+        for column in ["`a`  String", "`a` String ", "`a` \t"] {
+            let content = format!("columns format version: 1\n1 columns:\n{column}\n");
+            assert!(parse_columns(&content).is_err(), "accepted: {column:?}");
+        }
     }
 
     #[test]
