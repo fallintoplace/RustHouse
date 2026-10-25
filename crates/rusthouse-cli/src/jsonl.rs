@@ -174,5 +174,4 @@ mod tests {
             io::ErrorKind::InvalidData
         );
     }
-
 }
