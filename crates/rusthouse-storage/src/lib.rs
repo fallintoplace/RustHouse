@@ -2,11 +2,13 @@ mod columns;
 mod compression;
 mod marks;
 mod numeric;
+mod stream;
 
 pub use columns::parse_columns;
 pub use compression::{CompressedBlock, CompressedBlockReader, DecodedBlock};
 pub use marks::{WideMark, WideMarkFormat, WideMarks, read_wide_marks};
-pub use numeric::UInt64ColumnReader;
+pub use numeric::{NumericColumn, NumericReadError, read_numeric_column};
+pub use stream::UInt64ColumnReader;
 
 use std::error::Error;
 use std::fmt;
