@@ -63,8 +63,11 @@ impl<W: Write> JsonlWriter<W> {
 }
 
 fn write_json_string<W: Write>(writer: &mut W, input: &[u8]) -> io::Result<()> {
+    let input = std::str::from_utf8(input).map_err(|_| {
+        io::Error::new(io::ErrorKind::InvalidData, "JSONL field is not valid UTF-8")
+    })?;
     writer.write_all(b"\"")?;
-    for ch in String::from_utf8_lossy(input).chars() {
+    for ch in input.chars() {
         match ch {
             '"' => writer.write_all(b"\\\"")?,
             '\\' => writer.write_all(b"\\\\")?,
@@ -142,5 +145,22 @@ mod tests {
     fn rejects_oversized_rows() {
         let mut writer = JsonlWriter::new(Vec::new());
         assert!(writer.write_all(&vec![b'a'; MAX_LINE_BYTES + 1]).is_err());
+    }
+
+    #[test]
+    fn rejects_invalid_utf8_in_headers_and_values() {
+        let mut writer = JsonlWriter::new(Vec::new());
+        writer.write_all(b"\xff\n").unwrap();
+        assert_eq!(
+            writer.write_all(b"1\n").unwrap_err().kind(),
+            io::ErrorKind::InvalidData
+        );
+
+        let mut writer = JsonlWriter::new(Vec::new());
+        writer.write_all(b"name\n").unwrap();
+        assert_eq!(
+            writer.write_all(b"\xff\n").unwrap_err().kind(),
+            io::ErrorKind::InvalidData
+        );
     }
 }
