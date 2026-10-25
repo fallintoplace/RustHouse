@@ -1,6 +1,6 @@
 use crate::{
-    CompressedBlockReader, NumericColumn, PartError, WideMark, inspect_part,
-    read_numeric_granule, read_wide_marks,
+    CompressedBlockReader, NumericColumn, PartError, WideMark, inspect_part, read_numeric_granule,
+    read_wide_marks,
 };
 use std::fs::File;
 use std::path::Path;
@@ -21,7 +21,9 @@ pub struct NumericPartReader {
 impl NumericPartReader {
     pub fn open(part: impl AsRef<Path>, columns: &[String]) -> Result<Self, PartError> {
         if columns.is_empty() {
-            return Err(PartError::InvalidScan("at least one column is required".into()));
+            return Err(PartError::InvalidScan(
+                "at least one column is required".into(),
+            ));
         }
         let part = part.as_ref();
         let metadata = inspect_part(part)?;
@@ -44,9 +46,16 @@ impl NumericPartReader {
             }
             if !matches!(
                 column.data_type.as_str(),
-                "UInt8" | "UInt16" | "UInt32" | "UInt64"
-                    | "Int8" | "Int16" | "Int32" | "Int64"
-                    | "Float32" | "Float64"
+                "UInt8"
+                    | "UInt16"
+                    | "UInt32"
+                    | "UInt64"
+                    | "Int8"
+                    | "Int16"
+                    | "Int32"
+                    | "Int64"
+                    | "Float32"
+                    | "Float64"
             ) {
                 return Err(PartError::InvalidScan(format!(
                     "unsupported numeric column type: {} {}",
@@ -73,7 +82,9 @@ impl NumericPartReader {
                     })
                 })
                 .collect::<Result<Vec<_>, _>>()?;
-            let total = row_counts.iter().try_fold(0u64, |sum, rows| sum.checked_add(*rows));
+            let total = row_counts
+                .iter()
+                .try_fold(0u64, |sum, rows| sum.checked_add(*rows));
             if total != Some(metadata.rows) {
                 return Err(PartError::InvalidScan(format!(
                     "mark row counts do not match count.txt for {name}"
@@ -175,8 +186,14 @@ mod tests {
             "columns format version: 1\n2 columns:\n\u{0060}id\u{0060} Int32\n\u{0060}price\u{0060} UInt16\n",
         )
         .unwrap();
-        let ids: Vec<u8> = [1i32, 2, 3].into_iter().flat_map(i32::to_le_bytes).collect();
-        let prices: Vec<u8> = [10u16, 20, 30].into_iter().flat_map(u16::to_le_bytes).collect();
+        let ids: Vec<u8> = [1i32, 2, 3]
+            .into_iter()
+            .flat_map(i32::to_le_bytes)
+            .collect();
+        let prices: Vec<u8> = [10u16, 20, 30]
+            .into_iter()
+            .flat_map(u16::to_le_bytes)
+            .collect();
         fs::write(dir.join("id.bin"), block(&ids)).unwrap();
         fs::write(dir.join("price.bin"), block(&prices)).unwrap();
         fs::write(dir.join("id.mrk2"), marks(4, &[2, 1])).unwrap();
@@ -198,7 +215,10 @@ mod tests {
         );
         assert_eq!(
             reader.next_batch().unwrap().unwrap(),
-            vec![NumericColumn::UInt16(vec![30]), NumericColumn::Int32(vec![3])]
+            vec![
+                NumericColumn::UInt16(vec![30]),
+                NumericColumn::Int32(vec![3])
+            ]
         );
         assert!(reader.next_batch().unwrap().is_none());
         fs::remove_dir_all(dir).unwrap();
