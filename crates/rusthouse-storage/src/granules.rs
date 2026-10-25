@@ -24,8 +24,8 @@ pub fn read_mark_bytes<R: Read + Seek>(
         let block = reader
             .next_decoded()
             .ok_or_else(|| invalid_mark(mark, "column stream ends before granule"))??;
-        if offset > block.data.len() {
-            return Err(invalid_mark(mark, "decompressed offset exceeds block size"));
+        if offset >= block.data.len() {
+            return Err(invalid_mark(mark, "decompressed offset is outside block"));
         }
         let count = (byte_count - result.len()).min(block.data.len() - offset);
         result.extend_from_slice(&block.data[offset..offset + count]);
@@ -169,7 +169,21 @@ mod tests {
         assert!(matches!(
             read_u64_granule(&mut reader, &mark(0, 9, Some(1))),
             Err(PartError::InvalidWideMark {
-                reason: "decompressed offset exceeds block size",
+                reason: "decompressed offset is outside block",
+                ..
+            })
+        ));
+    }
+
+    #[test]
+    fn rejects_mark_at_end_of_nonempty_block() {
+        let mut bytes = checked_block(0x02, &12u64.to_le_bytes());
+        bytes.extend(checked_block(0x02, &34u64.to_le_bytes()));
+        let mut reader = reader(bytes);
+        assert!(matches!(
+            read_u64_granule(&mut reader, &mark(0, 8, Some(1))),
+            Err(PartError::InvalidWideMark {
+                reason: "decompressed offset is outside block",
                 ..
             })
         ));
