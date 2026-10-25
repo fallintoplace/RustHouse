@@ -70,6 +70,7 @@ impl Predicate {
 pub enum Source {
     Table(String),
     Numbers(u64),
+    NumbersRange { start: u64, count: u64 },
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -230,16 +231,37 @@ pub fn parse_select(sql: &str) -> Result<Select, ParseError> {
             if !count.bytes().all(|byte| byte.is_ascii_digit()) {
                 return Err(ParseError("numbers row count must be non-negative".into()));
             }
-            let count = count
+            let first = count
                 .parse::<u64>()
-                .map_err(|_| ParseError("numbers row count is too large".into()))?;
-            if count > 1_000_000 {
-                return Err(ParseError("numbers supports at most 1000000 rows".into()));
-            }
+                .map_err(|_| ParseError("numbers argument is too large".into()))?;
+            let source = if parser.take(Token::Comma) {
+                let count = parser.number()?;
+                if !count.bytes().all(|byte| byte.is_ascii_digit()) {
+                    return Err(ParseError("numbers row count must be non-negative".into()));
+                }
+                let count = count
+                    .parse::<u64>()
+                    .map_err(|_| ParseError("numbers row count is too large".into()))?;
+                if count > 1_000_000 {
+                    return Err(ParseError("numbers supports at most 1000000 rows".into()));
+                }
+                if first.checked_add(count).is_none() {
+                    return Err(ParseError("numbers range overflows UInt64".into()));
+                }
+                Source::NumbersRange {
+                    start: first,
+                    count,
+                }
+            } else {
+                if first > 1_000_000 {
+                    return Err(ParseError("numbers supports at most 1000000 rows".into()));
+                }
+                Source::Numbers(first)
+            };
             if !parser.take(Token::RParen) {
                 return Err(ParseError("expected ')' after numbers row count".into()));
             }
-            Some(Source::Numbers(count))
+            Some(source)
         } else {
             Some(Source::Table(name))
         }
@@ -583,6 +605,37 @@ mod tests {
             "SELECT number FROM numbers(18446744073709551616)",
             "SELECT number FROM numbers(3",
             "SELECT number FROM numbers",
+        ] {
+            assert!(parse_select(sql).is_err(), "{sql}");
+        }
+    }
+
+    #[test]
+    fn parses_numbers_start_count_with_checked_bounds() {
+        assert_eq!(
+            parse_select("SELECT number FROM numbers(10, 3)")
+                .unwrap()
+                .source,
+            Some(Source::NumbersRange {
+                start: 10,
+                count: 3
+            })
+        );
+        assert_eq!(
+            parse_select("SELECT count(*) FROM numbers(18446744073709551615, 0)")
+                .unwrap()
+                .source,
+            Some(Source::NumbersRange {
+                start: u64::MAX,
+                count: 0
+            })
+        );
+        for sql in [
+            "SELECT number FROM numbers(1,)",
+            "SELECT number FROM numbers(1,-1)",
+            "SELECT number FROM numbers(1,1000001)",
+            "SELECT number FROM numbers(18446744073709551615,2)",
+            "SELECT number FROM numbers(1,2,3)",
         ] {
             assert!(parse_select(sql).is_err(), "{sql}");
         }
