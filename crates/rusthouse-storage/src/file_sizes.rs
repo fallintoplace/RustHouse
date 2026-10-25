@@ -15,6 +15,10 @@ pub struct FileSizeVerification {
 /// Symlinks are not followed, including symlinks in nested paths.
 pub fn verify_part_file_sizes(part: impl AsRef<Path>) -> Result<FileSizeVerification, PartError> {
     let part = part.as_ref();
+    let metadata = fs::symlink_metadata(part).map_err(|source| io_error(part, source))?;
+    if !metadata.file_type().is_dir() {
+        return Err(invalid(part, "part path is not a directory"));
+    }
     let manifest = read_checksums(part.join("checksums.txt"))?;
     let mut total_bytes = 0u64;
 
@@ -198,6 +202,27 @@ mod tests {
                 ..
             })
         ));
+        fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn refuses_symlinked_part_roots() {
+        use std::os::unix::fs::symlink;
+
+        let dir = temp_dir();
+        fs::write(dir.join("checksums.txt"), manifest(&[])).unwrap();
+        let alias = dir.with_extension("link");
+        symlink(&dir, &alias).unwrap();
+
+        assert!(matches!(
+            verify_part_file_sizes(&alias),
+            Err(PartError::InvalidChecksums {
+                reason: "part path is not a directory",
+                ..
+            })
+        ));
+        fs::remove_file(alias).unwrap();
         fs::remove_dir_all(dir).unwrap();
     }
 
