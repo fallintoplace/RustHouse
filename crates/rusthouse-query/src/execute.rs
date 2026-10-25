@@ -725,7 +725,7 @@ fn compile_part_predicates(
                     operator: *operator,
                     target,
                 }
-            },
+            }
             Predicate::In { values, .. } => CompiledTest::In(
                 values
                     .iter()
