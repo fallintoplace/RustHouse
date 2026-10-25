@@ -60,6 +60,13 @@ fn executes_count_projection_filter_and_limit_on_real_checked_blocks() {
         format!("id\n{value}\n{value}\n")
     );
 
+    let duplicate = sql("SELECT id, id FROM part LIMIT 2", Some(&dir));
+    assert!(duplicate.status.success(), "{duplicate:?}");
+    assert_eq!(
+        String::from_utf8(duplicate.stdout).unwrap(),
+        format!("id\\tid\\n{value}\\t{value}\\n{value}\\t{value}\\n")
+    );
+
     let filtered = sql(
         &format!("SELECT id FROM part WHERE id = {value} LIMIT 1"),
         Some(&dir),
