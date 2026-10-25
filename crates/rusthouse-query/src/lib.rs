@@ -73,7 +73,8 @@ impl Parser {
     }
 
     fn keyword(&mut self, value: &str) -> bool {
-        if matches!(self.tokens.get(self.index), Some(Token::Word(word)) if word.eq_ignore_ascii_case(value)) {
+        if matches!(self.tokens.get(self.index), Some(Token::Word(word)) if word.eq_ignore_ascii_case(value))
+        {
             self.index += 1;
             true
         } else {
@@ -124,10 +125,7 @@ pub fn parse_select(sql: &str) -> Result<Select, ParseError> {
     let projection = if parser.take(Token::Star) {
         Projection::All
     } else if parser.keyword("COUNT") {
-        if !parser.take(Token::LParen)
-            || !parser.take(Token::Star)
-            || !parser.take(Token::RParen)
-        {
+        if !parser.take(Token::LParen) || !parser.take(Token::Star) || !parser.take(Token::RParen) {
             return Err(ParseError("expected COUNT(*)".into()));
         }
         Projection::Count
@@ -182,7 +180,9 @@ pub fn parse_select(sql: &str) -> Result<Select, ParseError> {
 
     parser.take(Token::Semicolon);
     if parser.index != parser.tokens.len() {
-        return Err(ParseError("unexpected tokens after SELECT statement".into()));
+        return Err(ParseError(
+            "unexpected tokens after SELECT statement".into(),
+        ));
     }
     Ok(Select {
         projection,
@@ -282,12 +282,19 @@ fn tokenize(sql: &str) -> Result<Vec<Token>, ParseError> {
             b'a'..=b'z' | b'A'..=b'Z' | b'_' => {
                 let start = index;
                 index += 1;
-                while matches!(bytes.get(index), Some(b'a'..=b'z' | b'A'..=b'Z' | b'0'..=b'9' | b'_')) {
+                while matches!(
+                    bytes.get(index),
+                    Some(b'a'..=b'z' | b'A'..=b'Z' | b'0'..=b'9' | b'_')
+                ) {
                     index += 1;
                 }
                 Token::Word(sql[start..index].into())
             }
-            _ => return Err(ParseError(format!("unsupported SQL character at byte {index}"))),
+            _ => {
+                return Err(ParseError(format!(
+                    "unsupported SQL character at byte {index}"
+                )));
+            }
         };
         tokens.push(token);
     }
@@ -320,7 +327,13 @@ mod tests {
         );
         assert_eq!(parse_select("SELECT * FROM part").unwrap().projection, Projection::All);
         assert_eq!(
-            parse_select("SeLeCt count(*) FROM part").unwrap().projection,
+            parse_select("SELECT * FROM part").unwrap().projection,
+            Projection::All
+        );
+        assert_eq!(
+            parse_select("SeLeCt count(*) FROM part")
+                .unwrap()
+                .projection,
             Projection::Count
         );
     }
@@ -338,11 +351,14 @@ mod tests {
         ] {
             let sql = format!("SELECT id FROM part WHERE id {input} -12.5 LIMIT 0");
             let query = parse_select(&sql).unwrap();
-            assert_eq!(query.predicate.unwrap(), Predicate {
-                column: "id".into(),
-                operator: expected,
-                value: "-12.5".into(),
-            });
+            assert_eq!(
+                query.predicate.unwrap(),
+                Predicate {
+                    column: "id".into(),
+                    operator: expected,
+                    value: "-12.5".into(),
+                }
+            );
             assert_eq!(query.limit, Some(0));
         }
     }
