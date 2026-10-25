@@ -57,6 +57,11 @@ impl NumericPartReader {
             }
             let plain_marks = part.join(format!("{name}.mrk2"));
             let compressed_marks = part.join(format!("{name}.cmrk2"));
+            if plain_marks.exists() && compressed_marks.exists() {
+                return Err(PartError::InvalidScan(format!(
+                    "multiple mark files for {name}"
+                )));
+            }
             let marks_path = if plain_marks.exists() || !compressed_marks.exists() {
                 plain_marks
             } else {
@@ -412,6 +417,18 @@ mod tests {
             Err(PartError::InvalidScan(_))
         ));
 
+        fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn rejects_conflicting_plain_and_compressed_marks() {
+        let dir = fixture();
+        fs::write(dir.join("id.cmrk2"), b"duplicate").unwrap();
+
+        assert!(matches!(
+            NumericPartReader::open(&dir, &["id".into()]),
+            Err(PartError::InvalidScan(reason)) if reason.contains("multiple mark files")
+        ));
         fs::remove_dir_all(dir).unwrap();
     }
 
