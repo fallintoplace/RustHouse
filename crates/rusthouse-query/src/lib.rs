@@ -68,7 +68,7 @@ pub struct OrderBy {
 pub struct Select {
     pub projection: Projection,
     pub source: Option<Source>,
-    pub predicate: Option<Predicate>,
+    pub predicates: Vec<Predicate>,
     pub order_by: Option<OrderBy>,
     pub limit: Option<usize>,
     pub offset: Option<usize>,
@@ -233,17 +233,27 @@ pub fn parse_select(sql: &str) -> Result<Select, ParseError> {
         return Err(ParseError("literal SELECT does not support FROM".into()));
     }
 
-    let predicate = if parser.keyword("WHERE") {
+    let predicates = if parser.keyword("WHERE") {
         if source.is_none() {
             return Err(ParseError("WHERE requires a table source".into()));
         }
-        Some(Predicate {
-            column: parser.word()?,
-            operator: parser.operator()?,
-            value: parser.number()?,
-        })
+        let mut predicates = Vec::new();
+        loop {
+            if predicates.len() == 16 {
+                return Err(ParseError("WHERE supports at most 16 conditions".into()));
+            }
+            predicates.push(Predicate {
+                column: parser.word()?,
+                operator: parser.operator()?,
+                value: parser.number()?,
+            });
+            if !parser.keyword("AND") {
+                break;
+            }
+        }
+        predicates
     } else {
-        None
+        Vec::new()
     };
 
     let order_by = if parser.keyword("ORDER") {
@@ -310,7 +320,7 @@ pub fn parse_select(sql: &str) -> Result<Select, ParseError> {
     Ok(Select {
         projection,
         source,
-        predicate,
+        predicates,
         order_by,
         limit,
         offset,
@@ -437,7 +447,7 @@ mod tests {
             Select {
                 projection: Projection::Literal(-42),
                 source: None,
-                predicate: None,
+                predicates: Vec::new(),
                 order_by: None,
                 limit: None,
                 offset: None,
@@ -448,7 +458,7 @@ mod tests {
             Select {
                 projection: Projection::Columns(vec!["id".into(), "price".into()]),
                 source: Some(Source::Table("part".into())),
-                predicate: None,
+                predicates: Vec::new(),
                 order_by: None,
                 limit: Some(2),
                 offset: None,
@@ -573,7 +583,7 @@ mod tests {
             let sql = format!("SELECT id FROM part WHERE id {input} -12.5 LIMIT 0");
             let query = parse_select(&sql).unwrap();
             assert_eq!(
-                query.predicate.unwrap(),
+                query.predicates.into_iter().next().unwrap(),
                 Predicate {
                     column: "id".into(),
                     operator: expected,
@@ -605,6 +615,40 @@ mod tests {
         ] {
             assert!(parse_select(sql).is_err(), "{sql}");
         }
+    }
+
+    #[test]
+    fn parses_and_conditions_and_rejects_incomplete_filters() {
+        let query =
+            parse_select("SELECT number FROM numbers(12) WHERE number >= 3 AND number < 8 LIMIT 4")
+                .unwrap();
+        assert_eq!(
+            query.predicates,
+            vec![
+                Predicate {
+                    column: "number".into(),
+                    operator: Operator::Ge,
+                    value: "3".into(),
+                },
+                Predicate {
+                    column: "number".into(),
+                    operator: Operator::Lt,
+                    value: "8".into(),
+                },
+            ]
+        );
+        for sql in [
+            "SELECT number FROM numbers(5) WHERE number > 1 AND",
+            "SELECT number FROM numbers(5) WHERE number > 1 OR number < 4",
+            "SELECT number FROM numbers(5) WHERE number > 1 AND AND number < 4",
+        ] {
+            assert!(parse_select(sql).is_err(), "{sql}");
+        }
+        let many = format!(
+            "SELECT number FROM numbers(5) WHERE {}",
+            vec!["number > 0"; 17].join(" AND ")
+        );
+        assert!(parse_select(&many).is_err());
     }
 
     #[test]
