@@ -10,4 +10,5 @@ name = "rusthouse"
 path = "src/main.rs"
 
 [dependencies]
+rusthouse-query = { path = "../rusthouse-query" }
 rusthouse-storage = { path = "../rusthouse-storage" }
