@@ -619,10 +619,9 @@ mod tests {
 
     #[test]
     fn parses_and_conditions_and_rejects_incomplete_filters() {
-        let query = parse_select(
-            "SELECT number FROM numbers(12) WHERE number >= 3 AND number < 8 LIMIT 4",
-        )
-        .unwrap();
+        let query =
+            parse_select("SELECT number FROM numbers(12) WHERE number >= 3 AND number < 8 LIMIT 4")
+                .unwrap();
         assert_eq!(
             query.predicates,
             vec![
