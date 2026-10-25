@@ -1,14 +1,14 @@
 use rusthouse_query::{execute, parse_select};
 use rusthouse_storage::{
     CompressedBlockReader, NumericColumn, UInt64ColumnReader, inspect_part, read_checksums,
-    read_numeric_granule, read_u64_granule, read_wide_marks, validate_wide_marks,
+    read_numeric_granule, read_u64_granule, read_wide_marks, validate_wide_marks, verify_wide_part,
 };
 use std::env;
 use std::ffi::OsString;
 use std::path::PathBuf;
 use std::process::ExitCode;
 
-const USAGE: &str = "Usage:\n  rusthouse inspect-part <path>\n  rusthouse inspect-checksums <path-to-checksums.txt>\n  rusthouse inspect-marks <path-to-wide-marks>\n  rusthouse inspect-blocks <path-to-.bin>\n  rusthouse verify-blocks <path-to-.bin>\n  rusthouse validate-marks <path-to-wide-marks> <path-to-.bin>\n  rusthouse read-u64 <data.bin> <marks.mrk2> <mark-index>\n  rusthouse scan-u64 <path-to-UInt64-.bin>\n  rusthouse read-numeric <data.bin> <marks.mrk2> <mark-index> <type>\n  rusthouse sql <SQL> [--part <path-to-wide-part>]\n  rusthouse --help\n\nInspect local MergeTree metadata, marks, and compressed blocks.";
+const USAGE: &str = "Usage:\n  rusthouse inspect-part <path>\n  rusthouse verify-part <path-to-wide-part>\n  rusthouse inspect-checksums <path-to-checksums.txt>\n  rusthouse inspect-marks <path-to-wide-marks>\n  rusthouse inspect-blocks <path-to-.bin>\n  rusthouse verify-blocks <path-to-.bin>\n  rusthouse validate-marks <path-to-wide-marks> <path-to-.bin>\n  rusthouse read-u64 <data.bin> <marks.mrk2> <mark-index>\n  rusthouse scan-u64 <path-to-UInt64-.bin>\n  rusthouse read-numeric <data.bin> <marks.mrk2> <mark-index> <type>\n  rusthouse sql <SQL> [--part <path-to-wide-part>]\n  rusthouse --help\n\nInspect local MergeTree metadata, marks, and compressed blocks.";
 
 fn main() -> ExitCode {
     let mut args = env::args_os().skip(1);
@@ -22,6 +22,7 @@ fn main() -> ExitCode {
         return ExitCode::SUCCESS;
     }
     if command != "inspect-part"
+        && command != "verify-part"
         && command != "inspect-checksums"
         && command != "inspect-marks"
         && command != "inspect-blocks"
@@ -84,6 +85,8 @@ fn main() -> ExitCode {
             };
             if command == "inspect-part" {
                 inspect_and_print(path)
+            } else if command == "verify-part" {
+                verify_part_and_print(path)
             } else if command == "inspect-checksums" {
                 inspect_checksums_and_print(path)
             } else if command == "inspect-marks" {
@@ -115,6 +118,16 @@ fn inspect_and_print(path: OsString) -> Result<(), rusthouse_storage::PartError>
     for column in metadata.columns {
         println!("  {:?}: {}", column.name, column.data_type);
     }
+    Ok(())
+}
+
+fn verify_part_and_print(path: OsString) -> Result<(), rusthouse_storage::PartError> {
+    let report = verify_wide_part(PathBuf::from(path))?;
+    println!(
+        "Verified {} streams, {} marks, {} blocks, {} decompressed bytes",
+        report.streams, report.marks, report.blocks, report.decompressed_bytes
+    );
+    println!("Block checksums and mark offsets verified; checksums.txt file hashes not verified");
     Ok(())
 }
 
