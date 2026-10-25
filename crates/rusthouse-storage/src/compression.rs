@@ -83,6 +83,26 @@ impl<R: Read + Seek> CompressedBlockReader<R> {
         })
     }
 
+    pub fn seek_to_block(&mut self, offset: u64) -> Result<(), PartError> {
+        if offset >= self.file_len {
+            return Err(PartError::InvalidCompressedBlock {
+                path: self.path.clone(),
+                offset,
+                reason: "block offset is outside file",
+            });
+        }
+
+        self.reader
+            .seek(SeekFrom::Start(offset))
+            .map_err(|source| PartError::Io {
+                path: self.path.clone(),
+                source,
+            })?;
+        self.offset = offset;
+        self.done = false;
+        Ok(())
+    }
+
     fn next_header(&mut self) -> Option<Result<BlockHeader, PartError>> {
         if self.done || self.offset == self.file_len {
             return None;
@@ -149,17 +169,18 @@ impl<R: Read + Seek> CompressedBlockReader<R> {
             return self.decoded_error(block.offset, "checksum mismatch");
         }
 
-        let payload = &encoded[HEADER_SIZE as usize..];
         let data = match block.method {
             0x02 => {
-                if payload.len() != block.decompressed_size as usize {
+                if encoded.len() - HEADER_SIZE as usize != block.decompressed_size as usize {
                     return self.decoded_error(block.offset, "uncompressed size mismatch");
                 }
-                payload.to_vec()
+                encoded.copy_within(HEADER_SIZE as usize.., 0);
+                encoded.truncate(block.decompressed_size as usize);
+                encoded
             }
             0x82 => {
                 let mut decoded = vec![0u8; block.decompressed_size as usize];
-                match decompress_into(payload, &mut decoded) {
+                match decompress_into(&encoded[HEADER_SIZE as usize..], &mut decoded) {
                     Ok(size) if size == decoded.len() => decoded,
                     _ => {
                         return self.decoded_error(
@@ -478,6 +499,62 @@ mod tests {
         assert!(matches!(
             reader.next_decoded(),
             Some(Err(PartError::Io { .. }))
+        ));
+        assert!(reader.next_decoded().is_none());
+    }
+
+    #[test]
+    fn decodes_independent_compressed_block_fixture() {
+        let bytes = include_bytes!("../tests/fixtures/blocks/lz4-none.bin");
+        let mut reader = CompressedBlockReader::new(Cursor::new(bytes), "fixture.bin").unwrap();
+
+        let first = reader.next_decoded().unwrap().unwrap();
+        assert_eq!(first.block.offset, 0);
+        assert_eq!(first.block.method, 0x82);
+        assert_eq!(first.data, vec![b'a'; 80]);
+
+        let second = reader.next_decoded().unwrap().unwrap();
+        assert_eq!(second.block.offset, 36);
+        assert_eq!(second.block.method, 0x02);
+        assert_eq!(second.data, b"hello");
+        assert!(reader.next_decoded().is_none());
+    }
+
+    #[test]
+    fn seeks_to_compressed_offsets_and_restarts_after_eof() {
+        let bytes = include_bytes!("../tests/fixtures/blocks/lz4-none.bin");
+        let mut reader = CompressedBlockReader::new(Cursor::new(bytes), "fixture.bin").unwrap();
+
+        reader.seek_to_block(36).unwrap();
+        assert_eq!(reader.next_decoded().unwrap().unwrap().data, b"hello");
+        assert!(reader.next_decoded().is_none());
+
+        reader.seek_to_block(0).unwrap();
+        assert_eq!(reader.next_decoded().unwrap().unwrap().data, vec![b'a'; 80]);
+        assert!(matches!(
+            reader.seek_to_block(bytes.len() as u64),
+            Err(PartError::InvalidCompressedBlock {
+                reason: "block offset is outside file",
+                ..
+            })
+        ));
+        assert_eq!(reader.next_decoded().unwrap().unwrap().data, b"hello");
+    }
+
+    #[test]
+    fn rejects_corrupt_reference_frame_at_its_offset() {
+        let mut bytes = include_bytes!("../tests/fixtures/blocks/lz4-none.bin").to_vec();
+        bytes[36 + PREFIX_SIZE] ^= 1;
+        let mut reader = CompressedBlockReader::new(Cursor::new(bytes), "fixture.bin").unwrap();
+
+        assert_eq!(reader.next_decoded().unwrap().unwrap().data, vec![b'a'; 80]);
+        assert!(matches!(
+            reader.next_decoded(),
+            Some(Err(PartError::InvalidCompressedBlock {
+                offset: 36,
+                reason: "checksum mismatch",
+                ..
+            }))
         ));
         assert!(reader.next_decoded().is_none());
     }

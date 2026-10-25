@@ -138,3 +138,19 @@ fn verify_blocks_rejects_checksum_mismatch() {
     assert_eq!(output.status.code(), Some(1));
     assert!(String::from_utf8_lossy(&output.stderr).contains("checksum mismatch"));
 }
+
+#[test]
+fn verify_blocks_accepts_lz4_and_none_fixture() {
+    let fixture = Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("../rusthouse-storage/tests/fixtures/blocks/lz4-none.bin");
+    let output = Command::new(env!("CARGO_BIN_EXE_rusthouse"))
+        .arg("verify-blocks")
+        .arg(fixture)
+        .output()
+        .unwrap();
+    assert!(output.status.success(), "{output:?}");
+    assert_eq!(
+        String::from_utf8(output.stdout).unwrap(),
+        "Verified 2 blocks, 85 decompressed bytes\n"
+    );
+}
