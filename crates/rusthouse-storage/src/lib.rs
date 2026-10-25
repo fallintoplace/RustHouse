@@ -1,10 +1,12 @@
 mod columns;
 mod compression;
 mod marks;
+mod mark_validation;
 
 pub use columns::parse_columns;
 pub use compression::{CompressedBlock, CompressedBlockReader};
 pub use marks::{WideMark, WideMarkFormat, WideMarks, read_wide_marks};
+pub use mark_validation::validate_wide_marks;
 
 use std::error::Error;
 use std::fmt;
@@ -42,6 +44,11 @@ pub enum PartError {
         record_size: usize,
     },
     EmptyMarksFile(PathBuf),
+    InvalidMarkOffset {
+        path: PathBuf,
+        index: usize,
+        reason: &'static str,
+    },
     InvalidCompressedBlock {
         path: PathBuf,
         offset: u64,
@@ -68,6 +75,11 @@ impl fmt::Display for PartError {
                 path.display()
             ),
             Self::EmptyMarksFile(path) => write!(f, "{}: empty marks file", path.display()),
+            Self::InvalidMarkOffset {
+                path,
+                index,
+                reason,
+            } => write!(f, "{}: invalid mark {index}: {reason}", path.display()),
             Self::InvalidCompressedBlock {
                 path,
                 offset,
