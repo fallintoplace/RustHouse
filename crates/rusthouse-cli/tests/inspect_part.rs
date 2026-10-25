@@ -3,8 +3,8 @@ use std::process::Command;
 
 #[test]
 fn inspect_part_prints_rows_and_columns() {
-    let fixture = Path::new(env!("CARGO_MANIFEST_DIR"))
-        .join("../rusthouse-storage/tests/fixtures/all_1_1_0");
+    let fixture =
+        Path::new(env!("CARGO_MANIFEST_DIR")).join("../rusthouse-storage/tests/fixtures/all_1_1_0");
     let output = Command::new(env!("CARGO_BIN_EXE_rusthouse"))
         .args(["inspect-part", fixture.to_str().unwrap()])
         .output()
@@ -23,7 +23,5 @@ fn wrong_arguments_fail_with_usage() {
         .output()
         .unwrap();
     assert_eq!(output.status.code(), Some(2));
-    assert!(String::from_utf8(output.stderr)
-        .unwrap()
-        .contains("Usage:"));
+    assert!(String::from_utf8(output.stderr).unwrap().contains("Usage:"));
 }

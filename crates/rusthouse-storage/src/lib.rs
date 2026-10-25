@@ -185,7 +185,8 @@ mod tests {
 
     #[test]
     fn supports_backtick_and_backslash_escapes() {
-        let content = "columns format version: 1\n2 columns:\n`a\\`b` String\n`path\\\\name` String\n";
+        let content =
+            "columns format version: 1\n2 columns:\n`a\\`b` String\n`path\\\\name` String\n";
         let columns = parse_columns(content).unwrap();
         assert_eq!(columns[0].name, "a`b");
         assert_eq!(columns[1].name, "path\\name");
@@ -223,7 +224,14 @@ mod tests {
 
     #[test]
     fn rejects_broken_column_definitions() {
-        for row in ["a String", "`a String", "`a`", "`` String", "`a` ", "`a\\q` String"] {
+        for row in [
+            "a String",
+            "`a String",
+            "`a`",
+            "`` String",
+            "`a` ",
+            "`a\\q` String",
+        ] {
             let content = format!("columns format version: 1\n1 columns:\n{row}\n");
             assert!(parse_columns(&content).is_err(), "accepted: {row:?}");
         }
