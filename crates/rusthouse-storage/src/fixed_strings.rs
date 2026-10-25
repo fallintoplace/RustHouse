@@ -184,8 +184,8 @@ mod tests {
         blocks.extend(checked_block(0x02, b"fghijkl"));
         let mut input = reader(blocks);
 
-        let values = read_fixed_string_granule(&mut input, &mark(0, 2, Some(3)), "FixedString(3)")
-            .unwrap();
+        let values =
+            read_fixed_string_granule(&mut input, &mark(0, 2, Some(3)), "FixedString(3)").unwrap();
         assert_eq!(values.get(0), Some(&b"cde"[..]));
         assert_eq!(values.get(1), Some(&b"fgh"[..]));
         assert_eq!(values.get(2), Some(&b"ijk"[..]));
@@ -271,7 +271,9 @@ mod tests {
         ));
         assert!(matches!(
             read_fixed_string_granule(&mut input, &mark(0, 0, Some(u64::MAX)), "FixedString(2)"),
-            Err(PartError::FixedStringRead(FixedStringReadError::TooManyRows(_)))
+            Err(PartError::FixedStringRead(
+                FixedStringReadError::TooManyRows(_)
+            ))
         ));
         let empty =
             read_fixed_string_granule(&mut input, &mark(u64::MAX, 0, Some(0)), "FixedString(4)")
