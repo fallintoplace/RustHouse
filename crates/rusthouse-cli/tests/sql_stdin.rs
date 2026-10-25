@@ -31,7 +31,11 @@ fn executes_stdin_sql_with_format_and_show_ast() {
 
     let result = stdin_sql(b"SELECT 1", &["sql", "--stdin", "--show-ast"]);
     assert!(result.status.success(), "{result:?}");
-    assert!(String::from_utf8(result.stdout).unwrap().contains("Literal"));
+    assert!(
+        String::from_utf8(result.stdout)
+            .unwrap()
+            .contains("Literal")
+    );
 }
 
 #[test]
