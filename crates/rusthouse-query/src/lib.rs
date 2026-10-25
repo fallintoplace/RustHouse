@@ -825,7 +825,6 @@ mod tests {
             "SELECT number FROM numbers(5) WHERE number IN (1 2)",
             "SELECT number FROM numbers(5) WHERE number IN 1",
             "SELECT number FROM numbers(5) WHERE number IN (1, 2",
-            "SELECT number FROM numbers(5) WHERE number NOT IN (1)",
         ] {
             assert!(parse_select(sql).is_err(), "{sql}");
         }
@@ -838,10 +837,8 @@ mod tests {
 
     #[test]
     fn parses_not_in_numeric_lists() {
-        let query = parse_select(
-            "SELECT number FROM numbers(10) WHERE number NOT IN (1, 4, 7)",
-        )
-        .unwrap();
+        let query =
+            parse_select("SELECT number FROM numbers(10) WHERE number NOT IN (1, 4, 7)").unwrap();
         assert_eq!(
             query.predicates,
             vec![Predicate::NotIn {
