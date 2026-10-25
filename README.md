@@ -1,5 +1,7 @@
 # RustHouse
 
-Experimental Rust analytical database.
+Experimental read-only ClickHouse MergeTree part metadata inspector. No SQL or column-data decoding.
 
-This repository is being initialized through its first pull request.
+```sh
+cargo run -p rusthouse-cli -- inspect-part crates/rusthouse-storage/tests/fixtures/all_1_1_0
+```
