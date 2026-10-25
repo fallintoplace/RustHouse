@@ -446,8 +446,7 @@ pub fn parse_select(sql: &str) -> Result<Select, ParseError> {
         if !parser.keyword("COUNT") || !parser.take(Token::LParen) {
             return Err(ParseError("HAVING requires COUNT(*)".into()));
         }
-        if !parser.take(Token::RParen)
-            && !(parser.take(Token::Star) && parser.take(Token::RParen))
+        if !parser.take(Token::RParen) && !(parser.take(Token::Star) && parser.take(Token::RParen))
         {
             return Err(ParseError("HAVING requires COUNT() or COUNT(*)".into()));
         }
@@ -690,6 +689,7 @@ mod tests {
                 predicates: Vec::new(),
                 or_predicates: Vec::new(),
                 order_by: None,
+                having: None,
                 limit: None,
                 offset: None,
             }
@@ -703,6 +703,7 @@ mod tests {
                 predicates: Vec::new(),
                 or_predicates: Vec::new(),
                 order_by: None,
+                having: None,
                 limit: Some(2),
                 offset: None,
             }
