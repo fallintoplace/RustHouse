@@ -107,35 +107,40 @@ pub fn read_numeric_array_column<O: Read, D: Read>(
     let mut offsets = Vec::with_capacity(rows + 1);
     offsets.push(0);
 
-    for row in 0..rows {
-        let mut bytes = [0u8; 8];
+    let mut buffer = [0u8; 16 * 1024];
+    let mut row = 0;
+    while row < rows {
+        let count = (rows - row).min(buffer.len() / 8);
         offset_stream
-            .read_exact(&mut bytes)
+            .read_exact(&mut buffer[..count * 8])
             .map_err(ArrayReadError::Offsets)?;
-        let encoded = u64::from_le_bytes(bytes);
 
-        let next = match encoding {
-            ArrayOffsetsEncoding::Sizes => {
-                absolute.checked_add(encoded).ok_or(ArrayReadError::InvalidOffset {
+        for bytes in buffer[..count * 8].chunks_exact(8) {
+            let encoded = u64::from_le_bytes(bytes.try_into().unwrap());
+            let next = match encoding {
+                ArrayOffsetsEncoding::Sizes => {
+                    absolute.checked_add(encoded).ok_or(ArrayReadError::InvalidOffset {
+                        row,
+                        reason: "array size overflows u64",
+                    })?
+                }
+                ArrayOffsetsEncoding::Absolute { .. } => encoded,
+            };
+            if next < absolute {
+                return Err(ArrayReadError::InvalidOffset {
                     row,
-                    reason: "array size overflows u64",
-                })?
+                    reason: "offset moves backwards",
+                });
             }
-            ArrayOffsetsEncoding::Absolute { .. } => encoded,
-        };
-        if next < absolute {
-            return Err(ArrayReadError::InvalidOffset {
-                row,
-                reason: "offset moves backwards",
-            });
-        }
 
-        let elements = next - base;
-        if elements > MAX_BATCH_ELEMENTS {
-            return Err(ArrayReadError::TooManyElements(elements));
+            let elements = next - base;
+            if elements > MAX_BATCH_ELEMENTS {
+                return Err(ArrayReadError::TooManyElements(elements));
+            }
+            offsets.push(elements as usize);
+            absolute = next;
+            row += 1;
         }
-        offsets.push(elements as usize);
-        absolute = next;
     }
 
     let values = read_numeric_column(data_stream, nested_type, (absolute - base) as usize)
@@ -290,7 +295,6 @@ mod tests {
             ),
             Err(ArrayReadError::InvalidOffset { row: 0, .. })
         ));
-
     }
 
     #[test]
