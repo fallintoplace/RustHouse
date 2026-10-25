@@ -20,7 +20,11 @@ impl<W: Write> JsonlWriter<W> {
     }
 
     fn finish_line(&mut self) -> io::Result<()> {
-        let fields: Vec<Vec<u8>> = self.line.split(|byte| *byte == b'\t').map(Vec::from).collect();
+        let fields: Vec<Vec<u8>> = self
+            .line
+            .split(|byte| *byte == b'\t')
+            .map(Vec::from)
+            .collect();
         self.line.clear();
         if self.headers.is_none() {
             for (index, header) in fields.iter().enumerate() {
@@ -112,7 +116,9 @@ mod tests {
         let mut output = Vec::new();
         {
             let mut writer = JsonlWriter::new(&mut output);
-            writer.write_all(b"name\tamount\n\"a\"\t340282366920938463463374607431768211455\n").unwrap();
+            writer
+                .write_all(b"name\tamount\n\"a\"\t340282366920938463463374607431768211455\n")
+                .unwrap();
             writer.write_all(b"missing\tNULL\n").unwrap();
             writer.flush().unwrap();
         }

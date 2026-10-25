@@ -25,5 +25,5 @@ fn refuses_unknown_output_formats() {
         .output()
         .unwrap();
     assert!(!result.status.success());
-    assert!(String::from_utf8_lossy(&result.stderr).contains("tsv or csv"));
+    assert!(String::from_utf8_lossy(&result.stderr).contains("tsv, csv, or jsonl"));
 }
