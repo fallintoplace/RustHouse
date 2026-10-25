@@ -25,6 +25,11 @@ pub struct DecodedBlock {
     pub data: Vec<u8>,
 }
 
+struct BlockHeader {
+    block: CompressedBlock,
+    prefix: [u8; PREFIX_SIZE],
+}
+
 pub struct CompressedBlockReader<R: Read + Seek> {
     reader: R,
     path: PathBuf,
@@ -78,30 +83,74 @@ impl<R: Read + Seek> CompressedBlockReader<R> {
         })
     }
 
+    fn next_header(&mut self) -> Option<Result<BlockHeader, PartError>> {
+        if self.done || self.offset == self.file_len {
+            return None;
+        }
+        if self.file_len - self.offset < PREFIX_SIZE as u64 {
+            return self.invalid("truncated checksum or block header");
+        }
+
+        let mut prefix = [0u8; PREFIX_SIZE];
+        if let Err(source) = self.reader.read_exact(&mut prefix) {
+            return self.io_error(source);
+        }
+        let compressed_size = u32::from_le_bytes(prefix[17..21].try_into().unwrap());
+        let decompressed_size = u32::from_le_bytes(prefix[21..25].try_into().unwrap());
+        if compressed_size < HEADER_SIZE {
+            return self.invalid("compressed size is smaller than the block header");
+        }
+        if compressed_size > MAX_BLOCK_SIZE || decompressed_size > MAX_BLOCK_SIZE {
+            return self.invalid("compressed or decompressed size exceeds the 1 GiB limit");
+        }
+        if decompressed_size == 0 {
+            return self.invalid("decompressed size is zero");
+        }
+
+        let Some(end) = self
+            .offset
+            .checked_add(CHECKSUM_SIZE + u64::from(compressed_size))
+        else {
+            return self.invalid("compressed block offset overflows");
+        };
+        if end > self.file_len {
+            return self.invalid("compressed block extends past end of file");
+        }
+
+        let block = CompressedBlock {
+            offset: self.offset,
+            method: prefix[16],
+            compressed_size,
+            decompressed_size,
+        };
+        self.offset = end;
+        Some(Ok(BlockHeader { block, prefix }))
+    }
+
     pub fn next_decoded(&mut self) -> Option<Result<DecodedBlock, PartError>> {
-        let block = match self.next()? {
-            Ok(block) => block,
+        let header = match self.next_header()? {
+            Ok(header) => header,
             Err(error) => return Some(Err(error)),
         };
+        let block = header.block;
         if block.compressed_size > MAX_DECODE_BLOCK_SIZE
             || block.decompressed_size > MAX_DECODE_BLOCK_SIZE
         {
             return self.decoded_error(block.offset, "block exceeds the 64 MiB decode limit");
         }
 
-        if let Err(source) = self.reader.seek(SeekFrom::Start(block.offset)) {
+        let mut encoded = vec![0u8; block.compressed_size as usize];
+        encoded[..HEADER_SIZE as usize]
+            .copy_from_slice(&header.prefix[CHECKSUM_SIZE as usize..]);
+        if let Err(source) = self.reader.read_exact(&mut encoded[HEADER_SIZE as usize..]) {
             return self.io_error(source);
         }
-        let mut encoded = vec![0u8; CHECKSUM_SIZE as usize + block.compressed_size as usize];
-        if let Err(source) = self.reader.read_exact(&mut encoded) {
-            return self.io_error(source);
-        }
-        let checksum = u128::from(cityhash128(&encoded[CHECKSUM_SIZE as usize..])).to_le_bytes();
-        if encoded[..CHECKSUM_SIZE as usize] != checksum {
+        let checksum = u128::from(cityhash128(&encoded)).to_le_bytes();
+        if header.prefix[..CHECKSUM_SIZE as usize] != checksum {
             return self.decoded_error(block.offset, "checksum mismatch");
         }
 
-        let payload = &encoded[PREFIX_SIZE..];
+        let payload = &encoded[HEADER_SIZE as usize..];
         let data = match block.method {
             0x02 => {
                 if payload.len() != block.decompressed_size as usize {
@@ -139,7 +188,7 @@ impl<R: Read + Seek> CompressedBlockReader<R> {
         }))
     }
 
-    fn invalid(&mut self, reason: &'static str) -> Option<Result<CompressedBlock, PartError>> {
+    fn invalid<T>(&mut self, reason: &'static str) -> Option<Result<T, PartError>> {
         self.done = true;
         Some(Err(PartError::InvalidCompressedBlock {
             path: self.path.clone(),
@@ -161,50 +210,14 @@ impl<R: Read + Seek> Iterator for CompressedBlockReader<R> {
     type Item = Result<CompressedBlock, PartError>;
 
     fn next(&mut self) -> Option<Self::Item> {
-        if self.done || self.offset == self.file_len {
-            return None;
-        }
-        if self.file_len - self.offset < PREFIX_SIZE as u64 {
-            return self.invalid("truncated checksum or block header");
-        }
-
-        let mut prefix = [0u8; PREFIX_SIZE];
-        if let Err(source) = self.reader.read_exact(&mut prefix) {
+        let header = match self.next_header()? {
+            Ok(header) => header,
+            Err(error) => return Some(Err(error)),
+        };
+        if let Err(source) = self.reader.seek(SeekFrom::Start(self.offset)) {
             return self.io_error(source);
         }
-        let compressed_size = u32::from_le_bytes(prefix[17..21].try_into().unwrap());
-        let decompressed_size = u32::from_le_bytes(prefix[21..25].try_into().unwrap());
-        if compressed_size < HEADER_SIZE {
-            return self.invalid("compressed size is smaller than the block header");
-        }
-        if compressed_size > MAX_BLOCK_SIZE || decompressed_size > MAX_BLOCK_SIZE {
-            return self.invalid("compressed or decompressed size exceeds the 1 GiB limit");
-        }
-        if decompressed_size == 0 {
-            return self.invalid("decompressed size is zero");
-        }
-
-        let Some(end) = self
-            .offset
-            .checked_add(CHECKSUM_SIZE + u64::from(compressed_size))
-        else {
-            return self.invalid("compressed block offset overflows");
-        };
-        if end > self.file_len {
-            return self.invalid("compressed block extends past end of file");
-        }
-
-        if let Err(source) = self.reader.seek(SeekFrom::Start(end)) {
-            return self.io_error(source);
-        }
-        let block = CompressedBlock {
-            offset: self.offset,
-            method: prefix[16],
-            compressed_size,
-            decompressed_size,
-        };
-        self.offset = end;
-        Some(Ok(block))
+        Some(Ok(header.block))
     }
 }
 
