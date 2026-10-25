@@ -140,7 +140,7 @@ impl fmt::Display for PartError {
             }
             Self::UnsupportedMarksFormat(path) => write!(
                 f,
-                "{}: only uncompressed wide-part .mrk and .mrk2 files are supported",
+                "{}: only wide-part .mrk, .mrk2, .cmrk, and .cmrk2 files are supported",
                 path.display()
             ),
         }

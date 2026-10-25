@@ -7,7 +7,7 @@ use std::ffi::OsString;
 use std::path::PathBuf;
 use std::process::ExitCode;
 
-const USAGE: &str = "Usage:\n  rusthouse inspect-part <path>\n  rusthouse inspect-marks <path-to-.mrk-or-.mrk2>\n  rusthouse inspect-blocks <path-to-.bin>\n  rusthouse verify-blocks <path-to-.bin>\n  rusthouse validate-marks <path-to-.mrk-or-.mrk2> <path-to-.bin>\n  rusthouse read-u64 <data.bin> <marks.mrk2> <mark-index>\n  rusthouse scan-u64 <path-to-UInt64-.bin>\n  rusthouse --help\n\nInspect local MergeTree metadata, marks, and compressed blocks.";
+const USAGE: &str = "Usage:\n  rusthouse inspect-part <path>\n  rusthouse inspect-marks <path-to-wide-marks>\n  rusthouse inspect-blocks <path-to-.bin>\n  rusthouse verify-blocks <path-to-.bin>\n  rusthouse validate-marks <path-to-wide-marks> <path-to-.bin>\n  rusthouse read-u64 <data.bin> <marks.mrk2> <mark-index>\n  rusthouse scan-u64 <path-to-UInt64-.bin>\n  rusthouse --help\n\nInspect local MergeTree metadata, marks, and compressed blocks.";
 
 fn main() -> ExitCode {
     let mut args = env::args_os().skip(1);
@@ -89,9 +89,15 @@ fn inspect_and_print(path: OsString) -> Result<(), rusthouse_storage::PartError>
 
 fn inspect_marks_and_print(path: OsString) -> Result<(), rusthouse_storage::PartError> {
     let metadata = read_wide_marks(PathBuf::from(path))?;
-    let format = match metadata.format {
-        rusthouse_storage::WideMarkFormat::Fixed => "fixed (.mrk)",
-        rusthouse_storage::WideMarkFormat::Adaptive => "adaptive (.mrk2)",
+    let extension = metadata
+        .path
+        .extension()
+        .and_then(|extension| extension.to_str());
+    let format = match (metadata.format, extension) {
+        (rusthouse_storage::WideMarkFormat::Fixed, Some("cmrk")) => "fixed (.cmrk)",
+        (rusthouse_storage::WideMarkFormat::Adaptive, Some("cmrk2")) => "adaptive (.cmrk2)",
+        (rusthouse_storage::WideMarkFormat::Fixed, _) => "fixed (.mrk)",
+        (rusthouse_storage::WideMarkFormat::Adaptive, _) => "adaptive (.mrk2)",
     };
     println!("Mark file: {}", metadata.path.display());
     println!("Format: {format}");
