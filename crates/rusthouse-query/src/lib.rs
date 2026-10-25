@@ -303,7 +303,10 @@ pub fn parse_select(sql: &str) -> Result<Select, ParseError> {
                 if !parser.take(Token::RParen) {
                     return Err(ParseError("expected ')' after IN list".into()));
                 }
-                branches.last_mut().unwrap().push(Predicate::In { column, values });
+                branches
+                    .last_mut()
+                    .unwrap()
+                    .push(Predicate::In { column, values });
                 total_conditions += 1;
             } else {
                 branches.last_mut().unwrap().push(Predicate::Comparison {
@@ -716,7 +719,6 @@ mod tests {
         );
         for sql in [
             "SELECT number FROM numbers(5) WHERE number > 1 AND",
-            "SELECT number FROM numbers(5) WHERE number > 1 OR number < 4",
             "SELECT number FROM numbers(5) WHERE number > 1 AND AND number < 4",
         ] {
             assert!(parse_select(sql).is_err(), "{sql}");
