@@ -125,6 +125,23 @@ impl NumericPartReader {
         self.rows
     }
 
+    pub fn mark_count(&self) -> usize {
+        self.marks
+    }
+
+    /// Position the next scan batch at a mark without reading earlier granules.
+    /// The index may equal mark_count() to seek to the end of the part.
+    pub fn seek_to_mark(&mut self, index: usize) -> Result<(), PartError> {
+        if index > self.marks {
+            return Err(PartError::InvalidGranuleIndex {
+                index,
+                marks: self.marks,
+            });
+        }
+        self.next_mark = index;
+        Ok(())
+    }
+
     pub fn next_batch(&mut self) -> Result<Option<Vec<NumericColumn>>, PartError> {
         if self.next_mark == self.marks {
             return Ok(None);
@@ -227,6 +244,67 @@ mod tests {
             ]
         );
         assert!(reader.next_batch().unwrap().is_none());
+        fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn seeks_to_marks_and_can_rescan_previous_batches() {
+        let dir = fixture();
+        let mut reader = NumericPartReader::open(&dir, &["id".into(), "price".into()]).unwrap();
+        assert_eq!(reader.mark_count(), 2);
+
+        reader.seek_to_mark(1).unwrap();
+        assert_eq!(
+            reader.next_batch().unwrap().unwrap(),
+            vec![
+                NumericColumn::Int32(vec![3]),
+                NumericColumn::UInt16(vec![30])
+            ]
+        );
+        assert!(reader.next_batch().unwrap().is_none());
+
+        reader.seek_to_mark(0).unwrap();
+        assert_eq!(
+            reader.next_batch().unwrap().unwrap(),
+            vec![
+                NumericColumn::Int32(vec![1, 2]),
+                NumericColumn::UInt16(vec![10, 20])
+            ]
+        );
+        assert!(matches!(
+            reader.seek_to_mark(3),
+            Err(PartError::InvalidGranuleIndex { index: 3, marks: 2 })
+        ));
+        assert_eq!(
+            reader.next_batch().unwrap().unwrap(),
+            vec![
+                NumericColumn::Int32(vec![3]),
+                NumericColumn::UInt16(vec![30])
+            ]
+        );
+
+        reader.seek_to_mark(reader.mark_count()).unwrap();
+        assert!(reader.next_batch().unwrap().is_none());
+        fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn empty_scan_can_only_seek_to_its_end() {
+        let dir = path();
+        fs::write(dir.join("count.txt"), "0\n").unwrap();
+        fs::write(
+            dir.join("columns.txt"),
+            "columns format version: 1\n1 columns:\n`id` UInt8\n",
+        )
+        .unwrap();
+        let mut reader = NumericPartReader::open(&dir, &["id".into()]).unwrap();
+        assert_eq!(reader.mark_count(), 0);
+        reader.seek_to_mark(0).unwrap();
+        assert!(reader.next_batch().unwrap().is_none());
+        assert!(matches!(
+            reader.seek_to_mark(1),
+            Err(PartError::InvalidGranuleIndex { index: 1, marks: 0 })
+        ));
         fs::remove_dir_all(dir).unwrap();
     }
 
