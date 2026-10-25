@@ -345,18 +345,23 @@ impl GroupedCounts {
         output: &mut W,
     ) -> Result<(), ExecutionError> {
         if let Some(order) = &query.order_by {
-            if order.column != column {
+            if order.column != column && order.column != "count" {
                 return Err(ExecutionError::Invalid(
-                    "grouped ORDER BY must use the group key".into(),
+                    "grouped ORDER BY must use the group key or count".into(),
                 ));
             }
-            self.rows.sort_by(|(left, _), (right, _)| {
-                let ordering = compare_numbers(*left, *right);
-                if order.descending {
+            self.rows.sort_by(|(left_key, left_count), (right_key, right_count)| {
+                let ordering = if order.column == "count" {
+                    left_count.cmp(right_count)
+                } else {
+                    compare_numbers(*left_key, *right_key)
+                };
+                let ordering = if order.descending {
                     ordering.reverse()
                 } else {
                     ordering
-                }
+                };
+                ordering.then_with(|| compare_numbers(*left_key, *right_key))
             });
         }
         writeln!(output, "{column}\tcount")?;
@@ -1422,6 +1427,24 @@ mod tests {
             )
             .unwrap(),
             "number\tcount\n11\t1\n8\t1\n"
+        );
+    }
+
+    #[test]
+    fn grouped_count_order_sorts_by_frequency_then_key() {
+        let query = crate::parse_select(
+            "SELECT number, count(*) FROM numbers(5) GROUP BY number ORDER BY count() DESC LIMIT 2",
+        )
+        .unwrap();
+        let mut groups = GroupedCounts::default();
+        for value in [3, 3, 1, 1, 1, 2] {
+            groups.push(Number::Unsigned(value)).unwrap();
+        }
+        let mut result = Vec::new();
+        groups.write(&query, "number", &mut result).unwrap();
+        assert_eq!(
+            String::from_utf8(result).unwrap(),
+            "number\tcount\n1\t3\n3\t2\n"
         );
     }
 

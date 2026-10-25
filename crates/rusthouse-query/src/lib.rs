@@ -431,6 +431,21 @@ pub fn parse_select(sql: &str) -> Result<Select, ParseError> {
             return Err(ParseError("expected BY after ORDER".into()));
         }
         let column = parser.word()?;
+        if matches!(projection, Projection::GroupedCount { .. })
+            && column.eq_ignore_ascii_case("count")
+            && parser.take(Token::LParen)
+            && !parser.take(Token::RParen)
+            && !(parser.take(Token::Star) && parser.take(Token::RParen))
+        {
+            return Err(ParseError("expected COUNT() or COUNT(*) in ORDER BY".into()));
+        }
+        let column = if matches!(projection, Projection::GroupedCount { .. })
+            && column.eq_ignore_ascii_case("count")
+        {
+            "count".to_string()
+        } else {
+            column
+        };
         let descending = if parser.keyword("DESC") {
             true
         } else {
@@ -453,7 +468,7 @@ pub fn parse_select(sql: &str) -> Result<Select, ParseError> {
     if let Projection::GroupedCount { column } = &projection {
         if order_by
             .as_ref()
-            .is_some_and(|order| &order.column != column)
+            .is_some_and(|order| &order.column != column && order.column != "count")
         {
             return Err(ParseError("grouped ORDER BY must use the group key".into()));
         }
@@ -805,6 +820,29 @@ mod tests {
         ] {
             assert!(parse_select(sql).is_err(), "{sql}");
         }
+    }
+
+    #[test]
+    fn grouped_queries_can_order_by_count() {
+        for order in ["count", "count()", "count(*)"] {
+            let sql = format!(
+                "SELECT number, count(*) FROM numbers(10) GROUP BY number ORDER BY {order} DESC"
+            );
+            let query = parse_select(&sql).unwrap();
+            assert_eq!(
+                query.order_by,
+                Some(OrderBy {
+                    column: "count".into(),
+                    descending: true,
+                })
+            );
+        }
+        assert!(
+            parse_select(
+                "SELECT number, count(*) FROM numbers(10) GROUP BY number ORDER BY count(foo)"
+            )
+            .is_err()
+        );
     }
 
     #[test]
