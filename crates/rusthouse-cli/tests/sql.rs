@@ -55,6 +55,19 @@ fn executes_generated_numbers_without_a_part() {
 }
 
 #[test]
+fn queries_generated_numbers_from_a_start_offset() {
+    let result = sql(
+        "SELECT number FROM numbers(100, 5) ORDER BY number DESC LIMIT 2",
+        None,
+    );
+    assert!(result.status.success(), "{result:?}");
+    assert_eq!(
+        String::from_utf8(result.stdout).unwrap(),
+        "number\n104\n103\n"
+    );
+}
+
+#[test]
 fn sorts_generated_numbers_from_the_cli() {
     let output = sql(
         "SELECT number FROM numbers(10) ORDER BY number DESC LIMIT 3",
@@ -195,6 +208,62 @@ fn pages_sorted_results_from_the_cli() {
         format!("id\n{id}\n{id}\n")
     );
     fs::remove_dir_all(dir).unwrap();
+}
+
+#[test]
+fn supports_comma_limit_pagination_from_the_cli() {
+    let result = sql("SELECT number FROM numbers(10) LIMIT 3, 2", None);
+    assert!(result.status.success(), "{result:?}");
+    assert_eq!(String::from_utf8(result.stdout).unwrap(), "number\n3\n4\n");
+
+    let result = sql(
+        "SELECT number FROM numbers(10) ORDER BY number DESC LIMIT 2, 3",
+        None,
+    );
+    assert!(result.status.success(), "{result:?}");
+    assert_eq!(
+        String::from_utf8(result.stdout).unwrap(),
+        "number\n7\n6\n5\n"
+    );
+}
+
+#[test]
+fn supports_modulo_predicates_in_sql() {
+    let result = sql(
+        "SELECT number FROM numbers(10) WHERE number % 2 = 1 LIMIT 3",
+        None,
+    );
+    assert!(result.status.success(), "{result:?}");
+    assert_eq!(
+        String::from_utf8(result.stdout).unwrap(),
+        "number\n1\n3\n5\n"
+    );
+}
+
+#[test]
+fn excludes_numeric_values_with_not_in() {
+    let result = sql(
+        "SELECT number FROM numbers(10) WHERE number NOT IN (1, 4, 9) LIMIT 3",
+        None,
+    );
+    assert!(result.status.success(), "{result:?}");
+    assert_eq!(
+        String::from_utf8(result.stdout).unwrap(),
+        "number\n0\n2\n3\n"
+    );
+}
+
+#[test]
+fn supports_or_filters_from_the_cli() {
+    let result = sql(
+        "SELECT number FROM numbers(10) WHERE number = 1 OR number >= 8 ORDER BY number DESC",
+        None,
+    );
+    assert!(result.status.success(), "{result:?}");
+    assert_eq!(
+        String::from_utf8(result.stdout).unwrap(),
+        "number\n9\n8\n1\n"
+    );
 }
 
 #[test]

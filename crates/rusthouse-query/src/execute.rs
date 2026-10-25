@@ -89,16 +89,16 @@ fn remember_distinct(
     values: &[Number],
 ) -> Result<bool, ExecutionError> {
     let key = values.iter().copied().map(NumberKey::from).collect();
-    if seen.contains(&key) {
-        return Ok(false);
-    }
+    // At capacity, duplicates are still valid but new unique rows are not.
     if seen.len() >= MAX_DISTINCT_ROWS {
+        if seen.contains(&key) {
+            return Ok(false);
+        }
         return Err(ExecutionError::Invalid(
             "DISTINCT supports at most 100000 unique rows".into(),
         ));
     }
-    seen.insert(key);
-    Ok(true)
+    Ok(seen.insert(key))
 }
 
 pub fn execute<W: Write>(
@@ -126,7 +126,10 @@ fn execute_into<W: Write>(
     }
 
     match query.source.as_ref() {
-        Some(Source::Numbers(rows)) => return execute_numbers(query, *rows, part, output),
+        Some(Source::Numbers(rows)) => return execute_numbers(query, 0, *rows, part, output),
+        Some(Source::NumbersRange { start, count }) => {
+            return execute_numbers(query, *start, *count, part, output);
+        }
         Some(Source::Table(table)) if table == "part" => {}
         _ => {
             return Err(ExecutionError::Invalid(
@@ -145,7 +148,10 @@ fn execute_into<W: Write>(
     }
     let metadata = inspect_part(part)?;
 
-    if matches!(query.projection, Projection::Count) && query.predicates.is_empty() {
+    if matches!(query.projection, Projection::Count)
+        && query.predicates.is_empty()
+        && query.or_predicates.is_empty()
+    {
         writeln!(output, "count")?;
         if query.limit != Some(0) && query.offset.unwrap_or(0) == 0 {
             writeln!(output, "{}", metadata.rows)?;
@@ -188,20 +194,16 @@ fn execute_into<W: Write>(
             }
         })
         .collect::<Vec<_>>();
-    let comparisons = compile_part_predicates(
-        &query.predicates,
-        &mut scan_columns,
-        |column_name, literal| {
-            let column = metadata
-                .columns
-                .iter()
-                .find(|column| column.name == column_name)
-                .ok_or_else(|| {
-                    ExecutionError::Invalid(format!("unknown WHERE column: {column_name}"))
-                })?;
-            parse_numeric(&column.data_type, literal)
-        },
-    )?;
+    let comparisons = compile_part_where(query, &mut scan_columns, |column_name, literal| {
+        let column = metadata
+            .columns
+            .iter()
+            .find(|column| column.name == column_name)
+            .ok_or_else(|| {
+                ExecutionError::Invalid(format!("unknown WHERE column: {column_name}"))
+            })?;
+        parse_numeric(&column.data_type, literal)
+    })?;
     let sort_index = query.order_by.as_ref().map(|order| {
         if let Some(index) = scan_columns
             .iter()
@@ -378,8 +380,8 @@ fn execute_grouped_part<W: Write>(
 ) -> Result<(), ExecutionError> {
     let metadata = inspect_part(part)?;
     let mut scan_columns = vec![column.to_owned()];
-    let comparisons = compile_part_predicates(
-        &query.predicates,
+    let comparisons = compile_part_where(
+        query,
         &mut scan_columns,
         |column_name, literal| {
             let metadata_column = metadata
@@ -409,6 +411,7 @@ fn execute_grouped_part<W: Write>(
 
 fn execute_grouped_numbers<W: Write>(
     query: &Select,
+    start: u64,
     rows: u64,
     column: &str,
     output: &mut W,
@@ -418,12 +421,12 @@ fn execute_grouped_numbers<W: Write>(
             "numbers(N) exposes only the number column".into(),
         ));
     }
-    let comparisons = compile_numbers_predicates(&query.predicates)?;
+    let comparisons = compile_numbers_predicates(query)?;
     let mut groups = GroupedCounts::default();
     if query.limit == Some(0) {
         return groups.write(query, column, output);
     }
-    for number in 0..rows {
+    for number in start..start + rows {
         let value = Number::Unsigned(u128::from(number));
         if number_matches_all(value, &comparisons) {
             groups.push(value)?;
@@ -441,20 +444,16 @@ fn execute_aggregate_part<W: Write>(
 ) -> Result<(), ExecutionError> {
     let metadata = inspect_part(part)?;
     let mut scan_columns = vec![column.to_owned()];
-    let comparisons = compile_part_predicates(
-        &query.predicates,
-        &mut scan_columns,
-        |column_name, literal| {
-            let metadata_column = metadata
-                .columns
-                .iter()
-                .find(|candidate| candidate.name == column_name)
-                .ok_or_else(|| {
-                    ExecutionError::Invalid(format!("unknown WHERE column: {column_name}"))
-                })?;
-            parse_numeric(&metadata_column.data_type, literal)
-        },
-    )?;
+    let comparisons = compile_part_where(query, &mut scan_columns, |column_name, literal| {
+        let metadata_column = metadata
+            .columns
+            .iter()
+            .find(|candidate| candidate.name == column_name)
+            .ok_or_else(|| {
+                ExecutionError::Invalid(format!("unknown WHERE column: {column_name}"))
+            })?;
+        parse_numeric(&metadata_column.data_type, literal)
+    })?;
     let mut reader = NumericPartReader::open(part, &scan_columns)?;
     writeln!(output, "{}({column})", function.name())?;
     if query.limit == Some(0) {
@@ -477,6 +476,7 @@ fn execute_aggregate_part<W: Write>(
 
 fn execute_aggregate_numbers<W: Write>(
     query: &Select,
+    start: u64,
     rows: u64,
     function: AggregateFunction,
     column: &str,
@@ -487,13 +487,13 @@ fn execute_aggregate_numbers<W: Write>(
             "numbers(N) exposes only the number column".into(),
         ));
     }
-    let comparisons = compile_numbers_predicates(&query.predicates)?;
+    let comparisons = compile_numbers_predicates(query)?;
     writeln!(output, "{}(number)", function.name())?;
     if query.limit == Some(0) {
         return Ok(());
     }
     let mut state = AggregateState::new(function);
-    for number in 0..rows {
+    for number in start..start + rows {
         let value = Number::Unsigned(u128::from(number));
         if !number_matches_all(value, &comparisons) {
             continue;
@@ -508,6 +508,7 @@ fn execute_aggregate_numbers<W: Write>(
 
 fn execute_numbers<W: Write>(
     query: &Select,
+    start: u64,
     rows: u64,
     part: Option<&Path>,
     output: &mut W,
@@ -518,10 +519,10 @@ fn execute_numbers<W: Write>(
         ));
     }
     if let Projection::Aggregate { function, column } = &query.projection {
-        return execute_aggregate_numbers(query, rows, *function, column, output);
+        return execute_aggregate_numbers(query, start, rows, *function, column, output);
     }
     if let Projection::GroupedCount { column } = &query.projection {
-        return execute_grouped_numbers(query, rows, column, output);
+        return execute_grouped_numbers(query, start, rows, column, output);
     }
     let projected: Vec<&str> = match &query.projection {
         Projection::All => vec!["number"],
@@ -536,9 +537,9 @@ fn execute_numbers<W: Write>(
         Projection::Count => Vec::new(),
         Projection::Aggregate { .. } | Projection::GroupedCount { .. } | Projection::Literal(_) => {
             unreachable!()
-        }
+        },
     };
-    let comparisons = compile_numbers_predicates(&query.predicates)?;
+    let comparisons = compile_numbers_predicates(query)?;
     let is_count = matches!(query.projection, Projection::Count);
     let mut sorting = query
         .order_by
@@ -572,7 +573,7 @@ fn execute_numbers<W: Write>(
     let mut skipped = 0usize;
     let offset = query.offset.unwrap_or(0);
     let limit = query.limit.unwrap_or(usize::MAX);
-    for number in 0..rows {
+    for number in start..start + rows {
         if !number_matches_all(Number::Unsigned(u128::from(number)), &comparisons) {
             continue;
         }
@@ -819,6 +820,7 @@ fn compare_numbers(left: Number, right: Number) -> Ordering {
 enum CompiledTest {
     Comparison { operator: Operator, target: Number },
     In(Vec<Number>),
+    NotIn(Vec<Number>),
 }
 
 impl CompiledTest {
@@ -828,6 +830,9 @@ impl CompiledTest {
             Self::In(targets) => targets
                 .iter()
                 .any(|target| number_matches(value, *target, Operator::Eq)),
+            Self::NotIn(targets) => targets
+                .iter()
+                .all(|target| !number_matches(value, *target, Operator::Eq)),
         }
     }
 }
@@ -848,11 +853,25 @@ fn compile_part_predicates(
         let test = match predicate {
             Predicate::Comparison {
                 operator, value, ..
-            } => CompiledTest::Comparison {
-                operator: *operator,
-                target: convert(column, value)?,
-            },
+            } => {
+                let target = convert(column, value)?;
+                if matches!(*operator, Operator::Modulo(_)) && matches!(target, Number::Float(_)) {
+                    return Err(ExecutionError::Invalid(
+                        "modulo requires integer columns".into(),
+                    ));
+                }
+                CompiledTest::Comparison {
+                    operator: *operator,
+                    target,
+                }
+            }
             Predicate::In { values, .. } => CompiledTest::In(
+                values
+                    .iter()
+                    .map(|value| convert(column, value))
+                    .collect::<Result<Vec<_>, _>>()?,
+            ),
+            Predicate::NotIn { values, .. } => CompiledTest::NotIn(
                 values
                     .iter()
                     .map(|value| convert(column, value))
@@ -873,19 +892,41 @@ fn compile_part_predicates(
     Ok(compiled)
 }
 
-fn batch_matches(batch: &[NumericColumn], row: usize, predicates: &[CompiledPredicate]) -> bool {
-    predicates.iter().all(|predicate| {
-        predicate
-            .test
-            .matches(number_at(&batch[predicate.index], row))
+fn batch_matches(batch: &[NumericColumn], row: usize, branches: &[Vec<CompiledPredicate>]) -> bool {
+    branches.iter().any(|predicates| {
+        predicates.iter().all(|predicate| {
+            predicate
+                .test
+                .matches(number_at(&batch[predicate.index], row))
+        })
     })
 }
 
+fn compile_part_where(
+    query: &Select,
+    scan_columns: &mut Vec<String>,
+    mut convert: impl FnMut(&str, &str) -> Result<Number, ExecutionError>,
+) -> Result<Vec<Vec<CompiledPredicate>>, ExecutionError> {
+    let mut result = vec![compile_part_predicates(
+        &query.predicates,
+        scan_columns,
+        |column, value| convert(column, value),
+    )?];
+    for predicates in &query.or_predicates {
+        result.push(compile_part_predicates(
+            predicates,
+            scan_columns,
+            |column, value| convert(column, value),
+        )?);
+    }
+    Ok(result)
+}
+
 fn compile_numbers_predicates(
-    predicates: &[Predicate],
-) -> Result<Vec<CompiledPredicate>, ExecutionError> {
+    query: &Select,
+) -> Result<Vec<Vec<CompiledPredicate>>, ExecutionError> {
     let mut scan_columns = vec!["number".into()];
-    compile_part_predicates(predicates, &mut scan_columns, |column, value| {
+    compile_part_where(query, &mut scan_columns, |column, value| {
         if column != "number" {
             return Err(ExecutionError::Invalid(
                 "numbers(N) exposes only the number column".into(),
@@ -895,10 +936,12 @@ fn compile_numbers_predicates(
     })
 }
 
-fn number_matches_all(value: Number, predicates: &[CompiledPredicate]) -> bool {
-    predicates
-        .iter()
-        .all(|predicate| predicate.test.matches(value))
+fn number_matches_all(value: Number, branches: &[Vec<CompiledPredicate>]) -> bool {
+    branches.iter().any(|predicates| {
+        predicates
+            .iter()
+            .all(|predicate| predicate.test.matches(value))
+    })
 }
 
 fn parse_numeric(data_type: &str, text: &str) -> Result<Number, ExecutionError> {
@@ -941,6 +984,17 @@ fn number_at(column: &NumericColumn, row: usize) -> Number {
 }
 
 fn number_matches(value: Number, target: Number, operator: Operator) -> bool {
+    if let Operator::Modulo(modulus) = operator {
+        return match (value, target) {
+            (Number::Unsigned(value), Number::Unsigned(target)) => {
+                value % u128::from(modulus) == target
+            }
+            (Number::Signed(value), Number::Signed(target)) => {
+                value % i128::from(modulus) == target
+            }
+            _ => false,
+        };
+    }
     match (value, target) {
         (Number::Unsigned(value), Number::Unsigned(target)) => compare(value, target, operator),
         (Number::Signed(value), Number::Signed(target)) => compare(value, target, operator),
@@ -957,6 +1011,7 @@ fn compare<T: PartialOrd>(value: T, target: T, operator: Operator) -> bool {
         Operator::Le => value <= target,
         Operator::Gt => value > target,
         Operator::Ge => value >= target,
+        Operator::Modulo(_) => unreachable!("modulo handled before comparison"),
     }
 }
 
@@ -1016,6 +1071,90 @@ mod tests {
         assert!(run("SELECT number FROM numbers(0) WHERE missing = 1", None).is_err());
         assert!(run("SELECT number FROM numbers(0) WHERE number = -1", None).is_err());
         assert!(run("SELECT number FROM numbers(2)", Some(Path::new("."))).is_err());
+    }
+
+    #[test]
+    fn queries_numbers_with_start_and_count() {
+        assert_eq!(
+            run(
+                "SELECT number FROM numbers(7, 4) WHERE number >= 8 LIMIT 2",
+                None
+            )
+            .unwrap(),
+            "number\n8\n9\n"
+        );
+        assert_eq!(
+            run("SELECT count(*) FROM numbers(7, 4)", None).unwrap(),
+            "count\n4\n"
+        );
+        assert_eq!(
+            run("SELECT sum(number) FROM numbers(7, 4)", None).unwrap(),
+            "sum(number)\n34\n"
+        );
+        assert_eq!(
+            run("SELECT number FROM numbers(7, 0)", None).unwrap(),
+            "number\n"
+        );
+    }
+
+    #[test]
+    fn filters_with_modulo_for_generated_numbers() {
+        assert_eq!(
+            run(
+                "SELECT number FROM numbers(12) WHERE number % 3 = 1 ORDER BY number DESC LIMIT 2",
+                None,
+            )
+            .unwrap(),
+            "number\n10\n7\n"
+        );
+        assert_eq!(
+            run(
+                "SELECT count(*) FROM numbers(10) WHERE number % 2 = 0",
+                None
+            )
+            .unwrap(),
+            "count\n5\n"
+        );
+    }
+
+    #[test]
+    fn evaluates_not_in_with_filters_and_aggregates() {
+        assert_eq!(
+            run(
+                "SELECT number FROM numbers(10) WHERE number NOT IN (1, 3, 5) LIMIT 4",
+                None,
+            )
+            .unwrap(),
+            "number\n0\n2\n4\n6\n"
+        );
+        assert_eq!(
+            run(
+                "SELECT count(*) FROM numbers(10) WHERE number NOT IN (1, 3, 5)",
+                None,
+            )
+            .unwrap(),
+            "count\n7\n"
+        );
+    }
+
+    #[test]
+    fn evaluates_or_across_generated_rows() {
+        assert_eq!(
+            run(
+                "SELECT number FROM numbers(10) WHERE number = 1 OR number >= 4 AND number < 6",
+                None,
+            )
+            .unwrap(),
+            "number\n1\n4\n5\n"
+        );
+        assert_eq!(
+            run(
+                "SELECT count(*) FROM numbers(10) WHERE number = 0 OR number = 9",
+                None,
+            )
+            .unwrap(),
+            "count\n2\n"
+        );
     }
 
     #[test]
@@ -1236,6 +1375,18 @@ mod tests {
     }
 
     #[test]
+    fn grouped_counts_support_ranges_and_or_filters() {
+        assert_eq!(
+            run(
+                "SELECT number, COUNT(*) FROM numbers(8, 4) WHERE number = 8 OR number = 11 GROUP BY number ORDER BY number DESC",
+                None
+            )
+            .unwrap(),
+            "number\\tcount\\n11\\t1\\n8\\t1\\n"
+        );
+    }
+
+    #[test]
     fn grouped_counts_merge_equal_values_without_precision_loss() {
         let mut groups = GroupedCounts::default();
         groups.push(Number::Unsigned(u128::MAX)).unwrap();
@@ -1260,6 +1411,19 @@ mod tests {
         assert!(remember_distinct(&mut seen, &[Number::Float(f64::NAN)]).unwrap());
         assert!(!remember_distinct(&mut seen, &[Number::Float(-f64::NAN)]).unwrap());
         assert!(remember_distinct(&mut seen, &[Number::Signed(-1)]).unwrap());
+    }
+
+    #[test]
+    fn distinct_limit_rejects_new_rows_but_accepts_existing_rows() {
+        let mut seen = HashSet::new();
+        for index in 0..MAX_DISTINCT_ROWS {
+            assert!(remember_distinct(&mut seen, &[Number::Unsigned(index as u128)]).unwrap());
+        }
+        assert!(!remember_distinct(&mut seen, &[Number::Unsigned(0)]).unwrap());
+        assert!(matches!(
+            remember_distinct(&mut seen, &[Number::Unsigned(MAX_DISTINCT_ROWS as u128)]),
+            Err(ExecutionError::Invalid(_))
+        ));
     }
 
     #[test]

@@ -1,3 +1,4 @@
+use crate::numeric::numeric_storage_type;
 use crate::{
     CompressedBlockReader, NumericColumn, PartError, WideMark, inspect_part, read_numeric_granule,
     read_wide_marks,
@@ -44,21 +45,7 @@ impl NumericPartReader {
                     "unsupported column filename: {name}"
                 )));
             }
-            if !matches!(
-                column.data_type.as_str(),
-                "UInt8"
-                    | "UInt16"
-                    | "UInt32"
-                    | "UInt64"
-                    | "UInt128"
-                    | "Int8"
-                    | "Int16"
-                    | "Int32"
-                    | "Int64"
-                    | "Int128"
-                    | "Float32"
-                    | "Float64"
-            ) {
+            if numeric_storage_type(&column.data_type).is_none() {
                 return Err(PartError::InvalidScan(format!(
                     "unsupported numeric column type: {} {}",
                     column.name, column.data_type
@@ -136,6 +123,23 @@ impl NumericPartReader {
 
     pub fn rows(&self) -> u64 {
         self.rows
+    }
+
+    pub fn mark_count(&self) -> usize {
+        self.marks
+    }
+
+    /// Position the next scan batch at a mark without reading earlier granules.
+    /// The index may equal mark_count() to seek to the end of the part.
+    pub fn seek_to_mark(&mut self, index: usize) -> Result<(), PartError> {
+        if index > self.marks {
+            return Err(PartError::InvalidGranuleIndex {
+                index,
+                marks: self.marks,
+            });
+        }
+        self.next_mark = index;
+        Ok(())
     }
 
     pub fn next_batch(&mut self) -> Result<Option<Vec<NumericColumn>>, PartError> {
@@ -244,6 +248,67 @@ mod tests {
     }
 
     #[test]
+    fn seeks_to_marks_and_can_rescan_previous_batches() {
+        let dir = fixture();
+        let mut reader = NumericPartReader::open(&dir, &["id".into(), "price".into()]).unwrap();
+        assert_eq!(reader.mark_count(), 2);
+
+        reader.seek_to_mark(1).unwrap();
+        assert_eq!(
+            reader.next_batch().unwrap().unwrap(),
+            vec![
+                NumericColumn::Int32(vec![3]),
+                NumericColumn::UInt16(vec![30])
+            ]
+        );
+        assert!(reader.next_batch().unwrap().is_none());
+
+        reader.seek_to_mark(0).unwrap();
+        assert_eq!(
+            reader.next_batch().unwrap().unwrap(),
+            vec![
+                NumericColumn::Int32(vec![1, 2]),
+                NumericColumn::UInt16(vec![10, 20])
+            ]
+        );
+        assert!(matches!(
+            reader.seek_to_mark(3),
+            Err(PartError::InvalidGranuleIndex { index: 3, marks: 2 })
+        ));
+        assert_eq!(
+            reader.next_batch().unwrap().unwrap(),
+            vec![
+                NumericColumn::Int32(vec![3]),
+                NumericColumn::UInt16(vec![30])
+            ]
+        );
+
+        reader.seek_to_mark(reader.mark_count()).unwrap();
+        assert!(reader.next_batch().unwrap().is_none());
+        fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn empty_scan_can_only_seek_to_its_end() {
+        let dir = path();
+        fs::write(dir.join("count.txt"), "0\n").unwrap();
+        fs::write(
+            dir.join("columns.txt"),
+            "columns format version: 1\n1 columns:\n`id` UInt8\n",
+        )
+        .unwrap();
+        let mut reader = NumericPartReader::open(&dir, &["id".into()]).unwrap();
+        assert_eq!(reader.mark_count(), 0);
+        reader.seek_to_mark(0).unwrap();
+        assert!(reader.next_batch().unwrap().is_none());
+        assert!(matches!(
+            reader.seek_to_mark(1),
+            Err(PartError::InvalidGranuleIndex { index: 1, marks: 0 })
+        ));
+        fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
     fn reads_signed_and_unsigned_128_bit_columns() {
         let dir = path();
         fs::write(dir.join("count.txt"), "3\n").unwrap();
@@ -281,6 +346,29 @@ mod tests {
                 NumericColumn::UInt128(large[2..].to_vec()),
                 NumericColumn::Int128(small[2..].to_vec())
             ]
+        );
+        assert!(reader.next_batch().unwrap().is_none());
+        fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn reads_timestamp_column_from_a_wide_part() {
+        let dir = path();
+        fs::write(dir.join("count.txt"), "2\n").unwrap();
+        fs::write(
+            dir.join("columns.txt"),
+            "columns format version: 1\n1 columns:\n`created_at` DateTime64(3, 'UTC')\n",
+        )
+        .unwrap();
+        let values = [-1i64, 1_700_000_000_123];
+        let bytes: Vec<_> = values.into_iter().flat_map(i64::to_le_bytes).collect();
+        fs::write(dir.join("created_at.bin"), block(&bytes)).unwrap();
+        fs::write(dir.join("created_at.mrk2"), marks(8, &[2])).unwrap();
+
+        let mut reader = NumericPartReader::open(&dir, &["created_at".into()]).unwrap();
+        assert_eq!(
+            reader.next_batch().unwrap().unwrap(),
+            vec![NumericColumn::Int64(values.to_vec())]
         );
         assert!(reader.next_batch().unwrap().is_none());
         fs::remove_dir_all(dir).unwrap();

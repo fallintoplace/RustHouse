@@ -1,4 +1,5 @@
 use crate::{Column, PartError};
+use std::collections::HashSet;
 
 pub fn parse_columns(content: &str) -> Result<Vec<Column>, PartError> {
     let mut lines = content.lines();
@@ -15,12 +16,17 @@ pub fn parse_columns(content: &str) -> Result<Vec<Column>, PartError> {
         .ok_or_else(|| invalid(2, "expected '<count> columns:'"))?;
 
     let mut columns = Vec::new();
+    let mut names = HashSet::new();
     for index in 0..expected {
         let line_number = index + 3;
         let line = lines
             .next()
             .ok_or_else(|| invalid(line_number, "fewer columns than declared"))?;
-        columns.push(parse_column(line, line_number)?);
+        let column = parse_column(line, line_number)?;
+        if !names.insert(column.name.clone()) {
+            return Err(invalid(line_number, "duplicate column name"));
+        }
+        columns.push(column);
     }
     if lines.next().is_some() {
         return Err(invalid(expected + 3, "more columns than declared"));
@@ -226,6 +232,22 @@ mod tests {
             parse_columns("columns format version: 1\nwrong\n"),
             Err(PartError::InvalidColumns { line: 2, .. })
         ));
+    }
+
+    #[test]
+    fn rejects_duplicate_decoded_names() {
+        for text in [
+            "columns format version: 1\n2 columns:\n`id` UInt32\n`id` UInt64\n",
+            "columns format version: 1\n2 columns:\n`a` UInt8\n`\\x61` UInt16\n",
+        ] {
+            assert!(matches!(
+                parse_columns(text),
+                Err(PartError::InvalidColumns {
+                    line: 4,
+                    message: "duplicate column name"
+                })
+            ));
+        }
     }
 
     #[test]
