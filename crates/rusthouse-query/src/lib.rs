@@ -46,10 +46,24 @@ pub enum Operator {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct Predicate {
-    pub column: String,
-    pub operator: Operator,
-    pub value: String,
+pub enum Predicate {
+    Comparison {
+        column: String,
+        operator: Operator,
+        value: String,
+    },
+    In {
+        column: String,
+        values: Vec<String>,
+    },
+}
+
+impl Predicate {
+    fn column(&self) -> &str {
+        match self {
+            Self::Comparison { column, .. } | Self::In { column, .. } => column,
+        }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -252,18 +266,36 @@ pub fn parse_select(sql: &str) -> Result<Select, ParseError> {
                     return Err(ParseError("BETWEEN requires AND".into()));
                 }
                 let upper = parser.number()?;
-                predicates.push(Predicate {
+                predicates.push(Predicate::Comparison {
                     column: column.clone(),
                     operator: Operator::Ge,
                     value: lower,
                 });
-                predicates.push(Predicate {
+                predicates.push(Predicate::Comparison {
                     column,
                     operator: Operator::Le,
                     value: upper,
                 });
+            } else if parser.keyword("IN") {
+                if !parser.take(Token::LParen) {
+                    return Err(ParseError("expected '(' after IN".into()));
+                }
+                let mut values = Vec::new();
+                loop {
+                    if values.len() == 32 {
+                        return Err(ParseError("IN supports at most 32 values".into()));
+                    }
+                    values.push(parser.number()?);
+                    if !parser.take(Token::Comma) {
+                        break;
+                    }
+                }
+                if !parser.take(Token::RParen) {
+                    return Err(ParseError("expected ')' after IN list".into()));
+                }
+                predicates.push(Predicate::In { column, values });
             } else {
-                predicates.push(Predicate {
+                predicates.push(Predicate::Comparison {
                     column,
                     operator: parser.operator()?,
                     value: parser.number()?,
@@ -606,7 +638,7 @@ mod tests {
             let query = parse_select(&sql).unwrap();
             assert_eq!(
                 query.predicates.into_iter().next().unwrap(),
-                Predicate {
+                Predicate::Comparison {
                     column: "id".into(),
                     operator: expected,
                     value: "-12.5".into(),
@@ -646,12 +678,12 @@ mod tests {
         assert_eq!(
             query.predicates,
             vec![
-                Predicate {
+                Predicate::Comparison {
                     column: "number".into(),
                     operator: Operator::Ge,
                     value: "3".into(),
                 },
-                Predicate {
+                Predicate::Comparison {
                     column: "number".into(),
                     operator: Operator::Lt,
                     value: "8".into(),
@@ -681,17 +713,17 @@ mod tests {
         assert_eq!(
             query.predicates,
             vec![
-                Predicate {
+                Predicate::Comparison {
                     column: "number".into(),
                     operator: Operator::Ge,
                     value: "3".into(),
                 },
-                Predicate {
+                Predicate::Comparison {
                     column: "number".into(),
                     operator: Operator::Le,
                     value: "8".into(),
                 },
-                Predicate {
+                Predicate::Comparison {
                     column: "number".into(),
                     operator: Operator::Ne,
                     value: "4".into(),
@@ -711,6 +743,42 @@ mod tests {
         let too_many = format!(
             "SELECT number FROM numbers(5) WHERE {} AND number BETWEEN 1 AND 2",
             vec!["number > 0"; 15].join(" AND ")
+        );
+        assert!(parse_select(&too_many).is_err());
+    }
+
+    #[test]
+    fn parses_in_and_checks_list_bounds() {
+        let query =
+            parse_select("SELECT number FROM numbers(9) WHERE number IN (1, 4, 7) AND number > 2")
+                .unwrap();
+        assert_eq!(
+            query.predicates,
+            vec![
+                Predicate::In {
+                    column: "number".into(),
+                    values: vec!["1".into(), "4".into(), "7".into()],
+                },
+                Predicate::Comparison {
+                    column: "number".into(),
+                    operator: Operator::Gt,
+                    value: "2".into(),
+                },
+            ]
+        );
+        for sql in [
+            "SELECT number FROM numbers(5) WHERE number IN ()",
+            "SELECT number FROM numbers(5) WHERE number IN (1,)",
+            "SELECT number FROM numbers(5) WHERE number IN (1 2)",
+            "SELECT number FROM numbers(5) WHERE number IN 1",
+            "SELECT number FROM numbers(5) WHERE number IN (1, 2",
+            "SELECT number FROM numbers(5) WHERE number NOT IN (1)",
+        ] {
+            assert!(parse_select(sql).is_err(), "{sql}");
+        }
+        let too_many = format!(
+            "SELECT number FROM numbers(9) WHERE number IN ({})",
+            vec!["1"; 33].join(",")
         );
         assert!(parse_select(&too_many).is_err());
     }
