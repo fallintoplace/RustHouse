@@ -204,7 +204,10 @@ impl Error for PartError {
 pub fn inspect_part(path: impl AsRef<Path>) -> Result<PartMetadata, PartError> {
     let path = path.as_ref();
     let rows = parse_count(&read_metadata(&path.join("count.txt"), MAX_COUNT_BYTES)?)?;
-    let columns = parse_columns(&read_metadata(&path.join("columns.txt"), MAX_COLUMNS_BYTES)?)?;
+    let columns = parse_columns(&read_metadata(
+        &path.join("columns.txt"),
+        MAX_COLUMNS_BYTES,
+    )?)?;
 
     Ok(PartMetadata {
         path: path.to_path_buf(),
@@ -275,13 +278,19 @@ mod tests {
 
     #[test]
     fn limits_count_and_column_metadata_before_parsing() {
-        let dir = std::env::temp_dir().join(format!(
-            "rusthouse-bounded-metadata-{}",
-            std::process::id()
-        ));
+        let dir =
+            std::env::temp_dir().join(format!("rusthouse-bounded-metadata-{}", std::process::id()));
         fs::create_dir_all(&dir).unwrap();
-        fs::write(dir.join("columns.txt"), "columns format version: 1\n0 columns:\n").unwrap();
-        fs::write(dir.join("count.txt"), vec![b'1'; MAX_COUNT_BYTES as usize + 1]).unwrap();
+        fs::write(
+            dir.join("columns.txt"),
+            "columns format version: 1\n0 columns:\n",
+        )
+        .unwrap();
+        fs::write(
+            dir.join("count.txt"),
+            vec![b'1'; MAX_COUNT_BYTES as usize + 1],
+        )
+        .unwrap();
         assert!(matches!(
             inspect_part(&dir),
             Err(PartError::Io { path, source })
