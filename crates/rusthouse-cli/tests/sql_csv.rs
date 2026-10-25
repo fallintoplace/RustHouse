@@ -27,7 +27,6 @@ fn refuses_unknown_output_formats() {
     assert!(!result.status.success());
     let error = String::from_utf8_lossy(&result.stderr);
     assert!(error.contains("tsv"));
-    assert!(error.contains("csv"));
+    assert!(error.contains("csv-no-header"));
     assert!(error.contains("jsonl"));
-    assert!(error.contains("json"));
 }
