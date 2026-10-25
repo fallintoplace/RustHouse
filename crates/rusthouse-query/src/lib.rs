@@ -30,9 +30,15 @@ pub struct Predicate {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Source {
+    Table(String),
+    Numbers(u64),
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Select {
     pub projection: Projection,
-    pub source: Option<String>,
+    pub source: Option<Source>,
     pub predicate: Option<Predicate>,
     pub limit: Option<usize>,
 }
@@ -148,7 +154,32 @@ pub fn parse_select(sql: &str) -> Result<Select, ParseError> {
         Projection::Columns(columns)
     };
 
-    let source = parser.keyword("FROM").then(|| parser.word()).transpose()?;
+    let source = if parser.keyword("FROM") {
+        let name = parser.word()?;
+        if name.eq_ignore_ascii_case("numbers") {
+            if !parser.take(Token::LParen) {
+                return Err(ParseError("numbers requires a row count".into()));
+            }
+            let count = parser.number()?;
+            if !count.bytes().all(|byte| byte.is_ascii_digit()) {
+                return Err(ParseError("numbers row count must be non-negative".into()));
+            }
+            let count = count
+                .parse::<u64>()
+                .map_err(|_| ParseError("numbers row count is too large".into()))?;
+            if count > 1_000_000 {
+                return Err(ParseError("numbers supports at most 1000000 rows".into()));
+            }
+            if !parser.take(Token::RParen) {
+                return Err(ParseError("expected ')' after numbers row count".into()));
+            }
+            Some(Source::Numbers(count))
+        } else {
+            Some(Source::Table(name))
+        }
+    } else {
+        None
+    };
     if source.is_none() && !matches!(projection, Projection::Literal(_)) {
         return Err(ParseError("a table source is required".into()));
     }
@@ -325,7 +356,7 @@ mod tests {
             parse_select("select id, price from part limit 2;").unwrap(),
             Select {
                 projection: Projection::Columns(vec!["id".into(), "price".into()]),
-                source: Some("part".into()),
+                source: Some(Source::Table("part".into())),
                 predicate: None,
                 limit: Some(2),
             }
@@ -346,6 +377,25 @@ mod tests {
                 .projection,
             Projection::Count
         );
+    }
+
+    #[test]
+    fn parses_generated_numbers_and_rejects_invalid_counts() {
+        let query = parse_select("SELECT number FROM numbers(12) WHERE number >= 5 LIMIT 2").unwrap();
+        assert_eq!(query.source, Some(Source::Numbers(12)));
+        assert_eq!(query.projection, Projection::Columns(vec!["number".into()]));
+        assert_eq!(parse_select("SELECT count(*) FROM NUMBERS(0)").unwrap().source, Some(Source::Numbers(0)));
+        for sql in [
+            "SELECT number FROM numbers()",
+            "SELECT number FROM numbers(-1)",
+            "SELECT number FROM numbers(1.5)",
+            "SELECT number FROM numbers(1000001)",
+            "SELECT number FROM numbers(18446744073709551616)",
+            "SELECT number FROM numbers(3",
+            "SELECT number FROM numbers",
+        ] {
+            assert!(parse_select(sql).is_err(), "{sql}");
+        }
     }
 
     #[test]
