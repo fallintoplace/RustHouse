@@ -328,7 +328,11 @@ fn run_sql_args(mut args: impl Iterator<Item = OsString>) -> Result<(), String> 
                 return Err("duplicate --format option".into());
             }
             seen_format = true;
-            csv = match args.next().and_then(|value| value.into_string().ok()).as_deref() {
+            csv = match args
+                .next()
+                .and_then(|value| value.into_string().ok())
+                .as_deref()
+            {
                 Some("tsv") => false,
                 Some("csv") => true,
                 _ => return Err("--format must be tsv or csv".into()),
