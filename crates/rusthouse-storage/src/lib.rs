@@ -1,4 +1,5 @@
 mod arrays;
+mod checksums;
 mod columns;
 mod compression;
 mod fixed_strings;
@@ -15,6 +16,7 @@ pub use arrays::{
     ArrayOffsets, ArrayOffsetsEncoding, ArrayReadError, NumericArrayColumn, read_array_offsets,
     read_numeric_array_column,
 };
+pub use checksums::{FileChecksum, PartChecksums, UncompressedChecksum, read_checksums};
 pub use columns::parse_columns;
 pub use compression::{CompressedBlock, CompressedBlockReader, DecodedBlock};
 pub use fixed_strings::{
@@ -58,6 +60,10 @@ pub enum PartError {
         source: io::Error,
     },
     InvalidCount(String),
+    InvalidChecksums {
+        path: PathBuf,
+        reason: &'static str,
+    },
     InvalidColumns {
         line: usize,
         message: &'static str,
@@ -106,6 +112,9 @@ impl fmt::Display for PartError {
         match self {
             Self::Io { path, source } => write!(f, "{}: {source}", path.display()),
             Self::InvalidCount(value) => write!(f, "invalid count.txt row count: {value:?}"),
+            Self::InvalidChecksums { path, reason } => {
+                write!(f, "{}: invalid checksums: {reason}", path.display())
+            }
             Self::InvalidColumns { line, message } => {
                 write!(f, "invalid columns.txt at line {line}: {message}")
             }
