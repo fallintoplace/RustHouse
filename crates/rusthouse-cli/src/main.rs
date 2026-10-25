@@ -456,14 +456,13 @@ fn run_sql_args(mut args: impl Iterator<Item = OsString>) -> Result<(), String> 
         ),
         SqlOutputFormat::Json => {
             let mut writer = json_array::JsonArrayWriter::new(&mut output);
-            execute(&select, part.as_deref(), &mut writer)
-                .and_then(|()| {
-                    writer
-                        .finish()
-                        .map(|_| ())
-                        .map_err(rusthouse_query::ExecutionError::Io)
-                })
-        },
+            execute(&select, part.as_deref(), &mut writer).and_then(|()| {
+                writer
+                    .finish()
+                    .map(|_| ())
+                    .map_err(rusthouse_query::ExecutionError::Io)
+            })
+        }
     };
     if result.is_err() {
         drop(output);
