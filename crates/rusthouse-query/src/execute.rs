@@ -135,20 +135,16 @@ fn execute_into<W: Write>(
             }
         })
         .collect::<Vec<_>>();
-    let comparisons = compile_part_predicates(
-        &query.predicates,
-        &mut scan_columns,
-        |predicate| {
-            let column = metadata
-                .columns
-                .iter()
-                .find(|column| column.name == predicate.column)
-                .ok_or_else(|| {
-                    ExecutionError::Invalid(format!("unknown WHERE column: {}", predicate.column))
-                })?;
-            parse_numeric(&column.data_type, &predicate.value)
-        },
-    )?;
+    let comparisons = compile_part_predicates(&query.predicates, &mut scan_columns, |predicate| {
+        let column = metadata
+            .columns
+            .iter()
+            .find(|column| column.name == predicate.column)
+            .ok_or_else(|| {
+                ExecutionError::Invalid(format!("unknown WHERE column: {}", predicate.column))
+            })?;
+        parse_numeric(&column.data_type, &predicate.value)
+    })?;
     let sort_index = query.order_by.as_ref().map(|order| {
         if let Some(index) = scan_columns
             .iter()
@@ -242,20 +238,16 @@ fn execute_aggregate_part<W: Write>(
 ) -> Result<(), ExecutionError> {
     let metadata = inspect_part(part)?;
     let mut scan_columns = vec![column.to_owned()];
-    let comparisons = compile_part_predicates(
-        &query.predicates,
-        &mut scan_columns,
-        |predicate| {
-            let metadata_column = metadata
-                .columns
-                .iter()
-                .find(|candidate| candidate.name == predicate.column)
-                .ok_or_else(|| {
-                    ExecutionError::Invalid(format!("unknown WHERE column: {}", predicate.column))
-                })?;
-            parse_numeric(&metadata_column.data_type, &predicate.value)
-        },
-    )?;
+    let comparisons = compile_part_predicates(&query.predicates, &mut scan_columns, |predicate| {
+        let metadata_column = metadata
+            .columns
+            .iter()
+            .find(|candidate| candidate.name == predicate.column)
+            .ok_or_else(|| {
+                ExecutionError::Invalid(format!("unknown WHERE column: {}", predicate.column))
+            })?;
+        parse_numeric(&metadata_column.data_type, &predicate.value)
+    })?;
     let mut reader = NumericPartReader::open(part, &scan_columns)?;
     writeln!(output, "{}({column})", function.name())?;
     if query.limit == Some(0) {
@@ -917,10 +909,13 @@ mod tests {
             .unwrap(),
             "sum(number)\n9\n"
         );
-        assert!(run(
-            "SELECT number FROM numbers(0) WHERE number > 2 AND missing < 5",
-            None
-        ).is_err());
+        assert!(
+            run(
+                "SELECT number FROM numbers(0) WHERE number > 2 AND missing < 5",
+                None
+            )
+            .is_err()
+        );
     }
 
     #[test]
