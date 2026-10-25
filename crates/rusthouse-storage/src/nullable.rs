@@ -284,4 +284,26 @@ mod tests {
         let column = read_nullable_legacy_strings(&mut io::empty(), &mut io::empty(), 0).unwrap();
         assert!(column.is_empty());
     }
+    #[test]
+    fn decodes_consecutive_batches_without_consuming_the_next_batch() {
+        let mut nulls = Bytewise(Cursor::new([1, 0, 0, 1, 99]));
+        let mut data = Bytewise(Cursor::new([10, 11, 12, 13, 88]));
+
+        let first =
+            read_nullable_numeric_column(&mut nulls, &mut data, "Nullable(UInt8)", 2).unwrap();
+        let second =
+            read_nullable_numeric_column(&mut nulls, &mut data, "Nullable(UInt8)", 2).unwrap();
+
+        assert_eq!(first.null_map(), &[1, 0]);
+        assert_eq!(first.values(), &NumericColumn::UInt8(vec![10, 11]));
+        assert_eq!(second.null_map(), &[0, 1]);
+        assert_eq!(second.values(), &NumericColumn::UInt8(vec![12, 13]));
+
+        let mut trailing = [0];
+        nulls.read_exact(&mut trailing).unwrap();
+        assert_eq!(trailing, [99]);
+        data.read_exact(&mut trailing).unwrap();
+        assert_eq!(trailing, [88]);
+    }
+
 }
