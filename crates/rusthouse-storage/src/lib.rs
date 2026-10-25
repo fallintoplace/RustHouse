@@ -2,12 +2,14 @@ mod arrays;
 mod checksums;
 mod columns;
 mod compression;
+mod decimal;
 mod enums;
 mod file_sizes;
 mod fixed_strings;
 mod granules;
 mod mark_validation;
 mod marks;
+mod nested_arrays;
 mod nullable;
 mod nullable_arrays;
 mod numeric;
@@ -25,6 +27,7 @@ pub use arrays::{
 pub use checksums::{FileChecksum, PartChecksums, UncompressedChecksum, read_checksums};
 pub use columns::parse_columns;
 pub use compression::{CompressedBlock, CompressedBlockReader, DecodedBlock};
+pub use decimal::{DecimalColumn, DecimalReadError, read_decimal_column};
 pub use enums::{EnumColumn, EnumReadError, read_enum_column};
 pub use file_sizes::{FileSizeVerification, verify_part_file_sizes};
 pub use fixed_strings::{
@@ -33,6 +36,9 @@ pub use fixed_strings::{
 pub use granules::{read_mark_bytes, read_numeric_granule, read_u64_granule};
 pub use mark_validation::validate_wide_marks;
 pub use marks::{WideMark, WideMarkFormat, WideMarks, read_wide_marks};
+pub use nested_arrays::{
+    NestedArrayReadError, NestedNumericArrayColumn, read_nested_numeric_array_column,
+};
 pub use nullable::{
     NullableColumn, NullableReadError, read_null_map, read_nullable_fixed_strings,
     read_nullable_legacy_strings, read_nullable_numeric_column, read_nullable_sized_strings,
