@@ -19,6 +19,10 @@ impl<W: Write> JsonlWriter<W> {
         }
     }
 
+    pub fn into_inner(self) -> W {
+        self.output
+    }
+
     fn finish_line(&mut self) -> io::Result<()> {
         let fields: Vec<Vec<u8>> = self
             .line
