@@ -1,4 +1,6 @@
-use rusthouse_storage::{CompressedBlockReader, inspect_part, read_wide_marks, validate_wide_marks};
+use rusthouse_storage::{
+    CompressedBlockReader, inspect_part, read_wide_marks, validate_wide_marks,
+};
 use std::env;
 use std::ffi::OsString;
 use std::path::PathBuf;

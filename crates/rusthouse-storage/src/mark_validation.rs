@@ -47,10 +47,9 @@ pub fn validate_wide_marks<R: Read + Seek>(
                     ));
                 }
             }
-            None
-                if terminal
-                    && mark.compressed_offset == preceding_end
-                    && mark.decompressed_offset == 0 => {}
+            None if terminal
+                && mark.compressed_offset == preceding_end
+                && mark.decompressed_offset == 0 => {}
             _ => {
                 return Err(invalid_mark(
                     marks,
@@ -162,11 +161,7 @@ mod tests {
     fn rejects_marks_inside_compressed_blocks() {
         let bytes = block(16);
         assert!(matches!(
-            check(
-                vec![mark(2, 0, Some(1))],
-                WideMarkFormat::Adaptive,
-                bytes,
-            ),
+            check(vec![mark(2, 0, Some(1))], WideMarkFormat::Adaptive, bytes,),
             Err(PartError::InvalidMarkOffset { index: 0, .. })
         ));
     }
@@ -216,11 +211,7 @@ mod tests {
         let mut bytes = block(16);
         bytes.extend_from_slice(&[1, 2, 3]);
         assert!(matches!(
-            check(
-                vec![mark(0, 0, Some(16))],
-                WideMarkFormat::Adaptive,
-                bytes,
-            ),
+            check(vec![mark(0, 0, Some(16))], WideMarkFormat::Adaptive, bytes,),
             Err(PartError::InvalidCompressedBlock { .. })
         ));
     }
