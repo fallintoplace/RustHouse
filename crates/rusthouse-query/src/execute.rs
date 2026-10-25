@@ -89,16 +89,16 @@ fn remember_distinct(
     values: &[Number],
 ) -> Result<bool, ExecutionError> {
     let key = values.iter().copied().map(NumberKey::from).collect();
-    if seen.contains(&key) {
-        return Ok(false);
-    }
+    // At capacity, duplicates are still valid but new unique rows are not.
     if seen.len() >= MAX_DISTINCT_ROWS {
+        if seen.contains(&key) {
+            return Ok(false);
+        }
         return Err(ExecutionError::Invalid(
             "DISTINCT supports at most 100000 unique rows".into(),
         ));
     }
-    seen.insert(key);
-    Ok(true)
+    Ok(seen.insert(key))
 }
 
 pub fn execute<W: Write>(
@@ -1075,6 +1075,19 @@ mod tests {
         assert!(remember_distinct(&mut seen, &[Number::Float(f64::NAN)]).unwrap());
         assert!(!remember_distinct(&mut seen, &[Number::Float(-f64::NAN)]).unwrap());
         assert!(remember_distinct(&mut seen, &[Number::Signed(-1)]).unwrap());
+    }
+
+    #[test]
+    fn distinct_limit_rejects_new_rows_but_accepts_existing_rows() {
+        let mut seen = HashSet::new();
+        for index in 0..MAX_DISTINCT_ROWS {
+            assert!(remember_distinct(&mut seen, &[Number::Unsigned(index as u128)]).unwrap());
+        }
+        assert!(!remember_distinct(&mut seen, &[Number::Unsigned(0)]).unwrap());
+        assert!(matches!(
+            remember_distinct(&mut seen, &[Number::Unsigned(MAX_DISTINCT_ROWS as u128)]),
+            Err(ExecutionError::Invalid(_))
+        ));
     }
 
     #[test]
