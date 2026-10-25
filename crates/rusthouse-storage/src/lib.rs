@@ -9,6 +9,7 @@ mod marks;
 mod nullable;
 mod numeric;
 mod part_scan;
+mod part_verify;
 mod primary_index;
 mod stream;
 mod string_arrays;
@@ -33,6 +34,7 @@ pub use nullable::{
 };
 pub use numeric::{NumericColumn, NumericReadError, read_numeric_column};
 pub use part_scan::NumericPartReader;
+pub use part_verify::{PartVerification, verify_wide_part};
 pub use primary_index::{FixedPrimaryIndex, read_fixed_primary_index};
 pub use stream::UInt64ColumnReader;
 pub use string_arrays::{
@@ -110,6 +112,10 @@ pub enum PartError {
         marks: usize,
     },
     InvalidScan(String),
+    InvalidPart {
+        path: PathBuf,
+        reason: &'static str,
+    },
     FixedStringRead(FixedStringReadError),
     NumericRead(NumericReadError),
     UnsupportedMarksFormat(PathBuf),
@@ -176,6 +182,9 @@ impl fmt::Display for PartError {
                 write!(f, "granule index {index} is outside {marks} marks")
             }
             Self::InvalidScan(reason) => write!(f, "invalid numeric part scan: {reason}"),
+            Self::InvalidPart { path, reason } => {
+                write!(f, "{}: invalid wide part: {reason}", path.display())
+            },
             Self::FixedStringRead(source) => write!(f, "{source}"),
             Self::NumericRead(source) => write!(f, "{source}"),
             Self::UnsupportedMarksFormat(path) => write!(
