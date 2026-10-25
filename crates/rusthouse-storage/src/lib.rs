@@ -1,6 +1,8 @@
 mod columns;
+mod marks;
 
 pub use columns::parse_columns;
+pub use marks::{WideMark, WideMarkFormat, WideMarks, read_wide_marks};
 
 use std::error::Error;
 use std::fmt;
@@ -26,6 +28,12 @@ pub enum PartError {
     Io { path: PathBuf, source: io::Error },
     InvalidCount(String),
     InvalidColumns { line: usize, message: &'static str },
+    InvalidMarksLength {
+        path: PathBuf,
+        size: usize,
+        record_size: usize,
+    },
+    UnsupportedMarksFormat(PathBuf),
 }
 
 impl fmt::Display for PartError {
@@ -36,6 +44,20 @@ impl fmt::Display for PartError {
             Self::InvalidColumns { line, message } => {
                 write!(f, "invalid columns.txt at line {line}: {message}")
             }
+            Self::InvalidMarksLength {
+                path,
+                size,
+                record_size,
+            } => write!(
+                f,
+                "{}: {size} bytes is not a multiple of {record_size} bytes per mark",
+                path.display()
+            ),
+            Self::UnsupportedMarksFormat(path) => write!(
+                f,
+                "{}: only uncompressed wide-part .mrk and .mrk2 files are supported",
+                path.display()
+            ),
         }
     }
 }
