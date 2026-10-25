@@ -202,12 +202,8 @@ fn execute_into<W: Write>(
 
 fn parse_numeric(data_type: &str, text: &str) -> Result<Number, ExecutionError> {
     let value = match data_type {
-        "UInt8" | "UInt16" | "UInt32" | "UInt64" => {
-            text.parse::<u64>().ok().map(Number::Unsigned)
-        }
-        "Int8" | "Int16" | "Int32" | "Int64" => {
-            text.parse::<i64>().ok().map(Number::Signed)
-        }
+        "UInt8" | "UInt16" | "UInt32" | "UInt64" => text.parse::<u64>().ok().map(Number::Unsigned),
+        "Int8" | "Int16" | "Int32" | "Int64" => text.parse::<i64>().ok().map(Number::Signed),
         "Float32" => text
             .parse::<f32>()
             .ok()
