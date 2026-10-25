@@ -75,7 +75,7 @@ impl From<Number> for NumberKey {
         match value {
             Number::Unsigned(value) => Self::Unsigned(value),
             Number::Signed(value) => Self::Signed(value),
-            Number::Float(value) if value == 0.0 => Self::Float(0),
+            Number::Float(0.0) => Self::Float(0),
             Number::Float(value) if value.is_nan() => Self::Float(f64::NAN.to_bits()),
             Number::Float(value) => Self::Float(value.to_bits()),
         }
