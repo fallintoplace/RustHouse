@@ -126,9 +126,13 @@ fn execute_into<W: Write>(
     }
 
     match query.source.as_ref() {
-        Some(Source::Numbers(rows)) => return execute_numbers(query, 0, *rows, part, output),
+        Some(Source::Numbers(rows)) => return execute_numbers(query, 0, *rows, 1, part, output),
         Some(Source::NumbersRange { start, count }) => {
-            return execute_numbers(query, *start, *count, part, output);
+            return execute_numbers(query, *start, *count, 1, part, output);
+        }
+        Some(Source::NumbersStepped { start, length, step }) => {
+            let rows = length / step + u64::from(length % step != 0);
+            return execute_numbers(query, *start, rows, *step, part, output);
         }
         Some(Source::Table(table)) if table == "part" => {}
         _ => {
@@ -415,6 +419,7 @@ fn execute_grouped_numbers<W: Write>(
     query: &Select,
     start: u64,
     rows: u64,
+    step: u64,
     column: &str,
     output: &mut W,
 ) -> Result<(), ExecutionError> {
@@ -428,7 +433,8 @@ fn execute_grouped_numbers<W: Write>(
     if query.limit == Some(0) {
         return groups.write(query, column, output);
     }
-    for number in start..start + rows {
+    for index in 0..rows {
+        let number = start + index * step;
         let value = Number::Unsigned(u128::from(number));
         if number_matches_all(value, &comparisons) {
             groups.push(value)?;
@@ -480,6 +486,7 @@ fn execute_aggregate_numbers<W: Write>(
     query: &Select,
     start: u64,
     rows: u64,
+    step: u64,
     function: AggregateFunction,
     column: &str,
     output: &mut W,
@@ -495,7 +502,8 @@ fn execute_aggregate_numbers<W: Write>(
         return Ok(());
     }
     let mut state = AggregateState::new(function);
-    for number in start..start + rows {
+    for index in 0..rows {
+        let number = start + index * step;
         let value = Number::Unsigned(u128::from(number));
         if !number_matches_all(value, &comparisons) {
             continue;
@@ -512,6 +520,7 @@ fn execute_numbers<W: Write>(
     query: &Select,
     start: u64,
     rows: u64,
+    step: u64,
     part: Option<&Path>,
     output: &mut W,
 ) -> Result<(), ExecutionError> {
@@ -521,10 +530,10 @@ fn execute_numbers<W: Write>(
         ));
     }
     if let Projection::Aggregate { function, column } = &query.projection {
-        return execute_aggregate_numbers(query, start, rows, *function, column, output);
+        return execute_aggregate_numbers(query, start, rows, step, *function, column, output);
     }
     if let Projection::GroupedCount { column } = &query.projection {
-        return execute_grouped_numbers(query, start, rows, column, output);
+        return execute_grouped_numbers(query, start, rows, step, column, output);
     }
     let projected: Vec<&str> = match &query.projection {
         Projection::All => vec!["number"],
@@ -585,7 +594,8 @@ fn execute_numbers<W: Write>(
         0
     };
     let mut skipped = fast_skip;
-    for number in start + fast_skip as u64..start + rows {
+    for index in fast_skip as u64..rows {
+        let number = start + index * step;
         if !number_matches_all(Number::Unsigned(u128::from(number)), &comparisons) {
             continue;
         }
@@ -1171,6 +1181,34 @@ mod tests {
         assert_eq!(
             run("SELECT number FROM numbers(7, 0)", None).unwrap(),
             "number\n"
+        );
+    }
+
+    #[test]
+    fn stepped_numbers_respect_clickhouse_range_semantics() {
+        assert_eq!(
+            run("SELECT number FROM numbers(3, 10, 4)", None).unwrap(),
+            "number\n3\n7\n11\n"
+        );
+        assert_eq!(
+            run("SELECT number FROM numbers(3, 10, 4) LIMIT 1 OFFSET 2", None).unwrap(),
+            "number\n11\n"
+        );
+        assert_eq!(
+            run("SELECT count(*) FROM numbers(3, 10, 4)", None).unwrap(),
+            "count\n3\n"
+        );
+        assert_eq!(
+            run("SELECT sum(number) FROM numbers(3, 10, 4)", None).unwrap(),
+            "sum(number)\n21\n"
+        );
+        assert_eq!(
+            run("SELECT number FROM numbers(5, 0, 2)", None).unwrap(),
+            "number\n"
+        );
+        assert_eq!(
+            run("SELECT number FROM numbers(5, 3, 100)", None).unwrap(),
+            "number\n5\n"
         );
     }
 

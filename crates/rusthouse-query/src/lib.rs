@@ -87,6 +87,7 @@ pub enum Source {
     Table(String),
     Numbers(u64),
     NumbersRange { start: u64, count: u64 },
+    NumbersStepped { start: u64, length: u64, step: u64 },
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -294,9 +295,24 @@ pub fn parse_select(sql: &str) -> Result<Select, ParseError> {
                 if first.checked_add(count).is_none() {
                     return Err(ParseError("numbers range overflows UInt64".into()));
                 }
-                Source::NumbersRange {
-                    start: first,
-                    count,
+                if parser.take(Token::Comma) {
+                    let step = parser
+                        .number()?
+                        .parse::<u64>()
+                        .map_err(|_| ParseError("numbers step must be a positive UInt64".into()))?;
+                    if step == 0 {
+                        return Err(ParseError("numbers step must be positive".into()));
+                    }
+                    Source::NumbersStepped {
+                        start: first,
+                        length: count,
+                        step,
+                    }
+                } else {
+                    Source::NumbersRange {
+                        start: first,
+                        count,
+                    }
                 }
             } else {
                 if first > 1_000_000 {
@@ -775,6 +791,28 @@ mod tests {
             "SELECT number FROM numbers(1,1000001)",
             "SELECT number FROM numbers(18446744073709551615,2)",
             "SELECT number FROM numbers(1,2,3)",
+        ] {
+            assert!(parse_select(sql).is_err(), "{sql}");
+        }
+    }
+
+    #[test]
+    fn parses_stepped_numbers_with_bounded_ranges() {
+        let query = parse_select("SELECT number FROM numbers(4, 9, 3)").unwrap();
+        assert_eq!(
+            query.source,
+            Some(Source::NumbersStepped {
+                start: 4,
+                length: 9,
+                step: 3,
+            })
+        );
+        for sql in [
+            "SELECT number FROM numbers(0, 10, 0)",
+            "SELECT number FROM numbers(0, 10, -1)",
+            "SELECT number FROM numbers(0, 10, 2, 3)",
+            "SELECT number FROM numbers(18446744073709551615, 2, 1)",
+            "SELECT number FROM numbers(0, 1000001, 2)",
         ] {
             assert!(parse_select(sql).is_err(), "{sql}");
         }
