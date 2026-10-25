@@ -1,7 +1,9 @@
 mod columns;
+mod compression;
 mod marks;
 
 pub use columns::parse_columns;
+pub use compression::{CompressedBlock, CompressedBlockReader};
 pub use marks::{WideMark, WideMarkFormat, WideMarks, read_wide_marks};
 
 use std::error::Error;
@@ -40,6 +42,11 @@ pub enum PartError {
         record_size: usize,
     },
     EmptyMarksFile(PathBuf),
+    InvalidCompressedBlock {
+        path: PathBuf,
+        offset: u64,
+        reason: &'static str,
+    },
     UnsupportedMarksFormat(PathBuf),
 }
 
@@ -61,6 +68,9 @@ impl fmt::Display for PartError {
                 path.display()
             ),
             Self::EmptyMarksFile(path) => write!(f, "{}: empty marks file", path.display()),
+            Self::InvalidCompressedBlock { path, offset, reason } => {
+                write!(f, "{}: invalid compressed block at byte {offset}: {reason}", path.display())
+            }
             Self::UnsupportedMarksFormat(path) => write!(
                 f,
                 "{}: only uncompressed wide-part .mrk and .mrk2 files are supported",
