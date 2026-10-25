@@ -46,8 +46,8 @@ impl From<io::Error> for ExecutionError {
 
 #[derive(Clone, Copy)]
 enum Number {
-    Unsigned(u64),
-    Signed(i64),
+    Unsigned(u128),
+    Signed(i128),
     Float(f64),
 }
 
@@ -202,8 +202,12 @@ fn execute_into<W: Write>(
 
 fn parse_numeric(data_type: &str, text: &str) -> Result<Number, ExecutionError> {
     let value = match data_type {
-        "UInt8" | "UInt16" | "UInt32" | "UInt64" => text.parse::<u64>().ok().map(Number::Unsigned),
-        "Int8" | "Int16" | "Int32" | "Int64" => text.parse::<i64>().ok().map(Number::Signed),
+        "UInt8" | "UInt16" | "UInt32" | "UInt64" | "UInt128" => {
+            text.parse::<u128>().ok().map(Number::Unsigned)
+        }
+        "Int8" | "Int16" | "Int32" | "Int64" | "Int128" => {
+            text.parse::<i128>().ok().map(Number::Signed)
+        }
         "Float32" => text
             .parse::<f32>()
             .ok()
@@ -220,14 +224,16 @@ fn parse_numeric(data_type: &str, text: &str) -> Result<Number, ExecutionError> 
 
 fn number_at(column: &NumericColumn, row: usize) -> Number {
     match column {
-        NumericColumn::UInt8(values) => Number::Unsigned(u64::from(values[row])),
-        NumericColumn::UInt16(values) => Number::Unsigned(u64::from(values[row])),
-        NumericColumn::UInt32(values) => Number::Unsigned(u64::from(values[row])),
-        NumericColumn::UInt64(values) => Number::Unsigned(values[row]),
-        NumericColumn::Int8(values) => Number::Signed(i64::from(values[row])),
-        NumericColumn::Int16(values) => Number::Signed(i64::from(values[row])),
-        NumericColumn::Int32(values) => Number::Signed(i64::from(values[row])),
-        NumericColumn::Int64(values) => Number::Signed(values[row]),
+        NumericColumn::UInt8(values) => Number::Unsigned(u128::from(values[row])),
+        NumericColumn::UInt16(values) => Number::Unsigned(u128::from(values[row])),
+        NumericColumn::UInt32(values) => Number::Unsigned(u128::from(values[row])),
+        NumericColumn::UInt64(values) => Number::Unsigned(u128::from(values[row])),
+        NumericColumn::UInt128(values) => Number::Unsigned(values[row]),
+        NumericColumn::Int8(values) => Number::Signed(i128::from(values[row])),
+        NumericColumn::Int16(values) => Number::Signed(i128::from(values[row])),
+        NumericColumn::Int32(values) => Number::Signed(i128::from(values[row])),
+        NumericColumn::Int64(values) => Number::Signed(i128::from(values[row])),
+        NumericColumn::Int128(values) => Number::Signed(values[row]),
         NumericColumn::Float32(values) => Number::Float(f64::from(values[row])),
         NumericColumn::Float64(values) => Number::Float(values[row]),
     }
@@ -351,18 +357,28 @@ mod tests {
     #[test]
     fn numeric_comparisons_do_not_lose_large_integer_precision() {
         assert!(number_matches(
-            Number::Unsigned(u64::MAX),
-            Number::Unsigned(u64::MAX - 1),
+            Number::Unsigned(u128::MAX),
+            Number::Unsigned(u128::MAX - 1),
             Operator::Gt,
         ));
         assert!(number_matches(
-            Number::Signed(i64::MIN),
+            Number::Signed(i128::MIN),
             Number::Signed(0),
             Operator::Lt,
         ));
         assert!(!number_matches(
             Number::Float(f64::NAN),
             Number::Float(1.0),
+            Operator::Eq,
+        ));
+        assert!(number_matches(
+            number_at(&NumericColumn::UInt128(vec![u128::MAX]), 0),
+            parse_numeric("UInt128", &u128::MAX.to_string()).unwrap(),
+            Operator::Eq,
+        ));
+        assert!(number_matches(
+            number_at(&NumericColumn::Int128(vec![i128::MIN]), 0),
+            parse_numeric("Int128", &i128::MIN.to_string()).unwrap(),
             Operator::Eq,
         ));
     }
