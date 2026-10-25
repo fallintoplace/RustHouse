@@ -836,7 +836,7 @@ enum CompiledTest {
     NotBetween {
         lower: Number,
         upper: Number,
-    }
+    },
     InSet {
         targets: HashSet<NumberKey>,
         negated: bool,
