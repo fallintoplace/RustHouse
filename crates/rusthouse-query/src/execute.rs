@@ -1083,8 +1083,16 @@ mod tests {
             run("SELECT count(*) FROM numbers(17) WHERE number >= 12", None).unwrap()
         );
         assert_eq!(
-            run("SELECT number, count() FROM numbers(3) GROUP BY number", None).unwrap(),
-            run("SELECT number, count(*) FROM numbers(3) GROUP BY number", None).unwrap()
+            run(
+                "SELECT number, count() FROM numbers(3) GROUP BY number",
+                None
+            )
+            .unwrap(),
+            run(
+                "SELECT number, count(*) FROM numbers(3) GROUP BY number",
+                None
+            )
+            .unwrap()
         );
     }
 
