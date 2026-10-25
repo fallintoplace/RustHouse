@@ -19,7 +19,10 @@ pub fn verify_part_file_sizes(part: impl AsRef<Path>) -> Result<FileSizeVerifica
     let metadata = fs::symlink_metadata(&checksums_path)
         .map_err(|source| io_error(&checksums_path, source))?;
     if !metadata.file_type().is_file() {
-        return Err(invalid(&checksums_path, "checksums.txt is not a regular file"));
+        return Err(invalid(
+            &checksums_path,
+            "checksums.txt is not a regular file",
+        ));
     }
     let manifest = read_checksums(&checksums_path)?;
     let mut total_bytes = 0u64;
