@@ -25,7 +25,9 @@ pub fn verify_wide_part(path: impl AsRef<Path>) -> Result<PartVerification, Part
     for entry in entries {
         let entry = entry.map_err(|source| io_error(path, source))?;
         let filename = entry.path();
-        let extension = filename.extension().and_then(|extension| extension.to_str());
+        let extension = filename
+            .extension()
+            .and_then(|extension| extension.to_str());
         let is_data = extension == Some("bin");
         let is_mark = matches!(extension, Some("mrk" | "mrk2" | "cmrk" | "cmrk2"));
         if matches!(extension, Some("mrk3" | "mrk4" | "cmrk3" | "cmrk4")) {
@@ -39,7 +41,10 @@ pub fn verify_wide_part(path: impl AsRef<Path>) -> Result<PartVerification, Part
             .map_err(|source| io_error(&filename, source))?
             .is_file()
         {
-            return Err(invalid(&filename, "expected a regular stream or marks file"));
+            return Err(invalid(
+                &filename,
+                "expected a regular stream or marks file",
+            ));
         }
         if is_data {
             data_files.insert(filename);

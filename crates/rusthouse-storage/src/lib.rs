@@ -184,7 +184,7 @@ impl fmt::Display for PartError {
             Self::InvalidScan(reason) => write!(f, "invalid numeric part scan: {reason}"),
             Self::InvalidPart { path, reason } => {
                 write!(f, "{}: invalid wide part: {reason}", path.display())
-            },
+            }
             Self::FixedStringRead(source) => write!(f, "{source}"),
             Self::NumericRead(source) => write!(f, "{source}"),
             Self::UnsupportedMarksFormat(path) => write!(

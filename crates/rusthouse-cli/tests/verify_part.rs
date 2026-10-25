@@ -41,10 +41,7 @@ fn verify_part_checks_streams_and_reports_limits() {
 
 #[test]
 fn verify_part_requires_one_directory_argument() {
-    for args in [
-        vec!["verify-part"],
-        vec!["verify-part", "a", "b"],
-    ] {
+    for args in [vec!["verify-part"], vec!["verify-part", "a", "b"]] {
         let output = Command::new(env!("CARGO_BIN_EXE_rusthouse"))
             .args(args)
             .output()
