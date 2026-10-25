@@ -31,26 +31,38 @@ impl CompressedBlockReader<File> {
             path: path.to_path_buf(),
             source,
         })?;
-        let file_len = file
-            .metadata()
-            .map_err(|source| PartError::Io {
+        let metadata = file.metadata().map_err(|source| PartError::Io {
+            path: path.to_path_buf(),
+            source,
+        })?;
+        if !metadata.is_file() {
+            return Err(PartError::Io {
                 path: path.to_path_buf(),
-                source,
-            })?
-            .len();
-        Ok(Self::new(file, path.to_path_buf(), file_len))
+                source: io::Error::new(io::ErrorKind::InvalidInput, "expected a regular file"),
+            });
+        }
+        Self::new(file, path)
     }
 }
 
 impl<R: Read + Seek> CompressedBlockReader<R> {
-    fn new(reader: R, path: PathBuf, file_len: u64) -> Self {
-        Self {
+    pub fn new(mut reader: R, path: impl AsRef<Path>) -> Result<Self, PartError> {
+        let path = path.as_ref().to_path_buf();
+        let file_len = reader.seek(SeekFrom::End(0)).map_err(|source| PartError::Io {
+            path: path.clone(),
+            source,
+        })?;
+        reader.seek(SeekFrom::Start(0)).map_err(|source| PartError::Io {
+            path: path.clone(),
+            source,
+        })?;
+        Ok(Self {
             reader,
             path,
             file_len,
             offset: 0,
             done: false,
-        }
+        })
     }
 
     fn invalid(&mut self, reason: &'static str) -> Option<Result<CompressedBlock, PartError>> {
@@ -137,8 +149,9 @@ mod tests {
     }
 
     fn read(bytes: Vec<u8>) -> Vec<Result<CompressedBlock, PartError>> {
-        let len = bytes.len() as u64;
-        CompressedBlockReader::new(Cursor::new(bytes), PathBuf::from("data.bin"), len).collect()
+        CompressedBlockReader::new(Cursor::new(bytes), "data.bin")
+            .unwrap()
+            .collect()
     }
 
     #[test]
@@ -183,11 +196,8 @@ mod tests {
     #[test]
     fn rejects_truncated_prefix_and_stops_after_failure() {
         for size in [1, 16, 24] {
-            let mut reader = CompressedBlockReader::new(
-                Cursor::new(vec![0; size]),
-                PathBuf::from("bad.bin"),
-                size as u64,
-            );
+            let mut reader = CompressedBlockReader::new(Cursor::new(vec![0u8; size]), "bad.bin")
+                .unwrap();
             assert!(matches!(
                 reader.next(),
                 Some(Err(PartError::InvalidCompressedBlock { offset: 0, .. }))
@@ -228,12 +238,40 @@ mod tests {
     }
 
     #[test]
+    fn starts_at_beginning_of_supplied_reader() {
+        let mut cursor = Cursor::new(block(0x82, &[1, 2], 2));
+        cursor.set_position(5);
+        let blocks = CompressedBlockReader::new(cursor, "memory.bin")
+            .unwrap()
+            .collect::<Result<Vec<_>, _>>()
+            .unwrap();
+        assert_eq!(blocks.len(), 1);
+        assert_eq!(blocks[0].offset, 0);
+        assert_eq!(blocks[0].compressed_size, 11);
+    }
+
+    #[test]
+    fn reports_invalid_second_block_at_its_own_offset() {
+        let mut bytes = block(0x82, &[1, 2], 2);
+        let second_offset = bytes.len() as u64;
+        bytes.extend(vec![0u8; PREFIX_SIZE]);
+        let mut reader = CompressedBlockReader::new(Cursor::new(bytes), "invalid.bin").unwrap();
+        assert_eq!(reader.next().unwrap().unwrap().offset, 0);
+        assert!(matches!(
+            reader.next(),
+            Some(Err(PartError::InvalidCompressedBlock { offset, .. })) if offset == second_offset
+        ));
+        assert!(reader.next().is_none());
+    }
+
+    #[test]
     fn reports_truncated_reads_if_file_changes_after_opening() {
         let mut reader = CompressedBlockReader::new(
-            Cursor::new(vec![0; 1]),
-            PathBuf::from("modified.bin"),
-            PREFIX_SIZE as u64,
-        );
+            Cursor::new(vec![0u8; PREFIX_SIZE]),
+            "modified.bin",
+        )
+        .unwrap();
+        reader.reader.get_mut().truncate(1);
         assert!(matches!(reader.next(), Some(Err(PartError::Io { .. }))));
         assert!(reader.next().is_none());
     }

@@ -85,6 +85,17 @@ fn inspect_marks_rejects_compressed_files() {
 }
 
 #[test]
+fn inspect_blocks_rejects_directories() {
+    let output = Command::new(env!("CARGO_BIN_EXE_rusthouse"))
+        .arg("inspect-blocks")
+        .arg(env!("CARGO_MANIFEST_DIR"))
+        .output()
+        .unwrap();
+    assert_eq!(output.status.code(), Some(1));
+    assert!(String::from_utf8_lossy(&output.stderr).contains("expected a regular file"));
+}
+
+#[test]
 fn inspect_blocks_reports_offsets_and_sizes() {
     let path = std::env::temp_dir().join(format!("rusthouse-blocks-{}.bin", std::process::id()));
     let mut bytes = vec![0; 16];
