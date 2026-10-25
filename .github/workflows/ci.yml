@@ -23,9 +23,6 @@ jobs:
         os: [ubuntu-latest, macos-latest]
     steps:
       - uses: actions/checkout@v6
-      - uses: dtolnay/rust-toolchain@stable
-        with:
-          components: clippy, rustfmt
       - if: runner.os == 'Linux'
         run: cargo fmt --all -- --check
       - if: runner.os == 'Linux'
