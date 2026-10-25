@@ -242,11 +242,33 @@ pub fn parse_select(sql: &str) -> Result<Select, ParseError> {
             if predicates.len() == 16 {
                 return Err(ParseError("WHERE supports at most 16 conditions".into()));
             }
-            predicates.push(Predicate {
-                column: parser.word()?,
-                operator: parser.operator()?,
-                value: parser.number()?,
-            });
+            let column = parser.word()?;
+            if parser.keyword("BETWEEN") {
+                if predicates.len() + 2 > 16 {
+                    return Err(ParseError("WHERE supports at most 16 conditions".into()));
+                }
+                let lower = parser.number()?;
+                if !parser.keyword("AND") {
+                    return Err(ParseError("BETWEEN requires AND".into()));
+                }
+                let upper = parser.number()?;
+                predicates.push(Predicate {
+                    column: column.clone(),
+                    operator: Operator::Ge,
+                    value: lower,
+                });
+                predicates.push(Predicate {
+                    column,
+                    operator: Operator::Le,
+                    value: upper,
+                });
+            } else {
+                predicates.push(Predicate {
+                    column,
+                    operator: parser.operator()?,
+                    value: parser.number()?,
+                });
+            }
             if !parser.keyword("AND") {
                 break;
             }
@@ -607,7 +629,6 @@ mod tests {
             "SELECT id, FROM part",
             "SELECT id FROM part LIMIT -1",
             "SELECT id FROM part LIMIT 1.5",
-            "SELECT id FROM part WHERE id BETWEEN 1 AND 2",
             "SELECT id FROM part WHERE id > 'abc'",
             "SELECT id FROM part WHERE id =",
             "SELECT id FROM part LIMIT 184467440737095516161",
@@ -649,6 +670,49 @@ mod tests {
             vec!["number > 0"; 17].join(" AND ")
         );
         assert!(parse_select(&many).is_err());
+    }
+
+    #[test]
+    fn parses_between_as_inclusive_range_predicates() {
+        let query = parse_select(
+            "SELECT number FROM numbers(12) WHERE number BETWEEN 3 AND 8 AND number != 4 LIMIT 3",
+        )
+        .unwrap();
+        assert_eq!(
+            query.predicates,
+            vec![
+                Predicate {
+                    column: "number".into(),
+                    operator: Operator::Ge,
+                    value: "3".into(),
+                },
+                Predicate {
+                    column: "number".into(),
+                    operator: Operator::Le,
+                    value: "8".into(),
+                },
+                Predicate {
+                    column: "number".into(),
+                    operator: Operator::Ne,
+                    value: "4".into(),
+                },
+            ]
+        );
+        for sql in [
+            "SELECT number FROM numbers(5) WHERE number BETWEEN",
+            "SELECT number FROM numbers(5) WHERE number BETWEEN 1",
+            "SELECT number FROM numbers(5) WHERE number BETWEEN 1 OR 2",
+            "SELECT number FROM numbers(5) WHERE number BETWEEN 1 AND",
+            "SELECT number FROM numbers(5) WHERE number BETWEEN 1 AND 3 AND",
+            "SELECT number FROM numbers(5) WHERE number NOT BETWEEN 1 AND 3",
+        ] {
+            assert!(parse_select(sql).is_err(), "{sql}");
+        }
+        let too_many = format!(
+            "SELECT number FROM numbers(5) WHERE {} AND number BETWEEN 1 AND 2",
+            vec!["number > 0"; 15].join(" AND ")
+        );
+        assert!(parse_select(&too_many).is_err());
     }
 
     #[test]
