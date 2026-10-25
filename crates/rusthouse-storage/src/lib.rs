@@ -9,7 +9,8 @@ mod stream;
 mod strings;
 
 pub use arrays::{
-    ArrayOffsetsEncoding, ArrayReadError, NumericArrayColumn, read_numeric_array_column,
+    ArrayOffsets, ArrayOffsetsEncoding, ArrayReadError, NumericArrayColumn, read_array_offsets,
+    read_numeric_array_column,
 };
 pub use columns::parse_columns;
 pub use compression::{CompressedBlock, CompressedBlockReader, DecodedBlock};
