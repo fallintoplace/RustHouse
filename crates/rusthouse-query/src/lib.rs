@@ -381,10 +381,16 @@ mod tests {
 
     #[test]
     fn parses_generated_numbers_and_rejects_invalid_counts() {
-        let query = parse_select("SELECT number FROM numbers(12) WHERE number >= 5 LIMIT 2").unwrap();
+        let query =
+            parse_select("SELECT number FROM numbers(12) WHERE number >= 5 LIMIT 2").unwrap();
         assert_eq!(query.source, Some(Source::Numbers(12)));
         assert_eq!(query.projection, Projection::Columns(vec!["number".into()]));
-        assert_eq!(parse_select("SELECT count(*) FROM NUMBERS(0)").unwrap().source, Some(Source::Numbers(0)));
+        assert_eq!(
+            parse_select("SELECT count(*) FROM NUMBERS(0)")
+                .unwrap()
+                .source,
+            Some(Source::Numbers(0))
+        );
         for sql in [
             "SELECT number FROM numbers()",
             "SELECT number FROM numbers(-1)",

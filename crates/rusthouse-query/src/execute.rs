@@ -237,7 +237,10 @@ fn execute_numbers<W: Write>(
                     "numbers(N) exposes only the number column".into(),
                 ));
             }
-            Ok((predicate.operator, parse_numeric("UInt64", &predicate.value)?))
+            Ok((
+                predicate.operator,
+                parse_numeric("UInt64", &predicate.value)?,
+            ))
         })
         .transpose()?;
     let is_count = matches!(query.projection, Projection::Count);
@@ -261,7 +264,7 @@ fn execute_numbers<W: Write>(
     let limit = query.limit.unwrap_or(usize::MAX);
     for number in 0..rows {
         if let Some((operator, target)) = comparison {
-            if !number_matches(Number::Unsigned(number), target, operator) {
+            if !number_matches(Number::Unsigned(u128::from(number)), target, operator) {
                 continue;
             }
         }
@@ -375,16 +378,29 @@ mod tests {
             "number\n0\n1\n2\n3\n"
         );
         assert_eq!(
-            run("SELECT number, number FROM numbers(5) WHERE number >= 3 LIMIT 1", None).unwrap(),
+            run(
+                "SELECT number, number FROM numbers(5) WHERE number >= 3 LIMIT 1",
+                None,
+            )
+            .unwrap(),
             "number\tnumber\n3\t3\n"
         );
-        assert_eq!(run("SELECT count(*) FROM numbers(5)", None).unwrap(), "count\n5\n");
+        assert_eq!(
+            run("SELECT count(*) FROM numbers(5)", None).unwrap(),
+            "count\n5\n"
+        );
         assert_eq!(
             run("SELECT count(*) FROM numbers(5) WHERE number < 3", None).unwrap(),
             "count\n3\n"
         );
-        assert_eq!(run("SELECT number FROM numbers(0)", None).unwrap(), "number\n");
-        assert_eq!(run("SELECT number FROM numbers(4) LIMIT 0", None).unwrap(), "number\n");
+        assert_eq!(
+            run("SELECT number FROM numbers(0)", None).unwrap(),
+            "number\n"
+        );
+        assert_eq!(
+            run("SELECT number FROM numbers(4) LIMIT 0", None).unwrap(),
+            "number\n"
+        );
         assert!(run("SELECT missing FROM numbers(0)", None).is_err());
         assert!(run("SELECT number FROM numbers(0) WHERE missing = 1", None).is_err());
         assert!(run("SELECT number FROM numbers(0) WHERE number = -1", None).is_err());

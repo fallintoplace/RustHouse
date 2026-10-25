@@ -271,10 +271,12 @@ fn read_numeric_and_print(
         NumericColumn::UInt16(values) => print_values(values),
         NumericColumn::UInt32(values) => print_values(values),
         NumericColumn::UInt64(values) => print_values(values),
+        NumericColumn::UInt128(values) => print_values(values),
         NumericColumn::Int8(values) => print_values(values),
         NumericColumn::Int16(values) => print_values(values),
         NumericColumn::Int32(values) => print_values(values),
         NumericColumn::Int64(values) => print_values(values),
+        NumericColumn::Int128(values) => print_values(values),
         NumericColumn::Float32(values) => print_values(values),
         NumericColumn::Float64(values) => print_values(values),
     }

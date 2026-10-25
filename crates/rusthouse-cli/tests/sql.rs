@@ -46,7 +46,10 @@ fn executes_scalar_select_without_a_server() {
 
 #[test]
 fn executes_generated_numbers_without_a_part() {
-    let output = sql("SELECT number FROM numbers(5) WHERE number >= 2 LIMIT 2", None);
+    let output = sql(
+        "SELECT number FROM numbers(5) WHERE number >= 2 LIMIT 2",
+        None,
+    );
     assert!(output.status.success(), "{output:?}");
     assert_eq!(String::from_utf8(output.stdout).unwrap(), "number\n2\n3\n");
 }

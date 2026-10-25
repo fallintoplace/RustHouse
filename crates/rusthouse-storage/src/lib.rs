@@ -11,6 +11,7 @@ mod numeric;
 mod part_scan;
 mod primary_index;
 mod stream;
+mod string_arrays;
 mod strings;
 
 pub use arrays::{
@@ -27,13 +28,17 @@ pub use granules::{read_mark_bytes, read_numeric_granule, read_u64_granule};
 pub use mark_validation::validate_wide_marks;
 pub use marks::{WideMark, WideMarkFormat, WideMarks, read_wide_marks};
 pub use nullable::{
-    NullableColumn, NullableReadError, read_null_map, read_nullable_legacy_strings,
-    read_nullable_numeric_column, read_nullable_sized_strings,
+    NullableColumn, NullableReadError, read_null_map, read_nullable_fixed_strings,
+    read_nullable_legacy_strings, read_nullable_numeric_column, read_nullable_sized_strings,
 };
 pub use numeric::{NumericColumn, NumericReadError, read_numeric_column};
 pub use part_scan::NumericPartReader;
 pub use primary_index::{FixedPrimaryIndex, read_fixed_primary_index};
 pub use stream::UInt64ColumnReader;
+pub use string_arrays::{
+    StringArrayColumn, StringArrayReadError, read_legacy_string_array_column,
+    read_sized_string_array_column,
+};
 pub use strings::{StringColumn, StringReadError, read_legacy_strings, read_sized_strings};
 
 use std::error::Error;
