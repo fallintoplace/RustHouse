@@ -11,10 +11,12 @@ pub enum NumericColumn {
     UInt16(Vec<u16>),
     UInt32(Vec<u32>),
     UInt64(Vec<u64>),
+    UInt128(Vec<u128>),
     Int8(Vec<i8>),
     Int16(Vec<i16>),
     Int32(Vec<i32>),
     Int64(Vec<i64>),
+    Int128(Vec<i128>),
     Float32(Vec<f32>),
     Float64(Vec<f64>),
 }
@@ -26,10 +28,12 @@ impl NumericColumn {
             Self::UInt16(values) => values.len(),
             Self::UInt32(values) => values.len(),
             Self::UInt64(values) => values.len(),
+            Self::UInt128(values) => values.len(),
             Self::Int8(values) => values.len(),
             Self::Int16(values) => values.len(),
             Self::Int32(values) => values.len(),
             Self::Int64(values) => values.len(),
+            Self::Int128(values) => values.len(),
             Self::Float32(values) => values.len(),
             Self::Float64(values) => values.len(),
         }
@@ -101,10 +105,12 @@ pub fn read_numeric_column<R: Read>(
         "UInt16" => decode!(u16, UInt16),
         "UInt32" => decode!(u32, UInt32),
         "UInt64" => decode!(u64, UInt64),
+        "UInt128" => decode!(u128, UInt128),
         "Int8" => decode!(i8, Int8),
         "Int16" => decode!(i16, Int16),
         "Int32" => decode!(i32, Int32),
         "Int64" => decode!(i64, Int64),
+        "Int128" => decode!(i128, Int128),
         "Float32" => decode!(f32, Float32),
         "Float64" => decode!(f64, Float64),
         _ => Err(NumericReadError::UnsupportedType(data_type.to_owned())),
@@ -180,6 +186,29 @@ mod tests {
     }
 
     #[test]
+    fn reads_128_bit_integers_in_little_endian_order() {
+        let unsigned = [0x1122_3344_5566_7788_99aa_bbcc_ddee_ff00u128, u128::MAX];
+        let bytes = unsigned
+            .iter()
+            .flat_map(|value| value.to_le_bytes())
+            .collect::<Vec<_>>();
+        assert_eq!(
+            decode("UInt128", &bytes, 2),
+            NumericColumn::UInt128(unsigned.to_vec())
+        );
+
+        let signed = [i128::MIN, -1, i128::MAX];
+        let bytes = signed
+            .iter()
+            .flat_map(|value| value.to_le_bytes())
+            .collect::<Vec<_>>();
+        assert_eq!(
+            decode("Int128", &bytes, 3),
+            NumericColumn::Int128(signed.to_vec())
+        );
+    }
+
+    #[test]
     fn preserves_float_bits_including_negative_zero_and_nan_payloads() {
         let negative_zero = f32::from_bits(0x8000_0000);
         let nan = f32::from_bits(0x7fc0_1234);
@@ -237,6 +266,17 @@ mod tests {
     }
 
     #[test]
+    fn rejects_truncated_128_bit_values() {
+        let mut data = i128::MIN.to_le_bytes().to_vec();
+        data.extend_from_slice(&[1, 2]);
+        let error = read_numeric_column(&mut data.as_slice(), "Int128", 2).unwrap_err();
+        assert!(matches!(
+            error,
+            NumericReadError::Io(source) if source.kind() == io::ErrorKind::UnexpectedEof
+        ));
+    }
+
+    #[test]
     fn rejects_truncated_values() {
         let mut bytes = 7u64.to_le_bytes().to_vec();
         bytes.extend_from_slice(&[1, 2, 3]);
@@ -260,6 +300,10 @@ mod tests {
         assert!(matches!(
             read_numeric_column(&mut NoRead, "UInt64", MAX_BATCH_BYTES / 8 + 1),
             Err(NumericReadError::BatchTooLarge { width: 8, .. })
+        ));
+        assert!(matches!(
+            read_numeric_column(&mut NoRead, "UInt128", MAX_BATCH_BYTES / 16 + 1),
+            Err(NumericReadError::BatchTooLarge { width: 16, .. })
         ));
         assert!(matches!(
             read_numeric_column(&mut NoRead, "UInt8", MAX_BATCH_BYTES + 1),

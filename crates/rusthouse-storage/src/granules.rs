@@ -68,6 +68,7 @@ pub fn read_numeric_granule<R: Read + Seek>(
         "UInt16" | "Int16" => 2,
         "UInt32" | "Int32" | "Float32" => 4,
         "UInt64" | "Int64" | "Float64" => 8,
+        "UInt128" | "Int128" => 16,
         _ => {
             return Err(PartError::NumericRead(NumericReadError::UnsupportedType(
                 data_type.to_owned(),
@@ -345,6 +346,33 @@ mod tests {
     }
 
     #[test]
+    fn reads_128_bit_granules_across_compressed_blocks() {
+        let values = [0x1122_3344_5566_7788_99aa_bbcc_ddee_ff00u128, u128::MAX];
+        let bytes = values
+            .iter()
+            .flat_map(|value| value.to_le_bytes())
+            .collect::<Vec<_>>();
+        let mut compressed = checked_block(0x82, &bytes[..19]);
+        compressed.extend(checked_block(0x02, &bytes[19..]));
+        let mut blocks = reader(compressed);
+        assert_eq!(
+            read_numeric_granule(&mut blocks, &mark(0, 0, Some(2)), "UInt128").unwrap(),
+            NumericColumn::UInt128(values.to_vec())
+        );
+
+        let signed = [i128::MIN, -10, i128::MAX];
+        let bytes = signed
+            .iter()
+            .flat_map(|value| value.to_le_bytes())
+            .collect::<Vec<_>>();
+        let mut blocks = reader(checked_block(0x02, &bytes));
+        assert_eq!(
+            read_numeric_granule(&mut blocks, &mark(0, 16, Some(2)), "Int128").unwrap(),
+            NumericColumn::Int128(vec![-10, i128::MAX])
+        );
+    }
+
+    #[test]
     fn preserves_float_bits_in_marked_numeric_values() {
         let expected = [0x8000_0000u32, 0x7fc0_1234u32];
         let bytes: Vec<u8> = expected.into_iter().flat_map(u32::to_le_bytes).collect();
@@ -387,6 +415,17 @@ mod tests {
             read_numeric_granule(&mut blocks, &mark(0, 0, Some(u64::MAX)), "Int64"),
             Err(PartError::InvalidWideMark {
                 reason: "granule size overflows",
+                ..
+            })
+        ));
+        assert!(matches!(
+            read_numeric_granule(
+                &mut blocks,
+                &mark(0, 0, Some(MAX_GRANULE_BYTES as u64 / 16 + 1)),
+                "Int128"
+            ),
+            Err(PartError::InvalidWideMark {
+                reason: "granule exceeds the 64 MiB read limit",
                 ..
             })
         ));
