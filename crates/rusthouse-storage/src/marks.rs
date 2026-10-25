@@ -173,8 +173,8 @@ fn read_u64(bytes: &[u8]) -> u64 {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::fs;
     use ch_cityhash102::cityhash128;
+    use std::fs;
     use std::io::Cursor;
 
     fn checked_block(method: u8, data: &[u8]) -> Vec<u8> {
