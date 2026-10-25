@@ -1,18 +1,28 @@
+mod arrays;
 mod columns;
 mod compression;
 mod granules;
 mod mark_validation;
 mod marks;
+mod nullable;
 mod numeric;
 mod primary_index;
 mod stream;
 mod strings;
 
+pub use arrays::{
+    ArrayOffsets, ArrayOffsetsEncoding, ArrayReadError, NumericArrayColumn, read_array_offsets,
+    read_numeric_array_column,
+};
 pub use columns::parse_columns;
 pub use compression::{CompressedBlock, CompressedBlockReader, DecodedBlock};
 pub use granules::{read_mark_bytes, read_u64_granule};
 pub use mark_validation::validate_wide_marks;
 pub use marks::{WideMark, WideMarkFormat, WideMarks, read_wide_marks};
+pub use nullable::{
+    NullableColumn, NullableReadError, read_null_map, read_nullable_legacy_strings,
+    read_nullable_numeric_column, read_nullable_sized_strings,
+};
 pub use numeric::{NumericColumn, NumericReadError, read_numeric_column};
 pub use primary_index::{FixedPrimaryIndex, read_fixed_primary_index};
 pub use stream::UInt64ColumnReader;
@@ -144,7 +154,7 @@ impl fmt::Display for PartError {
             }
             Self::UnsupportedMarksFormat(path) => write!(
                 f,
-                "{}: only uncompressed wide-part .mrk and .mrk2 files are supported",
+                "{}: only wide-part .mrk, .mrk2, .cmrk, and .cmrk2 files are supported",
                 path.display()
             ),
         }
