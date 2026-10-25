@@ -62,7 +62,8 @@ impl NumericPartReader {
             } else {
                 compressed_marks
             };
-            let marks = read_wide_marks(&marks_path)?.marks;
+            let marks_file = read_wide_marks(&marks_path)?;
+            let marks = &marks_file.marks;
             for (index, mark) in marks.iter().enumerate() {
                 if mark.rows == Some(0) && index + 1 != marks.len() {
                     return Err(PartError::InvalidScan(format!(
@@ -106,10 +107,12 @@ impl NumericPartReader {
                 baseline = Some(row_counts);
             }
 
+            let data_path = part.join(format!("{name}.bin"));
+            crate::validate_wide_marks(&marks_file, CompressedBlockReader::open(&data_path)?)?;
             streams.push(ColumnStream {
                 data_type: column.data_type.clone(),
-                marks,
-                reader: CompressedBlockReader::open(part.join(format!("{name}.bin")))?,
+                marks: marks_file.marks,
+                reader: CompressedBlockReader::open(data_path)?,
             });
         }
 
@@ -412,6 +415,21 @@ mod tests {
             Err(PartError::InvalidScan(_))
         ));
 
+        fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn rejects_marks_pointing_inside_compressed_blocks() {
+        let dir = fixture();
+        let mut invalid = marks(4, &[2, 1]);
+        invalid[..8].copy_from_slice(&1u64.to_le_bytes());
+        invalid[24..32].copy_from_slice(&1u64.to_le_bytes());
+        fs::write(dir.join("id.mrk2"), invalid).unwrap();
+
+        assert!(matches!(
+            NumericPartReader::open(&dir, &["id".into()]),
+            Err(PartError::InvalidMarkOffset { .. })
+        ));
         fs::remove_dir_all(dir).unwrap();
     }
 
