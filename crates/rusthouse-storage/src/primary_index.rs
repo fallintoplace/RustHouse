@@ -38,7 +38,7 @@ pub fn read_fixed_primary_index(
     if field_widths.is_empty() {
         return Err(invalid(path, "at least one key field is required"));
     }
-    let mut field_offsets = Vec::with_capacity(field_widths.len() + 1);
+    let mut field_offsets = Vec::new();
     field_offsets.push(0usize);
     for &width in field_widths {
         if width == 0 {
