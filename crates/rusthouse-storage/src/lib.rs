@@ -8,6 +8,7 @@ mod granules;
 mod mark_validation;
 mod marks;
 mod nullable;
+mod nullable_arrays;
 mod numeric;
 mod part_scan;
 mod part_verify;
@@ -33,6 +34,9 @@ pub use marks::{WideMark, WideMarkFormat, WideMarks, read_wide_marks};
 pub use nullable::{
     NullableColumn, NullableReadError, read_null_map, read_nullable_fixed_strings,
     read_nullable_legacy_strings, read_nullable_numeric_column, read_nullable_sized_strings,
+};
+pub use nullable_arrays::{
+    NullableArrayReadError, NullableNumericArrayColumn, read_nullable_numeric_array_column,
 };
 pub use numeric::{NumericColumn, NumericReadError, read_numeric_column};
 pub use part_scan::NumericPartReader;
