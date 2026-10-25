@@ -81,7 +81,7 @@ fn execute_into<W: Write>(
 ) -> Result<(), ExecutionError> {
     if let Projection::Literal(value) = query.projection {
         writeln!(output, "{value}")?;
-        if query.limit != Some(0) {
+        if query.limit != Some(0) && query.offset.unwrap_or(0) == 0 {
             writeln!(output, "{value}")?;
         }
         return Ok(());
@@ -106,7 +106,7 @@ fn execute_into<W: Write>(
 
     if matches!(query.projection, Projection::Count) && query.predicate.is_none() {
         writeln!(output, "count")?;
-        if query.limit != Some(0) {
+        if query.limit != Some(0) && query.offset.unwrap_or(0) == 0 {
             writeln!(output, "{}", metadata.rows)?;
         }
         return Ok(());
@@ -174,7 +174,8 @@ fn execute_into<W: Write>(
     let mut reader = NumericPartReader::open(part, &scan_columns)?;
 
     if let (Some(order), Some(index)) = (&query.order_by, sort_index) {
-        let mut sorted = SortedRows::new(query.limit, order.descending);
+        let mut sorted =
+            SortedRows::with_offset(query.limit, query.offset.unwrap_or(0), order.descending)?;
         writeln!(output, "{}", projected.join("\t"))?;
         if query.limit == Some(0) {
             return Ok(());
@@ -214,6 +215,8 @@ fn execute_into<W: Write>(
 
     let limit = query.limit.unwrap_or(usize::MAX);
     let mut emitted = 0usize;
+    let mut skipped = 0usize;
+    let offset = query.offset.unwrap_or(0);
     let mut matched = 0u64;
     while let Some(batch) = reader.next_batch()? {
         let rows = batch[0].len();
@@ -228,6 +231,10 @@ fn execute_into<W: Write>(
             if is_count {
                 matched += 1;
             } else {
+                if skipped < offset {
+                    skipped += 1;
+                    continue;
+                }
                 for (column_number, index) in projected_indices.iter().enumerate() {
                     if column_number != 0 {
                         write!(output, "\t")?;
@@ -243,7 +250,7 @@ fn execute_into<W: Write>(
         }
     }
 
-    if is_count {
+    if is_count && query.offset.unwrap_or(0) == 0 {
         writeln!(output, "{matched}")?;
     }
     Ok(())
@@ -298,7 +305,9 @@ fn execute_aggregate_part<W: Write>(
             state.update(number_at(&batch[0], row))?;
         }
     }
-    writeln!(output, "{}", state.render())?;
+    if query.offset.unwrap_or(0) == 0 {
+        writeln!(output, "{}", state.render())?;
+    }
     Ok(())
 }
 
@@ -343,7 +352,9 @@ fn execute_aggregate_numbers<W: Write>(
         }
         state.update(value)?;
     }
-    writeln!(output, "{}", state.render())?;
+    if query.offset.unwrap_or(0) == 0 {
+        writeln!(output, "{}", state.render())?;
+    }
     Ok(())
 }
 
@@ -399,13 +410,13 @@ fn execute_numbers<W: Write>(
                     "numbers(N) exposes only the number column".into(),
                 ));
             }
-            Ok(SortedRows::new(query.limit, order.descending))
+            SortedRows::with_offset(query.limit, query.offset.unwrap_or(0), order.descending)
         })
         .transpose()?;
     if is_count {
         writeln!(output, "count")?;
         if comparison.is_none() {
-            if query.limit != Some(0) {
+            if query.limit != Some(0) && query.offset.unwrap_or(0) == 0 {
                 writeln!(output, "{rows}")?;
             }
             return Ok(());
@@ -419,6 +430,8 @@ fn execute_numbers<W: Write>(
 
     let mut matched = 0u64;
     let mut emitted = 0usize;
+    let mut skipped = 0usize;
+    let offset = query.offset.unwrap_or(0);
     let limit = query.limit.unwrap_or(usize::MAX);
     for number in 0..rows {
         if let Some((operator, target)) = comparison {
@@ -434,6 +447,10 @@ fn execute_numbers<W: Write>(
         if is_count {
             matched += 1;
         } else {
+            if skipped < offset {
+                skipped += 1;
+                continue;
+            }
             for (index, _) in projected.iter().enumerate() {
                 if index != 0 {
                     write!(output, "\t")?;
@@ -450,7 +467,7 @@ fn execute_numbers<W: Write>(
     if let Some(sorted) = sorting {
         return sorted.write(output);
     }
-    if is_count {
+    if is_count && query.offset.unwrap_or(0) == 0 {
         writeln!(output, "{matched}")?;
     }
     Ok(())
@@ -575,6 +592,7 @@ impl Ord for SortedRow {
 struct SortedRows {
     rows: BinaryHeap<SortedRow>,
     requested: usize,
+    offset: usize,
     seen: usize,
     descending: bool,
 }
@@ -584,9 +602,28 @@ impl SortedRows {
         Self {
             rows: BinaryHeap::new(),
             requested: limit.unwrap_or(usize::MAX),
+            offset: 0,
             seen: 0,
             descending,
         }
+    }
+
+    fn with_offset(
+        limit: Option<usize>,
+        offset: usize,
+        descending: bool,
+    ) -> Result<Self, ExecutionError> {
+        let mut sorted = Self::new(limit, descending);
+        sorted.requested = limit
+            .map(|limit| {
+                limit.checked_add(offset).ok_or_else(|| {
+                    ExecutionError::Invalid("LIMIT plus OFFSET overflows".into())
+                })
+            })
+            .transpose()?
+            .unwrap_or(usize::MAX);
+        sorted.offset = offset;
+        Ok(sorted)
     }
 
     fn push(&mut self, key: Number, values: Vec<Number>) -> Result<(), ExecutionError> {
@@ -617,7 +654,7 @@ impl SortedRows {
     }
 
     fn write<W: Write>(self, output: &mut W) -> Result<(), ExecutionError> {
-        for row in self.rows.into_sorted_vec() {
+        for row in self.rows.into_sorted_vec().into_iter().skip(self.offset) {
             for (index, value) in row.values.iter().enumerate() {
                 if index != 0 {
                     write!(output, "\t")?;
@@ -843,6 +880,44 @@ mod tests {
             "number\n"
         );
         assert!(run("SELECT number FROM numbers(0) ORDER BY missing", None).is_err());
+    }
+
+    #[test]
+    fn pagination_applies_after_filtering_and_sorting() {
+        assert_eq!(
+            run("SELECT number FROM numbers(10) LIMIT 3 OFFSET 4", None).unwrap(),
+            "number\n4\n5\n6\n"
+        );
+        assert_eq!(
+            run(
+                "SELECT number FROM numbers(10) ORDER BY number DESC LIMIT 3 OFFSET 2",
+                None,
+            )
+            .unwrap(),
+            "number\n7\n6\n5\n"
+        );
+        assert_eq!(
+            run(
+                "SELECT number FROM numbers(10) WHERE number >= 5 LIMIT 2 OFFSET 1",
+                None,
+            )
+            .unwrap(),
+            "number\n6\n7\n"
+        );
+        assert_eq!(
+            run("SELECT number FROM numbers(2) LIMIT 2 OFFSET 100", None).unwrap(),
+            "number\n"
+        );
+        assert_eq!(
+            run("SELECT count(*) FROM numbers(10) LIMIT 1 OFFSET 1", None).unwrap(),
+            "count\n"
+        );
+        assert_eq!(
+            run("SELECT sum(number) FROM numbers(10) LIMIT 1 OFFSET 1", None).unwrap(),
+            "sum(number)\n"
+        );
+        assert_eq!(run("SELECT 1 LIMIT 1 OFFSET 1", None).unwrap(), "1\n");
+        assert!(SortedRows::with_offset(Some(usize::MAX), 1, false).is_err());
     }
 
     #[test]
