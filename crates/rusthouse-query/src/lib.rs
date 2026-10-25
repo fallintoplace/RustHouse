@@ -27,6 +27,7 @@ impl AggregateFunction {
 pub enum Projection {
     Literal(i64),
     Count,
+    CountDistinct { column: String },
     GroupedCount {
         column: String,
     },
@@ -206,11 +207,20 @@ pub fn parse_select(sql: &str) -> Result<Select, ParseError> {
         if !parser.take(Token::LParen) {
             return Err(ParseError("expected COUNT() or COUNT(*)".into()));
         }
-        if !parser.take(Token::RParen) && !(parser.take(Token::Star) && parser.take(Token::RParen))
-        {
-            return Err(ParseError("expected COUNT() or COUNT(*)".into()));
+        if parser.keyword("DISTINCT") {
+            let column = parser.word()?;
+            if !parser.take(Token::RParen) {
+                return Err(ParseError("expected ')' after COUNT(DISTINCT column)".into()));
+            }
+            Projection::CountDistinct { column }
+        } else {
+            if !parser.take(Token::RParen)
+                && !(parser.take(Token::Star) && parser.take(Token::RParen))
+            {
+                return Err(ParseError("expected COUNT() or COUNT(*)".into()));
+            }
+            Projection::Count
         }
-        Projection::Count
     } else if matches!(parser.tokens.get(parser.index + 1), Some(Token::LParen)) {
         let name = parser.word()?;
         let function = match name.to_ascii_uppercase().as_str() {
@@ -479,7 +489,10 @@ pub fn parse_select(sql: &str) -> Result<Select, ParseError> {
     if order_by.is_some()
         && matches!(
             projection,
-            Projection::Count | Projection::Aggregate { .. } | Projection::Literal(_)
+            Projection::Count
+                | Projection::CountDistinct { .. }
+                | Projection::Aggregate { .. }
+                | Projection::Literal(_)
         )
     {
         return Err(ParseError("ORDER BY requires column projections".into()));
@@ -803,6 +816,25 @@ mod tests {
             "SELECT sum(a, b) FROM part",
             "SELECT median(price) FROM part",
             "SELECT avg(number) FROM numbers(3) ORDER BY number",
+        ] {
+            assert!(parse_select(sql).is_err(), "{sql}");
+        }
+    }
+
+    #[test]
+    fn parses_count_distinct_projection() {
+        assert_eq!(
+            parse_select("SELECT count(DISTINCT number) FROM numbers(10)")
+                .unwrap()
+                .projection,
+            Projection::CountDistinct {
+                column: "number".into(),
+            }
+        );
+        for sql in [
+            "SELECT count(DISTINCT) FROM numbers(10)",
+            "SELECT count(DISTINCT number, other) FROM numbers(10)",
+            "SELECT DISTINCT count(DISTINCT number) FROM numbers(10)",
         ] {
             assert!(parse_select(sql).is_err(), "{sql}");
         }

@@ -140,6 +140,9 @@ fn execute_into<W: Write>(
     let part = part.ok_or_else(|| {
         ExecutionError::Invalid("pass --part <directory> for table queries".into())
     })?;
+    if let Projection::CountDistinct { column } = &query.projection {
+        return execute_count_distinct_part(query, part, column, output);
+    }
     if let Projection::Aggregate { function, column } = &query.projection {
         return execute_aggregate_part(query, part, *function, column, output);
     }
@@ -167,9 +170,10 @@ fn execute_into<W: Write>(
             .collect::<Vec<_>>(),
         Projection::Columns(names) => names.clone(),
         Projection::Count => Vec::new(),
-        Projection::Aggregate { .. } | Projection::GroupedCount { .. } | Projection::Literal(_) => {
-            unreachable!()
-        }
+        Projection::Aggregate { .. }
+        | Projection::CountDistinct { .. }
+        | Projection::GroupedCount { .. }
+        | Projection::Literal(_) => unreachable!(),
     };
     if query.distinct
         && query
@@ -437,6 +441,50 @@ fn execute_grouped_numbers<W: Write>(
     groups.write(query, column, output)
 }
 
+fn execute_count_distinct_part<W: Write>(
+    query: &Select,
+    part: &Path,
+    column: &str,
+    output: &mut W,
+) -> Result<(), ExecutionError> {
+    let metadata = inspect_part(part)?;
+    let mut scan_columns = vec![column.to_owned()];
+    let comparisons = compile_part_where(query, &mut scan_columns, |column_name, literal| {
+        let metadata_column = metadata
+            .columns
+            .iter()
+            .find(|candidate| candidate.name == column_name)
+            .ok_or_else(|| {
+                ExecutionError::Invalid(format!("unknown WHERE column: {column_name}"))
+            })?;
+        parse_numeric(&metadata_column.data_type, literal)
+    })?;
+    let mut reader = NumericPartReader::open(part, &scan_columns)?;
+    writeln!(output, "countDistinct({column})")?;
+    if query.limit == Some(0) {
+        return Ok(());
+    }
+    let mut seen = HashSet::new();
+    while let Some(batch) = reader.next_batch()? {
+        for row in 0..batch[0].len() {
+            if !batch_matches(&batch, row, &comparisons) {
+                continue;
+            }
+            let key = NumberKey::from(number_at(&batch[0], row));
+            if seen.len() >= MAX_DISTINCT_ROWS && !seen.contains(&key) {
+                return Err(ExecutionError::Invalid(
+                    "COUNT(DISTINCT) supports at most 100000 unique values".into(),
+                ));
+            }
+            seen.insert(key);
+        }
+    }
+    if query.offset.unwrap_or(0) == 0 {
+        writeln!(output, "{}", seen.len())?;
+    }
+    Ok(())
+}
+
 fn execute_aggregate_part<W: Write>(
     query: &Select,
     part: &Path,
@@ -520,6 +568,25 @@ fn execute_numbers<W: Write>(
             "--part cannot be used with numbers(N)".into(),
         ));
     }
+    if let Projection::CountDistinct { column } = &query.projection {
+        if column != "number" {
+            return Err(ExecutionError::Invalid(
+                "numbers(N) exposes only the number column".into(),
+            ));
+        }
+        let comparisons = compile_numbers_predicates(query)?;
+        writeln!(output, "countDistinct(number)")?;
+        if query.limit != Some(0) && query.offset.unwrap_or(0) == 0 {
+            let mut count = 0u64;
+            for number in start..start + rows {
+                if number_matches_all(Number::Unsigned(u128::from(number)), &comparisons) {
+                    count += 1;
+                }
+            }
+            writeln!(output, "{count}")?;
+        }
+        return Ok(());
+    }
     if let Projection::Aggregate { function, column } = &query.projection {
         return execute_aggregate_numbers(query, start, rows, *function, column, output);
     }
@@ -537,9 +604,10 @@ fn execute_numbers<W: Write>(
             names.iter().map(String::as_str).collect()
         }
         Projection::Count => Vec::new(),
-        Projection::Aggregate { .. } | Projection::GroupedCount { .. } | Projection::Literal(_) => {
-            unreachable!()
-        }
+        Projection::Aggregate { .. }
+        | Projection::CountDistinct { .. }
+        | Projection::GroupedCount { .. }
+        | Projection::Literal(_) => unreachable!(),
     };
     let comparisons = compile_numbers_predicates(query)?;
     let is_count = matches!(query.projection, Projection::Count);
@@ -1232,6 +1300,27 @@ mod tests {
             .unwrap(),
             "count\n2\n"
         );
+    }
+
+    #[test]
+    fn counts_exact_distinct_numeric_values_after_filters() {
+        assert_eq!(
+            run("SELECT count(DISTINCT number) FROM numbers(10)", None).unwrap(),
+            "countDistinct(number)\n10\n"
+        );
+        assert_eq!(
+            run(
+                "SELECT count(DISTINCT number) FROM numbers(10) WHERE number < 3 OR number >= 8",
+                None
+            )
+            .unwrap(),
+            "countDistinct(number)\n5\n"
+        );
+        assert_eq!(
+            run("SELECT count(DISTINCT number) FROM numbers(0)", None).unwrap(),
+            "countDistinct(number)\n0\n"
+        );
+        assert!(run("SELECT count(DISTINCT missing) FROM numbers(3)", None).is_err());
     }
 
     #[test]
