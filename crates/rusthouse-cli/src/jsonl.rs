@@ -100,9 +100,6 @@ impl<W: Write> Write for JsonlWriter<W> {
     }
 
     fn flush(&mut self) -> io::Result<()> {
-        if !self.line.is_empty() {
-            self.finish_line()?;
-        }
         self.output.flush()
     }
 }
@@ -142,5 +139,19 @@ mod tests {
     fn rejects_oversized_rows() {
         let mut writer = JsonlWriter::new(Vec::new());
         assert!(writer.write_all(&vec![b'a'; MAX_LINE_BYTES + 1]).is_err());
+    }
+
+    #[test]
+    fn flush_does_not_split_headers_or_rows() {
+        let mut writer = JsonlWriter::new(Vec::new());
+        writer.write_all(b"name\tamount").unwrap();
+        writer.flush().unwrap();
+        writer.write_all(b"\nabc\t1").unwrap();
+        writer.flush().unwrap();
+        writer.write_all(b"2\n").unwrap();
+        assert_eq!(
+            String::from_utf8(writer.output).unwrap(),
+            "{\"name\":\"abc\",\"amount\":\"12\"}\n"
+        );
     }
 }
