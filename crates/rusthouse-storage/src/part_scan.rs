@@ -50,10 +50,12 @@ impl NumericPartReader {
                     | "UInt16"
                     | "UInt32"
                     | "UInt64"
+                    | "UInt128"
                     | "Int8"
                     | "Int16"
                     | "Int32"
                     | "Int64"
+                    | "Int128"
                     | "Float32"
                     | "Float64"
             ) {
@@ -235,6 +237,49 @@ mod tests {
             vec![
                 NumericColumn::UInt16(vec![30]),
                 NumericColumn::Int32(vec![3])
+            ]
+        );
+        assert!(reader.next_batch().unwrap().is_none());
+        fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn reads_signed_and_unsigned_128_bit_columns() {
+        let dir = path();
+        fs::write(dir.join("count.txt"), "3\n").unwrap();
+        fs::write(
+            dir.join("columns.txt"),
+            "columns format version: 1\n2 columns:\n\u{0060}large\u{0060} UInt128\n\u{0060}small\u{0060} Int128\n",
+        )
+        .unwrap();
+        let large = [0u128, u128::MAX, (1u128 << 96) + 1];
+        let small = [i128::MIN, -1, i128::MAX];
+        let encoded_large = large
+            .into_iter()
+            .flat_map(u128::to_le_bytes)
+            .collect::<Vec<_>>();
+        let encoded_small = small
+            .into_iter()
+            .flat_map(i128::to_le_bytes)
+            .collect::<Vec<_>>();
+        fs::write(dir.join("large.bin"), block(&encoded_large)).unwrap();
+        fs::write(dir.join("small.bin"), block(&encoded_small)).unwrap();
+        fs::write(dir.join("large.mrk2"), marks(16, &[2, 1])).unwrap();
+        fs::write(dir.join("small.mrk2"), marks(16, &[2, 1])).unwrap();
+
+        let mut reader = NumericPartReader::open(&dir, &["large".into(), "small".into()]).unwrap();
+        assert_eq!(
+            reader.next_batch().unwrap().unwrap(),
+            vec![
+                NumericColumn::UInt128(large[..2].to_vec()),
+                NumericColumn::Int128(small[..2].to_vec())
+            ]
+        );
+        assert_eq!(
+            reader.next_batch().unwrap().unwrap(),
+            vec![
+                NumericColumn::UInt128(large[2..].to_vec()),
+                NumericColumn::Int128(small[2..].to_vec())
             ]
         );
         assert!(reader.next_batch().unwrap().is_none());
