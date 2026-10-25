@@ -833,7 +833,10 @@ enum CompiledTest {
     },
     In(Vec<Number>),
     NotIn(Vec<Number>),
-    NotBetween { lower: Number, upper: Number },
+    NotBetween {
+        lower: Number,
+        upper: Number,
+    }
     InSet {
         targets: HashSet<NumberKey>,
         negated: bool,
@@ -1294,8 +1297,11 @@ mod tests {
     #[test]
     fn not_between_filters_generated_numbers_and_combines_with_or() {
         assert_eq!(
-            run("SELECT number FROM numbers(10) WHERE number NOT BETWEEN 3 AND 6", None)
-                .unwrap(),
+            run(
+                "SELECT number FROM numbers(10) WHERE number NOT BETWEEN 3 AND 6",
+                None
+            )
+            .unwrap(),
             "number\n0\n1\n2\n7\n8\n9\n"
         );
         assert_eq!(
@@ -1307,8 +1313,11 @@ mod tests {
             "number\n0\n1\n2\n7\n8\n9\n"
         );
         assert_eq!(
-            run("SELECT count(*) FROM numbers(10) WHERE number NOT BETWEEN 0 AND 9", None)
-                .unwrap(),
+            run(
+                "SELECT count(*) FROM numbers(10) WHERE number NOT BETWEEN 0 AND 9",
+                None
+            )
+            .unwrap(),
             "count\n0\n"
         );
     }
