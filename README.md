@@ -17,3 +17,5 @@ Filter inclusive numeric ranges with `cargo run -p rusthouse-cli -- sql "SELECT 
 Filter chosen values with `cargo run -p rusthouse-cli -- sql "SELECT number FROM numbers(10) WHERE number IN (1, 3, 7)"`.
 
 Deduplicate numeric rows with `cargo run -p rusthouse-cli -- sql "SELECT DISTINCT id FROM part ORDER BY id" --part /path/to/wide-part`.
+
+Inspect the parsed SQL structure without touching data using `cargo run -p rusthouse-cli -- sql --show-ast "SELECT id FROM part WHERE id >= 3"`.

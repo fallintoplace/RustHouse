@@ -9,7 +9,7 @@ use std::ffi::OsString;
 use std::path::PathBuf;
 use std::process::ExitCode;
 
-const USAGE: &str = "Usage:\n  rusthouse inspect-part <path>\n  rusthouse verify-part <path-to-wide-part>\n  rusthouse verify-file-sizes <path-to-part>\n  rusthouse inspect-checksums <path-to-checksums.txt>\n  rusthouse inspect-marks <path-to-wide-marks>\n  rusthouse inspect-blocks <path-to-.bin>\n  rusthouse verify-blocks <path-to-.bin>\n  rusthouse validate-marks <path-to-wide-marks> <path-to-.bin>\n  rusthouse read-u64 <data.bin> <marks.mrk2> <mark-index>\n  rusthouse scan-u64 <path-to-UInt64-.bin>\n  rusthouse read-numeric <data.bin> <marks.mrk2> <mark-index> <type>\n  rusthouse sql <SQL> [--part <path-to-wide-part>]\n  rusthouse --help\n\nInspect local MergeTree metadata, marks, and compressed blocks.";
+const USAGE: &str = "Usage:\n  rusthouse inspect-part <path>\n  rusthouse verify-part <path-to-wide-part>\n  rusthouse verify-file-sizes <path-to-part>\n  rusthouse inspect-checksums <path-to-checksums.txt>\n  rusthouse inspect-marks <path-to-wide-marks>\n  rusthouse inspect-blocks <path-to-.bin>\n  rusthouse verify-blocks <path-to-.bin>\n  rusthouse validate-marks <path-to-wide-marks> <path-to-.bin>\n  rusthouse read-u64 <data.bin> <marks.mrk2> <mark-index>\n  rusthouse scan-u64 <path-to-UInt64-.bin>\n  rusthouse read-numeric <data.bin> <marks.mrk2> <mark-index> <type>\n  rusthouse sql <SQL> [--part <path-to-wide-part>] [--show-ast]\n  rusthouse --help\n\nInspect local MergeTree metadata, marks, and compressed blocks.";
 
 fn main() -> ExitCode {
     let mut args = env::args_os().skip(1);
@@ -318,7 +318,15 @@ fn print_values<T: std::fmt::Display>(values: Vec<T>) {
 fn run_sql_args(mut args: impl Iterator<Item = OsString>) -> Result<(), String> {
     let mut query = None;
     let mut part = None;
+    let mut show_ast = false;
     while let Some(arg) = args.next() {
+        if arg.to_str() == Some("--show-ast") {
+            if show_ast {
+                return Err("duplicate --show-ast option".into());
+            }
+            show_ast = true;
+            continue;
+        }
         if arg.to_str() == Some("--part") {
             if part.is_some() {
                 return Err("duplicate --part option".into());
@@ -337,5 +345,9 @@ fn run_sql_args(mut args: impl Iterator<Item = OsString>) -> Result<(), String> 
     }
     let query = query.ok_or("missing SQL statement")?;
     let select = parse_select(&query).map_err(|error| error.to_string())?;
+    if show_ast {
+        println!("{select:#?}");
+        return Ok(());
+    }
     execute(&select, part.as_deref(), &mut std::io::stdout()).map_err(|error| error.to_string())
 }
