@@ -254,7 +254,7 @@ mod tests {
         let error = read_sized_string_array_column(
             &mut encoded_offsets(&[1]).as_slice(),
             &mut 2u64.to_le_bytes().as_slice(),
-            &mut &[b'x'][..],
+            &mut &b"x"[..],
             "Array(String)",
             1,
             ArrayOffsetsEncoding::Sizes,
