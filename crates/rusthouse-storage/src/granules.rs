@@ -1,6 +1,6 @@
 use crate::numeric::numeric_storage_type;
 use crate::{
-    CompressedBlockReader, NumericColumn, NumericReadError, PartError, WideMark,
+    CompressedBlockReader, DecodedBlock, NumericColumn, NumericReadError, PartError, WideMark,
     read_numeric_column,
 };
 use std::io::{Read, Seek};
@@ -12,6 +12,15 @@ pub fn read_mark_bytes<R: Read + Seek>(
     mark: &WideMark,
     byte_count: usize,
 ) -> Result<Vec<u8>, PartError> {
+    read_mark_bytes_cached(reader, mark, byte_count, &mut None)
+}
+
+pub(crate) fn read_mark_bytes_cached<R: Read + Seek>(
+    reader: &mut CompressedBlockReader<R>,
+    mark: &WideMark,
+    byte_count: usize,
+    cached: &mut Option<DecodedBlock>,
+) -> Result<Vec<u8>, PartError> {
     if byte_count > MAX_GRANULE_BYTES {
         return Err(invalid_mark(mark, "granule exceeds the 64 MiB read limit"));
     }
@@ -21,6 +30,19 @@ pub fn read_mark_bytes<R: Read + Seek>(
 
     let mut offset = usize::try_from(mark.decompressed_offset)
         .map_err(|_| invalid_mark(mark, "decompressed offset exceeds address space"))?;
+    // Adjacent adaptive marks often reference the same compressed block.
+    // Keep one verified decoded block per column stream and avoid re-decoding it.
+    if let Some(bytes) = cached
+        .as_ref()
+        .filter(|block| block.block.offset == mark.compressed_offset)
+        .and_then(|block| {
+            offset
+                .checked_add(byte_count)
+                .and_then(|end| block.data.get(offset..end))
+        })
+    {
+        return Ok(bytes.to_vec());
+    }
     reader.seek_to_block(mark.compressed_offset)?;
 
     let mut result = Vec::with_capacity(byte_count);
@@ -34,6 +56,7 @@ pub fn read_mark_bytes<R: Read + Seek>(
         let count = (byte_count - result.len()).min(block.data.len() - offset);
         result.extend_from_slice(&block.data[offset..offset + count]);
         offset = 0;
+        *cached = Some(block);
     }
     Ok(result)
 }
@@ -64,6 +87,15 @@ pub fn read_numeric_granule<R: Read + Seek>(
     mark: &WideMark,
     data_type: &str,
 ) -> Result<NumericColumn, PartError> {
+    read_numeric_granule_cached(reader, mark, data_type, &mut None)
+}
+
+pub(crate) fn read_numeric_granule_cached<R: Read + Seek>(
+    reader: &mut CompressedBlockReader<R>,
+    mark: &WideMark,
+    data_type: &str,
+    cached: &mut Option<DecodedBlock>,
+) -> Result<NumericColumn, PartError> {
     let width = match numeric_storage_type(data_type).unwrap_or(data_type) {
         "UInt8" | "Int8" => 1,
         "UInt16" | "Int16" => 2,
@@ -83,7 +115,7 @@ pub fn read_numeric_granule<R: Read + Seek>(
     let byte_count = rows
         .checked_mul(width)
         .ok_or_else(|| invalid_mark(mark, "granule size overflows"))?;
-    let bytes = read_mark_bytes(reader, mark, byte_count)?;
+    let bytes = read_mark_bytes_cached(reader, mark, byte_count, cached)?;
     read_numeric_column(&mut bytes.as_slice(), data_type, rows).map_err(PartError::NumericRead)
 }
 
@@ -99,7 +131,9 @@ fn invalid_mark(mark: &WideMark, reason: &'static str) -> PartError {
 mod tests {
     use super::*;
     use ch_cityhash102::cityhash128;
-    use std::io::Cursor;
+    use std::cell::Cell;
+    use std::io::{Cursor, Read, Seek, SeekFrom};
+    use std::rc::Rc;
 
     fn checked_block(method: u8, data: &[u8]) -> Vec<u8> {
         let payload = if method == 0x82 {
@@ -126,6 +160,104 @@ mod tests {
 
     fn reader(data: Vec<u8>) -> CompressedBlockReader<Cursor<Vec<u8>>> {
         CompressedBlockReader::new(Cursor::new(data), "values.bin").unwrap()
+    }
+
+    struct CountingCursor {
+        inner: Cursor<Vec<u8>>,
+        reads: Rc<Cell<usize>>,
+    }
+
+    impl Read for CountingCursor {
+        fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
+            self.reads.set(self.reads.get() + 1);
+            self.inner.read(buf)
+        }
+    }
+
+    impl Seek for CountingCursor {
+        fn seek(&mut self, position: SeekFrom) -> std::io::Result<u64> {
+            self.inner.seek(position)
+        }
+    }
+
+    #[test]
+    fn caches_verified_blocks_for_adjacent_marks() {
+        let data = [11u64, 22, 33, 44]
+            .into_iter()
+            .flat_map(u64::to_le_bytes)
+            .collect::<Vec<_>>();
+        let reads = Rc::new(Cell::new(0));
+        let input = CountingCursor {
+            inner: Cursor::new(checked_block(0x82, &data)),
+            reads: Rc::clone(&reads),
+        };
+        let mut reader = CompressedBlockReader::new(input, "values.bin").unwrap();
+        let mut cache = None;
+
+        assert_eq!(
+            read_numeric_granule_cached(&mut reader, &mark(0, 0, Some(2)), "UInt64", &mut cache)
+                .unwrap(),
+            NumericColumn::UInt64(vec![11, 22])
+        );
+        let read_count = reads.get();
+        assert!(read_count > 0);
+        assert_eq!(
+            read_numeric_granule_cached(&mut reader, &mark(0, 16, Some(2)), "UInt64", &mut cache)
+                .unwrap(),
+            NumericColumn::UInt64(vec![33, 44])
+        );
+        assert_eq!(reads.get(), read_count);
+
+        // An invalid offset must still fail, even if the block was cached.
+        assert!(matches!(
+            read_numeric_granule_cached(&mut reader, &mark(0, 32, Some(1)), "UInt64", &mut cache),
+            Err(PartError::InvalidWideMark {
+                reason: "decompressed offset is outside block",
+                ..
+            })
+        ));
+    }
+
+    #[test]
+    fn cache_handles_cross_block_granules_and_backward_seeks() {
+        let data = [10u64, 20, 30]
+            .into_iter()
+            .flat_map(u64::to_le_bytes)
+            .collect::<Vec<_>>();
+        let mut bytes = checked_block(0x82, &data[..12]);
+        let second_offset = bytes.len() as u64;
+        bytes.extend(checked_block(0x02, &data[12..]));
+        let reads = Rc::new(Cell::new(0));
+        let input = CountingCursor {
+            inner: Cursor::new(bytes),
+            reads: Rc::clone(&reads),
+        };
+        let mut reader = CompressedBlockReader::new(input, "values.bin").unwrap();
+        let mut cache = None;
+
+        assert_eq!(
+            read_numeric_granule_cached(&mut reader, &mark(0, 8, Some(2)), "UInt64", &mut cache)
+                .unwrap(),
+            NumericColumn::UInt64(vec![20, 30])
+        );
+        let read_count = reads.get();
+        assert_eq!(
+            read_numeric_granule_cached(
+                &mut reader,
+                &mark(second_offset, 4, Some(1)),
+                "UInt64",
+                &mut cache
+            )
+            .unwrap(),
+            NumericColumn::UInt64(vec![30])
+        );
+        assert_eq!(reads.get(), read_count);
+        assert_eq!(
+            read_numeric_granule_cached(&mut reader, &mark(0, 0, Some(1)), "UInt64", &mut cache)
+                .unwrap(),
+            NumericColumn::UInt64(vec![10])
+        );
+        assert!(reads.get() > read_count);
     }
 
     #[test]

@@ -81,6 +81,30 @@ fn sorts_generated_numbers_from_the_cli() {
 }
 
 #[test]
+fn groups_repeated_part_values_from_the_cli() {
+    let dir = sample_part();
+    let id = u64::from_le_bytes(*b"aaaaaaaa");
+    let result = sql("SELECT id, count(*) FROM part GROUP BY id", Some(&dir));
+    assert!(result.status.success(), "{result:?}");
+    assert_eq!(
+        String::from_utf8(result.stdout).unwrap(),
+        format!("id\tcount\n{id}\t10\n")
+    );
+    let filtered = sql(
+        &format!(
+            "SELECT id, count(*) FROM part WHERE id IN (0, {id}) GROUP BY id ORDER BY id DESC"
+        ),
+        Some(&dir),
+    );
+    assert!(filtered.status.success(), "{filtered:?}");
+    assert_eq!(
+        String::from_utf8(filtered.stdout).unwrap(),
+        format!("id\tcount\n{id}\t10\n")
+    );
+    fs::remove_dir_all(dir).unwrap();
+}
+
+#[test]
 fn selects_distinct_numeric_rows_through_cli() {
     let dir = sample_part();
     let id = u64::from_le_bytes(*b"aaaaaaaa");
