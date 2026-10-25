@@ -127,7 +127,8 @@ mod tests {
 
     impl<R: Read> Read for OneByte<R> {
         fn read(&mut self, buf: &mut [u8]) -> io::Result<usize> {
-            self.0.read(&mut buf[..buf.len().min(1)])
+            let count = buf.len().min(1);
+            self.0.read(&mut buf[..count])
         }
     }
 
