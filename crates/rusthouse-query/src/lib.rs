@@ -197,8 +197,13 @@ pub fn parse_select(sql: &str) -> Result<Select, ParseError> {
     } else if matches!(parser.tokens.get(parser.index + 1), Some(Token::LParen))
         && parser.keyword("COUNT")
     {
-        if !parser.take(Token::LParen) || !parser.take(Token::Star) || !parser.take(Token::RParen) {
-            return Err(ParseError("expected COUNT(*)".into()));
+        if !parser.take(Token::LParen) {
+            return Err(ParseError("expected COUNT() or COUNT(*)".into()));
+        }
+        if !parser.take(Token::RParen)
+            && !(parser.take(Token::Star) && parser.take(Token::RParen))
+        {
+            return Err(ParseError("expected COUNT() or COUNT(*)".into()));
         }
         Projection::Count
     } else if matches!(parser.tokens.get(parser.index + 1), Some(Token::LParen)) {
@@ -231,11 +236,13 @@ pub fn parse_select(sql: &str) -> Result<Select, ParseError> {
                 && parser.tokens.get(parser.index + 1) == Some(&Token::LParen)
             {
                 parser.keyword("COUNT");
-                if !parser.take(Token::LParen)
-                    || !parser.take(Token::Star)
-                    || !parser.take(Token::RParen)
+                if !parser.take(Token::LParen) {
+                    return Err(ParseError("expected COUNT() or COUNT(*)".into()));
+                }
+                if !parser.take(Token::RParen)
+                    && !(parser.take(Token::Star) && parser.take(Token::RParen))
                 {
-                    return Err(ParseError("expected COUNT(*)".into()));
+                    return Err(ParseError("expected COUNT() or COUNT(*)".into()));
                 }
                 grouped_count = true;
                 break;
@@ -1121,6 +1128,31 @@ mod tests {
             "SELECT number FROM numbers(20) LIMIT 1, -2",
             "SELECT number FROM numbers(20) LIMIT 1, 2 OFFSET 3",
             "SELECT number FROM numbers(20) LIMIT 1, 184467440737095516160",
+        ] {
+            assert!(parse_select(sql).is_err(), "{sql}");
+        }
+    }
+
+    #[test]
+    fn supports_clickhouse_count_without_arguments() {
+        assert_eq!(
+            parse_select("SELECT count() FROM numbers(10)")
+                .unwrap()
+                .projection,
+            Projection::Count
+        );
+        assert_eq!(
+            parse_select("SELECT number, count() FROM numbers(10) GROUP BY number")
+                .unwrap()
+                .projection,
+            Projection::GroupedCount {
+                column: "number".into(),
+            }
+        );
+        for sql in [
+            "SELECT count( FROM numbers(2)",
+            "SELECT count(,) FROM numbers(2)",
+            "SELECT number, count( FROM numbers(2) GROUP BY number",
         ] {
             assert!(parse_select(sql).is_err(), "{sql}");
         }
