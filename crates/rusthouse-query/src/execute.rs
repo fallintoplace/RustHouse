@@ -878,7 +878,11 @@ mod tests {
     #[test]
     fn between_supports_inclusive_ranges_and_chained_filters() {
         assert_eq!(
-            run("SELECT number FROM numbers(10) WHERE number BETWEEN 3 AND 7", None).unwrap(),
+            run(
+                "SELECT number FROM numbers(10) WHERE number BETWEEN 3 AND 7",
+                None
+            )
+            .unwrap(),
             "number\n3\n4\n5\n6\n7\n"
         );
         assert_eq!(
@@ -890,18 +894,36 @@ mod tests {
             "number\n7\n6\n4\n"
         );
         assert_eq!(
-            run("SELECT count(*) FROM numbers(10) WHERE number BETWEEN 3 AND 7", None).unwrap(),
+            run(
+                "SELECT count(*) FROM numbers(10) WHERE number BETWEEN 3 AND 7",
+                None
+            )
+            .unwrap(),
             "count\n5\n"
         );
         assert_eq!(
-            run("SELECT sum(number) FROM numbers(10) WHERE number BETWEEN 3 AND 7", None).unwrap(),
+            run(
+                "SELECT sum(number) FROM numbers(10) WHERE number BETWEEN 3 AND 7",
+                None
+            )
+            .unwrap(),
             "sum(number)\n25\n"
         );
         assert_eq!(
-            run("SELECT number FROM numbers(10) WHERE number BETWEEN 7 AND 3", None).unwrap(),
+            run(
+                "SELECT number FROM numbers(10) WHERE number BETWEEN 7 AND 3",
+                None
+            )
+            .unwrap(),
             "number\n"
         );
-        assert!(run("SELECT number FROM numbers(0) WHERE number BETWEEN -1 AND 3", None).is_err());
+        assert!(
+            run(
+                "SELECT number FROM numbers(0) WHERE number BETWEEN -1 AND 3",
+                None
+            )
+            .is_err()
+        );
     }
 
     #[test]
