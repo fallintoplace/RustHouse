@@ -190,6 +190,21 @@ impl<R: Read + Seek> CompressedBlockReader<R> {
                     }
                 }
             }
+            0x90 => {
+                let mut decoded = vec![0u8; block.decompressed_size as usize];
+                match zstd::bulk::decompress_to_buffer(
+                    &encoded[HEADER_SIZE as usize..],
+                    &mut decoded,
+                ) {
+                    Ok(size) if size == decoded.len() => decoded,
+                    _ => {
+                        return self.decoded_error(
+                            block.offset,
+                            "invalid ZSTD payload or decompressed size",
+                        );
+                    }
+                }
+            }
             _ => return self.decoded_error(block.offset, "unsupported compression method"),
         };
         Some(Ok(DecodedBlock { block, data }))
@@ -470,7 +485,7 @@ mod tests {
                 "uncompressed size mismatch",
             ),
             (
-                checked_block(0x90, b"zstd", 4),
+                checked_block(0xfe, b"unknown", 7),
                 "unsupported compression method",
             ),
         ] {
@@ -562,5 +577,74 @@ mod tests {
             }))
         ));
         assert!(reader.next_decoded().is_none());
+    }
+
+    #[test]
+    fn decodes_native_zstd_frame_and_continues_to_next_block() {
+        let frame = include_bytes!("../tests/fixtures/blocks/zstd-frame.bin");
+        let mut bytes = checked_block(0x90, frame, 301);
+        let second_offset = bytes.len() as u64;
+        bytes.extend(checked_block(0x02, b"done", 4));
+
+        let mut reader = CompressedBlockReader::new(Cursor::new(bytes), "data.bin").unwrap();
+        let first = reader.next_decoded().unwrap().unwrap();
+        assert_eq!(first.block.offset, 0);
+        assert_eq!(first.block.method, 0x90);
+        assert_eq!(
+            first.data,
+            b"ClickHouse marks are compressed with ZSTD. ".repeat(7)
+        );
+
+        let second = reader.next_decoded().unwrap().unwrap();
+        assert_eq!(second.block.offset, second_offset);
+        assert_eq!(second.data, b"done");
+        assert!(reader.next_decoded().is_none());
+    }
+
+    #[test]
+    fn rejects_invalid_zstd_frames_and_wrong_decompressed_sizes() {
+        let frame = include_bytes!("../tests/fixtures/blocks/zstd-frame.bin");
+        for (payload, decompressed_size) in [
+            (&[0xff][..], 301),
+            (&frame[..frame.len() - 1], 301),
+            (&frame[..], 300),
+            (&frame[..], 302),
+        ] {
+            let bytes = checked_block(0x90, payload, decompressed_size);
+            let mut reader = CompressedBlockReader::new(Cursor::new(bytes), "bad.bin").unwrap();
+            assert!(matches!(
+                reader.next_decoded(),
+                Some(Err(PartError::InvalidCompressedBlock {
+                    reason: "invalid ZSTD payload or decompressed size",
+                    ..
+                }))
+            ));
+            assert!(reader.next_decoded().is_none());
+        }
+    }
+
+    #[test]
+    fn validates_zstd_checksum_and_decode_size_before_decompression() {
+        let frame = include_bytes!("../tests/fixtures/blocks/zstd-frame.bin");
+        let mut bytes = checked_block(0x90, frame, 301);
+        bytes[PREFIX_SIZE] ^= 1;
+        let mut reader = CompressedBlockReader::new(Cursor::new(bytes), "bad.bin").unwrap();
+        assert!(matches!(
+            reader.next_decoded(),
+            Some(Err(PartError::InvalidCompressedBlock {
+                reason: "checksum mismatch",
+                ..
+            }))
+        ));
+
+        let bytes = checked_block(0x90, frame, MAX_DECODE_BLOCK_SIZE + 1);
+        let mut reader = CompressedBlockReader::new(Cursor::new(bytes), "bad.bin").unwrap();
+        assert!(matches!(
+            reader.next_decoded(),
+            Some(Err(PartError::InvalidCompressedBlock {
+                reason: "block exceeds the 64 MiB decode limit",
+                ..
+            }))
+        ));
     }
 }
