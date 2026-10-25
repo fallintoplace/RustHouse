@@ -616,9 +616,9 @@ impl SortedRows {
         let mut sorted = Self::new(limit, descending);
         sorted.requested = limit
             .map(|limit| {
-                limit.checked_add(offset).ok_or_else(|| {
-                    ExecutionError::Invalid("LIMIT plus OFFSET overflows".into())
-                })
+                limit
+                    .checked_add(offset)
+                    .ok_or_else(|| ExecutionError::Invalid("LIMIT plus OFFSET overflows".into()))
             })
             .transpose()?
             .unwrap_or(usize::MAX);
