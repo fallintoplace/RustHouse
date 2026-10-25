@@ -305,5 +305,4 @@ mod tests {
         data.read_exact(&mut trailing).unwrap();
         assert_eq!(trailing, [88]);
     }
-
 }
