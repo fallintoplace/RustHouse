@@ -98,8 +98,6 @@ fn main() -> ExitCode {
         };
         outcome.map_err(|error| error.to_string())
     };
-    outcome.map_err(|error| error.to_string())
-    };
     match result {
         Ok(()) => ExitCode::SUCCESS,
         Err(error) => {

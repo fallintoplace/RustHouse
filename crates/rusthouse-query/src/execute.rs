@@ -1,4 +1,4 @@
-use crate::{Operator, Predicate, Projection, Select};
+use crate::{Operator, Projection, Select};
 use rusthouse_storage::{NumericColumn, NumericPartReader, PartError, inspect_part};
 use std::error::Error;
 use std::fmt;
