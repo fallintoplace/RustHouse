@@ -478,5 +478,4 @@ mod tests {
         assert_eq!(second.offsets(), &[0, 0, 4]);
         assert!(reader.is_empty());
     }
-
 }
