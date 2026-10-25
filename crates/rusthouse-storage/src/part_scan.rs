@@ -1,6 +1,7 @@
+use crate::granules::read_numeric_granule_cached;
 use crate::numeric::numeric_storage_type;
 use crate::{
-    CompressedBlockReader, NumericColumn, PartError, WideMark, inspect_part, read_numeric_granule,
+    CompressedBlockReader, DecodedBlock, NumericColumn, PartError, WideMark, inspect_part,
     read_wide_marks,
 };
 use std::fs::File;
@@ -10,6 +11,7 @@ struct ColumnStream {
     data_type: String,
     marks: Vec<WideMark>,
     reader: CompressedBlockReader<File>,
+    cached: Option<DecodedBlock>,
 }
 
 pub struct NumericPartReader {
@@ -110,6 +112,7 @@ impl NumericPartReader {
                 data_type: column.data_type.clone(),
                 marks,
                 reader: CompressedBlockReader::open(part.join(format!("{name}.bin")))?,
+                cached: None,
             });
         }
 
@@ -148,10 +151,11 @@ impl NumericPartReader {
         }
         let mut columns = Vec::with_capacity(self.streams.len());
         for stream in &mut self.streams {
-            columns.push(read_numeric_granule(
+            columns.push(read_numeric_granule_cached(
                 &mut stream.reader,
                 &stream.marks[self.next_mark],
                 &stream.data_type,
+                &mut stream.cached,
             )?);
         }
         self.next_mark += 1;
