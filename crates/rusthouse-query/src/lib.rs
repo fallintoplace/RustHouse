@@ -4,10 +4,33 @@ pub use execute::{ExecutionError, execute};
 use std::error::Error;
 use std::fmt;
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum AggregateFunction {
+    Sum,
+    Avg,
+    Min,
+    Max,
+}
+
+impl AggregateFunction {
+    pub fn name(self) -> &'static str {
+        match self {
+            Self::Sum => "sum",
+            Self::Avg => "avg",
+            Self::Min => "min",
+            Self::Max => "max",
+        }
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Projection {
     Literal(i64),
     Count,
+    Aggregate {
+        function: AggregateFunction,
+        column: String,
+    },
     All,
     Columns(Vec<String>),
 }
@@ -147,6 +170,21 @@ pub fn parse_select(sql: &str) -> Result<Select, ParseError> {
             return Err(ParseError("expected COUNT(*)".into()));
         }
         Projection::Count
+    } else if matches!(parser.tokens.get(parser.index + 1), Some(Token::LParen)) {
+        let name = parser.word()?;
+        let function = match name.to_ascii_uppercase().as_str() {
+            "SUM" => AggregateFunction::Sum,
+            "AVG" => AggregateFunction::Avg,
+            "MIN" => AggregateFunction::Min,
+            "MAX" => AggregateFunction::Max,
+            _ => return Err(ParseError(format!("unsupported aggregate: {name}"))),
+        };
+        parser.take(Token::LParen);
+        let column = parser.word()?;
+        if !parser.take(Token::RParen) {
+            return Err(ParseError("expected ')' after aggregate column".into()));
+        }
+        Projection::Aggregate { function, column }
     } else if matches!(parser.tokens.get(parser.index), Some(Token::Number(_))) {
         let literal = parser
             .number()?
@@ -222,7 +260,12 @@ pub fn parse_select(sql: &str) -> Result<Select, ParseError> {
     } else {
         None
     };
-    if order_by.is_some() && matches!(projection, Projection::Count | Projection::Literal(_)) {
+    if order_by.is_some()
+        && matches!(
+            projection,
+            Projection::Count | Projection::Aggregate { .. } | Projection::Literal(_)
+        )
+    {
         return Err(ParseError("ORDER BY requires column projections".into()));
     }
 
@@ -428,6 +471,34 @@ mod tests {
             "SELECT number FROM numbers(18446744073709551616)",
             "SELECT number FROM numbers(3",
             "SELECT number FROM numbers",
+        ] {
+            assert!(parse_select(sql).is_err(), "{sql}");
+        }
+    }
+
+    #[test]
+    fn parses_numeric_aggregates_and_rejects_unsupported_functions() {
+        for (name, expected) in [
+            ("SUM", AggregateFunction::Sum),
+            ("AVG", AggregateFunction::Avg),
+            ("MIN", AggregateFunction::Min),
+            ("MAX", AggregateFunction::Max),
+        ] {
+            let sql = format!("SELECT {name}(price) FROM part WHERE id > 2");
+            assert_eq!(
+                parse_select(&sql).unwrap().projection,
+                Projection::Aggregate {
+                    function: expected,
+                    column: "price".into(),
+                }
+            );
+        }
+        for sql in [
+            "SELECT sum(*) FROM part",
+            "SELECT sum() FROM part",
+            "SELECT sum(a, b) FROM part",
+            "SELECT median(price) FROM part",
+            "SELECT avg(number) FROM numbers(3) ORDER BY number",
         ] {
             assert!(parse_select(sql).is_err(), "{sql}");
         }

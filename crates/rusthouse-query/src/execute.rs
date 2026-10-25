@@ -1,4 +1,4 @@
-use crate::{Operator, Projection, Select, Source};
+use crate::{AggregateFunction, Operator, Projection, Select, Source};
 use rusthouse_storage::{NumericColumn, NumericPartReader, PartError, inspect_part};
 use std::cmp::Ordering;
 use std::collections::BinaryHeap;
@@ -99,6 +99,9 @@ fn execute_into<W: Write>(
     let part = part.ok_or_else(|| {
         ExecutionError::Invalid("pass --part <directory> for table queries".into())
     })?;
+    if let Projection::Aggregate { function, column } = &query.projection {
+        return execute_aggregate_part(query, part, *function, column, output);
+    }
     let metadata = inspect_part(part)?;
 
     if matches!(query.projection, Projection::Count) && query.predicate.is_none() {
@@ -117,7 +120,7 @@ fn execute_into<W: Write>(
             .collect::<Vec<_>>(),
         Projection::Columns(names) => names.clone(),
         Projection::Count => Vec::new(),
-        Projection::Literal(_) => unreachable!(),
+        Projection::Aggregate { .. } | Projection::Literal(_) => unreachable!(),
     };
     let mut scan_columns = Vec::new();
     let projected_indices = projected
@@ -246,6 +249,104 @@ fn execute_into<W: Write>(
     Ok(())
 }
 
+fn execute_aggregate_part<W: Write>(
+    query: &Select,
+    part: &Path,
+    function: AggregateFunction,
+    column: &str,
+    output: &mut W,
+) -> Result<(), ExecutionError> {
+    let metadata = inspect_part(part)?;
+    let mut scan_columns = vec![column.to_owned()];
+    let predicate_index = query.predicate.as_ref().map(|predicate| {
+        if predicate.column == column {
+            0
+        } else {
+            scan_columns.push(predicate.column.clone());
+            scan_columns.len() - 1
+        }
+    });
+    let comparison = query
+        .predicate
+        .as_ref()
+        .map(|predicate| {
+            let metadata_column = metadata
+                .columns
+                .iter()
+                .find(|candidate| candidate.name == predicate.column)
+                .ok_or_else(|| {
+                    ExecutionError::Invalid(format!("unknown WHERE column: {}", predicate.column))
+                })?;
+            parse_numeric(&metadata_column.data_type, &predicate.value)
+        })
+        .transpose()?;
+    let mut reader = NumericPartReader::open(part, &scan_columns)?;
+    writeln!(output, "{}({column})", function.name())?;
+    if query.limit == Some(0) {
+        return Ok(());
+    }
+    let mut state = AggregateState::new(function);
+    while let Some(batch) = reader.next_batch()? {
+        for row in 0..batch[0].len() {
+            if let (Some(predicate), Some(index), Some(target)) =
+                (&query.predicate, predicate_index, comparison)
+            {
+                if !number_matches(number_at(&batch[index], row), target, predicate.operator) {
+                    continue;
+                }
+            }
+            state.update(number_at(&batch[0], row))?;
+        }
+    }
+    writeln!(output, "{}", state.render())?;
+    Ok(())
+}
+
+fn execute_aggregate_numbers<W: Write>(
+    query: &Select,
+    rows: u64,
+    function: AggregateFunction,
+    column: &str,
+    output: &mut W,
+) -> Result<(), ExecutionError> {
+    if column != "number" {
+        return Err(ExecutionError::Invalid(
+            "numbers(N) exposes only the number column".into(),
+        ));
+    }
+    let comparison = query
+        .predicate
+        .as_ref()
+        .map(|predicate| {
+            if predicate.column != "number" {
+                return Err(ExecutionError::Invalid(
+                    "numbers(N) exposes only the number column".into(),
+                ));
+            }
+            Ok((
+                predicate.operator,
+                parse_numeric("UInt64", &predicate.value)?,
+            ))
+        })
+        .transpose()?;
+    writeln!(output, "{}(number)", function.name())?;
+    if query.limit == Some(0) {
+        return Ok(());
+    }
+    let mut state = AggregateState::new(function);
+    for number in 0..rows {
+        let value = Number::Unsigned(u128::from(number));
+        if let Some((operator, target)) = comparison {
+            if !number_matches(value, target, operator) {
+                continue;
+            }
+        }
+        state.update(value)?;
+    }
+    writeln!(output, "{}", state.render())?;
+    Ok(())
+}
+
 fn execute_numbers<W: Write>(
     query: &Select,
     rows: u64,
@@ -256,6 +357,9 @@ fn execute_numbers<W: Write>(
         return Err(ExecutionError::Invalid(
             "--part cannot be used with numbers(N)".into(),
         ));
+    }
+    if let Projection::Aggregate { function, column } = &query.projection {
+        return execute_aggregate_numbers(query, rows, *function, column, output);
     }
     let projected: Vec<&str> = match &query.projection {
         Projection::All => vec!["number"],
@@ -268,7 +372,7 @@ fn execute_numbers<W: Write>(
             names.iter().map(String::as_str).collect()
         }
         Projection::Count => Vec::new(),
-        Projection::Literal(_) => unreachable!(),
+        Projection::Aggregate { .. } | Projection::Literal(_) => unreachable!(),
     };
     let comparison = query
         .predicate
@@ -350,6 +454,87 @@ fn execute_numbers<W: Write>(
         writeln!(output, "{matched}")?;
     }
     Ok(())
+}
+
+struct AggregateState {
+    function: AggregateFunction,
+    value: Option<Number>,
+    mean: f64,
+    count: u64,
+}
+
+impl AggregateState {
+    fn new(function: AggregateFunction) -> Self {
+        Self {
+            function,
+            value: None,
+            mean: 0.0,
+            count: 0,
+        }
+    }
+
+    fn update(&mut self, value: Number) -> Result<(), ExecutionError> {
+        let next_count = self
+            .count
+            .checked_add(1)
+            .ok_or_else(|| ExecutionError::Invalid("aggregate row count overflow".into()))?;
+        match self.function {
+            AggregateFunction::Sum => {
+                let sum = match (self.value, value) {
+                    (None, value) => value,
+                    (Some(Number::Unsigned(a)), Number::Unsigned(b)) => {
+                        Number::Unsigned(a.checked_add(b).ok_or_else(|| {
+                            ExecutionError::Invalid("unsigned SUM overflow".into())
+                        })?)
+                    }
+                    (Some(Number::Signed(a)), Number::Signed(b)) => Number::Signed(
+                        a.checked_add(b)
+                            .ok_or_else(|| ExecutionError::Invalid("signed SUM overflow".into()))?,
+                    ),
+                    (Some(Number::Float(a)), Number::Float(b)) => Number::Float(a + b),
+                    _ => {
+                        return Err(ExecutionError::Invalid("incompatible types in SUM".into()));
+                    }
+                };
+                self.value = Some(sum);
+            }
+            AggregateFunction::Avg => {
+                let numeric = match value {
+                    Number::Unsigned(n) => n as f64,
+                    Number::Signed(n) => n as f64,
+                    Number::Float(n) => n,
+                };
+                self.mean += (numeric - self.mean) / next_count as f64;
+            }
+            AggregateFunction::Min | AggregateFunction::Max => {
+                let replace = self.value.is_none_or(|current| {
+                    let order = compare_numbers(value, current);
+                    match self.function {
+                        AggregateFunction::Min => order.is_lt(),
+                        AggregateFunction::Max => order.is_gt(),
+                        _ => false,
+                    }
+                });
+                if replace {
+                    self.value = Some(value);
+                }
+            }
+        }
+        self.count = next_count;
+        Ok(())
+    }
+
+    fn render(&self) -> String {
+        if self.count == 0 {
+            return "NULL".into();
+        }
+        match self.function {
+            AggregateFunction::Avg => self.mean.to_string(),
+            _ => self
+                .value
+                .map_or_else(String::new, |value| value.to_string()),
+        }
+    }
 }
 
 const MAX_SORTED_ROWS: usize = 100_000;
@@ -572,6 +757,59 @@ mod tests {
         assert!(run("SELECT number FROM numbers(0) WHERE missing = 1", None).is_err());
         assert!(run("SELECT number FROM numbers(0) WHERE number = -1", None).is_err());
         assert!(run("SELECT number FROM numbers(2)", Some(Path::new("."))).is_err());
+    }
+
+    #[test]
+    fn aggregates_generated_numbers_and_empty_inputs() {
+        assert_eq!(
+            run("SELECT sum(number) FROM numbers(10)", None).unwrap(),
+            "sum(number)\n45\n"
+        );
+        assert_eq!(
+            run("SELECT AVG(number) FROM numbers(10)", None).unwrap(),
+            "avg(number)\n4.5\n"
+        );
+        assert_eq!(
+            run(
+                "SELECT sum(number) FROM numbers(10) WHERE number >= 7",
+                None,
+            )
+            .unwrap(),
+            "sum(number)\n24\n"
+        );
+        assert_eq!(
+            run("SELECT min(number) FROM numbers(10)", None).unwrap(),
+            "min(number)\n0\n"
+        );
+        assert_eq!(
+            run("SELECT max(number) FROM numbers(10)", None).unwrap(),
+            "max(number)\n9\n"
+        );
+        assert_eq!(
+            run("SELECT avg(number) FROM numbers(0)", None).unwrap(),
+            "avg(number)\nNULL\n"
+        );
+        assert_eq!(
+            run("SELECT sum(number) FROM numbers(5) WHERE number > 10", None).unwrap(),
+            "sum(number)\nNULL\n"
+        );
+        assert_eq!(
+            run("SELECT sum(number) FROM numbers(5) LIMIT 0", None).unwrap(),
+            "sum(number)\n"
+        );
+        assert!(run("SELECT sum(missing) FROM numbers(0)", None).is_err());
+    }
+
+    #[test]
+    fn aggregate_state_preserves_precision_and_rejects_overflow() {
+        let mut sum = AggregateState::new(AggregateFunction::Sum);
+        sum.update(Number::Unsigned(u128::MAX)).unwrap();
+        assert!(sum.update(Number::Unsigned(1)).is_err());
+
+        let mut min = AggregateState::new(AggregateFunction::Min);
+        min.update(Number::Signed(i128::MAX)).unwrap();
+        min.update(Number::Signed(i128::MIN)).unwrap();
+        assert_eq!(min.render(), i128::MIN.to_string());
     }
 
     #[test]

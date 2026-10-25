@@ -68,6 +68,29 @@ fn sorts_generated_numbers_from_the_cli() {
 }
 
 #[test]
+fn calculates_aggregates_from_the_cli() {
+    let output = sql(
+        "SELECT sum(number) FROM numbers(1000) WHERE number >= 900",
+        None,
+    );
+    assert!(output.status.success(), "{output:?}");
+    assert_eq!(
+        String::from_utf8(output.stdout).unwrap(),
+        "sum(number)\n94950\n"
+    );
+
+    let dir = sample_part();
+    let output = sql("SELECT sum(id) FROM part", Some(&dir));
+    assert!(output.status.success(), "{output:?}");
+    let value = u128::from(u64::from_le_bytes(*b"aaaaaaaa"));
+    assert_eq!(
+        String::from_utf8(output.stdout).unwrap(),
+        format!("sum(id)\n{}\n", value * 10)
+    );
+    fs::remove_dir_all(dir).unwrap();
+}
+
+#[test]
 fn executes_count_projection_filter_and_limit_on_real_checked_blocks() {
     let dir = sample_part();
     let value = u64::from_le_bytes(*b"aaaaaaaa");
