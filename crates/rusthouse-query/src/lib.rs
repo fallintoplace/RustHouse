@@ -27,6 +27,9 @@ impl AggregateFunction {
 pub enum Projection {
     Literal(i64),
     Count,
+    GroupedCount {
+        column: String,
+    },
     Aggregate {
         function: AggregateFunction,
         column: String,
@@ -210,10 +213,31 @@ pub fn parse_select(sql: &str) -> Result<Select, ParseError> {
         Projection::Literal(literal)
     } else {
         let mut columns = vec![parser.word()?];
+        let mut grouped_count = false;
         while parser.take(Token::Comma) {
+            if columns.len() == 1
+                && matches!(parser.tokens.get(parser.index), Some(Token::Word(word)) if word.eq_ignore_ascii_case("COUNT"))
+                && parser.tokens.get(parser.index + 1) == Some(&Token::LParen)
+            {
+                parser.keyword("COUNT");
+                if !parser.take(Token::LParen)
+                    || !parser.take(Token::Star)
+                    || !parser.take(Token::RParen)
+                {
+                    return Err(ParseError("expected COUNT(*)".into()));
+                }
+                grouped_count = true;
+                break;
+            }
             columns.push(parser.word()?);
         }
-        Projection::Columns(columns)
+        if grouped_count {
+            Projection::GroupedCount {
+                column: columns.remove(0),
+            }
+        } else {
+            Projection::Columns(columns)
+        }
     };
 
     if distinct && !matches!(projection, Projection::All | Projection::Columns(_)) {
@@ -316,6 +340,26 @@ pub fn parse_select(sql: &str) -> Result<Select, ParseError> {
         Vec::new()
     };
 
+    if parser.keyword("GROUP") {
+        if !parser.keyword("BY") {
+            return Err(ParseError("expected BY after GROUP".into()));
+        }
+        let group_column = parser.word()?;
+        match &projection {
+            Projection::GroupedCount { column } if column == &group_column => {}
+            Projection::GroupedCount { .. } => {
+                return Err(ParseError("GROUP BY must match the selected key".into()));
+            }
+            _ => {
+                return Err(ParseError(
+                    "GROUP BY requires SELECT key, COUNT(*)".into(),
+                ));
+            }
+        }
+    } else if matches!(projection, Projection::GroupedCount { .. }) {
+        return Err(ParseError("COUNT(*) with a key requires GROUP BY".into()));
+    }
+
     let order_by = if parser.keyword("ORDER") {
         if !parser.keyword("BY") {
             return Err(ParseError("expected BY after ORDER".into()));
@@ -338,6 +382,15 @@ pub fn parse_select(sql: &str) -> Result<Select, ParseError> {
         )
     {
         return Err(ParseError("ORDER BY requires column projections".into()));
+    }
+
+    if let Projection::GroupedCount { column } = &projection {
+        if order_by
+            .as_ref()
+            .is_some_and(|order| &order.column != column)
+        {
+            return Err(ParseError("grouped ORDER BY must use the group key".into()));
+        }
     }
 
     let limit = if parser.keyword("LIMIT") {
@@ -754,6 +807,40 @@ mod tests {
             vec!["number > 0"; 15].join(" AND ")
         );
         assert!(parse_select(&too_many).is_err());
+    }
+
+    #[test]
+    fn parses_grouped_counts_and_rejects_unsupported_grouping() {
+        let query = parse_select(
+            "SELECT id, COUNT(*) FROM part WHERE id IN (2, 4) GROUP BY id ORDER BY id DESC LIMIT 2 OFFSET 1",
+        )
+        .unwrap();
+        assert_eq!(
+            query.projection,
+            Projection::GroupedCount {
+                column: "id".into(),
+            }
+        );
+        assert_eq!(
+            query.order_by,
+            Some(OrderBy {
+                column: "id".into(),
+                descending: true,
+            })
+        );
+        for sql in [
+            "SELECT id, count(*) FROM part",
+            "SELECT id, count(*) FROM part GROUP BY price",
+            "SELECT id, count(*) FROM part GROUP id",
+            "SELECT id, count(*) FROM part GROUP BY id, price",
+            "SELECT id, count(*) FROM part GROUP BY id ORDER BY price",
+            "SELECT id FROM part GROUP BY id",
+            "SELECT count(*) FROM part GROUP BY id",
+            "SELECT id, sum(price) FROM part GROUP BY id",
+            "SELECT DISTINCT id, count(*) FROM part GROUP BY id",
+        ] {
+            assert!(parse_select(sql).is_err(), "{sql}");
+        }
     }
 
     #[test]
