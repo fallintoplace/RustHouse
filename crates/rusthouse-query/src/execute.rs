@@ -761,6 +761,59 @@ mod tests {
     }
 
     #[test]
+    fn aggregates_generated_numbers_and_empty_inputs() {
+        assert_eq!(
+            run("SELECT sum(number) FROM numbers(10)", None).unwrap(),
+            "sum(number)\n45\n"
+        );
+        assert_eq!(
+            run("SELECT AVG(number) FROM numbers(10)", None).unwrap(),
+            "avg(number)\n4.5\n"
+        );
+        assert_eq!(
+            run(
+                "SELECT sum(number) FROM numbers(10) WHERE number >= 7",
+                None,
+            )
+            .unwrap(),
+            "sum(number)\n24\n"
+        );
+        assert_eq!(
+            run("SELECT min(number) FROM numbers(10)", None).unwrap(),
+            "min(number)\n0\n"
+        );
+        assert_eq!(
+            run("SELECT max(number) FROM numbers(10)", None).unwrap(),
+            "max(number)\n9\n"
+        );
+        assert_eq!(
+            run("SELECT avg(number) FROM numbers(0)", None).unwrap(),
+            "avg(number)\nNULL\n"
+        );
+        assert_eq!(
+            run("SELECT sum(number) FROM numbers(5) WHERE number > 10", None).unwrap(),
+            "sum(number)\nNULL\n"
+        );
+        assert_eq!(
+            run("SELECT sum(number) FROM numbers(5) LIMIT 0", None).unwrap(),
+            "sum(number)\n"
+        );
+        assert!(run("SELECT sum(missing) FROM numbers(0)", None).is_err());
+    }
+
+    #[test]
+    fn aggregate_state_preserves_precision_and_rejects_overflow() {
+        let mut sum = AggregateState::new(AggregateFunction::Sum);
+        sum.update(Number::Unsigned(u128::MAX)).unwrap();
+        assert!(sum.update(Number::Unsigned(1)).is_err());
+
+        let mut min = AggregateState::new(AggregateFunction::Min);
+        min.update(Number::Signed(i128::MAX)).unwrap();
+        min.update(Number::Signed(i128::MIN)).unwrap();
+        assert_eq!(min.render(), i128::MIN.to_string());
+    }
+
+    #[test]
     fn sorts_numbers_with_top_k_and_filtered_rows() {
         assert_eq!(
             run(
