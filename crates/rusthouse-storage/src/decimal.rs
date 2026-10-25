@@ -67,8 +67,7 @@ pub fn read_decimal_column<R: Read>(
 ) -> Result<DecimalColumn, DecimalReadError> {
     let (precision, scale, storage) = parse_decimal_type(data_type)
         .ok_or_else(|| DecimalReadError::InvalidType(data_type.to_owned()))?;
-    let unscaled =
-        read_numeric_column(reader, storage, rows).map_err(DecimalReadError::Numeric)?;
+    let unscaled = read_numeric_column(reader, storage, rows).map_err(DecimalReadError::Numeric)?;
     Ok(DecimalColumn {
         precision,
         scale,
@@ -95,9 +94,7 @@ fn parse_decimal_type(data_type: &str) -> Option<(u8, u8, &'static str)> {
         }
     }
 
-    let inner = data_type
-        .strip_prefix("Decimal(")?
-        .strip_suffix(')')?;
+    let inner = data_type.strip_prefix("Decimal(")?.strip_suffix(')')?;
     let (precision, scale) = match inner.split_once(',') {
         Some((precision, scale)) => (precision.trim(), scale.trim()),
         None => (inner.trim(), "0"),
@@ -169,8 +166,7 @@ mod tests {
 
         let value = i128::MIN;
         let column =
-            read_decimal_column(&mut value.to_le_bytes().as_slice(), "Decimal128(9)", 1)
-                .unwrap();
+            read_decimal_column(&mut value.to_le_bytes().as_slice(), "Decimal128(9)", 1).unwrap();
         assert_eq!(column.precision(), 38);
         assert_eq!(column.scale(), 9);
         assert_eq!(
@@ -233,9 +229,10 @@ mod tests {
     fn rejects_oversized_and_truncated_batches() {
         assert!(matches!(
             read_decimal_column(&mut NoRead, "Decimal64(2)", 64 * 1024 * 1024 / 8 + 1),
-            Err(DecimalReadError::Numeric(
-                NumericReadError::BatchTooLarge { width: 8, .. }
-            ))
+            Err(DecimalReadError::Numeric(NumericReadError::BatchTooLarge {
+                width: 8,
+                ..
+            }))
         ));
         assert!(matches!(
             read_decimal_column(&mut &[1, 2, 3][..], "Decimal32(0)", 1),
