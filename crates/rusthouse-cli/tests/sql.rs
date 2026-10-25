@@ -85,6 +85,49 @@ fn executes_count_projection_filter_and_limit_on_real_checked_blocks() {
 }
 
 #[test]
+fn executes_uint128_sql_with_exact_large_integer_predicates() {
+    let dir = std::env::temp_dir().join(format!(
+        "rusthouse-sql-128-{}-{}",
+        std::process::id(),
+        NEXT_DIR.fetch_add(1, Ordering::Relaxed)
+    ));
+    fs::create_dir(&dir).unwrap();
+    fs::write(dir.join("count.txt"), "5\n").unwrap();
+    fs::write(
+        dir.join("columns.txt"),
+        "columns format version: 1\n1 columns:\n\u{0060}large\u{0060} UInt128\n",
+    )
+    .unwrap();
+    let block = include_bytes!("../../rusthouse-storage/tests/fixtures/blocks/lz4-none.bin");
+    fs::write(dir.join("large.bin"), &block[..36]).unwrap();
+    let mut mark = Vec::new();
+    mark.extend_from_slice(&0u64.to_le_bytes());
+    mark.extend_from_slice(&0u64.to_le_bytes());
+    mark.extend_from_slice(&5u64.to_le_bytes());
+    fs::write(dir.join("large.mrk2"), mark).unwrap();
+
+    let value = u128::from_le_bytes(*b"aaaaaaaaaaaaaaaa");
+    let filtered = sql(
+        &format!("SELECT large FROM part WHERE large = {value} LIMIT 2"),
+        Some(&dir),
+    );
+    assert!(filtered.status.success(), "{filtered:?}");
+    assert_eq!(
+        String::from_utf8(filtered.stdout).unwrap(),
+        format!("large\n{value}\n{value}\n")
+    );
+
+    let count = sql(
+        "SELECT count(*) FROM part WHERE large > 18446744073709551615",
+        Some(&dir),
+    );
+    assert!(count.status.success(), "{count:?}");
+    assert_eq!(String::from_utf8(count.stdout).unwrap(), "count\n5\n");
+
+    fs::remove_dir_all(dir).unwrap();
+}
+
+#[test]
 fn refuses_unsupported_sql_and_missing_parts() {
     let invalid = sql("DROP TABLE part", None);
     assert_eq!(invalid.status.code(), Some(1));
