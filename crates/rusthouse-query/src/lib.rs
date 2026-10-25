@@ -127,7 +127,9 @@ pub fn parse_select(sql: &str) -> Result<Select, ParseError> {
 
     let projection = if parser.take(Token::Star) {
         Projection::All
-    } else if parser.keyword("COUNT") {
+    } else if matches!(parser.tokens.get(parser.index + 1), Some(Token::LParen))
+        && parser.keyword("COUNT")
+    {
         if !parser.take(Token::LParen) || !parser.take(Token::Star) || !parser.take(Token::RParen) {
             return Err(ParseError("expected COUNT(*)".into()));
         }
@@ -327,6 +329,12 @@ mod tests {
                 predicate: None,
                 limit: Some(2),
             }
+        );
+        assert_eq!(
+            parse_select("SELECT count, id FROM part")
+                .unwrap()
+                .projection,
+            Projection::Columns(vec!["count".into(), "id".into()])
         );
         assert_eq!(
             parse_select("SELECT * FROM part").unwrap().projection,

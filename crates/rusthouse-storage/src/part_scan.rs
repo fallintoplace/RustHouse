@@ -74,6 +74,23 @@ impl NumericPartReader {
                 compressed_marks
             };
             let marks = read_wide_marks(&marks_path)?.marks;
+            for (index, mark) in marks.iter().enumerate() {
+                if mark.rows == Some(0) && index + 1 != marks.len() {
+                    return Err(PartError::InvalidScan(format!(
+                        "zero-row mark is not terminal for {name}"
+                    )));
+                }
+                if index > 0 {
+                    let previous = &marks[index - 1];
+                    if (mark.compressed_offset, mark.decompressed_offset)
+                        < (previous.compressed_offset, previous.decompressed_offset)
+                    {
+                        return Err(PartError::InvalidScan(format!(
+                            "mark offsets are not ordered for {name}"
+                        )));
+                    }
+                }
+            }
             let row_counts = marks
                 .iter()
                 .map(|mark| {
@@ -241,6 +258,27 @@ mod tests {
             NumericPartReader::open(&dir, &["id".into()]),
             Err(PartError::InvalidScan(_))
         ));
+        fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn rejects_invalid_mark_order_and_nonterminal_zero_rows() {
+        let dir = fixture();
+        fs::write(dir.join("id.mrk2"), marks(4, &[0, 3])).unwrap();
+        assert!(matches!(
+            NumericPartReader::open(&dir, &["id".into()]),
+            Err(PartError::InvalidScan(_))
+        ));
+
+        let mut unordered = marks(4, &[2, 1]);
+        unordered[8..16].copy_from_slice(&8u64.to_le_bytes());
+        unordered[32..40].copy_from_slice(&0u64.to_le_bytes());
+        fs::write(dir.join("id.mrk2"), unordered).unwrap();
+        assert!(matches!(
+            NumericPartReader::open(&dir, &["id".into()]),
+            Err(PartError::InvalidScan(_))
+        ));
+
         fs::remove_dir_all(dir).unwrap();
     }
 
