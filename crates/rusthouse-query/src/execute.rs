@@ -1,7 +1,7 @@
 use crate::{Operator, Projection, Select, Source};
+use rusthouse_storage::{NumericColumn, NumericPartReader, PartError, inspect_part};
 use std::cmp::Ordering;
 use std::collections::BinaryHeap;
-use rusthouse_storage::{NumericColumn, NumericPartReader, PartError, inspect_part};
 use std::error::Error;
 use std::fmt;
 use std::io::{self, BufWriter, Write};
@@ -158,7 +158,10 @@ fn execute_into<W: Write>(
         })
         .transpose()?;
     let sort_index = query.order_by.as_ref().map(|order| {
-        if let Some(index) = scan_columns.iter().position(|column| column == &order.column) {
+        if let Some(index) = scan_columns
+            .iter()
+            .position(|column| column == &order.column)
+        {
             index
         } else {
             scan_columns.push(order.column.clone());
@@ -574,7 +577,11 @@ mod tests {
     #[test]
     fn sorts_numbers_with_top_k_and_filtered_rows() {
         assert_eq!(
-            run("SELECT number FROM numbers(10) ORDER BY number DESC LIMIT 3", None).unwrap(),
+            run(
+                "SELECT number FROM numbers(10) ORDER BY number DESC LIMIT 3",
+                None,
+            )
+            .unwrap(),
             "number\n9\n8\n7\n"
         );
         assert_eq!(
@@ -590,7 +597,11 @@ mod tests {
             "number\n2\n1\n0\n"
         );
         assert_eq!(
-            run("SELECT number FROM numbers(3) ORDER BY number LIMIT 0", None).unwrap(),
+            run(
+                "SELECT number FROM numbers(3) ORDER BY number LIMIT 0",
+                None,
+            )
+            .unwrap(),
             "number\n"
         );
         assert!(run("SELECT number FROM numbers(0) ORDER BY missing", None).is_err());
