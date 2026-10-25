@@ -344,6 +344,15 @@ impl GroupedCounts {
         column: &str,
         output: &mut W,
     ) -> Result<(), ExecutionError> {
+        if let Some(having) = &query.having {
+            self.rows.retain(|(_, count)| {
+                number_matches(
+                    Number::Unsigned(u128::from(*count)),
+                    Number::Unsigned(u128::from(having.value)),
+                    having.operator,
+                )
+            });
+        }
         if let Some(order) = &query.order_by {
             if order.column != column {
                 return Err(ExecutionError::Invalid(
@@ -1431,6 +1440,32 @@ mod tests {
             "number\tcount\n"
         );
         assert!(run("SELECT bad, COUNT(*) FROM numbers(0) GROUP BY bad", None).is_err());
+    }
+
+    #[test]
+    fn grouped_having_filters_after_counting_before_limit() {
+        let query = crate::parse_select(
+            "SELECT number, count(*) FROM numbers(10) GROUP BY number HAVING count(*) >= 2 ORDER BY number LIMIT 1",
+        )
+        .unwrap();
+        let mut groups = GroupedCounts::default();
+        for value in [3, 3, 3, 1, 1, 5] {
+            groups.push(Number::Unsigned(value)).unwrap();
+        }
+        let mut result = Vec::new();
+        groups.write(&query, "number", &mut result).unwrap();
+        assert_eq!(
+            String::from_utf8(result).unwrap(),
+            "number\tcount\n1\t2\n"
+        );
+        assert_eq!(
+            run(
+                "SELECT number, count(*) FROM numbers(3) GROUP BY number HAVING count(*) > 1",
+                None
+            )
+            .unwrap(),
+            "number\tcount\n"
+        );
     }
 
     #[test]

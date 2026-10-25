@@ -90,6 +90,12 @@ pub struct OrderBy {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Having {
+    pub operator: Operator,
+    pub value: u64,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Select {
     pub projection: Projection,
     pub distinct: bool,
@@ -98,6 +104,7 @@ pub struct Select {
     /// Additional OR branches, each containing AND-connected predicates.
     pub or_predicates: Vec<Vec<Predicate>>,
     pub order_by: Option<OrderBy>,
+    pub having: Option<Having>,
     pub limit: Option<usize>,
     pub offset: Option<usize>,
 }
@@ -432,6 +439,28 @@ pub fn parse_select(sql: &str) -> Result<Select, ParseError> {
         return Err(ParseError("COUNT(*) with a key requires GROUP BY".into()));
     }
 
+    let having = if parser.keyword("HAVING") {
+        if !matches!(projection, Projection::GroupedCount { .. }) {
+            return Err(ParseError("HAVING requires GROUP BY with COUNT(*)".into()));
+        }
+        if !parser.keyword("COUNT") || !parser.take(Token::LParen) {
+            return Err(ParseError("HAVING requires COUNT(*)".into()));
+        }
+        if !parser.take(Token::RParen)
+            && !(parser.take(Token::Star) && parser.take(Token::RParen))
+        {
+            return Err(ParseError("HAVING requires COUNT() or COUNT(*)".into()));
+        }
+        let operator = parser.operator()?;
+        let value = parser
+            .number()?
+            .parse::<u64>()
+            .map_err(|_| ParseError("HAVING count must be a UInt64".into()))?;
+        Some(Having { operator, value })
+    } else {
+        None
+    };
+
     let order_by = if parser.keyword("ORDER") {
         if !parser.keyword("BY") {
             return Err(ParseError("expected BY after ORDER".into()));
@@ -527,6 +556,7 @@ pub fn parse_select(sql: &str) -> Result<Select, ParseError> {
         predicates,
         or_predicates,
         order_by,
+        having,
         limit,
         offset,
     })
@@ -991,6 +1021,29 @@ mod tests {
             "SELECT DISTINCT sum(id) FROM part",
             "SELECT DISTINCT DISTINCT id FROM part",
             "SELECT DISTINCT FROM part",
+        ] {
+            assert!(parse_select(sql).is_err(), "{sql}");
+        }
+    }
+
+    #[test]
+    fn parses_having_counts_after_grouping() {
+        let query = parse_select(
+            "SELECT number, count(*) FROM numbers(10) GROUP BY number HAVING count(*) >= 2 ORDER BY number",
+        )
+        .unwrap();
+        assert_eq!(
+            query.having,
+            Some(Having {
+                operator: Operator::Ge,
+                value: 2,
+            })
+        );
+        for sql in [
+            "SELECT number FROM numbers(10) HAVING count(*) > 1",
+            "SELECT number, count(*) FROM numbers(10) GROUP BY number HAVING sum(number) > 1",
+            "SELECT number, count(*) FROM numbers(10) GROUP BY number HAVING count(*) >= -1",
+            "SELECT number, count(*) FROM numbers(10) GROUP BY number HAVING count(*) >",
         ] {
             assert!(parse_select(sql).is_err(), "{sql}");
         }
