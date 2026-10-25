@@ -4,7 +4,7 @@ mod mark_validation;
 mod marks;
 
 pub use columns::parse_columns;
-pub use compression::{CompressedBlock, CompressedBlockReader};
+pub use compression::{CompressedBlock, CompressedBlockReader, DecodedBlock};
 pub use mark_validation::validate_wide_marks;
 pub use marks::{WideMark, WideMarkFormat, WideMarks, read_wide_marks};
 
