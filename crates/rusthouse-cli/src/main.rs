@@ -1,13 +1,13 @@
 use rusthouse_storage::{
-    CompressedBlockReader, UInt64ColumnReader, inspect_part, read_checksums, read_u64_granule,
-    read_wide_marks, validate_wide_marks,
+    CompressedBlockReader, NumericColumn, UInt64ColumnReader, inspect_part, read_checksums,
+    read_numeric_granule, read_u64_granule, read_wide_marks, validate_wide_marks,
 };
 use std::env;
 use std::ffi::OsString;
 use std::path::PathBuf;
 use std::process::ExitCode;
 
-const USAGE: &str = "Usage:\n  rusthouse inspect-part <path>\n  rusthouse inspect-checksums <path-to-checksums.txt>\n  rusthouse inspect-marks <path-to-.mrk-or-.mrk2>\n  rusthouse inspect-blocks <path-to-.bin>\n  rusthouse verify-blocks <path-to-.bin>\n  rusthouse validate-marks <path-to-.mrk-or-.mrk2> <path-to-.bin>\n  rusthouse read-u64 <data.bin> <marks.mrk2> <mark-index>\n  rusthouse scan-u64 <path-to-UInt64-.bin>\n  rusthouse --help\n\nInspect local MergeTree metadata, marks, and compressed blocks.";
+const USAGE: &str = "Usage:\n  rusthouse inspect-part <path>\n  rusthouse inspect-checksums <path-to-checksums.txt>\n  rusthouse inspect-marks <path-to-wide-marks>\n  rusthouse inspect-blocks <path-to-.bin>\n  rusthouse verify-blocks <path-to-.bin>\n  rusthouse validate-marks <path-to-wide-marks> <path-to-.bin>\n  rusthouse read-u64 <data.bin> <marks.mrk2> <mark-index>\n  rusthouse scan-u64 <path-to-UInt64-.bin>\n  rusthouse read-numeric <data.bin> <marks.mrk2> <mark-index> <type>\n  rusthouse --help\n\nInspect local MergeTree metadata, marks, and compressed blocks.";
 
 fn main() -> ExitCode {
     let mut args = env::args_os().skip(1);
@@ -28,6 +28,7 @@ fn main() -> ExitCode {
         && command != "validate-marks"
         && command != "read-u64"
         && command != "scan-u64"
+        && command != "read-numeric"
     {
         eprintln!("unknown command: {command:?}\n{USAGE}");
         return ExitCode::from(2);
@@ -44,6 +45,26 @@ fn main() -> ExitCode {
             return ExitCode::from(2);
         };
         read_u64_and_print(data_path, marks_path, index)
+    } else if command == "read-numeric" {
+        let (Some(data_path), Some(marks_path), Some(index), Some(data_type), None) = (
+            args.next(),
+            args.next(),
+            args.next(),
+            args.next(),
+            args.next(),
+        ) else {
+            eprintln!("{USAGE}");
+            return ExitCode::from(2);
+        };
+        let Some(index) = index.to_str().and_then(|value| value.parse::<usize>().ok()) else {
+            eprintln!("{USAGE}");
+            return ExitCode::from(2);
+        };
+        let Some(data_type) = data_type.to_str() else {
+            eprintln!("{USAGE}");
+            return ExitCode::from(2);
+        };
+        read_numeric_and_print(data_path, marks_path, index, data_type)
     } else if command == "validate-marks" {
         let (Some(marks_path), Some(data_path), None) = (args.next(), args.next(), args.next())
         else {
@@ -109,9 +130,15 @@ fn inspect_checksums_and_print(path: OsString) -> Result<(), rusthouse_storage::
 
 fn inspect_marks_and_print(path: OsString) -> Result<(), rusthouse_storage::PartError> {
     let metadata = read_wide_marks(PathBuf::from(path))?;
-    let format = match metadata.format {
-        rusthouse_storage::WideMarkFormat::Fixed => "fixed (.mrk)",
-        rusthouse_storage::WideMarkFormat::Adaptive => "adaptive (.mrk2)",
+    let extension = metadata
+        .path
+        .extension()
+        .and_then(|extension| extension.to_str());
+    let format = match (metadata.format, extension) {
+        (rusthouse_storage::WideMarkFormat::Fixed, Some("cmrk")) => "fixed (.cmrk)",
+        (rusthouse_storage::WideMarkFormat::Adaptive, Some("cmrk2")) => "adaptive (.cmrk2)",
+        (rusthouse_storage::WideMarkFormat::Fixed, _) => "fixed (.mrk)",
+        (rusthouse_storage::WideMarkFormat::Adaptive, _) => "adaptive (.mrk2)",
     };
     println!("Mark file: {}", metadata.path.display());
     println!("Format: {format}");
@@ -213,4 +240,42 @@ fn scan_u64_and_print(path: OsString) -> Result<(), rusthouse_storage::PartError
         println!("Max: {max}");
     }
     Ok(())
+}
+
+fn read_numeric_and_print(
+    data_path: OsString,
+    marks_path: OsString,
+    index: usize,
+    data_type: &str,
+) -> Result<(), rusthouse_storage::PartError> {
+    let marks = read_wide_marks(PathBuf::from(marks_path))?;
+    let mark = marks
+        .marks
+        .get(index)
+        .ok_or(rusthouse_storage::PartError::InvalidGranuleIndex {
+            index,
+            marks: marks.marks.len(),
+        })?;
+    let mut reader = CompressedBlockReader::open(PathBuf::from(data_path))?;
+    let values = read_numeric_granule(&mut reader, mark, data_type)?;
+    println!("Rows: {}", values.len());
+    match values {
+        NumericColumn::UInt8(values) => print_values(values),
+        NumericColumn::UInt16(values) => print_values(values),
+        NumericColumn::UInt32(values) => print_values(values),
+        NumericColumn::UInt64(values) => print_values(values),
+        NumericColumn::Int8(values) => print_values(values),
+        NumericColumn::Int16(values) => print_values(values),
+        NumericColumn::Int32(values) => print_values(values),
+        NumericColumn::Int64(values) => print_values(values),
+        NumericColumn::Float32(values) => print_values(values),
+        NumericColumn::Float64(values) => print_values(values),
+    }
+    Ok(())
+}
+
+fn print_values<T: std::fmt::Display>(values: Vec<T>) {
+    for value in values {
+        println!("{value}");
+    }
 }

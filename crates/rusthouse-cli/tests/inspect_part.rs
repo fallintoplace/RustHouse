@@ -75,13 +75,13 @@ fn inspect_marks_prints_fixed_offsets() {
 }
 
 #[test]
-fn inspect_marks_rejects_compressed_files() {
+fn inspect_marks_rejects_compact_files() {
     let output = Command::new(env!("CARGO_BIN_EXE_rusthouse"))
-        .args(["inspect-marks", "marks.cmrk2"])
+        .args(["inspect-marks", "marks.cmrk3"])
         .output()
         .unwrap();
     assert_eq!(output.status.code(), Some(1));
-    assert!(String::from_utf8_lossy(&output.stderr).contains("only uncompressed wide-part"));
+    assert!(String::from_utf8_lossy(&output.stderr).contains("only wide-part"));
 }
 
 #[test]
