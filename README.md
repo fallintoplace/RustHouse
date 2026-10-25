@@ -17,3 +17,5 @@ cargo fmt --all -- --check
 cargo clippy --workspace --all-targets --locked -- -D warnings
 cargo test --workspace --locked
 ```
+
+Next: decode a verified MergeTree wide part, expose Arrow batches for SQL, then add ingestion.
