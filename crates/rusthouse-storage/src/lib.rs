@@ -1,5 +1,6 @@
 mod columns;
 mod compression;
+mod granules;
 mod mark_validation;
 mod marks;
 mod numeric;
@@ -7,6 +8,7 @@ mod strings;
 
 pub use columns::parse_columns;
 pub use compression::{CompressedBlock, CompressedBlockReader, DecodedBlock};
+pub use granules::{read_mark_bytes, read_u64_granule};
 pub use mark_validation::validate_wide_marks;
 pub use marks::{WideMark, WideMarkFormat, WideMarks, read_wide_marks};
 pub use numeric::{NumericColumn, NumericReadError, read_numeric_column};
@@ -58,6 +60,15 @@ pub enum PartError {
         offset: u64,
         reason: &'static str,
     },
+    InvalidWideMark {
+        compressed_offset: u64,
+        decompressed_offset: u64,
+        reason: &'static str,
+    },
+    InvalidGranuleIndex {
+        index: usize,
+        marks: usize,
+    },
     UnsupportedMarksFormat(PathBuf),
 }
 
@@ -94,6 +105,17 @@ impl fmt::Display for PartError {
                     "{}: invalid compressed block at byte {offset}: {reason}",
                     path.display()
                 )
+            }
+            Self::InvalidWideMark {
+                compressed_offset,
+                decompressed_offset,
+                reason,
+            } => write!(
+                f,
+                "invalid wide mark (compressed={compressed_offset}, decompressed={decompressed_offset}): {reason}"
+            ),
+            Self::InvalidGranuleIndex { index, marks } => {
+                write!(f, "granule index {index} is outside {marks} marks")
             }
             Self::UnsupportedMarksFormat(path) => write!(
                 f,
