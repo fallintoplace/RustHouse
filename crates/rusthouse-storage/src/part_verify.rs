@@ -5,7 +5,7 @@ use crate::{
 use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
 use std::io;
-use std::path::{Path, PathBuf};
+use std::path::Path;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct PartVerification {
@@ -124,6 +124,7 @@ fn io_error(path: &Path, source: io::Error) -> PartError {
 mod tests {
     use super::*;
     use ch_cityhash102::cityhash128;
+    use std::path::PathBuf;
     use std::sync::atomic::{AtomicUsize, Ordering};
 
     static NEXT_DIR: AtomicUsize = AtomicUsize::new(0);
