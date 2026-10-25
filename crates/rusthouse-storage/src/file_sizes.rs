@@ -19,37 +19,20 @@ pub fn verify_part_file_sizes(part: impl AsRef<Path>) -> Result<FileSizeVerifica
     if !metadata.file_type().is_dir() {
         return Err(invalid(part, "part path is not a directory"));
     }
-    let manifest = read_checksums(part.join("checksums.txt"))?;
+    let checksums_path = part.join("checksums.txt");
+    let metadata = fs::symlink_metadata(&checksums_path)
+        .map_err(|source| io_error(&checksums_path, source))?;
+    if !metadata.file_type().is_file() {
+        return Err(invalid(
+            &checksums_path,
+            "checksums.txt is not a regular file",
+        ));
+    }
+    let manifest = read_checksums(&checksums_path)?;
     let mut total_bytes = 0u64;
 
     for entry in &manifest.files {
-        let mut path = part.to_path_buf();
-        let mut components = entry.name.split('/').peekable();
-        while let Some(component) = components.next() {
-            path.push(component);
-            let metadata = fs::symlink_metadata(&path).map_err(|source| io_error(&path, source))?;
-            if components.peek().is_some() {
-                if !metadata.file_type().is_dir() {
-                    return Err(invalid(
-                        &manifest.path,
-                        "listed file parent is not a directory",
-                    ));
-                }
-            } else {
-                if !metadata.file_type().is_file() {
-                    return Err(invalid(
-                        &manifest.path,
-                        "listed entry is not a regular file",
-                    ));
-                }
-                if metadata.len() != entry.size {
-                    return Err(invalid(
-                        &manifest.path,
-                        "file size differs from checksums.txt",
-                    ));
-                }
-            }
-        }
+        verify_listed_file(part, &manifest.path, &entry.name, entry.size)?;
         total_bytes = total_bytes
             .checked_add(entry.size)
             .ok_or_else(|| invalid(&manifest.path, "file sizes overflow u64"))?;
@@ -59,6 +42,39 @@ pub fn verify_part_file_sizes(part: impl AsRef<Path>) -> Result<FileSizeVerifica
         files: manifest.files.len(),
         total_bytes,
     })
+}
+
+fn verify_listed_file(
+    part: &Path,
+    manifest_path: &Path,
+    name: &str,
+    expected_size: u64,
+) -> Result<(), PartError> {
+    let mut path = part.to_path_buf();
+    let mut components = name.split('/').peekable();
+    while let Some(component) = components.next() {
+        path.push(component);
+        let metadata = fs::symlink_metadata(&path).map_err(|source| io_error(&path, source))?;
+        if components.peek().is_some() {
+            if !metadata.file_type().is_dir() {
+                return Err(invalid(
+                    manifest_path,
+                    "listed file parent is not a directory",
+                ));
+            }
+        } else {
+            if !metadata.file_type().is_file() {
+                return Err(invalid(manifest_path, "listed entry is not a regular file"));
+            }
+            if metadata.len() != expected_size {
+                return Err(invalid(
+                    manifest_path,
+                    "file size differs from checksums.txt",
+                ));
+            }
+        }
+    }
+    Ok(())
 }
 
 fn invalid(path: &Path, reason: &'static str) -> PartError {
@@ -207,6 +223,46 @@ mod tests {
 
     #[cfg(unix)]
     #[test]
+    fn refuses_symlinked_checksums_manifest() {
+        use std::os::unix::fs::symlink;
+
+        let dir = temp_dir();
+        let target = dir.join("actual-checksums.txt");
+        fs::write(&target, manifest(&[])).unwrap();
+        symlink(&target, dir.join("checksums.txt")).unwrap();
+
+        assert!(matches!(
+            verify_part_file_sizes(&dir),
+            Err(PartError::InvalidChecksums {
+                reason: "checksums.txt is not a regular file",
+                ..
+            })
+        ));
+        fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn rejects_regular_files_used_as_parent_directories() {
+        let dir = temp_dir();
+        fs::write(dir.join("parent"), [1u8]).unwrap();
+        fs::write(
+            dir.join("checksums.txt"),
+            manifest(&[("parent/child.bin", 0)]),
+        )
+        .unwrap();
+
+        assert!(matches!(
+            verify_part_file_sizes(&dir),
+            Err(PartError::InvalidChecksums {
+                reason: "listed file parent is not a directory",
+                ..
+            })
+        ));
+        fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[cfg(unix)]
+    #[test]
     fn refuses_symlinked_part_roots() {
         use std::os::unix::fs::symlink;
 
@@ -225,6 +281,7 @@ mod tests {
         fs::remove_file(alias).unwrap();
         fs::remove_dir_all(dir).unwrap();
     }
+
 
     #[test]
     fn supports_empty_manifest() {
