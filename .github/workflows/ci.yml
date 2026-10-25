@@ -32,8 +32,14 @@ jobs:
         run: cargo clippy --workspace --all-targets --locked -- -D warnings
       - run: cargo test --workspace --locked
       - run: cargo build --workspace --locked
-      - name: Check minimum Rust version
-        if: runner.os == 'Linux'
+  msrv:
+    name: Rust MSRV (ubuntu-latest)
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v6
+      - name: Test minimum Rust version
+        run: |
         run: |
           msrv=$(sed -n 's/^rust-version = "\([^"]*\)"/\1/p' Cargo.toml)
           test -n "$msrv"
