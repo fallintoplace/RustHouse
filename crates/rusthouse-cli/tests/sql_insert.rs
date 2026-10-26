@@ -34,9 +34,14 @@ fn part_sql(query: &str, table: &str, catalog: &Path) -> Output {
 #[test]
 fn insert_values_persist_across_commands_and_reorder_columns() {
     let root = catalog();
-    assert!(sql("CREATE TABLE events (id Int64, name String, score Nullable(UInt64))", &root)
+    assert!(
+        sql(
+            "CREATE TABLE events (id Int64, name String, score Nullable(UInt64))",
+            &root
+        )
         .status
-        .success());
+        .success()
+    );
     for statement in [
         "INSERT INTO events VALUES (-2, 'alice', 5), (7, 'bob', NULL)",
         "INSERT INTO events (name, id) VALUES ('carol', 8)",
@@ -53,7 +58,10 @@ fn insert_values_persist_across_commands_and_reorder_columns() {
 
     let invalid = sql("INSERT INTO events (name) VALUES ('missing id')", &root);
     assert!(!invalid.status.success());
-    let invalid = sql("INSERT INTO events VALUES (9, 'overflow', 18446744073709551616)", &root);
+    let invalid = sql(
+        "INSERT INTO events VALUES (9, 'overflow', 18446744073709551616)",
+        &root,
+    );
     assert!(!invalid.status.success());
     let count = part_sql("SELECT count(*) FROM part", "events", &root);
     assert_eq!(count.stdout, b"count\n3\n");
@@ -76,27 +84,33 @@ fn drop_and_rename_keep_table_data_consistent() {
     let drop = sql("DROP TABLE archive", &root);
     assert!(drop.status.success(), "{drop:?}");
     assert!(!root.join("archive.parts").exists());
-    assert!(sql("CREATE TABLE archive (id UInt8)", &root)
-        .status
-        .success());
+    assert!(
+        sql("CREATE TABLE archive (id UInt8)", &root)
+            .status
+            .success()
+    );
     fs::remove_dir_all(root).unwrap();
 }
 
 #[test]
 fn insert_failure_does_not_publish_partial_part() {
     let root = catalog();
-    assert!(sql("CREATE TABLE tiny (id UInt8, label String)", &root)
-        .status
-        .success());
+    assert!(
+        sql("CREATE TABLE tiny (id UInt8, label String)", &root)
+            .status
+            .success()
+    );
     let error = sql("INSERT INTO tiny VALUES (255, 'good'), (256, 'bad')", &root);
     assert!(!error.status.success(), "{error:?}");
     let parts = root.join("tiny.parts");
     if parts.exists() {
         assert_eq!(fs::read_dir(parts).unwrap().count(), 0);
     }
-    assert!(sql("INSERT INTO tiny (label, id) VALUES ('ok', 1)", &root)
-        .status
-        .success());
+    assert!(
+        sql("INSERT INTO tiny (label, id) VALUES ('ok', 1)", &root)
+            .status
+            .success()
+    );
     let count = part_sql("SELECT count(*) FROM part", "tiny", &root);
     assert_eq!(count.stdout, b"count\n1\n");
     fs::remove_dir_all(root).unwrap();

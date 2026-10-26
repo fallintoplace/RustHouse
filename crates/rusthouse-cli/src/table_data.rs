@@ -73,10 +73,7 @@ fn next_id() -> Result<u64, String> {
     }
 }
 
-fn ordered_rows(
-    insert: &Insert,
-    columns: &[Column],
-) -> Result<Vec<Vec<Option<String>>>, String> {
+fn ordered_rows(insert: &Insert, columns: &[Column]) -> Result<Vec<Vec<Option<String>>>, String> {
     let positions = if let Some(names) = &insert.columns {
         let positions = names
             .iter()
@@ -124,9 +121,14 @@ pub(super) fn insert(catalog: &Path, statement: &Insert) -> Result<(), String> {
     let rows = ordered_rows(statement, &columns)?;
     let existing = existing_dir(catalog, &statement.table)?;
     if let Some(ref dir) = existing {
-        let mut entries = fs::read_dir(dir)
-            .map_err(|error| format!("cannot list table parts: {error}"))?;
-        if entries.next().transpose().map_err(|error| error.to_string())?.is_some() {
+        let mut entries =
+            fs::read_dir(dir).map_err(|error| format!("cannot list table parts: {error}"))?;
+        if entries
+            .next()
+            .transpose()
+            .map_err(|error| error.to_string())?
+            .is_some()
+        {
             let metadata = inspect_query_source(dir).map_err(|error| error.to_string())?;
             if metadata.columns != columns {
                 return Err("table parts do not match the catalog schema".into());
@@ -138,8 +140,7 @@ pub(super) fn insert(catalog: &Path, statement: &Insert) -> Result<(), String> {
     }
     let dir = path(catalog, &statement.table);
     if existing.is_none() {
-        fs::create_dir(&dir)
-            .map_err(|error| format!("cannot create table parts: {error}"))?;
+        fs::create_dir(&dir).map_err(|error| format!("cannot create table parts: {error}"))?;
     }
     // Pending parts live outside the scanned table directory. Readers only see
     // fully published parts, even if INSERT and SELECT overlap.

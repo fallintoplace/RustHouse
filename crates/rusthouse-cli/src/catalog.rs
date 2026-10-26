@@ -125,8 +125,9 @@ fn drop_table(catalog: &Path, name: &str, if_exists: bool) -> Result<(), String>
     let data_dir = crate::table_data::existing_dir(catalog, name)?;
     fs::remove_file(&path).map_err(|error| format!("cannot drop table {name}: {error}"))?;
     if let Some(dir) = data_dir {
-        fs::remove_dir_all(&dir)
-            .map_err(|error| format!("table {name} was dropped but data cleanup failed: {error}"))?;
+        fs::remove_dir_all(&dir).map_err(|error| {
+            format!("table {name} was dropped but data cleanup failed: {error}")
+        })?;
     }
     println!("Dropped table {name}");
     Ok(())
@@ -313,12 +314,17 @@ fn rename_table(catalog: &Path, from: &str, to: &str) -> Result<(), String> {
     if let Some(ref dir) = data_dir {
         if let Err(error) = fs::rename(dir, crate::table_data::path(catalog, to)) {
             let _ = fs::remove_file(&destination);
-            return Err(format!("cannot move table data from {from} to {to}: {error}"));
+            return Err(format!(
+                "cannot move table data from {from} to {to}: {error}"
+            ));
         }
     }
     if let Err(error) = fs::remove_file(&source) {
         if data_dir.is_some() {
-            let _ = fs::rename(crate::table_data::path(catalog, to), crate::table_data::path(catalog, from));
+            let _ = fs::rename(
+                crate::table_data::path(catalog, to),
+                crate::table_data::path(catalog, from),
+            );
         }
         let _ = fs::remove_file(&destination);
         return Err(format!("cannot finish renaming table {from}: {error}"));
@@ -336,7 +342,8 @@ fn create_table(
     fs::create_dir_all(catalog)
         .map_err(|error| format!("cannot create catalog {}: {error}", catalog.display()))?;
     let path = schema_path(catalog, name);
-    if matches!(fs::symlink_metadata(&path), Err(ref error) if error.kind() == std::io::ErrorKind::NotFound) {
+    if matches!(fs::symlink_metadata(&path), Err(ref error) if error.kind() == std::io::ErrorKind::NotFound)
+    {
         crate::table_data::require_no_data_dir(catalog, name)?;
     }
     let mut file = match OpenOptions::new().write(true).create_new(true).open(&path) {
