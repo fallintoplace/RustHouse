@@ -90,7 +90,7 @@ rusthouse sql "SELECT id, count(*) FROM part GROUP BY id ORDER BY id" --part ./s
 ```
 
 RustHouse now treats either a single wide part or an offline directory of
-ClickHouse-named active parts as a query source. It streams one part at a time;
+MergeTree-named active parts as a query source. It streams one part at a time;
 aggregates, filtering, ORDER BY, DISTINCT, LIMIT and OFFSET apply to the full set.
 For safety, it rejects overlapping block ranges, inconsistent schemas, malformed
 parts and more than 10,000 parts. It ignores non-part subdirectories such as
