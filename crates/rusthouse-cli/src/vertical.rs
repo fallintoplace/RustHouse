@@ -2,6 +2,54 @@ use std::io::{self, Write};
 
 const MAX_LINE_BYTES: usize = 1024 * 1024;
 
+fn hex_digit(value: u8) -> Option<u8> {
+    match value {
+        b'0'..=b'9' => Some(value - b'0'),
+        b'a'..=b'f' => Some(value - b'a' + 10),
+        b'A'..=b'F' => Some(value - b'A' + 10),
+        _ => None,
+    }
+}
+
+fn decode_tsv_field(field: &[u8]) -> io::Result<Vec<u8>> {
+    let invalid = |message| io::Error::new(io::ErrorKind::InvalidData, message);
+    let mut output = Vec::with_capacity(field.len());
+    let mut index = 0;
+    while index < field.len() {
+        if field[index] != b'\\' {
+            output.push(field[index]);
+            index += 1;
+            continue;
+        }
+        index += 1;
+        let escaped = *field
+            .get(index)
+            .ok_or_else(|| invalid("incomplete TSV escape"))?;
+        match escaped {
+            b'\\' => output.push(b'\\'),
+            b't' => output.push(b'\t'),
+            b'n' => output.push(b'\n'),
+            b'r' => output.push(b'\r'),
+            b'0' => output.push(0),
+            b'x' => {
+                let high = *field
+                    .get(index + 1)
+                    .ok_or_else(|| invalid("short TSV hex escape"))?;
+                let low = *field
+                    .get(index + 2)
+                    .ok_or_else(|| invalid("short TSV hex escape"))?;
+                let high = hex_digit(high).ok_or_else(|| invalid("invalid TSV hex escape"))?;
+                let low = hex_digit(low).ok_or_else(|| invalid("invalid TSV hex escape"))?;
+                output.push((high << 4) | low);
+                index += 2;
+            }
+            _ => return Err(invalid("unknown TSV escape")),
+        }
+        index += 1;
+    }
+    Ok(output)
+}
+
 /// Format tab-separated SQL output one row at a time for terminal inspection.
 ///
 /// The first input line contains column headers and is not printed until a data
@@ -31,8 +79,18 @@ fn write_row<W: Write>(
     headers: &[Vec<u8>],
     line: &[u8],
 ) -> io::Result<()> {
+    let fields = line
+        .split(|&byte| byte == b'\t')
+        .map(|field| {
+            if field == b"\\N" {
+                Ok(field.to_vec())
+            } else {
+                decode_tsv_field(field)
+            }
+        })
+        .collect::<io::Result<Vec<_>>>()?;
     writeln!(output, "Row {row}:")?;
-    for (header, field) in headers.iter().zip(line.split(|&byte| byte == b'\t')) {
+    for (header, field) in headers.iter().zip(&fields) {
         output.write_all(b"  ")?;
         write_visible(output, header)?;
         output.write_all(b": ")?;
@@ -160,5 +218,30 @@ mod tests {
                 .kind(),
             io::ErrorKind::InvalidData
         );
+    }
+}
+
+#[cfg(test)]
+mod decoded_vertical_regressions {
+    use super::*;
+
+    #[test]
+    fn decodes_sql_cells_and_keeps_controls_terminal_safe() {
+        let mut writer = VerticalWriter::new(Vec::new());
+        writer
+            .write_all(b"value\none\\ttwo\\nthree\\\\end\n")
+            .unwrap();
+        assert_eq!(
+            writer.output,
+            b"Row 1:\n  value: one\\x09two\\x0Athree\\end\n\n"
+        );
+    }
+
+    #[test]
+    fn refuses_bad_escapes_before_printing_a_row() {
+        let mut writer = VerticalWriter::new(Vec::new());
+        writer.write_all(b"value\n").unwrap();
+        assert!(writer.write_all(b"bad\\q\n").is_err());
+        assert!(writer.output.is_empty());
     }
 }
