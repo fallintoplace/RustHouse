@@ -38,6 +38,42 @@ fn scan_number(sql: &str, index: &mut usize) -> Result<Token, ParseError> {
     Ok(Token::Number(sql[start..*index].into()))
 }
 
+fn scan_string(sql: &str, index: &mut usize) -> Result<Token, ParseError> {
+    let bytes = sql.as_bytes();
+    let mut cursor = *index;
+    cursor += 1;
+    let mut value = String::new();
+    let mut start = cursor;
+    let mut closed = false;
+    while cursor < bytes.len() {
+        if bytes[cursor] == b'\\' && matches!(bytes.get(cursor + 1), Some(b'\'' | b'\\'))
+        {
+            value.push_str(&sql[start..cursor]);
+            value.push(bytes[cursor + 1] as char);
+            cursor += 2;
+            start = cursor;
+        } else if bytes[cursor] == b'\'' {
+            value.push_str(&sql[start..cursor]);
+            if bytes.get(cursor + 1) == Some(&b'\'') {
+                value.push('\'');
+                cursor += 2;
+                start = cursor;
+            } else {
+                cursor += 1;
+                closed = true;
+                break;
+            }
+        } else {
+            cursor += 1;
+        }
+    }
+    if !closed {
+        return Err(ParseError("unterminated string literal".into()));
+    }
+    *index = cursor;
+    Ok(Token::String(value))
+}
+
 pub(super) fn tokenize(sql: &str) -> Result<Vec<Token>, ParseError> {
     if sql.len() > 4096 {
         return Err(ParseError("statement exceeds the 4096-byte limit".into()));
@@ -52,38 +88,7 @@ pub(super) fn tokenize(sql: &str) -> Result<Vec<Token>, ParseError> {
                 index += 1;
                 continue;
             }
-            b'\'' => {
-                index += 1;
-                let mut value = String::new();
-                let mut start = index;
-                let mut closed = false;
-                while index < bytes.len() {
-                    if bytes[index] == b'\\' && matches!(bytes.get(index + 1), Some(b'\'' | b'\\'))
-                    {
-                        value.push_str(&sql[start..index]);
-                        value.push(bytes[index + 1] as char);
-                        index += 2;
-                        start = index;
-                    } else if bytes[index] == b'\'' {
-                        value.push_str(&sql[start..index]);
-                        if bytes.get(index + 1) == Some(&b'\'') {
-                            value.push('\'');
-                            index += 2;
-                            start = index;
-                        } else {
-                            index += 1;
-                            closed = true;
-                            break;
-                        }
-                    } else {
-                        index += 1;
-                    }
-                }
-                if !closed {
-                    return Err(ParseError("unterminated string literal".into()));
-                }
-                Token::String(value)
-            }
+            b'\'' => scan_string(sql, &mut index)?,
             b'*' => {
                 index += 1;
                 Token::Star
