@@ -49,7 +49,6 @@ cargo run -p rusthouse-cli -- sql "SHOW TABLES" --catalog ./catalog
 
 **Only use frozen, offline snapshots.** Never read a live table directory while another process modifies it. RustHouse rejects overlapping part ranges, inconsistent schemas, and snapshots with more than 10,000 parts. Primary-index predicate pruning is not implemented.
 
-
 ## Benchmarks
 
 Run the in-memory SQL execution benchmark in release mode:
