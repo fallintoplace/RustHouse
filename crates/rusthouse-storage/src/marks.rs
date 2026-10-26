@@ -490,5 +490,4 @@ mod tests {
         assert_eq!(result.marks.len(), 4_096);
         assert_eq!(result.marks[4_095].compressed_offset, 4_095 * 16);
     }
-
 }
