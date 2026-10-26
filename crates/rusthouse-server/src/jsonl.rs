@@ -20,7 +20,9 @@ fn decode_tsv_value(value: &[u8]) -> io::Result<String> {
             continue;
         }
         index += 1;
-        let escaped = *value.get(index).ok_or_else(|| invalid("incomplete TSV escape"))?;
+        let escaped = *value
+            .get(index)
+            .ok_or_else(|| invalid("incomplete TSV escape"))?;
         match escaped {
             b'\\' => decoded.push(b'\\'),
             b't' => decoded.push(b'\t'),
@@ -28,8 +30,12 @@ fn decode_tsv_value(value: &[u8]) -> io::Result<String> {
             b'r' => decoded.push(b'\r'),
             b'0' => decoded.push(0),
             b'x' => {
-                let high = *value.get(index + 1).ok_or_else(|| invalid("short TSV hex escape"))?;
-                let low = *value.get(index + 2).ok_or_else(|| invalid("short TSV hex escape"))?;
+                let high = *value
+                    .get(index + 1)
+                    .ok_or_else(|| invalid("short TSV hex escape"))?;
+                let low = *value
+                    .get(index + 2)
+                    .ok_or_else(|| invalid("short TSV hex escape"))?;
                 let digit = |byte: u8| (byte as char).to_digit(16).map(|value| value as u8);
                 let high = digit(high).ok_or_else(|| invalid("invalid TSV hex escape"))?;
                 let low = digit(low).ok_or_else(|| invalid("invalid TSV hex escape"))?;
@@ -157,7 +163,10 @@ mod tests {
         for invalid in [&b"bad\\q"[..], &b"bad\\xG0"[..], &b"bad\\x"[..]] {
             assert!(decode_tsv_value(invalid).is_err());
         }
-        assert_eq!(decode_tsv_value(b"quoted\\x22word").unwrap(), "quoted\"word");
+        assert_eq!(
+            decode_tsv_value(b"quoted\\x22word").unwrap(),
+            "quoted\"word"
+        );
     }
 
     #[test]
@@ -168,7 +177,10 @@ mod tests {
         writer.write_all(b"\na").unwrap();
         writer.flush().unwrap();
         writer.write_all(b"bc\n").unwrap();
-        assert_eq!(String::from_utf8(writer.output).unwrap(), "{\"key\":\"abc\"}\n");
+        assert_eq!(
+            String::from_utf8(writer.output).unwrap(),
+            "{\"key\":\"abc\"}\n"
+        );
 
         let mut writer = JsonlWriter::new(Vec::new());
         assert!(writer.write_all(&vec![b'x'; MAX_LINE_BYTES + 1]).is_err());
