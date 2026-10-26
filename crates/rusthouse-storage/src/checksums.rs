@@ -116,20 +116,12 @@ fn parse_checksums(content: &[u8], path: &Path) -> Result<PartChecksums, PartErr
         _ => return Err(invalid(path, "unsupported checksums format version")),
     };
     let payload = &header[end + 1..];
-    let mut decoded = Vec::new();
-
-    if version == 4 {
-        let mut blocks = CompressedBlockReader::new(Cursor::new(payload), path)?;
-        while let Some(block) = blocks.next_decoded() {
-            let block = block?;
-            if block.data.len() > MAX_CHECKSUMS_BYTES as usize - decoded.len() {
-                return Err(invalid(path, "decoded checksums exceed 64 MiB"));
-            }
-            decoded.extend_from_slice(&block.data);
-        }
-    }
-
-    let bytes = if version == 4 { &decoded[..] } else { payload };
+    let decoded = if version == 4 {
+        Some(decode_compressed_checksums(payload, path)?)
+    } else {
+        None
+    };
+    let bytes = decoded.as_deref().unwrap_or(payload);
     let mut reader = BinaryReader::new(bytes, path);
     let count = usize::try_from(reader.varuint()?)
         .map_err(|_| invalid(path, "file count exceeds address space"))?;
@@ -176,6 +168,19 @@ fn parse_checksums(content: &[u8], path: &Path) -> Result<PartChecksums, PartErr
         version,
         files,
     })
+}
+
+fn decode_compressed_checksums(payload: &[u8], path: &Path) -> Result<Vec<u8>, PartError> {
+    let mut decoded = Vec::new();
+    let mut blocks = CompressedBlockReader::new(Cursor::new(payload), path)?;
+    while let Some(block) = blocks.next_decoded() {
+        let block = block?;
+        if block.data.len() > MAX_CHECKSUMS_BYTES as usize - decoded.len() {
+            return Err(invalid(path, "decoded checksums exceed 64 MiB"));
+        }
+        decoded.extend_from_slice(&block.data);
+    }
+    Ok(decoded)
 }
 
 fn valid_name(name: &str) -> bool {
