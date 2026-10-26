@@ -8,6 +8,7 @@ cargo run -p rusthouse-server -- --port 8123 --part /path/to/wide-part
 curl http://127.0.0.1:8123/ping
 curl http://127.0.0.1:8123/schema
 curl 'http://127.0.0.1:8123/?query=SELECT%201'
+curl 'http://127.0.0.1:8123/explain?query=SELECT%20number%20FROM%20numbers(10)'
 curl http://127.0.0.1:8123/ --data-binary 'SELECT count(*) FROM part'
 ```
 
@@ -25,3 +26,8 @@ snapshots require the separate multi-part query feature.
 and an ordered list of column names and types. This endpoint reads metadata
 only, requires `--part`, and never exposes DDL or file writes. Schema responses
 share the server's 8 MiB response limit.
+
+`GET /explain?query=...` and `POST /explain` with a raw SELECT body
+return the bounded logical plan as plain text. The endpoint parses SQL but does
+not inspect parts or read rows. It uses the same 4096-byte input limit and
+server-side row cap as ordinary queries. This is not a physical or cost-based plan.
