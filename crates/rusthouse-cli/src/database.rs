@@ -260,11 +260,14 @@ pub(super) fn insert(database: &Path, insert: &Insert) -> Result<(), String> {
     }
     let next = last.checked_add(1).ok_or("part block number overflow")?;
     let destination = parts_dir.join(format!("all_{next}_{next}_0"));
-    if destination.exists() {
+    if existing_path(&destination)? {
         return Err("destination part already exists".into());
     }
-    let staging = parts_dir.join(format!(
-        ".pending-{}-{}",
+    // Stage outside the scanned parts directory. A concurrent SELECT must
+    // never discover half-written count.txt or columns.txt metadata.
+    let staging = database.join(format!(
+        ".{}.pending-{}-{}",
+        insert.table,
         std::process::id(),
         NEXT_STAGE.fetch_add(1, Ordering::Relaxed)
     ));
