@@ -1,8 +1,6 @@
+use crate::fixed_width::read_fixed_width;
 use std::fmt;
 use std::io::{self, Read};
-
-const MAX_BATCH_BYTES: usize = 64 * 1024 * 1024;
-const READ_BUFFER_BYTES: usize = 16 * 1024;
 
 /// A UUID in canonical byte order, independent of ClickHouse's disk encoding.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -39,26 +37,7 @@ impl fmt::Display for UuidValue {
 /// Each half is reversed separately to obtain the canonical UUID byte order.
 /// Rows are bounded to 64 MiB and decoded without reading into the next batch.
 pub fn read_uuid_values<R: Read>(reader: &mut R, rows: usize) -> io::Result<Vec<UuidValue>> {
-    if rows > MAX_BATCH_BYTES / 16 {
-        return Err(io::Error::new(
-            io::ErrorKind::InvalidInput,
-            "UUID batch exceeds 64 MiB",
-        ));
-    }
-
-    let mut result = Vec::with_capacity(rows);
-    let mut buffer = [0u8; READ_BUFFER_BYTES];
-    while result.len() < rows {
-        let count = (rows - result.len()).min(buffer.len() / 16);
-        let size = count * 16;
-        reader.read_exact(&mut buffer[..size])?;
-        result.extend(buffer[..size].chunks_exact(16).map(|chunk| {
-            let mut bytes = [0u8; 16];
-            bytes.copy_from_slice(chunk);
-            UuidValue::from_disk_bytes(bytes)
-        }));
-    }
-    Ok(result)
+    read_fixed_width(reader, rows, "UUID batch exceeds 64 MiB", UuidValue::from_disk_bytes)
 }
 
 #[cfg(test)]
