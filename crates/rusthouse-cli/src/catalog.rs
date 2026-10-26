@@ -25,6 +25,7 @@ pub(super) fn apply(catalog: &Path, ddl: &Ddl) -> Result<(), String> {
             column,
             if_exists,
         } => drop_column(catalog, table, column, *if_exists),
+        Ddl::RenameTable { from, to } => rename_table(catalog, from, to),
     }
 }
 
@@ -159,6 +160,31 @@ fn drop_column(catalog: &Path, table: &str, column: &str, if_exists: bool) -> Re
     columns.remove(index);
     replace_schema(catalog, table, &columns)?;
     println!("Dropped column {column} from {table} (schema only)");
+    Ok(())
+}
+
+fn rename_table(catalog: &Path, from: &str, to: &str) -> Result<(), String> {
+    if from == to {
+        return Err("source and destination table names must differ".into());
+    }
+    // Validate the source before moving it. Only versioned catalog files may be renamed.
+    read_schema(catalog, from)?;
+    let source = catalog.join(format!("{from}.schema"));
+    let destination = catalog.join(format!("{to}.schema"));
+    // Hard-link creation fails if the destination exists, unlike rename on Unix.
+    // Source removal comes second, so failures cannot silently overwrite a table.
+    match fs::hard_link(&source, &destination) {
+        Ok(()) => {}
+        Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {
+            return Err(format!("table already exists: {to}"));
+        }
+        Err(error) => return Err(format!("cannot rename table {from}: {error}")),
+    }
+    if let Err(error) = fs::remove_file(&source) {
+        let _ = fs::remove_file(&destination);
+        return Err(format!("cannot finish renaming table {from}: {error}"));
+    }
+    println!("Renamed table {from} to {to} (schema only)");
     Ok(())
 }
 

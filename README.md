@@ -66,3 +66,6 @@ Extend a schema with `rusthouse sql "ALTER TABLE events ADD COLUMN age UInt8" --
 
 Remove a catalog column with `rusthouse sql "ALTER TABLE events DROP COLUMN age" --catalog ./catalog`.
 `DROP COLUMN IF EXISTS` is idempotent. The last column cannot be dropped.
+
+Rename catalog metadata with `rusthouse sql "RENAME TABLE events TO archived_events" --catalog ./catalog`.
+The destination must be absent. No MergeTree parts are moved.
