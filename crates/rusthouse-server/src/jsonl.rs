@@ -98,7 +98,7 @@ impl<W: Write> JsonlWriter<W> {
                 }
                 write_json_string(&mut self.output, header)?;
                 self.output.write_all(b":")?;
-                if field == b"\\N" || field == b"NULL" {
+                if field == b"\\N" {
                     self.output.write_all(b"null")?;
                 } else {
                     let text = decode_tsv_value(field)?;
@@ -143,11 +143,11 @@ mod tests {
         writer
             .write_all(b"hello\\tworld\t340282366920938463463374607431768211455\t\\N\n")
             .unwrap();
-        writer.write_all(b"back\\\\slash\tNULL\tNULL\n").unwrap();
+        writer.write_all(b"back\\\\slash\tNULL\t\\N\n").unwrap();
         let output = String::from_utf8(writer.output).unwrap();
         assert_eq!(
             output,
-            "{\"label\":\"hello\\tworld\",\"amount\":\"340282366920938463463374607431768211455\",\"missing\":null}\n{\"label\":\"back\\\\slash\",\"amount\":null,\"missing\":null}\n"
+            "{\"label\":\"hello\\tworld\",\"amount\":\"340282366920938463463374607431768211455\",\"missing\":null}\n{\"label\":\"back\\\\slash\",\"amount\":\"NULL\",\"missing\":null}\n"
         );
     }
 
