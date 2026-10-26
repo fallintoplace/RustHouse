@@ -424,5 +424,4 @@ mod tests {
             assert!(parse_ddl(sql).is_err(), "{sql}");
         }
     }
-
 }
