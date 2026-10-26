@@ -81,6 +81,13 @@ impl From<io::Error> for NumericReadError {
     }
 }
 
+fn check_batch_size(rows: usize, width: usize) -> Result<(), NumericReadError> {
+    if rows > MAX_BATCH_BYTES / width {
+        return Err(NumericReadError::BatchTooLarge { rows, width });
+    }
+    Ok(())
+}
+
 pub(crate) fn numeric_storage_type(data_type: &str) -> Option<&str> {
     match data_type {
         "UInt8" | "UInt16" | "UInt32" | "UInt64" | "UInt128" | "Int8" | "Int16" | "Int32"
@@ -125,9 +132,7 @@ pub fn read_numeric_column<R: Read>(
     macro_rules! decode {
         ($value:ty, $variant:ident) => {{
             let width = std::mem::size_of::<$value>();
-            if rows > MAX_BATCH_BYTES / width {
-                return Err(NumericReadError::BatchTooLarge { rows, width });
-            }
+            check_batch_size(rows, width)?;
             Ok(NumericColumn::$variant(read_fixed(
                 reader,
                 rows,
@@ -138,9 +143,7 @@ pub fn read_numeric_column<R: Read>(
 
     match numeric_storage_type(data_type).unwrap_or(data_type) {
         "UInt8" => {
-            if rows > MAX_BATCH_BYTES {
-                return Err(NumericReadError::BatchTooLarge { rows, width: 1 });
-            }
+            check_batch_size(rows, 1)?;
             // A byte-wide column already has its final in-memory representation.
             // Read directly into the output instead of copying through 16 KiB chunks.
             let mut values = vec![0u8; rows];
@@ -192,6 +195,17 @@ mod tests {
 
     fn decode(data_type: &str, bytes: &[u8], rows: usize) -> NumericColumn {
         read_numeric_column(&mut Cursor::new(bytes), data_type, rows).unwrap()
+    }
+
+    #[test]
+    fn numeric_batch_limit_scales_with_element_width() {
+        for width in [1, 2, 4, 8, 16] {
+            assert!(check_batch_size(MAX_BATCH_BYTES / width, width).is_ok());
+            assert!(matches!(
+                check_batch_size(MAX_BATCH_BYTES / width + 1, width),
+                Err(NumericReadError::BatchTooLarge { width: actual, .. }) if actual == width
+            ));
+        }
     }
 
     #[test]
