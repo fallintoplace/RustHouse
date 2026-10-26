@@ -127,5 +127,4 @@ mod tests {
             format!("[{large_row},{{}}]\n").as_bytes()
         );
     }
-
 }
