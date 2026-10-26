@@ -25,6 +25,7 @@ pub(super) fn is_function(name: &str) -> bool {
         || is_extrema(name)
         || is_power(name)
         || is_bitwise(name)
+        || name.eq_ignore_ascii_case("CLAMP")
 }
 
 pub(super) fn parse(parser: &mut Parser) -> Result<i64, ParseError> {
@@ -145,6 +146,28 @@ fn checked_bit_shift(value: i64, amount: i64, left: bool) -> Result<i64, ParseEr
     }
 }
 
+fn parse_clamp(parser: &mut Parser, depth: usize) -> Result<i64, ParseError> {
+    if !parser.take(Token::LParen) {
+        return Err(ParseError("CLAMP requires '('".into()));
+    }
+    let value = expression(parser, depth + 1)?;
+    if !parser.take(Token::Comma) {
+        return Err(ParseError("CLAMP requires three arguments".into()));
+    }
+    let lower = expression(parser, depth + 1)?;
+    if !parser.take(Token::Comma) {
+        return Err(ParseError("CLAMP requires three arguments".into()));
+    }
+    let upper = expression(parser, depth + 1)?;
+    if !parser.take(Token::RParen) {
+        return Err(ParseError("expected ')' after CLAMP arguments".into()));
+    }
+    if lower > upper {
+        return Err(ParseError("CLAMP lower bound exceeds upper bound".into()));
+    }
+    Ok(value.clamp(lower, upper))
+}
+
 fn factor(parser: &mut Parser, depth: usize) -> Result<i64, ParseError> {
     if depth >= MAX_DEPTH {
         return Err(ParseError(
@@ -161,6 +184,9 @@ fn factor(parser: &mut Parser, depth: usize) -> Result<i64, ParseError> {
     }
     if parser.keyword("POWER") || parser.keyword("POW") {
         return parse_power(parser, depth);
+    }
+    if parser.keyword("CLAMP") {
+        return parse_clamp(parser, depth);
     }
     if matches!(parser.tokens.get(parser.index), Some(Token::Word(name)) if is_extrema(name)) {
         return parse_extrema(parser, depth);

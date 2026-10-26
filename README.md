@@ -42,6 +42,7 @@ cargo run -p rusthouse-cli -- sql "SELECT id, count(*) FROM part GROUP BY id ORD
 ## Supported features
 
 - **SQL:** `SELECT * RENAME old AS new` (query output only), `WHERE` (including `IN`, `BETWEEN`, `LIKE`, and `ILIKE`), sorting (including `ORDER BY ... NULLS FIRST/LAST`), `DISTINCT`, numeric aggregates (including `median`), grouped numeric aggregates by one key, `COUNT(column)` (skips NULLs), grouped counts with `HAVING`, and pagination. Scalar `SELECT` without `FROM` also supports signed integer arithmetic (`+`, `-`, `*`, `%`) with parentheses, checked 64-bit overflow and zero-divisor errors, plus `GREATEST` and `LEAST` with 2 to 16 integer expressions. This is a limited SQL subset.
+- **Scalar integers:** `CLAMP(value, lower, upper)` limits an evaluated integer expression to inclusive bounds in `SELECT` without `FROM`. Reversed bounds are rejected.
 - **Bit shifts:** Scalar `bitShiftLeft(value, amount)` and `bitShiftRight(value, amount)` accept shift counts from 0 to 63, reject overflowing left shifts, and perform arithmetic right shifts on signed integers.
 - **Data:** `numbers()` and inclusive `generate_series(start, stop[, step])` without files, plus supported numeric, `String`, `UUID`, and `Nullable` part columns.
 - **Output:** TSV, CSV, JSON, JSON Lines, compact JSON row arrays (`--format json-compact-each-row`), Markdown, HTML, and vertical formats via `--format`; also `--output`, `--max-rows`, `--time`, `--show-ast`, `--explain`, `--file`, and `--stdin`.
