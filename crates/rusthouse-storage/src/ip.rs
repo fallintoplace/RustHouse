@@ -119,8 +119,9 @@ mod tests {
         assert_eq!(result[8191], Ipv4Addr::new(192, 0, 2, 1));
 
         let ipv6 = [0x20, 0x01, 0x0d, 0xb8, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1];
+        let ipv6_values = ipv6.repeat(2048);
         let mut reader = CountingReader {
-            inner: ipv6.repeat(2048).as_slice(),
+            inner: ipv6_values.as_slice(),
             calls: 0,
         };
         let result = read_ipv6_values(&mut reader, 2048).unwrap();
@@ -131,7 +132,8 @@ mod tests {
 
         impl<R: Read> Read for Bytewise<R> {
             fn read(&mut self, output: &mut [u8]) -> io::Result<usize> {
-                self.0.read(&mut output[..output.len().min(1)])
+                let count = output.len().min(1);
+                self.0.read(&mut output[..count])
             }
         }
 
