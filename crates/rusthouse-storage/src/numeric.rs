@@ -448,5 +448,4 @@ mod tests {
             NumericColumn::UInt8(vec![])
         );
     }
-
 }
