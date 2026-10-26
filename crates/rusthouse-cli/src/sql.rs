@@ -416,12 +416,11 @@ pub(super) fn run_sql_args(mut args: impl Iterator<Item = OsString>) -> Result<(
     }
     // Hold a shared lock for the entire query, not just snapshot discovery.
     // DROP and RENAME must not remove part directories beneath active readers.
-    let _database_read_lock = if let (Some(database_dir), Some(Source::Table(_))) =
-        (database.as_deref(), select.source.as_ref())
-    {
-        Some(crate::database::read_lock(database_dir)?)
-    } else {
-        None
+    let _database_read_lock = match (database.as_deref(), select.source.as_ref()) {
+        (Some(directory), Some(Source::Table(_))) if directory.is_dir() => {
+            Some(crate::database::read_lock(directory)?)
+        }
+        _ => None,
     };
     if let (Some(database_dir), Some(Source::Table(table))) =
         (database.as_deref(), select.source.as_ref())
