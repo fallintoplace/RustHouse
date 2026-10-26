@@ -71,6 +71,9 @@ pub fn explain_select(query: &Select) -> String {
     }
 
     steps.push(describe_projection(&query.projection));
+    if let Some((source, target)) = &query.rename {
+        steps.push(format!("Rename: {source} -> {target}"));
+    }
     if let Some(alias) = &query.alias {
         steps.push(format!("Alias: {alias}"));
     }
@@ -128,6 +131,15 @@ mod tests {
         assert_eq!(
             explain_select(&query),
             "Source: numbers(20)\nFilter: 2 conditions across 2 OR branches\nProject: number\nSort: number DESC\nOffset: 4\nLimit: 2"
+        );
+    }
+
+    #[test]
+    fn explains_wildcard_rename_without_scanning_rows() {
+        let query = parse_select("SELECT * RENAME number AS value FROM numbers(3)").unwrap();
+        assert_eq!(
+            explain_select(&query),
+            "Source: numbers(3)\nProject: *\nRename: number -> value"
         );
     }
 

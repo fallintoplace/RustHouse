@@ -227,6 +227,35 @@ fn selects_mixed_string_and_numeric_rows() {
 }
 
 #[test]
+fn wildcard_rename_works_with_typed_parts_and_rejects_name_collisions() {
+    let part = part();
+    assert_eq!(
+        query(
+            "SELECT * RENAME service AS origin FROM part WHERE service = 'db'",
+            &part
+        ),
+        "origin\tstatus\tmessage\tuid\tattempt\ndb\t503\t\\N\t00000000-0000-0000-0000-000000000000\t\\N\n"
+    );
+    assert_eq!(
+        query(
+            "SELECT * RENAME status AS code FROM part ORDER BY code DESC LIMIT 1",
+            &part
+        ),
+        "service\tcode\tmessage\tuid\tattempt\ndb\t503\t\\N\t00000000-0000-0000-0000-000000000000\t\\N\n"
+    );
+    for sql in [
+        "SELECT * RENAME service AS status FROM part",
+        "SELECT * RENAME missing AS renamed FROM part LIMIT 0",
+    ] {
+        let select = parse_select(sql).unwrap();
+        let mut output = Vec::new();
+        assert!(execute(&select, Some(&part), &mut output).is_err(), "{sql}");
+        assert!(output.is_empty(), "{sql}");
+    }
+    fs::remove_dir_all(part).unwrap();
+}
+
+#[test]
 fn counts_and_filters_nullable_text() {
     let part = part();
     assert_eq!(

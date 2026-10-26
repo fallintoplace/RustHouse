@@ -86,7 +86,7 @@ pub(super) fn requires_typed_scan(query: &Select, path: &Path) -> Result<bool, E
         names.push(pred.column());
     }
     if let Some(order) = &query.order_by {
-        names.push(&order.column);
+        names.push(query.order_source_column(&order.column));
     }
     Ok(metadata
         .columns
@@ -461,13 +461,7 @@ pub(super) fn execute_typed<W: Write>(
         if matches!(query.projection, Projection::GroupedCount { .. }) {
             return None;
         }
-        Some(
-            if query.alias.as_deref() == Some(order.column.as_str()) && projection.len() == 1 {
-                projection[0].clone()
-            } else {
-                order.column.clone()
-            },
-        )
+        Some(query.order_source_column(&order.column).to_owned())
     });
     if let Some(sort) = &sort {
         include(sort);
@@ -510,7 +504,7 @@ pub(super) fn execute_typed<W: Write>(
         Projection::GroupedCount { column } => format!("{column}\tcount"),
         _ => projection.join("\t"),
     };
-    writeln!(output, "{}", query.alias.as_deref().unwrap_or(&header))?;
+    super::write_header(query, output, &header)?;
     if query.limit == Some(0) {
         return Ok(());
     }

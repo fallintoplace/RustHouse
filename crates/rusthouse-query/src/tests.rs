@@ -22,6 +22,7 @@ fn parses_scalar_and_table_queries() {
         Select {
             projection: Projection::Literal(-42),
             alias: None,
+            rename: None,
             distinct: false,
             source: None,
             predicates: Vec::new(),
@@ -37,6 +38,7 @@ fn parses_scalar_and_table_queries() {
         Select {
             projection: Projection::Columns(vec!["id".into(), "price".into()]),
             alias: None,
+            rename: None,
             distinct: false,
             source: Some(Source::Table("part".into())),
             predicates: Vec::new(),
@@ -63,6 +65,27 @@ fn parses_scalar_and_table_queries() {
             .projection,
         Projection::Count
     );
+}
+
+#[test]
+fn parses_wildcard_rename_and_rejects_invalid_forms() {
+    let query = parse_select(
+        "SELECT DISTINCT * ReNaMe number aS value FROM numbers(5) ORDER BY value DESC LIMIT 2",
+    )
+    .unwrap();
+    assert_eq!(query.projection, Projection::All);
+    assert_eq!(query.rename, Some(("number".into(), "value".into())));
+    assert_eq!(query.order_by.unwrap().column, "value");
+    for sql in [
+        "SELECT * RENAME number TO value FROM numbers(1)",
+        "SELECT * RENAME number AS FROM numbers(1)",
+        "SELECT * RENAME AS value FROM numbers(1)",
+        "SELECT number RENAME number AS value FROM numbers(1)",
+        "SELECT * RENAME number AS value, other AS name FROM numbers(1)",
+        "SELECT * RENAME number AS value RENAME number AS again FROM numbers(1)",
+    ] {
+        assert!(parse_select(sql).is_err(), "{sql}");
+    }
 }
 
 #[test]

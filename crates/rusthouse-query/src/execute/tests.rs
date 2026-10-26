@@ -48,6 +48,30 @@ fn single_result_aliases_change_headers_and_support_order_by() {
 }
 
 #[test]
+fn wildcard_rename_preserves_rows_and_resolves_order_alias() {
+    assert_eq!(
+        run(
+            "SELECT * RENAME number AS value FROM numbers(5) WHERE number >= 2 ORDER BY value DESC LIMIT 2",
+            None
+        )
+        .unwrap(),
+        "value\n4\n3\n"
+    );
+    assert_eq!(
+        run("SELECT DISTINCT * RENAME number AS value FROM numbers(2)", None).unwrap(),
+        "value\n0\n1\n"
+    );
+    assert_eq!(
+        run("SELECT * RENAME number AS number FROM numbers(0)", None).unwrap(),
+        "number\n"
+    );
+    assert!(matches!(
+        run("SELECT * RENAME missing AS label FROM numbers(0) LIMIT 0", None),
+        Err(ExecutionError::Invalid(_))
+    ));
+}
+
+#[test]
 fn clickhouse_count_empty_parentheses_matches_count_star() {
     assert_eq!(
         run("SELECT count() FROM numbers(17) WHERE number >= 12", None).unwrap(),

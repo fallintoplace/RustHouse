@@ -45,6 +45,21 @@ fn reads_empty_and_persisted_named_tables() {
     assert!(result.status.success(), "{result:?}");
     assert_eq!(result.stdout, b"id\tname\n1\tAda\n2\tGrace\n");
 
+    let renamed = sql(
+        "SELECT * RENAME name AS customer_name FROM events ORDER BY customer_name DESC",
+        &db,
+        &[],
+    );
+    assert!(renamed.status.success(), "{renamed:?}");
+    assert_eq!(renamed.stdout, b"id\tcustomer_name\n2\tGrace\n1\tAda\n");
+    let renamed_json = sql(
+        "SELECT * RENAME name AS customer_name FROM events LIMIT 1",
+        &db,
+        &["--format", "json"],
+    );
+    assert!(renamed_json.status.success(), "{renamed_json:?}");
+    assert!(String::from_utf8_lossy(&renamed_json.stdout).contains("\"customer_name\""));
+
     let count = sql("SELECT count(*) FROM events", &db, &[]);
     assert_eq!(count.stdout, b"count\n2\n");
     let capped = sql(
