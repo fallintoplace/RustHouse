@@ -6,6 +6,7 @@ const MAX_FIELD_BYTES: usize = 1024 * 1024;
 pub struct CsvWriter<W: Write> {
     output: W,
     field: Vec<u8>,
+    pending_cr: bool,
 }
 
 impl<W: Write> CsvWriter<W> {
@@ -13,7 +14,19 @@ impl<W: Write> CsvWriter<W> {
         Self {
             output,
             field: Vec::new(),
+            pending_cr: false,
         }
+    }
+
+    fn push_field_byte(&mut self, byte: u8) -> io::Result<()> {
+        if self.field.len() >= MAX_FIELD_BYTES {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                "CSV field exceeds 1 MiB",
+            ));
+        }
+        self.field.push(byte);
+        Ok(())
     }
 
     fn finish_field(&mut self, separator: &[u8]) -> io::Result<()> {
@@ -43,18 +56,20 @@ impl<W: Write> CsvWriter<W> {
 impl<W: Write> Write for CsvWriter<W> {
     fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
         for &byte in buf {
+            if self.pending_cr {
+                self.pending_cr = false;
+                if byte == b'\n' {
+                    self.finish_field(b"\r\n")?;
+                    continue;
+                }
+                self.push_field_byte(b'\r')?;
+            }
+
             match byte {
+                b'\r' => self.pending_cr = true,
                 b'\t' => self.finish_field(b",")?,
                 b'\n' => self.finish_field(b"\r\n")?,
-                _ => {
-                    if self.field.len() >= MAX_FIELD_BYTES {
-                        return Err(io::Error::new(
-                            io::ErrorKind::InvalidData,
-                            "CSV field exceeds 1 MiB",
-                        ));
-                    }
-                    self.field.push(byte);
-                }
+                _ => self.push_field_byte(byte)?,
             }
         }
         Ok(buf.len())
@@ -82,6 +97,27 @@ mod tests {
             output,
             b"left,right\r\n1,2\r\n\"\"\"hello, world\"\"\",4\r\n"
         );
+    }
+
+    #[test]
+    fn treats_crlf_as_one_newline_even_across_writes() {
+        let mut csv = CsvWriter::new(Vec::new());
+        csv.write_all(b"left\tright\r").unwrap();
+        csv.flush().unwrap();
+        csv.write_all(b"\n1\t2\r\n").unwrap();
+        assert_eq!(csv.output, b"left,right\r\n1,2\r\n");
+    }
+
+    #[test]
+    fn keeps_bare_carriage_returns_inside_quoted_fields() {
+        let mut csv = CsvWriter::new(Vec::new());
+        csv.write_all(b"ab\rc\tother\n").unwrap();
+        assert_eq!(csv.output, b"\"ab\rc\",other\r\n");
+
+        let mut csv = CsvWriter::new(Vec::new());
+        csv.write_all(b"ab\r").unwrap();
+        csv.write_all(b"\tother\n").unwrap();
+        assert_eq!(csv.output, b"\"ab\r\",other\r\n");
     }
 
     #[test]
