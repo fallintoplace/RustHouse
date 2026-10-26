@@ -60,3 +60,6 @@ Identifiers are simple ASCII SQL names and type support is deliberately bounded.
 
 Drop only a catalog schema file with `rusthouse sql "DROP TABLE IF EXISTS events" --catalog ./catalog`.
 Existing MergeTree parts remain untouched.
+
+Extend a schema with `rusthouse sql "ALTER TABLE events ADD COLUMN age UInt8" --catalog ./catalog`.
+`ADD COLUMN IF NOT EXISTS` is idempotent. Changes are metadata-only.

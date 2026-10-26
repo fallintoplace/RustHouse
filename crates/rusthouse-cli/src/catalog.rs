@@ -1,7 +1,11 @@
-use rusthouse_query::{ColumnDef, Ddl};
+use rusthouse_query::{ColumnDef, Ddl, parse_ddl};
 use std::fs::{self, OpenOptions};
 use std::io::Write;
 use std::path::Path;
+use std::sync::atomic::{AtomicUsize, Ordering};
+
+static NEXT_TEMP: AtomicUsize = AtomicUsize::new(0);
+const MAX_SCHEMA_BYTES: u64 = 32 * 1024;
 
 pub(super) fn apply(catalog: &Path, ddl: &Ddl) -> Result<(), String> {
     match ddl {
@@ -11,6 +15,11 @@ pub(super) fn apply(catalog: &Path, ddl: &Ddl) -> Result<(), String> {
             if_not_exists,
         } => create_table(catalog, name, columns, *if_not_exists),
         Ddl::DropTable { name, if_exists } => drop_table(catalog, name, *if_exists),
+        Ddl::AddColumn {
+            table,
+            column,
+            if_not_exists,
+        } => add_column(catalog, table, column, *if_not_exists),
     }
 }
 
@@ -31,6 +40,103 @@ fn drop_table(catalog: &Path, name: &str, if_exists: bool) -> Result<(), String>
     }
     fs::remove_file(&path).map_err(|error| format!("cannot drop table {name}: {error}"))?;
     println!("Dropped table {name} (schema only)");
+    Ok(())
+}
+
+fn read_schema(catalog: &Path, name: &str) -> Result<Vec<ColumnDef>, String> {
+    let path = catalog.join(format!("{name}.schema"));
+    let metadata = fs::symlink_metadata(&path)
+        .map_err(|error| format!("cannot read table {name}: {error}"))?;
+    if !metadata.file_type().is_file() {
+        return Err(format!("not a regular schema file: {name}"));
+    }
+    if metadata.len() > MAX_SCHEMA_BYTES {
+        return Err(format!("schema is too large for table {name}"));
+    }
+    let content =
+        fs::read_to_string(&path).map_err(|error| format!("cannot read table {name}: {error}"))?;
+    let mut lines = content.lines();
+    if lines.next() != Some("rusthouse-schema-v1") {
+        return Err(format!("invalid schema version for table {name}"));
+    }
+    let mut columns = Vec::new();
+    for line in lines {
+        let (column_name, data_type) = line
+            .split_once('\t')
+            .ok_or_else(|| format!("corrupt schema for table {name}"))?;
+        let sql = format!("CREATE TABLE _check ({column_name} {data_type})");
+        if columns.len() == 64
+            || !matches!(parse_ddl(&sql), Ok(Some(Ddl::CreateTable { .. })))
+            || columns
+                .iter()
+                .any(|column: &ColumnDef| column.name == column_name)
+        {
+            return Err(format!("corrupt schema for table {name}"));
+        }
+        columns.push(ColumnDef {
+            name: column_name.to_string(),
+            data_type: data_type.to_string(),
+        });
+    }
+    if columns.is_empty() || !content.ends_with('\n') {
+        return Err(format!("corrupt schema for table {name}"));
+    }
+    Ok(columns)
+}
+
+fn schema_contents(columns: &[ColumnDef]) -> String {
+    let mut schema = String::from("rusthouse-schema-v1\n");
+    for column in columns {
+        schema.push_str(&column.name);
+        schema.push('\t');
+        schema.push_str(&column.data_type);
+        schema.push('\n');
+    }
+    schema
+}
+
+fn replace_schema(catalog: &Path, name: &str, columns: &[ColumnDef]) -> Result<(), String> {
+    let path = catalog.join(format!("{name}.schema"));
+    let temp = catalog.join(format!(
+        ".{name}.schema.tmp.{}.{}",
+        std::process::id(),
+        NEXT_TEMP.fetch_add(1, Ordering::Relaxed)
+    ));
+    let update = || -> Result<(), std::io::Error> {
+        let mut file = OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(&temp)?;
+        file.write_all(schema_contents(columns).as_bytes())?;
+        file.sync_all()?;
+        fs::rename(&temp, &path)
+    };
+    if let Err(error) = update() {
+        let _ = fs::remove_file(&temp);
+        return Err(format!("cannot update schema for {name}: {error}"));
+    }
+    Ok(())
+}
+
+fn add_column(
+    catalog: &Path,
+    table: &str,
+    column: &ColumnDef,
+    if_not_exists: bool,
+) -> Result<(), String> {
+    let mut columns = read_schema(catalog, table)?;
+    if columns.iter().any(|entry| entry.name == column.name) {
+        if if_not_exists {
+            return Ok(());
+        }
+        return Err(format!("column already exists: {}", column.name));
+    }
+    if columns.len() >= 64 {
+        return Err("DDL supports at most 64 columns".into());
+    }
+    columns.push(column.clone());
+    replace_schema(catalog, table, &columns)?;
+    println!("Added column {} to {table} (schema only)", column.name);
     Ok(())
 }
 
@@ -55,15 +161,8 @@ fn create_table(
             return Err(format!("cannot create table {name}: {error}"));
         }
     };
-    let mut schema = String::from("rusthouse-schema-v1\n");
-    for column in columns {
-        schema.push_str(&column.name);
-        schema.push('\t');
-        schema.push_str(&column.data_type);
-        schema.push('\n');
-    }
     if let Err(error) = file
-        .write_all(schema.as_bytes())
+        .write_all(schema_contents(columns).as_bytes())
         .and_then(|()| file.sync_all())
     {
         drop(file);
