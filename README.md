@@ -99,7 +99,7 @@ rusthouse sql "SELECT count(*) FROM part" --part ./snapshot/active-parts
 rusthouse sql "SELECT id, count(*) FROM part GROUP BY id ORDER BY id" --part ./snapshot/active-parts
 ```
 
-RustHouse now treats either a single wide part or an offline directory of
+Group mixed-type data with `SELECT service, count(*) FROM part GROUP BY service ORDER BY count DESC`. String, UUID, and Nullable group keys work with WHERE, HAVING, LIMIT and OFFSET. Grouping is bounded to 100,000 distinct keys.\n\nRustHouse now treats either a single wide part or an offline directory of
 MergeTree-named active parts as a query source. It streams one part at a time;
 aggregates, filtering, ORDER BY, DISTINCT, LIMIT and OFFSET apply to the full set.
 For safety, it rejects overlapping block ranges, inconsistent schemas, malformed
