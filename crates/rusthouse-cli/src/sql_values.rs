@@ -196,7 +196,7 @@ mod tests {
     #[test]
     fn row_encoder_rejects_wrong_width_before_streaming() {
         assert!(encode_values_row(b"one", 2).is_err());
-        assert_eq!(encode_values_row(b"1\\t\\\\N", 2).unwrap(), b"(\'1\', NULL)");
+        assert_eq!(encode_values_row(b"1\t\\N", 2).unwrap(), b"('1', NULL)");
     }
 
     #[test]
