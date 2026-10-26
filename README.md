@@ -49,6 +49,19 @@ cargo run -p rusthouse-cli -- sql "SHOW TABLES" --catalog ./catalog
 
 **Only use frozen, offline snapshots.** Never read a live table directory while another process modifies it. RustHouse rejects overlapping part ranges, inconsistent schemas, and snapshots with more than 10,000 parts. Primary-index predicate pruning is not implemented.
 
+
+## Benchmarks
+
+Run the in-memory SQL execution benchmark in release mode:
+
+```sh
+cargo bench -p rusthouse-query --bench queries --locked -- --rows 100000 --samples 11
+```
+
+It measures filtered counts, filtered sums, and filtered top-K queries over generated `numbers()` rows. Each query is parsed before timing, warmed up three times, and checked for the expected result. The output shows median latency and millions of input rows per second.
+
+This covers query execution and formatting into a memory buffer, **not** disk scans, terminal rendering, or server overhead. Compare runs on the same machine and Rust compiler version; shared CI runners are not suitable for stable performance numbers.
+
 ## Development
 
 ```sh
