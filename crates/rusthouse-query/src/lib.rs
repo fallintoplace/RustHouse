@@ -6,12 +6,14 @@ mod explain;
 mod insert;
 mod lexer;
 mod scalar;
+mod update;
 pub use copy::{CopyFrom, parse_copy_from};
 pub use ddl::{ColumnDef, Ddl, parse_ddl};
 pub use delete::parse_delete;
 pub use execute::{ExecutionError, RowPredicate, execute};
 pub use explain::explain_select;
 pub use insert::{Insert, parse_insert};
+pub use update::{Update, parse_update};
 
 use std::error::Error;
 use std::fmt;

@@ -50,9 +50,11 @@ COPY FROM CSV imports local UTF-8 CSV with quoted commas, quotes, and newlines. 
 
 `--database` stores table schemas and **immutable wide parts** locally. Supported SQL includes `CREATE TABLE`, `INSERT ... VALUES`, `SELECT`, `SHOW TABLES`, `SHOW CREATE TABLE`, `DESCRIBE TABLE`, `RENAME TABLE`, `DROP TABLE` and `TRUNCATE TABLE`. Queries support the existing `--format`, `--output`, `--max-rows` and `--explain` options. Database writes are single-writer, limited to supported numeric, String and Nullable columns, and **not transactional across statements**. This is for local experiments, not concurrent production workloads. Run a sequence of up to 128 statements (256 KiB total) with `rusthouse sql --script setup.sql --database ./mydb`. Scripts permit SQL line comments and stop on the first error; they are **not transactions**.
 
-**Current limits:** SQL statements are limited to 4 KiB, INSERT supports up to 4,096 rows per statement, and tables are limited to 10,000 immutable parts. There is no UPDATE, DELETE, JOIN, background compaction, or cross-statement transaction. A crash can leave a stale `.rusthouse-write.lock` file; ensure no writer is active before removing it.
+**Current limits:** SQL statements are limited to 4 KiB, INSERT supports up to 4,096 rows per statement, and tables are limited to 10,000 immutable parts. There is no JOIN, background compaction, or cross-statement transaction. A crash can leave a stale `.rusthouse-write.lock` file; ensure no writer is active before removing it.
 
 `DELETE FROM events WHERE id = 1` removes matching rows from the active snapshot, preserving the previous generation for recovery. `DELETE FROM events` removes all rows, while `TRUNCATE TABLE events` is the faster option when there is no predicate. DELETE shares the 25,000-row and 16 MiB rewrite limits.
+
+Use `UPDATE events SET message = 'fixed' WHERE id = 2` to replace literal values in matching rows. Multiple assignments and `NULL` are supported when the target column allows NULL. UPDATE uses the same bounded copy-on-write snapshots as DELETE and OPTIMIZE; expressions such as `SET count = count + 1` are not supported yet.
 
 ## Reclaim active parts safely
 

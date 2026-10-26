@@ -2,7 +2,7 @@
 //! Tables use existing .schema metadata and immutable, atomically published wide parts.
 use crate::catalog;
 mod rewrite;
-use rusthouse_query::{Ddl, Insert, RowPredicate, Select, Source};
+use rusthouse_query::{Ddl, Insert, RowPredicate, Select, Source, Update};
 use rusthouse_storage::{
     Column, inspect_query_source, query_parts, resolve_active_snapshot, verify_wide_part,
     write_wide_part,
@@ -225,6 +225,37 @@ pub(super) fn apply_ddl(database: &Path, ddl: &Ddl) -> Result<(), String> {
         Ddl::RenameTable { from, to } => rename_table(database, from, to),
         _ => Err("database mode does not support ALTER yet".into()),
     }
+}
+
+pub(super) fn update(database: &Path, update: &Update) -> Result<(), String> {
+    let cols = columns(database, &update.table)?;
+    let filter = RowPredicate::new(&update.select, &cols).map_err(|error| error.to_string())?;
+    let assignments = update
+        .assignments
+        .iter()
+        .map(|(name, value)| {
+            let index = cols
+                .iter()
+                .position(|column| column.name == *name)
+                .ok_or_else(|| format!("unknown UPDATE column: {name}"))?;
+            if value.is_none() && !cols[index].data_type.starts_with("Nullable(") {
+                return Err(format!("NULL is not allowed for UPDATE column: {name}"));
+            }
+            Ok((index, value.clone()))
+        })
+        .collect::<Result<Vec<_>, String>>()?;
+    let mut changed = 0usize;
+    rewrite::rewrite_rows(database, &update.table, |batch, row, values| {
+        if filter.matches(batch, row) {
+            for (index, literal) in &assignments {
+                values[*index] = literal.clone();
+            }
+            changed += 1;
+        }
+        Ok(true)
+    })?;
+    println!("Updated {changed} rows in {}", update.table);
+    Ok(())
 }
 
 /// Delete matching rows by switching a complete immutable snapshot.
