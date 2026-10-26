@@ -6,15 +6,15 @@ mod jsonl;
 use rusthouse_query::{execute, parse_select};
 use rusthouse_storage::{
     CompressedBlockReader, NumericColumn, UInt64ColumnReader, inspect_part, read_checksums,
-    read_numeric_granule, read_u64_granule, read_wide_marks, validate_wide_marks,
-    verify_part_file_sizes, verify_wide_part,
+    read_fixed_primary_index, read_numeric_granule, read_u64_granule, read_wide_marks,
+    validate_wide_marks, verify_part_file_sizes, verify_wide_part,
 };
 use std::env;
 use std::ffi::OsString;
 use std::path::PathBuf;
 use std::process::ExitCode;
 
-const USAGE: &str = "Usage:\n  rusthouse inspect-part <path>\n  rusthouse verify-part <path-to-wide-part>\n  rusthouse verify-file-sizes <path-to-part>\n  rusthouse inspect-checksums <path-to-checksums.txt>\n  rusthouse inspect-marks <path-to-wide-marks>\n  rusthouse inspect-blocks <path-to-.bin>\n  rusthouse verify-blocks <path-to-.bin>\n  rusthouse validate-marks <path-to-wide-marks> <path-to-.bin>\n  rusthouse read-u64 <data.bin> <marks.mrk2> <mark-index>\n  rusthouse scan-u64 <path-to-UInt64-.bin>\n  rusthouse read-numeric <data.bin> <marks.mrk2> <mark-index> <type>\n  rusthouse sql <SQL> [--part <path-to-wide-part>] [--format tsv|tsv-no-header|csv|csv-no-header|jsonl|json] [--output <path>] [--max-rows <n>] [--show-ast]\n  rusthouse sql --stdin [--part <path-to-wide-part>] [--format tsv|tsv-no-header|csv|csv-no-header|jsonl|json] [--output <path>] [--max-rows <n>] [--show-ast]\n  rusthouse sql --file <path.sql> [--part <path-to-wide-part>] [--format tsv|tsv-no-header|csv|csv-no-header|jsonl|json] [--output <path>] [--max-rows <n>] [--show-ast]\n  rusthouse --help\n\nInspect local MergeTree metadata, marks, and compressed blocks.";
+const USAGE: &str = "Usage:\n  rusthouse inspect-part <path>\n  rusthouse verify-part <path-to-wide-part>\n  rusthouse verify-file-sizes <path-to-part>\n  rusthouse inspect-checksums <path-to-checksums.txt>\n  rusthouse inspect-marks <path-to-wide-marks>\n  rusthouse inspect-primary-index <primary.idx|primary.cidx> <field-width> [field-width ...]\n  rusthouse inspect-blocks <path-to-.bin>\n  rusthouse verify-blocks <path-to-.bin>\n  rusthouse validate-marks <path-to-wide-marks> <path-to-.bin>\n  rusthouse read-u64 <data.bin> <marks.mrk2> <mark-index>\n  rusthouse scan-u64 <path-to-UInt64-.bin>\n  rusthouse read-numeric <data.bin> <marks.mrk2> <mark-index> <type>\n  rusthouse sql <SQL> [--part <path-to-wide-part>] [--format tsv|tsv-no-header|csv|csv-no-header|jsonl|json] [--output <path>] [--max-rows <n>] [--show-ast]\n  rusthouse sql --stdin [--part <path-to-wide-part>] [--format tsv|tsv-no-header|csv|csv-no-header|jsonl|json] [--output <path>] [--max-rows <n>] [--show-ast]\n  rusthouse sql --file <path.sql> [--part <path-to-wide-part>] [--format tsv|tsv-no-header|csv|csv-no-header|jsonl|json] [--output <path>] [--max-rows <n>] [--show-ast]\n  rusthouse --help\n\nInspect local MergeTree metadata, marks, and compressed blocks.";
 
 #[derive(Clone, Copy)]
 enum SqlOutputFormat {
@@ -58,6 +58,7 @@ fn main() -> ExitCode {
         && command != "verify-file-sizes"
         && command != "inspect-checksums"
         && command != "inspect-marks"
+        && command != "inspect-primary-index"
         && command != "inspect-blocks"
         && command != "verify-blocks"
         && command != "validate-marks"
@@ -71,6 +72,12 @@ fn main() -> ExitCode {
     }
     let result = if command == "sql" {
         run_sql_args(args)
+    } else if command == "inspect-primary-index" {
+        let Some(path) = args.next() else {
+            eprintln!("{USAGE}");
+            return ExitCode::from(2);
+        };
+        inspect_primary_index_and_print(path, args)
     } else {
         let outcome = if command == "read-u64" {
             let (Some(data_path), Some(marks_path), Some(index), None) =
@@ -143,6 +150,56 @@ fn main() -> ExitCode {
             ExitCode::FAILURE
         }
     }
+}
+
+fn inspect_primary_index_and_print(
+    path: OsString,
+    widths: impl Iterator<Item = OsString>,
+) -> Result<(), String> {
+    let widths = widths
+        .map(|value| {
+            let width = value
+                .to_str()
+                .ok_or("primary-index field widths must be positive integers")?
+                .parse::<usize>()
+                .map_err(|_| "primary-index field widths must be positive integers")?;
+            if width == 0 {
+                return Err("primary-index field widths must be positive integers");
+            }
+            Ok(width)
+        })
+        .collect::<Result<Vec<_>, _>>()?;
+    if widths.is_empty() {
+        return Err("provide at least one primary-index field width".into());
+    }
+    let index = read_fixed_primary_index(PathBuf::from(path), &widths)
+        .map_err(|error| error.to_string())?;
+    println!("Marks: {}", index.len());
+    println!("Fields: {}", widths.len());
+    // Keep inspection output bounded even for large or adversarial indices.
+    for mark in 0..index.len().min(16) {
+        print!("Mark {mark}:");
+        for field in 0..widths.len().min(8) {
+            let bytes = index
+                .field(mark, field)
+                .expect("validated fixed-width tuple");
+            print!(" ");
+            for byte in bytes.iter().take(16) {
+                print!("{byte:02x}");
+            }
+            if bytes.len() > 16 {
+                print!("...");
+            }
+        }
+        if widths.len() > 8 {
+            print!(" ... ({} more fields)", widths.len() - 8);
+        }
+        println!();
+    }
+    if index.len() > 16 {
+        println!("... {} more marks", index.len() - 16);
+    }
+    Ok(())
 }
 
 fn inspect_and_print(path: OsString) -> Result<(), rusthouse_storage::PartError> {

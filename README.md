@@ -39,3 +39,5 @@ Export data-only TSV without the header row with `cargo run -p rusthouse-cli -- 
 Exclude selected remainders with `cargo run -p rusthouse-cli -- sql "SELECT number FROM numbers(10) WHERE number % 2 != 0"`.
 
 Name single-column query results with `cargo run -p rusthouse-cli -- sql "SELECT sum(number) AS total FROM numbers(10)"`. Aliases also work in `ORDER BY` for numeric row projections.
+
+Inspect fixed-width primary-index entries with `cargo run -p rusthouse-cli -- inspect-primary-index /path/to/primary.idx 8 4`. Field widths are byte counts. RustHouse prints a bounded hex preview (16 marks, 8 fields, 16 bytes per field) and accepts both `.idx` and `.cidx`.
