@@ -22,7 +22,9 @@ fn decode_tsv_field(field: &[u8]) -> io::Result<Vec<u8>> {
             continue;
         }
         index += 1;
-        let escaped = *field.get(index).ok_or_else(|| invalid("incomplete TSV escape"))?;
+        let escaped = *field
+            .get(index)
+            .ok_or_else(|| invalid("incomplete TSV escape"))?;
         match escaped {
             b'\\' => output.push(b'\\'),
             b't' => output.push(b'\t'),
@@ -30,8 +32,12 @@ fn decode_tsv_field(field: &[u8]) -> io::Result<Vec<u8>> {
             b'r' => output.push(b'\r'),
             b'0' => output.push(0),
             b'x' => {
-                let high = *field.get(index + 1).ok_or_else(|| invalid("short TSV hex escape"))?;
-                let low = *field.get(index + 2).ok_or_else(|| invalid("short TSV hex escape"))?;
+                let high = *field
+                    .get(index + 1)
+                    .ok_or_else(|| invalid("short TSV hex escape"))?;
+                let low = *field
+                    .get(index + 2)
+                    .ok_or_else(|| invalid("short TSV hex escape"))?;
                 let high = hex_digit(high).ok_or_else(|| invalid("invalid TSV hex escape"))?;
                 let low = hex_digit(low).ok_or_else(|| invalid("invalid TSV hex escape"))?;
                 output.push((high << 4) | low);
@@ -43,7 +49,6 @@ fn decode_tsv_field(field: &[u8]) -> io::Result<Vec<u8>> {
     }
     Ok(output)
 }
-
 
 /// Convert RustHouse's numeric tab-separated output into RFC 4180-style CSV.
 pub struct CsvWriter<W: Write> {
