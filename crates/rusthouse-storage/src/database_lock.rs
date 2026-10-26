@@ -48,7 +48,7 @@ impl Drop for DatabaseLock {
 #[cfg(unix)]
 fn validate_lock_identity(path: &Path, file: &fs::File) -> Result<(), String> {
     use std::os::unix::fs::MetadataExt;
-    let metadata = fs::symlink_metadata(&path)
+    let metadata = fs::symlink_metadata(path)
         .map_err(|error| format!("cannot inspect database lock {}: {error}", path.display()))?;
     let opened = file
         .metadata()
