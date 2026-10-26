@@ -924,8 +924,7 @@ impl AggregateState {
                         Number::Signed(value) => value as f64,
                         Number::Float(value) => value,
                     };
-                    (as_f64(values[middle - 1]) / 2.0 + as_f64(values[middle]) / 2.0)
-                        .to_string()
+                    (as_f64(values[middle - 1]) / 2.0 + as_f64(values[middle]) / 2.0).to_string()
                 }
             }
             _ => self
@@ -1450,7 +1449,11 @@ mod tests {
             "median(number)\nNULL\n"
         );
         assert_eq!(
-            run("SELECT median(number) FROM numbers(3) WHERE number > 9", None).unwrap(),
+            run(
+                "SELECT median(number) FROM numbers(3) WHERE number > 9",
+                None
+            )
+            .unwrap(),
             "median(number)\nNULL\n"
         );
     }
