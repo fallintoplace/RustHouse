@@ -32,7 +32,14 @@ fn shows_elapsed_time_on_stderr_without_modifying_query_output() {
 fn measures_csv_output_without_polluting_the_export() {
     let path = std::env::temp_dir().join(format!("rusthouse-timing-{}.csv", std::process::id()));
     let result = Command::new(env!("CARGO_BIN_EXE_rusthouse"))
-        .args(["sql", "SELECT number FROM numbers(2)", "--format", "csv", "--time", "--output"])
+        .args([
+            "sql",
+            "SELECT number FROM numbers(2)",
+            "--format",
+            "csv",
+            "--time",
+            "--output",
+        ])
         .arg(&path)
         .output()
         .unwrap();
