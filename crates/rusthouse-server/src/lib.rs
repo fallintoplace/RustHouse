@@ -1,6 +1,6 @@
 //! Minimal read-only SQL HTTP interface, bound to loopback by the binary.
 //! This is intentionally not a full database wire protocol.
-use rusthouse_query::{execute, parse_select};
+use rusthouse_query::{execute, explain_select, parse_select};
 use rusthouse_storage::inspect_query_source;
 use std::io::{self, Write};
 use std::path::PathBuf;
@@ -142,7 +142,7 @@ fn schema_response(config: &Config) -> Response {
 
 fn query_parameters(target: &str) -> Result<(String, Option<String>), &'static str> {
     let (path, query) = target.split_once('?').unwrap_or((target, ""));
-    if path != "/" {
+    if path != "/" && path != "/explain" {
         return Err("unknown SQL endpoint");
     }
     let mut statement = None;
@@ -185,7 +185,7 @@ pub fn handle_request(method: &str, target: &str, body: &[u8], config: &Config) 
     if body.len() > MAX_QUERY_BYTES || target.len() > MAX_HEADER_BYTES {
         return Response::text("413 Payload Too Large", "SQL statement too large\n");
     }
-    let (_, query) = match query_parameters(target) {
+    let (path, query) = match query_parameters(target) {
         Ok(v) => v,
         Err(message) => return Response::text("400 Bad Request", message),
     };
@@ -215,6 +215,12 @@ pub fn handle_request(method: &str, target: &str, body: &[u8], config: &Config) 
     };
     let cap = config.max_rows.min(100_000);
     select.limit = Some(select.limit.map_or(cap, |limit| limit.min(cap)));
+    if path == "/explain" {
+        return Response::text(
+            "200 OK",
+            &format!("Logical plan (no data read):\n{}\n", explain_select(&select)),
+        );
+    }
     let mut writer = LimitedWriter::new();
     match execute(&select, config.part.as_deref(), &mut writer) {
         Ok(()) => Response {
@@ -316,6 +322,42 @@ mod tests {
             String::from_utf8(output).unwrap(),
             "\"quote\\\"\\\\newline\\n\\u0007é\""
         );
+    }
+
+    #[test]
+    fn explains_sql_without_scanning_data() {
+        let get = handle_request(
+            "GET",
+            "/explain?query=SELECT+number+FROM+numbers%2810%29+WHERE+number%3E5",
+            b"",
+            &config(),
+        );
+        assert_eq!(get.status, "200 OK");
+        assert_eq!(get.content_type, "text/plain; charset=utf-8");
+        assert_eq!(
+            String::from_utf8(get.body).unwrap(),
+            "Logical plan (no data read):\nSource: numbers(10)\nFilter: 1 conditions across 1 OR branches\nProject: number\nLimit: 3\n"
+        );
+
+        // Planning a part query must not require --part or open data files.
+        let planned = handle_request("POST", "/explain", b"SELECT id FROM part", &config());
+        assert_eq!(planned.status, "200 OK");
+        assert!(String::from_utf8(planned.body).unwrap().contains("Source: table part"));
+
+        let executed = handle_request("POST", "/", b"SELECT id FROM part", &config());
+        assert_eq!(executed.status, "400 Bad Request");
+    }
+
+    #[test]
+    fn explain_endpoint_rejects_writes_and_invalid_inputs() {
+        for (method, path, body, status) in [
+            ("GET", "/explain?query=DROP+TABLE+t", &b""[..], "400 Bad Request"),
+            ("GET", "/explain", &b"SELECT 1"[..], "400 Bad Request"),
+            ("POST", "/explain?query=SELECT+1", &b"SELECT 2"[..], "400 Bad Request"),
+            ("PUT", "/explain", &b"SELECT 1"[..], "405 Method Not Allowed"),
+        ] {
+            assert_eq!(handle_request(method, path, body, &config()).status, status);
+        }
     }
 
     #[test]
