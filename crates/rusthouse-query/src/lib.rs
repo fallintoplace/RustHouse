@@ -385,8 +385,10 @@ pub fn parse_select(sql: &str) -> Result<Select, ParseError> {
             if total_conditions == 16 {
                 return Err(ParseError("WHERE supports at most 16 conditions".into()));
             }
+            let prefix_not = parser.keyword("NOT");
             let column = parser.word()?;
-            let negate_in = parser.keyword("NOT");
+            let postfix_not = parser.keyword("NOT");
+            let negate_in = prefix_not ^ postfix_not;
             if parser.keyword("BETWEEN") {
                 let lower = parser.number()?;
                 if !parser.keyword("AND") {
@@ -440,10 +442,12 @@ pub fn parse_select(sql: &str) -> Result<Select, ParseError> {
                 });
                 total_conditions += 1;
             } else {
-                if negate_in {
-                    return Err(ParseError("NOT requires IN".into()));
+                if postfix_not {
+                    return Err(ParseError(
+                        "NOT after a column requires IN or BETWEEN".into(),
+                    ));
                 }
-                let operator = if parser.take(Token::Percent) {
+                let mut operator = if parser.take(Token::Percent) {
                     let modulus = parser.number()?;
                     let modulus = modulus
                         .parse::<u64>()
@@ -459,6 +463,19 @@ pub fn parse_select(sql: &str) -> Result<Select, ParseError> {
                 } else {
                     parser.operator()?
                 };
+                if prefix_not {
+                    operator = match operator {
+                        Operator::Eq => Operator::Ne,
+                        Operator::Ne => Operator::Eq,
+                        Operator::Lt => Operator::Ge,
+                        Operator::Le => Operator::Gt,
+                        Operator::Gt => Operator::Le,
+                        Operator::Ge => Operator::Lt,
+                        Operator::Modulo(_) | Operator::ModuloNe(_) => {
+                            return Err(ParseError("NOT modulo predicates are unsupported".into()));
+                        }
+                    };
+                }
                 branches.last_mut().unwrap().push(Predicate::Comparison {
                     column,
                     operator,
@@ -1417,5 +1434,40 @@ mod tests {
     fn bounds_sql_input_and_rejects_invalid_characters() {
         assert!(parse_select(&" ".repeat(4097)).is_err());
         assert!(parse_select("SELECT café FROM part").is_err());
+    }
+    #[test]
+    fn parses_unary_not_on_numeric_predicates() {
+        let query = parse_select("SELECT number FROM numbers(6) WHERE NOT number < 3").unwrap();
+        assert_eq!(
+            query.predicates,
+            vec![Predicate::Comparison {
+                column: "number".into(),
+                operator: Operator::Ge,
+                value: "3".into(),
+            }]
+        );
+        assert!(matches!(
+            parse_select("SELECT number FROM numbers(6) WHERE NOT number IN (1, 3)")
+                .unwrap()
+                .predicates[0],
+            Predicate::NotIn { .. }
+        ));
+        assert!(matches!(
+            parse_select("SELECT number FROM numbers(6) WHERE NOT number BETWEEN 2 AND 4")
+                .unwrap()
+                .predicates[0],
+            Predicate::NotBetween { .. }
+        ));
+        let twice =
+            parse_select("SELECT number FROM numbers(6) WHERE NOT number NOT BETWEEN 2 AND 4")
+                .unwrap();
+        assert_eq!(twice.predicates.len(), 2);
+        for sql in [
+            "SELECT number FROM numbers(6) WHERE number NOT = 3",
+            "SELECT number FROM numbers(6) WHERE NOT number % 2 = 1",
+            "SELECT number FROM numbers(6) WHERE NOT",
+        ] {
+            assert!(parse_select(sql).is_err(), "{sql}");
+        }
     }
 }
