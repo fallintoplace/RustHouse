@@ -144,3 +144,22 @@ fn drop_does_not_silently_ignore_orphaned_parts() {
     assert!(db.join("t.parts").exists());
     fs::remove_dir_all(db).unwrap();
 }
+
+#[test]
+fn creating_persistent_table_leaves_only_complete_public_metadata() {
+    let db = database();
+    let created = sql("CREATE TABLE durable (id UInt64, note Nullable(String))", &db);
+    assert!(created.status.success(), "{created:?}");
+    assert!(db.join("durable.schema").is_file());
+    assert!(db.join("durable.parts/all_0_0_0/checksums.txt").is_file());
+    assert!(
+        fs::read_dir(&db)
+            .unwrap()
+            .all(|entry| !entry.unwrap().file_name().to_string_lossy().contains("schema.tmp"))
+    );
+    assert_eq!(
+        sql("SELECT count(*) FROM durable", &db).stdout,
+        b"count\n0\n"
+    );
+    fs::remove_dir_all(db).unwrap();
+}
