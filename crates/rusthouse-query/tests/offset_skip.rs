@@ -57,16 +57,28 @@ fn offset_crosses_granules_and_parts_without_dropping_partial_marks() {
         run(&root, "SELECT id FROM part LIMIT 4 OFFSET 2050"),
         "id\n2050\n2051\n2052\n2053\n"
     );
-    assert_eq!(run(&root, "SELECT id FROM part LIMIT 3 OFFSET 2057"), "id\n");
-    assert_eq!(run(&root, "SELECT id FROM part LIMIT 3 OFFSET 999999"), "id\n");
+    assert_eq!(
+        run(&root, "SELECT id FROM part LIMIT 3 OFFSET 2057"),
+        "id\n"
+    );
+    assert_eq!(
+        run(&root, "SELECT id FROM part LIMIT 3 OFFSET 999999"),
+        "id\n"
+    );
 
     // Filtering and sorting must not use physical scan offsets.
     assert_eq!(
-        run(&root, "SELECT id FROM part WHERE id >= 2052 LIMIT 2 OFFSET 1"),
+        run(
+            &root,
+            "SELECT id FROM part WHERE id >= 2052 LIMIT 2 OFFSET 1"
+        ),
         "id\n2053\n2054\n"
     );
     assert_eq!(
-        run(&root, "SELECT id FROM part ORDER BY id DESC LIMIT 2 OFFSET 1"),
+        run(
+            &root,
+            "SELECT id FROM part ORDER BY id DESC LIMIT 2 OFFSET 1"
+        ),
         "id\n2055\n2054\n"
     );
     assert_eq!(run(&root, "SELECT count(*) FROM part"), "count\n2057\n");
