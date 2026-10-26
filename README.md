@@ -78,3 +78,5 @@ Remove a catalog column with `rusthouse sql "ALTER TABLE events DROP COLUMN age"
 
 Rename catalog metadata with `rusthouse sql "RENAME TABLE events TO archived_events" --catalog ./catalog`.
 The destination must be absent. No MergeTree parts are moved.
+
+Print the parsed logical operator pipeline without scanning data using `rusthouse sql "SELECT number FROM numbers(10) WHERE number > 3 ORDER BY number DESC LIMIT 2" --explain`. This is a logical overview, not a physical or cost-based execution plan; column validity is still checked by actual execution.

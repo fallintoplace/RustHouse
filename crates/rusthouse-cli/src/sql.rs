@@ -1,5 +1,5 @@
 use crate::{csv, csv_no_header, json_array, jsonl, markdown, vertical};
-use rusthouse_query::{execute, parse_ddl, parse_select};
+use rusthouse_query::{execute, explain_select, parse_ddl, parse_select};
 use std::ffi::OsString;
 use std::path::PathBuf;
 
@@ -45,9 +45,17 @@ pub(super) fn run_sql_args(mut args: impl Iterator<Item = OsString>) -> Result<(
     let mut format = None;
     let mut output_path = None;
     let mut show_ast = false;
+    let mut explain = false;
     let mut time = false;
     let mut max_rows = None;
     while let Some(arg) = args.next() {
+        if arg.to_str() == Some("--explain") {
+            if explain {
+                return Err("duplicate --explain option".into());
+            }
+            explain = true;
+            continue;
+        }
         if arg.to_str() == Some("--show-ast") {
             if show_ast {
                 return Err("duplicate --show-ast option".into());
@@ -153,6 +161,9 @@ pub(super) fn run_sql_args(mut args: impl Iterator<Item = OsString>) -> Result<(
         query.ok_or("missing SQL statement")?
     };
     if let Some(catalog_path) = catalog {
+        if explain {
+            return Err("--explain is only supported for SELECT".into());
+        }
         if time {
             return Err("--time cannot be combined with --catalog".into());
         }
@@ -169,6 +180,19 @@ pub(super) fn run_sql_args(mut args: impl Iterator<Item = OsString>) -> Result<(
         return Err("--catalog is only supported for DDL statements".into());
     }
     let mut select = parse_select(&query).map_err(|error| error.to_string())?;
+    if explain {
+        if show_ast || time || format.is_some() || output_path.is_some() {
+            return Err(
+                "--explain cannot be combined with --show-ast, --time, --format, or --output"
+                    .into(),
+            );
+        }
+        if let Some(cap) = max_rows {
+            select.limit = Some(select.limit.map_or(cap, |limit| limit.min(cap)));
+        }
+        println!("Logical plan (no data read):\n{}", explain_select(&select));
+        return Ok(());
+    }
     if show_ast {
         if time {
             return Err("--time cannot be combined with --show-ast".into());
