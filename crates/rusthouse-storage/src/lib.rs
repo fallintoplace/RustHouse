@@ -23,6 +23,7 @@ mod scan_layout;
 mod stream;
 mod string_arrays;
 mod strings;
+mod typed_scan;
 mod uuid;
 
 pub use arrays::{
@@ -66,6 +67,7 @@ pub use string_arrays::{
     read_sized_string_array_column,
 };
 pub use strings::{StringColumn, StringReadError, read_legacy_strings, read_sized_strings};
+pub use typed_scan::{TypedColumn, TypedPartReader, TypedQueryReader};
 pub use uuid::{UuidValue, read_uuid_values};
 
 use std::error::Error;

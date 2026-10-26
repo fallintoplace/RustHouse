@@ -4,6 +4,7 @@ use crate::{Operator, ParseError};
 pub(super) enum Token {
     Word(String),
     Number(String),
+    String(String),
     Star,
     Percent,
     Comma,
@@ -26,6 +27,32 @@ pub(super) fn tokenize(sql: &str) -> Result<Vec<Token>, ParseError> {
             b' ' | b'\t' | b'\r' | b'\n' => {
                 index += 1;
                 continue;
+            }
+            b'\'' => {
+                index += 1;
+                let mut value = String::new();
+                let mut start = index;
+                let mut closed = false;
+                while index < bytes.len() {
+                    if bytes[index] == b'\'' {
+                        value.push_str(&sql[start..index]);
+                        if bytes.get(index + 1) == Some(&b'\'') {
+                            value.push('\'');
+                            index += 2;
+                            start = index;
+                        } else {
+                            index += 1;
+                            closed = true;
+                            break;
+                        }
+                    } else {
+                        index += 1;
+                    }
+                }
+                if !closed {
+                    return Err(ParseError("unterminated string literal".into()));
+                }
+                Token::String(value)
             }
             b'*' => {
                 index += 1;
