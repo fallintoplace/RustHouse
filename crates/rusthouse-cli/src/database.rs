@@ -161,6 +161,56 @@ fn rename_table(database: &Path, from: &str, to: &str) -> Result<(), String> {
     Ok(())
 }
 
+/// Replace all stored rows with one empty part while preserving the schema.
+/// This is a single-writer operation, not an online snapshot transaction.
+fn truncate_table(database: &Path, name: &str) -> Result<(), String> {
+    let _lock = lock(database)?;
+    let cols = columns(database, name)?;
+    let (parts, _) = validated_parts(database, name, &cols)?;
+    let sequence = NEXT_STAGE.fetch_add(1, Ordering::Relaxed);
+    let staging = database.join(format!(
+        ".{name}.truncate-new-{}-{sequence}",
+        std::process::id()
+    ));
+    let retired = database.join(format!(
+        ".{name}.truncate-old-{}-{sequence}",
+        std::process::id()
+    ));
+    if existing_path(&staging)? || existing_path(&retired)? {
+        return Err("TRUNCATE staging path already exists".into());
+    }
+    fs::create_dir(&staging)
+        .map_err(|error| format!("cannot stage TRUNCATE for {name}: {error}"))?;
+    let prepared = write_wide_part(&staging.join("all_0_0_0"), &cols, &[])
+        .map_err(|error| error.to_string())
+        .and_then(|_| verify_wide_part(&staging.join("all_0_0_0")).map_err(|error| error.to_string()));
+    if let Err(error) = prepared {
+        let _ = fs::remove_dir_all(&staging);
+        return Err(error);
+    }
+    if let Err(error) = fs::rename(&parts, &retired) {
+        let _ = fs::remove_dir_all(&staging);
+        return Err(format!("cannot retire stored rows of {name}: {error}"));
+    }
+    if let Err(error) = fs::rename(&staging, &parts) {
+        let rollback = fs::rename(&retired, &parts);
+        let _ = fs::remove_dir_all(&staging);
+        return match rollback {
+            Ok(()) => Err(format!("cannot publish empty table {name}: {error}")),
+            Err(rollback) => Err(format!(
+                "cannot publish empty table {name}: {error}; rollback failed: {rollback}"
+            )),
+        };
+    }
+    fs::File::open(database)
+        .and_then(|dir| dir.sync_all())
+        .map_err(|error| format!("table {name} was truncated but sync failed: {error}"))?;
+    fs::remove_dir_all(&retired)
+        .map_err(|error| format!("table {name} was truncated but cleanup failed: {error}"))?;
+    println!("Truncated table {name}");
+    Ok(())
+}
+
 pub(super) fn apply_ddl(database: &Path, ddl: &Ddl) -> Result<(), String> {
     match ddl {
         Ddl::ShowTables | Ddl::ShowCreateTable { .. } | Ddl::DescribeTable { .. } => {
@@ -201,6 +251,7 @@ pub(super) fn apply_ddl(database: &Path, ddl: &Ddl) -> Result<(), String> {
             result
         }
         Ddl::DropTable { name, if_exists } => drop_table(database, name, *if_exists),
+        Ddl::TruncateTable { name } => truncate_table(database, name),
         Ddl::RenameTable { from, to } => rename_table(database, from, to),
         _ => Err("database mode does not support ALTER yet".into()),
     }

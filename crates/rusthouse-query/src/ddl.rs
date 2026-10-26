@@ -25,6 +25,9 @@ pub enum Ddl {
         name: String,
         if_exists: bool,
     },
+    TruncateTable {
+        name: String,
+    },
     AddColumn {
         table: String,
         column: ColumnDef,
@@ -227,6 +230,14 @@ pub fn parse_ddl(sql: &str) -> Result<Option<Ddl>, ParseError> {
             if_not_exists,
         }));
     }
+    if parser.keyword("TRUNCATE") {
+        if !parser.keyword("TABLE") {
+            return Err(ParseError("expected TABLE after TRUNCATE".into()));
+        }
+        let name = identifier(&mut parser)?;
+        finish_ddl(&mut parser)?;
+        return Ok(Some(Ddl::TruncateTable { name }));
+    }
     if parser.keyword("DROP") {
         if !parser.keyword("TABLE") {
             return Err(ParseError("expected TABLE after DROP".into()));
@@ -386,6 +397,24 @@ mod tests {
             "ALTER TABLE events ADD COLUMN IF EXISTS info String",
         ] {
             assert!(parse_ddl(sql).is_err(), "{sql}");
+        }
+    }
+
+    #[test]
+    fn parses_truncate_and_rejects_malformed_or_multiple_statements() {
+        assert_eq!(
+            parse_ddl("TRUNCATE TABLE events;").unwrap(),
+            Some(Ddl::TruncateTable {
+                name: "events".into(),
+            })
+        );
+        for statement in [
+            "TRUNCATE events",
+            "TRUNCATE TABLE",
+            "TRUNCATE TABLE events RESTART IDENTITY",
+            "TRUNCATE TABLE events; DROP TABLE events",
+        ] {
+            assert!(parse_ddl(statement).is_err(), "{statement}");
         }
     }
 
