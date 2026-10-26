@@ -122,6 +122,37 @@ fn write_header<W: Write>(
     Ok(())
 }
 
+/// Reuse the typed SELECT predicate semantics for bounded local mutations.
+pub struct RowPredicate {
+    branches: Vec<Vec<typed::Condition>>,
+}
+
+impl RowPredicate {
+    pub fn new(
+        query: &Select,
+        columns: &[rusthouse_storage::Column],
+    ) -> Result<Self, ExecutionError> {
+        let indices = columns
+            .iter()
+            .enumerate()
+            .map(|(index, column)| (column.name.clone(), index))
+            .collect::<HashMap<_, _>>();
+        let kinds = columns
+            .iter()
+            .map(|column| (column.name.clone(), column.data_type.clone()))
+            .collect::<HashMap<_, _>>();
+        let branches = std::iter::once(query.predicates.as_slice())
+            .chain(query.or_predicates.iter().map(Vec::as_slice))
+            .map(|predicates| typed::compile(predicates, &indices, &kinds))
+            .collect::<Result<Vec<_>, _>>()?;
+        Ok(Self { branches })
+    }
+
+    pub fn matches(&self, batch: &[rusthouse_storage::TypedColumn], row: usize) -> bool {
+        typed::passes(batch, row, &self.branches)
+    }
+}
+
 pub fn execute<W: Write>(
     query: &Select,
     part: Option<&Path>,

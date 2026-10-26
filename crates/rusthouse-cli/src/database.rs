@@ -2,7 +2,7 @@
 //! Tables use existing .schema metadata and immutable, atomically published wide parts.
 use crate::catalog;
 mod rewrite;
-use rusthouse_query::{Ddl, Insert};
+use rusthouse_query::{Ddl, Insert, RowPredicate, Select, Source};
 use rusthouse_storage::{
     Column, inspect_query_source, query_parts, verify_wide_part, write_wide_part,
 };
@@ -251,6 +251,29 @@ pub(super) fn apply_ddl(database: &Path, ddl: &Ddl) -> Result<(), String> {
         Ddl::RenameTable { from, to } => rename_table(database, from, to),
         _ => Err("database mode does not support ALTER yet".into()),
     }
+}
+
+/// Delete matching rows by switching a complete immutable snapshot.
+pub(super) fn delete(database: &Path, select: &Select) -> Result<(), String> {
+    let Some(Source::Table(name)) = select.source.as_ref() else {
+        return Err("DELETE requires a stored database table".into());
+    };
+    let cols = columns(database, name)?;
+    let filter = RowPredicate::new(select, &cols).map_err(|error| error.to_string())?;
+    let mut removed = 0usize;
+    let (scanned, retained) = rewrite::rewrite_rows(database, name, |batch, row, _| {
+        if filter.matches(batch, row) {
+            removed += 1;
+            Ok(false)
+        } else {
+            Ok(true)
+        }
+    })?;
+    if scanned != removed + retained {
+        return Err("DELETE row count mismatch".into());
+    }
+    println!("Deleted {removed} rows from {name}");
+    Ok(())
 }
 
 pub(super) fn insert(database: &Path, insert: &Insert) -> Result<(), String> {
