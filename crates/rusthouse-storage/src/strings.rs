@@ -123,11 +123,18 @@ pub fn read_sized_strings<S: Read, D: Read>(
 ) -> Result<StringColumn, StringReadError> {
     checked_rows(rows)?;
     let mut values = StringColumn::new(rows);
-    for _ in 0..rows {
-        let mut encoded = [0u8; 8];
-        sizes.read_exact(&mut encoded)?;
-        let end = checked_end(*values.offsets.last().unwrap(), u64::from_le_bytes(encoded))?;
-        values.offsets.push(end);
+    // Read size entries in bounded chunks without consuming bytes from the next batch.
+    let mut buffer = [0u8; 8 * 1024];
+    let mut decoded_rows = 0;
+    while decoded_rows < rows {
+        let batch_rows = (rows - decoded_rows).min(buffer.len() / 8);
+        sizes.read_exact(&mut buffer[..batch_rows * 8])?;
+        for encoded in buffer[..batch_rows * 8].chunks_exact(8) {
+            let length = u64::from_le_bytes(encoded.try_into().unwrap());
+            let end = checked_end(*values.offsets.last().unwrap(), length)?;
+            values.offsets.push(end);
+        }
+        decoded_rows += batch_rows;
     }
     let bytes = *values.offsets.last().unwrap();
     values.data.resize(bytes, 0);
@@ -213,6 +220,47 @@ mod tests {
         assert_eq!(trailing, [77]);
         data_reader.read_exact(&mut trailing).unwrap();
         assert_eq!(trailing, [42]);
+    }
+
+    #[test]
+    fn batches_size_reads_and_leaves_trailing_bytes_unconsumed() {
+        struct CountingReader<R> {
+            inner: R,
+            reads: usize,
+        }
+
+        impl<R: Read> Read for CountingReader<R> {
+            fn read(&mut self, bytes: &mut [u8]) -> io::Result<usize> {
+                self.reads += 1;
+                self.inner.read(bytes)
+            }
+        }
+
+        let rows = 2050;
+        let mut encoded = Vec::new();
+        for row in 0..rows {
+            let length: u64 = if row % 1024 == 0 { 1 } else { 0 };
+            encoded.extend_from_slice(&length.to_le_bytes());
+        }
+        encoded.push(99);
+
+        let mut sizes = CountingReader {
+            inner: Cursor::new(encoded),
+            reads: 0,
+        };
+        let mut data = &b"abc"[..];
+        let column = read_sized_strings(&mut sizes, &mut data, rows).unwrap();
+        assert_eq!(column.len(), rows);
+        assert_eq!(column.data(), b"abc");
+        assert_eq!(column.get(0), Some(&b"a"[..]));
+        assert_eq!(column.get(1024), Some(&b"b"[..]));
+        assert_eq!(column.get(2048), Some(&b"c"[..]));
+        assert!(sizes.reads <= 3, "expected bounded bulk size reads");
+        assert!(data.is_empty());
+
+        let mut trailing = [0];
+        sizes.read_exact(&mut trailing).unwrap();
+        assert_eq!(trailing, [99]);
     }
 
     #[test]
