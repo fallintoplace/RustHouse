@@ -369,5 +369,4 @@ mod decoded_tsv_json_regressions {
         assert_eq!(output, "\"café\"\"a\\tb\"".as_bytes());
         assert!(write_json_value(&mut Vec::new(), &[0xff]).is_err());
     }
-
 }
