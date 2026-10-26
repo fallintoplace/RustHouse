@@ -1,6 +1,6 @@
 //! Small immutable wide-part writer for local SQL inserts.
 //! The caller publishes the completed directory with an atomic rename.
-use crate::{Column, PartError};
+use crate::{Column, FileChecksum, PartError, UncompressedChecksum};
 use ch_cityhash102::cityhash128;
 use std::collections::HashSet;
 use std::fs::{self, OpenOptions};
@@ -127,6 +127,46 @@ fn write_file(path: &Path, bytes: &[u8]) -> Result<(), PartError> {
     file.sync_all().map_err(|error| io_error(path, error))
 }
 
+fn write_tracked_file(
+    part: &Path,
+    name: &str,
+    bytes: &[u8],
+    uncompressed: Option<&[u8]>,
+    files: &mut Vec<FileChecksum>,
+) -> Result<(), PartError> {
+    write_file(&part.join(name), bytes)?;
+    files.push(FileChecksum {
+        name: name.to_owned(),
+        size: bytes.len() as u64,
+        hash: u128::from(cityhash128(bytes)),
+        uncompressed: uncompressed.map(|data| UncompressedChecksum {
+            size: data.len() as u64,
+            hash: u128::from(cityhash128(data)),
+        }),
+    });
+    Ok(())
+}
+
+fn encode_checksums(files: &[FileChecksum]) -> Vec<u8> {
+    let mut bytes = b"checksums format version: 3\n".to_vec();
+    push_varuint(files.len() as u64, &mut bytes);
+    for file in files {
+        push_varuint(file.name.len() as u64, &mut bytes);
+        bytes.extend_from_slice(file.name.as_bytes());
+        push_varuint(file.size, &mut bytes);
+        bytes.extend_from_slice(&file.hash.to_le_bytes());
+        match &file.uncompressed {
+            Some(original) => {
+                bytes.push(1);
+                push_varuint(original.size, &mut bytes);
+                bytes.extend_from_slice(&original.hash.to_le_bytes());
+            }
+            None => bytes.push(0),
+        }
+    }
+    bytes
+}
+
 fn block(data: &[u8]) -> Result<Vec<u8>, PartError> {
     let length = u32::try_from(data.len()).map_err(|_| invalid("part column is too large"))?;
     let mut encoded = Vec::with_capacity(25 + data.len());
@@ -143,7 +183,7 @@ fn block(data: &[u8]) -> Result<Vec<u8>, PartError> {
 
 /// Write a new immutable wide part. This function never replaces an existing path.
 /// Each row contains one value per column; None denotes SQL NULL.
-/// For empty tables only count.txt and columns.txt are needed.
+/// Empty tables have no data streams but still include a checksums manifest.
 pub fn write_wide_part(
     part: &Path,
     columns: &[Column],
@@ -202,15 +242,20 @@ pub fn write_wide_part(
     }
 
     fs::create_dir(part).map_err(|error| io_error(part, error))?;
+    let mut files = Vec::new();
     let mut definitions = format!("columns format version: 1\n{} columns:\n", columns.len());
     for col in columns {
         definitions.push_str(&format!("`{}` {}\n", col.name, col.data_type));
     }
-    write_file(&part.join("columns.txt"), definitions.as_bytes())?;
-    write_file(
-        &part.join("count.txt"),
-        format!("{}\n", rows.len()).as_bytes(),
+    write_tracked_file(
+        part,
+        "columns.txt",
+        definitions.as_bytes(),
+        None,
+        &mut files,
     )?;
+    let count = format!("{}\n", rows.len());
+    write_tracked_file(part, "count.txt", count.as_bytes(), None, &mut files)?;
 
     if !rows.is_empty() {
         let mut marks = Vec::with_capacity(24);
@@ -218,10 +263,19 @@ pub fn write_wide_part(
         marks.extend_from_slice(&0u64.to_le_bytes());
         marks.extend_from_slice(&(rows.len() as u64).to_le_bytes());
         for (name, data) in streams {
-            write_file(&part.join(format!("{name}.bin")), &block(&data)?)?;
-            write_file(&part.join(format!("{name}.mrk2")), &marks)?;
+            let compressed = block(&data)?;
+            write_tracked_file(
+                part,
+                &format!("{name}.bin"),
+                &compressed,
+                Some(&data),
+                &mut files,
+            )?;
+            write_tracked_file(part, &format!("{name}.mrk2"), &marks, None, &mut files)?;
         }
     }
+    // Write the manifest only after all listed files have been synced.
+    write_file(&part.join("checksums.txt"), &encode_checksums(&files))?;
     fs::File::open(part)
         .and_then(|dir| dir.sync_all())
         .map_err(|error| io_error(part, error))
@@ -230,7 +284,10 @@ pub fn write_wide_part(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{NumericColumn, TypedColumn, TypedPartReader, inspect_part};
+    use crate::{
+        NumericColumn, TypedColumn, TypedPartReader, inspect_part, read_checksums,
+        verify_part_file_sizes,
+    };
     use std::sync::atomic::{AtomicUsize, Ordering};
 
     static NEXT: AtomicUsize = AtomicUsize::new(0);
@@ -294,6 +351,68 @@ mod tests {
     }
 
     #[test]
+    fn writes_valid_checksums_for_metadata_and_compressed_streams() {
+        let root = root();
+        let part = root.join("all_1_1_0");
+        let columns = vec![
+            Column {
+                name: "id".into(),
+                data_type: "UInt64".into(),
+            },
+            Column {
+                name: "note".into(),
+                data_type: "Nullable(String)".into(),
+            },
+        ];
+        write_wide_part(
+            &part,
+            &columns,
+            &[
+                vec![Some("10".into()), Some("hi".into())],
+                vec![Some("20".into()), None],
+            ],
+        )
+        .unwrap();
+
+        let manifest = read_checksums(part.join("checksums.txt")).unwrap();
+        assert_eq!(manifest.version, 3);
+        assert_eq!(manifest.files.len(), 8);
+        for entry in &manifest.files {
+            let bytes = fs::read(part.join(&entry.name)).unwrap();
+            assert_eq!(entry.size, bytes.len() as u64);
+            assert_eq!(entry.hash, u128::from(cityhash128(&bytes)));
+            assert_eq!(entry.uncompressed.is_some(), entry.name.ends_with(".bin"));
+        }
+
+        let id = manifest.files.iter().find(|file| file.name == "id.bin").unwrap();
+        let raw_ids = [10u64, 20]
+            .into_iter()
+            .flat_map(u64::to_le_bytes)
+            .collect::<Vec<_>>();
+        assert_eq!(
+            id.uncompressed,
+            Some(UncompressedChecksum {
+                size: raw_ids.len() as u64,
+                hash: u128::from(cityhash128(&raw_ids)),
+            })
+        );
+        let nulls = manifest
+            .files
+            .iter()
+            .find(|file| file.name == "note.null.bin")
+            .unwrap();
+        assert_eq!(
+            nulls.uncompressed,
+            Some(UncompressedChecksum {
+                size: 2,
+                hash: u128::from(cityhash128(&[0, 1])),
+            })
+        );
+        assert_eq!(verify_part_file_sizes(&part).unwrap().files, 8);
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
     fn accepts_empty_parts_and_rejects_invalid_rows() {
         let root = root();
         let cols = vec![Column {
@@ -303,6 +422,12 @@ mod tests {
         let empty = root.join("all_0_0_0");
         write_wide_part(&empty, &cols, &[]).unwrap();
         assert_eq!(inspect_part(&empty).unwrap().rows, 0);
+        let manifest = read_checksums(empty.join("checksums.txt")).unwrap();
+        assert_eq!(
+            manifest.files.iter().map(|file| file.name.as_str()).collect::<Vec<_>>(),
+            vec!["columns.txt", "count.txt"]
+        );
+        assert_eq!(verify_part_file_sizes(&empty).unwrap().files, 2);
         assert!(write_wide_part(&root.join("bad"), &cols, &[vec![Some("256".into())]]).is_err());
         assert!(!root.join("bad").exists());
         assert!(write_wide_part(&root.join("null"), &cols, &[vec![None]]).is_err());
