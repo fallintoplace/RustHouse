@@ -246,7 +246,7 @@ mod tests {
             }
             write_json_value(&mut output, value).unwrap();
         }
-        assert_eq!(output, b"null,null,\\\"null\\\",\\\"NULLABLE\\\"");
+        assert_eq!(output, b"null,null,\"null\",\"NULLABLE\"");
     }
 
     #[test]
