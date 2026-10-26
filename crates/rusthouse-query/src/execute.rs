@@ -407,8 +407,18 @@ fn execute_into<W: Write>(
 
     let limit = query.limit.unwrap_or(usize::MAX);
     let mut emitted = 0usize;
-    let mut skipped = 0usize;
     let offset = query.offset.unwrap_or(0);
+    // OFFSET on an unsorted, unfiltered projection can bypass entire stored
+    // granules. WHERE, DISTINCT, aggregate and ORDER BY must still scan rows.
+    let mut skipped = if !is_count
+        && !query.distinct
+        && query.predicates.is_empty()
+        && query.or_predicates.is_empty()
+    {
+        reader.skip_prefix_rows(offset)?
+    } else {
+        0
+    };
     let mut matched = 0u64;
     while let Some(batch) = reader.next_batch()? {
         let rows = batch[0].len();
