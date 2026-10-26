@@ -22,7 +22,11 @@ pub fn verify_part_file_sizes(part: impl AsRef<Path>) -> Result<FileSizeVerifica
     let checksums_path = part.join("checksums.txt");
     let metadata = fs::symlink_metadata(&checksums_path)
         .map_err(|source| io_error(&checksums_path, source))?;
-    ensure_regular_file(&metadata, &checksums_path, "checksums.txt is not a regular file")?;
+    ensure_regular_file(
+        &metadata,
+        &checksums_path,
+        "checksums.txt is not a regular file",
+    )?;
     let manifest = read_checksums(&checksums_path)?;
     let mut total_bytes = 0u64;
 
@@ -69,7 +73,11 @@ fn verify_listed_file(
                 ));
             }
         } else {
-            ensure_regular_file(&metadata, manifest_path, "listed entry is not a regular file")?;
+            ensure_regular_file(
+                &metadata,
+                manifest_path,
+                "listed entry is not a regular file",
+            )?;
             if metadata.len() != expected_size {
                 return Err(invalid(
                     manifest_path,
