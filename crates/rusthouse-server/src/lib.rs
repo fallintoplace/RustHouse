@@ -1,5 +1,8 @@
 //! Minimal read-only SQL HTTP interface, bound to loopback by the binary.
 //! This is intentionally not a full database wire protocol.
+mod jsonl;
+
+use jsonl::JsonlWriter;
 use rusthouse_query::{execute, explain_select, parse_select};
 use rusthouse_storage::inspect_query_source;
 use std::io::{self, Write};
@@ -140,25 +143,51 @@ fn schema_response(config: &Config) -> Response {
     }
 }
 
-fn query_parameters(target: &str) -> Result<(String, Option<String>), &'static str> {
+#[derive(Clone, Copy)]
+enum QueryFormat {
+    Tsv,
+    Jsonl,
+}
+
+fn query_parameters(target: &str) -> Result<(String, Option<String>, QueryFormat), &'static str> {
     let (path, query) = target.split_once('?').unwrap_or((target, ""));
     if path != "/" && path != "/explain" {
         return Err("unknown SQL endpoint");
     }
     let mut statement = None;
+    let mut format = None;
     for parameter in query.split('&').filter(|p| !p.is_empty()) {
         let (key, value) = parameter
             .split_once('=')
             .ok_or("invalid URL query parameter")?;
-        if key != "query" {
-            return Err("unsupported URL query parameter");
+        match key {
+            "query" => {
+                if statement.is_some() {
+                    return Err("duplicate query parameter");
+                }
+                statement = Some(decode_url(value)?);
+            }
+            "format" => {
+                if format.is_some() {
+                    return Err("duplicate format parameter");
+                }
+                format = Some(match decode_url(value)?.as_str() {
+                    "tsv" => QueryFormat::Tsv,
+                    "jsonl" => QueryFormat::Jsonl,
+                    _ => return Err("unsupported query format"),
+                });
+            }
+            _ => return Err("unsupported URL query parameter"),
         }
-        if statement.is_some() {
-            return Err("duplicate query parameter");
-        }
-        statement = Some(decode_url(value)?);
     }
-    Ok((path.to_owned(), statement))
+    if path == "/explain" && format.is_some() {
+        return Err("format is unsupported for EXPLAIN");
+    }
+    Ok((
+        path.to_owned(),
+        statement,
+        format.unwrap_or(QueryFormat::Tsv),
+    ))
 }
 
 /// Runs only the subset accepted by the existing SELECT parser. DDL and
@@ -185,7 +214,7 @@ pub fn handle_request(method: &str, target: &str, body: &[u8], config: &Config) 
     if body.len() > MAX_QUERY_BYTES || target.len() > MAX_HEADER_BYTES {
         return Response::text("413 Payload Too Large", "SQL statement too large\n");
     }
-    let (path, query) = match query_parameters(target) {
+    let (path, query, format) = match query_parameters(target) {
         Ok(v) => v,
         Err(message) => return Response::text("400 Bad Request", message),
     };
@@ -225,10 +254,20 @@ pub fn handle_request(method: &str, target: &str, body: &[u8], config: &Config) 
         );
     }
     let mut writer = LimitedWriter::new();
-    match execute(&select, config.part.as_deref(), &mut writer) {
+    let result = match format {
+        QueryFormat::Tsv => execute(&select, config.part.as_deref(), &mut writer),
+        QueryFormat::Jsonl => {
+            let mut jsonl = JsonlWriter::new(&mut writer);
+            execute(&select, config.part.as_deref(), &mut jsonl)
+        }
+    };
+    match result {
         Ok(()) => Response {
             status: "200 OK",
-            content_type: "text/tab-separated-values; charset=utf-8",
+            content_type: match format {
+                QueryFormat::Tsv => "text/tab-separated-values; charset=utf-8",
+                QueryFormat::Jsonl => "application/x-ndjson; charset=utf-8",
+            },
             body: writer.data,
         },
         Err(error) => Response::text("400 Bad Request", &format!("{error}\n")),
@@ -387,5 +426,55 @@ mod tests {
         assert_eq!(decode_url("SELECT+1"), Ok("SELECT 1".into()));
         assert_eq!(decode_url("%FF"), Err("SQL query must be valid UTF-8"));
         assert_eq!(decode_url("%2"), Err("invalid percent encoding"));
+    }
+    #[test]
+    fn returns_bounded_ndjson_for_get_and_post() {
+        let response = handle_request(
+            "GET",
+            "/?query=SELECT+number+FROM+numbers%2810%29&format=jsonl",
+            b"",
+            &config(),
+        );
+        assert_eq!(response.status, "200 OK");
+        assert_eq!(response.content_type, "application/x-ndjson; charset=utf-8");
+        assert_eq!(
+            response.body,
+            b"{\"number\":\"0\"}\n{\"number\":\"1\"}\n{\"number\":\"2\"}\n"
+        );
+
+        let response = handle_request(
+            "POST",
+            "/?format=jsonl",
+            b"SELECT count(*) FROM numbers(0)",
+            &config(),
+        );
+        assert_eq!(response.status, "200 OK");
+        assert_eq!(response.body, b"{\"count\":\"0\"}\n");
+
+        let response = handle_request("POST", "/?format=tsv", b"SELECT 7", &config());
+        assert_eq!(response.status, "200 OK");
+        assert_eq!(response.body, b"7\n7\n");
+    }
+
+    #[test]
+    fn rejects_unsupported_jsonl_formats_and_duplicate_column_names() {
+        for url in [
+            "/?query=SELECT+1&format=json",
+            "/?query=SELECT+1&format=jsonl&format=jsonl",
+            "/explain?query=SELECT+1&format=jsonl",
+            "/?query=SELECT+number%2Cnumber+FROM+numbers%282%29&format=jsonl",
+        ] {
+            assert_eq!(
+                handle_request("GET", url, b"", &config()).status,
+                "400 Bad Request"
+            );
+        }
+        let config = Config {
+            part: None,
+            max_rows: 0,
+        };
+        let empty = handle_request("POST", "/?format=jsonl", b"SELECT 1", &config);
+        assert_eq!(empty.status, "200 OK");
+        assert!(empty.body.is_empty());
     }
 }
