@@ -32,7 +32,7 @@ cargo run -p rusthouse-cli -- sql "SELECT id, count(*) FROM part GROUP BY id ORD
 
 - **SQL:** `WHERE` (including `IN`, `BETWEEN`, `LIKE`, and `ILIKE`), sorting, `DISTINCT`, numeric aggregates (including `median`), `COUNT(column)` (skips NULLs), grouped counts with `HAVING`, and pagination. This is a limited SQL subset.
 - **Data:** `numbers()` and inclusive `generate_series(start, stop[, step])` without files, plus supported numeric, `String`, `UUID`, and `Nullable` part columns.
-- **Output:** TSV, CSV, JSON, JSON Lines, Markdown, and vertical formats via `--format`; also `--output`, `--max-rows`, `--time`, `--show-ast`, `--explain`, `--file`, and `--stdin`.
+- **Output:** TSV, CSV, JSON, JSON Lines, Markdown, HTML, and vertical formats via `--format`; also `--output`, `--max-rows`, `--time`, `--show-ast`, `--explain`, `--file`, and `--stdin`.
 - **Inspection:** `verify-part`, `verify-file-sizes`, `inspect-marks`, `inspect-checksums`, `inspect-blocks`, and `inspect-primary-index`. Run `cargo run -p rusthouse-cli -- --help` for the full CLI.
 - **HTTP:** an optional [read-only localhost server](crates/rusthouse-server/README.md), with no authentication or remote access.
 
