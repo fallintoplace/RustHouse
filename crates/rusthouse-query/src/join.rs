@@ -25,6 +25,8 @@ pub struct JoinSelect {
     /// None projects every column from both tables.
     pub columns: Option<Vec<JoinColumn>>,
     pub keys: Vec<(JoinColumn, JoinColumn)>,
+    /// Shared-key names for JOIN USING; star output projects each key once.
+    pub using_keys: Vec<String>,
     pub order_by: Option<(JoinColumn, bool)>,
     pub limit: Option<usize>,
     pub offset: usize,
@@ -48,7 +50,7 @@ fn alias(parser: &mut Parser, table: &str) -> Result<String, ParseError> {
     match parser.tokens.get(parser.index) {
         Some(Token::Word(word))
             if ![
-                "INNER", "LEFT", "RIGHT", "FULL", "CROSS", "OUTER", "JOIN", "ON", "WHERE", "GROUP",
+                "INNER", "LEFT", "RIGHT", "FULL", "CROSS", "OUTER", "JOIN", "ON", "USING", "WHERE", "GROUP",
                 "ORDER", "LIMIT", "OFFSET",
             ]
             .iter()
@@ -146,30 +148,63 @@ pub fn parse_join(sql: &str) -> Result<Option<JoinSelect>, ParseError> {
     if left_alias == right_alias {
         return Err(ParseError("joined tables require distinct aliases".into()));
     }
-    if !parser.keyword("ON") {
-        return Err(ParseError("JOIN requires ON".into()));
-    }
-    let first = qualified(&mut parser)?;
-    if !parser.take(Token::Operator(super::Operator::Eq)) {
-        return Err(ParseError(
-            "JOIN ON currently supports only equality".into(),
-        ));
-    }
-    let second = qualified(&mut parser)?;
-    let mut keys = vec![(first, second)];
-    while parser.keyword("AND") {
-        if keys.len() >= 8 {
-            return Err(ParseError("JOIN supports at most 8 equality keys".into()));
+    let (keys, using_keys) = if parser.keyword("USING") {
+        if !parser.take(Token::LParen) {
+            return Err(ParseError("JOIN USING requires '('".into()));
         }
+        let mut keys = Vec::new();
+        let mut names = Vec::new();
+        loop {
+            if names.len() >= 8 {
+                return Err(ParseError("JOIN USING supports at most 8 keys".into()));
+            }
+            let name = parser.word()?;
+            if names.contains(&name) {
+                return Err(ParseError("duplicate JOIN USING column".into()));
+            }
+            keys.push((
+                JoinColumn {
+                    relation: left_alias.clone(),
+                    name: name.clone(),
+                },
+                JoinColumn {
+                    relation: right_alias.clone(),
+                    name: name.clone(),
+                },
+            ));
+            names.push(name);
+            if !parser.take(Token::Comma) {
+                break;
+            }
+        }
+        if !parser.take(Token::RParen) {
+            return Err(ParseError("JOIN USING requires ')'".into()));
+        }
+        (keys, names)
+    } else if parser.keyword("ON") {
         let first = qualified(&mut parser)?;
         if !parser.take(Token::Operator(super::Operator::Eq)) {
-            return Err(ParseError(
-                "JOIN ON supports AND-connected equality keys".into(),
-            ));
+            return Err(ParseError("JOIN ON currently supports only equality".into()));
         }
         let second = qualified(&mut parser)?;
-        keys.push((first, second));
-    }
+        let mut keys = vec![(first, second)];
+        while parser.keyword("AND") {
+            if keys.len() >= 8 {
+                return Err(ParseError("JOIN supports at most 8 equality keys".into()));
+            }
+            let first = qualified(&mut parser)?;
+            if !parser.take(Token::Operator(super::Operator::Eq)) {
+                return Err(ParseError(
+                    "JOIN ON supports AND-connected equality keys".into(),
+                ));
+            }
+            let second = qualified(&mut parser)?;
+            keys.push((first, second));
+        }
+        (keys, Vec::new())
+    } else {
+        return Err(ParseError("JOIN requires ON or USING".into()));
+    };
     let order_by = if parser.keyword("ORDER") {
         if !parser.keyword("BY") {
             return Err(ParseError("ORDER requires BY".into()));
@@ -212,6 +247,7 @@ pub fn parse_join(sql: &str) -> Result<Option<JoinSelect>, ParseError> {
         kind,
         columns,
         keys,
+        using_keys,
         order_by,
         limit,
         offset,
@@ -286,6 +322,34 @@ mod tests {
         assert!(
             parse_join("SELECT * FROM a JOIN b ON a.id = b.id AND a.user_id != b.user_id").is_err()
         );
+    }
+
+    #[test]
+    fn parses_using_keys_with_aliases_and_rejects_invalid_lists() {
+        let query = parse_join(
+            "SELECT l.id, r.name FROM lefts AS l FULL JOIN rights AS r USING (id, region) LIMIT 5",
+        )
+        .unwrap()
+        .unwrap();
+        assert_eq!(query.kind, JoinType::Full);
+        assert_eq!(query.using_keys, ["id", "region"]);
+        assert_eq!(query.keys[0].0.relation, "l");
+        assert_eq!(query.keys[0].1.relation, "r");
+        assert_eq!(query.keys[1].0.name, "region");
+        for sql in [
+            "SELECT * FROM l JOIN r USING id",
+            "SELECT * FROM l JOIN r USING ()",
+            "SELECT * FROM l JOIN r USING (id, id)",
+            "SELECT * FROM l JOIN r USING (id,) ",
+            "SELECT * FROM l JOIN r USING (id) ON l.id = r.id",
+        ] {
+            assert!(parse_join(sql).is_err(), "{sql}");
+        }
+        let too_many = format!(
+            "SELECT * FROM l JOIN r USING ({})",
+            (0..9).map(|n| format!("key{n}")).collect::<Vec<_>>().join(", ")
+        );
+        assert!(parse_join(&too_many).is_err());
     }
 
     #[test]
