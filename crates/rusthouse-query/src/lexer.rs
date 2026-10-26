@@ -78,6 +78,19 @@ fn scan_string(sql: &str, index: &mut usize) -> Result<Token, ParseError> {
     Ok(Token::String(value))
 }
 
+fn scan_word(sql: &str, index: &mut usize) -> Token {
+    let bytes = sql.as_bytes();
+    let start = *index;
+    *index += 1;
+    while matches!(
+        bytes.get(*index),
+        Some(b'a'..=b'z' | b'A'..=b'Z' | b'0'..=b'9' | b'_')
+    ) {
+        *index += 1;
+    }
+    Token::Word(sql[start..*index].into())
+}
+
 fn scan_comparison(bytes: &[u8], index: &mut usize) -> Operator {
     let (operator, width) = match (bytes[*index], bytes.get(*index + 1)) {
         (b'<', Some(b'=')) => (Operator::Le, 2),
@@ -151,17 +164,7 @@ pub(super) fn tokenize(sql: &str) -> Result<Vec<Token>, ParseError> {
                 Token::Operator(scan_comparison(bytes, &mut index))
             }
             b'0'..=b'9' | b'-' => scan_number(sql, &mut index)?,
-            b'a'..=b'z' | b'A'..=b'Z' | b'_' => {
-                let start = index;
-                index += 1;
-                while matches!(
-                    bytes.get(index),
-                    Some(b'a'..=b'z' | b'A'..=b'Z' | b'0'..=b'9' | b'_')
-                ) {
-                    index += 1;
-                }
-                Token::Word(sql[start..index].into())
-            }
+            b'a'..=b'z' | b'A'..=b'Z' | b'_' => scan_word(sql, &mut index),
             _ => {
                 return Err(ParseError(format!(
                     "unsupported SQL character at byte {index}"
@@ -248,6 +251,21 @@ mod tests {
                 Token::RParen,
                 Token::Percent,
                 Token::Number("5".into()),
+            ]
+        );
+    }
+
+    #[test]
+    fn identifier_scanner_keeps_underscores_and_digits_in_words() {
+        assert_eq!(
+            tokenize("SELECT _key2, c_9 FROM t2").unwrap(),
+            vec![
+                Token::Word("SELECT".into()),
+                Token::Word("_key2".into()),
+                Token::Comma,
+                Token::Word("c_9".into()),
+                Token::Word("FROM".into()),
+                Token::Word("t2".into()),
             ]
         );
     }
