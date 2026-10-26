@@ -102,16 +102,15 @@ impl<W: Write> JsonlWriter<W> {
     }
 
     fn finish_line(&mut self) -> io::Result<()> {
-        if self.headers.is_none() {
-            let headers = parse_headers(&self.line);
+        if let Some(headers) = &self.headers {
+            let result = write_json_row(&mut self.output, headers, &self.line);
             self.line.clear();
-            self.headers = Some(headers?);
-            return Ok(());
+            return result;
         }
-
-        let result = write_json_row(&mut self.output, self.headers.as_ref().unwrap(), &self.line);
+        let headers = parse_headers(&self.line);
         self.line.clear();
-        result
+        self.headers = Some(headers?);
+        Ok(())
     }
 }
 
@@ -185,6 +184,14 @@ mod tests {
             decode_tsv_value(b"quoted\\x22word").unwrap(),
             "quoted\"word"
         );
+    }
+
+    #[test]
+    fn failed_header_keeps_writer_ready_for_new_header() {
+        let mut writer = JsonlWriter::new(Vec::new());
+        assert!(writer.write_all(b"key\\tkey\\n").is_err());
+        writer.write_all(b"key\\nvalue\\n").unwrap();
+        assert_eq!(writer.output, b"{\"key\":\"value\"}\\n");
     }
 
     #[test]
