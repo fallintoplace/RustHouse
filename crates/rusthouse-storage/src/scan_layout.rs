@@ -45,13 +45,11 @@ impl ScanLayout {
                 }
             }
 
-            let rows = mark.rows.ok_or_else(|| {
-                PartError::InvalidScan("adaptive wide marks are required".into())
-            })?;
+            let rows = mark
+                .rows
+                .ok_or_else(|| PartError::InvalidScan("adaptive wide marks are required".into()))?;
             total_rows = total_rows.checked_add(rows).ok_or_else(|| {
-                PartError::InvalidScan(format!(
-                    "mark row counts do not match count.txt for {name}"
-                ))
+                PartError::InvalidScan(format!("mark row counts do not match count.txt for {name}"))
             })?;
             if let Some(reference) = &self.reference_row_counts {
                 if reference.get(index) != Some(&rows) {
@@ -137,7 +135,9 @@ mod tests {
     #[test]
     fn rejects_changed_mark_counts_without_losing_reference() {
         let mut layout = ScanLayout::default();
-        layout.validate("first", &[mark(0, 2), mark(8, 3)], 5).unwrap();
+        layout
+            .validate("first", &[mark(0, 2), mark(8, 3)], 5)
+            .unwrap();
 
         let too_few = layout.validate("short", &[mark(0, 5)], 5).unwrap_err();
         assert!(matches!(
@@ -152,7 +152,9 @@ mod tests {
             PartError::InvalidScan(message) if message.contains("granule boundaries differ")
         ));
 
-        layout.validate("later", &[mark(0, 2), mark(20, 3)], 5).unwrap();
+        layout
+            .validate("later", &[mark(0, 2), mark(20, 3)], 5)
+            .unwrap();
         assert_eq!(layout.mark_count(), 2);
     }
 
