@@ -122,6 +122,37 @@ fn write_header<W: Write>(
     Ok(())
 }
 
+/// Reuse the typed SELECT predicate semantics for bounded local mutations.
+pub struct RowPredicate {
+    branches: Vec<Vec<typed::Condition>>,
+}
+
+impl RowPredicate {
+    pub fn new(
+        query: &Select,
+        columns: &[rusthouse_storage::Column],
+    ) -> Result<Self, ExecutionError> {
+        let indices = columns
+            .iter()
+            .enumerate()
+            .map(|(index, column)| (column.name.clone(), index))
+            .collect::<HashMap<_, _>>();
+        let kinds = columns
+            .iter()
+            .map(|column| (column.name.clone(), column.data_type.clone()))
+            .collect::<HashMap<_, _>>();
+        let branches = std::iter::once(query.predicates.as_slice())
+            .chain(query.or_predicates.iter().map(Vec::as_slice))
+            .map(|predicates| typed::compile(predicates, &indices, &kinds))
+            .collect::<Result<Vec<_>, _>>()?;
+        Ok(Self { branches })
+    }
+
+    pub fn matches(&self, batch: &[rusthouse_storage::TypedColumn], row: usize) -> bool {
+        typed::passes(batch, row, &self.branches)
+    }
+}
+
 pub fn execute<W: Write>(
     query: &Select,
     part: Option<&Path>,
@@ -246,7 +277,7 @@ fn execute_into<W: Write>(
         | Projection::Constants(_) => unreachable!(),
     };
     if query.distinct
-        && query.order_by.as_ref().is_some_and(|order| {
+        && query.order_terms().any(|order| {
             !projected.iter().any(|column| column == &order.column)
                 && query.alias.as_deref() != Some(order.column.as_str())
         })
@@ -292,12 +323,33 @@ fn execute_into<W: Write>(
             scan_columns.len() - 1
         }
     });
+    let mut extra_sort_indices = Vec::new();
+    for order in &query.order_by_extra {
+        let column_name =
+            if query.alias.as_deref() == Some(order.column.as_str()) && projected.len() == 1 {
+                &projected[0]
+            } else {
+                &order.column
+            };
+        let index = if let Some(index) = scan_columns.iter().position(|c| c == column_name) {
+            index
+        } else {
+            scan_columns.push(column_name.clone());
+            scan_columns.len() - 1
+        };
+        extra_sort_indices.push(index);
+    }
     let mut reader = NumericQueryReader::open(part, &scan_columns)?;
     let mut distinct: Option<HashSet<Vec<NumberKey>>> = query.distinct.then(HashSet::new);
 
     if let (Some(order), Some(index)) = (&query.order_by, sort_index) {
         let mut sorted =
             SortedRows::with_offset(query.limit, query.offset.unwrap_or(0), order.descending)?;
+        sorted.extra_descending = query
+            .order_by_extra
+            .iter()
+            .map(|term| term.descending)
+            .collect();
         write_header(query, output, &projected.join("\t"))?;
         if query.limit == Some(0) {
             return Ok(());
@@ -316,7 +368,11 @@ fn execute_into<W: Write>(
                         continue;
                     }
                 }
-                sorted.push(number_at(&batch[index], row), values)?;
+                let extra_keys = extra_sort_indices
+                    .iter()
+                    .map(|&index| number_at(&batch[index], row))
+                    .collect();
+                sorted.push_with_extra(number_at(&batch[index], row), extra_keys, values)?;
             }
         }
         return sorted.write(output);
@@ -433,25 +489,33 @@ impl GroupedCounts {
                 )
             });
         }
-        if let Some(order) = &query.order_by {
+        let terms: Vec<_> = query.order_terms().collect();
+        for order in &terms {
             if order.column != column && order.column != "count" {
                 return Err(ExecutionError::Invalid(
                     "grouped ORDER BY must use the group key or count".into(),
                 ));
             }
+        }
+        if !terms.is_empty() {
             self.rows
                 .sort_by(|(left_key, left_count), (right_key, right_count)| {
-                    let ordering = if order.column == "count" {
-                        left_count.cmp(right_count)
-                    } else {
-                        compare_numbers(*left_key, *right_key)
-                    };
-                    let ordering = if order.descending {
-                        ordering.reverse()
-                    } else {
-                        ordering
-                    };
-                    ordering.then_with(|| compare_numbers(*left_key, *right_key))
+                    for order in &terms {
+                        let comparison = if order.column == "count" {
+                            left_count.cmp(right_count)
+                        } else {
+                            compare_numbers(*left_key, *right_key)
+                        };
+                        let comparison = if order.descending {
+                            comparison.reverse()
+                        } else {
+                            comparison
+                        };
+                        if comparison != Ordering::Equal {
+                            return comparison;
+                        }
+                    }
+                    compare_numbers(*left_key, *right_key)
                 });
         }
         writeln!(output, "{column}\tcount")?;
@@ -885,6 +949,13 @@ fn execute_numbers<W: Write>(
             SortedRows::with_offset(query.limit, query.offset.unwrap_or(0), order.descending)
         })
         .transpose()?;
+    if query.order_by_extra.iter().any(|order| {
+        order.column != "number" && query.alias.as_deref() != Some(order.column.as_str())
+    }) {
+        return Err(ExecutionError::Invalid(
+            "numbers(N) exposes only the number column".into(),
+        ));
+    }
     if is_count {
         write_header(query, output, "count")?;
         if query.predicates.is_empty() && query.or_predicates.is_empty() {
@@ -1117,9 +1188,11 @@ const MAX_SORTED_ROWS: usize = 100_000;
 
 struct SortedRow {
     key: Number,
+    extra_keys: Vec<Number>,
     values: Vec<Number>,
     sequence: usize,
     descending: bool,
+    extra_descending: Vec<bool>,
 }
 
 impl PartialEq for SortedRow {
@@ -1144,7 +1217,26 @@ impl Ord for SortedRow {
         } else {
             ordering
         };
-        ordering.then_with(|| self.sequence.cmp(&other.sequence))
+        if ordering != Ordering::Equal {
+            return ordering;
+        }
+        for ((left, right), descending) in self
+            .extra_keys
+            .iter()
+            .zip(&other.extra_keys)
+            .zip(&self.extra_descending)
+        {
+            let comparison = compare_numbers(*left, *right);
+            let comparison = if *descending {
+                comparison.reverse()
+            } else {
+                comparison
+            };
+            if comparison != Ordering::Equal {
+                return comparison;
+            }
+        }
+        self.sequence.cmp(&other.sequence)
     }
 }
 
@@ -1154,6 +1246,7 @@ struct SortedRows {
     offset: usize,
     seen: usize,
     descending: bool,
+    extra_descending: Vec<bool>,
 }
 
 impl SortedRows {
@@ -1164,6 +1257,7 @@ impl SortedRows {
             offset: 0,
             seen: 0,
             descending,
+            extra_descending: Vec::new(),
         }
     }
 
@@ -1186,6 +1280,15 @@ impl SortedRows {
     }
 
     fn push(&mut self, key: Number, values: Vec<Number>) -> Result<(), ExecutionError> {
+        self.push_with_extra(key, Vec::new(), values)
+    }
+
+    fn push_with_extra(
+        &mut self,
+        key: Number,
+        extra_keys: Vec<Number>,
+        values: Vec<Number>,
+    ) -> Result<(), ExecutionError> {
         if self.requested > MAX_SORTED_ROWS && self.seen >= MAX_SORTED_ROWS {
             return Err(ExecutionError::Invalid(
                 "ORDER BY requires LIMIT <= 100000 for large results".into(),
@@ -1198,9 +1301,11 @@ impl SortedRows {
             .ok_or_else(|| ExecutionError::Invalid("too many rows to sort".into()))?;
         let row = SortedRow {
             key,
+            extra_keys,
             values,
             sequence,
             descending: self.descending,
+            extra_descending: self.extra_descending.clone(),
         };
         let retained = self.requested.min(MAX_SORTED_ROWS);
         if self.rows.len() < retained {
