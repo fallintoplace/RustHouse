@@ -1,0 +1,165 @@
+use crate::{PartError, parse_columns};
+use std::fs;
+use std::io::{self, Read};
+use std::path::{Path, PathBuf};
+
+const MAX_COUNT_BYTES: u64 = 64;
+const MAX_COLUMNS_BYTES: u64 = 16 * 1024 * 1024;
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Column {
+    pub name: String,
+    pub data_type: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PartMetadata {
+    pub path: PathBuf,
+    pub rows: u64,
+    pub columns: Vec<Column>,
+}
+
+pub fn inspect_part(path: impl AsRef<Path>) -> Result<PartMetadata, PartError> {
+    let path = path.as_ref();
+    let rows = parse_count(&read_metadata(&path.join("count.txt"), MAX_COUNT_BYTES)?)?;
+    let columns = parse_columns(&read_metadata(
+        &path.join("columns.txt"),
+        MAX_COLUMNS_BYTES,
+    )?)?;
+
+    Ok(PartMetadata {
+        path: path.to_path_buf(),
+        rows,
+        columns,
+    })
+}
+
+fn read_metadata(path: &Path, max_bytes: u64) -> Result<String, PartError> {
+    let file = fs::File::open(path).map_err(|source| PartError::Io {
+        path: path.to_path_buf(),
+        source,
+    })?;
+    let mut bytes = Vec::new();
+    file.take(max_bytes + 1)
+        .read_to_end(&mut bytes)
+        .map_err(|source| PartError::Io {
+            path: path.to_path_buf(),
+            source,
+        })?;
+    if bytes.len() as u64 > max_bytes {
+        return Err(PartError::Io {
+            path: path.to_path_buf(),
+            source: io::Error::new(io::ErrorKind::InvalidData, "metadata exceeds size limit"),
+        });
+    }
+    String::from_utf8(bytes).map_err(|source| PartError::Io {
+        path: path.to_path_buf(),
+        source: io::Error::new(io::ErrorKind::InvalidData, source),
+    })
+}
+
+fn parse_count(content: &str) -> Result<u64, PartError> {
+    content
+        .strip_suffix('\n')
+        .unwrap_or(content)
+        .parse()
+        .map_err(|_| PartError::InvalidCount(content.to_owned()))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn inspects_fixture_part_without_writing() {
+        let path = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/all_1_1_0");
+        let metadata = inspect_part(&path).unwrap();
+        assert_eq!(metadata.path, path);
+        assert_eq!(metadata.rows, 42);
+        assert_eq!(metadata.columns.len(), 2);
+        assert_eq!(metadata.columns[0].name, "id");
+        assert_eq!(metadata.columns[1].data_type, "LowCardinality(String)");
+    }
+
+    #[test]
+    fn reports_missing_count_file() {
+        let path = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/missing");
+        assert!(matches!(inspect_part(path), Err(PartError::Io { .. })));
+    }
+
+    #[test]
+    fn accepts_plain_and_newline_terminated_counts() {
+        assert_eq!(parse_count("42").unwrap(), 42);
+        assert_eq!(parse_count("42\n").unwrap(), 42);
+        assert_eq!(parse_count("18446744073709551615\n").unwrap(), u64::MAX);
+    }
+
+    #[test]
+    fn limits_count_and_column_metadata_before_parsing() {
+        let dir =
+            std::env::temp_dir().join(format!("rusthouse-bounded-metadata-{}", std::process::id()));
+        fs::create_dir_all(&dir).unwrap();
+        fs::write(
+            dir.join("columns.txt"),
+            "columns format version: 1\n0 columns:\n",
+        )
+        .unwrap();
+        fs::write(
+            dir.join("count.txt"),
+            vec![b'1'; MAX_COUNT_BYTES as usize + 1],
+        )
+        .unwrap();
+        assert!(matches!(
+            inspect_part(&dir),
+            Err(PartError::Io { path, source })
+                if path.ends_with("count.txt")
+                    && source.kind() == io::ErrorKind::InvalidData
+        ));
+
+        fs::write(dir.join("count.txt"), "0\n").unwrap();
+        let file = fs::File::create(dir.join("columns.txt")).unwrap();
+        file.set_len(MAX_COLUMNS_BYTES + 1).unwrap();
+        assert!(matches!(
+            inspect_part(&dir),
+            Err(PartError::Io { path, source })
+                if path.ends_with("columns.txt")
+                    && source.kind() == io::ErrorKind::InvalidData
+        ));
+        fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn rejects_invalid_utf8_metadata() {
+        let dir = std::env::temp_dir().join(format!(
+            "rusthouse-invalid-utf8-metadata-{}",
+            std::process::id()
+        ));
+        fs::create_dir_all(&dir).unwrap();
+        fs::write(dir.join("count.txt"), "1\n").unwrap();
+        fs::write(dir.join("columns.txt"), [0xff, 0xfe]).unwrap();
+        assert!(matches!(
+            inspect_part(&dir),
+            Err(PartError::Io { source, .. })
+                if source.kind() == io::ErrorKind::InvalidData
+        ));
+        fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn rejects_malformed_counts() {
+        for input in [
+            "",
+            "\n",
+            " 42\n",
+            "42 \n",
+            "42\n\n",
+            "-1\n",
+            "18446744073709551616\n",
+        ] {
+            assert!(
+                matches!(parse_count(input), Err(PartError::InvalidCount(_))),
+                "{input:?}"
+            );
+        }
+    }
+}
