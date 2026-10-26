@@ -450,6 +450,51 @@ fn groups_nullable_and_uuid_keys_including_null() {
 }
 
 #[test]
+fn groups_numeric_aggregates_by_typed_keys() {
+    let part = part();
+    assert_eq!(
+        query(
+            "SELECT service, sum(status) FROM part GROUP BY service ORDER BY service",
+            &part,
+        ),
+        "service\tsum(status)\napi\t700\ndb\t503\n"
+    );
+    assert_eq!(
+        query(
+            "SELECT service, avg(status) FROM part GROUP BY service ORDER BY service",
+            &part,
+        ),
+        "service\tavg(status)\napi\t350\ndb\t503\n"
+    );
+    assert_eq!(
+        query(
+            "SELECT service, sum(attempt) FROM part GROUP BY service ORDER BY service",
+            &part,
+        ),
+        "service\tsum(attempt)\napi\t4\ndb\tNULL\n"
+    );
+    assert_eq!(
+        query(
+            "SELECT message, min(status) FROM part GROUP BY message ORDER BY message",
+            &part,
+        ),
+        "message\tmin(status)\n\\N\t503\nhello\t200\nworld\t500\n"
+    );
+    assert_eq!(
+        query(
+            "SELECT service, max(status) FROM part WHERE status >= 500 GROUP BY service ORDER BY service",
+            &part,
+        ),
+        "service\tmax(status)\napi\t500\ndb\t503\n"
+    );
+    let invalid = parse_select("SELECT service, sum(message) FROM part GROUP BY service")
+        .unwrap();
+    let mut output = Vec::new();
+    assert!(execute(&invalid, Some(&part), &mut output).is_err());
+    fs::remove_dir_all(part).unwrap();
+}
+
+#[test]
 fn matches_ilike_on_string_and_nullable_columns() {
     let part = part();
     assert_eq!(
