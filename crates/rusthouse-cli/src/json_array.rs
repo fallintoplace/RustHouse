@@ -7,7 +7,6 @@ const MAX_JSON_ROW_BYTES: usize = 4 * 1024 * 1024;
 struct JsonArraySink<W: Write> {
     output: W,
     row: Vec<u8>,
-    started: bool,
     first: bool,
 }
 
@@ -16,17 +15,14 @@ impl<W: Write> JsonArraySink<W> {
         Self {
             output,
             row: Vec::new(),
-            started: false,
             first: true,
         }
     }
 
     fn finish_row(&mut self) -> io::Result<()> {
-        if !self.started {
+        if self.first {
             self.output.write_all(b"[")?;
-            self.started = true;
-        }
-        if !self.first {
+        } else {
             self.output.write_all(b",")?;
         }
         self.output.write_all(&self.row)?;
@@ -42,10 +38,10 @@ impl<W: Write> JsonArraySink<W> {
                 "incomplete JSON row",
             ));
         }
-        if self.started {
-            self.output.write_all(b"]\n")?;
-        } else {
+        if self.first {
             self.output.write_all(b"[]\n")?;
+        } else {
+            self.output.write_all(b"]\n")?;
         }
         self.output.flush()?;
         Ok(self.output)
