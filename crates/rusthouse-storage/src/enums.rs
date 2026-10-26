@@ -161,8 +161,6 @@ fn parse_enum_label(bytes: &[u8], position: &mut usize) -> Option<String> {
     None
 }
 
-/// Accept canonical explicit value declarations and common ClickHouse escapes.
-/// Implicit Enum numbering is not used for persisted columns.txt type names.
 fn parse_enum_code(inner: &str, bytes: &[u8], position: &mut usize) -> Option<i16> {
     let start = *position;
     if bytes.get(*position) == Some(&b'-') || bytes.get(*position) == Some(&b'+') {
@@ -178,6 +176,8 @@ fn parse_enum_code(inner: &str, bytes: &[u8], position: &mut usize) -> Option<i1
     inner[start..*position].parse::<i16>().ok()
 }
 
+/// Accept canonical explicit value declarations and common ClickHouse escapes.
+/// Implicit Enum numbering is not used for persisted columns.txt type names.
 fn parse_enum_type(data_type: &str) -> Option<(u8, BTreeMap<i16, String>)> {
     let (width, inner) = if let Some(inner) = data_type
         .strip_prefix("Enum8(")
