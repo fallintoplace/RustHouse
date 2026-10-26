@@ -1,4 +1,4 @@
-use crate::fixed_width::read_fixed_width;
+use crate::fixed_width::{MAX_BATCH_BYTES, read_fixed_width};
 use std::io::{self, Read};
 use std::net::{Ipv4Addr, Ipv6Addr};
 
