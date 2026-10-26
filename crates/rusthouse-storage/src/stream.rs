@@ -25,27 +25,7 @@ impl<R: Read + Seek> UInt64ColumnReader<R> {
             finished: false,
         }
     }
-}
-
-impl<R: Read + Seek> Iterator for UInt64ColumnReader<R> {
-    type Item = Result<u64, PartError>;
-
-    fn next(&mut self) -> Option<Self::Item> {
-        if self.finished {
-            return None;
-        }
-
-        // Most values fit entirely in the current decoded block. Skip the
-        // incremental copy loop, while keeping its cross-block fallback.
-        if self.current.len().saturating_sub(self.position) >= 8 {
-            let start = self.position;
-            self.position += 8;
-            let bytes = self.current[start..self.position]
-                .try_into()
-                .expect("an eight-byte slice");
-            return Some(Ok(u64::from_le_bytes(bytes)));
-        }
-
+    fn next_cross_block_value(&mut self) -> Option<Result<u64, PartError>> {
         let mut value = [0u8; 8];
         let mut filled = 0;
         while filled < value.len() {
@@ -82,6 +62,29 @@ impl<R: Read + Seek> Iterator for UInt64ColumnReader<R> {
         }
 
         Some(Ok(u64::from_le_bytes(value)))
+    }
+}
+
+impl<R: Read + Seek> Iterator for UInt64ColumnReader<R> {
+    type Item = Result<u64, PartError>;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        if self.finished {
+            return None;
+        }
+
+        // Most values fit entirely in the current decoded block. Skip the
+        // incremental copy loop, while keeping its cross-block fallback.
+        if self.current.len().saturating_sub(self.position) >= 8 {
+            let start = self.position;
+            self.position += 8;
+            let bytes = self.current[start..self.position]
+                .try_into()
+                .expect("an eight-byte slice");
+            return Some(Ok(u64::from_le_bytes(bytes)));
+        }
+
+        self.next_cross_block_value()
     }
 }
 
