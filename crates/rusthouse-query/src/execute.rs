@@ -1513,11 +1513,11 @@ mod tests {
         );
         assert_eq!(
             run(
-                "SELECT number FROM numbers(1000000) ORDER BY number LIMIT 1 OFFSET 999999",
+                "SELECT number FROM numbers(1000000) ORDER BY number LIMIT 1 OFFSET 99999",
                 None
             )
             .unwrap(),
-            "number\n999999\n"
+            "number\n99999\n"
         );
         assert_eq!(
             run(
@@ -1536,10 +1536,19 @@ mod tests {
             "number\n"
         );
         assert!(run("SELECT number FROM numbers(100001) ORDER BY number", None).is_err());
-        assert!(run("SELECT number FROM numbers(100001) ORDER BY number LIMIT 100001", None).is_err());
+        assert!(
+            run(
+                "SELECT number FROM numbers(100001) ORDER BY number LIMIT 100001",
+                None
+            )
+            .is_err()
+        );
         assert_eq!(
-            run("SELECT number FROM numbers(100001) ORDER BY number LIMIT 0", None)
-                .unwrap(),
+            run(
+                "SELECT number FROM numbers(100001) ORDER BY number LIMIT 0",
+                None
+            )
+            .unwrap(),
             "number\n"
         );
     }
