@@ -128,7 +128,7 @@ fn write_json_row<W: Write>(output: &mut W, headers: &[Vec<u8>], line: &[u8]) ->
 }
 
 // Keep NULL marker handling in one place for every JSONL field.
-fn write_json_value<W: Write>(output: &mut W, value: &[u8]) -> io::Result<()> {
+pub(super) fn write_json_value<W: Write>(output: &mut W, value: &[u8]) -> io::Result<()> {
     if value == b"NULL" || value == b"\\N" {
         output.write_all(b"null")
     } else {

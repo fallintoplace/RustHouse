@@ -1,6 +1,9 @@
 //! Execute a bounded two-table JOIN using the existing SQL output adapters.
 use crate::sql::SqlOutputFormat;
-use crate::{csv, csv_no_header, html, json_array, jsonl, markdown, sql_values, vertical};
+use crate::{
+    csv, csv_no_header, html, json_array, json_compact_each_row, jsonl, markdown, sql_values,
+    vertical,
+};
 use rusthouse_query::{JoinSelect, execute_join};
 use std::path::{Path, PathBuf};
 
@@ -62,6 +65,15 @@ fn execute_formatted_join(
         ),
         SqlOutputFormat::Json => {
             let mut writer = json_array::JsonArrayWriter::new(&mut output);
+            execute_join(query, left, right, &mut writer).and_then(|()| {
+                writer
+                    .finish()
+                    .map(|_| ())
+                    .map_err(rusthouse_query::ExecutionError::Io)
+            })
+        }
+        SqlOutputFormat::JsonCompactEachRow => {
+            let mut writer = json_compact_each_row::JsonCompactEachRowWriter::new(&mut output);
             execute_join(query, left, right, &mut writer).and_then(|()| {
                 writer
                     .finish()
