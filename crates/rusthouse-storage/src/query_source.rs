@@ -32,7 +32,7 @@ fn part_span(name: &str) -> Option<(String, u64, u64)> {
             let _mutation = tokens[index + 3].parse::<u64>().ok()?;
         }
         let partition = tokens[..index].join("_");
-        (min <= max && !partition.is_empty()).then(|| (partition, min, max))
+        (min <= max && !partition.is_empty()).then_some((partition, min, max))
     };
     match (candidate(3), candidate(4)) {
         (Some(part), None) | (None, Some(part)) => Some(part),
