@@ -79,7 +79,7 @@ pub(super) fn requires_typed_scan(query: &Select, path: &Path) -> Result<bool, E
         .iter()
         .chain(query.or_predicates.iter().flatten())
     {
-        if matches!(pred, Predicate::IsNull { .. }) {
+        if matches!(pred, Predicate::IsNull { .. } | Predicate::Like { .. }) {
             return Ok(true);
         }
         names.push(pred.column());
@@ -135,6 +135,11 @@ fn parse_literal(data_type: &str, literal: &str) -> Result<Cell, ExecutionError>
 enum Test {
     Compare(Operator, Cell),
     In(Vec<Cell>, bool),
+    Like {
+        pattern: Vec<u8>,
+        case_insensitive: bool,
+        negated: bool,
+    },
     NotBetween(Cell, Cell),
     IsNull(bool),
 }
@@ -181,6 +186,23 @@ fn compile(
                     Test::NotBetween(parse_literal(kind, lower)?, parse_literal(kind, upper)?)
                 }
                 Predicate::IsNull { negated, .. } => Test::IsNull(*negated),
+                Predicate::Like {
+                    pattern,
+                    case_insensitive,
+                    negated,
+                    ..
+                } => {
+                    if base_type(kind) != "String" {
+                        return Err(ExecutionError::Invalid(
+                            "LIKE requires a String column".into(),
+                        ));
+                    }
+                    Test::Like {
+                        pattern: pattern.as_bytes().to_vec(),
+                        case_insensitive: *case_insensitive,
+                        negated: *negated,
+                    }
+                },
             };
             Ok(Condition { index, test })
         })
@@ -233,12 +255,64 @@ fn matches_comparison(value: &Cell, target: &Cell, operator: Operator) -> bool {
     }
 }
 
+
+fn like_matches(value: &[u8], pattern: &[u8], case_insensitive: bool) -> bool {
+    let mut input = 0usize;
+    let mut position = 0usize;
+    let mut after_percent = None;
+    let mut retry_input = 0usize;
+    while input < value.len() {
+        if pattern.get(position) == Some(&b'%') {
+            position += 1;
+            after_percent = Some(position);
+            retry_input = input;
+            continue;
+        }
+        let (matches, width) = match pattern.get(position).copied() {
+            Some(b'_') => (true, 1),
+            Some(b'\\') => match pattern.get(position + 1) {
+                Some(&literal) => (
+                    value[input] == literal
+                        || (case_insensitive && value[input].eq_ignore_ascii_case(&literal)),
+                    2,
+                ),
+                None => (false, 0),
+            },
+            Some(literal) => (
+                value[input] == literal
+                    || (case_insensitive && value[input].eq_ignore_ascii_case(&literal)),
+                1,
+            ),
+            None => (false, 0),
+        };
+        if matches {
+            input += 1;
+            position += width;
+        } else if let Some(resume) = after_percent {
+            retry_input += 1;
+            input = retry_input;
+            position = resume;
+        } else {
+            return false;
+        }
+    }
+    pattern[position..].iter().all(|byte| *byte == b'%')
+}
+
 fn passes(batch: &[TypedColumn], row: usize, branches: &[Vec<Condition>]) -> bool {
     branches.iter().any(|branch| {
         branch.iter().all(|condition| {
             let value = cell(&batch[condition.index], row);
             match &condition.test {
                 Test::IsNull(negated) => matches!(value, Cell::Null) != *negated,
+                Test::Like {
+                    pattern,
+                    case_insensitive,
+                    negated,
+                } => match &value {
+                    Cell::Text(bytes) => like_matches(bytes, pattern, *case_insensitive) != *negated,
+                    _ => false,
+                },
                 Test::Compare(operator, target) => matches_comparison(&value, target, *operator),
                 Test::In(targets, negated) => {
                     if matches!(value, Cell::Null) {
