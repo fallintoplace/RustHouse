@@ -1416,7 +1416,11 @@ mod tests {
             "countDistinct(number)\n0\n"
         );
         assert_eq!(
-            run("SELECT count(DISTINCT number) FROM numbers(4) LIMIT 0", None).unwrap(),
+            run(
+                "SELECT count(DISTINCT number) FROM numbers(4) LIMIT 0",
+                None
+            )
+            .unwrap(),
             "countDistinct(number)\n"
         );
     }
