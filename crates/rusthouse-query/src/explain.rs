@@ -86,12 +86,19 @@ pub fn explain_select(query: &Select) -> String {
     if query.distinct {
         steps.push("Distinct: projected rows".into());
     }
-    if let Some(order) = &query.order_by {
-        steps.push(format!(
-            "Sort: {} {}",
-            order.column,
-            if order.descending { "DESC" } else { "ASC" }
-        ));
+    if query.order_by.is_some() {
+        let keys = query
+            .order_terms()
+            .map(|order| {
+                format!(
+                    "{} {}",
+                    order.column,
+                    if order.descending { "DESC" } else { "ASC" }
+                )
+            })
+            .collect::<Vec<_>>()
+            .join(", ");
+        steps.push(format!("Sort: {keys}"));
     }
     if let Some(offset) = query.offset {
         steps.push(format!("Offset: {offset}"));

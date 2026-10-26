@@ -49,7 +49,13 @@ fn truncation_preserves_schema_and_allows_new_inserts() {
         fs::read_to_string(dir.join("events.schema")).unwrap(),
         "rusthouse-schema-v1\nid\tUInt64\nnote\tNullable(String)\n"
     );
-    assert_eq!(fs::read_dir(dir.join("events.parts")).unwrap().count(), 1);
+    let pointer = fs::read_to_string(dir.join("events.parts/.rusthouse-active")).unwrap();
+    let generation = pointer.trim_end();
+    assert_eq!(generation, "g1");
+    assert!(
+        dir.join("events.parts/.rusthouse-versions/g1/all_0_0_0")
+            .is_dir()
+    );
     assert!(
         sql("INSERT INTO events VALUES (3, 'new')", &dir)
             .status

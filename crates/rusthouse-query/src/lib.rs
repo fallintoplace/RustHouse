@@ -1,10 +1,13 @@
 mod ddl;
+mod delete;
 mod execute;
 mod explain;
 mod insert;
 mod lexer;
+mod scalar;
 pub use ddl::{ColumnDef, Ddl, parse_ddl};
-pub use execute::{ExecutionError, execute};
+pub use delete::parse_delete;
+pub use execute::{ExecutionError, RowPredicate, execute};
 pub use explain::explain_select;
 pub use insert::{Insert, parse_insert};
 
@@ -184,13 +187,19 @@ pub struct Select {
     /// Additional OR branches, each containing AND-connected predicates.
     pub or_predicates: Vec<Vec<Predicate>>,
     pub order_by: Option<OrderBy>,
+    pub order_by_extra: Vec<OrderBy>,
     pub having: Option<Having>,
     pub limit: Option<usize>,
     pub offset: Option<usize>,
 }
 
 impl Select {
-    /// Resolve output aliases to source columns for ORDER BY.
+    /// ORDER BY keys in SQL precedence order.
+    pub fn order_terms(&self) -> impl Iterator<Item = &OrderBy> {
+        self.order_by.iter().chain(self.order_by_extra.iter())
+    }
+
+    /// Map SELECT output aliases to the underlying column used for ORDER BY.
     pub(crate) fn order_source_column<'a>(&'a self, column: &'a str) -> &'a str {
         if let Some((source, target)) = &self.rename {
             if column == target.as_str() {
@@ -293,6 +302,59 @@ impl Parser {
             _ => Err(ParseError("expected a comparison operator".into())),
         }
     }
+    fn order_term(&mut self, projection: &Projection) -> Result<OrderBy, ParseError> {
+        // Positions are 1-based and refer to projected columns.
+        let column = if matches!(self.tokens.get(self.index), Some(Token::Number(_))) {
+            let position = self
+                .number()?
+                .parse::<usize>()
+                .map_err(|_| ParseError("ORDER BY position is too large".into()))?;
+            match projection {
+                Projection::Columns(columns) => position
+                    .checked_sub(1)
+                    .and_then(|index| columns.get(index))
+                    .cloned()
+                    .ok_or_else(|| ParseError("ORDER BY position is out of range".into()))?,
+                Projection::GroupedCount { column } => match position {
+                    1 => column.clone(),
+                    2 => "count".into(),
+                    _ => return Err(ParseError("ORDER BY position is out of range".into())),
+                },
+                Projection::All => {
+                    return Err(ParseError(
+                        "ORDER BY positions require explicit projected columns".into(),
+                    ));
+                }
+                _ => return Err(ParseError("ORDER BY requires column projections".into())),
+            }
+        } else {
+            self.word()?
+        };
+        if matches!(projection, Projection::GroupedCount { .. })
+            && column.eq_ignore_ascii_case("count")
+            && self.take(Token::LParen)
+            && !self.take(Token::RParen)
+            && !(self.take(Token::Star) && self.take(Token::RParen))
+        {
+            return Err(ParseError(
+                "expected COUNT() or COUNT(*) in ORDER BY".into(),
+            ));
+        }
+        let column = if matches!(projection, Projection::GroupedCount { .. })
+            && column.eq_ignore_ascii_case("count")
+        {
+            "count".to_string()
+        } else {
+            column
+        };
+        let descending = if self.keyword("DESC") {
+            true
+        } else {
+            self.keyword("ASC");
+            false
+        };
+        Ok(OrderBy { column, descending })
+    }
 }
 
 pub fn parse_select(sql: &str) -> Result<Select, ParseError> {
@@ -356,7 +418,7 @@ pub fn parse_select(sql: &str) -> Result<Select, ParseError> {
         Projection::Aggregate { function, column }
     } else if matches!(
         parser.tokens.get(parser.index),
-        Some(Token::Number(_) | Token::String(_))
+        Some(Token::Number(_) | Token::String(_) | Token::LParen | Token::Plus | Token::Minus)
     ) || matches!(
         parser.tokens.get(parser.index),
         Some(Token::Word(word)) if word.eq_ignore_ascii_case("NULL")
@@ -367,10 +429,8 @@ pub fn parse_select(sql: &str) -> Result<Select, ParseError> {
                 return Err(ParseError("SELECT supports at most 64 constants".into()));
             }
             let value = match parser.tokens.get(parser.index) {
-                Some(Token::Number(_)) => {
-                    ConstantValue::Integer(parser.number()?.parse::<i64>().map_err(|_| {
-                        ParseError("SELECT literals must be signed 64-bit integers".into())
-                    })?)
+                Some(Token::Number(_) | Token::LParen | Token::Plus | Token::Minus) => {
+                    ConstantValue::Integer(scalar::parse(&mut parser)?)
                 }
                 Some(Token::String(value)) => {
                     let value = value.clone();
@@ -797,61 +857,19 @@ pub fn parse_select(sql: &str) -> Result<Select, ParseError> {
         None
     };
 
+    let mut order_by_extra = Vec::new();
     let order_by = if parser.keyword("ORDER") {
         if !parser.keyword("BY") {
             return Err(ParseError("expected BY after ORDER".into()));
         }
-        // Resolve SQL's 1-based ORDER BY positions while the SELECT list is available.
-        let column = if matches!(parser.tokens.get(parser.index), Some(Token::Number(_))) {
-            let position = parser
-                .number()?
-                .parse::<usize>()
-                .map_err(|_| ParseError("ORDER BY position is too large".into()))?;
-            match &projection {
-                Projection::Columns(columns) => position
-                    .checked_sub(1)
-                    .and_then(|index| columns.get(index))
-                    .cloned()
-                    .ok_or_else(|| ParseError("ORDER BY position is out of range".into()))?,
-                Projection::GroupedCount { column } => match position {
-                    1 => column.clone(),
-                    2 => "count".into(),
-                    _ => return Err(ParseError("ORDER BY position is out of range".into())),
-                },
-                Projection::All => {
-                    return Err(ParseError(
-                        "ORDER BY positions require explicit projected columns".into(),
-                    ));
-                }
-                _ => return Err(ParseError("ORDER BY requires column projections".into())),
+        let first = parser.order_term(&projection)?;
+        while parser.take(Token::Comma) {
+            if order_by_extra.len() >= 7 {
+                return Err(ParseError("ORDER BY supports at most 8 columns".into()));
             }
-        } else {
-            parser.word()?
-        };
-        if matches!(projection, Projection::GroupedCount { .. })
-            && column.eq_ignore_ascii_case("count")
-            && parser.take(Token::LParen)
-            && !parser.take(Token::RParen)
-            && !(parser.take(Token::Star) && parser.take(Token::RParen))
-        {
-            return Err(ParseError(
-                "expected COUNT() or COUNT(*) in ORDER BY".into(),
-            ));
+            order_by_extra.push(parser.order_term(&projection)?);
         }
-        let column = if matches!(projection, Projection::GroupedCount { .. })
-            && column.eq_ignore_ascii_case("count")
-        {
-            "count".to_string()
-        } else {
-            column
-        };
-        let descending = if parser.keyword("DESC") {
-            true
-        } else {
-            parser.keyword("ASC");
-            false
-        };
-        Some(OrderBy { column, descending })
+        Some(first)
     } else {
         None
     };
@@ -870,8 +888,9 @@ pub fn parse_select(sql: &str) -> Result<Select, ParseError> {
 
     if let Projection::GroupedCount { column } = &projection {
         if order_by
-            .as_ref()
-            .is_some_and(|order| &order.column != column && order.column != "count")
+            .iter()
+            .chain(order_by_extra.iter())
+            .any(|order| &order.column != column && order.column != "count")
         {
             return Err(ParseError("grouped ORDER BY must use the group key".into()));
         }
@@ -969,6 +988,7 @@ pub fn parse_select(sql: &str) -> Result<Select, ParseError> {
         predicates,
         or_predicates,
         order_by,
+        order_by_extra,
         having,
         limit,
         offset,
