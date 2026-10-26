@@ -186,6 +186,42 @@ fn skips_end_of_file_terminal_zero_row_marks() {
     fs::remove_dir_all(part).unwrap();
 }
 
+
+#[test]
+fn filters_text_by_like_and_not_like_across_nullable_values() {
+    let part = part();
+    assert_eq!(
+        query("SELECT service FROM part WHERE service LIKE 'a_i'", &part),
+        "service\napi\napi\n"
+    );
+    assert_eq!(
+        query("SELECT service FROM part WHERE service NOT LIKE 'a%'", &part),
+        "service\ndb\n"
+    );
+    assert_eq!(
+        query("SELECT message FROM part WHERE message NOT LIKE '%l%'", &part),
+        "message\n"
+    );
+    assert_eq!(
+        query("SELECT message FROM part WHERE message LIKE 'w%'", &part),
+        "message\nworld\n"
+    );
+    fs::remove_dir_all(part).unwrap();
+}
+
+#[test]
+fn rejects_like_for_numeric_columns() {
+    let part = part();
+    let mut output = Vec::new();
+    let query = parse_select("SELECT service FROM part WHERE status LIKE '5%'").unwrap();
+    assert!(execute(&query, Some(&part), &mut output).is_err());
+
+    let number_query =
+        parse_select("SELECT number FROM numbers(10) WHERE number LIKE '1%'").unwrap();
+    assert!(execute(&number_query, None, &mut output).is_err());
+    fs::remove_dir_all(part).unwrap();
+}
+
 #[test]
 fn queries_typed_columns_across_frozen_parts() {
     let table = std::env::temp_dir().join(format!(
