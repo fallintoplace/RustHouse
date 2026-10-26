@@ -16,8 +16,8 @@ mod typed_aggregate;
 #[cfg(test)]
 use predicates::{CompiledTest, compile_in_test};
 use predicates::{
-    batch_matches, compile_numbers_predicates, compile_part_where, number_matches,
-    number_matches_all, parse_numeric,
+    batch_matches, compile_numbers_predicates, compile_part_where, count_batch_matches,
+    number_matches, number_matches_all, parse_numeric,
 };
 
 #[derive(Debug)]
@@ -423,6 +423,10 @@ fn execute_into<W: Write>(
     };
     let mut matched = 0u64;
     while let Some(batch) = reader.next_batch()? {
+        if is_count {
+            matched += count_batch_matches(&batch, &comparisons) as u64;
+            continue;
+        }
         let rows = batch[0].len();
         for row in 0..rows {
             if !batch_matches(&batch, row, &comparisons) {
