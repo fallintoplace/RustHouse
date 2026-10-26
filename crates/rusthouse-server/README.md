@@ -16,6 +16,8 @@ The endpoint supports GET /?query=... and POST / with raw SQL. Responses are TSV
 Pass `format=csv` on either method for RFC 4180-style CSV with CRLF row endings.
 CSV includes headers, quotes embedded commas/newlines, and uses an unquoted `\\N` for NULL.
 Pass `format=jsonl` on either method for `application/x-ndjson`, one JSON object per result row.
+Pass `format=json` for a JSON array suitable for API clients. It uses the same validated
+JSONL value encoding, an explicit closing bracket, and existing response size limits.
 This works with `GET /?query=SELECT%201&format=jsonl` and `POST /?format=jsonl` with a raw SELECT body.
 JSONL values are strings to preserve 128-bit numeric precision, and TSV NULL markers become JSON null.
 The JSONL converter decodes text escapes, rejects duplicate column names and invalid UTF-8,

@@ -1,9 +1,11 @@
 //! Minimal read-only SQL HTTP interface, bound to loopback by the binary.
 //! This is intentionally not a full database wire protocol.
 mod csv;
+mod json_array;
 mod jsonl;
 
 use csv::CsvWriter;
+use json_array::JsonArraySink;
 use jsonl::JsonlWriter;
 use rusthouse_query::{execute, explain_select, parse_select};
 use rusthouse_storage::inspect_query_source;
@@ -158,6 +160,7 @@ enum QueryFormat {
     Tsv,
     Csv,
     Jsonl,
+    Json,
 }
 
 fn query_parameters(target: &str) -> Result<(String, Option<String>, QueryFormat), &'static str> {
@@ -186,6 +189,7 @@ fn query_parameters(target: &str) -> Result<(String, Option<String>, QueryFormat
                     "tsv" => QueryFormat::Tsv,
                     "csv" => QueryFormat::Csv,
                     "jsonl" => QueryFormat::Jsonl,
+                    "json" => QueryFormat::Json,
                     _ => return Err("unsupported query format"),
                 });
             }
@@ -282,6 +286,19 @@ pub fn handle_request(method: &str, target: &str, body: &[u8], config: &Config) 
             let mut jsonl = JsonlWriter::new(&mut writer);
             execute(&select, config.part.as_deref(), &mut jsonl)
         }
+        QueryFormat::Json => {
+            let mut array = JsonArraySink::new(&mut writer);
+            let result = {
+                let mut jsonl = JsonlWriter::new(&mut array);
+                execute(&select, config.part.as_deref(), &mut jsonl)
+            };
+            result.and_then(|()| {
+                array
+                    .finish()
+                    .map(|_| ())
+                    .map_err(rusthouse_query::ExecutionError::Io)
+            })
+        }
     };
     match result {
         Ok(()) => Response {
@@ -290,6 +307,7 @@ pub fn handle_request(method: &str, target: &str, body: &[u8], config: &Config) 
                 QueryFormat::Tsv => "text/tab-separated-values; charset=utf-8",
                 QueryFormat::Csv => "text/csv; charset=utf-8",
                 QueryFormat::Jsonl => "application/x-ndjson; charset=utf-8",
+                QueryFormat::Json => "application/json; charset=utf-8",
             },
             body: writer.data,
         },
@@ -498,6 +516,48 @@ mod tests {
         let response = handle_request("POST", "/?format=tsv", b"SELECT 7", &config());
         assert_eq!(response.status, "200 OK");
         assert_eq!(response.body, b"7\n7\n");
+    }
+
+    #[test]
+    fn returns_json_arrays_for_get_and_post() {
+        let response = handle_request(
+            "GET",
+            "/?query=SELECT+number+FROM+numbers%2810%29&format=json",
+            b"",
+            &config(),
+        );
+        assert_eq!(response.status, "200 OK");
+        assert_eq!(response.content_type, "application/json; charset=utf-8");
+        assert_eq!(
+            response.body,
+            b"[{\"number\":\"0\"},{\"number\":\"1\"},{\"number\":\"2\"}]\n"
+        );
+
+        let empty = handle_request(
+            "POST",
+            "/?format=json",
+            b"SELECT number FROM numbers(0)",
+            &config(),
+        );
+        assert_eq!(empty.status, "200 OK");
+        assert_eq!(empty.body, b"[]\n");
+
+        let count = handle_request(
+            "POST",
+            "/?format=json",
+            b"SELECT count(*) FROM numbers(0)",
+            &config(),
+        );
+        assert_eq!(count.status, "200 OK");
+        assert_eq!(count.body, b"[{\"count\":\"0\"}]\n");
+
+        let invalid = handle_request(
+            "POST",
+            "/?format=json",
+            b"SELECT number, number FROM numbers(1)",
+            &config(),
+        );
+        assert_eq!(invalid.status, "400 Bad Request");
     }
 
     #[test]
