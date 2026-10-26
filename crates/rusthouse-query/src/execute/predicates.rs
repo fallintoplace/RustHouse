@@ -154,19 +154,10 @@ pub(super) fn compile_part_where(
     scan_columns: &mut Vec<String>,
     mut convert: impl FnMut(&str, &str) -> Result<Number, ExecutionError>,
 ) -> Result<Vec<Vec<CompiledPredicate>>, ExecutionError> {
-    let mut result = vec![compile_part_predicates(
-        &query.predicates,
-        scan_columns,
-        |column, value| convert(column, value),
-    )?];
-    for predicates in &query.or_predicates {
-        result.push(compile_part_predicates(
-            predicates,
-            scan_columns,
-            |column, value| convert(column, value),
-        )?);
-    }
-    Ok(result)
+    std::iter::once(query.predicates.as_slice())
+        .chain(query.or_predicates.iter().map(Vec::as_slice))
+        .map(|predicates| compile_part_predicates(predicates, scan_columns, &mut convert))
+        .collect()
 }
 
 pub(super) fn compile_numbers_predicates(
@@ -255,6 +246,18 @@ fn compare<T: PartialOrd>(value: T, target: T, operator: Operator) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn compiles_or_branches_using_the_same_numeric_conversion() {
+        let query =
+            crate::parse_select("SELECT number FROM numbers(10) WHERE number = 1 OR number = 3")
+                .unwrap();
+        let branches = compile_numbers_predicates(&query).unwrap();
+        assert_eq!(branches.len(), 2);
+        assert!(number_matches_all(Number::Unsigned(1), &branches));
+        assert!(number_matches_all(Number::Unsigned(3), &branches));
+        assert!(!number_matches_all(Number::Unsigned(2), &branches));
+    }
 
     #[test]
     fn hashed_in_and_not_in_keep_membership_semantics() {
