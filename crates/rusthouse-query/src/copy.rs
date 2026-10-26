@@ -50,26 +50,7 @@ fn parse_copy_columns(parser: &mut Parser) -> Result<Option<Vec<String>>, ParseE
     Ok(Some(columns))
 }
 
-pub fn parse_copy_from(sql: &str) -> Result<Option<CopyFrom>, ParseError> {
-    let mut parser = Parser {
-        tokens: tokenize(sql)?,
-        index: 0,
-    };
-    if !parser.keyword("COPY") {
-        return Ok(None);
-    }
-    let table = identifier(&mut parser)?;
-    let columns = parse_copy_columns(&mut parser)?;
-    if !parser.keyword("FROM") {
-        return Err(ParseError("COPY requires FROM 'path'".into()));
-    }
-    let path = match parser.tokens.get(parser.index) {
-        Some(Token::String(path)) if !path.is_empty() => {
-            parser.index += 1;
-            path.clone()
-        }
-        _ => return Err(ParseError("COPY requires a quoted local file path".into())),
-    };
+fn parse_copy_options(parser: &mut Parser) -> Result<(CopyFormat, bool), ParseError> {
     let mut header = false;
     let mut format = CopyFormat::Csv;
     if parser.keyword("WITH") {
@@ -101,6 +82,30 @@ pub fn parse_copy_from(sql: &str) -> Result<Option<CopyFrom>, ParseError> {
             return Err(ParseError("expected ')' after COPY options".into()));
         }
     }
+    Ok((format, header))
+}
+
+pub fn parse_copy_from(sql: &str) -> Result<Option<CopyFrom>, ParseError> {
+    let mut parser = Parser {
+        tokens: tokenize(sql)?,
+        index: 0,
+    };
+    if !parser.keyword("COPY") {
+        return Ok(None);
+    }
+    let table = identifier(&mut parser)?;
+    let columns = parse_copy_columns(&mut parser)?;
+    if !parser.keyword("FROM") {
+        return Err(ParseError("COPY requires FROM 'path'".into()));
+    }
+    let path = match parser.tokens.get(parser.index) {
+        Some(Token::String(path)) if !path.is_empty() => {
+            parser.index += 1;
+            path.clone()
+        }
+        _ => return Err(ParseError("COPY requires a quoted local file path".into())),
+    };
+    let (format, header) = parse_copy_options(&mut parser)?;
     parser.take(Token::Semicolon);
     if parser.index != parser.tokens.len() {
         return Err(ParseError("unexpected tokens after COPY statement".into()));
@@ -154,6 +159,15 @@ mod tests {
             CopyFormat::Csv
         );
         assert!(parse_copy_from("COPY events FROM 'events' WITH (FORMAT JSON)").is_err());
+    }
+
+    #[test]
+    fn defaults_header_to_false_for_format_only_options() {
+        let copy = parse_copy_from("COPY events FROM 'rows.tsv' WITH (FORMAT TSV)")
+            .unwrap()
+            .unwrap();
+        assert_eq!(copy.format, CopyFormat::Tsv);
+        assert!(!copy.header);
     }
 
     #[test]
