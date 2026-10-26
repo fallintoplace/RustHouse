@@ -618,7 +618,10 @@ fn parses_grouped_numeric_aggregates_and_bounds_ordering() {
             panic!("not a grouped aggregate: {sql}");
         };
         assert_eq!(column, "service");
-        assert_eq!(function.name().to_ascii_lowercase(), name.to_ascii_lowercase());
+        assert_eq!(
+            function.name().to_ascii_lowercase(),
+            name.to_ascii_lowercase()
+        );
         assert_eq!(value_column, "status");
     }
     for sql in [
