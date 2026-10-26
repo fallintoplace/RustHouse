@@ -34,6 +34,16 @@ pub fn read_checksums(path: impl AsRef<Path>) -> Result<PartChecksums, PartError
         path: path.to_path_buf(),
         source,
     })?;
+    let size = file
+        .metadata()
+        .map_err(|source| PartError::Io {
+            path: path.to_path_buf(),
+            source,
+        })?
+        .len();
+    if size > MAX_CHECKSUMS_BYTES {
+        return Err(invalid(path, "checksums file exceeds 64 MiB"));
+    }
     let mut content = Vec::new();
     file.take(MAX_CHECKSUMS_BYTES + 1)
         .read_to_end(&mut content)
@@ -402,5 +412,23 @@ mod tests {
             let checksums = parse_checksums(&data, Path::new("checksums.txt")).unwrap();
             assert!(checksums.files.is_empty());
         }
+    }
+
+    #[test]
+    fn rejects_oversized_sparse_checksums_before_reading() {
+        let path = std::env::temp_dir().join(format!(
+            "rusthouse-oversized-checksums-{}.txt",
+            std::process::id()
+        ));
+        let file = File::create(&path).unwrap();
+        file.set_len(MAX_CHECKSUMS_BYTES + 1).unwrap();
+        assert!(matches!(
+            read_checksums(&path),
+            Err(PartError::InvalidChecksums {
+                reason: "checksums file exceeds 64 MiB",
+                ..
+            })
+        ));
+        std::fs::remove_file(path).unwrap();
     }
 }
