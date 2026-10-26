@@ -45,7 +45,9 @@ fn read_sql_input(input: impl std::io::Read, source: &str, label: &str) -> Resul
         .read_to_end(&mut bytes)
         .map_err(|error| format!("cannot read {source}: {error}"))?;
     if bytes.len() > MAX_SQL_BYTES {
-        return Err(format!("{label} exceeds the {MAX_SQL_BYTES}-byte statement limit"));
+        return Err(format!(
+            "{label} exceeds the {MAX_SQL_BYTES}-byte statement limit"
+        ));
     }
     String::from_utf8(bytes).map_err(|_| format!("{label} must be valid UTF-8"))
 }
