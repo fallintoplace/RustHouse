@@ -23,7 +23,7 @@ fn parse_header(line: &str) -> Result<(&str, &str), Response> {
             .all(|byte| byte.is_ascii_alphanumeric() || b"!#$%&'*+-.^_`|~".contains(&byte))
         || value
             .bytes()
-            .any(|byte| byte.is_ascii_control() && byte != b'\\t')
+            .any(|byte| byte.is_ascii_control() && byte != b'\t')
     {
         return Err(Response::text("400 Bad Request", "invalid HTTP header\n"));
     }
@@ -235,8 +235,14 @@ mod tests {
 
     #[test]
     fn accepts_http_token_header_names_and_optional_tabs() {
-        assert_eq!(parse_header("Content-Length: 3").unwrap(), ("Content-Length", " 3"));
-        assert_eq!(parse_header("X_Request: hello\tworld").unwrap(), ("X_Request", " hello\tworld"));
+        assert_eq!(
+            parse_header("Content-Length: 3").ok(),
+            Some(("Content-Length", " 3"))
+        );
+        assert_eq!(
+            parse_header("X_Request: hello\tworld").ok(),
+            Some(("X_Request", " hello\tworld"))
+        );
     }
 
     #[test]
@@ -249,7 +255,11 @@ mod tests {
             "X-Test: hello\u{0000}world",
             "X-Test: hello\u{001b}world",
         ] {
-            assert_eq!(parse_header(header).unwrap_err().status, "400 Bad Request", "{header:?}");
+            assert_eq!(
+                parse_header(header).unwrap_err().status,
+                "400 Bad Request",
+                "{header:?}"
+            );
         }
     }
 }
