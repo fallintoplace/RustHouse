@@ -1,11 +1,11 @@
 use rusthouse_query::{ColumnDef, Ddl, parse_ddl};
 use std::fs::{self, OpenOptions};
 use std::io::Write;
+use std::path::Path;
 use std::sync::atomic::{AtomicUsize, Ordering};
 
 static NEXT_TEMP: AtomicUsize = AtomicUsize::new(0);
 const MAX_SCHEMA_BYTES: u64 = 32 * 1024;
-use std::path::Path;
 
 pub(super) fn apply(catalog: &Path, ddl: &Ddl) -> Result<(), String> {
     match ddl {
@@ -62,7 +62,7 @@ fn read_schema(catalog: &Path, name: &str) -> Result<Vec<ColumnDef>, String> {
     let mut columns = Vec::new();
     for line in lines {
         let (column_name, data_type) = line
-            .split_once('	')
+            .split_once('\t')
             .ok_or_else(|| format!("corrupt schema for table {name}"))?;
         let sql = format!("CREATE TABLE _check ({column_name} {data_type})");
         if columns.len() == 64
@@ -76,8 +76,7 @@ fn read_schema(catalog: &Path, name: &str) -> Result<Vec<ColumnDef>, String> {
             data_type: data_type.to_string(),
         });
     }
-    if columns.is_empty() || !content.ends_with('
-') {
+    if columns.is_empty() || !content.ends_with('\n') {
         return Err(format!("corrupt schema for table {name}"));
     }
     Ok(columns)
@@ -87,10 +86,9 @@ fn schema_contents(columns: &[ColumnDef]) -> String {
     let mut schema = String::from("rusthouse-schema-v1\n");
     for column in columns {
         schema.push_str(&column.name);
-        schema.push('	');
+        schema.push('\t');
         schema.push_str(&column.data_type);
-        schema.push('
-');
+        schema.push('\n');
     }
     schema
 }

@@ -23,7 +23,11 @@ fn ddl(sql: &str, directory: &std::path::Path) -> std::process::Output {
 #[test]
 fn adds_columns_durably_and_preserves_previous_schema() {
     let dir = new_catalog();
-    assert!(ddl("CREATE TABLE events (id UInt64)", &dir).status.success());
+    assert!(
+        ddl("CREATE TABLE events (id UInt64)", &dir)
+            .status
+            .success()
+    );
 
     let added = ddl("ALTER TABLE events ADD COLUMN info Nullable(String)", &dir);
     assert!(added.status.success(), "{added:?}");
@@ -36,7 +40,10 @@ fn adds_columns_durably_and_preserves_previous_schema() {
     assert!(!duplicate.status.success());
     assert!(String::from_utf8_lossy(&duplicate.stderr).contains("already exists"));
 
-    let skipped = ddl("ALTER TABLE events ADD COLUMN IF NOT EXISTS info UInt8", &dir);
+    let skipped = ddl(
+        "ALTER TABLE events ADD COLUMN IF NOT EXISTS info UInt8",
+        &dir,
+    );
     assert!(skipped.status.success(), "{skipped:?}");
     assert_eq!(
         fs::read_to_string(dir.join("events.schema")).unwrap(),
@@ -56,7 +63,10 @@ fn rejects_corrupt_catalogs_and_missing_tables_without_clobbering() {
     fs::write(dir.join("events.schema"), b"corrupt format\n").unwrap();
     let result = ddl("ALTER TABLE events ADD COLUMN age UInt8", &dir);
     assert!(!result.status.success());
-    assert_eq!(fs::read(dir.join("events.schema")).unwrap(), b"corrupt format\n");
+    assert_eq!(
+        fs::read(dir.join("events.schema")).unwrap(),
+        b"corrupt format\n"
+    );
     assert_eq!(fs::read_dir(&dir).unwrap().count(), 1);
 
     fs::remove_dir_all(dir).unwrap();
