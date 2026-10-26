@@ -52,12 +52,9 @@ fn escapes_column_names_loaded_from_metadata() {
 
 #[test]
 fn rejects_unknown_extra_or_missing_arguments() {
-    let path = Path::new(env!("CARGO_MANIFEST_DIR"))
-        .join("../rusthouse-storage/tests/fixtures/all_1_1_0");
-    for arguments in [
-        vec!["--bad"],
-        vec!["--json", "--json"],
-    ] {
+    let path =
+        Path::new(env!("CARGO_MANIFEST_DIR")).join("../rusthouse-storage/tests/fixtures/all_1_1_0");
+    for arguments in [vec!["--bad"], vec!["--json", "--json"]] {
         let result = Command::new(env!("CARGO_BIN_EXE_rusthouse"))
             .arg("inspect-part")
             .arg(&path)
