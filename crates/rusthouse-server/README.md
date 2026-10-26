@@ -13,6 +13,7 @@ curl http://127.0.0.1:8123/ --data-binary 'SELECT count(*) FROM part'
 ```
 
 The endpoint supports GET /?query=... and POST / with raw SQL. Responses are TSV by default.
+Pass `format=tsv-no-header` to remove the header row, including for empty results.
 Pass `format=csv` on either method for RFC 4180-style CSV with CRLF row endings.
 CSV includes headers, quotes embedded commas/newlines, and uses an unquoted `\\N` for NULL.
 Pass `format=jsonl` on either method for `application/x-ndjson`, one JSON object per result row.

@@ -252,6 +252,7 @@ fn schema_response(config: &Config, table: Option<&str>) -> Response {
 #[derive(Clone, Copy)]
 enum QueryFormat {
     Tsv,
+    TsvNoHeader,
     Csv,
     Jsonl,
     Json,
@@ -281,6 +282,7 @@ fn query_parameters(target: &str) -> Result<(String, Option<String>, QueryFormat
                 }
                 format = Some(match decode_url(value)?.as_str() {
                     "tsv" => QueryFormat::Tsv,
+                    "tsv-no-header" => QueryFormat::TsvNoHeader,
                     "csv" => QueryFormat::Csv,
                     "jsonl" => QueryFormat::Jsonl,
                     "json" => QueryFormat::Json,
@@ -412,7 +414,9 @@ pub fn handle_request(method: &str, target: &str, body: &[u8], config: &Config) 
     }
     let mut writer = LimitedWriter::new();
     let result = match format {
-        QueryFormat::Tsv => execute(&select, part.as_deref(), &mut writer),
+        QueryFormat::Tsv | QueryFormat::TsvNoHeader => {
+            execute(&select, part.as_deref(), &mut writer)
+        }
         QueryFormat::Csv => {
             let mut csv = CsvWriter::new(&mut writer);
             execute(&select, part.as_deref(), &mut csv)
@@ -435,11 +439,21 @@ pub fn handle_request(method: &str, target: &str, body: &[u8], config: &Config) 
             })
         }
     };
+    if result.is_ok() && matches!(format, QueryFormat::TsvNoHeader) {
+        let header_bytes = writer
+            .data
+            .iter()
+            .position(|&byte| byte == b'\n')
+            .map_or(writer.data.len(), |index| index + 1);
+        writer.data.drain(..header_bytes);
+    }
     match result {
         Ok(()) => Response {
             status: "200 OK",
             content_type: match format {
-                QueryFormat::Tsv => "text/tab-separated-values; charset=utf-8",
+                QueryFormat::Tsv | QueryFormat::TsvNoHeader => {
+                    "text/tab-separated-values; charset=utf-8"
+                }
                 QueryFormat::Csv => "text/csv; charset=utf-8",
                 QueryFormat::Jsonl => "application/x-ndjson; charset=utf-8",
                 QueryFormat::Json => "application/json; charset=utf-8",
@@ -918,6 +932,37 @@ mod tests {
             max_rows: 0,
         };
         let empty = handle_request("POST", "/?format=jsonl", b"SELECT 1", &config);
+        assert_eq!(empty.status, "200 OK");
+        assert!(empty.body.is_empty());
+    }
+
+    #[test]
+    fn returns_tsv_without_column_headers_for_get_and_post() {
+        let get = handle_request(
+            "GET",
+            "/?query=SELECT+number+FROM+numbers%2810%29&format=tsv-no-header",
+            b"",
+            &config(),
+        );
+        assert_eq!(get.status, "200 OK");
+        assert_eq!(get.content_type, "text/tab-separated-values; charset=utf-8");
+        assert_eq!(get.body, b"0\n1\n2\n");
+
+        let post = handle_request(
+            "POST",
+            "/?format=tsv-no-header",
+            b"SELECT 7 AS value",
+            &config(),
+        );
+        assert_eq!(post.status, "200 OK");
+        assert_eq!(post.body, b"7\n");
+
+        let cap = Config {
+            part: None,
+            database: None,
+            max_rows: 0,
+        };
+        let empty = handle_request("POST", "/?format=tsv-no-header", b"SELECT 1", &cap);
         assert_eq!(empty.status, "200 OK");
         assert!(empty.body.is_empty());
     }
