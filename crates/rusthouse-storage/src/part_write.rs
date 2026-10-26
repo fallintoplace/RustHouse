@@ -37,9 +37,18 @@ fn supported(kind: &str) -> bool {
     matches!(
         base,
         "String"
-            | "UInt8" | "UInt16" | "UInt32" | "UInt64" | "UInt128"
-            | "Int8" | "Int16" | "Int32" | "Int64" | "Int128"
-            | "Float32" | "Float64"
+            | "UInt8"
+            | "UInt16"
+            | "UInt32"
+            | "UInt64"
+            | "UInt128"
+            | "Int8"
+            | "Int16"
+            | "Int32"
+            | "Int64"
+            | "Int128"
+            | "Float32"
+            | "Float64"
     )
 }
 
@@ -51,11 +60,7 @@ fn push_varuint(mut value: u64, output: &mut Vec<u8>) {
     output.push(value as u8);
 }
 
-fn push_cell(
-    kind: &str,
-    value: Option<&str>,
-    output: &mut Vec<u8>,
-) -> Result<bool, PartError> {
+fn push_cell(kind: &str, value: Option<&str>, output: &mut Vec<u8>) -> Result<bool, PartError> {
     let (base, nullable) = base_type(kind);
     let is_null = value.is_none();
     if is_null && !nullable {
@@ -64,7 +69,8 @@ fn push_cell(
     let value = value.unwrap_or(if base == "String" { "" } else { "0" });
     macro_rules! numeric {
         ($ty:ty) => {{
-            let number = value.parse::<$ty>()
+            let number = value
+                .parse::<$ty>()
                 .map_err(|_| invalid(format!("invalid {kind} value: {value}")))?;
             output.extend_from_slice(&number.to_le_bytes());
         }};
@@ -85,7 +91,8 @@ fn push_cell(
         "Int64" => numeric!(i64),
         "Int128" => numeric!(i128),
         "Float32" => {
-            let number = value.parse::<f32>()
+            let number = value
+                .parse::<f32>()
                 .map_err(|_| invalid(format!("invalid {kind} value: {value}")))?;
             if !number.is_finite() {
                 return Err(invalid("non-finite float values are unsupported"));
@@ -93,7 +100,8 @@ fn push_cell(
             output.extend_from_slice(&number.to_le_bytes());
         }
         "Float64" => {
-            let number = value.parse::<f64>()
+            let number = value
+                .parse::<f64>()
                 .map_err(|_| invalid(format!("invalid {kind} value: {value}")))?;
             if !number.is_finite() {
                 return Err(invalid("non-finite float values are unsupported"));
@@ -114,13 +122,13 @@ fn write_file(path: &Path, bytes: &[u8]) -> Result<(), PartError> {
         .create_new(true)
         .open(path)
         .map_err(|error| io_error(path, error))?;
-    file.write_all(bytes).map_err(|error| io_error(path, error))?;
+    file.write_all(bytes)
+        .map_err(|error| io_error(path, error))?;
     file.sync_all().map_err(|error| io_error(path, error))
 }
 
 fn block(data: &[u8]) -> Result<Vec<u8>, PartError> {
-    let length = u32::try_from(data.len())
-        .map_err(|_| invalid("part column is too large"))?;
+    let length = u32::try_from(data.len()).map_err(|_| invalid("part column is too large"))?;
     let mut encoded = Vec::with_capacity(25 + data.len());
     encoded.push(0x02); // Uncompressed block, supported by the existing reader.
     encoded.extend_from_slice(&(length + 9).to_le_bytes());
@@ -151,8 +159,14 @@ pub fn write_wide_part(
     for col in columns {
         if col.name.is_empty()
             || col.name.len() > 128
-            || !matches!(col.name.as_bytes().first(), Some(b'a'..=b'z' | b'A'..=b'Z' | b'_'))
-            || !col.name.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'_')
+            || !matches!(
+                col.name.as_bytes().first(),
+                Some(b'a'..=b'z' | b'A'..=b'Z' | b'_')
+            )
+            || !col
+                .name
+                .bytes()
+                .all(|b| b.is_ascii_alphanumeric() || b == b'_')
             || !names.insert(col.name.as_str())
         {
             return Err(invalid(format!("invalid part column name: {}", col.name)));
@@ -188,17 +202,17 @@ pub fn write_wide_part(
     }
 
     fs::create_dir(part).map_err(|error| io_error(part, error))?;
-    let mut definitions = format!(
-        "columns format version: 1\n{} columns:\n",
-        columns.len()
-    );
+    let mut definitions = format!("columns format version: 1\n{} columns:\n", columns.len());
     for col in columns {
         definitions.push_str(&format!("`{}` {}\n", col.name, col.data_type));
     }
     // Backticks are mandatory in columns.txt, and must not be escaped as HTML.
     let definitions = definitions.replace("`", "\u{0060}");
     write_file(&part.join("columns.txt"), definitions.as_bytes())?;
-    write_file(&part.join("count.txt"), format!("{}\n", rows.len()).as_bytes())?;
+    write_file(
+        &part.join("count.txt"),
+        format!("{}\n", rows.len()).as_bytes(),
+    )?;
 
     if !rows.is_empty() {
         let mut marks = Vec::with_capacity(24);
@@ -238,25 +252,45 @@ mod tests {
         let root = root();
         let part = root.join("all_1_1_0");
         let columns = vec![
-            Column { name: "id".into(), data_type: "Int64".into() },
-            Column { name: "message".into(), data_type: "String".into() },
-            Column { name: "score".into(), data_type: "Nullable(UInt64)".into() },
+            Column {
+                name: "id".into(),
+                data_type: "Int64".into(),
+            },
+            Column {
+                name: "message".into(),
+                data_type: "String".into(),
+            },
+            Column {
+                name: "score".into(),
+                data_type: "Nullable(UInt64)".into(),
+            },
         ];
         write_wide_part(
             &part,
             &columns,
             &[
-                vec![Some("-3".into()), Some("hello\tworld".into()), Some("12".into())],
+                vec![
+                    Some("-3".into()),
+                    Some("hello\tworld".into()),
+                    Some("12".into()),
+                ],
                 vec![Some("7".into()), Some("مرحبا".into()), None],
             ],
         )
         .unwrap();
         assert_eq!(inspect_part(&part).unwrap().rows, 2);
-        let mut reader = TypedPartReader::open(&part, &["id".into(), "message".into(), "score".into()]).unwrap();
+        let mut reader =
+            TypedPartReader::open(&part, &["id".into(), "message".into(), "score".into()]).unwrap();
         let batch = reader.next_batch().unwrap().unwrap();
-        assert!(matches!(&batch[0], TypedColumn::Numeric(NumericColumn::Int64(values)) if values == &vec![-3, 7]));
-        assert!(matches!(&batch[1], TypedColumn::Text(values) if values.get(0) == Some(b"hello\tworld".as_slice()) && values.get(1) == Some("مرحبا".as_bytes())));
-        assert!(matches!(&batch[2], TypedColumn::NullableNumeric { nulls, .. } if nulls == &vec![0,1]));
+        assert!(
+            matches!(&batch[0], TypedColumn::Numeric(NumericColumn::Int64(values)) if values == &vec![-3, 7])
+        );
+        assert!(
+            matches!(&batch[1], TypedColumn::Text(values) if values.get(0) == Some(b"hello\tworld".as_slice()) && values.get(1) == Some("مرحبا".as_bytes()))
+        );
+        assert!(
+            matches!(&batch[2], TypedColumn::NullableNumeric { nulls, .. } if nulls == &vec![0,1])
+        );
         assert!(reader.next_batch().unwrap().is_none());
         fs::remove_dir_all(root).unwrap();
     }
@@ -264,7 +298,10 @@ mod tests {
     #[test]
     fn accepts_empty_parts_and_rejects_invalid_rows() {
         let root = root();
-        let cols = vec![Column { name: "id".into(), data_type: "UInt8".into() }];
+        let cols = vec![Column {
+            name: "id".into(),
+            data_type: "UInt8".into(),
+        }];
         let empty = root.join("all_0_0_0");
         write_wide_part(&empty, &cols, &[]).unwrap();
         assert_eq!(inspect_part(&empty).unwrap().rows, 0);
