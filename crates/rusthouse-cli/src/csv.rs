@@ -124,9 +124,9 @@ mod tests {
         });
         let field = vec![b'a'; 16 * 1024];
         csv.write_all(&field).unwrap();
-        csv.write_all(b"\\n").unwrap();
+        csv.write_all(b"\n").unwrap();
         assert_eq!(csv.output.calls, 2);
         assert_eq!(&csv.output.bytes[..field.len()], field);
-        assert_eq!(&csv.output.bytes[field.len()..], b"\\r\\n");
+        assert_eq!(&csv.output.bytes[field.len()..], b"\r\n");
     }
 }
