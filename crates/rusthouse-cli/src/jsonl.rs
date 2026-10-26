@@ -99,16 +99,16 @@ fn write_json_string<W: Write>(writer: &mut W, input: &[u8]) -> io::Result<()> {
             _ => None,
         };
         if let Some(escaped) = escaped {
-            writer.write_all(input[start..index].as_bytes())?;
+            writer.write_all(&input.as_bytes()[start..index])?;
             writer.write_all(escaped)?;
             start = index + ch.len_utf8();
         } else if ch.is_control() {
-            writer.write_all(input[start..index].as_bytes())?;
+            writer.write_all(&input.as_bytes()[start..index])?;
             write!(writer, "\\u{:04x}", ch as u32)?;
             start = index + ch.len_utf8();
         }
     }
-    writer.write_all(input[start..].as_bytes())?;
+    writer.write_all(&input.as_bytes()[start..])?;
     writer.write_all(b"\"")
 }
 
