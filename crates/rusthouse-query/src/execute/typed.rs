@@ -154,7 +154,12 @@ fn compile_like(pattern: &str) -> Result<Vec<LikeToken>, ExecutionError> {
                 let escaped = bytes.next().ok_or_else(|| {
                     ExecutionError::Invalid("LIKE pattern ends with an escape".into())
                 })?;
-                tokens.push(LikeToken::Byte(escaped));
+                if matches!(escaped, b'%' | b'_' | b'\\') {
+                    tokens.push(LikeToken::Byte(escaped));
+                } else {
+                    tokens.push(LikeToken::Byte(b'\\'));
+                    tokens.push(LikeToken::Byte(escaped));
+                }
             }
             literal => tokens.push(LikeToken::Byte(literal)),
         }
@@ -633,6 +638,8 @@ mod like_tests {
         assert!(matches(b"abc%d", "abc\\%d"));
         assert!(!matches(b"abcde", "abc\\%d"));
         assert!(matches(b"abcXYZend", "a%end"));
+        assert!(matches(br"a\qb", r"a\qb"));
+        assert!(!matches(b"aqb", r"a\qb"));
         assert!(!matches(b"abcXYZend", "a%ends"));
         assert!(compile_like("dangling\\").is_err());
     }
