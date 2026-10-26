@@ -23,7 +23,9 @@ fn decode_tsv_field(field: &[u8]) -> io::Result<Vec<u8>> {
             continue;
         }
         index += 1;
-        let escaped = *field.get(index).ok_or_else(|| invalid("incomplete TSV escape"))?;
+        let escaped = *field
+            .get(index)
+            .ok_or_else(|| invalid("incomplete TSV escape"))?;
         match escaped {
             b'\\' => output.push(b'\\'),
             b't' => output.push(b'\t'),
@@ -31,8 +33,12 @@ fn decode_tsv_field(field: &[u8]) -> io::Result<Vec<u8>> {
             b'r' => output.push(b'\r'),
             b'0' => output.push(0),
             b'x' => {
-                let high = *field.get(index + 1).ok_or_else(|| invalid("short TSV hex escape"))?;
-                let low = *field.get(index + 2).ok_or_else(|| invalid("short TSV hex escape"))?;
+                let high = *field
+                    .get(index + 1)
+                    .ok_or_else(|| invalid("short TSV hex escape"))?;
+                let low = *field
+                    .get(index + 2)
+                    .ok_or_else(|| invalid("short TSV hex escape"))?;
                 let high = hex_digit(high).ok_or_else(|| invalid("invalid TSV hex escape"))?;
                 let low = hex_digit(low).ok_or_else(|| invalid("invalid TSV hex escape"))?;
                 output.push((high << 4) | low);
@@ -44,7 +50,6 @@ fn decode_tsv_field(field: &[u8]) -> io::Result<Vec<u8>> {
     }
     Ok(output)
 }
-
 
 /// Convert tab-separated numeric query output to one JSON object per row.
 /// Values are strings to preserve UInt128/Int128 precision. NULL becomes JSON null.
@@ -314,7 +319,9 @@ mod decoded_tsv_json_regressions {
     #[test]
     fn restores_escaped_sql_strings_before_json_quoting() {
         let mut writer = JsonlWriter::new(Vec::new());
-        writer.write_all(b"value\nline\\nnext\\tcell\\\\end\n").unwrap();
+        writer
+            .write_all(b"value\nline\\nnext\\tcell\\\\end\n")
+            .unwrap();
         assert_eq!(
             writer.into_inner(),
             b"{\"value\":\"line\\nnext\\tcell\\\\end\"}\n"
