@@ -36,26 +36,7 @@ pub fn read_fixed_primary_index(
     field_widths: &[usize],
 ) -> Result<FixedPrimaryIndex, PartError> {
     let path = path.as_ref();
-    if field_widths.is_empty() {
-        return Err(invalid(path, "at least one key field is required"));
-    }
-    if field_widths.len() > MAX_INDEX_FIELDS {
-        return Err(invalid(path, "too many primary-key fields"));
-    }
-    let mut field_offsets = Vec::new();
-    field_offsets.push(0usize);
-    for &width in field_widths {
-        if width == 0 {
-            return Err(invalid(path, "key field width must be positive"));
-        }
-        let offset = field_offsets
-            .last()
-            .unwrap()
-            .checked_add(width)
-            .filter(|size| *size <= MAX_INDEX_BYTES)
-            .ok_or_else(|| invalid(path, "key width exceeds the 256 MiB limit"))?;
-        field_offsets.push(offset);
-    }
+    let field_offsets = checked_field_offsets(path, field_widths)?;
     let row_width = *field_offsets.last().unwrap();
 
     let data = match path.extension().and_then(|extension| extension.to_str()) {
@@ -71,6 +52,30 @@ pub fn read_fixed_primary_index(
         field_offsets,
         row_width,
     })
+}
+
+fn checked_field_offsets(path: &Path, field_widths: &[usize]) -> Result<Vec<usize>, PartError> {
+    if field_widths.is_empty() {
+        return Err(invalid(path, "at least one key field is required"));
+    }
+    if field_widths.len() > MAX_INDEX_FIELDS {
+        return Err(invalid(path, "too many primary-key fields"));
+    }
+    let mut field_offsets = Vec::with_capacity(field_widths.len() + 1);
+    field_offsets.push(0usize);
+    for &width in field_widths {
+        if width == 0 {
+            return Err(invalid(path, "key field width must be positive"));
+        }
+        let offset = field_offsets
+            .last()
+            .unwrap()
+            .checked_add(width)
+            .filter(|size| *size <= MAX_INDEX_BYTES)
+            .ok_or_else(|| invalid(path, "key width exceeds the 256 MiB limit"))?;
+        field_offsets.push(offset);
+    }
+    Ok(field_offsets)
 }
 
 fn read_raw(path: &Path) -> Result<Vec<u8>, PartError> {
@@ -128,6 +133,18 @@ mod tests {
     use std::sync::atomic::{AtomicUsize, Ordering};
 
     static NEXT_FILE: AtomicUsize = AtomicUsize::new(0);
+
+    #[test]
+    fn checks_primary_key_field_layout_before_io() {
+        let path = Path::new("missing.idx");
+        assert_eq!(checked_field_offsets(path, &[1, 2]).unwrap(), vec![0, 1, 3]);
+        for widths in [&[][..], &[0][..], &[MAX_INDEX_BYTES, 1][..]] {
+            assert!(matches!(
+                checked_field_offsets(path, widths),
+                Err(PartError::InvalidPrimaryIndex { .. })
+            ));
+        }
+    }
 
     fn temporary_file(
         extension: &str,
