@@ -89,17 +89,26 @@ fn verify_component(
             ));
         }
     } else {
-        ensure_regular_file(
-            &metadata,
+        verify_leaf_size(&metadata, manifest_path, expected_size)?;
+    }
+    Ok(())
+}
+
+fn verify_leaf_size(
+    metadata: &fs::Metadata,
+    manifest_path: &Path,
+    expected_size: u64,
+) -> Result<(), PartError> {
+    ensure_regular_file(
+        metadata,
+        manifest_path,
+        "listed entry is not a regular file",
+    )?;
+    if metadata.len() != expected_size {
+        return Err(invalid(
             manifest_path,
-            "listed entry is not a regular file",
-        )?;
-        if metadata.len() != expected_size {
-            return Err(invalid(
-                manifest_path,
-                "file size differs from checksums.txt",
-            ));
-        }
+            "file size differs from checksums.txt",
+        ));
     }
     Ok(())
 }
@@ -155,6 +164,23 @@ mod tests {
             bytes.push(0);
         }
         bytes
+    }
+
+    #[test]
+    fn leaf_validation_checks_regular_files_before_sizes() {
+        let dir = temp_dir();
+        let file = dir.join("a.bin");
+        fs::write(&file, [1u8, 2, 3]).unwrap();
+        let metadata = fs::symlink_metadata(&file).unwrap();
+        assert!(verify_leaf_size(&metadata, &file, 3).is_ok());
+        assert!(matches!(
+            verify_leaf_size(&metadata, &file, 4),
+            Err(PartError::InvalidChecksums {
+                reason: "file size differs from checksums.txt",
+                ..
+            })
+        ));
+        fs::remove_dir_all(dir).unwrap();
     }
 
     #[test]
