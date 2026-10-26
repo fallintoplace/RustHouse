@@ -593,7 +593,8 @@ pub(super) fn execute_typed<W: Write>(
     let top_capacity = if sort_indices.is_empty() {
         None
     } else {
-        query.limit
+        query
+            .limit
             .and_then(|count| count.checked_add(offset))
             .filter(|count| *count <= MAX_BUFFERED_ROWS)
     };
@@ -664,9 +665,9 @@ pub(super) fn execute_typed<W: Write>(
                         ordinal,
                         descending_mask,
                     };
-                    ordinal = ordinal.checked_add(1).ok_or_else(|| {
-                        ExecutionError::Invalid("row ordinal overflow".into())
-                    })?;
+                    ordinal = ordinal
+                        .checked_add(1)
+                        .ok_or_else(|| ExecutionError::Invalid("row ordinal overflow".into()))?;
                     if top.len() < capacity {
                         top.push(next);
                     } else if top.peek().is_some_and(|worst| next < *worst) {
