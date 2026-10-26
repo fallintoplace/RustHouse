@@ -578,9 +578,7 @@ fn execute_aggregate_numbers<W: Write>(
                 let first = u128::from(start);
                 let last = first + u128::from(rows - 1) * u128::from(step);
                 match function {
-                    AggregateFunction::Sum => {
-                        ((first + last) * u128::from(rows) / 2).to_string()
-                    }
+                    AggregateFunction::Sum => ((first + last) * u128::from(rows) / 2).to_string(),
                     AggregateFunction::Min => first.to_string(),
                     AggregateFunction::Max => last.to_string(),
                     AggregateFunction::Avg => unreachable!(),
