@@ -20,12 +20,8 @@ pub fn explain_select(query: &Select) -> String {
     steps.push(format!("Source: {source}"));
 
     if !query.predicates.is_empty() {
-        let count = query.predicates.len()
-            + query
-                .or_predicates
-                .iter()
-                .map(Vec::len)
-                .sum::<usize>();
+        let count =
+            query.predicates.len() + query.or_predicates.iter().map(Vec::len).sum::<usize>();
         steps.push(format!(
             "Filter: {} conditions across {} OR branches",
             count,
@@ -53,7 +49,10 @@ pub fn explain_select(query: &Select) -> String {
         steps.push(format!("Alias: {alias}"));
     }
     if let Some(having) = &query.having {
-        steps.push(format!("Having: count(*) {:?} {}", having.operator, having.value));
+        steps.push(format!(
+            "Having: count(*) {:?} {}",
+            having.operator, having.value
+        ));
     }
     if query.distinct {
         steps.push("Distinct: projected rows".into());
@@ -94,8 +93,7 @@ mod tests {
     #[test]
     fn explains_groups_aggregates_and_constants() {
         let grouped =
-            parse_select("SELECT id, count(*) FROM part GROUP BY id HAVING count(*) >= 2")
-                .unwrap();
+            parse_select("SELECT id, count(*) FROM part GROUP BY id HAVING count(*) >= 2").unwrap();
         assert!(explain_select(&grouped).contains("Aggregate: GROUP BY id, count(*)"));
         assert!(explain_select(&grouped).contains("Having: count(*) Ge 2"));
         let literal = parse_select("SELECT 42 AS answer").unwrap();
