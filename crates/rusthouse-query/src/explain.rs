@@ -1,10 +1,7 @@
 use crate::{Projection, Select, Source};
 
-/// Summarize parsed logical operators without reading data or estimating costs.
-/// This is not a physical execution plan.
-pub fn explain_select(query: &Select) -> String {
-    let mut steps = Vec::new();
-    let source = match &query.source {
+fn describe_source(source: Option<&Source>) -> String {
+    match source {
         None => "constant row".to_owned(),
         Some(Source::Table(name)) => format!("table {name}"),
         Some(Source::Numbers(rows)) => format!("numbers({rows})"),
@@ -16,20 +13,11 @@ pub fn explain_select(query: &Select) -> String {
             length,
             step,
         }) => format!("numbers({start}, {length}, {step})"),
-    };
-    steps.push(format!("Source: {source}"));
-
-    if !query.predicates.is_empty() {
-        let count =
-            query.predicates.len() + query.or_predicates.iter().map(Vec::len).sum::<usize>();
-        steps.push(format!(
-            "Filter: {} conditions across {} OR branches",
-            count,
-            query.or_predicates.len() + 1
-        ));
     }
+}
 
-    let projection = match &query.projection {
+fn describe_projection(projection: &Projection) -> String {
+    match projection {
         Projection::Literal(value) => format!("Project: {value}"),
         Projection::All => "Project: *".to_owned(),
         Projection::Columns(columns) => format!("Project: {}", columns.join(", ")),
@@ -43,8 +31,26 @@ pub fn explain_select(query: &Select) -> String {
         Projection::Aggregate { function, column } => {
             format!("Aggregate: {}({column})", function.name())
         }
-    };
-    steps.push(projection);
+    }
+}
+
+/// Summarize parsed logical operators without reading data or estimating costs.
+/// This is not a physical execution plan.
+pub fn explain_select(query: &Select) -> String {
+    let mut steps = Vec::new();
+    steps.push(format!("Source: {}", describe_source(query.source.as_ref())));
+
+    if !query.predicates.is_empty() {
+        let count =
+            query.predicates.len() + query.or_predicates.iter().map(Vec::len).sum::<usize>();
+        steps.push(format!(
+            "Filter: {} conditions across {} OR branches",
+            count,
+            query.or_predicates.len() + 1
+        ));
+    }
+
+    steps.push(describe_projection(&query.projection));
     if let Some(alias) = &query.alias {
         steps.push(format!("Alias: {alias}"));
     }
@@ -77,6 +83,18 @@ pub fn explain_select(query: &Select) -> String {
 mod tests {
     use super::*;
     use crate::parse_select;
+
+    #[test]
+    fn labels_each_source_and_projection_without_query_execution() {
+        let source = Source::NumbersRange {
+            start: 5,
+            count: 10,
+        };
+        assert_eq!(describe_source(Some(&source)), "numbers(5, 10)");
+        assert_eq!(describe_source(None), "constant row");
+        assert_eq!(describe_projection(&Projection::All), "Project: *");
+        assert_eq!(describe_projection(&Projection::Count), "Aggregate: count(*)");
+    }
 
     #[test]
     fn explains_filter_sort_and_pagination_in_logical_order() {
