@@ -193,10 +193,7 @@ fn execute_into<W: Write>(
         | Projection::Literal(_) => unreachable!(),
     };
     if query.distinct
-        && query
-            .order_by
-            .as_ref()
-            .is_some_and(|order| {
+        && query.order_by.as_ref().is_some_and(|order| {
             !projected.iter().any(|column| column == &order.column)
                 && query.alias.as_deref() != Some(order.column.as_str())
         })
@@ -229,17 +226,13 @@ fn execute_into<W: Write>(
         parse_numeric(&column.data_type, literal)
     })?;
     let sort_index = query.order_by.as_ref().map(|order| {
-        let column_name = if query.alias.as_deref() == Some(order.column.as_str())
-            && projected.len() == 1
-        {
-            &projected[0]
-        } else {
-            &order.column
-        };
-        if let Some(index) = scan_columns
-            .iter()
-            .position(|column| column == column_name)
-        {
+        let column_name =
+            if query.alias.as_deref() == Some(order.column.as_str()) && projected.len() == 1 {
+                &projected[0]
+            } else {
+                &order.column
+            };
+        if let Some(index) = scan_columns.iter().position(|column| column == column_name) {
             index
         } else {
             scan_columns.push(column_name.clone());
@@ -656,9 +649,7 @@ fn execute_numbers<W: Write>(
         .order_by
         .as_ref()
         .map(|order| {
-            if order.column != "number"
-                && query.alias.as_deref() != Some(order.column.as_str())
-            {
+            if order.column != "number" && query.alias.as_deref() != Some(order.column.as_str()) {
                 return Err(ExecutionError::Invalid(
                     "numbers(N) exposes only the number column".into(),
                 ));
@@ -1218,13 +1209,19 @@ mod tests {
             "total\n6\n"
         );
         assert_eq!(
-            run("SELECT number AS n FROM numbers(4) ORDER BY n DESC LIMIT 2", None)
-                .unwrap(),
+            run(
+                "SELECT number AS n FROM numbers(4) ORDER BY n DESC LIMIT 2",
+                None
+            )
+            .unwrap(),
             "n\n3\n2\n"
         );
         assert_eq!(
-            run("SELECT DISTINCT number AS n FROM numbers(2) ORDER BY n", None)
-                .unwrap(),
+            run(
+                "SELECT DISTINCT number AS n FROM numbers(2) ORDER BY n",
+                None
+            )
+            .unwrap(),
             "n\n0\n1\n"
         );
     }
