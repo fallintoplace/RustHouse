@@ -34,4 +34,8 @@ Inspect the parsed SQL structure without touching data using `cargo run -p rusth
 
 Exclude selected values with `cargo run -p rusthouse-cli -- sql "SELECT number FROM numbers(10) WHERE number NOT IN (1, 4, 9)"`.
 
+Export data-only TSV without the header row with `cargo run -p rusthouse-cli -- sql "SELECT number FROM numbers(3)" --format tsv-no-header`.
+
+Exclude selected remainders with `cargo run -p rusthouse-cli -- sql "SELECT number FROM numbers(10) WHERE number % 2 != 0"`.
+
 Name single-column query results with `cargo run -p rusthouse-cli -- sql "SELECT sum(number) AS total FROM numbers(10)"`. Aliases also work in `ORDER BY` for numeric row projections.

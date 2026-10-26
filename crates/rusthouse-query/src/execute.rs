@@ -574,6 +574,32 @@ fn execute_aggregate_numbers<W: Write>(
     if query.limit == Some(0) {
         return Ok(());
     }
+    // For an unfiltered arithmetic progression, these aggregates are exact
+    // without visiting every row. Keep AVG iterative to preserve its rounding.
+    if query.predicates.is_empty()
+        && query.or_predicates.is_empty()
+        && matches!(
+            function,
+            AggregateFunction::Sum | AggregateFunction::Min | AggregateFunction::Max
+        )
+    {
+        if query.offset.unwrap_or(0) == 0 {
+            let result = if rows == 0 {
+                "NULL".to_string()
+            } else {
+                let first = u128::from(start);
+                let last = first + u128::from(rows - 1) * u128::from(step);
+                match function {
+                    AggregateFunction::Sum => ((first + last) * u128::from(rows) / 2).to_string(),
+                    AggregateFunction::Min => first.to_string(),
+                    AggregateFunction::Max => last.to_string(),
+                    AggregateFunction::Avg => unreachable!(),
+                }
+            };
+            writeln!(output, "{result}")?;
+        }
+        return Ok(());
+    }
     let mut state = AggregateState::new(function);
     for index in 0..rows {
         let number = start + index * step;
@@ -611,12 +637,19 @@ fn execute_numbers<W: Write>(
         let comparisons = compile_numbers_predicates(query)?;
         write_header(query, output, "countDistinct(number)")?;
         if query.limit != Some(0) && query.offset.unwrap_or(0) == 0 {
-            let mut count = 0u64;
-            for number in start..start + rows {
-                if number_matches_all(Number::Unsigned(u128::from(number)), &comparisons) {
-                    count += 1;
+            // Generated numbers are unique, so unfiltered COUNT(DISTINCT) is their row count.
+            let count = if query.predicates.is_empty() && query.or_predicates.is_empty() {
+                rows
+            } else {
+                let mut matched = 0u64;
+                for index in 0..rows {
+                    let number = start + index * step;
+                    if number_matches_all(Number::Unsigned(u128::from(number)), &comparisons) {
+                        matched += 1;
+                    }
                 }
-            }
+                matched
+            };
             writeln!(output, "{count}")?;
         }
         return Ok(());
@@ -669,6 +702,43 @@ fn execute_numbers<W: Write>(
         write_header(query, output, &projected.join("\t"))?;
     }
     if query.limit == Some(0) {
+        return Ok(());
+    }
+
+    // numbers() is already sorted and its values are unique. A filter-free
+    // ORDER BY can page the generated range directly rather than filling a heap.
+    let unfiltered_sort = if query.predicates.is_empty() && query.or_predicates.is_empty() {
+        sorting.as_ref()
+    } else {
+        None
+    };
+    if let Some(sorted) = unfiltered_sort {
+        if rows > MAX_SORTED_ROWS as u64 && sorted.requested > MAX_SORTED_ROWS {
+            return Err(ExecutionError::Invalid(
+                "ORDER BY requires LIMIT <= 100000 for large results".into(),
+            ));
+        }
+        let total = usize::try_from(rows).unwrap_or(usize::MAX);
+        let begin = sorted.offset.min(total);
+        let end = sorted
+            .offset
+            .saturating_add(query.limit.unwrap_or(usize::MAX))
+            .min(total);
+        for position in begin..end {
+            let index = if sorted.descending {
+                rows - position as u64 - 1
+            } else {
+                position as u64
+            };
+            let number = start + index * step;
+            for column in 0..projected.len() {
+                if column != 0 {
+                    write!(output, "\t")?;
+                }
+                write!(output, "{number}")?;
+            }
+            writeln!(output)?;
+        }
         return Ok(());
     }
 
@@ -1009,7 +1079,9 @@ fn compile_part_predicates(
                 operator, value, ..
             } => {
                 let target = convert(column, value)?;
-                if matches!(*operator, Operator::Modulo(_)) && matches!(target, Number::Float(_)) {
+                if matches!(*operator, Operator::Modulo(_) | Operator::ModuloNe(_))
+                    && matches!(target, Number::Float(_))
+                {
                     return Err(ExecutionError::Invalid(
                         "modulo requires integer columns".into(),
                     ));
@@ -1144,15 +1216,20 @@ fn number_at(column: &NumericColumn, row: usize) -> Number {
 }
 
 fn number_matches(value: Number, target: Number, operator: Operator) -> bool {
-    if let Operator::Modulo(modulus) = operator {
-        return match (value, target) {
+    if let Operator::Modulo(modulus) | Operator::ModuloNe(modulus) = operator {
+        let equal = match (value, target) {
             (Number::Unsigned(value), Number::Unsigned(target)) => {
                 value % u128::from(modulus) == target
             }
             (Number::Signed(value), Number::Signed(target)) => {
                 value % i128::from(modulus) == target
             }
-            _ => false,
+            _ => return false,
+        };
+        return if matches!(operator, Operator::ModuloNe(_)) {
+            !equal
+        } else {
+            equal
         };
     }
     match (value, target) {
@@ -1171,7 +1248,9 @@ fn compare<T: PartialOrd>(value: T, target: T, operator: Operator) -> bool {
         Operator::Le => value <= target,
         Operator::Gt => value > target,
         Operator::Ge => value >= target,
-        Operator::Modulo(_) => unreachable!("modulo handled before comparison"),
+        Operator::Modulo(_) | Operator::ModuloNe(_) => {
+            unreachable!("modulo handled before comparison")
+        }
     }
 }
 
@@ -1359,6 +1438,27 @@ mod tests {
     }
 
     #[test]
+    fn excludes_modulo_remainders_for_generated_numbers() {
+        assert_eq!(
+            run("SELECT number FROM numbers(10) WHERE number % 3 != 1", None).unwrap(),
+            "number\n0\n2\n3\n5\n6\n8\n9\n"
+        );
+        assert_eq!(
+            run(
+                "SELECT count(*) FROM numbers(10) WHERE number % 3 != 1 AND number >= 4",
+                None
+            )
+            .unwrap(),
+            "count\n4\n"
+        );
+        assert!(!number_matches(
+            Number::Float(1.0),
+            Number::Float(1.0),
+            Operator::ModuloNe(3)
+        ));
+    }
+
+    #[test]
     fn evaluates_not_in_with_filters_and_aggregates() {
         assert_eq!(
             run(
@@ -1420,6 +1520,46 @@ mod tests {
     }
 
     #[test]
+    fn generated_count_distinct_skips_unfiltered_scans_and_respects_steps() {
+        assert_eq!(
+            run("SELECT count(DISTINCT number) FROM numbers(1000000)", None).unwrap(),
+            "countDistinct(number)\n1000000\n"
+        );
+        assert_eq!(
+            run("SELECT count(DISTINCT number) FROM numbers(3, 10, 4)", None).unwrap(),
+            "countDistinct(number)\n3\n"
+        );
+        assert_eq!(
+            run(
+                "SELECT count(DISTINCT number) FROM numbers(3, 10, 4) WHERE number >= 7",
+                None
+            )
+            .unwrap(),
+            "countDistinct(number)\n2\n"
+        );
+        assert_eq!(
+            run(
+                "SELECT count(DISTINCT number) FROM numbers(3, 10, 4) WHERE number = 11",
+                None
+            )
+            .unwrap(),
+            "countDistinct(number)\n1\n"
+        );
+        assert_eq!(
+            run("SELECT count(DISTINCT number) FROM numbers(0)", None).unwrap(),
+            "countDistinct(number)\n0\n"
+        );
+        assert_eq!(
+            run(
+                "SELECT count(DISTINCT number) FROM numbers(4) LIMIT 0",
+                None
+            )
+            .unwrap(),
+            "countDistinct(number)\n"
+        );
+    }
+
+    #[test]
     fn aggregates_generated_numbers_and_empty_inputs() {
         assert_eq!(
             run("SELECT sum(number) FROM numbers(10)", None).unwrap(),
@@ -1458,6 +1598,52 @@ mod tests {
             "sum(number)\n"
         );
         assert!(run("SELECT sum(missing) FROM numbers(0)", None).is_err());
+    }
+
+    #[test]
+    fn exact_unfiltered_generated_aggregates_match_scanned_values() {
+        for (start, length, step) in [
+            (0, 0, 1),
+            (0, 17, 1),
+            (3, 10, 4),
+            (1000, 1, 10),
+            (u64::MAX - 20, 20, 6),
+        ] {
+            let rows = length / step + u64::from(length % step != 0);
+            for function in [
+                AggregateFunction::Sum,
+                AggregateFunction::Min,
+                AggregateFunction::Max,
+            ] {
+                let mut state = AggregateState::new(function);
+                for index in 0..rows {
+                    state
+                        .update(Number::Unsigned(u128::from(start + index * step)))
+                        .unwrap();
+                }
+                let sql = format!(
+                    "SELECT {}(number) FROM numbers({start}, {length}, {step})",
+                    function.name()
+                );
+                assert_eq!(
+                    run(&sql, None).unwrap(),
+                    format!("{}(number)\n{}\n", function.name(), state.render()),
+                    "{sql}"
+                );
+            }
+        }
+        assert_eq!(
+            run("SELECT sum(number) FROM numbers(1000000)", None).unwrap(),
+            "sum(number)\n499999500000\n"
+        );
+        assert_eq!(
+            run(
+                "SELECT sum(number) FROM numbers(10) WHERE number >= 8",
+                None
+            )
+            .unwrap(),
+            "sum(number)\n17\n"
+        );
     }
 
     #[test]
@@ -1503,6 +1689,58 @@ mod tests {
             "number\n"
         );
         assert!(run("SELECT number FROM numbers(0) ORDER BY missing", None).is_err());
+    }
+
+    #[test]
+    fn orders_unfiltered_generated_ranges_without_scanning() {
+        assert_eq!(
+            run(
+                "SELECT number FROM numbers(1000000) ORDER BY number DESC LIMIT 2 OFFSET 1000",
+                None
+            )
+            .unwrap(),
+            "number\n998999\n998998\n"
+        );
+        assert_eq!(
+            run(
+                "SELECT number FROM numbers(1000000) ORDER BY number LIMIT 1 OFFSET 99999",
+                None
+            )
+            .unwrap(),
+            "number\n99999\n"
+        );
+        assert_eq!(
+            run(
+                "SELECT number FROM numbers(20, 13, 4) ORDER BY number DESC LIMIT 2 OFFSET 1",
+                None
+            )
+            .unwrap(),
+            "number\n28\n24\n"
+        );
+        assert_eq!(
+            run(
+                "SELECT number FROM numbers(3) ORDER BY number DESC LIMIT 2 OFFSET 5",
+                None
+            )
+            .unwrap(),
+            "number\n"
+        );
+        assert!(run("SELECT number FROM numbers(100001) ORDER BY number", None).is_err());
+        assert!(
+            run(
+                "SELECT number FROM numbers(100001) ORDER BY number LIMIT 100001",
+                None
+            )
+            .is_err()
+        );
+        assert_eq!(
+            run(
+                "SELECT number FROM numbers(100001) ORDER BY number LIMIT 0",
+                None
+            )
+            .unwrap(),
+            "number\n"
+        );
     }
 
     #[test]
