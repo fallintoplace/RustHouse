@@ -1,3 +1,4 @@
+use std::borrow::Cow;
 use std::io::{self, Write};
 
 const MAX_LINE_BYTES: usize = 1024 * 1024;
@@ -73,13 +74,13 @@ fn write_visible<W: Write>(output: &mut W, bytes: &[u8]) -> io::Result<()> {
     output.write_all(&bytes[start..])
 }
 
-fn decode_row_fields(line: &[u8]) -> io::Result<Vec<Vec<u8>>> {
+fn decode_row_fields(line: &[u8]) -> io::Result<Vec<Cow<'_, [u8]>>> {
     line.split(|&byte| byte == b'\t')
         .map(|field| {
-            if field == b"\\N" {
-                Ok(field.to_vec())
+            if field == b"\\N" || !field.contains(&b'\\') {
+                Ok(Cow::Borrowed(field))
             } else {
-                decode_tsv_field(field)
+                decode_tsv_field(field).map(Cow::Owned)
             }
         })
         .collect()
@@ -176,10 +177,24 @@ mod tests {
     #[test]
     fn decoded_row_fields_preserve_null_sentinels() {
         assert_eq!(
-            decode_row_fields(b"one\\ttwo\t\\N").unwrap(),
+            decode_row_fields(b"one\\ttwo\t\\N")
+                .unwrap()
+                .into_iter()
+                .map(Cow::into_owned)
+                .collect::<Vec<_>>(),
             vec![b"one\ttwo".to_vec(), b"\\N".to_vec()]
         );
         assert!(decode_row_fields(b"bad\\q").is_err());
+    }
+
+
+    #[test]
+    fn borrows_unescaped_fields_and_null_markers() {
+        let fields = decode_row_fields(b"plain\tone\\ttwo\t\\N").unwrap();
+        assert!(matches!(&fields[0], Cow::Borrowed(_)));
+        assert!(matches!(&fields[1], Cow::Owned(_)));
+        assert!(matches!(&fields[2], Cow::Borrowed(_)));
+        assert_eq!(fields[1].as_ref(), b"one\ttwo");
     }
 
     #[test]
