@@ -29,6 +29,20 @@ impl<W: Write> CsvWriter<W> {
         Ok(())
     }
 
+    /// Returns true when an LF has completed a previous CRLF row boundary.
+    fn consume_pending_cr(&mut self, byte: u8) -> io::Result<bool> {
+        if !self.pending_cr {
+            return Ok(false);
+        }
+        self.pending_cr = false;
+        if byte == b'\n' {
+            self.finish_field(b"\r\n")?;
+            return Ok(true);
+        }
+        self.push_field_byte(b'\r')?;
+        Ok(false)
+    }
+
     fn finish_field(&mut self, separator: &[u8]) -> io::Result<()> {
         write_csv_field(&mut self.output, &self.field)?;
         self.field.clear();
@@ -62,13 +76,8 @@ fn write_quoted_field<W: Write>(output: &mut W, field: &[u8]) -> io::Result<()> 
 impl<W: Write> Write for CsvWriter<W> {
     fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
         for &byte in buf {
-            if self.pending_cr {
-                self.pending_cr = false;
-                if byte == b'\n' {
-                    self.finish_field(b"\r\n")?;
-                    continue;
-                }
-                self.push_field_byte(b'\r')?;
+            if self.consume_pending_cr(byte)? {
+                continue;
             }
 
             match byte {
