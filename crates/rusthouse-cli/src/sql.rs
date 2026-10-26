@@ -199,7 +199,14 @@ mod tests {
 
     #[test]
     fn format_parser_accepts_all_supported_formats() {
-        for value in ["tsv", "tsv-no-header", "csv", "csv-no-header", "jsonl", "json"] {
+        for value in [
+            "tsv",
+            "tsv-no-header",
+            "csv",
+            "csv-no-header",
+            "jsonl",
+            "json",
+        ] {
             assert!(SqlOutputFormat::from_arg(Some(value.into())).is_ok());
         }
     }
