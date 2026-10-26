@@ -662,9 +662,7 @@ pub(super) fn execute_typed<W: Write>(
         return Ok(());
     }
     if let Some(order) = &query.order_by {
-        ordered.sort_by(|left, right| {
-            compare_for_order(&left.sort_key, &right.sort_key, order)
-        });
+        ordered.sort_by(|left, right| compare_for_order(&left.sort_key, &right.sort_key, order));
         for row in ordered.into_iter().skip(offset).take(limit) {
             write_row(output, &row.values)?;
         }
