@@ -18,6 +18,31 @@ fn identifier(parser: &mut Parser) -> Result<String, ParseError> {
     Ok(name)
 }
 
+fn parse_copy_columns(parser: &mut Parser) -> Result<Option<Vec<String>>, ParseError> {
+    if !parser.take(Token::LParen) {
+        return Ok(None);
+    }
+    let mut columns = Vec::new();
+    let mut seen = HashSet::new();
+    loop {
+        if columns.len() >= 64 {
+            return Err(ParseError("COPY supports at most 64 columns".into()));
+        }
+        let column = identifier(parser)?;
+        if !seen.insert(column.clone()) {
+            return Err(ParseError(format!("duplicate COPY column: {column}")));
+        }
+        columns.push(column);
+        if !parser.take(Token::Comma) {
+            break;
+        }
+    }
+    if !parser.take(Token::RParen) {
+        return Err(ParseError("expected ')' after COPY columns".into()));
+    }
+    Ok(Some(columns))
+}
+
 pub fn parse_copy_from(sql: &str) -> Result<Option<CopyFrom>, ParseError> {
     let mut parser = Parser {
         tokens: tokenize(sql)?,
@@ -27,29 +52,7 @@ pub fn parse_copy_from(sql: &str) -> Result<Option<CopyFrom>, ParseError> {
         return Ok(None);
     }
     let table = identifier(&mut parser)?;
-    let columns = if parser.take(Token::LParen) {
-        let mut result = Vec::new();
-        let mut seen = HashSet::new();
-        loop {
-            if result.len() >= 64 {
-                return Err(ParseError("COPY supports at most 64 columns".into()));
-            }
-            let column = identifier(&mut parser)?;
-            if !seen.insert(column.clone()) {
-                return Err(ParseError(format!("duplicate COPY column: {column}")));
-            }
-            result.push(column);
-            if !parser.take(Token::Comma) {
-                break;
-            }
-        }
-        if !parser.take(Token::RParen) {
-            return Err(ParseError("expected ')' after COPY columns".into()));
-        }
-        Some(result)
-    } else {
-        None
-    };
+    let columns = parse_copy_columns(&mut parser)?;
     if !parser.keyword("FROM") {
         return Err(ParseError("COPY requires FROM 'path'".into()));
     }
@@ -111,6 +114,16 @@ mod tests {
         assert_eq!(parsed.columns, Some(vec!["name".into(), "id".into()]));
         assert!(parsed.header);
         assert!(!parse_copy_from("SELECT 1").unwrap().is_some());
+    }
+
+    #[test]
+    fn enforces_copy_column_limit() {
+        let columns = (0..65)
+            .map(|index| format!("c{index}"))
+            .collect::<Vec<_>>()
+            .join(", ");
+        let sql = format!("COPY t ({columns}) FROM 'rows.csv'");
+        assert!(parse_copy_from(&sql).is_err());
     }
 
     #[test]
