@@ -211,8 +211,7 @@ fn create_table_locked(
         if_not_exists,
     };
     let result = (|| -> Result<(), String> {
-        write_wide_part(&parts.join("all_0_0_0"), &cols, &[])
-            .map_err(|error| error.to_string())?;
+        write_wide_part(&parts.join("all_0_0_0"), &cols, &[]).map_err(|error| error.to_string())?;
         // Persist the parts directory and its parent before the schema name
         // becomes visible. A published schema must not point at missing data
         // after a crash.
