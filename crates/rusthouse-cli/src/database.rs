@@ -169,7 +169,9 @@ fn rename_table(database: &Path, from: &str, to: &str) -> Result<(), String> {
     }
     let _lock = lock(database)?;
     let cols = columns(database, from)?;
-    let (source_parts, _) = validated_parts(database, from, &cols)?;
+    validated_parts(database, from, &cols)?;
+    // Move the complete table root, including its snapshot pointer and all generations.
+    let source_parts = data_path(database, from);
     let source_schema = database.join(format!("{from}.schema"));
     let destination_schema = database.join(format!("{to}.schema"));
     let destination_parts = data_path(database, to);
