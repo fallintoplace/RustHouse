@@ -126,6 +126,10 @@ fn main() {
     let retained = rows - middle;
     let sum = (middle as u128 + rows as u128 - 1) * retained as u128 / 2;
 
+    let mut page = String::from("id\n");
+    for id in (middle..rows).take(100) {
+        writeln!(&mut page, "{id}").unwrap();
+    }
     let mut top = String::from("id\n");
     for id in (middle..rows).rev().take(100) {
         writeln!(&mut top, "{id}").unwrap();
@@ -133,12 +137,20 @@ fn main() {
     println!("RustHouse frozen-parts benchmark: {rows} rows, {samples} samples");
     println!(
         "{:<18} {:>10} {:>17}",
-        "workload", "median ms", "M input rows/s"
+        "workload", "median ms", "M logical rows/s"
     );
     measure(
         "filtered sum",
         &format!("SELECT sum(id) FROM part WHERE id >= {middle}"),
         &format!("sum(id)\n{sum}\n"),
+        &fixture,
+        rows,
+        samples,
+    );
+    measure(
+        "large OFFSET",
+        &format!("SELECT id FROM part LIMIT 100 OFFSET {middle}"),
+        &page,
         &fixture,
         rows,
         samples,

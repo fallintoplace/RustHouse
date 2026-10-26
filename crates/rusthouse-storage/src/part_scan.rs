@@ -111,6 +111,30 @@ impl NumericPartReader {
         Ok(())
     }
 
+    /// Skip whole validated adaptive marks without decompressing their streams.
+    /// The caller must still discard any remaining rows inside the next mark.
+    /// Legacy marks without row counts cannot be skipped safely.
+    pub fn skip_complete_marks(&mut self, max_rows: usize) -> usize {
+        let Some(stream) = self.streams.first() else {
+            return 0;
+        };
+        let mut skipped = 0usize;
+        while self.next_mark < self.marks {
+            let Some(count) = stream.marks[self.next_mark].rows else {
+                break;
+            };
+            let Ok(count) = usize::try_from(count) else {
+                break;
+            };
+            if count == 0 || count > max_rows - skipped {
+                break;
+            }
+            skipped += count;
+            self.next_mark += 1;
+        }
+        skipped
+    }
+
     pub fn next_batch(&mut self) -> Result<Option<Vec<NumericColumn>>, PartError> {
         if self.next_mark == self.marks {
             return Ok(None);
