@@ -542,9 +542,11 @@ mod tests {
         );
         assert_eq!(current.status, "200 OK");
         assert_eq!(current.body, b"id\tname\n3\tLin\n");
-        assert!(handle_request("GET", "/schema?table=events", b"", &config)
-            .body
-            .starts_with(b"{\"rows\":1,"));
+        assert!(
+            handle_request("GET", "/schema?table=events", b"", &config)
+                .body
+                .starts_with(b"{\"rows\":1,")
+        );
         assert_eq!(
             handle_request("POST", "/", b"SELECT count(*) FROM events", &config).body,
             b"count\n1\n"
