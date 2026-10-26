@@ -14,7 +14,7 @@ use std::ffi::OsString;
 use std::path::PathBuf;
 use std::process::ExitCode;
 
-const USAGE: &str = "Usage:\n  rusthouse inspect-part <path>\n  rusthouse verify-part <path-to-wide-part>\n  rusthouse verify-file-sizes <path-to-part>\n  rusthouse inspect-checksums <path-to-checksums.txt>\n  rusthouse inspect-marks <path-to-wide-marks>\n  rusthouse inspect-blocks <path-to-.bin>\n  rusthouse verify-blocks <path-to-.bin>\n  rusthouse validate-marks <path-to-wide-marks> <path-to-.bin>\n  rusthouse read-u64 <data.bin> <marks.mrk2> <mark-index>\n  rusthouse scan-u64 <path-to-UInt64-.bin>\n  rusthouse read-numeric <data.bin> <marks.mrk2> <mark-index> <type>\n  rusthouse sql <SQL> [--part <path-to-wide-part>] [--format tsv|tsv-no-header|csv|csv-no-header|jsonl|json] [--output <path>] [--show-ast]\n  rusthouse sql --stdin [--part <path-to-wide-part>] [--format tsv|tsv-no-header|csv|csv-no-header|jsonl|json] [--output <path>] [--show-ast]\n  rusthouse sql --file <path.sql> [--part <path-to-wide-part>] [--format tsv|tsv-no-header|csv|csv-no-header|jsonl|json] [--output <path>] [--show-ast]\n  rusthouse --help\n\nInspect local MergeTree metadata, marks, and compressed blocks.";
+const USAGE: &str = "Usage:\n  rusthouse inspect-part <path>\n  rusthouse verify-part <path-to-wide-part>\n  rusthouse verify-file-sizes <path-to-part>\n  rusthouse inspect-checksums <path-to-checksums.txt>\n  rusthouse inspect-marks <path-to-wide-marks>\n  rusthouse inspect-blocks <path-to-.bin>\n  rusthouse verify-blocks <path-to-.bin>\n  rusthouse validate-marks <path-to-wide-marks> <path-to-.bin>\n  rusthouse read-u64 <data.bin> <marks.mrk2> <mark-index>\n  rusthouse scan-u64 <path-to-UInt64-.bin>\n  rusthouse read-numeric <data.bin> <marks.mrk2> <mark-index> <type>\n  rusthouse sql <SQL> [--part <path-to-wide-part>] [--format tsv|tsv-no-header|csv|csv-no-header|jsonl|json] [--output <path>] [--max-rows <n>] [--show-ast]\n  rusthouse sql --stdin [--part <path-to-wide-part>] [--format tsv|tsv-no-header|csv|csv-no-header|jsonl|json] [--output <path>] [--max-rows <n>] [--show-ast]\n  rusthouse sql --file <path.sql> [--part <path-to-wide-part>] [--format tsv|tsv-no-header|csv|csv-no-header|jsonl|json] [--output <path>] [--max-rows <n>] [--show-ast]\n  rusthouse --help\n\nInspect local MergeTree metadata, marks, and compressed blocks.";
 
 #[derive(Clone, Copy)]
 enum SqlOutputFormat {
@@ -356,6 +356,7 @@ fn run_sql_args(mut args: impl Iterator<Item = OsString>) -> Result<(), String> 
     let mut format = None;
     let mut output_path = None;
     let mut show_ast = false;
+    let mut max_rows = None;
     while let Some(arg) = args.next() {
         if arg.to_str() == Some("--show-ast") {
             if show_ast {
@@ -376,6 +377,22 @@ fn run_sql_args(mut args: impl Iterator<Item = OsString>) -> Result<(), String> 
                 return Err("duplicate --format option".into());
             }
             format = Some(SqlOutputFormat::from_arg(args.next())?);
+        } else if arg.to_str() == Some("--max-rows") {
+            if max_rows.is_some() {
+                return Err("duplicate --max-rows option".into());
+            }
+            let value = args.next().ok_or("missing --max-rows value")?;
+            let value = value
+                .to_str()
+                .ok_or("--max-rows must be a non-negative integer")?;
+            if value.is_empty() || !value.bytes().all(|byte| byte.is_ascii_digit()) {
+                return Err("--max-rows must be a non-negative integer".into());
+            }
+            max_rows = Some(
+                value
+                    .parse::<usize>()
+                    .map_err(|_| "--max-rows is too large")?,
+            );
         } else if arg.to_str() == Some("--output") {
             if output_path.is_some() {
                 return Err("duplicate --output option".into());
@@ -431,13 +448,16 @@ fn run_sql_args(mut args: impl Iterator<Item = OsString>) -> Result<(), String> 
     } else {
         query.ok_or("missing SQL statement")?
     };
-    let select = parse_select(&query).map_err(|error| error.to_string())?;
+    let mut select = parse_select(&query).map_err(|error| error.to_string())?;
     if show_ast {
         if output_path.is_some() {
             return Err("--output cannot be combined with --show-ast".into());
         }
         println!("{select:#?}");
         return Ok(());
+    }
+    if let Some(cap) = max_rows {
+        select.limit = Some(select.limit.map_or(cap, |limit| limit.min(cap)));
     }
     let mut output: Box<dyn std::io::Write> = match &output_path {
         Some(path) => Box::new(
