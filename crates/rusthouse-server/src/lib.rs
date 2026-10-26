@@ -191,11 +191,36 @@ fn database_part(database: &Path, table: &str) -> Result<PathBuf, String> {
     Ok(active)
 }
 
-fn schema_response(config: &Config) -> Response {
-    let Some(part) = config.part.as_deref() else {
-        return Response::text("400 Bad Request", "no --part source configured\n");
+fn schema_response(config: &Config, table: Option<&str>) -> Response {
+    if config.part.is_some() && config.database.is_some() {
+        return Response::text("400 Bad Request", "choose --part or --database, not both\n");
+    }
+    // Hold the same shared lock as SQL queries while resolving the snapshot
+    // and building the response. Concurrent DROP/RENAME must not remove it.
+    let _database_read_lock = if table.is_some() {
+        let Some(database) = config.database.as_deref() else {
+            return Response::text("400 Bad Request", "table discovery requires --database\n");
+        };
+        match rusthouse_storage::acquire_database_lock(database, false) {
+            Ok(lock) => Some(lock),
+            Err(error) => return Response::text("409 Conflict", &format!("{error}\n")),
+        }
+    } else {
+        None
     };
-    let metadata = match inspect_query_source(part) {
+    let part = if let Some(table) = table {
+        let database = config.database.as_deref().expect("checked --database");
+        match database_part(database, table) {
+            Ok(part) => part,
+            Err(error) => return Response::text("400 Bad Request", &format!("{error}\n")),
+        }
+    } else {
+        let Some(part) = config.part.as_ref() else {
+            return Response::text("400 Bad Request", "no --part source configured\n");
+        };
+        part.clone()
+    };
+    let metadata = match inspect_query_source(&part) {
         Ok(metadata) => metadata,
         Err(error) => return Response::text("400 Bad Request", &format!("{error}\n")),
     };
@@ -287,14 +312,31 @@ pub fn handle_request(method: &str, target: &str, body: &[u8], config: &Config) 
         }
         return Response::text("200 OK", "Ok.\n");
     }
-    if target == "/schema" {
+    if target == "/schema" || target.starts_with("/schema?") {
         if method != "GET" {
             return Response::text("405 Method Not Allowed", "schema endpoint requires GET\n");
         }
         if !body.is_empty() {
             return Response::text("400 Bad Request", "GET must not contain a request body\n");
         }
-        return schema_response(config);
+        if target.len() > MAX_HEADER_BYTES {
+            return Response::text("413 Payload Too Large", "request target too large\n");
+        }
+        let table = if target == "/schema" {
+            None
+        } else {
+            let Some(value) = target.strip_prefix("/schema?table=") else {
+                return Response::text("400 Bad Request", "schema expects one table parameter\n");
+            };
+            if value.is_empty() || value.contains('&') {
+                return Response::text("400 Bad Request", "schema expects one table parameter\n");
+            }
+            match decode_url(value) {
+                Ok(name) => Some(name),
+                Err(message) => return Response::text("400 Bad Request", message),
+            }
+        };
+        return schema_response(config, table.as_deref());
     }
     if method != "GET" && method != "POST" {
         return Response::text(
@@ -465,6 +507,13 @@ mod tests {
             database: Some(database.clone()),
             max_rows: 10,
         };
+        let schema = handle_request("GET", "/schema?table=events", b"", &config);
+        assert_eq!(schema.status, "200 OK");
+        assert_eq!(schema.content_type, "application/json; charset=utf-8");
+        assert_eq!(
+            schema.body,
+            b"{\"rows\":2,\"columns\":[{\"name\":\"id\",\"type\":\"UInt64\"},{\"name\":\"name\",\"type\":\"String\"}]}\n"
+        );
         let result = handle_request(
             "POST",
             "/",
@@ -493,6 +542,9 @@ mod tests {
         );
         assert_eq!(current.status, "200 OK");
         assert_eq!(current.body, b"id\tname\n3\tLin\n");
+        assert!(handle_request("GET", "/schema?table=events", b"", &config)
+            .body
+            .starts_with(b"{\"rows\":1,"));
         assert_eq!(
             handle_request("POST", "/", b"SELECT count(*) FROM events", &config).body,
             b"count\n1\n"
@@ -563,6 +615,10 @@ mod tests {
         let writer = acquire_database_lock(&database, true).unwrap();
         let blocked = handle_request("POST", "/", b"SELECT id FROM events", &config);
         assert_eq!(blocked.status, "409 Conflict");
+        assert_eq!(
+            handle_request("GET", "/schema?table=events", b"", &config).status,
+            "409 Conflict"
+        );
         drop(writer);
 
         let allowed = handle_request("POST", "/", b"SELECT id FROM events", &config);
@@ -663,6 +719,19 @@ mod tests {
     fn schema_discovery_requires_a_part_and_escapes_json() {
         let missing = handle_request("GET", "/schema", b"", &config());
         assert_eq!(missing.status, "400 Bad Request");
+        for url in [
+            "/schema?table=events",
+            "/schema?table=",
+            "/schema?table=events&table=other",
+            "/schema?query=SELECT+1",
+            "/schema?table=%FF",
+        ] {
+            assert_eq!(
+                handle_request("GET", url, b"", &config()).status,
+                "400 Bad Request",
+                "{url}"
+            );
+        }
         let mut output = Vec::new();
         write_json_string(&mut output, "quote\"\\newline\n\u{07}é").unwrap();
         assert_eq!(
