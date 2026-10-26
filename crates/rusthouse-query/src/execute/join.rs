@@ -514,7 +514,7 @@ mod tests {
                 .iter()
                 .map(|column| typed::cell(column, row))
                 .collect::<Vec<_>>();
-            assert_eq!(batch_key(&batch, row, &[0, 1]), row_key(&materialized, &[0, 1]));
+            assert!(batch_key(&batch, row, &[0, 1]) == row_key(&materialized, &[0, 1]));
         }
         assert!(batch_key(&batch, 0, &[0, 1]).is_some());
         assert!(batch_key(&batch, 1, &[0, 1]).is_none());
