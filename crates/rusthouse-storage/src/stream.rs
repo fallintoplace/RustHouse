@@ -35,6 +35,17 @@ impl<R: Read + Seek> Iterator for UInt64ColumnReader<R> {
             return None;
         }
 
+        // Most values fit entirely in the current decoded block. Skip the
+        // incremental copy loop, while keeping its cross-block fallback.
+        if self.current.len().saturating_sub(self.position) >= 8 {
+            let start = self.position;
+            self.position += 8;
+            let bytes = self.current[start..self.position]
+                .try_into()
+                .expect("an eight-byte slice");
+            return Some(Ok(u64::from_le_bytes(bytes)));
+        }
+
         let mut value = [0u8; 8];
         let mut filled = 0;
         while filled < value.len() {
@@ -159,5 +170,32 @@ mod tests {
     #[test]
     fn empty_column_is_empty() {
         assert!(scan(Vec::new()).next().is_none());
+    }
+    #[test]
+    fn decodes_many_values_with_the_contiguous_block_path() {
+        let expected = (0u64..4096)
+            .map(|value| value * 7919 + 17)
+            .collect::<Vec<_>>();
+        let bytes = expected
+            .iter()
+            .flat_map(|value| value.to_le_bytes())
+            .collect::<Vec<_>>();
+        let actual = scan(none_block(&bytes))
+            .collect::<Result<Vec<_>, _>>()
+            .unwrap();
+        assert_eq!(actual, expected);
+    }
+
+    #[test]
+    fn handles_unaligned_values_after_cross_block_fallback() {
+        let expected = [u64::MAX, 42, 77, 81];
+        let bytes = expected
+            .iter()
+            .flat_map(|value| value.to_le_bytes())
+            .collect::<Vec<_>>();
+        let mut blocks = none_block(&bytes[..3]);
+        blocks.extend(none_block(&bytes[3..]));
+        let actual = scan(blocks).collect::<Result<Vec<_>, _>>().unwrap();
+        assert_eq!(actual, expected);
     }
 }
