@@ -43,3 +43,17 @@ Name single-column query results with `cargo run -p rusthouse-cli -- sql "SELECT
 Inspect fixed-width primary-index entries with `cargo run -p rusthouse-cli -- inspect-primary-index /path/to/primary.idx 8 4`. Field widths are byte counts. RustHouse prints a bounded hex preview (16 marks, 8 fields, 16 bytes per field) and accepts both `.idx` and `.cidx`.
 
 Negate a numeric predicate using `WHERE NOT number < 5`, `WHERE NOT number IN (1, 3)`, or `WHERE NOT number BETWEEN 2 AND 4`. The prefix `NOT` applies to one predicate; parenthesized Boolean expressions are not supported.
+
+## Local schema catalog (experimental)
+
+DDL in RustHouse currently manages **metadata only** in an explicit local directory.
+It does **not** create MergeTree parts, change existing data, or make these
+catalog tables queryable by `SELECT`. Keep it separate from production parts.
+
+```sh
+cargo run -p rusthouse-cli -- sql "CREATE TABLE events (id UInt64, name String)" --catalog ./catalog
+cargo run -p rusthouse-cli -- sql "CREATE TABLE IF NOT EXISTS events (id UInt64, name String)" --catalog ./catalog
+```
+
+Schemas use a versioned text format in `<catalog>/<table>.schema`.
+Identifiers are simple ASCII SQL names and type support is deliberately bounded.
