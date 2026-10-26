@@ -241,3 +241,33 @@ fn compare<T: PartialOrd>(value: T, target: T, operator: Operator) -> bool {
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn hashed_in_and_not_in_keep_membership_semantics() {
+        let values = (0..16).map(Number::Unsigned).collect::<Vec<_>>();
+        let included = compile_in_test(values.clone(), false);
+        let excluded = compile_in_test(values, true);
+        assert!(matches!(&included, CompiledTest::InSet { .. }));
+        assert!(matches!(&excluded, CompiledTest::InSet { .. }));
+        assert!(included.matches(Number::Unsigned(0)));
+        assert!(included.matches(Number::Unsigned(15)));
+        assert!(!included.matches(Number::Unsigned(16)));
+        assert!(!excluded.matches(Number::Unsigned(0)));
+        assert!(excluded.matches(Number::Unsigned(16)));
+    }
+
+    #[test]
+    fn hashed_float_in_normalizes_signed_zero_but_not_nan() {
+        let values = (1..16)
+            .map(|value| Number::Float(f64::from(value)))
+            .chain(std::iter::once(Number::Float(-0.0)))
+            .collect();
+        let included = compile_in_test(values, false);
+        assert!(included.matches(Number::Float(0.0)));
+        assert!(!included.matches(Number::Float(f64::NAN)));
+    }
+}
