@@ -41,6 +41,16 @@ pub struct CompressedBlockReader<R: Read + Seek> {
 impl CompressedBlockReader<File> {
     pub fn open(path: impl AsRef<Path>) -> Result<Self, PartError> {
         let path = path.as_ref();
+        let entry = std::fs::symlink_metadata(path).map_err(|source| PartError::Io {
+            path: path.to_path_buf(),
+            source,
+        })?;
+        if !entry.file_type().is_file() {
+            return Err(PartError::Io {
+                path: path.to_path_buf(),
+                source: io::Error::new(io::ErrorKind::InvalidInput, "expected a regular file"),
+            });
+        }
         let file = File::open(path).map_err(|source| PartError::Io {
             path: path.to_path_buf(),
             source,
@@ -285,6 +295,25 @@ mod tests {
         CompressedBlockReader::new(Cursor::new(bytes), "data.bin")
             .unwrap()
             .collect()
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn rejects_symlinked_compressed_streams() {
+        use std::os::unix::fs::symlink;
+
+        let dir = std::env::temp_dir().join(format!(
+            "rusthouse-compressed-symlink-{}",
+            std::process::id()
+        ));
+        std::fs::create_dir(&dir).unwrap();
+        std::fs::write(dir.join("real.bin"), b"data").unwrap();
+        symlink("real.bin", dir.join("link.bin")).unwrap();
+        assert!(matches!(
+            CompressedBlockReader::open(dir.join("link.bin")),
+            Err(PartError::Io { source, .. }) if source.kind() == io::ErrorKind::InvalidInput
+        ));
+        std::fs::remove_dir_all(dir).unwrap();
     }
 
     #[test]
