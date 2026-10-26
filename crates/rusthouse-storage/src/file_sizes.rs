@@ -64,26 +64,41 @@ fn verify_listed_file(
     let mut components = name.split('/').peekable();
     while let Some(component) = components.next() {
         path.push(component);
-        let metadata = fs::symlink_metadata(&path).map_err(|source| io_error(&path, source))?;
-        if components.peek().is_some() {
-            if !metadata.file_type().is_dir() {
-                return Err(invalid(
-                    manifest_path,
-                    "listed file parent is not a directory",
-                ));
-            }
-        } else {
-            ensure_regular_file(
-                &metadata,
+        verify_component(
+            &path,
+            manifest_path,
+            components.peek().is_some(),
+            expected_size,
+        )?;
+    }
+    Ok(())
+}
+
+fn verify_component(
+    path: &Path,
+    manifest_path: &Path,
+    is_parent: bool,
+    expected_size: u64,
+) -> Result<(), PartError> {
+    let metadata = fs::symlink_metadata(path).map_err(|source| io_error(path, source))?;
+    if is_parent {
+        if !metadata.file_type().is_dir() {
+            return Err(invalid(
                 manifest_path,
-                "listed entry is not a regular file",
-            )?;
-            if metadata.len() != expected_size {
-                return Err(invalid(
-                    manifest_path,
-                    "file size differs from checksums.txt",
-                ));
-            }
+                "listed file parent is not a directory",
+            ));
+        }
+    } else {
+        ensure_regular_file(
+            &metadata,
+            manifest_path,
+            "listed entry is not a regular file",
+        )?;
+        if metadata.len() != expected_size {
+            return Err(invalid(
+                manifest_path,
+                "file size differs from checksums.txt",
+            ));
         }
     }
     Ok(())
