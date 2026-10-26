@@ -78,3 +78,20 @@ Remove a catalog column with `rusthouse sql "ALTER TABLE events DROP COLUMN age"
 
 Rename catalog metadata with `rusthouse sql "RENAME TABLE events TO archived_events" --catalog ./catalog`.
 The destination must be absent. No MergeTree parts are moved.
+
+
+## Read-only local HTTP API (experimental)
+
+```sh
+cargo run -p rusthouse-server -- --port 8123 --part ./snapshot/active-parts
+curl http://127.0.0.1:8123/ping
+curl 'http://127.0.0.1:8123/?query=SELECT%201'
+curl http://127.0.0.1:8123/ --data-binary 'SELECT count(*) FROM part'
+```
+
+The HTTP server is deliberately limited to the existing read-only SELECT dialect,
+plain TSV responses, and loopback-only access. Both GET and POST are supported.
+The server enforces an 8 MiB response limit, 4096-byte query limit,
+16 concurrent connections, and a maximum result row count (default 10000).
+It does not implement full SQL wire-protocol compatibility, TLS, authentication,
+or queries against a live mutating table directory.
