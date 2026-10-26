@@ -11,7 +11,7 @@ use std::path::Path;
 const MAX_BUFFERED_ROWS: usize = 100_000;
 
 #[derive(Clone)]
-enum Cell {
+pub(super) enum Cell {
     Numeric(Number),
     Text(Vec<u8>),
     Uuid(String),
@@ -37,7 +37,7 @@ impl Cell {
     }
 }
 
-fn cell(column: &TypedColumn, row: usize) -> Cell {
+pub(super) fn cell(column: &TypedColumn, row: usize) -> Cell {
     match column {
         TypedColumn::Numeric(values) => Cell::Numeric(number_at(values, row)),
         TypedColumn::Text(values) => Cell::Text(values.get(row).unwrap().to_owned()),
@@ -93,7 +93,7 @@ pub(super) fn requires_typed_scan(query: &Select, path: &Path) -> Result<bool, E
         .any(|column| is_typed(&column.data_type) && names.contains(&column.name.as_str())))
 }
 
-fn base_type(data_type: &str) -> &str {
+pub(super) fn base_type(data_type: &str) -> &str {
     data_type
         .strip_prefix("Nullable(")
         .and_then(|inner| inner.strip_suffix(')'))
@@ -205,12 +205,12 @@ enum Test {
     Like(Vec<LikeToken>, bool),
 }
 
-struct Condition {
+pub(super) struct Condition {
     index: usize,
     test: Test,
 }
 
-fn compile(
+pub(super) fn compile(
     predicates: &[Predicate],
     indices: &HashMap<String, usize>,
     types: &HashMap<String, String>,
@@ -309,7 +309,7 @@ fn matches_comparison(value: &Cell, target: &Cell, operator: Operator) -> bool {
     }
 }
 
-fn passes(batch: &[TypedColumn], row: usize, branches: &[Vec<Condition>]) -> bool {
+pub(super) fn passes(batch: &[TypedColumn], row: usize, branches: &[Vec<Condition>]) -> bool {
     branches.iter().any(|branch| {
         branch.iter().all(|condition| {
             let value = cell(&batch[condition.index], row);

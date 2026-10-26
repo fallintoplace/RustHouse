@@ -10,6 +10,7 @@ use std::path::Path;
 
 mod predicates;
 mod typed;
+mod typed_aggregate;
 #[cfg(test)]
 use predicates::{CompiledTest, compile_in_test};
 use predicates::{
@@ -169,6 +170,9 @@ fn execute_into<W: Write>(
         ExecutionError::Invalid("pass --part <directory> for table queries".into())
     })?;
     if typed::requires_typed_scan(query, part)? {
+        if matches!(query.projection, Projection::Aggregate { .. }) {
+            return typed_aggregate::execute_typed_aggregate(query, part, output);
+        }
         return typed::execute_typed(query, part, output);
     }
     if let Projection::CountDistinct { column } = &query.projection {
