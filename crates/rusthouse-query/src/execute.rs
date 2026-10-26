@@ -599,12 +599,19 @@ fn execute_numbers<W: Write>(
         let comparisons = compile_numbers_predicates(query)?;
         writeln!(output, "countDistinct(number)")?;
         if query.limit != Some(0) && query.offset.unwrap_or(0) == 0 {
-            let mut count = 0u64;
-            for number in start..start + rows {
-                if number_matches_all(Number::Unsigned(u128::from(number)), &comparisons) {
-                    count += 1;
+            // Generated numbers are unique, so unfiltered COUNT(DISTINCT) is their row count.
+            let count = if query.predicates.is_empty() && query.or_predicates.is_empty() {
+                rows
+            } else {
+                let mut matched = 0u64;
+                for index in 0..rows {
+                    let number = start + index * step;
+                    if number_matches_all(Number::Unsigned(u128::from(number)), &comparisons) {
+                        matched += 1;
+                    }
                 }
-            }
+                matched
+            };
             writeln!(output, "{count}")?;
         }
         return Ok(());
@@ -1376,6 +1383,42 @@ mod tests {
             "countDistinct(number)\n0\n"
         );
         assert!(run("SELECT count(DISTINCT missing) FROM numbers(3)", None).is_err());
+    }
+
+    #[test]
+    fn generated_count_distinct_skips_unfiltered_scans_and_respects_steps() {
+        assert_eq!(
+            run("SELECT count(DISTINCT number) FROM numbers(1000000)", None).unwrap(),
+            "countDistinct(number)\n1000000\n"
+        );
+        assert_eq!(
+            run("SELECT count(DISTINCT number) FROM numbers(3, 10, 4)", None).unwrap(),
+            "countDistinct(number)\n3\n"
+        );
+        assert_eq!(
+            run(
+                "SELECT count(DISTINCT number) FROM numbers(3, 10, 4) WHERE number >= 7",
+                None
+            )
+            .unwrap(),
+            "countDistinct(number)\n2\n"
+        );
+        assert_eq!(
+            run(
+                "SELECT count(DISTINCT number) FROM numbers(3, 10, 4) WHERE number = 11",
+                None
+            )
+            .unwrap(),
+            "countDistinct(number)\n1\n"
+        );
+        assert_eq!(
+            run("SELECT count(DISTINCT number) FROM numbers(0)", None).unwrap(),
+            "countDistinct(number)\n0\n"
+        );
+        assert_eq!(
+            run("SELECT count(DISTINCT number) FROM numbers(4) LIMIT 0", None).unwrap(),
+            "countDistinct(number)\n"
+        );
     }
 
     #[test]
