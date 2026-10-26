@@ -143,6 +143,12 @@ fn schema_response(config: &Config) -> Response {
     }
 }
 
+#[derive(Clone, Copy)]
+enum QueryFormat {
+    Tsv,
+    Jsonl,
+}
+
 fn query_parameters(target: &str) -> Result<(String, Option<String>, QueryFormat), &'static str> {
     let (path, query) = target.split_once('?').unwrap_or((target, ""));
     if path != "/" && path != "/explain" {
