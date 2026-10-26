@@ -128,6 +128,12 @@ fn invalid(path: &Path, reason: &'static str) -> PartError {
 
 #[cfg(test)]
 mod tests {
+    use super::*;
+    use std::path::PathBuf;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
+    static NEXT_FILE: AtomicUsize = AtomicUsize::new(0);
+
     #[test]
     fn checks_primary_key_field_layout_before_io() {
         let path = Path::new("missing.idx");
@@ -139,12 +145,6 @@ mod tests {
             ));
         }
     }
-
-    use super::*;
-    use std::path::PathBuf;
-    use std::sync::atomic::{AtomicUsize, Ordering};
-
-    static NEXT_FILE: AtomicUsize = AtomicUsize::new(0);
 
     fn temporary_file(
         extension: &str,
