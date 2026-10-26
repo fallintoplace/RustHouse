@@ -13,6 +13,8 @@ fn options() -> (u64, usize) {
     let mut args = std::env::args().skip(1);
     while let Some(arg) = args.next() {
         match arg.as_str() {
+            // Cargo passes this to custom bench targets with harness = false.
+            "--bench" => {}
             "--rows" => {
                 rows = args
                     .next()
