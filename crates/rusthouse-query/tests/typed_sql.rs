@@ -213,3 +213,53 @@ fn queries_typed_columns_across_frozen_parts() {
     );
     fs::remove_dir_all(table).unwrap();
 }
+
+
+#[test]
+fn groups_typed_columns_with_filters_having_and_pagination() {
+    let part = part();
+    assert_eq!(
+        query("SELECT service, count(*) FROM part GROUP BY service ORDER BY count DESC", &part),
+        "service\tcount\napi\t2\ndb\t1\n"
+    );
+    assert_eq!(
+        query(
+            "SELECT service, count(*) FROM part WHERE status >= 500 GROUP BY service ORDER BY service DESC",
+            &part
+        ),
+        "service\tcount\ndb\t1\napi\t1\n"
+    );
+    assert_eq!(
+        query(
+            "SELECT service, count(*) FROM part GROUP BY service HAVING count(*) >= 2 ORDER BY count DESC LIMIT 1",
+            &part
+        ),
+        "service\tcount\napi\t2\n"
+    );
+    assert_eq!(
+        query(
+            "SELECT service, count(*) FROM part GROUP BY service ORDER BY count DESC LIMIT 1 OFFSET 1",
+            &part
+        ),
+        "service\tcount\ndb\t1\n"
+    );
+    fs::remove_dir_all(part).unwrap();
+}
+
+#[test]
+fn groups_nullable_and_uuid_keys_including_null() {
+    let part = part();
+    assert_eq!(
+        query("SELECT message, count(*) FROM part GROUP BY message ORDER BY message", &part),
+        "message\tcount\n\\N\t1\nhello\t1\nworld\t1\n"
+    );
+    assert_eq!(
+        query("SELECT attempt, count(*) FROM part GROUP BY attempt ORDER BY attempt", &part),
+        "attempt\tcount\n\\N\t1\n1\t1\n3\t1\n"
+    );
+    assert_eq!(
+        query("SELECT uid, count(*) FROM part GROUP BY uid", &part),
+        "uid\tcount\n00000000-0000-0000-0000-000000000000\t3\n"
+    );
+    fs::remove_dir_all(part).unwrap();
+}
