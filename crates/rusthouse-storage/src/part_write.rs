@@ -376,6 +376,12 @@ mod tests {
         );
         assert_ne!(checksum_hash(b"abc"), u128::from(cityhash128(b"abc")));
 
+        let one_block = vec![42u8; 2048];
+        assert_eq!(
+            checksum_hash(&one_block),
+            u128::from(cityhash128_with_seed(&one_block, U128::new(0, 0)))
+        );
+
         let input = vec![42u8; 4097];
         let first = cityhash128_with_seed(&input[..2048], U128::new(0, 0));
         let second = cityhash128_with_seed(&input[2048..4096], first);
