@@ -36,33 +36,37 @@ impl<W: Write> CsvWriter<W> {
             if index != 0 {
                 self.output.write_all(b",")?;
             }
-            if field == b"\\N" {
-                self.output.write_all(b"\\N")?;
-                continue;
-            }
-            let value = decode_tsv_value(field)?;
-            let needs_quotes = value == "\\N"
-                || value
-                    .bytes()
-                    .any(|byte| matches!(byte, b',' | b'"' | b'\n' | b'\r'));
-            if needs_quotes {
-                self.output.write_all(b"\"")?;
-            }
-            for byte in value.as_bytes() {
-                if *byte == b'"' {
-                    self.output.write_all(b"\"\"")?;
-                } else {
-                    self.output.write_all(&[*byte])?;
-                }
-            }
-            if needs_quotes {
-                self.output.write_all(b"\"")?;
-            }
+            write_csv_field(&mut self.output, field)?;
         }
         self.output.write_all(b"\r\n")?;
         self.line.clear();
         Ok(())
     }
+}
+
+fn write_csv_field<W: Write>(output: &mut W, field: &[u8]) -> io::Result<()> {
+    if field == b"\\N" {
+        return output.write_all(b"\\N");
+    }
+    let value = decode_tsv_value(field)?;
+    let needs_quotes = value == "\\N"
+        || value
+            .bytes()
+            .any(|byte| matches!(byte, b',' | b'"' | b'\n' | b'\r'));
+    if needs_quotes {
+        output.write_all(b"\"")?;
+    }
+    for byte in value.as_bytes() {
+        if *byte == b'"' {
+            output.write_all(b"\"\"")?;
+        } else {
+            output.write_all(&[*byte])?;
+        }
+    }
+    if needs_quotes {
+        output.write_all(b"\"")?;
+    }
+    Ok(())
 }
 
 impl<W: Write> Write for CsvWriter<W> {
@@ -120,6 +124,14 @@ mod tests {
 
         let mut csv = CsvWriter::new(Vec::new());
         assert!(csv.write_all(b"column\ninvalid\\q\n").is_err());
+    }
+
+    #[test]
+    fn writes_null_markers_and_plain_fields() {
+        let mut output = Vec::new();
+        write_csv_field(&mut output, b"\\N").unwrap();
+        write_csv_field(&mut output, b"plain").unwrap();
+        assert_eq!(output, b"\\Nplain");
     }
 
     #[test]
