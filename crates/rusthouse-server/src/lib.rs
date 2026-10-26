@@ -3,6 +3,7 @@
 mod csv;
 mod json_array;
 mod jsonl;
+mod tables;
 
 use csv::CsvWriter;
 use json_array::JsonArraySink;
@@ -313,6 +314,9 @@ pub fn handle_request(method: &str, target: &str, body: &[u8], config: &Config) 
             return Response::text("400 Bad Request", "GET must not contain a request body\n");
         }
         return Response::text("200 OK", "Ok.\n");
+    }
+    if target == "/tables" {
+        return tables::handle(method, body, config);
     }
     if target == "/schema" || target.starts_with("/schema?") {
         if method != "GET" {
