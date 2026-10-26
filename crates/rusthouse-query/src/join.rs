@@ -50,8 +50,8 @@ fn alias(parser: &mut Parser, table: &str) -> Result<String, ParseError> {
     match parser.tokens.get(parser.index) {
         Some(Token::Word(word))
             if ![
-                "INNER", "LEFT", "RIGHT", "FULL", "CROSS", "OUTER", "JOIN", "ON", "USING", "WHERE", "GROUP",
-                "ORDER", "LIMIT", "OFFSET",
+                "INNER", "LEFT", "RIGHT", "FULL", "CROSS", "OUTER", "JOIN", "ON", "USING", "WHERE",
+                "GROUP", "ORDER", "LIMIT", "OFFSET",
             ]
             .iter()
             .any(|keyword| word.eq_ignore_ascii_case(keyword)) =>
@@ -184,7 +184,9 @@ pub fn parse_join(sql: &str) -> Result<Option<JoinSelect>, ParseError> {
     } else if parser.keyword("ON") {
         let first = qualified(&mut parser)?;
         if !parser.take(Token::Operator(super::Operator::Eq)) {
-            return Err(ParseError("JOIN ON currently supports only equality".into()));
+            return Err(ParseError(
+                "JOIN ON currently supports only equality".into(),
+            ));
         }
         let second = qualified(&mut parser)?;
         let mut keys = vec![(first, second)];
@@ -347,7 +349,10 @@ mod tests {
         }
         let too_many = format!(
             "SELECT * FROM l JOIN r USING ({})",
-            (0..9).map(|n| format!("key{n}")).collect::<Vec<_>>().join(", ")
+            (0..9)
+                .map(|n| format!("key{n}"))
+                .collect::<Vec<_>>()
+                .join(", ")
         );
         assert!(parse_join(&too_many).is_err());
     }
