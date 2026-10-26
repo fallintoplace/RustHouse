@@ -69,17 +69,28 @@ fn acquire_lock(database: &Path, exclusive: bool) -> Result<DatabaseLock, String
         .write(true)
         .create(true)
         .open(&path)
-        .map_err(|error| format!("cannot open database {kind} lock {}: {error}", path.display()))?;
+        .map_err(|error| {
+            format!(
+                "cannot open database {kind} lock {}: {error}",
+                path.display()
+            )
+        })?;
 
     #[cfg(unix)]
     {
         let metadata = fs::symlink_metadata(&path)
             .map_err(|error| format!("cannot inspect database lock {}: {error}", path.display()))?;
         if !metadata.file_type().is_file() {
-            return Err(format!("database lock is not a regular file: {}", path.display()));
+            return Err(format!(
+                "database lock is not a regular file: {}",
+                path.display()
+            ));
         }
         advisory::try_lock(&file, exclusive).map_err(|error| {
-            format!("cannot acquire database {kind} lock {}: {error}", path.display())
+            format!(
+                "cannot acquire database {kind} lock {}: {error}",
+                path.display()
+            )
         })?;
     }
 
@@ -88,7 +99,12 @@ fn acquire_lock(database: &Path, exclusive: bool) -> Result<DatabaseLock, String
         .write(true)
         .create_new(true)
         .open(&path)
-        .map_err(|error| format!("cannot acquire database {kind} lock {}: {error}", path.display()))?;
+        .map_err(|error| {
+            format!(
+                "cannot acquire database {kind} lock {}: {error}",
+                path.display()
+            )
+        })?;
 
     Ok(DatabaseLock {
         _file: file,
