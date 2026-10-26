@@ -137,7 +137,16 @@ pub fn read_numeric_column<R: Read>(
     }
 
     match numeric_storage_type(data_type).unwrap_or(data_type) {
-        "UInt8" => decode!(u8, UInt8),
+        "UInt8" => {
+            if rows > MAX_BATCH_BYTES {
+                return Err(NumericReadError::BatchTooLarge { rows, width: 1 });
+            }
+            // A byte-wide column already has its final in-memory representation.
+            // Read directly into the output instead of copying through 16 KiB chunks.
+            let mut values = vec![0u8; rows];
+            reader.read_exact(&mut values)?;
+            Ok(NumericColumn::UInt8(values))
+        }
         "UInt16" => decode!(u16, UInt16),
         "UInt32" => decode!(u32, UInt32),
         "UInt64" => decode!(u64, UInt64),
@@ -407,4 +416,37 @@ mod tests {
         assert!(column.is_empty());
         assert_eq!(column.len(), 0);
     }
+    #[test]
+    fn reads_large_u8_columns_directly_with_one_bulk_read() {
+        struct CountingReader<R> {
+            inner: R,
+            calls: usize,
+        }
+
+        impl<R: Read> Read for CountingReader<R> {
+            fn read(&mut self, buf: &mut [u8]) -> io::Result<usize> {
+                self.calls += 1;
+                self.inner.read(buf)
+            }
+        }
+
+        let input = vec![42u8; 65_536];
+        let mut reader = CountingReader {
+            inner: Cursor::new(input.as_slice()),
+            calls: 0,
+        };
+        let column = read_numeric_column(&mut reader, "UInt8", input.len()).unwrap();
+        assert_eq!(reader.calls, 1);
+        assert_eq!(column, NumericColumn::UInt8(input));
+    }
+
+    #[test]
+    fn zero_length_u8_batch_does_not_read() {
+        let mut reader = Cursor::new(&[][..]);
+        assert_eq!(
+            read_numeric_column(&mut reader, "UInt8", 0).unwrap(),
+            NumericColumn::UInt8(vec![])
+        );
+    }
+
 }
