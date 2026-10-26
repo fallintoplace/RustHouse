@@ -51,6 +51,28 @@ fn token_sql(token: &Token) -> String {
     }
 }
 
+fn parse_assignments(parser: &mut Parser) -> Result<Vec<(String, Option<String>)>, ParseError> {
+    let mut assignments = Vec::new();
+    let mut seen = HashSet::new();
+    loop {
+        if assignments.len() >= 64 {
+            return Err(ParseError("UPDATE supports at most 64 columns".into()));
+        }
+        let column = parser.word()?;
+        if !seen.insert(column.clone()) {
+            return Err(ParseError(format!("duplicate UPDATE column: {column}")));
+        }
+        if !parser.take(Token::Operator(Operator::Eq)) {
+            return Err(ParseError("UPDATE assignments require =".into()));
+        }
+        assignments.push((column, value(parser)?));
+        if !parser.take(Token::Comma) {
+            break;
+        }
+    }
+    Ok(assignments)
+}
+
 /// Rewrite predicates using the SELECT parser to keep NULL, LIKE and OR semantics shared.
 pub fn parse_update(sql: &str) -> Result<Option<Update>, ParseError> {
     let mut parser = Parser {
@@ -67,24 +89,7 @@ pub fn parse_update(sql: &str) -> Result<Option<Update>, ParseError> {
     if !parser.keyword("SET") {
         return Err(ParseError("UPDATE requires SET assignments".into()));
     }
-    let mut assignments = Vec::new();
-    let mut seen = HashSet::new();
-    loop {
-        if assignments.len() >= 64 {
-            return Err(ParseError("UPDATE supports at most 64 columns".into()));
-        }
-        let column = parser.word()?;
-        if !seen.insert(column.clone()) {
-            return Err(ParseError(format!("duplicate UPDATE column: {column}")));
-        }
-        if !parser.take(Token::Operator(Operator::Eq)) {
-            return Err(ParseError("UPDATE assignments require =".into()));
-        }
-        assignments.push((column, value(&mut parser)?));
-        if !parser.take(Token::Comma) {
-            break;
-        }
-    }
+    let assignments = parse_assignments(&mut parser)?;
 
     let mut query = format!("SELECT * FROM {table}");
     if parser.keyword("WHERE") {
