@@ -108,3 +108,21 @@ cargo fmt --all -- --check
 cargo clippy --workspace --all-targets --locked -- -D warnings
 cargo test --workspace --locked
 ```
+
+## Diagnose a local database without changing it
+
+Stop writers and the HTTP server before running the offline diagnostic command:
+
+```sh
+rusthouse doctor --database ./mydb
+```
+
+It checks catalog schemas against active parts, validates stream checksums,
+mark layouts, and manifest file sizes, and reports missing or orphaned tables,
+bad snapshot pointers, and interrupted staging paths. Reports are sorted by
+table name. Errors produce a nonzero exit code. The command does not delete,
+repair, or create database files, including the lock file.
+
+Run it only with writers stopped: doctor does not take a database lock.
+It does **not** verify checksums.txt file hashes, older inactive generations,
+or power-loss durability. Preserve damaged files before manual recovery.
