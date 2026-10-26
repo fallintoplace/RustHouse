@@ -10,7 +10,28 @@ pub(super) fn apply(catalog: &Path, ddl: &Ddl) -> Result<(), String> {
             columns,
             if_not_exists,
         } => create_table(catalog, name, columns, *if_not_exists),
+        Ddl::DropTable { name, if_exists } => drop_table(catalog, name, *if_exists),
     }
+}
+
+fn drop_table(catalog: &Path, name: &str, if_exists: bool) -> Result<(), String> {
+    let path = catalog.join(format!("{name}.schema"));
+    let metadata = match fs::symlink_metadata(&path) {
+        Ok(metadata) => metadata,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound && if_exists => {
+            return Ok(());
+        }
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+            return Err(format!("unknown catalog table: {name}"));
+        }
+        Err(error) => return Err(format!("cannot inspect table {name}: {error}")),
+    };
+    if !metadata.file_type().is_file() {
+        return Err(format!("not a regular schema file: {name}"));
+    }
+    fs::remove_file(&path).map_err(|error| format!("cannot drop table {name}: {error}"))?;
+    println!("Dropped table {name} (schema only)");
+    Ok(())
 }
 
 fn create_table(
