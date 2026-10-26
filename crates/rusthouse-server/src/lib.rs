@@ -5,8 +5,8 @@ mod csv_no_header;
 mod json_array;
 mod json_compact_each_row;
 mod jsonl;
-mod sql_values;
 mod markdown;
+mod sql_values;
 mod tables;
 
 use csv::CsvWriter;
