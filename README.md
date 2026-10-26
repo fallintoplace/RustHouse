@@ -108,3 +108,19 @@ cargo fmt --all -- --check
 cargo clippy --workspace --all-targets --locked -- -D warnings
 cargo test --workspace --locked
 ```
+
+## Debug-only storage crash testing
+
+Debug builds provide internal process-exit fault points around INSERT and
+snapshot publication. These are disabled in release builds and must not be used
+for a running database. The test command below launches disposable databases,
+forces process exit 86 at each selected point, reopens storage, and checks
+committed rows and subsequent writes:
+
+```sh
+cargo test -p rusthouse-cli --test sql_database_crash_points --locked
+```
+
+This models sudden **process termination**, not power loss or a filesystem
+that violates flush guarantees. Ordinary tests do not set the fault-point
+environment variable.

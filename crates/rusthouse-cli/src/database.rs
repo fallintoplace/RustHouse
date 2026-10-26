@@ -13,6 +13,20 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 
 static NEXT_STAGE: AtomicUsize = AtomicUsize::new(0);
 
+// Deliberately disabled in release builds. Used by subprocess integration tests
+// to simulate a process dying without running destructors at commit boundaries.
+#[cfg(debug_assertions)]
+pub(super) fn crash_if_requested(point: &str) {
+    if std::env::var("RUSTHOUSE_DEBUG_CRASH_AT").is_ok_and(|value| value == point) {
+        eprintln!("RustHouse debug crash point: {point}");
+        std::process::exit(86);
+    }
+}
+
+#[cfg(not(debug_assertions))]
+pub(super) fn crash_if_requested(_point: &str) {}
+
+
 // Keep this file on disk. Unix advisory locks are released by the kernel when
 // the process exits, including after SIGKILL, so a stale pathname is harmless.
 // Unlinking a locked file would let another writer lock a different inode.
@@ -519,8 +533,10 @@ pub(super) fn insert(database: &Path, insert: &Insert) -> Result<(), String> {
     let result = (|| {
         write_wide_part(&staging, &cols, &rows).map_err(|error| error.to_string())?;
         verify_wide_part(&staging).map_err(|error| error.to_string())?;
+        crash_if_requested("insert-after-staging");
         fs::rename(&staging, &destination)
             .map_err(|error| format!("cannot publish inserted rows: {error}"))?;
+        crash_if_requested("insert-after-rename");
         fs::File::open(&parts_dir)
             .and_then(|dir| dir.sync_all())
             .map_err(|error| format!("cannot sync table data: {error}"))?;

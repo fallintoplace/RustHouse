@@ -1,6 +1,6 @@
 //! Bounded copy-on-write snapshots for local SQL tables.
 //! The active pointer is atomically replaced only after all new parts are verified.
-use super::{NEXT_STAGE, columns, data_path, lock, validated_parts};
+use super::{NEXT_STAGE, columns, crash_if_requested, data_path, lock, validated_parts};
 use rusthouse_storage::{
     Column, NumericColumn, TypedColumn, TypedQueryReader, inspect_query_source, verify_wide_part,
     write_wide_part,
@@ -188,6 +188,7 @@ pub(super) fn publish_snapshot(
             }
         }
         sync_directory(&staging)?;
+        crash_if_requested("snapshot-after-staging");
         Ok(())
     })();
     if let Err(error) = prepared {
@@ -201,6 +202,7 @@ pub(super) fn publish_snapshot(
     fs::rename(&staging, &destination)
         .map_err(|error| format!("cannot publish database generation: {error}"))?;
     sync_directory(&versions)?;
+    crash_if_requested("snapshot-after-generation");
 
     let root = data_path(database, table);
     let pointer = root.join(".rusthouse-active");
@@ -218,8 +220,10 @@ pub(super) fn publish_snapshot(
         .and_then(|_| file.sync_all())
         .map_err(|error| format!("cannot persist snapshot pointer: {error}"))?;
     drop(file);
+    crash_if_requested("snapshot-before-pointer");
     fs::rename(&pending, &pointer)
         .map_err(|error| format!("cannot activate database snapshot: {error}"))?;
+    crash_if_requested("snapshot-after-pointer");
     sync_directory(&root)?;
     Ok(())
 }
