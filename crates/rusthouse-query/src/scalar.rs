@@ -4,6 +4,10 @@ use super::{ParseError, Parser, Token};
 
 const MAX_DEPTH: usize = 16;
 
+pub(super) fn is_function(name: &str) -> bool {
+    name.eq_ignore_ascii_case("ABS") || name.eq_ignore_ascii_case("SIGN")
+}
+
 pub(super) fn parse(parser: &mut Parser) -> Result<i64, ParseError> {
     expression(parser, 0)
 }
@@ -70,6 +74,21 @@ fn factor(parser: &mut Parser, depth: usize) -> Result<i64, ParseError> {
     }
     if parser.take(Token::Plus) {
         return factor(parser, depth + 1);
+    }
+    if matches!(parser.tokens.get(parser.index), Some(Token::Word(name)) if is_function(name)) {
+        let name = parser.word()?;
+        if !parser.take(Token::LParen) {
+            return Err(ParseError("expected '(' after scalar function".into()));
+        }
+        let value = expression(parser, depth + 1)?;
+        if !parser.take(Token::RParen) {
+            return Err(ParseError("expected ')' after scalar function".into()));
+        }
+        return if name.eq_ignore_ascii_case("ABS") {
+            value.checked_abs().ok_or_else(overflow)
+        } else {
+            Ok(value.signum())
+        };
     }
     if parser.take(Token::LParen) {
         let value = expression(parser, depth + 1)?;

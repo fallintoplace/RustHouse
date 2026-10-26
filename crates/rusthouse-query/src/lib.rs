@@ -441,7 +441,9 @@ fn parse_select_tokens(tokens: Vec<Token>) -> Result<Select, ParseError> {
             }
             Projection::CountColumn { column }
         }
-    } else if matches!(parser.tokens.get(parser.index + 1), Some(Token::LParen)) {
+    } else if matches!(parser.tokens.get(parser.index + 1), Some(Token::LParen))
+        && !matches!(parser.tokens.get(parser.index), Some(Token::Word(word)) if scalar::is_function(word))
+    {
         let name = parser.word()?;
         let function = match name.to_ascii_uppercase().as_str() {
             "SUM" => AggregateFunction::Sum,
@@ -466,7 +468,7 @@ fn parse_select_tokens(tokens: Vec<Token>) -> Result<Select, ParseError> {
         Some(Token::Number(_) | Token::String(_) | Token::LParen | Token::Plus | Token::Minus)
     ) || matches!(
         parser.tokens.get(parser.index),
-        Some(Token::Word(word)) if word.eq_ignore_ascii_case("NULL")
+        Some(Token::Word(word)) if word.eq_ignore_ascii_case("NULL") || scalar::is_function(word)
     ) {
         let mut columns = Vec::new();
         loop {
@@ -475,6 +477,9 @@ fn parse_select_tokens(tokens: Vec<Token>) -> Result<Select, ParseError> {
             }
             let value = match parser.tokens.get(parser.index) {
                 Some(Token::Number(_) | Token::LParen | Token::Plus | Token::Minus) => {
+                    ConstantValue::Integer(scalar::parse(&mut parser)?)
+                }
+                Some(Token::Word(name)) if scalar::is_function(name) => {
                     ConstantValue::Integer(scalar::parse(&mut parser)?)
                 }
                 Some(Token::String(value)) => {
