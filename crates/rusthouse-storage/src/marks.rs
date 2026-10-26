@@ -74,7 +74,7 @@ pub fn read_wide_marks(path: impl AsRef<Path>) -> Result<WideMarks, PartError> {
         if size > MAX_MARKS_BYTES as u64 {
             return Err(marks_too_large(path));
         }
-        let mut content = Vec::new();
+        let mut content = Vec::with_capacity(size as usize);
         file.take(MAX_MARKS_BYTES as u64 + 1)
             .read_to_end(&mut content)
             .map_err(|source| PartError::Io {
@@ -472,5 +472,22 @@ mod tests {
                 if source.kind() == io::ErrorKind::InvalidData
         ));
         fs::remove_file(path).unwrap();
+    }
+    #[test]
+    fn reads_thousands_of_raw_marks_from_one_file() {
+        let path = std::env::temp_dir().join(format!(
+            "rusthouse-many-raw-marks-{}.mrk",
+            std::process::id()
+        ));
+        let mut bytes = Vec::new();
+        for mark in 0..4_096u64 {
+            bytes.extend_from_slice(&(mark * 16).to_le_bytes());
+            bytes.extend_from_slice(&0u64.to_le_bytes());
+        }
+        fs::write(&path, bytes).unwrap();
+        let result = read_wide_marks(&path).unwrap();
+        fs::remove_file(path).unwrap();
+        assert_eq!(result.marks.len(), 4_096);
+        assert_eq!(result.marks[4_095].compressed_offset, 4_095 * 16);
     }
 }

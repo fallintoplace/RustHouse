@@ -20,6 +20,7 @@ Use `format=csv-no-header` to omit column headers while preserving CSV escaping 
 Pass `format=sql-values` to export rows as SQL `VALUES ('text', NULL), ...;` tuples.
 The output uses quoted text literals for every non-NULL value, matches the CLI format,
 and inherits the 8 MiB response and 1 MiB line limits.
+Pass `format=markdown` to return a Markdown table with escaped cell text and bounded output.
 Pass `format=jsonl` on either method for `application/x-ndjson`, one JSON object per result row.
 Pass `format=json-compact-each-row` for newline-delimited JSON arrays of column values.
 Like the existing JSONL mode, values remain strings to preserve wide integer

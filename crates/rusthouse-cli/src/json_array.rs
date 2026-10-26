@@ -117,17 +117,22 @@ impl<W: Write> JsonArraySink<W> {
 
 impl<W: Write> Write for JsonArraySink<W> {
     fn write(&mut self, bytes: &[u8]) -> io::Result<usize> {
-        for &byte in bytes {
-            if byte == b'\n' {
-                self.finish_row()?;
+        for chunk in bytes.split_inclusive(|&byte| byte == b'\n') {
+            let complete = chunk.last() == Some(&b'\n');
+            let fragment = if complete {
+                &chunk[..chunk.len() - 1]
             } else {
-                if self.row.len() >= MAX_JSON_ROW_BYTES {
-                    return Err(io::Error::new(
-                        io::ErrorKind::InvalidData,
-                        "JSON object exceeds 4 MiB",
-                    ));
-                }
-                self.row.push(byte);
+                chunk
+            };
+            if fragment.len() > MAX_JSON_ROW_BYTES.saturating_sub(self.row.len()) {
+                return Err(io::Error::new(
+                    io::ErrorKind::InvalidData,
+                    "JSON object exceeds 4 MiB",
+                ));
+            }
+            self.row.extend_from_slice(fragment);
+            if complete {
+                self.finish_row()?;
             }
         }
         Ok(bytes.len())
@@ -243,5 +248,16 @@ mod tests {
         writer.write_all(b"number\n1").unwrap();
         writer.write_all(b"\n").unwrap();
         assert_eq!(writer.finish().unwrap(), b"[{\"number\":\"1\"}]\n");
+    }
+    #[test]
+    fn array_sink_bulk_copies_large_json_objects() {
+        let large_row = format!("{{\"value\":\"{}\"}}", "x".repeat(64 * 1024));
+        let mut sink = JsonArraySink::new(Vec::new(), false);
+        sink.write_all(large_row.as_bytes()).unwrap();
+        sink.write_all(b"\n{}\n").unwrap();
+        assert_eq!(
+            sink.finish().unwrap(),
+            format!("[{large_row},{{}}]\n").as_bytes()
+        );
     }
 }
