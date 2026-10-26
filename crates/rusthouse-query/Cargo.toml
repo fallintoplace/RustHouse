@@ -7,3 +7,6 @@ description = "Read-only SQL parsing and query execution for RustHouse"
 
 [dependencies]
 rusthouse-storage = { path = "../rusthouse-storage" }
+
+[dev-dependencies]
+ch_cityhash102 = "0.1.0"

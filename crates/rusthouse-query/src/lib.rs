@@ -86,6 +86,10 @@ pub enum Predicate {
         lower: String,
         upper: String,
     },
+    IsNull {
+        column: String,
+        negated: bool,
+    },
 }
 
 impl Predicate {
@@ -94,7 +98,8 @@ impl Predicate {
             Self::Comparison { column, .. }
             | Self::In { column, .. }
             | Self::NotIn { column, .. }
-            | Self::NotBetween { column, .. } => column,
+            | Self::NotBetween { column, .. }
+            | Self::IsNull { column, .. } => column,
         }
     }
 }
@@ -177,6 +182,16 @@ impl Parser {
                 Ok(value.clone())
             }
             _ => Err(ParseError("expected an identifier".into())),
+        }
+    }
+
+    fn literal(&mut self) -> Result<String, ParseError> {
+        match self.tokens.get(self.index) {
+            Some(Token::Number(value)) | Some(Token::String(value)) => {
+                self.index += 1;
+                Ok(value.clone())
+            }
+            _ => Err(ParseError("expected a SQL literal".into())),
         }
     }
 
@@ -392,7 +407,20 @@ pub fn parse_select(sql: &str) -> Result<Select, ParseError> {
             let column = parser.word()?;
             let postfix_not = parser.keyword("NOT");
             let negate_in = prefix_not ^ postfix_not;
-            if parser.keyword("BETWEEN") {
+            if parser.keyword("IS") {
+                if postfix_not {
+                    return Err(ParseError("unexpected NOT before IS".into()));
+                }
+                let negated = parser.keyword("NOT") ^ prefix_not;
+                if !parser.keyword("NULL") {
+                    return Err(ParseError("expected NULL after IS".into()));
+                }
+                branches
+                    .last_mut()
+                    .unwrap()
+                    .push(Predicate::IsNull { column, negated });
+                total_conditions += 1;
+            } else if parser.keyword("BETWEEN") {
                 let lower = parser.number()?;
                 if !parser.keyword("AND") {
                     return Err(ParseError("BETWEEN requires AND".into()));
@@ -430,7 +458,7 @@ pub fn parse_select(sql: &str) -> Result<Select, ParseError> {
                     if values.len() == 32 {
                         return Err(ParseError("IN supports at most 32 values".into()));
                     }
-                    values.push(parser.number()?);
+                    values.push(parser.literal()?);
                     if !parser.take(Token::Comma) {
                         break;
                     }
@@ -482,7 +510,7 @@ pub fn parse_select(sql: &str) -> Result<Select, ParseError> {
                 branches.last_mut().unwrap().push(Predicate::Comparison {
                     column,
                     operator,
-                    value: parser.number()?,
+                    value: parser.literal()?,
                 });
                 total_conditions += 1;
             }
@@ -1027,6 +1055,11 @@ mod tests {
     }
 
     #[test]
+    fn allows_quoted_predicate_values_for_type_validation_at_execution() {
+        assert!(parse_select("SELECT id FROM part WHERE id > 'abc'").is_ok());
+    }
+
+    #[test]
     fn rejects_malformed_and_unsupported_statements() {
         for sql in [
             "",
@@ -1038,7 +1071,6 @@ mod tests {
             "SELECT id, FROM part",
             "SELECT id FROM part LIMIT -1",
             "SELECT id FROM part LIMIT 1.5",
-            "SELECT id FROM part WHERE id > 'abc'",
             "SELECT id FROM part WHERE id =",
             "SELECT id FROM part LIMIT 184467440737095516161",
             "SELECT 1 + 2",
