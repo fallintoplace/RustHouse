@@ -218,7 +218,10 @@ pub fn handle_request(method: &str, target: &str, body: &[u8], config: &Config) 
     if path == "/explain" {
         return Response::text(
             "200 OK",
-            &format!("Logical plan (no data read):\n{}\n", explain_select(&select)),
+            &format!(
+                "Logical plan (no data read):\n{}\n",
+                explain_select(&select)
+            ),
         );
     }
     let mut writer = LimitedWriter::new();
@@ -342,7 +345,11 @@ mod tests {
         // Planning a part query must not require --part or open data files.
         let planned = handle_request("POST", "/explain", b"SELECT id FROM part", &config());
         assert_eq!(planned.status, "200 OK");
-        assert!(String::from_utf8(planned.body).unwrap().contains("Source: table part"));
+        assert!(
+            String::from_utf8(planned.body)
+                .unwrap()
+                .contains("Source: table part")
+        );
 
         let executed = handle_request("POST", "/", b"SELECT id FROM part", &config());
         assert_eq!(executed.status, "400 Bad Request");
@@ -351,10 +358,25 @@ mod tests {
     #[test]
     fn explain_endpoint_rejects_writes_and_invalid_inputs() {
         for (method, path, body, status) in [
-            ("GET", "/explain?query=DROP+TABLE+t", &b""[..], "400 Bad Request"),
+            (
+                "GET",
+                "/explain?query=DROP+TABLE+t",
+                &b""[..],
+                "400 Bad Request",
+            ),
             ("GET", "/explain", &b"SELECT 1"[..], "400 Bad Request"),
-            ("POST", "/explain?query=SELECT+1", &b"SELECT 2"[..], "400 Bad Request"),
-            ("PUT", "/explain", &b"SELECT 1"[..], "405 Method Not Allowed"),
+            (
+                "POST",
+                "/explain?query=SELECT+1",
+                &b"SELECT 2"[..],
+                "400 Bad Request",
+            ),
+            (
+                "PUT",
+                "/explain",
+                &b"SELECT 1"[..],
+                "405 Method Not Allowed",
+            ),
         ] {
             assert_eq!(handle_request(method, path, body, &config()).status, status);
         }
