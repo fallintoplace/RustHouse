@@ -962,8 +962,7 @@ mod tests {
                 },
             ]
         );
-        let negated = parse_select("SELECT service FROM part WHERE NOT service LIKE 'd%'")
-            .unwrap();
+        let negated = parse_select("SELECT service FROM part WHERE NOT service LIKE 'd%'").unwrap();
         assert_eq!(
             negated.predicates,
             vec![Predicate::Like {
