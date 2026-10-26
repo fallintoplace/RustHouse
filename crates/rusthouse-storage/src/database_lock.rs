@@ -45,6 +45,27 @@ impl Drop for DatabaseLock {
     }
 }
 
+#[cfg(unix)]
+fn validate_lock_identity(path: &Path, file: &fs::File) -> Result<(), String> {
+    use std::os::unix::fs::MetadataExt;
+    let metadata = fs::symlink_metadata(path)
+        .map_err(|error| format!("cannot inspect database lock {}: {error}", path.display()))?;
+    let opened = file
+        .metadata()
+        .map_err(|error| format!("cannot inspect opened database lock: {error}"))?;
+    if !metadata.file_type().is_file()
+        || !opened.file_type().is_file()
+        || metadata.ino() != opened.ino()
+        || metadata.dev() != opened.dev()
+    {
+        return Err(format!(
+            "database lock is not a stable regular file: {}",
+            path.display()
+        ));
+    }
+    Ok(())
+}
+
 /// Exclusive for writes, shared for reads. Unix locks are released after crashes.
 /// A read never creates the database directory; both modes use the same inode.
 pub fn acquire_database_lock(database: &Path, exclusive: bool) -> Result<DatabaseLock, String> {
@@ -71,22 +92,7 @@ pub fn acquire_database_lock(database: &Path, exclusive: bool) -> Result<Databas
 
     #[cfg(unix)]
     {
-        use std::os::unix::fs::MetadataExt;
-        let metadata = fs::symlink_metadata(&path)
-            .map_err(|error| format!("cannot inspect database lock {}: {error}", path.display()))?;
-        let opened = file
-            .metadata()
-            .map_err(|error| format!("cannot inspect opened database lock: {error}"))?;
-        if !metadata.file_type().is_file()
-            || !opened.file_type().is_file()
-            || metadata.ino() != opened.ino()
-            || metadata.dev() != opened.dev()
-        {
-            return Err(format!(
-                "database lock is not a stable regular file: {}",
-                path.display()
-            ));
-        }
+        validate_lock_identity(&path, &file)?;
         advisory::try_lock(&file, exclusive).map_err(|error| {
             format!(
                 "cannot acquire database {kind} lock {}: {error}",
