@@ -136,5 +136,4 @@ mod tests {
             "[\"42\"]\n".repeat(1_000).as_bytes()
         );
     }
-
 }
