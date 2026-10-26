@@ -106,6 +106,26 @@ fn finish_ddl(parser: &mut Parser) -> Result<(), ParseError> {
     Ok(())
 }
 
+fn optional_if_exists(parser: &mut Parser) -> Result<bool, ParseError> {
+    if !parser.keyword("IF") {
+        return Ok(false);
+    }
+    if !parser.keyword("EXISTS") {
+        return Err(ParseError("expected IF EXISTS".into()));
+    }
+    Ok(true)
+}
+
+fn optional_if_not_exists(parser: &mut Parser) -> Result<bool, ParseError> {
+    if !parser.keyword("IF") {
+        return Ok(false);
+    }
+    if !parser.keyword("NOT") || !parser.keyword("EXISTS") {
+        return Err(ParseError("expected IF NOT EXISTS".into()));
+    }
+    Ok(true)
+}
+
 /// Recognize only supported schema-only DDL. SELECT is parsed by the existing parser.
 pub fn parse_ddl(sql: &str) -> Result<Option<Ddl>, ParseError> {
     let mut parser = Parser {
@@ -183,14 +203,7 @@ pub fn parse_ddl(sql: &str) -> Result<Option<Ddl>, ParseError> {
             if !parser.keyword("COLUMN") {
                 return Err(ParseError("expected COLUMN after DROP".into()));
             }
-            let if_exists = if parser.keyword("IF") {
-                if !parser.keyword("EXISTS") {
-                    return Err(ParseError("expected IF EXISTS".into()));
-                }
-                true
-            } else {
-                false
-            };
+            let if_exists = optional_if_exists(&mut parser)?;
             let column = identifier(&mut parser)?;
             finish_ddl(&mut parser)?;
             return Ok(Some(Ddl::DropColumn {
@@ -204,14 +217,7 @@ pub fn parse_ddl(sql: &str) -> Result<Option<Ddl>, ParseError> {
                 "expected ADD COLUMN or DROP COLUMN after table name".into(),
             ));
         }
-        let if_not_exists = if parser.keyword("IF") {
-            if !parser.keyword("NOT") || !parser.keyword("EXISTS") {
-                return Err(ParseError("expected IF NOT EXISTS".into()));
-            }
-            true
-        } else {
-            false
-        };
+        let if_not_exists = optional_if_not_exists(&mut parser)?;
         let name = identifier(&mut parser)?;
         let data_type = data_type(&mut parser, 0)?;
         finish_ddl(&mut parser)?;
@@ -225,14 +231,7 @@ pub fn parse_ddl(sql: &str) -> Result<Option<Ddl>, ParseError> {
         if !parser.keyword("TABLE") {
             return Err(ParseError("expected TABLE after DROP".into()));
         }
-        let if_exists = if parser.keyword("IF") {
-            if !parser.keyword("EXISTS") {
-                return Err(ParseError("expected IF EXISTS".into()));
-            }
-            true
-        } else {
-            false
-        };
+        let if_exists = optional_if_exists(&mut parser)?;
         let name = identifier(&mut parser)?;
         finish_ddl(&mut parser)?;
         return Ok(Some(Ddl::DropTable { name, if_exists }));
@@ -243,14 +242,7 @@ pub fn parse_ddl(sql: &str) -> Result<Option<Ddl>, ParseError> {
     if !parser.keyword("TABLE") {
         return Err(ParseError("expected TABLE after CREATE".into()));
     }
-    let if_not_exists = if parser.keyword("IF") {
-        if !parser.keyword("NOT") || !parser.keyword("EXISTS") {
-            return Err(ParseError("expected IF NOT EXISTS".into()));
-        }
-        true
-    } else {
-        false
-    };
+    let if_not_exists = optional_if_not_exists(&mut parser)?;
     let name = identifier(&mut parser)?;
     if !parser.take(Token::LParen) {
         return Err(ParseError("expected '(' after table name".into()));
