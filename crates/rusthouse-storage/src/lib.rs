@@ -28,7 +28,7 @@ pub use arrays::{
     ArrayOffsets, ArrayOffsetsEncoding, ArrayReadError, NumericArrayColumn, read_array_offsets,
     read_numeric_array_column,
 };
-pub use checksums::{FileChecksum, PartChecksums, UncompressedChecksum, read_checksums};
+pub use checksums::{ChecksumSizeSummary, FileChecksum, PartChecksums, UncompressedChecksum, read_checksums};
 pub use columns::parse_columns;
 pub use compression::{CompressedBlock, CompressedBlockReader, DecodedBlock};
 pub use decimal::{DecimalColumn, DecimalReadError, read_decimal_column};

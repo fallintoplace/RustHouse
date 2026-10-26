@@ -28,6 +28,51 @@ pub struct PartChecksums {
     pub files: Vec<FileChecksum>,
 }
 
+/// Byte totals declared by the manifest; no disk files or hashes are checked.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ChecksumSizeSummary {
+    pub files: usize,
+    pub stored_bytes: u64,
+    pub compressed_files: usize,
+    pub compressed_stored_bytes: u64,
+    /// Original bytes reported for compressed entries only, not all files.
+    pub compressed_original_bytes: u64,
+}
+
+impl PartChecksums {
+    pub fn size_summary(&self) -> Result<ChecksumSizeSummary, PartError> {
+        let mut summary = ChecksumSizeSummary {
+            files: self.files.len(),
+            stored_bytes: 0,
+            compressed_files: 0,
+            compressed_stored_bytes: 0,
+            compressed_original_bytes: 0,
+        };
+        let overflow = || PartError::InvalidChecksums {
+            path: self.path.clone(),
+            reason: "manifest file sizes overflow u64",
+        };
+        for file in &self.files {
+            summary.stored_bytes = summary
+                .stored_bytes
+                .checked_add(file.size)
+                .ok_or_else(&overflow)?;
+            if let Some(uncompressed) = &file.uncompressed {
+                summary.compressed_files += 1;
+                summary.compressed_stored_bytes = summary
+                    .compressed_stored_bytes
+                    .checked_add(file.size)
+                    .ok_or_else(&overflow)?;
+                summary.compressed_original_bytes = summary
+                    .compressed_original_bytes
+                    .checked_add(uncompressed.size)
+                    .ok_or_else(&overflow)?;
+            }
+        }
+        Ok(summary)
+    }
+}
+
 pub fn read_checksums(path: impl AsRef<Path>) -> Result<PartChecksums, PartError> {
     let path = path.as_ref();
     let file = File::open(path).map_err(|source| PartError::Io {
@@ -431,4 +476,66 @@ mod tests {
         ));
         std::fs::remove_file(path).unwrap();
     }
+
+    #[test]
+    fn summarizes_manifest_storage_without_reading_files() {
+        let manifest = PartChecksums {
+            path: PathBuf::from("/missing/checksums.txt"),
+            version: 3,
+            files: vec![
+                FileChecksum {
+                    name: "id.bin".into(),
+                    size: 80,
+                    hash: 0,
+                    uncompressed: Some(UncompressedChecksum { size: 240, hash: 0 }),
+                },
+                FileChecksum {
+                    name: "id.mrk2".into(),
+                    size: 20,
+                    hash: 0,
+                    uncompressed: None,
+                },
+            ],
+        };
+        assert_eq!(
+            manifest.size_summary().unwrap(),
+            ChecksumSizeSummary {
+                files: 2,
+                stored_bytes: 100,
+                compressed_files: 1,
+                compressed_stored_bytes: 80,
+                compressed_original_bytes: 240,
+            }
+        );
+    }
+
+    #[test]
+    fn rejects_overflowing_summed_manifest_sizes() {
+        let manifest = PartChecksums {
+            path: PathBuf::from("checksums.txt"),
+            version: 3,
+            files: vec![
+                FileChecksum {
+                    name: "a".into(),
+                    size: u64::MAX,
+                    hash: 0,
+                    uncompressed: None,
+                },
+                FileChecksum {
+                    name: "b".into(),
+                    size: 1,
+                    hash: 0,
+                    uncompressed: None,
+                },
+            ],
+        };
+        assert!(matches!(
+            manifest.size_summary(),
+            Err(PartError::InvalidChecksums {
+                reason: "manifest file sizes overflow u64",
+                ..
+            })
+        ));
+    }
+
 }

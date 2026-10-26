@@ -78,3 +78,5 @@ Remove a catalog column with `rusthouse sql "ALTER TABLE events DROP COLUMN age"
 
 Rename catalog metadata with `rusthouse sql "RENAME TABLE events TO archived_events" --catalog ./catalog`.
 The destination must be absent. No MergeTree parts are moved.
+
+Summarize declared part manifest sizes without reading data files with `rusthouse inspect-checksums /path/to/checksums.txt --summary`. The result separates compressed stored bytes and their original byte counts. It does not verify that local files or hashes match the manifest.
