@@ -5,7 +5,10 @@ use super::{ParseError, Parser, Token};
 const MAX_DEPTH: usize = 16;
 
 pub(super) fn is_function(name: &str) -> bool {
-    name.eq_ignore_ascii_case("ABS") || name.eq_ignore_ascii_case("SIGN")
+    matches!(
+        name.to_ascii_uppercase().as_str(),
+        "ABS" | "SIGN" | "BITAND" | "BITOR" | "BITXOR"
+    )
 }
 
 pub(super) fn parse(parser: &mut Parser) -> Result<i64, ParseError> {
@@ -80,15 +83,27 @@ fn factor(parser: &mut Parser, depth: usize) -> Result<i64, ParseError> {
         if !parser.take(Token::LParen) {
             return Err(ParseError("expected '(' after scalar function".into()));
         }
-        let value = expression(parser, depth + 1)?;
+        let first = expression(parser, depth + 1)?;
+        let result = match name.to_ascii_uppercase().as_str() {
+            "ABS" => first.checked_abs().ok_or_else(overflow)?,
+            "SIGN" => first.signum(),
+            "BITAND" | "BITOR" | "BITXOR" => {
+                if !parser.take(Token::Comma) {
+                    return Err(ParseError("bitwise functions require two arguments".into()));
+                }
+                let second = expression(parser, depth + 1)?;
+                match name.to_ascii_uppercase().as_str() {
+                    "BITAND" => first & second,
+                    "BITOR" => first | second,
+                    _ => first ^ second,
+                }
+            }
+            _ => unreachable!("only supported scalar functions reach this branch"),
+        };
         if !parser.take(Token::RParen) {
             return Err(ParseError("expected ')' after scalar function".into()));
         }
-        return if name.eq_ignore_ascii_case("ABS") {
-            value.checked_abs().ok_or_else(overflow)
-        } else {
-            Ok(value.signum())
-        };
+        return Ok(result);
     }
     if parser.take(Token::LParen) {
         let value = expression(parser, depth + 1)?;
