@@ -38,9 +38,9 @@ impl<W: Write> JsonCompactEachRowWriter<W> {
         let width = 1 + self.line.iter().filter(|&&byte| byte == b'\t').count();
         if Some(width) != self.columns {
             return Err(io::Error::new(
-                    io::ErrorKind::InvalidData,
-                    "JSON row width differs from header",
-                ));
+                io::ErrorKind::InvalidData,
+                "JSON row width differs from header",
+            ));
         }
         self.output.write_all(b"[")?;
         for (index, value) in self.line.split(|byte| *byte == b'\t').enumerate() {
@@ -57,9 +57,9 @@ impl<W: Write> JsonCompactEachRowWriter<W> {
     pub(super) fn finish(mut self) -> io::Result<W> {
         if self.columns.is_none() || !self.line.is_empty() {
             return Err(io::Error::new(
-                    io::ErrorKind::InvalidData,
-                    "incomplete JSON row stream",
-                ));
+                io::ErrorKind::InvalidData,
+                "incomplete JSON row stream",
+            ));
         }
         self.output.flush()?;
         Ok(self.output)
@@ -74,9 +74,9 @@ impl<W: Write> Write for JsonCompactEachRowWriter<W> {
             } else {
                 if self.line.len() >= MAX_LINE_BYTES {
                     return Err(io::Error::new(
-                    io::ErrorKind::InvalidData,
-                    "JSON row exceeds 1 MiB",
-                ));
+                        io::ErrorKind::InvalidData,
+                        "JSON row exceeds 1 MiB",
+                    ));
                 }
                 self.line.push(byte);
             }
