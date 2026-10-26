@@ -111,7 +111,7 @@ mod tests {
             }
         }
 
-        let ipv4 = vec![1u8, 2, 0, 192].repeat(8192);
+        let ipv4 = [1u8, 2, 0, 192].repeat(8192);
         let mut reader = CountingReader {
             inner: ipv4.as_slice(),
             calls: 0,
