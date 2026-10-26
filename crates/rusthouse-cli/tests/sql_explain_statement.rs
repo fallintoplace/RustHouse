@@ -23,7 +23,11 @@ fn explain_sql_statement_plans_without_opening_data() {
 
     let lower = sql("explain select 42", &[]);
     assert!(lower.status.success(), "{lower:?}");
-    assert!(String::from_utf8(lower.stdout).unwrap().contains("Project: 42"));
+    assert!(
+        String::from_utf8(lower.stdout)
+            .unwrap()
+            .contains("Project: 42")
+    );
 }
 
 #[test]
