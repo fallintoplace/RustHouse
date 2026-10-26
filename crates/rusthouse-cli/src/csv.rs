@@ -272,5 +272,4 @@ mod decoded_csv_regressions {
         write_csv_field(&mut output, b"a\\tb").unwrap();
         assert_eq!(output, "café\",comma\"\"a\tb\"".as_bytes());
     }
-
 }
