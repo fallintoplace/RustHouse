@@ -85,17 +85,21 @@ pub fn read_null_map<R: Read>(reader: &mut R, rows: usize) -> Result<Vec<u8>, Nu
     Ok(null_map)
 }
 
+fn nullable_inner_type(data_type: &str) -> Result<&str, NullableReadError> {
+    data_type
+        .strip_prefix("Nullable(")
+        .and_then(|inner| inner.strip_suffix(')'))
+        .filter(|inner| !inner.is_empty())
+        .ok_or_else(|| NullableReadError::InvalidType(data_type.to_owned()))
+}
+
 pub fn read_nullable_numeric_column<N: Read, D: Read>(
     nulls: &mut N,
     data: &mut D,
     data_type: &str,
     rows: usize,
 ) -> Result<NullableColumn<NumericColumn>, NullableReadError> {
-    let nested_type = data_type
-        .strip_prefix("Nullable(")
-        .and_then(|inner| inner.strip_suffix(')'))
-        .filter(|inner| !inner.is_empty())
-        .ok_or_else(|| NullableReadError::InvalidType(data_type.to_owned()))?;
+    let nested_type = nullable_inner_type(data_type)?;
     if read_numeric_column(&mut io::empty(), nested_type, 0).is_err() {
         return Err(NullableReadError::InvalidType(data_type.to_owned()));
     }
@@ -111,11 +115,10 @@ pub fn read_nullable_fixed_strings<N: Read, D: Read>(
     data_type: &str,
     rows: usize,
 ) -> Result<NullableColumn<FixedStringColumn>, NullableReadError> {
-    let nested_type = data_type
-        .strip_prefix("Nullable(")
-        .and_then(|inner| inner.strip_suffix(')'))
-        .filter(|inner| inner.starts_with("FixedString(") && inner.ends_with(')'))
-        .ok_or_else(|| NullableReadError::InvalidType(data_type.to_owned()))?;
+    let nested_type = nullable_inner_type(data_type)?;
+    if !nested_type.starts_with("FixedString(") || !nested_type.ends_with(')') {
+        return Err(NullableReadError::InvalidType(data_type.to_owned()));
+    }
     crate::fixed_strings::checked_size(nested_type, rows)
         .map_err(NullableReadError::FixedString)?;
 
