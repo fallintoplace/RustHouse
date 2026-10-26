@@ -106,6 +106,21 @@ fn scan_comparison(bytes: &[u8], index: &mut usize) -> Operator {
     operator
 }
 
+fn punctuation_token(byte: u8) -> Token {
+    match byte {
+        b'*' => Token::Star,
+        b'/' => Token::Slash,
+        b'%' => Token::Percent,
+        b'+' => Token::Plus,
+        b',' => Token::Comma,
+        b'.' => Token::Dot,
+        b'(' => Token::LParen,
+        b')' => Token::RParen,
+        b';' => Token::Semicolon,
+        _ => unreachable!("only supported punctuation reaches this helper"),
+    }
+}
+
 pub(super) fn tokenize(sql: &str) -> Result<Vec<Token>, ParseError> {
     if sql.len() > 4096 {
         return Err(ParseError("statement exceeds the 4096-byte limit".into()));
@@ -121,21 +136,9 @@ pub(super) fn tokenize(sql: &str) -> Result<Vec<Token>, ParseError> {
                 continue;
             }
             b'\'' => scan_string(sql, &mut index)?,
-            b'*' => {
+            b'*' | b'/' | b'%' | b'+' | b',' | b'.' | b'(' | b')' | b';' => {
                 index += 1;
-                Token::Star
-            }
-            b'/' => {
-                index += 1;
-                Token::Slash
-            }
-            b'%' => {
-                index += 1;
-                Token::Percent
-            }
-            b'+' => {
-                index += 1;
-                Token::Plus
+                punctuation_token(byte)
             }
             b'-' if bytes.get(index + 1) == Some(&b'.') => {
                 return Err(ParseError("expected digits after '-'".into()));
@@ -143,26 +146,6 @@ pub(super) fn tokenize(sql: &str) -> Result<Vec<Token>, ParseError> {
             b'-' if !matches!(bytes.get(index + 1), Some(b'0'..=b'9')) => {
                 index += 1;
                 Token::Minus
-            }
-            b',' => {
-                index += 1;
-                Token::Comma
-            }
-            b'.' => {
-                index += 1;
-                Token::Dot
-            }
-            b'(' => {
-                index += 1;
-                Token::LParen
-            }
-            b')' => {
-                index += 1;
-                Token::RParen
-            }
-            b';' => {
-                index += 1;
-                Token::Semicolon
             }
             b'=' | b'<' | b'>' => Token::Operator(scan_comparison(bytes, &mut index)),
             b'!' if bytes.get(index + 1) == Some(&b'=') => {
