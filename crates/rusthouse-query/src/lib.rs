@@ -539,7 +539,33 @@ pub fn parse_select(sql: &str) -> Result<Select, ParseError> {
         if !parser.keyword("BY") {
             return Err(ParseError("expected BY after ORDER".into()));
         }
-        let column = parser.word()?;
+        // Resolve SQL's 1-based ORDER BY positions while the SELECT list is available.
+        let column = if matches!(parser.tokens.get(parser.index), Some(Token::Number(_))) {
+            let position = parser
+                .number()?
+                .parse::<usize>()
+                .map_err(|_| ParseError("ORDER BY position is too large".into()))?;
+            match &projection {
+                Projection::Columns(columns) => position
+                    .checked_sub(1)
+                    .and_then(|index| columns.get(index))
+                    .cloned()
+                    .ok_or_else(|| ParseError("ORDER BY position is out of range".into()))?,
+                Projection::GroupedCount { column } => match position {
+                    1 => column.clone(),
+                    2 => "count".into(),
+                    _ => return Err(ParseError("ORDER BY position is out of range".into())),
+                },
+                Projection::All => {
+                    return Err(ParseError(
+                        "ORDER BY positions require explicit projected columns".into(),
+                    ));
+                }
+                _ => return Err(ParseError("ORDER BY requires column projections".into())),
+            }
+        } else {
+            parser.word()?
+        };
         if matches!(projection, Projection::GroupedCount { .. })
             && column.eq_ignore_ascii_case("count")
             && parser.take(Token::LParen)
@@ -1353,6 +1379,45 @@ mod tests {
             "SELECT number FROM numbers(6) WHERE number NOT = 3",
             "SELECT number FROM numbers(6) WHERE NOT number % 2 = 1",
             "SELECT number FROM numbers(6) WHERE NOT",
+        ] {
+            assert!(parse_select(sql).is_err(), "{sql}");
+        }
+    }
+
+    #[test]
+    fn resolves_one_based_order_by_positions() {
+        let query =
+            parse_select("SELECT number AS n FROM numbers(10) ORDER BY 1 DESC LIMIT 3").unwrap();
+        assert_eq!(
+            query.order_by,
+            Some(OrderBy {
+                column: "number".into(),
+                descending: true,
+            })
+        );
+        let grouped =
+            parse_select("SELECT id, count(*) FROM part GROUP BY id ORDER BY 2 DESC").unwrap();
+        assert_eq!(
+            grouped.order_by,
+            Some(OrderBy {
+                column: "count".into(),
+                descending: true,
+            })
+        );
+        let grouped_key =
+            parse_select("SELECT id, count(*) FROM part GROUP BY id ORDER BY 1").unwrap();
+        assert_eq!(grouped_key.order_by.unwrap().column, "id");
+    }
+
+    #[test]
+    fn rejects_invalid_order_by_positions() {
+        for sql in [
+            "SELECT number FROM numbers(3) ORDER BY 0",
+            "SELECT number FROM numbers(3) ORDER BY 2",
+            "SELECT number FROM numbers(3) ORDER BY -1",
+            "SELECT * FROM numbers(3) ORDER BY 1",
+            "SELECT number FROM numbers(3) ORDER BY 184467440737095516160",
+            "SELECT id, count(*) FROM part GROUP BY id ORDER BY 3",
         ] {
             assert!(parse_select(sql).is_err(), "{sql}");
         }
