@@ -29,6 +29,8 @@ jobs:
         run: cargo clippy --workspace --all-targets --locked -- -D warnings
       - run: cargo test --workspace --locked
       - run: cargo build --workspace --locked
+      - if: runner.os == 'Linux'
+        run: cargo bench -p rusthouse-query --bench queries --locked -- --rows 1000 --samples 3
   msrv:
     name: Rust MSRV (ubuntu-latest)
     runs-on: ubuntu-latest
