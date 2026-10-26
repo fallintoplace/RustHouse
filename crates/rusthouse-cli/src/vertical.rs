@@ -73,14 +73,8 @@ fn write_visible<W: Write>(output: &mut W, bytes: &[u8]) -> io::Result<()> {
     output.write_all(&bytes[start..])
 }
 
-fn write_row<W: Write>(
-    output: &mut W,
-    row: usize,
-    headers: &[Vec<u8>],
-    line: &[u8],
-) -> io::Result<()> {
-    let fields = line
-        .split(|&byte| byte == b'\t')
+fn decode_row_fields(line: &[u8]) -> io::Result<Vec<Vec<u8>>> {
+    line.split(|&byte| byte == b'\t')
         .map(|field| {
             if field == b"\\N" {
                 Ok(field.to_vec())
@@ -88,7 +82,16 @@ fn write_row<W: Write>(
                 decode_tsv_field(field)
             }
         })
-        .collect::<io::Result<Vec<_>>>()?;
+        .collect()
+}
+
+fn write_row<W: Write>(
+    output: &mut W,
+    row: usize,
+    headers: &[Vec<u8>],
+    line: &[u8],
+) -> io::Result<()> {
+    let fields = decode_row_fields(line)?;
     writeln!(output, "Row {row}:")?;
     for (header, field) in headers.iter().zip(&fields) {
         output.write_all(b"  ")?;
@@ -169,6 +172,15 @@ impl<W: Write> Write for VerticalWriter<W> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn decoded_row_fields_preserve_null_sentinels() {
+        assert_eq!(
+            decode_row_fields(b"one\\ttwo\t\\N").unwrap(),
+            vec![b"one\ttwo".to_vec(), b"\\N".to_vec()]
+        );
+        assert!(decode_row_fields(b"bad\\q").is_err());
+    }
 
     #[test]
     fn prints_rows_in_column_value_form_even_with_fragmented_writes() {
