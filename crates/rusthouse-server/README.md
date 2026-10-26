@@ -11,7 +11,12 @@ curl 'http://127.0.0.1:8123/?query=SELECT%201'
 curl http://127.0.0.1:8123/ --data-binary 'SELECT count(*) FROM part'
 ```
 
-The endpoint supports GET /?query=... and POST / with raw SQL. Responses are TSV.
+The endpoint supports GET /?query=... and POST / with raw SQL. Responses are TSV by default.
+Pass `format=jsonl` on either method for `application/x-ndjson`, one JSON object per result row.
+This works with `GET /?query=SELECT%201&format=jsonl` and `POST /?format=jsonl` with a raw SELECT body.
+JSONL values are strings to preserve 128-bit numeric precision, and TSV NULL markers become JSON null.
+The JSONL converter decodes text escapes, rejects duplicate column names and invalid UTF-8,
+and uses the existing 8 MiB response bound plus a 1 MiB per-row bound.
 Inputs are limited to 4096-byte statements and 8192-byte HTTP headers.
 Responses are capped at 8 MiB, concurrent requests at 16, and result rows
 at 10000 by default (up to 100000 with --max-rows).
