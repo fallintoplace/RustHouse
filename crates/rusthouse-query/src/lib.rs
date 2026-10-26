@@ -298,7 +298,6 @@ impl Parser {
         };
         Ok(OrderBy { column, descending })
     }
-
 }
 
 pub fn parse_select(sql: &str) -> Result<Select, ParseError> {
