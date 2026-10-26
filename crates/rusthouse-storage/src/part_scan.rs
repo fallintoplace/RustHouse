@@ -1,5 +1,6 @@
 use crate::granules::read_numeric_granule_cached;
 use crate::numeric::numeric_storage_type;
+use crate::scan_layout::ScanLayout;
 use crate::{
     CompressedBlockReader, DecodedBlock, NumericColumn, PartError, WideMark, inspect_part,
     read_wide_marks,
@@ -31,7 +32,7 @@ impl NumericPartReader {
         let part = part.as_ref();
         let metadata = inspect_part(part)?;
         let mut streams = Vec::with_capacity(columns.len());
-        let mut baseline: Option<Vec<u64>> = None;
+        let mut layout = ScanLayout::default();
 
         for name in columns {
             let column = metadata
@@ -70,58 +71,7 @@ impl NumericPartReader {
                 compressed_marks
             };
             let marks_file = read_wide_marks(&marks_path)?;
-            let marks = &marks_file.marks;
-            for (index, mark) in marks.iter().enumerate() {
-                if mark.rows == Some(0) && index + 1 != marks.len() {
-                    return Err(PartError::InvalidScan(format!(
-                        "zero-row mark is not terminal for {name}"
-                    )));
-                }
-                if index > 0 {
-                    let previous = &marks[index - 1];
-                    if (mark.compressed_offset, mark.decompressed_offset)
-                        < (previous.compressed_offset, previous.decompressed_offset)
-                    {
-                        return Err(PartError::InvalidScan(format!(
-                            "mark offsets are not ordered for {name}"
-                        )));
-                    }
-                    if mark.rows != Some(0)
-                        && (mark.compressed_offset, mark.decompressed_offset)
-                            == (previous.compressed_offset, previous.decompressed_offset)
-                    {
-                        return Err(PartError::InvalidScan(format!(
-                            "duplicate live mark offsets for {name}"
-                        )));
-                    }
-                }
-            }
-            let row_counts = marks
-                .iter()
-                .map(|mark| {
-                    mark.rows.ok_or_else(|| {
-                        PartError::InvalidScan("adaptive wide marks are required".into())
-                    })
-                })
-                .collect::<Result<Vec<_>, _>>()?;
-            let total = row_counts
-                .iter()
-                .try_fold(0u64, |sum, rows| sum.checked_add(*rows));
-            if total != Some(metadata.rows) {
-                return Err(PartError::InvalidScan(format!(
-                    "mark row counts do not match count.txt for {name}"
-                )));
-            }
-            if let Some(reference) = &baseline {
-                if reference != &row_counts {
-                    return Err(PartError::InvalidScan(format!(
-                        "granule boundaries differ for {name}"
-                    )));
-                }
-            } else {
-                baseline = Some(row_counts);
-            }
-
+            layout.validate(name, &marks_file.marks, metadata.rows)?;
             let data_path = part.join(format!("{name}.bin"));
             crate::validate_wide_marks(&marks_file, CompressedBlockReader::open(&data_path)?)?;
             streams.push(ColumnStream {
@@ -135,7 +85,7 @@ impl NumericPartReader {
         Ok(Self {
             streams,
             rows: metadata.rows,
-            marks: baseline.as_ref().map_or(0, Vec::len),
+            marks: layout.mark_count(),
             next_mark: 0,
         })
     }
