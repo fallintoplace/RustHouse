@@ -76,6 +76,24 @@ fn append_literal(output: &mut Vec<u8>, field: &[u8]) -> io::Result<()> {
     Ok(())
 }
 
+fn encode_values_row(line: &[u8], columns: usize) -> io::Result<Vec<u8>> {
+    let mut values = Vec::new();
+    let mut count = 0;
+    values.push(b'(');
+    for field in line.split(|&byte| byte == b'\t') {
+        if count > 0 {
+            values.extend_from_slice(b", ");
+        }
+        append_literal(&mut values, field)?;
+        count += 1;
+    }
+    if count != columns {
+        return Err(invalid("SQL VALUES row width differs from the header"));
+    }
+    values.push(b')');
+    Ok(values)
+}
+
 pub struct SqlValuesWriter<W: Write> {
     output: W,
     columns: Option<usize>,
@@ -94,30 +112,16 @@ impl<W: Write> SqlValuesWriter<W> {
     }
 
     fn finish_line(&mut self) -> io::Result<()> {
-        let fields = self.line.split(|&byte| byte == b'\t');
-        if self.columns.is_none() {
-            let columns = fields.count();
+        let Some(columns) = self.columns else {
+            let columns = self.line.split(|&byte| byte == b'\t').count();
             if columns == 0 || columns > 64 {
                 return Err(invalid("SQL VALUES supports 1 to 64 columns"));
             }
             self.columns = Some(columns);
             self.line.clear();
             return Ok(());
-        }
-        let mut values = Vec::new();
-        let mut count = 0;
-        values.push(b'(');
-        for field in fields {
-            if count > 0 {
-                values.extend_from_slice(b", ");
-            }
-            append_literal(&mut values, field)?;
-            count += 1;
-        }
-        if Some(count) != self.columns {
-            return Err(invalid("SQL VALUES row width differs from the header"));
-        }
-        values.push(b')');
+        };
+        let values = encode_values_row(&self.line, columns)?;
         if self.rows == 0 {
             self.output.write_all(b"VALUES ")?;
         } else {
@@ -187,6 +191,12 @@ mod tests {
             render(b"one\ttwo\n\\N\t\\N\n").unwrap(),
             "VALUES (NULL, NULL);\n"
         );
+    }
+
+    #[test]
+    fn row_encoder_rejects_wrong_width_before_streaming() {
+        assert!(encode_values_row(b"one", 2).is_err());
+        assert_eq!(encode_values_row(b"1\\t\\\\N", 2).unwrap(), b"(\'1\', NULL)");
     }
 
     #[test]
