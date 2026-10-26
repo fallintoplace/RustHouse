@@ -38,7 +38,10 @@ fn describe_projection(projection: &Projection) -> String {
 /// This is not a physical execution plan.
 pub fn explain_select(query: &Select) -> String {
     let mut steps = Vec::new();
-    steps.push(format!("Source: {}", describe_source(query.source.as_ref())));
+    steps.push(format!(
+        "Source: {}",
+        describe_source(query.source.as_ref())
+    ));
 
     if !query.predicates.is_empty() {
         let count =
@@ -93,7 +96,10 @@ mod tests {
         assert_eq!(describe_source(Some(&source)), "numbers(5, 10)");
         assert_eq!(describe_source(None), "constant row");
         assert_eq!(describe_projection(&Projection::All), "Project: *");
-        assert_eq!(describe_projection(&Projection::Count), "Aggregate: count(*)");
+        assert_eq!(
+            describe_projection(&Projection::Count),
+            "Aggregate: count(*)"
+        );
     }
 
     #[test]
