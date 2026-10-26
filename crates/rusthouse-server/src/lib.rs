@@ -1,11 +1,13 @@
 //! Minimal read-only SQL HTTP interface, bound to loopback by the binary.
 //! This is intentionally not a full database wire protocol.
 mod csv;
+mod csv_no_header;
 mod json_array;
 mod jsonl;
 mod tables;
 
 use csv::CsvWriter;
+use csv_no_header::WithoutHeader;
 use json_array::JsonArraySink;
 use jsonl::JsonlWriter;
 use rusthouse_query::{Source, execute, explain_select, parse_select};
@@ -255,6 +257,7 @@ enum QueryFormat {
     Tsv,
     TsvNoHeader,
     Csv,
+    CsvNoHeader,
     Jsonl,
     Json,
 }
@@ -285,6 +288,7 @@ fn query_parameters(target: &str) -> Result<(String, Option<String>, QueryFormat
                     "tsv" => QueryFormat::Tsv,
                     "tsv-no-header" => QueryFormat::TsvNoHeader,
                     "csv" => QueryFormat::Csv,
+                    "csv-no-header" => QueryFormat::CsvNoHeader,
                     "jsonl" => QueryFormat::Jsonl,
                     "json" => QueryFormat::Json,
                     _ => return Err("unsupported query format"),
@@ -425,6 +429,10 @@ pub fn handle_request(method: &str, target: &str, body: &[u8], config: &Config) 
             let mut csv = CsvWriter::new(&mut writer);
             execute(&select, part.as_deref(), &mut csv)
         }
+        QueryFormat::CsvNoHeader => {
+            let mut csv = CsvWriter::new(WithoutHeader::new(&mut writer));
+            execute(&select, part.as_deref(), &mut csv)
+        }
         QueryFormat::Jsonl => {
             let mut jsonl = JsonlWriter::new(&mut writer);
             execute(&select, part.as_deref(), &mut jsonl)
@@ -458,7 +466,7 @@ pub fn handle_request(method: &str, target: &str, body: &[u8], config: &Config) 
                 QueryFormat::Tsv | QueryFormat::TsvNoHeader => {
                     "text/tab-separated-values; charset=utf-8"
                 }
-                QueryFormat::Csv => "text/csv; charset=utf-8",
+                QueryFormat::Csv | QueryFormat::CsvNoHeader => "text/csv; charset=utf-8",
                 QueryFormat::Jsonl => "application/x-ndjson; charset=utf-8",
                 QueryFormat::Json => "application/json; charset=utf-8",
             },
@@ -915,6 +923,45 @@ mod tests {
 
         let bad = handle_request("POST", "/?format=csv&format=tsv", b"SELECT 1", &config());
         assert_eq!(bad.status, "400 Bad Request");
+    }
+
+    #[test]
+    fn returns_csv_without_header_for_get_post_and_empty_results() {
+        let get = handle_request(
+            "GET",
+            "/?query=SELECT+number+FROM+numbers%2810%29&format=csv-no-header",
+            b"",
+            &config(),
+        );
+        assert_eq!(get.status, "200 OK");
+        assert_eq!(get.content_type, "text/csv; charset=utf-8");
+        assert_eq!(get.body, b"0\r\n1\r\n2\r\n");
+
+        let post = handle_request(
+            "POST",
+            "/?format=csv-no-header",
+            b"SELECT count(*) FROM numbers(0)",
+            &config(),
+        );
+        assert_eq!(post.status, "200 OK");
+        assert_eq!(post.body, b"0\r\n");
+
+        let empty = handle_request(
+            "POST",
+            "/?format=csv-no-header",
+            b"SELECT number FROM numbers(0)",
+            &config(),
+        );
+        assert_eq!(empty.status, "200 OK");
+        assert!(empty.body.is_empty());
+
+        let explain = handle_request(
+            "GET",
+            "/explain?query=SELECT+1&format=csv-no-header",
+            b"",
+            &config(),
+        );
+        assert_eq!(explain.status, "400 Bad Request");
     }
 
     #[test]

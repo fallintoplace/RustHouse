@@ -16,6 +16,7 @@ The endpoint supports GET /?query=... and POST / with raw SQL. Responses are TSV
 Pass `format=tsv-no-header` to remove the header row, including for empty results.
 Pass `format=csv` on either method for RFC 4180-style CSV with CRLF row endings.
 CSV includes headers, quotes embedded commas/newlines, and uses an unquoted `\\N` for NULL.
+Use `format=csv-no-header` to omit column headers while preserving CSV escaping and response limits.
 Pass `format=jsonl` on either method for `application/x-ndjson`, one JSON object per result row.
 Pass `format=json` for a JSON array suitable for API clients. It uses the same validated
 JSONL value encoding, an explicit closing bracket, and existing response size limits.
