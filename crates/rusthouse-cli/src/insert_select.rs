@@ -136,6 +136,35 @@ mod tests {
         assert!(decode_rows(b"id\n\\xZ1\n").is_err());
     }
 
+    #[cfg(unix)]
+    #[test]
+    fn locks_before_resolving_a_source_table() {
+        use std::fs;
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        static NEXT: AtomicUsize = AtomicUsize::new(0);
+
+        let database = std::env::temp_dir().join(format!(
+            "rusthouse-insert-select-lock-test-{}-{}",
+            std::process::id(),
+            NEXT.fetch_add(1, Ordering::Relaxed)
+        ));
+        let statement = rusthouse_query::parse_insert_select(
+            "INSERT INTO target SELECT id FROM missing",
+        )
+        .unwrap()
+        .unwrap();
+        crate::database::with_write_lock(&database, || {
+            let error = run(&database, &statement).unwrap_err();
+            assert!(
+                error.contains("cannot acquire database write lock"),
+                "{error}"
+            );
+            Ok(())
+        })
+        .unwrap();
+        fs::remove_dir_all(database).unwrap();
+    }
+
     #[test]
     fn bounded_result_never_grows_past_limit() {
         let mut output = BoundedOutput(vec![0; MAX_RESULT_BYTES]);
