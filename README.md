@@ -107,3 +107,9 @@ parts and more than 10,000 parts. It ignores non-part subdirectories such as
 `detached/`. **Only use a frozen snapshot of active parts**, never a live table
 directory being modified by a database process. Predicate pruning across the primary index
 is not implemented by this change.
+
+Compute medians with `rusthouse sql "SELECT median(number) FROM numbers(100)"`.
+`median(column)` works on numeric parts and generated numbers, returns `NULL`
+for empty input, and rejects over 100,000 matching rows to bound memory use.
+For an odd row count it preserves the middle numeric value; for an even
+count it interpolates the two middle values using Float64 precision.

@@ -92,6 +92,7 @@ impl From<Number> for NumberKey {
 }
 
 const MAX_DISTINCT_ROWS: usize = 100_000;
+const MAX_MEDIAN_ROWS: usize = 100_000;
 
 fn remember_distinct(
     seen: &mut HashSet<Vec<NumberKey>>,
@@ -607,7 +608,8 @@ fn execute_aggregate_numbers<W: Write>(
                     AggregateFunction::Max => last.to_string(),
                     AggregateFunction::Avg
                     | AggregateFunction::VarPop
-                    | AggregateFunction::StddevPop => unreachable!(),
+                    | AggregateFunction::StddevPop
+                    | AggregateFunction::Median => unreachable!(),
                 }
             };
             writeln!(output, "{result}")?;
@@ -816,6 +818,7 @@ struct AggregateState {
     mean: f64,
     squared_deviations: f64,
     count: u64,
+    median_values: Vec<Number>,
 }
 
 impl AggregateState {
@@ -826,6 +829,7 @@ impl AggregateState {
             mean: 0.0,
             squared_deviations: 0.0,
             count: 0,
+            median_values: Vec::new(),
         }
     }
 
@@ -870,6 +874,14 @@ impl AggregateState {
                     self.squared_deviations += difference * (numeric - self.mean);
                 }
             }
+            AggregateFunction::Median => {
+                if self.median_values.len() >= MAX_MEDIAN_ROWS {
+                    return Err(ExecutionError::Invalid(
+                        "median supports at most 100000 matching rows".into(),
+                    ));
+                }
+                self.median_values.push(value);
+            }
             AggregateFunction::Min | AggregateFunction::Max => {
                 let replace = self.value.is_none_or(|current| {
                     let order = compare_numbers(value, current);
@@ -898,6 +910,24 @@ impl AggregateState {
             AggregateFunction::StddevPop => (self.squared_deviations / self.count as f64)
                 .sqrt()
                 .to_string(),
+            AggregateFunction::Median => {
+                let mut values = self.median_values.clone();
+                values.sort_unstable_by(|left, right| compare_numbers(*left, *right));
+                let middle = values.len() / 2;
+                if values.len() & 1 == 1 {
+                    values[middle].to_string()
+                } else {
+                    // Even-length interpolation uses Float64, as AVG already does.
+                    // Divide before adding to avoid overflow for very large values.
+                    let as_f64 = |number: Number| match number {
+                        Number::Unsigned(value) => value as f64,
+                        Number::Signed(value) => value as f64,
+                        Number::Float(value) => value,
+                    };
+                    (as_f64(values[middle - 1]) / 2.0 + as_f64(values[middle]) / 2.0)
+                        .to_string()
+                }
+            }
             _ => self
                 .value
                 .map_or_else(String::new, |value| value.to_string()),
@@ -1391,6 +1421,51 @@ mod tests {
             "sum(number)\n"
         );
         assert!(run("SELECT sum(missing) FROM numbers(0)", None).is_err());
+    }
+
+    #[test]
+    fn median_handles_odd_even_filtered_and_empty_inputs() {
+        assert_eq!(
+            run("SELECT median(number) FROM numbers(5)", None).unwrap(),
+            "median(number)\n2\n"
+        );
+        assert_eq!(
+            run("SELECT median(number) FROM numbers(6)", None).unwrap(),
+            "median(number)\n2.5\n"
+        );
+        assert_eq!(
+            run(
+                "SELECT median(number) FROM numbers(20) WHERE number % 3 = 1",
+                None
+            )
+            .unwrap(),
+            "median(number)\n10\n"
+        );
+        assert_eq!(
+            run("SELECT median(number) FROM numbers(1, 7, 2)", None).unwrap(),
+            "median(number)\n3\n"
+        );
+        assert_eq!(
+            run("SELECT median(number) FROM numbers(0)", None).unwrap(),
+            "median(number)\nNULL\n"
+        );
+        assert_eq!(
+            run("SELECT median(number) FROM numbers(3) WHERE number > 9", None).unwrap(),
+            "median(number)\nNULL\n"
+        );
+    }
+
+    #[test]
+    fn median_is_memory_bounded_and_preserves_odd_large_integers() {
+        let mut state = AggregateState::new(AggregateFunction::Median);
+        state.update(Number::Unsigned(u128::MAX)).unwrap();
+        assert_eq!(state.render(), u128::MAX.to_string());
+        let error = run("SELECT median(number) FROM numbers(100001)", None).unwrap_err();
+        assert!(error.to_string().contains("at most 100000 matching rows"));
+        assert_eq!(
+            run("SELECT median(number) FROM numbers(100000)", None).unwrap(),
+            "median(number)\n49999.5\n"
+        );
     }
 
     #[test]
