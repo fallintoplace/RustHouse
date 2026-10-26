@@ -198,5 +198,4 @@ mod tests {
         let mut ranges = HashMap::from([("all".to_owned(), vec![(10, 12), (1, 3), (4, 5)])]);
         validate_block_ranges(&mut ranges).unwrap();
     }
-
 }
