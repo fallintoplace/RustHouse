@@ -58,7 +58,7 @@ fn write_cell<W: Write>(output: &mut W, field: &[u8]) -> io::Result<()> {
     let mut start = 0;
     for (index, &byte) in field.iter().enumerate() {
         let escape: Option<&[u8]> = match byte {
-            b'|' => Some(b"\|"),
+            b'|' => Some(b"\\|"),
             b'\\' => Some(b"\\\\"),
             b'&' => Some(b"&amp;"),
             b'<' => Some(b"&lt;"),
