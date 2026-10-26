@@ -90,6 +90,11 @@ pub enum Predicate {
         column: String,
         negated: bool,
     },
+    Like {
+        column: String,
+        pattern: String,
+        negated: bool,
+    },
 }
 
 impl Predicate {
@@ -99,7 +104,8 @@ impl Predicate {
             | Self::In { column, .. }
             | Self::NotIn { column, .. }
             | Self::NotBetween { column, .. }
-            | Self::IsNull { column, .. } => column,
+            | Self::IsNull { column, .. }
+            | Self::Like { column, .. } => column,
         }
     }
 }
@@ -419,6 +425,18 @@ pub fn parse_select(sql: &str) -> Result<Select, ParseError> {
                     .last_mut()
                     .unwrap()
                     .push(Predicate::IsNull { column, negated });
+                total_conditions += 1;
+            } else if parser.keyword("LIKE") {
+                let pattern = match parser.tokens.get(parser.index) {
+                    Some(Token::String(value)) => value.clone(),
+                    _ => return Err(ParseError("LIKE requires a string literal".into())),
+                };
+                parser.index += 1;
+                branches.last_mut().unwrap().push(Predicate::Like {
+                    column,
+                    pattern,
+                    negated: negate_in,
+                });
                 total_conditions += 1;
             } else if parser.keyword("BETWEEN") {
                 let lower = parser.number()?;
@@ -920,6 +938,46 @@ mod tests {
             "SELECT number FROM numbers(0, 1000001, 2)",
         ] {
             assert!(parse_select(sql).is_err(), "{sql}");
+        }
+    }
+
+    #[test]
+    fn parses_like_predicates_and_rejects_nontext_patterns() {
+        let query = parse_select(
+            "SELECT service FROM part WHERE service LIKE 'a%' AND service NOT LIKE '%z'",
+        )
+        .unwrap();
+        assert_eq!(
+            query.predicates,
+            vec![
+                Predicate::Like {
+                    column: "service".into(),
+                    pattern: "a%".into(),
+                    negated: false,
+                },
+                Predicate::Like {
+                    column: "service".into(),
+                    pattern: "%z".into(),
+                    negated: true,
+                },
+            ]
+        );
+        let negated = parse_select("SELECT service FROM part WHERE NOT service LIKE 'd%'")
+            .unwrap();
+        assert_eq!(
+            negated.predicates,
+            vec![Predicate::Like {
+                column: "service".into(),
+                pattern: "d%".into(),
+                negated: true,
+            }]
+        );
+        for invalid in [
+            "SELECT service FROM part WHERE service LIKE 42",
+            "SELECT service FROM part WHERE service LIKE",
+            "SELECT service FROM part WHERE service NOT LIKE NULL",
+        ] {
+            assert!(parse_select(invalid).is_err(), "{invalid}");
         }
     }
 
