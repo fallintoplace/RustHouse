@@ -46,8 +46,7 @@ fn scan_string(sql: &str, index: &mut usize) -> Result<Token, ParseError> {
     let mut start = cursor;
     let mut closed = false;
     while cursor < bytes.len() {
-        if bytes[cursor] == b'\\' && matches!(bytes.get(cursor + 1), Some(b'\'' | b'\\'))
-        {
+        if bytes[cursor] == b'\\' && matches!(bytes.get(cursor + 1), Some(b'\'' | b'\\')) {
             value.push_str(&sql[start..cursor]);
             value.push(bytes[cursor + 1] as char);
             cursor += 2;
