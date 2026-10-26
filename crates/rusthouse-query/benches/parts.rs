@@ -70,14 +70,22 @@ fn options() -> (usize, usize) {
                     .expect("--samples must be an integer");
             }
             "-h" | "--help" => {
-                println!("Usage: cargo bench -p rusthouse-query --bench parts -- [--rows N] [--samples N]");
+                println!(
+                    "Usage: cargo bench -p rusthouse-query --bench parts -- [--rows N] [--samples N]"
+                );
                 std::process::exit(0);
             }
             other => panic!("unknown option: {other}"),
         }
     }
-    assert!((1..=262_144).contains(&rows), "rows must be between 1 and 262144");
-    assert!(samples > 0 && samples % 2 == 1, "samples must be positive and odd");
+    assert!(
+        (1..=262_144).contains(&rows),
+        "rows must be between 1 and 262144"
+    );
+    assert!(
+        samples > 0 && samples % 2 == 1,
+        "samples must be positive and odd"
+    );
     (rows, samples)
 }
 
@@ -88,7 +96,11 @@ fn measure(label: &str, sql: &str, expected: &str, fixture: &Fixture, rows: usiz
         output.clear();
         execute(black_box(&query), Some(&fixture.0), &mut output).unwrap();
     }
-    assert_eq!(output, expected.as_bytes(), "{label} warmup returned bad data");
+    assert_eq!(
+        output,
+        expected.as_bytes(),
+        "{label} warmup returned bad data"
+    );
     let mut timings = Vec::with_capacity(samples);
     for _ in 0..samples {
         output.clear();
@@ -119,7 +131,10 @@ fn main() {
         writeln!(&mut top, "{id}").unwrap();
     }
     println!("RustHouse frozen-parts benchmark: {rows} rows, {samples} samples");
-    println!("{:<18} {:>10} {:>17}", "workload", "median ms", "M input rows/s");
+    println!(
+        "{:<18} {:>10} {:>17}",
+        "workload", "median ms", "M input rows/s"
+    );
     measure(
         "filtered sum",
         &format!("SELECT sum(id) FROM part WHERE id >= {middle}"),
