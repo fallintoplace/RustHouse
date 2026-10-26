@@ -200,6 +200,8 @@ fn create_table(
     let mut file = match OpenOptions::new().write(true).create_new(true).open(&path) {
         Ok(file) => file,
         Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists && if_not_exists => {
+            // An existing schema must be safe and readable before ignoring CREATE.
+            read_schema(catalog, name)?;
             return Ok(());
         }
         Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {
