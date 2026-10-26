@@ -184,9 +184,7 @@ fn record_catalog_entry(
     report: &mut Report,
 ) {
     if name.starts_with('.')
-        && (name.contains(".pending-")
-            || name.contains(".schema.tmp.")
-            || name.contains(".drop-"))
+        && (name.contains(".pending-") || name.contains(".schema.tmp.") || name.contains(".drop-"))
     {
         report.warning(
             "catalog",
@@ -277,7 +275,12 @@ mod tests {
         let mut schemas = BTreeSet::new();
         let mut parts = BTreeSet::new();
         let mut report = Report::default();
-        for name in ["logs.schema", "logs.parts", ".schema.tmp.17", "bad-name.schema"] {
+        for name in [
+            "logs.schema",
+            "logs.parts",
+            ".schema.tmp.17",
+            "bad-name.schema",
+        ] {
             record_catalog_entry(name, &mut schemas, &mut parts, &mut report);
         }
         assert!(schemas.contains("logs"));
