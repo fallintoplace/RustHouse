@@ -10,7 +10,9 @@ pub struct ColumnDef {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Ddl {
     ShowTables,
-    ShowCreateTable { name: String },
+    ShowCreateTable {
+        name: String,
+    },
     DescribeTable {
         name: String,
     },
@@ -120,7 +122,9 @@ pub fn parse_ddl(sql: &str) -> Result<Option<Ddl>, ParseError> {
                 name: identifier(&mut parser)?,
             }
         } else {
-            return Err(ParseError("expected TABLES or CREATE TABLE after SHOW".into()));
+            return Err(ParseError(
+                "expected TABLES or CREATE TABLE after SHOW".into(),
+            ));
         };
         parser.take(Token::Semicolon);
         if parser.index != parser.tokens.len() {
