@@ -1,7 +1,9 @@
 //! Shared local database lock protocol for CLI and HTTP reads.
 //! Keep the lock inode in place: unlinking it could admit a second writer.
 use std::fs::{self, OpenOptions};
-use std::path::{Path, PathBuf};
+use std::path::Path;
+#[cfg(not(unix))]
+use std::path::PathBuf;
 
 #[cfg(unix)]
 mod advisory {
