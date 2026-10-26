@@ -54,7 +54,7 @@ fn show_tables_like_works_in_persistent_database_mode() {
         );
         assert!(result.status.success(), "{result:?}");
     }
-    let result = sql("SHOW TABLES LIKE 'events_'", &database, "--database");
+    let result = sql("SHOW TABLES LIKE 'events_%'", &database, "--database");
     assert!(result.status.success(), "{result:?}");
     assert_eq!(result.stdout, b"name\nevents_a\nevents_b\n");
     fs::remove_dir_all(database).unwrap();
