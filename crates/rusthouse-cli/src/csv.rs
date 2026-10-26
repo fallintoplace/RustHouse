@@ -113,9 +113,9 @@ fn write_csv_field<W: Write>(output: &mut W, field: &[u8]) -> io::Result<()> {
             .iter()
             .any(|byte| matches!(byte, b',' | b'"' | b'\t' | b'\r' | b'\n'));
     if !needs_quotes {
-        return output.write_all(&value);
+        return output.write_all(value);
     }
-    write_quoted_field(output, &value)
+    write_quoted_field(output, value)
 }
 
 fn write_quoted_field<W: Write>(output: &mut W, field: &[u8]) -> io::Result<()> {
