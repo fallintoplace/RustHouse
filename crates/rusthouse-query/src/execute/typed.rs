@@ -133,6 +133,13 @@ fn parse_literal(data_type: &str, literal: &str) -> Result<Cell, ExecutionError>
     }
 }
 
+fn parse_literals(data_type: &str, values: &[String]) -> Result<Vec<Cell>, ExecutionError> {
+    values
+        .iter()
+        .map(|value| parse_literal(data_type, value))
+        .collect()
+}
+
 #[derive(Clone, Copy)]
 enum LikeToken {
     Any,
@@ -261,20 +268,8 @@ pub(super) fn compile(
                 Predicate::Comparison {
                     operator, value, ..
                 } => Test::Compare(*operator, parse_literal(kind, value)?),
-                Predicate::In { values, .. } => Test::In(
-                    values
-                        .iter()
-                        .map(|v| parse_literal(kind, v))
-                        .collect::<Result<Vec<_>, _>>()?,
-                    false,
-                ),
-                Predicate::NotIn { values, .. } => Test::In(
-                    values
-                        .iter()
-                        .map(|v| parse_literal(kind, v))
-                        .collect::<Result<Vec<_>, _>>()?,
-                    true,
-                ),
+                Predicate::In { values, .. } => Test::In(parse_literals(kind, values)?, false),
+                Predicate::NotIn { values, .. } => Test::In(parse_literals(kind, values)?, true),
                 Predicate::NotBetween { lower, upper, .. } => {
                     Test::NotBetween(parse_literal(kind, lower)?, parse_literal(kind, upper)?)
                 }
