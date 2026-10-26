@@ -107,7 +107,9 @@ mod tests {
     #[test]
     fn escapes_terminal_control_bytes_in_cells() {
         let mut writer = MarkdownWriter::new(Vec::new());
-        writer.write_all(b"name\tvalue\nESC\x1b\tNUL\x00DEL\x7f\n").unwrap();
+        writer
+            .write_all(b"name\tvalue\nESC\x1b\tNUL\x00DEL\x7f\n")
+            .unwrap();
         assert_eq!(
             writer.output,
             b"| name | value |\n| --- | --- |\n| ESC&#27; | NUL&#0;DEL&#127; |\n"
