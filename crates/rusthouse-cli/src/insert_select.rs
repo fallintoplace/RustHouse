@@ -148,11 +148,10 @@ mod tests {
             std::process::id(),
             NEXT.fetch_add(1, Ordering::Relaxed)
         ));
-        let statement = rusthouse_query::parse_insert_select(
-            "INSERT INTO target SELECT id FROM missing",
-        )
-        .unwrap()
-        .unwrap();
+        let statement =
+            rusthouse_query::parse_insert_select("INSERT INTO target SELECT id FROM missing")
+                .unwrap()
+                .unwrap();
         crate::database::with_write_lock(&database, || {
             let error = run(&database, &statement).unwrap_err();
             assert!(
