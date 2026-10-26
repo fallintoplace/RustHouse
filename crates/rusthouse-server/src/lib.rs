@@ -586,9 +586,9 @@ mod tests {
     }
 
     #[test]
-    fn rejects_unsupported_jsonl_formats_and_duplicate_column_names() {
+    fn rejects_unsupported_query_formats_and_duplicate_column_names() {
         for url in [
-            "/?query=SELECT+1&format=json",
+            "/?query=SELECT+1&format=xml",
             "/?query=SELECT+1&format=jsonl&format=jsonl",
             "/explain?query=SELECT+1&format=jsonl",
             "/?query=SELECT+number%2Cnumber+FROM+numbers%282%29&format=jsonl",
