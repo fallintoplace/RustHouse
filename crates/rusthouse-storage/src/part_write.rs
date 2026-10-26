@@ -206,20 +206,7 @@ fn block(data: &[u8]) -> Result<Vec<u8>, PartError> {
     Ok(result)
 }
 
-/// Write a new immutable wide part. This function never replaces an existing path.
-/// Each row contains one value per column; None denotes SQL NULL.
-/// Empty tables have no data streams but still include a checksums manifest.
-pub fn write_wide_part(
-    part: &Path,
-    columns: &[Column],
-    rows: &[Vec<Option<String>>],
-) -> Result<(), PartError> {
-    if columns.is_empty() || columns.len() > 64 {
-        return Err(invalid("part requires 1 to 64 columns"));
-    }
-    if rows.len() > MAX_PART_ROWS {
-        return Err(invalid("an INSERT part supports at most 4096 rows"));
-    }
+fn validate_part_columns(columns: &[Column]) -> Result<(), PartError> {
     let mut names = HashSet::new();
     for col in columns {
         if col.name.is_empty()
@@ -244,6 +231,24 @@ pub fn write_wide_part(
         }
     }
 
+    Ok(())
+}
+
+/// Write a new immutable wide part. This function never replaces an existing path.
+/// Each row contains one value per column; None denotes SQL NULL.
+/// Empty tables have no data streams but still include a checksums manifest.
+pub fn write_wide_part(
+    part: &Path,
+    columns: &[Column],
+    rows: &[Vec<Option<String>>],
+) -> Result<(), PartError> {
+    if columns.is_empty() || columns.len() > 64 {
+        return Err(invalid("part requires 1 to 64 columns"));
+    }
+    if rows.len() > MAX_PART_ROWS {
+        return Err(invalid("an INSERT part supports at most 4096 rows"));
+    }
+    validate_part_columns(columns)?;
     let mut streams = Vec::new();
     if !rows.is_empty() {
         for (index, col) in columns.iter().enumerate() {
