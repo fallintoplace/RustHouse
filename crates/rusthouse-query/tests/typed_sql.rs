@@ -606,7 +606,10 @@ fn orders_nullable_columns_with_explicit_null_precedence() {
     assert_eq!(whole, "message\tattempt\nhello\t1\nworld\t3\n\\N\t\\N\n");
     let limited = query(&format!("{sql} LIMIT 2"), &part);
     assert_eq!(limited, "message\tattempt\nhello\t1\nworld\t3\n");
-    assert_eq!(limited, format!("{}\n", whole.lines().take(3).collect::<Vec<_>>().join("\n")));
+    assert_eq!(
+        limited,
+        format!("{}\n", whole.lines().take(3).collect::<Vec<_>>().join("\n"))
+    );
     fs::remove_dir_all(part).unwrap();
 }
 
