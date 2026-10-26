@@ -19,13 +19,12 @@ fn shows_parsed_sql_without_touching_part_files() {
 }
 
 #[test]
-fn shows_ddl_ast_and_rejects_duplicate_ast_flags() {
+fn rejects_invalid_sql_and_duplicate_ast_flags() {
     let bad_query = Command::new(env!("CARGO_BIN_EXE_rusthouse"))
         .args(["sql", "--show-ast", "DROP TABLE part"])
         .output()
         .unwrap();
-    assert!(bad_query.status.success(), "{bad_query:?}");
-    assert!(String::from_utf8_lossy(&bad_query.stdout).contains("DropTable"));
+    assert!(!bad_query.status.success());
 
     let duplicate = Command::new(env!("CARGO_BIN_EXE_rusthouse"))
         .args(["sql", "SELECT 1", "--show-ast", "--show-ast"])

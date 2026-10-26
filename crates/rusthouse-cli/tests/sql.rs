@@ -373,10 +373,10 @@ fn executes_uint128_sql_with_exact_large_integer_predicates() {
 }
 
 #[test]
-fn requires_catalog_for_ddl_and_part_for_select() {
+fn refuses_unsupported_sql_and_missing_parts() {
     let invalid = sql("DROP TABLE part", None);
     assert_eq!(invalid.status.code(), Some(1));
-    assert!(String::from_utf8_lossy(&invalid.stderr).contains("DDL requires --catalog"));
+    assert!(String::from_utf8_lossy(&invalid.stderr).contains("only SELECT"));
 
     let missing = sql("SELECT id FROM part", None);
     assert_eq!(missing.status.code(), Some(1));
