@@ -121,7 +121,11 @@ mod tests {
     fn rejects_nonadaptive_marks_and_row_count_overflow() {
         let mut nonadaptive = mark(0, 1);
         nonadaptive.rows = None;
-        assert!(ScanLayout::default().validate("a", &[nonadaptive], 1).is_err());
+        assert!(
+            ScanLayout::default()
+                .validate("a", &[nonadaptive], 1)
+                .is_err()
+        );
         assert!(
             ScanLayout::default()
                 .validate("a", &[mark(0, u64::MAX), mark(1, 1)], u64::MAX)
@@ -133,9 +137,11 @@ mod tests {
     fn failed_column_validation_does_not_change_reference_layout() {
         let mut layout = ScanLayout::default();
         layout.validate("a", &[mark(0, 2), mark(10, 3)], 5).unwrap();
-        assert!(layout.validate("bad", &[mark(0, 4), mark(10, 1)], 5).is_err());
+        assert!(
+            layout
+                .validate("bad", &[mark(0, 4), mark(10, 1)], 5)
+                .is_err()
+        );
         layout.validate("c", &[mark(0, 2), mark(20, 3)], 5).unwrap();
         assert_eq!(layout.mark_count(), 2);
-    }
-
-}
+    }}
