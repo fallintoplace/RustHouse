@@ -22,6 +22,7 @@ pub(super) fn apply(catalog: &Path, ddl: &Ddl) -> Result<(), String> {
             if_not_exists,
         } => create_table(catalog, name, columns, *if_not_exists),
         Ddl::DropTable { name, if_exists } => drop_table(catalog, name, *if_exists),
+        Ddl::TruncateTable { .. } => Err("TRUNCATE requires --database".into()),
         Ddl::AddColumn {
             table,
             column,
@@ -127,7 +128,7 @@ fn drop_table(catalog: &Path, name: &str, if_exists: bool) -> Result<(), String>
     Ok(())
 }
 
-fn read_schema(catalog: &Path, name: &str) -> Result<Vec<ColumnDef>, String> {
+pub(super) fn read_schema(catalog: &Path, name: &str) -> Result<Vec<ColumnDef>, String> {
     let path = schema_path(catalog, name);
     let metadata = fs::symlink_metadata(&path)
         .map_err(|error| format!("cannot read table {name}: {error}"))?;
