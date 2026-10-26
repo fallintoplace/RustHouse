@@ -1,5 +1,5 @@
 use crate::{csv, csv_no_header, json_array, jsonl, markdown, vertical};
-use rusthouse_query::{execute, explain_select, parse_ddl, parse_select};
+use rusthouse_query::{execute, explain_select, parse_ddl, parse_insert, parse_select};
 use std::ffi::OsString;
 use std::path::PathBuf;
 
@@ -71,6 +71,7 @@ pub(super) fn run_sql_args(mut args: impl Iterator<Item = OsString>) -> Result<(
     let mut read_stdin = false;
     let mut part = None;
     let mut catalog = None;
+    let mut database = None;
     let mut format = None;
     let mut output_path = None;
     let mut show_ast = false;
@@ -135,6 +136,13 @@ pub(super) fn run_sql_args(mut args: impl Iterator<Item = OsString>) -> Result<(
             catalog = Some(PathBuf::from(
                 args.next().ok_or("missing --catalog directory")?,
             ));
+        } else if arg.to_str() == Some("--database") {
+            if database.is_some() {
+                return Err("duplicate --database option".into());
+            }
+            database = Some(PathBuf::from(
+                args.next().ok_or("missing --database directory")?,
+            ));
         } else if arg.to_str() == Some("--file") {
             if file.is_some() || query.is_some() {
                 return Err("provide SQL text or --file, not both".into());
@@ -161,6 +169,35 @@ pub(super) fn run_sql_args(mut args: impl Iterator<Item = OsString>) -> Result<(
     } else {
         query.ok_or("missing SQL statement")?
     };
+    if database.is_some() && catalog.is_some() {
+        return Err("--catalog and --database cannot be combined".into());
+    }
+    if let Some(database_dir) = database {
+        if part.is_some() {
+            return Err("--part cannot be combined with --database".into());
+        }
+        if let Some(ddl) = parse_ddl(&query).map_err(|error| error.to_string())? {
+            if explain || time || format.is_some() || output_path.is_some() || max_rows.is_some() {
+                return Err("database DDL cannot use --explain, --time, --format, --output, or --max-rows".into());
+            }
+            if show_ast {
+                println!("{ddl:#?}");
+                return Ok(());
+            }
+            return crate::database::apply_ddl(&database_dir, &ddl);
+        }
+        if let Some(insert) = parse_insert(&query).map_err(|error| error.to_string())? {
+            if explain || time || format.is_some() || output_path.is_some() || max_rows.is_some() {
+                return Err("INSERT cannot use --explain, --time, --format, --output, or --max-rows".into());
+            }
+            if show_ast {
+                println!("{insert:#?}");
+                return Ok(());
+            }
+            return crate::database::insert(&database_dir, &insert);
+        }
+        return Err("--database currently supports schema commands and INSERT; SELECT is not enabled yet".into());
+    }
     if let Some(catalog_path) = catalog {
         if explain {
             return Err("--explain is only supported for SELECT".into());

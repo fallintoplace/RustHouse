@@ -1,8 +1,10 @@
 mod ddl;
+mod insert;
 mod execute;
 mod explain;
 mod lexer;
 pub use ddl::{ColumnDef, Ddl, parse_ddl};
+pub use insert::{Insert, parse_insert};
 pub use execute::{ExecutionError, execute};
 pub use explain::explain_select;
 
