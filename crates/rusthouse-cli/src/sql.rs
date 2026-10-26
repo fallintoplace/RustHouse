@@ -1,5 +1,5 @@
 use crate::{csv, csv_no_header, json_array, jsonl, markdown, vertical};
-use rusthouse_query::{execute, explain_select, parse_ddl, parse_insert, parse_select};
+use rusthouse_query::{Source, execute, explain_select, parse_ddl, parse_insert, parse_select};
 use std::ffi::OsString;
 use std::path::PathBuf;
 
@@ -161,14 +161,14 @@ pub(super) fn run_sql_args(mut args: impl Iterator<Item = OsString>) -> Result<(
     } else {
         query.ok_or("missing SQL statement")?
     };
-    if let Some(catalog_path) = catalog {
-        if explain {
-            return Err("--explain is only supported for SELECT".into());
-        }
-        if time {
-            return Err("--time cannot be combined with --catalog".into());
-        }
+    if let Some(catalog_path) = catalog.as_deref() {
         if let Some(ddl) = parse_ddl(&query).map_err(|error| error.to_string())? {
+            if explain {
+                return Err("--explain is only supported for SELECT".into());
+            }
+            if time {
+                return Err("--time cannot be combined with catalog DDL".into());
+            }
             if part.is_some() || output_path.is_some() || format.is_some() || max_rows.is_some() {
                 return Err("DDL cannot use --part, --output, --format, or --max-rows".into());
             }
@@ -176,9 +176,12 @@ pub(super) fn run_sql_args(mut args: impl Iterator<Item = OsString>) -> Result<(
                 println!("{ddl:#?}");
                 return Ok(());
             }
-            return crate::catalog::apply(&catalog_path, &ddl);
+            return crate::catalog::apply(catalog_path, &ddl);
         }
         if let Some(statement) = parse_insert(&query).map_err(|error| error.to_string())? {
+            if explain || time {
+                return Err("INSERT does not support --explain or --time".into());
+            }
             if part.is_some() || output_path.is_some() || format.is_some() || max_rows.is_some() {
                 return Err("INSERT cannot use --part, --output, --format, or --max-rows".into());
             }
@@ -186,11 +189,18 @@ pub(super) fn run_sql_args(mut args: impl Iterator<Item = OsString>) -> Result<(
                 println!("{statement:#?}");
                 return Ok(());
             }
-            return crate::table_data::insert(&catalog_path, &statement);
+            return crate::table_data::insert(catalog_path, &statement);
         }
-        return Err("--catalog is only supported for DDL and INSERT statements".into());
+        if part.is_some() {
+            return Err("--catalog and --part cannot be combined".into());
+        }
     }
     let mut select = parse_select(&query).map_err(|error| error.to_string())?;
+    if let (Some(catalog_path), Some(Source::Table(name))) =
+        (catalog.as_deref(), select.source.as_ref())
+    {
+        crate::catalog::read_schema(catalog_path, name)?;
+    }
     if explain {
         if show_ast || time || format.is_some() || output_path.is_some() {
             return Err(
@@ -216,6 +226,21 @@ pub(super) fn run_sql_args(mut args: impl Iterator<Item = OsString>) -> Result<(
     }
     if let Some(cap) = max_rows {
         select.limit = Some(select.limit.map_or(cap, |limit| limit.min(cap)));
+    }
+    let mut _empty_part = None;
+    if let (Some(catalog_path), Some(Source::Table(name))) =
+        (catalog.as_deref(), select.source.as_ref())
+    {
+        let (columns, saved) = crate::table_data::resolve_table(catalog_path, name)?;
+        part = Some(if let Some(dir) = saved {
+            dir
+        } else {
+            let empty = crate::table_data::empty_part(&columns)?;
+            let path = empty.path().to_path_buf();
+            _empty_part = Some(empty);
+            path
+        });
+        select.source = Some(Source::Table("part".into()));
     }
     let mut output: Box<dyn std::io::Write> = match &output_path {
         Some(path) => Box::new(

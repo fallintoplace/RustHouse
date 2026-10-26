@@ -174,3 +174,68 @@ pub(super) fn insert(catalog: &Path, statement: &Insert) -> Result<(), String> {
     println!("Inserted {} rows into {}", rows.len(), statement.table);
     Ok(())
 }
+
+pub(super) fn resolve_table(
+    catalog: &Path,
+    table: &str,
+) -> Result<(Vec<Column>, Option<PathBuf>), String> {
+    let columns = crate::catalog::read_schema(catalog, table)?
+        .into_iter()
+        .map(|column| Column {
+            name: column.name,
+            data_type: column.data_type,
+        })
+        .collect::<Vec<_>>();
+    let Some(dir) = existing_dir(catalog, table)? else {
+        return Ok((columns, None));
+    };
+    let mut entries = fs::read_dir(&dir)
+        .map_err(|error| format!("cannot list table parts for {table}: {error}"))?;
+    if entries
+        .next()
+        .transpose()
+        .map_err(|error| error.to_string())?
+        .is_none()
+    {
+        return Ok((columns, None));
+    }
+    let metadata = inspect_query_source(&dir).map_err(|error| error.to_string())?;
+    if metadata.columns != columns {
+        return Err(format!("table parts do not match the catalog schema for {table}"));
+    }
+    Ok((columns, Some(dir)))
+}
+
+/// A zero-row part lets the regular SQL engine handle empty catalog tables,
+/// including aggregate results, without changing the persistent catalog.
+pub(super) struct EmptyPart {
+    path: PathBuf,
+}
+
+impl EmptyPart {
+    pub(super) fn path(&self) -> &Path {
+        &self.path
+    }
+}
+
+impl Drop for EmptyPart {
+    fn drop(&mut self) {
+        let _ = fs::remove_dir_all(&self.path);
+    }
+}
+
+pub(super) fn empty_part(columns: &[Column]) -> Result<EmptyPart, String> {
+    let id = next_id()?;
+    let path = std::env::temp_dir().join(format!(
+        "rusthouse-empty-{}-{id}",
+        std::process::id()
+    ));
+    if fs::symlink_metadata(&path).is_ok() {
+        return Err("temporary empty part already exists".into());
+    }
+    if let Err(error) = write_wide_part(&path, columns, &[]) {
+        let _ = fs::remove_dir_all(&path);
+        return Err(error.to_string());
+    }
+    Ok(EmptyPart { path })
+}
