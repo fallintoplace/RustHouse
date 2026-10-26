@@ -16,6 +16,36 @@ fn io_error(path: &Path, source: io::Error) -> PartError {
     }
 }
 
+/// Resolve the immutable active generation of a local table.
+/// Legacy tables without a pointer use their original parts directory.
+pub fn resolve_active_snapshot(root: &Path) -> Result<PathBuf, PartError> {
+    let pointer = root.join(".rusthouse-active");
+    let metadata = match fs::symlink_metadata(&pointer) {
+        Ok(metadata) => metadata,
+        Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(root.to_owned()),
+        Err(error) => return Err(io_error(&pointer, error)),
+    };
+    if !metadata.file_type().is_file() || metadata.len() > 64 {
+        return Err(PartError::InvalidScan("invalid database snapshot pointer".into()));
+    }
+    let label = fs::read_to_string(&pointer).map_err(|error| io_error(&pointer, error))?;
+    let label = label
+        .strip_suffix('\n')
+        .ok_or_else(|| PartError::InvalidScan("invalid snapshot pointer format".into()))?;
+    if !label.starts_with('g')
+        || label.len() < 2
+        || !label.as_bytes()[1..].iter().all(u8::is_ascii_digit)
+    {
+        return Err(PartError::InvalidScan("invalid database snapshot generation".into()));
+    }
+    let active = root.join(".rusthouse-versions").join(label);
+    let kind = fs::symlink_metadata(&active).map_err(|error| io_error(&active, error))?;
+    if !kind.file_type().is_dir() {
+        return Err(PartError::InvalidScan("active database snapshot is not a directory".into()));
+    }
+    Ok(active)
+}
+
 // upstream names are partition_minBlock_maxBlock_level[_mutation].
 // The partition id may contain underscores; split from the right instead.
 fn part_span(name: &str) -> Option<(String, u64, u64)> {

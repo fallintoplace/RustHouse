@@ -8,7 +8,7 @@ use csv::CsvWriter;
 use json_array::JsonArraySink;
 use jsonl::JsonlWriter;
 use rusthouse_query::{Source, execute, explain_select, parse_select};
-use rusthouse_storage::inspect_query_source;
+use rusthouse_storage::{inspect_query_source, resolve_active_snapshot};
 use std::fs;
 use std::io::{self, Read, Write};
 use std::path::{Path, PathBuf};
@@ -177,7 +177,8 @@ fn database_part(database: &Path, table: &str) -> Result<PathBuf, String> {
             "database parts are not a real directory for {table}"
         ));
     }
-    let stored = inspect_query_source(&parts).map_err(|error| error.to_string())?;
+    let active = resolve_active_snapshot(&parts).map_err(|error| error.to_string())?;
+    let stored = inspect_query_source(&active).map_err(|error| error.to_string())?;
     if stored.columns.len() != expected.len()
         || !stored
             .columns
@@ -187,7 +188,7 @@ fn database_part(database: &Path, table: &str) -> Result<PathBuf, String> {
     {
         return Err(format!("schema and stored data disagree for {table}"));
     }
-    Ok(parts)
+    Ok(active)
 }
 
 fn schema_response(config: &Config) -> Response {
@@ -463,6 +464,34 @@ mod tests {
         assert_eq!(result.body, b"id\tname\n1\tAda\n2\tGrace\n");
         let count = handle_request("POST", "/", b"SELECT count(*) FROM events", &config);
         assert_eq!(count.body, b"count\n2\n");
+        // SQL over HTTP must follow the same active generation as the CLI.
+        let generation = parts.join(".rusthouse-versions").join("g1");
+        fs::create_dir_all(&generation).unwrap();
+        write_wide_part(
+            &generation.join("all_1_1_0"),
+            &columns,
+            &[vec![Some("3".into()), Some("Lin".into())]],
+        )
+        .unwrap();
+        fs::write(parts.join(".rusthouse-active"), "g1\n").unwrap();
+        let current = handle_request(
+            "POST",
+            "/",
+            b"SELECT id, name FROM events ORDER BY id",
+            &config,
+        );
+        assert_eq!(current.status, "200 OK");
+        assert_eq!(current.body, b"id\tname\n3\tLin\n");
+        assert_eq!(
+            handle_request("POST", "/", b"SELECT count(*) FROM events", &config).body,
+            b"count\n1\n"
+        );
+        fs::write(parts.join(".rusthouse-active"), "g../old\n").unwrap();
+        assert_eq!(
+            handle_request("POST", "/", b"SELECT id FROM events", &config).status,
+            "400 Bad Request"
+        );
+        fs::write(parts.join(".rusthouse-active"), "g1\n").unwrap();
         let mutation = handle_request("POST", "/", b"DROP TABLE events", &config);
         assert_eq!(mutation.status, "400 Bad Request");
         assert_eq!(
