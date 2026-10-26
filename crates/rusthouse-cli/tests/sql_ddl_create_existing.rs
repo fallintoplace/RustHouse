@@ -14,7 +14,11 @@ fn catalog() -> std::path::PathBuf {
 
 fn create_if_not_exists(dir: &std::path::Path) -> std::process::Output {
     Command::new(env!("CARGO_BIN_EXE_rusthouse"))
-        .args(["sql", "CREATE TABLE IF NOT EXISTS events (id UInt64)", "--catalog"])
+        .args([
+            "sql",
+            "CREATE TABLE IF NOT EXISTS events (id UInt64)",
+            "--catalog",
+        ])
         .arg(dir)
         .output()
         .unwrap()
