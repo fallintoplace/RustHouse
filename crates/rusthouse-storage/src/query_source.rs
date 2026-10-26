@@ -162,23 +162,60 @@ pub fn inspect_query_source(path: &Path) -> Result<PartMetadata, PartError> {
 }
 
 fn inspect_parts_metadata(path: &Path, paths: &[PathBuf]) -> Result<PartMetadata, PartError> {
-    let first = inspect_part(&paths[0])?;
+    // Part metadata is immutable for an offline snapshot. For tables with many
+    // parts, inspect independent files in parallel without spawning one thread
+    // per part. Preserve input order so corruption reports stay deterministic.
+    const PARALLEL_THRESHOLD: usize = 32;
+    const MAX_WORKERS: usize = 8;
+    let workers = std::thread::available_parallelism()
+        .map_or(1, |parallelism| parallelism.get())
+        .min(MAX_WORKERS);
+    let mut metadata = Vec::with_capacity(paths.len());
+    if paths.len() >= PARALLEL_THRESHOLD && workers > 1 {
+        let chunk_size = paths.len().div_ceil(workers);
+        std::thread::scope(|scope| -> Result<(), PartError> {
+            let handles = paths
+                .chunks(chunk_size)
+                .map(|chunk| {
+                    scope.spawn(move || {
+                        chunk.iter().map(|part| inspect_part(part)).collect::<Vec<_>>()
+                    })
+                })
+                .collect::<Vec<_>>();
+            for handle in handles {
+                let chunk = handle.join().map_err(|_| {
+                    PartError::InvalidScan("snapshot metadata worker panicked".into())
+                })?;
+                for result in chunk {
+                    metadata.push(result?);
+                }
+            }
+            Ok(())
+        })?;
+    } else {
+        for part in paths {
+            metadata.push(inspect_part(part)?);
+        }
+    }
+
+    let first = metadata.first().ok_or_else(|| {
+        PartError::InvalidScan("snapshot contains no readable parts".into())
+    })?;
     let mut rows = 0u64;
-    for part in paths {
-        let metadata = inspect_part(part)?;
-        if metadata.columns != first.columns {
+    for (part, item) in paths.iter().zip(&metadata) {
+        if item.columns != first.columns {
             return Err(PartError::InvalidScan(format!(
                 "part schema mismatch in {}",
                 part.display()
             )));
         }
         rows = rows
-            .checked_add(metadata.rows)
+            .checked_add(item.rows)
             .ok_or_else(|| PartError::InvalidScan("table row count overflow".into()))?;
     }
     Ok(PartMetadata {
         path: path.to_owned(),
-        columns: first.columns,
+        columns: first.columns.clone(),
         rows,
     })
 }
@@ -281,6 +318,53 @@ mod tests {
             .unwrap();
         }
         assert_eq!(query_parts(&root).unwrap(), vec![active]);
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn inspects_many_immutable_parts_and_rejects_one_incompatible_schema() {
+        use crate::write_wide_part;
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        static NEXT_TEST: AtomicUsize = AtomicUsize::new(0);
+
+        let root = std::env::temp_dir().join(format!(
+            "rusthouse-parallel-metadata-{}-{}",
+            std::process::id(),
+            NEXT_TEST.fetch_add(1, Ordering::Relaxed)
+        ));
+        fs::create_dir(&root).unwrap();
+        let columns = vec![Column {
+            name: "id".into(),
+            data_type: "UInt64".into(),
+        }];
+        for index in 1..=40 {
+            let part = root.join(format!("all_{index}_{index}_0"));
+            write_wide_part(
+                &part,
+                &columns,
+                &[vec![Some(index.to_string())]],
+            )
+            .unwrap();
+        }
+        let metadata = inspect_query_source(&root).unwrap();
+        assert_eq!(metadata.rows, 40);
+        assert_eq!(metadata.columns, columns);
+
+        let changed = root.join("all_40_40_0");
+        fs::remove_dir_all(&changed).unwrap();
+        write_wide_part(
+            &changed,
+            &[Column {
+                name: "other".into(),
+                data_type: "UInt64".into(),
+            }],
+            &[vec![Some("40".into())]],
+        )
+        .unwrap();
+        assert!(matches!(
+            inspect_query_source(&root),
+            Err(PartError::InvalidScan(message)) if message.contains("schema mismatch")
+        ));
         fs::remove_dir_all(root).unwrap();
     }
 
