@@ -29,6 +29,47 @@ fn validate_mark_position(name: &str, marks: &[WideMark], index: usize) -> Resul
     Ok(())
 }
 
+fn validate_mark_rows(
+    name: &str,
+    marks: &[WideMark],
+    expected_rows: u64,
+    reference: Option<&[u64]>,
+) -> Result<Option<Vec<u64>>, PartError> {
+    // Capture only the first column's row counts. Later columns validate
+    // against the reference without allocating another boundary vector.
+    let mut first_row_counts = reference.is_none().then(|| Vec::with_capacity(marks.len()));
+    let mut total_rows = 0u64;
+    for (index, mark) in marks.iter().enumerate() {
+        validate_mark_position(name, marks, index)?;
+        let rows = mark
+            .rows
+            .ok_or_else(|| PartError::InvalidScan("adaptive wide marks are required".into()))?;
+        total_rows = total_rows.checked_add(rows).ok_or_else(|| {
+            PartError::InvalidScan(format!("mark row counts do not match count.txt for {name}"))
+        })?;
+        if let Some(reference) = reference {
+            if reference.get(index) != Some(&rows) {
+                return Err(PartError::InvalidScan(format!(
+                    "granule boundaries differ for {name}"
+                )));
+            }
+        } else if let Some(first) = first_row_counts.as_mut() {
+            first.push(rows);
+        }
+    }
+    if total_rows != expected_rows {
+        return Err(PartError::InvalidScan(format!(
+            "mark row counts do not match count.txt for {name}"
+        )));
+    }
+    if reference.is_some_and(|reference| reference.len() != marks.len()) {
+        return Err(PartError::InvalidScan(format!(
+            "granule boundaries differ for {name}"
+        )));
+    }
+    Ok(first_row_counts)
+}
+
 /// Shared granule boundaries for every requested column in a part scan.
 #[derive(Default)]
 pub(crate) struct ScanLayout {
@@ -42,47 +83,14 @@ impl ScanLayout {
         marks: &[WideMark],
         expected_rows: u64,
     ) -> Result<(), PartError> {
-        // Only the first column needs to retain row boundaries. Later columns
-        // compare directly against them without building another vector.
-        let mut first_row_counts = self
-            .reference_row_counts
-            .is_none()
-            .then(|| Vec::with_capacity(marks.len()));
-        let mut total_rows = 0u64;
-        for (index, mark) in marks.iter().enumerate() {
-            validate_mark_position(name, marks, index)?;
-            let rows = mark
-                .rows
-                .ok_or_else(|| PartError::InvalidScan("adaptive wide marks are required".into()))?;
-            total_rows = total_rows.checked_add(rows).ok_or_else(|| {
-                PartError::InvalidScan(format!("mark row counts do not match count.txt for {name}"))
-            })?;
-            if let Some(reference) = &self.reference_row_counts {
-                if reference.get(index) != Some(&rows) {
-                    return Err(PartError::InvalidScan(format!(
-                        "granule boundaries differ for {name}"
-                    )));
-                }
-            } else if let Some(first) = first_row_counts.as_mut() {
-                first.push(rows);
-            }
-        }
-        if total_rows != expected_rows {
-            return Err(PartError::InvalidScan(format!(
-                "mark row counts do not match count.txt for {name}"
-            )));
-        }
-        if self
-            .reference_row_counts
-            .as_ref()
-            .is_some_and(|reference| reference.len() != marks.len())
-        {
-            return Err(PartError::InvalidScan(format!(
-                "granule boundaries differ for {name}"
-            )));
-        }
-        if let Some(first) = first_row_counts {
-            self.reference_row_counts = Some(first);
+        let row_counts = validate_mark_rows(
+            name,
+            marks,
+            expected_rows,
+            self.reference_row_counts.as_deref(),
+        )?;
+        if let Some(row_counts) = row_counts {
+            self.reference_row_counts = Some(row_counts);
         }
         Ok(())
     }
@@ -102,6 +110,15 @@ mod tests {
             decompressed_offset: 0,
             rows: Some(rows),
         }
+    }
+
+    #[test]
+    fn first_failed_validation_does_not_seed_reference_boundaries() {
+        let mut layout = ScanLayout::default();
+        assert!(layout.validate("invalid", &[mark(0, 3)], 2).is_err());
+        assert_eq!(layout.mark_count(), 0);
+        layout.validate("valid", &[mark(0, 2)], 2).unwrap();
+        assert_eq!(layout.mark_count(), 1);
     }
 
     #[test]
