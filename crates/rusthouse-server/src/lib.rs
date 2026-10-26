@@ -347,6 +347,17 @@ pub fn handle_request(method: &str, target: &str, body: &[u8], config: &Config) 
     if config.part.is_some() && config.database.is_some() {
         return Response::text("400 Bad Request", "choose --part or --database, not both\n");
     }
+    // Match the CLI read contract: DROP/RENAME cannot remove parts mid-query.
+    // Retain this guard through the entire execution and response conversion.
+    let _database_read_lock = match (config.database.as_deref(), select.source.as_ref()) {
+        (Some(database), Some(Source::Table(_))) => {
+            match rusthouse_storage::acquire_database_lock(database, false) {
+                Ok(lock) => Some(lock),
+                Err(error) => return Response::text("409 Conflict", &format!("{error}\n")),
+            }
+        }
+        _ => None,
+    };
     let mut part = config.part.clone();
     if let (Some(database), Some(Source::Table(table))) =
         (config.database.as_deref(), select.source.as_ref())
@@ -512,6 +523,51 @@ mod tests {
             handle_request("POST", "/", b"SELECT id FROM events", &config).status,
             "400 Bad Request"
         );
+        fs::remove_dir_all(database).unwrap();
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn database_http_query_respects_cli_exclusive_lock() {
+        use rusthouse_storage::{Column, acquire_database_lock, write_wide_part};
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        static NEXT_DB: AtomicUsize = AtomicUsize::new(0);
+
+        let database = std::env::temp_dir().join(format!(
+            "rusthouse-server-lock-{}-{}",
+            std::process::id(),
+            NEXT_DB.fetch_add(1, Ordering::Relaxed)
+        ));
+        let parts = database.join("events.parts");
+        fs::create_dir_all(&parts).unwrap();
+        write_wide_part(
+            &parts.join("all_0_0_0"),
+            &[Column {
+                name: "id".into(),
+                data_type: "UInt64".into(),
+            }],
+            &[vec![Some("5".into())]],
+        )
+        .unwrap();
+        fs::write(
+            database.join("events.schema"),
+            "rusthouse-schema-v1\nid\tUInt64\n",
+        )
+        .unwrap();
+        let config = Config {
+            database: Some(database.clone()),
+            part: None,
+            max_rows: 10,
+        };
+
+        let writer = acquire_database_lock(&database, true).unwrap();
+        let blocked = handle_request("POST", "/", b"SELECT id FROM events", &config);
+        assert_eq!(blocked.status, "409 Conflict");
+        drop(writer);
+
+        let allowed = handle_request("POST", "/", b"SELECT id FROM events", &config);
+        assert_eq!(allowed.status, "200 OK");
+        assert_eq!(allowed.body, b"id\n5\n");
         fs::remove_dir_all(database).unwrap();
     }
 
