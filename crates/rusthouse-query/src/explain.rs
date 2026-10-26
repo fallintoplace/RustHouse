@@ -170,8 +170,7 @@ mod tests {
     #[test]
     fn describes_explicit_null_sort_placement() {
         let query =
-            parse_select("SELECT number FROM numbers(3) ORDER BY number DESC NULLS LAST")
-                .unwrap();
+            parse_select("SELECT number FROM numbers(3) ORDER BY number DESC NULLS LAST").unwrap();
         assert!(explain_select(&query).contains("Sort: number DESC NULLS LAST"));
     }
 
