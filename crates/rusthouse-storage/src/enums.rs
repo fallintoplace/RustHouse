@@ -143,8 +143,13 @@ fn parse_enum_type(data_type: &str) -> Option<(u8, BTreeMap<i16, String>)> {
             position += 1;
             match byte {
                 b'\'' => {
-                    terminated = true;
-                    break;
+                    if bytes.get(position) == Some(&b'\'') {
+                        position += 1;
+                        name.push(b'\'');
+                    } else {
+                        terminated = true;
+                        break;
+                    }
                 }
                 b'\\' => {
                     let escaped = *bytes.get(position)?;
@@ -258,6 +263,16 @@ mod tests {
             Some("ok now")
         );
         assert_eq!(input.0.position(), 2);
+    }
+
+    #[test]
+    fn supports_doubled_quote_enum_labels() {
+        let mut input = &[255u8, 2][..];
+        let column =
+            read_enum_column(&mut input, "Enum8('it''s' = -1, 'don''t' = 2)", 2).unwrap();
+        assert_eq!(column.name(0), Some("it's"));
+        assert_eq!(column.name(1), Some("don't"));
+        assert!(input.is_empty());
     }
 
     #[test]
