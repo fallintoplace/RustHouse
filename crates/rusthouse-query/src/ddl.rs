@@ -128,8 +128,10 @@ mod tests {
     #[test]
     fn parses_create_with_nested_types_and_idempotency() {
         assert_eq!(
-            parse_ddl("create table if not exists events (id uint64, payload Nullable(Array(String)));")
-                .unwrap(),
+            parse_ddl(
+                "create table if not exists events (id uint64, payload Nullable(Array(String)));"
+            )
+            .unwrap(),
             Some(Ddl::CreateTable {
                 name: "events".into(),
                 if_not_exists: true,

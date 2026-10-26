@@ -1,6 +1,6 @@
+mod catalog;
 mod csv;
 mod csv_no_header;
-mod catalog;
 mod json_array;
 mod jsonl;
 mod sql;

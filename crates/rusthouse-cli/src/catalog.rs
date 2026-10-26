@@ -41,7 +41,10 @@ fn create_table(
         schema.push_str(&column.data_type);
         schema.push('\n');
     }
-    if let Err(error) = file.write_all(schema.as_bytes()).and_then(|()| file.sync_all()) {
+    if let Err(error) = file
+        .write_all(schema.as_bytes())
+        .and_then(|()| file.sync_all())
+    {
         drop(file);
         let _ = fs::remove_file(&path);
         return Err(format!("cannot write schema for {name}: {error}"));

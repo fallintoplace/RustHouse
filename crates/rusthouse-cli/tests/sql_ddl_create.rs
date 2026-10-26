@@ -23,7 +23,10 @@ fn ddl(sql: &str, directory: &std::path::Path) -> std::process::Output {
 #[test]
 fn persists_schema_without_creating_mergetree_parts() {
     let dir = catalog();
-    let first = ddl("CREATE TABLE events (id UInt64, payload Nullable(String))", &dir);
+    let first = ddl(
+        "CREATE TABLE events (id UInt64, payload Nullable(String))",
+        &dir,
+    );
     assert!(first.status.success(), "{first:?}");
     assert_eq!(
         fs::read_to_string(dir.join("events.schema")).unwrap(),
