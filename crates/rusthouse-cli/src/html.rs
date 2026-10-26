@@ -3,6 +3,54 @@ use std::io::{self, Write};
 
 const MAX_LINE_BYTES: usize = 1024 * 1024;
 
+fn hex_digit(value: u8) -> Option<u8> {
+    match value {
+        b'0'..=b'9' => Some(value - b'0'),
+        b'a'..=b'f' => Some(value - b'a' + 10),
+        b'A'..=b'F' => Some(value - b'A' + 10),
+        _ => None,
+    }
+}
+
+fn decode_tsv_field(field: &[u8]) -> io::Result<Vec<u8>> {
+    let invalid = |message| io::Error::new(io::ErrorKind::InvalidData, message);
+    let mut output = Vec::with_capacity(field.len());
+    let mut index = 0;
+    while index < field.len() {
+        if field[index] != b'\\' {
+            output.push(field[index]);
+            index += 1;
+            continue;
+        }
+        index += 1;
+        let escaped = *field
+            .get(index)
+            .ok_or_else(|| invalid("incomplete TSV escape"))?;
+        match escaped {
+            b'\\' => output.push(b'\\'),
+            b't' => output.push(b'\t'),
+            b'n' => output.push(b'\n'),
+            b'r' => output.push(b'\r'),
+            b'0' => output.push(0),
+            b'x' => {
+                let high = *field
+                    .get(index + 1)
+                    .ok_or_else(|| invalid("short TSV hex escape"))?;
+                let low = *field
+                    .get(index + 2)
+                    .ok_or_else(|| invalid("short TSV hex escape"))?;
+                let high = hex_digit(high).ok_or_else(|| invalid("invalid TSV hex escape"))?;
+                let low = hex_digit(low).ok_or_else(|| invalid("invalid TSV hex escape"))?;
+                output.push((high << 4) | low);
+                index += 2;
+            }
+            _ => return Err(invalid("unknown TSV escape")),
+        }
+        index += 1;
+    }
+    Ok(output)
+}
+
 pub struct HtmlWriter<W: Write> {
     output: W,
     line: Vec<u8>,
@@ -33,12 +81,24 @@ impl<W: Write> HtmlWriter<W> {
             }
         }
 
+        let fields = text
+            .split('\t')
+            .map(|field| {
+                if header || field == "\\N" {
+                    return Ok(field.to_owned());
+                }
+                String::from_utf8(decode_tsv_field(field.as_bytes())?).map_err(|_| {
+                    io::Error::new(io::ErrorKind::InvalidData, "HTML field is not valid UTF-8")
+                })
+            })
+            .collect::<io::Result<Vec<_>>>()?;
+
         if header {
             self.output.write_all(b"<table>\n<thead><tr>")?;
         } else {
             self.output.write_all(b"<tr>")?;
         }
-        write_cells(&mut self.output, text, header)?;
+        write_cells(&mut self.output, &fields, header)?;
         if header {
             self.output.write_all(b"</tr></thead>\n<tbody>\n")?;
             self.columns = Some(count);
@@ -62,13 +122,13 @@ impl<W: Write> HtmlWriter<W> {
     }
 }
 
-fn write_cells<W: Write>(output: &mut W, row: &str, header: bool) -> io::Result<()> {
+fn write_cells<W: Write>(output: &mut W, fields: &[String], header: bool) -> io::Result<()> {
     let (open, close) = if header {
         (b"<th>".as_slice(), b"</th>".as_slice())
     } else {
         (b"<td>".as_slice(), b"</td>".as_slice())
     };
-    for field in row.split('\t') {
+    for field in fields {
         output.write_all(open)?;
         write_cell(output, field)?;
         output.write_all(close)?;
@@ -160,8 +220,8 @@ mod tests {
     #[test]
     fn renders_header_and_data_cell_tags() {
         let mut output = Vec::new();
-        write_cells(&mut output, "name\tvalue", true).unwrap();
-        write_cells(&mut output, "id\t1", false).unwrap();
+        write_cells(&mut output, &["name".into(), "value".into()], true).unwrap();
+        write_cells(&mut output, &["id".into(), "1".into()], false).unwrap();
         assert_eq!(output, b"<th>name</th><th>value</th><td>id</td><td>1</td>");
     }
 
@@ -169,5 +229,29 @@ mod tests {
     fn caps_incomplete_lines() {
         let mut writer = HtmlWriter::new(Vec::new());
         assert!(writer.write_all(&vec![b'x'; MAX_LINE_BYTES + 1]).is_err());
+    }
+}
+
+#[cfg(test)]
+mod decoded_html_regressions {
+    use super::*;
+
+    #[test]
+    fn decodes_sql_string_escapes_before_html_escaping() {
+        let mut writer = HtmlWriter::new(Vec::new());
+        writer
+            .write_all(b"name\nline\\nnext\\tcell\\\\tail\n")
+            .unwrap();
+        let html = String::from_utf8(writer.finish().unwrap()).unwrap();
+        assert!(html.contains(r"<td>line&#10;next&#9;cell\tail</td>"));
+    }
+
+    #[test]
+    fn rejects_bad_tsv_escape_before_starting_the_row() {
+        let mut writer = HtmlWriter::new(Vec::new());
+        writer.write_all(b"name\n").unwrap();
+        let before = writer.output.clone();
+        assert!(writer.write_all(b"bad\\q\n").is_err());
+        assert_eq!(writer.output, before);
     }
 }
