@@ -26,9 +26,11 @@ fn sql(query: &str, catalog: &Path) -> Output {
 #[test]
 fn empty_catalog_tables_have_select_headers_and_zero_counts() {
     let root = catalog();
-    assert!(sql("CREATE TABLE events (id UInt64, name String)", &root)
-        .status
-        .success());
+    assert!(
+        sql("CREATE TABLE events (id UInt64, name String)", &root)
+            .status
+            .success()
+    );
     let count = sql("SELECT count(*) FROM events", &root);
     assert!(count.status.success(), "{count:?}");
     assert_eq!(count.stdout, b"count\n0\n");
@@ -42,9 +44,14 @@ fn empty_catalog_tables_have_select_headers_and_zero_counts() {
 #[test]
 fn catalog_select_supports_filters_aggregates_and_saved_parts() {
     let root = catalog();
-    assert!(sql("CREATE TABLE events (id Int64, name String, score Nullable(Int64))", &root)
+    assert!(
+        sql(
+            "CREATE TABLE events (id Int64, name String, score Nullable(Int64))",
+            &root
+        )
         .status
-        .success());
+        .success()
+    );
     for statement in [
         "INSERT INTO events VALUES (-3, 'alpha', NULL), (4, 'beta', 2)",
         "INSERT INTO events (id, name) VALUES (7, 'gamma')",

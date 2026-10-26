@@ -167,7 +167,7 @@ pub(super) fn run_sql_args(mut args: impl Iterator<Item = OsString>) -> Result<(
                 return Err("--explain is only supported for SELECT".into());
             }
             if time {
-                return Err("--time cannot be combined with catalog DDL".into());
+                return Err("--time cannot be combined with --catalog".into());
             }
             if part.is_some() || output_path.is_some() || format.is_some() || max_rows.is_some() {
                 return Err("DDL cannot use --part, --output, --format, or --max-rows".into());

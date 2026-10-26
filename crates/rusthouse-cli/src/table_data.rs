@@ -201,7 +201,9 @@ pub(super) fn resolve_table(
     }
     let metadata = inspect_query_source(&dir).map_err(|error| error.to_string())?;
     if metadata.columns != columns {
-        return Err(format!("table parts do not match the catalog schema for {table}"));
+        return Err(format!(
+            "table parts do not match the catalog schema for {table}"
+        ));
     }
     Ok((columns, Some(dir)))
 }
@@ -226,10 +228,7 @@ impl Drop for EmptyPart {
 
 pub(super) fn empty_part(columns: &[Column]) -> Result<EmptyPart, String> {
     let id = next_id()?;
-    let path = std::env::temp_dir().join(format!(
-        "rusthouse-empty-{}-{id}",
-        std::process::id()
-    ));
+    let path = std::env::temp_dir().join(format!("rusthouse-empty-{}-{id}", std::process::id()));
     if fs::symlink_metadata(&path).is_ok() {
         return Err("temporary empty part already exists".into());
     }
