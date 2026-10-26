@@ -14,6 +14,10 @@ pub enum Ddl {
         columns: Vec<ColumnDef>,
         if_not_exists: bool,
     },
+    DropTable {
+        name: String,
+        if_exists: bool,
+    },
 }
 
 fn identifier(parser: &mut Parser) -> Result<String, ParseError> {
@@ -70,6 +74,25 @@ pub fn parse_ddl(sql: &str) -> Result<Option<Ddl>, ParseError> {
         tokens: tokenize(sql)?,
         index: 0,
     };
+    if parser.keyword("DROP") {
+        if !parser.keyword("TABLE") {
+            return Err(ParseError("expected TABLE after DROP".into()));
+        }
+        let if_exists = if parser.keyword("IF") {
+            if !parser.keyword("EXISTS") {
+                return Err(ParseError("expected IF EXISTS".into()));
+            }
+            true
+        } else {
+            false
+        };
+        let name = identifier(&mut parser)?;
+        parser.take(Token::Semicolon);
+        if parser.index != parser.tokens.len() {
+            return Err(ParseError("unexpected tokens after DDL statement".into()));
+        }
+        return Ok(Some(Ddl::DropTable { name, if_exists }));
+    }
     if !parser.keyword("CREATE") {
         return Ok(None);
     }
@@ -148,6 +171,32 @@ mod tests {
             })
         );
         assert_eq!(parse_ddl("SELECT 1").unwrap(), None);
+    }
+
+    #[test]
+    fn parses_drop_and_rejects_extra_statements() {
+        assert_eq!(
+            parse_ddl("drop table if exists events;").unwrap(),
+            Some(Ddl::DropTable {
+                name: "events".into(),
+                if_exists: true,
+            })
+        );
+        assert!(matches!(
+            parse_ddl("DROP TABLE events").unwrap(),
+            Some(Ddl::DropTable {
+                if_exists: false,
+                ..
+            })
+        ));
+        for sql in [
+            "DROP TABLE",
+            "DROP events",
+            "DROP TABLE IF NOT EXISTS events",
+            "DROP TABLE events; DROP TABLE other",
+        ] {
+            assert!(parse_ddl(sql).is_err(), "{sql}");
+        }
     }
 
     #[test]
