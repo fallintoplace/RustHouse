@@ -662,10 +662,12 @@ fn execute_numbers<W: Write>(
 
     // numbers() is already sorted and its values are unique. A filter-free
     // ORDER BY can page the generated range directly rather than filling a heap.
-    if let Some(sorted) = sorting.as_ref()
-        && query.predicates.is_empty()
-        && query.or_predicates.is_empty()
-    {
+    let unfiltered_sort = if query.predicates.is_empty() && query.or_predicates.is_empty() {
+        sorting.as_ref()
+    } else {
+        None
+    };
+    if let Some(sorted) = unfiltered_sort {
         if rows > MAX_SORTED_ROWS as u64 && sorted.requested > MAX_SORTED_ROWS {
             return Err(ExecutionError::Invalid(
                 "ORDER BY requires LIMIT <= 100000 for large results".into(),
