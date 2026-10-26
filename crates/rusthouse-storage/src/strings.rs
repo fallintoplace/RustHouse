@@ -116,6 +116,15 @@ pub fn read_legacy_strings<R: Read>(
     Ok(values)
 }
 
+fn append_sized_offsets(values: &mut StringColumn, bytes: &[u8]) -> Result<(), StringReadError> {
+    for encoded in bytes.chunks_exact(8) {
+        let length = u64::from_le_bytes(encoded.try_into().unwrap());
+        let end = checked_end(*values.offsets.last().unwrap(), length)?;
+        values.offsets.push(end);
+    }
+    Ok(())
+}
+
 pub fn read_sized_strings<S: Read, D: Read>(
     sizes: &mut S,
     data: &mut D,
@@ -129,11 +138,7 @@ pub fn read_sized_strings<S: Read, D: Read>(
     while decoded_rows < rows {
         let batch_rows = (rows - decoded_rows).min(buffer.len() / 8);
         sizes.read_exact(&mut buffer[..batch_rows * 8])?;
-        for encoded in buffer[..batch_rows * 8].chunks_exact(8) {
-            let length = u64::from_le_bytes(encoded.try_into().unwrap());
-            let end = checked_end(*values.offsets.last().unwrap(), length)?;
-            values.offsets.push(end);
-        }
+        append_sized_offsets(&mut values, &buffer[..batch_rows * 8])?;
         decoded_rows += batch_rows;
     }
     let bytes = *values.offsets.last().unwrap();
