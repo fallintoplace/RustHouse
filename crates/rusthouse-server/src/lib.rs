@@ -274,16 +274,16 @@ enum QueryFormat {
 impl QueryFormat {
     fn parse(value: &str) -> Result<Self, &'static str> {
         Ok(match value {
-                    "tsv" => Self::Tsv,
-                    "tsv-no-header" => Self::TsvNoHeader,
-                    "csv" => Self::Csv,
-                    "csv-no-header" => Self::CsvNoHeader,
-                    "jsonl" => Self::Jsonl,
-                    "json" => Self::Json,
-                    "json-compact-each-row" => Self::JsonCompactEachRow,
-                    "sql-values" => Self::SqlValues,
-                    "markdown" => Self::Markdown,
-                    _ => return Err("unsupported query format"),
+            "tsv" => Self::Tsv,
+            "tsv-no-header" => Self::TsvNoHeader,
+            "csv" => Self::Csv,
+            "csv-no-header" => Self::CsvNoHeader,
+            "jsonl" => Self::Jsonl,
+            "json" => Self::Json,
+            "json-compact-each-row" => Self::JsonCompactEachRow,
+            "sql-values" => Self::SqlValues,
+            "markdown" => Self::Markdown,
+            _ => return Err("unsupported query format"),
         })
     }
 }
