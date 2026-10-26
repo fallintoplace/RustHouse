@@ -4,13 +4,11 @@ mod execute;
 mod explain;
 mod insert;
 mod lexer;
-mod update;
 pub use ddl::{ColumnDef, Ddl, parse_ddl};
 pub use delete::{Delete, parse_delete};
-pub use execute::{ExecutionError, execute, read_matching_rows};
+pub use execute::{ExecutionError, MatchedRow, execute, read_matching_rows};
 pub use explain::explain_select;
 pub use insert::{Insert, parse_insert};
-pub use update::{Assignment, Update, parse_update};
 
 use std::error::Error;
 use std::fmt;

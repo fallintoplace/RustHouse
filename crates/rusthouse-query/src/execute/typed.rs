@@ -384,7 +384,7 @@ pub(super) fn read_matching_rows(
     predicates: &[Predicate],
     or_predicates: &[Vec<Predicate>],
     path: &Path,
-) -> Result<Vec<(Vec<Option<String>>, bool)>, ExecutionError> {
+) -> Result<Vec<super::MatchedRow>, ExecutionError> {
     const MAX_REWRITE_ROWS: usize = 4096;
     const MAX_REWRITE_BYTES: usize = 16 * 1024 * 1024;
     let metadata = inspect_query_source(path)?;

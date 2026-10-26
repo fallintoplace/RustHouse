@@ -122,13 +122,16 @@ fn write_header<W: Write>(
     Ok(())
 }
 
+/// Materialized row plus the result of its WHERE predicate.
+pub type MatchedRow = (Vec<Option<String>>, bool);
+
 /// Materialize a bounded local table snapshot and report which rows satisfy WHERE.
 /// Used by single-writer SQL mutations; SELECT still streams through its normal executor.
 pub fn read_matching_rows(
     predicates: &[crate::Predicate],
     or_predicates: &[Vec<crate::Predicate>],
     part: &Path,
-) -> Result<Vec<(Vec<Option<String>>, bool)>, ExecutionError> {
+) -> Result<Vec<MatchedRow>, ExecutionError> {
     typed::read_matching_rows(predicates, or_predicates, part)
 }
 
