@@ -68,17 +68,22 @@ impl<W: Write> JsonCompactEachRowWriter<W> {
 
 impl<W: Write> Write for JsonCompactEachRowWriter<W> {
     fn write(&mut self, bytes: &[u8]) -> io::Result<usize> {
-        for &byte in bytes {
-            if byte == b'\n' {
-                self.finish_line()?;
+        for chunk in bytes.split_inclusive(|&byte| byte == b'\n') {
+            let complete = chunk.last() == Some(&b'\n');
+            let fragment = if complete {
+                &chunk[..chunk.len() - 1]
             } else {
-                if self.line.len() >= MAX_LINE_BYTES {
-                    return Err(io::Error::new(
-                        io::ErrorKind::InvalidData,
-                        "JSON row exceeds 1 MiB",
-                    ));
-                }
-                self.line.push(byte);
+                chunk
+            };
+            if fragment.len() > MAX_LINE_BYTES.saturating_sub(self.line.len()) {
+                return Err(io::Error::new(
+                    io::ErrorKind::InvalidData,
+                    "JSON row exceeds 1 MiB",
+                ));
+            }
+            self.line.extend_from_slice(fragment);
+            if complete {
+                self.finish_line()?;
             }
         }
         Ok(bytes.len())
@@ -120,5 +125,15 @@ mod tests {
         }
         let mut writer = JsonCompactEachRowWriter::new(Vec::new());
         writer.write_all(b"a\tb\n1\n").unwrap_err();
+    }
+    #[test]
+    fn processes_many_compact_rows_from_one_bulk_write() {
+        let mut writer = JsonCompactEachRowWriter::new(Vec::new());
+        let input = format!("value\n{}", "42\n".repeat(1_000));
+        writer.write_all(input.as_bytes()).unwrap();
+        assert_eq!(
+            writer.finish().unwrap(),
+            "[\"42\"]\n".repeat(1_000).as_bytes()
+        );
     }
 }
