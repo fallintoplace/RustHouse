@@ -83,8 +83,8 @@ fn write_json_row<W: Write>(output: &mut W, headers: &[String], line: &[u8]) -> 
                 let text = decode_tsv_value(field)?;
                 write_json_string(output, &text)?;
             } else {
-                let text = std::str::from_utf8(field)
-                    .map_err(|_| invalid("JSONL field is not UTF-8"))?;
+                let text =
+                    std::str::from_utf8(field).map_err(|_| invalid("JSONL field is not UTF-8"))?;
                 write_json_string(output, text)?;
             }
         }
@@ -228,5 +228,4 @@ mod tests {
         let mut invalid = Vec::new();
         assert!(write_json_row(&mut invalid, &["value".to_owned()], &[0xff]).is_err());
     }
-
 }
