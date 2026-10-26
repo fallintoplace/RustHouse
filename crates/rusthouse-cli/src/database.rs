@@ -1,7 +1,7 @@
 //! Single-writer local database mode.
 //! Tables use existing .schema metadata and immutable, atomically published wide parts.
 use crate::catalog;
-use rusthouse_query::{Ddl, Delete, Insert, read_matching_rows};
+use rusthouse_query::{Ddl, Delete, Insert, Update, read_matching_rows};
 use rusthouse_storage::{
     Column, inspect_query_source, query_parts, verify_wide_part, write_wide_part,
 };
@@ -326,6 +326,43 @@ pub(super) fn delete(database: &Path, delete: &Delete) -> Result<(), String> {
         replace_rows(database, &delete.table, &cols, &parts_dir, &retained)?;
     }
     println!("Deleted {count} rows from {}", delete.table);
+    Ok(())
+}
+
+pub(super) fn update(database: &Path, update: &Update) -> Result<(), String> {
+    let _lock = lock(database)?;
+    let cols = columns(database, &update.table)?;
+    let (parts_dir, _) = validated_parts(database, &update.table, &cols)?;
+    let mut assignments = Vec::with_capacity(update.assignments.len());
+    for assignment in &update.assignments {
+        let index = cols
+            .iter()
+            .position(|column| column.name == assignment.column)
+            .ok_or_else(|| format!("unknown UPDATE column: {}", assignment.column))?;
+        if assignment.value.is_none() && !cols[index].data_type.starts_with("Nullable(") {
+            return Err(format!("NULL is not permitted for {}", assignment.column));
+        }
+        assignments.push((index, &assignment.value));
+    }
+    let existing = read_matching_rows(&update.predicates, &update.or_predicates, &parts_dir)
+        .map_err(|error| error.to_string())?;
+    let mut changed = 0usize;
+    let rows = existing
+        .into_iter()
+        .map(|(mut row, matched)| {
+            if matched {
+                changed += 1;
+                for (index, value) in &assignments {
+                    row[*index] = (*value).clone();
+                }
+            }
+            row
+        })
+        .collect::<Vec<_>>();
+    if changed > 0 {
+        replace_rows(database, &update.table, &cols, &parts_dir, &rows)?;
+    }
+    println!("Updated {changed} rows in {}", update.table);
     Ok(())
 }
 
