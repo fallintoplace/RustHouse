@@ -1,11 +1,11 @@
 //! Strict, bounded CSV loader for COPY table FROM 'local-file'.
-use rusthouse_query::{CopyFrom, Insert};
+use rusthouse_query::{CopyFormat, CopyFrom, Insert};
 use std::collections::HashSet;
 use std::fs::File;
 use std::io::Read;
 use std::path::Path;
 
-const MAX_CSV_BYTES: usize = 8 * 1024 * 1024;
+const MAX_COPY_BYTES: usize = 8 * 1024 * 1024;
 const MAX_RECORDS: usize = 4096;
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -111,35 +111,86 @@ fn parse_csv(data: &str) -> Result<Vec<Vec<Option<String>>>, String> {
     Ok(records)
 }
 
+fn parse_tsv(data: &str) -> Result<Vec<Vec<Option<String>>>, String> {
+    let input = data.strip_prefix('\u{feff}').unwrap_or(data);
+    let mut records = Vec::new();
+    for line in input.split_terminator('\n') {
+        if records.len() > MAX_RECORDS {
+            return Err("TSV supports at most 4096 data rows".into());
+        }
+        let line = line.strip_suffix('\r').unwrap_or(line);
+        if line.contains('\r') {
+            return Err("TSV requires CRLF for carriage returns".into());
+        }
+        let mut row = Vec::new();
+        for field in line.split('\t') {
+            if row.len() >= 64 {
+                return Err("TSV records support at most 64 columns".into());
+            }
+            if field == "\\N" {
+                row.push(None);
+                continue;
+            }
+            let mut decoded = String::new();
+            let mut chars = field.chars();
+            while let Some(ch) = chars.next() {
+                if ch != '\\' {
+                    decoded.push(ch);
+                    continue;
+                }
+                let escaped = chars.next().ok_or("TSV ends with an incomplete escape")?;
+                decoded.push(match escaped {
+                    't' => '\t',
+                    'n' => '\n',
+                    'r' => '\r',
+                    '0' => '\0',
+                    'b' => '\u{8}',
+                    'f' => '\u{c}',
+                    'v' => '\u{b}',
+                    '\\' => '\\',
+                    'N' => return Err("TSV NULL marker must occupy the whole field".into()),
+                    _ => return Err(format!("unsupported TSV escape: \\{escaped}")),
+                });
+            }
+            row.push(Some(decoded));
+        }
+        records.push(row);
+    }
+    Ok(records)
+}
+
 pub(super) fn run(database: &Path, statement: &CopyFrom) -> Result<(), String> {
     let mut data = Vec::new();
     File::open(&statement.path)
         .map_err(|error| format!("cannot open COPY file {}: {error}", statement.path))?
-        .take((MAX_CSV_BYTES + 1) as u64)
+        .take((MAX_COPY_BYTES + 1) as u64)
         .read_to_end(&mut data)
         .map_err(|error| format!("cannot read COPY file {}: {error}", statement.path))?;
-    if data.len() > MAX_CSV_BYTES {
+    if data.len() > MAX_COPY_BYTES {
         return Err("COPY file exceeds 8 MiB".into());
     }
-    let input = std::str::from_utf8(&data).map_err(|_| "COPY requires UTF-8 CSV")?;
-    let mut records = parse_csv(input)?;
+    let input = std::str::from_utf8(&data).map_err(|_| "COPY requires UTF-8 data")?;
+    let mut records = match statement.format {
+        CopyFormat::Csv => parse_csv(input)?,
+        CopyFormat::Tsv => parse_tsv(input)?,
+    };
     let mut columns = statement.columns.clone();
     if statement.header {
         if records.is_empty() {
-            return Err("COPY file is missing its CSV header".into());
+            return Err("COPY file is missing its header".into());
         }
         let headings = records.remove(0);
         let names = headings
             .into_iter()
-            .map(|value| value.ok_or("CSV header cannot contain empty columns"))
+            .map(|value| value.ok_or("COPY header cannot contain empty columns"))
             .collect::<Result<Vec<_>, _>>()?;
         let mut unique = HashSet::new();
         if names.iter().any(|name| !unique.insert(name.clone())) {
-            return Err("duplicate CSV header column".into());
+            return Err("duplicate COPY header column".into());
         }
         if let Some(expected) = columns.as_ref() {
             if expected != &names {
-                return Err("CSV header does not match explicit COPY column list".into());
+                return Err("COPY header does not match explicit column list".into());
             }
         } else {
             columns = Some(names);
@@ -181,6 +232,29 @@ mod tests {
             parse_csv("\"hello\nworld\",42\n").unwrap()[0][0],
             Some("hello\nworld".into())
         );
+    }
+
+    #[test]
+    fn tsv_decodes_nulls_and_escaped_fields() {
+        assert_eq!(
+            parse_tsv("id\tname\tnote\r\n1\tAda\\tLovelace\t\\N\r\n2\tGrace\\nHopper\t\n").unwrap(),
+            vec![
+                vec![Some("id".into()), Some("name".into()), Some("note".into())],
+                vec![Some("1".into()), Some("Ada\tLovelace".into()), None],
+                vec![
+                    Some("2".into()),
+                    Some("Grace\nHopper".into()),
+                    Some("".into())
+                ],
+            ]
+        );
+    }
+
+    #[test]
+    fn invalid_tsv_escapes_are_rejected() {
+        for input in ["bad\\q\n", "bad\\\n", "a\\Nvalue\n", "a\rb\n"] {
+            assert!(parse_tsv(input).is_err(), "{input:?}");
+        }
     }
 
     #[test]

@@ -2,12 +2,19 @@
 use super::{ParseError, Parser, Token, tokenize};
 use std::collections::HashSet;
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CopyFormat {
+    Csv,
+    Tsv,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct CopyFrom {
     pub table: String,
     pub columns: Option<Vec<String>>,
     pub path: String,
     pub header: bool,
+    pub format: CopyFormat,
 }
 
 fn identifier(parser: &mut Parser) -> Result<String, ParseError> {
@@ -64,12 +71,20 @@ pub fn parse_copy_from(sql: &str) -> Result<Option<CopyFrom>, ParseError> {
         _ => return Err(ParseError("COPY requires a quoted local file path".into())),
     };
     let mut header = false;
+    let mut format = CopyFormat::Csv;
     if parser.keyword("WITH") {
-        if !parser.take(Token::LParen) || !parser.keyword("FORMAT") || !parser.keyword("CSV") {
+        if !parser.take(Token::LParen) || !parser.keyword("FORMAT") {
             return Err(ParseError(
-                "COPY supports WITH (FORMAT CSV[, HEADER TRUE])".into(),
+                "COPY supports WITH (FORMAT CSV|TSV[, HEADER TRUE])".into(),
             ));
         }
+        format = if parser.keyword("CSV") {
+            CopyFormat::Csv
+        } else if parser.keyword("TSV") {
+            CopyFormat::Tsv
+        } else {
+            return Err(ParseError("COPY format must be CSV or TSV".into()));
+        };
         if parser.take(Token::Comma) {
             if !parser.keyword("HEADER") {
                 return Err(ParseError("expected HEADER after CSV".into()));
@@ -95,6 +110,7 @@ pub fn parse_copy_from(sql: &str) -> Result<Option<CopyFrom>, ParseError> {
         columns,
         path,
         header,
+        format,
     }))
 }
 
@@ -114,6 +130,30 @@ mod tests {
         assert_eq!(parsed.columns, Some(vec!["name".into(), "id".into()]));
         assert!(parsed.header);
         assert!(!parse_copy_from("SELECT 1").unwrap().is_some());
+    }
+
+    #[test]
+    fn parses_tsv_options_and_rejects_other_formats() {
+        let copy = parse_copy_from("COPY events FROM 'events.tsv' WITH (FORMAT TSV, HEADER TRUE)")
+            .unwrap()
+            .unwrap();
+        assert_eq!(copy.format, CopyFormat::Tsv);
+        assert!(copy.header);
+        assert_eq!(
+            parse_copy_from("COPY events FROM 'events.tsv' WITH (FORMAT TSV, HEADER FALSE)")
+                .unwrap()
+                .unwrap()
+                .format,
+            CopyFormat::Tsv
+        );
+        assert_eq!(
+            parse_copy_from("COPY events FROM 'events.csv'")
+                .unwrap()
+                .unwrap()
+                .format,
+            CopyFormat::Csv
+        );
+        assert!(parse_copy_from("COPY events FROM 'events' WITH (FORMAT JSON)").is_err());
     }
 
     #[test]
