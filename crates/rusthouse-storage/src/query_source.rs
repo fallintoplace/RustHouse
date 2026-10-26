@@ -31,7 +31,8 @@ fn part_span(name: &str) -> Option<(String, u64, u64)> {
         if suffix == 4 {
             let _mutation = tokens[index + 3].parse::<u64>().ok()?;
         }
-        (min <= max).then(|| (tokens[..index].join("_"), min, max))
+        let partition = tokens[..index].join("_");
+        (min <= max && !partition.is_empty()).then_some((partition, min, max))
     };
     match (candidate(3), candidate(4)) {
         (Some(part), None) | (None, Some(part)) => Some(part),
@@ -186,6 +187,9 @@ mod tests {
         assert_eq!(part_span("2026_10_1_2_0"), Some(("2026_10".into(), 1, 2)));
         assert_eq!(part_span("all_1_2_0_7"), Some(("all".into(), 1, 2)));
         assert_eq!(part_span("all_3_2_0"), None);
+        assert_eq!(part_span("_1_2_0"), None);
+        assert_eq!(part_span("all__1_2_0"), Some(("all_".into(), 1, 2)));
+        assert_eq!(part_span("all_1_2_0_"), None);
     }
     #[test]
     fn checks_overlapping_block_ranges_independently_of_directory_order() {
