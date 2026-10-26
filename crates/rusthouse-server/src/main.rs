@@ -196,8 +196,7 @@ fn main() -> io::Result<()> {
                 Err(updated) => count = updated,
             }
         };
-        if !acquired
-        {
+        if !acquired {
             let mut stream = stream;
             let _ = respond(
                 &mut stream,
