@@ -23,27 +23,55 @@ fn ddl(sql: &str, dir: &std::path::Path) -> std::process::Output {
 #[test]
 fn modifies_catalog_type_without_changing_data_or_column_order() {
     let dir = catalog();
-    assert!(ddl("CREATE TABLE events (id UInt64, payload String)", &dir).status.success());
+    assert!(
+        ddl("CREATE TABLE events (id UInt64, payload String)", &dir)
+            .status
+            .success()
+    );
     fs::write(dir.join("part.bin"), b"untouched").unwrap();
 
-    let changed = ddl("ALTER TABLE events MODIFY COLUMN payload Nullable(String)", &dir);
+    let changed = ddl(
+        "ALTER TABLE events MODIFY COLUMN payload Nullable(String)",
+        &dir,
+    );
     assert!(changed.status.success(), "{changed:?}");
     let schema = "rusthouse-schema-v1\nid\tUInt64\npayload\tNullable(String)\n";
-    assert_eq!(fs::read_to_string(dir.join("events.schema")).unwrap(), schema);
+    assert_eq!(
+        fs::read_to_string(dir.join("events.schema")).unwrap(),
+        schema
+    );
     assert_eq!(fs::read(dir.join("part.bin")).unwrap(), b"untouched");
-    assert!(ddl("ALTER TABLE events MODIFY COLUMN payload Nullable(String)", &dir).status.success());
-    assert_eq!(fs::read_to_string(dir.join("events.schema")).unwrap(), schema);
+    assert!(
+        ddl(
+            "ALTER TABLE events MODIFY COLUMN payload Nullable(String)",
+            &dir
+        )
+        .status
+        .success()
+    );
+    assert_eq!(
+        fs::read_to_string(dir.join("events.schema")).unwrap(),
+        schema
+    );
 
     let described = ddl("DESCRIBE TABLE events", &dir);
     assert!(described.status.success());
-    assert!(String::from_utf8(described.stdout).unwrap().contains("payload\tNullable(String)"));
+    assert!(
+        String::from_utf8(described.stdout)
+            .unwrap()
+            .contains("payload\tNullable(String)")
+    );
     fs::remove_dir_all(dir).unwrap();
 }
 
 #[test]
 fn rejects_invalid_type_and_missing_column_without_mutation() {
     let dir = catalog();
-    assert!(ddl("CREATE TABLE events (id UInt64, payload String)", &dir).status.success());
+    assert!(
+        ddl("CREATE TABLE events (id UInt64, payload String)", &dir)
+            .status
+            .success()
+    );
     let before = fs::read(dir.join("events.schema")).unwrap();
     for sql in [
         "ALTER TABLE events MODIFY COLUMN missing String",
