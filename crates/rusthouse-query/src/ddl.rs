@@ -10,7 +10,9 @@ pub struct ColumnDef {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Ddl {
     ShowTables,
-    ShowTablesLike { pattern: String },
+    ShowTablesLike {
+        pattern: String,
+    },
     ShowCreateTable {
         name: String,
     },
@@ -180,10 +182,16 @@ pub fn parse_ddl(sql: &str) -> Result<Option<Ddl>, ParseError> {
             if parser.keyword("LIKE") {
                 let pattern = match parser.tokens.get(parser.index) {
                     Some(Token::String(pattern)) => pattern.clone(),
-                    _ => return Err(ParseError("SHOW TABLES LIKE requires a string literal".into())),
+                    _ => {
+                        return Err(ParseError(
+                            "SHOW TABLES LIKE requires a string literal".into(),
+                        ));
+                    }
                 };
                 if pattern.len() > 256 {
-                    return Err(ParseError("SHOW TABLES LIKE pattern exceeds 256 bytes".into()));
+                    return Err(ParseError(
+                        "SHOW TABLES LIKE pattern exceeds 256 bytes".into(),
+                    ));
                 }
                 parser.index += 1;
                 Ddl::ShowTablesLike { pattern }
