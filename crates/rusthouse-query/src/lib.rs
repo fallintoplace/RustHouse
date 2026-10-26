@@ -410,9 +410,7 @@ pub fn parse_select(sql: &str) -> Result<Select, ParseError> {
                 grouped_count = true;
                 break;
             }
-            if columns.len() == 1
-                && parser.tokens.get(parser.index + 1) == Some(&Token::LParen)
-            {
+            if columns.len() == 1 && parser.tokens.get(parser.index + 1) == Some(&Token::LParen) {
                 let function = match parser.tokens.get(parser.index) {
                     Some(Token::Word(name)) => match name.to_ascii_uppercase().as_str() {
                         "SUM" => Some(AggregateFunction::Sum),
@@ -775,7 +773,9 @@ pub fn parse_select(sql: &str) -> Result<Select, ParseError> {
                 return Err(ParseError("GROUP BY must match the selected key".into()));
             }
             _ => {
-                return Err(ParseError("GROUP BY requires SELECT key, aggregate(column)".into()));
+                return Err(ParseError(
+                    "GROUP BY requires SELECT key, aggregate(column)".into(),
+                ));
             }
         }
     } else if matches!(
@@ -894,8 +894,13 @@ pub fn parse_select(sql: &str) -> Result<Select, ParseError> {
         }
     }
     if let Projection::GroupedAggregate { column, .. } = &projection {
-        if order_by.as_ref().is_some_and(|order| &order.column != column) {
-            return Err(ParseError("grouped numeric ORDER BY must use the group key".into()));
+        if order_by
+            .as_ref()
+            .is_some_and(|order| &order.column != column)
+        {
+            return Err(ParseError(
+                "grouped numeric ORDER BY must use the group key".into(),
+            ));
         }
     }
 
