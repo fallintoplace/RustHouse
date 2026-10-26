@@ -102,10 +102,8 @@ fn parses_single_column_result_aliases() {
 
 #[test]
 fn accepts_composite_order_by_keys_and_bounds_the_count() {
-    let parsed = parse_select(
-        "SELECT id, price FROM part ORDER BY 2 DESC, id ASC, 1 LIMIT 3",
-    )
-    .unwrap();
+    let parsed =
+        parse_select("SELECT id, price FROM part ORDER BY 2 DESC, id ASC, 1 LIMIT 3").unwrap();
     assert_eq!(parsed.order_by.unwrap().column, "price");
     assert_eq!(
         parsed.order_by_extra,
