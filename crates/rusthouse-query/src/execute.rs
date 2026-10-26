@@ -562,6 +562,32 @@ fn execute_aggregate_numbers<W: Write>(
     if query.limit == Some(0) {
         return Ok(());
     }
+    // For an unfiltered arithmetic progression, these aggregates are exact
+    // without visiting every row. Keep AVG iterative to preserve its rounding.
+    if query.predicates.is_empty()
+        && query.or_predicates.is_empty()
+        && matches!(
+            function,
+            AggregateFunction::Sum | AggregateFunction::Min | AggregateFunction::Max
+        )
+    {
+        if query.offset.unwrap_or(0) == 0 {
+            let result = if rows == 0 {
+                "NULL".to_string()
+            } else {
+                let first = u128::from(start);
+                let last = first + u128::from(rows - 1) * u128::from(step);
+                match function {
+                    AggregateFunction::Sum => ((first + last) * u128::from(rows) / 2).to_string(),
+                    AggregateFunction::Min => first.to_string(),
+                    AggregateFunction::Max => last.to_string(),
+                    AggregateFunction::Avg => unreachable!(),
+                }
+            };
+            writeln!(output, "{result}")?;
+        }
+        return Ok(());
+    }
     let mut state = AggregateState::new(function);
     for index in 0..rows {
         let number = start + index * step;
@@ -1501,6 +1527,52 @@ mod tests {
             "sum(number)\n"
         );
         assert!(run("SELECT sum(missing) FROM numbers(0)", None).is_err());
+    }
+
+    #[test]
+    fn exact_unfiltered_generated_aggregates_match_scanned_values() {
+        for (start, length, step) in [
+            (0, 0, 1),
+            (0, 17, 1),
+            (3, 10, 4),
+            (1000, 1, 10),
+            (u64::MAX - 20, 20, 6),
+        ] {
+            let rows = length / step + u64::from(length % step != 0);
+            for function in [
+                AggregateFunction::Sum,
+                AggregateFunction::Min,
+                AggregateFunction::Max,
+            ] {
+                let mut state = AggregateState::new(function);
+                for index in 0..rows {
+                    state
+                        .update(Number::Unsigned(u128::from(start + index * step)))
+                        .unwrap();
+                }
+                let sql = format!(
+                    "SELECT {}(number) FROM numbers({start}, {length}, {step})",
+                    function.name()
+                );
+                assert_eq!(
+                    run(&sql, None).unwrap(),
+                    format!("{}(number)\n{}\n", function.name(), state.render()),
+                    "{sql}"
+                );
+            }
+        }
+        assert_eq!(
+            run("SELECT sum(number) FROM numbers(1000000)", None).unwrap(),
+            "sum(number)\n499999500000\n"
+        );
+        assert_eq!(
+            run(
+                "SELECT sum(number) FROM numbers(10) WHERE number >= 8",
+                None
+            )
+            .unwrap(),
+            "sum(number)\n17\n"
+        );
     }
 
     #[test]
