@@ -235,6 +235,5 @@ mod tests {
             error(&["SELECT 1", "--file", "other.sql"]),
             "provide SQL text or --file, not both"
         );
-
     }
 }
