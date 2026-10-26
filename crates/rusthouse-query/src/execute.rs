@@ -9,12 +9,12 @@ use std::io::{self, BufWriter, Write};
 use std::path::Path;
 
 mod predicates;
+#[cfg(test)]
+use predicates::{CompiledTest, compile_in_test};
 use predicates::{
     batch_matches, compile_numbers_predicates, compile_part_where, number_matches,
     number_matches_all, parse_numeric,
 };
-#[cfg(test)]
-use predicates::{CompiledTest, compile_in_test};
 
 #[derive(Debug)]
 pub enum ExecutionError {
