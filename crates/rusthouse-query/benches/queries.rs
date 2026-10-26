@@ -28,7 +28,9 @@ fn options() -> (u64, usize) {
                     .expect("--samples must be an integer");
             }
             "-h" | "--help" => {
-                println!("Usage: cargo bench -p rusthouse-query --bench queries -- [--rows N] [--samples N]");
+                println!(
+                    "Usage: cargo bench -p rusthouse-query --bench queries -- [--rows N] [--samples N]"
+                );
                 std::process::exit(0);
             }
             _ => panic!("unknown benchmark argument: {arg}"),
@@ -39,7 +41,7 @@ fn options() -> (u64, usize) {
         "--rows must be between 1 and 1000000"
     );
     assert!(
-        samples > 0 && samples % 2 == 1,
+        samples > 0 && samples & 1 == 1,
         "--samples must be a positive odd number"
     );
     (rows, samples)
