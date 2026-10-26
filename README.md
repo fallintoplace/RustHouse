@@ -87,6 +87,14 @@ cargo bench -p rusthouse-query --bench queries --locked -- --rows 100000 --sampl
 
 It measures filtered counts, filtered sums, and filtered top-K queries over generated `numbers()` rows. Each query is parsed before timing, warmed up three times, and checked for the expected result. The output shows median latency and millions of input rows per second.
 
+Measure filtered scans on locally written immutable wide parts in release mode:
+
+```sh
+cargo bench -p rusthouse-query --bench parts --locked -- --rows 65536 --samples 11
+```
+
+The disk benchmark generates its parts once before timing, parses SQL before samples, warms each query three times, and checks query results. This includes filesystem reads with OS caching but does not force cold-cache operation. It is not a ClickHouse comparison.
+
 This covers query execution and formatting into a memory buffer, **not** disk scans, terminal rendering, or server overhead. Compare runs on the same machine and Rust compiler version; shared CI runners are not suitable for stable performance numbers.
 
 ## Development
