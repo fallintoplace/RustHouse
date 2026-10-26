@@ -71,6 +71,10 @@ impl Write for LimitedWriter {
     }
 }
 
+fn hex_digit(value: u8) -> Option<u8> {
+    (value as char).to_digit(16).map(|digit| digit as u8)
+}
+
 fn decode_url(value: &str) -> Result<String, &'static str> {
     let bytes = value.as_bytes();
     let mut decoded = Vec::with_capacity(bytes.len());
@@ -81,9 +85,8 @@ fn decode_url(value: &str) -> Result<String, &'static str> {
             if index + 2 >= bytes.len() {
                 return Err("invalid percent encoding");
             }
-            let hex = |v: u8| (v as char).to_digit(16).map(|digit| digit as u8);
-            let hi = hex(bytes[index + 1]).ok_or("invalid percent encoding")?;
-            let lo = hex(bytes[index + 2]).ok_or("invalid percent encoding")?;
+            let hi = hex_digit(bytes[index + 1]).ok_or("invalid percent encoding")?;
+            let lo = hex_digit(bytes[index + 2]).ok_or("invalid percent encoding")?;
             decoded.push((hi << 4) | lo);
             index += 3;
         } else {
