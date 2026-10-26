@@ -86,3 +86,5 @@ Use SQL-standard pagination with `SELECT number FROM numbers(10) ORDER BY number
 Rename a column in catalog metadata with `rusthouse sql "ALTER TABLE events RENAME COLUMN name TO title" --catalog ./catalog`. The change preserves column order and never modifies MergeTree data.
 
 Print the parsed logical operator pipeline without scanning data using `rusthouse sql "SELECT number FROM numbers(10) WHERE number > 3 ORDER BY number DESC LIMIT 2" --explain`. This is a logical overview, not a physical or cost-based execution plan; column validity is still checked by actual execution.
+
+Summarize declared part manifest sizes without reading data files with `rusthouse inspect-checksums /path/to/checksums.txt --summary`. The result separates compressed stored bytes and their original byte counts. It does not verify that local files or hashes match the manifest.

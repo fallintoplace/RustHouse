@@ -18,7 +18,7 @@ use std::ffi::OsString;
 use std::path::PathBuf;
 use std::process::ExitCode;
 
-const USAGE: &str = "Usage:\n  rusthouse inspect-part <path> [--json]\n  rusthouse verify-part <path-to-wide-part>\n  rusthouse verify-file-sizes <path-to-part>\n  rusthouse inspect-checksums <path-to-checksums.txt>\n  rusthouse inspect-marks <path-to-wide-marks>\n  rusthouse inspect-primary-index <primary.idx|primary.cidx> <field-width> [field-width ...]\n  rusthouse inspect-blocks <path-to-.bin>\n  rusthouse verify-blocks <path-to-.bin>\n  rusthouse validate-marks <path-to-wide-marks> <path-to-.bin>\n  rusthouse read-u64 <data.bin> <marks.mrk2> <mark-index>\n  rusthouse scan-u64 <path-to-UInt64-.bin>\n  rusthouse read-numeric <data.bin> <marks.mrk2> <mark-index> <type>\n  rusthouse sql <SQL> [--part <path-to-wide-part>] [--format tsv|tsv-no-header|csv|csv-no-header|jsonl|json|markdown|vertical] [--output <path>] [--max-rows <n>] [--show-ast|--explain] [--time]\n  rusthouse sql --stdin [--part <path-to-wide-part>] [--format tsv|tsv-no-header|csv|csv-no-header|jsonl|json|markdown|vertical] [--output <path>] [--max-rows <n>] [--show-ast|--explain] [--time]\n  rusthouse sql --file <path.sql> [--part <path-to-wide-part>] [--format tsv|tsv-no-header|csv|csv-no-header|jsonl|json|markdown|vertical] [--output <path>] [--max-rows <n>] [--show-ast|--explain] [--time]\n  rusthouse sql <DDL> --catalog <directory> [--show-ast]\n  rusthouse --help\n\nInspect local MergeTree metadata, marks, and compressed blocks.";
+const USAGE: &str = "Usage:\n  rusthouse inspect-part <path> [--json]\n  rusthouse verify-part <path-to-wide-part>\n  rusthouse verify-file-sizes <path-to-part>\n  rusthouse inspect-checksums <path-to-checksums.txt> [--summary]\n  rusthouse inspect-marks <path-to-wide-marks>\n  rusthouse inspect-primary-index <primary.idx|primary.cidx> <field-width> [field-width ...]\n  rusthouse inspect-blocks <path-to-.bin>\n  rusthouse verify-blocks <path-to-.bin>\n  rusthouse validate-marks <path-to-wide-marks> <path-to-.bin>\n  rusthouse read-u64 <data.bin> <marks.mrk2> <mark-index>\n  rusthouse scan-u64 <path-to-UInt64-.bin>\n  rusthouse read-numeric <data.bin> <marks.mrk2> <mark-index> <type>\n  rusthouse sql <SQL> [--part <path-to-wide-part>] [--format tsv|tsv-no-header|csv|csv-no-header|jsonl|json|markdown|vertical] [--output <path>] [--max-rows <n>] [--show-ast|--explain] [--time]\n  rusthouse sql --stdin [--part <path-to-wide-part>] [--format tsv|tsv-no-header|csv|csv-no-header|jsonl|json|markdown|vertical] [--output <path>] [--max-rows <n>] [--show-ast|--explain] [--time]\n  rusthouse sql --file <path.sql> [--part <path-to-wide-part>] [--format tsv|tsv-no-header|csv|csv-no-header|jsonl|json|markdown|vertical] [--output <path>] [--max-rows <n>] [--show-ast|--explain] [--time]\n  rusthouse sql <DDL> --catalog <directory> [--show-ast]\n  rusthouse --help\n\nInspect local MergeTree metadata, marks, and compressed blocks.";
 
 fn main() -> ExitCode {
     let mut args = env::args_os().skip(1);
@@ -109,6 +109,19 @@ fn main() -> ExitCode {
                 eprintln!("{USAGE}");
                 return ExitCode::from(2);
             }
+        } else if command == "inspect-checksums" {
+            let (Some(path), option, None) = (args.next(), args.next(), args.next()) else {
+                eprintln!("{USAGE}");
+                return ExitCode::from(2);
+            };
+            if option.is_none() {
+                inspect_checksums_and_print(path)
+            } else if option.as_ref().and_then(|arg| arg.to_str()) == Some("--summary") {
+                inspect_checksum_sizes_and_print(path)
+            } else {
+                eprintln!("{USAGE}");
+                return ExitCode::from(2);
+            }
         } else {
             let (Some(path), None) = (args.next(), args.next()) else {
                 eprintln!("{USAGE}");
@@ -118,8 +131,6 @@ fn main() -> ExitCode {
                 verify_part_and_print(path)
             } else if command == "verify-file-sizes" {
                 verify_file_sizes_and_print(path)
-            } else if command == "inspect-checksums" {
-                inspect_checksums_and_print(path)
             } else if command == "inspect-marks" {
                 inspect_marks_and_print(path)
             } else if command == "inspect-blocks" {
@@ -235,6 +246,21 @@ fn inspect_checksums_and_print(path: OsString) -> Result<(), rusthouse_storage::
         }
     }
     println!("Checksums recorded, not verified against disk files");
+    Ok(())
+}
+
+fn inspect_checksum_sizes_and_print(path: OsString) -> Result<(), rusthouse_storage::PartError> {
+    let manifest = read_checksums(PathBuf::from(path))?;
+    let sizes = manifest.size_summary()?;
+    println!("Files: {}", sizes.files);
+    println!("Stored bytes: {}", sizes.stored_bytes);
+    println!("Compressed files: {}", sizes.compressed_files);
+    println!("Compressed stored bytes: {}", sizes.compressed_stored_bytes);
+    println!(
+        "Uncompressed bytes (compressed files only): {}",
+        sizes.compressed_original_bytes
+    );
+    println!("Manifest sizes only; local files and hashes not verified");
     Ok(())
 }
 
