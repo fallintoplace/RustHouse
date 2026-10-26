@@ -158,17 +158,28 @@ where
 /// For unordered INNER joins, build only the small right side and stream the
 /// left side twice. The first pass validates the output bound before writing
 /// any rows, preserving the existing no-partial-result behavior on overflow.
+struct InnerJoinColumns<'a> {
+    left_names: &'a [String],
+    right_names: &'a [String],
+    selected: &'a [(usize, String)],
+    left_keys: &'a [usize],
+    right_keys: &'a [usize],
+}
+
 fn execute_streaming_inner<W: Write>(
     query: &JoinSelect,
     left_path: &Path,
     right_path: &Path,
-    left_names: &[String],
-    right_names: &[String],
-    selected: &[(usize, String)],
-    left_keys: &[usize],
-    right_keys: &[usize],
+    columns: InnerJoinColumns<'_>,
     output: &mut W,
 ) -> Result<(), ExecutionError> {
+    let InnerJoinColumns {
+        left_names,
+        right_names,
+        selected,
+        left_keys,
+        right_keys,
+    } = columns;
     let left_meta = inspect_query_source(left_path)?;
     if left_meta.rows > MAX_STREAM_LEFT_ROWS {
         return Err(invalid(
@@ -306,11 +317,13 @@ pub fn execute_join<W: Write>(
             query,
             left_path,
             right_path,
-            &left_names,
-            &right_names,
-            &selected,
-            &left_keys,
-            &right_keys,
+            InnerJoinColumns {
+                left_names: &left_names,
+                right_names: &right_names,
+                selected: &selected,
+                left_keys: &left_keys,
+                right_keys: &right_keys,
+            },
             output,
         );
     }
