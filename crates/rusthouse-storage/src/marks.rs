@@ -47,6 +47,16 @@ pub fn read_wide_marks(path: impl AsRef<Path>) -> Result<WideMarks, PartError> {
     let marks = if compressed {
         read_compressed_wide_marks(CompressedBlockReader::open(path)?, path, format)?
     } else {
+        let entry = std::fs::symlink_metadata(path).map_err(|source| PartError::Io {
+            path: path.to_path_buf(),
+            source,
+        })?;
+        if !entry.file_type().is_file() {
+            return Err(PartError::Io {
+                path: path.to_path_buf(),
+                source: io::Error::new(io::ErrorKind::InvalidInput, "expected a regular marks file"),
+            });
+        }
         let file = File::open(path).map_err(|source| PartError::Io {
             path: path.to_path_buf(),
             source,
@@ -207,6 +217,25 @@ mod tests {
         let path = Path::new("wide.cmrk2");
         let reader = CompressedBlockReader::new(Cursor::new(bytes), path)?;
         read_compressed_wide_marks(reader, path, format)
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn refuses_symlinked_uncompressed_marks() {
+        use std::os::unix::fs::symlink;
+
+        let dir = std::env::temp_dir().join(format!(
+            "rusthouse-plain-marks-symlink-{}",
+            std::process::id()
+        ));
+        fs::create_dir(&dir).unwrap();
+        fs::write(dir.join("actual.mrk2"), [0u8; 24]).unwrap();
+        symlink("actual.mrk2", dir.join("link.mrk2")).unwrap();
+        assert!(matches!(
+            read_wide_marks(dir.join("link.mrk2")),
+            Err(PartError::Io { source, .. }) if source.kind() == io::ErrorKind::InvalidInput
+        ));
+        fs::remove_dir_all(dir).unwrap();
     }
 
     #[test]
