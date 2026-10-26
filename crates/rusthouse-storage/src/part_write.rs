@@ -172,9 +172,7 @@ fn block(data: &[u8]) -> Result<Vec<u8>, PartError> {
     // Small and incompressible columns keep the lightweight uncompressed codec.
     let compressed = (data.len() >= 128).then(|| lz4_flex::block::compress(data));
     let (method, payload) = match compressed.as_ref() {
-        Some(bytes) if bytes.len().saturating_add(16) < data.len() => {
-            (0x82, bytes.as_slice())
-        }
+        Some(bytes) if bytes.len().saturating_add(16) < data.len() => (0x82, bytes.as_slice()),
         _ => (0x02, data),
     };
     let compressed_size =
@@ -319,7 +317,8 @@ mod tests {
 
         for (data, codec) in [(vec![7u8; 4096], 0x82u8), (vec![1, 2, 3], 0x02)] {
             let encoded = block(&data).unwrap();
-            let mut reader = CompressedBlockReader::new(Cursor::new(encoded), "column.bin").unwrap();
+            let mut reader =
+                CompressedBlockReader::new(Cursor::new(encoded), "column.bin").unwrap();
             let decoded = reader.next_decoded().unwrap().unwrap();
             assert_eq!(decoded.block.method, codec);
             assert_eq!(decoded.data, data);
