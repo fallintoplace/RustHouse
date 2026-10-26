@@ -9,8 +9,14 @@ fn evaluate(sql: &str) -> Result<String, String> {
 
 #[test]
 fn scalar_abs_and_sign_support_aliases_and_composition() {
-    assert_eq!(evaluate("SELECT ABS(-7) AS magnitude").unwrap(), "magnitude\n7\n");
-    assert_eq!(evaluate("SELECT sign(-10) AS neg, SIGN(0) AS zero, sign(9) AS pos").unwrap(), "neg\tzero\tpos\n-1\t0\t1\n");
+    assert_eq!(
+        evaluate("SELECT ABS(-7) AS magnitude").unwrap(),
+        "magnitude\n7\n"
+    );
+    assert_eq!(
+        evaluate("SELECT sign(-10) AS neg, SIGN(0) AS zero, sign(9) AS pos").unwrap(),
+        "neg\tzero\tpos\n-1\t0\t1\n"
+    );
     assert_eq!(evaluate("SELECT abs(-4) + sign(-9)").unwrap(), "3\n3\n");
     assert_eq!(evaluate("SELECT abs(-(2 + 3))").unwrap(), "5\n5\n");
 }
