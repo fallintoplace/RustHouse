@@ -292,8 +292,8 @@ mod request_line_spacing_regressions {
 
     #[test]
     fn accepts_standard_http_request_lines() {
-        assert_eq!(parse_request_line("GET /ping HTTP/1.1").unwrap(), ("GET", "/ping"));
-        assert_eq!(parse_request_line("POST / HTTP/1.0").unwrap(), ("POST", "/"));
+        assert!(matches!(parse_request_line("GET /ping HTTP/1.1"), Ok(("GET", "/ping"))));
+        assert!(matches!(parse_request_line("POST / HTTP/1.0"), Ok(("POST", "/"))));
     }
 
     #[test]
@@ -305,7 +305,10 @@ mod request_line_spacing_regressions {
             "GET /ping HTTP/1.1 ",
             "GET\u{00a0}/ping HTTP/1.1",
         ] {
-            assert_eq!(parse_request_line(line).unwrap_err().status, "400 Bad Request");
+            assert_eq!(
+                parse_request_line(line).err().map(|response| response.status),
+                Some("400 Bad Request")
+            );
         }
     }
 }
