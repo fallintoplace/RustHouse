@@ -41,6 +41,66 @@ impl Response {
     }
 }
 
+// Use the CLI's persistent .rusthouse-write.lock inode and nonblocking
+// advisory protocol. Holding the shared lock throughout the query prevents
+// concurrent DROP/RENAME from removing a part while HTTP is reading it.
+struct DatabaseReadLock {
+    _file: fs::File,
+    #[cfg(not(unix))]
+    path: PathBuf,
+}
+
+#[cfg(not(unix))]
+impl Drop for DatabaseReadLock {
+    fn drop(&mut self) {
+        let _ = fs::remove_file(&self.path);
+    }
+}
+
+fn database_read_lock(database: &Path) -> io::Result<DatabaseReadLock> {
+    let path = database.join(".rusthouse-write.lock");
+
+    #[cfg(unix)]
+    let file = fs::OpenOptions::new()
+        .read(true)
+        .write(true)
+        .create(true)
+        .truncate(false)
+        .open(&path)?;
+
+    #[cfg(unix)]
+    {
+        use std::os::fd::AsRawFd;
+        use std::os::raw::c_int;
+
+        unsafe extern "C" {
+            fn flock(fd: c_int, operation: c_int) -> c_int;
+        }
+        const LOCK_SH: c_int = 1;
+        const LOCK_NB: c_int = 4;
+
+        if !fs::symlink_metadata(&path)?.file_type().is_file() {
+            return Err(io::Error::other("database lock must be a regular file"));
+        }
+        if unsafe { flock(file.as_raw_fd(), LOCK_SH | LOCK_NB) } == -1 {
+            return Err(io::Error::last_os_error());
+        }
+    }
+
+    // Match the CLI's existing create-new lock behavior on non-Unix systems.
+    #[cfg(not(unix))]
+    let file = fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(&path)?;
+
+    Ok(DatabaseReadLock {
+        _file: file,
+        #[cfg(not(unix))]
+        path,
+    })
+}
+
 struct LimitedWriter {
     data: Vec<u8>,
     exceeded: bool,
@@ -347,6 +407,20 @@ pub fn handle_request(method: &str, target: &str, body: &[u8], config: &Config) 
     if config.part.is_some() && config.database.is_some() {
         return Response::text("400 Bad Request", "choose --part or --database, not both\n");
     }
+    // Acquire the lock before resolving the schema and active snapshot, and
+    // retain it until the response is fully materialized.
+    let _database_read_lock = match (config.database.as_deref(), select.source.as_ref()) {
+        (Some(database), Some(Source::Table(_))) => match database_read_lock(database) {
+            Ok(lock) => Some(lock),
+            Err(error) => {
+                return Response::text(
+                    "503 Service Unavailable",
+                    &format!("database read lock unavailable: {error}\\n"),
+                );
+            }
+        },
+        _ => None,
+    };
     let mut part = config.part.clone();
     if let (Some(database), Some(Source::Table(table))) =
         (config.database.as_deref(), select.source.as_ref())
@@ -464,6 +538,44 @@ mod tests {
         assert_eq!(result.body, b"id\tname\n1\tAda\n2\tGrace\n");
         let count = handle_request("POST", "/", b"SELECT count(*) FROM events", &config);
         assert_eq!(count.body, b"count\n2\n");
+        #[cfg(unix)]
+        {
+            use std::os::fd::AsRawFd;
+            use std::os::raw::c_int;
+            unsafe extern "C" {
+                fn flock(fd: c_int, operation: c_int) -> c_int;
+            }
+            const LOCK_EX: c_int = 2;
+            const LOCK_NB: c_int = 4;
+
+            let writer = fs::OpenOptions::new()
+                .read(true)
+                .write(true)
+                .open(database.join(".rusthouse-write.lock"))
+                .unwrap();
+            assert_eq!(unsafe { flock(writer.as_raw_fd(), LOCK_EX | LOCK_NB) }, 0);
+            assert_eq!(
+                handle_request("POST", "/", b"SELECT id FROM events", &config).status,
+                "503 Service Unavailable"
+            );
+            drop(writer);
+            let reader = database_read_lock(&database).unwrap();
+            let another_reader = database_read_lock(&database).unwrap();
+            let writer = fs::OpenOptions::new()
+                .read(true)
+                .write(true)
+                .open(database.join(".rusthouse-write.lock"))
+                .unwrap();
+            assert_eq!(unsafe { flock(writer.as_raw_fd(), LOCK_EX | LOCK_NB) }, -1);
+            drop(another_reader);
+            drop(reader);
+            assert_eq!(unsafe { flock(writer.as_raw_fd(), LOCK_EX | LOCK_NB) }, 0);
+            drop(writer);
+            assert_eq!(
+                handle_request("POST", "/", b"SELECT id FROM events", &config).status,
+                "200 OK"
+            );
+        }
         // SQL over HTTP must follow the same active generation as the CLI.
         let generation = parts.join(".rusthouse-versions").join("g1");
         fs::create_dir_all(&generation).unwrap();
