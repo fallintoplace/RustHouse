@@ -6,6 +6,7 @@ mod json_array;
 mod json_compact_each_row;
 mod jsonl;
 mod markdown;
+mod sql_values;
 mod tables;
 
 use csv::CsvWriter;
@@ -16,6 +17,7 @@ use jsonl::JsonlWriter;
 use markdown::MarkdownWriter;
 use rusthouse_query::{Source, execute, explain_select, parse_select};
 use rusthouse_storage::{inspect_query_source, resolve_active_snapshot};
+use sql_values::SqlValuesWriter;
 use std::fs;
 use std::io::{self, Read, Write};
 use std::path::{Path, PathBuf};
@@ -265,6 +267,7 @@ enum QueryFormat {
     Jsonl,
     Json,
     JsonCompactEachRow,
+    SqlValues,
     Markdown,
 }
 
@@ -298,6 +301,7 @@ fn query_parameters(target: &str) -> Result<(String, Option<String>, QueryFormat
                     "jsonl" => QueryFormat::Jsonl,
                     "json" => QueryFormat::Json,
                     "json-compact-each-row" => QueryFormat::JsonCompactEachRow,
+                    "sql-values" => QueryFormat::SqlValues,
                     "markdown" => QueryFormat::Markdown,
                     _ => return Err("unsupported query format"),
                 });
@@ -473,6 +477,11 @@ pub fn handle_request(method: &str, target: &str, body: &[u8], config: &Config) 
             let mut csv = CsvWriter::new(WithoutHeader::new(&mut writer));
             execute(&select, part.as_deref(), &mut csv)
         }
+        QueryFormat::SqlValues => {
+            let mut values = SqlValuesWriter::new(&mut writer);
+            execute(&select, part.as_deref(), &mut values)
+                .and_then(|()| values.finish().map_err(rusthouse_query::ExecutionError::Io))
+        }
         QueryFormat::Markdown => {
             let mut markdown = MarkdownWriter::new(&mut writer);
             execute(&select, part.as_deref(), &mut markdown)
@@ -523,6 +532,7 @@ pub fn handle_request(method: &str, target: &str, body: &[u8], config: &Config) 
                 QueryFormat::Jsonl => "application/x-ndjson; charset=utf-8",
                 QueryFormat::Json => "application/json; charset=utf-8",
                 QueryFormat::JsonCompactEachRow => "application/x-ndjson; charset=utf-8",
+                QueryFormat::SqlValues => "text/plain; charset=utf-8",
                 QueryFormat::Markdown => "text/markdown; charset=utf-8",
             },
             body: writer.data,
