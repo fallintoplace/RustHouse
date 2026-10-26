@@ -107,3 +107,7 @@ parts and more than 10,000 parts. It ignores non-part subdirectories such as
 `detached/`. **Only use a frozen snapshot of active parts**, never a live table
 directory being modified by a database process. Predicate pruning across the primary index
 is not implemented by this change.
+
+Recover portable schema-only DDL with `rusthouse sql "SHOW CREATE TABLE events" --catalog ./catalog`.
+The output can be executed in another local catalog. No MergeTree data or engine
+settings are included, since the local catalog records only names and types.

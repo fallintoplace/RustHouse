@@ -10,6 +10,7 @@ pub struct ColumnDef {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Ddl {
     ShowTables,
+    ShowCreateTable { name: String },
     DescribeTable {
         name: String,
     },
@@ -109,14 +110,23 @@ pub fn parse_ddl(sql: &str) -> Result<Option<Ddl>, ParseError> {
         return Ok(Some(Ddl::DescribeTable { name }));
     }
     if parser.keyword("SHOW") {
-        if !parser.keyword("TABLES") {
-            return Err(ParseError("expected TABLES after SHOW".into()));
-        }
+        let statement = if parser.keyword("TABLES") {
+            Ddl::ShowTables
+        } else if parser.keyword("CREATE") {
+            if !parser.keyword("TABLE") {
+                return Err(ParseError("expected TABLE after SHOW CREATE".into()));
+            }
+            Ddl::ShowCreateTable {
+                name: identifier(&mut parser)?,
+            }
+        } else {
+            return Err(ParseError("expected TABLES or CREATE TABLE after SHOW".into()));
+        };
         parser.take(Token::Semicolon);
         if parser.index != parser.tokens.len() {
             return Err(ParseError("unexpected tokens after DDL statement".into()));
         }
-        return Ok(Some(Ddl::ShowTables));
+        return Ok(Some(statement));
     }
     if parser.keyword("RENAME") {
         if !parser.keyword("TABLE") {
@@ -274,6 +284,26 @@ pub fn parse_ddl(sql: &str) -> Result<Option<Ddl>, ParseError> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn parses_show_create_table_and_rejects_bad_forms() {
+        assert_eq!(
+            parse_ddl("SHOW CREATE TABLE events;").unwrap(),
+            Some(Ddl::ShowCreateTable {
+                name: "events".into()
+            })
+        );
+        assert_eq!(parse_ddl("show tables").unwrap(), Some(Ddl::ShowTables));
+        for invalid in [
+            "SHOW CREATE events",
+            "SHOW CREATE TABLE",
+            "SHOW CREATE TABLE events; DROP TABLE events",
+            "SHOW CREATE TABLE events extra",
+            "SHOW CREATE TABLE events CREATE",
+        ] {
+            assert!(parse_ddl(invalid).is_err(), "{invalid}");
+        }
+    }
 
     #[test]
     fn parses_create_with_nested_types_and_idempotency() {
