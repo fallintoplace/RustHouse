@@ -4,7 +4,7 @@
 use super::{ExecutionError, Number, compare_numbers};
 use std::cmp::Ordering;
 use std::collections::BinaryHeap;
-use std::io::{self, Write};
+use std::io::Write;
 use std::sync::Arc;
 
 pub(super) const MAX_SORTED_ROWS: usize = 100_000;
