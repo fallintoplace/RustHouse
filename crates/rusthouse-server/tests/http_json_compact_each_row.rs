@@ -15,7 +15,12 @@ fn compact_arrays_support_post_and_get_without_renaming_columns() {
         b"SELECT 7 AS amount, 'hello' AS label, NULL AS missing",
         &config(),
     );
-    assert_eq!(post.status, "200 OK", "{}", String::from_utf8_lossy(&post.body));
+    assert_eq!(
+        post.status,
+        "200 OK",
+        "{}",
+        String::from_utf8_lossy(&post.body)
+    );
     assert_eq!(post.content_type, "application/x-ndjson; charset=utf-8");
     assert_eq!(post.body, b"[\"7\",\"hello\",null]\n");
 
