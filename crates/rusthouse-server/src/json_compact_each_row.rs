@@ -25,7 +25,10 @@ impl<W: Write> JsonCompactEachRowWriter<W> {
                 .map_err(|_| io::Error::new(io::ErrorKind::InvalidData, "invalid TSV header"))?;
             let columns = 1 + self.line.iter().filter(|&&byte| byte == b'\t').count();
             if columns > 128 {
-                return Err(io::Error::new(io::ErrorKind::InvalidData, "too many columns"));
+                return Err(io::Error::new(
+                    io::ErrorKind::InvalidData,
+                    "too many columns",
+                ));
             }
             self.columns = Some(columns);
             self.line.clear();
@@ -33,7 +36,10 @@ impl<W: Write> JsonCompactEachRowWriter<W> {
         }
         let width = 1 + self.line.iter().filter(|&&byte| byte == b'\t').count();
         if Some(width) != self.columns {
-            return Err(io::Error::new(io::ErrorKind::InvalidData, "JSON row width differs from header"));
+            return Err(io::Error::new(
+                    io::ErrorKind::InvalidData,
+                    "JSON row width differs from header",
+                ));
         }
         self.output.write_all(b"[")?;
         for (index, value) in self.line.split(|byte| *byte == b'\t').enumerate() {
@@ -53,7 +59,10 @@ impl<W: Write> JsonCompactEachRowWriter<W> {
 
     pub(super) fn finish(mut self) -> io::Result<W> {
         if self.columns.is_none() || !self.line.is_empty() {
-            return Err(io::Error::new(io::ErrorKind::InvalidData, "incomplete JSON row stream"));
+            return Err(io::Error::new(
+                    io::ErrorKind::InvalidData,
+                    "incomplete JSON row stream",
+                ));
         }
         self.output.flush()?;
         Ok(self.output)
@@ -67,7 +76,10 @@ impl<W: Write> Write for JsonCompactEachRowWriter<W> {
                 self.finish_line()?;
             } else {
                 if self.line.len() >= MAX_LINE_BYTES {
-                    return Err(io::Error::new(io::ErrorKind::InvalidData, "JSON row exceeds 1 MiB"));
+                    return Err(io::Error::new(
+                    io::ErrorKind::InvalidData,
+                    "JSON row exceeds 1 MiB",
+                ));
                 }
                 self.line.push(byte);
             }
@@ -87,7 +99,8 @@ mod tests {
     #[test]
     fn streams_arrays_without_headers_and_preserves_textual_nulls() {
         let mut out = JsonCompactEachRowWriter::new(Vec::new());
-        out.write_all(b"id\tlabel\tmissing\n7\thello\\tworld\t\\N\n").unwrap();
+        out.write_all(b"id\tlabel\tmissing\n7\thello\\tworld\t\\N\n")
+            .unwrap();
         out.write_all(b"8\tNULL\t\\").unwrap();
         out.write_all(b"N\n").unwrap();
         assert_eq!(
