@@ -9,11 +9,11 @@ fn evaluate(sql: &str) -> Result<String, String> {
 
 #[test]
 fn division_is_signed_truncating_and_has_multiplicative_precedence() {
-    assert_eq!(evaluate("SELECT 7 / 2 AS q").unwrap(), "q\\n3\\n");
-    assert_eq!(evaluate("SELECT -7 / 2").unwrap(), "-3\\n-3\\n");
-    assert_eq!(evaluate("SELECT 7 / -2").unwrap(), "-3\\n-3\\n");
-    assert_eq!(evaluate("SELECT 8 / 2 % 3").unwrap(), "1\\n1\\n");
-    assert_eq!(evaluate("SELECT 1 + 10 / (2 + 3)").unwrap(), "3\\n3\\n");
+    assert_eq!(evaluate("SELECT 7 / 2 AS q").unwrap(), "q\n3\n");
+    assert_eq!(evaluate("SELECT -7 / 2").unwrap(), "-3\n-3\n");
+    assert_eq!(evaluate("SELECT 7 / -2").unwrap(), "-3\n-3\n");
+    assert_eq!(evaluate("SELECT 8 / 2 % 3").unwrap(), "1\n1\n");
+    assert_eq!(evaluate("SELECT 1 + 10 / (2 + 3)").unwrap(), "3\n3\n");
 }
 
 #[test]
