@@ -12,11 +12,19 @@ fn is_power(name: &str) -> bool {
     name.eq_ignore_ascii_case("POWER") || name.eq_ignore_ascii_case("POW")
 }
 
+fn is_bitwise(name: &str) -> bool {
+    matches!(
+        name.to_ascii_uppercase().as_str(),
+        "BITAND" | "BITOR" | "BITXOR"
+    )
+}
+
 pub(super) fn is_function(name: &str) -> bool {
     name.eq_ignore_ascii_case("ABS")
         || name.eq_ignore_ascii_case("SIGN")
         || is_extrema(name)
         || is_power(name)
+        || is_bitwise(name)
 }
 
 pub(super) fn parse(parser: &mut Parser) -> Result<i64, ParseError> {
@@ -139,15 +147,27 @@ fn factor(parser: &mut Parser, depth: usize) -> Result<i64, ParseError> {
         if !parser.take(Token::LParen) {
             return Err(ParseError("expected '(' after scalar function".into()));
         }
-        let value = expression(parser, depth + 1)?;
+        let first = expression(parser, depth + 1)?;
+        let result = if is_bitwise(&name) {
+            if !parser.take(Token::Comma) {
+                return Err(ParseError("bitwise functions require two arguments".into()));
+            }
+            let second = expression(parser, depth + 1)?;
+            match name.to_ascii_uppercase().as_str() {
+                "BITAND" => first & second,
+                "BITOR" => first | second,
+                "BITXOR" => first ^ second,
+                _ => unreachable!("only supported bitwise functions reach this branch"),
+            }
+        } else if name.eq_ignore_ascii_case("ABS") {
+            first.checked_abs().ok_or_else(overflow)?
+        } else {
+            first.signum()
+        };
         if !parser.take(Token::RParen) {
             return Err(ParseError("expected ')' after scalar function".into()));
         }
-        return if name.eq_ignore_ascii_case("ABS") {
-            value.checked_abs().ok_or_else(overflow)
-        } else {
-            Ok(value.signum())
-        };
+        return Ok(result);
     }
     if parser.take(Token::LParen) {
         let value = expression(parser, depth + 1)?;
