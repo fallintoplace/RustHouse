@@ -13,6 +13,13 @@ impl ScanLayout {
         marks: &[WideMark],
         expected_rows: u64,
     ) -> Result<(), PartError> {
+        // Only the first column needs to retain row boundaries. Later columns
+        // compare directly against them without building another vector.
+        let mut first_row_counts = self
+            .reference_row_counts
+            .is_none()
+            .then(|| Vec::with_capacity(marks.len()));
+        let mut total_rows = 0u64;
         for (index, mark) in marks.iter().enumerate() {
             if mark.rows == Some(0) && index + 1 != marks.len() {
                 return Err(PartError::InvalidScan(format!(
@@ -37,31 +44,41 @@ impl ScanLayout {
                     )));
                 }
             }
+
+            let rows = mark.rows.ok_or_else(|| {
+                PartError::InvalidScan("adaptive wide marks are required".into())
+            })?;
+            total_rows = total_rows.checked_add(rows).ok_or_else(|| {
+                PartError::InvalidScan(format!(
+                    "mark row counts do not match count.txt for {name}"
+                ))
+            })?;
+            if let Some(reference) = &self.reference_row_counts {
+                if reference.get(index) != Some(&rows) {
+                    return Err(PartError::InvalidScan(format!(
+                        "granule boundaries differ for {name}"
+                    )));
+                }
+            } else if let Some(first) = first_row_counts.as_mut() {
+                first.push(rows);
+            }
         }
-        let row_counts = marks
-            .iter()
-            .map(|mark| {
-                mark.rows.ok_or_else(|| {
-                    PartError::InvalidScan("adaptive wide marks are required".into())
-                })
-            })
-            .collect::<Result<Vec<_>, _>>()?;
-        let total = row_counts
-            .iter()
-            .try_fold(0u64, |sum, rows| sum.checked_add(*rows));
-        if total != Some(expected_rows) {
+        if total_rows != expected_rows {
             return Err(PartError::InvalidScan(format!(
                 "mark row counts do not match count.txt for {name}"
             )));
         }
-        if let Some(reference) = &self.reference_row_counts {
-            if reference != &row_counts {
-                return Err(PartError::InvalidScan(format!(
-                    "granule boundaries differ for {name}"
-                )));
-            }
-        } else {
-            self.reference_row_counts = Some(row_counts);
+        if self
+            .reference_row_counts
+            .as_ref()
+            .is_some_and(|reference| reference.len() != marks.len())
+        {
+            return Err(PartError::InvalidScan(format!(
+                "granule boundaries differ for {name}"
+            )));
+        }
+        if let Some(first) = first_row_counts {
+            self.reference_row_counts = Some(first);
         }
         Ok(())
     }
@@ -115,6 +132,28 @@ mod tests {
                 .validate("a", &[mark(0, 0), mark(1, 1)], 1)
                 .is_err()
         );
+    }
+
+    #[test]
+    fn rejects_changed_mark_counts_without_losing_reference() {
+        let mut layout = ScanLayout::default();
+        layout.validate("first", &[mark(0, 2), mark(8, 3)], 5).unwrap();
+
+        let too_few = layout.validate("short", &[mark(0, 5)], 5).unwrap_err();
+        assert!(matches!(
+            too_few,
+            PartError::InvalidScan(message) if message.contains("granule boundaries differ")
+        ));
+        let too_many = layout
+            .validate("long", &[mark(0, 2), mark(8, 3), mark(16, 0)], 5)
+            .unwrap_err();
+        assert!(matches!(
+            too_many,
+            PartError::InvalidScan(message) if message.contains("granule boundaries differ")
+        ));
+
+        layout.validate("later", &[mark(0, 2), mark(20, 3)], 5).unwrap();
+        assert_eq!(layout.mark_count(), 2);
     }
 
     #[test]
