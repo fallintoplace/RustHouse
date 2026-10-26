@@ -23,6 +23,11 @@ pub enum Ddl {
         column: ColumnDef,
         if_not_exists: bool,
     },
+    DropColumn {
+        table: String,
+        column: String,
+        if_exists: bool,
+    },
 }
 
 fn identifier(parser: &mut Parser) -> Result<String, ParseError> {
@@ -84,8 +89,33 @@ pub fn parse_ddl(sql: &str) -> Result<Option<Ddl>, ParseError> {
             return Err(ParseError("expected TABLE after ALTER".into()));
         }
         let table = identifier(&mut parser)?;
+        if parser.keyword("DROP") {
+            if !parser.keyword("COLUMN") {
+                return Err(ParseError("expected COLUMN after DROP".into()));
+            }
+            let if_exists = if parser.keyword("IF") {
+                if !parser.keyword("EXISTS") {
+                    return Err(ParseError("expected IF EXISTS".into()));
+                }
+                true
+            } else {
+                false
+            };
+            let column = identifier(&mut parser)?;
+            parser.take(Token::Semicolon);
+            if parser.index != parser.tokens.len() {
+                return Err(ParseError("unexpected tokens after DDL statement".into()));
+            }
+            return Ok(Some(Ddl::DropColumn {
+                table,
+                column,
+                if_exists,
+            }));
+        }
         if !parser.keyword("ADD") || !parser.keyword("COLUMN") {
-            return Err(ParseError("expected ADD COLUMN after table name".into()));
+            return Err(ParseError(
+                "expected ADD COLUMN or DROP COLUMN after table name".into(),
+            ));
         }
         let if_not_exists = if parser.keyword("IF") {
             if !parser.keyword("NOT") || !parser.keyword("EXISTS") {
@@ -204,6 +234,26 @@ mod tests {
             })
         );
         assert_eq!(parse_ddl("SELECT 1").unwrap(), None);
+    }
+
+    #[test]
+    fn parses_drop_column_and_rejects_bad_forms() {
+        assert_eq!(
+            parse_ddl("ALTER TABLE events DROP COLUMN IF EXISTS age;").unwrap(),
+            Some(Ddl::DropColumn {
+                table: "events".into(),
+                column: "age".into(),
+                if_exists: true,
+            })
+        );
+        for sql in [
+            "ALTER TABLE events DROP age",
+            "ALTER TABLE events DROP COLUMN",
+            "ALTER TABLE events DROP COLUMN IF NOT EXISTS age",
+            "ALTER TABLE events DROP COLUMN age, info",
+        ] {
+            assert!(parse_ddl(sql).is_err(), "{sql}");
+        }
     }
 
     #[test]

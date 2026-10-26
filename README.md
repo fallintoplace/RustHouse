@@ -63,3 +63,6 @@ Existing MergeTree parts remain untouched.
 
 Extend a schema with `rusthouse sql "ALTER TABLE events ADD COLUMN age UInt8" --catalog ./catalog`.
 `ADD COLUMN IF NOT EXISTS` is idempotent. Changes are metadata-only.
+
+Remove a catalog column with `rusthouse sql "ALTER TABLE events DROP COLUMN age" --catalog ./catalog`.
+`DROP COLUMN IF EXISTS` is idempotent. The last column cannot be dropped.

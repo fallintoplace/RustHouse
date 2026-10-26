@@ -20,6 +20,11 @@ pub(super) fn apply(catalog: &Path, ddl: &Ddl) -> Result<(), String> {
             column,
             if_not_exists,
         } => add_column(catalog, table, column, *if_not_exists),
+        Ddl::DropColumn {
+            table,
+            column,
+            if_exists,
+        } => drop_column(catalog, table, column, *if_exists),
     }
 }
 
@@ -137,6 +142,23 @@ fn add_column(
     columns.push(column.clone());
     replace_schema(catalog, table, &columns)?;
     println!("Added column {} to {table} (schema only)", column.name);
+    Ok(())
+}
+
+fn drop_column(catalog: &Path, table: &str, column: &str, if_exists: bool) -> Result<(), String> {
+    let mut columns = read_schema(catalog, table)?;
+    let Some(index) = columns.iter().position(|entry| entry.name == column) else {
+        if if_exists {
+            return Ok(());
+        }
+        return Err(format!("unknown column: {column}"));
+    };
+    if columns.len() == 1 {
+        return Err(format!("cannot drop the last column from table {table}"));
+    }
+    columns.remove(index);
+    replace_schema(catalog, table, &columns)?;
+    println!("Dropped column {column} from {table} (schema only)");
     Ok(())
 }
 
