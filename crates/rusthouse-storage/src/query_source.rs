@@ -177,12 +177,7 @@ fn inspect_parts_metadata(path: &Path, paths: &[PathBuf]) -> Result<PartMetadata
             let handles = paths
                 .chunks(chunk_size)
                 .map(|chunk| {
-                    scope.spawn(move || {
-                        chunk
-                            .iter()
-                            .map(inspect_part)
-                            .collect::<Vec<_>>()
-                    })
+                    scope.spawn(move || chunk.iter().map(inspect_part).collect::<Vec<_>>())
                 })
                 .collect::<Vec<_>>();
             for handle in handles {
