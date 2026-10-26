@@ -141,7 +141,10 @@ fn aggregates_ignore_nulls_and_preserve_empty_result_semantics() {
         "SELECT sum(missing) FROM part WHERE service = 'api'",
     ] {
         let parsed = parse_select(sql).unwrap();
-        assert!(execute(&parsed, Some(&part), &mut Vec::new()).is_err(), "{sql}");
+        assert!(
+            execute(&parsed, Some(&part), &mut Vec::new()).is_err(),
+            "{sql}"
+        );
     }
     fs::remove_dir_all(part).unwrap();
 }
