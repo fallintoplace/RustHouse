@@ -4,6 +4,7 @@ mod csv;
 mod csv_no_header;
 mod database;
 mod html;
+mod insert_select;
 mod json_array;
 mod jsonl;
 mod markdown;

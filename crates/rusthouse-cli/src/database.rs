@@ -457,6 +457,10 @@ pub(super) fn insert(database: &Path, insert: &Insert) -> Result<(), String> {
             .collect::<Result<Vec<_>, _>>()?,
         None => (0..cols.len()).collect(),
     };
+    if insert.rows.is_empty() {
+        println!("Inserted 0 rows into {}", insert.table);
+        return Ok(());
+    }
     let mut rows = Vec::with_capacity(insert.rows.len());
     for source in &insert.rows {
         if source.len() != indices.len() {
