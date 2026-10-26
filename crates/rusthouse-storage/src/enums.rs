@@ -113,6 +113,28 @@ fn hex_digit(byte: u8) -> Option<u8> {
     }
 }
 
+fn decode_enum_escape(bytes: &[u8], position: &mut usize) -> Option<u8> {
+    let escaped = *bytes.get(*position)?;
+    *position += 1;
+    let decoded = match escaped {
+        b'\\' => b'\\',
+        b'\'' => b'\'',
+        b'"' => b'"',
+        b'n' => b'\n',
+        b'r' => b'\r',
+        b't' => b'\t',
+        b'0' => 0,
+        b'x' => {
+            let high = hex_digit(*bytes.get(*position)?)?;
+            let low = hex_digit(*bytes.get(*position + 1)?)?;
+            *position += 2;
+            (high << 4) | low
+        }
+        _ => return None,
+    };
+    Some(decoded)
+}
+
 fn parse_enum_label(bytes: &[u8], position: &mut usize) -> Option<String> {
     if bytes.get(*position) != Some(&b'\'') {
         return None;
@@ -131,25 +153,7 @@ fn parse_enum_label(bytes: &[u8], position: &mut usize) -> Option<String> {
                 }
             }
             b'\\' => {
-                let escaped = *bytes.get(*position)?;
-                *position += 1;
-                let decoded = match escaped {
-                    b'\\' => b'\\',
-                    b'\'' => b'\'',
-                    b'"' => b'"',
-                    b'n' => b'\n',
-                    b'r' => b'\r',
-                    b't' => b'\t',
-                    b'0' => 0,
-                    b'x' => {
-                        let high = hex_digit(*bytes.get(*position)?)?;
-                        let low = hex_digit(*bytes.get(*position + 1)?)?;
-                        *position += 2;
-                        (high << 4) | low
-                    }
-                    _ => return None,
-                };
-                name.push(decoded);
+                name.push(decode_enum_escape(bytes, position)?);
             }
             _ => name.push(byte),
         }
