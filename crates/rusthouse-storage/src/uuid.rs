@@ -1,4 +1,4 @@
-use crate::fixed_width::read_fixed_width;
+use crate::fixed_width::{MAX_BATCH_BYTES, read_fixed_width};
 use std::fmt;
 use std::io::{self, Read};
 
@@ -37,7 +37,12 @@ impl fmt::Display for UuidValue {
 /// Each half is reversed separately to obtain the canonical UUID byte order.
 /// Rows are bounded to 64 MiB and decoded without reading into the next batch.
 pub fn read_uuid_values<R: Read>(reader: &mut R, rows: usize) -> io::Result<Vec<UuidValue>> {
-    read_fixed_width(reader, rows, "UUID batch exceeds 64 MiB", UuidValue::from_disk_bytes)
+    read_fixed_width(
+        reader,
+        rows,
+        "UUID batch exceeds 64 MiB",
+        UuidValue::from_disk_bytes,
+    )
 }
 
 #[cfg(test)]
