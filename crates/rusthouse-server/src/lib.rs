@@ -356,4 +356,54 @@ mod tests {
         assert_eq!(decode_url("%FF"), Err("SQL query must be valid UTF-8"));
         assert_eq!(decode_url("%2"), Err("invalid percent encoding"));
     }
+
+    #[test]
+    fn returns_bounded_ndjson_for_get_and_post() {
+        let response = handle_request(
+            "GET",
+            "/?query=SELECT+number+FROM+numbers%2810%29&format=jsonl",
+            b"",
+            &config(),
+        );
+        assert_eq!(response.status, "200 OK");
+        assert_eq!(response.content_type, "application/x-ndjson; charset=utf-8");
+        assert_eq!(
+            response.body,
+            b"{\"number\":\"0\"}\n{\"number\":\"1\"}\n{\"number\":\"2\"}\n"
+        );
+
+        let response = handle_request(
+            "POST",
+            "/?format=jsonl",
+            b"SELECT count(*) FROM numbers(0)",
+            &config(),
+        );
+        assert_eq!(response.status, "200 OK");
+        assert_eq!(response.body, b"{\"count\":\"0\"}\n");
+
+        let response = handle_request("POST", "/?format=tsv", b"SELECT 7", &config());
+        assert_eq!(response.status, "200 OK");
+        assert_eq!(response.body, b"7\n7\n");
+    }
+
+    #[test]
+    fn rejects_unsupported_jsonl_formats_and_duplicate_column_names() {
+        for url in [
+            "/?query=SELECT+1&format=json",
+            "/?query=SELECT+1&format=jsonl&format=jsonl",
+            "/?query=SELECT+number%2Cnumber+FROM+numbers%282%29&format=jsonl",
+        ] {
+            assert_eq!(
+                handle_request("GET", url, b"", &config()).status,
+                "400 Bad Request"
+            );
+        }
+        let config = Config {
+            part: None,
+            max_rows: 0,
+        };
+        let empty = handle_request("POST", "/?format=jsonl", b"SELECT 1", &config);
+        assert_eq!(empty.status, "200 OK");
+        assert!(empty.body.is_empty());
+    }
 }
