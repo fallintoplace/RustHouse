@@ -286,7 +286,11 @@ fn execute_into<W: Write>(
     if let (Some(order), Some(index)) = (&query.order_by, sort_index) {
         let mut sorted =
             SortedRows::with_offset(query.limit, query.offset.unwrap_or(0), order.descending)?;
-        sorted.extra_descending = query.order_by_extra.iter().map(|term| term.descending).collect();
+        sorted.extra_descending = query
+            .order_by_extra
+            .iter()
+            .map(|term| term.descending)
+            .collect();
         write_header(query, output, &projected.join("\t"))?;
         if query.limit == Some(0) {
             return Ok(());
