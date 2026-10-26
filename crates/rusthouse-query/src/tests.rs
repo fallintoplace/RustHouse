@@ -100,8 +100,7 @@ fn parses_single_column_result_aliases() {
 
 #[test]
 fn parses_generated_numbers_and_rejects_invalid_counts() {
-    let query =
-        parse_select("SELECT number FROM numbers(12) WHERE number >= 5 LIMIT 2").unwrap();
+    let query = parse_select("SELECT number FROM numbers(12) WHERE number >= 5 LIMIT 2").unwrap();
     assert_eq!(query.source, Some(Source::Numbers(12)));
     assert_eq!(query.projection, Projection::Columns(vec!["number".into()]));
     assert_eq!(
@@ -177,10 +176,9 @@ fn parses_stepped_numbers_with_bounded_ranges() {
 
 #[test]
 fn parses_like_predicates_and_rejects_nontext_patterns() {
-    let query = parse_select(
-        "SELECT service FROM part WHERE service LIKE 'a%' AND service NOT LIKE '%z'",
-    )
-    .unwrap();
+    let query =
+        parse_select("SELECT service FROM part WHERE service LIKE 'a%' AND service NOT LIKE '%z'")
+            .unwrap();
     assert_eq!(
         query.predicates,
         vec![
@@ -779,8 +777,7 @@ fn parses_unary_not_on_numeric_predicates() {
         Predicate::NotBetween { .. }
     ));
     let twice =
-        parse_select("SELECT number FROM numbers(6) WHERE NOT number NOT BETWEEN 2 AND 4")
-            .unwrap();
+        parse_select("SELECT number FROM numbers(6) WHERE NOT number NOT BETWEEN 2 AND 4").unwrap();
     assert_eq!(twice.predicates.len(), 2);
     for sql in [
         "SELECT number FROM numbers(6) WHERE number NOT = 3",
@@ -811,8 +808,7 @@ fn resolves_one_based_order_by_positions() {
             descending: true,
         })
     );
-    let grouped_key =
-        parse_select("SELECT id, count(*) FROM part GROUP BY id ORDER BY 1").unwrap();
+    let grouped_key = parse_select("SELECT id, count(*) FROM part GROUP BY id ORDER BY 1").unwrap();
     assert_eq!(grouped_key.order_by.unwrap().column, "id");
 }
 
