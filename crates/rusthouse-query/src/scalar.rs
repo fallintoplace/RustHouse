@@ -15,7 +15,7 @@ fn is_power(name: &str) -> bool {
 fn is_bitwise(name: &str) -> bool {
     matches!(
         name.to_ascii_uppercase().as_str(),
-        "BITAND" | "BITOR" | "BITXOR"
+        "BITAND" | "BITOR" | "BITXOR" | "BITSHIFTLEFT" | "BITSHIFTRIGHT"
     )
 }
 
@@ -130,6 +130,19 @@ fn parse_extrema(parser: &mut Parser, depth: usize) -> Result<i64, ParseError> {
     Ok(value)
 }
 
+fn checked_bit_shift(value: i64, amount: i64, left: bool) -> Result<i64, ParseError> {
+    let shift = u32::try_from(amount)
+        .map_err(|_| ParseError("bit shift count must be between 0 and 63".into()))?;
+    if shift >= i64::BITS {
+        return Err(ParseError("bit shift count must be between 0 and 63".into()));
+    }
+    if left {
+        i64::try_from(i128::from(value) << shift).map_err(|_| overflow())
+    } else {
+        Ok(value >> shift)
+    }
+}
+
 fn factor(parser: &mut Parser, depth: usize) -> Result<i64, ParseError> {
     if depth >= MAX_DEPTH {
         return Err(ParseError(
@@ -165,6 +178,8 @@ fn factor(parser: &mut Parser, depth: usize) -> Result<i64, ParseError> {
                 "BITAND" => first & second,
                 "BITOR" => first | second,
                 "BITXOR" => first ^ second,
+                "BITSHIFTLEFT" => checked_bit_shift(first, second, true)?,
+                "BITSHIFTRIGHT" => checked_bit_shift(first, second, false)?,
                 _ => unreachable!("only supported bitwise functions reach this branch"),
             }
         } else if name.eq_ignore_ascii_case("ABS") {
