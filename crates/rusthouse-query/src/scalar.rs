@@ -80,6 +80,56 @@ fn term(parser: &mut Parser, depth: usize) -> Result<i64, ParseError> {
     Ok(value)
 }
 
+fn parse_power(parser: &mut Parser, depth: usize) -> Result<i64, ParseError> {
+    if !parser.take(Token::LParen) {
+        return Err(ParseError("POWER requires '('".into()));
+    }
+    let base = expression(parser, depth + 1)?;
+    if !parser.take(Token::Comma) {
+        return Err(ParseError("POWER requires two arguments".into()));
+    }
+    let exponent = expression(parser, depth + 1)?;
+    if !parser.take(Token::RParen) {
+        return Err(ParseError("POWER requires ')' after exponent".into()));
+    }
+    let exponent = u32::try_from(exponent)
+        .map_err(|_| ParseError("POWER exponent must be non-negative and fit UInt32".into()))?;
+    base.checked_pow(exponent).ok_or_else(overflow)
+}
+
+fn parse_extrema(parser: &mut Parser, depth: usize) -> Result<i64, ParseError> {
+    let name = parser.word()?;
+    if !parser.take(Token::LParen) {
+        return Err(ParseError(format!("{name} requires '('")));
+    }
+    let mut value = expression(parser, depth + 1)?;
+    if !parser.take(Token::Comma) {
+        return Err(ParseError(format!(
+            "{name} requires at least two arguments"
+        )));
+    }
+    let mut count = 1usize;
+    loop {
+        if count == 16 {
+            return Err(ParseError(format!("{name} supports at most 16 arguments")));
+        }
+        let candidate = expression(parser, depth + 1)?;
+        value = if name.eq_ignore_ascii_case("GREATEST") {
+            value.max(candidate)
+        } else {
+            value.min(candidate)
+        };
+        count += 1;
+        if !parser.take(Token::Comma) {
+            break;
+        }
+    }
+    if !parser.take(Token::RParen) {
+        return Err(ParseError(format!("expected ')' after {name} arguments")));
+    }
+    Ok(value)
+}
+
 fn factor(parser: &mut Parser, depth: usize) -> Result<i64, ParseError> {
     if depth >= MAX_DEPTH {
         return Err(ParseError(
@@ -95,52 +145,10 @@ fn factor(parser: &mut Parser, depth: usize) -> Result<i64, ParseError> {
         return factor(parser, depth + 1);
     }
     if parser.keyword("POWER") || parser.keyword("POW") {
-        if !parser.take(Token::LParen) {
-            return Err(ParseError("POWER requires '('".into()));
-        }
-        let base = expression(parser, depth + 1)?;
-        if !parser.take(Token::Comma) {
-            return Err(ParseError("POWER requires two arguments".into()));
-        }
-        let exponent = expression(parser, depth + 1)?;
-        if !parser.take(Token::RParen) {
-            return Err(ParseError("POWER requires ')' after exponent".into()));
-        }
-        let exponent = u32::try_from(exponent)
-            .map_err(|_| ParseError("POWER exponent must be non-negative and fit UInt32".into()))?;
-        return base.checked_pow(exponent).ok_or_else(overflow);
+        return parse_power(parser, depth);
     }
     if matches!(parser.tokens.get(parser.index), Some(Token::Word(name)) if is_extrema(name)) {
-        let name = parser.word()?;
-        if !parser.take(Token::LParen) {
-            return Err(ParseError(format!("{name} requires '('")));
-        }
-        let mut value = expression(parser, depth + 1)?;
-        if !parser.take(Token::Comma) {
-            return Err(ParseError(format!(
-                "{name} requires at least two arguments"
-            )));
-        }
-        let mut count = 1usize;
-        loop {
-            if count == 16 {
-                return Err(ParseError(format!("{name} supports at most 16 arguments")));
-            }
-            let candidate = expression(parser, depth + 1)?;
-            value = if name.eq_ignore_ascii_case("GREATEST") {
-                value.max(candidate)
-            } else {
-                value.min(candidate)
-            };
-            count += 1;
-            if !parser.take(Token::Comma) {
-                break;
-            }
-        }
-        if !parser.take(Token::RParen) {
-            return Err(ParseError(format!("expected ')' after {name} arguments")));
-        }
-        return Ok(value);
+        return parse_extrema(parser, depth);
     }
     if matches!(parser.tokens.get(parser.index), Some(Token::Word(name)) if is_function(name)) {
         let name = parser.word()?;
