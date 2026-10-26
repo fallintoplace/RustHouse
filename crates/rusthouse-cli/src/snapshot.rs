@@ -1,5 +1,5 @@
 //! Summarize a frozen set of compatible active wide MergeTree parts.
-use crate::part_json::json_string;
+use crate::part_json::{json_string, print_columns_json};
 use rusthouse_storage::{PartError, inspect_query_source, query_parts};
 use std::path::Path;
 
@@ -17,16 +17,7 @@ pub(crate) fn inspect_and_print(path: &Path, json: bool) -> Result<(), PartError
             part_count,
             metadata.rows
         );
-        for (index, column) in metadata.columns.iter().enumerate() {
-            if index != 0 {
-                print!(",");
-            }
-            print!(
-                "{{\"name\":{},\"type\":{}}}",
-                json_string(&column.name),
-                json_string(&column.data_type)
-            );
-        }
+            print_columns_json(&metadata.columns);
         println!("]}}");
     } else {
         println!("Parts: {part_count}");
