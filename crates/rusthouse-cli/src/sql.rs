@@ -1,4 +1,4 @@
-use crate::{csv, csv_no_header, html, json_array, jsonl, markdown, vertical};
+use crate::{csv, csv_no_header, html, json_array, json_compact_each_row, jsonl, markdown, vertical};
 use rusthouse_query::{
     Source, execute, explain_join, explain_select, parse_ddl, parse_delete, parse_insert,
     parse_join, parse_select, parse_update,
@@ -18,6 +18,7 @@ pub(super) enum SqlOutputFormat {
     CsvNoHeader,
     Jsonl,
     Json,
+    JsonCompactEachRow,
     Markdown,
     Html,
     Vertical,
@@ -32,11 +33,12 @@ impl SqlOutputFormat {
             Some("csv-no-header") => Ok(Self::CsvNoHeader),
             Some("jsonl") => Ok(Self::Jsonl),
             Some("json") => Ok(Self::Json),
+            Some("json-compact-each-row") => Ok(Self::JsonCompactEachRow),
             Some("markdown") => Ok(Self::Markdown),
             Some("html") => Ok(Self::Html),
             Some("vertical") => Ok(Self::Vertical),
             _ => Err(
-                "--format must be tsv, tsv-no-header, csv, csv-no-header, jsonl, json, markdown, html, or vertical"
+                "--format must be tsv, tsv-no-header, csv, csv-no-header, jsonl, json, json-compact-each-row, markdown, html, or vertical"
                     .into(),
             ),
         }
@@ -548,6 +550,15 @@ pub(super) fn run_sql_args(mut args: impl Iterator<Item = OsString>) -> Result<(
             part.as_deref(),
             &mut jsonl::JsonlWriter::new(&mut output),
         ),
+        SqlOutputFormat::JsonCompactEachRow => {
+            let mut writer = json_compact_each_row::JsonCompactEachRowWriter::new(&mut output);
+            execute(&select, part.as_deref(), &mut writer).and_then(|()| {
+                writer
+                    .finish()
+                    .map(|_| ())
+                    .map_err(rusthouse_query::ExecutionError::Io)
+            })
+        }
         SqlOutputFormat::Json => {
             let mut writer = json_array::JsonArrayWriter::new(&mut output);
             execute(&select, part.as_deref(), &mut writer).and_then(|()| {
@@ -640,6 +651,7 @@ mod tests {
             "csv-no-header",
             "jsonl",
             "json",
+            "json-compact-each-row",
             "markdown",
             "vertical",
         ] {
