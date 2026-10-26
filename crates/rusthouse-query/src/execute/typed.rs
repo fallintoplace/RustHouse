@@ -4,7 +4,7 @@ use super::{ExecutionError, Number, NumberKey, compare_numbers, number_at};
 use crate::{Operator, Predicate, Projection, Select};
 use rusthouse_storage::{TypedColumn, TypedQueryReader, inspect_query_source};
 use std::cmp::Ordering;
-use std::collections::{HashMap, HashSet, hash_map::Entry};
+use std::collections::{BinaryHeap, HashMap, HashSet, hash_map::Entry};
 use std::io::Write;
 use std::path::Path;
 
@@ -419,6 +419,55 @@ struct Row {
     sort_keys: Vec<Cell>,
 }
 
+// Keep the worst retained row at the root of the heap.
+// Original arrival order breaks ties, matching stable ORDER BY.
+struct TopRow {
+    row: Row,
+    ordinal: usize,
+    descending_mask: u8,
+}
+
+fn compare_sort_keys(left: &[Cell], right: &[Cell], descending_mask: u8) -> Ordering {
+    for (index, (a, b)) in left.iter().zip(right).enumerate() {
+        let comparison = cmp(a, b);
+        let descending = descending_mask & (1 << index) != 0;
+        let comparison = if descending {
+            comparison.reverse()
+        } else {
+            comparison
+        };
+        if comparison != Ordering::Equal {
+            return comparison;
+        }
+    }
+    Ordering::Equal
+}
+
+impl PartialEq for TopRow {
+    fn eq(&self, other: &Self) -> bool {
+        self.cmp(other).is_eq()
+    }
+}
+
+impl Eq for TopRow {}
+
+impl PartialOrd for TopRow {
+    fn partial_cmp(&self, other: &Self) -> Option<Ordering> {
+        Some(self.cmp(other))
+    }
+}
+
+impl Ord for TopRow {
+    fn cmp(&self, other: &Self) -> Ordering {
+        compare_sort_keys(
+            &self.row.sort_keys,
+            &other.row.sort_keys,
+            self.descending_mask,
+        )
+        .then_with(|| self.ordinal.cmp(&other.ordinal))
+    }
+}
+
 pub(super) fn execute_typed<W: Write>(
     query: &Select,
     part: &Path,
@@ -528,10 +577,26 @@ pub(super) fn execute_typed<W: Write>(
     let mut group_indices = HashMap::<Key, usize>::new();
     let mut grouped_rows = Vec::<(Cell, u64)>::new();
     let mut ordered = Vec::<Row>::new();
+    let mut top = BinaryHeap::<TopRow>::new();
+    let mut ordinal = 0usize;
     let mut emitted = 0usize;
     let mut skipped = 0usize;
     let offset = query.offset.unwrap_or(0);
     let limit = query.limit.unwrap_or(usize::MAX);
+    // ORDER BY supports at most eight keys, allowing a compact direction mask.
+    let descending_mask = query
+        .order_terms()
+        .enumerate()
+        .fold(0u8, |mask, (index, order)| {
+            mask | (u8::from(order.descending) << index)
+        });
+    let top_capacity = if sort_indices.is_empty() {
+        None
+    } else {
+        query.limit
+            .and_then(|count| count.checked_add(offset))
+            .filter(|count| *count <= MAX_BUFFERED_ROWS)
+    };
     while let Some(batch) = scan.next_batch()? {
         for index in 0..batch[0].len() {
             if !passes(&batch, index, &conditions) {
@@ -586,18 +651,36 @@ pub(super) fn execute_typed<W: Write>(
                 continue;
             }
             if !sort_indices.is_empty() {
-                if ordered.len() >= MAX_BUFFERED_ROWS {
-                    return Err(ExecutionError::Invalid(
-                        "typed ORDER BY exceeds 100000 matching rows".into(),
-                    ));
-                }
-                ordered.push(Row {
+                let row = Row {
                     values: cells,
                     sort_keys: sort_indices
                         .iter()
                         .map(|&sort_index| cell(&batch[sort_index], index))
                         .collect(),
-                });
+                };
+                if let Some(capacity) = top_capacity {
+                    let next = TopRow {
+                        row,
+                        ordinal,
+                        descending_mask,
+                    };
+                    ordinal = ordinal.checked_add(1).ok_or_else(|| {
+                        ExecutionError::Invalid("row ordinal overflow".into())
+                    })?;
+                    if top.len() < capacity {
+                        top.push(next);
+                    } else if top.peek().is_some_and(|worst| next < *worst) {
+                        top.pop();
+                        top.push(next);
+                    }
+                } else {
+                    if ordered.len() >= MAX_BUFFERED_ROWS {
+                        return Err(ExecutionError::Invalid(
+                            "typed ORDER BY exceeds 100000 matching rows".into(),
+                        ));
+                    }
+                    ordered.push(row);
+                }
                 continue;
             }
             if skipped < offset {
@@ -659,22 +742,17 @@ pub(super) fn execute_typed<W: Write>(
         return Ok(());
     }
     if query.order_by.is_some() {
-        ordered.sort_by(|left, right| {
-            for (index, order) in query.order_terms().enumerate() {
-                let comparison = cmp(&left.sort_keys[index], &right.sort_keys[index]);
-                let comparison = if order.descending {
-                    comparison.reverse()
-                } else {
-                    comparison
-                };
-                if comparison != Ordering::Equal {
-                    return comparison;
-                }
+        if top_capacity.is_some() {
+            for entry in top.into_sorted_vec().into_iter().skip(offset).take(limit) {
+                write_row(output, &entry.row.values)?;
             }
-            Ordering::Equal
-        });
-        for row in ordered.into_iter().skip(offset).take(limit) {
-            write_row(output, &row.values)?;
+        } else {
+            ordered.sort_by(|left, right| {
+                compare_sort_keys(&left.sort_keys, &right.sort_keys, descending_mask)
+            });
+            for row in ordered.into_iter().skip(offset).take(limit) {
+                write_row(output, &row.values)?;
+            }
         }
     }
     Ok(())
