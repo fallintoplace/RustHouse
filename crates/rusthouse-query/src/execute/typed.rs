@@ -167,6 +167,19 @@ fn compile_like(pattern: &str) -> Result<Vec<LikeToken>, ExecutionError> {
     Ok(tokens)
 }
 
+fn next_utf8_boundary(value: &[u8], index: usize) -> Option<usize> {
+    let width = match *value.get(index)? {
+        0x00..=0x7f => 1,
+        0xc2..=0xdf => 2,
+        0xe0..=0xef => 3,
+        0xf0..=0xf4 => 4,
+        _ => return None,
+    };
+    let end = index.checked_add(width)?;
+    std::str::from_utf8(value.get(index..end)?).ok()?;
+    Some(end)
+}
+
 fn like_matches(value: &[u8], pattern: &[LikeToken], case_insensitive: bool) -> bool {
     let (mut row, mut pat) = (0, 0);
     let mut last_any = None;
@@ -181,7 +194,10 @@ fn like_matches(value: &[u8], pattern: &[LikeToken], case_insensitive: bool) -> 
                 pat += 1;
             }
             Some(LikeToken::One) => {
-                row += 1;
+                let Some(next) = next_utf8_boundary(value, row) else {
+                    return false;
+                };
+                row = next;
                 pat += 1;
             }
             Some(LikeToken::Any) => {
@@ -193,7 +209,10 @@ fn like_matches(value: &[u8], pattern: &[LikeToken], case_insensitive: bool) -> 
                 let Some(any) = last_any else {
                     return false;
                 };
-                restart += 1;
+                let Some(next) = next_utf8_boundary(value, restart) else {
+                    return false;
+                };
+                restart = next;
                 row = restart;
                 pat = any + 1;
             }
@@ -674,6 +693,11 @@ mod like_tests {
         assert!(matches(b"api", "%p%"));
         assert!(matches(b"", "%"));
         assert!(!matches(b"", "_"));
+        assert!(matches("é".as_bytes(), "_"));
+        assert!(matches("東京".as_bytes(), "__"));
+        assert!(!matches("東京".as_bytes(), "_"));
+        assert!(matches("aéz".as_bytes(), "a_z"));
+        assert!(matches("é".as_bytes(), "%_"));
         assert!(matches(b"a_b", "a\\_b"));
         assert!(!matches(b"acb", "a\\_b"));
         assert!(matches(b"abc%d", "abc\\%d"));
