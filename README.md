@@ -64,6 +64,9 @@ cargo run -p rusthouse-cli -- sql "CREATE TABLE IF NOT EXISTS events (id UInt64,
 Schemas use a versioned text format in `<catalog>/<table>.schema`.
 Identifiers are simple ASCII SQL names and type support is deliberately bounded.
 
+List local tables with `rusthouse sql "SHOW TABLES" --catalog ./catalog`.
+Inspect stored column names and types with `rusthouse sql "DESCRIBE TABLE events" --catalog ./catalog`.
+
 Drop only a catalog schema file with `rusthouse sql "DROP TABLE IF EXISTS events" --catalog ./catalog`.
 Existing MergeTree parts remain untouched.
 

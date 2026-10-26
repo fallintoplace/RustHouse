@@ -1,6 +1,6 @@
 use rusthouse_query::{ColumnDef, Ddl, parse_ddl};
 use std::fs::{self, OpenOptions};
-use std::io::Write;
+use std::io::{Read, Write};
 use std::path::Path;
 use std::sync::atomic::{AtomicUsize, Ordering};
 
@@ -9,6 +9,8 @@ const MAX_SCHEMA_BYTES: u64 = 32 * 1024;
 
 pub(super) fn apply(catalog: &Path, ddl: &Ddl) -> Result<(), String> {
     match ddl {
+        Ddl::ShowTables => show_tables(catalog),
+        Ddl::DescribeTable { name } => describe_table(catalog, name),
         Ddl::CreateTable {
             name,
             columns,
@@ -27,6 +29,64 @@ pub(super) fn apply(catalog: &Path, ddl: &Ddl) -> Result<(), String> {
         } => drop_column(catalog, table, column, *if_exists),
         Ddl::RenameTable { from, to } => rename_table(catalog, from, to),
     }
+}
+
+fn describe_table(catalog: &Path, name: &str) -> Result<(), String> {
+    let columns = read_schema(catalog, name)?;
+    println!("name\ttype");
+    for column in columns {
+        println!("{}\t{}", column.name, column.data_type);
+    }
+    Ok(())
+}
+
+fn show_tables(catalog: &Path) -> Result<(), String> {
+    let entries = match fs::read_dir(catalog) {
+        Ok(entries) => entries,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+            println!("name");
+            return Ok(());
+        }
+        Err(error) => {
+            return Err(format!(
+                "cannot list catalog {}: {error}",
+                catalog.display()
+            ));
+        }
+    };
+
+    let mut names = Vec::new();
+    for entry in entries {
+        let entry = entry.map_err(|error| format!("cannot read catalog entry: {error}"))?;
+        if !entry
+            .file_type()
+            .map_err(|error| format!("cannot inspect catalog entry: {error}"))?
+            .is_file()
+        {
+            continue;
+        }
+        let filename = entry.file_name();
+        let Some(filename) = filename.to_str() else {
+            continue;
+        };
+        let Some(name) = filename.strip_suffix(".schema") else {
+            continue;
+        };
+        let mut bytes = name.bytes();
+        if name.len() > 128
+            || !matches!(bytes.next(), Some(b'a'..=b'z' | b'A'..=b'Z' | b'_'))
+            || !bytes.all(|byte| byte.is_ascii_alphanumeric() || byte == b'_')
+        {
+            continue;
+        }
+        names.push(name.to_owned());
+    }
+    names.sort_unstable();
+    println!("name");
+    for name in names {
+        println!("{name}");
+    }
+    Ok(())
 }
 
 fn drop_table(catalog: &Path, name: &str, if_exists: bool) -> Result<(), String> {
@@ -59,8 +119,18 @@ fn read_schema(catalog: &Path, name: &str) -> Result<Vec<ColumnDef>, String> {
     if metadata.len() > MAX_SCHEMA_BYTES {
         return Err(format!("schema is too large for table {name}"));
     }
-    let content =
-        fs::read_to_string(&path).map_err(|error| format!("cannot read table {name}: {error}"))?;
+    // Limit reads even if a schema grows between metadata inspection and open.
+    let mut bytes = Vec::new();
+    fs::File::open(&path)
+        .map_err(|error| format!("cannot read table {name}: {error}"))?
+        .take(MAX_SCHEMA_BYTES + 1)
+        .read_to_end(&mut bytes)
+        .map_err(|error| format!("cannot read table {name}: {error}"))?;
+    if bytes.len() as u64 > MAX_SCHEMA_BYTES {
+        return Err(format!("schema is too large for table {name}"));
+    }
+    let content = String::from_utf8(bytes)
+        .map_err(|_| format!("invalid UTF-8 in schema for table {name}"))?;
     let mut lines = content.lines();
     if lines.next() != Some("rusthouse-schema-v1") {
         return Err(format!("invalid schema version for table {name}"));
@@ -200,6 +270,8 @@ fn create_table(
     let mut file = match OpenOptions::new().write(true).create_new(true).open(&path) {
         Ok(file) => file,
         Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists && if_not_exists => {
+            // An existing schema must be safe and readable before ignoring CREATE.
+            read_schema(catalog, name)?;
             return Ok(());
         }
         Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {
