@@ -5,7 +5,7 @@ use crate::{
 use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
 use std::io;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct PartVerification {
@@ -18,43 +18,7 @@ pub struct PartVerification {
 pub fn verify_wide_part(path: impl AsRef<Path>) -> Result<PartVerification, PartError> {
     let path = path.as_ref();
     let metadata = inspect_part(path)?;
-    let mut data_files = BTreeSet::new();
-    let mut mark_files = BTreeMap::new();
-    let entries = fs::read_dir(path).map_err(|source| io_error(path, source))?;
-
-    for entry in entries {
-        let entry = entry.map_err(|source| io_error(path, source))?;
-        let filename = entry.path();
-        let extension = filename
-            .extension()
-            .and_then(|extension| extension.to_str());
-        let is_data = extension == Some("bin");
-        let is_mark = matches!(extension, Some("mrk" | "mrk2" | "cmrk" | "cmrk2"));
-        if matches!(extension, Some("mrk3" | "mrk4" | "cmrk3" | "cmrk4")) {
-            return Err(PartError::UnsupportedMarksFormat(filename));
-        }
-        if !is_data && !is_mark {
-            continue;
-        }
-        if !entry
-            .file_type()
-            .map_err(|source| io_error(&filename, source))?
-            .is_file()
-        {
-            return Err(invalid(
-                &filename,
-                "expected a regular stream or marks file",
-            ));
-        }
-        if is_data {
-            data_files.insert(filename);
-        } else {
-            let data = filename.with_extension("bin");
-            if mark_files.insert(data, filename.clone()).is_some() {
-                return Err(invalid(&filename, "multiple mark files for one stream"));
-            }
-        }
-    }
+    let (data_files, mut mark_files) = collect_wide_file_pairs(path)?;
 
     if metadata.rows > 0 && data_files.is_empty() {
         return Err(invalid(path, "nonempty part has no wide data streams"));
@@ -104,6 +68,50 @@ pub fn verify_wide_part(path: impl AsRef<Path>) -> Result<PartVerification, Part
         report.streams += 1;
     }
     Ok(report)
+}
+
+fn collect_wide_file_pairs(
+    path: &Path,
+) -> Result<(BTreeSet<PathBuf>, BTreeMap<PathBuf, PathBuf>), PartError> {
+    let mut data_files = BTreeSet::new();
+    let mut mark_files = BTreeMap::new();
+    let entries = fs::read_dir(path).map_err(|source| io_error(path, source))?;
+
+    for entry in entries {
+        let entry = entry.map_err(|source| io_error(path, source))?;
+        let filename = entry.path();
+        let extension = filename
+            .extension()
+            .and_then(|extension| extension.to_str());
+        let is_data = extension == Some("bin");
+        let is_mark = matches!(extension, Some("mrk" | "mrk2" | "cmrk" | "cmrk2"));
+        if matches!(extension, Some("mrk3" | "mrk4" | "cmrk3" | "cmrk4")) {
+            return Err(PartError::UnsupportedMarksFormat(filename));
+        }
+        if !is_data && !is_mark {
+            continue;
+        }
+        if !entry
+            .file_type()
+            .map_err(|source| io_error(&filename, source))?
+            .is_file()
+        {
+            return Err(invalid(
+                &filename,
+                "expected a regular stream or marks file",
+            ));
+        }
+        if is_data {
+            data_files.insert(filename);
+        } else {
+            let data = filename.with_extension("bin");
+            if mark_files.insert(data, filename.clone()).is_some() {
+                return Err(invalid(&filename, "multiple mark files for one stream"));
+            }
+        }
+    }
+
+    Ok((data_files, mark_files))
 }
 
 fn invalid(path: &Path, reason: &'static str) -> PartError {
