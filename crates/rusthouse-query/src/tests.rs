@@ -27,6 +27,7 @@ fn parses_scalar_and_table_queries() {
             predicates: Vec::new(),
             or_predicates: Vec::new(),
             order_by: None,
+            order_by_extra: Vec::new(),
             having: None,
             limit: None,
             offset: None,
@@ -42,6 +43,7 @@ fn parses_scalar_and_table_queries() {
             predicates: Vec::new(),
             or_predicates: Vec::new(),
             order_by: None,
+            order_by_extra: Vec::new(),
             having: None,
             limit: Some(2),
             offset: None,
@@ -145,6 +147,38 @@ fn projects_bounded_mixed_constant_rows() {
         "SELECT 'hi' FROM numbers(2)",
         "SELECT NULL AS",
         "SELECT 1, unknown",
+    ] {
+        assert!(parse_select(sql).is_err(), "{sql}");
+    }
+}
+
+#[test]
+fn accepts_composite_order_by_keys_and_bounds_the_count() {
+    let parsed =
+        parse_select("SELECT id, price FROM part ORDER BY 2 DESC, id ASC, 1 LIMIT 3").unwrap();
+    assert_eq!(parsed.order_by.unwrap().column, "price");
+    assert_eq!(
+        parsed.order_by_extra,
+        vec![
+            OrderBy {
+                column: "id".into(),
+                descending: false,
+            },
+            OrderBy {
+                column: "id".into(),
+                descending: false,
+            },
+        ]
+    );
+    let grouped =
+        parse_select("SELECT id, count(*) FROM part GROUP BY id ORDER BY count DESC, id").unwrap();
+    assert_eq!(grouped.order_by_extra[0].column, "id");
+    for sql in [
+        "SELECT id FROM part ORDER BY id,",
+        "SELECT id FROM part ORDER BY id, 2",
+        "SELECT count(*) FROM part ORDER BY id, id",
+        "SELECT id, count(*) FROM part GROUP BY id ORDER BY id, missing",
+        "SELECT id FROM part ORDER BY id, id, id, id, id, id, id, id, id",
     ] {
         assert!(parse_select(sql).is_err(), "{sql}");
     }
