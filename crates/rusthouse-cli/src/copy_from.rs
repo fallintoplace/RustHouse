@@ -6,7 +6,9 @@ use std::io::Read;
 use std::path::Path;
 
 const MAX_COPY_BYTES: usize = 8 * 1024 * 1024;
-const MAX_RECORDS: usize = 4096;
+const MAX_RECORDS: usize = 4096; // TSV data rows
+const MAX_CSV_DATA_RECORDS: usize = 50_000;
+const MAX_CSV_RECORDS: usize = MAX_CSV_DATA_RECORDS + 1;
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum State {
@@ -37,8 +39,8 @@ fn push_record(
     records: &mut Vec<Vec<Option<String>>>,
     row: &mut Vec<Option<String>>,
 ) -> Result<(), String> {
-    if records.len() > MAX_RECORDS {
-        return Err("CSV supports at most 4096 records".into());
+    if records.len() >= MAX_CSV_RECORDS {
+        return Err("CSV supports at most 50001 records including the header".into());
     }
     records.push(std::mem::take(row));
     Ok(())
@@ -196,8 +198,12 @@ pub(super) fn run(database: &Path, statement: &CopyFrom) -> Result<(), String> {
             columns = Some(names);
         }
     }
-    if records.len() > MAX_RECORDS {
-        return Err("COPY supports at most 4096 data rows".into());
+    let max_data_records = match statement.format {
+        CopyFormat::Csv => MAX_CSV_DATA_RECORDS,
+        CopyFormat::Tsv => MAX_RECORDS,
+    };
+    if records.len() > max_data_records {
+        return Err(format!("COPY supports at most {max_data_records} data rows"));
     }
     if records.is_empty() {
         // Empty imports should not create needless immutable parts.
@@ -205,14 +211,16 @@ pub(super) fn run(database: &Path, statement: &CopyFrom) -> Result<(), String> {
         println!("Inserted 0 rows into {}", statement.table);
         return Ok(());
     }
-    crate::database::insert(
-        database,
-        &Insert {
-            table: statement.table.clone(),
-            columns,
-            rows: records,
-        },
-    )
+    let insert = Insert {
+        table: statement.table.clone(),
+        columns,
+        rows: records,
+    };
+    if insert.rows.len() > 4096 {
+        crate::database::insert_many(database, &insert)
+    } else {
+        crate::database::insert(database, &insert)
+    }
 }
 
 #[cfg(test)]

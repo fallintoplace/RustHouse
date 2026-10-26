@@ -75,3 +75,36 @@ fn rejects_header_mismatch_and_preserves_existing_rows() {
     assert_eq!(ok("SELECT count(*) FROM events", &db), "count\n0\n");
     fs::remove_dir_all(db).unwrap();
 }
+
+#[test]
+fn bulk_copy_publishes_all_parts_or_no_parts() {
+    use std::fmt::Write as _;
+
+    let db = database();
+    ok("CREATE TABLE events (id UInt64, name String)", &db);
+    ok("INSERT INTO events VALUES (9000, 'existing')", &db);
+    let input = db.join("bulk.csv");
+    let mut csv = String::from("id,name\n");
+    for id in 0..5100 {
+        writeln!(&mut csv, "{id},item-{id}").unwrap();
+    }
+    fs::write(&input, &csv).unwrap();
+    let statement = format!(
+        "COPY events FROM '{}' WITH (FORMAT CSV, HEADER TRUE)",
+        input.display()
+    );
+    ok(&statement, &db);
+    assert_eq!(ok("SELECT count(*) FROM events", &db), "count\n5101\n");
+    let pointer = db.join("events.parts/.rusthouse-active");
+    assert_eq!(fs::read_to_string(&pointer).unwrap(), "g1\n");
+
+    // The invalid value appears after the first complete 4096-row part.
+    // The already-active generation must remain unchanged.
+    csv.push_str("not-an-integer,invalid\n");
+    fs::write(&input, &csv).unwrap();
+    let rejected = sql(&statement, &db);
+    assert!(!rejected.status.success(), "{rejected:?}");
+    assert_eq!(fs::read_to_string(&pointer).unwrap(), "g1\n");
+    assert_eq!(ok("SELECT count(*) FROM events", &db), "count\n5101\n");
+    fs::remove_dir_all(db).unwrap();
+}
