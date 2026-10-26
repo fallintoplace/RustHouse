@@ -10,6 +10,7 @@ const MAX_SCHEMA_BYTES: u64 = 32 * 1024;
 pub(super) fn apply(catalog: &Path, ddl: &Ddl) -> Result<(), String> {
     match ddl {
         Ddl::ShowTables => show_tables(catalog),
+        Ddl::DescribeTable { name } => describe_table(catalog, name),
         Ddl::CreateTable {
             name,
             columns,
@@ -28,6 +29,15 @@ pub(super) fn apply(catalog: &Path, ddl: &Ddl) -> Result<(), String> {
         } => drop_column(catalog, table, column, *if_exists),
         Ddl::RenameTable { from, to } => rename_table(catalog, from, to),
     }
+}
+
+fn describe_table(catalog: &Path, name: &str) -> Result<(), String> {
+    let columns = read_schema(catalog, name)?;
+    println!("name\ttype");
+    for column in columns {
+        println!("{}\t{}", column.name, column.data_type);
+    }
+    Ok(())
 }
 
 fn show_tables(catalog: &Path) -> Result<(), String> {
