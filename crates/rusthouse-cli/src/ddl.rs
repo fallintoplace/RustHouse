@@ -15,6 +15,7 @@ pub(super) enum Statement {
         if_not_exists: bool,
         columns: Vec<Column>,
     },
+    ShowTables,
 }
 
 struct Parser<'a> {
@@ -125,13 +126,20 @@ pub(super) fn parse_ddl(sql: &str) -> Result<Option<Statement>, String> {
         .trim_start()
         .split(|c: char| !c.is_ascii_alphabetic())
         .next();
-    if !first.is_some_and(|value| value.eq_ignore_ascii_case("CREATE")) {
+    if !first.is_some_and(|value| {
+        value.eq_ignore_ascii_case("CREATE") || value.eq_ignore_ascii_case("SHOW")
+    }) {
         return Ok(None);
     }
     let mut parser = Parser {
         tokens: tokenize(sql)?,
         index: 0,
     };
+    if parser.take("SHOW") {
+        parser.expect("TABLES")?;
+        parser.finish()?;
+        return Ok(Some(Statement::ShowTables));
+    }
     parser.expect("CREATE")?;
     parser.expect("TABLE")?;
     let if_not_exists = if parser.take("IF") {
@@ -204,6 +212,43 @@ pub(super) fn execute_ddl(statement: Statement, root: &Path) -> Result<(), Strin
                 drop(file);
                 let _ = fs::remove_file(&path);
                 return Err(format!("cannot write table {name}: {error}"));
+            }
+            Ok(())
+        }
+        Statement::ShowTables => {
+            let mut names = Vec::new();
+            let entries = match fs::read_dir(root) {
+                Ok(entries) => Some(entries),
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => None,
+                Err(error) => {
+                    return Err(format!("cannot read catalog {}: {error}", root.display()));
+                }
+            };
+            if let Some(entries) = entries {
+                for entry in entries {
+                    let entry = entry.map_err(|error| format!("cannot list catalog: {error}"))?;
+                    if !entry
+                        .file_type()
+                        .map_err(|error| format!("cannot inspect catalog entry: {error}"))?
+                        .is_file()
+                    {
+                        continue;
+                    }
+                    if let Some(name) = entry
+                        .file_name()
+                        .to_str()
+                        .and_then(|name| name.strip_suffix(".rh"))
+                    {
+                        if valid_identifier(name) {
+                            names.push(name.to_string());
+                        }
+                    }
+                }
+            }
+            names.sort();
+            println!("name");
+            for name in names {
+                println!("{name}");
             }
             Ok(())
         }

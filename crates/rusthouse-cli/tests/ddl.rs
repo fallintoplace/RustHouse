@@ -61,3 +61,23 @@ fn create_requires_catalog_and_rejects_unsupported_flags() {
     assert!(!unsupported.status.success());
     assert!(!dir.exists());
 }
+
+#[test]
+fn show_tables_lists_only_valid_catalog_entries_in_sorted_order() {
+    let dir = catalog();
+    assert!(sql("CREATE TABLE beta (id UInt64)", &dir).status.success());
+    assert!(sql("CREATE TABLE alpha (id UInt64)", &dir).status.success());
+    fs::write(dir.join("notes.txt"), "ignore").unwrap();
+    fs::write(dir.join("bad-name.rh"), "ignore").unwrap();
+    let shown = sql("SHOW TABLES;", &dir);
+    assert!(shown.status.success(), "{shown:?}");
+    assert_eq!(
+        String::from_utf8(shown.stdout).unwrap(),
+        "name\nalpha\nbeta\n"
+    );
+    fs::remove_dir_all(&dir).unwrap();
+
+    let empty = sql("SHOW TABLES", &dir);
+    assert!(empty.status.success(), "{empty:?}");
+    assert_eq!(String::from_utf8(empty.stdout).unwrap(), "name\n");
+}
