@@ -236,7 +236,10 @@ mod tests {
         for header in ["+1 columns:", "-1 columns:", " 1 columns:", "1 columns: "] {
             let content = format!("columns format version: 1\n{header}\n`id` UInt64\n");
             assert!(
-                matches!(parse_columns(&content), Err(PartError::InvalidColumns { line: 2, .. })),
+                matches!(
+                    parse_columns(&content),
+                    Err(PartError::InvalidColumns { line: 2, .. })
+                ),
                 "{header:?}"
             );
         }
