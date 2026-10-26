@@ -269,8 +269,7 @@ pub(super) fn insert(database: &Path, insert: &Insert) -> Result<(), String> {
     if existing_path(&destination)? {
         return Err("destination part already exists".into());
     }
-    // Stage outside the scanned parts directory. A concurrent SELECT must
-    // never discover half-written count.txt or columns.txt metadata.
+    // An interrupted write must not become visible as an active part.
     let staging = database.join(format!(
         ".{}.pending-{}-{}",
         insert.table,
