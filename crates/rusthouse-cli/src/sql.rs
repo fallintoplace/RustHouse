@@ -216,4 +216,25 @@ mod tests {
         assert!(SqlOutputFormat::from_arg(None).is_err());
         assert!(SqlOutputFormat::from_arg(Some("parquet".into())).is_err());
     }
+
+    #[test]
+    fn sql_frontend_rejects_duplicate_flags_and_invalid_row_caps() {
+        fn error(args: &[&str]) -> String {
+            run_sql_args(args.iter().copied().map(OsString::from)).unwrap_err()
+        }
+
+        assert_eq!(
+            error(&["SELECT 1", "--format", "json", "--format", "csv"]),
+            "duplicate --format option"
+        );
+        assert_eq!(
+            error(&["SELECT 1", "--max-rows", "-1"]),
+            "--max-rows must be a non-negative integer"
+        );
+        assert_eq!(
+            error(&["SELECT 1", "--file", "other.sql"]),
+            "provide SQL text or --file, not both"
+        );
+    }
+
 }
