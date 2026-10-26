@@ -50,6 +50,7 @@ pub enum Operator {
     Gt,
     Ge,
     Modulo(u64),
+    ModuloNe(u64),
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -434,10 +435,11 @@ pub fn parse_select(sql: &str) -> Result<Select, ParseError> {
                     if modulus == 0 {
                         return Err(ParseError("modulus must be positive".into()));
                     }
-                    if parser.operator()? != Operator::Eq {
-                        return Err(ParseError("modulo predicates require =".into()));
+                    match parser.operator()? {
+                        Operator::Eq => Operator::Modulo(modulus),
+                        Operator::Ne => Operator::ModuloNe(modulus),
+                        _ => return Err(ParseError("modulo predicates require = or !=".into())),
                     }
-                    Operator::Modulo(modulus)
                 } else {
                     parser.operator()?
                 };
@@ -1250,6 +1252,15 @@ mod tests {
             query.predicates[0],
             Predicate::Comparison {
                 operator: Operator::Modulo(3),
+                ..
+            }
+        ));
+        assert!(matches!(
+            parse_select("SELECT number FROM numbers(10) WHERE number % 3 != 1")
+                .unwrap()
+                .predicates[0],
+            Predicate::Comparison {
+                operator: Operator::ModuloNe(3),
                 ..
             }
         ));

@@ -997,7 +997,7 @@ fn compile_part_predicates(
                 operator, value, ..
             } => {
                 let target = convert(column, value)?;
-                if matches!(*operator, Operator::Modulo(_)) && matches!(target, Number::Float(_)) {
+                if matches!(*operator, Operator::Modulo(_) | Operator::ModuloNe(_)) && matches!(target, Number::Float(_)) {
                     return Err(ExecutionError::Invalid(
                         "modulo requires integer columns".into(),
                     ));
@@ -1132,15 +1132,20 @@ fn number_at(column: &NumericColumn, row: usize) -> Number {
 }
 
 fn number_matches(value: Number, target: Number, operator: Operator) -> bool {
-    if let Operator::Modulo(modulus) = operator {
-        return match (value, target) {
+    if let Operator::Modulo(modulus) | Operator::ModuloNe(modulus) = operator {
+        let equal = match (value, target) {
             (Number::Unsigned(value), Number::Unsigned(target)) => {
                 value % u128::from(modulus) == target
             }
             (Number::Signed(value), Number::Signed(target)) => {
                 value % i128::from(modulus) == target
             }
-            _ => false,
+            _ => return false,
+        };
+        return if matches!(operator, Operator::ModuloNe(_)) {
+            !equal
+        } else {
+            equal
         };
     }
     match (value, target) {
@@ -1159,7 +1164,9 @@ fn compare<T: PartialOrd>(value: T, target: T, operator: Operator) -> bool {
         Operator::Le => value <= target,
         Operator::Gt => value > target,
         Operator::Ge => value >= target,
-        Operator::Modulo(_) => unreachable!("modulo handled before comparison"),
+        Operator::Modulo(_) | Operator::ModuloNe(_) => {
+            unreachable!("modulo handled before comparison")
+        }
     }
 }
 
@@ -1315,6 +1322,27 @@ mod tests {
             .unwrap(),
             "count\n5\n"
         );
+    }
+
+    #[test]
+    fn excludes_modulo_remainders_for_generated_numbers() {
+        assert_eq!(
+            run("SELECT number FROM numbers(10) WHERE number % 3 != 1", None).unwrap(),
+            "number\n0\n2\n3\n5\n6\n8\n9\n"
+        );
+        assert_eq!(
+            run(
+                "SELECT count(*) FROM numbers(10) WHERE number % 3 != 1 AND number >= 4",
+                None
+            )
+            .unwrap(),
+            "count\n4\n"
+        );
+        assert!(!number_matches(
+            Number::Float(1.0),
+            Number::Float(1.0),
+            Operator::ModuloNe(3)
+        ));
     }
 
     #[test]
