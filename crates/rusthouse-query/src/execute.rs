@@ -122,6 +122,37 @@ fn write_header<W: Write>(
     Ok(())
 }
 
+/// Reuse the typed SELECT predicate semantics for bounded local mutations.
+pub struct RowPredicate {
+    branches: Vec<Vec<typed::Condition>>,
+}
+
+impl RowPredicate {
+    pub fn new(
+        query: &Select,
+        columns: &[rusthouse_storage::Column],
+    ) -> Result<Self, ExecutionError> {
+        let indices = columns
+            .iter()
+            .enumerate()
+            .map(|(index, column)| (column.name.clone(), index))
+            .collect::<HashMap<_, _>>();
+        let kinds = columns
+            .iter()
+            .map(|column| (column.name.clone(), column.data_type.clone()))
+            .collect::<HashMap<_, _>>();
+        let branches = std::iter::once(query.predicates.as_slice())
+            .chain(query.or_predicates.iter().map(Vec::as_slice))
+            .map(|predicates| typed::compile(predicates, &indices, &kinds))
+            .collect::<Result<Vec<_>, _>>()?;
+        Ok(Self { branches })
+    }
+
+    pub fn matches(&self, batch: &[rusthouse_storage::TypedColumn], row: usize) -> bool {
+        typed::passes(batch, row, &self.branches)
+    }
+}
+
 pub fn execute<W: Write>(
     query: &Select,
     part: Option<&Path>,
@@ -138,6 +169,29 @@ fn execute_into<W: Write>(
     part: Option<&Path>,
     output: &mut W,
 ) -> Result<(), ExecutionError> {
+    if let Projection::Constants(columns) = &query.projection {
+        let headers: Vec<_> = columns.iter().map(crate::Constant::header).collect();
+        write_header(query, output, &headers.join("\t"))?;
+        if query.limit != Some(0) && query.offset.unwrap_or(0) == 0 {
+            for (index, column) in columns.iter().enumerate() {
+                if index != 0 {
+                    output.write_all(b"\t")?;
+                }
+                let value = match &column.value {
+                    crate::ConstantValue::Integer(value) => {
+                        typed::Cell::Numeric(Number::Signed(i128::from(*value)))
+                    }
+                    crate::ConstantValue::Text(value) => {
+                        typed::Cell::Text(value.as_bytes().to_vec())
+                    }
+                    crate::ConstantValue::Null => typed::Cell::Null,
+                };
+                typed::write_value(output, &value)?;
+            }
+            writeln!(output)?;
+        }
+        return Ok(());
+    }
     if let Projection::Literal(value) = query.projection {
         write_header(query, output, &value.to_string())?;
         if query.limit != Some(0) && query.offset.unwrap_or(0) == 0 {
@@ -215,7 +269,8 @@ fn execute_into<W: Write>(
         | Projection::CountColumn { .. }
         | Projection::CountDistinct { .. }
         | Projection::GroupedCount { .. }
-        | Projection::Literal(_) => unreachable!(),
+        | Projection::Literal(_)
+        | Projection::Constants(_) => unreachable!(),
     };
     if query.distinct
         && query.order_by.as_ref().is_some_and(|order| {
@@ -768,7 +823,8 @@ fn execute_numbers<W: Write>(
         | Projection::CountColumn { .. }
         | Projection::CountDistinct { .. }
         | Projection::GroupedCount { .. }
-        | Projection::Literal(_) => unreachable!(),
+        | Projection::Literal(_)
+        | Projection::Constants(_) => unreachable!(),
     };
     let comparisons = compile_numbers_predicates(query)?;
     let is_count = matches!(query.projection, Projection::Count);

@@ -27,6 +27,14 @@ fn describe_source(source: Option<&Source>) -> String {
 fn describe_projection(projection: &Projection) -> String {
     match projection {
         Projection::Literal(value) => format!("Project: {value}"),
+        Projection::Constants(columns) => format!(
+            "Project: {}",
+            columns
+                .iter()
+                .map(crate::Constant::header)
+                .collect::<Vec<_>>()
+                .join(", ")
+        ),
         Projection::All => "Project: *".to_owned(),
         Projection::Columns(columns) => format!("Project: {}", columns.join(", ")),
         Projection::Count => "Aggregate: count(*)".to_owned(),

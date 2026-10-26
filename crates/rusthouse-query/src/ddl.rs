@@ -33,6 +33,9 @@ pub enum Ddl {
     TruncateTable {
         name: String,
     },
+    OptimizeTable {
+        name: String,
+    },
     AddColumn {
         table: String,
         column: ColumnDef,
@@ -234,6 +237,14 @@ pub fn parse_ddl(sql: &str) -> Result<Option<Ddl>, ParseError> {
             column: ColumnDef { name, data_type },
             if_not_exists,
         }));
+    }
+    if parser.keyword("OPTIMIZE") {
+        if !parser.keyword("TABLE") {
+            return Err(ParseError("expected TABLE after OPTIMIZE".into()));
+        }
+        let name = identifier(&mut parser)?;
+        finish_ddl(&mut parser)?;
+        return Ok(Some(Ddl::OptimizeTable { name }));
     }
     if parser.keyword("TRUNCATE") {
         if !parser.keyword("TABLE") {

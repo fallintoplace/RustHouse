@@ -31,6 +31,7 @@ pub(super) fn apply(catalog: &Path, ddl: &Ddl) -> Result<(), String> {
         }
         Ddl::DropTable { name, if_exists } => drop_table(catalog, name, *if_exists),
         Ddl::TruncateTable { .. } => Err("TRUNCATE requires --database".into()),
+        Ddl::OptimizeTable { .. } => Err("OPTIMIZE requires --database".into()),
         Ddl::AddColumn {
             table,
             column,
