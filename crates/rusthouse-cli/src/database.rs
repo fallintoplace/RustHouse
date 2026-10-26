@@ -180,6 +180,45 @@ fn truncate_table(database: &Path, name: &str) -> Result<(), String> {
     Ok(())
 }
 
+fn create_table_locked(
+    database: &Path,
+    name: &str,
+    definitions: &[rusthouse_query::ColumnDef],
+    if_not_exists: bool,
+) -> Result<(), String> {
+    let schema = database.join(format!("{name}.schema"));
+    if existing_path(&schema)? {
+        if !if_not_exists {
+            return Err(format!("table already exists: {name}"));
+        }
+        let existing = columns(database, name)?;
+        validated_parts(database, name, &existing)?;
+        return Ok(());
+    }
+    let parts = data_path(database, name);
+    fs::create_dir(&parts)
+        .map_err(|error| format!("cannot create table data {}: {error}", parts.display()))?;
+    let cols: Vec<Column> = definitions
+        .iter()
+        .map(|column| Column {
+            name: column.name.clone(),
+            data_type: column.data_type.clone(),
+        })
+        .collect();
+    let ddl = Ddl::CreateTable {
+        name: name.to_owned(),
+        columns: definitions.to_vec(),
+        if_not_exists,
+    };
+    let result = write_wide_part(&parts.join("all_0_0_0"), &cols, &[])
+        .map_err(|error| error.to_string())
+        .and_then(|_| catalog::apply(database, &ddl));
+    if result.is_err() {
+        let _ = fs::remove_dir_all(&parts);
+    }
+    result
+}
+
 pub(super) fn apply_ddl(database: &Path, ddl: &Ddl) -> Result<(), String> {
     match ddl {
         Ddl::ShowTables | Ddl::ShowCreateTable { .. } | Ddl::DescribeTable { .. } => {
@@ -191,33 +230,24 @@ pub(super) fn apply_ddl(database: &Path, ddl: &Ddl) -> Result<(), String> {
             if_not_exists,
         } => {
             let _lock = lock(database)?;
-            let schema = database.join(format!("{name}.schema"));
-            if schema.exists() {
-                if !if_not_exists {
-                    return Err(format!("table already exists: {name}"));
-                }
-                let existing = columns(database, name)?;
-                validated_parts(database, name, &existing)?;
-                return Ok(());
-            }
-            let parts = data_path(database, name);
-            fs::create_dir(&parts).map_err(|error| {
-                format!("cannot create table data {}: {error}", parts.display())
-            })?;
-            let cols: Vec<Column> = definitions
+            create_table_locked(database, name, definitions, *if_not_exists)
+        }
+        Ddl::CreateTableLike {
+            name,
+            source,
+            if_not_exists,
+        } => {
+            let _lock = lock(database)?;
+            let source_columns = catalog::read_schema(database, source)?;
+            let physical_columns: Vec<Column> = source_columns
                 .iter()
                 .map(|column| Column {
                     name: column.name.clone(),
                     data_type: column.data_type.clone(),
                 })
                 .collect();
-            let result = write_wide_part(&parts.join("all_0_0_0"), &cols, &[])
-                .map_err(|error| error.to_string())
-                .and_then(|_| catalog::apply(database, ddl));
-            if result.is_err() {
-                let _ = fs::remove_dir_all(&parts);
-            }
-            result
+            validated_parts(database, source, &physical_columns)?;
+            create_table_locked(database, name, &source_columns, *if_not_exists)
         }
         Ddl::DropTable { name, if_exists } => drop_table(database, name, *if_exists),
         Ddl::TruncateTable { name } => truncate_table(database, name),
