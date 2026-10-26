@@ -3,29 +3,94 @@ use std::io::{self, Write};
 
 const MAX_JSON_ROW_BYTES: usize = 4 * 1024 * 1024;
 
+/// Indent validated JSONL rows, keeping quotes and escaped syntax intact.
+fn write_pretty_row<W: Write>(output: &mut W, row: &[u8]) -> io::Result<()> {
+    let mut quoted = false;
+    let mut escaped = false;
+    let mut depth = 0usize;
+    let mut start = 0usize;
+    for (index, &byte) in row.iter().enumerate() {
+        if quoted {
+            if escaped {
+                escaped = false;
+            } else if byte == b'\\' {
+                escaped = true;
+            } else if byte == b'"' {
+                quoted = false;
+            }
+            continue;
+        }
+        match byte {
+            b'"' => quoted = true,
+            b'{' | b'[' => {
+                output.write_all(&row[start..=index])?;
+                depth += 1;
+                output.write_all(b"\n")?;
+                for _ in 0..=depth {
+                    output.write_all(b"  ")?;
+                }
+                start = index + 1;
+            }
+            b'}' | b']' => {
+                output.write_all(&row[start..index])?;
+                depth = depth.saturating_sub(1);
+                output.write_all(b"\n")?;
+                for _ in 0..=depth {
+                    output.write_all(b"  ")?;
+                }
+                output.write_all(&row[index..=index])?;
+                start = index + 1;
+            }
+            b',' => {
+                output.write_all(&row[start..=index])?;
+                output.write_all(b"\n")?;
+                for _ in 0..=depth {
+                    output.write_all(b"  ")?;
+                }
+                start = index + 1;
+            }
+            b':' => {
+                output.write_all(&row[start..=index])?;
+                output.write_all(b" ")?;
+                start = index + 1;
+            }
+            _ => {}
+        }
+    }
+    output.write_all(&row[start..])
+}
+
 /// Convert a stream of JSONL objects to a valid JSON array without buffering all rows.
 struct JsonArraySink<W: Write> {
     output: W,
     row: Vec<u8>,
     first: bool,
+    pretty: bool,
 }
 
 impl<W: Write> JsonArraySink<W> {
-    fn new(output: W) -> Self {
+    fn new(output: W, pretty: bool) -> Self {
         Self {
             output,
             row: Vec::new(),
             first: true,
+            pretty,
         }
     }
 
     fn finish_row(&mut self) -> io::Result<()> {
         if self.first {
-            self.output.write_all(b"[")?;
+            self.output
+                .write_all(if self.pretty { b"[\n  " } else { b"[" })?;
         } else {
-            self.output.write_all(b",")?;
+            self.output
+                .write_all(if self.pretty { b",\n  " } else { b"," })?;
         }
-        self.output.write_all(&self.row)?;
+        if self.pretty {
+            write_pretty_row(&mut self.output, &self.row)?;
+        } else {
+            self.output.write_all(&self.row)?;
+        }
         self.row.clear();
         self.first = false;
         Ok(())
@@ -40,6 +105,8 @@ impl<W: Write> JsonArraySink<W> {
         }
         if self.first {
             self.output.write_all(b"[]\n")?;
+        } else if self.pretty {
+            self.output.write_all(b"\n]\n")?;
         } else {
             self.output.write_all(b"]\n")?;
         }
@@ -79,8 +146,16 @@ pub struct JsonArrayWriter<W: Write> {
 
 impl<W: Write> JsonArrayWriter<W> {
     pub fn new(output: W) -> Self {
+        Self::with_style(output, false)
+    }
+
+    pub fn new_pretty(output: W) -> Self {
+        Self::with_style(output, true)
+    }
+
+    fn with_style(output: W, pretty: bool) -> Self {
         Self {
-            inner: JsonlWriter::new(JsonArraySink::new(output)),
+            inner: JsonlWriter::new(JsonArraySink::new(output, pretty)),
             incomplete_line: false,
         }
     }
@@ -127,6 +202,21 @@ mod tests {
             String::from_utf8(output).unwrap(),
             "[{\"number\":\"12\",\"name\":\"\\\"x\\\"\"},{\"number\":\"13\",\"name\":null}]\n"
         );
+    }
+
+    #[test]
+    fn pretty_prints_multiple_objects_and_preserves_escaped_strings() {
+        let mut writer = JsonArrayWriter::new_pretty(Vec::new());
+        writer.write_all(b"name\tnullable\n").unwrap();
+        writer.write_all(b"hello\\nworld\t\\N\n").unwrap();
+        writer.write_all(b"\"quoted\"\tvalue\n").unwrap();
+        assert_eq!(
+            String::from_utf8(writer.finish().unwrap()).unwrap(),
+            "[\n  {\n    \"name\": \"hello\\nworld\",\n    \"nullable\": null\n  },\n  {\n    \"name\": \"\\\"quoted\\\"\",\n    \"nullable\": \"value\"\n  }\n]\n"
+        );
+        let mut empty = JsonArrayWriter::new_pretty(Vec::new());
+        empty.write_all(b"id\n").unwrap();
+        assert_eq!(empty.finish().unwrap(), b"[]\n");
     }
 
     #[test]

@@ -1,5 +1,6 @@
 use crate::{
-    csv, csv_no_header, html, json_array, json_compact_each_row, jsonl, markdown, vertical,
+    csv, csv_no_header, html, json_array, json_compact_each_row, jsonl, markdown, sql_values,
+    vertical,
 };
 use rusthouse_query::{
     Source, execute, explain_join, explain_select, parse_ddl, parse_delete, parse_insert,
@@ -20,9 +21,11 @@ pub(super) enum SqlOutputFormat {
     CsvNoHeader,
     Jsonl,
     Json,
+    JsonPretty,
     JsonCompactEachRow,
     Markdown,
     Html,
+    SqlValues,
     Vertical,
 }
 
@@ -35,12 +38,14 @@ impl SqlOutputFormat {
             Some("csv-no-header") => Ok(Self::CsvNoHeader),
             Some("jsonl") => Ok(Self::Jsonl),
             Some("json") => Ok(Self::Json),
+            Some("json-pretty") => Ok(Self::JsonPretty),
             Some("json-compact-each-row") => Ok(Self::JsonCompactEachRow),
             Some("markdown") => Ok(Self::Markdown),
             Some("html") => Ok(Self::Html),
+            Some("sql-values") => Ok(Self::SqlValues),
             Some("vertical") => Ok(Self::Vertical),
             _ => Err(
-                "--format must be tsv, tsv-no-header, csv, csv-no-header, jsonl, json, json-compact-each-row, markdown, html, or vertical"
+                "--format must be tsv, tsv-no-header, csv, csv-no-header, jsonl, json, json-pretty, json-compact-each-row, markdown, html, sql-values, or vertical"
                     .into(),
             ),
         }
@@ -547,11 +552,25 @@ pub(super) fn run_sql_args(mut args: impl Iterator<Item = OsString>) -> Result<(
             part.as_deref(),
             &mut vertical::VerticalWriter::new(&mut output),
         ),
+        SqlOutputFormat::SqlValues => {
+            let mut writer = sql_values::SqlValuesWriter::new(&mut output);
+            execute(&select, part.as_deref(), &mut writer)
+                .and_then(|()| writer.finish().map_err(rusthouse_query::ExecutionError::Io))
+        }
         SqlOutputFormat::Jsonl => execute(
             &select,
             part.as_deref(),
             &mut jsonl::JsonlWriter::new(&mut output),
         ),
+        SqlOutputFormat::Json => {
+            let mut writer = json_array::JsonArrayWriter::new(&mut output);
+            execute(&select, part.as_deref(), &mut writer).and_then(|()| {
+                writer
+                    .finish()
+                    .map(|_| ())
+                    .map_err(rusthouse_query::ExecutionError::Io)
+            })
+        }
         SqlOutputFormat::JsonCompactEachRow => {
             let mut writer = json_compact_each_row::JsonCompactEachRowWriter::new(&mut output);
             execute(&select, part.as_deref(), &mut writer).and_then(|()| {
@@ -561,8 +580,8 @@ pub(super) fn run_sql_args(mut args: impl Iterator<Item = OsString>) -> Result<(
                     .map_err(rusthouse_query::ExecutionError::Io)
             })
         }
-        SqlOutputFormat::Json => {
-            let mut writer = json_array::JsonArrayWriter::new(&mut output);
+        SqlOutputFormat::JsonPretty => {
+            let mut writer = json_array::JsonArrayWriter::new_pretty(&mut output);
             execute(&select, part.as_deref(), &mut writer).and_then(|()| {
                 writer
                     .finish()
@@ -653,8 +672,10 @@ mod tests {
             "csv-no-header",
             "jsonl",
             "json",
+            "json-pretty",
             "json-compact-each-row",
             "markdown",
+            "sql-values",
             "vertical",
         ] {
             assert!(SqlOutputFormat::from_arg(Some(value.into())).is_ok());

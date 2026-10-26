@@ -1,7 +1,8 @@
 //! Execute a bounded two-table JOIN using the existing SQL output adapters.
 use crate::sql::SqlOutputFormat;
 use crate::{
-    csv, csv_no_header, html, json_array, json_compact_each_row, jsonl, markdown, vertical,
+    csv, csv_no_header, html, json_array, json_compact_each_row, jsonl, markdown, sql_values,
+    vertical,
 };
 use rusthouse_query::{JoinSelect, execute_join};
 use std::path::{Path, PathBuf};
@@ -51,12 +52,26 @@ fn execute_formatted_join(
             right,
             &mut vertical::VerticalWriter::new(&mut output),
         ),
+        SqlOutputFormat::SqlValues => {
+            let mut writer = sql_values::SqlValuesWriter::new(&mut output);
+            execute_join(query, left, right, &mut writer)
+                .and_then(|()| writer.finish().map_err(rusthouse_query::ExecutionError::Io))
+        }
         SqlOutputFormat::Jsonl => execute_join(
             query,
             left,
             right,
             &mut jsonl::JsonlWriter::new(&mut output),
         ),
+        SqlOutputFormat::Json => {
+            let mut writer = json_array::JsonArrayWriter::new(&mut output);
+            execute_join(query, left, right, &mut writer).and_then(|()| {
+                writer
+                    .finish()
+                    .map(|_| ())
+                    .map_err(rusthouse_query::ExecutionError::Io)
+            })
+        }
         SqlOutputFormat::JsonCompactEachRow => {
             let mut writer = json_compact_each_row::JsonCompactEachRowWriter::new(&mut output);
             execute_join(query, left, right, &mut writer).and_then(|()| {
@@ -66,8 +81,8 @@ fn execute_formatted_join(
                     .map_err(rusthouse_query::ExecutionError::Io)
             })
         }
-        SqlOutputFormat::Json => {
-            let mut writer = json_array::JsonArrayWriter::new(&mut output);
+        SqlOutputFormat::JsonPretty => {
+            let mut writer = json_array::JsonArrayWriter::new_pretty(&mut output);
             execute_join(query, left, right, &mut writer).and_then(|()| {
                 writer
                     .finish()

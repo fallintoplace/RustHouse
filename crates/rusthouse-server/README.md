@@ -50,3 +50,6 @@ the server's 8 MiB response limit.
 return the bounded logical plan as plain text. The endpoint parses SQL but does
 not inspect parts or read rows. It uses the same 4096-byte input limit and
 server-side row cap as ordinary queries. This is not a physical or cost-based plan.
+
+`GET /capabilities` returns read-only JSON with the server version, source mode,
+SQL and response byte limits, and effective row cap. Empty-body GET only.
