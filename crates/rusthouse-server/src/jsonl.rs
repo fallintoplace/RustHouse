@@ -10,7 +10,7 @@ fn invalid(message: &'static str) -> io::Error {
     io::Error::new(io::ErrorKind::InvalidData, message)
 }
 
-fn decode_tsv_value(value: &[u8]) -> io::Result<String> {
+pub(super) fn decode_tsv_value(value: &[u8]) -> io::Result<String> {
     let mut decoded = Vec::with_capacity(value.len());
     let mut index = 0;
     while index < value.len() {
