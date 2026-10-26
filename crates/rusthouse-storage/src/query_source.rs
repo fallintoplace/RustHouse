@@ -116,7 +116,7 @@ pub fn inspect_query_source(path: &Path) -> Result<PartMetadata, PartError> {
 fn inspect_parts_metadata(path: &Path, paths: &[PathBuf]) -> Result<PartMetadata, PartError> {
     let first = inspect_part(&paths[0])?;
     let mut rows = 0u64;
-    for part in &paths {
+    for part in paths {
         let metadata = inspect_part(part)?;
         if metadata.columns != first.columns {
             return Err(PartError::InvalidScan(format!(
