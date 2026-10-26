@@ -83,3 +83,56 @@ fn null_and_empty_result_queries_agree_between_sources() {
     }
     fs::remove_dir_all(root).unwrap();
 }
+
+
+/// Exercise multiple immutable parts instead of one small in-memory fixture.
+fn test_multi_parts(rows: u64) -> PathBuf {
+    let root = std::env::temp_dir().join(format!(
+        "rusthouse-query-multi-oracle-{}-{}",
+        std::process::id(),
+        NEXT.fetch_add(1, Ordering::Relaxed)
+    ));
+    fs::create_dir(&root).unwrap();
+    let columns = vec![Column {
+        name: "number".into(),
+        data_type: "UInt64".into(),
+    }];
+    for (index, start) in (0..rows).step_by(4096).enumerate() {
+        let end = (start + 4096).min(rows);
+        let data = (start..end)
+            .map(|value| vec![Some(value.to_string())])
+            .collect::<Vec<_>>();
+        write_wide_part(
+            &root.join(format!("all_{index}_{index}_0")),
+            &columns,
+            &data,
+        )
+        .unwrap();
+    }
+    root
+}
+
+#[test]
+fn multi_part_queries_match_independent_generated_source() {
+    // Cross the 1024-row granule and 4096-row part boundaries.
+    let rows = 8201;
+    let root = test_multi_parts(rows);
+    let statements = [
+        "SELECT count(*) FROM {source} WHERE number >= 4095",
+        "SELECT sum(number) FROM {source} WHERE number >= 4095",
+        "SELECT countDistinct(number) FROM {source} WHERE number >= 1024",
+        "SELECT number FROM {source} WHERE number >= 4096 ORDER BY number DESC LIMIT 17 OFFSET 3",
+        "SELECT number FROM {source} WHERE number < 5 OR number >= 8190 ORDER BY number DESC LIMIT 12",
+        "SELECT number FROM {source} WHERE number BETWEEN 4093 AND 4102 ORDER BY number ASC LIMIT 5 OFFSET 2",
+    ];
+    for statement in statements {
+        let generated = statement.replace("{source}", &format!("numbers({rows})"));
+        let part = statement.replace("{source}", "part");
+        assert_eq!(
+            run(&part, Some(&root)),
+            run(&generated, None),
+            "{statement}"
+        );
+    }
+    fs::remove_dir_all(root).unwrap();
+}
