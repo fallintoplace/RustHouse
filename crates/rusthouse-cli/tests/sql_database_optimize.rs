@@ -143,7 +143,10 @@ fn optimize_streams_tables_larger_than_mutation_rewrite_limit() {
     }
     let before = sql("SELECT sum(id) FROM events", &db);
     assert!(before.status.success(), "{before:?}");
-    assert_eq!(sql("SELECT count(*) FROM events", &db).stdout, b"count\n31500\n");
+    assert_eq!(
+        sql("SELECT count(*) FROM events", &db).stdout,
+        b"count\n31500\n"
+    );
 
     let optimized = sql("OPTIMIZE TABLE events", &db);
     assert!(optimized.status.success(), "{optimized:?}");
