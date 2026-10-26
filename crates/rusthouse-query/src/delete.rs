@@ -25,7 +25,9 @@ pub fn parse_delete(sql: &str) -> Result<Option<Delete>, ParseError> {
     }
     let (predicates, or_predicates) = parse_where(&mut parser)?;
     if predicates.is_empty() {
-        return Err(ParseError("DELETE requires WHERE; use TRUNCATE TABLE to delete all rows".into()));
+        return Err(ParseError(
+            "DELETE requires WHERE; use TRUNCATE TABLE to delete all rows".into(),
+        ));
     }
     parser.take(Token::Semicolon);
     if parser.index != parser.tokens.len() {

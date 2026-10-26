@@ -279,8 +279,7 @@ fn replace_rows(
     if existing_path(&staging)? || existing_path(&retired)? {
         return Err("SQL mutation staging path already exists".into());
     }
-    fs::create_dir(&staging)
-        .map_err(|error| format!("cannot stage table rewrite: {error}"))?;
+    fs::create_dir(&staging).map_err(|error| format!("cannot stage table rewrite: {error}"))?;
     let prepared = write_wide_part(&staging.join("all_0_0_0"), columns, rows)
         .map_err(|error| error.to_string())
         .and_then(|_| {
@@ -316,12 +315,8 @@ pub(super) fn delete(database: &Path, delete: &Delete) -> Result<(), String> {
     let _lock = lock(database)?;
     let cols = columns(database, &delete.table)?;
     let (parts_dir, _) = validated_parts(database, &delete.table, &cols)?;
-    let existing = read_matching_rows(
-        &delete.predicates,
-        &delete.or_predicates,
-        &parts_dir,
-    )
-    .map_err(|error| error.to_string())?;
+    let existing = read_matching_rows(&delete.predicates, &delete.or_predicates, &parts_dir)
+        .map_err(|error| error.to_string())?;
     let count = existing.iter().filter(|(_, matched)| *matched).count();
     if count > 0 {
         let retained = existing

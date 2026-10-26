@@ -243,9 +243,6 @@ impl Parser {
 
 fn parse_where(parser: &mut Parser) -> Result<(Vec<Predicate>, Vec<Vec<Predicate>>), ParseError> {
     let (predicates, or_predicates) = if parser.keyword("WHERE") {
-        if source.is_none() {
-            return Err(ParseError("WHERE requires a table source".into()));
-        }
         let mut branches: Vec<Vec<Predicate>> = vec![Vec::new()];
         let mut total_conditions = 0usize;
         loop {
