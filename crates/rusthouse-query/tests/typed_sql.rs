@@ -321,7 +321,10 @@ fn matches_ilike_on_string_and_nullable_columns() {
         "service\napi\napi\n"
     );
     assert_eq!(
-        query("SELECT service FROM part WHERE service NOT ILIKE 'API'", &part),
+        query(
+            "SELECT service FROM part WHERE service NOT ILIKE 'API'",
+            &part
+        ),
         "service\ndb\n"
     );
     assert_eq!(
@@ -332,7 +335,10 @@ fn matches_ilike_on_string_and_nullable_columns() {
         "service\napi\ndb\napi\n"
     );
     assert_eq!(
-        query("SELECT message FROM part WHERE message NOT ILIKE '%O%'", &part),
+        query(
+            "SELECT message FROM part WHERE message NOT ILIKE '%O%'",
+            &part
+        ),
         "message\n"
     );
     let mut output = Vec::new();
@@ -340,4 +346,3 @@ fn matches_ilike_on_string_and_nullable_columns() {
     assert!(execute(&numeric, Some(&part), &mut output).is_err());
     fs::remove_dir_all(part).unwrap();
 }
-
