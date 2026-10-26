@@ -111,6 +111,11 @@ fn compile_part_predicates(
                     "IS NULL requires a typed scan".into(),
                 ));
             }
+            Predicate::Like { .. } => {
+                return Err(ExecutionError::Invalid(
+                    "LIKE requires a String column".into(),
+                ));
+            }
             Predicate::NotBetween { lower, upper, .. } => CompiledTest::NotBetween {
                 lower: convert(column, lower)?,
                 upper: convert(column, upper)?,
