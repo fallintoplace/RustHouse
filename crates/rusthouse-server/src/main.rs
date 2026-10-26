@@ -9,7 +9,7 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::Duration;
 
 fn usage() -> &'static str {
-    "Usage: rusthouse-server [--port <1-65535>] [--part <frozen-part-or-snapshot>] [--max-rows <n>]\n\
+    "Usage: rusthouse-server [--port <1-65535>] [--part <frozen-part-or-snapshot> | --database <directory>] [--max-rows <n>]\n\
      Listens on 127.0.0.1 only. Supports GET /ping, GET /?query=... and POST / with a raw SELECT body.\n"
 }
 
@@ -154,6 +154,7 @@ fn main() -> io::Result<()> {
     let mut args = std::env::args().skip(1);
     let mut port = 8123u16;
     let mut part = None;
+    let mut database = None;
     let mut max_rows = 10_000usize;
     while let Some(arg) = args.next() {
         match arg.as_str() {
@@ -177,6 +178,12 @@ fn main() -> io::Result<()> {
                         .ok_or_else(|| io::Error::other("missing part path"))?,
                 ));
             }
+            "--database" => {
+                database = Some(PathBuf::from(
+                    args.next()
+                        .ok_or_else(|| io::Error::other("missing database path"))?,
+                ));
+            }
             "--max-rows" => {
                 max_rows = args
                     .next()
@@ -195,7 +202,14 @@ fn main() -> io::Result<()> {
             }
         }
     }
-    let config = Arc::new(Config { part, max_rows });
+    if part.is_some() && database.is_some() {
+        return Err(io::Error::other("--part and --database cannot be combined"));
+    }
+    let config = Arc::new(Config {
+        part,
+        database,
+        max_rows,
+    });
     let listener = TcpListener::bind(("127.0.0.1", port))?;
     eprintln!("RustHouse read-only HTTP listening on http://127.0.0.1:{port}");
     let active = Arc::new(AtomicUsize::new(0));

@@ -7,10 +7,11 @@ mod jsonl;
 use csv::CsvWriter;
 use json_array::JsonArraySink;
 use jsonl::JsonlWriter;
-use rusthouse_query::{execute, explain_select, parse_select};
+use rusthouse_query::{Source, execute, explain_select, parse_select};
 use rusthouse_storage::inspect_query_source;
-use std::io::{self, Write};
-use std::path::PathBuf;
+use std::fs;
+use std::io::{self, Read, Write};
+use std::path::{Path, PathBuf};
 
 pub const MAX_QUERY_BYTES: usize = 4096;
 pub const MAX_HEADER_BYTES: usize = 8192;
@@ -20,6 +21,7 @@ pub const MAX_CONNECTIONS: usize = 16;
 #[derive(Clone, Debug, Default)]
 pub struct Config {
     pub part: Option<PathBuf>,
+    pub database: Option<PathBuf>,
     pub max_rows: usize,
 }
 
@@ -120,6 +122,72 @@ fn write_json_string<W: Write>(writer: &mut W, value: &str) -> io::Result<()> {
         }
     }
     writer.write_all(b"\"")
+}
+
+/// Resolve only catalog-visible, on-disk tables. Never expose orphaned
+/// data directories or symlinks that the local database would not accept.
+fn database_part(database: &Path, table: &str) -> Result<PathBuf, String> {
+    let mut chars = table.bytes();
+    if table.len() > 128
+        || !matches!(chars.next(), Some(b'a'..=b'z' | b'A'..=b'Z' | b'_'))
+        || !chars.all(|byte| byte.is_ascii_alphanumeric() || byte == b'_')
+    {
+        return Err("invalid database table name".into());
+    }
+    let schema = database.join(format!("{table}.schema"));
+    let schema_metadata = fs::symlink_metadata(&schema)
+        .map_err(|error| format!("cannot read database table {table}: {error}"))?;
+    if !schema_metadata.file_type().is_file() || schema_metadata.len() > 32 * 1024 {
+        return Err(format!("invalid database schema for {table}"));
+    }
+    let mut content = Vec::new();
+    fs::File::open(&schema)
+        .map_err(|error| format!("cannot read database table {table}: {error}"))?
+        .take(32 * 1024 + 1)
+        .read_to_end(&mut content)
+        .map_err(|error| format!("cannot read database table {table}: {error}"))?;
+    if content.len() > 32 * 1024 {
+        return Err(format!("database schema exceeds size limit for {table}"));
+    }
+    let content = String::from_utf8(content)
+        .map_err(|_| format!("invalid UTF-8 in database schema for {table}"))?;
+    if !content.ends_with('\n') {
+        return Err(format!("invalid database schema for {table}"));
+    }
+    let mut lines = content.lines();
+    if lines.next() != Some("rusthouse-schema-v1") {
+        return Err(format!("invalid database schema version for {table}"));
+    }
+    let expected: Vec<(&str, &str)> = lines
+        .map(|line| {
+            line.split_once('\t')
+                .ok_or_else(|| format!("invalid database column in {table}"))
+        })
+        .collect::<Result<_, _>>()?;
+    if expected.is_empty() || expected.len() > 64 {
+        return Err(format!("invalid database columns for {table}"));
+    }
+    let parts = database.join(format!("{table}.parts"));
+    if !fs::symlink_metadata(&parts)
+        .map_err(|error| format!("cannot inspect data for {table}: {error}"))?
+        .file_type()
+        .is_dir()
+    {
+        return Err(format!(
+            "database parts are not a real directory for {table}"
+        ));
+    }
+    let stored = inspect_query_source(&parts).map_err(|error| error.to_string())?;
+    if stored.columns.len() != expected.len()
+        || !stored
+            .columns
+            .iter()
+            .zip(expected)
+            .all(|(stored, (name, kind))| stored.name == name && stored.data_type == kind)
+    {
+        return Err(format!("schema and stored data disagree for {table}"));
+    }
+    Ok(parts)
 }
 
 fn schema_response(config: &Config) -> Response {
@@ -275,22 +343,35 @@ pub fn handle_request(method: &str, target: &str, body: &[u8], config: &Config) 
             ),
         );
     }
+    if config.part.is_some() && config.database.is_some() {
+        return Response::text("400 Bad Request", "choose --part or --database, not both\n");
+    }
+    let mut part = config.part.clone();
+    if let (Some(database), Some(Source::Table(table))) =
+        (config.database.as_deref(), select.source.as_ref())
+    {
+        part = match database_part(database, table) {
+            Ok(path) => Some(path),
+            Err(error) => return Response::text("400 Bad Request", &format!("{error}\n")),
+        };
+        select.source = Some(Source::Table("part".into()));
+    }
     let mut writer = LimitedWriter::new();
     let result = match format {
-        QueryFormat::Tsv => execute(&select, config.part.as_deref(), &mut writer),
+        QueryFormat::Tsv => execute(&select, part.as_deref(), &mut writer),
         QueryFormat::Csv => {
             let mut csv = CsvWriter::new(&mut writer);
-            execute(&select, config.part.as_deref(), &mut csv)
+            execute(&select, part.as_deref(), &mut csv)
         }
         QueryFormat::Jsonl => {
             let mut jsonl = JsonlWriter::new(&mut writer);
-            execute(&select, config.part.as_deref(), &mut jsonl)
+            execute(&select, part.as_deref(), &mut jsonl)
         }
         QueryFormat::Json => {
             let mut array = JsonArraySink::new(&mut writer);
             let result = {
                 let mut jsonl = JsonlWriter::new(&mut array);
-                execute(&select, config.part.as_deref(), &mut jsonl)
+                execute(&select, part.as_deref(), &mut jsonl)
             };
             result.and_then(|()| {
                 array
@@ -325,8 +406,84 @@ mod tests {
     fn config() -> Config {
         Config {
             part: None,
+            database: None,
             max_rows: 3,
         }
+    }
+
+    #[test]
+    fn database_mode_reads_only_visible_matching_tables() {
+        use rusthouse_storage::{Column, write_wide_part};
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        static NEXT_DB: AtomicUsize = AtomicUsize::new(0);
+
+        let database = std::env::temp_dir().join(format!(
+            "rusthouse-server-db-{}-{}",
+            std::process::id(),
+            NEXT_DB.fetch_add(1, Ordering::Relaxed)
+        ));
+        let parts = database.join("events.parts");
+        fs::create_dir_all(&parts).unwrap();
+        let columns = vec![
+            Column {
+                name: "id".into(),
+                data_type: "UInt64".into(),
+            },
+            Column {
+                name: "name".into(),
+                data_type: "String".into(),
+            },
+        ];
+        write_wide_part(
+            &parts.join("all_0_0_0"),
+            &columns,
+            &[
+                vec![Some("2".into()), Some("Grace".into())],
+                vec![Some("1".into()), Some("Ada".into())],
+            ],
+        )
+        .unwrap();
+        fs::write(
+            database.join("events.schema"),
+            "rusthouse-schema-v1\nid\tUInt64\nname\tString\n",
+        )
+        .unwrap();
+        let config = Config {
+            part: None,
+            database: Some(database.clone()),
+            max_rows: 10,
+        };
+        let result = handle_request(
+            "POST",
+            "/",
+            b"SELECT id, name FROM events ORDER BY id",
+            &config,
+        );
+        assert_eq!(result.status, "200 OK");
+        assert_eq!(result.body, b"id\tname\n1\tAda\n2\tGrace\n");
+        let count = handle_request("POST", "/", b"SELECT count(*) FROM events", &config);
+        assert_eq!(count.body, b"count\n2\n");
+        let mutation = handle_request("POST", "/", b"DROP TABLE events", &config);
+        assert_eq!(mutation.status, "400 Bad Request");
+        assert_eq!(
+            handle_request("POST", "/", b"SELECT id FROM missing", &config).status,
+            "400 Bad Request"
+        );
+        fs::write(
+            database.join("events.schema"),
+            "rusthouse-schema-v1\nid\tUInt8\nname\tString\n",
+        )
+        .unwrap();
+        assert_eq!(
+            handle_request("POST", "/", b"SELECT id FROM events", &config).status,
+            "400 Bad Request"
+        );
+        fs::remove_file(database.join("events.schema")).unwrap();
+        assert_eq!(
+            handle_request("POST", "/", b"SELECT id FROM events", &config).status,
+            "400 Bad Request"
+        );
+        fs::remove_dir_all(database).unwrap();
     }
 
     #[test]
@@ -397,6 +554,7 @@ mod tests {
             .join("../rusthouse-storage/tests/fixtures/all_1_1_0");
         let config = Config {
             part: Some(path),
+            database: None,
             max_rows: 1,
         };
         let response = handle_request("GET", "/schema", b"", &config);
@@ -600,6 +758,7 @@ mod tests {
         }
         let config = Config {
             part: None,
+            database: None,
             max_rows: 0,
         };
         let empty = handle_request("POST", "/?format=jsonl", b"SELECT 1", &config);
