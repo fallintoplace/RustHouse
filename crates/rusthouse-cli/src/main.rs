@@ -7,6 +7,7 @@ mod markdown;
 mod part_json;
 mod snapshot;
 mod sql;
+mod table_data;
 mod vertical;
 
 use rusthouse_storage::{

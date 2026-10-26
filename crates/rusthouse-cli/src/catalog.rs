@@ -122,12 +122,17 @@ fn drop_table(catalog: &Path, name: &str, if_exists: bool) -> Result<(), String>
     if !metadata.file_type().is_file() {
         return Err(format!("not a regular schema file: {name}"));
     }
+    let data_dir = crate::table_data::existing_dir(catalog, name)?;
     fs::remove_file(&path).map_err(|error| format!("cannot drop table {name}: {error}"))?;
-    println!("Dropped table {name} (schema only)");
+    if let Some(dir) = data_dir {
+        fs::remove_dir_all(&dir)
+            .map_err(|error| format!("table {name} was dropped but data cleanup failed: {error}"))?;
+    }
+    println!("Dropped table {name}");
     Ok(())
 }
 
-fn read_schema(catalog: &Path, name: &str) -> Result<Vec<ColumnDef>, String> {
+pub(super) fn read_schema(catalog: &Path, name: &str) -> Result<Vec<ColumnDef>, String> {
     let path = schema_path(catalog, name);
     let metadata = fs::symlink_metadata(&path)
         .map_err(|error| format!("cannot read table {name}: {error}"))?;
@@ -195,6 +200,7 @@ fn persist_schema(file: &mut fs::File, columns: &[ColumnDef]) -> std::io::Result
 }
 
 fn replace_schema(catalog: &Path, name: &str, columns: &[ColumnDef]) -> Result<(), String> {
+    crate::table_data::ensure_unpopulated(catalog, name)?;
     let path = schema_path(catalog, name);
     let temp = catalog.join(format!(
         ".{name}.schema.tmp.{}.{}",
@@ -292,12 +298,11 @@ fn rename_table(catalog: &Path, from: &str, to: &str) -> Result<(), String> {
     if from == to {
         return Err("source and destination table names must differ".into());
     }
-    // Validate the source before moving it. Only versioned catalog files may be renamed.
     read_schema(catalog, from)?;
     let source = schema_path(catalog, from);
     let destination = schema_path(catalog, to);
-    // Hard-link creation fails if the destination exists, unlike rename on Unix.
-    // Source removal comes second, so failures cannot silently overwrite a table.
+    let data_dir = crate::table_data::existing_dir(catalog, from)?;
+    crate::table_data::require_no_data_dir(catalog, to)?;
     match fs::hard_link(&source, &destination) {
         Ok(()) => {}
         Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {
@@ -305,11 +310,20 @@ fn rename_table(catalog: &Path, from: &str, to: &str) -> Result<(), String> {
         }
         Err(error) => return Err(format!("cannot rename table {from}: {error}")),
     }
+    if let Some(ref dir) = data_dir {
+        if let Err(error) = fs::rename(dir, crate::table_data::path(catalog, to)) {
+            let _ = fs::remove_file(&destination);
+            return Err(format!("cannot move table data from {from} to {to}: {error}"));
+        }
+    }
     if let Err(error) = fs::remove_file(&source) {
+        if data_dir.is_some() {
+            let _ = fs::rename(crate::table_data::path(catalog, to), crate::table_data::path(catalog, from));
+        }
         let _ = fs::remove_file(&destination);
         return Err(format!("cannot finish renaming table {from}: {error}"));
     }
-    println!("Renamed table {from} to {to} (schema only)");
+    println!("Renamed table {from} to {to}");
     Ok(())
 }
 
@@ -322,6 +336,9 @@ fn create_table(
     fs::create_dir_all(catalog)
         .map_err(|error| format!("cannot create catalog {}: {error}", catalog.display()))?;
     let path = schema_path(catalog, name);
+    if matches!(fs::symlink_metadata(&path), Err(ref error) if error.kind() == std::io::ErrorKind::NotFound) {
+        crate::table_data::require_no_data_dir(catalog, name)?;
+    }
     let mut file = match OpenOptions::new().write(true).create_new(true).open(&path) {
         Ok(file) => file,
         Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists && if_not_exists => {

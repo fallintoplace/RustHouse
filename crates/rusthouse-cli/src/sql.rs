@@ -1,5 +1,5 @@
 use crate::{csv, csv_no_header, json_array, jsonl, markdown, vertical};
-use rusthouse_query::{execute, explain_select, parse_ddl, parse_select};
+use rusthouse_query::{execute, explain_select, parse_ddl, parse_insert, parse_select};
 use std::ffi::OsString;
 use std::path::PathBuf;
 
@@ -178,7 +178,17 @@ pub(super) fn run_sql_args(mut args: impl Iterator<Item = OsString>) -> Result<(
             }
             return crate::catalog::apply(&catalog_path, &ddl);
         }
-        return Err("--catalog is only supported for DDL statements".into());
+        if let Some(statement) = parse_insert(&query).map_err(|error| error.to_string())? {
+            if part.is_some() || output_path.is_some() || format.is_some() || max_rows.is_some() {
+                return Err("INSERT cannot use --part, --output, --format, or --max-rows".into());
+            }
+            if show_ast {
+                println!("{statement:#?}");
+                return Ok(());
+            }
+            return crate::table_data::insert(&catalog_path, &statement);
+        }
+        return Err("--catalog is only supported for DDL and INSERT statements".into());
     }
     let mut select = parse_select(&query).map_err(|error| error.to_string())?;
     if explain {
