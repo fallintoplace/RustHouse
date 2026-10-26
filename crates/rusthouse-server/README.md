@@ -39,8 +39,11 @@ mid-query. Contending writers receive a 409 response while their lock is held. T
 
 `GET /schema` returns JSON with the frozen part or snapshot's total row count
 and an ordered list of column names and types. This endpoint reads metadata
-only, requires `--part`, and never exposes DDL or file writes. Schema responses
-share the server's 8 MiB response limit.
+only, requires `--part`, and never exposes DDL or file writes. With `--database`,
+use `GET /schema?table=events` to inspect a named persistent table instead.
+Database schema reads use the same shared lock and validation as SQL queries.
+Only one URL-encoded `table` parameter is accepted. Schema responses share
+the server's 8 MiB response limit.
 
 `GET /explain?query=...` and `POST /explain` with a raw SELECT body
 return the bounded logical plan as plain text. The endpoint parses SQL but does
