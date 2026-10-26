@@ -166,7 +166,7 @@ pub fn parse_ddl(sql: &str) -> Result<Option<Ddl>, ParseError> {
         tokens: tokenize(sql)?,
         index: 0,
     };
-    if parser.keyword("DESCRIBE") {
+    if parser.keyword("DESCRIBE") || parser.keyword("DESC") {
         if !parser.keyword("TABLE") {
             return Err(ParseError("expected TABLE after DESCRIBE".into()));
         }
@@ -177,6 +177,13 @@ pub fn parse_ddl(sql: &str) -> Result<Option<Ddl>, ParseError> {
     if parser.keyword("SHOW") {
         let statement = if parser.keyword("TABLES") {
             Ddl::ShowTables
+        } else if parser.keyword("COLUMNS") {
+            if !parser.keyword("FROM") {
+                return Err(ParseError("expected FROM after SHOW COLUMNS".into()));
+            }
+            Ddl::DescribeTable {
+                name: identifier(&mut parser)?,
+            }
         } else if parser.keyword("CREATE") {
             if !parser.keyword("TABLE") {
                 return Err(ParseError("expected TABLE after SHOW CREATE".into()));
@@ -548,6 +555,41 @@ mod tests {
             "ALTER TABLE events RENAME COLUMN old_name new_name",
             "ALTER TABLE events RENAME COLUMN old_name TO",
             "ALTER TABLE events RENAME COLUMN old_name TO new_name, x TO y",
+        ] {
+            assert!(parse_ddl(sql).is_err(), "{sql}");
+        }
+    }
+}
+
+#[cfg(test)]
+mod show_columns_tests {
+    use super::*;
+
+    #[test]
+    fn show_columns_and_desc_table_reuse_describe_plan() {
+        let expected = Some(Ddl::DescribeTable {
+            name: "events".into(),
+        });
+        for sql in [
+            "DESCRIBE TABLE events",
+            "DESC TABLE events;",
+            "SHOW COLUMNS FROM events",
+            "show columns from events;",
+        ] {
+            assert_eq!(parse_ddl(sql).unwrap(), expected, "{sql}");
+        }
+    }
+
+    #[test]
+    fn malformed_show_columns_and_desc_are_rejected() {
+        for sql in [
+            "SHOW COLUMNS events",
+            "SHOW COLUMNS FROM",
+            "SHOW COLUMNS FROM events EXTRA",
+            "SHOW COLUMNS FROM events; DROP TABLE events",
+            "DESC events",
+            "DESC TABLE",
+            "DESC TABLE events ORDER BY name",
         ] {
             assert!(parse_ddl(sql).is_err(), "{sql}");
         }
