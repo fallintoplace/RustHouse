@@ -4,7 +4,8 @@ use crate::catalog;
 mod rewrite;
 use rusthouse_query::{Ddl, Insert, RowPredicate, Select, Source};
 use rusthouse_storage::{
-    Column, inspect_query_source, query_parts, verify_wide_part, write_wide_part,
+    Column, inspect_query_source, query_parts, resolve_active_snapshot, verify_wide_part,
+    write_wide_part,
 };
 use std::fs::{self, OpenOptions};
 use std::path::{Path, PathBuf};
@@ -76,34 +77,7 @@ fn validated_parts(
 }
 
 fn active_source(database: &Path, name: &str) -> Result<PathBuf, String> {
-    let root = data_path(database, name);
-    let pointer = root.join(".rusthouse-active");
-    let metadata = match fs::symlink_metadata(&pointer) {
-        Ok(metadata) => metadata,
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(root),
-        Err(error) => return Err(format!("cannot inspect table snapshot: {error}")),
-    };
-    if !metadata.file_type().is_file() || metadata.len() > 64 {
-        return Err("invalid database snapshot pointer".into());
-    }
-    let label = fs::read_to_string(&pointer)
-        .map_err(|error| format!("cannot read table snapshot pointer: {error}"))?;
-    let label = label
-        .strip_suffix('\n')
-        .ok_or("invalid snapshot pointer format")?;
-    if !label.starts_with('g')
-        || label.len() < 2
-        || !label.as_bytes()[1..].iter().all(u8::is_ascii_digit)
-    {
-        return Err("invalid database snapshot generation".into());
-    }
-    let active = root.join(".rusthouse-versions").join(label);
-    let kind = fs::symlink_metadata(&active)
-        .map_err(|error| format!("missing active database snapshot: {error}"))?;
-    if !kind.file_type().is_dir() {
-        return Err("active database snapshot is not a directory".into());
-    }
-    Ok(active)
+    resolve_active_snapshot(&data_path(database, name)).map_err(|error| error.to_string())
 }
 
 /// Resolve a named SQL table to its immutable on-disk parts.

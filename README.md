@@ -8,6 +8,7 @@ Requires **Rust 1.85+**. Run from the repository root:
 
 ```sh
 cargo run -p rusthouse-cli -- sql "SELECT number FROM numbers(10) WHERE number >= 7 ORDER BY number DESC LIMIT 3"
+cargo run -p rusthouse-cli -- sql "SELECT (2 + 3) * 4 AS result"
 ```
 
 Output:
@@ -30,7 +31,7 @@ cargo run -p rusthouse-cli -- sql "SELECT id, count(*) FROM part GROUP BY id ORD
 
 ## Supported features
 
-- **SQL:** `WHERE` (including `IN`, `BETWEEN`, `LIKE`, and `ILIKE`), sorting, `DISTINCT`, numeric aggregates (including `median`), `COUNT(column)` (skips NULLs), grouped counts with `HAVING`, and pagination. This is a limited SQL subset.
+- **SQL:** `WHERE` (including `IN`, `BETWEEN`, `LIKE`, and `ILIKE`), sorting, `DISTINCT`, numeric aggregates (including `median`), grouped numeric aggregates by one key, `COUNT(column)` (skips NULLs), grouped counts with `HAVING`, and pagination. Scalar `SELECT` without `FROM` also supports signed integer arithmetic (`+`, `-`, `*`, `%`) with parentheses, checked 64-bit overflow and zero-divisor errors. This is a limited SQL subset.
 - **Data:** `numbers()` and inclusive `generate_series(start, stop[, step])` without files, plus supported numeric, `String`, `UUID`, and `Nullable` part columns.
 - **Output:** TSV, CSV, JSON, JSON Lines, Markdown, HTML, and vertical formats via `--format`; also `--output`, `--max-rows`, `--time`, `--show-ast`, `--explain`, `--file`, and `--stdin`.
 - **Inspection:** `verify-part`, `verify-file-sizes`, `inspect-marks`, `inspect-checksums`, `inspect-blocks`, and `inspect-primary-index`. Run `cargo run -p rusthouse-cli -- --help` for the full CLI.
@@ -42,7 +43,10 @@ cargo run -p rusthouse-cli -- sql "SELECT id, count(*) FROM part GROUP BY id ORD
 cargo run -p rusthouse-cli -- sql "CREATE TABLE events (id UInt64, name String)" --database ./mydb
 cargo run -p rusthouse-cli -- sql "INSERT INTO events VALUES (1, 'Ada'), (2, 'Grace')" --database ./mydb
 cargo run -p rusthouse-cli -- sql "SELECT id, name FROM events ORDER BY id" --database ./mydb
+cargo run -p rusthouse-cli -- sql "COPY events FROM '/path/to/events.csv' WITH (FORMAT CSV, HEADER TRUE)" --database ./mydb
 ```
+
+COPY FROM CSV imports local UTF-8 CSV with quoted commas, quotes, and newlines. With `HEADER TRUE`, CSV headers map fields to named table columns. Without a header, CSV fields follow table column order. Unquoted empty fields become NULL; quoted empty fields remain empty strings. Imports are limited to 4,096 records and 8 MiB and publish one part only after parsing succeeds.
 
 `--database` stores table schemas and **immutable wide parts** locally. Supported SQL includes `CREATE TABLE`, `INSERT ... VALUES`, `SELECT`, `SHOW TABLES`, `SHOW CREATE TABLE`, `DESCRIBE TABLE`, `CREATE TABLE ... LIKE`, `RENAME TABLE`, `DROP TABLE` and `TRUNCATE TABLE`. Queries support the existing `--format`, `--output`, `--max-rows` and `--explain` options. Database writes are single-writer, limited to supported numeric, String and Nullable columns, and **not transactional across statements**. This is for local experiments, not concurrent production workloads. Run a sequence of up to 128 statements (256 KiB total) with `rusthouse sql --script setup.sql --database ./mydb`. Scripts permit SQL line comments and stop on the first error; they are **not transactions**.
 

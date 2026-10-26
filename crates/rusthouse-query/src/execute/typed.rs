@@ -19,7 +19,7 @@ pub(super) enum Cell {
 }
 
 #[derive(PartialEq, Eq, Hash)]
-enum Key {
+pub(super) enum Key {
     Numeric(NumberKey),
     Text(Vec<u8>),
     Uuid(String),
@@ -27,7 +27,7 @@ enum Key {
 }
 
 impl Cell {
-    fn key(&self) -> Key {
+    pub(super) fn key(&self) -> Key {
         match self {
             Self::Numeric(value) => Key::Numeric(NumberKey::from(*value)),
             Self::Text(bytes) => Key::Text(bytes.clone()),
@@ -85,7 +85,7 @@ pub(super) fn requires_typed_scan(query: &Select, path: &Path) -> Result<bool, E
         }
         names.push(pred.column());
     }
-    if let Some(order) = &query.order_by {
+    for order in query.order_terms() {
         names.push(&order.column);
     }
     Ok(metadata
@@ -297,7 +297,7 @@ pub(super) fn compile(
         .collect()
 }
 
-fn cmp(left: &Cell, right: &Cell) -> Ordering {
+pub(super) fn cmp(left: &Cell, right: &Cell) -> Ordering {
     match (left, right) {
         (Cell::Numeric(left), Cell::Numeric(right)) => compare_numbers(*left, *right),
         (Cell::Text(left), Cell::Text(right)) => left.cmp(right),
@@ -416,7 +416,7 @@ fn write_row<W: Write>(output: &mut W, cells: &[Cell]) -> Result<(), ExecutionEr
 
 struct Row {
     values: Vec<Cell>,
-    sort_key: Cell,
+    sort_keys: Vec<Cell>,
 }
 
 pub(super) fn execute_typed<W: Write>(
@@ -457,27 +457,29 @@ pub(super) fn execute_typed<W: Write>(
     {
         include(predicate.column());
     }
-    let sort = query.order_by.as_ref().and_then(|order| {
-        if matches!(query.projection, Projection::GroupedCount { .. }) {
-            return None;
-        }
-        Some(
-            if query.alias.as_deref() == Some(order.column.as_str()) && projection.len() == 1 {
-                projection[0].clone()
-            } else {
-                order.column.clone()
-            },
-        )
-    });
-    if let Some(sort) = &sort {
-        include(sort);
+    let sort = if matches!(query.projection, Projection::GroupedCount { .. }) {
+        Vec::new()
+    } else {
+        query
+            .order_terms()
+            .map(|order| {
+                if query.alias.as_deref() == Some(order.column.as_str()) && projection.len() == 1 {
+                    projection[0].clone()
+                } else {
+                    order.column.clone()
+                }
+            })
+            .collect::<Vec<_>>()
+    };
+    for name in &sort {
+        include(name);
     }
     if names.is_empty() {
         return Err(ExecutionError::Invalid(
             "typed scan requires a column".into(),
         ));
     }
-    if query.distinct && sort.as_ref().is_some_and(|name| !projection.contains(name)) {
+    if query.distinct && sort.iter().any(|name| !projection.contains(name)) {
         return Err(ExecutionError::Invalid(
             "DISTINCT ORDER BY column must appear in SELECT".into(),
         ));
@@ -501,7 +503,10 @@ pub(super) fn execute_typed<W: Write>(
         .iter()
         .map(|name| indices[name])
         .collect::<Vec<_>>();
-    let sort_index = sort.as_ref().map(|name| *indices.get(name).unwrap());
+    let sort_indices = sort
+        .iter()
+        .map(|name| *indices.get(name).unwrap())
+        .collect::<Vec<_>>();
     let mut scan = TypedQueryReader::open(part, &names)?;
     let header = match &query.projection {
         Projection::Count => "count".to_string(),
@@ -580,7 +585,7 @@ pub(super) fn execute_typed<W: Write>(
             if is_count_distinct {
                 continue;
             }
-            if let Some(sort_index) = sort_index {
+            if !sort_indices.is_empty() {
                 if ordered.len() >= MAX_BUFFERED_ROWS {
                     return Err(ExecutionError::Invalid(
                         "typed ORDER BY exceeds 100000 matching rows".into(),
@@ -588,7 +593,10 @@ pub(super) fn execute_typed<W: Write>(
                 }
                 ordered.push(Row {
                     values: cells,
-                    sort_key: cell(&batch[sort_index], index),
+                    sort_keys: sort_indices
+                        .iter()
+                        .map(|&sort_index| cell(&batch[sort_index], index))
+                        .collect(),
                 });
                 continue;
             }
@@ -613,19 +621,24 @@ pub(super) fn execute_typed<W: Write>(
                 )
             });
         }
-        if let Some(order) = &query.order_by {
+        if query.order_by.is_some() {
             grouped_rows.sort_by(|(left_key, left_count), (right_key, right_count)| {
-                let ordering = if order.column == "count" {
-                    left_count.cmp(right_count)
-                } else {
-                    cmp(left_key, right_key)
-                };
-                let ordering = if order.descending {
-                    ordering.reverse()
-                } else {
-                    ordering
-                };
-                ordering.then_with(|| cmp(left_key, right_key))
+                for order in query.order_terms() {
+                    let comparison = if order.column == "count" {
+                        left_count.cmp(right_count)
+                    } else {
+                        cmp(left_key, right_key)
+                    };
+                    let comparison = if order.descending {
+                        comparison.reverse()
+                    } else {
+                        comparison
+                    };
+                    if comparison != Ordering::Equal {
+                        return comparison;
+                    }
+                }
+                cmp(left_key, right_key)
             });
         }
         for (key, count) in grouped_rows.into_iter().skip(offset).take(limit) {
@@ -645,14 +658,20 @@ pub(super) fn execute_typed<W: Write>(
         }
         return Ok(());
     }
-    if let Some(order) = &query.order_by {
+    if query.order_by.is_some() {
         ordered.sort_by(|left, right| {
-            let comparison = cmp(&left.sort_key, &right.sort_key);
-            if order.descending {
-                comparison.reverse()
-            } else {
-                comparison
+            for (index, order) in query.order_terms().enumerate() {
+                let comparison = cmp(&left.sort_keys[index], &right.sort_keys[index]);
+                let comparison = if order.descending {
+                    comparison.reverse()
+                } else {
+                    comparison
+                };
+                if comparison != Ordering::Equal {
+                    return comparison;
+                }
             }
+            Ordering::Equal
         });
         for row in ordered.into_iter().skip(offset).take(limit) {
             write_row(output, &row.values)?;

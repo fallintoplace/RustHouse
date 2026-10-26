@@ -2,6 +2,7 @@
 //! The caller publishes the completed directory with an atomic rename.
 use crate::{Column, FileChecksum, PartError, UncompressedChecksum};
 use ch_cityhash102::cityhash128;
+use naive_cityhash::{U128, cityhash128_with_seed};
 use std::collections::HashSet;
 use std::fs::{self, OpenOptions};
 use std::io::{self, Write};
@@ -127,6 +128,21 @@ fn write_file(path: &Path, bytes: &[u8]) -> Result<(), PartError> {
     file.sync_all().map_err(|error| io_error(path, error))
 }
 
+/// ClickHouse HashingWriteBuffer hashes 2048-byte blocks with CityHash128WithSeed,
+/// starting with a zero seed. This differs from compressed block checksums.
+fn checksum_hash(data: &[u8]) -> u128 {
+    const HASH_BLOCK_BYTES: usize = 2048;
+    let mut seed = U128::new(0, 0);
+    let mut chunks = data.chunks_exact(HASH_BLOCK_BYTES);
+    for chunk in chunks.by_ref() {
+        seed = cityhash128_with_seed(chunk, seed);
+    }
+    if !chunks.remainder().is_empty() {
+        seed = cityhash128_with_seed(chunks.remainder(), seed);
+    }
+    seed.into()
+}
+
 fn write_tracked_file(
     part: &Path,
     name: &str,
@@ -138,10 +154,10 @@ fn write_tracked_file(
     files.push(FileChecksum {
         name: name.to_owned(),
         size: bytes.len() as u64,
-        hash: u128::from(cityhash128(bytes)),
+        hash: checksum_hash(bytes),
         uncompressed: uncompressed.map(|data| UncompressedChecksum {
             size: data.len() as u64,
-            hash: u128::from(cityhash128(data)),
+            hash: checksum_hash(data),
         }),
     });
     Ok(())
@@ -169,11 +185,19 @@ fn encode_checksums(files: &[FileChecksum]) -> Vec<u8> {
 
 fn block(data: &[u8]) -> Result<Vec<u8>, PartError> {
     let length = u32::try_from(data.len()).map_err(|_| invalid("part column is too large"))?;
-    let mut encoded = Vec::with_capacity(25 + data.len());
-    encoded.push(0x02); // Uncompressed block, supported by the existing reader.
-    encoded.extend_from_slice(&(length + 9).to_le_bytes());
+    // Small and incompressible columns keep the lightweight uncompressed codec.
+    let compressed = (data.len() >= 128).then(|| lz4_flex::block::compress(data));
+    let (method, payload) = match compressed.as_ref() {
+        Some(bytes) if bytes.len().saturating_add(16) < data.len() => (0x82, bytes.as_slice()),
+        _ => (0x02, data),
+    };
+    let compressed_size =
+        u32::try_from(payload.len()).map_err(|_| invalid("part column is too large"))?;
+    let mut encoded = Vec::with_capacity(9 + payload.len());
+    encoded.push(method);
+    encoded.extend_from_slice(&(compressed_size + 9).to_le_bytes());
     encoded.extend_from_slice(&length.to_le_bytes());
-    encoded.extend_from_slice(data);
+    encoded.extend_from_slice(payload);
     let checksum = u128::from(cityhash128(&encoded)).to_le_bytes();
     let mut result = Vec::with_capacity(16 + encoded.len());
     result.extend_from_slice(&checksum);
@@ -303,6 +327,22 @@ mod tests {
     }
 
     #[test]
+    fn compresses_repeating_streams_but_leaves_tiny_blocks_raw() {
+        use crate::CompressedBlockReader;
+        use std::io::Cursor;
+
+        for (data, codec) in [(vec![7u8; 4096], 0x82u8), (vec![1, 2, 3], 0x02)] {
+            let encoded = block(&data).unwrap();
+            let mut reader =
+                CompressedBlockReader::new(Cursor::new(encoded), "column.bin").unwrap();
+            let decoded = reader.next_decoded().unwrap().unwrap();
+            assert_eq!(decoded.block.method, codec);
+            assert_eq!(decoded.data, data);
+            assert!(reader.next_decoded().is_none());
+        }
+    }
+
+    #[test]
     fn round_trip_numeric_text_and_nullable_values() {
         let root = root();
         let part = root.join("all_1_1_0");
@@ -351,6 +391,30 @@ mod tests {
     }
 
     #[test]
+    fn computes_clickhouse_blockwise_seeded_manifest_hashes() {
+        assert_eq!(checksum_hash(b""), 0);
+        // CityHash v1.0.2 with seed (0, 0), not CityHash128.
+        assert_eq!(
+            checksum_hash(b"abc"),
+            0xa78da83cc4e0210684541c08b5db83dcu128
+        );
+        assert_ne!(checksum_hash(b"abc"), u128::from(cityhash128(b"abc")));
+
+        let one_block = vec![42u8; 2048];
+        assert_eq!(
+            checksum_hash(&one_block),
+            u128::from(cityhash128_with_seed(&one_block, U128::new(0, 0)))
+        );
+
+        let input = vec![42u8; 4097];
+        let first = cityhash128_with_seed(&input[..2048], U128::new(0, 0));
+        let second = cityhash128_with_seed(&input[2048..4096], first);
+        let tail = cityhash128_with_seed(&input[4096..], second);
+        assert_eq!(checksum_hash(&input), u128::from(tail));
+        assert_ne!(checksum_hash(&input), u128::from(cityhash128(&input)));
+    }
+
+    #[test]
     fn writes_valid_checksums_for_metadata_and_compressed_streams() {
         let root = root();
         let part = root.join("all_1_1_0");
@@ -380,7 +444,7 @@ mod tests {
         for entry in &manifest.files {
             let bytes = fs::read(part.join(&entry.name)).unwrap();
             assert_eq!(entry.size, bytes.len() as u64);
-            assert_eq!(entry.hash, u128::from(cityhash128(&bytes)));
+            assert_eq!(entry.hash, checksum_hash(&bytes));
             assert_eq!(entry.uncompressed.is_some(), entry.name.ends_with(".bin"));
         }
 
@@ -397,7 +461,7 @@ mod tests {
             id.uncompressed,
             Some(UncompressedChecksum {
                 size: raw_ids.len() as u64,
-                hash: u128::from(cityhash128(&raw_ids)),
+                hash: checksum_hash(&raw_ids),
             })
         );
         let nulls = manifest
@@ -409,7 +473,7 @@ mod tests {
             nulls.uncompressed,
             Some(UncompressedChecksum {
                 size: 2,
-                hash: u128::from(cityhash128(&[0, 1])),
+                hash: checksum_hash(&[0, 1]),
             })
         );
         assert_eq!(verify_part_file_sizes(&part).unwrap().files, 8);

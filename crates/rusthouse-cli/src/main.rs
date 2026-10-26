@@ -1,4 +1,5 @@
 mod catalog;
+mod copy_from;
 mod csv;
 mod csv_no_header;
 mod database;
