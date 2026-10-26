@@ -1,5 +1,7 @@
+mod ddl;
 mod execute;
 mod lexer;
+pub use ddl::{ColumnDef, Ddl, parse_ddl};
 pub use execute::{ExecutionError, execute};
 
 use std::error::Error;
