@@ -149,7 +149,11 @@ fn drop_does_not_silently_ignore_orphaned_parts() {
 fn interrupted_rename_preserves_a_readable_table_at_each_stage() {
     let db = database();
     assert!(sql("CREATE TABLE source (id UInt64)", &db).status.success());
-    assert!(sql("INSERT INTO source VALUES (9), (10)", &db).status.success());
+    assert!(
+        sql("INSERT INTO source VALUES (9), (10)", &db)
+            .status
+            .success()
+    );
 
     // Simulate the state after publishing the destination schema but before
     // the part directory has moved. The original table is still usable.
