@@ -349,7 +349,10 @@ fn create_table(
     // sync the staging file first, then link it without replacing an existing
     // table (CREATE IF NOT EXISTS must still validate existing schemas).
     let staged = (|| -> Result<(), std::io::Error> {
-        let mut file = OpenOptions::new().write(true).create_new(true).open(&temp)?;
+        let mut file = OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(&temp)?;
         persist_schema(&mut file, columns)
     })();
     if let Err(error) = staged {
