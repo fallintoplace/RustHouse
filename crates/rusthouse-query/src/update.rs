@@ -74,24 +74,7 @@ fn parse_assignments(parser: &mut Parser) -> Result<Vec<(String, Option<String>)
     Ok(assignments)
 }
 
-/// Rewrite predicates using the SELECT parser to keep NULL, LIKE and OR semantics shared.
-pub fn parse_update(sql: &str) -> Result<Option<Update>, ParseError> {
-    let mut parser = Parser {
-        tokens: tokenize(sql)?,
-        index: 0,
-    };
-    if !parser.keyword("UPDATE") {
-        return Ok(None);
-    }
-    let table = parser.word()?;
-    if table.len() > 128 {
-        return Err(ParseError("UPDATE table name is too long".into()));
-    }
-    if !parser.keyword("SET") {
-        return Err(ParseError("UPDATE requires SET assignments".into()));
-    }
-    let assignments = parse_assignments(&mut parser)?;
-
+fn update_select_query(parser: &mut Parser, table: &str) -> Result<String, ParseError> {
     let mut query = format!("SELECT * FROM {table}");
     if parser.keyword("WHERE") {
         if parser.index == parser.tokens.len() {
@@ -113,6 +96,28 @@ pub fn parse_update(sql: &str) -> Result<Option<Update>, ParseError> {
             ));
         }
     }
+    Ok(query)
+}
+
+/// Rewrite predicates using the SELECT parser to keep NULL, LIKE and OR semantics shared.
+pub fn parse_update(sql: &str) -> Result<Option<Update>, ParseError> {
+    let mut parser = Parser {
+        tokens: tokenize(sql)?,
+        index: 0,
+    };
+    if !parser.keyword("UPDATE") {
+        return Ok(None);
+    }
+    let table = parser.word()?;
+    if table.len() > 128 {
+        return Err(ParseError("UPDATE table name is too long".into()));
+    }
+    if !parser.keyword("SET") {
+        return Err(ParseError("UPDATE requires SET assignments".into()));
+    }
+    let assignments = parse_assignments(&mut parser)?;
+
+    let query = update_select_query(&mut parser, &table)?;
     let select = parse_select(&query)?;
     if !matches!(select.source, Some(Source::Table(_)))
         || select.limit.is_some()
@@ -156,6 +161,14 @@ mod tests {
                 .unwrap()
                 .is_some()
         );
+    }
+
+    #[test]
+    fn forwards_where_predicates_with_statement_terminators() {
+        let update = parse_update("UPDATE events SET id = 1 WHERE id >= 1;")
+            .unwrap()
+            .unwrap();
+        assert_eq!(update.select.source, Some(Source::Table("events".into())));
     }
 
     #[test]
