@@ -159,23 +159,6 @@ fn show_tables(catalog: &Path, pattern: Option<&str>) -> Result<(), String> {
     Ok(())
 }
 
-#[cfg(test)]
-mod show_tables_like_tests {
-    use super::table_matches_like;
-
-    #[test]
-    fn matches_percent_single_wildcard_and_literal_escapes() {
-        assert!(table_matches_like("events_2026", "events%"));
-        assert!(table_matches_like("orders_1", r"orders\_%"));
-        assert!(!table_matches_like("ordersX1", r"orders\_%"));
-        assert!(table_matches_like("xy", "x_"));
-        assert!(!table_matches_like("xyz", "x_"));
-        assert!(table_matches_like("any", "%"));
-        assert!(!table_matches_like("any", "other%"));
-        assert!(!table_matches_like("any", r"any\"));
-    }
-}
-
 fn drop_table(catalog: &Path, name: &str, if_exists: bool) -> Result<(), String> {
     let path = schema_path(catalog, name);
     let metadata = match fs::symlink_metadata(&path) {
@@ -437,4 +420,21 @@ fn create_table(
     sync_catalog_dir(catalog)?;
     println!("Created table {name} (schema only)");
     Ok(())
+}
+
+#[cfg(test)]
+mod show_tables_like_tests {
+    use super::table_matches_like;
+
+    #[test]
+    fn matches_percent_single_wildcard_and_literal_escapes() {
+        assert!(table_matches_like("events_2026", "events%"));
+        assert!(table_matches_like("orders_1", r"orders\_%"));
+        assert!(!table_matches_like("ordersX1", r"orders\_%"));
+        assert!(table_matches_like("xy", "x_"));
+        assert!(!table_matches_like("xyz", "x_"));
+        assert!(table_matches_like("any", "%"));
+        assert!(!table_matches_like("any", "other%"));
+        assert!(!table_matches_like("any", r"any\"));
+    }
 }
