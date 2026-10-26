@@ -28,6 +28,10 @@ pub enum Ddl {
         column: String,
         if_exists: bool,
     },
+    RenameTable {
+        from: String,
+        to: String,
+    },
 }
 
 fn identifier(parser: &mut Parser) -> Result<String, ParseError> {
@@ -84,6 +88,21 @@ pub fn parse_ddl(sql: &str) -> Result<Option<Ddl>, ParseError> {
         tokens: tokenize(sql)?,
         index: 0,
     };
+    if parser.keyword("RENAME") {
+        if !parser.keyword("TABLE") {
+            return Err(ParseError("expected TABLE after RENAME".into()));
+        }
+        let from = identifier(&mut parser)?;
+        if !parser.keyword("TO") {
+            return Err(ParseError("expected TO after source table".into()));
+        }
+        let to = identifier(&mut parser)?;
+        parser.take(Token::Semicolon);
+        if parser.index != parser.tokens.len() {
+            return Err(ParseError("unexpected tokens after DDL statement".into()));
+        }
+        return Ok(Some(Ddl::RenameTable { from, to }));
+    }
     if parser.keyword("ALTER") {
         if !parser.keyword("TABLE") {
             return Err(ParseError("expected TABLE after ALTER".into()));
@@ -234,6 +253,25 @@ mod tests {
             })
         );
         assert_eq!(parse_ddl("SELECT 1").unwrap(), None);
+    }
+
+    #[test]
+    fn parses_rename_table_and_rejects_trailing_sql() {
+        assert_eq!(
+            parse_ddl("RENAME TABLE events TO archived_events;").unwrap(),
+            Some(Ddl::RenameTable {
+                from: "events".into(),
+                to: "archived_events".into(),
+            })
+        );
+        for sql in [
+            "RENAME events TO archived_events",
+            "RENAME TABLE events archived_events",
+            "RENAME TABLE events TO archived_events, other TO t",
+            "RENAME TABLE events TO archived_events; DROP TABLE archived_events",
+        ] {
+            assert!(parse_ddl(sql).is_err(), "{sql}");
+        }
     }
 
     #[test]
