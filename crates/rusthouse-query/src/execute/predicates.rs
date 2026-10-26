@@ -160,7 +160,7 @@ pub(super) fn count_batch_matches(
         if predicates.is_empty() {
             return batch.first().map_or(0, NumericColumn::len);
         }
-        if let [predicate] = predicates {
+        if let [predicate] = predicates.as_slice() {
             if let CompiledTest::Comparison { operator, target } = &predicate.test {
                 if !matches!(operator, Operator::Modulo(_) | Operator::ModuloNe(_)) {
                     macro_rules! count_direct {
@@ -348,11 +348,11 @@ mod tests {
     fn batched_counts_match_rowwise_predicates_across_numeric_types() {
         for (batch, target) in [
             (NumericColumn::UInt8(vec![0, 1, 3, 5]), Number::Unsigned(3)),
-            (NumericColumn::UInt64(vec![0, 1, 3, u64::MAX]), Number::Unsigned(3)),
             (
-                NumericColumn::Int64(vec![-9, -1, 3, 7]),
-                Number::Signed(3),
+                NumericColumn::UInt64(vec![0, 1, 3, u64::MAX]),
+                Number::Unsigned(3),
             ),
+            (NumericColumn::Int64(vec![-9, -1, 3, 7]), Number::Signed(3)),
             (
                 NumericColumn::Float64(vec![f64::NAN, -1.0, 3.0, 5.0]),
                 Number::Float(3.0),
