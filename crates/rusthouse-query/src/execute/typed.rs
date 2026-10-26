@@ -11,7 +11,7 @@ use std::path::Path;
 const MAX_BUFFERED_ROWS: usize = 100_000;
 
 #[derive(Clone)]
-enum Cell {
+pub(super) enum Cell {
     Numeric(Number),
     Text(Vec<u8>),
     Uuid(String),
@@ -37,7 +37,7 @@ impl Cell {
     }
 }
 
-fn cell(column: &TypedColumn, row: usize) -> Cell {
+pub(super) fn cell(column: &TypedColumn, row: usize) -> Cell {
     match column {
         TypedColumn::Numeric(values) => Cell::Numeric(number_at(values, row)),
         TypedColumn::Text(values) => Cell::Text(values.get(row).unwrap().to_owned()),
@@ -93,7 +93,7 @@ pub(super) fn requires_typed_scan(query: &Select, path: &Path) -> Result<bool, E
         .any(|column| is_typed(&column.data_type) && names.contains(&column.name.as_str())))
 }
 
-fn base_type(data_type: &str) -> &str {
+pub(super) fn base_type(data_type: &str) -> &str {
     data_type
         .strip_prefix("Nullable(")
         .and_then(|inner| inner.strip_suffix(')'))
@@ -154,7 +154,12 @@ fn compile_like(pattern: &str) -> Result<Vec<LikeToken>, ExecutionError> {
                 let escaped = bytes.next().ok_or_else(|| {
                     ExecutionError::Invalid("LIKE pattern ends with an escape".into())
                 })?;
-                tokens.push(LikeToken::Byte(escaped));
+                if matches!(escaped, b'%' | b'_' | b'\\') {
+                    tokens.push(LikeToken::Byte(escaped));
+                } else {
+                    tokens.push(LikeToken::Byte(b'\\'));
+                    tokens.push(LikeToken::Byte(escaped));
+                }
             }
             literal => tokens.push(LikeToken::Byte(literal)),
         }
@@ -162,13 +167,16 @@ fn compile_like(pattern: &str) -> Result<Vec<LikeToken>, ExecutionError> {
     Ok(tokens)
 }
 
-fn like_matches(value: &[u8], pattern: &[LikeToken]) -> bool {
+fn like_matches(value: &[u8], pattern: &[LikeToken], case_insensitive: bool) -> bool {
     let (mut row, mut pat) = (0, 0);
     let mut last_any = None;
     let mut restart = 0;
     while row < value.len() {
         match pattern.get(pat) {
-            Some(LikeToken::Byte(byte)) if *byte == value[row] => {
+            Some(LikeToken::Byte(byte))
+                if *byte == value[row]
+                    || (case_insensitive && value[row].eq_ignore_ascii_case(byte)) =>
+            {
                 row += 1;
                 pat += 1;
             }
@@ -202,15 +210,19 @@ enum Test {
     In(Vec<Cell>, bool),
     NotBetween(Cell, Cell),
     IsNull(bool),
-    Like(Vec<LikeToken>, bool),
+    Like {
+        pattern: Vec<LikeToken>,
+        case_insensitive: bool,
+        negated: bool,
+    },
 }
 
-struct Condition {
+pub(super) struct Condition {
     index: usize,
     test: Test,
 }
 
-fn compile(
+pub(super) fn compile(
     predicates: &[Predicate],
     indices: &HashMap<String, usize>,
     types: &HashMap<String, String>,
@@ -248,14 +260,21 @@ fn compile(
                 }
                 Predicate::IsNull { negated, .. } => Test::IsNull(*negated),
                 Predicate::Like {
-                    pattern, negated, ..
+                    pattern,
+                    case_insensitive,
+                    negated,
+                    ..
                 } => {
                     if base_type(kind) != "String" {
                         return Err(ExecutionError::Invalid(
                             "LIKE requires a String column".into(),
                         ));
                     }
-                    Test::Like(compile_like(pattern)?, *negated)
+                    Test::Like {
+                        pattern: compile_like(pattern)?,
+                        case_insensitive: *case_insensitive,
+                        negated: *negated,
+                    }
                 }
             };
             Ok(Condition { index, test })
@@ -309,14 +328,20 @@ fn matches_comparison(value: &Cell, target: &Cell, operator: Operator) -> bool {
     }
 }
 
-fn passes(batch: &[TypedColumn], row: usize, branches: &[Vec<Condition>]) -> bool {
+pub(super) fn passes(batch: &[TypedColumn], row: usize, branches: &[Vec<Condition>]) -> bool {
     branches.iter().any(|branch| {
         branch.iter().all(|condition| {
             let value = cell(&batch[condition.index], row);
             match &condition.test {
                 Test::IsNull(negated) => matches!(value, Cell::Null) != *negated,
-                Test::Like(pattern, negated) => match &value {
-                    Cell::Text(bytes) => like_matches(bytes, pattern) != *negated,
+                Test::Like {
+                    pattern,
+                    case_insensitive,
+                    negated,
+                } => match &value {
+                    Cell::Text(bytes) => {
+                        like_matches(bytes, pattern, *case_insensitive) != *negated
+                    }
                     _ => false,
                 },
                 Test::Compare(operator, target) => matches_comparison(&value, target, *operator),
@@ -520,6 +545,9 @@ pub(super) fn execute_typed<W: Write>(
                 .iter()
                 .map(|&idx| cell(&batch[idx], index))
                 .collect::<Vec<_>>();
+            if is_count_distinct && cells.iter().any(|value| matches!(value, Cell::Null)) {
+                continue;
+            }
             if is_count_distinct || query.distinct {
                 let key = cells.iter().map(Cell::key).collect::<Vec<_>>();
                 if distinct.len() >= MAX_BUFFERED_ROWS && !distinct.contains(&key) {
@@ -619,7 +647,25 @@ mod like_tests {
 
     fn matches(text: &[u8], pattern: &str) -> bool {
         let compiled = compile_like(pattern).unwrap();
-        like_matches(text, &compiled)
+        like_matches(text, &compiled, false)
+    }
+
+    #[test]
+    fn folds_ascii_case_but_keeps_escaping() {
+        let pattern = compile_like("FOO\\_bAR%").unwrap();
+        assert!(like_matches(b"foo_BarExtra", &pattern, true));
+        assert!(!like_matches(b"foo_BarExtra", &pattern, false));
+        assert!(like_matches(
+            b"100%done",
+            &compile_like("100\\%D%").unwrap(),
+            true
+        ));
+        assert!(like_matches(
+            b"AlphaBeta",
+            &compile_like("a%%beTa").unwrap(),
+            true
+        ));
+        assert!(!like_matches(b"foobarextra", &pattern, true));
     }
 
     #[test]
@@ -633,6 +679,8 @@ mod like_tests {
         assert!(matches(b"abc%d", "abc\\%d"));
         assert!(!matches(b"abcde", "abc\\%d"));
         assert!(matches(b"abcXYZend", "a%end"));
+        assert!(matches(br"a\qb", r"a\qb"));
+        assert!(!matches(b"aqb", r"a\qb"));
         assert!(!matches(b"abcXYZend", "a%ends"));
         assert!(compile_like("dangling\\").is_err());
     }

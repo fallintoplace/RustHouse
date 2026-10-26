@@ -78,6 +78,99 @@ fn query(sql: &str, part: &Path) -> String {
 }
 
 #[test]
+fn aggregates_numeric_values_after_text_filters() {
+    let part = part();
+    for (sql, expected) in [
+        (
+            "SELECT sum(status) FROM part WHERE service = 'api'",
+            "sum(status)\n700\n",
+        ),
+        (
+            "SELECT avg(status) FROM part WHERE service = 'api'",
+            "avg(status)\n350\n",
+        ),
+        (
+            "SELECT min(status) FROM part WHERE message IS NOT NULL",
+            "min(status)\n200\n",
+        ),
+        (
+            "SELECT max(status) AS peak FROM part WHERE message IS NOT NULL",
+            "peak\n500\n",
+        ),
+        (
+            "SELECT varPop(status) FROM part WHERE service = 'api'",
+            "varPop(status)\n22500\n",
+        ),
+        (
+            "SELECT stddevPop(status) FROM part WHERE service = 'api'",
+            "stddevPop(status)\n150\n",
+        ),
+        (
+            "SELECT median(status) FROM part WHERE service = 'api'",
+            "median(status)\n350\n",
+        ),
+    ] {
+        assert_eq!(query(sql, &part), expected, "{sql}");
+    }
+    fs::remove_dir_all(part).unwrap();
+}
+
+#[test]
+fn aggregates_ignore_nulls_and_preserve_empty_result_semantics() {
+    let part = part();
+    for (sql, expected) in [
+        ("SELECT sum(attempt) FROM part", "sum(attempt)\n4\n"),
+        ("SELECT avg(attempt) FROM part", "avg(attempt)\n2\n"),
+        (
+            "SELECT min(attempt) FROM part WHERE message IS NULL",
+            "min(attempt)\nNULL\n",
+        ),
+        (
+            "SELECT sum(status) FROM part WHERE service = 'missing'",
+            "sum(status)\nNULL\n",
+        ),
+        (
+            "SELECT sum(status) FROM part WHERE service = 'api' LIMIT 0",
+            "sum(status)\n",
+        ),
+    ] {
+        assert_eq!(query(sql, &part), expected, "{sql}");
+    }
+    for sql in [
+        "SELECT sum(service) FROM part",
+        "SELECT sum(missing) FROM part WHERE service = 'api'",
+    ] {
+        let parsed = parse_select(sql).unwrap();
+        assert!(
+            execute(&parsed, Some(&part), &mut Vec::new()).is_err(),
+            "{sql}"
+        );
+    }
+    fs::remove_dir_all(part).unwrap();
+}
+
+#[test]
+fn aggregates_typed_filters_across_frozen_parts() {
+    let table = std::env::temp_dir().join(format!(
+        "rusthouse-typed-aggregates-{}-{}",
+        std::process::id(),
+        NEXT_DIR.fetch_add(1, Ordering::Relaxed)
+    ));
+    fs::create_dir(&table).unwrap();
+    fs::rename(part(), table.join("all_1_1_0")).unwrap();
+    fs::rename(part(), table.join("all_2_2_0")).unwrap();
+    assert_eq!(
+        query("SELECT sum(status) FROM part WHERE service = 'api'", &table),
+        "sum(status)\n1400\n"
+    );
+    assert_eq!(
+        query("SELECT sum(attempt) FROM part WHERE service = 'db'", &table),
+        "sum(attempt)\nNULL\n"
+    );
+    fs::remove_dir_all(table).unwrap();
+}
+
+#[test]
 fn selects_mixed_string_and_numeric_rows() {
     let part = part();
     assert_eq!(
@@ -116,6 +209,14 @@ fn counts_and_filters_nullable_text() {
     assert_eq!(
         query("SELECT count(DISTINCT service) FROM part", &part),
         "countDistinct(service)\n2\n"
+    );
+    assert_eq!(
+        query("SELECT count(DISTINCT message) FROM part", &part),
+        "countDistinct(message)\n2\n"
+    );
+    assert_eq!(
+        query("SELECT count(DISTINCT attempt) FROM part", &part),
+        "countDistinct(attempt)\n2\n"
     );
     assert_eq!(
         query("SELECT DISTINCT service FROM part ORDER BY service", &part),
@@ -310,5 +411,39 @@ fn groups_nullable_and_uuid_keys_including_null() {
         query("SELECT uid, count(*) FROM part GROUP BY uid", &part),
         "uid\tcount\n00000000-0000-0000-0000-000000000000\t3\n"
     );
+    fs::remove_dir_all(part).unwrap();
+}
+
+#[test]
+fn matches_ilike_on_string_and_nullable_columns() {
+    let part = part();
+    assert_eq!(
+        query("SELECT service FROM part WHERE service ILIKE 'A_I'", &part),
+        "service\napi\napi\n"
+    );
+    assert_eq!(
+        query(
+            "SELECT service FROM part WHERE service NOT ILIKE 'API'",
+            &part
+        ),
+        "service\ndb\n"
+    );
+    assert_eq!(
+        query(
+            "SELECT service FROM part WHERE service ILIKE 'API' OR service LIKE 'd_'",
+            &part
+        ),
+        "service\napi\ndb\napi\n"
+    );
+    assert_eq!(
+        query(
+            "SELECT message FROM part WHERE message NOT ILIKE '%O%'",
+            &part
+        ),
+        "message\n"
+    );
+    let mut output = Vec::new();
+    let numeric = parse_select("SELECT status FROM part WHERE status ILIKE '5%'").unwrap();
+    assert!(execute(&numeric, Some(&part), &mut output).is_err());
     fs::remove_dir_all(part).unwrap();
 }

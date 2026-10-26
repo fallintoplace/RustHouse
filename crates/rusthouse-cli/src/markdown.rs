@@ -19,9 +19,8 @@ impl<W: Write> MarkdownWriter<W> {
     }
 
     fn finish_line(&mut self) -> io::Result<()> {
-        let fields: Vec<&[u8]> = self.line.split(|&byte| byte == b'\t').collect();
         self.output.write_all(b"|")?;
-        for field in &fields {
+        for field in self.line.split(|&byte| byte == b'\t') {
             self.output.write_all(b" ")?;
             write_cell(&mut self.output, field)?;
             self.output.write_all(b" |")?;
@@ -29,7 +28,7 @@ impl<W: Write> MarkdownWriter<W> {
         self.output.write_all(b"\n")?;
         if !self.header_written {
             self.output.write_all(b"|")?;
-            for _ in &fields {
+            for _ in self.line.split(|&byte| byte == b'\t') {
                 self.output.write_all(b" --- |")?;
             }
             self.output.write_all(b"\n")?;

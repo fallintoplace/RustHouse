@@ -26,58 +26,61 @@ impl<W: Write> JsonlWriter<W> {
 
     fn finish_line(&mut self) -> io::Result<()> {
         if self.headers.is_none() {
-            let headers = (|| {
-                let mut seen = HashSet::new();
-                let mut headers = Vec::new();
-                for header in self.line.split(|byte| *byte == b'\t') {
-                    if !seen.insert(header) {
-                        return Err(io::Error::new(
-                            io::ErrorKind::InvalidData,
-                            "JSONL requires unique projected column names",
-                        ));
-                    }
-                    headers.push(header.to_vec());
-                }
-                Ok(headers)
-            })();
+            let headers = parse_headers(&self.line);
             self.line.clear();
             self.headers = Some(headers?);
             return Ok(());
         }
 
         let headers = self.headers.as_ref().unwrap();
-        let field_count = 1 + self.line.iter().filter(|byte| **byte == b'\t').count();
-        if field_count != headers.len() {
-            self.line.clear();
-            return Err(io::Error::new(
-                io::ErrorKind::InvalidData,
-                "JSONL row does not match header column count",
-            ));
-        }
-
-        let result = (|| {
-            self.output.write_all(b"{")?;
-            for (index, (header, value)) in headers
-                .iter()
-                .zip(self.line.split(|byte| *byte == b'\t'))
-                .enumerate()
-            {
-                if index > 0 {
-                    self.output.write_all(b",")?;
-                }
-                write_json_string(&mut self.output, header)?;
-                self.output.write_all(b":")?;
-                if value == b"NULL" || value == b"\\N" {
-                    self.output.write_all(b"null")?;
-                } else {
-                    write_json_string(&mut self.output, value)?;
-                }
-            }
-            self.output.write_all(b"}\n")
-        })();
+        let result = write_json_row(&mut self.output, headers, &self.line);
         self.line.clear();
         result
     }
+}
+
+fn parse_headers(line: &[u8]) -> io::Result<Vec<Vec<u8>>> {
+    let mut seen = HashSet::new();
+    let mut headers = Vec::new();
+    for header in line.split(|byte| *byte == b'\t') {
+        if !seen.insert(header) {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                "JSONL requires unique projected column names",
+            ));
+        }
+        headers.push(header.to_vec());
+    }
+    Ok(headers)
+}
+
+fn write_json_row<W: Write>(output: &mut W, headers: &[Vec<u8>], line: &[u8]) -> io::Result<()> {
+    let field_count = 1 + line.iter().filter(|byte| **byte == b'\t').count();
+    if field_count != headers.len() {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            "JSONL row does not match header column count",
+        ));
+    }
+
+    output.write_all(b"{")?;
+    for (index, (header, value)) in headers
+        .iter()
+        .zip(line.split(|byte| *byte == b'\t'))
+        .enumerate()
+    {
+        if index > 0 {
+            output.write_all(b",")?;
+        }
+        write_json_string(output, header)?;
+        output.write_all(b":")?;
+        if value == b"NULL" || value == b"\\N" {
+            output.write_all(b"null")?;
+        } else {
+            write_json_string(output, value)?;
+        }
+    }
+    output.write_all(b"}\n")
 }
 
 fn write_json_string<W: Write>(writer: &mut W, input: &[u8]) -> io::Result<()> {
@@ -192,7 +195,6 @@ mod tests {
             io::ErrorKind::InvalidData
         );
     }
-
     #[test]
     fn renders_typed_null_markers_as_json_null() {
         let mut writer = JsonlWriter::new(Vec::new());
