@@ -125,7 +125,11 @@ fn compile_part_predicates(
     Ok(compiled)
 }
 
-pub(super) fn batch_matches(batch: &[NumericColumn], row: usize, branches: &[Vec<CompiledPredicate>]) -> bool {
+pub(super) fn batch_matches(
+    batch: &[NumericColumn],
+    row: usize,
+    branches: &[Vec<CompiledPredicate>],
+) -> bool {
     branches.iter().any(|predicates| {
         predicates.iter().all(|predicate| {
             predicate
@@ -237,4 +241,3 @@ fn compare<T: PartialOrd>(value: T, target: T, operator: Operator) -> bool {
         }
     }
 }
-
