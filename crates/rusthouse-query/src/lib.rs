@@ -4,6 +4,7 @@ mod execute;
 mod explain;
 mod insert;
 mod lexer;
+mod scalar;
 pub use ddl::{ColumnDef, Ddl, parse_ddl};
 pub use delete::parse_delete;
 pub use execute::{ExecutionError, RowPredicate, execute};
@@ -337,7 +338,7 @@ pub fn parse_select(sql: &str) -> Result<Select, ParseError> {
         Projection::Aggregate { function, column }
     } else if matches!(
         parser.tokens.get(parser.index),
-        Some(Token::Number(_) | Token::String(_))
+        Some(Token::Number(_) | Token::String(_) | Token::LParen | Token::Plus | Token::Minus)
     ) || matches!(
         parser.tokens.get(parser.index),
         Some(Token::Word(word)) if word.eq_ignore_ascii_case("NULL")
@@ -348,10 +349,8 @@ pub fn parse_select(sql: &str) -> Result<Select, ParseError> {
                 return Err(ParseError("SELECT supports at most 64 constants".into()));
             }
             let value = match parser.tokens.get(parser.index) {
-                Some(Token::Number(_)) => {
-                    ConstantValue::Integer(parser.number()?.parse::<i64>().map_err(|_| {
-                        ParseError("SELECT literals must be signed 64-bit integers".into())
-                    })?)
+                Some(Token::Number(_) | Token::LParen | Token::Plus | Token::Minus) => {
+                    ConstantValue::Integer(scalar::parse(&mut parser)?)
                 }
                 Some(Token::String(value)) => {
                     let value = value.clone();
