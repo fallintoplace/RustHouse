@@ -107,20 +107,3 @@ parts and more than 10,000 parts. It ignores non-part subdirectories such as
 `detached/`. **Only use a frozen snapshot of active parts**, never a live table
 directory being modified by a database process. Predicate pruning across the primary index
 is not implemented by this change.
-
-
-## Read-only local HTTP API (experimental)
-
-```sh
-cargo run -p rusthouse-server -- --port 8123 --part ./snapshot/active-parts
-curl http://127.0.0.1:8123/ping
-curl 'http://127.0.0.1:8123/?query=SELECT%201'
-curl http://127.0.0.1:8123/ --data-binary 'SELECT count(*) FROM part'
-```
-
-The HTTP server is deliberately limited to the existing read-only SELECT dialect,
-plain TSV responses, and loopback-only access. Both GET and POST are supported.
-The server enforces an 8 MiB response limit, 4096-byte query limit,
-16 concurrent connections, and a maximum result row count (default 10000).
-It does not implement full SQL wire-protocol compatibility, TLS, authentication,
-or queries against a live mutating table directory.
