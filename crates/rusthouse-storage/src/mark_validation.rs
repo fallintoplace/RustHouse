@@ -15,16 +15,7 @@ pub fn validate_wide_marks<R: Read + Seek>(
 
     for (index, mark) in marks.marks.iter().enumerate() {
         let terminal = mark.rows == Some(0);
-        if terminal && index + 1 != marks.marks.len() {
-            return Err(invalid_mark(marks, index, "zero-row mark must be last"));
-        }
-        if let Some(previous) = previous {
-            if (mark.compressed_offset, mark.decompressed_offset)
-                < (previous.compressed_offset, previous.decompressed_offset)
-            {
-                return Err(invalid_mark(marks, index, "mark offsets are not ordered"));
-            }
-        }
+        validate_mark_sequence(marks, index, mark, previous)?;
 
         while let Some(current) = block {
             if current.offset >= mark.compressed_offset {
@@ -63,6 +54,25 @@ pub fn validate_wide_marks<R: Read + Seek>(
 
     while block.is_some() {
         block = reader.next().transpose()?;
+    }
+    Ok(())
+}
+
+fn validate_mark_sequence(
+    marks: &WideMarks,
+    index: usize,
+    mark: &WideMark,
+    previous: Option<&WideMark>,
+) -> Result<(), PartError> {
+    if mark.rows == Some(0) && index + 1 != marks.marks.len() {
+        return Err(invalid_mark(marks, index, "zero-row mark must be last"));
+    }
+    if let Some(previous) = previous {
+        if (mark.compressed_offset, mark.decompressed_offset)
+            < (previous.compressed_offset, previous.decompressed_offset)
+        {
+            return Err(invalid_mark(marks, index, "mark offsets are not ordered"));
+        }
     }
     Ok(())
 }
