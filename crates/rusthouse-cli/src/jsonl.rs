@@ -1,5 +1,5 @@
-use std::collections::HashSet;
 use crate::tsv_escape::decode_tsv_field;
+use std::collections::HashSet;
 use std::io::{self, Write};
 
 const MAX_LINE_BYTES: usize = 1024 * 1024;

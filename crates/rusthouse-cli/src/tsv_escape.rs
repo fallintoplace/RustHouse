@@ -54,7 +54,10 @@ mod tests {
 
     #[test]
     fn decodes_control_and_hex_escapes() {
-        assert_eq!(decode_tsv_field(br"a\t\n\r\0\\\x41").unwrap(), b"a\t\n\r\0\\A");
+        assert_eq!(
+            decode_tsv_field(br"a\t\n\r\0\\\x41").unwrap(),
+            b"a\t\n\r\0\\A"
+        );
     }
 
     #[test]

@@ -1,5 +1,5 @@
-use std::io::{self, Write};
 use crate::tsv_escape::decode_tsv_field;
+use std::io::{self, Write};
 
 const MAX_FIELD_BYTES: usize = 1024 * 1024;
 
