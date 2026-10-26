@@ -90,24 +90,26 @@ pub fn read_numeric_granule<R: Read + Seek>(
     read_numeric_granule_cached(reader, mark, data_type, &mut None)
 }
 
+fn numeric_granule_width(data_type: &str) -> Result<usize, PartError> {
+    match numeric_storage_type(data_type).unwrap_or(data_type) {
+        "UInt8" | "Int8" => Ok(1),
+        "UInt16" | "Int16" => Ok(2),
+        "UInt32" | "Int32" | "Float32" => Ok(4),
+        "UInt64" | "Int64" | "Float64" => Ok(8),
+        "UInt128" | "Int128" => Ok(16),
+        _ => Err(PartError::NumericRead(NumericReadError::UnsupportedType(
+            data_type.to_owned(),
+        ))),
+    }
+}
+
 pub(crate) fn read_numeric_granule_cached<R: Read + Seek>(
     reader: &mut CompressedBlockReader<R>,
     mark: &WideMark,
     data_type: &str,
     cached: &mut Option<DecodedBlock>,
 ) -> Result<NumericColumn, PartError> {
-    let width = match numeric_storage_type(data_type).unwrap_or(data_type) {
-        "UInt8" | "Int8" => 1,
-        "UInt16" | "Int16" => 2,
-        "UInt32" | "Int32" | "Float32" => 4,
-        "UInt64" | "Int64" | "Float64" => 8,
-        "UInt128" | "Int128" => 16,
-        _ => {
-            return Err(PartError::NumericRead(NumericReadError::UnsupportedType(
-                data_type.to_owned(),
-            )));
-        }
-    };
+    let width = numeric_granule_width(data_type)?;
     let rows = mark
         .rows
         .ok_or_else(|| invalid_mark(mark, "numeric granules require adaptive marks"))?;
