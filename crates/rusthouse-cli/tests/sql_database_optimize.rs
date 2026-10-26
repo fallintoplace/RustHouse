@@ -132,3 +132,34 @@ fn optimize_requires_database_mode() {
         .unwrap();
     assert!(!result.status.success());
 }
+#[test]
+fn optimize_streams_tables_larger_than_mutation_rewrite_limit() {
+    let db = dir();
+    let create = sql("CREATE TABLE events (id UInt64)", &db);
+    assert!(create.status.success(), "{create:?}");
+    for _ in 0..9 {
+        let insert = sql("INSERT INTO events SELECT number FROM numbers(3500)", &db);
+        assert!(insert.status.success(), "{insert:?}");
+    }
+    let before = sql("SELECT sum(id) FROM events", &db);
+    assert!(before.status.success(), "{before:?}");
+    assert_eq!(sql("SELECT count(*) FROM events", &db).stdout, b"count\n31500\n");
+
+    let optimized = sql("OPTIMIZE TABLE events", &db);
+    assert!(optimized.status.success(), "{optimized:?}");
+    let after = sql("SELECT sum(id) FROM events", &db);
+    assert!(after.status.success(), "{after:?}");
+    assert_eq!(before.stdout, after.stdout);
+    assert_eq!(
+        sql("SELECT count(*) FROM events", &db).stdout,
+        b"count\n31500\n"
+    );
+    let generation = db.join("events.parts/.rusthouse-versions/g1");
+    let active_parts = fs::read_dir(generation)
+        .unwrap()
+        .map(|entry| entry.unwrap().file_name())
+        .filter(|name| name.to_string_lossy().starts_with("all_"))
+        .count();
+    assert_eq!(active_parts, 8);
+    fs::remove_dir_all(db).unwrap();
+}
