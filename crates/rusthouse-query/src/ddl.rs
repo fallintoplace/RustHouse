@@ -137,6 +137,29 @@ fn optional_if_not_exists(parser: &mut Parser) -> Result<bool, ParseError> {
     Ok(true)
 }
 
+fn parse_column_definitions(parser: &mut Parser) -> Result<Vec<ColumnDef>, ParseError> {
+    let mut columns = Vec::new();
+    let mut names = HashSet::new();
+    loop {
+        if columns.len() == 64 {
+            return Err(ParseError("DDL supports at most 64 columns".into()));
+        }
+        let column_name = identifier(parser)?;
+        if !names.insert(column_name.clone()) {
+            return Err(ParseError(format!("duplicate DDL column: {column_name}")));
+        }
+        let column_type = data_type(parser, 0)?;
+        columns.push(ColumnDef {
+            name: column_name,
+            data_type: column_type,
+        });
+        if !parser.take(Token::Comma) {
+            break;
+        }
+    }
+    Ok(columns)
+}
+
 /// Recognize only supported schema-only DDL. SELECT is parsed by the existing parser.
 pub fn parse_ddl(sql: &str) -> Result<Option<Ddl>, ParseError> {
     let mut parser = Parser {
@@ -283,25 +306,7 @@ pub fn parse_ddl(sql: &str) -> Result<Option<Ddl>, ParseError> {
     if !parser.take(Token::LParen) {
         return Err(ParseError("expected '(' after table name".into()));
     }
-    let mut columns = Vec::new();
-    let mut names = HashSet::new();
-    loop {
-        if columns.len() == 64 {
-            return Err(ParseError("DDL supports at most 64 columns".into()));
-        }
-        let column_name = identifier(&mut parser)?;
-        if !names.insert(column_name.clone()) {
-            return Err(ParseError(format!("duplicate DDL column: {column_name}")));
-        }
-        let column_type = data_type(&mut parser, 0)?;
-        columns.push(ColumnDef {
-            name: column_name,
-            data_type: column_type,
-        });
-        if !parser.take(Token::Comma) {
-            break;
-        }
-    }
+    let columns = parse_column_definitions(&mut parser)?;
     if !parser.take(Token::RParen) {
         return Err(ParseError("expected ')' after column definitions".into()));
     }
