@@ -2,6 +2,7 @@
 //! This reader is deliberately separate from the optimized numeric-only scan.
 use crate::granules::{read_mark_bytes_cached, read_numeric_granule_cached};
 use crate::numeric::numeric_storage_type;
+use crate::scan_layout::ScanLayout;
 use crate::{
     CompressedBlockReader, DecodedBlock, NumericColumn, PartError, StringColumn, UuidValue,
     WideMark, inspect_part, read_legacy_strings, read_uuid_values, read_wide_marks,
@@ -166,8 +167,7 @@ impl TypedPartReader {
             ));
         }
         let mut columns = Vec::with_capacity(names.len());
-        let mut shared_rows: Option<Vec<u64>> = None;
-        let mut marks = 0;
+        let mut layout = ScanLayout::default();
         for name in names {
             if !name.bytes().all(|v| v.is_ascii_alphanumeric() || v == b'_') {
                 return Err(PartError::InvalidScan("unsafe column filename".into()));
@@ -208,41 +208,9 @@ impl TypedPartReader {
             let null_map = nullable
                 .then(|| Stream::open(part, &format!("{name}.null")))
                 .transpose()?;
-            let stream_rows = data
-                .marks
-                .iter()
-                .map(|mark| {
-                    mark.rows.ok_or_else(|| {
-                        PartError::InvalidScan("typed scan requires adaptive marks".into())
-                    })
-                })
-                .collect::<Result<Vec<_>, _>>()?;
-            let total = stream_rows
-                .iter()
-                .try_fold(0u64, |acc, rows| acc.checked_add(*rows))
-                .ok_or_else(|| PartError::InvalidScan("granule count overflow".into()))?;
-            if total != metadata.rows {
-                return Err(PartError::InvalidScan(
-                    "typed column row count mismatch".into(),
-                ));
-            }
-            if let Some(reference) = &shared_rows {
-                if *reference != stream_rows {
-                    return Err(PartError::InvalidScan(
-                        "unaligned typed column marks".into(),
-                    ));
-                }
-            } else {
-                marks = stream_rows.len();
-                shared_rows = Some(stream_rows.clone());
-            }
+            layout.validate(name, &data.marks, metadata.rows)?;
             if let Some(nulls) = &null_map {
-                let rows: Vec<_> = nulls.marks.iter().map(|mark| mark.rows).collect();
-                if rows != stream_rows.iter().copied().map(Some).collect::<Vec<_>>() {
-                    return Err(PartError::InvalidScan(
-                        "unaligned nullable null-map marks".into(),
-                    ));
-                }
+                layout.validate(&format!("{name}.null"), &nulls.marks, metadata.rows)?;
             }
             columns.push(ColumnReader {
                 kind,
@@ -252,7 +220,7 @@ impl TypedPartReader {
         }
         Ok(Self {
             columns,
-            marks,
+            marks: layout.mark_count(),
             next_mark: 0,
         })
     }
@@ -262,6 +230,11 @@ impl TypedPartReader {
             return Ok(None);
         }
         let index = self.next_mark;
+        if self.columns[0].data.marks[index].rows == Some(0) {
+            // A terminal zero-row mark is metadata only, not a data granule.
+            self.next_mark = self.marks;
+            return Ok(None);
+        }
         let mut batch = Vec::with_capacity(self.columns.len());
         for column in &mut self.columns {
             let mark = &column.data.marks[index];
