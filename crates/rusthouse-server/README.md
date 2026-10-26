@@ -17,6 +17,9 @@ Pass `format=tsv-no-header` to remove the header row, including for empty result
 Pass `format=csv` on either method for RFC 4180-style CSV with CRLF row endings.
 CSV includes headers, quotes embedded commas/newlines, and uses an unquoted `\\N` for NULL.
 Pass `format=jsonl` on either method for `application/x-ndjson`, one JSON object per result row.
+Pass `format=json-compact-each-row` for newline-delimited JSON arrays of column values.
+Like the existing JSONL mode, values remain strings to preserve wide integer
+precision instead of emitting ClickHouse's native numeric JSON types.
 Pass `format=json` for a JSON array suitable for API clients. It uses the same validated
 JSONL value encoding, an explicit closing bracket, and existing response size limits.
 This works with `GET /?query=SELECT%201&format=jsonl` and `POST /?format=jsonl` with a raw SELECT body.
