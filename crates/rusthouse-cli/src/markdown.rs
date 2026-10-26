@@ -27,16 +27,23 @@ impl<W: Write> MarkdownWriter<W> {
         }
         self.output.write_all(b"\n")?;
         if !self.header_written {
-            self.output.write_all(b"|")?;
-            for _ in self.line.split(|&byte| byte == b'\t') {
-                self.output.write_all(b" --- |")?;
-            }
-            self.output.write_all(b"\n")?;
+            write_header_separator(
+                &mut self.output,
+                self.line.split(|&byte| byte == b'\t').count(),
+            )?;
             self.header_written = true;
         }
         self.line.clear();
         Ok(())
     }
+}
+
+fn write_header_separator<W: Write>(output: &mut W, columns: usize) -> io::Result<()> {
+    output.write_all(b"|")?;
+    for _ in 0..columns {
+        output.write_all(b" --- |")?;
+    }
+    output.write_all(b"\n")
 }
 
 fn write_cell<W: Write>(output: &mut W, field: &[u8]) -> io::Result<()> {
