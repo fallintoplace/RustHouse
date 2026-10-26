@@ -85,6 +85,16 @@ fn parse_copy_options(parser: &mut Parser) -> Result<(CopyFormat, bool), ParseEr
     Ok((format, header))
 }
 
+fn parse_copy_path(parser: &mut Parser) -> Result<String, ParseError> {
+    match parser.tokens.get(parser.index) {
+        Some(Token::String(path)) if !path.is_empty() => {
+            parser.index += 1;
+            Ok(path.clone())
+        }
+        _ => Err(ParseError("COPY requires a quoted local file path".into())),
+    }
+}
+
 pub fn parse_copy_from(sql: &str) -> Result<Option<CopyFrom>, ParseError> {
     let mut parser = Parser {
         tokens: tokenize(sql)?,
@@ -98,13 +108,7 @@ pub fn parse_copy_from(sql: &str) -> Result<Option<CopyFrom>, ParseError> {
     if !parser.keyword("FROM") {
         return Err(ParseError("COPY requires FROM 'path'".into()));
     }
-    let path = match parser.tokens.get(parser.index) {
-        Some(Token::String(path)) if !path.is_empty() => {
-            parser.index += 1;
-            path.clone()
-        }
-        _ => return Err(ParseError("COPY requires a quoted local file path".into())),
-    };
+    let path = parse_copy_path(&mut parser)?;
     let (format, header) = parse_copy_options(&mut parser)?;
     parser.take(Token::Semicolon);
     if parser.index != parser.tokens.len() {
