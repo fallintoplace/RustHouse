@@ -9,6 +9,7 @@ use std::io::{self, Write};
 use std::path::Path;
 
 const MAX_PART_ROWS: usize = 4096;
+const GRANULE_ROWS: usize = 1024;
 const MAX_STREAM_BYTES: usize = 8 * 1024 * 1024;
 
 fn invalid(message: impl Into<String>) -> PartError {
@@ -246,21 +247,29 @@ pub fn write_wide_part(
     let mut streams = Vec::new();
     if !rows.is_empty() {
         for (index, col) in columns.iter().enumerate() {
-            let mut data = Vec::new();
-            let mut nulls = Vec::new();
             let (_, nullable) = base_type(&col.data_type);
-            for row in rows {
-                if row.len() != columns.len() {
-                    return Err(invalid("INSERT row width does not match table schema"));
+            let mut data_granules = Vec::new();
+            let mut null_granules = Vec::new();
+            for granule in rows.chunks(GRANULE_ROWS) {
+                let mut data = Vec::new();
+                let mut nulls = Vec::new();
+                for row in granule {
+                    if row.len() != columns.len() {
+                        return Err(invalid("INSERT row width does not match table schema"));
+                    }
+                    let null = push_cell(&col.data_type, row[index].as_deref(), &mut data)?;
+                    if nullable {
+                        nulls.push(u8::from(null));
+                    }
                 }
-                let null = push_cell(&col.data_type, row[index].as_deref(), &mut data)?;
+                data_granules.push(data);
                 if nullable {
-                    nulls.push(u8::from(null));
+                    null_granules.push(nulls);
                 }
             }
-            streams.push((col.name.clone(), data));
+            streams.push((col.name.clone(), data_granules));
             if nullable {
-                streams.push((format!("{}.null", col.name), nulls));
+                streams.push((format!("{}.null", col.name), null_granules));
             }
         }
     }
@@ -282,22 +291,32 @@ pub fn write_wide_part(
     write_tracked_file(part, "count.txt", count.as_bytes(), None, &mut files)?;
 
     if !rows.is_empty() {
-        let mut marks = Vec::with_capacity(24);
-        marks.extend_from_slice(&0u64.to_le_bytes());
-        marks.extend_from_slice(&0u64.to_le_bytes());
-        marks.extend_from_slice(&(rows.len() as u64).to_le_bytes());
-        for (name, data) in streams {
-            let compressed = block(&data)?;
+        for (name, granules) in streams {
+            let mut encoded = Vec::new();
+            let mut uncompressed = Vec::new();
+            let mut marks = Vec::with_capacity(24 * granules.len());
+            for (index, data) in granules.iter().enumerate() {
+                if data.len() > MAX_STREAM_BYTES - uncompressed.len() {
+                    return Err(invalid("part column exceeds 8 MiB"));
+                }
+                marks.extend_from_slice(&(encoded.len() as u64).to_le_bytes());
+                marks.extend_from_slice(&0u64.to_le_bytes());
+                let row_count = (rows.len() - index * GRANULE_ROWS).min(GRANULE_ROWS);
+                marks.extend_from_slice(&(row_count as u64).to_le_bytes());
+                encoded.extend_from_slice(&block(data)?);
+                uncompressed.extend_from_slice(data);
+            }
             write_tracked_file(
                 part,
                 &format!("{name}.bin"),
-                &compressed,
-                Some(&data),
+                &encoded,
+                Some(&uncompressed),
                 &mut files,
             )?;
             write_tracked_file(part, &format!("{name}.mrk2"), &marks, None, &mut files)?;
         }
     }
+
     // Write the manifest only after all listed files have been synced.
     write_file(&part.join("checksums.txt"), &encode_checksums(&files))?;
     fs::File::open(part)
@@ -309,8 +328,8 @@ pub fn write_wide_part(
 mod tests {
     use super::*;
     use crate::{
-        NumericColumn, TypedColumn, TypedPartReader, inspect_part, read_checksums,
-        verify_part_file_sizes,
+        NumericColumn, TypedColumn, TypedPartReader, inspect_part, read_checksums, read_wide_marks,
+        verify_part_file_sizes, verify_wide_part,
     };
     use std::sync::atomic::{AtomicUsize, Ordering};
 
@@ -477,6 +496,57 @@ mod tests {
             })
         );
         assert_eq!(verify_part_file_sizes(&part).unwrap().files, 8);
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn writes_multiple_aligned_granules_and_reads_each_batch() {
+        let root = root();
+        let part = root.join("all_2_2_0");
+        let cols = vec![
+            Column {
+                name: "id".into(),
+                data_type: "UInt64".into(),
+            },
+            Column {
+                name: "note".into(),
+                data_type: "Nullable(String)".into(),
+            },
+        ];
+        let rows: Vec<Vec<Option<String>>> = (0..2100)
+            .map(|i| vec![Some(i.to_string()), (i % 3 != 0).then(|| format!("row{i}"))])
+            .collect();
+        write_wide_part(&part, &cols, &rows).unwrap();
+        let marks = read_wide_marks(part.join("id.mrk2")).unwrap();
+        assert_eq!(
+            marks.marks.iter().map(|mark| mark.rows).collect::<Vec<_>>(),
+            vec![Some(1024), Some(1024), Some(52)]
+        );
+        assert!(marks.marks[0].compressed_offset < marks.marks[1].compressed_offset);
+        let note_marks = read_wide_marks(part.join("note.null.mrk2")).unwrap();
+        assert_eq!(
+            note_marks
+                .marks
+                .iter()
+                .map(|mark| mark.rows)
+                .collect::<Vec<_>>(),
+            vec![Some(1024), Some(1024), Some(52)]
+        );
+        verify_wide_part(&part).unwrap();
+        let mut scan = TypedPartReader::open(&part, &["id".into(), "note".into()]).unwrap();
+        for (first, count) in [(0u64, 1024usize), (1024, 1024), (2048, 52)] {
+            let batch = scan.next_batch().unwrap().unwrap();
+            assert_eq!(batch[0].len(), count);
+            assert_eq!(batch[1].len(), count);
+            assert!(
+                matches!(&batch[0], TypedColumn::Numeric(NumericColumn::UInt64(values))
+                    if values.first() == Some(&first)
+                        && values.last() == Some(&(first + count as u64 - 1)))
+            );
+            assert!(matches!(&batch[1], TypedColumn::NullableText { nulls, .. }
+                if nulls[0] == u8::from(first % 3 == 0)));
+        }
+        assert!(scan.next_batch().unwrap().is_none());
         fs::remove_dir_all(root).unwrap();
     }
 
