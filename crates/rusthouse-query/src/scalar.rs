@@ -4,11 +4,19 @@ use super::{ParseError, Parser, Token};
 
 const MAX_DEPTH: usize = 16;
 
+fn is_extrema(name: &str) -> bool {
+    name.eq_ignore_ascii_case("GREATEST") || name.eq_ignore_ascii_case("LEAST")
+}
+
+fn is_bitwise(name: &str) -> bool {
+    matches!(name.to_ascii_uppercase().as_str(), "BITAND" | "BITOR" | "BITXOR")
+}
+
 pub(super) fn is_function(name: &str) -> bool {
-    matches!(
-        name.to_ascii_uppercase().as_str(),
-        "ABS" | "SIGN" | "BITAND" | "BITOR" | "BITXOR"
-    )
+    name.eq_ignore_ascii_case("ABS")
+        || name.eq_ignore_ascii_case("SIGN")
+        || is_extrema(name)
+        || is_bitwise(name)
 }
 
 pub(super) fn parse(parser: &mut Parser) -> Result<i64, ParseError> {
@@ -78,27 +86,59 @@ fn factor(parser: &mut Parser, depth: usize) -> Result<i64, ParseError> {
     if parser.take(Token::Plus) {
         return factor(parser, depth + 1);
     }
+    if matches!(parser.tokens.get(parser.index), Some(Token::Word(name)) if is_extrema(name)) {
+        let name = parser.word()?;
+        if !parser.take(Token::LParen) {
+            return Err(ParseError(format!("{name} requires '('")));
+        }
+        let mut value = expression(parser, depth + 1)?;
+        if !parser.take(Token::Comma) {
+            return Err(ParseError(format!(
+                "{name} requires at least two arguments"
+            )));
+        }
+        let mut count = 1usize;
+        loop {
+            if count == 16 {
+                return Err(ParseError(format!("{name} supports at most 16 arguments")));
+            }
+            let candidate = expression(parser, depth + 1)?;
+            value = if name.eq_ignore_ascii_case("GREATEST") {
+                value.max(candidate)
+            } else {
+                value.min(candidate)
+            };
+            count += 1;
+            if !parser.take(Token::Comma) {
+                break;
+            }
+        }
+        if !parser.take(Token::RParen) {
+            return Err(ParseError(format!("expected ')' after {name} arguments")));
+        }
+        return Ok(value);
+    }
     if matches!(parser.tokens.get(parser.index), Some(Token::Word(name)) if is_function(name)) {
         let name = parser.word()?;
         if !parser.take(Token::LParen) {
             return Err(ParseError("expected '(' after scalar function".into()));
         }
         let first = expression(parser, depth + 1)?;
-        let result = match name.to_ascii_uppercase().as_str() {
-            "ABS" => first.checked_abs().ok_or_else(overflow)?,
-            "SIGN" => first.signum(),
-            "BITAND" | "BITOR" | "BITXOR" => {
-                if !parser.take(Token::Comma) {
-                    return Err(ParseError("bitwise functions require two arguments".into()));
-                }
-                let second = expression(parser, depth + 1)?;
-                match name.to_ascii_uppercase().as_str() {
-                    "BITAND" => first & second,
-                    "BITOR" => first | second,
-                    _ => first ^ second,
-                }
+        let result = if is_bitwise(&name) {
+            if !parser.take(Token::Comma) {
+                return Err(ParseError("bitwise functions require two arguments".into()));
             }
-            _ => unreachable!("only supported scalar functions reach this branch"),
+            let second = expression(parser, depth + 1)?;
+            match name.to_ascii_uppercase().as_str() {
+                "BITAND" => first & second,
+                "BITOR" => first | second,
+                "BITXOR" => first ^ second,
+                _ => unreachable!("only supported bitwise functions reach this branch"),
+            }
+        } else if name.eq_ignore_ascii_case("ABS") {
+            first.checked_abs().ok_or_else(overflow)?
+        } else {
+            first.signum()
         };
         if !parser.take(Token::RParen) {
             return Err(ParseError("expected ')' after scalar function".into()));

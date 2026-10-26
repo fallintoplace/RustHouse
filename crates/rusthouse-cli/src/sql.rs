@@ -1,4 +1,4 @@
-use crate::{csv, csv_no_header, html, json_array, jsonl, markdown, vertical};
+use crate::{csv, csv_no_header, html, json_array, jsonl, markdown, sql_values, vertical};
 use rusthouse_query::{
     Source, execute, explain_join, explain_select, parse_ddl, parse_delete, parse_insert,
     parse_join, parse_select, parse_update,
@@ -18,8 +18,10 @@ pub(super) enum SqlOutputFormat {
     CsvNoHeader,
     Jsonl,
     Json,
+    JsonPretty,
     Markdown,
     Html,
+    SqlValues,
     Vertical,
 }
 
@@ -32,11 +34,13 @@ impl SqlOutputFormat {
             Some("csv-no-header") => Ok(Self::CsvNoHeader),
             Some("jsonl") => Ok(Self::Jsonl),
             Some("json") => Ok(Self::Json),
+            Some("json-pretty") => Ok(Self::JsonPretty),
             Some("markdown") => Ok(Self::Markdown),
             Some("html") => Ok(Self::Html),
+            Some("sql-values") => Ok(Self::SqlValues),
             Some("vertical") => Ok(Self::Vertical),
             _ => Err(
-                "--format must be tsv, tsv-no-header, csv, csv-no-header, jsonl, json, markdown, html, or vertical"
+                "--format must be tsv, tsv-no-header, csv, csv-no-header, jsonl, json, json-pretty, markdown, html, sql-values, or vertical"
                     .into(),
             ),
         }
@@ -543,6 +547,11 @@ pub(super) fn run_sql_args(mut args: impl Iterator<Item = OsString>) -> Result<(
             part.as_deref(),
             &mut vertical::VerticalWriter::new(&mut output),
         ),
+        SqlOutputFormat::SqlValues => {
+            let mut writer = sql_values::SqlValuesWriter::new(&mut output);
+            execute(&select, part.as_deref(), &mut writer)
+                .and_then(|()| writer.finish().map_err(rusthouse_query::ExecutionError::Io))
+        }
         SqlOutputFormat::Jsonl => execute(
             &select,
             part.as_deref(),
@@ -550,6 +559,15 @@ pub(super) fn run_sql_args(mut args: impl Iterator<Item = OsString>) -> Result<(
         ),
         SqlOutputFormat::Json => {
             let mut writer = json_array::JsonArrayWriter::new(&mut output);
+            execute(&select, part.as_deref(), &mut writer).and_then(|()| {
+                writer
+                    .finish()
+                    .map(|_| ())
+                    .map_err(rusthouse_query::ExecutionError::Io)
+            })
+        }
+        SqlOutputFormat::JsonPretty => {
+            let mut writer = json_array::JsonArrayWriter::new_pretty(&mut output);
             execute(&select, part.as_deref(), &mut writer).and_then(|()| {
                 writer
                     .finish()
@@ -640,7 +658,9 @@ mod tests {
             "csv-no-header",
             "jsonl",
             "json",
+            "json-pretty",
             "markdown",
+            "sql-values",
             "vertical",
         ] {
             assert!(SqlOutputFormat::from_arg(Some(value.into())).is_ok());
