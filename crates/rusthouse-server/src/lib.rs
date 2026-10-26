@@ -271,6 +271,23 @@ enum QueryFormat {
     Markdown,
 }
 
+impl QueryFormat {
+    fn parse(value: &str) -> Result<Self, &'static str> {
+        Ok(match value {
+                    "tsv" => Self::Tsv,
+                    "tsv-no-header" => Self::TsvNoHeader,
+                    "csv" => Self::Csv,
+                    "csv-no-header" => Self::CsvNoHeader,
+                    "jsonl" => Self::Jsonl,
+                    "json" => Self::Json,
+                    "json-compact-each-row" => Self::JsonCompactEachRow,
+                    "sql-values" => Self::SqlValues,
+                    "markdown" => Self::Markdown,
+                    _ => return Err("unsupported query format"),
+        })
+    }
+}
+
 fn query_parameters(target: &str) -> Result<(String, Option<String>, QueryFormat), &'static str> {
     let (path, query) = target.split_once('?').unwrap_or((target, ""));
     if path != "/" && path != "/explain" {
@@ -293,18 +310,7 @@ fn query_parameters(target: &str) -> Result<(String, Option<String>, QueryFormat
                 if format.is_some() {
                     return Err("duplicate format parameter");
                 }
-                format = Some(match decode_url(value)?.as_str() {
-                    "tsv" => QueryFormat::Tsv,
-                    "tsv-no-header" => QueryFormat::TsvNoHeader,
-                    "csv" => QueryFormat::Csv,
-                    "csv-no-header" => QueryFormat::CsvNoHeader,
-                    "jsonl" => QueryFormat::Jsonl,
-                    "json" => QueryFormat::Json,
-                    "json-compact-each-row" => QueryFormat::JsonCompactEachRow,
-                    "sql-values" => QueryFormat::SqlValues,
-                    "markdown" => QueryFormat::Markdown,
-                    _ => return Err("unsupported query format"),
-                });
+                format = Some(QueryFormat::parse(&decode_url(value)?)?);
             }
             _ => return Err("unsupported URL query parameter"),
         }
