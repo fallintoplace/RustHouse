@@ -4,7 +4,7 @@ use super::{ExecutionError, Number, NumberKey, compare_numbers, number_at};
 use crate::{Operator, Predicate, Projection, Select};
 use rusthouse_storage::{TypedColumn, TypedQueryReader, inspect_query_source};
 use std::cmp::Ordering;
-use std::collections::{HashMap, HashSet};
+use std::collections::{HashMap, HashSet, hash_map::Entry};
 use std::io::Write;
 use std::path::Path;
 
@@ -313,7 +313,9 @@ pub(super) fn execute_typed<W: Write>(
             .collect::<Vec<_>>(),
         Projection::Columns(cols) => cols.clone(),
         Projection::Count => Vec::new(),
-        Projection::CountDistinct { column } => vec![column.clone()],
+        Projection::CountDistinct { column } | Projection::GroupedCount { column } => {
+            vec![column.clone()]
+        }
         _ => {
             return Err(ExecutionError::Invalid(
                 "typed SQL currently supports SELECT columns, COUNT(*) and COUNT(DISTINCT col)"
@@ -334,12 +336,17 @@ pub(super) fn execute_typed<W: Write>(
     {
         include(predicate.column());
     }
-    let sort = query.order_by.as_ref().map(|order| {
-        if query.alias.as_deref() == Some(order.column.as_str()) && projection.len() == 1 {
-            projection[0].clone()
-        } else {
-            order.column.clone()
+    let sort = query.order_by.as_ref().and_then(|order| {
+        if matches!(query.projection, Projection::GroupedCount { .. }) {
+            return None;
         }
+        Some(
+            if query.alias.as_deref() == Some(order.column.as_str()) && projection.len() == 1 {
+                projection[0].clone()
+            } else {
+                order.column.clone()
+            },
+        )
     });
     if let Some(sort) = &sort {
         include(sort);
@@ -378,6 +385,7 @@ pub(super) fn execute_typed<W: Write>(
     let header = match &query.projection {
         Projection::Count => "count".to_string(),
         Projection::CountDistinct { column } => format!("countDistinct({column})"),
+        Projection::GroupedCount { column } => format!("{column}\tcount"),
         _ => projection.join("\t"),
     };
     writeln!(output, "{}", query.alias.as_deref().unwrap_or(&header))?;
@@ -386,8 +394,11 @@ pub(super) fn execute_typed<W: Write>(
     }
     let is_count = matches!(query.projection, Projection::Count);
     let is_count_distinct = matches!(query.projection, Projection::CountDistinct { .. });
+    let is_grouped = matches!(query.projection, Projection::GroupedCount { .. });
     let mut count = 0u64;
     let mut distinct = HashSet::<Vec<Key>>::new();
+    let mut group_indices = HashMap::<Key, usize>::new();
+    let mut grouped_rows = Vec::<(Cell, u64)>::new();
     let mut ordered = Vec::<Row>::new();
     let mut emitted = 0usize;
     let mut skipped = 0usize;
@@ -402,6 +413,27 @@ pub(super) fn execute_typed<W: Write>(
                 count = count
                     .checked_add(1)
                     .ok_or_else(|| ExecutionError::Invalid("count overflow".into()))?;
+                continue;
+            }
+            if is_grouped {
+                let value = cell(&batch[projection_indices[0]], index);
+                match group_indices.entry(value.key()) {
+                    Entry::Occupied(entry) => {
+                        let count = &mut grouped_rows[*entry.get()].1;
+                        *count = count.checked_add(1).ok_or_else(|| {
+                            ExecutionError::Invalid("group count overflow".into())
+                        })?;
+                    }
+                    Entry::Vacant(entry) => {
+                        if grouped_rows.len() >= MAX_BUFFERED_ROWS {
+                            return Err(ExecutionError::Invalid(
+                                "GROUP BY supports at most 100000 groups".into(),
+                            ));
+                        }
+                        entry.insert(grouped_rows.len());
+                        grouped_rows.push((value, 1));
+                    }
+                }
                 continue;
             }
             let cells = projection_indices
@@ -442,6 +474,37 @@ pub(super) fn execute_typed<W: Write>(
                 return Ok(());
             }
         }
+    }
+    if is_grouped {
+        if let Some(having) = &query.having {
+            grouped_rows.retain(|(_, count)| {
+                super::predicates::number_matches(
+                    Number::Unsigned(u128::from(*count)),
+                    Number::Unsigned(u128::from(having.value)),
+                    having.operator,
+                )
+            });
+        }
+        if let Some(order) = &query.order_by {
+            grouped_rows.sort_by(|(left_key, left_count), (right_key, right_count)| {
+                let ordering = if order.column == "count" {
+                    left_count.cmp(right_count)
+                } else {
+                    cmp(left_key, right_key)
+                };
+                let ordering = if order.descending {
+                    ordering.reverse()
+                } else {
+                    ordering
+                };
+                ordering.then_with(|| cmp(left_key, right_key))
+            });
+        }
+        for (key, count) in grouped_rows.into_iter().skip(offset).take(limit) {
+            write_value(output, &key)?;
+            writeln!(output, "\t{count}")?;
+        }
+        return Ok(());
     }
     if is_count || is_count_distinct {
         if offset == 0 {
