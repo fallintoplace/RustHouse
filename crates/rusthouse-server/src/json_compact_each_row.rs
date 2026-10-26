@@ -150,11 +150,7 @@ mod tests {
         let mut output = Vec::new();
         write_compact_row(&mut output, "1\tcafé".as_bytes(), 2).unwrap();
         write_compact_row(&mut output, b"2\ta\\tb", 2).unwrap();
-        assert_eq!(
-            output,
-            "[\"1\",\"café\"]\n[\"2\",\"a\\tb\"]\n".as_bytes()
-        );
+        assert_eq!(output, "[\"1\",\"café\"]\n[\"2\",\"a\\tb\"]\n".as_bytes());
         assert!(write_compact_row(&mut Vec::new(), &[0xff], 1).is_err());
     }
-
 }
