@@ -169,11 +169,21 @@ fn encode_checksums(files: &[FileChecksum]) -> Vec<u8> {
 
 fn block(data: &[u8]) -> Result<Vec<u8>, PartError> {
     let length = u32::try_from(data.len()).map_err(|_| invalid("part column is too large"))?;
-    let mut encoded = Vec::with_capacity(25 + data.len());
-    encoded.push(0x02); // Uncompressed block, supported by the existing reader.
-    encoded.extend_from_slice(&(length + 9).to_le_bytes());
+    // Small and incompressible columns keep the lightweight uncompressed codec.
+    let compressed = (data.len() >= 128).then(|| lz4_flex::block::compress(data));
+    let (method, payload) = match compressed.as_ref() {
+        Some(bytes) if bytes.len().saturating_add(16) < data.len() => {
+            (0x82, bytes.as_slice())
+        }
+        _ => (0x02, data),
+    };
+    let compressed_size =
+        u32::try_from(payload.len()).map_err(|_| invalid("part column is too large"))?;
+    let mut encoded = Vec::with_capacity(9 + payload.len());
+    encoded.push(method);
+    encoded.extend_from_slice(&(compressed_size + 9).to_le_bytes());
     encoded.extend_from_slice(&length.to_le_bytes());
-    encoded.extend_from_slice(data);
+    encoded.extend_from_slice(payload);
     let checksum = u128::from(cityhash128(&encoded)).to_le_bytes();
     let mut result = Vec::with_capacity(16 + encoded.len());
     result.extend_from_slice(&checksum);
@@ -300,6 +310,21 @@ mod tests {
         ));
         fs::create_dir(&path).unwrap();
         path
+    }
+
+    #[test]
+    fn compresses_repeating_streams_but_leaves_tiny_blocks_raw() {
+        use crate::CompressedBlockReader;
+        use std::io::Cursor;
+
+        for (data, codec) in [(vec![7u8; 4096], 0x82u8), (vec![1, 2, 3], 0x02)] {
+            let encoded = block(&data).unwrap();
+            let mut reader = CompressedBlockReader::new(Cursor::new(encoded), "column.bin").unwrap();
+            let decoded = reader.next_decoded().unwrap().unwrap();
+            assert_eq!(decoded.block.method, codec);
+            assert_eq!(decoded.data, data);
+            assert!(reader.next_decoded().is_none());
+        }
     }
 
     #[test]
