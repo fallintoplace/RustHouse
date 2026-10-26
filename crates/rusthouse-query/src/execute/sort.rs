@@ -149,9 +149,11 @@ impl SortedRows {
         let retained = self.requested.min(MAX_SORTED_ROWS);
         if self.rows.len() < retained {
             self.rows.push(row);
-        } else if self.rows.peek().is_some_and(|worst| row < *worst) {
-            self.rows.pop();
-            self.rows.push(row);
+        } else if let Some(mut worst) = self.rows.peek_mut() {
+            // Reheapify only once when the incoming row beats the current worst.
+            if row < *worst {
+                *worst = row;
+            }
         }
         Ok(())
     }
@@ -173,6 +175,29 @@ impl SortedRows {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn bounded_heap_keeps_the_best_rows_with_offset_and_ties() {
+        let mut sorted = SortedRows::with_offset(Some(2), 1, false).unwrap();
+        for value in [10u128, 8, 1, 4, 1, 3, 2] {
+            sorted
+                .push(Number::Unsigned(value), vec![Number::Unsigned(value)])
+                .unwrap();
+        }
+        let mut output = Vec::new();
+        sorted.write(&mut output).unwrap();
+        assert_eq!(output, b"1\n2\n");
+
+        let mut descending = SortedRows::new(Some(2), true);
+        for value in [5u128, 1, 9, 3, 9] {
+            descending
+                .push(Number::Unsigned(value), vec![Number::Unsigned(value)])
+                .unwrap();
+        }
+        let mut output = Vec::new();
+        descending.write(&mut output).unwrap();
+        assert_eq!(output, b"9\n9\n");
+    }
 
     #[test]
     fn shares_sort_directions_and_keeps_secondary_order() {
