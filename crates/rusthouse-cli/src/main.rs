@@ -35,7 +35,9 @@ impl SqlOutputFormat {
             Some("csv-no-header") => Ok(Self::CsvNoHeader),
             Some("jsonl") => Ok(Self::Jsonl),
             Some("json") => Ok(Self::Json),
-            _ => Err("--format must be tsv, tsv-no-header, csv, csv-no-header, jsonl, or json".into()),
+            _ => Err(
+                "--format must be tsv, tsv-no-header, csv, csv-no-header, jsonl, or json".into(),
+            ),
         }
     }
 }
