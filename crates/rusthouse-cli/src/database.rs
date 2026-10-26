@@ -13,6 +13,18 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 
 static NEXT_STAGE: AtomicUsize = AtomicUsize::new(0);
 
+// Debug-only subprocess fault points for commit boundary tests.
+#[cfg(debug_assertions)]
+pub(super) fn crash_if_requested(point: &str) {
+    if std::env::var("RUSTHOUSE_DEBUG_CRASH_AT").is_ok_and(|value| value == point) {
+        eprintln!("RustHouse debug crash point: {point}");
+        std::process::exit(86);
+    }
+}
+
+#[cfg(not(debug_assertions))]
+pub(super) fn crash_if_requested(_point: &str) {}
+
 fn lock(database: &Path) -> Result<DatabaseLock, String> {
     acquire_database_lock(database, true)
 }
@@ -431,8 +443,10 @@ pub(super) fn insert_locked(database: &Path, insert: &Insert) -> Result<(), Stri
     let result = (|| {
         write_wide_part(&staging, &cols, &rows).map_err(|error| error.to_string())?;
         verify_wide_part(&staging).map_err(|error| error.to_string())?;
+        crash_if_requested("insert-after-staging");
         fs::rename(&staging, &destination)
             .map_err(|error| format!("cannot publish inserted rows: {error}"))?;
+        crash_if_requested("insert-after-rename");
         fs::File::open(&parts_dir)
             .and_then(|dir| dir.sync_all())
             .map_err(|error| format!("cannot sync table data: {error}"))?;
