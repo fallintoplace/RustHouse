@@ -304,8 +304,8 @@ pub fn write_wide_part(
 mod tests {
     use super::*;
     use crate::{
-        NumericColumn, TypedColumn, TypedPartReader, inspect_part, read_checksums,
-        read_wide_marks, verify_part_file_sizes, verify_wide_part,
+        NumericColumn, TypedColumn, TypedPartReader, inspect_part, read_checksums, read_wide_marks,
+        verify_part_file_sizes, verify_wide_part,
     };
     use std::sync::atomic::{AtomicUsize, Ordering};
 
@@ -461,7 +461,11 @@ mod tests {
         assert!(marks.marks[0].compressed_offset < marks.marks[1].compressed_offset);
         let note_marks = read_wide_marks(part.join("note.null.mrk2")).unwrap();
         assert_eq!(
-            note_marks.marks.iter().map(|mark| mark.rows).collect::<Vec<_>>(),
+            note_marks
+                .marks
+                .iter()
+                .map(|mark| mark.rows)
+                .collect::<Vec<_>>(),
             vec![Some(1024), Some(1024), Some(52)]
         );
         verify_wide_part(&part).unwrap();
