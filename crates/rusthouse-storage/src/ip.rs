@@ -33,7 +33,9 @@ pub fn read_ipv4_values<R: Read>(reader: &mut R, rows: usize) -> io::Result<Vec<
             "IPv4 batch exceeds 64 MiB",
         ));
     }
-    read_addresses(reader, rows, |bytes| Ipv4Addr::from(u32::from_le_bytes(bytes)))
+    read_addresses(reader, rows, |bytes| {
+        Ipv4Addr::from(u32::from_le_bytes(bytes))
+    })
 }
 
 /// Decode ClickHouse IPv6's 16-byte network-order physical representation.
