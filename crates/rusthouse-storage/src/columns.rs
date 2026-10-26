@@ -12,6 +12,7 @@ pub fn parse_columns(content: &str) -> Result<Vec<Column>, PartError> {
         .ok_or_else(|| invalid(2, "missing column-count header"))?;
     let expected = header
         .strip_suffix(" columns:")
+        .filter(|value| !value.is_empty() && value.bytes().all(|b| b.is_ascii_digit()))
         .and_then(|value| value.parse::<usize>().ok())
         .ok_or_else(|| invalid(2, "expected '<count> columns:'"))?;
 
@@ -232,6 +233,13 @@ mod tests {
             parse_columns("columns format version: 1\nwrong\n"),
             Err(PartError::InvalidColumns { line: 2, .. })
         ));
+        for header in ["+1 columns:", "-1 columns:", " 1 columns:", "1 columns: "] {
+            let content = format!("columns format version: 1\n{header}\n`id` UInt64\n");
+            assert!(
+                matches!(parse_columns(&content), Err(PartError::InvalidColumns { line: 2, .. })),
+                "{header:?}"
+            );
+        }
     }
 
     #[test]
