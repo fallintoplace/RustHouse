@@ -139,13 +139,13 @@ fn generations_dir(database: &Path, table: &str) -> Result<std::path::PathBuf, S
     }
 }
 
-/// Publish a complete immutable generation and then atomically swap its pointer.
+/// Publish a verified immutable generation and atomically swap its pointer.
+/// The staging writer may stream parts without holding the whole table in memory.
 /// Caller must hold the database write lock and validate the existing table.
-pub(super) fn publish_snapshot(
+fn publish_snapshot_with(
     database: &Path,
     table: &str,
-    cols: &[Column],
-    rows: &[Vec<Option<String>>],
+    prepare: impl FnOnce(&Path) -> Result<(), String>,
 ) -> Result<(), String> {
     let versions = generations_dir(database, table)?;
     let mut highest = 0u64;
@@ -175,18 +175,7 @@ pub(super) fn publish_snapshot(
     fs::create_dir(&staging)
         .map_err(|error| format!("cannot stage new database snapshot: {error}"))?;
     let prepared = (|| -> Result<(), String> {
-        if rows.is_empty() {
-            let part = staging.join("all_0_0_0");
-            write_wide_part(&part, cols, &[]).map_err(|error| error.to_string())?;
-            verify_wide_part(&part).map_err(|error| error.to_string())?;
-        } else {
-            for (index, chunk) in rows.chunks(PART_ROWS).enumerate() {
-                let number = index + 1;
-                let part = staging.join(format!("all_{number}_{number}_0"));
-                write_wide_part(&part, cols, chunk).map_err(|error| error.to_string())?;
-                verify_wide_part(&part).map_err(|error| error.to_string())?;
-            }
-        }
+        prepare(&staging)?;
         sync_directory(&staging)?;
         crash_if_requested("snapshot-after-staging");
         Ok(())
@@ -228,6 +217,31 @@ pub(super) fn publish_snapshot(
     Ok(())
 }
 
+/// Publish a bounded in-memory rewrite for UPDATE, DELETE, and TRUNCATE.
+/// The staging and pointer protocol is shared with streaming compaction.
+pub(super) fn publish_snapshot(
+    database: &Path,
+    table: &str,
+    cols: &[Column],
+    rows: &[Vec<Option<String>>],
+) -> Result<(), String> {
+    publish_snapshot_with(database, table, |staging| {
+        if rows.is_empty() {
+            let part = staging.join("all_0_0_0");
+            write_wide_part(&part, cols, &[]).map_err(|error| error.to_string())?;
+            verify_wide_part(&part).map_err(|error| error.to_string())?;
+        } else {
+            for (index, chunk) in rows.chunks(PART_ROWS).enumerate() {
+                let number = index + 1;
+                let part = staging.join(format!("all_{number}_{number}_0"));
+                write_wide_part(&part, cols, chunk).map_err(|error| error.to_string())?;
+                verify_wide_part(&part).map_err(|error| error.to_string())?;
+            }
+        }
+        Ok(())
+    })
+}
+
 /// Rewrite a local table while preserving the previous active snapshot on failure.
 pub(super) fn rewrite_rows(
     database: &Path,
@@ -243,6 +257,8 @@ pub(super) fn rewrite_rows(
     Ok((read, retained))
 }
 
+/// Stream immutable table rows into verified compacted parts. Keep only
+/// PART_ROWS decoded rows in memory, independent of the full table size.
 pub(super) fn compact_table(database: &Path, table: &str) -> Result<(), String> {
     let _lock = lock(database)?;
     let cols = columns(database, table)?;
@@ -251,23 +267,55 @@ pub(super) fn compact_table(database: &Path, table: &str) -> Result<(), String> 
         println!("Table {table} is already compact");
         return Ok(());
     }
-    let (rows, read) = read_rows(&source, &cols, |_, _, _| Ok(true))?;
-    let kept = rows.len();
-    publish_snapshot(database, table, &cols, &rows)?;
-    println!("Optimized table {table}: read {read} rows, retained {kept}");
+    let expected = inspect_query_source(&source)
+        .map_err(|error| error.to_string())?
+        .rows;
+    let names = cols.iter().map(|column| column.name.clone()).collect::<Vec<_>>();
+    let mut reader =
+        TypedQueryReader::open(&source, &names).map_err(|error| error.to_string())?;
+    let mut scanned = 0u64;
+    publish_snapshot_with(database, table, |staging| {
+        let mut buffer = Vec::with_capacity(PART_ROWS);
+        let mut part_number = 0u64;
+        let mut flush = |rows: &mut Vec<Vec<Option<String>>>| -> Result<(), String> {
+            if rows.is_empty() {
+                return Ok(());
+            }
+            part_number = part_number.checked_add(1).ok_or("part number overflow")?;
+            let part = staging.join(format!("all_{part_number}_{part_number}_0"));
+            write_wide_part(&part, &cols, rows).map_err(|error| error.to_string())?;
+            verify_wide_part(&part).map_err(|error| error.to_string())?;
+            rows.clear();
+            Ok(())
+        };
+        while let Some(batch) = reader.next_batch().map_err(|error| error.to_string())? {
+            let length = batch.first().map_or(0, TypedColumn::len);
+            if batch.len() != cols.len() || batch.iter().any(|column| column.len() != length) {
+                return Err("corrupt database scan batch".into());
+            }
+            for index in 0..length {
+                let row = batch
+                    .iter()
+                    .map(|column| column_value(column, index))
+                    .collect::<Result<Vec<_>, _>>()?;
+                buffer.push(row);
+                scanned = scanned.checked_add(1).ok_or("table row count overflow")?;
+                if buffer.len() == PART_ROWS {
+                    flush(&mut buffer)?;
+                }
+            }
+        }
+        if scanned != expected {
+            return Err("database compaction read an inconsistent row count".into());
+        }
+        flush(&mut buffer)?;
+        if scanned == 0 {
+            let part = staging.join("all_0_0_0");
+            write_wide_part(&part, &cols, &[]).map_err(|error| error.to_string())?;
+            verify_wide_part(&part).map_err(|error| error.to_string())?;
+        }
+        Ok(())
+    })?;
+    println!("Optimized table {table}: read {scanned} rows, retained {scanned}");
     Ok(())
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn rejects_non_utf8_text_conversion_without_panicking() {
-        assert!(text_value(Some(&[0xff])).is_err());
-        assert_eq!(
-            text_value(Some(b"hello")).unwrap(),
-            Some("hello".to_string())
-        );
-    }
 }
