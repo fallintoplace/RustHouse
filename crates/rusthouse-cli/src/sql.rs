@@ -49,7 +49,6 @@ fn read_sql_input(input: impl std::io::Read, source: &str, label: &str) -> Resul
 }
 
 pub(super) fn run_sql_args(mut args: impl Iterator<Item = OsString>) -> Result<(), String> {
-
     let mut query = None;
     let mut file = None;
     let mut read_stdin = false;
@@ -274,7 +273,9 @@ mod tests {
     #[test]
     fn bounded_input_accepts_exact_limit_and_rejects_invalid_input() {
         assert_eq!(
-            read_sql_input(&vec![b'x'; 4096][..], "SQL file", "SQL file").unwrap().len(),
+            read_sql_input(&vec![b'x'; 4096][..], "SQL file", "SQL file")
+                .unwrap()
+                .len(),
             4096
         );
         assert_eq!(
