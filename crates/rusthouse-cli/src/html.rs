@@ -162,10 +162,7 @@ mod tests {
         let mut output = Vec::new();
         write_cells(&mut output, "name\tvalue", true).unwrap();
         write_cells(&mut output, "id\t1", false).unwrap();
-        assert_eq!(
-            output,
-            b"<th>name</th><th>value</th><td>id</td><td>1</td>"
-        );
+        assert_eq!(output, b"<th>name</th><th>value</th><td>id</td><td>1</td>");
     }
 
     #[test]
