@@ -79,8 +79,8 @@ fn options() -> (usize, usize) {
         }
     }
     assert!(
-        (1..=262_144).contains(&rows),
-        "rows must be between 1 and 262144"
+        (1..=1_048_576).contains(&rows),
+        "rows must be between 1 and 1048576"
     );
     assert!(
         samples > 0 && samples % 2 == 1,
