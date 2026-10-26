@@ -15,13 +15,12 @@ pub struct FileSizeVerification {
 /// Symlinks are not followed, including symlinks in nested paths.
 pub fn verify_part_file_sizes(part: impl AsRef<Path>) -> Result<FileSizeVerification, PartError> {
     let part = part.as_ref();
-    let root_metadata = fs::symlink_metadata(part).map_err(|source| io_error(part, source))?;
+    let root_metadata = nofollow_metadata(part)?;
     if !root_metadata.file_type().is_dir() {
         return Err(invalid(part, "part path is not a directory"));
     }
     let checksums_path = part.join("checksums.txt");
-    let metadata = fs::symlink_metadata(&checksums_path)
-        .map_err(|source| io_error(&checksums_path, source))?;
+    let metadata = nofollow_metadata(&checksums_path)?;
     ensure_regular_file(
         &metadata,
         &checksums_path,
@@ -41,6 +40,11 @@ pub fn verify_part_file_sizes(part: impl AsRef<Path>) -> Result<FileSizeVerifica
         files: manifest.files.len(),
         total_bytes,
     })
+}
+
+/// Read metadata for the directory entry itself, never its symlink target.
+fn nofollow_metadata(path: &Path) -> Result<fs::Metadata, PartError> {
+    fs::symlink_metadata(path).map_err(|source| io_error(path, source))
 }
 
 fn ensure_regular_file(
@@ -80,7 +84,7 @@ fn verify_component(
     is_parent: bool,
     expected_size: u64,
 ) -> Result<(), PartError> {
-    let metadata = fs::symlink_metadata(path).map_err(|source| io_error(path, source))?;
+    let metadata = nofollow_metadata(path)?;
     if is_parent {
         if !metadata.file_type().is_dir() {
             return Err(invalid(
