@@ -88,20 +88,27 @@ fn write_json_string<W: Write>(writer: &mut W, input: &[u8]) -> io::Result<()> {
         io::Error::new(io::ErrorKind::InvalidData, "JSONL field is not valid UTF-8")
     })?;
     writer.write_all(b"\"")?;
-    for ch in input.chars() {
-        match ch {
-            '"' => writer.write_all(b"\\\"")?,
-            '\\' => writer.write_all(b"\\\\")?,
-            '\n' => writer.write_all(b"\\n")?,
-            '\r' => writer.write_all(b"\\r")?,
-            '\t' => writer.write_all(b"\\t")?,
-            ch if ch.is_control() => write!(writer, "\\u{:04x}", ch as u32)?,
-            ch => {
-                let mut buf = [0; 4];
-                writer.write_all(ch.encode_utf8(&mut buf).as_bytes())?;
-            }
+    let mut start = 0;
+    for (index, ch) in input.char_indices() {
+        let escaped: Option<&[u8]> = match ch {
+            '"' => Some(b"\\\""),
+            '\\' => Some(b"\\\\"),
+            '\n' => Some(b"\\n"),
+            '\r' => Some(b"\\r"),
+            '\t' => Some(b"\\t"),
+            _ => None,
+        };
+        if let Some(escaped) = escaped {
+            writer.write_all(input[start..index].as_bytes())?;
+            writer.write_all(escaped)?;
+            start = index + ch.len_utf8();
+        } else if ch.is_control() {
+            writer.write_all(input[start..index].as_bytes())?;
+            write!(writer, "\\u{:04x}", ch as u32)?;
+            start = index + ch.len_utf8();
         }
     }
+    writer.write_all(input[start..].as_bytes())?;
     writer.write_all(b"\"")
 }
 
@@ -131,6 +138,33 @@ impl<W: Write> Write for JsonlWriter<W> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn writes_plain_json_fields_in_bulk_without_losing_unicode() {
+        struct CountingWriter {
+            calls: usize,
+            bytes: Vec<u8>,
+        }
+        impl Write for CountingWriter {
+            fn write(&mut self, bytes: &[u8]) -> io::Result<usize> {
+                self.calls += 1;
+                self.bytes.extend_from_slice(bytes);
+                Ok(bytes.len())
+            }
+
+            fn flush(&mut self) -> io::Result<()> {
+                Ok(())
+            }
+        }
+
+        let mut output = CountingWriter {
+            calls: 0,
+            bytes: Vec::new(),
+        };
+        write_json_string(&mut output, "plain café".as_bytes()).unwrap();
+        assert_eq!(output.calls, 3);
+        assert_eq!(output.bytes, "\"plain café\"".as_bytes());
+    }
 
     #[test]
     fn writes_escaped_json_and_preserves_large_values() {
