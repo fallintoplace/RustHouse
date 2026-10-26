@@ -8,8 +8,12 @@ fn is_extrema(name: &str) -> bool {
     name.eq_ignore_ascii_case("GREATEST") || name.eq_ignore_ascii_case("LEAST")
 }
 
+fn is_power(name: &str) -> bool {
+    name.eq_ignore_ascii_case("POWER") || name.eq_ignore_ascii_case("POW")
+}
+
 pub(super) fn is_function(name: &str) -> bool {
-    name.eq_ignore_ascii_case("ABS") || name.eq_ignore_ascii_case("SIGN") || is_extrema(name)
+    name.eq_ignore_ascii_case("ABS") || name.eq_ignore_ascii_case("SIGN") || is_extrema(name) || is_power(name)
 }
 
 pub(super) fn parse(parser: &mut Parser) -> Result<i64, ParseError> {
@@ -78,6 +82,22 @@ fn factor(parser: &mut Parser, depth: usize) -> Result<i64, ParseError> {
     }
     if parser.take(Token::Plus) {
         return factor(parser, depth + 1);
+    }
+    if parser.keyword("POWER") || parser.keyword("POW") {
+        if !parser.take(Token::LParen) {
+            return Err(ParseError("POWER requires '('".into()));
+        }
+        let base = expression(parser, depth + 1)?;
+        if !parser.take(Token::Comma) {
+            return Err(ParseError("POWER requires two arguments".into()));
+        }
+        let exponent = expression(parser, depth + 1)?;
+        if !parser.take(Token::RParen) {
+            return Err(ParseError("POWER requires ')' after exponent".into()));
+        }
+        let exponent = u32::try_from(exponent)
+            .map_err(|_| ParseError("POWER exponent must be non-negative and fit UInt32".into()))?;
+        return base.checked_pow(exponent).ok_or_else(overflow);
     }
     if matches!(parser.tokens.get(parser.index), Some(Token::Word(name)) if is_extrema(name)) {
         let name = parser.word()?;
