@@ -14,6 +14,12 @@ pub(super) enum Token {
     Operator(Operator),
 }
 
+fn advance_ascii_digits(bytes: &[u8], index: &mut usize) {
+    while matches!(bytes.get(*index), Some(b'0'..=b'9')) {
+        *index += 1;
+    }
+}
+
 fn scan_number(sql: &str, index: &mut usize) -> Result<Token, ParseError> {
     let bytes = sql.as_bytes();
     let start = *index;
@@ -23,17 +29,13 @@ fn scan_number(sql: &str, index: &mut usize) -> Result<Token, ParseError> {
             return Err(ParseError("expected digits after '-'".into()));
         }
     }
-    while matches!(bytes.get(*index), Some(b'0'..=b'9')) {
-        *index += 1;
-    }
+    advance_ascii_digits(bytes, index);
     if bytes.get(*index) == Some(&b'.') {
         *index += 1;
         if !matches!(bytes.get(*index), Some(b'0'..=b'9')) {
             return Err(ParseError("expected digits after decimal point".into()));
         }
-        while matches!(bytes.get(*index), Some(b'0'..=b'9')) {
-            *index += 1;
-        }
+        advance_ascii_digits(bytes, index);
     }
     Ok(Token::Number(sql[start..*index].into()))
 }
