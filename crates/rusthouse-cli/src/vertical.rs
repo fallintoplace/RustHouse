@@ -119,10 +119,7 @@ mod tests {
     fn escapes_terminal_controls_in_headers_and_values() {
         let mut writer = VerticalWriter::new(Vec::new());
         writer.write_all(b"na\x1bme\nva\x00lue\x7f\n").unwrap();
-        assert_eq!(
-            writer.output,
-            b"Row 1:\n  na\\x1Bme: va\\x00lue\\x7F\n\n"
-        );
+        assert_eq!(writer.output, b"Row 1:\n  na\\x1Bme: va\\x00lue\\x7F\n\n");
     }
 
     #[test]
