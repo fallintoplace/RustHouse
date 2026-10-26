@@ -4,10 +4,10 @@
 use super::{ExecutionError, Number, compare_numbers};
 use std::cmp::Ordering;
 use std::collections::BinaryHeap;
-use std::io::{Write, self};
+use std::io::{self, Write};
 use std::sync::Arc;
 
-const MAX_SORTED_ROWS: usize = 100_000;
+pub(super) const MAX_SORTED_ROWS: usize = 100_000;
 
 struct SortedRow {
     key: Number,
@@ -102,10 +102,19 @@ impl SortedRows {
         Ok(sorted)
     }
 
-    pub(super) fn set_extra_directions(
-        &mut self,
-        directions: impl IntoIterator<Item = bool>,
-    ) {
+    pub(super) fn requested(&self) -> usize {
+        self.requested
+    }
+
+    pub(super) fn offset(&self) -> usize {
+        self.offset
+    }
+
+    pub(super) fn descending(&self) -> bool {
+        self.descending
+    }
+
+    pub(super) fn set_extra_directions(&mut self, directions: impl IntoIterator<Item = bool>) {
         self.extra_descending = Arc::from(directions.into_iter().collect::<Vec<_>>());
     }
 
@@ -178,10 +187,12 @@ mod tests {
                 )
                 .unwrap();
         }
-        assert!(sorted
-            .rows
-            .iter()
-            .all(|row| Arc::ptr_eq(&row.extra_descending, &sorted.extra_descending)));
+        assert!(
+            sorted
+                .rows
+                .iter()
+                .all(|row| Arc::ptr_eq(&row.extra_descending, &sorted.extra_descending))
+        );
 
         let mut output = Vec::new();
         sorted.write(&mut output).unwrap();
