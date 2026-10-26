@@ -1,6 +1,7 @@
 use crate::{AggregateFunction, Operator, Predicate, Projection, Select, Source};
 use rusthouse_storage::{NumericColumn, NumericPartReader, PartError, inspect_part};
 use std::cmp::Ordering;
+use std::collections::hash_map::Entry;
 use std::collections::{BinaryHeap, HashMap, HashSet};
 use std::error::Error;
 use std::fmt;
@@ -344,20 +345,23 @@ struct GroupedCounts {
 
 impl GroupedCounts {
     fn push(&mut self, value: Number) -> Result<(), ExecutionError> {
-        let key = NumberKey::from(value);
-        if let Some(&index) = self.by_key.get(&key) {
-            self.rows[index].1 = self.rows[index]
-                .1
-                .checked_add(1)
-                .ok_or_else(|| ExecutionError::Invalid("group count overflow".into()))?;
-        } else {
-            if self.rows.len() >= MAX_GROUPS {
-                return Err(ExecutionError::Invalid(
-                    "GROUP BY supports at most 100000 groups".into(),
-                ));
+        // Entry avoids hashing a new key twice (lookup followed by insert).
+        match self.by_key.entry(NumberKey::from(value)) {
+            Entry::Occupied(entry) => {
+                let count = &mut self.rows[*entry.get()].1;
+                *count = count
+                    .checked_add(1)
+                    .ok_or_else(|| ExecutionError::Invalid("group count overflow".into()))?;
             }
-            self.by_key.insert(key, self.rows.len());
-            self.rows.push((value, 1));
+            Entry::Vacant(entry) => {
+                if self.rows.len() >= MAX_GROUPS {
+                    return Err(ExecutionError::Invalid(
+                        "GROUP BY supports at most 100000 groups".into(),
+                    ));
+                }
+                entry.insert(self.rows.len());
+                self.rows.push((value, 1));
+            }
         }
         Ok(())
     }
@@ -2298,6 +2302,30 @@ mod tests {
             number_at(&NumericColumn::Int128(vec![i128::MIN]), 0),
             parse_numeric("Int128", &i128::MIN.to_string()).unwrap(),
             Operator::Eq,
+        ));
+    }
+    #[test]
+    fn group_entry_path_counts_new_and_existing_keys() {
+        let mut groups = GroupedCounts::default();
+        for value in 0u64..4096 {
+            groups.push(Number::Unsigned(u128::from(value))).unwrap();
+        }
+        for value in (0u64..4096).rev() {
+            groups.push(Number::Unsigned(u128::from(value))).unwrap();
+        }
+        assert_eq!(groups.by_key.len(), 4096);
+        assert_eq!(groups.rows.len(), 4096);
+        assert!(groups.rows.iter().all(|(_, count)| *count == 2));
+    }
+
+    #[test]
+    fn group_entry_path_preserves_count_overflow_errors() {
+        let mut groups = GroupedCounts::default();
+        groups.push(Number::Unsigned(7)).unwrap();
+        groups.rows[0].1 = u64::MAX;
+        assert!(matches!(
+            groups.push(Number::Unsigned(7)),
+            Err(ExecutionError::Invalid(_))
         ));
     }
 }
