@@ -171,8 +171,10 @@ pub(super) fn insert(database: &Path, insert: &Insert) -> Result<(), String> {
     if destination.exists() {
         return Err("destination part already exists".into());
     }
-    let staging = parts_dir.join(format!(
-        ".pending-{}-{}",
+    // An interrupted write must not become visible as an active part.
+    let staging = database.join(format!(
+        ".{}.pending-{}-{}",
+        insert.table,
         std::process::id(),
         NEXT_STAGE.fetch_add(1, Ordering::Relaxed)
     ));
