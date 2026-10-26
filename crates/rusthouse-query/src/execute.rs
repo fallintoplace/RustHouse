@@ -854,9 +854,7 @@ impl AggregateState {
                 };
                 self.value = Some(sum);
             }
-            AggregateFunction::Avg
-            | AggregateFunction::VarPop
-            | AggregateFunction::StddevPop => {
+            AggregateFunction::Avg | AggregateFunction::VarPop | AggregateFunction::StddevPop => {
                 let numeric = match value {
                     Number::Unsigned(n) => n as f64,
                     Number::Signed(n) => n as f64,
@@ -896,14 +894,10 @@ impl AggregateState {
         }
         match self.function {
             AggregateFunction::Avg => self.mean.to_string(),
-            AggregateFunction::VarPop => {
-                (self.squared_deviations / self.count as f64).to_string()
-            }
-            AggregateFunction::StddevPop => {
-                (self.squared_deviations / self.count as f64)
-                    .sqrt()
-                    .to_string()
-            }
+            AggregateFunction::VarPop => (self.squared_deviations / self.count as f64).to_string(),
+            AggregateFunction::StddevPop => (self.squared_deviations / self.count as f64)
+                .sqrt()
+                .to_string(),
             _ => self
                 .value
                 .map_or_else(String::new, |value| value.to_string()),
@@ -1414,8 +1408,11 @@ mod tests {
             "varPop(number)\nNULL\n"
         );
         assert_eq!(
-            run("SELECT stddevPop(number) FROM numbers(10) WHERE number > 99", None)
-                .unwrap(),
+            run(
+                "SELECT stddevPop(number) FROM numbers(10) WHERE number > 99",
+                None
+            )
+            .unwrap(),
             "stddevPop(number)\nNULL\n"
         );
         assert_eq!(
@@ -1442,10 +1439,16 @@ mod tests {
         assert!((variance.render().parse::<f64>().unwrap() - 8.0 / 3.0).abs() < 1e-12);
 
         let mut deviation = AggregateState::new(AggregateFunction::StddevPop);
-        for n in [1_000_000_000_000.0, 1_000_000_000_001.0, 1_000_000_000_002.0] {
+        for n in [
+            1_000_000_000_000.0,
+            1_000_000_000_001.0,
+            1_000_000_000_002.0,
+        ] {
             deviation.update(Number::Float(n)).unwrap();
         }
-        assert!((deviation.render().parse::<f64>().unwrap() - (2.0_f64 / 3.0).sqrt()).abs() < 1e-12);
+        assert!(
+            (deviation.render().parse::<f64>().unwrap() - (2.0_f64 / 3.0).sqrt()).abs() < 1e-12
+        );
     }
 
     #[test]
