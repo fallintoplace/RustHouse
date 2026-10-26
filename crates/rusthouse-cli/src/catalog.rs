@@ -21,6 +21,14 @@ pub(super) fn apply(catalog: &Path, ddl: &Ddl) -> Result<(), String> {
             columns,
             if_not_exists,
         } => create_table(catalog, name, columns, *if_not_exists),
+        Ddl::CreateTableLike {
+            name,
+            source,
+            if_not_exists,
+        } => {
+            let source_columns = read_schema(catalog, source)?;
+            create_table(catalog, name, &source_columns, *if_not_exists)
+        }
         Ddl::DropTable { name, if_exists } => drop_table(catalog, name, *if_exists),
         Ddl::TruncateTable { .. } => Err("TRUNCATE requires --database".into()),
         Ddl::AddColumn {
