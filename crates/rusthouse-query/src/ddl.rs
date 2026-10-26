@@ -9,6 +9,7 @@ pub struct ColumnDef {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Ddl {
+    ShowTables,
     CreateTable {
         name: String,
         columns: Vec<ColumnDef>,
@@ -88,6 +89,16 @@ pub fn parse_ddl(sql: &str) -> Result<Option<Ddl>, ParseError> {
         tokens: tokenize(sql)?,
         index: 0,
     };
+    if parser.keyword("SHOW") {
+        if !parser.keyword("TABLES") {
+            return Err(ParseError("expected TABLES after SHOW".into()));
+        }
+        parser.take(Token::Semicolon);
+        if parser.index != parser.tokens.len() {
+            return Err(ParseError("unexpected tokens after DDL statement".into()));
+        }
+        return Ok(Some(Ddl::ShowTables));
+    }
     if parser.keyword("RENAME") {
         if !parser.keyword("TABLE") {
             return Err(ParseError("expected TABLE after RENAME".into()));
