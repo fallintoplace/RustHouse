@@ -8,6 +8,7 @@ use std::path::Path;
 
 const MAX_INPUT_ROWS: u64 = 4096;
 const MAX_RESULT_ROWS: usize = 65_536;
+const MAX_STREAM_LEFT_ROWS: u64 = 100_000;
 
 type Pair = (Option<usize>, Option<usize>);
 
@@ -118,6 +119,115 @@ fn add_pair(pairs: &mut Vec<Pair>, pair: Pair) -> Result<(), ExecutionError> {
     Ok(())
 }
 
+/// Scan the probe side without retaining its rows or joined result pairs.
+fn probe_inner<F>(
+    left_path: &Path,
+    left_names: &[String],
+    left_keys: &[usize],
+    right_rows: &[Vec<typed::Cell>],
+    hash: &HashMap<Vec<typed::Key>, Vec<usize>>,
+    mut emit: F,
+) -> Result<usize, ExecutionError>
+where
+    F: FnMut(&[typed::Cell], &[typed::Cell]) -> Result<(), ExecutionError>,
+{
+    let mut reader = TypedQueryReader::open(left_path, left_names)?;
+    let mut matches = 0usize;
+    while let Some(batch) = reader.next_batch()? {
+        for index in 0..batch[0].len() {
+            let left_row = batch
+                .iter()
+                .map(|column| typed::cell(column, index))
+                .collect::<Vec<_>>();
+            if let Some(key) = row_key(&left_row, left_keys) {
+                if let Some(right_indices) = hash.get(&key) {
+                    for &right_index in right_indices {
+                        if matches >= MAX_RESULT_ROWS {
+                            return Err(invalid("JOIN produces more than 65536 rows"));
+                        }
+                        emit(&left_row, &right_rows[right_index])?;
+                        matches += 1;
+                    }
+                }
+            }
+        }
+    }
+    Ok(matches)
+}
+
+/// For unordered INNER joins, build only the small right side and stream the
+/// left side twice. The first pass validates the output bound before writing
+/// any rows, preserving the existing no-partial-result behavior on overflow.
+fn execute_streaming_inner<W: Write>(
+    query: &JoinSelect,
+    left_path: &Path,
+    right_path: &Path,
+    left_names: &[String],
+    right_names: &[String],
+    selected: &[(usize, String)],
+    left_keys: &[usize],
+    right_keys: &[usize],
+    output: &mut W,
+) -> Result<(), ExecutionError> {
+    let left_meta = inspect_query_source(left_path)?;
+    if left_meta.rows > MAX_STREAM_LEFT_ROWS {
+        return Err(invalid("streaming INNER JOIN supports at most 100000 left rows"));
+    }
+    let right_meta = inspect_query_source(right_path)?;
+    let right_rows = read_rows(right_path, right_names, right_meta.rows)?;
+    let mut hash: HashMap<Vec<typed::Key>, Vec<usize>> = HashMap::new();
+    for (index, row) in right_rows.iter().enumerate() {
+        if let Some(key) = row_key(row, right_keys) {
+            hash.entry(key).or_default().push(index);
+        }
+    }
+    probe_inner(
+        left_path,
+        left_names,
+        left_keys,
+        &right_rows,
+        &hash,
+        |_, _| Ok(()),
+    )?;
+
+    let header = selected
+        .iter()
+        .map(|(_, name)| name.as_str())
+        .collect::<Vec<_>>()
+        .join("\t");
+    writeln!(output, "{header}")?;
+
+    let left_width = left_names.len();
+    let end = query.offset.saturating_add(query.limit.unwrap_or(usize::MAX));
+    let mut position = 0usize;
+    probe_inner(
+        left_path,
+        left_names,
+        left_keys,
+        &right_rows,
+        &hash,
+        |left, right| {
+            if position >= query.offset && position < end {
+                for (index, (column, _)) in selected.iter().enumerate() {
+                    if index != 0 {
+                        output.write_all(b"\t")?;
+                    }
+                    let cell = if *column < left_width {
+                        &left[*column]
+                    } else {
+                        &right[*column - left_width]
+                    };
+                    typed::write_value(output, cell)?;
+                }
+                output.write_all(b"\n")?;
+            }
+            position += 1;
+            Ok(())
+        },
+    )?;
+    Ok(())
+}
+
 /// Evaluate a two-table JOIN using typed values, not serialized TSV.
 pub fn execute_join<W: Write>(
     query: &JoinSelect,
@@ -185,6 +295,20 @@ pub fn execute_join<W: Write>(
         }
         left_keys.push(left_index);
         right_keys.push(right_index);
+    }
+
+    if query.kind == JoinType::Inner && order.is_none() {
+        return execute_streaming_inner(
+            query,
+            left_path,
+            right_path,
+            &left_names,
+            &right_names,
+            &selected,
+            &left_keys,
+            &right_keys,
+            output,
+        );
     }
 
     let left_rows = read_rows(left_path, &left_names, left_meta.rows)?;
