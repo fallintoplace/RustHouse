@@ -667,6 +667,43 @@ fn execute_numbers<W: Write>(
         return Ok(());
     }
 
+    // numbers() is already sorted and its values are unique. A filter-free
+    // ORDER BY can page the generated range directly rather than filling a heap.
+    let unfiltered_sort = if query.predicates.is_empty() && query.or_predicates.is_empty() {
+        sorting.as_ref()
+    } else {
+        None
+    };
+    if let Some(sorted) = unfiltered_sort {
+        if rows > MAX_SORTED_ROWS as u64 && sorted.requested > MAX_SORTED_ROWS {
+            return Err(ExecutionError::Invalid(
+                "ORDER BY requires LIMIT <= 100000 for large results".into(),
+            ));
+        }
+        let total = usize::try_from(rows).unwrap_or(usize::MAX);
+        let begin = sorted.offset.min(total);
+        let end = sorted
+            .offset
+            .saturating_add(query.limit.unwrap_or(usize::MAX))
+            .min(total);
+        for position in begin..end {
+            let index = if sorted.descending {
+                rows - position as u64 - 1
+            } else {
+                position as u64
+            };
+            let number = start + index * step;
+            for column in 0..projected.len() {
+                if column != 0 {
+                    write!(output, "\t")?;
+                }
+                write!(output, "{number}")?;
+            }
+            writeln!(output)?;
+        }
+        return Ok(());
+    }
+
     let mut matched = 0u64;
     let mut emitted = 0usize;
     let offset = query.offset.unwrap_or(0);
@@ -1509,6 +1546,58 @@ mod tests {
             "number\n"
         );
         assert!(run("SELECT number FROM numbers(0) ORDER BY missing", None).is_err());
+    }
+
+    #[test]
+    fn orders_unfiltered_generated_ranges_without_scanning() {
+        assert_eq!(
+            run(
+                "SELECT number FROM numbers(1000000) ORDER BY number DESC LIMIT 2 OFFSET 1000",
+                None
+            )
+            .unwrap(),
+            "number\n998999\n998998\n"
+        );
+        assert_eq!(
+            run(
+                "SELECT number FROM numbers(1000000) ORDER BY number LIMIT 1 OFFSET 99999",
+                None
+            )
+            .unwrap(),
+            "number\n99999\n"
+        );
+        assert_eq!(
+            run(
+                "SELECT number FROM numbers(20, 13, 4) ORDER BY number DESC LIMIT 2 OFFSET 1",
+                None
+            )
+            .unwrap(),
+            "number\n28\n24\n"
+        );
+        assert_eq!(
+            run(
+                "SELECT number FROM numbers(3) ORDER BY number DESC LIMIT 2 OFFSET 5",
+                None
+            )
+            .unwrap(),
+            "number\n"
+        );
+        assert!(run("SELECT number FROM numbers(100001) ORDER BY number", None).is_err());
+        assert!(
+            run(
+                "SELECT number FROM numbers(100001) ORDER BY number LIMIT 100001",
+                None
+            )
+            .is_err()
+        );
+        assert_eq!(
+            run(
+                "SELECT number FROM numbers(100001) ORDER BY number LIMIT 0",
+                None
+            )
+            .unwrap(),
+            "number\n"
+        );
     }
 
     #[test]
