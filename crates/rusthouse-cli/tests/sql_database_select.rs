@@ -80,6 +80,41 @@ fn reads_empty_and_persisted_named_tables() {
 }
 
 #[test]
+fn aggregates_persistent_table_rows_by_string_key() {
+    let db = database();
+    let created = sql(
+        "CREATE TABLE events (category String, amount Nullable(UInt64))",
+        &db,
+        &[],
+    );
+    assert!(created.status.success(), "{created:?}");
+    let inserted = sql(
+        "INSERT INTO events VALUES ('food', 10), ('travel', 7), ('food', 12), ('travel', NULL)",
+        &db,
+        &[],
+    );
+    assert!(inserted.status.success(), "{inserted:?}");
+    let grouped = sql(
+        "SELECT category, sum(amount) FROM events GROUP BY category ORDER BY category",
+        &db,
+        &[],
+    );
+    assert!(grouped.status.success(), "{grouped:?}");
+    assert_eq!(
+        grouped.stdout,
+        b"category\tsum(amount)\nfood\t22\ntravel\t7\n"
+    );
+    let filtered = sql(
+        "SELECT category, max(amount) FROM events WHERE category = 'food' GROUP BY category",
+        &db,
+        &[],
+    );
+    assert!(filtered.status.success(), "{filtered:?}");
+    assert_eq!(filtered.stdout, b"category\tmax(amount)\nfood\t12\n");
+    fs::remove_dir_all(db).unwrap();
+}
+
+#[test]
 fn rejects_unknown_tables_and_incompatible_options() {
     let db = database();
     let unknown = sql("SELECT * FROM missing", &db, &[]);

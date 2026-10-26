@@ -1,3 +1,4 @@
+mod copy;
 mod ddl;
 mod delete;
 mod execute;
@@ -5,11 +6,14 @@ mod explain;
 mod insert;
 mod lexer;
 mod scalar;
+mod update;
+pub use copy::{CopyFrom, parse_copy_from};
 pub use ddl::{ColumnDef, Ddl, parse_ddl};
 pub use delete::parse_delete;
 pub use execute::{ExecutionError, RowPredicate, execute};
 pub use explain::explain_select;
 pub use insert::{Insert, parse_insert};
+pub use update::{Update, parse_update};
 
 use std::error::Error;
 use std::fmt;
@@ -88,6 +92,11 @@ pub enum Projection {
     },
     GroupedCount {
         column: String,
+    },
+    GroupedAggregate {
+        column: String,
+        function: AggregateFunction,
+        value_column: String,
     },
     Aggregate {
         function: AggregateFunction,
@@ -320,6 +329,14 @@ impl Parser {
                     2 => "count".into(),
                     _ => return Err(ParseError("ORDER BY position is out of range".into())),
                 },
+                Projection::GroupedAggregate { column, .. } => match position {
+                    1 => column.clone(),
+                    _ => {
+                        return Err(ParseError(
+                            "grouped numeric aggregates only support ORDER BY the group key".into(),
+                        ));
+                    }
+                },
                 Projection::All => {
                     return Err(ParseError(
                         "ORDER BY positions require explicit projected columns".into(),
@@ -468,6 +485,7 @@ pub fn parse_select(sql: &str) -> Result<Select, ParseError> {
     } else {
         let mut columns = vec![parser.word()?];
         let mut grouped_count = false;
+        let mut grouped_aggregate = None;
         while parser.take(Token::Comma) {
             if columns.len() == 1
                 && matches!(parser.tokens.get(parser.index), Some(Token::Word(word)) if word.eq_ignore_ascii_case("COUNT"))
@@ -485,11 +503,42 @@ pub fn parse_select(sql: &str) -> Result<Select, ParseError> {
                 grouped_count = true;
                 break;
             }
+            if columns.len() == 1 && parser.tokens.get(parser.index + 1) == Some(&Token::LParen) {
+                let function = match parser.tokens.get(parser.index) {
+                    Some(Token::Word(name)) => match name.to_ascii_uppercase().as_str() {
+                        "SUM" => Some(AggregateFunction::Sum),
+                        "AVG" => Some(AggregateFunction::Avg),
+                        "MIN" => Some(AggregateFunction::Min),
+                        "MAX" => Some(AggregateFunction::Max),
+                        "VARPOP" => Some(AggregateFunction::VarPop),
+                        "STDDEVPOP" => Some(AggregateFunction::StddevPop),
+                        "MEDIAN" => Some(AggregateFunction::Median),
+                        _ => None,
+                    },
+                    _ => None,
+                };
+                if let Some(function) = function {
+                    parser.index += 1;
+                    parser.take(Token::LParen);
+                    let value_column = parser.word()?;
+                    if !parser.take(Token::RParen) {
+                        return Err(ParseError("expected ')' after grouped aggregate".into()));
+                    }
+                    grouped_aggregate = Some((function, value_column));
+                    break;
+                }
+            }
             columns.push(parser.word()?);
         }
         if grouped_count {
             Projection::GroupedCount {
                 column: columns.remove(0),
+            }
+        } else if let Some((function, value_column)) = grouped_aggregate {
+            Projection::GroupedAggregate {
+                column: columns.remove(0),
+                function,
+                value_column,
             }
         } else {
             Projection::Columns(columns)
@@ -824,16 +873,22 @@ pub fn parse_select(sql: &str) -> Result<Select, ParseError> {
         }
         let group_column = parser.word()?;
         match &projection {
-            Projection::GroupedCount { column } if column == &group_column => {}
-            Projection::GroupedCount { .. } => {
+            Projection::GroupedCount { column } | Projection::GroupedAggregate { column, .. }
+                if column == &group_column => {}
+            Projection::GroupedCount { .. } | Projection::GroupedAggregate { .. } => {
                 return Err(ParseError("GROUP BY must match the selected key".into()));
             }
             _ => {
-                return Err(ParseError("GROUP BY requires SELECT key, COUNT(*)".into()));
+                return Err(ParseError(
+                    "GROUP BY requires SELECT key, aggregate(column)".into(),
+                ));
             }
         }
-    } else if matches!(projection, Projection::GroupedCount { .. }) {
-        return Err(ParseError("COUNT(*) with a key requires GROUP BY".into()));
+    } else if matches!(
+        projection,
+        Projection::GroupedCount { .. } | Projection::GroupedAggregate { .. }
+    ) {
+        return Err(ParseError("grouped aggregates require GROUP BY".into()));
     }
 
     let having = if parser.keyword("HAVING") {
@@ -893,6 +948,16 @@ pub fn parse_select(sql: &str) -> Result<Select, ParseError> {
             .any(|order| &order.column != column && order.column != "count")
         {
             return Err(ParseError("grouped ORDER BY must use the group key".into()));
+        }
+    }
+    if let Projection::GroupedAggregate { column, .. } = &projection {
+        if order_by
+            .as_ref()
+            .is_some_and(|order| &order.column != column)
+        {
+            return Err(ParseError(
+                "grouped numeric ORDER BY must use the group key".into(),
+            ));
         }
     }
 

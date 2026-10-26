@@ -31,7 +31,7 @@ cargo run -p rusthouse-cli -- sql "SELECT id, count(*) FROM part GROUP BY id ORD
 
 ## Supported features
 
-- **SQL:** `SELECT * RENAME old AS new` (query output only), `WHERE` (including `IN`, `BETWEEN`, `LIKE`, and `ILIKE`), sorting, `DISTINCT`, numeric aggregates (including `median`), `COUNT(column)` (skips NULLs), grouped counts with `HAVING`, and pagination. Scalar `SELECT` without `FROM` also supports signed integer arithmetic (`+`, `-`, `*`, `%`) with parentheses, checked 64-bit overflow and zero-divisor errors. This is a limited SQL subset.
+- **SQL:** `SELECT * RENAME old AS new` (query output only), `WHERE` (including `IN`, `BETWEEN`, `LIKE`, and `ILIKE`), sorting, `DISTINCT`, numeric aggregates (including `median`), grouped numeric aggregates by one key, `COUNT(column)` (skips NULLs), grouped counts with `HAVING`, and pagination. Scalar `SELECT` without `FROM` also supports signed integer arithmetic (`+`, `-`, `*`, `%`) with parentheses, checked 64-bit overflow and zero-divisor errors. This is a limited SQL subset.
 - **Data:** `numbers()` and inclusive `generate_series(start, stop[, step])` without files, plus supported numeric, `String`, `UUID`, and `Nullable` part columns.
 - **Output:** TSV, CSV, JSON, JSON Lines, Markdown, HTML, and vertical formats via `--format`; also `--output`, `--max-rows`, `--time`, `--show-ast`, `--explain`, `--file`, and `--stdin`.
 - **Inspection:** `verify-part`, `verify-file-sizes`, `inspect-marks`, `inspect-checksums`, `inspect-blocks`, and `inspect-primary-index`. Run `cargo run -p rusthouse-cli -- --help` for the full CLI.
@@ -43,13 +43,18 @@ cargo run -p rusthouse-cli -- sql "SELECT id, count(*) FROM part GROUP BY id ORD
 cargo run -p rusthouse-cli -- sql "CREATE TABLE events (id UInt64, name String)" --database ./mydb
 cargo run -p rusthouse-cli -- sql "INSERT INTO events VALUES (1, 'Ada'), (2, 'Grace')" --database ./mydb
 cargo run -p rusthouse-cli -- sql "SELECT id, name FROM events ORDER BY id" --database ./mydb
+cargo run -p rusthouse-cli -- sql "COPY events FROM '/path/to/events.csv' WITH (FORMAT CSV, HEADER TRUE)" --database ./mydb
 ```
+
+COPY FROM CSV imports local UTF-8 CSV with quoted commas, quotes, and newlines. With `HEADER TRUE`, CSV headers map fields to named table columns. Without a header, CSV fields follow table column order. Unquoted empty fields become NULL; quoted empty fields remain empty strings. Imports are limited to 4,096 records and 8 MiB and publish one part only after parsing succeeds.
 
 `--database` stores table schemas and **immutable wide parts** locally. Supported SQL includes `CREATE TABLE`, `INSERT ... VALUES`, `SELECT`, `SHOW TABLES`, `SHOW CREATE TABLE`, `DESCRIBE TABLE`, `RENAME TABLE`, `DROP TABLE` and `TRUNCATE TABLE`. Queries support the existing `--format`, `--output`, `--max-rows` and `--explain` options. Database writes are single-writer, limited to supported numeric, String and Nullable columns, and **not transactional across statements**. This is for local experiments, not concurrent production workloads. Run a sequence of up to 128 statements (256 KiB total) with `rusthouse sql --script setup.sql --database ./mydb`. Scripts permit SQL line comments and stop on the first error; they are **not transactions**.
 
-**Current limits:** SQL statements are limited to 4 KiB, INSERT supports up to 4,096 rows per statement, and tables are limited to 10,000 immutable parts. There is no UPDATE, DELETE, JOIN, background compaction, or cross-statement transaction. A crash can leave a stale `.rusthouse-write.lock` file; ensure no writer is active before removing it.
+**Current limits:** SQL statements are limited to 4 KiB, INSERT supports up to 4,096 rows per statement, and tables are limited to 10,000 immutable parts. There is no JOIN, background compaction, or cross-statement transaction. A crash can leave a stale `.rusthouse-write.lock` file; ensure no writer is active before removing it.
 
 `DELETE FROM events WHERE id = 1` removes matching rows from the active snapshot, preserving the previous generation for recovery. `DELETE FROM events` removes all rows, while `TRUNCATE TABLE events` is the faster option when there is no predicate. DELETE shares the 25,000-row and 16 MiB rewrite limits.
+
+Use `UPDATE events SET message = 'fixed' WHERE id = 2` to replace literal values in matching rows. Multiple assignments and `NULL` are supported when the target column allows NULL. UPDATE uses the same bounded copy-on-write snapshots as DELETE and OPTIMIZE; expressions such as `SET count = count + 1` are not supported yet.
 
 ## Reclaim active parts safely
 

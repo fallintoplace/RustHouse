@@ -693,8 +693,43 @@ fn parses_grouped_counts_and_rejects_unsupported_grouping() {
         "SELECT id, count(*) FROM part GROUP BY id ORDER BY price",
         "SELECT id FROM part GROUP BY id",
         "SELECT count(*) FROM part GROUP BY id",
-        "SELECT id, sum(price) FROM part GROUP BY id",
         "SELECT DISTINCT id, count(*) FROM part GROUP BY id",
+    ] {
+        assert!(parse_select(sql).is_err(), "{sql}");
+    }
+}
+
+#[test]
+fn parses_grouped_numeric_aggregates_and_bounds_ordering() {
+    for name in ["sum", "avg", "min", "max", "varPop", "stddevPop", "median"] {
+        let sql = format!(
+            "SELECT service, {name}(status) FROM part WHERE status > 0 GROUP BY service ORDER BY service DESC LIMIT 3"
+        );
+        let select = parse_select(&sql).unwrap();
+        let Projection::GroupedAggregate {
+            column,
+            function,
+            value_column,
+        } = select.projection
+        else {
+            panic!("not a grouped aggregate: {sql}");
+        };
+        assert_eq!(column, "service");
+        assert_eq!(
+            function.name().to_ascii_lowercase(),
+            name.to_ascii_lowercase()
+        );
+        assert_eq!(value_column, "status");
+    }
+    for sql in [
+        "SELECT service, sum(status) FROM part",
+        "SELECT service, sum(status) FROM part GROUP BY status",
+        "SELECT service, sum(status) FROM part GROUP BY service ORDER BY status",
+        "SELECT service, sum(status) FROM part GROUP BY service ORDER BY 2",
+        "SELECT DISTINCT service, sum(status) FROM part GROUP BY service",
+        "SELECT service, sum(*) FROM part GROUP BY service",
+        "SELECT service, sum(status, id) FROM part GROUP BY service",
+        "SELECT service, avg(status) FROM part GROUP BY service HAVING count(*) > 1",
     ] {
         assert!(parse_select(sql).is_err(), "{sql}");
     }

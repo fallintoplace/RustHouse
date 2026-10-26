@@ -1,0 +1,129 @@
+//! Restricted COPY FROM CSV for local persistent tables.
+use super::{ParseError, Parser, Token, tokenize};
+use std::collections::HashSet;
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CopyFrom {
+    pub table: String,
+    pub columns: Option<Vec<String>>,
+    pub path: String,
+    pub header: bool,
+}
+
+fn identifier(parser: &mut Parser) -> Result<String, ParseError> {
+    let name = parser.word()?;
+    if name.len() > 128 {
+        return Err(ParseError("identifiers cannot exceed 128 bytes".into()));
+    }
+    Ok(name)
+}
+
+pub fn parse_copy_from(sql: &str) -> Result<Option<CopyFrom>, ParseError> {
+    let mut parser = Parser {
+        tokens: tokenize(sql)?,
+        index: 0,
+    };
+    if !parser.keyword("COPY") {
+        return Ok(None);
+    }
+    let table = identifier(&mut parser)?;
+    let columns = if parser.take(Token::LParen) {
+        let mut result = Vec::new();
+        let mut seen = HashSet::new();
+        loop {
+            if result.len() >= 64 {
+                return Err(ParseError("COPY supports at most 64 columns".into()));
+            }
+            let column = identifier(&mut parser)?;
+            if !seen.insert(column.clone()) {
+                return Err(ParseError(format!("duplicate COPY column: {column}")));
+            }
+            result.push(column);
+            if !parser.take(Token::Comma) {
+                break;
+            }
+        }
+        if !parser.take(Token::RParen) {
+            return Err(ParseError("expected ')' after COPY columns".into()));
+        }
+        Some(result)
+    } else {
+        None
+    };
+    if !parser.keyword("FROM") {
+        return Err(ParseError("COPY requires FROM 'path'".into()));
+    }
+    let path = match parser.tokens.get(parser.index) {
+        Some(Token::String(path)) if !path.is_empty() => {
+            parser.index += 1;
+            path.clone()
+        }
+        _ => return Err(ParseError("COPY requires a quoted local file path".into())),
+    };
+    let mut header = false;
+    if parser.keyword("WITH") {
+        if !parser.take(Token::LParen) || !parser.keyword("FORMAT") || !parser.keyword("CSV") {
+            return Err(ParseError(
+                "COPY supports WITH (FORMAT CSV[, HEADER TRUE])".into(),
+            ));
+        }
+        if parser.take(Token::Comma) {
+            if !parser.keyword("HEADER") {
+                return Err(ParseError("expected HEADER after CSV".into()));
+            }
+            header = if parser.keyword("TRUE") {
+                true
+            } else if parser.keyword("FALSE") {
+                false
+            } else {
+                return Err(ParseError("HEADER must be TRUE or FALSE".into()));
+            };
+        }
+        if !parser.take(Token::RParen) {
+            return Err(ParseError("expected ')' after COPY options".into()));
+        }
+    }
+    parser.take(Token::Semicolon);
+    if parser.index != parser.tokens.len() {
+        return Err(ParseError("unexpected tokens after COPY statement".into()));
+    }
+    Ok(Some(CopyFrom {
+        table,
+        columns,
+        path,
+        header,
+    }))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn parses_copy_and_preserves_quoted_path() {
+        let parsed = parse_copy_from(
+            "COPY events (name, id) FROM '/tmp/data''s.csv' WITH (FORMAT CSV, HEADER TRUE);",
+        )
+        .unwrap()
+        .unwrap();
+        assert_eq!(parsed.table, "events");
+        assert_eq!(parsed.path, "/tmp/data's.csv");
+        assert_eq!(parsed.columns, Some(vec!["name".into(), "id".into()]));
+        assert!(parsed.header);
+        assert!(!parse_copy_from("SELECT 1").unwrap().is_some());
+    }
+
+    #[test]
+    fn refuses_unbounded_or_unsupported_copy_syntax() {
+        for sql in [
+            "COPY events FROM STDIN",
+            "COPY events FROM '/tmp/a.csv' WITH (FORMAT JSON)",
+            "COPY events FROM '/tmp/a.csv'; DROP TABLE events",
+            "COPY events (id, id) FROM '/tmp/a.csv'",
+            "COPY events FROM '/tmp/a.csv' WITH (FORMAT CSV, HEADER)",
+            "COPY events TO '/tmp/a.csv'",
+        ] {
+            assert!(parse_copy_from(sql).is_err(), "{sql}");
+        }
+    }
+}
