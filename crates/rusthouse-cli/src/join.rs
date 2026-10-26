@@ -64,6 +64,15 @@ fn execute_formatted_join(
                     .map_err(rusthouse_query::ExecutionError::Io)
             })
         }
+        SqlOutputFormat::JsonPretty => {
+            let mut writer = json_array::JsonArrayWriter::new_pretty(&mut output);
+            execute_join(query, left, right, &mut writer).and_then(|()| {
+                writer
+                    .finish()
+                    .map(|_| ())
+                    .map_err(rusthouse_query::ExecutionError::Io)
+            })
+        }
     }
 }
 
