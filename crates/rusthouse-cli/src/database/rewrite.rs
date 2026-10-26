@@ -13,6 +13,21 @@ const MAX_REWRITE_ROWS: u64 = 25_000;
 const MAX_REWRITE_BYTES: usize = 16 * 1024 * 1024;
 const PART_ROWS: usize = 4096;
 
+// Debug-only simulated publication errors allow integration tests to exercise
+// cleanup and recovery without relying on platform-dependent permissions.
+#[cfg(debug_assertions)]
+fn fail_publication_at(point: &str) -> Result<(), String> {
+    if std::env::var("RUSTHOUSE_DEBUG_FAIL_AT").is_ok_and(|value| value == point) {
+        return Err(format!("injected snapshot publication failure: {point}"));
+    }
+    Ok(())
+}
+
+#[cfg(not(debug_assertions))]
+fn fail_publication_at(_point: &str) -> Result<(), String> {
+    Ok(())
+}
+
 type StoredRows = Vec<Vec<Option<String>>>;
 
 fn numeric_value(values: &NumericColumn, index: usize) -> String {
@@ -188,8 +203,16 @@ fn publish_snapshot_with(
         let _ = fs::remove_dir_all(&staging);
         return Err("snapshot generation already exists".into());
     }
-    fs::rename(&staging, &destination)
-        .map_err(|error| format!("cannot publish database generation: {error}"))?;
+    let published = fail_publication_at("snapshot-before-generation-rename").and_then(|_| {
+        fs::rename(&staging, &destination)
+            .map_err(|error| format!("cannot publish database generation: {error}"))
+    });
+    if let Err(error) = published {
+        // No generation has become active. Keep the old snapshot readable
+        // and do not accumulate failed multi-part staging directories.
+        let _ = fs::remove_dir_all(&staging);
+        return Err(error);
+    }
     sync_directory(&versions)?;
     crash_if_requested("snapshot-after-generation");
 
@@ -200,18 +223,31 @@ fn publish_snapshot_with(
         std::process::id(),
         NEXT_STAGE.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
     ));
-    let mut file = OpenOptions::new()
-        .create_new(true)
-        .write(true)
-        .open(&pending)
-        .map_err(|error| format!("cannot create snapshot pointer: {error}"))?;
-    file.write_all(format!("{name}\n").as_bytes())
-        .and_then(|_| file.sync_all())
-        .map_err(|error| format!("cannot persist snapshot pointer: {error}"))?;
-    drop(file);
+    let prepared_pointer = (|| -> Result<(), String> {
+        let mut file = OpenOptions::new()
+            .create_new(true)
+            .write(true)
+            .open(&pending)
+            .map_err(|error| format!("cannot create snapshot pointer: {error}"))?;
+        file.write_all(format!("{name}\n").as_bytes())
+            .and_then(|_| file.sync_all())
+            .map_err(|error| format!("cannot persist snapshot pointer: {error}"))
+    })();
+    if let Err(error) = prepared_pointer {
+        let _ = fs::remove_file(&pending);
+        return Err(error);
+    }
     crash_if_requested("snapshot-before-pointer");
-    fs::rename(&pending, &pointer)
-        .map_err(|error| format!("cannot activate database snapshot: {error}"))?;
+    let activated = fail_publication_at("snapshot-before-pointer-rename").and_then(|_| {
+        fs::rename(&pending, &pointer)
+            .map_err(|error| format!("cannot activate database snapshot: {error}"))
+    });
+    if let Err(error) = activated {
+        // The pointer still names the previously committed generation.
+        // A newer orphaned generation is retained for offline recovery.
+        let _ = fs::remove_file(&pending);
+        return Err(error);
+    }
     crash_if_requested("snapshot-after-pointer");
     sync_directory(&root)?;
     Ok(())

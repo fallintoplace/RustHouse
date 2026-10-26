@@ -77,6 +77,57 @@ fn snapshot_publication_survives_process_exit_at_each_boundary() {
 }
 
 #[test]
+fn failed_snapshot_publication_keeps_old_rows_and_cleans_staging() {
+    for point in [
+        "snapshot-before-generation-rename",
+        "snapshot-before-pointer-rename",
+    ] {
+        let db = database();
+        success(&db, "CREATE TABLE events (id UInt64)");
+        success(&db, "INSERT INTO events VALUES (1), (2)");
+        let failed = Command::new(env!("CARGO_BIN_EXE_rusthouse"))
+            .args(["sql", "DELETE FROM events WHERE id = 1", "--database"])
+            .arg(&db)
+            .env("RUSTHOUSE_DEBUG_FAIL_AT", point)
+            .output()
+            .unwrap();
+        assert!(!failed.status.success(), "{point}: {failed:?}");
+        assert!(
+            String::from_utf8_lossy(&failed.stderr)
+                .contains("injected snapshot publication failure"),
+            "{point}: {failed:?}"
+        );
+        assert_eq!(
+            success(&db, "SELECT id FROM events ORDER BY id").stdout,
+            b"id\n1\n2\n",
+            "{point}"
+        );
+
+        let table = db.join("events.parts");
+        for entry in fs::read_dir(&table).unwrap() {
+            let name = entry.unwrap().file_name().to_string_lossy().into_owned();
+            assert!(
+                !name.starts_with(".rusthouse-active.tmp-"),
+                "{point}: {name}"
+            );
+        }
+        let versions = table.join(".rusthouse-versions");
+        for entry in fs::read_dir(versions).unwrap() {
+            let name = entry.unwrap().file_name().to_string_lossy().into_owned();
+            assert!(!name.starts_with(".pending-"), "{point}: {name}");
+        }
+
+        success(&db, "DELETE FROM events WHERE id = 1");
+        assert_eq!(
+            success(&db, "SELECT id FROM events ORDER BY id").stdout,
+            b"id\n2\n",
+            "{point}"
+        );
+        fs::remove_dir_all(db).unwrap();
+    }
+}
+
+#[test]
 fn inserted_parts_are_never_partially_exposed_after_process_exit() {
     for (point, expected) in [
         ("insert-after-staging", "id\n1\n"),
