@@ -31,6 +31,31 @@ fn value(parser: &mut Parser) -> Result<Option<String>, ParseError> {
     }
 }
 
+fn parse_insert_columns(parser: &mut Parser) -> Result<Option<Vec<String>>, ParseError> {
+    if !parser.take(Token::LParen) {
+        return Ok(None);
+    }
+    let mut result = Vec::new();
+    let mut seen = HashSet::new();
+    loop {
+        if result.len() >= 64 {
+            return Err(ParseError("INSERT supports at most 64 columns".into()));
+        }
+        let column = identifier(parser)?;
+        if !seen.insert(column.clone()) {
+            return Err(ParseError(format!("duplicate INSERT column: {column}")));
+        }
+        result.push(column);
+        if !parser.take(Token::Comma) {
+            break;
+        }
+    }
+    if !parser.take(Token::RParen) {
+        return Err(ParseError("expected ')' after INSERT columns".into()));
+    }
+    Ok(Some(result))
+}
+
 /// Recognize INSERT INTO table [(column, ...)] VALUES (...), (...).
 /// Only literal rows are accepted, with no expressions or implicit casts.
 pub fn parse_insert(sql: &str) -> Result<Option<Insert>, ParseError> {
@@ -45,29 +70,7 @@ pub fn parse_insert(sql: &str) -> Result<Option<Insert>, ParseError> {
         return Err(ParseError("expected INTO after INSERT".into()));
     }
     let table = identifier(&mut parser)?;
-    let columns = if parser.take(Token::LParen) {
-        let mut result = Vec::new();
-        let mut seen = HashSet::new();
-        loop {
-            if result.len() >= 64 {
-                return Err(ParseError("INSERT supports at most 64 columns".into()));
-            }
-            let column = identifier(&mut parser)?;
-            if !seen.insert(column.clone()) {
-                return Err(ParseError(format!("duplicate INSERT column: {column}")));
-            }
-            result.push(column);
-            if !parser.take(Token::Comma) {
-                break;
-            }
-        }
-        if !parser.take(Token::RParen) {
-            return Err(ParseError("expected ')' after INSERT columns".into()));
-        }
-        Some(result)
-    } else {
-        None
-    };
+    let columns = parse_insert_columns(&mut parser)?;
     // DEFAULT VALUES inserts one row with no explicit column values.
     // The database writer validates that every omitted column is nullable.
     if parser.keyword("DEFAULT") {
@@ -191,6 +194,15 @@ mod tests {
         ] {
             assert!(parse_insert(sql).is_err(), "{sql}");
         }
+    }
+
+    #[test]
+    fn rejects_more_than_64_insert_columns() {
+        let columns = (0..65)
+            .map(|index| format!("c{index}"))
+            .collect::<Vec<_>>()
+            .join(", ");
+        assert!(parse_insert(&format!("INSERT INTO t ({columns}) VALUES (1)")).is_err());
     }
 
     #[test]
