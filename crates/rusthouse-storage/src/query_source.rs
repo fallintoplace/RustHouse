@@ -178,7 +178,10 @@ fn inspect_parts_metadata(path: &Path, paths: &[PathBuf]) -> Result<PartMetadata
                 .chunks(chunk_size)
                 .map(|chunk| {
                     scope.spawn(move || {
-                        chunk.iter().map(|part| inspect_part(part)).collect::<Vec<_>>()
+                        chunk
+                            .iter()
+                            .map(|part| inspect_part(part))
+                            .collect::<Vec<_>>()
                     })
                 })
                 .collect::<Vec<_>>();
@@ -198,9 +201,9 @@ fn inspect_parts_metadata(path: &Path, paths: &[PathBuf]) -> Result<PartMetadata
         }
     }
 
-    let first = metadata.first().ok_or_else(|| {
-        PartError::InvalidScan("snapshot contains no readable parts".into())
-    })?;
+    let first = metadata
+        .first()
+        .ok_or_else(|| PartError::InvalidScan("snapshot contains no readable parts".into()))?;
     let mut rows = 0u64;
     for (part, item) in paths.iter().zip(&metadata) {
         if item.columns != first.columns {
@@ -339,12 +342,7 @@ mod tests {
         }];
         for index in 1..=40 {
             let part = root.join(format!("all_{index}_{index}_0"));
-            write_wide_part(
-                &part,
-                &columns,
-                &[vec![Some(index.to_string())]],
-            )
-            .unwrap();
+            write_wide_part(&part, &columns, &[vec![Some(index.to_string())]]).unwrap();
         }
         let metadata = inspect_query_source(&root).unwrap();
         assert_eq!(metadata.rows, 40);
