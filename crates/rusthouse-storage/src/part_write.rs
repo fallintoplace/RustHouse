@@ -387,10 +387,7 @@ mod tests {
         let second = cityhash128_with_seed(&input[2048..4096], first);
         let tail = cityhash128_with_seed(&input[4096..], second);
         assert_eq!(checksum_hash(&input), u128::from(tail));
-        assert_ne!(
-            checksum_hash(&input),
-            u128::from(cityhash128(&input))
-        );
+        assert_ne!(checksum_hash(&input), u128::from(cityhash128(&input)));
     }
 
     #[test]
