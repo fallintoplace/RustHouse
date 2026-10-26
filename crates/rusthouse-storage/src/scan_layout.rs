@@ -144,5 +144,6 @@ mod tests {
         );
         layout.validate("c", &[mark(0, 2), mark(20, 3)], 5).unwrap();
         assert_eq!(layout.mark_count(), 2);
-     }
+
+    }
 }
