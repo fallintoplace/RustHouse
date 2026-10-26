@@ -3,7 +3,7 @@
 mod jsonl;
 
 use jsonl::JsonlWriter;
-use rusthouse_query::{execute, parse_select};
+use rusthouse_query::{execute, explain_select, parse_select};
 use rusthouse_storage::inspect_query_source;
 use std::io::{self, Write};
 use std::path::PathBuf;
@@ -143,15 +143,9 @@ fn schema_response(config: &Config) -> Response {
     }
 }
 
-#[derive(Clone, Copy)]
-enum QueryFormat {
-    Tsv,
-    Jsonl,
-}
-
 fn query_parameters(target: &str) -> Result<(String, Option<String>, QueryFormat), &'static str> {
     let (path, query) = target.split_once('?').unwrap_or((target, ""));
-    if path != "/" {
+    if path != "/" && path != "/explain" {
         return Err("unknown SQL endpoint");
     }
     let mut statement = None;
@@ -179,6 +173,9 @@ fn query_parameters(target: &str) -> Result<(String, Option<String>, QueryFormat
             }
             _ => return Err("unsupported URL query parameter"),
         }
+    }
+    if path == "/explain" && format.is_some() {
+        return Err("format is unsupported for EXPLAIN");
     }
     Ok((
         path.to_owned(),
@@ -211,7 +208,7 @@ pub fn handle_request(method: &str, target: &str, body: &[u8], config: &Config) 
     if body.len() > MAX_QUERY_BYTES || target.len() > MAX_HEADER_BYTES {
         return Response::text("413 Payload Too Large", "SQL statement too large\n");
     }
-    let (_, query, format) = match query_parameters(target) {
+    let (path, query, format) = match query_parameters(target) {
         Ok(v) => v,
         Err(message) => return Response::text("400 Bad Request", message),
     };
@@ -241,6 +238,15 @@ pub fn handle_request(method: &str, target: &str, body: &[u8], config: &Config) 
     };
     let cap = config.max_rows.min(100_000);
     select.limit = Some(select.limit.map_or(cap, |limit| limit.min(cap)));
+    if path == "/explain" {
+        return Response::text(
+            "200 OK",
+            &format!(
+                "Logical plan (no data read):\n{}\n",
+                explain_select(&select)
+            ),
+        );
+    }
     let mut writer = LimitedWriter::new();
     let result = match format {
         QueryFormat::Tsv => execute(&select, config.part.as_deref(), &mut writer),
@@ -355,12 +361,66 @@ mod tests {
     }
 
     #[test]
+    fn explains_sql_without_scanning_data() {
+        let get = handle_request(
+            "GET",
+            "/explain?query=SELECT+number+FROM+numbers%2810%29+WHERE+number%3E5",
+            b"",
+            &config(),
+        );
+        assert_eq!(get.status, "200 OK");
+        assert_eq!(get.content_type, "text/plain; charset=utf-8");
+        assert_eq!(
+            String::from_utf8(get.body).unwrap(),
+            "Logical plan (no data read):\nSource: numbers(10)\nFilter: 1 conditions across 1 OR branches\nProject: number\nLimit: 3\n"
+        );
+
+        // Planning a part query must not require --part or open data files.
+        let planned = handle_request("POST", "/explain", b"SELECT id FROM part", &config());
+        assert_eq!(planned.status, "200 OK");
+        assert!(
+            String::from_utf8(planned.body)
+                .unwrap()
+                .contains("Source: table part")
+        );
+
+        let executed = handle_request("POST", "/", b"SELECT id FROM part", &config());
+        assert_eq!(executed.status, "400 Bad Request");
+    }
+
+    #[test]
+    fn explain_endpoint_rejects_writes_and_invalid_inputs() {
+        for (method, path, body, status) in [
+            (
+                "GET",
+                "/explain?query=DROP+TABLE+t",
+                &b""[..],
+                "400 Bad Request",
+            ),
+            ("GET", "/explain", &b"SELECT 1"[..], "400 Bad Request"),
+            (
+                "POST",
+                "/explain?query=SELECT+1",
+                &b"SELECT 2"[..],
+                "400 Bad Request",
+            ),
+            (
+                "PUT",
+                "/explain",
+                &b"SELECT 1"[..],
+                "405 Method Not Allowed",
+            ),
+        ] {
+            assert_eq!(handle_request(method, path, body, &config()).status, status);
+        }
+    }
+
+    #[test]
     fn safely_decodes_utf8_queries() {
         assert_eq!(decode_url("SELECT+1"), Ok("SELECT 1".into()));
         assert_eq!(decode_url("%FF"), Err("SQL query must be valid UTF-8"));
         assert_eq!(decode_url("%2"), Err("invalid percent encoding"));
     }
-
     #[test]
     fn returns_bounded_ndjson_for_get_and_post() {
         let response = handle_request(
@@ -395,6 +455,7 @@ mod tests {
         for url in [
             "/?query=SELECT+1&format=json",
             "/?query=SELECT+1&format=jsonl&format=jsonl",
+            "/explain?query=SELECT+1&format=jsonl",
             "/?query=SELECT+number%2Cnumber+FROM+numbers%282%29&format=jsonl",
         ] {
             assert_eq!(

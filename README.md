@@ -22,6 +22,8 @@ Count occurrences of numeric keys with `cargo run -p rusthouse-cli -- sql "SELEC
 
 Filter alternatives with `cargo run -p rusthouse-cli -- sql "SELECT number FROM numbers(10) WHERE number = 1 OR number >= 8"`.
 
+Filter String columns from a frozen part with `rusthouse sql "SELECT service FROM part WHERE service LIKE 'api%'" --part ./snapshot`. `LIKE` accepts `%` for zero or more bytes and `_` for one byte; `NOT LIKE` excludes matching values. Backslash escapes the next pattern byte. Nulls do not match either predicate.
+
 Start at a chosen number with `cargo run -p rusthouse-cli -- sql "SELECT number FROM numbers(100, 5)"`.
 
 Execute SQL from a saved file with `cargo run -p rusthouse-cli -- sql --file query.sql` (up to 4096 bytes).
@@ -85,6 +87,8 @@ Use SQL-standard pagination with `SELECT number FROM numbers(10) ORDER BY number
 
 Rename a column in catalog metadata with `rusthouse sql "ALTER TABLE events RENAME COLUMN name TO title" --catalog ./catalog`. The change preserves column order and never modifies MergeTree data.
 
+Update a local catalog column type with `rusthouse sql "ALTER TABLE events MODIFY COLUMN title Nullable(String)" --catalog ./catalog`. This changes the versioned schema file only; it does not convert existing data, verify its compatibility, or rewrite parts.
+
 Print the parsed logical operator pipeline without scanning data using `rusthouse sql "SELECT number FROM numbers(10) WHERE number > 3 ORDER BY number DESC LIMIT 2" --explain`. This is a logical overview, not a physical or cost-based execution plan; column validity is still checked by actual execution.
 
 Summarize declared part manifest sizes without reading data files with `rusthouse inspect-checksums /path/to/checksums.txt --summary`. The result separates compressed stored bytes and their original byte counts. It does not verify that local files or hashes match the manifest.
@@ -98,6 +102,8 @@ Pass a directory containing the **active** wide part subdirectories to `--part`:
 rusthouse sql "SELECT count(*) FROM part" --part ./snapshot/active-parts
 rusthouse sql "SELECT id, count(*) FROM part GROUP BY id ORDER BY id" --part ./snapshot/active-parts
 ```
+
+Group mixed-type data with `SELECT service, count(*) FROM part GROUP BY service ORDER BY count DESC`. String, UUID, and Nullable group keys work with WHERE, HAVING, LIMIT and OFFSET. Grouping is bounded to 100,000 distinct keys.
 
 RustHouse now treats either a single wide part or an offline directory of
 MergeTree-named active parts as a query source. It streams one part at a time;

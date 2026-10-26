@@ -4,7 +4,7 @@ use super::{ExecutionError, Number, NumberKey, compare_numbers, number_at};
 use crate::{Operator, Predicate, Projection, Select};
 use rusthouse_storage::{TypedColumn, TypedQueryReader, inspect_query_source};
 use std::cmp::Ordering;
-use std::collections::{HashMap, HashSet};
+use std::collections::{HashMap, HashSet, hash_map::Entry};
 use std::io::Write;
 use std::path::Path;
 
@@ -79,7 +79,7 @@ pub(super) fn requires_typed_scan(query: &Select, path: &Path) -> Result<bool, E
         .iter()
         .chain(query.or_predicates.iter().flatten())
     {
-        if matches!(pred, Predicate::IsNull { .. }) {
+        if matches!(pred, Predicate::IsNull { .. } | Predicate::Like { .. }) {
             return Ok(true);
         }
         names.push(pred.column());
@@ -132,11 +132,77 @@ fn parse_literal(data_type: &str, literal: &str) -> Result<Cell, ExecutionError>
     }
 }
 
+#[derive(Clone, Copy)]
+enum LikeToken {
+    Any,
+    One,
+    Byte(u8),
+}
+
+fn compile_like(pattern: &str) -> Result<Vec<LikeToken>, ExecutionError> {
+    let mut tokens = Vec::new();
+    let mut bytes = pattern.bytes();
+    while let Some(byte) = bytes.next() {
+        match byte {
+            b'%' => {
+                if !matches!(tokens.last(), Some(LikeToken::Any)) {
+                    tokens.push(LikeToken::Any);
+                }
+            }
+            b'_' => tokens.push(LikeToken::One),
+            b'\\' => {
+                let escaped = bytes.next().ok_or_else(|| {
+                    ExecutionError::Invalid("LIKE pattern ends with an escape".into())
+                })?;
+                tokens.push(LikeToken::Byte(escaped));
+            }
+            literal => tokens.push(LikeToken::Byte(literal)),
+        }
+    }
+    Ok(tokens)
+}
+
+fn like_matches(value: &[u8], pattern: &[LikeToken]) -> bool {
+    let (mut row, mut pat) = (0, 0);
+    let mut last_any = None;
+    let mut restart = 0;
+    while row < value.len() {
+        match pattern.get(pat) {
+            Some(LikeToken::Byte(byte)) if *byte == value[row] => {
+                row += 1;
+                pat += 1;
+            }
+            Some(LikeToken::One) => {
+                row += 1;
+                pat += 1;
+            }
+            Some(LikeToken::Any) => {
+                last_any = Some(pat);
+                pat += 1;
+                restart = row;
+            }
+            _ => {
+                let Some(any) = last_any else {
+                    return false;
+                };
+                restart += 1;
+                row = restart;
+                pat = any + 1;
+            }
+        }
+    }
+    while matches!(pattern.get(pat), Some(LikeToken::Any)) {
+        pat += 1;
+    }
+    pat == pattern.len()
+}
+
 enum Test {
     Compare(Operator, Cell),
     In(Vec<Cell>, bool),
     NotBetween(Cell, Cell),
     IsNull(bool),
+    Like(Vec<LikeToken>, bool),
 }
 
 struct Condition {
@@ -181,6 +247,16 @@ fn compile(
                     Test::NotBetween(parse_literal(kind, lower)?, parse_literal(kind, upper)?)
                 }
                 Predicate::IsNull { negated, .. } => Test::IsNull(*negated),
+                Predicate::Like {
+                    pattern, negated, ..
+                } => {
+                    if base_type(kind) != "String" {
+                        return Err(ExecutionError::Invalid(
+                            "LIKE requires a String column".into(),
+                        ));
+                    }
+                    Test::Like(compile_like(pattern)?, *negated)
+                }
             };
             Ok(Condition { index, test })
         })
@@ -239,6 +315,10 @@ fn passes(batch: &[TypedColumn], row: usize, branches: &[Vec<Condition>]) -> boo
             let value = cell(&batch[condition.index], row);
             match &condition.test {
                 Test::IsNull(negated) => matches!(value, Cell::Null) != *negated,
+                Test::Like(pattern, negated) => match &value {
+                    Cell::Text(bytes) => like_matches(bytes, pattern) != *negated,
+                    _ => false,
+                },
                 Test::Compare(operator, target) => matches_comparison(&value, target, *operator),
                 Test::In(targets, negated) => {
                     if matches!(value, Cell::Null) {
@@ -313,7 +393,9 @@ pub(super) fn execute_typed<W: Write>(
             .collect::<Vec<_>>(),
         Projection::Columns(cols) => cols.clone(),
         Projection::Count => Vec::new(),
-        Projection::CountDistinct { column } => vec![column.clone()],
+        Projection::CountDistinct { column } | Projection::GroupedCount { column } => {
+            vec![column.clone()]
+        }
         _ => {
             return Err(ExecutionError::Invalid(
                 "typed SQL currently supports SELECT columns, COUNT(*) and COUNT(DISTINCT col)"
@@ -334,12 +416,17 @@ pub(super) fn execute_typed<W: Write>(
     {
         include(predicate.column());
     }
-    let sort = query.order_by.as_ref().map(|order| {
-        if query.alias.as_deref() == Some(order.column.as_str()) && projection.len() == 1 {
-            projection[0].clone()
-        } else {
-            order.column.clone()
+    let sort = query.order_by.as_ref().and_then(|order| {
+        if matches!(query.projection, Projection::GroupedCount { .. }) {
+            return None;
         }
+        Some(
+            if query.alias.as_deref() == Some(order.column.as_str()) && projection.len() == 1 {
+                projection[0].clone()
+            } else {
+                order.column.clone()
+            },
+        )
     });
     if let Some(sort) = &sort {
         include(sort);
@@ -378,6 +465,7 @@ pub(super) fn execute_typed<W: Write>(
     let header = match &query.projection {
         Projection::Count => "count".to_string(),
         Projection::CountDistinct { column } => format!("countDistinct({column})"),
+        Projection::GroupedCount { column } => format!("{column}\tcount"),
         _ => projection.join("\t"),
     };
     writeln!(output, "{}", query.alias.as_deref().unwrap_or(&header))?;
@@ -386,8 +474,11 @@ pub(super) fn execute_typed<W: Write>(
     }
     let is_count = matches!(query.projection, Projection::Count);
     let is_count_distinct = matches!(query.projection, Projection::CountDistinct { .. });
+    let is_grouped = matches!(query.projection, Projection::GroupedCount { .. });
     let mut count = 0u64;
     let mut distinct = HashSet::<Vec<Key>>::new();
+    let mut group_indices = HashMap::<Key, usize>::new();
+    let mut grouped_rows = Vec::<(Cell, u64)>::new();
     let mut ordered = Vec::<Row>::new();
     let mut emitted = 0usize;
     let mut skipped = 0usize;
@@ -402,6 +493,27 @@ pub(super) fn execute_typed<W: Write>(
                 count = count
                     .checked_add(1)
                     .ok_or_else(|| ExecutionError::Invalid("count overflow".into()))?;
+                continue;
+            }
+            if is_grouped {
+                let value = cell(&batch[projection_indices[0]], index);
+                match group_indices.entry(value.key()) {
+                    Entry::Occupied(entry) => {
+                        let count = &mut grouped_rows[*entry.get()].1;
+                        *count = count.checked_add(1).ok_or_else(|| {
+                            ExecutionError::Invalid("group count overflow".into())
+                        })?;
+                    }
+                    Entry::Vacant(entry) => {
+                        if grouped_rows.len() >= MAX_BUFFERED_ROWS {
+                            return Err(ExecutionError::Invalid(
+                                "GROUP BY supports at most 100000 groups".into(),
+                            ));
+                        }
+                        entry.insert(grouped_rows.len());
+                        grouped_rows.push((value, 1));
+                    }
+                }
                 continue;
             }
             let cells = projection_indices
@@ -443,6 +555,37 @@ pub(super) fn execute_typed<W: Write>(
             }
         }
     }
+    if is_grouped {
+        if let Some(having) = &query.having {
+            grouped_rows.retain(|(_, count)| {
+                super::predicates::number_matches(
+                    Number::Unsigned(u128::from(*count)),
+                    Number::Unsigned(u128::from(having.value)),
+                    having.operator,
+                )
+            });
+        }
+        if let Some(order) = &query.order_by {
+            grouped_rows.sort_by(|(left_key, left_count), (right_key, right_count)| {
+                let ordering = if order.column == "count" {
+                    left_count.cmp(right_count)
+                } else {
+                    cmp(left_key, right_key)
+                };
+                let ordering = if order.descending {
+                    ordering.reverse()
+                } else {
+                    ordering
+                };
+                ordering.then_with(|| cmp(left_key, right_key))
+            });
+        }
+        for (key, count) in grouped_rows.into_iter().skip(offset).take(limit) {
+            write_value(output, &key)?;
+            writeln!(output, "\t{count}")?;
+        }
+        return Ok(());
+    }
     if is_count || is_count_distinct {
         if offset == 0 {
             let result = if is_count {
@@ -468,4 +611,29 @@ pub(super) fn execute_typed<W: Write>(
         }
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod like_tests {
+    use super::{compile_like, like_matches};
+
+    fn matches(text: &[u8], pattern: &str) -> bool {
+        let compiled = compile_like(pattern).unwrap();
+        like_matches(text, &compiled)
+    }
+
+    #[test]
+    fn supports_wildcards_and_backslash_escaping() {
+        assert!(matches(b"api", "a_i"));
+        assert!(matches(b"api", "%p%"));
+        assert!(matches(b"", "%"));
+        assert!(!matches(b"", "_"));
+        assert!(matches(b"a_b", "a\\_b"));
+        assert!(!matches(b"acb", "a\\_b"));
+        assert!(matches(b"abc%d", "abc\\%d"));
+        assert!(!matches(b"abcde", "abc\\%d"));
+        assert!(matches(b"abcXYZend", "a%end"));
+        assert!(!matches(b"abcXYZend", "a%ends"));
+        assert!(compile_like("dangling\\").is_err());
+    }
 }
