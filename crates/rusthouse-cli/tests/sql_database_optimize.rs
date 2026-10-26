@@ -54,6 +54,13 @@ fn optimize_preserves_rows_and_allows_new_inserts() {
     assert_eq!(before.stdout, after.stdout);
     let pointer = fs::read_to_string(dir.join("t.parts/.rusthouse-active")).unwrap();
     assert_eq!(pointer, "g1\n");
+    let again = sql("OPTIMIZE TABLE t", &dir);
+    assert!(again.status.success(), "{again:?}");
+    assert_eq!(
+        fs::read_to_string(dir.join("t.parts/.rusthouse-active")).unwrap(),
+        "g1\n"
+    );
+    assert!(!dir.join("t.parts/.rusthouse-versions/g2").exists());
     assert!(
         sql("INSERT INTO t VALUES (5, 'after', NULL)", &dir)
             .status

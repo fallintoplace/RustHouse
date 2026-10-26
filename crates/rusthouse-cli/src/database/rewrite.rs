@@ -240,7 +240,16 @@ pub(super) fn rewrite_rows(
 }
 
 pub(super) fn compact_table(database: &Path, table: &str) -> Result<(), String> {
-    let (read, kept) = rewrite_rows(database, table, |_, _, _| Ok(true))?;
+    let _lock = lock(database)?;
+    let cols = columns(database, table)?;
+    let (source, parts) = validated_parts(database, table, &cols)?;
+    if parts.len() <= 1 {
+        println!("Table {table} is already compact");
+        return Ok(());
+    }
+    let (rows, read) = read_rows(&source, &cols, |_, _, _| Ok(true))?;
+    let kept = rows.len();
+    publish_snapshot(database, table, &cols, &rows)?;
     println!("Optimized table {table}: read {read} rows, retained {kept}");
     Ok(())
 }
