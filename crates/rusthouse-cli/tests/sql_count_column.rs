@@ -17,7 +17,10 @@ fn counts_generated_column_values_with_filters_and_pagination() {
             "total\n4\n",
         ),
         ("SELECT count(number) FROM numbers(0)", "count(number)\n0\n"),
-        ("SELECT count(number) FROM numbers(10) LIMIT 0", "count(number)\n"),
+        (
+            "SELECT count(number) FROM numbers(10) LIMIT 0",
+            "count(number)\n",
+        ),
         (
             "SELECT count(number) FROM numbers(10) LIMIT 1 OFFSET 1",
             "count(number)\n",

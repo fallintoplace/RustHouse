@@ -445,8 +445,7 @@ pub(super) fn execute_typed<W: Write>(
         }
         _ => {
             return Err(ExecutionError::Invalid(
-                "typed SQL currently supports SELECT columns and COUNT aggregates"
-                    .into(),
+                "typed SQL currently supports SELECT columns and COUNT aggregates".into(),
             ));
         }
     };

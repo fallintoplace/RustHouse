@@ -96,7 +96,10 @@ fn count_column_excludes_nulls_after_typed_filters() {
             "SELECT count(attempt) FROM part WHERE message IS NULL",
             "count(attempt)\n0\n",
         ),
-        ("SELECT count(attempt) FROM part LIMIT 0", "count(attempt)\n"),
+        (
+            "SELECT count(attempt) FROM part LIMIT 0",
+            "count(attempt)\n",
+        ),
         (
             "SELECT count(attempt) FROM part LIMIT 1 OFFSET 1",
             "count(attempt)\n",

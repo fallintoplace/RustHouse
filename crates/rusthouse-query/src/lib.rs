@@ -40,7 +40,9 @@ impl AggregateFunction {
 pub enum Projection {
     Literal(i64),
     Count,
-    CountColumn { column: String },
+    CountColumn {
+        column: String,
+    },
     CountDistinct {
         column: String,
     },
