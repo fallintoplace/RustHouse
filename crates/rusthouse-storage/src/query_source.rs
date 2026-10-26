@@ -110,9 +110,13 @@ pub fn query_parts(path: &Path) -> Result<Vec<PathBuf>, PartError> {
 /// Return consistent metadata for a single part or a frozen table snapshot.
 pub fn inspect_query_source(path: &Path) -> Result<PartMetadata, PartError> {
     let paths = query_parts(path)?;
+    inspect_parts_metadata(path, &paths)
+}
+
+fn inspect_parts_metadata(path: &Path, paths: &[PathBuf]) -> Result<PartMetadata, PartError> {
     let first = inspect_part(&paths[0])?;
     let mut rows = 0u64;
-    for part in &paths {
+    for part in paths {
         let metadata = inspect_part(part)?;
         if metadata.columns != first.columns {
             return Err(PartError::InvalidScan(format!(
@@ -143,7 +147,7 @@ pub struct NumericQueryReader {
 impl NumericQueryReader {
     pub fn open(path: &Path, columns: &[String]) -> Result<Self, PartError> {
         let parts = query_parts(path)?;
-        let metadata = inspect_query_source(path)?;
+        let metadata = inspect_parts_metadata(path, &parts)?;
         for column in columns {
             if !metadata.columns.iter().any(|c: &Column| &c.name == column) {
                 return Err(PartError::InvalidScan(format!("unknown column: {column}")));
