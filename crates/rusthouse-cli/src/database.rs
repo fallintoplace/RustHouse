@@ -323,10 +323,22 @@ fn create_table_locked(
         columns: definitions.to_vec(),
         if_not_exists,
     };
-    let result = write_wide_part(&parts.join("all_0_0_0"), &cols, &[])
-        .map_err(|error| error.to_string())
-        .and_then(|_| catalog::apply(database, &ddl));
-    if result.is_err() {
+    let result = (|| -> Result<(), String> {
+        write_wide_part(&parts.join("all_0_0_0"), &cols, &[]).map_err(|error| error.to_string())?;
+        // Persist the parts directory and its parent before the schema name
+        // becomes visible. A published schema must not point at missing data
+        // after a crash.
+        fs::File::open(&parts)
+            .and_then(|directory| directory.sync_all())
+            .map_err(|error| format!("cannot sync new table parts: {error}"))?;
+        fs::File::open(database)
+            .and_then(|directory| directory.sync_all())
+            .map_err(|error| format!("cannot sync new table directory: {error}"))?;
+        catalog::apply(database, &ddl)
+    })();
+    if result.is_err() && matches!(existing_path(&schema), Ok(false)) {
+        // A schema may have been published before its final sync failed.
+        // Never remove its data in that case.
         let _ = fs::remove_dir_all(&parts);
     }
     result
