@@ -28,8 +28,12 @@ at 10000 by default (up to 100000 with --max-rows).
 Only loopback is supported. There is no TLS, remote access, authentication,
 or full wire-protocol compatibility.
 
-For non-generated SQL, use an immutable wide MergeTree part. Multi-part table
-snapshots require the separate multi-part query feature.
+For non-generated SQL, use an immutable wide MergeTree part or snapshot. To query
+persistent tables created by `rusthouse sql ... --database ./mydb`, start the
+server with `--database ./mydb` instead of `--part`. Queries like
+`SELECT name FROM events` resolve only catalog-visible tables whose schema
+matches stored parts. The server remains **read-only**; HTTP DDL and INSERT
+are rejected. The `--part` and `--database` modes are mutually exclusive.
 
 `GET /schema` returns JSON with the frozen part or snapshot's total row count
 and an ordered list of column names and types. This endpoint reads metadata
