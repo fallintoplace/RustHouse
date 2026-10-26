@@ -1404,8 +1404,8 @@ mod tests {
                 descending: true,
             })
         );
-        let grouped_key = parse_select("SELECT id, count(*) FROM part GROUP BY id ORDER BY 1")
-            .unwrap();
+        let grouped_key =
+            parse_select("SELECT id, count(*) FROM part GROUP BY id ORDER BY 1").unwrap();
         assert_eq!(grouped_key.order_by.unwrap().column, "id");
     }
 
@@ -1422,5 +1422,4 @@ mod tests {
             assert!(parse_select(sql).is_err(), "{sql}");
         }
     }
-
 }
