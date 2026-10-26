@@ -226,7 +226,9 @@ mod decoded_html_regressions {
     #[test]
     fn decodes_sql_string_escapes_before_html_escaping() {
         let mut writer = HtmlWriter::new(Vec::new());
-        writer.write_all(b"name\nline\\nnext\\tcell\\\\tail\n").unwrap();
+        writer
+            .write_all(b"name\nline\\nnext\\tcell\\\\tail\n")
+            .unwrap();
         let html = String::from_utf8(writer.finish().unwrap()).unwrap();
         assert!(html.contains(r"<td>line&#10;next&#9;cell\tail</td>"));
     }
