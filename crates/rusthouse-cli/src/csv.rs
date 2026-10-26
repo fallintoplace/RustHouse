@@ -30,27 +30,31 @@ impl<W: Write> CsvWriter<W> {
     }
 
     fn finish_field(&mut self, separator: &[u8]) -> io::Result<()> {
-        let needs_quotes = self
-            .field
-            .iter()
-            .any(|byte| matches!(byte, b',' | b'"' | b'\r' | b'\n'));
-        if needs_quotes {
-            self.output.write_all(b"\"")?;
-            let mut pieces = self.field.split(|byte| *byte == b'"');
-            if let Some(first) = pieces.next() {
-                self.output.write_all(first)?;
-            }
-            for piece in pieces {
-                self.output.write_all(b"\"\"")?;
-                self.output.write_all(piece)?;
-            }
-            self.output.write_all(b"\"")?;
-        } else {
-            self.output.write_all(&self.field)?;
-        }
+        write_csv_field(&mut self.output, &self.field)?;
         self.field.clear();
         self.output.write_all(separator)
     }
+}
+
+fn write_csv_field<W: Write>(output: &mut W, field: &[u8]) -> io::Result<()> {
+    let needs_quotes = field
+        .iter()
+        .any(|byte| matches!(byte, b',' | b'"' | b'\r' | b'\n'));
+    if needs_quotes {
+        output.write_all(b"\"")?;
+        let mut pieces = field.split(|byte| *byte == b'"');
+        if let Some(first) = pieces.next() {
+            output.write_all(first)?;
+        }
+        for piece in pieces {
+            output.write_all(b"\"\"")?;
+            output.write_all(piece)?;
+        }
+        output.write_all(b"\"")?;
+    } else {
+        output.write_all(field)?;
+    }
+    Ok(())
 }
 
 impl<W: Write> Write for CsvWriter<W> {
