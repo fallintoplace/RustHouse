@@ -43,6 +43,16 @@ fn invalid(line: usize, message: &'static str) -> PartError {
     PartError::InvalidColumns { line, message }
 }
 
+fn hex_identifier_digit(
+    chars: &mut std::str::Chars<'_>,
+    line_number: usize,
+) -> Result<u32, PartError> {
+    chars
+        .next()
+        .and_then(|digit| digit.to_digit(16))
+        .ok_or_else(|| invalid(line_number, "invalid hex identifier escape"))
+}
+
 fn append_identifier_escape(
     chars: &mut std::str::Chars<'_>,
     name: &mut Vec<u8>,
@@ -53,14 +63,8 @@ fn append_identifier_escape(
         .ok_or_else(|| invalid(line_number, "trailing identifier escape"))?;
     let decoded = match escaped {
         'x' => {
-            let high = chars
-                .next()
-                .and_then(|digit| digit.to_digit(16))
-                .ok_or_else(|| invalid(line_number, "invalid hex identifier escape"))?;
-            let low = chars
-                .next()
-                .and_then(|digit| digit.to_digit(16))
-                .ok_or_else(|| invalid(line_number, "invalid hex identifier escape"))?;
+            let high = hex_identifier_digit(chars, line_number)?;
+            let low = hex_identifier_digit(chars, line_number)?;
             (high * 16 + low) as u8
         }
         'N' => return Ok(()),
