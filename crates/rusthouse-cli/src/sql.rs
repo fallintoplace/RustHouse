@@ -414,6 +414,15 @@ pub(super) fn run_sql_args(mut args: impl Iterator<Item = OsString>) -> Result<(
     if let Some(cap) = max_rows {
         select.limit = Some(select.limit.map_or(cap, |limit| limit.min(cap)));
     }
+    // Hold a shared lock for the entire query, not just snapshot discovery.
+    // DROP and RENAME must not remove part directories beneath active readers.
+    let _database_read_lock = if let (Some(database_dir), Some(Source::Table(_))) =
+        (database.as_deref(), select.source.as_ref())
+    {
+        Some(crate::database::read_lock(database_dir)?)
+    } else {
+        None
+    };
     if let (Some(database_dir), Some(Source::Table(table))) =
         (database.as_deref(), select.source.as_ref())
     {
