@@ -118,8 +118,8 @@ mod tests {
         let mut output = Vec::new();
         assert!(write_compact_row(&mut output, b"only-one", 2).is_err());
         assert!(output.is_empty());
-        write_compact_row(&mut output, b"1\\t\\\\N", 2).unwrap();
-        assert_eq!(output, b"[\"1\",null]\\n");
+        write_compact_row(&mut output, b"1\t\\N", 2).unwrap();
+        assert_eq!(output, b"[\"1\",null]\n");
     }
 
     #[test]
