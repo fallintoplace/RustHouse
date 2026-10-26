@@ -379,6 +379,75 @@ pub(super) fn passes(batch: &[TypedColumn], row: usize, branches: &[Vec<Conditio
     })
 }
 
+/// Read a small mutable table with the same typed WHERE semantics as SELECT.
+pub(super) fn read_matching_rows(
+    predicates: &[Predicate],
+    or_predicates: &[Vec<Predicate>],
+    path: &Path,
+) -> Result<Vec<(Vec<Option<String>>, bool)>, ExecutionError> {
+    const MAX_REWRITE_ROWS: usize = 4096;
+    const MAX_REWRITE_BYTES: usize = 16 * 1024 * 1024;
+    let metadata = inspect_query_source(path)?;
+    let names = metadata
+        .columns
+        .iter()
+        .map(|column| column.name.clone())
+        .collect::<Vec<_>>();
+    let indices = names
+        .iter()
+        .enumerate()
+        .map(|(index, name)| (name.clone(), index))
+        .collect::<HashMap<_, _>>();
+    let types = metadata
+        .columns
+        .iter()
+        .map(|column| (column.name.clone(), column.data_type.clone()))
+        .collect::<HashMap<_, _>>();
+    let mut conditions = vec![compile(predicates, &indices, &types)?];
+    for branch in or_predicates {
+        conditions.push(compile(branch, &indices, &types)?);
+    }
+    let mut scan = TypedQueryReader::open(path, &names)?;
+    let mut rows = Vec::new();
+    let mut bytes = 0usize;
+    while let Some(batch) = scan.next_batch()? {
+        for index in 0..batch[0].len() {
+            if rows.len() == MAX_REWRITE_ROWS {
+                return Err(ExecutionError::Invalid(
+                    "SQL row mutations support at most 4096 existing rows".into(),
+                ));
+            }
+            let matched = passes(&batch, index, &conditions);
+            let mut values = Vec::with_capacity(batch.len());
+            for column in &batch {
+                let value = match cell(column, index) {
+                    Cell::Null => None,
+                    Cell::Numeric(value) => Some(value.to_string()),
+                    Cell::Uuid(value) => Some(value),
+                    Cell::Text(value) => Some(String::from_utf8(value).map_err(|_| {
+                        ExecutionError::Invalid(
+                            "SQL row mutations require UTF-8 String values".into(),
+                        )
+                    })?),
+                };
+                if let Some(value) = &value {
+                    bytes = bytes
+                        .checked_add(value.len())
+                        .ok_or_else(|| ExecutionError::Invalid("row data size overflow".into()))?;
+                    if bytes > MAX_REWRITE_BYTES {
+                        return Err(ExecutionError::Invalid(
+                            "SQL row mutations support at most 16 MiB of row data".into(),
+                        ));
+                    }
+                }
+                values.push(value);
+            }
+            rows.push((values, matched));
+        }
+    }
+    Ok(rows)
+}
+
 fn write_value<W: Write>(output: &mut W, value: &Cell) -> Result<(), ExecutionError> {
     match value {
         Cell::Numeric(value) => write!(output, "{value}")?,

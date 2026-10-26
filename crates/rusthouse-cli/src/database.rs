@@ -1,7 +1,7 @@
 //! Single-writer local database mode.
 //! Tables use existing .schema metadata and immutable, atomically published wide parts.
 use crate::catalog;
-use rusthouse_query::{Ddl, Insert};
+use rusthouse_query::{Ddl, Delete, Insert, read_matching_rows};
 use rusthouse_storage::{
     Column, inspect_query_source, query_parts, verify_wide_part, write_wide_part,
 };
@@ -257,6 +257,81 @@ pub(super) fn apply_ddl(database: &Path, ddl: &Ddl) -> Result<(), String> {
         Ddl::RenameTable { from, to } => rename_table(database, from, to),
         _ => Err("database mode does not support ALTER yet".into()),
     }
+}
+
+/// Replace one small table snapshot, preserving old data on preparation failures.
+fn replace_rows(
+    database: &Path,
+    name: &str,
+    columns: &[Column],
+    current: &Path,
+    rows: &[Vec<Option<String>>],
+) -> Result<(), String> {
+    let sequence = NEXT_STAGE.fetch_add(1, Ordering::Relaxed);
+    let staging = database.join(format!(
+        ".{name}.rewrite-new-{}-{sequence}",
+        std::process::id()
+    ));
+    let retired = database.join(format!(
+        ".{name}.rewrite-old-{}-{sequence}",
+        std::process::id()
+    ));
+    if existing_path(&staging)? || existing_path(&retired)? {
+        return Err("SQL mutation staging path already exists".into());
+    }
+    fs::create_dir(&staging)
+        .map_err(|error| format!("cannot stage table rewrite: {error}"))?;
+    let prepared = write_wide_part(&staging.join("all_0_0_0"), columns, rows)
+        .map_err(|error| error.to_string())
+        .and_then(|_| {
+            verify_wide_part(staging.join("all_0_0_0")).map_err(|error| error.to_string())
+        });
+    if let Err(error) = prepared {
+        let _ = fs::remove_dir_all(&staging);
+        return Err(error);
+    }
+    if let Err(error) = fs::rename(current, &retired) {
+        let _ = fs::remove_dir_all(&staging);
+        return Err(format!("cannot retire old table parts: {error}"));
+    }
+    if let Err(error) = fs::rename(&staging, current) {
+        let rollback = fs::rename(&retired, current);
+        let _ = fs::remove_dir_all(&staging);
+        return match rollback {
+            Ok(()) => Err(format!("cannot publish rewritten table: {error}")),
+            Err(rollback) => Err(format!(
+                "cannot publish rewritten table: {error}; rollback failed: {rollback}"
+            )),
+        };
+    }
+    fs::File::open(database)
+        .and_then(|dir| dir.sync_all())
+        .map_err(|error| format!("table rewrite published but sync failed: {error}"))?;
+    fs::remove_dir_all(&retired)
+        .map_err(|error| format!("table rewrite published but cleanup failed: {error}"))?;
+    Ok(())
+}
+
+pub(super) fn delete(database: &Path, delete: &Delete) -> Result<(), String> {
+    let _lock = lock(database)?;
+    let cols = columns(database, &delete.table)?;
+    let (parts_dir, _) = validated_parts(database, &delete.table, &cols)?;
+    let existing = read_matching_rows(
+        &delete.predicates,
+        &delete.or_predicates,
+        &parts_dir,
+    )
+    .map_err(|error| error.to_string())?;
+    let count = existing.iter().filter(|(_, matched)| *matched).count();
+    if count > 0 {
+        let retained = existing
+            .into_iter()
+            .filter_map(|(row, matched)| (!matched).then_some(row))
+            .collect::<Vec<_>>();
+        replace_rows(database, &delete.table, &cols, &parts_dir, &retained)?;
+    }
+    println!("Deleted {count} rows from {}", delete.table);
+    Ok(())
 }
 
 pub(super) fn insert(database: &Path, insert: &Insert) -> Result<(), String> {

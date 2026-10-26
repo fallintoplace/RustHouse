@@ -122,6 +122,16 @@ fn write_header<W: Write>(
     Ok(())
 }
 
+/// Materialize a bounded local table snapshot and report which rows satisfy WHERE.
+/// Used by single-writer SQL mutations; SELECT still streams through its normal executor.
+pub fn read_matching_rows(
+    predicates: &[crate::Predicate],
+    or_predicates: &[Vec<crate::Predicate>],
+    part: &Path,
+) -> Result<Vec<(Vec<Option<String>>, bool)>, ExecutionError> {
+    typed::read_matching_rows(predicates, or_predicates, part)
+}
+
 pub fn execute<W: Write>(
     query: &Select,
     part: Option<&Path>,

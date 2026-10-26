@@ -1,10 +1,12 @@
 mod ddl;
+mod delete;
 mod execute;
 mod explain;
 mod insert;
 mod lexer;
 pub use ddl::{ColumnDef, Ddl, parse_ddl};
-pub use execute::{ExecutionError, execute};
+pub use delete::{Delete, parse_delete};
+pub use execute::{ExecutionError, execute, read_matching_rows};
 pub use explain::explain_select;
 pub use insert::{Insert, parse_insert};
 
@@ -237,6 +239,167 @@ impl Parser {
             _ => Err(ParseError("expected a comparison operator".into())),
         }
     }
+}
+
+fn parse_where(parser: &mut Parser) -> Result<(Vec<Predicate>, Vec<Vec<Predicate>>), ParseError> {
+    let (predicates, or_predicates) = if parser.keyword("WHERE") {
+        if source.is_none() {
+            return Err(ParseError("WHERE requires a table source".into()));
+        }
+        let mut branches: Vec<Vec<Predicate>> = vec![Vec::new()];
+        let mut total_conditions = 0usize;
+        loop {
+            if total_conditions == 16 {
+                return Err(ParseError("WHERE supports at most 16 conditions".into()));
+            }
+            let prefix_not = parser.keyword("NOT");
+            let column = parser.word()?;
+            let postfix_not = parser.keyword("NOT");
+            let negate_in = prefix_not ^ postfix_not;
+            if parser.keyword("IS") {
+                if postfix_not {
+                    return Err(ParseError("unexpected NOT before IS".into()));
+                }
+                let negated = parser.keyword("NOT") ^ prefix_not;
+                if !parser.keyword("NULL") {
+                    return Err(ParseError("expected NULL after IS".into()));
+                }
+                branches
+                    .last_mut()
+                    .unwrap()
+                    .push(Predicate::IsNull { column, negated });
+                total_conditions += 1;
+            } else if let Some(case_insensitive) = parser.like_keyword() {
+                let pattern = match parser.tokens.get(parser.index) {
+                    Some(Token::String(value)) => value.clone(),
+                    _ => return Err(ParseError("LIKE requires a string literal".into())),
+                };
+                let trailing_escapes = pattern
+                    .as_bytes()
+                    .iter()
+                    .rev()
+                    .take_while(|&&byte| byte == b'\\')
+                    .count();
+                if trailing_escapes % 2 != 0 {
+                    return Err(ParseError("LIKE pattern has a trailing escape".into()));
+                }
+                parser.index += 1;
+                branches.last_mut().unwrap().push(Predicate::Like {
+                    column,
+                    pattern,
+                    case_insensitive,
+                    negated: negate_in,
+                });
+                total_conditions += 1;
+            } else if parser.keyword("BETWEEN") {
+                let lower = parser.number()?;
+                if !parser.keyword("AND") {
+                    return Err(ParseError("BETWEEN requires AND".into()));
+                }
+                let upper = parser.number()?;
+                if negate_in {
+                    branches.last_mut().unwrap().push(Predicate::NotBetween {
+                        column,
+                        lower,
+                        upper,
+                    });
+                    total_conditions += 1;
+                } else {
+                    if total_conditions + 2 > 16 {
+                        return Err(ParseError("WHERE supports at most 16 conditions".into()));
+                    }
+                    branches.last_mut().unwrap().push(Predicate::Comparison {
+                        column: column.clone(),
+                        operator: Operator::Ge,
+                        value: lower,
+                    });
+                    branches.last_mut().unwrap().push(Predicate::Comparison {
+                        column,
+                        operator: Operator::Le,
+                        value: upper,
+                    });
+                    total_conditions += 2;
+                }
+            } else if parser.keyword("IN") {
+                if !parser.take(Token::LParen) {
+                    return Err(ParseError("expected '(' after IN".into()));
+                }
+                let mut values = Vec::new();
+                loop {
+                    if values.len() == 32 {
+                        return Err(ParseError("IN supports at most 32 values".into()));
+                    }
+                    values.push(parser.literal()?);
+                    if !parser.take(Token::Comma) {
+                        break;
+                    }
+                }
+                if !parser.take(Token::RParen) {
+                    return Err(ParseError("expected ')' after IN list".into()));
+                }
+                branches.last_mut().unwrap().push(if negate_in {
+                    Predicate::NotIn { column, values }
+                } else {
+                    Predicate::In { column, values }
+                });
+                total_conditions += 1;
+            } else {
+                if postfix_not {
+                    return Err(ParseError(
+                        "NOT after a column requires IN or BETWEEN".into(),
+                    ));
+                }
+                let mut operator = if parser.take(Token::Percent) {
+                    let modulus = parser.number()?;
+                    let modulus = modulus
+                        .parse::<u64>()
+                        .map_err(|_| ParseError("modulus must be a positive UInt64".into()))?;
+                    if modulus == 0 {
+                        return Err(ParseError("modulus must be positive".into()));
+                    }
+                    match parser.operator()? {
+                        Operator::Eq => Operator::Modulo(modulus),
+                        Operator::Ne => Operator::ModuloNe(modulus),
+                        _ => return Err(ParseError("modulo predicates require = or !=".into())),
+                    }
+                } else {
+                    parser.operator()?
+                };
+                if prefix_not {
+                    operator = match operator {
+                        Operator::Eq => Operator::Ne,
+                        Operator::Ne => Operator::Eq,
+                        Operator::Lt => Operator::Ge,
+                        Operator::Le => Operator::Gt,
+                        Operator::Gt => Operator::Le,
+                        Operator::Ge => Operator::Lt,
+                        Operator::Modulo(_) | Operator::ModuloNe(_) => {
+                            return Err(ParseError("NOT modulo predicates are unsupported".into()));
+                        }
+                    };
+                }
+                branches.last_mut().unwrap().push(Predicate::Comparison {
+                    column,
+                    operator,
+                    value: parser.literal()?,
+                });
+                total_conditions += 1;
+            }
+            if parser.keyword("AND") {
+                continue;
+            }
+            if parser.keyword("OR") {
+                branches.push(Vec::new());
+                continue;
+            }
+            break;
+        }
+        let first = branches.remove(0);
+        (first, branches)
+    } else {
+        (Vec::new(), Vec::new())
+    };
+    Ok((predicates, or_predicates))
 }
 
 pub fn parse_select(sql: &str) -> Result<Select, ParseError> {
@@ -473,163 +636,7 @@ pub fn parse_select(sql: &str) -> Result<Select, ParseError> {
         return Err(ParseError("literal SELECT does not support FROM".into()));
     }
 
-    let (predicates, or_predicates) = if parser.keyword("WHERE") {
-        if source.is_none() {
-            return Err(ParseError("WHERE requires a table source".into()));
-        }
-        let mut branches: Vec<Vec<Predicate>> = vec![Vec::new()];
-        let mut total_conditions = 0usize;
-        loop {
-            if total_conditions == 16 {
-                return Err(ParseError("WHERE supports at most 16 conditions".into()));
-            }
-            let prefix_not = parser.keyword("NOT");
-            let column = parser.word()?;
-            let postfix_not = parser.keyword("NOT");
-            let negate_in = prefix_not ^ postfix_not;
-            if parser.keyword("IS") {
-                if postfix_not {
-                    return Err(ParseError("unexpected NOT before IS".into()));
-                }
-                let negated = parser.keyword("NOT") ^ prefix_not;
-                if !parser.keyword("NULL") {
-                    return Err(ParseError("expected NULL after IS".into()));
-                }
-                branches
-                    .last_mut()
-                    .unwrap()
-                    .push(Predicate::IsNull { column, negated });
-                total_conditions += 1;
-            } else if let Some(case_insensitive) = parser.like_keyword() {
-                let pattern = match parser.tokens.get(parser.index) {
-                    Some(Token::String(value)) => value.clone(),
-                    _ => return Err(ParseError("LIKE requires a string literal".into())),
-                };
-                let trailing_escapes = pattern
-                    .as_bytes()
-                    .iter()
-                    .rev()
-                    .take_while(|&&byte| byte == b'\\')
-                    .count();
-                if trailing_escapes % 2 != 0 {
-                    return Err(ParseError("LIKE pattern has a trailing escape".into()));
-                }
-                parser.index += 1;
-                branches.last_mut().unwrap().push(Predicate::Like {
-                    column,
-                    pattern,
-                    case_insensitive,
-                    negated: negate_in,
-                });
-                total_conditions += 1;
-            } else if parser.keyword("BETWEEN") {
-                let lower = parser.number()?;
-                if !parser.keyword("AND") {
-                    return Err(ParseError("BETWEEN requires AND".into()));
-                }
-                let upper = parser.number()?;
-                if negate_in {
-                    branches.last_mut().unwrap().push(Predicate::NotBetween {
-                        column,
-                        lower,
-                        upper,
-                    });
-                    total_conditions += 1;
-                } else {
-                    if total_conditions + 2 > 16 {
-                        return Err(ParseError("WHERE supports at most 16 conditions".into()));
-                    }
-                    branches.last_mut().unwrap().push(Predicate::Comparison {
-                        column: column.clone(),
-                        operator: Operator::Ge,
-                        value: lower,
-                    });
-                    branches.last_mut().unwrap().push(Predicate::Comparison {
-                        column,
-                        operator: Operator::Le,
-                        value: upper,
-                    });
-                    total_conditions += 2;
-                }
-            } else if parser.keyword("IN") {
-                if !parser.take(Token::LParen) {
-                    return Err(ParseError("expected '(' after IN".into()));
-                }
-                let mut values = Vec::new();
-                loop {
-                    if values.len() == 32 {
-                        return Err(ParseError("IN supports at most 32 values".into()));
-                    }
-                    values.push(parser.literal()?);
-                    if !parser.take(Token::Comma) {
-                        break;
-                    }
-                }
-                if !parser.take(Token::RParen) {
-                    return Err(ParseError("expected ')' after IN list".into()));
-                }
-                branches.last_mut().unwrap().push(if negate_in {
-                    Predicate::NotIn { column, values }
-                } else {
-                    Predicate::In { column, values }
-                });
-                total_conditions += 1;
-            } else {
-                if postfix_not {
-                    return Err(ParseError(
-                        "NOT after a column requires IN or BETWEEN".into(),
-                    ));
-                }
-                let mut operator = if parser.take(Token::Percent) {
-                    let modulus = parser.number()?;
-                    let modulus = modulus
-                        .parse::<u64>()
-                        .map_err(|_| ParseError("modulus must be a positive UInt64".into()))?;
-                    if modulus == 0 {
-                        return Err(ParseError("modulus must be positive".into()));
-                    }
-                    match parser.operator()? {
-                        Operator::Eq => Operator::Modulo(modulus),
-                        Operator::Ne => Operator::ModuloNe(modulus),
-                        _ => return Err(ParseError("modulo predicates require = or !=".into())),
-                    }
-                } else {
-                    parser.operator()?
-                };
-                if prefix_not {
-                    operator = match operator {
-                        Operator::Eq => Operator::Ne,
-                        Operator::Ne => Operator::Eq,
-                        Operator::Lt => Operator::Ge,
-                        Operator::Le => Operator::Gt,
-                        Operator::Gt => Operator::Le,
-                        Operator::Ge => Operator::Lt,
-                        Operator::Modulo(_) | Operator::ModuloNe(_) => {
-                            return Err(ParseError("NOT modulo predicates are unsupported".into()));
-                        }
-                    };
-                }
-                branches.last_mut().unwrap().push(Predicate::Comparison {
-                    column,
-                    operator,
-                    value: parser.literal()?,
-                });
-                total_conditions += 1;
-            }
-            if parser.keyword("AND") {
-                continue;
-            }
-            if parser.keyword("OR") {
-                branches.push(Vec::new());
-                continue;
-            }
-            break;
-        }
-        let first = branches.remove(0);
-        (first, branches)
-    } else {
-        (Vec::new(), Vec::new())
-    };
+    let (predicates, or_predicates) = parse_where(&mut parser)?;
 
     if parser.keyword("GROUP") {
         if !parser.keyword("BY") {
