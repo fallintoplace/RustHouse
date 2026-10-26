@@ -59,21 +59,23 @@ fn describe_projection(projection: &Projection) -> String {
     }
 }
 
+fn describe_sort_term(column: &str, descending: bool, nulls_first: Option<bool>) -> String {
+    format!(
+        "{} {}{}",
+        column,
+        if descending { "DESC" } else { "ASC" },
+        match nulls_first {
+            Some(true) => " NULLS FIRST",
+            Some(false) => " NULLS LAST",
+            None => "",
+        }
+    )
+}
+
 fn describe_sort(query: &Select) -> String {
     query
         .order_terms()
-        .map(|order| {
-            format!(
-                "{} {}{}",
-                order.column,
-                if order.descending { "DESC" } else { "ASC" },
-                match order.nulls_first {
-                    Some(true) => " NULLS FIRST",
-                    Some(false) => " NULLS LAST",
-                    None => "",
-                }
-            )
-        })
+        .map(|order| describe_sort_term(&order.column, order.descending, order.nulls_first))
         .collect::<Vec<_>>()
         .join(", ")
 }
