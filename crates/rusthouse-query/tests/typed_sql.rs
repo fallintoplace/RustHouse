@@ -226,11 +226,17 @@ fn matches_like_ilike_and_nullable_string_filters() {
         "service\napi\napi\n"
     );
     assert_eq!(
-        query("SELECT service FROM part WHERE service NOT ILIKE 'API'", &part),
+        query(
+            "SELECT service FROM part WHERE service NOT ILIKE 'API'",
+            &part
+        ),
         "service\ndb\n"
     );
     assert_eq!(
-        query("SELECT message FROM part WHERE message NOT LIKE '%o%'", &part),
+        query(
+            "SELECT message FROM part WHERE message NOT LIKE '%o%'",
+            &part
+        ),
         "message\n"
     );
     assert_eq!(
