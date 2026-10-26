@@ -43,9 +43,10 @@ impl LimitedWriter {
 
 impl Write for LimitedWriter {
     fn write(&mut self, bytes: &[u8]) -> io::Result<usize> {
-        let new_size = self.data.len().checked_add(bytes.len()).ok_or_else(|| {
-            io::Error::new(io::ErrorKind::InvalidData, "response size overflow")
-        })?;
+        let new_size =
+            self.data.len().checked_add(bytes.len()).ok_or_else(|| {
+                io::Error::new(io::ErrorKind::InvalidData, "response size overflow")
+            })?;
         if new_size > MAX_RESPONSE_BYTES {
             return Err(io::Error::new(
                 io::ErrorKind::InvalidData,
@@ -94,7 +95,9 @@ fn query_parameters(target: &str) -> Result<(String, Option<String>), &'static s
     }
     let mut statement = None;
     for parameter in query.split('&').filter(|p| !p.is_empty()) {
-        let (key, value) = parameter.split_once('=').ok_or("invalid URL query parameter")?;
+        let (key, value) = parameter
+            .split_once('=')
+            .ok_or("invalid URL query parameter")?;
         if key != "query" {
             return Err("unsupported URL query parameter");
         }
@@ -113,7 +116,10 @@ pub fn handle_request(method: &str, target: &str, body: &[u8], config: &Config) 
         return Response::text("200 OK", "Ok.\n");
     }
     if method != "GET" && method != "POST" {
-        return Response::text("405 Method Not Allowed", "only GET and POST are supported\n");
+        return Response::text(
+            "405 Method Not Allowed",
+            "only GET and POST are supported\n",
+        );
     }
     if body.len() > MAX_QUERY_BYTES || target.len() > MAX_HEADER_BYTES {
         return Response::text("413 Payload Too Large", "SQL statement too large\n");
@@ -128,7 +134,10 @@ pub fn handle_request(method: &str, target: &str, body: &[u8], config: &Config) 
         }
         "GET" => query.unwrap_or_default(),
         "POST" if query.is_some() => {
-            return Response::text("400 Bad Request", "do not combine query URL and POST body\n");
+            return Response::text(
+                "400 Bad Request",
+                "do not combine query URL and POST body\n",
+            );
         }
         "POST" => match std::str::from_utf8(body) {
             Ok(statement) => statement.to_owned(),
@@ -161,14 +170,23 @@ mod tests {
     use super::*;
 
     fn config() -> Config {
-        Config { part: None, max_rows: 3 }
+        Config {
+            part: None,
+            max_rows: 3,
+        }
     }
 
     #[test]
     fn serves_health_and_bounded_select() {
-        assert_eq!(handle_request("GET", "/ping", b"", &config()).body, b"Ok.\n");
+        assert_eq!(
+            handle_request("GET", "/ping", b"", &config()).body,
+            b"Ok.\n"
+        );
         let response = handle_request(
-            "GET", "/?query=SELECT+number+FROM+numbers%2810%29", b"", &config()
+            "GET",
+            "/?query=SELECT+number+FROM+numbers%2810%29",
+            b"",
+            &config(),
         );
         assert_eq!(response.status, "200 OK");
         assert_eq!(response.body, b"number\n0\n1\n2\n");
@@ -183,7 +201,10 @@ mod tests {
             ("POST", "/?query=SELECT+1", &b"SELECT 2"[..]),
             ("GET", "/unrecognized", &b""[..]),
         ] {
-            assert_eq!(handle_request(method, target, body, &config()).status, "400 Bad Request");
+            assert_eq!(
+                handle_request(method, target, body, &config()).status,
+                "400 Bad Request"
+            );
         }
     }
 
@@ -192,7 +213,9 @@ mod tests {
         let result = handle_request("POST", "/", b"SELECT 7", &config());
         assert_eq!(result.status, "200 OK");
         assert_eq!(result.body, b"7\n7\n");
-        let mut writer = LimitedWriter { data: vec![0; MAX_RESPONSE_BYTES] };
+        let mut writer = LimitedWriter {
+            data: vec![0; MAX_RESPONSE_BYTES],
+        };
         assert!(writer.write_all(b"x").is_err());
         assert_eq!(writer.data.len(), MAX_RESPONSE_BYTES);
     }
