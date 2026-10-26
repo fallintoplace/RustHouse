@@ -19,7 +19,8 @@ fn sync_catalog_dir(catalog: &Path) -> Result<(), String> {
 
 pub(super) fn apply(catalog: &Path, ddl: &Ddl) -> Result<(), String> {
     match ddl {
-        Ddl::ShowTables => show_tables(catalog),
+        Ddl::ShowTables => show_tables(catalog, None),
+        Ddl::ShowTablesLike { pattern } => show_tables(catalog, Some(pattern)),
         Ddl::ShowCreateTable { name } => show_create_table(catalog, name),
         Ddl::DescribeTable { name } => describe_table(catalog, name),
         Ddl::CreateTable {
@@ -74,7 +75,40 @@ fn describe_table(catalog: &Path, name: &str) -> Result<(), String> {
     Ok(())
 }
 
-fn show_tables(catalog: &Path) -> Result<(), String> {
+/// Match SQL LIKE over validated ASCII table names. % matches any number of
+/// bytes, _ matches one byte, and backslash escapes either wildcard.
+fn table_matches_like(name: &str, pattern: &str) -> bool {
+    let name = name.as_bytes();
+    let mut states = vec![false; name.len() + 1];
+    states[0] = true;
+    let mut pattern = pattern.bytes();
+    while let Some(mut ch) = pattern.next() {
+        let escaped = ch == b'\\';
+        if escaped {
+            let Some(next) = pattern.next() else {
+                return false;
+            };
+            ch = next;
+        }
+        let mut next = vec![false; name.len() + 1];
+        if !escaped && ch == b'%' {
+            next[0] = states[0];
+            for i in 1..=name.len() {
+                next[i] = states[i] || next[i - 1];
+            }
+        } else {
+            for i in 0..name.len() {
+                if states[i] && ((!escaped && ch == b'_') || name[i] == ch) {
+                    next[i + 1] = true;
+                }
+            }
+        }
+        states = next;
+    }
+    states[name.len()]
+}
+
+fn show_tables(catalog: &Path, pattern: Option<&str>) -> Result<(), String> {
     let entries = match fs::read_dir(catalog) {
         Ok(entries) => entries,
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
@@ -113,7 +147,9 @@ fn show_tables(catalog: &Path) -> Result<(), String> {
         {
             continue;
         }
-        names.push(name.to_owned());
+        if pattern.is_none_or(|pattern| table_matches_like(name, pattern)) {
+            names.push(name.to_owned());
+        }
     }
     names.sort_unstable();
     println!("name");
@@ -384,4 +420,21 @@ fn create_table(
     sync_catalog_dir(catalog)?;
     println!("Created table {name} (schema only)");
     Ok(())
+}
+
+#[cfg(test)]
+mod show_tables_like_tests {
+    use super::table_matches_like;
+
+    #[test]
+    fn matches_percent_single_wildcard_and_literal_escapes() {
+        assert!(table_matches_like("events_2026", "events%"));
+        assert!(table_matches_like("orders_1", r"orders\_%"));
+        assert!(!table_matches_like("ordersX1", r"orders\_%"));
+        assert!(table_matches_like("xy", "x_"));
+        assert!(!table_matches_like("xyz", "x_"));
+        assert!(table_matches_like("any", "%"));
+        assert!(!table_matches_like("any", "other%"));
+        assert!(!table_matches_like("any", r"any\"));
+    }
 }

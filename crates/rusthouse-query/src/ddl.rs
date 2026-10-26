@@ -10,6 +10,9 @@ pub struct ColumnDef {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Ddl {
     ShowTables,
+    ShowTablesLike {
+        pattern: String,
+    },
     ShowCreateTable {
         name: String,
     },
@@ -176,7 +179,25 @@ pub fn parse_ddl(sql: &str) -> Result<Option<Ddl>, ParseError> {
     }
     if parser.keyword("SHOW") {
         let statement = if parser.keyword("TABLES") {
-            Ddl::ShowTables
+            if parser.keyword("LIKE") {
+                let pattern = match parser.tokens.get(parser.index) {
+                    Some(Token::String(pattern)) => pattern.clone(),
+                    _ => {
+                        return Err(ParseError(
+                            "SHOW TABLES LIKE requires a string literal".into(),
+                        ));
+                    }
+                };
+                if pattern.len() > 256 {
+                    return Err(ParseError(
+                        "SHOW TABLES LIKE pattern exceeds 256 bytes".into(),
+                    ));
+                }
+                parser.index += 1;
+                Ddl::ShowTablesLike { pattern }
+            } else {
+                Ddl::ShowTables
+            }
         } else if parser.keyword("COLUMNS") {
             if !parser.keyword("FROM") {
                 return Err(ParseError("expected FROM after SHOW COLUMNS".into()));
@@ -328,6 +349,30 @@ pub fn parse_ddl(sql: &str) -> Result<Option<Ddl>, ParseError> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn parses_show_tables_like_patterns() {
+        assert_eq!(
+            parse_ddl("SHOW TABLES LIKE 'orders\\_%';").unwrap(),
+            Some(Ddl::ShowTablesLike {
+                pattern: "orders\\_%".into(),
+            })
+        );
+        assert_eq!(
+            parse_ddl("show tables like 'staging%'").unwrap(),
+            Some(Ddl::ShowTablesLike {
+                pattern: "staging%".into(),
+            })
+        );
+        for sql in [
+            "SHOW TABLES LIKE 123",
+            "SHOW TABLES LIKE",
+            "SHOW TABLES LIKE 'x' extra",
+            "SHOW TABLES LIKE 'a' LIKE 'b'",
+        ] {
+            assert!(parse_ddl(sql).is_err(), "{sql}");
+        }
+    }
 
     #[test]
     fn parses_show_create_table_and_rejects_bad_forms() {
