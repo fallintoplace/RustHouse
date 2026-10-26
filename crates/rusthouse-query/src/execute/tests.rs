@@ -53,7 +53,8 @@ fn groups_numeric_aggregates_on_generated_sources() {
         run(
             "SELECT number, sum(number) FROM numbers(3) GROUP BY number ORDER BY number DESC",
             None,
-        ).unwrap(),
+        )
+        .unwrap(),
         "number\tsum(number)\n2\t2\n1\t1\n0\t0\n",
     );
     assert_eq!(
@@ -67,12 +68,17 @@ fn groups_numeric_aggregates_on_generated_sources() {
         run(
             "SELECT number, avg(number) FROM numbers(0) GROUP BY number",
             None,
-        ).unwrap(),
+        )
+        .unwrap(),
         "number\tavg(number)\n",
     );
-    assert!(run(
-        "SELECT number, sum(other) FROM numbers(2) GROUP BY number", None
-    ).is_err());
+    assert!(
+        run(
+            "SELECT number, sum(other) FROM numbers(2) GROUP BY number",
+            None
+        )
+        .is_err()
+    );
 }
 
 #[test]
