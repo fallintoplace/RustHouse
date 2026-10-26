@@ -648,6 +648,7 @@ mod like_tests {
         assert!(like_matches(b"foo_BarExtra", &pattern, true));
         assert!(!like_matches(b"foo_BarExtra", &pattern, false));
         assert!(like_matches(b"100%done", &compile_like("100\\%D%").unwrap(), true));
+        assert!(like_matches(b"AlphaBeta", &compile_like("a%%beTa").unwrap(), true));
         assert!(!like_matches(b"foobarextra", &pattern, true));
     }
 
