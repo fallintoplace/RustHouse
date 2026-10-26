@@ -11,18 +11,17 @@ fn run(query: &str, mode: &str, dir: &std::path::Path) -> std::process::Output {
 
 #[test]
 fn show_columns_and_desc_return_the_same_schema_in_catalog_mode() {
-    let dir = std::env::temp_dir().join(format!(
-        "rusthouse-show-columns-{}",
-        std::process::id()
-    ));
+    let dir = std::env::temp_dir().join(format!("rusthouse-show-columns-{}", std::process::id()));
     let _ = fs::remove_dir_all(&dir);
-    assert!(run(
-        "CREATE TABLE events (id UInt64, label Nullable(String))",
-        "--catalog",
-        &dir,
-    )
-    .status
-    .success());
+    assert!(
+        run(
+            "CREATE TABLE events (id UInt64, label Nullable(String))",
+            "--catalog",
+            &dir,
+        )
+        .status
+        .success()
+    );
     let original = run("DESCRIBE TABLE events", "--catalog", &dir);
     assert!(original.status.success());
     for command in ["SHOW COLUMNS FROM events", "DESC TABLE events"] {
