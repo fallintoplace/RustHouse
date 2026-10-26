@@ -1,5 +1,9 @@
 use crate::{PartError, WideMark};
 
+fn mark_offset(mark: &WideMark) -> (u64, u64) {
+    (mark.compressed_offset, mark.decompressed_offset)
+}
+
 fn validate_mark_position(name: &str, marks: &[WideMark], index: usize) -> Result<(), PartError> {
     let mark = &marks[index];
     if mark.rows == Some(0) && index + 1 != marks.len() {
@@ -8,18 +12,14 @@ fn validate_mark_position(name: &str, marks: &[WideMark], index: usize) -> Resul
         )));
     }
     if index > 0 {
-        let previous = &marks[index - 1];
-        if (mark.compressed_offset, mark.decompressed_offset)
-            < (previous.compressed_offset, previous.decompressed_offset)
-        {
+        let current_offset = mark_offset(mark);
+        let previous_offset = mark_offset(&marks[index - 1]);
+        if current_offset < previous_offset {
             return Err(PartError::InvalidScan(format!(
                 "mark offsets are not ordered for {name}"
             )));
         }
-        if mark.rows != Some(0)
-            && (mark.compressed_offset, mark.decompressed_offset)
-                == (previous.compressed_offset, previous.decompressed_offset)
-        {
+        if mark.rows != Some(0) && current_offset == previous_offset {
             return Err(PartError::InvalidScan(format!(
                 "duplicate live mark offsets for {name}"
             )));
@@ -153,6 +153,13 @@ mod tests {
                 .validate("a", &[mark(0, 0), mark(1, 1)], 1)
                 .is_err()
         );
+    }
+
+    #[test]
+    fn permits_terminal_zero_row_mark_at_same_offset() {
+        let mut layout = ScanLayout::default();
+        layout.validate("a", &[mark(0, 3), mark(0, 0)], 3).unwrap();
+        assert_eq!(layout.mark_count(), 2);
     }
 
     #[test]
