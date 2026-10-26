@@ -48,10 +48,15 @@ pub fn verify_wide_part(path: impl AsRef<Path>) -> Result<PartVerification, Part
             if rows != Some(metadata.rows) {
                 return Err(invalid(&data, "mark row counts do not match count.txt"));
             }
-            let name = data.file_name().and_then(|name| name.to_str()).unwrap_or("stream");
-            layout.validate(name, &marks.marks, metadata.rows).map_err(|_| {
-                invalid(&data, "adaptive streams have mismatched granule boundaries")
-            })?;
+            let name = data
+                .file_name()
+                .and_then(|name| name.to_str())
+                .unwrap_or("stream");
+            layout
+                .validate(name, &marks.marks, metadata.rows)
+                .map_err(|_| {
+                    invalid(&data, "adaptive streams have mismatched granule boundaries")
+                })?;
         }
         validate_wide_marks(&marks, CompressedBlockReader::open(&data)?)?;
 
