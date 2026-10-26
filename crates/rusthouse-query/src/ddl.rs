@@ -21,6 +21,11 @@ pub enum Ddl {
         columns: Vec<ColumnDef>,
         if_not_exists: bool,
     },
+    CreateTableLike {
+        name: String,
+        source: String,
+        if_not_exists: bool,
+    },
     DropTable {
         name: String,
         if_exists: bool,
@@ -255,6 +260,15 @@ pub fn parse_ddl(sql: &str) -> Result<Option<Ddl>, ParseError> {
     }
     let if_not_exists = optional_if_not_exists(&mut parser)?;
     let name = identifier(&mut parser)?;
+    if parser.keyword("LIKE") {
+        let source = identifier(&mut parser)?;
+        finish_ddl(&mut parser)?;
+        return Ok(Some(Ddl::CreateTableLike {
+            name,
+            source,
+            if_not_exists,
+        }));
+    }
     if !parser.take(Token::LParen) {
         return Err(ParseError("expected '(' after table name".into()));
     }
@@ -335,6 +349,26 @@ mod tests {
             })
         );
         assert_eq!(parse_ddl("SELECT 1").unwrap(), None);
+    }
+
+    #[test]
+    fn parses_create_table_like() {
+        assert_eq!(
+            parse_ddl("CREATE TABLE IF NOT EXISTS new_events LIKE events;").unwrap(),
+            Some(Ddl::CreateTableLike {
+                name: "new_events".into(),
+                source: "events".into(),
+                if_not_exists: true,
+            })
+        );
+        for invalid in [
+            "CREATE TABLE copy LIKE",
+            "CREATE TABLE copy LIKE source extra",
+            "CREATE TABLE copy LIKE source (id UInt64)",
+            "CREATE TABLE copy LIKE 42",
+        ] {
+            assert!(parse_ddl(invalid).is_err(), "{invalid}");
+        }
     }
 
     #[test]
