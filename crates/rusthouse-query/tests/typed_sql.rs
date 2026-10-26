@@ -118,6 +118,14 @@ fn counts_and_filters_nullable_text() {
         "countDistinct(service)\n2\n"
     );
     assert_eq!(
+        query("SELECT count(DISTINCT message) FROM part", &part),
+        "countDistinct(message)\n2\n"
+    );
+    assert_eq!(
+        query("SELECT count(DISTINCT attempt) FROM part", &part),
+        "countDistinct(attempt)\n2\n"
+    );
+    assert_eq!(
         query("SELECT DISTINCT service FROM part ORDER BY service", &part),
         "service\napi\ndb\n"
     );
