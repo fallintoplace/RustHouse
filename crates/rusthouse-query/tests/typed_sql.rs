@@ -186,7 +186,6 @@ fn skips_end_of_file_terminal_zero_row_marks() {
     fs::remove_dir_all(part).unwrap();
 }
 
-
 #[test]
 fn filters_text_by_like_and_not_like_across_nullable_values() {
     let part = part();
@@ -195,11 +194,17 @@ fn filters_text_by_like_and_not_like_across_nullable_values() {
         "service\napi\napi\n"
     );
     assert_eq!(
-        query("SELECT service FROM part WHERE service NOT LIKE 'a%'", &part),
+        query(
+            "SELECT service FROM part WHERE service NOT LIKE 'a%'",
+            &part
+        ),
         "service\ndb\n"
     );
     assert_eq!(
-        query("SELECT message FROM part WHERE message NOT LIKE '%l%'", &part),
+        query(
+            "SELECT message FROM part WHERE message NOT LIKE '%l%'",
+            &part
+        ),
         "message\n"
     );
     assert_eq!(
