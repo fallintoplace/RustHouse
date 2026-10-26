@@ -161,9 +161,7 @@ impl StorageKind {
                 }
                 Ok(Self::NullableNumeric(inner.to_owned()))
             }
-            other if numeric_storage_type(other).is_some() => {
-                Ok(Self::Numeric(other.to_owned()))
-            }
+            other if numeric_storage_type(other).is_some() => Ok(Self::Numeric(other.to_owned())),
             other => Err(PartError::InvalidScan(format!(
                 "unsupported typed scan type: {other}"
             ))),
@@ -353,14 +351,18 @@ impl TypedQueryReader {
         }
     }
 }
- 
+
 #[cfg(test)]
 mod tests {
     use super::*;
 
     #[test]
     fn typed_kinds_own_their_null_map_requirements() {
-        for kind in ["Nullable(String)", "Nullable(UInt64)", "Nullable(DateTime64(3))"] {
+        for kind in [
+            "Nullable(String)",
+            "Nullable(UInt64)",
+            "Nullable(DateTime64(3))",
+        ] {
             assert!(StorageKind::from_data_type(kind).unwrap().needs_null_map());
         }
         for kind in ["String", "UUID", "UInt64", "DateTime"] {
