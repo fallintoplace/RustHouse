@@ -487,8 +487,7 @@ fn groups_numeric_aggregates_by_typed_keys() {
         ),
         "service\tmax(status)\napi\t500\ndb\t503\n"
     );
-    let invalid = parse_select("SELECT service, sum(message) FROM part GROUP BY service")
-        .unwrap();
+    let invalid = parse_select("SELECT service, sum(message) FROM part GROUP BY service").unwrap();
     let mut output = Vec::new();
     assert!(execute(&invalid, Some(&part), &mut output).is_err());
     fs::remove_dir_all(part).unwrap();
