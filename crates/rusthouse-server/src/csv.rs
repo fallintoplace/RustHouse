@@ -53,20 +53,19 @@ fn write_csv_field<W: Write>(output: &mut W, field: &[u8]) -> io::Result<()> {
         || value
             .bytes()
             .any(|byte| matches!(byte, b',' | b'"' | b'\n' | b'\r'));
-    if needs_quotes {
-        output.write_all(b"\"")?;
+    if !needs_quotes {
+        return output.write_all(value.as_bytes());
     }
-    for byte in value.as_bytes() {
-        if *byte == b'"' {
-            output.write_all(b"\"\"")?;
-        } else {
-            output.write_all(&[*byte])?;
-        }
+    output.write_all(b"\"")?;
+    let mut segments = value.as_bytes().split(|&byte| byte == b'"');
+    if let Some(first) = segments.next() {
+        output.write_all(first)?;
     }
-    if needs_quotes {
-        output.write_all(b"\"")?;
+    for segment in segments {
+        output.write_all(b"\"\"")?;
+        output.write_all(segment)?;
     }
-    Ok(())
+    output.write_all(b"\"")
 }
 
 impl<W: Write> Write for CsvWriter<W> {
@@ -132,6 +131,32 @@ mod tests {
         write_csv_field(&mut output, b"\\N").unwrap();
         write_csv_field(&mut output, b"plain").unwrap();
         assert_eq!(output, b"\\Nplain");
+    }
+
+    #[test]
+    fn writes_large_plain_fields_in_one_bulk_call() {
+        struct CountingWriter {
+            calls: usize,
+            bytes: Vec<u8>,
+        }
+        impl Write for CountingWriter {
+            fn write(&mut self, bytes: &[u8]) -> io::Result<usize> {
+                self.calls += 1;
+                self.bytes.extend_from_slice(bytes);
+                Ok(bytes.len())
+            }
+            fn flush(&mut self) -> io::Result<()> {
+                Ok(())
+            }
+        }
+        let mut output = CountingWriter {
+            calls: 0,
+            bytes: Vec::new(),
+        };
+        let field = vec![b'x'; 32 * 1024];
+        write_csv_field(&mut output, &field).unwrap();
+        assert_eq!(output.calls, 1);
+        assert_eq!(output.bytes, field);
     }
 
     #[test]
