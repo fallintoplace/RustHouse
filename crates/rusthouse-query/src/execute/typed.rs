@@ -86,7 +86,7 @@ pub(super) fn requires_typed_scan(query: &Select, path: &Path) -> Result<bool, E
         names.push(pred.column());
     }
     for order in query.order_terms() {
-        names.push(&order.column);
+        names.push(query.order_source_column(&order.column));
     }
     Ok(metadata
         .columns
@@ -511,13 +511,7 @@ pub(super) fn execute_typed<W: Write>(
     } else {
         query
             .order_terms()
-            .map(|order| {
-                if query.alias.as_deref() == Some(order.column.as_str()) && projection.len() == 1 {
-                    projection[0].clone()
-                } else {
-                    order.column.clone()
-                }
-            })
+            .map(|order| query.order_source_column(&order.column).to_owned())
             .collect::<Vec<_>>()
     };
     for name in &sort {
@@ -564,7 +558,7 @@ pub(super) fn execute_typed<W: Write>(
         Projection::GroupedCount { column } => format!("{column}\tcount"),
         _ => projection.join("\t"),
     };
-    writeln!(output, "{}", query.alias.as_deref().unwrap_or(&header))?;
+    super::write_header(query, output, &header)?;
     if query.limit == Some(0) {
         return Ok(());
     }

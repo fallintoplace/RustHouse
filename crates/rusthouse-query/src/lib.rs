@@ -188,6 +188,8 @@ pub struct Having {
 pub struct Select {
     pub projection: Projection,
     pub alias: Option<String>,
+    /// One wildcard column rename. Applies to query output only.
+    pub rename: Option<(String, String)>,
     pub distinct: bool,
     pub source: Option<Source>,
     pub predicates: Vec<Predicate>,
@@ -204,6 +206,23 @@ impl Select {
     /// ORDER BY keys in SQL precedence order.
     pub fn order_terms(&self) -> impl Iterator<Item = &OrderBy> {
         self.order_by.iter().chain(self.order_by_extra.iter())
+    }
+
+    /// Map SELECT output aliases to the underlying column used for ORDER BY.
+    pub(crate) fn order_source_column<'a>(&'a self, column: &'a str) -> &'a str {
+        if let Some((source, target)) = &self.rename {
+            if column == target.as_str() {
+                return source;
+            }
+        }
+        if self.alias.as_deref() == Some(column) {
+            if let Projection::Columns(columns) = &self.projection {
+                if let [source] = columns.as_slice() {
+                    return source;
+                }
+            }
+        }
+        column
     }
 }
 
@@ -529,6 +548,19 @@ pub fn parse_select(sql: &str) -> Result<Select, ParseError> {
     if distinct && !matches!(projection, Projection::All | Projection::Columns(_)) {
         return Err(ParseError("DISTINCT supports only row projections".into()));
     }
+    let rename = if parser.keyword("RENAME") {
+        if !matches!(projection, Projection::All) {
+            return Err(ParseError("RENAME requires SELECT *".into()));
+        }
+        let source = parser.word()?;
+        if !parser.keyword("AS") {
+            return Err(ParseError("RENAME requires AS".into()));
+        }
+        Some((source, parser.word()?))
+    } else {
+        None
+    };
+
     let alias = if let Some(alias) = literal_alias {
         Some(alias)
     } else if parser.keyword("AS") {
@@ -1015,6 +1047,7 @@ pub fn parse_select(sql: &str) -> Result<Select, ParseError> {
     Ok(Select {
         projection,
         alias,
+        rename,
         distinct,
         source,
         predicates,

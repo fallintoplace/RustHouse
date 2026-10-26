@@ -118,7 +118,33 @@ fn write_header<W: Write>(
     output: &mut W,
     default: &str,
 ) -> Result<(), ExecutionError> {
-    writeln!(output, "{}", query.alias.as_deref().unwrap_or(default))?;
+    if let Some((source, target)) = &query.rename {
+        let columns: Vec<&str> = default.split('\t').collect();
+        if !columns.contains(&source.as_str()) {
+            return Err(ExecutionError::Invalid(format!(
+                "unknown RENAME column: {source}"
+            )));
+        }
+        if source != target && columns.contains(&target.as_str()) {
+            return Err(ExecutionError::Invalid(format!(
+                "RENAME target already exists: {target}"
+            )));
+        }
+        let header = columns
+            .into_iter()
+            .map(|column| {
+                if column == source.as_str() {
+                    target.as_str()
+                } else {
+                    column
+                }
+            })
+            .collect::<Vec<_>>()
+            .join("\t");
+        writeln!(output, "{header}")?;
+    } else {
+        writeln!(output, "{}", query.alias.as_deref().unwrap_or(default))?;
+    }
     Ok(())
 }
 
@@ -278,8 +304,9 @@ fn execute_into<W: Write>(
     };
     if query.distinct
         && query.order_terms().any(|order| {
-            !projected.iter().any(|column| column == &order.column)
-                && query.alias.as_deref() != Some(order.column.as_str())
+            !projected
+                .iter()
+                .any(|column| column == query.order_source_column(&order.column))
         })
     {
         return Err(ExecutionError::Invalid(
@@ -310,31 +337,21 @@ fn execute_into<W: Write>(
         parse_numeric(&column.data_type, literal)
     })?;
     let sort_index = query.order_by.as_ref().map(|order| {
-        let column_name =
-            if query.alias.as_deref() == Some(order.column.as_str()) && projected.len() == 1 {
-                &projected[0]
-            } else {
-                &order.column
-            };
+        let column_name = query.order_source_column(&order.column);
         if let Some(index) = scan_columns.iter().position(|column| column == column_name) {
             index
         } else {
-            scan_columns.push(column_name.clone());
+            scan_columns.push(column_name.to_owned());
             scan_columns.len() - 1
         }
     });
     let mut extra_sort_indices = Vec::new();
     for order in &query.order_by_extra {
-        let column_name =
-            if query.alias.as_deref() == Some(order.column.as_str()) && projected.len() == 1 {
-                &projected[0]
-            } else {
-                &order.column
-            };
+        let column_name = query.order_source_column(&order.column);
         let index = if let Some(index) = scan_columns.iter().position(|c| c == column_name) {
             index
         } else {
-            scan_columns.push(column_name.clone());
+            scan_columns.push(column_name.to_owned());
             scan_columns.len() - 1
         };
         extra_sort_indices.push(index);
@@ -941,7 +958,7 @@ fn execute_numbers<W: Write>(
         .order_by
         .as_ref()
         .map(|order| {
-            if order.column != "number" && query.alias.as_deref() != Some(order.column.as_str()) {
+            if query.order_source_column(&order.column) != "number" {
                 return Err(ExecutionError::Invalid(
                     "numbers(N) exposes only the number column".into(),
                 ));
@@ -949,9 +966,11 @@ fn execute_numbers<W: Write>(
             SortedRows::with_offset(query.limit, query.offset.unwrap_or(0), order.descending)
         })
         .transpose()?;
-    if query.order_by_extra.iter().any(|order| {
-        order.column != "number" && query.alias.as_deref() != Some(order.column.as_str())
-    }) {
+    if query
+        .order_by_extra
+        .iter()
+        .any(|order| query.order_source_column(&order.column) != "number")
+    {
         return Err(ExecutionError::Invalid(
             "numbers(N) exposes only the number column".into(),
         ));
