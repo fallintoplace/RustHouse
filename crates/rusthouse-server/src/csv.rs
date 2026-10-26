@@ -106,7 +106,7 @@ mod tests {
         csv.write_all(b"hello\\tworld, \"yes\"\t\\N\n").unwrap();
         assert_eq!(
             csv.output,
-            b"message,null\r\n\"hello\\tworld, \"\"yes\"\"\",\\N\r\n"
+            b"message,null\r\n\"hello\tworld, \"\"yes\"\"\",\\N\r\n"
         );
     }
 
