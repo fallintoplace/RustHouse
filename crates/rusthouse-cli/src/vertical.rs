@@ -13,6 +13,18 @@ pub struct VerticalWriter<W: Write> {
     rows: usize,
 }
 
+fn write_visible<W: Write>(output: &mut W, bytes: &[u8]) -> io::Result<()> {
+    let mut start = 0;
+    for (index, &byte) in bytes.iter().enumerate() {
+        if byte.is_ascii_control() {
+            output.write_all(&bytes[start..index])?;
+            write!(output, "\\x{byte:02X}")?;
+            start = index + 1;
+        }
+    }
+    output.write_all(&bytes[start..])
+}
+
 impl<W: Write> VerticalWriter<W> {
     pub fn new(output: W) -> Self {
         Self {
@@ -52,9 +64,9 @@ impl<W: Write> VerticalWriter<W> {
         writeln!(self.output, "Row {row}:")?;
         for (header, field) in headers.iter().zip(self.line.split(|&byte| byte == b'\t')) {
             self.output.write_all(b"  ")?;
-            self.output.write_all(header)?;
+            write_visible(&mut self.output, header)?;
             self.output.write_all(b": ")?;
-            self.output.write_all(field)?;
+            write_visible(&mut self.output, field)?;
             self.output.write_all(b"\n")?;
         }
         self.output.write_all(b"\n")?;
@@ -100,6 +112,16 @@ mod tests {
         assert_eq!(
             writer.output,
             b"Row 1:\n  number: 1\n  value: alpha\n\nRow 2:\n  number: 2\n  value: beta\n\n"
+        );
+    }
+
+    #[test]
+    fn escapes_terminal_controls_in_headers_and_values() {
+        let mut writer = VerticalWriter::new(Vec::new());
+        writer.write_all(b"na\x1bme\nva\x00lue\x7f\n").unwrap();
+        assert_eq!(
+            writer.output,
+            b"Row 1:\n  na\\x1Bme: va\\x00lue\\x7F\n\n"
         );
     }
 
