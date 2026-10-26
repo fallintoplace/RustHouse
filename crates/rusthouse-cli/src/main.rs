@@ -376,4 +376,3 @@ fn print_values<T: std::fmt::Display>(values: Vec<T>) {
         println!("{value}");
     }
 }
-
