@@ -1442,7 +1442,7 @@ mod tests {
             "median(number)\n10\n"
         );
         assert_eq!(
-            run("SELECT median(number) FROM numbers(1, 7, 2)", None).unwrap(),
+            run("SELECT median(number) FROM numbers(1, 6, 2)", None).unwrap(),
             "median(number)\n3\n"
         );
         assert_eq!(
