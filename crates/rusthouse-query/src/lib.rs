@@ -824,7 +824,10 @@ mod tests {
             Some("total")
         );
         assert_eq!(
-            parse_select("SELECT -3 AS result").unwrap().alias.as_deref(),
+            parse_select("SELECT -3 AS result")
+                .unwrap()
+                .alias
+                .as_deref(),
             Some("result")
         );
         for sql in [
