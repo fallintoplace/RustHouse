@@ -79,7 +79,9 @@ pub fn parse_insert(sql: &str) -> Result<Option<Insert>, ParseError> {
         }
         parser.take(Token::Semicolon);
         if parser.index != parser.tokens.len() {
-            return Err(ParseError("unexpected tokens after INSERT statement".into()));
+            return Err(ParseError(
+                "unexpected tokens after INSERT statement".into(),
+            ));
         }
         return Ok(Some(Insert {
             table,
