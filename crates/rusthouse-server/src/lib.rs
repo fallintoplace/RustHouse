@@ -1,6 +1,7 @@
 //! Minimal read-only SQL HTTP interface, bound to loopback by the binary.
 //! This is intentionally not a full database wire protocol.
 use rusthouse_query::{execute, parse_select};
+use rusthouse_storage::inspect_query_source;
 use std::io::{self, Write};
 use std::path::PathBuf;
 
@@ -88,6 +89,57 @@ fn decode_url(value: &str) -> Result<String, &'static str> {
     String::from_utf8(decoded).map_err(|_| "SQL query must be valid UTF-8")
 }
 
+fn write_json_string<W: Write>(writer: &mut W, value: &str) -> io::Result<()> {
+    writer.write_all(b"\"")?;
+    for ch in value.chars() {
+        match ch {
+            '"' => writer.write_all(b"\\\"")?,
+            '\\' => writer.write_all(b"\\\\")?,
+            '\n' => writer.write_all(b"\\n")?,
+            '\r' => writer.write_all(b"\\r")?,
+            '\t' => writer.write_all(b"\\t")?,
+            '\u{08}' => writer.write_all(b"\\b")?,
+            '\u{0c}' => writer.write_all(b"\\f")?,
+            ch if ch <= '\u{1f}' => write!(writer, "\\u{:04x}", ch as u32)?,
+            ch => writer.write_all(ch.encode_utf8(&mut [0; 4]).as_bytes())?,
+        }
+    }
+    writer.write_all(b"\"")
+}
+
+fn schema_response(config: &Config) -> Response {
+    let Some(part) = config.part.as_deref() else {
+        return Response::text("400 Bad Request", "no --part source configured\n");
+    };
+    let metadata = match inspect_query_source(part) {
+        Ok(metadata) => metadata,
+        Err(error) => return Response::text("400 Bad Request", &format!("{error}\n")),
+    };
+    let mut output = LimitedWriter::new();
+    let result = (|| -> io::Result<()> {
+        write!(&mut output, "{{\"rows\":{},\"columns\":[", metadata.rows)?;
+        for (index, column) in metadata.columns.iter().enumerate() {
+            if index > 0 {
+                output.write_all(b",")?;
+            }
+            output.write_all(b"{\"name\":")?;
+            write_json_string(&mut output, &column.name)?;
+            output.write_all(b",\"type\":")?;
+            write_json_string(&mut output, &column.data_type)?;
+            output.write_all(b"}")?;
+        }
+        output.write_all(b"]}\n")
+    })();
+    match result {
+        Ok(()) => Response {
+            status: "200 OK",
+            content_type: "application/json; charset=utf-8",
+            body: output.data,
+        },
+        Err(_) => Response::text("413 Payload Too Large", "schema response exceeds 8 MiB\n"),
+    }
+}
+
 fn query_parameters(target: &str) -> Result<(String, Option<String>), &'static str> {
     let (path, query) = target.split_once('?').unwrap_or((target, ""));
     if path != "/" {
@@ -114,6 +166,15 @@ fn query_parameters(target: &str) -> Result<(String, Option<String>), &'static s
 pub fn handle_request(method: &str, target: &str, body: &[u8], config: &Config) -> Response {
     if method == "GET" && target == "/ping" {
         return Response::text("200 OK", "Ok.\n");
+    }
+    if target == "/schema" {
+        if method != "GET" {
+            return Response::text("405 Method Not Allowed", "schema endpoint requires GET\n");
+        }
+        if !body.is_empty() {
+            return Response::text("400 Bad Request", "GET must not contain a request body\n");
+        }
+        return schema_response(config);
     }
     if method != "GET" && method != "POST" {
         return Response::text(
@@ -218,6 +279,43 @@ mod tests {
         };
         assert!(writer.write_all(b"x").is_err());
         assert_eq!(writer.data.len(), MAX_RESPONSE_BYTES);
+    }
+
+    #[test]
+    fn exposes_a_read_only_json_schema_for_a_frozen_part() {
+        let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../rusthouse-storage/tests/fixtures/all_1_1_0");
+        let config = Config {
+            part: Some(path),
+            max_rows: 1,
+        };
+        let response = handle_request("GET", "/schema", b"", &config);
+        assert_eq!(response.status, "200 OK");
+        assert_eq!(response.content_type, "application/json; charset=utf-8");
+        assert_eq!(
+            response.body,
+            br#"{"rows":42,"columns":[{"name":"id","type":"UInt64"},{"name":"city","type":"LowCardinality(String)"}]}"#.iter().copied().chain([b'\n']).collect::<Vec<_>>()
+        );
+
+        for (method, path, body, status) in [
+            ("POST", "/schema", &b""[..], "405 Method Not Allowed"),
+            ("GET", "/schema", &b"x"[..], "400 Bad Request"),
+            ("GET", "/schema?query=SELECT+1", &b""[..], "400 Bad Request"),
+        ] {
+            assert_eq!(handle_request(method, path, body, &config).status, status);
+        }
+    }
+
+    #[test]
+    fn schema_discovery_requires_a_part_and_escapes_json() {
+        let missing = handle_request("GET", "/schema", b"", &config());
+        assert_eq!(missing.status, "400 Bad Request");
+        let mut output = Vec::new();
+        write_json_string(&mut output, "quote\"\\newline\n\u{07}é").unwrap();
+        assert_eq!(
+            String::from_utf8(output).unwrap(),
+            "\"quote\\\"\\\\newline\\n\\u0007é\""
+        );
     }
 
     #[test]

@@ -73,6 +73,7 @@ name = "rusthouse-server"
 version = "0.1.0"
 dependencies = [
  "rusthouse-query",
+ "rusthouse-storage",
 ]
 
 [[package]]
