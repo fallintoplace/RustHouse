@@ -53,7 +53,11 @@ fn snapshot_publication_survives_process_exit_at_each_boundary() {
         success(&dir, "INSERT INTO events VALUES (1), (2), (3)");
 
         let crashed = run(&dir, "DELETE FROM events WHERE id = 1", Some(point));
-        assert_eq!(crashed.status.code(), Some(CRASH_EXIT), "{point}: {crashed:?}");
+        assert_eq!(
+            crashed.status.code(),
+            Some(CRASH_EXIT),
+            "{point}: {crashed:?}"
+        );
 
         // Restarting the CLI must see exactly one complete generation.
         assert_eq!(
@@ -82,7 +86,11 @@ fn inserted_parts_are_never_partially_exposed_after_process_exit() {
         success(&dir, "CREATE TABLE events (id UInt64)");
         success(&dir, "INSERT INTO events VALUES (1)");
         let crashed = run(&dir, "INSERT INTO events VALUES (2)", Some(point));
-        assert_eq!(crashed.status.code(), Some(CRASH_EXIT), "{point}: {crashed:?}");
+        assert_eq!(
+            crashed.status.code(),
+            Some(CRASH_EXIT),
+            "{point}: {crashed:?}"
+        );
         assert_eq!(
             success(&dir, "SELECT id FROM events ORDER BY id").stdout,
             expected.as_bytes(),

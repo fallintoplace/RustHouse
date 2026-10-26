@@ -26,7 +26,6 @@ pub(super) fn crash_if_requested(point: &str) {
 #[cfg(not(debug_assertions))]
 pub(super) fn crash_if_requested(_point: &str) {}
 
-
 // Keep this file on disk. Unix advisory locks are released by the kernel when
 // the process exits, including after SIGKILL, so a stale pathname is harmless.
 // Unlinking a locked file would let another writer lock a different inode.
