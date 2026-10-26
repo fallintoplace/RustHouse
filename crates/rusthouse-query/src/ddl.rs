@@ -32,6 +32,11 @@ pub enum Ddl {
         column: String,
         if_exists: bool,
     },
+    RenameColumn {
+        table: String,
+        from: String,
+        to: String,
+    },
     RenameTable {
         from: String,
         to: String,
@@ -133,6 +138,21 @@ pub fn parse_ddl(sql: &str) -> Result<Option<Ddl>, ParseError> {
             return Err(ParseError("expected TABLE after ALTER".into()));
         }
         let table = identifier(&mut parser)?;
+        if parser.keyword("RENAME") {
+            if !parser.keyword("COLUMN") {
+                return Err(ParseError("expected COLUMN after RENAME".into()));
+            }
+            let from = identifier(&mut parser)?;
+            if !parser.keyword("TO") {
+                return Err(ParseError("expected TO after source column".into()));
+            }
+            let to = identifier(&mut parser)?;
+            parser.take(Token::Semicolon);
+            if parser.index != parser.tokens.len() {
+                return Err(ParseError("unexpected tokens after DDL statement".into()));
+            }
+            return Ok(Some(Ddl::RenameColumn { table, from, to }));
+        }
         if parser.keyword("DROP") {
             if !parser.keyword("COLUMN") {
                 return Err(ParseError("expected COLUMN after DROP".into()));
@@ -380,6 +400,26 @@ mod tests {
             "CREATE TABLE IF EXISTS t (id UInt64)",
             "CREATE TABLE t (id UInt64) ENGINE = MergeTree",
             "CREATE TABLE t (id Nullable(UInt64)",
+        ] {
+            assert!(parse_ddl(sql).is_err(), "{sql}");
+        }
+    }
+
+    #[test]
+    fn parses_column_renaming_and_rejects_unsupported_forms() {
+        assert_eq!(
+            parse_ddl("ALTER TABLE events RENAME COLUMN old_name TO new_name;").unwrap(),
+            Some(Ddl::RenameColumn {
+                table: "events".into(),
+                from: "old_name".into(),
+                to: "new_name".into(),
+            })
+        );
+        for sql in [
+            "ALTER TABLE events RENAME old_name TO new_name",
+            "ALTER TABLE events RENAME COLUMN old_name new_name",
+            "ALTER TABLE events RENAME COLUMN old_name TO",
+            "ALTER TABLE events RENAME COLUMN old_name TO new_name, x TO y",
         ] {
             assert!(parse_ddl(sql).is_err(), "{sql}");
         }
