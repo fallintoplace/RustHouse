@@ -62,17 +62,25 @@ impl<W: Write> Write for JsonArraySink<W> {
 /// Use JsonlWriter's validated, escaped row format for a streaming JSON array.
 pub struct JsonArrayWriter<W: Write> {
     inner: JsonlWriter<JsonArraySink<W>>,
+    incomplete_line: bool,
 }
 
 impl<W: Write> JsonArrayWriter<W> {
     pub fn new(output: W) -> Self {
         Self {
             inner: JsonlWriter::new(JsonArraySink::new(output)),
+            incomplete_line: false,
         }
     }
 
     /// Finalization is explicit because JSON output needs a closing bracket.
     pub fn finish(mut self) -> io::Result<W> {
+        if self.incomplete_line {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                "incomplete JSON input line",
+            ));
+        }
         self.inner.flush()?;
         let mut sink = self.inner.into_inner();
         if !sink.row.is_empty() {
@@ -93,7 +101,11 @@ impl<W: Write> JsonArrayWriter<W> {
 
 impl<W: Write> Write for JsonArrayWriter<W> {
     fn write(&mut self, bytes: &[u8]) -> io::Result<usize> {
-        self.inner.write(bytes)
+        let written = self.inner.write(bytes)?;
+        if let Some(last) = bytes.last() {
+            self.incomplete_line = *last != b'\n';
+        }
+        Ok(written)
     }
 
     fn flush(&mut self) -> io::Result<()> {
@@ -125,5 +137,19 @@ mod tests {
         assert_eq!(writer.finish().unwrap(), b"[]\n");
         let mut writer = JsonArrayWriter::new(Vec::new());
         assert!(writer.write_all(b"x\tx\n").is_err());
+    }
+
+    #[test]
+    fn rejects_unterminated_headers_and_rows_at_finish() {
+        for input in [b"number".as_slice(), b"number\n1".as_slice()] {
+            let mut writer = JsonArrayWriter::new(Vec::new());
+            writer.write_all(input).unwrap();
+            assert_eq!(writer.finish().unwrap_err().kind(), io::ErrorKind::InvalidData);
+        }
+
+        let mut writer = JsonArrayWriter::new(Vec::new());
+        writer.write_all(b"number\n1").unwrap();
+        writer.write_all(b"\n").unwrap();
+        assert_eq!(writer.finish().unwrap(), b"[{\"number\":\"1\"}]\n");
     }
 }
