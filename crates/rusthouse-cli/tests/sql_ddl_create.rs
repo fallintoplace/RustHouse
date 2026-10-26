@@ -88,3 +88,27 @@ fn rejects_unsafe_or_unsupported_statements_without_touching_disk() {
     assert!(String::from_utf8_lossy(&preview.stdout).contains("CreateTable"));
     assert!(!dir.exists());
 }
+
+#[test]
+fn interrupted_schema_staging_is_invisible_and_create_can_retry() {
+    let dir = catalog();
+    fs::create_dir_all(&dir).unwrap();
+    let orphan = dir.join(".events.schema.tmp.interrupted");
+    fs::write(&orphan, b"rusthouse-schema-v1\nid\tUInt64\n").unwrap();
+
+    // A crash before the hard-link publication cannot list a partial table.
+    let before = ddl("SHOW TABLES", &dir);
+    assert!(before.status.success(), "{before:?}");
+    assert_eq!(before.stdout, b"name\n");
+
+    let create = ddl("CREATE TABLE events (id UInt64)", &dir);
+    assert!(create.status.success(), "{create:?}");
+    assert_eq!(
+        fs::read_to_string(dir.join("events.schema")).unwrap(),
+        "rusthouse-schema-v1\nid\tUInt64\n"
+    );
+    assert_eq!(ddl("SHOW TABLES", &dir).stdout, b"name\nevents\n");
+    // Unpublished files are not reinterpreted as schemas.
+    assert!(orphan.exists());
+    fs::remove_dir_all(dir).unwrap();
+}
