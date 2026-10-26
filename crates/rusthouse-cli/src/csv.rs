@@ -102,15 +102,20 @@ fn write_csv_field<W: Write>(output: &mut W, field: &[u8]) -> io::Result<()> {
     if field == b"\\N" {
         return output.write_all(b"\\N");
     }
-    let value = decode_tsv_field(field)?;
+    let decoded = if field.contains(&b'\\') {
+        Some(decode_tsv_field(field)?)
+    } else {
+        None
+    };
+    let value = decoded.as_deref().unwrap_or(field);
     let needs_quotes = value == b"\\N"
         || value
             .iter()
             .any(|byte| matches!(byte, b',' | b'"' | b'\t' | b'\r' | b'\n'));
     if !needs_quotes {
-        return output.write_all(&value);
+        return output.write_all(value);
     }
-    write_quoted_field(output, &value)
+    write_quoted_field(output, value)
 }
 
 fn write_quoted_field<W: Write>(output: &mut W, field: &[u8]) -> io::Result<()> {
@@ -258,5 +263,13 @@ mod decoded_csv_regressions {
             csv.write_all(b"bad\\q\n").unwrap_err().kind(),
             io::ErrorKind::InvalidData
         );
+    }
+    #[test]
+    fn borrows_plain_fields_and_keeps_csv_quote_rules() {
+        let mut output = Vec::new();
+        write_csv_field(&mut output, "café".as_bytes()).unwrap();
+        write_csv_field(&mut output, b",comma").unwrap();
+        write_csv_field(&mut output, b"a\\tb").unwrap();
+        assert_eq!(output, "café\",comma\"\"a\tb\"".as_bytes());
     }
 }

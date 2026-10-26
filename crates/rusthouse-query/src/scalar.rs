@@ -15,7 +15,7 @@ fn is_power(name: &str) -> bool {
 fn is_bitwise(name: &str) -> bool {
     matches!(
         name.to_ascii_uppercase().as_str(),
-        "BITAND" | "BITOR" | "BITXOR"
+        "BITAND" | "BITOR" | "BITXOR" | "BITSHIFTLEFT" | "BITSHIFTRIGHT"
     )
 }
 
@@ -27,6 +27,7 @@ pub(super) fn is_function(name: &str) -> bool {
         || is_bitwise(name)
         || name.eq_ignore_ascii_case("GCD")
         || name.eq_ignore_ascii_case("LCM")
+        || name.eq_ignore_ascii_case("CLAMP")
 }
 
 pub(super) fn parse(parser: &mut Parser) -> Result<i64, ParseError> {
@@ -132,6 +133,43 @@ fn parse_extrema(parser: &mut Parser, depth: usize) -> Result<i64, ParseError> {
     Ok(value)
 }
 
+fn checked_bit_shift(value: i64, amount: i64, left: bool) -> Result<i64, ParseError> {
+    let shift = u32::try_from(amount)
+        .map_err(|_| ParseError("bit shift count must be between 0 and 63".into()))?;
+    if shift >= i64::BITS {
+        return Err(ParseError(
+            "bit shift count must be between 0 and 63".into(),
+        ));
+    }
+    if left {
+        i64::try_from(i128::from(value) << shift).map_err(|_| overflow())
+    } else {
+        Ok(value >> shift)
+    }
+}
+
+fn parse_clamp(parser: &mut Parser, depth: usize) -> Result<i64, ParseError> {
+    if !parser.take(Token::LParen) {
+        return Err(ParseError("CLAMP requires '('".into()));
+    }
+    let value = expression(parser, depth + 1)?;
+    if !parser.take(Token::Comma) {
+        return Err(ParseError("CLAMP requires three arguments".into()));
+    }
+    let lower = expression(parser, depth + 1)?;
+    if !parser.take(Token::Comma) {
+        return Err(ParseError("CLAMP requires three arguments".into()));
+    }
+    let upper = expression(parser, depth + 1)?;
+    if !parser.take(Token::RParen) {
+        return Err(ParseError("expected ')' after CLAMP arguments".into()));
+    }
+    if lower > upper {
+        return Err(ParseError("CLAMP lower bound exceeds upper bound".into()));
+    }
+    Ok(value.clamp(lower, upper))
+}
+
 fn gcd(mut left: u64, mut right: u64) -> u64 {
     while right != 0 {
         let remainder = left % right;
@@ -185,6 +223,9 @@ fn factor(parser: &mut Parser, depth: usize) -> Result<i64, ParseError> {
     if parser.keyword("POWER") || parser.keyword("POW") {
         return parse_power(parser, depth);
     }
+    if parser.keyword("CLAMP") {
+        return parse_clamp(parser, depth);
+    }
     if matches!(parser.tokens.get(parser.index), Some(Token::Word(name)) if name.eq_ignore_ascii_case("GCD") || name.eq_ignore_ascii_case("LCM"))
     {
         return parse_gcd_lcm(parser, depth);
@@ -207,6 +248,8 @@ fn factor(parser: &mut Parser, depth: usize) -> Result<i64, ParseError> {
                 "BITAND" => first & second,
                 "BITOR" => first | second,
                 "BITXOR" => first ^ second,
+                "BITSHIFTLEFT" => checked_bit_shift(first, second, true)?,
+                "BITSHIFTRIGHT" => checked_bit_shift(first, second, false)?,
                 _ => unreachable!("only supported bitwise functions reach this branch"),
             }
         } else if name.eq_ignore_ascii_case("ABS") {

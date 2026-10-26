@@ -5,6 +5,7 @@ mod csv_no_header;
 mod json_array;
 mod json_compact_each_row;
 mod jsonl;
+mod markdown;
 mod tables;
 
 use csv::CsvWriter;
@@ -12,6 +13,7 @@ use csv_no_header::WithoutHeader;
 use json_array::JsonArraySink;
 use json_compact_each_row::JsonCompactEachRowWriter;
 use jsonl::JsonlWriter;
+use markdown::MarkdownWriter;
 use rusthouse_query::{Source, execute, explain_select, parse_select};
 use rusthouse_storage::{inspect_query_source, resolve_active_snapshot};
 use std::fs;
@@ -263,6 +265,7 @@ enum QueryFormat {
     Jsonl,
     Json,
     JsonCompactEachRow,
+    Markdown,
 }
 
 fn query_parameters(target: &str) -> Result<(String, Option<String>, QueryFormat), &'static str> {
@@ -295,6 +298,7 @@ fn query_parameters(target: &str) -> Result<(String, Option<String>, QueryFormat
                     "jsonl" => QueryFormat::Jsonl,
                     "json" => QueryFormat::Json,
                     "json-compact-each-row" => QueryFormat::JsonCompactEachRow,
+                    "markdown" => QueryFormat::Markdown,
                     _ => return Err("unsupported query format"),
                 });
             }
@@ -469,6 +473,10 @@ pub fn handle_request(method: &str, target: &str, body: &[u8], config: &Config) 
             let mut csv = CsvWriter::new(WithoutHeader::new(&mut writer));
             execute(&select, part.as_deref(), &mut csv)
         }
+        QueryFormat::Markdown => {
+            let mut markdown = MarkdownWriter::new(&mut writer);
+            execute(&select, part.as_deref(), &mut markdown)
+        }
         QueryFormat::Jsonl => {
             let mut jsonl = JsonlWriter::new(&mut writer);
             execute(&select, part.as_deref(), &mut jsonl)
@@ -515,6 +523,7 @@ pub fn handle_request(method: &str, target: &str, body: &[u8], config: &Config) 
                 QueryFormat::Jsonl => "application/x-ndjson; charset=utf-8",
                 QueryFormat::Json => "application/json; charset=utf-8",
                 QueryFormat::JsonCompactEachRow => "application/x-ndjson; charset=utf-8",
+                QueryFormat::Markdown => "text/markdown; charset=utf-8",
             },
             body: writer.data,
         },
