@@ -3,6 +3,28 @@ use std::net::{Ipv4Addr, Ipv6Addr};
 
 const MAX_BATCH_BYTES: usize = 64 * 1024 * 1024;
 
+const READ_BUFFER_BYTES: usize = 16 * 1024;
+
+fn read_addresses<R: Read, T, const WIDTH: usize>(
+    reader: &mut R,
+    rows: usize,
+    decode: impl Fn([u8; WIDTH]) -> T,
+) -> io::Result<Vec<T>> {
+    let mut result = Vec::with_capacity(rows);
+    let mut buffer = [0u8; READ_BUFFER_BYTES];
+    while result.len() < rows {
+        let count = (rows - result.len()).min(buffer.len() / WIDTH);
+        let size = count * WIDTH;
+        reader.read_exact(&mut buffer[..size])?;
+        result.extend(buffer[..size].chunks_exact(WIDTH).map(|chunk| {
+            let mut bytes = [0u8; WIDTH];
+            bytes.copy_from_slice(chunk);
+            decode(bytes)
+        }));
+    }
+    Ok(result)
+}
+
 /// Decode ClickHouse IPv4's little-endian UInt32 physical representation.
 pub fn read_ipv4_values<R: Read>(reader: &mut R, rows: usize) -> io::Result<Vec<Ipv4Addr>> {
     if rows > MAX_BATCH_BYTES / 4 {
@@ -11,13 +33,9 @@ pub fn read_ipv4_values<R: Read>(reader: &mut R, rows: usize) -> io::Result<Vec<
             "IPv4 batch exceeds 64 MiB",
         ));
     }
-    let mut result = Vec::with_capacity(rows);
-    let mut bytes = [0u8; 4];
-    for _ in 0..rows {
-        reader.read_exact(&mut bytes)?;
-        result.push(Ipv4Addr::from(u32::from_le_bytes(bytes)));
-    }
-    Ok(result)
+    read_addresses(reader, rows, |bytes| {
+        Ipv4Addr::from(u32::from_le_bytes(bytes))
+    })
 }
 
 /// Decode ClickHouse IPv6's 16-byte network-order physical representation.
@@ -28,13 +46,7 @@ pub fn read_ipv6_values<R: Read>(reader: &mut R, rows: usize) -> io::Result<Vec<
             "IPv6 batch exceeds 64 MiB",
         ));
     }
-    let mut result = Vec::with_capacity(rows);
-    let mut bytes = [0u8; 16];
-    for _ in 0..rows {
-        reader.read_exact(&mut bytes)?;
-        result.push(Ipv6Addr::from(bytes));
-    }
-    Ok(result)
+    read_addresses(reader, rows, Ipv6Addr::from)
 }
 
 #[cfg(test)]
@@ -82,6 +94,54 @@ mod tests {
                 .unwrap_err()
                 .kind(),
             io::ErrorKind::UnexpectedEof
+        );
+    }
+
+    #[test]
+    fn batches_address_reads_and_handles_short_readers() {
+        struct CountingReader<R> {
+            inner: R,
+            calls: usize,
+        }
+
+        impl<R: Read> Read for CountingReader<R> {
+            fn read(&mut self, output: &mut [u8]) -> io::Result<usize> {
+                self.calls += 1;
+                self.inner.read(output)
+            }
+        }
+
+        let ipv4 = [1u8, 2, 0, 192].repeat(8192);
+        let mut reader = CountingReader {
+            inner: ipv4.as_slice(),
+            calls: 0,
+        };
+        let result = read_ipv4_values(&mut reader, 8192).unwrap();
+        assert_eq!(reader.calls, 2);
+        assert_eq!(result[8191], Ipv4Addr::new(192, 0, 2, 1));
+
+        let ipv6 = [0x20, 0x01, 0x0d, 0xb8, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1];
+        let ipv6_values = ipv6.repeat(2048);
+        let mut reader = CountingReader {
+            inner: ipv6_values.as_slice(),
+            calls: 0,
+        };
+        let result = read_ipv6_values(&mut reader, 2048).unwrap();
+        assert_eq!(reader.calls, 2);
+        assert_eq!(result[2047], Ipv6Addr::from(ipv6));
+
+        struct Bytewise<R>(R);
+
+        impl<R: Read> Read for Bytewise<R> {
+            fn read(&mut self, output: &mut [u8]) -> io::Result<usize> {
+                let count = output.len().min(1);
+                self.0.read(&mut output[..count])
+            }
+        }
+
+        assert_eq!(
+            read_ipv4_values(&mut Bytewise(&[1u8, 2, 0, 192][..]), 1).unwrap(),
+            vec![Ipv4Addr::new(192, 0, 2, 1)]
         );
     }
 }
