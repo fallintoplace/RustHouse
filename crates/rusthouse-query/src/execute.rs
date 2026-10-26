@@ -138,6 +138,29 @@ fn execute_into<W: Write>(
     part: Option<&Path>,
     output: &mut W,
 ) -> Result<(), ExecutionError> {
+    if let Projection::Constants(columns) = &query.projection {
+        let headers: Vec<_> = columns.iter().map(crate::Constant::header).collect();
+        write_header(query, output, &headers.join("\t"))?;
+        if query.limit != Some(0) && query.offset.unwrap_or(0) == 0 {
+            for (index, column) in columns.iter().enumerate() {
+                if index != 0 {
+                    output.write_all(b"\t")?;
+                }
+                let value = match &column.value {
+                    crate::ConstantValue::Integer(value) => {
+                        typed::Cell::Numeric(Number::Signed(i128::from(*value)))
+                    }
+                    crate::ConstantValue::Text(value) => {
+                        typed::Cell::Text(value.as_bytes().to_vec())
+                    }
+                    crate::ConstantValue::Null => typed::Cell::Null,
+                };
+                typed::write_value(output, &value)?;
+            }
+            writeln!(output)?;
+        }
+        return Ok(());
+    }
     if let Projection::Literal(value) = query.projection {
         write_header(query, output, &value.to_string())?;
         if query.limit != Some(0) && query.offset.unwrap_or(0) == 0 {
@@ -215,7 +238,8 @@ fn execute_into<W: Write>(
         | Projection::CountColumn { .. }
         | Projection::CountDistinct { .. }
         | Projection::GroupedCount { .. }
-        | Projection::Literal(_) => unreachable!(),
+        | Projection::Literal(_)
+        | Projection::Constants(_) => unreachable!(),
     };
     if query.distinct
         && query.order_by.as_ref().is_some_and(|order| {
@@ -768,7 +792,8 @@ fn execute_numbers<W: Write>(
         | Projection::CountColumn { .. }
         | Projection::CountDistinct { .. }
         | Projection::GroupedCount { .. }
-        | Projection::Literal(_) => unreachable!(),
+        | Projection::Literal(_)
+        | Projection::Constants(_) => unreachable!(),
     };
     let comparisons = compile_numbers_predicates(query)?;
     let is_count = matches!(query.projection, Projection::Count);
