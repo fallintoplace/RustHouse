@@ -84,7 +84,6 @@ fn null_and_empty_result_queries_agree_between_sources() {
     fs::remove_dir_all(root).unwrap();
 }
 
-
 /// Exercise multiple immutable parts instead of one small in-memory fixture.
 fn test_multi_parts(rows: u64) -> PathBuf {
     let root = std::env::temp_dir().join(format!(
@@ -120,7 +119,7 @@ fn multi_part_queries_match_independent_generated_source() {
     let statements = [
         "SELECT count(*) FROM {source} WHERE number >= 4095",
         "SELECT sum(number) FROM {source} WHERE number >= 4095",
-        "SELECT countDistinct(number) FROM {source} WHERE number >= 1024",
+        "SELECT count(DISTINCT number) FROM {source} WHERE number >= 1024",
         "SELECT number FROM {source} WHERE number >= 4096 ORDER BY number DESC LIMIT 17 OFFSET 3",
         "SELECT number FROM {source} WHERE number < 5 OR number >= 8190 ORDER BY number DESC LIMIT 12",
         "SELECT number FROM {source} WHERE number BETWEEN 4093 AND 4102 ORDER BY number ASC LIMIT 5 OFFSET 2",
