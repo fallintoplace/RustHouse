@@ -182,7 +182,7 @@ mod literal_null_marker_regressions {
         let row = std::iter::repeat_n("123", 256).collect::<Vec<_>>().join("\t");
         let mut writer = CsvWriter::new(Vec::new());
         writer.write_all(format!("{header}\n{row}\n").as_bytes()).unwrap();
-        assert_eq!(writer.output.lines().count(), 0); // Bytes are CRLF separated.
+        assert_eq!(writer.output.iter().filter(|&&byte| byte == b'\n').count(), 2);
         assert_eq!(writer.columns, Some(256));
         assert!(writer.write_all(b"one\tcolumn\n").is_err());
     }
