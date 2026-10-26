@@ -51,8 +51,8 @@ fn write_csv_field<W: Write>(output: &mut W, field: &[u8]) -> io::Result<()> {
     let value = decode_tsv_value(field)?;
     let needs_quotes = value == "\\N"
         || value
-        .bytes()
-        .any(|byte| matches!(byte, b',' | b'"' | b'\n' | b'\r'));
+            .bytes()
+            .any(|byte| matches!(byte, b',' | b'"' | b'\n' | b'\r'));
     if needs_quotes {
         output.write_all(b"\"")?;
     }
