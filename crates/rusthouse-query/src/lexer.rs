@@ -10,6 +10,7 @@ pub(super) enum Token {
     Plus,
     Minus,
     Comma,
+    Dot,
     LParen,
     RParen,
     Semicolon,
@@ -104,6 +105,9 @@ pub(super) fn tokenize(sql: &str) -> Result<Vec<Token>, ParseError> {
                 index += 1;
                 Token::Plus
             }
+            b'-' if bytes.get(index + 1) == Some(&b'.') => {
+                return Err(ParseError("expected digits after '-'".into()));
+            }
             b'-' if !matches!(bytes.get(index + 1), Some(b'0'..=b'9')) => {
                 index += 1;
                 Token::Minus
@@ -111,6 +115,10 @@ pub(super) fn tokenize(sql: &str) -> Result<Vec<Token>, ParseError> {
             b',' => {
                 index += 1;
                 Token::Comma
+            }
+            b'.' => {
+                index += 1;
+                Token::Dot
             }
             b'(' => {
                 index += 1;

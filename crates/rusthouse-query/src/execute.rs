@@ -8,8 +8,10 @@ use std::fmt;
 use std::io::{self, BufWriter, Write};
 use std::path::Path;
 
+mod join;
 mod predicates;
 mod typed;
+pub use join::execute_join;
 mod typed_aggregate;
 #[cfg(test)]
 use predicates::{CompiledTest, compile_in_test};

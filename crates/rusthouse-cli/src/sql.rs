@@ -1,7 +1,7 @@
 use crate::{csv, csv_no_header, html, json_array, jsonl, markdown, vertical};
 use rusthouse_query::{
-    Source, execute, explain_select, parse_ddl, parse_delete, parse_insert, parse_select,
-    parse_update,
+    Source, execute, explain_join, explain_select, parse_ddl, parse_delete, parse_insert,
+    parse_join, parse_select, parse_update,
 };
 use std::ffi::OsString;
 use std::path::PathBuf;
@@ -11,7 +11,7 @@ const MAX_SCRIPT_BYTES: usize = 256 * 1024;
 const MAX_SCRIPT_STATEMENTS: usize = 128;
 
 #[derive(Clone, Copy)]
-enum SqlOutputFormat {
+pub(super) enum SqlOutputFormat {
     Tsv,
     TsvNoHeader,
     Csv,
@@ -400,6 +400,39 @@ pub(super) fn run_sql_args(mut args: impl Iterator<Item = OsString>) -> Result<(
             return crate::catalog::apply(&catalog_path, &ddl);
         }
         return Err("--catalog is only supported for DDL statements".into());
+    }
+    if let Some(mut join) = parse_join(&query).map_err(|error| error.to_string())? {
+        let database_dir = database.as_deref().ok_or("JOIN requires --database")?;
+        if part.is_some() {
+            return Err("JOIN cannot use --part".into());
+        }
+        if explain {
+            if show_ast || time || format.is_some() || output_path.is_some() {
+                return Err("--explain cannot be combined with other output options".into());
+            }
+            if let Some(cap) = max_rows {
+                join.limit = Some(join.limit.map_or(cap, |limit| limit.min(cap)));
+            }
+            println!("Logical plan (no data read):\n{}", explain_join(&join));
+            return Ok(());
+        }
+        if show_ast {
+            if time || output_path.is_some() {
+                return Err("--show-ast cannot be combined with --time or --output".into());
+            }
+            println!("{join:#?}");
+            return Ok(());
+        }
+        if let Some(cap) = max_rows {
+            join.limit = Some(join.limit.map_or(cap, |limit| limit.min(cap)));
+        }
+        return crate::join::run(
+            database_dir,
+            &join,
+            format.unwrap_or(SqlOutputFormat::Tsv),
+            output_path,
+            time,
+        );
     }
     let mut select = parse_select(&query).map_err(|error| error.to_string())?;
     if explain {

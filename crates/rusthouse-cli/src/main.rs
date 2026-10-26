@@ -6,6 +6,7 @@ mod database;
 mod doctor;
 mod html;
 mod insert_select;
+mod join;
 mod json_array;
 mod jsonl;
 mod markdown;

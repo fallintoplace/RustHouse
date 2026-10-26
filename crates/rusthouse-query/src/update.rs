@@ -34,6 +34,7 @@ fn token_sql(token: &Token) -> String {
         Token::Plus => "+".into(),
         Token::Minus => "-".into(),
         Token::Comma => ",".into(),
+        Token::Dot => ".".into(),
         Token::LParen => "(".into(),
         Token::RParen => ")".into(),
         Token::Semicolon => ";".into(),
