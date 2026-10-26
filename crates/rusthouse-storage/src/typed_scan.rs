@@ -449,13 +449,23 @@ mod tests {
             let values = read_legacy_strings(&mut first, 1).unwrap();
             assert_eq!(values.get(0), Some(b"abc".as_slice()));
         }
-        assert!(stream.cached.as_ref().is_some_and(|block| block.block.offset == 0));
+        assert!(
+            stream
+                .cached
+                .as_ref()
+                .is_some_and(|block| block.block.offset == 0)
+        );
         {
             let mut second = MarkStream::open(&mut stream, 1).unwrap();
             let values = read_legacy_strings(&mut second, 1).unwrap();
             assert_eq!(values.get(0), Some(b"def".as_slice()));
         }
-        assert!(stream.cached.as_ref().is_some_and(|block| block.block.offset == 0));
+        assert!(
+            stream
+                .cached
+                .as_ref()
+                .is_some_and(|block| block.block.offset == 0)
+        );
         drop(stream);
         std::fs::remove_file(path).unwrap();
     }
