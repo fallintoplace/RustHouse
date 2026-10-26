@@ -75,7 +75,6 @@ fn supports_join_explain_and_rejects_unknown_aliases() {
     assert!(!unknown.status.success());
 }
 
-
 #[test]
 fn streams_large_inner_join_probe_without_buffering_left_table() {
     let db = database();
