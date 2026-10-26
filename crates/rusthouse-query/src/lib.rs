@@ -4,6 +4,7 @@ mod delete;
 mod execute;
 mod explain;
 mod insert;
+mod insert_select;
 mod lexer;
 mod scalar;
 mod update;
@@ -13,6 +14,7 @@ pub use delete::parse_delete;
 pub use execute::{ExecutionError, RowPredicate, execute};
 pub use explain::explain_select;
 pub use insert::{Insert, parse_insert};
+pub use insert_select::{InsertSelect, parse_insert_select};
 pub use update::{Update, parse_update};
 
 use std::error::Error;
@@ -356,10 +358,11 @@ impl Parser {
 }
 
 pub fn parse_select(sql: &str) -> Result<Select, ParseError> {
-    let mut parser = Parser {
-        tokens: tokenize(sql)?,
-        index: 0,
-    };
+    parse_select_tokens(tokenize(sql)?)
+}
+
+fn parse_select_tokens(tokens: Vec<Token>) -> Result<Select, ParseError> {
+    let mut parser = Parser { tokens, index: 0 };
     if !parser.keyword("SELECT") {
         return Err(ParseError("only SELECT statements are supported".into()));
     }
