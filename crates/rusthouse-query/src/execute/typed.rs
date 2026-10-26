@@ -406,18 +406,34 @@ pub(super) fn write_value<W: Write>(output: &mut W, value: &Cell) -> Result<(), 
         Cell::Null => output.write_all(b"\\N")?,
         Cell::Uuid(value) => output.write_all(value.as_bytes())?,
         Cell::Text(bytes) => {
-            for &byte in bytes {
-                match byte {
-                    b'\\' => output.write_all(b"\\\\")?,
-                    b'\t' => output.write_all(b"\\t")?,
-                    b'\n' => output.write_all(b"\\n")?,
-                    b'\r' => output.write_all(b"\\r")?,
-                    0 => output.write_all(b"\\0")?,
+            let mut start = 0;
+            for (index, &byte) in bytes.iter().enumerate() {
+                let escape: Option<&[u8]> = match byte {
+                    b'\\' => Some(b"\\\\"),
+                    b'\t' => Some(b"\\t"),
+                    b'\n' => Some(b"\\n"),
+                    b'\r' => Some(b"\\r"),
+                    0 => Some(b"\\0"),
                     0x01..=0x08 | 0x0b..=0x0c | 0x0e..=0x1f | 0x7f => {
+                        if start < index {
+                            output.write_all(&bytes[start..index])?;
+                        }
                         write!(output, "\\x{byte:02X}")?;
+                        start = index + 1;
+                        continue;
                     }
-                    other => output.write_all(&[other])?,
+                    _ => None,
+                };
+                if let Some(escape) = escape {
+                    if start < index {
+                        output.write_all(&bytes[start..index])?;
+                    }
+                    output.write_all(escape)?;
+                    start = index + 1;
                 }
+            }
+            if start < bytes.len() {
+                output.write_all(&bytes[start..])?;
             }
         }
     }
@@ -854,5 +870,44 @@ mod like_tests {
         assert!(!matches(b"aqb", r"a\qb"));
         assert!(!matches(b"abcXYZend", "a%ends"));
         assert!(compile_like("dangling\\").is_err());
+    }
+}
+
+#[cfg(test)]
+mod typed_output_perf_tests {
+    use super::{Cell, write_value};
+    use std::io::{self, Write};
+
+    #[derive(Default)]
+    struct CountingWriter {
+        writes: usize,
+        bytes: Vec<u8>,
+    }
+
+    impl Write for CountingWriter {
+        fn write(&mut self, bytes: &[u8]) -> io::Result<usize> {
+            self.writes += 1;
+            self.bytes.extend_from_slice(bytes);
+            Ok(bytes.len())
+        }
+
+        fn flush(&mut self) -> io::Result<()> {
+            Ok(())
+        }
+    }
+
+    #[test]
+    fn preserves_tsv_escaping_across_plain_spans() {
+        let mut output = Vec::new();
+        write_value(&mut output, &Cell::Text(b"one\ttwo\\three\n\0\x01".to_vec())).unwrap();
+        assert_eq!(output, br"one\ttwo\\three\n\0\x01");
+    }
+
+    #[test]
+    fn emits_long_unescaped_strings_with_one_write() {
+        let mut output = CountingWriter::default();
+        write_value(&mut output, &Cell::Text(vec![b'a'; 16 * 1024])).unwrap();
+        assert_eq!(output.bytes, vec![b'a'; 16 * 1024]);
+        assert_eq!(output.writes, 1);
     }
 }
