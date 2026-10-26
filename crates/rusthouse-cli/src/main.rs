@@ -1,9 +1,9 @@
 mod csv;
 mod csv_no_header;
-mod ddl;
 mod json_array;
 mod jsonl;
 mod sql;
+mod ddl;
 
 use rusthouse_storage::{
     CompressedBlockReader, NumericColumn, UInt64ColumnReader, inspect_part, read_checksums,

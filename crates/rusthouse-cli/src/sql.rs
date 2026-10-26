@@ -86,9 +86,7 @@ pub(super) fn run_sql_args(mut args: impl Iterator<Item = OsString>) -> Result<(
             if catalog.is_some() {
                 return Err("duplicate --catalog option".into());
             }
-            catalog = Some(PathBuf::from(
-                args.next().ok_or("missing --catalog directory")?,
-            ));
+            catalog = Some(PathBuf::from(args.next().ok_or("missing --catalog directory")?));
         } else if arg.to_str() == Some("--part") {
             if part.is_some() {
                 return Err("duplicate --part option".into());

@@ -51,3 +51,5 @@ Create a local schema catalog with `cargo run -p rusthouse-cli -- sql "CREATE TA
 List tables with `cargo run -p rusthouse-cli -- sql "SHOW TABLES" --catalog ./catalog`.
 
 Inspect columns with `cargo run -p rusthouse-cli -- sql "DESCRIBE TABLE events" --catalog ./catalog`.
+
+Remove catalog metadata with `cargo run -p rusthouse-cli -- sql "DROP TABLE IF EXISTS events" --catalog ./catalog`. This removes only the schema file, not external data parts.
