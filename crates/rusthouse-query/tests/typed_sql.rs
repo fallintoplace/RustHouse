@@ -213,3 +213,52 @@ fn queries_typed_columns_across_frozen_parts() {
     );
     fs::remove_dir_all(table).unwrap();
 }
+
+#[test]
+fn matches_like_ilike_and_nullable_string_filters() {
+    let part = part();
+    assert_eq!(
+        query("SELECT service FROM part WHERE service LIKE 'a%'", &part),
+        "service\napi\napi\n"
+    );
+    assert_eq!(
+        query("SELECT service FROM part WHERE service ILIKE 'A_I'", &part),
+        "service\napi\napi\n"
+    );
+    assert_eq!(
+        query("SELECT service FROM part WHERE service NOT ILIKE 'API'", &part),
+        "service\ndb\n"
+    );
+    assert_eq!(
+        query("SELECT message FROM part WHERE message NOT LIKE '%o%'", &part),
+        "message\n"
+    );
+    assert_eq!(
+        query(r"SELECT service FROM part WHERE service LIKE 'a\%'", &part),
+        "service\n"
+    );
+    assert_eq!(
+        query(
+            "SELECT service FROM part WHERE service ILIKE 'API' OR service LIKE 'd_'",
+            &part
+        ),
+        "service\napi\ndb\napi\n"
+    );
+    fs::remove_dir_all(part).unwrap();
+}
+
+#[test]
+fn like_requires_a_quoted_pattern_and_string_column() {
+    for sql in [
+        "SELECT service FROM part WHERE service LIKE 123",
+        "SELECT service FROM part WHERE service LIKE 'abc\\'",
+        "SELECT service FROM part WHERE service NOT LIKE",
+    ] {
+        assert!(parse_select(sql).is_err(), "{sql}");
+    }
+    let part = part();
+    let mut output = Vec::new();
+    let query = parse_select("SELECT status FROM part WHERE status LIKE '5%'").unwrap();
+    assert!(execute(&query, Some(&part), &mut output).is_err());
+    fs::remove_dir_all(part).unwrap();
+}
