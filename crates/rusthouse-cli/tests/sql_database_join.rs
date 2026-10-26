@@ -61,7 +61,6 @@ fn joins_persisted_tables_with_duplicates_nulls_and_aliases() {
     fs::remove_dir_all(db).unwrap();
 }
 
-
 #[test]
 fn inner_join_builds_more_than_one_4096_row_part() {
     let db = database();
