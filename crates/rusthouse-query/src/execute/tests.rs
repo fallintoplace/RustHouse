@@ -444,9 +444,7 @@ fn population_statistics_handle_signed_values_and_stable_large_offsets() {
     ] {
         deviation.update(Number::Float(n)).unwrap();
     }
-    assert!(
-        (deviation.render().parse::<f64>().unwrap() - (2.0_f64 / 3.0).sqrt()).abs() < 1e-12
-    );
+    assert!((deviation.render().parse::<f64>().unwrap() - (2.0_f64 / 3.0).sqrt()).abs() < 1e-12);
 }
 
 #[test]
