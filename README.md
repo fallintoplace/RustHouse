@@ -111,3 +111,9 @@ is not implemented by this change.
 Recover portable schema-only DDL with `rusthouse sql "SHOW CREATE TABLE events" --catalog ./catalog`.
 The output can be executed in another local catalog. No MergeTree data or engine
 settings are included, since the local catalog records only names and types.
+
+Compute medians with `rusthouse sql "SELECT median(number) FROM numbers(100)"`.
+`median(column)` works on numeric parts and generated numbers, returns `NULL`
+for empty input, and rejects over 100,000 matching rows to bound memory use.
+For an odd row count it preserves the middle numeric value; for an even
+count it interpolates the two middle values using Float64 precision.

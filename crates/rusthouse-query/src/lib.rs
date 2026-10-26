@@ -19,6 +19,7 @@ pub enum AggregateFunction {
     Max,
     VarPop,
     StddevPop,
+    Median,
 }
 
 impl AggregateFunction {
@@ -30,6 +31,7 @@ impl AggregateFunction {
             Self::Max => "max",
             Self::VarPop => "varPop",
             Self::StddevPop => "stddevPop",
+            Self::Median => "median",
         }
     }
 }
@@ -257,6 +259,7 @@ pub fn parse_select(sql: &str) -> Result<Select, ParseError> {
             "MAX" => AggregateFunction::Max,
             "VARPOP" => AggregateFunction::VarPop,
             "STDDEVPOP" => AggregateFunction::StddevPop,
+            "MEDIAN" => AggregateFunction::Median,
             _ => return Err(ParseError(format!("unsupported aggregate: {name}"))),
         };
         parser.take(Token::LParen);
@@ -746,6 +749,21 @@ mod tests {
     use super::*;
 
     #[test]
+    fn parses_median_as_a_numeric_aggregate() {
+        assert_eq!(
+            parse_select("SELECT median(number) FROM numbers(5)")
+                .unwrap()
+                .projection,
+            Projection::Aggregate {
+                function: AggregateFunction::Median,
+                column: "number".into(),
+            }
+        );
+        assert!(parse_select("SELECT median() FROM numbers(1)").is_err());
+        assert!(parse_select("SELECT median(number, number) FROM numbers(1)").is_err());
+    }
+
+    #[test]
     fn parses_scalar_and_table_queries() {
         assert_eq!(
             parse_select(" SELECT -42; ").unwrap(),
@@ -914,6 +932,7 @@ mod tests {
             ("MAX", AggregateFunction::Max),
             ("VARPOP", AggregateFunction::VarPop),
             ("STDDEVPOP", AggregateFunction::StddevPop),
+            ("MEDIAN", AggregateFunction::Median),
         ] {
             let sql = format!("SELECT {name}(price) FROM part WHERE id > 2");
             assert_eq!(
@@ -928,7 +947,6 @@ mod tests {
             "SELECT sum(*) FROM part",
             "SELECT sum() FROM part",
             "SELECT sum(a, b) FROM part",
-            "SELECT median(price) FROM part",
             "SELECT avg(number) FROM numbers(3) ORDER BY number",
         ] {
             assert!(parse_select(sql).is_err(), "{sql}");
