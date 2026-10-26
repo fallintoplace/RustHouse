@@ -73,6 +73,40 @@ fn optimize_preserves_rows_and_allows_new_inserts() {
 }
 
 #[test]
+fn rename_after_optimize_preserves_snapshot_generations() {
+    let dir = dir();
+    let create = sql("CREATE TABLE events (id UInt64)", &dir);
+    assert!(create.status.success(), "{create:?}");
+    let inserted = sql("INSERT INTO events VALUES (1), (2)", &dir);
+    assert!(inserted.status.success(), "{inserted:?}");
+    let optimized = sql("OPTIMIZE TABLE events", &dir);
+    assert!(optimized.status.success(), "{optimized:?}");
+    let renamed = sql("RENAME TABLE events TO archived", &dir);
+    assert!(renamed.status.success(), "{renamed:?}");
+
+    assert!(!dir.join("events.parts").exists());
+    assert!(dir.join("archived.parts/.rusthouse-versions/g1").is_dir());
+    assert_eq!(
+        fs::read_to_string(dir.join("archived.parts/.rusthouse-active")).unwrap(),
+        "g1\n"
+    );
+    assert_eq!(
+        sql("SELECT count(*) FROM archived", &dir).stdout,
+        b"count\n2\n"
+    );
+
+    let inserted = sql("INSERT INTO archived VALUES (3)", &dir);
+    assert!(inserted.status.success(), "{inserted:?}");
+    let optimized = sql("OPTIMIZE TABLE archived", &dir);
+    assert!(optimized.status.success(), "{optimized:?}");
+    assert_eq!(
+        sql("SELECT count(*) FROM archived", &dir).stdout,
+        b"count\n3\n"
+    );
+    fs::remove_dir_all(dir).unwrap();
+}
+
+#[test]
 fn invalid_snapshot_pointer_fails_closed() {
     let dir = dir();
     assert!(sql("CREATE TABLE t (id UInt64)", &dir).status.success());
