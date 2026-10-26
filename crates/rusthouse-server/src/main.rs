@@ -181,11 +181,22 @@ fn main() -> io::Result<()> {
     let active = Arc::new(AtomicUsize::new(0));
     for accepted in listener.incoming() {
         let stream = accepted?;
-        if active
-            .fetch_update(Ordering::AcqRel, Ordering::Relaxed, |value| {
-                (value < MAX_CONNECTIONS).then_some(value + 1)
-            })
-            .is_err()
+        let mut count = active.load(Ordering::Relaxed);
+        let acquired = loop {
+            if count >= MAX_CONNECTIONS {
+                break false;
+            }
+            match active.compare_exchange_weak(
+                count,
+                count + 1,
+                Ordering::AcqRel,
+                Ordering::Relaxed,
+            ) {
+                Ok(_) => break true,
+                Err(updated) => count = updated,
+            }
+        };
+        if !acquired
         {
             let mut stream = stream;
             let _ = respond(
