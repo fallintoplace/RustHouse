@@ -9,7 +9,7 @@ mod join;
 mod lexer;
 mod scalar;
 mod update;
-pub use copy::{CopyFrom, parse_copy_from};
+pub use copy::{CopyFormat, CopyFrom, parse_copy_from};
 pub use ddl::{ColumnDef, Ddl, parse_ddl};
 pub use delete::parse_delete;
 pub use execute::{ExecutionError, RowPredicate, execute, execute_join};
