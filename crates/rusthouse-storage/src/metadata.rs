@@ -42,7 +42,10 @@ fn read_metadata(path: &Path, max_bytes: u64) -> Result<String, PartError> {
     if !metadata.file_type().is_file() {
         return Err(PartError::Io {
             path: path.to_path_buf(),
-            source: io::Error::new(io::ErrorKind::InvalidData, "metadata must be a regular file"),
+            source: io::Error::new(
+                io::ErrorKind::InvalidData,
+                "metadata must be a regular file",
+            ),
         });
     }
     let file = fs::File::open(path).map_err(|source| PartError::Io {
@@ -85,10 +88,8 @@ mod tests {
     fn refuses_symlinked_metadata() {
         use std::os::unix::fs::symlink;
 
-        let dir = std::env::temp_dir().join(format!(
-            "rusthouse-metadata-symlink-{}",
-            std::process::id()
-        ));
+        let dir =
+            std::env::temp_dir().join(format!("rusthouse-metadata-symlink-{}", std::process::id()));
         fs::create_dir(&dir).unwrap();
         fs::write(dir.join("real-count.txt"), b"42\n").unwrap();
         symlink("real-count.txt", dir.join("count.txt")).unwrap();
