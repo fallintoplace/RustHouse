@@ -1,3 +1,4 @@
+use std::borrow::Cow;
 use std::io::{self, Write};
 
 const MAX_LINE_BYTES: usize = 1024 * 1024;
@@ -58,20 +59,28 @@ fn append_literal(output: &mut Vec<u8>, field: &[u8]) -> io::Result<()> {
         output.extend_from_slice(b"NULL");
         return Ok(());
     }
-    let decoded = decode_field(field)?;
+    let decoded: Cow<'_, [u8]> = if field.contains(&b'\\') {
+        Cow::Owned(decode_field(field)?)
+    } else {
+        Cow::Borrowed(field)
+    };
     let value = std::str::from_utf8(&decoded)
         .map_err(|_| invalid("SQL VALUES output requires UTF-8 text"))?;
     output.push(b'\'');
-    for ch in value.chars() {
-        match ch {
-            '\'' => output.extend_from_slice(b"''"),
-            '\\' => output.extend_from_slice(b"\\\\"),
-            other => {
-                let mut bytes = [0; 4];
-                output.extend_from_slice(other.encode_utf8(&mut bytes).as_bytes());
+    let bytes = value.as_bytes();
+    let mut start = 0;
+    for (index, &byte) in bytes.iter().enumerate() {
+        if byte == b'\'' || byte == b'\\' {
+            output.extend_from_slice(&bytes[start..index]);
+            if byte == b'\'' {
+                output.extend_from_slice(b"''");
+            } else {
+                output.extend_from_slice(b"\\\\");
             }
+            start = index + 1;
         }
     }
+    output.extend_from_slice(&bytes[start..]);
     output.push(b'\'');
     Ok(())
 }
@@ -178,6 +187,17 @@ mod tests {
             writer.finish()?;
         }
         String::from_utf8(output).map_err(|_| invalid("invalid output UTF-8"))
+    }
+
+    #[test]
+    fn encodes_large_plain_utf8_literals_without_changing_content() {
+        let field = "café".repeat(4096);
+        let mut output = Vec::new();
+        append_literal(&mut output, field.as_bytes()).unwrap();
+        assert_eq!(output.len(), field.len() + 2);
+        assert_eq!(&output[1..1 + field.len()], field.as_bytes());
+        assert_eq!(output[0], b'\'');
+        assert_eq!(*output.last().unwrap(), b'\'');
     }
 
     #[test]
