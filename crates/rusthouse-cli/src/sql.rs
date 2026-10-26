@@ -1,5 +1,5 @@
 use crate::{csv, csv_no_header, json_array, jsonl, markdown, vertical};
-use rusthouse_query::{execute, explain_select, parse_ddl, parse_insert, parse_select};
+use rusthouse_query::{Source, execute, explain_select, parse_ddl, parse_insert, parse_select};
 use std::ffi::OsString;
 use std::path::PathBuf;
 
@@ -172,7 +172,7 @@ pub(super) fn run_sql_args(mut args: impl Iterator<Item = OsString>) -> Result<(
     if database.is_some() && catalog.is_some() {
         return Err("--catalog and --database cannot be combined".into());
     }
-    if let Some(database_dir) = database {
+    if let Some(database_dir) = database.as_deref() {
         if part.is_some() {
             return Err("--part cannot be combined with --database".into());
         }
@@ -201,10 +201,6 @@ pub(super) fn run_sql_args(mut args: impl Iterator<Item = OsString>) -> Result<(
             }
             return crate::database::insert(&database_dir, &insert);
         }
-        return Err(
-            "--database currently supports schema commands and INSERT; SELECT is not enabled yet"
-                .into(),
-        );
     }
     if let Some(catalog_path) = catalog {
         if explain {
@@ -251,6 +247,12 @@ pub(super) fn run_sql_args(mut args: impl Iterator<Item = OsString>) -> Result<(
     }
     if let Some(cap) = max_rows {
         select.limit = Some(select.limit.map_or(cap, |limit| limit.min(cap)));
+    }
+    if let (Some(database_dir), Some(Source::Table(table))) =
+        (database.as_deref(), select.source.as_ref())
+    {
+        part = Some(crate::database::select_source(database_dir, table)?);
+        select.source = Some(Source::Table("part".into()));
     }
     let mut output: Box<dyn std::io::Write> = match &output_path {
         Some(path) => Box::new(
