@@ -53,14 +53,13 @@ fn numeric_predicates_ordering_and_pagination_match_written_parts() {
                     if descending {
                         expected.reverse();
                     }
-                    let expected = expected
-                        .into_iter()
-                        .skip(offset)
-                        .take(limit)
-                        .fold(String::from("number\n"), |mut result, value| {
+                    let expected = expected.into_iter().skip(offset).take(limit).fold(
+                        String::from("number\n"),
+                        |mut result, value| {
                             result.push_str(&format!("{value}\n"));
                             result
-                        });
+                        },
+                    );
                     assert_eq!(run(&generated_sql, None), expected, "{generated_sql}");
                     assert_eq!(run(&parts_sql, Some(&root)), expected, "{parts_sql}");
                 }
