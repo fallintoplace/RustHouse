@@ -899,7 +899,11 @@ mod typed_output_perf_tests {
     #[test]
     fn preserves_tsv_escaping_across_plain_spans() {
         let mut output = Vec::new();
-        write_value(&mut output, &Cell::Text(b"one\ttwo\\three\n\0\x01".to_vec())).unwrap();
+        write_value(
+            &mut output,
+            &Cell::Text(b"one\ttwo\\three\n\0\x01".to_vec()),
+        )
+        .unwrap();
         assert_eq!(output, br"one\ttwo\\three\n\0\x01");
     }
 
