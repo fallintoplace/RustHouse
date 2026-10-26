@@ -9,8 +9,8 @@ mod fixed_strings;
 mod granules;
 mod ip;
 mod mark_validation;
-mod metadata;
 mod marks;
+mod metadata;
 mod nested_arrays;
 mod nullable;
 mod nullable_arrays;
@@ -38,8 +38,8 @@ pub use fixed_strings::{
 pub use granules::{read_mark_bytes, read_numeric_granule, read_u64_granule};
 pub use ip::{read_ipv4_values, read_ipv6_values};
 pub use mark_validation::validate_wide_marks;
-pub use metadata::{Column, PartMetadata, inspect_part};
 pub use marks::{WideMark, WideMarkFormat, WideMarks, read_wide_marks};
+pub use metadata::{Column, PartMetadata, inspect_part};
 pub use nested_arrays::{
     NestedArrayReadError, NestedNumericArrayColumn, read_nested_numeric_array_column,
 };
@@ -210,4 +210,3 @@ impl Error for PartError {
         }
     }
 }
-
