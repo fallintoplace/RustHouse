@@ -70,6 +70,15 @@ pub fn query_parts(path: &Path) -> Result<Vec<PathBuf>, PartError> {
         if !file_type.is_dir() {
             continue; // Symlinks are deliberately not followed.
         }
+        let name = entry.file_name();
+        // Older local writers staged data inside the active parts directory.
+        // Never expose those incomplete, unpublished parts to SQL reads.
+        if name
+            .to_str()
+            .is_some_and(|name| name.starts_with(".pending-"))
+        {
+            continue;
+        }
         let child = entry.path();
         let has_count = child.join("count.txt").exists();
         let has_columns = child.join("columns.txt").exists();
@@ -82,7 +91,6 @@ pub fn query_parts(path: &Path) -> Result<Vec<PathBuf>, PartError> {
                 child.display()
             )));
         }
-        let name = entry.file_name();
         let name = name
             .to_str()
             .ok_or_else(|| PartError::InvalidScan("part directory name is not UTF-8".into()))?;
@@ -184,6 +192,32 @@ impl NumericQueryReader {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn ignores_unpublished_pending_local_parts() {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        static NEXT_TEMP: AtomicUsize = AtomicUsize::new(0);
+
+        let root = std::env::temp_dir().join(format!(
+            "rusthouse-pending-part-{}-{}",
+            std::process::id(),
+            NEXT_TEMP.fetch_add(1, Ordering::Relaxed)
+        ));
+        let active = root.join("all_0_0_0");
+        let pending = root.join(".pending-123-0");
+        fs::create_dir_all(&active).unwrap();
+        fs::create_dir(&pending).unwrap();
+        for path in [&active, &pending] {
+            fs::write(path.join("count.txt"), "0\n").unwrap();
+            fs::write(
+                path.join("columns.txt"),
+                "columns format version: 1\n1 columns:\n`id` UInt64\n",
+            )
+            .unwrap();
+        }
+        assert_eq!(query_parts(&root).unwrap(), vec![active]);
+        fs::remove_dir_all(root).unwrap();
+    }
 
     #[test]
     fn parses_standard_part_names() {
