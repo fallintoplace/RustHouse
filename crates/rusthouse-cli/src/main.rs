@@ -14,11 +14,12 @@ use std::ffi::OsString;
 use std::path::PathBuf;
 use std::process::ExitCode;
 
-const USAGE: &str = "Usage:\n  rusthouse inspect-part <path>\n  rusthouse verify-part <path-to-wide-part>\n  rusthouse verify-file-sizes <path-to-part>\n  rusthouse inspect-checksums <path-to-checksums.txt>\n  rusthouse inspect-marks <path-to-wide-marks>\n  rusthouse inspect-blocks <path-to-.bin>\n  rusthouse verify-blocks <path-to-.bin>\n  rusthouse validate-marks <path-to-wide-marks> <path-to-.bin>\n  rusthouse read-u64 <data.bin> <marks.mrk2> <mark-index>\n  rusthouse scan-u64 <path-to-UInt64-.bin>\n  rusthouse read-numeric <data.bin> <marks.mrk2> <mark-index> <type>\n  rusthouse sql <SQL> [--part <path-to-wide-part>] [--format tsv|csv|csv-no-header|jsonl|json] [--output <path>] [--show-ast]\n  rusthouse sql --stdin [--part <path-to-wide-part>] [--format tsv|csv|csv-no-header|jsonl|json] [--output <path>] [--show-ast]\n  rusthouse sql --file <path.sql> [--part <path-to-wide-part>] [--format tsv|csv|csv-no-header|jsonl|json] [--output <path>] [--show-ast]\n  rusthouse --help\n\nInspect local MergeTree metadata, marks, and compressed blocks.";
+const USAGE: &str = "Usage:\n  rusthouse inspect-part <path>\n  rusthouse verify-part <path-to-wide-part>\n  rusthouse verify-file-sizes <path-to-part>\n  rusthouse inspect-checksums <path-to-checksums.txt>\n  rusthouse inspect-marks <path-to-wide-marks>\n  rusthouse inspect-blocks <path-to-.bin>\n  rusthouse verify-blocks <path-to-.bin>\n  rusthouse validate-marks <path-to-wide-marks> <path-to-.bin>\n  rusthouse read-u64 <data.bin> <marks.mrk2> <mark-index>\n  rusthouse scan-u64 <path-to-UInt64-.bin>\n  rusthouse read-numeric <data.bin> <marks.mrk2> <mark-index> <type>\n  rusthouse sql <SQL> [--part <path-to-wide-part>] [--format tsv|tsv-no-header|csv|csv-no-header|jsonl|json] [--output <path>] [--show-ast]\n  rusthouse sql --stdin [--part <path-to-wide-part>] [--format tsv|tsv-no-header|csv|csv-no-header|jsonl|json] [--output <path>] [--show-ast]\n  rusthouse sql --file <path.sql> [--part <path-to-wide-part>] [--format tsv|tsv-no-header|csv|csv-no-header|jsonl|json] [--output <path>] [--show-ast]\n  rusthouse --help\n\nInspect local MergeTree metadata, marks, and compressed blocks.";
 
 #[derive(Clone, Copy)]
 enum SqlOutputFormat {
     Tsv,
+    TsvNoHeader,
     Csv,
     CsvNoHeader,
     Jsonl,
@@ -29,11 +30,14 @@ impl SqlOutputFormat {
     fn from_arg(value: Option<OsString>) -> Result<Self, String> {
         match value.and_then(|value| value.into_string().ok()).as_deref() {
             Some("tsv") => Ok(Self::Tsv),
+            Some("tsv-no-header") => Ok(Self::TsvNoHeader),
             Some("csv") => Ok(Self::Csv),
             Some("csv-no-header") => Ok(Self::CsvNoHeader),
             Some("jsonl") => Ok(Self::Jsonl),
             Some("json") => Ok(Self::Json),
-            _ => Err("--format must be tsv, csv, csv-no-header, jsonl, or json".into()),
+            _ => Err(
+                "--format must be tsv, tsv-no-header, csv, csv-no-header, jsonl, or json".into(),
+            ),
         }
     }
 }
@@ -447,6 +451,11 @@ fn run_sql_args(mut args: impl Iterator<Item = OsString>) -> Result<(), String> 
     };
     let result = match format.unwrap_or(SqlOutputFormat::Tsv) {
         SqlOutputFormat::Tsv => execute(&select, part.as_deref(), &mut output),
+        SqlOutputFormat::TsvNoHeader => execute(
+            &select,
+            part.as_deref(),
+            &mut csv_no_header::WithoutHeader::new(&mut output),
+        ),
         SqlOutputFormat::Csv => execute(
             &select,
             part.as_deref(),
