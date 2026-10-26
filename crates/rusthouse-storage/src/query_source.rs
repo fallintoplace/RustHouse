@@ -41,6 +41,20 @@ fn part_span(name: &str) -> Option<(String, u64, u64)> {
     }
 }
 
+fn validate_block_ranges(ranges: &mut HashMap<String, Vec<(u64, u64)>>) -> Result<(), PartError> {
+    for spans in ranges.values_mut() {
+        spans.sort_unstable();
+        for pair in spans.windows(2) {
+            if pair[0].1 >= pair[1].0 {
+                return Err(PartError::InvalidScan(
+                    "overlapping part block ranges: provide a frozen active-part snapshot".into(),
+                ));
+            }
+        }
+    }
+    Ok(())
+}
+
 /// List complete active wide parts from an offline snapshot.
 /// Refuse overlapping block ranges rather than double-count replaced parts.
 pub fn query_parts(path: &Path) -> Result<Vec<PathBuf>, PartError> {
@@ -87,16 +101,7 @@ pub fn query_parts(path: &Path) -> Result<Vec<PathBuf>, PartError> {
             "no active wide MergeTree parts found in snapshot".into(),
         ));
     }
-    for spans in ranges.values_mut() {
-        spans.sort_unstable();
-        for pair in spans.windows(2) {
-            if pair[0].1 >= pair[1].0 {
-                return Err(PartError::InvalidScan(
-                    "overlapping part block ranges: provide a frozen active-part snapshot".into(),
-                ));
-            }
-        }
-    }
+    validate_block_ranges(&mut ranges)?;
     parts.sort_unstable();
     Ok(parts)
 }
@@ -182,4 +187,16 @@ mod tests {
         assert_eq!(part_span("all_1_2_0_7"), Some(("all".into(), 1, 2)));
         assert_eq!(part_span("all_3_2_0"), None);
     }
+    #[test]
+    fn checks_overlapping_block_ranges_independently_of_directory_order() {
+        let mut ranges = HashMap::from([("all".to_owned(), vec![(10, 12), (1, 3), (3, 5)])]);
+        assert!(matches!(
+            validate_block_ranges(&mut ranges),
+            Err(PartError::InvalidScan(_))
+        ));
+
+        let mut ranges = HashMap::from([("all".to_owned(), vec![(10, 12), (1, 3), (4, 5)])]);
+        validate_block_ranges(&mut ranges).unwrap();
+    }
+
 }
