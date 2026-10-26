@@ -634,6 +634,9 @@ pub fn parse_select(sql: &str) -> Result<Select, ParseError> {
     }
 
     let (predicates, or_predicates) = parse_where(&mut parser)?;
+    if source.is_none() && !predicates.is_empty() {
+        return Err(ParseError("WHERE requires a table source".into()));
+    }
 
     if parser.keyword("GROUP") {
         if !parser.keyword("BY") {
