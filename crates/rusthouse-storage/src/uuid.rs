@@ -14,6 +14,12 @@ impl UuidValue {
     pub fn as_bytes(&self) -> &[u8; 16] {
         &self.bytes
     }
+
+    fn from_disk_bytes(mut bytes: [u8; 16]) -> Self {
+        bytes[..8].reverse();
+        bytes[8..].reverse();
+        Self { bytes }
+    }
 }
 
 impl fmt::Display for UuidValue {
@@ -49,9 +55,7 @@ pub fn read_uuid_values<R: Read>(reader: &mut R, rows: usize) -> io::Result<Vec<
         result.extend(buffer[..size].chunks_exact(16).map(|chunk| {
             let mut bytes = [0u8; 16];
             bytes.copy_from_slice(chunk);
-            bytes[..8].reverse();
-            bytes[8..].reverse();
-            UuidValue { bytes }
+            UuidValue::from_disk_bytes(bytes)
         }));
     }
     Ok(result)
@@ -66,6 +70,16 @@ mod tests {
         0xe7, 0x11, 0xb3, 0x5c, 0x04, 0xc4, 0xf0, 0x61, 0xa0, 0xdb, 0xd3, 0x6a, 0x00, 0xa6, 0x7b,
         0x90,
     ];
+
+    #[test]
+    fn converts_uuid_disk_halves_independently() {
+        let disk = [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15];
+        let value = UuidValue::from_disk_bytes(disk);
+        assert_eq!(
+            value.as_bytes(),
+            &[7, 6, 5, 4, 3, 2, 1, 0, 15, 14, 13, 12, 11, 10, 9, 8]
+        );
+    }
 
     #[test]
     fn decodes_two_little_endian_halves_into_standard_uuid_order() {
