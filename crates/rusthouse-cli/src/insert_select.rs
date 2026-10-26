@@ -91,28 +91,33 @@ fn decode_rows(data: &[u8]) -> Result<Vec<Vec<Option<String>>>, String> {
 }
 
 pub(super) fn run(database: &Path, statement: &InsertSelect) -> Result<(), String> {
-    let mut query = statement.select.clone();
-    // Read one extra row to reject truncation rather than silently losing rows.
-    let cap = MAX_INSERT_ROWS + 1;
-    query.limit = Some(query.limit.map_or(cap, |limit| limit.min(cap)));
-    let part = if let Some(Source::Table(table)) = query.source.as_ref() {
-        let path = crate::database::select_source(database, table)?;
-        query.source = Some(Source::Table("part".into()));
-        Some(path)
-    } else {
-        None
-    };
-    let mut output = BoundedOutput::default();
-    execute(&query, part.as_deref(), &mut output).map_err(|error| error.to_string())?;
-    let rows = decode_rows(&output.0)?;
-    crate::database::insert(
-        database,
-        &Insert {
-            table: statement.table.clone(),
-            columns: statement.columns.clone(),
-            rows,
-        },
-    )
+    // Keep source resolution, SELECT execution and final append under one
+    // database write lock so concurrent RENAME/DROP cannot invalidate the
+    // input, and self-INSERT observes a consistent pre-insert snapshot.
+    crate::database::with_write_lock(database, || {
+        let mut query = statement.select.clone();
+        // Read one extra row to reject truncation rather than silently losing rows.
+        let cap = MAX_INSERT_ROWS + 1;
+        query.limit = Some(query.limit.map_or(cap, |limit| limit.min(cap)));
+        let part = if let Some(Source::Table(table)) = query.source.as_ref() {
+            let path = crate::database::select_source(database, table)?;
+            query.source = Some(Source::Table("part".into()));
+            Some(path)
+        } else {
+            None
+        };
+        let mut output = BoundedOutput::default();
+        execute(&query, part.as_deref(), &mut output).map_err(|error| error.to_string())?;
+        let rows = decode_rows(&output.0)?;
+        crate::database::insert_locked(
+            database,
+            &Insert {
+                table: statement.table.clone(),
+                columns: statement.columns.clone(),
+                rows,
+            },
+        )
+    })
 }
 
 #[cfg(test)]
