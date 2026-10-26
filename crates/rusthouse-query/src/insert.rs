@@ -17,7 +17,9 @@ pub struct Insert {
 fn identifier(parser: &mut Parser) -> Result<String, ParseError> {
     let name = parser.word()?;
     if name.len() > 128 {
-        return Err(ParseError("INSERT identifiers cannot exceed 128 bytes".into()));
+        return Err(ParseError(
+            "INSERT identifiers cannot exceed 128 bytes".into(),
+        ));
     }
     Ok(name)
 }
@@ -73,7 +75,9 @@ pub fn parse_insert(sql: &str) -> Result<Option<Insert>, ParseError> {
         let mut row = Vec::new();
         loop {
             if row.len() == MAX_INSERT_COLUMNS {
-                return Err(ParseError("INSERT supports at most 64 values per row".into()));
+                return Err(ParseError(
+                    "INSERT supports at most 64 values per row".into(),
+                ));
             }
             let value = match parser.tokens.get(parser.index) {
                 Some(Token::Word(word)) if word.eq_ignore_ascii_case("NULL") => {
@@ -92,9 +96,13 @@ pub fn parse_insert(sql: &str) -> Result<Option<Insert>, ParseError> {
             return Err(ParseError("expected ')' after VALUES row".into()));
         }
         if rows.first().is_some_and(|first| first.len() != row.len())
-            || columns.as_ref().is_some_and(|names| names.len() != row.len())
+            || columns
+                .as_ref()
+                .is_some_and(|names| names.len() != row.len())
         {
-            return Err(ParseError("INSERT row width does not match column list".into()));
+            return Err(ParseError(
+                "INSERT row width does not match column list".into(),
+            ));
         }
         rows.push(row);
         if !parser.take(Token::Comma) {
@@ -103,7 +111,9 @@ pub fn parse_insert(sql: &str) -> Result<Option<Insert>, ParseError> {
     }
     parser.take(Token::Semicolon);
     if parser.index != parser.tokens.len() {
-        return Err(ParseError("unexpected tokens after INSERT statement".into()));
+        return Err(ParseError(
+            "unexpected tokens after INSERT statement".into(),
+        ));
     }
     Ok(Some(Insert {
         table,
@@ -131,7 +141,11 @@ mod tests {
         assert_eq!(
             insert.rows,
             vec![
-                vec![Some("it's here".into()), Some("-2".into()), Some("3.5".into())],
+                vec![
+                    Some("it's here".into()),
+                    Some("-2".into()),
+                    Some("3.5".into())
+                ],
                 vec![Some("two".into()), Some("7".into()), None],
             ]
         );
@@ -172,7 +186,10 @@ mod tests {
     fn rejects_bounded_width_and_statement_size() {
         let values = vec!["1"; 65].join(", ");
         assert!(parse_insert(&format!("INSERT INTO t VALUES ({values})")).is_err());
-        let cols = (0..65).map(|n| format!("c{n}")).collect::<Vec<_>>().join(", ");
+        let cols = (0..65)
+            .map(|n| format!("c{n}"))
+            .collect::<Vec<_>>()
+            .join(", ");
         assert!(parse_insert(&format!("INSERT INTO t ({cols}) VALUES (1)")).is_err());
         assert!(parse_insert(&format!("INSERT INTO t VALUES ('{}')", "x".repeat(4096))).is_err());
     }
