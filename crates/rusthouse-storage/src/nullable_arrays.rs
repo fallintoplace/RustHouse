@@ -69,16 +69,7 @@ impl Error for NullableArrayReadError {
     }
 }
 
-/// Decode separate Array offsets, element null-map, and element value streams.
-/// All element slots, including null placeholders, consume a physical value.
-pub fn read_nullable_numeric_array_column<O: Read, N: Read, D: Read>(
-    offsets: &mut O,
-    nulls: &mut N,
-    data: &mut D,
-    data_type: &str,
-    rows: usize,
-    encoding: ArrayOffsetsEncoding,
-) -> Result<NullableNumericArrayColumn, NullableArrayReadError> {
+fn validated_nullable_type(data_type: &str) -> Result<&str, NullableArrayReadError> {
     let nullable_type = data_type
         .strip_prefix("Array(")
         .and_then(|inner| inner.strip_suffix(')'))
@@ -93,6 +84,21 @@ pub fn read_nullable_numeric_array_column<O: Read, N: Read, D: Read>(
     if read_numeric_column(&mut io::empty(), numeric_type, 0).is_err() {
         return Err(NullableArrayReadError::InvalidType(data_type.to_owned()));
     }
+
+    Ok(nullable_type)
+}
+
+/// Decode separate Array offsets, element null-map, and element value streams.
+/// All element slots, including null placeholders, consume a physical value.
+pub fn read_nullable_numeric_array_column<O: Read, N: Read, D: Read>(
+    offsets: &mut O,
+    nulls: &mut N,
+    data: &mut D,
+    data_type: &str,
+    rows: usize,
+    encoding: ArrayOffsetsEncoding,
+) -> Result<NullableNumericArrayColumn, NullableArrayReadError> {
+    let nullable_type = validated_nullable_type(data_type)?;
 
     let offsets =
         read_array_offsets(offsets, rows, encoding).map_err(NullableArrayReadError::Offsets)?;
