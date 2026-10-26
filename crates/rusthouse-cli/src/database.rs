@@ -183,7 +183,9 @@ fn truncate_table(database: &Path, name: &str) -> Result<(), String> {
         .map_err(|error| format!("cannot stage TRUNCATE for {name}: {error}"))?;
     let prepared = write_wide_part(&staging.join("all_0_0_0"), &cols, &[])
         .map_err(|error| error.to_string())
-        .and_then(|_| verify_wide_part(&staging.join("all_0_0_0")).map_err(|error| error.to_string()));
+        .and_then(|_| {
+            verify_wide_part(&staging.join("all_0_0_0")).map_err(|error| error.to_string())
+        });
     if let Err(error) = prepared {
         let _ = fs::remove_dir_all(&staging);
         return Err(error);

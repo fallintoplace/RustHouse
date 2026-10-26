@@ -24,20 +24,37 @@ fn sql(statement: &str, dir: &Path) -> Output {
 #[test]
 fn truncation_preserves_schema_and_allows_new_inserts() {
     let dir = database();
-    let create = sql("CREATE TABLE events (id UInt64, note Nullable(String))", &dir);
+    let create = sql(
+        "CREATE TABLE events (id UInt64, note Nullable(String))",
+        &dir,
+    );
     assert!(create.status.success(), "{create:?}");
-    assert!(sql("INSERT INTO events VALUES (1, 'first'), (2, NULL)", &dir).status.success());
-    assert_eq!(sql("SELECT count(*) FROM events", &dir).stdout, b"count\n2\n");
+    assert!(
+        sql("INSERT INTO events VALUES (1, 'first'), (2, NULL)", &dir)
+            .status
+            .success()
+    );
+    assert_eq!(
+        sql("SELECT count(*) FROM events", &dir).stdout,
+        b"count\n2\n"
+    );
 
     let truncate = sql("TRUNCATE TABLE events", &dir);
     assert!(truncate.status.success(), "{truncate:?}");
-    assert_eq!(sql("SELECT count(*) FROM events", &dir).stdout, b"count\n0\n");
+    assert_eq!(
+        sql("SELECT count(*) FROM events", &dir).stdout,
+        b"count\n0\n"
+    );
     assert_eq!(
         fs::read_to_string(dir.join("events.schema")).unwrap(),
         "rusthouse-schema-v1\nid\tUInt64\nnote\tNullable(String)\n"
     );
     assert_eq!(fs::read_dir(dir.join("events.parts")).unwrap().count(), 1);
-    assert!(sql("INSERT INTO events VALUES (3, 'new')", &dir).status.success());
+    assert!(
+        sql("INSERT INTO events VALUES (3, 'new')", &dir)
+            .status
+            .success()
+    );
     assert_eq!(sql("SELECT id FROM events", &dir).stdout, b"id\n3\n");
     fs::remove_dir_all(dir).unwrap();
 }
