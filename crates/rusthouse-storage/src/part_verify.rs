@@ -1,3 +1,4 @@
+use crate::scan_layout::ScanLayout;
 use crate::{
     CompressedBlockReader, PartError, WideMarkFormat, inspect_part, read_wide_marks,
     validate_wide_marks,
@@ -36,6 +37,7 @@ pub fn verify_wide_part(path: impl AsRef<Path>) -> Result<PartVerification, Part
         blocks: 0,
         decompressed_bytes: 0,
     };
+    let mut layout = ScanLayout::default();
     for data in data_files {
         let marks_path = mark_files.remove(&data).unwrap();
         let marks = read_wide_marks(marks_path)?;
@@ -46,6 +48,10 @@ pub fn verify_wide_part(path: impl AsRef<Path>) -> Result<PartVerification, Part
             if rows != Some(metadata.rows) {
                 return Err(invalid(&data, "mark row counts do not match count.txt"));
             }
+            let name = data.file_name().and_then(|name| name.to_str()).unwrap_or("stream");
+            layout.validate(name, &marks.marks, metadata.rows).map_err(|_| {
+                invalid(&data, "adaptive streams have mismatched granule boundaries")
+            })?;
         }
         validate_wide_marks(&marks, CompressedBlockReader::open(&data)?)?;
 
@@ -237,6 +243,45 @@ mod tests {
             verify_wide_part(&dir),
             Err(PartError::InvalidPart {
                 reason: "data stream has no matching marks",
+                ..
+            })
+        ));
+        fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn checks_shared_granule_boundaries_across_streams() {
+        let dir = fixture();
+        fs::write(
+            dir.join("columns.txt"),
+            "columns format version: 1\n2 columns:\n`id` UInt64\n`score` UInt64\n",
+        )
+        .unwrap();
+        fs::copy(dir.join("id.bin"), dir.join("score.bin")).unwrap();
+        fs::copy(dir.join("id.mrk2"), dir.join("score.mrk2")).unwrap();
+        assert_eq!(
+            verify_wide_part(&dir).unwrap(),
+            PartVerification {
+                streams: 2,
+                marks: 2,
+                blocks: 2,
+                decompressed_bytes: 32,
+            }
+        );
+
+        // The total row count still matches count.txt, but the score column
+        // splits the two rows into different granules.
+        let mut marks = Vec::new();
+        for offset in [0u64, 8] {
+            marks.extend_from_slice(&0u64.to_le_bytes());
+            marks.extend_from_slice(&offset.to_le_bytes());
+            marks.extend_from_slice(&1u64.to_le_bytes());
+        }
+        fs::write(dir.join("score.mrk2"), marks).unwrap();
+        assert!(matches!(
+            verify_wide_part(&dir),
+            Err(PartError::InvalidPart {
+                reason: "adaptive streams have mismatched granule boundaries",
                 ..
             })
         ));
