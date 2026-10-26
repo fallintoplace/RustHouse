@@ -33,3 +33,5 @@ Export numeric rows as JSON Lines with `cargo run -p rusthouse-cli -- sql "SELEC
 Inspect the parsed SQL structure without touching data using `cargo run -p rusthouse-cli -- sql --show-ast "SELECT id FROM part WHERE id >= 3"`.
 
 Exclude selected values with `cargo run -p rusthouse-cli -- sql "SELECT number FROM numbers(10) WHERE number NOT IN (1, 4, 9)"`.
+
+Name single-column query results with `cargo run -p rusthouse-cli -- sql "SELECT sum(number) AS total FROM numbers(10)"`. Aliases also work in `ORDER BY` for numeric row projections.

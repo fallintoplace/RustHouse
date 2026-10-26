@@ -101,6 +101,15 @@ fn remember_distinct(
     Ok(seen.insert(key))
 }
 
+fn write_header<W: Write>(
+    query: &Select,
+    output: &mut W,
+    default: &str,
+) -> Result<(), ExecutionError> {
+    writeln!(output, "{}", query.alias.as_deref().unwrap_or(default))?;
+    Ok(())
+}
+
 pub fn execute<W: Write>(
     query: &Select,
     part: Option<&Path>,
@@ -118,7 +127,7 @@ fn execute_into<W: Write>(
     output: &mut W,
 ) -> Result<(), ExecutionError> {
     if let Projection::Literal(value) = query.projection {
-        writeln!(output, "{value}")?;
+        write_header(query, output, &value.to_string())?;
         if query.limit != Some(0) && query.offset.unwrap_or(0) == 0 {
             writeln!(output, "{value}")?;
         }
@@ -163,7 +172,7 @@ fn execute_into<W: Write>(
         && query.predicates.is_empty()
         && query.or_predicates.is_empty()
     {
-        writeln!(output, "count")?;
+        write_header(query, output, "count")?;
         if query.limit != Some(0) && query.offset.unwrap_or(0) == 0 {
             writeln!(output, "{}", metadata.rows)?;
         }
@@ -187,7 +196,10 @@ fn execute_into<W: Write>(
         && query
             .order_by
             .as_ref()
-            .is_some_and(|order| !projected.iter().any(|column| column == &order.column))
+            .is_some_and(|order| {
+            !projected.iter().any(|column| column == &order.column)
+                && query.alias.as_deref() != Some(order.column.as_str())
+        })
     {
         return Err(ExecutionError::Invalid(
             "DISTINCT ORDER BY column must appear in SELECT".into(),
@@ -217,13 +229,20 @@ fn execute_into<W: Write>(
         parse_numeric(&column.data_type, literal)
     })?;
     let sort_index = query.order_by.as_ref().map(|order| {
+        let column_name = if query.alias.as_deref() == Some(order.column.as_str())
+            && projected.len() == 1
+        {
+            &projected[0]
+        } else {
+            &order.column
+        };
         if let Some(index) = scan_columns
             .iter()
-            .position(|column| column == &order.column)
+            .position(|column| column == column_name)
         {
             index
         } else {
-            scan_columns.push(order.column.clone());
+            scan_columns.push(column_name.clone());
             scan_columns.len() - 1
         }
     });
@@ -233,7 +252,7 @@ fn execute_into<W: Write>(
     if let (Some(order), Some(index)) = (&query.order_by, sort_index) {
         let mut sorted =
             SortedRows::with_offset(query.limit, query.offset.unwrap_or(0), order.descending)?;
-        writeln!(output, "{}", projected.join("\t"))?;
+        write_header(query, output, &projected.join("\t"))?;
         if query.limit == Some(0) {
             return Ok(());
         }
@@ -259,9 +278,9 @@ fn execute_into<W: Write>(
 
     let is_count = matches!(query.projection, Projection::Count);
     if is_count {
-        writeln!(output, "count")?;
+        write_header(query, output, "count")?;
     } else {
-        writeln!(output, "{}", projected.join("\t"))?;
+        write_header(query, output, &projected.join("\t"))?;
     }
     if query.limit == Some(0) {
         return Ok(());
@@ -479,7 +498,7 @@ fn execute_count_distinct_part<W: Write>(
         parse_numeric(&metadata_column.data_type, literal)
     })?;
     let mut reader = NumericPartReader::open(part, &scan_columns)?;
-    writeln!(output, "countDistinct({column})")?;
+    write_header(query, output, &format!("countDistinct({column})"))?;
     if query.limit == Some(0) {
         return Ok(());
     }
@@ -524,7 +543,7 @@ fn execute_aggregate_part<W: Write>(
         parse_numeric(&metadata_column.data_type, literal)
     })?;
     let mut reader = NumericPartReader::open(part, &scan_columns)?;
-    writeln!(output, "{}({column})", function.name())?;
+    write_header(query, output, &format!("{}({column})", function.name()))?;
     if query.limit == Some(0) {
         return Ok(());
     }
@@ -558,7 +577,7 @@ fn execute_aggregate_numbers<W: Write>(
         ));
     }
     let comparisons = compile_numbers_predicates(query)?;
-    writeln!(output, "{}(number)", function.name())?;
+    write_header(query, output, &format!("{}(number)", function.name()))?;
     if query.limit == Some(0) {
         return Ok(());
     }
@@ -597,7 +616,7 @@ fn execute_numbers<W: Write>(
             ));
         }
         let comparisons = compile_numbers_predicates(query)?;
-        writeln!(output, "countDistinct(number)")?;
+        write_header(query, output, "countDistinct(number)")?;
         if query.limit != Some(0) && query.offset.unwrap_or(0) == 0 {
             let mut count = 0u64;
             for number in start..start + rows {
@@ -637,7 +656,9 @@ fn execute_numbers<W: Write>(
         .order_by
         .as_ref()
         .map(|order| {
-            if order.column != "number" {
+            if order.column != "number"
+                && query.alias.as_deref() != Some(order.column.as_str())
+            {
                 return Err(ExecutionError::Invalid(
                     "numbers(N) exposes only the number column".into(),
                 ));
@@ -646,7 +667,7 @@ fn execute_numbers<W: Write>(
         })
         .transpose()?;
     if is_count {
-        writeln!(output, "count")?;
+        write_header(query, output, "count")?;
         if query.predicates.is_empty() && query.or_predicates.is_empty() {
             if query.limit != Some(0) && query.offset.unwrap_or(0) == 0 {
                 writeln!(output, "{rows}")?;
@@ -654,7 +675,7 @@ fn execute_numbers<W: Write>(
             return Ok(());
         }
     } else {
-        writeln!(output, "{}", projected.join("\t"))?;
+        write_header(query, output, &projected.join("\t"))?;
     }
     if query.limit == Some(0) {
         return Ok(());
@@ -1183,6 +1204,29 @@ mod tests {
     fn runs_scalar_queries_without_a_part() {
         assert_eq!(run("SELECT 1", None).unwrap(), "1\n1\n");
         assert_eq!(run("SELECT -5 LIMIT 0", None).unwrap(), "-5\n");
+    }
+
+    #[test]
+    fn single_result_aliases_change_headers_and_support_order_by() {
+        assert_eq!(run("SELECT 1 AS result", None).unwrap(), "result\n1\n");
+        assert_eq!(
+            run("SELECT count(*) AS total FROM numbers(4)", None).unwrap(),
+            "total\n4\n"
+        );
+        assert_eq!(
+            run("SELECT sum(number) AS total FROM numbers(4)", None).unwrap(),
+            "total\n6\n"
+        );
+        assert_eq!(
+            run("SELECT number AS n FROM numbers(4) ORDER BY n DESC LIMIT 2", None)
+                .unwrap(),
+            "n\n3\n2\n"
+        );
+        assert_eq!(
+            run("SELECT DISTINCT number AS n FROM numbers(2) ORDER BY n", None)
+                .unwrap(),
+            "n\n0\n1\n"
+        );
     }
 
     #[test]
