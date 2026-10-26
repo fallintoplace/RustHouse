@@ -626,9 +626,6 @@ fn parse_select_tokens(tokens: Vec<Token>) -> Result<Select, ParseError> {
                 if count > 1_000_000 {
                     return Err(ParseError("numbers supports at most 1000000 rows".into()));
                 }
-                if first.checked_add(count).is_none() {
-                    return Err(ParseError("numbers range overflows UInt64".into()));
-                }
                 if parser.take(Token::Comma) {
                     let step = parser
                         .number()?
@@ -654,6 +651,16 @@ fn parse_select_tokens(tokens: Vec<Token>) -> Result<Select, ParseError> {
                 }
                 Source::Numbers(first)
             };
+            let last_offset = match &source {
+                Source::NumbersRange { count, .. } if *count > 0 => Some(*count - 1),
+                Source::NumbersStepped { length, step, .. } if *length > 0 => {
+                    Some(((*length - 1) / *step) * *step)
+                }
+                _ => None,
+            };
+            if last_offset.is_some_and(|offset| first.checked_add(offset).is_none()) {
+                return Err(ParseError("numbers range overflows UInt64".into()));
+            }
             if !parser.take(Token::RParen) {
                 return Err(ParseError("expected ')' after numbers row count".into()));
             }
@@ -1084,3 +1091,41 @@ fn parse_select_tokens(tokens: Vec<Token>) -> Result<Select, ParseError> {
 
 #[cfg(test)]
 mod tests;
+
+#[cfg(test)]
+mod generated_numbers_boundary_regressions {
+    use super::*;
+
+    #[test]
+    fn accepts_ranges_ending_at_u64_max() {
+        for (sql, expected) in [
+            (
+                "SELECT number FROM numbers(18446744073709551615, 1)",
+                "number\n18446744073709551615\n",
+            ),
+            (
+                "SELECT number FROM numbers(18446744073709551610, 10, 5)",
+                "number\n18446744073709551610\n18446744073709551615\n",
+            ),
+            (
+                "SELECT number FROM numbers(18446744073709551615, 0)",
+                "number\n",
+            ),
+        ] {
+            let query = parse_select(sql).unwrap();
+            let mut output = Vec::new();
+            execute(&query, None, &mut output).unwrap();
+            assert_eq!(String::from_utf8(output).unwrap(), expected);
+        }
+    }
+
+    #[test]
+    fn rejects_ranges_whose_last_value_overflows() {
+        for sql in [
+            "SELECT number FROM numbers(18446744073709551615, 2)",
+            "SELECT number FROM numbers(18446744073709551614, 5, 2)",
+        ] {
+            assert!(parse_select(sql).is_err(), "{sql}");
+        }
+    }
+}

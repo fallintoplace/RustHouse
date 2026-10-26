@@ -69,12 +69,15 @@ fn read_sql_input(input: impl std::io::Read, source: &str, label: &str) -> Resul
             "{label} exceeds the {MAX_SQL_BYTES}-byte statement limit"
         ));
     }
-    String::from_utf8(bytes).map_err(|_| format!("{label} must be valid UTF-8"))
+    String::from_utf8(bytes)
+        .map(|input| input.strip_prefix('\u{feff}').unwrap_or(&input).to_owned())
+        .map_err(|_| format!("{label} must be valid UTF-8"))
 }
 
 /// Split a bounded SQL script on semicolons outside quoted strings.
 /// Strip line comments; the single-statement SQL parser intentionally does not accept them.
 fn split_sql_script(input: &str) -> Result<Vec<String>, String> {
+    let input = input.strip_prefix('\u{feff}').unwrap_or(input);
     let bytes = input.as_bytes();
     let mut statements = Vec::new();
     let mut current = String::new();
@@ -661,6 +664,31 @@ mod tests {
         assert_eq!(
             error(&["SELECT 1", "--file", "other.sql"]),
             "provide SQL text or --file, not both"
+        );
+    }
+}
+
+#[cfg(test)]
+mod utf8_bom_regressions {
+    use super::*;
+
+    #[test]
+    fn accepts_bom_prefixed_sql_files_and_scripts() {
+        assert_eq!(
+            read_sql_input("\u{feff}SELECT 42".as_bytes(), "test", "test").unwrap(),
+            "SELECT 42"
+        );
+        assert_eq!(
+            split_sql_script("\u{feff}SELECT 1; SELECT 2;").unwrap(),
+            vec!["SELECT 1", "SELECT 2"]
+        );
+    }
+
+    #[test]
+    fn keeps_bom_inside_quoted_sql_data() {
+        assert_eq!(
+            split_sql_script("SELECT '\u{feff}value';").unwrap(),
+            vec!["SELECT '\u{feff}value'"]
         );
     }
 }

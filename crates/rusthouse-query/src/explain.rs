@@ -59,6 +59,25 @@ fn describe_projection(projection: &Projection) -> String {
     }
 }
 
+fn describe_sort(query: &Select) -> String {
+    query
+        .order_terms()
+        .map(|order| {
+            format!(
+                "{} {}{}",
+                order.column,
+                if order.descending { "DESC" } else { "ASC" },
+                match order.nulls_first {
+                    Some(true) => " NULLS FIRST",
+                    Some(false) => " NULLS LAST",
+                    None => "",
+                }
+            )
+        })
+        .collect::<Vec<_>>()
+        .join(", ")
+}
+
 /// Summarize parsed logical operators without reading data or estimating costs.
 /// This is not a physical execution plan.
 pub fn explain_select(query: &Select) -> String {
@@ -95,22 +114,7 @@ pub fn explain_select(query: &Select) -> String {
         steps.push("Distinct: projected rows".into());
     }
     if query.order_by.is_some() {
-        let keys = query
-            .order_terms()
-            .map(|order| {
-                format!(
-                    "{} {}{}",
-                    order.column,
-                    if order.descending { "DESC" } else { "ASC" },
-                    match order.nulls_first {
-                        Some(true) => " NULLS FIRST",
-                        Some(false) => " NULLS LAST",
-                        None => "",
-                    }
-                )
-            })
-            .collect::<Vec<_>>()
-            .join(", ");
+        let keys = describe_sort(query);
         steps.push(format!("Sort: {keys}"));
     }
     if let Some(offset) = query.offset {
@@ -161,6 +165,13 @@ mod tests {
             explain_select(&query),
             "Source: numbers(3)\nProject: *\nRename: number -> value"
         );
+    }
+
+    #[test]
+    fn describes_explicit_null_sort_placement() {
+        let query =
+            parse_select("SELECT number FROM numbers(3) ORDER BY number DESC NULLS LAST").unwrap();
+        assert!(explain_select(&query).contains("Sort: number DESC NULLS LAST"));
     }
 
     #[test]

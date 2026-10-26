@@ -41,9 +41,10 @@ impl<W: Write> CsvWriter<W> {
                 continue;
             }
             let value = decode_tsv_value(field)?;
-            let needs_quotes = value
-                .bytes()
-                .any(|byte| matches!(byte, b',' | b'"' | b'\n' | b'\r'));
+            let needs_quotes = value == "\\N"
+                || value
+                    .bytes()
+                    .any(|byte| matches!(byte, b',' | b'"' | b'\n' | b'\r'));
             if needs_quotes {
                 self.output.write_all(b"\"")?;
             }
@@ -125,5 +126,17 @@ mod tests {
     fn caps_incomplete_rows_to_one_mib() {
         let mut csv = CsvWriter::new(Vec::new());
         assert!(csv.write_all(&vec![b'x'; MAX_LINE_BYTES + 1]).is_err());
+    }
+}
+
+#[cfg(test)]
+mod literal_null_marker_regressions {
+    use super::*;
+
+    #[test]
+    fn distinguishes_literal_backslash_n_from_null_in_csv() {
+        let mut csv = CsvWriter::new(Vec::new());
+        csv.write_all(b"value\n\\N\n\\\\N\n").unwrap();
+        assert_eq!(csv.output, b"value\r\n\\N\r\n\"\\N\"\r\n");
     }
 }

@@ -31,8 +31,11 @@ fn parse_header(line: &str) -> Result<(&str, &str), Response> {
 }
 
 fn parse_request_line(line: &str) -> Result<(&str, &str), Response> {
-    let words: Vec<&str> = line.split_whitespace().collect();
-    if words.len() != 3 || !matches!(words[2], "HTTP/1.1" | "HTTP/1.0") {
+    let words: Vec<&str> = line.split(' ').collect();
+    if words.len() != 3
+        || words.iter().any(|word| word.is_empty())
+        || !matches!(words[2], "HTTP/1.1" | "HTTP/1.0")
+    {
         return Err(Response::text(
             "400 Bad Request",
             "invalid HTTP request line\n",
@@ -278,6 +281,41 @@ mod tests {
                 parse_header(header).unwrap_err().status,
                 "400 Bad Request",
                 "{header:?}"
+            );
+        }
+    }
+}
+
+#[cfg(test)]
+mod request_line_spacing_regressions {
+    use super::*;
+
+    #[test]
+    fn accepts_standard_http_request_lines() {
+        assert!(matches!(
+            parse_request_line("GET /ping HTTP/1.1"),
+            Ok(("GET", "/ping"))
+        ));
+        assert!(matches!(
+            parse_request_line("POST / HTTP/1.0"),
+            Ok(("POST", "/"))
+        ));
+    }
+
+    #[test]
+    fn rejects_tabs_repeated_spaces_and_trailing_spaces() {
+        for line in [
+            "GET\t/ping HTTP/1.1",
+            "GET  /ping HTTP/1.1",
+            "GET /ping  HTTP/1.1",
+            "GET /ping HTTP/1.1 ",
+            "GET\u{00a0}/ping HTTP/1.1",
+        ] {
+            assert_eq!(
+                parse_request_line(line)
+                    .err()
+                    .map(|response| response.status),
+                Some("400 Bad Request")
             );
         }
     }
