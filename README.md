@@ -22,6 +22,8 @@ Count occurrences of numeric keys with `cargo run -p rusthouse-cli -- sql "SELEC
 
 Filter alternatives with `cargo run -p rusthouse-cli -- sql "SELECT number FROM numbers(10) WHERE number = 1 OR number >= 8"`.
 
+Filter String columns from a frozen part with `rusthouse sql "SELECT service FROM part WHERE service LIKE 'api%'" --part ./snapshot`. `LIKE` accepts `%` for zero or more bytes and `_` for one byte; `NOT LIKE` excludes matching values. Backslash escapes the next pattern byte. Nulls do not match either predicate.
+
 Start at a chosen number with `cargo run -p rusthouse-cli -- sql "SELECT number FROM numbers(100, 5)"`.
 
 Execute SQL from a saved file with `cargo run -p rusthouse-cli -- sql --file query.sql` (up to 4096 bytes).
