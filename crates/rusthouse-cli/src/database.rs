@@ -4,122 +4,33 @@ use crate::catalog;
 mod rewrite;
 use rusthouse_query::{Ddl, Insert, RowPredicate, Select, Source, Update};
 use rusthouse_storage::{
-    Column, inspect_query_source, query_parts, resolve_active_snapshot, verify_wide_part,
-    write_wide_part,
+    Column, DatabaseLock, acquire_database_lock, inspect_query_source, query_parts,
+    resolve_active_snapshot, verify_wide_part, write_wide_part,
 };
-use std::fs::{self, OpenOptions};
+use std::fs;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicUsize, Ordering};
 
 static NEXT_STAGE: AtomicUsize = AtomicUsize::new(0);
 
-// Keep this file on disk. Unix advisory locks are released by the kernel when
-// the process exits, including after SIGKILL, so a stale pathname is harmless.
-// Unlinking a locked file would let another writer lock a different inode.
-#[cfg(unix)]
-mod advisory {
-    use std::fs::File;
-    use std::io;
-    use std::os::fd::AsRawFd;
-    use std::os::raw::c_int;
-
-    unsafe extern "C" {
-        fn flock(fd: c_int, operation: c_int) -> c_int;
-    }
-
-    const LOCK_SH: c_int = 1;
-    const LOCK_EX: c_int = 2;
-    const LOCK_NB: c_int = 4;
-
-    pub(super) fn try_lock(file: &File, exclusive: bool) -> io::Result<()> {
-        let mode = if exclusive { LOCK_EX } else { LOCK_SH };
-        if unsafe { flock(file.as_raw_fd(), mode | LOCK_NB) } == -1 {
-            Err(io::Error::last_os_error())
-        } else {
-            Ok(())
-        }
+// Debug-only subprocess fault points for commit boundary tests.
+#[cfg(debug_assertions)]
+pub(super) fn crash_if_requested(point: &str) {
+    if std::env::var("RUSTHOUSE_DEBUG_CRASH_AT").is_ok_and(|value| value == point) {
+        eprintln!("RustHouse debug crash point: {point}");
+        std::process::exit(86);
     }
 }
 
-pub(super) struct DatabaseLock {
-    _file: fs::File,
-    #[cfg(not(unix))]
-    path: PathBuf,
-}
-
-// Platforms without flock retain the original create-new lock semantics.
-#[cfg(not(unix))]
-impl Drop for DatabaseLock {
-    fn drop(&mut self) {
-        let _ = fs::remove_file(&self.path);
-    }
-}
-
-fn acquire_lock(database: &Path, exclusive: bool) -> Result<DatabaseLock, String> {
-    if exclusive {
-        fs::create_dir_all(database)
-            .map_err(|error| format!("cannot create database {}: {error}", database.display()))?;
-    }
-    let path = database.join(".rusthouse-write.lock");
-    let kind = if exclusive { "write" } else { "read" };
-
-    #[cfg(unix)]
-    let file = OpenOptions::new()
-        .read(true)
-        .write(true)
-        .create(true)
-        .truncate(false)
-        .open(&path)
-        .map_err(|error| {
-            format!(
-                "cannot open database {kind} lock {}: {error}",
-                path.display()
-            )
-        })?;
-
-    #[cfg(unix)]
-    {
-        let metadata = fs::symlink_metadata(&path)
-            .map_err(|error| format!("cannot inspect database lock {}: {error}", path.display()))?;
-        if !metadata.file_type().is_file() {
-            return Err(format!(
-                "database lock is not a regular file: {}",
-                path.display()
-            ));
-        }
-        advisory::try_lock(&file, exclusive).map_err(|error| {
-            format!(
-                "cannot acquire database {kind} lock {}: {error}",
-                path.display()
-            )
-        })?;
-    }
-
-    #[cfg(not(unix))]
-    let file = OpenOptions::new()
-        .write(true)
-        .create_new(true)
-        .open(&path)
-        .map_err(|error| {
-            format!(
-                "cannot acquire database {kind} lock {}: {error}",
-                path.display()
-            )
-        })?;
-
-    Ok(DatabaseLock {
-        _file: file,
-        #[cfg(not(unix))]
-        path,
-    })
-}
+#[cfg(not(debug_assertions))]
+pub(super) fn crash_if_requested(_point: &str) {}
 
 fn lock(database: &Path) -> Result<DatabaseLock, String> {
-    acquire_lock(database, true)
+    acquire_database_lock(database, true)
 }
 
 pub(super) fn read_lock(database: &Path) -> Result<DatabaseLock, String> {
-    acquire_lock(database, false)
+    acquire_database_lock(database, false)
 }
 
 fn data_path(database: &Path, name: &str) -> PathBuf {
@@ -442,8 +353,21 @@ pub(super) fn delete(database: &Path, select: &Select) -> Result<(), String> {
     Ok(())
 }
 
-pub(super) fn insert(database: &Path, insert: &Insert) -> Result<(), String> {
+/// Run a bounded statement while holding the database's exclusive lock.
+pub(super) fn with_write_lock<T>(
+    database: &Path,
+    operation: impl FnOnce() -> Result<T, String>,
+) -> Result<T, String> {
     let _lock = lock(database)?;
+    operation()
+}
+
+pub(super) fn insert(database: &Path, insert: &Insert) -> Result<(), String> {
+    with_write_lock(database, || insert_locked(database, insert))
+}
+
+/// The caller must already own the exclusive database write lock.
+pub(super) fn insert_locked(database: &Path, insert: &Insert) -> Result<(), String> {
     let cols = columns(database, &insert.table)?;
     let (parts_dir, parts) = validated_parts(database, &insert.table, &cols)?;
     let indices: Vec<usize> = match &insert.columns {
@@ -519,8 +443,10 @@ pub(super) fn insert(database: &Path, insert: &Insert) -> Result<(), String> {
     let result = (|| {
         write_wide_part(&staging, &cols, &rows).map_err(|error| error.to_string())?;
         verify_wide_part(&staging).map_err(|error| error.to_string())?;
+        crash_if_requested("insert-after-staging");
         fs::rename(&staging, &destination)
             .map_err(|error| format!("cannot publish inserted rows: {error}"))?;
+        crash_if_requested("insert-after-rename");
         fs::File::open(&parts_dir)
             .and_then(|dir| dir.sync_all())
             .map_err(|error| format!("cannot sync table data: {error}"))?;

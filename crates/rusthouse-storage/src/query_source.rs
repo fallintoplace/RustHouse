@@ -205,6 +205,31 @@ impl NumericQueryReader {
         })
     }
 
+    /// Skip as much of an unfiltered OFFSET as possible using part/mark
+    /// boundaries. No predicate or DISTINCT rows may be discarded this way.
+    /// The result is the number of complete rows skipped, so the executor can
+    /// still discard a remainder in the first decoded batch.
+    pub fn skip_prefix_rows(&mut self, max_rows: usize) -> Result<usize, PartError> {
+        if self.next_part != 0 || self.current.is_some() {
+            return Err(PartError::InvalidScan(
+                "OFFSET mark skipping requires a fresh reader".into(),
+            ));
+        }
+        let mut skipped = 0usize;
+        while skipped < max_rows && self.next_part < self.parts.len() {
+            // Opening validates stream layout and marks before we skip them.
+            let mut reader = NumericPartReader::open(&self.parts[self.next_part], &self.columns)?;
+            self.next_part += 1;
+            let amount = reader.skip_complete_marks(max_rows - skipped);
+            skipped += amount;
+            if u64::try_from(amount).ok() != Some(reader.rows()) {
+                self.current = Some(reader);
+                break;
+            }
+        }
+        Ok(skipped)
+    }
+
     pub fn next_batch(&mut self) -> Result<Option<Vec<NumericColumn>>, PartError> {
         loop {
             if let Some(current) = self.current.as_mut() {
