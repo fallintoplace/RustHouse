@@ -29,6 +29,7 @@ pub(super) fn apply(catalog: &Path, ddl: &Ddl) -> Result<(), String> {
             if_exists,
         } => drop_column(catalog, table, column, *if_exists),
         Ddl::RenameColumn { table, from, to } => rename_column(catalog, table, from, to),
+        Ddl::ModifyColumn { table, column } => modify_column(catalog, table, column),
         Ddl::RenameTable { from, to } => rename_table(catalog, from, to),
     }
 }
@@ -243,6 +244,21 @@ fn drop_column(catalog: &Path, table: &str, column: &str, if_exists: bool) -> Re
     columns.remove(index);
     replace_schema(catalog, table, &columns)?;
     println!("Dropped column {column} from {table} (schema only)");
+    Ok(())
+}
+
+fn modify_column(catalog: &Path, table: &str, column: &ColumnDef) -> Result<(), String> {
+    let mut columns = read_schema(catalog, table)?;
+    let index = columns
+        .iter()
+        .position(|entry| entry.name == column.name)
+        .ok_or_else(|| format!("unknown column: {}", column.name))?;
+    if columns[index].data_type == column.data_type {
+        return Ok(());
+    }
+    columns[index].data_type.clone_from(&column.data_type);
+    replace_schema(catalog, table, &columns)?;
+    println!("Modified column {} in {table} (schema only)", column.name);
     Ok(())
 }
 

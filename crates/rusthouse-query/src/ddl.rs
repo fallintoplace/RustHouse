@@ -40,6 +40,10 @@ pub enum Ddl {
         from: String,
         to: String,
     },
+    ModifyColumn {
+        table: String,
+        column: ColumnDef,
+    },
     RenameTable {
         from: String,
         to: String,
@@ -166,6 +170,21 @@ pub fn parse_ddl(sql: &str) -> Result<Option<Ddl>, ParseError> {
                 return Err(ParseError("unexpected tokens after DDL statement".into()));
             }
             return Ok(Some(Ddl::RenameColumn { table, from, to }));
+        }
+        if parser.keyword("MODIFY") {
+            if !parser.keyword("COLUMN") {
+                return Err(ParseError("expected COLUMN after MODIFY".into()));
+            }
+            let name = identifier(&mut parser)?;
+            let data_type = data_type(&mut parser, 0)?;
+            parser.take(Token::Semicolon);
+            if parser.index != parser.tokens.len() {
+                return Err(ParseError("unexpected tokens after DDL statement".into()));
+            }
+            return Ok(Some(Ddl::ModifyColumn {
+                table,
+                column: ColumnDef { name, data_type },
+            }));
         }
         if parser.keyword("DROP") {
             if !parser.keyword("COLUMN") {
@@ -434,6 +453,29 @@ mod tests {
             "CREATE TABLE IF EXISTS t (id UInt64)",
             "CREATE TABLE t (id UInt64) ENGINE = MergeTree",
             "CREATE TABLE t (id Nullable(UInt64)",
+        ] {
+            assert!(parse_ddl(sql).is_err(), "{sql}");
+        }
+    }
+
+    #[test]
+    fn parses_modify_column_and_rejects_unsupported_forms() {
+        assert_eq!(
+            parse_ddl("ALTER TABLE events MODIFY COLUMN payload Nullable(String);").unwrap(),
+            Some(Ddl::ModifyColumn {
+                table: "events".into(),
+                column: ColumnDef {
+                    name: "payload".into(),
+                    data_type: "Nullable(String)".into(),
+                },
+            })
+        );
+        for sql in [
+            "ALTER TABLE events MODIFY payload String",
+            "ALTER TABLE events MODIFY COLUMN payload",
+            "ALTER TABLE events MODIFY COLUMN payload Unknown",
+            "ALTER TABLE events MODIFY COLUMN payload String, id UInt64",
+            "ALTER TABLE events MODIFY COLUMN payload String; DROP TABLE events",
         ] {
             assert!(parse_ddl(sql).is_err(), "{sql}");
         }
