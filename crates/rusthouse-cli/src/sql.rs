@@ -178,7 +178,10 @@ pub(super) fn run_sql_args(mut args: impl Iterator<Item = OsString>) -> Result<(
         }
         if let Some(ddl) = parse_ddl(&query).map_err(|error| error.to_string())? {
             if explain || time || format.is_some() || output_path.is_some() || max_rows.is_some() {
-                return Err("database DDL cannot use --explain, --time, --format, --output, or --max-rows".into());
+                return Err(
+                    "database DDL cannot use --explain, --time, --format, --output, or --max-rows"
+                        .into(),
+                );
             }
             if show_ast {
                 println!("{ddl:#?}");
@@ -188,7 +191,9 @@ pub(super) fn run_sql_args(mut args: impl Iterator<Item = OsString>) -> Result<(
         }
         if let Some(insert) = parse_insert(&query).map_err(|error| error.to_string())? {
             if explain || time || format.is_some() || output_path.is_some() || max_rows.is_some() {
-                return Err("INSERT cannot use --explain, --time, --format, --output, or --max-rows".into());
+                return Err(
+                    "INSERT cannot use --explain, --time, --format, --output, or --max-rows".into(),
+                );
             }
             if show_ast {
                 println!("{insert:#?}");
@@ -196,7 +201,10 @@ pub(super) fn run_sql_args(mut args: impl Iterator<Item = OsString>) -> Result<(
             }
             return crate::database::insert(&database_dir, &insert);
         }
-        return Err("--database currently supports schema commands and INSERT; SELECT is not enabled yet".into());
+        return Err(
+            "--database currently supports schema commands and INSERT; SELECT is not enabled yet"
+                .into(),
+        );
     }
     if let Some(catalog_path) = catalog {
         if explain {

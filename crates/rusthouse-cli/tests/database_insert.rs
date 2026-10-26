@@ -32,7 +32,10 @@ fn snapshot_sql(statement: &str, dir: &Path) -> Output {
 #[test]
 fn inserts_recoverable_wide_parts_with_named_columns() {
     let dir = database();
-    let create = sql("CREATE TABLE events (id UInt64, name String, note Nullable(String))", &dir);
+    let create = sql(
+        "CREATE TABLE events (id UInt64, name String, note Nullable(String))",
+        &dir,
+    );
     assert!(create.status.success(), "{create:?}");
     let initial = snapshot_sql("SELECT count(*) FROM part", &dir);
     assert_eq!(initial.stdout, b"count\n0\n");
@@ -57,8 +60,16 @@ fn inserts_recoverable_wide_parts_with_named_columns() {
 #[test]
 fn failed_insert_leaves_existing_rows_unchanged() {
     let dir = database();
-    assert!(sql("CREATE TABLE events (id UInt8, name String)", &dir).status.success());
-    assert!(sql("INSERT INTO events VALUES (1, 'ok')", &dir).status.success());
+    assert!(
+        sql("CREATE TABLE events (id UInt8, name String)", &dir)
+            .status
+            .success()
+    );
+    assert!(
+        sql("INSERT INTO events VALUES (1, 'ok')", &dir)
+            .status
+            .success()
+    );
     for statement in [
         "INSERT INTO events VALUES (256, 'bad')",
         "INSERT INTO events VALUES (2, NULL)",
@@ -86,7 +97,9 @@ fn database_rejects_unqueryable_column_types() {
     assert!(valid.status.success(), "{valid:?}");
     let again = sql("CREATE TABLE IF NOT EXISTS events (other String)", &dir);
     assert!(again.status.success(), "{again:?}");
-    assert_eq!(fs::read_to_string(dir.join("events.schema")).unwrap(),
-        "rusthouse-schema-v1\nid\tUInt64\n");
+    assert_eq!(
+        fs::read_to_string(dir.join("events.schema")).unwrap(),
+        "rusthouse-schema-v1\nid\tUInt64\n"
+    );
     fs::remove_dir_all(dir).unwrap();
 }

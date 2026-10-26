@@ -30,7 +30,12 @@ fn lock(database: &Path) -> Result<WriteLock, String> {
         .create_new(true)
         .write(true)
         .open(&path)
-        .map_err(|error| format!("cannot acquire database write lock {}: {error}", path.display()))?;
+        .map_err(|error| {
+            format!(
+                "cannot acquire database write lock {}: {error}",
+                path.display()
+            )
+        })?;
     Ok(WriteLock { path, _file: file })
 }
 
@@ -40,13 +45,20 @@ fn data_path(database: &Path, name: &str) -> PathBuf {
 
 fn columns(database: &Path, name: &str) -> Result<Vec<Column>, String> {
     let schema = catalog::read_schema(database, name)?;
-    Ok(schema.into_iter().map(|col| Column {
-        name: col.name,
-        data_type: col.data_type,
-    }).collect())
+    Ok(schema
+        .into_iter()
+        .map(|col| Column {
+            name: col.name,
+            data_type: col.data_type,
+        })
+        .collect())
 }
 
-fn validated_parts(database: &Path, name: &str, cols: &[Column]) -> Result<(PathBuf, Vec<PathBuf>), String> {
+fn validated_parts(
+    database: &Path,
+    name: &str,
+    cols: &[Column],
+) -> Result<(PathBuf, Vec<PathBuf>), String> {
     let path = data_path(database, name);
     let metadata = fs::symlink_metadata(&path)
         .map_err(|error| format!("cannot inspect table data {name}: {error}"))?;
@@ -101,10 +113,14 @@ pub(super) fn insert(database: &Path, insert: &Insert) -> Result<(), String> {
     let cols = columns(database, &insert.table)?;
     let (parts_dir, parts) = validated_parts(database, &insert.table, &cols)?;
     let indices: Vec<usize> = match &insert.columns {
-        Some(names) => names.iter().map(|name| {
-            cols.iter().position(|column| column.name == *name)
-                .ok_or_else(|| format!("unknown INSERT column: {name}"))
-        }).collect::<Result<Vec<_>, _>>()?,
+        Some(names) => names
+            .iter()
+            .map(|name| {
+                cols.iter()
+                    .position(|column| column.name == *name)
+                    .ok_or_else(|| format!("unknown INSERT column: {name}"))
+            })
+            .collect::<Result<Vec<_>, _>>()?,
         None => (0..cols.len()).collect(),
     };
     let mut rows = Vec::with_capacity(insert.rows.len());
@@ -128,13 +144,23 @@ pub(super) fn insert(database: &Path, insert: &Insert) -> Result<(), String> {
     }
     let mut last = 0u64;
     for part in parts {
-        let name = part.file_name().and_then(|name| name.to_str())
+        let name = part
+            .file_name()
+            .and_then(|name| name.to_str())
             .ok_or("invalid stored part filename")?;
-        let span = name.strip_prefix("all_").and_then(|name| name.strip_suffix("_0"))
+        let span = name
+            .strip_prefix("all_")
+            .and_then(|name| name.strip_suffix("_0"))
             .and_then(|name| name.split_once('_'))
             .ok_or_else(|| format!("unexpected stored part name: {name}"))?;
-        let first = span.0.parse::<u64>().map_err(|_| "invalid local part block number")?;
-        let second = span.1.parse::<u64>().map_err(|_| "invalid local part block number")?;
+        let first = span
+            .0
+            .parse::<u64>()
+            .map_err(|_| "invalid local part block number")?;
+        let second = span
+            .1
+            .parse::<u64>()
+            .map_err(|_| "invalid local part block number")?;
         if first != second {
             return Err("non-local part block ranges cannot be appended".into());
         }
@@ -155,7 +181,8 @@ pub(super) fn insert(database: &Path, insert: &Insert) -> Result<(), String> {
         verify_wide_part(&staging).map_err(|error| error.to_string())?;
         fs::rename(&staging, &destination)
             .map_err(|error| format!("cannot publish inserted rows: {error}"))?;
-        fs::File::open(&parts_dir).and_then(|dir| dir.sync_all())
+        fs::File::open(&parts_dir)
+            .and_then(|dir| dir.sync_all())
             .map_err(|error| format!("cannot sync table data: {error}"))?;
         Ok::<(), String>(())
     })();

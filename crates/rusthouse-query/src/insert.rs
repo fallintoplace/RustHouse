@@ -82,7 +82,9 @@ pub fn parse_insert(sql: &str) -> Result<Option<Insert>, ParseError> {
         let mut row = Vec::new();
         loop {
             if row.len() >= 64 {
-                return Err(ParseError("INSERT supports at most 64 values per row".into()));
+                return Err(ParseError(
+                    "INSERT supports at most 64 values per row".into(),
+                ));
             }
             row.push(value(&mut parser)?);
             if !parser.take(Token::Comma) {
@@ -94,9 +96,14 @@ pub fn parse_insert(sql: &str) -> Result<Option<Insert>, ParseError> {
         }
         if let Some(names) = &columns {
             if row.len() != names.len() {
-                return Err(ParseError("INSERT row width does not match column list".into()));
+                return Err(ParseError(
+                    "INSERT row width does not match column list".into(),
+                ));
             }
-        } else if rows.first().is_some_and(|previous: &Vec<Option<String>>| previous.len() != row.len()) {
+        } else if rows
+            .first()
+            .is_some_and(|previous: &Vec<Option<String>>| previous.len() != row.len())
+        {
             return Err(ParseError("INSERT rows must have equal width".into()));
         }
         rows.push(row);
@@ -106,9 +113,15 @@ pub fn parse_insert(sql: &str) -> Result<Option<Insert>, ParseError> {
     }
     parser.take(Token::Semicolon);
     if parser.index != parser.tokens.len() {
-        return Err(ParseError("unexpected tokens after INSERT statement".into()));
+        return Err(ParseError(
+            "unexpected tokens after INSERT statement".into(),
+        ));
     }
-    Ok(Some(Insert { table, columns, rows }))
+    Ok(Some(Insert {
+        table,
+        columns,
+        rows,
+    }))
 }
 
 #[cfg(test)]
@@ -118,7 +131,8 @@ mod tests {
     #[test]
     fn parses_named_multirow_insert_and_escaped_literals() {
         assert_eq!(
-            parse_insert("INSERT INTO events (name, id) VALUES ('O''Brien', 1), ('two', 2);").unwrap(),
+            parse_insert("INSERT INTO events (name, id) VALUES ('O''Brien', 1), ('two', 2);")
+                .unwrap(),
             Some(Insert {
                 table: "events".into(),
                 columns: Some(vec!["name".into(), "id".into()]),
@@ -129,7 +143,10 @@ mod tests {
             })
         );
         assert_eq!(
-            parse_insert("insert into events values (-2, null)").unwrap().unwrap().rows,
+            parse_insert("insert into events values (-2, null)")
+                .unwrap()
+                .unwrap()
+                .rows,
             vec![vec![Some("-2".into()), None]]
         );
         assert!(parse_insert("SELECT 1").unwrap().is_none());
