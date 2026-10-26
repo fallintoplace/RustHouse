@@ -1,0 +1,215 @@
+use rusthouse_server::{
+    Config, MAX_CONNECTIONS, MAX_HEADER_BYTES, MAX_QUERY_BYTES, Response, handle_request,
+};
+use std::io::{self, BufReader, Read, Write};
+use std::net::{TcpListener, TcpStream};
+use std::path::PathBuf;
+use std::sync::Arc;
+use std::sync::atomic::{AtomicUsize, Ordering};
+use std::time::Duration;
+
+fn usage() -> &'static str {
+    "Usage: rusthouse-server [--port <1-65535>] [--part <frozen-part-or-snapshot>] [--max-rows <n>]\n\
+     Listens on 127.0.0.1 only. Supports GET /ping, GET /?query=... and POST / with a raw SELECT body.\n"
+}
+
+fn read_request(stream: &mut TcpStream) -> Result<(String, String, Vec<u8>), Response> {
+    let mut input = BufReader::new(stream);
+    let mut head = Vec::new();
+    // Read only until the headers end, without consuming the beginning of the body.
+    while !head.ends_with(b"\r\n\r\n") {
+        let mut byte = [0u8];
+        input
+            .read_exact(&mut byte)
+            .map_err(|_| Response::text("400 Bad Request", "incomplete HTTP request headers\n"))?;
+        head.push(byte[0]);
+        if head.len() > MAX_HEADER_BYTES {
+            return Err(Response::text(
+                "413 Payload Too Large",
+                "HTTP headers too large\n",
+            ));
+        }
+    }
+    let header_text = std::str::from_utf8(&head)
+        .map_err(|_| Response::text("400 Bad Request", "HTTP headers are not UTF-8\n"))?;
+    let mut lines = header_text.split("\r\n");
+    let first = lines
+        .next()
+        .ok_or_else(|| Response::text("400 Bad Request", "missing HTTP request line\n"))?;
+    let words: Vec<&str> = first.split_whitespace().collect();
+    if words.len() != 3 || !matches!(words[2], "HTTP/1.1" | "HTTP/1.0") {
+        return Err(Response::text(
+            "400 Bad Request",
+            "invalid HTTP request line\n",
+        ));
+    }
+    let (method, target) = (words[0], words[1]);
+    if method != "GET" && method != "POST" {
+        return Err(Response::text(
+            "405 Method Not Allowed",
+            "only GET and POST\n",
+        ));
+    }
+    let mut size = None;
+    let mut transfer_encoding = false;
+    for line in lines {
+        if line.is_empty() {
+            break;
+        }
+        let (key, value) = line
+            .split_once(':')
+            .ok_or_else(|| Response::text("400 Bad Request", "invalid HTTP header\n"))?;
+        if key.eq_ignore_ascii_case("content-length") {
+            if size.is_some() {
+                return Err(Response::text(
+                    "400 Bad Request",
+                    "duplicate Content-Length\n",
+                ));
+            }
+            let value = value.trim();
+            if value.is_empty() || !value.bytes().all(|b| b.is_ascii_digit()) {
+                return Err(Response::text(
+                    "400 Bad Request",
+                    "invalid Content-Length\n",
+                ));
+            }
+            size = Some(value.parse::<usize>().map_err(|_| {
+                Response::text("413 Payload Too Large", "request body too large\n")
+            })?);
+        }
+        if key.eq_ignore_ascii_case("transfer-encoding") {
+            transfer_encoding = true;
+        }
+    }
+    if transfer_encoding {
+        return Err(Response::text(
+            "400 Bad Request",
+            "Transfer-Encoding is unsupported\n",
+        ));
+    }
+    if method == "POST" && size.is_none() {
+        return Err(Response::text(
+            "411 Length Required",
+            "POST requires Content-Length\n",
+        ));
+    }
+    let size = size.unwrap_or(0);
+    if size > MAX_QUERY_BYTES {
+        return Err(Response::text(
+            "413 Payload Too Large",
+            "request body too large\n",
+        ));
+    }
+    let mut body = vec![0u8; size];
+    input
+        .read_exact(&mut body)
+        .map_err(|_| Response::text("400 Bad Request", "incomplete HTTP request body\n"))?;
+    Ok((method.to_owned(), target.to_owned(), body))
+}
+
+fn respond(stream: &mut TcpStream, response: Response) -> io::Result<()> {
+    write!(
+        stream,
+        "HTTP/1.1 {}\r\nContent-Type: {}\r\nContent-Length: {}\r\n\
+         Connection: close\r\nCache-Control: no-store\r\n\
+         X-Content-Type-Options: nosniff\r\n\r\n",
+        response.status,
+        response.content_type,
+        response.body.len()
+    )?;
+    stream.write_all(&response.body)
+}
+
+fn serve(mut stream: TcpStream, config: &Config) {
+    let _ = stream.set_read_timeout(Some(Duration::from_secs(5)));
+    let _ = stream.set_write_timeout(Some(Duration::from_secs(5)));
+    let response = match read_request(&mut stream) {
+        Ok((method, target, body)) => handle_request(&method, &target, &body, config),
+        Err(response) => response,
+    };
+    let _ = respond(&mut stream, response);
+}
+
+fn main() -> io::Result<()> {
+    let mut args = std::env::args().skip(1);
+    let mut port = 8123u16;
+    let mut part = None;
+    let mut max_rows = 10_000usize;
+    while let Some(arg) = args.next() {
+        match arg.as_str() {
+            "--help" | "-h" => {
+                print!("{}", usage());
+                return Ok(());
+            }
+            "--port" => {
+                port = args
+                    .next()
+                    .ok_or_else(|| io::Error::other("missing port"))?
+                    .parse::<u16>()
+                    .map_err(|_| io::Error::other("invalid port"))?;
+                if port == 0 {
+                    return Err(io::Error::other("port must be nonzero"));
+                }
+            }
+            "--part" => {
+                part = Some(PathBuf::from(
+                    args.next()
+                        .ok_or_else(|| io::Error::other("missing part path"))?,
+                ));
+            }
+            "--max-rows" => {
+                max_rows = args
+                    .next()
+                    .ok_or_else(|| io::Error::other("missing row cap"))?
+                    .parse::<usize>()
+                    .map_err(|_| io::Error::other("invalid row cap"))?;
+                if max_rows > 100_000 {
+                    return Err(io::Error::other("--max-rows exceeds 100000"));
+                }
+            }
+            other => {
+                return Err(io::Error::other(format!(
+                    "unknown argument: {other}\n{}",
+                    usage()
+                )));
+            }
+        }
+    }
+    let config = Arc::new(Config { part, max_rows });
+    let listener = TcpListener::bind(("127.0.0.1", port))?;
+    eprintln!("RustHouse read-only HTTP listening on http://127.0.0.1:{port}");
+    let active = Arc::new(AtomicUsize::new(0));
+    for accepted in listener.incoming() {
+        let stream = accepted?;
+        let mut count = active.load(Ordering::Relaxed);
+        let acquired = loop {
+            if count >= MAX_CONNECTIONS {
+                break false;
+            }
+            match active.compare_exchange_weak(
+                count,
+                count + 1,
+                Ordering::AcqRel,
+                Ordering::Relaxed,
+            ) {
+                Ok(_) => break true,
+                Err(updated) => count = updated,
+            }
+        };
+        if !acquired {
+            let mut stream = stream;
+            let _ = respond(
+                &mut stream,
+                Response::text("503 Service Unavailable", "server busy\n"),
+            );
+            continue;
+        }
+        let config = Arc::clone(&config);
+        let active = Arc::clone(&active);
+        std::thread::spawn(move || {
+            serve(stream, &config);
+            active.fetch_sub(1, Ordering::AcqRel);
+        });
+    }
+    Ok(())
+}

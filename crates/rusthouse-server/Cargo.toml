@@ -1,0 +1,8 @@
+[package]
+name = "rusthouse-server"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+rusthouse-query = { path = "../rusthouse-query" }
