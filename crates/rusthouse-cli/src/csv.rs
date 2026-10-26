@@ -2,6 +2,49 @@ use std::io::{self, Write};
 
 const MAX_FIELD_BYTES: usize = 1024 * 1024;
 
+fn hex_digit(value: u8) -> Option<u8> {
+    match value {
+        b'0'..=b'9' => Some(value - b'0'),
+        b'a'..=b'f' => Some(value - b'a' + 10),
+        b'A'..=b'F' => Some(value - b'A' + 10),
+        _ => None,
+    }
+}
+
+fn decode_tsv_field(field: &[u8]) -> io::Result<Vec<u8>> {
+    let invalid = |message| io::Error::new(io::ErrorKind::InvalidData, message);
+    let mut output = Vec::with_capacity(field.len());
+    let mut index = 0;
+    while index < field.len() {
+        if field[index] != b'\\' {
+            output.push(field[index]);
+            index += 1;
+            continue;
+        }
+        index += 1;
+        let escaped = *field.get(index).ok_or_else(|| invalid("incomplete TSV escape"))?;
+        match escaped {
+            b'\\' => output.push(b'\\'),
+            b't' => output.push(b'\t'),
+            b'n' => output.push(b'\n'),
+            b'r' => output.push(b'\r'),
+            b'0' => output.push(0),
+            b'x' => {
+                let high = *field.get(index + 1).ok_or_else(|| invalid("short TSV hex escape"))?;
+                let low = *field.get(index + 2).ok_or_else(|| invalid("short TSV hex escape"))?;
+                let high = hex_digit(high).ok_or_else(|| invalid("invalid TSV hex escape"))?;
+                let low = hex_digit(low).ok_or_else(|| invalid("invalid TSV hex escape"))?;
+                output.push((high << 4) | low);
+                index += 2;
+            }
+            _ => return Err(invalid("unknown TSV escape")),
+        }
+        index += 1;
+    }
+    Ok(output)
+}
+
+
 /// Convert RustHouse's numeric tab-separated output into RFC 4180-style CSV.
 pub struct CsvWriter<W: Write> {
     output: W,
@@ -37,13 +80,18 @@ impl<W: Write> CsvWriter<W> {
 }
 
 fn write_csv_field<W: Write>(output: &mut W, field: &[u8]) -> io::Result<()> {
-    let needs_quotes = field
-        .iter()
-        .any(|byte| matches!(byte, b',' | b'"' | b'\r' | b'\n'));
-    if !needs_quotes {
-        return output.write_all(field);
+    if field == b"\\N" {
+        return output.write_all(b"\\N");
     }
-    write_quoted_field(output, field)
+    let value = decode_tsv_field(field)?;
+    let needs_quotes = value == b"\\N"
+        || value
+            .iter()
+            .any(|byte| matches!(byte, b',' | b'"' | b'\t' | b'\r' | b'\n'));
+    if !needs_quotes {
+        return output.write_all(&value);
+    }
+    write_quoted_field(output, &value)
 }
 
 fn write_quoted_field<W: Write>(output: &mut W, field: &[u8]) -> io::Result<()> {
@@ -170,5 +218,31 @@ mod tests {
         assert_eq!(csv.output.calls, 2);
         assert_eq!(&csv.output.bytes[..field.len()], field);
         assert_eq!(&csv.output.bytes[field.len()..], b"\r\n");
+    }
+}
+
+#[cfg(test)]
+mod decoded_csv_regressions {
+    use super::*;
+
+    #[test]
+    fn restores_sql_escapes_and_distinguishes_null_from_literal_marker() {
+        let mut csv = CsvWriter::new(Vec::new());
+        csv.write_all(b"value\nline\\nnext\ncol\\tval\n\\N\n\\\\N\n")
+            .unwrap();
+        assert_eq!(
+            csv.output,
+            b"value\r\n\"line\nnext\"\r\n\"col\tval\"\r\n\\N\r\n\"\\N\"\r\n"
+        );
+    }
+
+    #[test]
+    fn rejects_unknown_escape_sequences() {
+        let mut csv = CsvWriter::new(Vec::new());
+        csv.write_all(b"value\n").unwrap();
+        assert_eq!(
+            csv.write_all(b"bad\\q\n").unwrap_err().kind(),
+            io::ErrorKind::InvalidData
+        );
     }
 }
