@@ -379,7 +379,7 @@ pub(super) fn passes(batch: &[TypedColumn], row: usize, branches: &[Vec<Conditio
     })
 }
 
-fn write_value<W: Write>(output: &mut W, value: &Cell) -> Result<(), ExecutionError> {
+pub(super) fn write_value<W: Write>(output: &mut W, value: &Cell) -> Result<(), ExecutionError> {
     match value {
         Cell::Numeric(value) => write!(output, "{value}")?,
         Cell::Null => output.write_all(b"\\N")?,

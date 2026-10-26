@@ -49,6 +49,14 @@ cargo run -p rusthouse-cli -- sql "SELECT id, name FROM events ORDER BY id" --da
 
 **Current limits:** SQL statements are limited to 4 KiB, INSERT supports up to 4,096 rows per statement, and tables are limited to 10,000 immutable parts. There is no UPDATE, DELETE, JOIN, background compaction, or cross-statement transaction. A crash can leave a stale `.rusthouse-write.lock` file; ensure no writer is active before removing it.
 
+## Reclaim active parts safely
+
+`OPTIMIZE TABLE events` rewrites a bounded local table into new immutable parts and switches its active snapshot with an atomic pointer replacement. Previous snapshots are retained for existing readers and recovery. A rewrite supports at most 25,000 rows and 16 MiB of materialized values; use this only for local experiments.
+
+```sh
+cargo run -p rusthouse-cli -- sql "OPTIMIZE TABLE events" --database ./mydb
+```
+
 ## Local schema catalog
 
 ```sh

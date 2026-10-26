@@ -99,6 +99,58 @@ fn parses_single_column_result_aliases() {
 }
 
 #[test]
+fn projects_bounded_mixed_constant_rows() {
+    let select = parse_select("SELECT 'Ada' AS name, -7 AS id, NULL AS missing").unwrap();
+    assert_eq!(
+        select.projection,
+        Projection::Constants(vec![
+            Constant {
+                value: ConstantValue::Text("Ada".into()),
+                alias: Some("name".into()),
+            },
+            Constant {
+                value: ConstantValue::Integer(-7),
+                alias: Some("id".into()),
+            },
+            Constant {
+                value: ConstantValue::Null,
+                alias: Some("missing".into()),
+            },
+        ])
+    );
+    let mut output = Vec::new();
+    execute(&select, None, &mut output).unwrap();
+    assert_eq!(output, b"name\tid\tmissing\nAda\t-7\t\\N\n");
+
+    let mut output = Vec::new();
+    execute(
+        &parse_select("SELECT 'hi', NULL LIMIT 0").unwrap(),
+        None,
+        &mut output,
+    )
+    .unwrap();
+    assert_eq!(output, b"'hi'\tNULL\n");
+
+    let mut output = Vec::new();
+    execute(
+        &parse_select("SELECT 'hi', 2 LIMIT 1 OFFSET 1").unwrap(),
+        None,
+        &mut output,
+    )
+    .unwrap();
+    assert_eq!(output, b"'hi'\t2\n");
+
+    for sql in [
+        "SELECT 1,",
+        "SELECT 'hi' FROM numbers(2)",
+        "SELECT NULL AS",
+        "SELECT 1, unknown",
+    ] {
+        assert!(parse_select(sql).is_err(), "{sql}");
+    }
+}
+
+#[test]
 fn parses_generated_numbers_and_rejects_invalid_counts() {
     let query = parse_select("SELECT number FROM numbers(12) WHERE number >= 5 LIMIT 2").unwrap();
     assert_eq!(query.source, Some(Source::Numbers(12)));
