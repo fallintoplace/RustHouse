@@ -346,14 +346,11 @@ pub fn parse_select(sql: &str) -> Result<Select, ParseError> {
                 return Err(ParseError("SELECT supports at most 64 constants".into()));
             }
             let value = match parser.tokens.get(parser.index) {
-                Some(Token::Number(_)) => ConstantValue::Integer(
-                    parser
-                        .number()?
-                        .parse::<i64>()
-                        .map_err(|_| {
-                            ParseError("SELECT literals must be signed 64-bit integers".into())
-                        })?,
-                ),
+                Some(Token::Number(_)) => {
+                    ConstantValue::Integer(parser.number()?.parse::<i64>().map_err(|_| {
+                        ParseError("SELECT literals must be signed 64-bit integers".into())
+                    })?)
+                }
                 Some(Token::String(value)) => {
                     let value = value.clone();
                     parser.index += 1;
@@ -375,10 +372,12 @@ pub fn parse_select(sql: &str) -> Result<Select, ParseError> {
                 break;
             }
         }
-        if let [Constant {
-            value: ConstantValue::Integer(value),
-            alias,
-        }] = columns.as_slice()
+        if let [
+            Constant {
+                value: ConstantValue::Integer(value),
+                alias,
+            },
+        ] = columns.as_slice()
         {
             literal_alias = alias.clone();
             Projection::Literal(*value)
@@ -550,10 +549,20 @@ pub fn parse_select(sql: &str) -> Result<Select, ParseError> {
     } else {
         None
     };
-    if source.is_none() && !matches!(projection, Projection::Literal(_) | Projection::Constants(_)) {
+    if source.is_none()
+        && !matches!(
+            projection,
+            Projection::Literal(_) | Projection::Constants(_)
+        )
+    {
         return Err(ParseError("a table source is required".into()));
     }
-    if source.is_some() && matches!(projection, Projection::Literal(_) | Projection::Constants(_)) {
+    if source.is_some()
+        && matches!(
+            projection,
+            Projection::Literal(_) | Projection::Constants(_)
+        )
+    {
         return Err(ParseError("literal SELECT does not support FROM".into()));
     }
 
