@@ -1,4 +1,4 @@
-use crate::{csv, csv_no_header, json_array, jsonl};
+use crate::{csv, csv_no_header, json_array, jsonl, markdown};
 use rusthouse_query::{execute, parse_ddl, parse_select};
 use std::ffi::OsString;
 use std::path::PathBuf;
@@ -11,6 +11,7 @@ enum SqlOutputFormat {
     CsvNoHeader,
     Jsonl,
     Json,
+    Markdown,
 }
 
 impl SqlOutputFormat {
@@ -22,8 +23,10 @@ impl SqlOutputFormat {
             Some("csv-no-header") => Ok(Self::CsvNoHeader),
             Some("jsonl") => Ok(Self::Jsonl),
             Some("json") => Ok(Self::Json),
+            Some("markdown") => Ok(Self::Markdown),
             _ => Err(
-                "--format must be tsv, tsv-no-header, csv, csv-no-header, jsonl, or json".into(),
+                "--format must be tsv, tsv-no-header, csv, csv-no-header, jsonl, json, or markdown"
+                    .into(),
             ),
         }
     }
@@ -40,6 +43,7 @@ pub(super) fn run_sql_args(mut args: impl Iterator<Item = OsString>) -> Result<(
     let mut format = None;
     let mut output_path = None;
     let mut show_ast = false;
+    let mut time = false;
     let mut max_rows = None;
     while let Some(arg) = args.next() {
         if arg.to_str() == Some("--show-ast") {
@@ -47,6 +51,13 @@ pub(super) fn run_sql_args(mut args: impl Iterator<Item = OsString>) -> Result<(
                 return Err("duplicate --show-ast option".into());
             }
             show_ast = true;
+            continue;
+        }
+        if arg.to_str() == Some("--time") {
+            if time {
+                return Err("duplicate --time option".into());
+            }
+            time = true;
             continue;
         }
         if arg.to_str() == Some("--stdin") {
@@ -140,6 +151,9 @@ pub(super) fn run_sql_args(mut args: impl Iterator<Item = OsString>) -> Result<(
         query.ok_or("missing SQL statement")?
     };
     if let Some(catalog_path) = catalog {
+        if time {
+            return Err("--time cannot be combined with --catalog".into());
+        }
         if let Some(ddl) = parse_ddl(&query).map_err(|error| error.to_string())? {
             if part.is_some() || output_path.is_some() || format.is_some() || max_rows.is_some() {
                 return Err("DDL cannot use --part, --output, --format, or --max-rows".into());
@@ -154,6 +168,9 @@ pub(super) fn run_sql_args(mut args: impl Iterator<Item = OsString>) -> Result<(
     }
     let mut select = parse_select(&query).map_err(|error| error.to_string())?;
     if show_ast {
+        if time {
+            return Err("--time cannot be combined with --show-ast".into());
+        }
         if output_path.is_some() {
             return Err("--output cannot be combined with --show-ast".into());
         }
@@ -173,6 +190,7 @@ pub(super) fn run_sql_args(mut args: impl Iterator<Item = OsString>) -> Result<(
         ),
         None => Box::new(std::io::stdout()),
     };
+    let start = std::time::Instant::now();
     let result = match format.unwrap_or(SqlOutputFormat::Tsv) {
         SqlOutputFormat::Tsv => execute(&select, part.as_deref(), &mut output),
         SqlOutputFormat::TsvNoHeader => execute(
@@ -190,6 +208,11 @@ pub(super) fn run_sql_args(mut args: impl Iterator<Item = OsString>) -> Result<(
             part.as_deref(),
             &mut csv::CsvWriter::new(csv_no_header::WithoutHeader::new(&mut output)),
         ),
+        SqlOutputFormat::Markdown => execute(
+            &select,
+            part.as_deref(),
+            &mut markdown::MarkdownWriter::new(&mut output),
+        ),
         SqlOutputFormat::Jsonl => execute(
             &select,
             part.as_deref(),
@@ -205,6 +228,9 @@ pub(super) fn run_sql_args(mut args: impl Iterator<Item = OsString>) -> Result<(
             })
         }
     };
+    if time {
+        eprintln!("Elapsed: {:.3} ms", start.elapsed().as_secs_f64() * 1_000.0);
+    }
     if result.is_err() {
         drop(output);
         if let Some(path) = output_path {
@@ -227,6 +253,7 @@ mod tests {
             "csv-no-header",
             "jsonl",
             "json",
+            "markdown",
         ] {
             assert!(SqlOutputFormat::from_arg(Some(value.into())).is_ok());
         }
@@ -251,6 +278,18 @@ mod tests {
         assert_eq!(
             error(&["SELECT 1", "--max-rows", "-1"]),
             "--max-rows must be a non-negative integer"
+        );
+        assert_eq!(
+            error(&["SELECT 1", "--time", "--time"]),
+            "duplicate --time option"
+        );
+        assert_eq!(
+            error(&["SELECT 1", "--show-ast", "--time"]),
+            "--time cannot be combined with --show-ast"
+        );
+        assert_eq!(
+            error(&["CREATE TABLE t (id UInt64)", "--catalog", ".", "--time"]),
+            "--time cannot be combined with --catalog"
         );
         assert_eq!(
             error(&["SELECT 1", "--file", "other.sql"]),

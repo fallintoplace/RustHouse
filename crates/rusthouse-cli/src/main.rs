@@ -3,6 +3,8 @@ mod csv;
 mod csv_no_header;
 mod json_array;
 mod jsonl;
+mod markdown;
+mod part_json;
 mod sql;
 
 use rusthouse_storage::{
@@ -15,7 +17,7 @@ use std::ffi::OsString;
 use std::path::PathBuf;
 use std::process::ExitCode;
 
-const USAGE: &str = "Usage:\n  rusthouse inspect-part <path>\n  rusthouse verify-part <path-to-wide-part>\n  rusthouse verify-file-sizes <path-to-part>\n  rusthouse inspect-checksums <path-to-checksums.txt>\n  rusthouse inspect-marks <path-to-wide-marks>\n  rusthouse inspect-primary-index <primary.idx|primary.cidx> <field-width> [field-width ...]\n  rusthouse inspect-blocks <path-to-.bin>\n  rusthouse verify-blocks <path-to-.bin>\n  rusthouse validate-marks <path-to-wide-marks> <path-to-.bin>\n  rusthouse read-u64 <data.bin> <marks.mrk2> <mark-index>\n  rusthouse scan-u64 <path-to-UInt64-.bin>\n  rusthouse read-numeric <data.bin> <marks.mrk2> <mark-index> <type>\n  rusthouse sql <SQL> [--part <path-to-wide-part>] [--format tsv|tsv-no-header|csv|csv-no-header|jsonl|json] [--output <path>] [--max-rows <n>] [--show-ast]\n  rusthouse sql --stdin [--part <path-to-wide-part>] [--format tsv|tsv-no-header|csv|csv-no-header|jsonl|json] [--output <path>] [--max-rows <n>] [--show-ast]\n  rusthouse sql --file <path.sql> [--part <path-to-wide-part>] [--format tsv|tsv-no-header|csv|csv-no-header|jsonl|json] [--output <path>] [--max-rows <n>] [--show-ast]\n  rusthouse sql <DDL> --catalog <directory> [--show-ast]\n  rusthouse --help\n\nInspect local MergeTree metadata, marks, and compressed blocks.";
+const USAGE: &str = "Usage:\n  rusthouse inspect-part <path> [--json]\n  rusthouse verify-part <path-to-wide-part>\n  rusthouse verify-file-sizes <path-to-part>\n  rusthouse inspect-checksums <path-to-checksums.txt>\n  rusthouse inspect-marks <path-to-wide-marks>\n  rusthouse inspect-primary-index <primary.idx|primary.cidx> <field-width> [field-width ...]\n  rusthouse inspect-blocks <path-to-.bin>\n  rusthouse verify-blocks <path-to-.bin>\n  rusthouse validate-marks <path-to-wide-marks> <path-to-.bin>\n  rusthouse read-u64 <data.bin> <marks.mrk2> <mark-index>\n  rusthouse scan-u64 <path-to-UInt64-.bin>\n  rusthouse read-numeric <data.bin> <marks.mrk2> <mark-index> <type>\n  rusthouse sql <SQL> [--part <path-to-wide-part>] [--format tsv|tsv-no-header|csv|csv-no-header|jsonl|json|markdown] [--output <path>] [--max-rows <n>] [--show-ast] [--time]\n  rusthouse sql --stdin [--part <path-to-wide-part>] [--format tsv|tsv-no-header|csv|csv-no-header|jsonl|json|markdown] [--output <path>] [--max-rows <n>] [--show-ast] [--time]\n  rusthouse sql --file <path.sql> [--part <path-to-wide-part>] [--format tsv|tsv-no-header|csv|csv-no-header|jsonl|json|markdown] [--output <path>] [--max-rows <n>] [--show-ast] [--time]\n  rusthouse sql <DDL> --catalog <directory> [--show-ast]\n  rusthouse --help\n\nInspect local MergeTree metadata, marks, and compressed blocks.";
 
 fn main() -> ExitCode {
     let mut args = env::args_os().skip(1);
@@ -93,14 +95,25 @@ fn main() -> ExitCode {
                 return ExitCode::from(2);
             };
             validate_marks_and_print(marks_path, data_path)
+        } else if command == "inspect-part" {
+            let (Some(path), format, None) = (args.next(), args.next(), args.next()) else {
+                eprintln!("{USAGE}");
+                return ExitCode::from(2);
+            };
+            if format.is_none() {
+                inspect_and_print(path)
+            } else if format.as_ref().and_then(|arg| arg.to_str()) == Some("--json") {
+                part_json::inspect_and_print_json(PathBuf::from(path))
+            } else {
+                eprintln!("{USAGE}");
+                return ExitCode::from(2);
+            }
         } else {
             let (Some(path), None) = (args.next(), args.next()) else {
                 eprintln!("{USAGE}");
                 return ExitCode::from(2);
             };
-            if command == "inspect-part" {
-                inspect_and_print(path)
-            } else if command == "verify-part" {
+            if command == "verify-part" {
                 verify_part_and_print(path)
             } else if command == "verify-file-sizes" {
                 verify_file_sizes_and_print(path)

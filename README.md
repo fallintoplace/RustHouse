@@ -44,6 +44,12 @@ Inspect fixed-width primary-index entries with `cargo run -p rusthouse-cli -- in
 
 Negate a numeric predicate using `WHERE NOT number < 5`, `WHERE NOT number IN (1, 3)`, or `WHERE NOT number BETWEEN 2 AND 4`. The prefix `NOT` applies to one predicate; parenthesized Boolean expressions are not supported.
 
+Measure SQL execution and output formatting time with `cargo run -p rusthouse-cli -- sql "SELECT number FROM numbers(1000)" --time`. The elapsed milliseconds appear on stderr, leaving stdout and exported files unchanged.
+
+Inspect part metadata in machine-readable JSON with `cargo run -p rusthouse-cli -- inspect-part /path/to/wide-part --json`. This prints the path, row count, and column names and types without reading data streams.
+
+Copy SQL results into GitHub issues and Markdown documents using `cargo run -p rusthouse-cli -- sql "SELECT number FROM numbers(3)" --format markdown`. The formatter streams rows and escapes Markdown and HTML-sensitive characters.
+
 ## Local schema catalog (experimental)
 
 DDL in RustHouse currently manages **metadata only** in an explicit local directory.

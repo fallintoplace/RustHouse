@@ -1,3 +1,4 @@
+use std::collections::HashSet;
 use std::io::{self, Write};
 
 const MAX_LINE_BYTES: usize = 1024 * 1024;
@@ -24,45 +25,58 @@ impl<W: Write> JsonlWriter<W> {
     }
 
     fn finish_line(&mut self) -> io::Result<()> {
-        let fields: Vec<Vec<u8>> = self
-            .line
-            .split(|byte| *byte == b'\t')
-            .map(Vec::from)
-            .collect();
-        self.line.clear();
         if self.headers.is_none() {
-            for (index, header) in fields.iter().enumerate() {
-                if fields[..index].contains(header) {
-                    return Err(io::Error::new(
-                        io::ErrorKind::InvalidData,
-                        "JSONL requires unique projected column names",
-                    ));
+            let headers = (|| {
+                let mut seen = HashSet::new();
+                let mut headers = Vec::new();
+                for header in self.line.split(|byte| *byte == b'\t') {
+                    if !seen.insert(header) {
+                        return Err(io::Error::new(
+                            io::ErrorKind::InvalidData,
+                            "JSONL requires unique projected column names",
+                        ));
+                    }
+                    headers.push(header.to_vec());
                 }
-            }
-            self.headers = Some(fields);
+                Ok(headers)
+            })();
+            self.line.clear();
+            self.headers = Some(headers?);
             return Ok(());
         }
+
         let headers = self.headers.as_ref().unwrap();
-        if fields.len() != headers.len() {
+        let field_count = 1 + self.line.iter().filter(|byte| **byte == b'\t').count();
+        if field_count != headers.len() {
+            self.line.clear();
             return Err(io::Error::new(
                 io::ErrorKind::InvalidData,
                 "JSONL row does not match header column count",
             ));
         }
-        self.output.write_all(b"{")?;
-        for (index, (header, value)) in headers.iter().zip(fields.iter()).enumerate() {
-            if index > 0 {
-                self.output.write_all(b",")?;
+
+        let result = (|| {
+            self.output.write_all(b"{")?;
+            for (index, (header, value)) in headers
+                .iter()
+                .zip(self.line.split(|byte| *byte == b'\t'))
+                .enumerate()
+            {
+                if index > 0 {
+                    self.output.write_all(b",")?;
+                }
+                write_json_string(&mut self.output, header)?;
+                self.output.write_all(b":")?;
+                if value == b"NULL" {
+                    self.output.write_all(b"null")?;
+                } else {
+                    write_json_string(&mut self.output, value)?;
+                }
             }
-            write_json_string(&mut self.output, header)?;
-            self.output.write_all(b":")?;
-            if value == b"NULL" {
-                self.output.write_all(b"null")?;
-            } else {
-                write_json_string(&mut self.output, value)?;
-            }
-        }
-        self.output.write_all(b"}\n")
+            self.output.write_all(b"}\n")
+        })();
+        self.line.clear();
+        result
     }
 }
 
@@ -177,5 +191,28 @@ mod tests {
             writer.write_all(b"\xff\n").unwrap_err().kind(),
             io::ErrorKind::InvalidData
         );
+    }
+
+    #[test]
+    fn formats_wide_rows_without_cloning_each_field() {
+        let header = (0..32)
+            .map(|index| format!("field{index}"))
+            .collect::<Vec<_>>()
+            .join("\t");
+        let row = (0..32)
+            .map(|index| format!("value{index}"))
+            .collect::<Vec<_>>()
+            .join("\t");
+        let mut writer = JsonlWriter::new(Vec::new());
+        writer.write_all(header.as_bytes()).unwrap();
+        writer.write_all(b"\n").unwrap();
+        for _ in 0..2 {
+            writer.write_all(row.as_bytes()).unwrap();
+            writer.write_all(b"\n").unwrap();
+        }
+        let output = String::from_utf8(writer.into_inner()).unwrap();
+        assert_eq!(output.lines().count(), 2);
+        assert_eq!(output.matches("\"field31\":\"value31\"").count(), 2);
+        assert!(output.starts_with("{\"field0\":\"value0\","));
     }
 }

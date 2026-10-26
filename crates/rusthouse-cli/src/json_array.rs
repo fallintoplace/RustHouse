@@ -144,7 +144,10 @@ mod tests {
         for input in [b"number".as_slice(), b"number\n1".as_slice()] {
             let mut writer = JsonArrayWriter::new(Vec::new());
             writer.write_all(input).unwrap();
-            assert_eq!(writer.finish().unwrap_err().kind(), io::ErrorKind::InvalidData);
+            assert_eq!(
+                writer.finish().unwrap_err().kind(),
+                io::ErrorKind::InvalidData
+            );
         }
 
         let mut writer = JsonArrayWriter::new(Vec::new());

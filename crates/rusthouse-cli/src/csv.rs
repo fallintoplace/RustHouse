@@ -23,16 +23,17 @@ impl<W: Write> CsvWriter<W> {
             .any(|byte| matches!(byte, b',' | b'"' | b'\r' | b'\n'));
         if needs_quotes {
             self.output.write_all(b"\"")?;
-        }
-        for &byte in &self.field {
-            if byte == b'"' {
-                self.output.write_all(b"\"\"")?;
-            } else {
-                self.output.write_all(&[byte])?;
+            let mut pieces = self.field.split(|byte| *byte == b'"');
+            if let Some(first) = pieces.next() {
+                self.output.write_all(first)?;
             }
-        }
-        if needs_quotes {
+            for piece in pieces {
+                self.output.write_all(b"\"\"")?;
+                self.output.write_all(piece)?;
+            }
             self.output.write_all(b"\"")?;
+        } else {
+            self.output.write_all(&self.field)?;
         }
         self.field.clear();
         self.output.write_all(separator)
@@ -96,5 +97,36 @@ mod tests {
         csv.flush().unwrap();
         csv.write_all(b"bc\n").unwrap();
         assert_eq!(csv.output, b"\"a,bc\"\r\n");
+    }
+
+    #[test]
+    fn writes_large_fields_in_bulk_instead_of_one_byte_at_a_time() {
+        struct CountingWriter {
+            calls: usize,
+            bytes: Vec<u8>,
+        }
+
+        impl Write for CountingWriter {
+            fn write(&mut self, data: &[u8]) -> io::Result<usize> {
+                self.calls += 1;
+                self.bytes.extend_from_slice(data);
+                Ok(data.len())
+            }
+
+            fn flush(&mut self) -> io::Result<()> {
+                Ok(())
+            }
+        }
+
+        let mut csv = CsvWriter::new(CountingWriter {
+            calls: 0,
+            bytes: Vec::new(),
+        });
+        let field = vec![b'a'; 16 * 1024];
+        csv.write_all(&field).unwrap();
+        csv.write_all(b"\n").unwrap();
+        assert_eq!(csv.output.calls, 2);
+        assert_eq!(&csv.output.bytes[..field.len()], field);
+        assert_eq!(&csv.output.bytes[field.len()..], b"\r\n");
     }
 }
