@@ -36,6 +36,19 @@ impl SqlOutputFormat {
     }
 }
 
+fn parse_max_rows(value: Option<OsString>) -> Result<usize, String> {
+    let value = value.ok_or("missing --max-rows value")?;
+    let value = value
+        .to_str()
+        .ok_or("--max-rows must be a non-negative integer")?;
+    if value.is_empty() || !value.bytes().all(|byte| byte.is_ascii_digit()) {
+        return Err("--max-rows must be a non-negative integer".into());
+    }
+    value
+        .parse::<usize>()
+        .map_err(|_| "--max-rows is too large".into())
+}
+
 fn read_sql_input(input: impl std::io::Read, source: &str, label: &str) -> Result<String, String> {
     use std::io::Read;
 
@@ -102,18 +115,7 @@ pub(super) fn run_sql_args(mut args: impl Iterator<Item = OsString>) -> Result<(
             if max_rows.is_some() {
                 return Err("duplicate --max-rows option".into());
             }
-            let value = args.next().ok_or("missing --max-rows value")?;
-            let value = value
-                .to_str()
-                .ok_or("--max-rows must be a non-negative integer")?;
-            if value.is_empty() || !value.bytes().all(|byte| byte.is_ascii_digit()) {
-                return Err("--max-rows must be a non-negative integer".into());
-            }
-            max_rows = Some(
-                value
-                    .parse::<usize>()
-                    .map_err(|_| "--max-rows is too large")?,
-            );
+            max_rows = Some(parse_max_rows(args.next())?);
         } else if arg.to_str() == Some("--output") {
             if output_path.is_some() {
                 return Err("duplicate --output option".into());
@@ -273,6 +275,19 @@ pub(super) fn run_sql_args(mut args: impl Iterator<Item = OsString>) -> Result<(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn row_cap_parser_preserves_boundary_and_error_rules() {
+        assert_eq!(parse_max_rows(Some(OsString::from("0003"))), Ok(3));
+        assert_eq!(parse_max_rows(Some(OsString::from("0"))), Ok(0));
+        assert_eq!(parse_max_rows(None).unwrap_err(), "missing --max-rows value");
+        for invalid in ["", "-1", "+2", "1.5", "no"] {
+            assert_eq!(
+                parse_max_rows(Some(OsString::from(invalid))).unwrap_err(),
+                "--max-rows must be a non-negative integer"
+            );
+        }
+    }
 
     #[test]
     fn bounded_input_accepts_exact_limit_and_rejects_invalid_input() {
