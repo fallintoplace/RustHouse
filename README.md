@@ -97,5 +97,5 @@ aggregates, filtering, ORDER BY, DISTINCT, LIMIT and OFFSET apply to the full se
 For safety, it rejects overlapping block ranges, inconsistent schemas, malformed
 parts and more than 10,000 parts. It ignores non-part subdirectories such as
 `detached/`. **Only use a frozen snapshot of active parts**, never a live table
-directory being mutated by ClickHouse. Predicate pruning across the primary index
+directory being modified by a database process. Predicate pruning across the primary index
 is not implemented by this change.
