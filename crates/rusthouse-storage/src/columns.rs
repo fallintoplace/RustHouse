@@ -12,6 +12,7 @@ pub fn parse_columns(content: &str) -> Result<Vec<Column>, PartError> {
         .ok_or_else(|| invalid(2, "missing column-count header"))?;
     let expected = header
         .strip_suffix(" columns:")
+        .filter(|value| !value.is_empty() && value.bytes().all(|b| b.is_ascii_digit()))
         .and_then(|value| value.parse::<usize>().ok())
         .ok_or_else(|| invalid(2, "expected '<count> columns:'"))?;
 
@@ -42,6 +43,53 @@ fn invalid(line: usize, message: &'static str) -> PartError {
     PartError::InvalidColumns { line, message }
 }
 
+fn append_identifier_escape(
+    chars: &mut std::str::Chars<'_>,
+    name: &mut Vec<u8>,
+    line_number: usize,
+) -> Result<(), PartError> {
+    let escaped = chars
+        .next()
+        .ok_or_else(|| invalid(line_number, "trailing identifier escape"))?;
+    let decoded = match escaped {
+        'x' => {
+            let high = chars
+                .next()
+                .and_then(|digit| digit.to_digit(16))
+                .ok_or_else(|| invalid(line_number, "invalid hex identifier escape"))?;
+            let low = chars
+                .next()
+                .and_then(|digit| digit.to_digit(16))
+                .ok_or_else(|| invalid(line_number, "invalid hex identifier escape"))?;
+            (high * 16 + low) as u8
+        }
+        'N' => return Ok(()),
+        '\\' => b'\\',
+        '`' => b'`',
+        '\'' => b'\'',
+        '"' => b'"',
+        '/' => b'/',
+        '=' => b'=',
+        'n' => b'\n',
+        'r' => b'\r',
+        't' => b'\t',
+        '0' => b'\0',
+        'a' => b'\x07',
+        'b' => b'\x08',
+        'e' => b'\x1b',
+        'f' => b'\x0c',
+        'v' => b'\x0b',
+        _ => {
+            name.push(b'\\');
+            let mut encoded = [0; 4];
+            name.extend_from_slice(escaped.encode_utf8(&mut encoded).as_bytes());
+            return Ok(());
+        }
+    };
+    name.push(decoded);
+    Ok(())
+}
+
 fn parse_column(line: &str, line_number: usize) -> Result<Column, PartError> {
     let mut chars = line
         .strip_prefix('`')
@@ -70,47 +118,7 @@ fn parse_column(line: &str, line_number: usize) -> Result<Column, PartError> {
                     data_type: data_type.to_owned(),
                 });
             }
-            '\\' => {
-                let escaped = chars
-                    .next()
-                    .ok_or_else(|| invalid(line_number, "trailing identifier escape"))?;
-                let decoded = match escaped {
-                    'x' => {
-                        let high = chars
-                            .next()
-                            .and_then(|digit| digit.to_digit(16))
-                            .ok_or_else(|| invalid(line_number, "invalid hex identifier escape"))?;
-                        let low = chars
-                            .next()
-                            .and_then(|digit| digit.to_digit(16))
-                            .ok_or_else(|| invalid(line_number, "invalid hex identifier escape"))?;
-                        (high * 16 + low) as u8
-                    }
-                    'N' => continue,
-                    '\\' => b'\\',
-                    '`' => b'`',
-                    '\'' => b'\'',
-                    '"' => b'"',
-                    '/' => b'/',
-                    '=' => b'=',
-                    'n' => b'\n',
-                    'r' => b'\r',
-                    't' => b'\t',
-                    '0' => b'\0',
-                    'a' => b'\x07',
-                    'b' => b'\x08',
-                    'e' => b'\x1b',
-                    'f' => b'\x0c',
-                    'v' => b'\x0b',
-                    _ => {
-                        name.push(b'\\');
-                        let mut encoded = [0; 4];
-                        name.extend_from_slice(escaped.encode_utf8(&mut encoded).as_bytes());
-                        continue;
-                    }
-                };
-                name.push(decoded);
-            }
+            '\\' => append_identifier_escape(&mut chars, &mut name, line_number)?,
             _ => {
                 let mut encoded = [0; 4];
                 name.extend_from_slice(ch.encode_utf8(&mut encoded).as_bytes());
@@ -232,6 +240,16 @@ mod tests {
             parse_columns("columns format version: 1\nwrong\n"),
             Err(PartError::InvalidColumns { line: 2, .. })
         ));
+        for header in ["+1 columns:", "-1 columns:", " 1 columns:", "1 columns: "] {
+            let content = format!("columns format version: 1\n{header}\n`id` UInt64\n");
+            assert!(
+                matches!(
+                    parse_columns(&content),
+                    Err(PartError::InvalidColumns { line: 2, .. })
+                ),
+                "{header:?}"
+            );
+        }
     }
 
     #[test]

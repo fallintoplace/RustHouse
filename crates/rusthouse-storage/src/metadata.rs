@@ -35,6 +35,19 @@ pub fn inspect_part(path: impl AsRef<Path>) -> Result<PartMetadata, PartError> {
 }
 
 fn read_metadata(path: &Path, max_bytes: u64) -> Result<String, PartError> {
+    let metadata = fs::symlink_metadata(path).map_err(|source| PartError::Io {
+        path: path.to_path_buf(),
+        source,
+    })?;
+    if !metadata.file_type().is_file() {
+        return Err(PartError::Io {
+            path: path.to_path_buf(),
+            source: io::Error::new(
+                io::ErrorKind::InvalidData,
+                "metadata must be a regular file",
+            ),
+        });
+    }
     let file = fs::File::open(path).map_err(|source| PartError::Io {
         path: path.to_path_buf(),
         source,
@@ -69,6 +82,23 @@ fn parse_count(content: &str) -> Result<u64, PartError> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[cfg(unix)]
+    #[test]
+    fn refuses_symlinked_metadata() {
+        use std::os::unix::fs::symlink;
+
+        let dir =
+            std::env::temp_dir().join(format!("rusthouse-metadata-symlink-{}", std::process::id()));
+        fs::create_dir(&dir).unwrap();
+        fs::write(dir.join("real-count.txt"), b"42\n").unwrap();
+        symlink("real-count.txt", dir.join("count.txt")).unwrap();
+        assert!(matches!(
+            read_metadata(&dir.join("count.txt"), MAX_COUNT_BYTES),
+            Err(PartError::Io { source, .. }) if source.kind() == io::ErrorKind::InvalidData
+        ));
+        fs::remove_dir_all(dir).unwrap();
+    }
 
     #[test]
     fn inspects_fixture_part_without_writing() {

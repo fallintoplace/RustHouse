@@ -8,8 +8,12 @@ const READ_BUFFER_BYTES: usize = 16 * 1024;
 fn read_addresses<R: Read, T, const WIDTH: usize>(
     reader: &mut R,
     rows: usize,
+    error_message: &'static str,
     decode: impl Fn([u8; WIDTH]) -> T,
 ) -> io::Result<Vec<T>> {
+    if rows > MAX_BATCH_BYTES / WIDTH {
+        return Err(io::Error::new(io::ErrorKind::InvalidInput, error_message));
+    }
     let mut result = Vec::with_capacity(rows);
     let mut buffer = [0u8; READ_BUFFER_BYTES];
     while result.len() < rows {
@@ -27,26 +31,14 @@ fn read_addresses<R: Read, T, const WIDTH: usize>(
 
 /// Decode ClickHouse IPv4's little-endian UInt32 physical representation.
 pub fn read_ipv4_values<R: Read>(reader: &mut R, rows: usize) -> io::Result<Vec<Ipv4Addr>> {
-    if rows > MAX_BATCH_BYTES / 4 {
-        return Err(io::Error::new(
-            io::ErrorKind::InvalidInput,
-            "IPv4 batch exceeds 64 MiB",
-        ));
-    }
-    read_addresses(reader, rows, |bytes| {
+    read_addresses(reader, rows, "IPv4 batch exceeds 64 MiB", |bytes| {
         Ipv4Addr::from(u32::from_le_bytes(bytes))
     })
 }
 
 /// Decode ClickHouse IPv6's 16-byte network-order physical representation.
 pub fn read_ipv6_values<R: Read>(reader: &mut R, rows: usize) -> io::Result<Vec<Ipv6Addr>> {
-    if rows > MAX_BATCH_BYTES / 16 {
-        return Err(io::Error::new(
-            io::ErrorKind::InvalidInput,
-            "IPv6 batch exceeds 64 MiB",
-        ));
-    }
-    read_addresses(reader, rows, Ipv6Addr::from)
+    read_addresses(reader, rows, "IPv6 batch exceeds 64 MiB", Ipv6Addr::from)
 }
 
 #[cfg(test)]

@@ -146,6 +146,33 @@ enum StorageKind {
     NullableString,
 }
 
+impl StorageKind {
+    fn from_data_type(data_type: &str) -> Result<Self, PartError> {
+        match data_type {
+            "String" => Ok(Self::String),
+            "UUID" => Ok(Self::Uuid),
+            "Nullable(String)" => Ok(Self::NullableString),
+            other if other.starts_with("Nullable(") && other.ends_with(')') => {
+                let inner = &other[9..other.len() - 1];
+                if numeric_storage_type(inner).is_none() {
+                    return Err(PartError::InvalidScan(format!(
+                        "unsupported typed scan type: {other}"
+                    )));
+                }
+                Ok(Self::NullableNumeric(inner.to_owned()))
+            }
+            other if numeric_storage_type(other).is_some() => Ok(Self::Numeric(other.to_owned())),
+            other => Err(PartError::InvalidScan(format!(
+                "unsupported typed scan type: {other}"
+            ))),
+        }
+    }
+
+    fn needs_null_map(&self) -> bool {
+        matches!(self, Self::NullableNumeric(_) | Self::NullableString)
+    }
+}
+
 struct ColumnReader {
     kind: StorageKind,
     data: Stream,
@@ -180,33 +207,13 @@ impl TypedPartReader {
                 .ok_or_else(|| PartError::InvalidScan(format!("unknown column: {name}")))?
                 .data_type
                 .as_str();
-            let (kind, nullable) = match data_type {
-                "String" => (StorageKind::String, false),
-                "UUID" => (StorageKind::Uuid, false),
-                "Nullable(String)" => (StorageKind::NullableString, true),
-                other if other.starts_with("Nullable(") && other.ends_with(')') => {
-                    let inner = &other[9..other.len() - 1];
-                    if numeric_storage_type(inner).is_none() {
-                        return Err(PartError::InvalidScan(format!(
-                            "unsupported typed scan type: {other}"
-                        )));
-                    }
-                    (StorageKind::NullableNumeric(inner.to_owned()), true)
-                }
-                other if numeric_storage_type(other).is_some() => {
-                    (StorageKind::Numeric(other.to_owned()), false)
-                }
-                other => {
-                    return Err(PartError::InvalidScan(format!(
-                        "unsupported typed scan type: {other}"
-                    )));
-                }
-            };
+            let kind = StorageKind::from_data_type(data_type)?;
             if metadata.rows == 0 {
                 continue;
             }
             let data = Stream::open(part, name)?;
-            let null_map = nullable
+            let null_map = kind
+                .needs_null_map()
                 .then(|| Stream::open(part, &format!("{name}.null")))
                 .transpose()?;
             layout.validate(name, &data.marks, metadata.rows)?;
@@ -342,5 +349,25 @@ impl TypedQueryReader {
             )?);
             self.next_part += 1;
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn typed_kinds_own_their_null_map_requirements() {
+        for kind in [
+            "Nullable(String)",
+            "Nullable(UInt64)",
+            "Nullable(DateTime64(3))",
+        ] {
+            assert!(StorageKind::from_data_type(kind).unwrap().needs_null_map());
+        }
+        for kind in ["String", "UUID", "UInt64", "DateTime"] {
+            assert!(!StorageKind::from_data_type(kind).unwrap().needs_null_map());
+        }
+        assert!(StorageKind::from_data_type("Nullable(UUID)").is_err());
     }
 }
