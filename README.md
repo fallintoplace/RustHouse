@@ -44,6 +44,8 @@ Inspect fixed-width primary-index entries with `cargo run -p rusthouse-cli -- in
 
 Negate a numeric predicate using `WHERE NOT number < 5`, `WHERE NOT number IN (1, 3)`, or `WHERE NOT number BETWEEN 2 AND 4`. The prefix `NOT` applies to one predicate; parenthesized Boolean expressions are not supported.
 
+Filter String and Nullable(String) snapshot columns with `WHERE service LIKE 'api%'`, `ILIKE 'API%'`, or `NOT LIKE '%test%'`. `%` matches any byte sequence and `_` matches one byte; backslash escapes wildcard characters. `ILIKE` folds ASCII case. NULL never matches, including with `NOT LIKE`.
+
 Measure SQL execution and output formatting time with `cargo run -p rusthouse-cli -- sql "SELECT number FROM numbers(1000)" --time`. The elapsed milliseconds appear on stderr, leaving stdout and exported files unchanged.
 
 Inspect part metadata in machine-readable JSON with `cargo run -p rusthouse-cli -- inspect-part /path/to/wide-part --json`. This prints the path, row count, and column names and types without reading data streams.
