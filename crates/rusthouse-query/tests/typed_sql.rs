@@ -587,6 +587,20 @@ fn orders_nullable_columns_with_explicit_null_precedence() {
         ),
         "message\tcount\n\\N\t1\nworld\t1\nhello\t1\n"
     );
+    assert_eq!(
+        query(
+            "SELECT attempt FROM part ORDER BY attempt ASC NULLS FIRST",
+            &part
+        ),
+        "attempt\n\\N\n1\n3\n"
+    );
+    assert_eq!(
+        query(
+            "SELECT attempt FROM part ORDER BY attempt DESC NULLS LAST",
+            &part
+        ),
+        "attempt\n3\n1\n\\N\n"
+    );
     let sql = "SELECT message, attempt FROM part ORDER BY attempt ASC NULLS LAST, message DESC";
     let whole = query(sql, &part);
     assert_eq!(whole, "message\tattempt\nhello\t1\nworld\t3\n\\N\t\\N\n");
