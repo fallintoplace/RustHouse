@@ -34,8 +34,7 @@ pub(super) fn tokenize(sql: &str) -> Result<Vec<Token>, ParseError> {
                 let mut start = index;
                 let mut closed = false;
                 while index < bytes.len() {
-                    if bytes[index] == b'\\'
-                        && matches!(bytes.get(index + 1), Some(b'\'' | b'\\'))
+                    if bytes[index] == b'\\' && matches!(bytes.get(index + 1), Some(b'\'' | b'\\'))
                     {
                         value.push_str(&sql[start..index]);
                         value.push(bytes[index + 1] as char);
