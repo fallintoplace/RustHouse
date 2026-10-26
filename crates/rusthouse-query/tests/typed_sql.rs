@@ -44,7 +44,7 @@ fn part() -> PathBuf {
     fs::create_dir(&part).unwrap();
     fs::write(part.join("count.txt"), "3\n").unwrap();
     fs::write(part.join("columns.txt"),
-        "columns format version: 1\n4 columns:\n`service` String\n`status` UInt16\n`message` Nullable(String)\n`uid` UUID\n").unwrap();
+        "columns format version: 1\n5 columns:\n`service` String\n`status` UInt16\n`message` Nullable(String)\n`uid` UUID\n`attempt` Nullable(UInt16)\n").unwrap();
     stream(&part, "service", &strings(&["api", "db", "api"]), 3);
     stream(
         &part,
@@ -58,6 +58,13 @@ fn part() -> PathBuf {
     stream(&part, "message", &strings(&["hello", "", "world"]), 3);
     stream(&part, "message.null", &[0, 1, 0], 3);
     stream(&part, "uid", &[0u8; 48], 3);
+    stream(
+        &part,
+        "attempt",
+        &[1u16, 999, 3].into_iter().flat_map(u16::to_le_bytes).collect::<Vec<_>>(),
+        3,
+    );
+    stream(&part, "attempt.null", &[0, 1, 0], 3);
     part
 }
 
@@ -125,5 +132,36 @@ fn rejects_invalid_string_literals_without_panicking() {
         ),
         "service\napi\ndb\napi\n"
     );
+    fs::remove_dir_all(part).unwrap();
+}
+
+
+#[test]
+fn supports_nullable_numeric_values_and_filters() {
+    let part = part();
+    assert_eq!(query("SELECT attempt FROM part WHERE attempt IS NULL", &part),
+        "attempt\n\\N\n");
+    assert_eq!(query("SELECT attempt FROM part WHERE attempt > 2", &part),
+        "attempt\n3\n");
+    fs::remove_dir_all(part).unwrap();
+}
+
+#[test]
+fn skips_end_of_file_terminal_zero_row_marks() {
+    use std::io::Write;
+    let part = part();
+    for name in [
+        "service", "status", "message", "message.null", "uid",
+        "attempt", "attempt.null"
+    ] {
+        let bytes = fs::metadata(part.join(format!("{name}.bin"))).unwrap().len();
+        let mut mark = fs::OpenOptions::new().append(true)
+            .open(part.join(format!("{name}.mrk2"))).unwrap();
+        mark.write_all(&bytes.to_le_bytes()).unwrap();
+        mark.write_all(&0u64.to_le_bytes()).unwrap();
+        mark.write_all(&0u64.to_le_bytes()).unwrap();
+    }
+    assert_eq!(query("SELECT service, status FROM part ORDER BY status DESC LIMIT 2", &part),
+        "service\tstatus\ndb\t503\napi\t500\n");
     fs::remove_dir_all(part).unwrap();
 }
