@@ -453,11 +453,17 @@ fn groups_nullable_and_uuid_keys_including_null() {
 fn orders_nullable_columns_with_explicit_null_precedence() {
     let part = part();
     assert_eq!(
-        query("SELECT attempt FROM part ORDER BY attempt ASC NULLS LAST", &part),
+        query(
+            "SELECT attempt FROM part ORDER BY attempt ASC NULLS LAST",
+            &part
+        ),
         "attempt\n1\n3\n\\N\n"
     );
     assert_eq!(
-        query("SELECT attempt FROM part ORDER BY attempt DESC NULLS FIRST", &part),
+        query(
+            "SELECT attempt FROM part ORDER BY attempt DESC NULLS FIRST",
+            &part
+        ),
         "attempt\n\\N\n3\n1\n"
     );
     assert_eq!(
