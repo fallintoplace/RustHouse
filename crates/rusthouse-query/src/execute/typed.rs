@@ -520,6 +520,9 @@ pub(super) fn execute_typed<W: Write>(
                 .iter()
                 .map(|&idx| cell(&batch[idx], index))
                 .collect::<Vec<_>>();
+            if is_count_distinct && cells.iter().any(|value| matches!(value, Cell::Null)) {
+                continue;
+            }
             if is_count_distinct || query.distinct {
                 let key = cells.iter().map(Cell::key).collect::<Vec<_>>();
                 if distinct.len() >= MAX_BUFFERED_ROWS && !distinct.contains(&key) {
