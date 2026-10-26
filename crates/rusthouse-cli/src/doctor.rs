@@ -177,6 +177,36 @@ fn inspect_table(report: &mut Report, database: &Path, name: &str, schema: bool,
     }
 }
 
+fn record_catalog_entry(
+    name: &str,
+    schemas: &mut BTreeSet<String>,
+    parts: &mut BTreeSet<String>,
+    report: &mut Report,
+) {
+    if name.starts_with('.')
+        && (name.contains(".pending-") || name.contains(".schema.tmp.") || name.contains(".drop-"))
+    {
+        report.warning(
+            "catalog",
+            format!("unpublished or interrupted staging entry: {name}"),
+        );
+    }
+    if let Some(table) = name.strip_suffix(".schema") {
+        if valid_name(table) {
+            schemas.insert(table.to_owned());
+        } else if !name.starts_with('.') {
+            report.error("catalog", format!("invalid schema filename: {name}"));
+        }
+    }
+    if let Some(table) = name.strip_suffix(".parts") {
+        if valid_name(table) {
+            parts.insert(table.to_owned());
+        } else if !name.starts_with('.') {
+            report.error("catalog", format!("invalid data directory name: {name}"));
+        }
+    }
+}
+
 /// Print a deterministic diagnostic report without altering on-disk data.
 /// Does not acquire a lock because doing so could create the lock inode.
 pub(super) fn run(mut args: impl Iterator<Item = OsString>) -> Result<(), String> {
@@ -207,30 +237,7 @@ pub(super) fn run(mut args: impl Iterator<Item = OsString>) -> Result<(), String
             report.warning("catalog", "non-UTF-8 root entry was skipped");
             continue;
         };
-        if name.starts_with('.')
-            && (name.contains(".pending-")
-                || name.contains(".schema.tmp.")
-                || name.contains(".drop-"))
-        {
-            report.warning(
-                "catalog",
-                format!("unpublished or interrupted staging entry: {name}"),
-            );
-        }
-        if let Some(table) = name.strip_suffix(".schema") {
-            if valid_name(table) {
-                schemas.insert(table.to_owned());
-            } else if !name.starts_with('.') {
-                report.error("catalog", format!("invalid schema filename: {name}"));
-            }
-        }
-        if let Some(table) = name.strip_suffix(".parts") {
-            if valid_name(table) {
-                parts.insert(table.to_owned());
-            } else if !name.starts_with('.') {
-                report.error("catalog", format!("invalid data directory name: {name}"));
-            }
-        }
+        record_catalog_entry(name, &mut schemas, &mut parts, &mut report);
     }
     let names = schemas.union(&parts).cloned().collect::<Vec<_>>();
     for name in names {
@@ -256,5 +263,31 @@ pub(super) fn run(mut args: impl Iterator<Item = OsString>) -> Result<(), String
         ))
     } else {
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn catalog_classifier_keeps_valid_tables_and_reports_staging_entries() {
+        let mut schemas = BTreeSet::new();
+        let mut parts = BTreeSet::new();
+        let mut report = Report::default();
+        for name in [
+            "logs.schema",
+            "logs.parts",
+            ".schema.tmp.17",
+            "bad-name.schema",
+        ] {
+            record_catalog_entry(name, &mut schemas, &mut parts, &mut report);
+        }
+        assert!(schemas.contains("logs"));
+        assert!(parts.contains("logs"));
+        assert_eq!(schemas.len(), 1);
+        assert_eq!(parts.len(), 1);
+        assert_eq!(report.warnings, 1);
+        assert_eq!(report.errors, 1);
     }
 }
