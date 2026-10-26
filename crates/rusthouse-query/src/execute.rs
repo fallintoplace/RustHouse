@@ -850,6 +850,8 @@ fn execute_aggregate_numbers<W: Write>(
                     AggregateFunction::Avg
                     | AggregateFunction::VarPop
                     | AggregateFunction::StddevPop
+                    | AggregateFunction::VarSamp
+                    | AggregateFunction::StddevSamp
                     | AggregateFunction::Median => unreachable!(),
                 }
             };
@@ -1139,7 +1141,11 @@ impl AggregateState {
                 };
                 self.value = Some(sum);
             }
-            AggregateFunction::Avg | AggregateFunction::VarPop | AggregateFunction::StddevPop => {
+            AggregateFunction::Avg
+            | AggregateFunction::VarPop
+            | AggregateFunction::StddevPop
+            | AggregateFunction::VarSamp
+            | AggregateFunction::StddevSamp => {
                 let numeric = match value {
                     Number::Unsigned(n) => n as f64,
                     Number::Signed(n) => n as f64,
@@ -1149,7 +1155,10 @@ impl AggregateState {
                 self.mean += difference / next_count as f64;
                 if matches!(
                     self.function,
-                    AggregateFunction::VarPop | AggregateFunction::StddevPop
+                    AggregateFunction::VarPop
+                        | AggregateFunction::StddevPop
+                        | AggregateFunction::VarSamp
+                        | AggregateFunction::StddevSamp
                 ) {
                     // Welford's algorithm avoids subtracting large squared sums.
                     self.squared_deviations += difference * (numeric - self.mean);
@@ -1182,13 +1191,25 @@ impl AggregateState {
     }
 
     fn render(&self) -> String {
-        if self.count == 0 {
+        if self.count == 0
+            || (self.count == 1
+                && matches!(
+                    self.function,
+                    AggregateFunction::VarSamp | AggregateFunction::StddevSamp
+                ))
+        {
             return "NULL".into();
         }
         match self.function {
             AggregateFunction::Avg => self.mean.to_string(),
             AggregateFunction::VarPop => (self.squared_deviations / self.count as f64).to_string(),
             AggregateFunction::StddevPop => (self.squared_deviations / self.count as f64)
+                .sqrt()
+                .to_string(),
+            AggregateFunction::VarSamp => {
+                (self.squared_deviations / (self.count - 1) as f64).to_string()
+            }
+            AggregateFunction::StddevSamp => (self.squared_deviations / (self.count - 1) as f64)
                 .sqrt()
                 .to_string(),
             AggregateFunction::Median => {
