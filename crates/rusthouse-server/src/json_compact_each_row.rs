@@ -20,7 +20,14 @@ fn write_compact_row<W: Write>(output: &mut W, line: &[u8], columns: usize) -> i
         if value == b"\\N" {
             output.write_all(b"null")?;
         } else {
-            write_json_string(output, &decode_tsv_value(value)?)?;
+            if value.contains(&b'\\') {
+                write_json_string(output, &decode_tsv_value(value)?)?;
+            } else {
+                let text = std::str::from_utf8(value).map_err(|_| {
+                    io::Error::new(io::ErrorKind::InvalidData, "invalid UTF-8 field")
+                })?;
+                write_json_string(output, text)?;
+            }
         }
     }
     output.write_all(b"]\n")
@@ -138,4 +145,16 @@ mod tests {
         let mut out = JsonCompactEachRowWriter::new(Vec::new());
         out.write_all(b"id\nbad\\q\n").unwrap_err();
     }
+    #[test]
+    fn borrows_utf8_and_still_decodes_tsv_escapes() {
+        let mut output = Vec::new();
+        write_compact_row(&mut output, "1\tcafé".as_bytes(), 2).unwrap();
+        write_compact_row(&mut output, b"2\ta\\tb", 2).unwrap();
+        assert_eq!(
+            output,
+            "[\"1\",\"café\"]\n[\"2\",\"a\\tb\"]\n".as_bytes()
+        );
+        assert!(write_compact_row(&mut Vec::new(), &[0xff], 1).is_err());
+    }
+
 }
