@@ -67,6 +67,52 @@ pub(super) struct CompiledPredicate {
     test: CompiledTest,
 }
 
+fn compile_predicate_test(
+    predicate: &Predicate,
+    column: &str,
+    convert: &mut impl FnMut(&str, &str) -> Result<Number, ExecutionError>,
+) -> Result<CompiledTest, ExecutionError> {
+    Ok(match predicate {
+        Predicate::Comparison {
+            operator, value, ..
+        } => {
+            let target = convert(column, value)?;
+            if matches!(*operator, Operator::Modulo(_) | Operator::ModuloNe(_))
+                && matches!(target, Number::Float(_))
+            {
+                return Err(ExecutionError::Invalid(
+                    "modulo requires integer columns".into(),
+                ));
+            }
+            CompiledTest::Comparison {
+                operator: *operator,
+                target,
+            }
+        }
+        Predicate::In { values, .. } | Predicate::NotIn { values, .. } => compile_in_test(
+            values
+                .iter()
+                .map(|value| convert(column, value))
+                .collect::<Result<Vec<_>, _>>()?,
+            matches!(predicate, Predicate::NotIn { .. }),
+        ),
+        Predicate::IsNull { .. } => {
+            return Err(ExecutionError::Invalid(
+                "IS NULL requires a typed scan".into(),
+            ));
+        }
+        Predicate::Like { .. } => {
+            return Err(ExecutionError::Invalid(
+                "LIKE requires a String column".into(),
+            ));
+        }
+        Predicate::NotBetween { lower, upper, .. } => CompiledTest::NotBetween {
+            lower: convert(column, lower)?,
+            upper: convert(column, upper)?,
+        },
+    })
+}
+
 fn compile_part_predicates(
     predicates: &[Predicate],
     scan_columns: &mut Vec<String>,
@@ -75,45 +121,7 @@ fn compile_part_predicates(
     let mut compiled = Vec::with_capacity(predicates.len());
     for predicate in predicates {
         let column = predicate.column();
-        let test = match predicate {
-            Predicate::Comparison {
-                operator, value, ..
-            } => {
-                let target = convert(column, value)?;
-                if matches!(*operator, Operator::Modulo(_) | Operator::ModuloNe(_))
-                    && matches!(target, Number::Float(_))
-                {
-                    return Err(ExecutionError::Invalid(
-                        "modulo requires integer columns".into(),
-                    ));
-                }
-                CompiledTest::Comparison {
-                    operator: *operator,
-                    target,
-                }
-            }
-            Predicate::In { values, .. } | Predicate::NotIn { values, .. } => compile_in_test(
-                values
-                    .iter()
-                    .map(|value| convert(column, value))
-                    .collect::<Result<Vec<_>, _>>()?,
-                matches!(predicate, Predicate::NotIn { .. }),
-            ),
-            Predicate::IsNull { .. } => {
-                return Err(ExecutionError::Invalid(
-                    "IS NULL requires a typed scan".into(),
-                ));
-            }
-            Predicate::Like { .. } => {
-                return Err(ExecutionError::Invalid(
-                    "LIKE requires a String column".into(),
-                ));
-            }
-            Predicate::NotBetween { lower, upper, .. } => CompiledTest::NotBetween {
-                lower: convert(column, lower)?,
-                upper: convert(column, upper)?,
-            },
-        };
+        let test = compile_predicate_test(predicate, column, &mut convert)?;
         let index = if let Some(index) = scan_columns
             .iter()
             .position(|candidate| candidate.as_str() == column)
