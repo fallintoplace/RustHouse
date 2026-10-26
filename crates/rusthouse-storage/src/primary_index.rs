@@ -427,21 +427,11 @@ mod tests {
             row_width: 8,
         };
         assert_eq!(
-            candidate_u64_mark_range(
-                &index,
-                0,
-                Bound::Included(512),
-                Bound::Included(520)
-            ),
+            candidate_u64_mark_range(&index, 0, Bound::Included(512), Bound::Included(520)),
             Some(511..521)
         );
         assert_eq!(
-            candidate_u64_mark_range(
-                &index,
-                0,
-                Bound::Excluded(512),
-                Bound::Excluded(520)
-            ),
+            candidate_u64_mark_range(&index, 0, Bound::Excluded(512), Bound::Excluded(520)),
             Some(512..520)
         );
         assert_eq!(
@@ -449,5 +439,4 @@ mod tests {
             Some(0..8_192)
         );
     }
-
 }
