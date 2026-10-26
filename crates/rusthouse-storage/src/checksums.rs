@@ -1,6 +1,7 @@
 use crate::{CompressedBlockReader, PartError};
 use std::collections::HashSet;
-use std::fs::File;
+use std::fs::{self, File};
+use std::io;
 use std::io::{Cursor, Read};
 use std::path::{Path, PathBuf};
 
@@ -75,6 +76,19 @@ impl PartChecksums {
 
 pub fn read_checksums(path: impl AsRef<Path>) -> Result<PartChecksums, PartError> {
     let path = path.as_ref();
+    let metadata = fs::symlink_metadata(path).map_err(|source| PartError::Io {
+        path: path.to_path_buf(),
+        source,
+    })?;
+    if !metadata.file_type().is_file() {
+        return Err(PartError::Io {
+            path: path.to_path_buf(),
+            source: io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "checksums must be a regular file",
+            ),
+        });
+    }
     let file = File::open(path).map_err(|source| PartError::Io {
         path: path.to_path_buf(),
         source,
@@ -466,6 +480,33 @@ mod tests {
             let checksums = parse_checksums(&data, Path::new("checksums.txt")).unwrap();
             assert!(checksums.files.is_empty());
         }
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn refuses_symlinked_checksums_on_direct_reads() {
+        use std::os::unix::fs::symlink;
+
+        let root = std::env::temp_dir().join(format!(
+            "rusthouse-direct-checksums-symlink-{}",
+            std::process::id()
+        ));
+        fs::create_dir(&root).unwrap();
+        fs::write(root.join("real.txt"), v3(&[0])).unwrap();
+        symlink("real.txt", root.join("checksums.txt")).unwrap();
+
+        assert!(matches!(
+            read_checksums(root.join("checksums.txt")),
+            Err(PartError::Io { source, .. })
+                if source.kind() == io::ErrorKind::InvalidInput
+        ));
+        // Directories must also be refused before File::open is attempted.
+        assert!(matches!(
+            read_checksums(&root),
+            Err(PartError::Io { source, .. })
+                if source.kind() == io::ErrorKind::InvalidInput
+        ));
+        fs::remove_dir_all(root).unwrap();
     }
 
     #[test]

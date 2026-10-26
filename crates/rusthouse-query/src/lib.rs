@@ -1,10 +1,13 @@
 mod ddl;
+mod delete;
 mod execute;
 mod explain;
 mod insert;
 mod lexer;
+mod scalar;
 pub use ddl::{ColumnDef, Ddl, parse_ddl};
-pub use execute::{ExecutionError, execute};
+pub use delete::parse_delete;
+pub use execute::{ExecutionError, RowPredicate, execute};
 pub use explain::explain_select;
 pub use insert::{Insert, parse_insert};
 
@@ -39,8 +42,43 @@ impl AggregateFunction {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ConstantValue {
+    Integer(i64),
+    Text(String),
+    Null,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Constant {
+    pub value: ConstantValue,
+    pub alias: Option<String>,
+}
+
+impl Constant {
+    fn header(&self) -> String {
+        if let Some(alias) = &self.alias {
+            return alias.clone();
+        }
+        match &self.value {
+            ConstantValue::Integer(value) => value.to_string(),
+            ConstantValue::Null => "NULL".into(),
+            ConstantValue::Text(value) => format!(
+                "'{}'",
+                value
+                    .replace('\\', "\\\\")
+                    .replace('\t', "\\t")
+                    .replace('\n', "\\n")
+                    .replace('\r', "\\r")
+                    .replace('\'', "''")
+            ),
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Projection {
     Literal(i64),
+    Constants(Vec<Constant>),
     Count,
     CountColumn {
         column: String,
@@ -309,6 +347,7 @@ pub fn parse_select(sql: &str) -> Result<Select, ParseError> {
         return Err(ParseError("only SELECT statements are supported".into()));
     }
     let distinct = parser.keyword("DISTINCT");
+    let mut literal_alias = None;
 
     let projection = if parser.take(Token::Star) {
         Projection::All
@@ -358,12 +397,55 @@ pub fn parse_select(sql: &str) -> Result<Select, ParseError> {
             return Err(ParseError("expected ')' after aggregate column".into()));
         }
         Projection::Aggregate { function, column }
-    } else if matches!(parser.tokens.get(parser.index), Some(Token::Number(_))) {
-        let literal = parser
-            .number()?
-            .parse::<i64>()
-            .map_err(|_| ParseError("SELECT literals must be signed 64-bit integers".into()))?;
-        Projection::Literal(literal)
+    } else if matches!(
+        parser.tokens.get(parser.index),
+        Some(Token::Number(_) | Token::String(_) | Token::LParen | Token::Plus | Token::Minus)
+    ) || matches!(
+        parser.tokens.get(parser.index),
+        Some(Token::Word(word)) if word.eq_ignore_ascii_case("NULL")
+    ) {
+        let mut columns = Vec::new();
+        loop {
+            if columns.len() >= 64 {
+                return Err(ParseError("SELECT supports at most 64 constants".into()));
+            }
+            let value = match parser.tokens.get(parser.index) {
+                Some(Token::Number(_) | Token::LParen | Token::Plus | Token::Minus) => {
+                    ConstantValue::Integer(scalar::parse(&mut parser)?)
+                }
+                Some(Token::String(value)) => {
+                    let value = value.clone();
+                    parser.index += 1;
+                    ConstantValue::Text(value)
+                }
+                Some(Token::Word(word)) if word.eq_ignore_ascii_case("NULL") => {
+                    parser.index += 1;
+                    ConstantValue::Null
+                }
+                _ => return Err(ParseError("expected a constant after comma".into())),
+            };
+            let alias = if parser.keyword("AS") {
+                Some(parser.word()?)
+            } else {
+                None
+            };
+            columns.push(Constant { value, alias });
+            if !parser.take(Token::Comma) {
+                break;
+            }
+        }
+        if let [
+            Constant {
+                value: ConstantValue::Integer(value),
+                alias,
+            },
+        ] = columns.as_slice()
+        {
+            literal_alias = alias.clone();
+            Projection::Literal(*value)
+        } else {
+            Projection::Constants(columns)
+        }
     } else {
         let mut columns = vec![parser.word()?];
         let mut grouped_count = false;
@@ -398,7 +480,9 @@ pub fn parse_select(sql: &str) -> Result<Select, ParseError> {
     if distinct && !matches!(projection, Projection::All | Projection::Columns(_)) {
         return Err(ParseError("DISTINCT supports only row projections".into()));
     }
-    let alias = if parser.keyword("AS") {
+    let alias = if let Some(alias) = literal_alias {
+        Some(alias)
+    } else if parser.keyword("AS") {
         let single_result = matches!(
             &projection,
             Projection::Literal(_)
@@ -527,10 +611,20 @@ pub fn parse_select(sql: &str) -> Result<Select, ParseError> {
     } else {
         None
     };
-    if source.is_none() && !matches!(projection, Projection::Literal(_)) {
+    if source.is_none()
+        && !matches!(
+            projection,
+            Projection::Literal(_) | Projection::Constants(_)
+        )
+    {
         return Err(ParseError("a table source is required".into()));
     }
-    if source.is_some() && matches!(projection, Projection::Literal(_)) {
+    if source.is_some()
+        && matches!(
+            projection,
+            Projection::Literal(_) | Projection::Constants(_)
+        )
+    {
         return Err(ParseError("literal SELECT does not support FROM".into()));
     }
 

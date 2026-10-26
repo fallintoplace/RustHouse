@@ -1,5 +1,7 @@
 use crate::{csv, csv_no_header, html, json_array, jsonl, markdown, vertical};
-use rusthouse_query::{Source, execute, explain_select, parse_ddl, parse_insert, parse_select};
+use rusthouse_query::{
+    Source, execute, explain_select, parse_ddl, parse_delete, parse_insert, parse_select,
+};
 use std::ffi::OsString;
 use std::path::PathBuf;
 
@@ -329,6 +331,16 @@ pub(super) fn run_sql_args(mut args: impl Iterator<Item = OsString>) -> Result<(
                 return Ok(());
             }
             return crate::database::insert(database_dir, &insert);
+        }
+        if let Some(delete) = parse_delete(&query).map_err(|error| error.to_string())? {
+            if explain || time || format.is_some() || output_path.is_some() || max_rows.is_some() {
+                return Err("DELETE cannot use output or SELECT-only flags".into());
+            }
+            if show_ast {
+                println!("{delete:#?}");
+                return Ok(());
+            }
+            return crate::database::delete(database_dir, &delete);
         }
     }
     if let Some(catalog_path) = catalog {
