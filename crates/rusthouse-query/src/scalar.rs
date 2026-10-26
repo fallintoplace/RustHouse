@@ -42,6 +42,10 @@ fn term(parser: &mut Parser, depth: usize) -> Result<i64, ParseError> {
             value = value
                 .checked_mul(factor(parser, depth)?)
                 .ok_or_else(overflow)?;
+        } else if parser.take(Token::Slash) {
+            value = value
+                .checked_div(factor(parser, depth)?)
+                .ok_or(ParseError("scalar division by zero or overflow".into()))?;
         } else if parser.take(Token::Percent) {
             value = value
                 .checked_rem(factor(parser, depth)?)
