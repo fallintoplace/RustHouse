@@ -2,10 +2,12 @@
 //! This is intentionally not a full database wire protocol.
 mod csv;
 mod json_array;
+mod json_compact_each_row;
 mod jsonl;
 
 use csv::CsvWriter;
 use json_array::JsonArraySink;
+use json_compact_each_row::JsonCompactEachRowWriter;
 use jsonl::JsonlWriter;
 use rusthouse_query::{Source, execute, explain_select, parse_select};
 use rusthouse_storage::{inspect_query_source, resolve_active_snapshot};
@@ -256,6 +258,7 @@ enum QueryFormat {
     Csv,
     Jsonl,
     Json,
+    JsonCompactEachRow,
 }
 
 fn query_parameters(target: &str) -> Result<(String, Option<String>, QueryFormat), &'static str> {
@@ -286,6 +289,7 @@ fn query_parameters(target: &str) -> Result<(String, Option<String>, QueryFormat
                     "csv" => QueryFormat::Csv,
                     "jsonl" => QueryFormat::Jsonl,
                     "json" => QueryFormat::Json,
+                    "json-compact-each-row" => QueryFormat::JsonCompactEachRow,
                     _ => return Err("unsupported query format"),
                 });
             }
@@ -425,6 +429,15 @@ pub fn handle_request(method: &str, target: &str, body: &[u8], config: &Config) 
             let mut jsonl = JsonlWriter::new(&mut writer);
             execute(&select, part.as_deref(), &mut jsonl)
         }
+        QueryFormat::JsonCompactEachRow => {
+            let mut compact = JsonCompactEachRowWriter::new(&mut writer);
+            execute(&select, part.as_deref(), &mut compact).and_then(|()| {
+                compact
+                    .finish()
+                    .map(|_| ())
+                    .map_err(rusthouse_query::ExecutionError::Io)
+            })
+        }
         QueryFormat::Json => {
             let mut array = JsonArraySink::new(&mut writer);
             let result = {
@@ -457,6 +470,7 @@ pub fn handle_request(method: &str, target: &str, body: &[u8], config: &Config) 
                 QueryFormat::Csv => "text/csv; charset=utf-8",
                 QueryFormat::Jsonl => "application/x-ndjson; charset=utf-8",
                 QueryFormat::Json => "application/json; charset=utf-8",
+                QueryFormat::JsonCompactEachRow => "application/x-ndjson; charset=utf-8",
             },
             body: writer.data,
         },
