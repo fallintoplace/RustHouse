@@ -409,7 +409,9 @@ pub fn handle_request(method: &str, target: &str, body: &[u8], config: &Config) 
         Ok(()) => Response {
             status: "200 OK",
             content_type: match format {
-                QueryFormat::Tsv | QueryFormat::TsvNoHeader => "text/tab-separated-values; charset=utf-8",
+                QueryFormat::Tsv | QueryFormat::TsvNoHeader => {
+                    "text/tab-separated-values; charset=utf-8"
+                }
                 QueryFormat::Csv => "text/csv; charset=utf-8",
                 QueryFormat::Jsonl => "application/x-ndjson; charset=utf-8",
                 QueryFormat::Json => "application/json; charset=utf-8",
@@ -893,5 +895,4 @@ mod tests {
         assert_eq!(empty.status, "200 OK");
         assert!(empty.body.is_empty());
     }
-
 }
