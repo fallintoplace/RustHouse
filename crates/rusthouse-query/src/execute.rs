@@ -2328,4 +2328,35 @@ mod tests {
             Err(ExecutionError::Invalid(_))
         ));
     }
+    #[test]
+    fn evaluates_unary_not_with_comparisons_lists_and_ranges() {
+        assert_eq!(
+            run("SELECT number FROM numbers(6) WHERE NOT number < 3", None).unwrap(),
+            "number\n3\n4\n5\n"
+        );
+        assert_eq!(
+            run(
+                "SELECT number FROM numbers(6) WHERE NOT number IN (1, 3, 5)",
+                None
+            )
+            .unwrap(),
+            "number\n0\n2\n4\n"
+        );
+        assert_eq!(
+            run(
+                "SELECT number FROM numbers(6) WHERE NOT number BETWEEN 2 AND 4",
+                None
+            )
+            .unwrap(),
+            "number\n0\n1\n5\n"
+        );
+        assert_eq!(
+            run(
+                "SELECT number FROM numbers(6) WHERE NOT number NOT BETWEEN 2 AND 4",
+                None
+            )
+            .unwrap(),
+            "number\n2\n3\n4\n"
+        );
+    }
 }
