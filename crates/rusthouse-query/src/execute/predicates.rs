@@ -107,7 +107,9 @@ fn compile_part_predicates(
                 true,
             ),
             Predicate::IsNull { .. } => {
-                return Err(ExecutionError::Invalid("IS NULL requires a typed scan".into()));
+                return Err(ExecutionError::Invalid(
+                    "IS NULL requires a typed scan".into(),
+                ));
             }
             Predicate::NotBetween { lower, upper, .. } => CompiledTest::NotBetween {
                 lower: convert(column, lower)?,

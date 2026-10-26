@@ -74,7 +74,11 @@ pub(super) fn requires_typed_scan(query: &Select, path: &Path) -> Result<bool, E
         | Projection::GroupedCount { column } => names.push(column),
         _ => {}
     }
-    for pred in query.predicates.iter().chain(query.or_predicates.iter().flatten()) {
+    for pred in query
+        .predicates
+        .iter()
+        .chain(query.or_predicates.iter().flatten())
+    {
         if matches!(pred, Predicate::IsNull { .. }) {
             return Ok(true);
         }
@@ -83,9 +87,10 @@ pub(super) fn requires_typed_scan(query: &Select, path: &Path) -> Result<bool, E
     if let Some(order) = &query.order_by {
         names.push(&order.column);
     }
-    Ok(metadata.columns.iter().any(|column| {
-        is_typed(&column.data_type) && names.contains(&column.name.as_str())
-    }))
+    Ok(metadata
+        .columns
+        .iter()
+        .any(|column| is_typed(&column.data_type) && names.contains(&column.name.as_str())))
 }
 
 fn base_type(data_type: &str) -> &str {
@@ -144,33 +149,42 @@ fn compile(
     indices: &HashMap<String, usize>,
     types: &HashMap<String, String>,
 ) -> Result<Vec<Condition>, ExecutionError> {
-    predicates.iter().map(|pred| {
-        let name = pred.column();
-        let index = *indices.get(name).ok_or_else(|| ExecutionError::Invalid(
-            format!("unknown WHERE column: {name}")
-        ))?;
-        let kind = types.get(name).ok_or_else(|| ExecutionError::Invalid(
-            format!("unknown WHERE column: {name}")
-        ))?;
-        let test = match pred {
-            Predicate::Comparison { operator, value, .. } => {
-                Test::Compare(*operator, parse_literal(kind, value)?)
-            }
-            Predicate::In { values, .. } => Test::In(
-                values.iter().map(|v| parse_literal(kind, v))
-                    .collect::<Result<Vec<_>, _>>()?, false
-            ),
-            Predicate::NotIn { values, .. } => Test::In(
-                values.iter().map(|v| parse_literal(kind, v))
-                    .collect::<Result<Vec<_>, _>>()?, true
-            ),
-            Predicate::NotBetween { lower, upper, .. } => Test::NotBetween(
-                parse_literal(kind, lower)?, parse_literal(kind, upper)?
-            ),
-            Predicate::IsNull { negated, .. } => Test::IsNull(*negated),
-        };
-        Ok(Condition { index, test })
-    }).collect()
+    predicates
+        .iter()
+        .map(|pred| {
+            let name = pred.column();
+            let index = *indices
+                .get(name)
+                .ok_or_else(|| ExecutionError::Invalid(format!("unknown WHERE column: {name}")))?;
+            let kind = types
+                .get(name)
+                .ok_or_else(|| ExecutionError::Invalid(format!("unknown WHERE column: {name}")))?;
+            let test = match pred {
+                Predicate::Comparison {
+                    operator, value, ..
+                } => Test::Compare(*operator, parse_literal(kind, value)?),
+                Predicate::In { values, .. } => Test::In(
+                    values
+                        .iter()
+                        .map(|v| parse_literal(kind, v))
+                        .collect::<Result<Vec<_>, _>>()?,
+                    false,
+                ),
+                Predicate::NotIn { values, .. } => Test::In(
+                    values
+                        .iter()
+                        .map(|v| parse_literal(kind, v))
+                        .collect::<Result<Vec<_>, _>>()?,
+                    true,
+                ),
+                Predicate::NotBetween { lower, upper, .. } => {
+                    Test::NotBetween(parse_literal(kind, lower)?, parse_literal(kind, upper)?)
+                }
+                Predicate::IsNull { negated, .. } => Test::IsNull(*negated),
+            };
+            Ok(Condition { index, test })
+        })
+        .collect()
 }
 
 fn cmp(left: &Cell, right: &Cell) -> Ordering {
@@ -201,8 +215,9 @@ fn matches_comparison(value: &Cell, target: &Cell, operator: Operator) -> bool {
     ) {
         return false;
     }
-    if !matches!((value,target),
-        (Cell::Text(_),Cell::Text(_)) | (Cell::Uuid(_),Cell::Uuid(_))
+    if !matches!(
+        (value, target),
+        (Cell::Text(_), Cell::Text(_)) | (Cell::Uuid(_), Cell::Uuid(_))
     ) {
         return false;
     }
@@ -219,25 +234,29 @@ fn matches_comparison(value: &Cell, target: &Cell, operator: Operator) -> bool {
 }
 
 fn passes(batch: &[TypedColumn], row: usize, branches: &[Vec<Condition>]) -> bool {
-    branches.iter().any(|branch| branch.iter().all(|condition| {
-        let value = cell(&batch[condition.index], row);
-        match &condition.test {
-            Test::IsNull(negated) => matches!(value, Cell::Null) != *negated,
-            Test::Compare(operator, target) => matches_comparison(&value, target, *operator),
-            Test::In(targets, negated) => {
-                if matches!(value, Cell::Null) { return false; }
-                let present = targets.iter().any(|target| {
-                    matches_comparison(&value, target, Operator::Eq)
-                });
-                present != *negated
+    branches.iter().any(|branch| {
+        branch.iter().all(|condition| {
+            let value = cell(&batch[condition.index], row);
+            match &condition.test {
+                Test::IsNull(negated) => matches!(value, Cell::Null) != *negated,
+                Test::Compare(operator, target) => matches_comparison(&value, target, *operator),
+                Test::In(targets, negated) => {
+                    if matches!(value, Cell::Null) {
+                        return false;
+                    }
+                    let present = targets
+                        .iter()
+                        .any(|target| matches_comparison(&value, target, Operator::Eq));
+                    present != *negated
+                }
+                Test::NotBetween(lower, upper) => {
+                    !matches!(value, Cell::Null)
+                        && (!matches_comparison(&value, lower, Operator::Ge)
+                            || !matches_comparison(&value, upper, Operator::Le))
+                }
             }
-            Test::NotBetween(lower, upper) => {
-                !matches!(value, Cell::Null)
-                    && (!matches_comparison(&value, lower, Operator::Ge)
-                        || !matches_comparison(&value, upper, Operator::Le))
-            }
-        }
-    }))
+        })
+    })
 }
 
 fn write_value<W: Write>(output: &mut W, value: &Cell) -> Result<(), ExecutionError> {
@@ -287,13 +306,20 @@ pub(super) fn execute_typed<W: Write>(
 ) -> Result<(), ExecutionError> {
     let metadata = inspect_part(part)?;
     let projection = match &query.projection {
-        Projection::All => metadata.columns.iter().map(|c| c.name.clone()).collect::<Vec<_>>(),
+        Projection::All => metadata
+            .columns
+            .iter()
+            .map(|c| c.name.clone())
+            .collect::<Vec<_>>(),
         Projection::Columns(cols) => cols.clone(),
         Projection::Count => Vec::new(),
         Projection::CountDistinct { column } => vec![column.clone()],
-        _ => return Err(ExecutionError::Invalid(
-            "typed SQL currently supports SELECT columns, COUNT(*) and COUNT(DISTINCT col)".into()
-        )),
+        _ => {
+            return Err(ExecutionError::Invalid(
+                "typed SQL currently supports SELECT columns, COUNT(*) and COUNT(DISTINCT col)"
+                    .into(),
+            ));
+        }
     };
     let mut names = projection.clone();
     let mut include = |name: &str| {
@@ -301,7 +327,11 @@ pub(super) fn execute_typed<W: Write>(
             names.push(name.to_owned());
         }
     };
-    for predicate in query.predicates.iter().chain(query.or_predicates.iter().flatten()) {
+    for predicate in query
+        .predicates
+        .iter()
+        .chain(query.or_predicates.iter().flatten())
+    {
         include(predicate.column());
     }
     let sort = query.order_by.as_ref().map(|order| {
@@ -315,23 +345,33 @@ pub(super) fn execute_typed<W: Write>(
         include(sort);
     }
     if names.is_empty() {
-        return Err(ExecutionError::Invalid("typed scan requires a column".into()));
+        return Err(ExecutionError::Invalid(
+            "typed scan requires a column".into(),
+        ));
     }
     if query.distinct && sort.as_ref().is_some_and(|name| !projection.contains(name)) {
         return Err(ExecutionError::Invalid(
-            "DISTINCT ORDER BY column must appear in SELECT".into()
+            "DISTINCT ORDER BY column must appear in SELECT".into(),
         ));
     }
-    let indices: HashMap<String, usize> = names.iter().enumerate()
-        .map(|(index, name)| (name.clone(), index)).collect();
-    let types: HashMap<String, String> = metadata.columns.iter()
-        .map(|col| (col.name.clone(), col.data_type.clone())).collect();
-    let first=compile(&query.predicates, &indices, &types)?;
+    let indices: HashMap<String, usize> = names
+        .iter()
+        .enumerate()
+        .map(|(index, name)| (name.clone(), index))
+        .collect();
+    let types: HashMap<String, String> = metadata
+        .columns
+        .iter()
+        .map(|col| (col.name.clone(), col.data_type.clone()))
+        .collect();
+    let first = compile(&query.predicates, &indices, &types)?;
     let mut conditions = vec![first];
     for branch in &query.or_predicates {
         conditions.push(compile(branch, &indices, &types)?);
     }
-    let projection_indices = projection.iter().map(|name| indices[name])
+    let projection_indices = projection
+        .iter()
+        .map(|name| indices[name])
         .collect::<Vec<_>>();
     let sort_index = sort.as_ref().map(|name| *indices.get(name).unwrap());
     let mut scan = TypedPartReader::open(part, &names)?;
@@ -359,12 +399,14 @@ pub(super) fn execute_typed<W: Write>(
                 continue;
             }
             if is_count {
-                count = count.checked_add(1).ok_or_else(|| ExecutionError::Invalid(
-                    "count overflow".into()
-                ))?;
+                count = count
+                    .checked_add(1)
+                    .ok_or_else(|| ExecutionError::Invalid("count overflow".into()))?;
                 continue;
             }
-            let cells = projection_indices.iter().map(|&idx| cell(&batch[idx], index))
+            let cells = projection_indices
+                .iter()
+                .map(|&idx| cell(&batch[idx], index))
                 .collect::<Vec<_>>();
             if is_count_distinct || query.distinct {
                 let key = cells.iter().map(Cell::key).collect::<Vec<_>>();
@@ -381,10 +423,13 @@ pub(super) fn execute_typed<W: Write>(
             if let Some(sort_index) = sort_index {
                 if ordered.len() >= MAX_BUFFERED_ROWS {
                     return Err(ExecutionError::Invalid(
-                        "typed ORDER BY exceeds 100000 matching rows".into()
+                        "typed ORDER BY exceeds 100000 matching rows".into(),
                     ));
                 }
-                ordered.push(Row { values: cells, sort_key: cell(&batch[sort_index], index) });
+                ordered.push(Row {
+                    values: cells,
+                    sort_key: cell(&batch[sort_index], index),
+                });
                 continue;
             }
             if skipped < offset {
@@ -400,7 +445,11 @@ pub(super) fn execute_typed<W: Write>(
     }
     if is_count || is_count_distinct {
         if offset == 0 {
-            let result = if is_count { count } else { distinct.len() as u64 };
+            let result = if is_count {
+                count
+            } else {
+                distinct.len() as u64
+            };
             writeln!(output, "{result}")?;
         }
         return Ok(());
@@ -408,7 +457,11 @@ pub(super) fn execute_typed<W: Write>(
     if let Some(order) = &query.order_by {
         ordered.sort_by(|left, right| {
             let comparison = cmp(&left.sort_key, &right.sort_key);
-            if order.descending { comparison.reverse() } else { comparison }
+            if order.descending {
+                comparison.reverse()
+            } else {
+                comparison
+            }
         });
         for row in ordered.into_iter().skip(offset).take(limit) {
             write_row(output, &row.values)?;

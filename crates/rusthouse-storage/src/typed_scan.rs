@@ -15,8 +15,14 @@ pub enum TypedColumn {
     Numeric(NumericColumn),
     Text(StringColumn),
     Uuid(Vec<UuidValue>),
-    NullableNumeric { values: NumericColumn, nulls: Vec<u8> },
-    NullableText { values: StringColumn, nulls: Vec<u8> },
+    NullableNumeric {
+        values: NumericColumn,
+        nulls: Vec<u8>,
+    },
+    NullableText {
+        values: StringColumn,
+        nulls: Vec<u8>,
+    },
 }
 
 impl TypedColumn {
@@ -84,15 +90,24 @@ struct MarkStream<'a> {
 impl<'a> MarkStream<'a> {
     fn open(stream: &'a mut Stream, index: usize) -> Result<Self, PartError> {
         let mark = &stream.marks[index];
-        let offset = usize::try_from(mark.decompressed_offset)
-            .map_err(|_| PartError::InvalidScan("String mark offset exceeds address space".into()))?;
+        let offset = usize::try_from(mark.decompressed_offset).map_err(|_| {
+            PartError::InvalidScan("String mark offset exceeds address space".into())
+        })?;
         stream.reader.seek_to_block(mark.compressed_offset)?;
-        let block = stream.reader.next_decoded()
+        let block = stream
+            .reader
+            .next_decoded()
             .ok_or_else(|| PartError::InvalidScan("String stream ends at mark".into()))??;
         if offset >= block.data.len() {
-            return Err(PartError::InvalidScan("String mark offset exceeds block".into()));
+            return Err(PartError::InvalidScan(
+                "String mark offset exceeds block".into(),
+            ));
         }
-        Ok(Self { stream, block: Some(block), offset })
+        Ok(Self {
+            stream,
+            block: Some(block),
+            offset,
+        })
     }
 }
 
@@ -105,7 +120,8 @@ impl Read for MarkStream<'_> {
             if let Some(block) = &self.block {
                 if self.offset < block.data.len() {
                     let read = destination.len().min(block.data.len() - self.offset);
-                    destination[..read].copy_from_slice(&block.data[self.offset..self.offset + read]);
+                    destination[..read]
+                        .copy_from_slice(&block.data[self.offset..self.offset + read]);
                     self.offset += read;
                     return Ok(read);
                 }
@@ -145,7 +161,9 @@ impl TypedPartReader {
         let part = part.as_ref();
         let metadata = inspect_part(part)?;
         if names.is_empty() {
-            return Err(PartError::InvalidScan("typed scan requires at least one column".into()));
+            return Err(PartError::InvalidScan(
+                "typed scan requires at least one column".into(),
+            ));
         }
         let mut columns = Vec::with_capacity(names.len());
         let mut shared_rows: Option<Vec<u64>> = None;
@@ -154,15 +172,19 @@ impl TypedPartReader {
             if !name.bytes().all(|v| v.is_ascii_alphanumeric() || v == b'_') {
                 return Err(PartError::InvalidScan("unsafe column filename".into()));
             }
-            let data_type = metadata.columns.iter().find(|column| column.name == *name)
+            let data_type = metadata
+                .columns
+                .iter()
+                .find(|column| column.name == *name)
                 .ok_or_else(|| PartError::InvalidScan(format!("unknown column: {name}")))?
-                .data_type.as_str();
+                .data_type
+                .as_str();
             let (kind, nullable) = match data_type {
                 "String" => (StorageKind::String, false),
                 "UUID" => (StorageKind::Uuid, false),
                 "Nullable(String)" => (StorageKind::NullableString, true),
                 other if other.starts_with("Nullable(") && other.ends_with(')') => {
-                    let inner = &other[9..other.len()-1];
+                    let inner = &other[9..other.len() - 1];
                     if numeric_storage_type(inner).is_none() {
                         return Err(PartError::InvalidScan(format!(
                             "unsupported typed scan type: {other}"
@@ -173,29 +195,42 @@ impl TypedPartReader {
                 other if numeric_storage_type(other).is_some() => {
                     (StorageKind::Numeric(other.to_owned()), false)
                 }
-                other => return Err(PartError::InvalidScan(format!(
-                    "unsupported typed scan type: {other}"
-                ))),
+                other => {
+                    return Err(PartError::InvalidScan(format!(
+                        "unsupported typed scan type: {other}"
+                    )));
+                }
             };
             if metadata.rows == 0 {
                 continue;
             }
             let data = Stream::open(part, name)?;
-            let null_map = nullable.then(|| Stream::open(part, &format!("{name}.null")))
+            let null_map = nullable
+                .then(|| Stream::open(part, &format!("{name}.null")))
                 .transpose()?;
-            let stream_rows = data.marks.iter()
-                .map(|mark| mark.rows.ok_or_else(|| PartError::InvalidScan(
-                    "typed scan requires adaptive marks".into()
-                )))
+            let stream_rows = data
+                .marks
+                .iter()
+                .map(|mark| {
+                    mark.rows.ok_or_else(|| {
+                        PartError::InvalidScan("typed scan requires adaptive marks".into())
+                    })
+                })
                 .collect::<Result<Vec<_>, _>>()?;
-            let total = stream_rows.iter().try_fold(0u64, |acc, rows| acc.checked_add(*rows))
+            let total = stream_rows
+                .iter()
+                .try_fold(0u64, |acc, rows| acc.checked_add(*rows))
                 .ok_or_else(|| PartError::InvalidScan("granule count overflow".into()))?;
             if total != metadata.rows {
-                return Err(PartError::InvalidScan("typed column row count mismatch".into()));
+                return Err(PartError::InvalidScan(
+                    "typed column row count mismatch".into(),
+                ));
             }
             if let Some(reference) = &shared_rows {
                 if *reference != stream_rows {
-                    return Err(PartError::InvalidScan("unaligned typed column marks".into()));
+                    return Err(PartError::InvalidScan(
+                        "unaligned typed column marks".into(),
+                    ));
                 }
             } else {
                 marks = stream_rows.len();
@@ -204,12 +239,22 @@ impl TypedPartReader {
             if let Some(nulls) = &null_map {
                 let rows: Vec<_> = nulls.marks.iter().map(|mark| mark.rows).collect();
                 if rows != stream_rows.iter().copied().map(Some).collect::<Vec<_>>() {
-                    return Err(PartError::InvalidScan("unaligned nullable null-map marks".into()));
+                    return Err(PartError::InvalidScan(
+                        "unaligned nullable null-map marks".into(),
+                    ));
                 }
             }
-            columns.push(ColumnReader { kind, data, null_map });
+            columns.push(ColumnReader {
+                kind,
+                data,
+                null_map,
+            });
         }
-        Ok(Self { columns, marks, next_mark: 0 })
+        Ok(Self {
+            columns,
+            marks,
+            next_mark: 0,
+        })
     }
 
     pub fn next_batch(&mut self) -> Result<Option<Vec<TypedColumn>>, PartError> {
@@ -220,10 +265,14 @@ impl TypedPartReader {
         let mut batch = Vec::with_capacity(self.columns.len());
         for column in &mut self.columns {
             let mark = &column.data.marks[index];
-            let rows = usize::try_from(mark.rows.ok_or_else(|| PartError::InvalidScan(
-                "typed scan requires adaptive marks".into()
-            ))?).map_err(|_| PartError::InvalidScan("row count too large".into()))?;
-            let nulls = column.null_map.as_mut().map(|stream| stream.read_fixed(index, rows))
+            let rows = usize::try_from(mark.rows.ok_or_else(|| {
+                PartError::InvalidScan("typed scan requires adaptive marks".into())
+            })?)
+            .map_err(|_| PartError::InvalidScan("row count too large".into()))?;
+            let nulls = column
+                .null_map
+                .as_mut()
+                .map(|stream| stream.read_fixed(index, rows))
                 .transpose()?;
             let values = match &column.kind {
                 StorageKind::Numeric(kind) | StorageKind::NullableNumeric(kind) => {
@@ -236,28 +285,38 @@ impl TypedPartReader {
                 }
                 StorageKind::String | StorageKind::NullableString => {
                     let mut stream = MarkStream::open(&mut column.data, index)?;
-                    TypedColumn::Text(read_legacy_strings(&mut stream, rows)
-                        .map_err(|error| PartError::InvalidScan(error.to_string()))?)
+                    TypedColumn::Text(
+                        read_legacy_strings(&mut stream, rows)
+                            .map_err(|error| PartError::InvalidScan(error.to_string()))?,
+                    )
                 }
                 StorageKind::Uuid => {
                     let bytes = column.data.read_fixed(
                         index,
-                        rows.checked_mul(16).ok_or_else(|| PartError::InvalidScan(
-                            "UUID granule too large".into()
-                        ))?,
+                        rows.checked_mul(16).ok_or_else(|| {
+                            PartError::InvalidScan("UUID granule too large".into())
+                        })?,
                     )?;
-                    TypedColumn::Uuid(read_uuid_values(&mut bytes.as_slice(), rows)
-                        .map_err(|error| PartError::InvalidScan(error.to_string()))?)
+                    TypedColumn::Uuid(
+                        read_uuid_values(&mut bytes.as_slice(), rows)
+                            .map_err(|error| PartError::InvalidScan(error.to_string()))?,
+                    )
                 }
             };
             let values = match (values, nulls) {
-                (TypedColumn::Numeric(values), Some(nulls)) => TypedColumn::NullableNumeric { values, nulls },
-                (TypedColumn::Text(values), Some(nulls)) => TypedColumn::NullableText { values, nulls },
+                (TypedColumn::Numeric(values), Some(nulls)) => {
+                    TypedColumn::NullableNumeric { values, nulls }
+                }
+                (TypedColumn::Text(values), Some(nulls)) => {
+                    TypedColumn::NullableText { values, nulls }
+                }
                 (other, None) => other,
                 _ => return Err(PartError::InvalidScan("unsupported null map".into())),
             };
             if values.len() != rows {
-                return Err(PartError::InvalidScan("typed batch row count mismatch".into()));
+                return Err(PartError::InvalidScan(
+                    "typed batch row count mismatch".into(),
+                ));
             }
             batch.push(values);
         }

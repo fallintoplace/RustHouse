@@ -82,7 +82,10 @@ pub enum Predicate {
         lower: String,
         upper: String,
     },
-    IsNull { column: String, negated: bool },
+    IsNull {
+        column: String,
+        negated: bool,
+    },
 }
 
 impl Predicate {
@@ -407,7 +410,10 @@ pub fn parse_select(sql: &str) -> Result<Select, ParseError> {
                 if !parser.keyword("NULL") {
                     return Err(ParseError("expected NULL after IS".into()));
                 }
-                branches.last_mut().unwrap().push(Predicate::IsNull { column, negated });
+                branches
+                    .last_mut()
+                    .unwrap()
+                    .push(Predicate::IsNull { column, negated });
                 total_conditions += 1;
             } else if parser.keyword("BETWEEN") {
                 let lower = parser.number()?;
@@ -986,13 +992,17 @@ mod tests {
             "SELECT id, FROM part",
             "SELECT id FROM part LIMIT -1",
             "SELECT id FROM part LIMIT 1.5",
-            "SELECT id FROM part WHERE id > 'abc'",
             "SELECT id FROM part WHERE id =",
             "SELECT id FROM part LIMIT 184467440737095516161",
             "SELECT 1 + 2",
         ] {
             assert!(parse_select(sql).is_err(), "{sql}");
         }
+    }
+
+    #[test]
+    fn allows_quoted_predicate_values_for_type_validation_at_execution() {
+        assert!(parse_select("SELECT id FROM part WHERE id > 'abc'").is_ok());
     }
 
     #[test]
