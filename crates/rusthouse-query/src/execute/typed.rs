@@ -340,11 +340,13 @@ pub(super) fn execute_typed<W: Write>(
         if matches!(query.projection, Projection::GroupedCount { .. }) {
             return None;
         }
-        Some(if query.alias.as_deref() == Some(order.column.as_str()) && projection.len() == 1 {
-            projection[0].clone()
-        } else {
-            order.column.clone()
-        })
+        Some(
+            if query.alias.as_deref() == Some(order.column.as_str()) && projection.len() == 1 {
+                projection[0].clone()
+            } else {
+                order.column.clone()
+            },
+        )
     });
     if let Some(sort) = &sort {
         include(sort);
