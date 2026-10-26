@@ -1,4 +1,4 @@
-use crate::{csv, csv_no_header, json_array, jsonl, markdown, vertical};
+use crate::{csv, csv_no_header, html, json_array, jsonl, markdown, vertical};
 use rusthouse_query::{execute, explain_select, parse_ddl, parse_select};
 use std::ffi::OsString;
 use std::path::PathBuf;
@@ -14,6 +14,7 @@ enum SqlOutputFormat {
     Jsonl,
     Json,
     Markdown,
+    Html,
     Vertical,
 }
 
@@ -27,9 +28,10 @@ impl SqlOutputFormat {
             Some("jsonl") => Ok(Self::Jsonl),
             Some("json") => Ok(Self::Json),
             Some("markdown") => Ok(Self::Markdown),
+            Some("html") => Ok(Self::Html),
             Some("vertical") => Ok(Self::Vertical),
             _ => Err(
-                "--format must be tsv, tsv-no-header, csv, csv-no-header, jsonl, json, markdown, or vertical"
+                "--format must be tsv, tsv-no-header, csv, csv-no-header, jsonl, json, markdown, html, or vertical"
                     .into(),
             ),
         }
@@ -240,6 +242,15 @@ pub(super) fn run_sql_args(mut args: impl Iterator<Item = OsString>) -> Result<(
             part.as_deref(),
             &mut markdown::MarkdownWriter::new(&mut output),
         ),
+        SqlOutputFormat::Html => {
+            let mut writer = html::HtmlWriter::new(&mut output);
+            execute(&select, part.as_deref(), &mut writer).and_then(|()| {
+                writer
+                    .finish()
+                    .map(|_| ())
+                    .map_err(rusthouse_query::ExecutionError::Io)
+            })
+        }
         SqlOutputFormat::Vertical => execute(
             &select,
             part.as_deref(),
