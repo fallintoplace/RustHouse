@@ -7,6 +7,7 @@ mod decimal;
 mod enums;
 mod file_sizes;
 mod fixed_strings;
+mod fixed_width;
 mod granules;
 mod ip;
 mod mark_validation;
