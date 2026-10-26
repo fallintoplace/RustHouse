@@ -997,7 +997,9 @@ fn compile_part_predicates(
                 operator, value, ..
             } => {
                 let target = convert(column, value)?;
-                if matches!(*operator, Operator::Modulo(_) | Operator::ModuloNe(_)) && matches!(target, Number::Float(_)) {
+                if matches!(*operator, Operator::Modulo(_) | Operator::ModuloNe(_))
+                    && matches!(target, Number::Float(_))
+                {
                     return Err(ExecutionError::Invalid(
                         "modulo requires integer columns".into(),
                     ));
