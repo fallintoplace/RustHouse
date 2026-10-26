@@ -12,7 +12,11 @@ fn gcd_and_lcm_accept_negative_zero_and_composed_constants() {
         ("SELECT lcm(3 * 2, 4) + 1", 13),
         ("SELECT gcd(lcm(8, 12), 18)", 6),
     ] {
-        assert_eq!(parse_select(sql).unwrap().projection, Projection::Literal(expected), "{sql}");
+        assert_eq!(
+            parse_select(sql).unwrap().projection,
+            Projection::Literal(expected),
+            "{sql}"
+        );
     }
 }
 
