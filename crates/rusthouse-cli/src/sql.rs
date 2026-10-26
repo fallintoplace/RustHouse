@@ -40,6 +40,7 @@ pub(super) fn run_sql_args(mut args: impl Iterator<Item = OsString>) -> Result<(
     let mut output_path = None;
     let mut show_ast = false;
     let mut max_rows = None;
+    let mut catalog = None;
     while let Some(arg) = args.next() {
         if arg.to_str() == Some("--show-ast") {
             if show_ast {
@@ -81,6 +82,11 @@ pub(super) fn run_sql_args(mut args: impl Iterator<Item = OsString>) -> Result<(
                 return Err("duplicate --output option".into());
             }
             output_path = Some(PathBuf::from(args.next().ok_or("missing --output path")?));
+        } else if arg.to_str() == Some("--catalog") {
+            if catalog.is_some() {
+                return Err("duplicate --catalog option".into());
+            }
+            catalog = Some(PathBuf::from(args.next().ok_or("missing --catalog directory")?));
         } else if arg.to_str() == Some("--part") {
             if part.is_some() {
                 return Err("duplicate --part option".into());
@@ -131,6 +137,23 @@ pub(super) fn run_sql_args(mut args: impl Iterator<Item = OsString>) -> Result<(
     } else {
         query.ok_or("missing SQL statement")?
     };
+    if let Some(ddl) = crate::ddl::parse_ddl(&query)? {
+        if show_ast {
+            if output_path.is_some() {
+                return Err("--output cannot be combined with --show-ast".into());
+            }
+            println!("{ddl:#?}");
+            return Ok(());
+        }
+        if part.is_some() || max_rows.is_some() || format.is_some() || output_path.is_some() {
+            return Err("DDL does not accept --part, --max-rows, --format, or --output".into());
+        }
+        let catalog = catalog.ok_or("DDL requires --catalog <directory>")?;
+        return crate::ddl::execute_ddl(ddl, &catalog);
+    }
+    if catalog.is_some() {
+        return Err("--catalog is only supported for DDL statements".into());
+    }
     let mut select = parse_select(&query).map_err(|error| error.to_string())?;
     if show_ast {
         if output_path.is_some() {
