@@ -22,6 +22,7 @@ mod scan_layout;
 mod stream;
 mod string_arrays;
 mod strings;
+mod uuid;
 
 pub use arrays::{
     ArrayOffsets, ArrayOffsetsEncoding, ArrayReadError, NumericArrayColumn, read_array_offsets,
@@ -61,6 +62,7 @@ pub use string_arrays::{
     read_sized_string_array_column,
 };
 pub use strings::{StringColumn, StringReadError, read_legacy_strings, read_sized_strings};
+pub use uuid::{UuidValue, read_uuid_values};
 
 use std::error::Error;
 use std::fmt;
