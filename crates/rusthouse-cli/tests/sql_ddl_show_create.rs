@@ -34,9 +34,12 @@ fn show_create_reconstructs_a_round_trippable_schema_after_alters() {
         .success()
     );
     assert!(
-        sql("ALTER TABLE events RENAME COLUMN active TO enabled", &source)
-            .status
-            .success()
+        sql(
+            "ALTER TABLE events RENAME COLUMN active TO enabled",
+            &source
+        )
+        .status
+        .success()
     );
 
     let result = sql("SHOW CREATE TABLE events;", &source);
