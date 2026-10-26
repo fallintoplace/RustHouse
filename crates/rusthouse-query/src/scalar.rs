@@ -55,7 +55,9 @@ fn term(parser: &mut Parser, depth: usize) -> Result<i64, ParseError> {
 
 fn factor(parser: &mut Parser, depth: usize) -> Result<i64, ParseError> {
     if depth >= MAX_DEPTH {
-        return Err(ParseError("scalar expressions nest at most 16 levels".into()));
+        return Err(ParseError(
+            "scalar expressions nest at most 16 levels".into(),
+        ));
     }
     if parser.take(Token::Minus) {
         return factor(parser, depth + 1)?
