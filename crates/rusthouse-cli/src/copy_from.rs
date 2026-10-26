@@ -45,6 +45,7 @@ fn push_record(
 }
 
 fn parse_csv(data: &str) -> Result<Vec<Vec<Option<String>>>, String> {
+    let data = data.strip_prefix('\u{feff}').unwrap_or(data);
     let mut records = Vec::new();
     let mut row = Vec::new();
     let mut field = String::new();
@@ -187,5 +188,22 @@ mod tests {
         for input in ["\"unterminated", "a\"bad,b", "\"a\"x,b", "bad\rline"] {
             assert!(parse_csv(input).is_err(), "{input}");
         }
+    }
+}
+
+#[cfg(test)]
+mod utf8_bom_regressions {
+    use super::*;
+
+    #[test]
+    fn ignores_file_bom_without_removing_embedded_unicode_markers() {
+        assert_eq!(
+            parse_csv("\u{feff}id,name\r\n1,Ada\r\n").unwrap(),
+            parse_csv("id,name\r\n1,Ada\r\n").unwrap()
+        );
+        assert_eq!(
+            parse_csv("id,\u{feff}name\n").unwrap()[0][1],
+            Some("\u{feff}name".to_owned())
+        );
     }
 }
