@@ -86,6 +86,12 @@ pub enum Predicate {
         lower: String,
         upper: String,
     },
+    Like {
+        column: String,
+        pattern: String,
+        case_insensitive: bool,
+        negated: bool,
+    },
     IsNull {
         column: String,
         negated: bool,
@@ -99,6 +105,7 @@ impl Predicate {
             | Self::In { column, .. }
             | Self::NotIn { column, .. }
             | Self::NotBetween { column, .. }
+            | Self::Like { column, .. }
             | Self::IsNull { column, .. } => column,
         }
     }
@@ -172,6 +179,16 @@ impl Parser {
             true
         } else {
             false
+        }
+    }
+
+    fn like_keyword(&mut self) -> Option<bool> {
+        if self.keyword("LIKE") {
+            Some(false)
+        } else if self.keyword("ILIKE") {
+            Some(true)
+        } else {
+            None
         }
     }
 
@@ -449,6 +466,27 @@ pub fn parse_select(sql: &str) -> Result<Select, ParseError> {
                     });
                     total_conditions += 2;
                 }
+            } else if let Some(case_insensitive) = parser.like_keyword() {
+                if !matches!(parser.tokens.get(parser.index), Some(Token::String(_))) {
+                    return Err(ParseError("LIKE requires a quoted string pattern".into()));
+                }
+                let pattern = parser.literal()?;
+                let escapes = pattern
+                    .as_bytes()
+                    .iter()
+                    .rev()
+                    .take_while(|&&byte| byte == b'\\')
+                    .count();
+                if escapes % 2 != 0 {
+                    return Err(ParseError("LIKE pattern has a trailing escape".into()));
+                }
+                branches.last_mut().unwrap().push(Predicate::Like {
+                    column,
+                    pattern,
+                    case_insensitive,
+                    negated: negate_in,
+                });
+                total_conditions += 1;
             } else if parser.keyword("IN") {
                 if !parser.take(Token::LParen) {
                     return Err(ParseError("expected '(' after IN".into()));
