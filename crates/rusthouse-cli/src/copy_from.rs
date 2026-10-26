@@ -203,7 +203,9 @@ pub(super) fn run(database: &Path, statement: &CopyFrom) -> Result<(), String> {
         CopyFormat::Tsv => MAX_RECORDS,
     };
     if records.len() > max_data_records {
-        return Err(format!("COPY supports at most {max_data_records} data rows"));
+        return Err(format!(
+            "COPY supports at most {max_data_records} data rows"
+        ));
     }
     if records.is_empty() {
         // Empty imports should not create needless immutable parts.
