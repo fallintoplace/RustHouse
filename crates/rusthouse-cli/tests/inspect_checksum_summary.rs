@@ -16,10 +16,7 @@ fn summarizes_manifest_bytes_without_opening_data_files() {
     ));
     let mut data = b"checksums format version: 3\n".to_vec();
     varuint(2, &mut data);
-    for (name, size, original) in [
-        ("id.bin", 80u64, Some(240u64)),
-        ("id.mrk2", 20u64, None),
-    ] {
+    for (name, size, original) in [("id.bin", 80u64, Some(240u64)), ("id.mrk2", 20u64, None)] {
         varuint(name.len() as u64, &mut data);
         data.extend_from_slice(name.as_bytes());
         varuint(size, &mut data);
