@@ -9,7 +9,10 @@ fn is_extrema(name: &str) -> bool {
 }
 
 fn is_bitwise(name: &str) -> bool {
-    matches!(name.to_ascii_uppercase().as_str(), "BITAND" | "BITOR" | "BITXOR")
+    matches!(
+        name.to_ascii_uppercase().as_str(),
+        "BITAND" | "BITOR" | "BITXOR"
+    )
 }
 
 pub(super) fn is_function(name: &str) -> bool {
