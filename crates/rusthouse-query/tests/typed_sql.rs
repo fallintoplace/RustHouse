@@ -206,6 +206,47 @@ fn aggregates_typed_filters_across_frozen_parts() {
 }
 
 #[test]
+fn typed_topk_keeps_stable_ties_and_respects_offsets() {
+    let part = part();
+    assert_eq!(
+        query(
+            "SELECT service FROM part ORDER BY status DESC LIMIT 1 OFFSET 1",
+            &part
+        ),
+        "service\napi\n"
+    );
+    assert_eq!(
+        query(
+            "SELECT status FROM part ORDER BY service ASC LIMIT 2",
+            &part
+        ),
+        "status\n200\n500\n"
+    );
+    assert_eq!(
+        query(
+            "SELECT status FROM part ORDER BY service ASC LIMIT 1 OFFSET 1",
+            &part
+        ),
+        "status\n500\n"
+    );
+    assert_eq!(
+        query(
+            "SELECT status FROM part ORDER BY service DESC LIMIT 2",
+            &part
+        ),
+        "status\n503\n200\n"
+    );
+    assert_eq!(
+        query(
+            "SELECT status FROM part ORDER BY service ASC, status DESC LIMIT 2",
+            &part
+        ),
+        "status\n500\n200\n"
+    );
+    fs::remove_dir_all(part).unwrap();
+}
+
+#[test]
 fn selects_mixed_string_and_numeric_rows() {
     let part = part();
     assert_eq!(
