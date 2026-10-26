@@ -4,6 +4,28 @@ use std::io::{self, Write};
 
 const MAX_LINE_BYTES: usize = 1024 * 1024;
 
+fn write_compact_row<W: Write>(output: &mut W, line: &[u8], columns: usize) -> io::Result<()> {
+    let width = 1 + line.iter().filter(|&&byte| byte == b'\t').count();
+    if width != columns {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            "JSON row width differs from header",
+        ));
+    }
+    output.write_all(b"[")?;
+    for (index, value) in line.split(|byte| *byte == b'\t').enumerate() {
+        if index > 0 {
+            output.write_all(b",")?;
+        }
+        if value == b"\\N" {
+            output.write_all(b"null")?;
+        } else {
+            write_json_string(output, &decode_tsv_value(value)?)?;
+        }
+    }
+    output.write_all(b"]\n")
+}
+
 pub(super) struct JsonCompactEachRowWriter<W: Write> {
     output: W,
     columns: Option<usize>,
@@ -20,7 +42,7 @@ impl<W: Write> JsonCompactEachRowWriter<W> {
     }
 
     fn finish_line(&mut self) -> io::Result<()> {
-        if self.columns.is_none() {
+        let Some(columns) = self.columns else {
             std::str::from_utf8(&self.line)
                 .map_err(|_| io::Error::new(io::ErrorKind::InvalidData, "invalid TSV header"))?;
             let columns = 1 + self.line.iter().filter(|&&byte| byte == b'\t').count();
@@ -33,26 +55,8 @@ impl<W: Write> JsonCompactEachRowWriter<W> {
             self.columns = Some(columns);
             self.line.clear();
             return Ok(());
-        }
-        let width = 1 + self.line.iter().filter(|&&byte| byte == b'\t').count();
-        if Some(width) != self.columns {
-            return Err(io::Error::new(
-                io::ErrorKind::InvalidData,
-                "JSON row width differs from header",
-            ));
-        }
-        self.output.write_all(b"[")?;
-        for (index, value) in self.line.split(|byte| *byte == b'\t').enumerate() {
-            if index > 0 {
-                self.output.write_all(b",")?;
-            }
-            if value == b"\\N" {
-                self.output.write_all(b"null")?;
-            } else {
-                write_json_string(&mut self.output, &decode_tsv_value(value)?)?;
-            }
-        }
-        self.output.write_all(b"]\n")?;
+        };
+        write_compact_row(&mut self.output, &self.line, columns)?;
         self.line.clear();
         Ok(())
     }
@@ -107,6 +111,15 @@ mod tests {
             out.finish().unwrap(),
             b"[\"7\",\"hello\\tworld\",null]\n[\"8\",\"NULL\",null]\n"
         );
+    }
+
+    #[test]
+    fn compact_row_validates_width_before_writing() {
+        let mut output = Vec::new();
+        assert!(write_compact_row(&mut output, b"only-one", 2).is_err());
+        assert!(output.is_empty());
+        write_compact_row(&mut output, b"1\t\\N", 2).unwrap();
+        assert_eq!(output, b"[\"1\",null]\n");
     }
 
     #[test]
