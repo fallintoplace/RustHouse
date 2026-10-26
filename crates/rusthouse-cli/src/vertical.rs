@@ -45,9 +45,10 @@ impl<W: Write> VerticalWriter<W> {
             ));
         }
 
-        let row = self.rows.checked_add(1).ok_or_else(|| {
-            io::Error::new(io::ErrorKind::InvalidData, "too many vertical rows")
-        })?;
+        let row = self
+            .rows
+            .checked_add(1)
+            .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidData, "too many vertical rows"))?;
         writeln!(self.output, "Row {row}:")?;
         for (header, field) in headers.iter().zip(fields) {
             self.output.write_all(b"  ")?;
@@ -125,7 +126,8 @@ mod tests {
     fn rejects_rows_larger_than_one_megabyte() {
         let mut writer = VerticalWriter::new(Vec::new());
         assert_eq!(
-            writer.write_all(&vec![b'a'; MAX_LINE_BYTES + 1])
+            writer
+                .write_all(&vec![b'a'; MAX_LINE_BYTES + 1])
                 .unwrap_err()
                 .kind(),
             io::ErrorKind::InvalidData
