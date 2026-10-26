@@ -150,9 +150,7 @@ fn rename_table(database: &Path, from: &str, to: &str) -> Result<(), String> {
         .map_err(|error| format!("cannot move table data from {from}: {error}"))?;
     if let Err(error) = fs::rename(&source_schema, &destination_schema) {
         fs::rename(&destination_parts, &source_parts).map_err(|rollback| {
-            format!(
-                "cannot rename schema from {from}: {error}; data rollback failed: {rollback}"
-            )
+            format!("cannot rename schema from {from}: {error}; data rollback failed: {rollback}")
         })?;
         return Err(format!("cannot rename schema from {from}: {error}"));
     }
@@ -168,7 +166,11 @@ pub(super) fn apply_ddl(database: &Path, ddl: &Ddl) -> Result<(), String> {
         Ddl::ShowTables | Ddl::ShowCreateTable { .. } | Ddl::DescribeTable { .. } => {
             catalog::apply(database, ddl)
         }
-        Ddl::CreateTable { name, columns: definitions, if_not_exists } => {
+        Ddl::CreateTable {
+            name,
+            columns: definitions,
+            if_not_exists,
+        } => {
             let _lock = lock(database)?;
             let schema = database.join(format!("{name}.schema"));
             if schema.exists() {
@@ -180,12 +182,16 @@ pub(super) fn apply_ddl(database: &Path, ddl: &Ddl) -> Result<(), String> {
                 return Ok(());
             }
             let parts = data_path(database, name);
-            fs::create_dir(&parts)
-                .map_err(|error| format!("cannot create table data {}: {error}", parts.display()))?;
-            let cols: Vec<Column> = definitions.iter().map(|column| Column {
-                name: column.name.clone(),
-                data_type: column.data_type.clone(),
-            }).collect();
+            fs::create_dir(&parts).map_err(|error| {
+                format!("cannot create table data {}: {error}", parts.display())
+            })?;
+            let cols: Vec<Column> = definitions
+                .iter()
+                .map(|column| Column {
+                    name: column.name.clone(),
+                    data_type: column.data_type.clone(),
+                })
+                .collect();
             let result = write_wide_part(&parts.join("all_0_0_0"), &cols, &[])
                 .map_err(|error| error.to_string())
                 .and_then(|_| catalog::apply(database, ddl));

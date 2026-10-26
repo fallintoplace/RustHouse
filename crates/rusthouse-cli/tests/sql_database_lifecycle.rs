@@ -24,8 +24,16 @@ fn sql(statement: &str, database: &Path) -> Output {
 #[test]
 fn rename_preserves_stored_rows_and_drop_removes_both_files() {
     let db = database();
-    assert!(sql("CREATE TABLE events (id UInt64, name String)", &db).status.success());
-    assert!(sql("INSERT INTO events VALUES (1, 'first')", &db).status.success());
+    assert!(
+        sql("CREATE TABLE events (id UInt64, name String)", &db)
+            .status
+            .success()
+    );
+    assert!(
+        sql("INSERT INTO events VALUES (1, 'first')", &db)
+            .status
+            .success()
+    );
 
     let rename = sql("RENAME TABLE events TO archive", &db);
     assert!(rename.status.success(), "{rename:?}");
@@ -36,7 +44,11 @@ fn rename_preserves_stored_rows_and_drop_removes_both_files() {
     let read = sql("SELECT id, name FROM archive", &db);
     assert!(read.status.success(), "{read:?}");
     assert_eq!(read.stdout, b"id\tname\n1\tfirst\n");
-    assert!(sql("INSERT INTO archive VALUES (2, 'second')", &db).status.success());
+    assert!(
+        sql("INSERT INTO archive VALUES (2, 'second')", &db)
+            .status
+            .success()
+    );
     let count = sql("SELECT count(*) FROM archive", &db);
     assert_eq!(count.stdout, b"count\n2\n");
     let gone = sql("SELECT * FROM events", &db);

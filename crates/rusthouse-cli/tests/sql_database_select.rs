@@ -31,17 +31,33 @@ fn reads_empty_and_persisted_named_tables() {
     assert!(empty.status.success(), "{empty:?}");
     assert_eq!(empty.stdout, b"count\n0\n");
 
-    let inserted = sql("INSERT INTO events VALUES (2, 'Grace'), (1, 'Ada')", &db, &[]);
+    let inserted = sql(
+        "INSERT INTO events VALUES (2, 'Grace'), (1, 'Ada')",
+        &db,
+        &[],
+    );
     assert!(inserted.status.success(), "{inserted:?}");
-    let result = sql("SELECT id, name FROM events WHERE id >= 1 ORDER BY id", &db, &[]);
+    let result = sql(
+        "SELECT id, name FROM events WHERE id >= 1 ORDER BY id",
+        &db,
+        &[],
+    );
     assert!(result.status.success(), "{result:?}");
     assert_eq!(result.stdout, b"id\tname\n1\tAda\n2\tGrace\n");
 
     let count = sql("SELECT count(*) FROM events", &db, &[]);
     assert_eq!(count.stdout, b"count\n2\n");
-    let capped = sql("SELECT id FROM events ORDER BY id", &db, &["--max-rows", "1"]);
+    let capped = sql(
+        "SELECT id FROM events ORDER BY id",
+        &db,
+        &["--max-rows", "1"],
+    );
     assert_eq!(capped.stdout, b"id\n1\n");
-    let json = sql("SELECT name FROM events ORDER BY name", &db, &["--format", "json"]);
+    let json = sql(
+        "SELECT name FROM events ORDER BY name",
+        &db,
+        &["--format", "json"],
+    );
     assert!(json.status.success(), "{json:?}");
     assert!(String::from_utf8_lossy(&json.stdout).contains("Ada"));
     assert!(String::from_utf8_lossy(&json.stdout).contains("Grace"));
