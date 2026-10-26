@@ -106,6 +106,9 @@ fn compile_part_predicates(
                     .collect::<Result<Vec<_>, _>>()?,
                 true,
             ),
+            Predicate::IsNull { .. } => {
+                return Err(ExecutionError::Invalid("IS NULL requires a typed scan".into()));
+            }
             Predicate::NotBetween { lower, upper, .. } => CompiledTest::NotBetween {
                 lower: convert(column, lower)?,
                 upper: convert(column, upper)?,
