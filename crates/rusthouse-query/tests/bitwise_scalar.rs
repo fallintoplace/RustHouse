@@ -33,10 +33,6 @@ fn rejects_invalid_bitwise_arity_and_nesting() {
     ] {
         assert!(parse_select(query).is_err(), "{query}");
     }
-    let deeply_nested = format!(
-        "SELECT {}1{}",
-        "bitAnd(1,".repeat(20),
-        ")".repeat(20)
-    );
+    let deeply_nested = format!("SELECT {}1{}", "bitAnd(1,".repeat(20), ")".repeat(20));
     assert!(parse_select(&deeply_nested).is_err());
 }
