@@ -257,7 +257,10 @@ fn create_table_locked(
 
 pub(super) fn apply_ddl(database: &Path, ddl: &Ddl) -> Result<(), String> {
     match ddl {
-        Ddl::ShowTables | Ddl::ShowTablesLike { .. } | Ddl::ShowCreateTable { .. } | Ddl::DescribeTable { .. } => {
+        Ddl::ShowTables
+        | Ddl::ShowTablesLike { .. }
+        | Ddl::ShowCreateTable { .. }
+        | Ddl::DescribeTable { .. } => {
             // Do not create a new database just to list empty tables.
             if database.is_dir() {
                 let _read_lock = read_lock(database)?;
