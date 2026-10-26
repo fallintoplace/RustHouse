@@ -1,4 +1,5 @@
 //! Convert the SQL executor's TSV stream into a bounded, escaped HTML table.
+use std::borrow::Cow;
 use std::io::{self, Write};
 
 const MAX_LINE_BYTES: usize = 1024 * 1024;
@@ -84,12 +85,14 @@ impl<W: Write> HtmlWriter<W> {
         let fields = text
             .split('\t')
             .map(|field| {
-                if header || field == "\\N" {
-                    return Ok(field.to_owned());
+                if header || field == "\\N" || !field.as_bytes().contains(&b'\\') {
+                    return Ok(Cow::Borrowed(field));
                 }
-                String::from_utf8(decode_tsv_field(field.as_bytes())?).map_err(|_| {
-                    io::Error::new(io::ErrorKind::InvalidData, "HTML field is not valid UTF-8")
-                })
+                String::from_utf8(decode_tsv_field(field.as_bytes())?)
+                    .map(Cow::Owned)
+                    .map_err(|_| {
+                        io::Error::new(io::ErrorKind::InvalidData, "HTML field is not valid UTF-8")
+                    })
             })
             .collect::<io::Result<Vec<_>>>()?;
 
@@ -122,7 +125,7 @@ impl<W: Write> HtmlWriter<W> {
     }
 }
 
-fn write_cells<W: Write>(output: &mut W, fields: &[String], header: bool) -> io::Result<()> {
+fn write_cells<W: Write>(output: &mut W, fields: &[Cow<'_, str>], header: bool) -> io::Result<()> {
     let (open, close) = if header {
         (b"<th>".as_slice(), b"</th>".as_slice())
     } else {
@@ -137,16 +140,34 @@ fn write_cells<W: Write>(output: &mut W, fields: &[String], header: bool) -> io:
 }
 
 fn write_cell<W: Write>(output: &mut W, field: &str) -> io::Result<()> {
-    for ch in field.chars() {
-        match ch {
-            '&' => output.write_all(b"&amp;")?,
-            '<' => output.write_all(b"&lt;")?,
-            '>' => output.write_all(b"&gt;")?,
-            '"' => output.write_all(b"&quot;")?,
-            '\'' => output.write_all(b"&#39;")?,
-            ch if ch.is_control() => write!(output, "&#{};", ch as u32)?,
-            other => output.write_all(other.encode_utf8(&mut [0u8; 4]).as_bytes())?,
+    let mut start = 0;
+    for (index, ch) in field.char_indices() {
+        let escape: Option<&[u8]> = match ch {
+            '&' => Some(b"&amp;"),
+            '<' => Some(b"&lt;"),
+            '>' => Some(b"&gt;"),
+            '"' => Some(b"&quot;"),
+            '\'' => Some(b"&#39;"),
+            ch if ch.is_control() => {
+                if start < index {
+                    output.write_all(&field.as_bytes()[start..index])?;
+                }
+                write!(output, "&#{};", ch as u32)?;
+                start = index + ch.len_utf8();
+                continue;
+            }
+            _ => None,
+        };
+        if let Some(escape) = escape {
+            if start < index {
+                output.write_all(&field.as_bytes()[start..index])?;
+            }
+            output.write_all(escape)?;
+            start = index + ch.len_utf8();
         }
+    }
+    if start < field.len() {
+        output.write_all(&field.as_bytes()[start..])?;
     }
     Ok(())
 }
@@ -253,5 +274,42 @@ mod decoded_html_regressions {
         let before = writer.output.clone();
         assert!(writer.write_all(b"bad\\q\n").is_err());
         assert_eq!(writer.output, before);
+    }
+}
+
+#[cfg(test)]
+mod html_bulk_perf_tests {
+    use super::*;
+
+    struct CountingWriter {
+        calls: usize,
+        bytes: usize,
+    }
+
+    impl Write for CountingWriter {
+        fn write(&mut self, bytes: &[u8]) -> io::Result<usize> {
+            self.calls += 1;
+            self.bytes += bytes.len();
+            Ok(bytes.len())
+        }
+        fn flush(&mut self) -> io::Result<()> {
+            Ok(())
+        }
+    }
+
+    #[test]
+    fn writes_plain_utf8_text_in_one_call() {
+        let long = "café".repeat(4096);
+        let mut output = CountingWriter { calls: 0, bytes: 0 };
+        write_cell(&mut output, &long).unwrap();
+        assert_eq!(output.bytes, long.len());
+        assert_eq!(output.calls, 1);
+    }
+
+    #[test]
+    fn bulk_escaping_keeps_unicode_and_controls() {
+        let mut output = Vec::new();
+        write_cell(&mut output, "ab<&>é\u{0001}z").unwrap();
+        assert_eq!(output, "ab&lt;&amp;&gt;é&#1;z".as_bytes());
     }
 }
