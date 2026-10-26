@@ -904,6 +904,7 @@ mod tests {
             ("MAX", AggregateFunction::Max),
             ("VARPOP", AggregateFunction::VarPop),
             ("STDDEVPOP", AggregateFunction::StddevPop),
+            ("MEDIAN", AggregateFunction::Median),
         ] {
             let sql = format!("SELECT {name}(price) FROM part WHERE id > 2");
             assert_eq!(
@@ -918,7 +919,6 @@ mod tests {
             "SELECT sum(*) FROM part",
             "SELECT sum() FROM part",
             "SELECT sum(a, b) FROM part",
-            "SELECT median(price) FROM part",
             "SELECT avg(number) FROM numbers(3) ORDER BY number",
         ] {
             assert!(parse_select(sql).is_err(), "{sql}");
