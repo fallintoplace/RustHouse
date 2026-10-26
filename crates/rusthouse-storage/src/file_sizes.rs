@@ -64,7 +64,12 @@ fn verify_listed_file(
     let mut components = name.split('/').peekable();
     while let Some(component) = components.next() {
         path.push(component);
-        verify_component(&path, manifest_path, components.peek().is_some(), expected_size)?;
+        verify_component(
+            &path,
+            manifest_path,
+            components.peek().is_some(),
+            expected_size,
+        )?;
     }
     Ok(())
 }
