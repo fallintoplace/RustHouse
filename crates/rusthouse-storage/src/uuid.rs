@@ -136,7 +136,8 @@ mod tests {
         struct Bytewise<R>(R);
         impl<R: Read> Read for Bytewise<R> {
             fn read(&mut self, bytes: &mut [u8]) -> io::Result<usize> {
-                self.0.read(&mut bytes[..bytes.len().min(1)])
+                let count = bytes.len().min(1);
+                self.0.read(&mut bytes[..count])
             }
         }
 
