@@ -6,6 +6,7 @@ pub(super) enum Token {
     Number(String),
     String(String),
     Star,
+    Slash,
     Percent,
     Plus,
     Minus,
@@ -123,6 +124,10 @@ pub(super) fn tokenize(sql: &str) -> Result<Vec<Token>, ParseError> {
             b'*' => {
                 index += 1;
                 Token::Star
+            }
+            b'/' => {
+                index += 1;
+                Token::Slash
             }
             b'%' => {
                 index += 1;

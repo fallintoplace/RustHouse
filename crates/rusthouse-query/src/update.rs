@@ -30,6 +30,7 @@ fn token_sql(token: &Token) -> String {
         Token::Word(value) | Token::Number(value) => value.clone(),
         Token::String(value) => format!("'{}'", value.replace('\\', "\\\\").replace('\'', "''")),
         Token::Star => "*".into(),
+        Token::Slash => "/".into(),
         Token::Percent => "%".into(),
         Token::Plus => "+".into(),
         Token::Minus => "-".into(),

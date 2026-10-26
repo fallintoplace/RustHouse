@@ -544,6 +544,7 @@ fn parses_scalar_arithmetic_with_checked_overflow_and_precedence() {
         ("SELECT 1 + 2 * 3", 7),
         ("SELECT (1 + 2) * 3", 9),
         ("SELECT 10 % 4", 2),
+        ("SELECT 7 / 2", 3),
         ("SELECT 12 - 5 * 2", 2),
         ("SELECT 12-5*2", 2),
         ("SELECT 10 + -4", 6),
@@ -570,7 +571,6 @@ fn parses_scalar_arithmetic_with_checked_overflow_and_precedence() {
         "SELECT 1 + (2 * 3",
         "SELECT 1 + 2 FROM part",
         "SELECT 1.5 + 2",
-        "SELECT 1 / 2",
     ] {
         assert!(parse_select(sql).is_err(), "{sql}");
     }
@@ -592,7 +592,6 @@ fn rejects_malformed_and_unsupported_statements() {
         "SELECT id FROM part LIMIT 1.5",
         "SELECT id FROM part WHERE id =",
         "SELECT id FROM part LIMIT 184467440737095516161",
-        "SELECT 1 / 2",
     ] {
         assert!(parse_select(sql).is_err(), "{sql}");
     }
