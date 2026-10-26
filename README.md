@@ -53,3 +53,5 @@ List tables with `cargo run -p rusthouse-cli -- sql "SHOW TABLES" --catalog ./ca
 Inspect columns with `cargo run -p rusthouse-cli -- sql "DESCRIBE TABLE events" --catalog ./catalog`.
 
 Remove catalog metadata with `cargo run -p rusthouse-cli -- sql "DROP TABLE IF EXISTS events" --catalog ./catalog`. This removes only the schema file, not external data parts.
+
+Add a metadata column with `cargo run -p rusthouse-cli -- sql "ALTER TABLE events ADD COLUMN IF NOT EXISTS flag UInt8" --catalog ./catalog`. This changes schema metadata only; it does not rewrite data parts.

@@ -126,3 +126,56 @@ fn drop_table_removes_only_the_named_schema() {
     assert!(ignored_again.status.success(), "{ignored_again:?}");
     fs::remove_dir_all(&dir).unwrap();
 }
+
+#[test]
+fn alter_add_column_persists_new_column_and_rejects_duplicates() {
+    let dir = catalog();
+    assert!(
+        sql("CREATE TABLE metrics (id UInt64)", &dir)
+            .status
+            .success()
+    );
+    let added = sql("ALTER TABLE metrics ADD COLUMN value Float64", &dir);
+    assert!(added.status.success(), "{added:?}");
+    let description = sql("DESCRIBE TABLE metrics", &dir);
+    assert_eq!(
+        String::from_utf8(description.stdout).unwrap(),
+        "name\ttype\nid\tUInt64\nvalue\tFloat64\n"
+    );
+    let repeated = sql("ALTER TABLE metrics ADD COLUMN value Int64", &dir);
+    assert!(!repeated.status.success());
+    let ignored = sql(
+        "ALTER TABLE metrics ADD COLUMN IF NOT EXISTS value Int64",
+        &dir,
+    );
+    assert!(ignored.status.success(), "{ignored:?}");
+    let description = sql("DESCRIBE TABLE metrics", &dir);
+    assert_eq!(
+        String::from_utf8(description.stdout).unwrap(),
+        "name\ttype\nid\tUInt64\nvalue\tFloat64\n"
+    );
+    let unsupported = sql("ALTER TABLE metrics ADD COLUMN stuff Nullable", &dir);
+    assert!(!unsupported.status.success());
+    assert!(
+        !dir.join(format!(".metrics.{}.tmp", std::process::id()))
+            .exists()
+    );
+    fs::remove_dir_all(&dir).unwrap();
+}
+
+#[test]
+fn alter_rejects_unknown_and_corrupt_schemas_without_creating_files() {
+    let dir = catalog();
+    let missing = sql("ALTER TABLE missing ADD COLUMN id UInt64", &dir);
+    assert!(!missing.status.success());
+    assert!(!dir.exists());
+    fs::create_dir(&dir).unwrap();
+    fs::write(dir.join("damaged.rh"), "wrong\n").unwrap();
+    let invalid = sql("ALTER TABLE damaged ADD COLUMN value UInt64", &dir);
+    assert!(!invalid.status.success());
+    assert_eq!(
+        fs::read_to_string(dir.join("damaged.rh")).unwrap(),
+        "wrong\n"
+    );
+    fs::remove_dir_all(&dir).unwrap();
+}

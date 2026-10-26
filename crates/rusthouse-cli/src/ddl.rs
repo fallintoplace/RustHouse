@@ -23,6 +23,11 @@ pub(super) enum Statement {
         name: String,
         if_exists: bool,
     },
+    AlterAddColumn {
+        name: String,
+        column: Column,
+        if_not_exists: bool,
+    },
 }
 
 struct Parser<'a> {
@@ -138,6 +143,7 @@ pub(super) fn parse_ddl(sql: &str) -> Result<Option<Statement>, String> {
             || value.eq_ignore_ascii_case("SHOW")
             || value.eq_ignore_ascii_case("DESCRIBE")
             || value.eq_ignore_ascii_case("DROP")
+            || value.eq_ignore_ascii_case("ALTER")
     }) {
         return Ok(None);
     }
@@ -167,6 +173,32 @@ pub(super) fn parse_ddl(sql: &str) -> Result<Option<Statement>, String> {
         let name = parser.identifier()?;
         parser.finish()?;
         return Ok(Some(Statement::DropTable { name, if_exists }));
+    }
+    if parser.take("ALTER") {
+        parser.expect("TABLE")?;
+        let name = parser.identifier()?;
+        parser.expect("ADD")?;
+        parser.expect("COLUMN")?;
+        let if_not_exists = if parser.take("IF") {
+            parser.expect("NOT")?;
+            parser.expect("EXISTS")?;
+            true
+        } else {
+            false
+        };
+        let column_name = parser.identifier()?;
+        let raw_type = parser.identifier()?;
+        let data_type = canonical_type(&raw_type)
+            .ok_or_else(|| format!("unsupported column type: {raw_type}"))?;
+        parser.finish()?;
+        return Ok(Some(Statement::AlterAddColumn {
+            name,
+            column: Column {
+                name: column_name,
+                data_type: data_type.into(),
+            },
+            if_not_exists,
+        }));
     }
     parser.expect("CREATE")?;
     parser.expect("TABLE")?;
@@ -206,6 +238,39 @@ pub(super) fn parse_ddl(sql: &str) -> Result<Option<Statement>, String> {
         if_not_exists,
         columns,
     }))
+}
+
+fn read_columns(root: &Path, name: &str) -> Result<Vec<Column>, String> {
+    let path = root.join(format!("{name}.rh"));
+    let contents =
+        fs::read_to_string(&path).map_err(|error| format!("cannot read table {name}: {error}"))?;
+    let mut lines = contents.lines();
+    if lines.next() != Some("RustHouseTableV1") {
+        return Err(format!("invalid schema for table {name}"));
+    }
+    let mut columns: Vec<Column> = Vec::new();
+    for line in lines {
+        let (column_name, data_type) = line
+            .split_once(' ')
+            .ok_or_else(|| format!("invalid schema for table {name}"))?;
+        if !valid_identifier(column_name) || canonical_type(data_type) != Some(data_type) {
+            return Err(format!("invalid schema for table {name}"));
+        }
+        if columns
+            .iter()
+            .any(|column| column.name.eq_ignore_ascii_case(column_name))
+        {
+            return Err(format!("duplicate column in table {name}"));
+        }
+        columns.push(Column {
+            name: column_name.into(),
+            data_type: data_type.into(),
+        });
+    }
+    if columns.is_empty() {
+        return Err(format!("empty schema for table {name}"));
+    }
+    Ok(columns)
 }
 
 pub(super) fn execute_ddl(statement: Statement, root: &Path) -> Result<(), String> {
@@ -281,35 +346,10 @@ pub(super) fn execute_ddl(statement: Statement, root: &Path) -> Result<(), Strin
             Ok(())
         }
         Statement::DescribeTable { name } => {
-            let path = root.join(format!("{name}.rh"));
-            let contents = fs::read_to_string(&path)
-                .map_err(|error| format!("cannot describe table {name}: {error}"))?;
-            let mut lines = contents.lines();
-            if lines.next() != Some("RustHouseTableV1") {
-                return Err(format!("invalid schema for table {name}"));
-            }
-            let mut columns = Vec::new();
-            for line in lines {
-                let (column, data_type) = line
-                    .split_once(' ')
-                    .ok_or_else(|| format!("invalid schema for table {name}"))?;
-                if !valid_identifier(column) || canonical_type(data_type) != Some(data_type) {
-                    return Err(format!("invalid schema for table {name}"));
-                }
-                if columns
-                    .iter()
-                    .any(|(existing, _): &(String, String)| existing.eq_ignore_ascii_case(column))
-                {
-                    return Err(format!("duplicate column in table {name}"));
-                }
-                columns.push((column.to_string(), data_type.to_string()));
-            }
-            if columns.is_empty() {
-                return Err(format!("empty schema for table {name}"));
-            }
+            let columns = read_columns(root, &name)?;
             println!("name\ttype");
-            for (column, data_type) in columns {
-                println!("{column}\t{data_type}");
+            for column in columns {
+                println!("{}\t{}", column.name, column.data_type);
             }
             Ok(())
         }
@@ -320,6 +360,49 @@ pub(super) fn execute_ddl(statement: Statement, root: &Path) -> Result<(), Strin
                 Err(error) if if_exists && error.kind() == std::io::ErrorKind::NotFound => Ok(()),
                 Err(error) => Err(format!("cannot drop table {name}: {error}")),
             }
+        }
+        Statement::AlterAddColumn {
+            name,
+            column,
+            if_not_exists,
+        } => {
+            let mut columns = read_columns(root, &name)?;
+            if columns
+                .iter()
+                .any(|existing| existing.name.eq_ignore_ascii_case(&column.name))
+            {
+                if if_not_exists {
+                    return Ok(());
+                }
+                return Err(format!(
+                    "column {} already exists in table {name}",
+                    column.name
+                ));
+            }
+            columns.push(column);
+            let mut contents = String::from("RustHouseTableV1\n");
+            for column in columns {
+                contents.push_str(&format!("{} {}\n", column.name, column.data_type));
+            }
+            let temporary = root.join(format!(".{name}.{}.tmp", std::process::id()));
+            let mut file = OpenOptions::new()
+                .write(true)
+                .create_new(true)
+                .open(&temporary)
+                .map_err(|error| format!("cannot stage ALTER TABLE {name}: {error}"))?;
+            let written = file
+                .write_all(contents.as_bytes())
+                .and_then(|_| file.sync_all());
+            drop(file);
+            if let Err(error) = written {
+                let _ = fs::remove_file(&temporary);
+                return Err(format!("cannot write ALTER TABLE {name}: {error}"));
+            }
+            if let Err(error) = fs::rename(&temporary, root.join(format!("{name}.rh"))) {
+                let _ = fs::remove_file(&temporary);
+                return Err(format!("cannot commit ALTER TABLE {name}: {error}"));
+            }
+            Ok(())
         }
     }
 }
