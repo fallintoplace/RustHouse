@@ -312,6 +312,27 @@ pub(super) fn cmp(left: &Cell, right: &Cell) -> Ordering {
     }
 }
 
+fn compare_order_cells(
+    left: &Cell,
+    right: &Cell,
+    descending: bool,
+    nulls_first: Option<bool>,
+) -> Ordering {
+    match (left, right, nulls_first) {
+        (Cell::Null, Cell::Null, _) => Ordering::Equal,
+        (Cell::Null, _, Some(true)) | (_, Cell::Null, Some(false)) => Ordering::Less,
+        (Cell::Null, _, Some(false)) | (_, Cell::Null, Some(true)) => Ordering::Greater,
+        _ => {
+            let comparison = cmp(left, right);
+            if descending {
+                comparison.reverse()
+            } else {
+                comparison
+            }
+        }
+    }
+}
+
 fn matches_comparison(value: &Cell, target: &Cell, operator: Operator) -> bool {
     if matches!(value, Cell::Null) || matches!(target, Cell::Null) {
         return false;
@@ -425,17 +446,27 @@ struct TopRow {
     row: Row,
     ordinal: usize,
     descending_mask: u8,
+    nulls_first_mask: u8,
+    nulls_last_mask: u8,
 }
 
-fn compare_sort_keys(left: &[Cell], right: &[Cell], descending_mask: u8) -> Ordering {
+fn compare_sort_keys(
+    left: &[Cell],
+    right: &[Cell],
+    descending_mask: u8,
+    nulls_first_mask: u8,
+    nulls_last_mask: u8,
+) -> Ordering {
     for (index, (a, b)) in left.iter().zip(right).enumerate() {
-        let comparison = cmp(a, b);
-        let descending = descending_mask & (1 << index) != 0;
-        let comparison = if descending {
-            comparison.reverse()
+        let bit = 1u8 << index;
+        let nulls_first = if nulls_first_mask & bit != 0 {
+            Some(true)
+        } else if nulls_last_mask & bit != 0 {
+            Some(false)
         } else {
-            comparison
+            None
         };
+        let comparison = compare_order_cells(a, b, descending_mask & bit != 0, nulls_first);
         if comparison != Ordering::Equal {
             return comparison;
         }
@@ -463,6 +494,8 @@ impl Ord for TopRow {
             &self.row.sort_keys,
             &other.row.sort_keys,
             self.descending_mask,
+            self.nulls_first_mask,
+            self.nulls_last_mask,
         )
         .then_with(|| self.ordinal.cmp(&other.ordinal))
     }
@@ -578,12 +611,20 @@ pub(super) fn execute_typed<W: Write>(
     let offset = query.offset.unwrap_or(0);
     let limit = query.limit.unwrap_or(usize::MAX);
     // ORDER BY supports at most eight keys, allowing a compact direction mask.
-    let descending_mask = query
-        .order_terms()
-        .enumerate()
-        .fold(0u8, |mask, (index, order)| {
-            mask | (u8::from(order.descending) << index)
-        });
+    let mut descending_mask = 0u8;
+    let mut nulls_first_mask = 0u8;
+    let mut nulls_last_mask = 0u8;
+    for (index, order) in query.order_terms().enumerate() {
+        let bit = 1u8 << index;
+        if order.descending {
+            descending_mask |= bit;
+        }
+        match order.nulls_first {
+            Some(true) => nulls_first_mask |= bit,
+            Some(false) => nulls_last_mask |= bit,
+            None => {}
+        }
+    }
     let top_capacity = if sort_indices.is_empty() {
         None
     } else {
@@ -658,6 +699,8 @@ pub(super) fn execute_typed<W: Write>(
                         row,
                         ordinal,
                         descending_mask,
+                        nulls_first_mask,
+                        nulls_last_mask,
                     };
                     ordinal = ordinal
                         .checked_add(1)
@@ -703,14 +746,19 @@ pub(super) fn execute_typed<W: Write>(
             grouped_rows.sort_by(|(left_key, left_count), (right_key, right_count)| {
                 for order in query.order_terms() {
                     let comparison = if order.column == "count" {
-                        left_count.cmp(right_count)
+                        let comparison = left_count.cmp(right_count);
+                        if order.descending {
+                            comparison.reverse()
+                        } else {
+                            comparison
+                        }
                     } else {
-                        cmp(left_key, right_key)
-                    };
-                    let comparison = if order.descending {
-                        comparison.reverse()
-                    } else {
-                        comparison
+                        compare_order_cells(
+                            left_key,
+                            right_key,
+                            order.descending,
+                            order.nulls_first,
+                        )
                     };
                     if comparison != Ordering::Equal {
                         return comparison;
@@ -743,7 +791,13 @@ pub(super) fn execute_typed<W: Write>(
             }
         } else {
             ordered.sort_by(|left, right| {
-                compare_sort_keys(&left.sort_keys, &right.sort_keys, descending_mask)
+                compare_sort_keys(
+                    &left.sort_keys,
+                    &right.sort_keys,
+                    descending_mask,
+                    nulls_first_mask,
+                    nulls_last_mask,
+                )
             });
             for row in ordered.into_iter().skip(offset).take(limit) {
                 write_row(output, &row.values)?;

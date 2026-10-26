@@ -99,9 +99,14 @@ pub fn explain_select(query: &Select) -> String {
             .order_terms()
             .map(|order| {
                 format!(
-                    "{} {}",
+                    "{} {}{}",
                     order.column,
-                    if order.descending { "DESC" } else { "ASC" }
+                    if order.descending { "DESC" } else { "ASC" },
+                    match order.nulls_first {
+                        Some(true) => " NULLS FIRST",
+                        Some(false) => " NULLS LAST",
+                        None => "",
+                    }
                 )
             })
             .collect::<Vec<_>>()

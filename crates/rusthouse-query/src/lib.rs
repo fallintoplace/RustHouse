@@ -178,6 +178,8 @@ pub enum Source {
 pub struct OrderBy {
     pub column: String,
     pub descending: bool,
+    /// None keeps the existing ASC/DESC NULL ordering.
+    pub nulls_first: Option<bool>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -372,7 +374,22 @@ impl Parser {
             self.keyword("ASC");
             false
         };
-        Ok(OrderBy { column, descending })
+        let nulls_first = if self.keyword("NULLS") {
+            if self.keyword("FIRST") {
+                Some(true)
+            } else if self.keyword("LAST") {
+                Some(false)
+            } else {
+                return Err(ParseError("NULLS requires FIRST or LAST".into()));
+            }
+        } else {
+            None
+        };
+        Ok(OrderBy {
+            column,
+            descending,
+            nulls_first,
+        })
     }
 }
 

@@ -564,6 +564,56 @@ fn groups_numeric_aggregates_by_typed_keys() {
 }
 
 #[test]
+fn orders_nullable_columns_with_explicit_null_precedence() {
+    let part = part();
+    assert_eq!(
+        query(
+            "SELECT attempt FROM part ORDER BY attempt ASC NULLS LAST",
+            &part
+        ),
+        "attempt\n1\n3\n\\N\n"
+    );
+    assert_eq!(
+        query(
+            "SELECT attempt FROM part ORDER BY attempt DESC NULLS FIRST",
+            &part
+        ),
+        "attempt\n\\N\n3\n1\n"
+    );
+    assert_eq!(
+        query(
+            "SELECT message, count(*) FROM part GROUP BY message ORDER BY message DESC NULLS FIRST",
+            &part,
+        ),
+        "message\tcount\n\\N\t1\nworld\t1\nhello\t1\n"
+    );
+    assert_eq!(
+        query(
+            "SELECT attempt FROM part ORDER BY attempt ASC NULLS FIRST",
+            &part
+        ),
+        "attempt\n\\N\n1\n3\n"
+    );
+    assert_eq!(
+        query(
+            "SELECT attempt FROM part ORDER BY attempt DESC NULLS LAST",
+            &part
+        ),
+        "attempt\n3\n1\n\\N\n"
+    );
+    let sql = "SELECT message, attempt FROM part ORDER BY attempt ASC NULLS LAST, message DESC";
+    let whole = query(sql, &part);
+    assert_eq!(whole, "message\tattempt\nhello\t1\nworld\t3\n\\N\t\\N\n");
+    let limited = query(&format!("{sql} LIMIT 2"), &part);
+    assert_eq!(limited, "message\tattempt\nhello\t1\nworld\t3\n");
+    assert_eq!(
+        limited,
+        format!("{}\n", whole.lines().take(3).collect::<Vec<_>>().join("\n"))
+    );
+    fs::remove_dir_all(part).unwrap();
+}
+
+#[test]
 fn matches_ilike_on_string_and_nullable_columns() {
     let part = part();
     assert_eq!(
