@@ -753,7 +753,12 @@ pub(super) fn execute_typed<W: Write>(
                             comparison
                         }
                     } else {
-                        compare_order_cells(left_key, right_key, order.descending, order.nulls_first)
+                        compare_order_cells(
+                            left_key,
+                            right_key,
+                            order.descending,
+                            order.nulls_first,
+                        )
                     };
                     if comparison != Ordering::Equal {
                         return comparison;
