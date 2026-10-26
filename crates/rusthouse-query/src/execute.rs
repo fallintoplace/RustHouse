@@ -16,8 +16,8 @@ mod typed_aggregate;
 #[cfg(test)]
 use predicates::{CompiledTest, compile_in_test};
 use predicates::{
-    batch_matches, compile_numbers_predicates, compile_part_where, count_batch_matches, number_matches,
-    number_matches_all, parse_numeric,
+    batch_matches, compile_numbers_predicates, compile_part_where, count_batch_matches,
+    number_matches, number_matches_all, parse_numeric,
 };
 
 #[derive(Debug)]
