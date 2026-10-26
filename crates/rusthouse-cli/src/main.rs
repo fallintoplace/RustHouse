@@ -7,6 +7,7 @@ mod html;
 mod insert_select;
 mod json_array;
 mod jsonl;
+mod join;
 mod markdown;
 mod part_json;
 mod snapshot;

@@ -10,6 +10,8 @@ use std::path::Path;
 
 mod predicates;
 mod typed;
+mod join;
+pub use join::execute_join;
 mod typed_aggregate;
 #[cfg(test)]
 use predicates::{CompiledTest, compile_in_test};
