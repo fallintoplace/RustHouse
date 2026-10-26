@@ -415,7 +415,7 @@ pub fn handle_request(method: &str, target: &str, body: &[u8], config: &Config) 
             Err(error) => {
                 return Response::text(
                     "503 Service Unavailable",
-                    &format!("database read lock unavailable: {error}\\n"),
+                    &format!("database read lock unavailable: {error}\n"),
                 );
             }
         },
