@@ -17,6 +17,7 @@ Pass `format=tsv-no-header` to remove the header row, including for empty result
 Pass `format=csv` on either method for RFC 4180-style CSV with CRLF row endings.
 CSV includes headers, quotes embedded commas/newlines, and uses an unquoted `\\N` for NULL.
 Use `format=csv-no-header` to omit column headers while preserving CSV escaping and response limits.
+Pass `format=markdown` to return a Markdown table with escaped cell text and bounded output.
 Pass `format=jsonl` on either method for `application/x-ndjson`, one JSON object per result row.
 Pass `format=json-compact-each-row` for newline-delimited JSON arrays of column values.
 Like the existing JSONL mode, values remain strings to preserve wide integer

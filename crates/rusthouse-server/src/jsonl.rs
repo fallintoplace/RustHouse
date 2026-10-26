@@ -79,8 +79,14 @@ fn write_json_row<W: Write>(output: &mut W, headers: &[String], line: &[u8]) -> 
         if field == b"\\N" {
             output.write_all(b"null")?;
         } else {
-            let text = decode_tsv_value(field)?;
-            write_json_string(output, &text)?;
+            if field.contains(&b'\\') {
+                let text = decode_tsv_value(field)?;
+                write_json_string(output, &text)?;
+            } else {
+                let text =
+                    std::str::from_utf8(field).map_err(|_| invalid("JSONL field is not UTF-8"))?;
+                write_json_string(output, text)?;
+            }
         }
     }
     output.write_all(b"}\n")
@@ -209,5 +215,17 @@ mod tests {
 
         let mut writer = JsonlWriter::new(Vec::new());
         assert!(writer.write_all(&vec![b'x'; MAX_LINE_BYTES + 1]).is_err());
+    }
+    #[test]
+    fn plain_and_escaped_json_fields_produce_identical_values() {
+        let mut output = Vec::new();
+        write_json_row(&mut output, &["value".to_owned()], "café".as_bytes()).unwrap();
+        write_json_row(&mut output, &["value".to_owned()], b"a\\tb").unwrap();
+        assert_eq!(
+            output,
+            "{\"value\":\"café\"}\n{\"value\":\"a\\tb\"}\n".as_bytes()
+        );
+        let mut invalid = Vec::new();
+        assert!(write_json_row(&mut invalid, &["value".to_owned()], &[0xff]).is_err());
     }
 }
