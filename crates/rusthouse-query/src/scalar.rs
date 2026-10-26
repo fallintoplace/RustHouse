@@ -13,7 +13,10 @@ fn is_power(name: &str) -> bool {
 }
 
 pub(super) fn is_function(name: &str) -> bool {
-    name.eq_ignore_ascii_case("ABS") || name.eq_ignore_ascii_case("SIGN") || is_extrema(name) || is_power(name)
+    name.eq_ignore_ascii_case("ABS")
+        || name.eq_ignore_ascii_case("SIGN")
+        || is_extrema(name)
+        || is_power(name)
 }
 
 pub(super) fn parse(parser: &mut Parser) -> Result<i64, ParseError> {
