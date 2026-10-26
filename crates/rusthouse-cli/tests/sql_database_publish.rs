@@ -25,7 +25,11 @@ fn sql(statement: &str, database: &Path) -> Output {
 fn only_published_part_directories_are_visible_to_select() {
     let db = database();
     assert!(sql("CREATE TABLE items (id UInt8)", &db).status.success());
-    assert!(sql("INSERT INTO items VALUES (1), (2)", &db).status.success());
+    assert!(
+        sql("INSERT INTO items VALUES (1), (2)", &db)
+            .status
+            .success()
+    );
     let parts = db.join("items.parts");
 
     // Emulate an interrupted INSERT from the previous staging layout.
@@ -45,7 +49,11 @@ fn only_published_part_directories_are_visible_to_select() {
     assert!(next.status.success(), "{next:?}");
     assert_eq!(sql("SELECT count(*) FROM items", &db).stdout, b"count\n3\n");
     assert!(fs::read_dir(&db).unwrap().all(|entry| {
-        !entry.unwrap().file_name().to_string_lossy().contains(".pending-")
+        !entry
+            .unwrap()
+            .file_name()
+            .to_string_lossy()
+            .contains(".pending-")
     }));
     fs::remove_dir_all(db).unwrap();
 }
@@ -59,7 +67,11 @@ fn rejected_rows_cannot_publish_new_parts() {
     assert_eq!(sql("SELECT count(*) FROM items", &db).stdout, b"count\n0\n");
     assert_eq!(fs::read_dir(db.join("items.parts")).unwrap().count(), 1);
     assert!(fs::read_dir(&db).unwrap().all(|entry| {
-        !entry.unwrap().file_name().to_string_lossy().contains(".pending-")
+        !entry
+            .unwrap()
+            .file_name()
+            .to_string_lossy()
+            .contains(".pending-")
     }));
     fs::remove_dir_all(db).unwrap();
 }
