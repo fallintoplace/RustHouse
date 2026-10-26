@@ -50,7 +50,6 @@ fn read_sql_source(reader: impl Read, source: &str, label: &str) -> Result<Strin
 }
 
 pub(super) fn run_sql_args(mut args: impl Iterator<Item = OsString>) -> Result<(), String> {
-
     let mut query = None;
     let mut file = None;
     let mut read_stdin = false;
@@ -276,7 +275,9 @@ mod tests {
     fn bounded_sql_reader_preserves_limits_and_utf8_errors() {
         let exact = vec![b'x'; MAX_SQL_BYTES as usize];
         assert_eq!(
-            read_sql_source(exact.as_slice(), "example", "SQL file").unwrap().len(),
+            read_sql_source(exact.as_slice(), "example", "SQL file")
+                .unwrap()
+                .len(),
             MAX_SQL_BYTES as usize
         );
         let oversized = vec![b'x'; MAX_SQL_BYTES as usize + 1];
