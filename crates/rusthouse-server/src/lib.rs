@@ -1,5 +1,8 @@
 //! Minimal read-only SQL HTTP interface, bound to loopback by the binary.
 //! This is intentionally not a full database wire protocol.
+mod jsonl;
+
+use jsonl::JsonlWriter;
 use rusthouse_query::{execute, parse_select};
 use rusthouse_storage::inspect_query_source;
 use std::io::{self, Write};
@@ -140,25 +143,44 @@ fn schema_response(config: &Config) -> Response {
     }
 }
 
-fn query_parameters(target: &str) -> Result<(String, Option<String>), &'static str> {
+#[derive(Clone, Copy)]
+enum QueryFormat {
+    Tsv,
+    Jsonl,
+}
+
+fn query_parameters(target: &str) -> Result<(String, Option<String>, QueryFormat), &'static str> {
     let (path, query) = target.split_once('?').unwrap_or((target, ""));
     if path != "/" {
         return Err("unknown SQL endpoint");
     }
     let mut statement = None;
+    let mut format = None;
     for parameter in query.split('&').filter(|p| !p.is_empty()) {
         let (key, value) = parameter
             .split_once('=')
             .ok_or("invalid URL query parameter")?;
-        if key != "query" {
-            return Err("unsupported URL query parameter");
+        match key {
+            "query" => {
+                if statement.is_some() {
+                    return Err("duplicate query parameter");
+                }
+                statement = Some(decode_url(value)?);
+            }
+            "format" => {
+                if format.is_some() {
+                    return Err("duplicate format parameter");
+                }
+                format = Some(match decode_url(value)?.as_str() {
+                    "tsv" => QueryFormat::Tsv,
+                    "jsonl" => QueryFormat::Jsonl,
+                    _ => return Err("unsupported query format"),
+                });
+            }
+            _ => return Err("unsupported URL query parameter"),
         }
-        if statement.is_some() {
-            return Err("duplicate query parameter");
-        }
-        statement = Some(decode_url(value)?);
     }
-    Ok((path.to_owned(), statement))
+    Ok((path.to_owned(), statement, format.unwrap_or(QueryFormat::Tsv)))
 }
 
 /// Runs only the subset accepted by the existing SELECT parser. DDL and
@@ -185,7 +207,7 @@ pub fn handle_request(method: &str, target: &str, body: &[u8], config: &Config) 
     if body.len() > MAX_QUERY_BYTES || target.len() > MAX_HEADER_BYTES {
         return Response::text("413 Payload Too Large", "SQL statement too large\n");
     }
-    let (_, query) = match query_parameters(target) {
+    let (_, query, format) = match query_parameters(target) {
         Ok(v) => v,
         Err(message) => return Response::text("400 Bad Request", message),
     };
@@ -216,10 +238,20 @@ pub fn handle_request(method: &str, target: &str, body: &[u8], config: &Config) 
     let cap = config.max_rows.min(100_000);
     select.limit = Some(select.limit.map_or(cap, |limit| limit.min(cap)));
     let mut writer = LimitedWriter::new();
-    match execute(&select, config.part.as_deref(), &mut writer) {
+    let result = match format {
+        QueryFormat::Tsv => execute(&select, config.part.as_deref(), &mut writer),
+        QueryFormat::Jsonl => {
+            let mut jsonl = JsonlWriter::new(&mut writer);
+            execute(&select, config.part.as_deref(), &mut jsonl)
+        }
+    };
+    match result {
         Ok(()) => Response {
             status: "200 OK",
-            content_type: "text/tab-separated-values; charset=utf-8",
+            content_type: match format {
+                QueryFormat::Tsv => "text/tab-separated-values; charset=utf-8",
+                QueryFormat::Jsonl => "application/x-ndjson; charset=utf-8",
+            },
             body: writer.data,
         },
         Err(error) => Response::text("400 Bad Request", &format!("{error}\n")),
