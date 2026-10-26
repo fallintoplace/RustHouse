@@ -5,6 +5,10 @@ edition.workspace = true
 rust-version.workspace = true
 description = "Read-only SQL parsing and query execution for RustHouse"
 
+[[bench]]
+name = "queries"
+harness = false
+
 [dependencies]
 rusthouse-storage = { path = "../rusthouse-storage" }
 
