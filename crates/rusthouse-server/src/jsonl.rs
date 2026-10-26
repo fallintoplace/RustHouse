@@ -53,8 +53,7 @@ fn parse_headers(line: &[u8]) -> io::Result<Vec<String>> {
     let mut seen = HashSet::new();
     let mut headers = Vec::new();
     for header in line.split(|byte| *byte == b'\t') {
-        let name = std::str::from_utf8(header)
-            .map_err(|_| invalid("JSONL header is not UTF-8"))?;
+        let name = std::str::from_utf8(header).map_err(|_| invalid("JSONL header is not UTF-8"))?;
         if !seen.insert(name) {
             return Err(invalid("JSONL needs unique projected column names"));
         }
