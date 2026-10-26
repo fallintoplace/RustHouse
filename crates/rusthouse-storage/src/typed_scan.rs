@@ -10,7 +10,8 @@ use crate::{
 };
 use std::fs::File;
 use std::io::{self, Read};
-use std::path::Path;
+use std::path::{Path, PathBuf};
+use crate::{inspect_query_source, query_parts};
 
 pub enum TypedColumn {
     Numeric(NumericColumn),
@@ -295,5 +296,52 @@ impl TypedPartReader {
         }
         self.next_mark += 1;
         Ok(Some(batch))
+    }
+}
+
+
+/// Read typed rows from one part or a frozen multi-part snapshot.
+/// Only one part's file streams are held open at a time.
+pub struct TypedQueryReader {
+    parts: Vec<PathBuf>,
+    columns: Vec<String>,
+    next_part: usize,
+    current: Option<TypedPartReader>,
+}
+
+impl TypedQueryReader {
+    pub fn open(path: &Path, columns: &[String]) -> Result<Self, PartError> {
+        let parts = query_parts(path)?;
+        let metadata = inspect_query_source(path)?;
+        for name in columns {
+            if !metadata.columns.iter().any(|column| &column.name == name) {
+                return Err(PartError::InvalidScan(format!("unknown column: {name}")));
+            }
+        }
+        Ok(Self {
+            parts,
+            columns: columns.to_vec(),
+            next_part: 0,
+            current: None,
+        })
+    }
+
+    pub fn next_batch(&mut self) -> Result<Option<Vec<TypedColumn>>, PartError> {
+        loop {
+            if let Some(reader) = self.current.as_mut() {
+                if let Some(batch) = reader.next_batch()? {
+                    return Ok(Some(batch));
+                }
+                self.current = None;
+            }
+            if self.next_part == self.parts.len() {
+                return Ok(None);
+            }
+            self.current = Some(TypedPartReader::open(
+                &self.parts[self.next_part],
+                &self.columns,
+            )?);
+            self.next_part += 1;
+        }
     }
 }

@@ -185,3 +185,32 @@ fn skips_end_of_file_terminal_zero_row_marks() {
     );
     fs::remove_dir_all(part).unwrap();
 }
+
+
+#[test]
+fn queries_typed_columns_across_frozen_parts() {
+    let table = std::env::temp_dir().join(format!(
+        "rusthouse-typed-multipart-{}-{}",
+        std::process::id(),
+        NEXT_DIR.fetch_add(1, Ordering::Relaxed)
+    ));
+    fs::create_dir(&table).unwrap();
+    fs::rename(part(), table.join("all_1_1_0")).unwrap();
+    fs::rename(part(), table.join("all_2_2_0")).unwrap();
+    assert_eq!(
+        query("SELECT count(*) FROM part WHERE service = 'api'", &table),
+        "count\n4\n"
+    );
+    assert_eq!(
+        query(
+            "SELECT service, status FROM part WHERE status > 500 ORDER BY status DESC LIMIT 2",
+            &table
+        ),
+        "service\tstatus\ndb\t503\ndb\t503\n"
+    );
+    assert_eq!(
+        query("SELECT DISTINCT service FROM part ORDER BY service", &table),
+        "service\napi\ndb\n"
+    );
+    fs::remove_dir_all(table).unwrap();
+}

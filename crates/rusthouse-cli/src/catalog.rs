@@ -27,6 +27,7 @@ pub(super) fn apply(catalog: &Path, ddl: &Ddl) -> Result<(), String> {
             column,
             if_exists,
         } => drop_column(catalog, table, column, *if_exists),
+        Ddl::RenameColumn { table, from, to } => rename_column(catalog, table, from, to),
         Ddl::RenameTable { from, to } => rename_table(catalog, from, to),
     }
 }
@@ -230,6 +231,24 @@ fn drop_column(catalog: &Path, table: &str, column: &str, if_exists: bool) -> Re
     columns.remove(index);
     replace_schema(catalog, table, &columns)?;
     println!("Dropped column {column} from {table} (schema only)");
+    Ok(())
+}
+
+fn rename_column(catalog: &Path, table: &str, from: &str, to: &str) -> Result<(), String> {
+    if from == to {
+        return Err("source and destination column names must differ".into());
+    }
+    let mut columns = read_schema(catalog, table)?;
+    let index = columns
+        .iter()
+        .position(|entry| entry.name == from)
+        .ok_or_else(|| format!("unknown column: {from}"))?;
+    if columns.iter().any(|entry| entry.name == to) {
+        return Err(format!("column already exists: {to}"));
+    }
+    columns[index].name = to.to_owned();
+    replace_schema(catalog, table, &columns)?;
+    println!("Renamed column {from} to {to} in {table} (schema only)");
     Ok(())
 }
 

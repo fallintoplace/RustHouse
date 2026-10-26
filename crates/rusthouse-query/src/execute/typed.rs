@@ -2,7 +2,7 @@
 //! Keep the numeric-only executor unchanged for its optimized fast paths.
 use super::{ExecutionError, Number, NumberKey, compare_numbers, number_at};
 use crate::{Operator, Predicate, Projection, Select};
-use rusthouse_storage::{TypedColumn, TypedPartReader, inspect_part};
+use rusthouse_storage::{TypedColumn, TypedQueryReader, inspect_query_source};
 use std::cmp::Ordering;
 use std::collections::{HashMap, HashSet};
 use std::io::Write;
@@ -64,7 +64,7 @@ fn is_typed(data_type: &str) -> bool {
 }
 
 pub(super) fn requires_typed_scan(query: &Select, path: &Path) -> Result<bool, ExecutionError> {
-    let metadata = inspect_part(path)?;
+    let metadata = inspect_query_source(path)?;
     let mut names = Vec::new();
     match &query.projection {
         Projection::All => names.extend(metadata.columns.iter().map(|c| c.name.as_str())),
@@ -304,7 +304,7 @@ pub(super) fn execute_typed<W: Write>(
     part: &Path,
     output: &mut W,
 ) -> Result<(), ExecutionError> {
-    let metadata = inspect_part(part)?;
+    let metadata = inspect_query_source(part)?;
     let projection = match &query.projection {
         Projection::All => metadata
             .columns
@@ -374,7 +374,7 @@ pub(super) fn execute_typed<W: Write>(
         .map(|name| indices[name])
         .collect::<Vec<_>>();
     let sort_index = sort.as_ref().map(|name| *indices.get(name).unwrap());
-    let mut scan = TypedPartReader::open(part, &names)?;
+    let mut scan = TypedQueryReader::open(part, &names)?;
     let header = match &query.projection {
         Projection::Count => "count".to_string(),
         Projection::CountDistinct { column } => format!("countDistinct({column})"),

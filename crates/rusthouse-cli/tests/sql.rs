@@ -382,3 +382,60 @@ fn refuses_unsupported_sql_and_missing_parts() {
     assert_eq!(missing.status.code(), Some(1));
     assert!(String::from_utf8_lossy(&missing.stderr).contains("--part"));
 }
+
+#[test]
+fn queries_multiple_active_parts_globally() {
+    let table = std::env::temp_dir().join(format!(
+        "rusthouse-query-table-{}-{}",
+        std::process::id(),
+        NEXT_DIR.fetch_add(1, Ordering::Relaxed)
+    ));
+    fs::create_dir(&table).unwrap();
+    fs::rename(sample_part(), table.join("all_1_1_0")).unwrap();
+    fs::rename(sample_part(), table.join("all_2_2_0")).unwrap();
+    let value = u64::from_le_bytes(*b"aaaaaaaa");
+    let result = sql("SELECT count(*) FROM part", Some(&table));
+    assert!(result.status.success(), "{result:?}");
+    assert_eq!(String::from_utf8(result.stdout).unwrap(), "count\n20\n");
+    let ordered = sql(
+        "SELECT id FROM part ORDER BY id LIMIT 3 OFFSET 9",
+        Some(&table),
+    );
+    assert!(ordered.status.success(), "{ordered:?}");
+    assert_eq!(
+        String::from_utf8(ordered.stdout).unwrap(),
+        format!("id\n{value}\n{value}\n{value}\n")
+    );
+    let grouped = sql("SELECT id, count(*) FROM part GROUP BY id", Some(&table));
+    assert!(grouped.status.success(), "{grouped:?}");
+    assert_eq!(
+        String::from_utf8(grouped.stdout).unwrap(),
+        format!("id\tcount\n{value}\t20\n")
+    );
+    fs::remove_dir_all(&table).unwrap();
+}
+
+#[test]
+fn rejects_overlapping_parts_and_mismatched_schemas() {
+    let table = std::env::temp_dir().join(format!(
+        "rusthouse-query-overlap-{}-{}",
+        std::process::id(),
+        NEXT_DIR.fetch_add(1, Ordering::Relaxed)
+    ));
+    fs::create_dir(&table).unwrap();
+    fs::rename(sample_part(), table.join("all_1_2_0")).unwrap();
+    fs::rename(sample_part(), table.join("all_2_3_0")).unwrap();
+    let overlap = sql("SELECT count(*) FROM part", Some(&table));
+    assert!(!overlap.status.success());
+    assert!(String::from_utf8_lossy(&overlap.stderr).contains("overlapping"));
+    fs::rename(table.join("all_2_3_0"), table.join("all_3_3_0")).unwrap();
+    fs::write(
+        table.join("all_3_3_0").join("columns.txt"),
+        "columns format version: 1\n1 columns:\n`other` UInt64\n",
+    )
+    .unwrap();
+    let mismatch = sql("SELECT count(*) FROM part", Some(&table));
+    assert!(!mismatch.status.success());
+    assert!(String::from_utf8_lossy(&mismatch.stderr).contains("schema mismatch"));
+    fs::remove_dir_all(&table).unwrap();
+}

@@ -1,5 +1,5 @@
 use crate::{AggregateFunction, Projection, Select, Source};
-use rusthouse_storage::{NumericColumn, NumericPartReader, PartError, inspect_part};
+use rusthouse_storage::{NumericColumn, NumericQueryReader, PartError, inspect_query_source};
 use std::cmp::Ordering;
 use std::collections::hash_map::Entry;
 use std::collections::{BinaryHeap, HashMap, HashSet};
@@ -179,7 +179,7 @@ fn execute_into<W: Write>(
     if let Projection::GroupedCount { column } = &query.projection {
         return execute_grouped_part(query, part, column, output);
     }
-    let metadata = inspect_part(part)?;
+    let metadata = inspect_query_source(part)?;
 
     if matches!(query.projection, Projection::Count)
         && query.predicates.is_empty()
@@ -252,7 +252,7 @@ fn execute_into<W: Write>(
             scan_columns.len() - 1
         }
     });
-    let mut reader = NumericPartReader::open(part, &scan_columns)?;
+    let mut reader = NumericQueryReader::open(part, &scan_columns)?;
     let mut distinct: Option<HashSet<Vec<NumberKey>>> = query.distinct.then(HashSet::new);
 
     if let (Some(order), Some(index)) = (&query.order_by, sort_index) {
@@ -433,7 +433,7 @@ fn execute_grouped_part<W: Write>(
     column: &str,
     output: &mut W,
 ) -> Result<(), ExecutionError> {
-    let metadata = inspect_part(part)?;
+    let metadata = inspect_query_source(part)?;
     let mut scan_columns = vec![column.to_owned()];
     let comparisons = compile_part_where(query, &mut scan_columns, |column_name, literal| {
         let metadata_column = metadata
@@ -445,7 +445,7 @@ fn execute_grouped_part<W: Write>(
             })?;
         parse_numeric(&metadata_column.data_type, literal)
     })?;
-    let mut reader = NumericPartReader::open(part, &scan_columns)?;
+    let mut reader = NumericQueryReader::open(part, &scan_columns)?;
     let mut groups = GroupedCounts::default();
     if query.limit == Some(0) {
         return groups.write(query, column, output);
@@ -494,7 +494,7 @@ fn execute_count_distinct_part<W: Write>(
     column: &str,
     output: &mut W,
 ) -> Result<(), ExecutionError> {
-    let metadata = inspect_part(part)?;
+    let metadata = inspect_query_source(part)?;
     let mut scan_columns = vec![column.to_owned()];
     let comparisons = compile_part_where(query, &mut scan_columns, |column_name, literal| {
         let metadata_column = metadata
@@ -506,7 +506,7 @@ fn execute_count_distinct_part<W: Write>(
             })?;
         parse_numeric(&metadata_column.data_type, literal)
     })?;
-    let mut reader = NumericPartReader::open(part, &scan_columns)?;
+    let mut reader = NumericQueryReader::open(part, &scan_columns)?;
     write_header(query, output, &format!("countDistinct({column})"))?;
     if query.limit == Some(0) {
         return Ok(());
@@ -539,7 +539,7 @@ fn execute_aggregate_part<W: Write>(
     column: &str,
     output: &mut W,
 ) -> Result<(), ExecutionError> {
-    let metadata = inspect_part(part)?;
+    let metadata = inspect_query_source(part)?;
     let mut scan_columns = vec![column.to_owned()];
     let comparisons = compile_part_where(query, &mut scan_columns, |column_name, literal| {
         let metadata_column = metadata
@@ -551,7 +551,7 @@ fn execute_aggregate_part<W: Write>(
             })?;
         parse_numeric(&metadata_column.data_type, literal)
     })?;
-    let mut reader = NumericPartReader::open(part, &scan_columns)?;
+    let mut reader = NumericQueryReader::open(part, &scan_columns)?;
     write_header(query, output, &format!("{}({column})", function.name()))?;
     if query.limit == Some(0) {
         return Ok(());

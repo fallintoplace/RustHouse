@@ -78,3 +78,32 @@ Remove a catalog column with `rusthouse sql "ALTER TABLE events DROP COLUMN age"
 
 Rename catalog metadata with `rusthouse sql "RENAME TABLE events TO archived_events" --catalog ./catalog`.
 The destination must be absent. No MergeTree parts are moved.
+
+Order by a selected column's 1-based position with `SELECT number FROM numbers(10) ORDER BY 1 DESC`. For `SELECT key, count(*) ... GROUP BY key`, positions 1 and 2 refer to the key and count. `SELECT *` requires named ORDER BY columns.
+
+Use SQL-standard pagination with `SELECT number FROM numbers(10) ORDER BY number DESC OFFSET 2 ROWS FETCH NEXT 3 ROWS ONLY`. `FETCH FIRST n ROWS ONLY` also works without an offset; existing `LIMIT` syntax is unchanged.
+
+Rename a column in catalog metadata with `rusthouse sql "ALTER TABLE events RENAME COLUMN name TO title" --catalog ./catalog`. The change preserves column order and never modifies MergeTree data.
+
+Print the parsed logical operator pipeline without scanning data using `rusthouse sql "SELECT number FROM numbers(10) WHERE number > 3 ORDER BY number DESC LIMIT 2" --explain`. This is a logical overview, not a physical or cost-based execution plan; column validity is still checked by actual execution.
+
+Summarize declared part manifest sizes without reading data files with `rusthouse inspect-checksums /path/to/checksums.txt --summary`. The result separates compressed stored bytes and their original byte counts. It does not verify that local files or hashes match the manifest.
+
+
+## Query frozen multi-part MergeTree snapshots
+
+Pass a directory containing the **active** wide part subdirectories to `--part`:
+
+```sh
+rusthouse sql "SELECT count(*) FROM part" --part ./snapshot/active-parts
+rusthouse sql "SELECT id, count(*) FROM part GROUP BY id ORDER BY id" --part ./snapshot/active-parts
+```
+
+RustHouse now treats either a single wide part or an offline directory of
+MergeTree-named active parts as a query source. It streams one part at a time;
+aggregates, filtering, ORDER BY, DISTINCT, LIMIT and OFFSET apply to the full set.
+For safety, it rejects overlapping block ranges, inconsistent schemas, malformed
+parts and more than 10,000 parts. It ignores non-part subdirectories such as
+`detached/`. **Only use a frozen snapshot of active parts**, never a live table
+directory being modified by a database process. Predicate pruning across the primary index
+is not implemented by this change.
