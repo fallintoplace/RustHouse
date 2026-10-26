@@ -48,6 +48,7 @@ fn write_cell<W: Write>(output: &mut W, field: &[u8]) -> io::Result<()> {
             b'<' => output.write_all(b"&lt;")?,
             b'>' => output.write_all(b"&gt;")?,
             b'\r' => output.write_all(b"&#13;")?,
+            byte if byte.is_ascii_control() => write!(output, "&#{byte};")?,
             other => output.write_all(&[other])?,
         }
     }
@@ -100,6 +101,16 @@ mod tests {
         assert_eq!(
             writer.output,
             b"| &lt;tag&gt; | &amp;value&#13; |\n| --- | --- |\n"
+        );
+    }
+
+    #[test]
+    fn escapes_terminal_control_bytes_in_cells() {
+        let mut writer = MarkdownWriter::new(Vec::new());
+        writer.write_all(b"name\tvalue\nESC\x1b\tNUL\x00DEL\x7f\n").unwrap();
+        assert_eq!(
+            writer.output,
+            b"| name | value |\n| --- | --- |\n| ESC&#27; | NUL&#0;DEL&#127; |\n"
         );
     }
 
