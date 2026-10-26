@@ -78,3 +78,5 @@ Remove a catalog column with `rusthouse sql "ALTER TABLE events DROP COLUMN age"
 
 Rename catalog metadata with `rusthouse sql "RENAME TABLE events TO archived_events" --catalog ./catalog`.
 The destination must be absent. No MergeTree parts are moved.
+
+Rename a column in catalog metadata with `rusthouse sql "ALTER TABLE events RENAME COLUMN name TO title" --catalog ./catalog`. The change preserves column order and never modifies MergeTree data.
