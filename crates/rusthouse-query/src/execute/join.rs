@@ -171,7 +171,9 @@ fn execute_streaming_inner<W: Write>(
 ) -> Result<(), ExecutionError> {
     let left_meta = inspect_query_source(left_path)?;
     if left_meta.rows > MAX_STREAM_LEFT_ROWS {
-        return Err(invalid("streaming INNER JOIN supports at most 100000 left rows"));
+        return Err(invalid(
+            "streaming INNER JOIN supports at most 100000 left rows",
+        ));
     }
     let right_meta = inspect_query_source(right_path)?;
     let right_rows = read_rows(right_path, right_names, right_meta.rows)?;
@@ -198,7 +200,9 @@ fn execute_streaming_inner<W: Write>(
     writeln!(output, "{header}")?;
 
     let left_width = left_names.len();
-    let end = query.offset.saturating_add(query.limit.unwrap_or(usize::MAX));
+    let end = query
+        .offset
+        .saturating_add(query.limit.unwrap_or(usize::MAX));
     let mut position = 0usize;
     probe_inner(
         left_path,
