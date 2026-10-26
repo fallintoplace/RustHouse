@@ -33,7 +33,11 @@ persistent tables created by `rusthouse sql ... --database ./mydb`, start the
 server with `--database ./mydb` instead of `--part`. Queries like
 `SELECT name FROM events` resolve only catalog-visible tables whose schema
 matches stored parts. The server remains **read-only**; HTTP DDL and INSERT
-are rejected. The `--part` and `--database` modes are mutually exclusive.
+are rejected. In `--database` mode, named-table queries hold the same read lock
+as the CLI until the response is built. Concurrent CLI writes return HTTP 503
+instead of racing with table DROP or RENAME. On Unix, advisory locks are
+released on crash; on other platforms the existing create-new lock-file
+semantics apply. The `--part` and `--database` modes are mutually exclusive.
 
 `GET /schema` returns JSON with the frozen part or snapshot's total row count
 and an ordered list of column names and types. This endpoint reads metadata
