@@ -3,6 +3,8 @@ use rusthouse_query::{execute, explain_select, parse_ddl, parse_select};
 use std::ffi::OsString;
 use std::path::PathBuf;
 
+const MAX_SQL_BYTES: usize = 4096;
+
 #[derive(Clone, Copy)]
 enum SqlOutputFormat {
     Tsv,
@@ -39,11 +41,13 @@ fn read_sql_input(input: impl std::io::Read, source: &str, label: &str) -> Resul
 
     let mut bytes = Vec::new();
     input
-        .take(4097)
+        .take((MAX_SQL_BYTES + 1) as u64)
         .read_to_end(&mut bytes)
         .map_err(|error| format!("cannot read {source}: {error}"))?;
-    if bytes.len() > 4096 {
-        return Err(format!("{label} exceeds the 4096-byte statement limit"));
+    if bytes.len() > MAX_SQL_BYTES {
+        return Err(format!(
+            "{label} exceeds the {MAX_SQL_BYTES}-byte statement limit"
+        ));
     }
     String::from_utf8(bytes).map_err(|_| format!("{label} must be valid UTF-8"))
 }
@@ -273,18 +277,22 @@ mod tests {
     #[test]
     fn bounded_input_accepts_exact_limit_and_rejects_invalid_input() {
         assert_eq!(
-            read_sql_input(&vec![b'x'; 4096][..], "SQL file", "SQL file")
+            read_sql_input(&vec![b'x'; MAX_SQL_BYTES][..], "SQL file", "SQL file")
                 .unwrap()
                 .len(),
-            4096
+            MAX_SQL_BYTES
         );
         assert_eq!(
-            read_sql_input(&vec![b'x'; 4097][..], "SQL file", "SQL file").unwrap_err(),
+            read_sql_input(&vec![b'x'; MAX_SQL_BYTES + 1][..], "SQL file", "SQL file").unwrap_err(),
             "SQL file exceeds the 4096-byte statement limit"
         );
         assert_eq!(
             read_sql_input(&[0xff][..], "SQL file", "SQL file").unwrap_err(),
             "SQL file must be valid UTF-8"
+        );
+        assert_eq!(
+            read_sql_input(&[0xff][..], "SQL from stdin", "SQL from stdin").unwrap_err(),
+            "SQL from stdin must be valid UTF-8"
         );
     }
 
