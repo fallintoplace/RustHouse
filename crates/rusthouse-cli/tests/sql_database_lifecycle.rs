@@ -67,9 +67,12 @@ fn rename_preserves_stored_rows_and_drop_removes_both_files() {
 fn create_table_like_copies_schema_but_not_rows() {
     let db = database();
     assert!(
-        sql("CREATE TABLE events (id UInt64, name Nullable(String))", &db)
-            .status
-            .success()
+        sql(
+            "CREATE TABLE events (id UInt64, name Nullable(String))",
+            &db
+        )
+        .status
+        .success()
     );
     assert!(
         sql("INSERT INTO events VALUES (1, 'original')", &db)
@@ -87,7 +90,11 @@ fn create_table_like_copies_schema_but_not_rows() {
         sql("SELECT count(*) FROM replica", &db).stdout,
         b"count\n0\n"
     );
-    assert!(sql("INSERT INTO replica VALUES (2, NULL)", &db).status.success());
+    assert!(
+        sql("INSERT INTO replica VALUES (2, NULL)", &db)
+            .status
+            .success()
+    );
     assert_eq!(
         sql("SELECT count(*) FROM events", &db).stdout,
         b"count\n1\n"
@@ -97,8 +104,16 @@ fn create_table_like_copies_schema_but_not_rows() {
             .status
             .success()
     );
-    assert!(!sql("CREATE TABLE replica LIKE events", &db).status.success());
-    assert!(!sql("CREATE TABLE missing_copy LIKE unknown", &db).status.success());
+    assert!(
+        !sql("CREATE TABLE replica LIKE events", &db)
+            .status
+            .success()
+    );
+    assert!(
+        !sql("CREATE TABLE missing_copy LIKE unknown", &db)
+            .status
+            .success()
+    );
     assert!(!db.join("missing_copy.parts").exists());
     fs::remove_dir_all(db).unwrap();
 }
