@@ -76,7 +76,6 @@ fn snapshot_publication_survives_process_exit_at_each_boundary() {
     }
 }
 
-
 #[test]
 fn failed_snapshot_publication_keeps_old_rows_and_cleans_staging() {
     for point in [
@@ -94,7 +93,8 @@ fn failed_snapshot_publication_keeps_old_rows_and_cleans_staging() {
             .unwrap();
         assert!(!failed.status.success(), "{point}: {failed:?}");
         assert!(
-            String::from_utf8_lossy(&failed.stderr).contains("injected snapshot publication failure"),
+            String::from_utf8_lossy(&failed.stderr)
+                .contains("injected snapshot publication failure"),
             "{point}: {failed:?}"
         );
         assert_eq!(
@@ -106,7 +106,10 @@ fn failed_snapshot_publication_keeps_old_rows_and_cleans_staging() {
         let table = db.join("events.parts");
         for entry in fs::read_dir(&table).unwrap() {
             let name = entry.unwrap().file_name().to_string_lossy().into_owned();
-            assert!(!name.starts_with(".rusthouse-active.tmp-"), "{point}: {name}");
+            assert!(
+                !name.starts_with(".rusthouse-active.tmp-"),
+                "{point}: {name}"
+            );
         }
         let versions = table.join(".rusthouse-versions");
         for entry in fs::read_dir(versions).unwrap() {
