@@ -78,6 +78,16 @@ fn read_raw(path: &Path) -> Result<Vec<u8>, PartError> {
         path: path.to_path_buf(),
         source,
     })?;
+    let size = file
+        .metadata()
+        .map_err(|source| PartError::Io {
+            path: path.to_path_buf(),
+            source,
+        })?
+        .len();
+    if size > MAX_INDEX_BYTES as u64 {
+        return Err(invalid(path, "index exceeds the 256 MiB limit"));
+    }
     let mut data = Vec::new();
     file.take(MAX_INDEX_BYTES as u64 + 1)
         .read_to_end(&mut data)
@@ -258,5 +268,20 @@ mod tests {
             read_fixed_primary_index(&path, &[8]),
             Err(PartError::Io { .. })
         ));
+    }
+
+    #[test]
+    fn rejects_oversized_sparse_indexes_before_reading() {
+        let path = temporary_path("idx");
+        let file = File::create(&path).unwrap();
+        file.set_len(MAX_INDEX_BYTES as u64 + 1).unwrap();
+        assert!(matches!(
+            read_fixed_primary_index(&path, &[8]),
+            Err(PartError::InvalidPrimaryIndex {
+                reason: "index exceeds the 256 MiB limit",
+                ..
+            })
+        ));
+        std::fs::remove_file(path).unwrap();
     }
 }

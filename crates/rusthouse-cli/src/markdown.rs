@@ -1,0 +1,112 @@
+use std::io::{self, Write};
+
+const MAX_LINE_BYTES: usize = 1024 * 1024;
+
+/// Turn the SQL executor's TSV rows into a streaming Markdown table.
+pub struct MarkdownWriter<W: Write> {
+    output: W,
+    line: Vec<u8>,
+    header_written: bool,
+}
+
+impl<W: Write> MarkdownWriter<W> {
+    pub fn new(output: W) -> Self {
+        Self {
+            output,
+            line: Vec::new(),
+            header_written: false,
+        }
+    }
+
+    fn finish_line(&mut self) -> io::Result<()> {
+        let fields: Vec<&[u8]> = self.line.split(|&byte| byte == b'\t').collect();
+        self.output.write_all(b"|")?;
+        for field in &fields {
+            self.output.write_all(b" ")?;
+            write_cell(&mut self.output, field)?;
+            self.output.write_all(b" |")?;
+        }
+        self.output.write_all(b"\n")?;
+        if !self.header_written {
+            self.output.write_all(b"|")?;
+            for _ in &fields {
+                self.output.write_all(b" --- |")?;
+            }
+            self.output.write_all(b"\n")?;
+            self.header_written = true;
+        }
+        self.line.clear();
+        Ok(())
+    }
+}
+
+fn write_cell<W: Write>(output: &mut W, field: &[u8]) -> io::Result<()> {
+    for &byte in field {
+        match byte {
+            b'|' => output.write_all(b"\\|")?,
+            b'\\' => output.write_all(b"\\\\")?,
+            b'&' => output.write_all(b"&amp;")?,
+            b'<' => output.write_all(b"&lt;")?,
+            b'>' => output.write_all(b"&gt;")?,
+            b'\r' => output.write_all(b"&#13;")?,
+            other => output.write_all(&[other])?,
+        }
+    }
+    Ok(())
+}
+
+impl<W: Write> Write for MarkdownWriter<W> {
+    fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
+        for &byte in buf {
+            if byte == b'\n' {
+                self.finish_line()?;
+            } else {
+                if self.line.len() >= MAX_LINE_BYTES {
+                    return Err(io::Error::new(
+                        io::ErrorKind::InvalidData,
+                        "Markdown row exceeds 1 MiB",
+                    ));
+                }
+                self.line.push(byte);
+            }
+        }
+        Ok(buf.len())
+    }
+
+    fn flush(&mut self) -> io::Result<()> {
+        self.output.flush()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn handles_chunked_writes_and_flush_without_splitting_rows() {
+        let mut writer = MarkdownWriter::new(Vec::new());
+        writer.write_all(b"a|b\tpath\nx").unwrap();
+        writer.flush().unwrap();
+        writer.write_all(b"y\tz\\q\n").unwrap();
+        assert_eq!(
+            writer.output,
+            b"| a\\|b | path |\n| --- | --- |\n| xy | z\\\\q |\n"
+        );
+    }
+
+    #[test]
+    fn escapes_html_and_ampersands() {
+        let mut writer = MarkdownWriter::new(Vec::new());
+        writer.write_all(b"<tag>\t&value\r\n").unwrap();
+        assert_eq!(
+            writer.output,
+            b"| &lt;tag&gt; | &amp;value&#13; |\n| --- | --- |\n"
+        );
+    }
+
+    #[test]
+    fn rejects_oversized_rows() {
+        let mut writer = MarkdownWriter::new(Vec::new());
+        assert!(writer.write_all(&vec![b'a'; MAX_LINE_BYTES + 1]).is_err());
+    }
+}

@@ -51,6 +51,16 @@ pub fn read_wide_marks(path: impl AsRef<Path>) -> Result<WideMarks, PartError> {
             path: path.to_path_buf(),
             source,
         })?;
+        let size = file
+            .metadata()
+            .map_err(|source| PartError::Io {
+                path: path.to_path_buf(),
+                source,
+            })?
+            .len();
+        if size > MAX_MARKS_BYTES as u64 {
+            return Err(marks_too_large(path));
+        }
         let mut content = Vec::new();
         file.take(MAX_MARKS_BYTES as u64 + 1)
             .read_to_end(&mut content)
@@ -414,5 +424,21 @@ mod tests {
             read_wide_marks(&path),
             Err(PartError::Io { path: missing, .. }) if missing == path
         ));
+    }
+
+    #[test]
+    fn rejects_oversized_sparse_raw_marks() {
+        let path = std::env::temp_dir().join(format!(
+            "rusthouse-oversized-marks-{}.mrk2",
+            std::process::id()
+        ));
+        let file = File::create(&path).unwrap();
+        file.set_len(MAX_MARKS_BYTES as u64 + 1).unwrap();
+        assert!(matches!(
+            read_wide_marks(&path),
+            Err(PartError::Io { source, .. })
+                if source.kind() == io::ErrorKind::InvalidData
+        ));
+        fs::remove_file(path).unwrap();
     }
 }
