@@ -406,6 +406,42 @@ fn allows_quoted_predicate_values_for_type_validation_at_execution() {
 }
 
 #[test]
+fn parses_scalar_arithmetic_with_checked_overflow_and_precedence() {
+    for (sql, value) in [
+        ("SELECT 1 + 2 * 3", 7),
+        ("SELECT (1 + 2) * 3", 9),
+        ("SELECT 10 % 4", 2),
+        ("SELECT 12 - 5 * 2", 2),
+        ("SELECT 12-5*2", 2),
+        ("SELECT 10 + -4", 6),
+        ("SELECT - 2 * 3", -6),
+        ("SELECT -9223372036854775808", i64::MIN),
+        ("SELECT 1--2", 3),
+    ] {
+        assert_eq!(parse_select(sql).unwrap().projection, Projection::Literal(value), "{sql}");
+    }
+    let aliased = parse_select("SELECT 5 * (2 + 1) AS answer LIMIT 1").unwrap();
+    assert_eq!(aliased.projection, Projection::Literal(15));
+    assert_eq!(aliased.alias.as_deref(), Some("answer"));
+    for sql in [
+        "SELECT 1 +",
+        "SELECT 1 -",
+        "SELECT 1 % 0",
+        "SELECT 1 + 9223372036854775807",
+        "SELECT 9223372036854775807 * 2",
+        "SELECT -9223372036854775808 - 1",
+        "SELECT 1 + (2 * 3",
+        "SELECT 1 + 2 FROM part",
+        "SELECT 1.5 + 2",
+        "SELECT 1 / 2",
+    ] {
+        assert!(parse_select(sql).is_err(), "{sql}");
+    }
+    let deeply_nested = format!("SELECT {}1{}", "(".repeat(20), ")".repeat(20));
+    assert!(parse_select(&deeply_nested).is_err());
+}
+
+#[test]
 fn rejects_malformed_and_unsupported_statements() {
     for sql in [
         "",
@@ -419,7 +455,7 @@ fn rejects_malformed_and_unsupported_statements() {
         "SELECT id FROM part LIMIT 1.5",
         "SELECT id FROM part WHERE id =",
         "SELECT id FROM part LIMIT 184467440737095516161",
-        "SELECT 1 + 2",
+        "SELECT 1 / 2",
     ] {
         assert!(parse_select(sql).is_err(), "{sql}");
     }

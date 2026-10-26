@@ -3,6 +3,7 @@ mod execute;
 mod explain;
 mod insert;
 mod lexer;
+mod scalar;
 pub use ddl::{ColumnDef, Ddl, parse_ddl};
 pub use execute::{ExecutionError, execute};
 pub use explain::explain_select;
@@ -297,12 +298,11 @@ pub fn parse_select(sql: &str) -> Result<Select, ParseError> {
             return Err(ParseError("expected ')' after aggregate column".into()));
         }
         Projection::Aggregate { function, column }
-    } else if matches!(parser.tokens.get(parser.index), Some(Token::Number(_))) {
-        let literal = parser
-            .number()?
-            .parse::<i64>()
-            .map_err(|_| ParseError("SELECT literals must be signed 64-bit integers".into()))?;
-        Projection::Literal(literal)
+    } else if matches!(
+        parser.tokens.get(parser.index),
+        Some(Token::Number(_) | Token::LParen | Token::Minus | Token::Plus)
+    ) {
+        Projection::Literal(scalar::parse(&mut parser)?)
     } else {
         let mut columns = vec![parser.word()?];
         let mut grouped_count = false;

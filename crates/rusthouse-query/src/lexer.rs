@@ -7,6 +7,8 @@ pub(super) enum Token {
     String(String),
     Star,
     Percent,
+    Plus,
+    Minus,
     Comma,
     LParen,
     RParen,
@@ -97,6 +99,14 @@ pub(super) fn tokenize(sql: &str) -> Result<Vec<Token>, ParseError> {
             b'%' => {
                 index += 1;
                 Token::Percent
+            }
+            b'+' => {
+                index += 1;
+                Token::Plus
+            }
+            b'-' if !matches!(bytes.get(index + 1), Some(b'0'..=b'9')) => {
+                index += 1;
+                Token::Minus
             }
             b',' => {
                 index += 1;
@@ -227,8 +237,29 @@ mod tests {
     }
 
     #[test]
+    fn tokenizes_scalar_operators_without_changing_signed_literals() {
+        assert_eq!(
+            tokenize("SELECT 1 + -2 * (3 - 4) % 5").unwrap(),
+            vec![
+                Token::Word("SELECT".into()),
+                Token::Number("1".into()),
+                Token::Plus,
+                Token::Number("-2".into()),
+                Token::Star,
+                Token::LParen,
+                Token::Number("3".into()),
+                Token::Minus,
+                Token::Number("4".into()),
+                Token::RParen,
+                Token::Percent,
+                Token::Number("5".into()),
+            ]
+        );
+    }
+
+    #[test]
     fn rejects_incomplete_numbers_and_accepts_exact_size_limit() {
-        for sql in ["-", "1.", "-.2", "SELECT é"] {
+        for sql in ["1.", "-.2", "SELECT é"] {
             assert!(tokenize(sql).is_err(), "{sql:?}");
         }
         assert!(tokenize(&" ".repeat(4096)).is_ok());
