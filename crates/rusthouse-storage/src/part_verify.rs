@@ -1,6 +1,6 @@
 use crate::scan_layout::ScanLayout;
 use crate::{
-    CompressedBlockReader, PartError, WideMarkFormat, inspect_part, read_wide_marks,
+    CompressedBlockReader, PartError, WideMarkFormat, WideMarks, inspect_part, read_wide_marks,
     validate_wide_marks,
 };
 use std::collections::{BTreeMap, BTreeSet};
@@ -41,23 +41,7 @@ pub fn verify_wide_part(path: impl AsRef<Path>) -> Result<PartVerification, Part
     for data in data_files {
         let marks_path = mark_files.remove(&data).unwrap();
         let marks = read_wide_marks(marks_path)?;
-        if marks.format == WideMarkFormat::Adaptive {
-            let rows = marks.marks.iter().try_fold(0u64, |total, mark| {
-                total.checked_add(mark.rows.unwrap_or(0))
-            });
-            if rows != Some(metadata.rows) {
-                return Err(invalid(&data, "mark row counts do not match count.txt"));
-            }
-            let name = data
-                .file_name()
-                .and_then(|name| name.to_str())
-                .unwrap_or("stream");
-            layout
-                .validate(name, &marks.marks, metadata.rows)
-                .map_err(|_| {
-                    invalid(&data, "adaptive streams have mismatched granule boundaries")
-                })?;
-        }
+        validate_adaptive_stream(&data, &marks, metadata.rows, &mut layout)?;
         validate_wide_marks(&marks, CompressedBlockReader::open(&data)?)?;
 
         let mut reader = CompressedBlockReader::open(&data)?;
@@ -79,6 +63,30 @@ pub fn verify_wide_part(path: impl AsRef<Path>) -> Result<PartVerification, Part
         report.streams += 1;
     }
     Ok(report)
+}
+
+fn validate_adaptive_stream(
+    data: &Path,
+    marks: &WideMarks,
+    expected_rows: u64,
+    layout: &mut ScanLayout,
+) -> Result<(), PartError> {
+    if marks.format != WideMarkFormat::Adaptive {
+        return Ok(());
+    }
+    let rows = marks.marks.iter().try_fold(0u64, |total, mark| {
+        total.checked_add(mark.rows.unwrap_or(0))
+    });
+    if rows != Some(expected_rows) {
+        return Err(invalid(data, "mark row counts do not match count.txt"));
+    }
+    let name = data
+        .file_name()
+        .and_then(|name| name.to_str())
+        .unwrap_or("stream");
+    layout
+        .validate(name, &marks.marks, expected_rows)
+        .map_err(|_| invalid(data, "adaptive streams have mismatched granule boundaries"))
 }
 
 fn collect_wide_file_pairs(
