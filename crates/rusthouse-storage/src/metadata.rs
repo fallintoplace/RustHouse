@@ -26,6 +26,10 @@ fn io_error(path: &Path, source: io::Error) -> PartError {
     }
 }
 
+fn invalid_metadata(path: &Path, reason: &'static str) -> PartError {
+    io_error(path, io::Error::new(io::ErrorKind::InvalidData, reason))
+}
+
 pub fn inspect_part(path: impl AsRef<Path>) -> Result<PartMetadata, PartError> {
     let path = path.as_ref();
     let rows = parse_count(&read_metadata(&path.join("count.txt"), MAX_COUNT_BYTES)?)?;
@@ -44,13 +48,7 @@ pub fn inspect_part(path: impl AsRef<Path>) -> Result<PartMetadata, PartError> {
 fn read_metadata(path: &Path, max_bytes: u64) -> Result<String, PartError> {
     let metadata = fs::symlink_metadata(path).map_err(|source| io_error(path, source))?;
     if !metadata.file_type().is_file() {
-        return Err(PartError::Io {
-            path: path.to_path_buf(),
-            source: io::Error::new(
-                io::ErrorKind::InvalidData,
-                "metadata must be a regular file",
-            ),
-        });
+        return Err(invalid_metadata(path, "metadata must be a regular file"));
     }
     let file = fs::File::open(path).map_err(|source| io_error(path, source))?;
     let mut bytes = Vec::new();
@@ -58,10 +56,7 @@ fn read_metadata(path: &Path, max_bytes: u64) -> Result<String, PartError> {
         .read_to_end(&mut bytes)
         .map_err(|source| io_error(path, source))?;
     if bytes.len() as u64 > max_bytes {
-        return Err(PartError::Io {
-            path: path.to_path_buf(),
-            source: io::Error::new(io::ErrorKind::InvalidData, "metadata exceeds size limit"),
-        });
+        return Err(invalid_metadata(path, "metadata exceeds size limit"));
     }
     String::from_utf8(bytes)
         .map_err(|source| io_error(path, io::Error::new(io::ErrorKind::InvalidData, source)))
