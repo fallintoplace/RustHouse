@@ -30,6 +30,24 @@ fn parse_header(line: &str) -> Result<(&str, &str), Response> {
     Ok((key, value))
 }
 
+fn parse_request_line(line: &str) -> Result<(&str, &str), Response> {
+    let words: Vec<&str> = line.split_whitespace().collect();
+    if words.len() != 3 || !matches!(words[2], "HTTP/1.1" | "HTTP/1.0") {
+        return Err(Response::text(
+            "400 Bad Request",
+            "invalid HTTP request line\n",
+        ));
+    }
+    let (method, target) = (words[0], words[1]);
+    if method != "GET" && method != "POST" {
+        return Err(Response::text(
+            "405 Method Not Allowed",
+            "only GET and POST\n",
+        ));
+    }
+    Ok((method, target))
+}
+
 fn read_request(stream: &mut TcpStream) -> Result<(String, String, Vec<u8>), Response> {
     let mut input = BufReader::new(stream);
     let mut head = Vec::new();
@@ -53,20 +71,7 @@ fn read_request(stream: &mut TcpStream) -> Result<(String, String, Vec<u8>), Res
     let first = lines
         .next()
         .ok_or_else(|| Response::text("400 Bad Request", "missing HTTP request line\n"))?;
-    let words: Vec<&str> = first.split_whitespace().collect();
-    if words.len() != 3 || !matches!(words[2], "HTTP/1.1" | "HTTP/1.0") {
-        return Err(Response::text(
-            "400 Bad Request",
-            "invalid HTTP request line\n",
-        ));
-    }
-    let (method, target) = (words[0], words[1]);
-    if method != "GET" && method != "POST" {
-        return Err(Response::text(
-            "405 Method Not Allowed",
-            "only GET and POST\n",
-        ));
-    }
+    let (method, target) = parse_request_line(first)?;
     let mut size = None;
     let mut transfer_encoding = false;
     for line in lines {
