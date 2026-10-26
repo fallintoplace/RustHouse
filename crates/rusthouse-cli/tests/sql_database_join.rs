@@ -74,3 +74,34 @@ fn supports_join_explain_and_rejects_unknown_aliases() {
     let unknown = sql("SELECT x.id FROM foo a JOIN bar b ON a.id = b.id", &db, &[]);
     assert!(!unknown.status.success());
 }
+
+#[test]
+fn streams_large_inner_join_probe_without_buffering_left_table() {
+    let db = database();
+    for statement in [
+        "CREATE TABLE facts (id UInt64)",
+        "CREATE TABLE dimension (id UInt64, label String)",
+        "INSERT INTO facts SELECT number FROM numbers(4096)",
+        "INSERT INTO facts SELECT number FROM numbers(2048)",
+        "INSERT INTO dimension VALUES (5, 'match')",
+    ] {
+        let result = sql(statement, &db, &[]);
+        assert!(result.status.success(), "{statement}: {result:?}");
+    }
+    let joined = sql(
+        "SELECT f.id, d.label FROM facts f JOIN dimension d ON f.id = d.id LIMIT 2",
+        &db,
+        &[],
+    );
+    assert!(joined.status.success(), "{joined:?}");
+    assert_eq!(joined.stdout, b"f.id\td.label\n5\tmatch\n5\tmatch\n");
+
+    let paged = sql(
+        "SELECT f.id FROM facts f INNER JOIN dimension d ON f.id = d.id LIMIT 1 OFFSET 1",
+        &db,
+        &[],
+    );
+    assert!(paged.status.success(), "{paged:?}");
+    assert_eq!(paged.stdout, b"f.id\n5\n");
+    fs::remove_dir_all(db).unwrap();
+}
