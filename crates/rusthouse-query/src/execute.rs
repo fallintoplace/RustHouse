@@ -2,7 +2,7 @@ use crate::{AggregateFunction, Projection, Select, Source};
 use rusthouse_storage::{NumericColumn, NumericQueryReader, PartError, inspect_query_source};
 use std::cmp::Ordering;
 use std::collections::hash_map::Entry;
-use std::collections::{BinaryHeap, HashMap, HashSet};
+use std::collections::{HashMap, HashSet};
 use std::error::Error;
 use std::fmt;
 use std::io::{self, BufWriter, Write};
@@ -10,8 +10,10 @@ use std::path::Path;
 
 mod join;
 mod predicates;
+mod sort;
 mod typed;
 pub use join::execute_join;
+use sort::{MAX_SORTED_ROWS, SortedRows};
 mod typed_aggregate;
 #[cfg(test)]
 use predicates::{CompiledTest, compile_in_test};
@@ -364,11 +366,7 @@ fn execute_into<W: Write>(
     if let (Some(order), Some(index)) = (&query.order_by, sort_index) {
         let mut sorted =
             SortedRows::with_offset(query.limit, query.offset.unwrap_or(0), order.descending)?;
-        sorted.extra_descending = query
-            .order_by_extra
-            .iter()
-            .map(|term| term.descending)
-            .collect();
+        sorted.set_extra_directions(query.order_by_extra.iter().map(|term| term.descending));
         write_header(query, output, &projected.join("\t"))?;
         if query.limit == Some(0) {
             return Ok(());
@@ -1016,19 +1014,19 @@ fn execute_numbers<W: Write>(
         None
     };
     if let Some(sorted) = unfiltered_sort {
-        if rows > MAX_SORTED_ROWS as u64 && sorted.requested > MAX_SORTED_ROWS {
+        if rows > MAX_SORTED_ROWS as u64 && sorted.requested() > MAX_SORTED_ROWS {
             return Err(ExecutionError::Invalid(
                 "ORDER BY requires LIMIT <= 100000 for large results".into(),
             ));
         }
         let total = usize::try_from(rows).unwrap_or(usize::MAX);
-        let begin = sorted.offset.min(total);
+        let begin = sorted.offset().min(total);
         let end = sorted
-            .offset
+            .offset()
             .saturating_add(query.limit.unwrap_or(usize::MAX))
             .min(total);
         for position in begin..end {
-            let index = if sorted.descending {
+            let index = if sorted.descending() {
                 rows - position as u64 - 1
             } else {
                 position as u64
@@ -1237,153 +1235,6 @@ impl AggregateState {
                 .value
                 .map_or_else(String::new, |value| value.to_string()),
         }
-    }
-}
-
-const MAX_SORTED_ROWS: usize = 100_000;
-
-struct SortedRow {
-    key: Number,
-    extra_keys: Vec<Number>,
-    values: Vec<Number>,
-    sequence: usize,
-    descending: bool,
-    extra_descending: Vec<bool>,
-}
-
-impl PartialEq for SortedRow {
-    fn eq(&self, other: &Self) -> bool {
-        self.cmp(other) == Ordering::Equal
-    }
-}
-
-impl Eq for SortedRow {}
-
-impl PartialOrd for SortedRow {
-    fn partial_cmp(&self, other: &Self) -> Option<Ordering> {
-        Some(self.cmp(other))
-    }
-}
-
-impl Ord for SortedRow {
-    fn cmp(&self, other: &Self) -> Ordering {
-        let ordering = compare_numbers(self.key, other.key);
-        let ordering = if self.descending {
-            ordering.reverse()
-        } else {
-            ordering
-        };
-        if ordering != Ordering::Equal {
-            return ordering;
-        }
-        for ((left, right), descending) in self
-            .extra_keys
-            .iter()
-            .zip(&other.extra_keys)
-            .zip(&self.extra_descending)
-        {
-            let comparison = compare_numbers(*left, *right);
-            let comparison = if *descending {
-                comparison.reverse()
-            } else {
-                comparison
-            };
-            if comparison != Ordering::Equal {
-                return comparison;
-            }
-        }
-        self.sequence.cmp(&other.sequence)
-    }
-}
-
-struct SortedRows {
-    rows: BinaryHeap<SortedRow>,
-    requested: usize,
-    offset: usize,
-    seen: usize,
-    descending: bool,
-    extra_descending: Vec<bool>,
-}
-
-impl SortedRows {
-    fn new(limit: Option<usize>, descending: bool) -> Self {
-        Self {
-            rows: BinaryHeap::new(),
-            requested: limit.unwrap_or(usize::MAX),
-            offset: 0,
-            seen: 0,
-            descending,
-            extra_descending: Vec::new(),
-        }
-    }
-
-    fn with_offset(
-        limit: Option<usize>,
-        offset: usize,
-        descending: bool,
-    ) -> Result<Self, ExecutionError> {
-        let mut sorted = Self::new(limit, descending);
-        sorted.requested = limit
-            .map(|limit| {
-                limit
-                    .checked_add(offset)
-                    .ok_or_else(|| ExecutionError::Invalid("LIMIT plus OFFSET overflows".into()))
-            })
-            .transpose()?
-            .unwrap_or(usize::MAX);
-        sorted.offset = offset;
-        Ok(sorted)
-    }
-
-    fn push(&mut self, key: Number, values: Vec<Number>) -> Result<(), ExecutionError> {
-        self.push_with_extra(key, Vec::new(), values)
-    }
-
-    fn push_with_extra(
-        &mut self,
-        key: Number,
-        extra_keys: Vec<Number>,
-        values: Vec<Number>,
-    ) -> Result<(), ExecutionError> {
-        if self.requested > MAX_SORTED_ROWS && self.seen >= MAX_SORTED_ROWS {
-            return Err(ExecutionError::Invalid(
-                "ORDER BY requires LIMIT <= 100000 for large results".into(),
-            ));
-        }
-        let sequence = self.seen;
-        self.seen = self
-            .seen
-            .checked_add(1)
-            .ok_or_else(|| ExecutionError::Invalid("too many rows to sort".into()))?;
-        let row = SortedRow {
-            key,
-            extra_keys,
-            values,
-            sequence,
-            descending: self.descending,
-            extra_descending: self.extra_descending.clone(),
-        };
-        let retained = self.requested.min(MAX_SORTED_ROWS);
-        if self.rows.len() < retained {
-            self.rows.push(row);
-        } else if self.rows.peek().is_some_and(|worst| row < *worst) {
-            self.rows.pop();
-            self.rows.push(row);
-        }
-        Ok(())
-    }
-
-    fn write<W: Write>(self, output: &mut W) -> Result<(), ExecutionError> {
-        for row in self.rows.into_sorted_vec().into_iter().skip(self.offset) {
-            for (index, value) in row.values.iter().enumerate() {
-                if index != 0 {
-                    write!(output, "\t")?;
-                }
-                write!(output, "{value}")?;
-            }
-            writeln!(output)?;
-        }
-        Ok(())
     }
 }
 
