@@ -85,7 +85,10 @@ fn aggregates_persistent_table_rows_by_string_key() {
         &[],
     );
     assert!(grouped.status.success(), "{grouped:?}");
-    assert_eq!(grouped.stdout, b"category\tsum(amount)\nfood\t22\ntravel\t7\n");
+    assert_eq!(
+        grouped.stdout,
+        b"category\tsum(amount)\nfood\t22\ntravel\t7\n"
+    );
     let filtered = sql(
         "SELECT category, max(amount) FROM events WHERE category = 'food' GROUP BY category",
         &db,
