@@ -173,7 +173,9 @@ fn database_part(database: &Path, table: &str) -> Result<PathBuf, String> {
         .file_type()
         .is_dir()
     {
-        return Err(format!("database parts are not a real directory for {table}"));
+        return Err(format!(
+            "database parts are not a real directory for {table}"
+        ));
     }
     let stored = inspect_query_source(&parts).map_err(|error| error.to_string())?;
     if stored.columns.len() != expected.len()
