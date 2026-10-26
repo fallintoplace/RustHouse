@@ -295,7 +295,7 @@ pub(super) fn run_sql_args(mut args: impl Iterator<Item = OsString>) -> Result<(
     if read_stdin && (query.is_some() || file.is_some()) {
         return Err("provide SQL text, --file, or --stdin, not both".into());
     }
-    let query = if read_stdin {
+    let mut query = if read_stdin {
         read_sql_input(std::io::stdin(), "SQL from stdin", "SQL from stdin")?
     } else if let Some(file) = file {
         let input = std::fs::File::open(&file)
@@ -304,6 +304,24 @@ pub(super) fn run_sql_args(mut args: impl Iterator<Item = OsString>) -> Result<(
     } else {
         query.ok_or("missing SQL statement")?
     };
+    let trimmed = query.trim_start();
+    let explain_statement = trimmed
+        .get(..7)
+        .is_some_and(|prefix| prefix.eq_ignore_ascii_case("EXPLAIN"))
+        && trimmed
+            .as_bytes()
+            .get(7)
+            .is_none_or(u8::is_ascii_whitespace);
+    if explain_statement {
+        if explain {
+            return Err("do not combine EXPLAIN statement with --explain".into());
+        }
+        query = trimmed[7..].trim_start().to_owned();
+        if query.is_empty() {
+            return Err("EXPLAIN requires a SELECT statement".into());
+        }
+        explain = true;
+    }
     if database.is_some() && catalog.is_some() {
         return Err("--catalog and --database cannot be combined".into());
     }
