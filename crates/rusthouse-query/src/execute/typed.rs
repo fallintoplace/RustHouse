@@ -79,7 +79,7 @@ pub(super) fn requires_typed_scan(query: &Select, path: &Path) -> Result<bool, E
         .iter()
         .chain(query.or_predicates.iter().flatten())
     {
-        if matches!(pred, Predicate::IsNull { .. }) {
+        if matches!(pred, Predicate::IsNull { .. } | Predicate::Like { .. }) {
             return Ok(true);
         }
         names.push(pred.column());
@@ -132,11 +132,77 @@ fn parse_literal(data_type: &str, literal: &str) -> Result<Cell, ExecutionError>
     }
 }
 
+#[derive(Clone, Copy)]
+enum LikeToken {
+    Any,
+    One,
+    Byte(u8),
+}
+
+fn compile_like(pattern: &str) -> Result<Vec<LikeToken>, ExecutionError> {
+    let mut tokens = Vec::new();
+    let mut bytes = pattern.bytes();
+    while let Some(byte) = bytes.next() {
+        match byte {
+            b'%' => {
+                if !matches!(tokens.last(), Some(LikeToken::Any)) {
+                    tokens.push(LikeToken::Any);
+                }
+            }
+            b'_' => tokens.push(LikeToken::One),
+            b'\\' => {
+                let escaped = bytes.next().ok_or_else(|| {
+                    ExecutionError::Invalid("LIKE pattern ends with an escape".into())
+                })?;
+                tokens.push(LikeToken::Byte(escaped));
+            }
+            literal => tokens.push(LikeToken::Byte(literal)),
+        }
+    }
+    Ok(tokens)
+}
+
+fn like_matches(value: &[u8], pattern: &[LikeToken]) -> bool {
+    let (mut row, mut pat) = (0, 0);
+    let mut last_any = None;
+    let mut restart = 0;
+    while row < value.len() {
+        match pattern.get(pat) {
+            Some(LikeToken::Byte(byte)) if *byte == value[row] => {
+                row += 1;
+                pat += 1;
+            }
+            Some(LikeToken::One) => {
+                row += 1;
+                pat += 1;
+            }
+            Some(LikeToken::Any) => {
+                last_any = Some(pat);
+                pat += 1;
+                restart = row;
+            }
+            _ => {
+                let Some(any) = last_any else {
+                    return false;
+                };
+                restart += 1;
+                row = restart;
+                pat = any + 1;
+            }
+        }
+    }
+    while matches!(pattern.get(pat), Some(LikeToken::Any)) {
+        pat += 1;
+    }
+    pat == pattern.len()
+}
+
 enum Test {
     Compare(Operator, Cell),
     In(Vec<Cell>, bool),
     NotBetween(Cell, Cell),
     IsNull(bool),
+    Like(Vec<LikeToken>, bool),
 }
 
 struct Condition {
@@ -181,6 +247,16 @@ fn compile(
                     Test::NotBetween(parse_literal(kind, lower)?, parse_literal(kind, upper)?)
                 }
                 Predicate::IsNull { negated, .. } => Test::IsNull(*negated),
+                Predicate::Like {
+                    pattern, negated, ..
+                } => {
+                    if base_type(kind) != "String" {
+                        return Err(ExecutionError::Invalid(
+                            "LIKE requires a String column".into(),
+                        ));
+                    }
+                    Test::Like(compile_like(pattern)?, *negated)
+                }
             };
             Ok(Condition { index, test })
         })
@@ -239,6 +315,10 @@ fn passes(batch: &[TypedColumn], row: usize, branches: &[Vec<Condition>]) -> boo
             let value = cell(&batch[condition.index], row);
             match &condition.test {
                 Test::IsNull(negated) => matches!(value, Cell::Null) != *negated,
+                Test::Like(pattern, negated) => match &value {
+                    Cell::Text(bytes) => like_matches(bytes, pattern) != *negated,
+                    _ => false,
+                },
                 Test::Compare(operator, target) => matches_comparison(&value, target, *operator),
                 Test::In(targets, negated) => {
                     if matches!(value, Cell::Null) {
@@ -531,4 +611,29 @@ pub(super) fn execute_typed<W: Write>(
         }
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod like_tests {
+    use super::{compile_like, like_matches};
+
+    fn matches(text: &[u8], pattern: &str) -> bool {
+        let compiled = compile_like(pattern).unwrap();
+        like_matches(text, &compiled)
+    }
+
+    #[test]
+    fn supports_wildcards_and_backslash_escaping() {
+        assert!(matches(b"api", "a_i"));
+        assert!(matches(b"api", "%p%"));
+        assert!(matches(b"", "%"));
+        assert!(!matches(b"", "_"));
+        assert!(matches(b"a_b", "a\\_b"));
+        assert!(!matches(b"acb", "a\\_b"));
+        assert!(matches(b"abc%d", "abc\\%d"));
+        assert!(!matches(b"abcde", "abc\\%d"));
+        assert!(matches(b"abcXYZend", "a%end"));
+        assert!(!matches(b"abcXYZend", "a%ends"));
+        assert!(compile_like("dangling\\").is_err());
+    }
 }
