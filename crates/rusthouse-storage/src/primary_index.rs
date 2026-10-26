@@ -114,16 +114,10 @@ fn checked_field_offsets(path: &Path, field_widths: &[usize]) -> Result<Vec<usiz
 }
 
 fn read_raw(path: &Path) -> Result<Vec<u8>, PartError> {
-    let file = File::open(path).map_err(|source| PartError::Io {
-        path: path.to_path_buf(),
-        source,
-    })?;
+    let file = File::open(path).map_err(|source| io_error(path, source))?;
     let size = file
         .metadata()
-        .map_err(|source| PartError::Io {
-            path: path.to_path_buf(),
-            source,
-        })?
+        .map_err(|source| io_error(path, source))?
         .len();
     if size > MAX_INDEX_BYTES as u64 {
         return Err(invalid(path, "index exceeds the 256 MiB limit"));
@@ -131,10 +125,7 @@ fn read_raw(path: &Path) -> Result<Vec<u8>, PartError> {
     let mut data = Vec::new();
     file.take(MAX_INDEX_BYTES as u64 + 1)
         .read_to_end(&mut data)
-        .map_err(|source| PartError::Io {
-            path: path.to_path_buf(),
-            source,
-        })?;
+        .map_err(|source| io_error(path, source))?;
     if data.len() > MAX_INDEX_BYTES {
         return Err(invalid(path, "index exceeds the 256 MiB limit"));
     }
@@ -152,6 +143,13 @@ fn read_compressed(path: &Path) -> Result<Vec<u8>, PartError> {
         data.extend_from_slice(&block.data);
     }
     Ok(data)
+}
+
+fn io_error(path: &Path, source: std::io::Error) -> PartError {
+    PartError::Io {
+        path: path.to_path_buf(),
+        source,
+    }
 }
 
 fn invalid(path: &Path, reason: &'static str) -> PartError {

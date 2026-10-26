@@ -98,16 +98,7 @@ impl<W: Write> HtmlWriter<W> {
         } else {
             self.output.write_all(b"<tr>")?;
         }
-        let (open, close) = if header {
-            (b"<th>".as_slice(), b"</th>".as_slice())
-        } else {
-            (b"<td>".as_slice(), b"</td>".as_slice())
-        };
-        for field in &fields {
-            self.output.write_all(open)?;
-            write_cell(&mut self.output, field)?;
-            self.output.write_all(close)?;
-        }
+        write_cells(&mut self.output, &fields, header)?;
         if header {
             self.output.write_all(b"</tr></thead>\n<tbody>\n")?;
             self.columns = Some(count);
@@ -129,6 +120,20 @@ impl<W: Write> HtmlWriter<W> {
         self.output.flush()?;
         Ok(self.output)
     }
+}
+
+fn write_cells<W: Write>(output: &mut W, fields: &[String], header: bool) -> io::Result<()> {
+    let (open, close) = if header {
+        (b"<th>".as_slice(), b"</th>".as_slice())
+    } else {
+        (b"<td>".as_slice(), b"</td>".as_slice())
+    };
+    for field in fields {
+        output.write_all(open)?;
+        write_cell(output, field)?;
+        output.write_all(close)?;
+    }
+    Ok(())
 }
 
 fn write_cell<W: Write>(output: &mut W, field: &str) -> io::Result<()> {
@@ -210,6 +215,14 @@ mod tests {
         let mut writer = HtmlWriter::new(Vec::new());
         writer.write_all(b"field\n").unwrap();
         assert!(writer.write_all(b"\xff\n").is_err());
+    }
+
+    #[test]
+    fn renders_header_and_data_cell_tags() {
+        let mut output = Vec::new();
+        write_cells(&mut output, &["name".into(), "value".into()], true).unwrap();
+        write_cells(&mut output, &["id".into(), "1".into()], false).unwrap();
+        assert_eq!(output, b"<th>name</th><th>value</th><td>id</td><td>1</td>");
     }
 
     #[test]

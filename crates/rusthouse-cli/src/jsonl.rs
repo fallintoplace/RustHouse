@@ -3,6 +3,54 @@ use std::io::{self, Write};
 
 const MAX_LINE_BYTES: usize = 1024 * 1024;
 
+fn hex_digit(value: u8) -> Option<u8> {
+    match value {
+        b'0'..=b'9' => Some(value - b'0'),
+        b'a'..=b'f' => Some(value - b'a' + 10),
+        b'A'..=b'F' => Some(value - b'A' + 10),
+        _ => None,
+    }
+}
+
+fn decode_tsv_field(field: &[u8]) -> io::Result<Vec<u8>> {
+    let invalid = |message| io::Error::new(io::ErrorKind::InvalidData, message);
+    let mut output = Vec::with_capacity(field.len());
+    let mut index = 0;
+    while index < field.len() {
+        if field[index] != b'\\' {
+            output.push(field[index]);
+            index += 1;
+            continue;
+        }
+        index += 1;
+        let escaped = *field
+            .get(index)
+            .ok_or_else(|| invalid("incomplete TSV escape"))?;
+        match escaped {
+            b'\\' => output.push(b'\\'),
+            b't' => output.push(b'\t'),
+            b'n' => output.push(b'\n'),
+            b'r' => output.push(b'\r'),
+            b'0' => output.push(0),
+            b'x' => {
+                let high = *field
+                    .get(index + 1)
+                    .ok_or_else(|| invalid("short TSV hex escape"))?;
+                let low = *field
+                    .get(index + 2)
+                    .ok_or_else(|| invalid("short TSV hex escape"))?;
+                let high = hex_digit(high).ok_or_else(|| invalid("invalid TSV hex escape"))?;
+                let low = hex_digit(low).ok_or_else(|| invalid("invalid TSV hex escape"))?;
+                output.push((high << 4) | low);
+                index += 2;
+            }
+            _ => return Err(invalid("unknown TSV escape")),
+        }
+        index += 1;
+    }
+    Ok(output)
+}
+
 /// Convert tab-separated numeric query output to one JSON object per row.
 /// Values are strings to preserve UInt128/Int128 precision. NULL becomes JSON null.
 pub struct JsonlWriter<W: Write> {
@@ -74,13 +122,19 @@ fn write_json_row<W: Write>(output: &mut W, headers: &[Vec<u8>], line: &[u8]) ->
         }
         write_json_string(output, header)?;
         output.write_all(b":")?;
-        if value == b"NULL" || value == b"\\N" {
-            output.write_all(b"null")?;
-        } else {
-            write_json_string(output, value)?;
-        }
+        write_json_value(output, value)?;
     }
     output.write_all(b"}\n")
+}
+
+// Keep NULL marker handling in one place for every JSONL field.
+fn write_json_value<W: Write>(output: &mut W, value: &[u8]) -> io::Result<()> {
+    if value == b"NULL" || value == b"\\N" {
+        output.write_all(b"null")
+    } else {
+        let decoded = decode_tsv_field(value)?;
+        write_json_string(output, &decoded)
+    }
 }
 
 fn write_json_string<W: Write>(writer: &mut W, input: &[u8]) -> io::Result<()> {
@@ -230,6 +284,21 @@ mod tests {
         );
     }
     #[test]
+    fn separates_null_markers_from_literal_text() {
+        let mut output = Vec::new();
+        for (index, value) in [b"NULL".as_slice(), b"\\N", b"null", b"NULLABLE"]
+            .into_iter()
+            .enumerate()
+        {
+            if index > 0 {
+                output.push(b',');
+            }
+            write_json_value(&mut output, value).unwrap();
+        }
+        assert_eq!(output, b"null,null,\"null\",\"NULLABLE\"");
+    }
+
+    #[test]
     fn renders_typed_null_markers_as_json_null() {
         let mut writer = JsonlWriter::new(Vec::new());
         writer.write_all(b"message\tamount\n\\N\t1\n").unwrap();
@@ -260,5 +329,32 @@ mod tests {
         assert_eq!(output.lines().count(), 2);
         assert_eq!(output.matches("\"field31\":\"value31\"").count(), 2);
         assert!(output.starts_with("{\"field0\":\"value0\","));
+    }
+}
+
+#[cfg(test)]
+mod decoded_tsv_json_regressions {
+    use super::*;
+
+    #[test]
+    fn restores_escaped_sql_strings_before_json_quoting() {
+        let mut writer = JsonlWriter::new(Vec::new());
+        writer
+            .write_all(b"value\nline\\nnext\\tcell\\\\end\n")
+            .unwrap();
+        assert_eq!(
+            writer.into_inner(),
+            b"{\"value\":\"line\\nnext\\tcell\\\\end\"}\n"
+        );
+    }
+
+    #[test]
+    fn rejects_bad_tsv_escapes_instead_of_exporting_changed_data() {
+        let mut writer = JsonlWriter::new(Vec::new());
+        writer.write_all(b"value\n").unwrap();
+        assert_eq!(
+            writer.write_all(b"bad\\q\n").unwrap_err().kind(),
+            io::ErrorKind::InvalidData
+        );
     }
 }
