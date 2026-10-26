@@ -13,32 +13,96 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 
 static NEXT_STAGE: AtomicUsize = AtomicUsize::new(0);
 
-struct WriteLock {
-    path: PathBuf,
-    _file: fs::File,
+// Keep this file on disk. Unix advisory locks are released by the kernel when
+// the process exits, including after SIGKILL, so a stale pathname is harmless.
+// Unlinking a locked file would let another writer lock a different inode.
+#[cfg(unix)]
+mod advisory {
+    use std::fs::File;
+    use std::io;
+    use std::os::fd::AsRawFd;
+    use std::os::raw::c_int;
+
+    unsafe extern "C" {
+        fn flock(fd: c_int, operation: c_int) -> c_int;
+    }
+
+    const LOCK_SH: c_int = 1;
+    const LOCK_EX: c_int = 2;
+    const LOCK_NB: c_int = 4;
+
+    pub(super) fn try_lock(file: &File, exclusive: bool) -> io::Result<()> {
+        let mode = if exclusive { LOCK_EX } else { LOCK_SH };
+        if unsafe { flock(file.as_raw_fd(), mode | LOCK_NB) } == -1 {
+            Err(io::Error::last_os_error())
+        } else {
+            Ok(())
+        }
+    }
 }
 
-impl Drop for WriteLock {
+pub(super) struct DatabaseLock {
+    _file: fs::File,
+    #[cfg(not(unix))]
+    path: PathBuf,
+}
+
+// Platforms without flock retain the original create-new lock semantics.
+#[cfg(not(unix))]
+impl Drop for DatabaseLock {
     fn drop(&mut self) {
         let _ = fs::remove_file(&self.path);
     }
 }
 
-fn lock(database: &Path) -> Result<WriteLock, String> {
-    fs::create_dir_all(database)
-        .map_err(|error| format!("cannot create database {}: {error}", database.display()))?;
+fn acquire_lock(database: &Path, exclusive: bool) -> Result<DatabaseLock, String> {
+    if exclusive {
+        fs::create_dir_all(database)
+            .map_err(|error| format!("cannot create database {}: {error}", database.display()))?;
+    }
     let path = database.join(".rusthouse-write.lock");
+    let kind = if exclusive { "write" } else { "read" };
+
+    #[cfg(unix)]
     let file = OpenOptions::new()
-        .create_new(true)
+        .read(true)
         .write(true)
+        .create(true)
         .open(&path)
-        .map_err(|error| {
-            format!(
-                "cannot acquire database write lock {}: {error}",
-                path.display()
-            )
+        .map_err(|error| format!("cannot open database {kind} lock {}: {error}", path.display()))?;
+
+    #[cfg(unix)]
+    {
+        let metadata = fs::symlink_metadata(&path)
+            .map_err(|error| format!("cannot inspect database lock {}: {error}", path.display()))?;
+        if !metadata.file_type().is_file() {
+            return Err(format!("database lock is not a regular file: {}", path.display()));
+        }
+        advisory::try_lock(&file, exclusive).map_err(|error| {
+            format!("cannot acquire database {kind} lock {}: {error}", path.display())
         })?;
-    Ok(WriteLock { path, _file: file })
+    }
+
+    #[cfg(not(unix))]
+    let file = OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(&path)
+        .map_err(|error| format!("cannot acquire database {kind} lock {}: {error}", path.display()))?;
+
+    Ok(DatabaseLock {
+        _file: file,
+        #[cfg(not(unix))]
+        path,
+    })
+}
+
+fn lock(database: &Path) -> Result<DatabaseLock, String> {
+    acquire_lock(database, true)
+}
+
+pub(super) fn read_lock(database: &Path) -> Result<DatabaseLock, String> {
+    acquire_lock(database, false)
 }
 
 fn data_path(database: &Path, name: &str) -> PathBuf {
@@ -222,7 +286,13 @@ fn create_table_locked(
 pub(super) fn apply_ddl(database: &Path, ddl: &Ddl) -> Result<(), String> {
     match ddl {
         Ddl::ShowTables | Ddl::ShowCreateTable { .. } | Ddl::DescribeTable { .. } => {
-            catalog::apply(database, ddl)
+            // Do not create a new database just to list empty tables.
+            if database.is_dir() {
+                let _read_lock = read_lock(database)?;
+                catalog::apply(database, ddl)
+            } else {
+                catalog::apply(database, ddl)
+            }
         }
         Ddl::CreateTable {
             name,
@@ -397,4 +467,54 @@ pub(super) fn insert(database: &Path, insert: &Insert) -> Result<(), String> {
     result?;
     println!("Inserted {} rows into {}", rows.len(), insert.table);
     Ok(())
+}
+
+#[cfg(all(test, unix))]
+mod lock_tests {
+    use super::*;
+
+    #[test]
+    fn stale_lock_is_reusable_and_readers_block_writers() {
+        let directory = std::env::temp_dir().join(format!(
+            "rusthouse-advisory-lock-test-{}",
+            std::process::id()
+        ));
+        fs::create_dir_all(&directory).unwrap();
+        let path = directory.join(".rusthouse-write.lock");
+        fs::write(&path, b"left behind by a terminated writer").unwrap();
+
+        let writer = lock(&directory).unwrap();
+        assert!(lock(&directory).is_err());
+        assert!(read_lock(&directory).is_err());
+        drop(writer);
+
+        let first_reader = read_lock(&directory).unwrap();
+        let second_reader = read_lock(&directory).unwrap();
+        assert!(lock(&directory).is_err());
+        drop(first_reader);
+        assert!(lock(&directory).is_err());
+        drop(second_reader);
+
+        let writer = lock(&directory).unwrap();
+        drop(writer);
+        assert!(path.is_file(), "lock inode must stay available for reuse");
+        fs::remove_dir_all(directory).unwrap();
+    }
+
+    #[test]
+    fn rejects_symlinked_lock_file() {
+        use std::os::unix::fs::symlink;
+
+        let directory = std::env::temp_dir().join(format!(
+            "rusthouse-advisory-symlink-test-{}",
+            std::process::id()
+        ));
+        fs::create_dir_all(&directory).unwrap();
+        let target = directory.join("target");
+        fs::write(&target, b"untouched").unwrap();
+        symlink(&target, directory.join(".rusthouse-write.lock")).unwrap();
+        assert!(lock(&directory).is_err());
+        assert_eq!(fs::read(target).unwrap(), b"untouched");
+        fs::remove_dir_all(directory).unwrap();
+    }
 }
