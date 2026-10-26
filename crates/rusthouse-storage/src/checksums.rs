@@ -181,7 +181,7 @@ fn parse_checksums(content: &[u8], path: &Path) -> Result<PartChecksums, PartErr
 fn valid_name(name: &str) -> bool {
     !name.is_empty()
         && !name.contains('\\')
-        && !name.contains('\0')
+        && !name.bytes().any(|byte| byte.is_ascii_control())
         && name
             .split('/')
             .all(|part| !part.is_empty() && part != "." && part != "..")
@@ -392,6 +392,10 @@ mod tests {
             "dir/../file",
             "dir\\file",
             "bad\0name",
+            "line\nbreak",
+            "tab\tname",
+            "color\u{001b}[31m",
+            "delete\u{007f}char",
         ] {
             let mut bytes = vec![1];
             entry(&mut bytes, name, 0, 0, None);
