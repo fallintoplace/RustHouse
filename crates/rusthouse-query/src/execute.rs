@@ -226,6 +226,9 @@ fn execute_into<W: Write>(
     let part = part.ok_or_else(|| {
         ExecutionError::Invalid("pass --part <directory> for table queries".into())
     })?;
+    if matches!(query.projection, Projection::GroupedAggregate { .. }) {
+        return typed_aggregate::execute_grouped_aggregate(query, part, output);
+    }
     if typed::requires_typed_scan(query, part)? {
         if matches!(query.projection, Projection::Aggregate { .. }) {
             return typed_aggregate::execute_typed_aggregate(query, part, output);
@@ -269,6 +272,7 @@ fn execute_into<W: Write>(
         | Projection::CountColumn { .. }
         | Projection::CountDistinct { .. }
         | Projection::GroupedCount { .. }
+        | Projection::GroupedAggregate { .. }
         | Projection::Literal(_)
         | Projection::Constants(_) => unreachable!(),
     };
@@ -588,6 +592,74 @@ fn execute_grouped_numbers<W: Write>(
     groups.write(query, column, output)
 }
 
+fn execute_grouped_aggregate_numbers<W: Write>(
+    query: &Select,
+    start: u64,
+    rows: u64,
+    step: u64,
+    output: &mut W,
+) -> Result<(), ExecutionError> {
+    let Projection::GroupedAggregate {
+        column,
+        function,
+        value_column,
+    } = &query.projection
+    else {
+        unreachable!("grouped aggregate source requires a grouped projection")
+    };
+    if column != "number" || value_column != "number" {
+        return Err(ExecutionError::Invalid(
+            "numbers(N) exposes only the number column".into(),
+        ));
+    }
+    let comparisons = compile_numbers_predicates(query)?;
+    writeln!(output, "{column}\t{}({value_column})", function.name())?;
+    if query.limit == Some(0) {
+        return Ok(());
+    }
+    let mut by_key = HashMap::<NumberKey, usize>::new();
+    let mut groups = Vec::<(Number, AggregateState)>::new();
+    for index in 0..rows {
+        let number = start + index * step;
+        let value = Number::Unsigned(u128::from(number));
+        if !number_matches_all(value, &comparisons) {
+            continue;
+        }
+        match by_key.entry(NumberKey::from(value)) {
+            Entry::Occupied(entry) => groups[*entry.get()].1.update(value)?,
+            Entry::Vacant(entry) => {
+                if groups.len() >= MAX_GROUPS {
+                    return Err(ExecutionError::Invalid(
+                        "GROUP BY supports at most 100000 groups".into(),
+                    ));
+                }
+                entry.insert(groups.len());
+                let mut state = AggregateState::new(*function);
+                state.update(value)?;
+                groups.push((value, state));
+            }
+        }
+    }
+    if let Some(order) = &query.order_by {
+        groups.sort_by(|(left, _), (right, _)| {
+            let ordering = compare_numbers(*left, *right);
+            if order.descending {
+                ordering.reverse()
+            } else {
+                ordering
+            }
+        });
+    }
+    for (key, state) in groups
+        .into_iter()
+        .skip(query.offset.unwrap_or(0))
+        .take(query.limit.unwrap_or(usize::MAX))
+    {
+        writeln!(output, "{key}\t{}", state.render())?;
+    }
+    Ok(())
+}
+
 fn execute_count_column_part<W: Write>(
     query: &Select,
     part: &Path,
@@ -841,6 +913,9 @@ fn execute_numbers<W: Write>(
     if let Projection::GroupedCount { column } = &query.projection {
         return execute_grouped_numbers(query, start, rows, step, column, output);
     }
+    if matches!(query.projection, Projection::GroupedAggregate { .. }) {
+        return execute_grouped_aggregate_numbers(query, start, rows, step, output);
+    }
     let projected: Vec<&str> = match &query.projection {
         Projection::All => vec!["number"],
         Projection::Columns(names) => {
@@ -856,6 +931,7 @@ fn execute_numbers<W: Write>(
         | Projection::CountColumn { .. }
         | Projection::CountDistinct { .. }
         | Projection::GroupedCount { .. }
+        | Projection::GroupedAggregate { .. }
         | Projection::Literal(_)
         | Projection::Constants(_) => unreachable!(),
     };

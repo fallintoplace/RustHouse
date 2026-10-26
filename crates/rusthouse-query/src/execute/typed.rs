@@ -19,7 +19,7 @@ pub(super) enum Cell {
 }
 
 #[derive(PartialEq, Eq, Hash)]
-enum Key {
+pub(super) enum Key {
     Numeric(NumberKey),
     Text(Vec<u8>),
     Uuid(String),
@@ -27,7 +27,7 @@ enum Key {
 }
 
 impl Cell {
-    fn key(&self) -> Key {
+    pub(super) fn key(&self) -> Key {
         match self {
             Self::Numeric(value) => Key::Numeric(NumberKey::from(*value)),
             Self::Text(bytes) => Key::Text(bytes.clone()),
@@ -297,7 +297,7 @@ pub(super) fn compile(
         .collect()
 }
 
-fn cmp(left: &Cell, right: &Cell) -> Ordering {
+pub(super) fn cmp(left: &Cell, right: &Cell) -> Ordering {
     match (left, right) {
         (Cell::Numeric(left), Cell::Numeric(right)) => compare_numbers(*left, *right),
         (Cell::Text(left), Cell::Text(right)) => left.cmp(right),

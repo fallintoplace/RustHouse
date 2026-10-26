@@ -45,6 +45,14 @@ fn describe_projection(projection: &Projection) -> String {
         Projection::GroupedCount { column } => {
             format!("Aggregate: GROUP BY {column}, count(*)")
         }
+        Projection::GroupedAggregate {
+            column,
+            function,
+            value_column,
+        } => format!(
+            "Aggregate: GROUP BY {column}, {}({value_column})",
+            function.name()
+        ),
         Projection::Aggregate { function, column } => {
             format!("Aggregate: {}({column})", function.name())
         }
