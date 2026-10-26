@@ -122,14 +122,19 @@ fn write_json_row<W: Write>(output: &mut W, headers: &[Vec<u8>], line: &[u8]) ->
         }
         write_json_string(output, header)?;
         output.write_all(b":")?;
-        if value == b"NULL" || value == b"\\N" {
-            output.write_all(b"null")?;
-        } else {
-            let decoded = decode_tsv_field(value)?;
-            write_json_string(output, &decoded)?;
-        }
+        write_json_value(output, value)?;
     }
     output.write_all(b"}\n")
+}
+
+// Keep NULL marker handling in one place for every JSONL field.
+fn write_json_value<W: Write>(output: &mut W, value: &[u8]) -> io::Result<()> {
+    if value == b"NULL" || value == b"\\N" {
+        output.write_all(b"null")
+    } else {
+        let decoded = decode_tsv_field(value)?;
+        write_json_string(output, &decoded)
+    }
 }
 
 fn write_json_string<W: Write>(writer: &mut W, input: &[u8]) -> io::Result<()> {
@@ -278,6 +283,21 @@ mod tests {
             io::ErrorKind::InvalidData
         );
     }
+    #[test]
+    fn separates_null_markers_from_literal_text() {
+        let mut output = Vec::new();
+        for (index, value) in [b"NULL".as_slice(), b"\\N", b"null", b"NULLABLE"]
+            .into_iter()
+            .enumerate()
+        {
+            if index > 0 {
+                output.push(b',');
+            }
+            write_json_value(&mut output, value).unwrap();
+        }
+        assert_eq!(output, b"null,null,\"null\",\"NULLABLE\"");
+    }
+
     #[test]
     fn renders_typed_null_markers_as_json_null() {
         let mut writer = JsonlWriter::new(Vec::new());
