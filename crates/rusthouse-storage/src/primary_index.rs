@@ -44,24 +44,46 @@ pub fn candidate_u64_mark_range(
     lower: Bound<u64>,
     upper: Bound<u64>,
 ) -> Option<Range<usize>> {
-    let keys = (0..index.len())
-        .map(|mark| {
-            let bytes: [u8; 8] = index.field(mark, field)?.try_into().ok()?;
-            Some(u64::from_le_bytes(bytes))
-        })
-        .collect::<Option<Vec<_>>>()?;
-    if keys.windows(2).any(|values| values[0] > values[1]) {
-        return None;
+    let len = index.len();
+    // Keep the same conservative safety check without materializing every key.
+    let mut previous = None;
+    for mark in 0..len {
+        let bytes: [u8; 8] = index.field(mark, field)?.try_into().ok()?;
+        let key = u64::from_le_bytes(bytes);
+        if previous.is_some_and(|last| last > key) {
+            return None;
+        }
+        previous = Some(key);
     }
+
+    // The complete index layout and ordering have been validated above.
+    let key_at = |mark| {
+        let bytes: [u8; 8] = index.field(mark, field).unwrap().try_into().unwrap();
+        u64::from_le_bytes(bytes)
+    };
+    let partition_point = |target: u64, inclusive: bool| {
+        let mut low = 0;
+        let mut high = len;
+        while low < high {
+            let mid = low + (high - low) / 2;
+            let key = key_at(mid);
+            if key < target || (inclusive && key == target) {
+                low = mid + 1;
+            } else {
+                high = mid;
+            }
+        }
+        low
+    };
     let start = match lower {
-        Bound::Included(value) => keys.partition_point(|key| *key < value).saturating_sub(1),
-        Bound::Excluded(value) => keys.partition_point(|key| *key <= value).saturating_sub(1),
+        Bound::Included(value) => partition_point(value, false).saturating_sub(1),
+        Bound::Excluded(value) => partition_point(value, true).saturating_sub(1),
         Bound::Unbounded => 0,
     };
     let end = match upper {
-        Bound::Included(value) => keys.partition_point(|key| *key <= value),
-        Bound::Excluded(value) => keys.partition_point(|key| *key < value),
-        Bound::Unbounded => keys.len(),
+        Bound::Included(value) => partition_point(value, true),
+        Bound::Excluded(value) => partition_point(value, false),
+        Bound::Unbounded => len,
     };
     Some(start.min(end)..end)
 }
@@ -396,4 +418,36 @@ mod tests {
         ));
         std::fs::remove_file(path).unwrap();
     }
+    #[test]
+    fn searches_large_packed_index_without_changing_predecessor_bounds() {
+        let data: Vec<u8> = (0..8_192u64).flat_map(u64::to_le_bytes).collect();
+        let index = FixedPrimaryIndex {
+            data,
+            field_offsets: vec![0, 8],
+            row_width: 8,
+        };
+        assert_eq!(
+            candidate_u64_mark_range(
+                &index,
+                0,
+                Bound::Included(512),
+                Bound::Included(520)
+            ),
+            Some(511..521)
+        );
+        assert_eq!(
+            candidate_u64_mark_range(
+                &index,
+                0,
+                Bound::Excluded(512),
+                Bound::Excluded(520)
+            ),
+            Some(512..520)
+        );
+        assert_eq!(
+            candidate_u64_mark_range(&index, 0, Bound::Unbounded, Bound::Unbounded),
+            Some(0..8_192)
+        );
+    }
+
 }
