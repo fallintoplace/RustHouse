@@ -256,7 +256,7 @@ fn compile(
                         ));
                     }
                     Test::Like(compile_like(pattern)?, *negated)
-                },
+                }
             };
             Ok(Condition { index, test })
         })
