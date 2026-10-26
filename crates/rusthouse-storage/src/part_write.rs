@@ -384,7 +384,11 @@ mod tests {
             assert_eq!(entry.uncompressed.is_some(), entry.name.ends_with(".bin"));
         }
 
-        let id = manifest.files.iter().find(|file| file.name == "id.bin").unwrap();
+        let id = manifest
+            .files
+            .iter()
+            .find(|file| file.name == "id.bin")
+            .unwrap();
         let raw_ids = [10u64, 20]
             .into_iter()
             .flat_map(u64::to_le_bytes)
@@ -424,7 +428,11 @@ mod tests {
         assert_eq!(inspect_part(&empty).unwrap().rows, 0);
         let manifest = read_checksums(empty.join("checksums.txt")).unwrap();
         assert_eq!(
-            manifest.files.iter().map(|file| file.name.as_str()).collect::<Vec<_>>(),
+            manifest
+                .files
+                .iter()
+                .map(|file| file.name.as_str())
+                .collect::<Vec<_>>(),
             vec!["columns.txt", "count.txt"]
         );
         assert_eq!(verify_part_file_sizes(&empty).unwrap().files, 2);
