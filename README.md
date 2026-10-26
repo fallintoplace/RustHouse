@@ -44,12 +44,37 @@ Inspect fixed-width primary-index entries with `cargo run -p rusthouse-cli -- in
 
 Negate a numeric predicate using `WHERE NOT number < 5`, `WHERE NOT number IN (1, 3)`, or `WHERE NOT number BETWEEN 2 AND 4`. The prefix `NOT` applies to one predicate; parenthesized Boolean expressions are not supported.
 
-## Experimental schema-only DDL
+Measure SQL execution and output formatting time with `cargo run -p rusthouse-cli -- sql "SELECT number FROM numbers(1000)" --time`. The elapsed milliseconds appear on stderr, leaving stdout and exported files unchanged.
 
-Create a local schema catalog with `cargo run -p rusthouse-cli -- sql "CREATE TABLE events (id UInt64, value Int64)" --catalog ./catalog`. A table is a `.rh` schema file inside the chosen catalog directory. This does not allocate MergeTree parts or enable inserts. For now, DDL accepts a limited type list and simple unquoted identifiers. `--show-ast` works without a catalog.
+Inspect part metadata in machine-readable JSON with `cargo run -p rusthouse-cli -- inspect-part /path/to/wide-part --json`. This prints the path, row count, and column names and types without reading data streams.
 
-List tables with `cargo run -p rusthouse-cli -- sql "SHOW TABLES" --catalog ./catalog`.
+Copy SQL results into GitHub issues and Markdown documents using `cargo run -p rusthouse-cli -- sql "SELECT number FROM numbers(3)" --format markdown`. The formatter streams rows and escapes Markdown and HTML-sensitive characters.
 
-Inspect columns with `cargo run -p rusthouse-cli -- sql "DESCRIBE TABLE events" --catalog ./catalog`.
+## Local schema catalog (experimental)
 
-Remove catalog metadata with `cargo run -p rusthouse-cli -- sql "DROP TABLE IF EXISTS events" --catalog ./catalog`. This removes only the schema file, not external data parts.
+DDL in RustHouse currently manages **metadata only** in an explicit local directory.
+It does **not** create MergeTree parts, change existing data, or make these
+catalog tables queryable by `SELECT`. Keep it separate from production parts.
+
+```sh
+cargo run -p rusthouse-cli -- sql "CREATE TABLE events (id UInt64, name String)" --catalog ./catalog
+cargo run -p rusthouse-cli -- sql "CREATE TABLE IF NOT EXISTS events (id UInt64, name String)" --catalog ./catalog
+```
+
+Schemas use a versioned text format in `<catalog>/<table>.schema`.
+Identifiers are simple ASCII SQL names and type support is deliberately bounded.
+
+List local tables with `rusthouse sql "SHOW TABLES" --catalog ./catalog`.
+Inspect stored column names and types with `rusthouse sql "DESCRIBE TABLE events" --catalog ./catalog`.
+
+Drop only a catalog schema file with `rusthouse sql "DROP TABLE IF EXISTS events" --catalog ./catalog`.
+Existing MergeTree parts remain untouched.
+
+Extend a schema with `rusthouse sql "ALTER TABLE events ADD COLUMN age UInt8" --catalog ./catalog`.
+`ADD COLUMN IF NOT EXISTS` is idempotent. Changes are metadata-only.
+
+Remove a catalog column with `rusthouse sql "ALTER TABLE events DROP COLUMN age" --catalog ./catalog`.
+`DROP COLUMN IF EXISTS` is idempotent. The last column cannot be dropped.
+
+Rename catalog metadata with `rusthouse sql "RENAME TABLE events TO archived_events" --catalog ./catalog`.
+The destination must be absent. No MergeTree parts are moved.
