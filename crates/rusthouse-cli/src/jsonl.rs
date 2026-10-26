@@ -74,7 +74,7 @@ fn write_json_row<W: Write>(output: &mut W, headers: &[Vec<u8>], line: &[u8]) ->
         }
         write_json_string(output, header)?;
         output.write_all(b":")?;
-        if value == b"NULL" {
+        if value == b"NULL" || value == b"\\N" {
             output.write_all(b"null")?;
         } else {
             write_json_string(output, value)?;
@@ -193,6 +193,15 @@ mod tests {
         assert_eq!(
             writer.write_all(b"\xff\n").unwrap_err().kind(),
             io::ErrorKind::InvalidData
+        );
+    }
+    #[test]
+    fn renders_typed_null_markers_as_json_null() {
+        let mut writer = JsonlWriter::new(Vec::new());
+        writer.write_all(b"message\tamount\n\\N\t1\n").unwrap();
+        assert_eq!(
+            writer.into_inner(),
+            b"{\"message\":null,\"amount\":\"1\"}\n"
         );
     }
 
