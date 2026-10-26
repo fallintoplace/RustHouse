@@ -58,7 +58,13 @@ pub(super) fn tokenize(sql: &str) -> Result<Vec<Token>, ParseError> {
                 let mut start = index;
                 let mut closed = false;
                 while index < bytes.len() {
-                    if bytes[index] == b'\'' {
+                    if bytes[index] == b'\\' && matches!(bytes.get(index + 1), Some(b'\'' | b'\\'))
+                    {
+                        value.push_str(&sql[start..index]);
+                        value.push(bytes[index + 1] as char);
+                        index += 2;
+                        start = index;
+                    } else if bytes[index] == b'\'' {
                         value.push_str(&sql[start..index]);
                         if bytes.get(index + 1) == Some(&b'\'') {
                             value.push('\'');
@@ -164,6 +170,21 @@ mod tests {
     fn rejects_non_ascii_and_oversized_statements() {
         assert!(tokenize("SELECT é").is_err());
         assert!(tokenize(&" ".repeat(4097)).is_err());
+    }
+
+    #[test]
+    fn supports_backslash_quoted_strings_without_losing_literal_escapes() {
+        assert_eq!(
+            tokenize(r"SELECT 'it\'s', 'C:\\tmp', 'a\_b'").unwrap(),
+            vec![
+                Token::Word("SELECT".into()),
+                Token::String("it's".into()),
+                Token::Comma,
+                Token::String(r"C:\tmp".into()),
+                Token::Comma,
+                Token::String(r"a\_b".into()),
+            ]
+        );
     }
 
     #[test]
