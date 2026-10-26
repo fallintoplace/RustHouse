@@ -707,10 +707,8 @@ pub(super) fn execute_typed<W: Write>(
                         .ok_or_else(|| ExecutionError::Invalid("row ordinal overflow".into()))?;
                     if top.len() < capacity {
                         top.push(next);
-                    } else if let Some(mut worst) = top.peek_mut() {
-                        if next < *worst {
-                            *worst = next;
-                        }
+                    } else if top.peek().is_some_and(|worst| next < *worst) {
+                        *top.peek_mut().unwrap() = next;
                     }
                 } else {
                     if ordered.len() >= MAX_BUFFERED_ROWS {
