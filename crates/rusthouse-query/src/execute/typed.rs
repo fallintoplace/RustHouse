@@ -543,3 +543,21 @@ pub(super) fn execute_typed<W: Write>(
     }
     Ok(())
 }
+
+#[cfg(test)]
+mod like_tests {
+    use super::like_matches;
+
+    #[test]
+    fn matches_escaped_wildcards_and_empty_text() {
+        assert!(like_matches(b"foo_bar", b"foo\\_bar", false));
+        assert!(like_matches(b"100%", b"100\\%", false));
+        assert!(like_matches(b"a\\b", b"a\\\\b", false));
+        assert!(like_matches(b"", b"%", false));
+        assert!(!like_matches(b"", b"_", false));
+        assert!(!like_matches(b"api", b"API", false));
+        assert!(like_matches(b"api", b"A_I", true));
+        assert!(like_matches(b"abcdef", b"a%e_", false));
+        assert!(!like_matches(b"abcdef", b"a%e", false));
+    }
+}
