@@ -56,7 +56,11 @@ fn measure(name: &str, sql: &str, expected: &str, rows: u64, samples: usize) {
         output.clear();
         execute(black_box(&query), None, &mut output).expect("warmup must execute");
     }
-    assert_eq!(output, expected.as_bytes(), "{name} returned the wrong result");
+    assert_eq!(
+        output,
+        expected.as_bytes(),
+        "{name} returned the wrong result"
+    );
 
     let mut timings = Vec::with_capacity(samples);
     for _ in 0..samples {
@@ -66,7 +70,11 @@ fn measure(name: &str, sql: &str, expected: &str, rows: u64, samples: usize) {
         execute(black_box(&query), None, &mut output).expect("benchmark must execute");
         timings.push(start.elapsed());
         black_box(&output);
-        assert_eq!(output, expected.as_bytes(), "{name} returned the wrong result");
+        assert_eq!(
+            output,
+            expected.as_bytes(),
+            "{name} returned the wrong result"
+        );
     }
     timings.sort_unstable();
     let median_seconds = timings[samples / 2].as_secs_f64();
@@ -91,7 +99,10 @@ fn main() {
     println!(
         "RustHouse numbers() benchmarks: {rows} input rows, {samples} samples, {WARMUP_RUNS} warmups"
     );
-    println!("{:<18} {:>10} {:>17}", "workload", "median ms", "M input rows/s");
+    println!(
+        "{:<18} {:>10} {:>17}",
+        "workload", "median ms", "M input rows/s"
+    );
 
     measure(
         "filtered count",
