@@ -95,9 +95,25 @@ mod tests {
 
     #[test]
     fn rejects_bad_mark_order_duplicate_offsets_and_row_counts() {
-        assert!(ScanLayout::default().validate("a", &[mark(8, 1), mark(4, 1)], 2).is_err());
-        assert!(ScanLayout::default().validate("a", &[mark(0, 1), mark(0, 1)], 2).is_err());
-        assert!(ScanLayout::default().validate("a", &[mark(0, 1)], 2).is_err());
-        assert!(ScanLayout::default().validate("a", &[mark(0, 0), mark(1, 1)], 1).is_err());
+        assert!(
+            ScanLayout::default()
+                .validate("a", &[mark(8, 1), mark(4, 1)], 2)
+                .is_err()
+        );
+        assert!(
+            ScanLayout::default()
+                .validate("a", &[mark(0, 1), mark(0, 1)], 2)
+                .is_err()
+        );
+        assert!(
+            ScanLayout::default()
+                .validate("a", &[mark(0, 1)], 2)
+                .is_err()
+        );
+        assert!(
+            ScanLayout::default()
+                .validate("a", &[mark(0, 0), mark(1, 1)], 1)
+                .is_err()
+        );
     }
 }
