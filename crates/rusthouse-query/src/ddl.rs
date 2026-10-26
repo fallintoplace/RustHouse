@@ -18,6 +18,11 @@ pub enum Ddl {
         name: String,
         if_exists: bool,
     },
+    AddColumn {
+        table: String,
+        column: ColumnDef,
+        if_not_exists: bool,
+    },
 }
 
 fn identifier(parser: &mut Parser) -> Result<String, ParseError> {
@@ -74,6 +79,34 @@ pub fn parse_ddl(sql: &str) -> Result<Option<Ddl>, ParseError> {
         tokens: tokenize(sql)?,
         index: 0,
     };
+    if parser.keyword("ALTER") {
+        if !parser.keyword("TABLE") {
+            return Err(ParseError("expected TABLE after ALTER".into()));
+        }
+        let table = identifier(&mut parser)?;
+        if !parser.keyword("ADD") || !parser.keyword("COLUMN") {
+            return Err(ParseError("expected ADD COLUMN after table name".into()));
+        }
+        let if_not_exists = if parser.keyword("IF") {
+            if !parser.keyword("NOT") || !parser.keyword("EXISTS") {
+                return Err(ParseError("expected IF NOT EXISTS".into()));
+            }
+            true
+        } else {
+            false
+        };
+        let name = identifier(&mut parser)?;
+        let data_type = data_type(&mut parser, 0)?;
+        parser.take(Token::Semicolon);
+        if parser.index != parser.tokens.len() {
+            return Err(ParseError("unexpected tokens after DDL statement".into()));
+        }
+        return Ok(Some(Ddl::AddColumn {
+            table,
+            column: ColumnDef { name, data_type },
+            if_not_exists,
+        }));
+    }
     if parser.keyword("DROP") {
         if !parser.keyword("TABLE") {
             return Err(ParseError("expected TABLE after DROP".into()));
@@ -171,6 +204,30 @@ mod tests {
             })
         );
         assert_eq!(parse_ddl("SELECT 1").unwrap(), None);
+    }
+
+    #[test]
+    fn parses_add_column_and_rejects_unsupported_alter_syntax() {
+        assert_eq!(
+            parse_ddl("ALTER TABLE events ADD COLUMN IF NOT EXISTS info Nullable(String);")
+                .unwrap(),
+            Some(Ddl::AddColumn {
+                table: "events".into(),
+                column: ColumnDef {
+                    name: "info".into(),
+                    data_type: "Nullable(String)".into(),
+                },
+                if_not_exists: true,
+            })
+        );
+        for sql in [
+            "ALTER TABLE events ADD info String",
+            "ALTER TABLE events ADD COLUMN id",
+            "ALTER TABLE events ADD COLUMN id Int64 AFTER info",
+            "ALTER TABLE events ADD COLUMN IF EXISTS info String",
+        ] {
+            assert!(parse_ddl(sql).is_err(), "{sql}");
+        }
     }
 
     #[test]
