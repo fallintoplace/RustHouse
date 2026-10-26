@@ -1,6 +1,7 @@
 //! Single-writer local database mode.
 //! Tables use existing .schema metadata and immutable, atomically published wide parts.
 use crate::catalog;
+mod rewrite;
 use rusthouse_query::{Ddl, Insert};
 use rusthouse_storage::{
     Column, inspect_query_source, query_parts, verify_wide_part, write_wide_part,
@@ -65,12 +66,44 @@ fn validated_parts(
     if !metadata.file_type().is_dir() {
         return Err(format!("table data is not a real directory: {name}"));
     }
-    let parts = query_parts(&path).map_err(|error| error.to_string())?;
-    let source = inspect_query_source(&path).map_err(|error| error.to_string())?;
+    let active = active_source(database, name)?;
+    let parts = query_parts(&active).map_err(|error| error.to_string())?;
+    let source = inspect_query_source(&active).map_err(|error| error.to_string())?;
     if source.columns != cols {
         return Err(format!("table {name} schema differs from its stored data"));
     }
-    Ok((path, parts))
+    Ok((active, parts))
+}
+
+fn active_source(database: &Path, name: &str) -> Result<PathBuf, String> {
+    let root = data_path(database, name);
+    let pointer = root.join(".rusthouse-active");
+    let metadata = match fs::symlink_metadata(&pointer) {
+        Ok(metadata) => metadata,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(root),
+        Err(error) => return Err(format!("cannot inspect table snapshot: {error}")),
+    };
+    if !metadata.file_type().is_file() || metadata.len() > 64 {
+        return Err("invalid database snapshot pointer".into());
+    }
+    let label = fs::read_to_string(&pointer)
+        .map_err(|error| format!("cannot read table snapshot pointer: {error}"))?;
+    let label = label
+        .strip_suffix('\n')
+        .ok_or("invalid snapshot pointer format")?;
+    if !label.starts_with('g')
+        || label.len() < 2
+        || !label.as_bytes()[1..].iter().all(u8::is_ascii_digit)
+    {
+        return Err("invalid database snapshot generation".into());
+    }
+    let active = root.join(".rusthouse-versions").join(label);
+    let kind = fs::symlink_metadata(&active)
+        .map_err(|error| format!("missing active database snapshot: {error}"))?;
+    if !kind.file_type().is_dir() {
+        return Err("active database snapshot is not a directory".into());
+    }
+    Ok(active)
 }
 
 /// Resolve a named SQL table to its immutable on-disk parts.
@@ -136,7 +169,9 @@ fn rename_table(database: &Path, from: &str, to: &str) -> Result<(), String> {
     }
     let _lock = lock(database)?;
     let cols = columns(database, from)?;
-    let (source_parts, _) = validated_parts(database, from, &cols)?;
+    validated_parts(database, from, &cols)?;
+    // Move the complete table root, including its snapshot pointer and all generations.
+    let source_parts = data_path(database, from);
     let source_schema = database.join(format!("{from}.schema"));
     let destination_schema = database.join(format!("{to}.schema"));
     let destination_parts = data_path(database, to);
@@ -161,54 +196,12 @@ fn rename_table(database: &Path, from: &str, to: &str) -> Result<(), String> {
     Ok(())
 }
 
-/// Replace all stored rows with one empty part while preserving the schema.
-/// This is a single-writer operation, not an online snapshot transaction.
+/// Publish a new empty snapshot without temporarily removing the active table.
 fn truncate_table(database: &Path, name: &str) -> Result<(), String> {
     let _lock = lock(database)?;
     let cols = columns(database, name)?;
-    let (parts, _) = validated_parts(database, name, &cols)?;
-    let sequence = NEXT_STAGE.fetch_add(1, Ordering::Relaxed);
-    let staging = database.join(format!(
-        ".{name}.truncate-new-{}-{sequence}",
-        std::process::id()
-    ));
-    let retired = database.join(format!(
-        ".{name}.truncate-old-{}-{sequence}",
-        std::process::id()
-    ));
-    if existing_path(&staging)? || existing_path(&retired)? {
-        return Err("TRUNCATE staging path already exists".into());
-    }
-    fs::create_dir(&staging)
-        .map_err(|error| format!("cannot stage TRUNCATE for {name}: {error}"))?;
-    let prepared = write_wide_part(&staging.join("all_0_0_0"), &cols, &[])
-        .map_err(|error| error.to_string())
-        .and_then(|_| {
-            verify_wide_part(staging.join("all_0_0_0")).map_err(|error| error.to_string())
-        });
-    if let Err(error) = prepared {
-        let _ = fs::remove_dir_all(&staging);
-        return Err(error);
-    }
-    if let Err(error) = fs::rename(&parts, &retired) {
-        let _ = fs::remove_dir_all(&staging);
-        return Err(format!("cannot retire stored rows of {name}: {error}"));
-    }
-    if let Err(error) = fs::rename(&staging, &parts) {
-        let rollback = fs::rename(&retired, &parts);
-        let _ = fs::remove_dir_all(&staging);
-        return match rollback {
-            Ok(()) => Err(format!("cannot publish empty table {name}: {error}")),
-            Err(rollback) => Err(format!(
-                "cannot publish empty table {name}: {error}; rollback failed: {rollback}"
-            )),
-        };
-    }
-    fs::File::open(database)
-        .and_then(|dir| dir.sync_all())
-        .map_err(|error| format!("table {name} was truncated but sync failed: {error}"))?;
-    fs::remove_dir_all(&retired)
-        .map_err(|error| format!("table {name} was truncated but cleanup failed: {error}"))?;
+    validated_parts(database, name, &cols)?;
+    rewrite::publish_snapshot(database, name, &cols, &[])?;
     println!("Truncated table {name}");
     Ok(())
 }
@@ -254,6 +247,7 @@ pub(super) fn apply_ddl(database: &Path, ddl: &Ddl) -> Result<(), String> {
         }
         Ddl::DropTable { name, if_exists } => drop_table(database, name, *if_exists),
         Ddl::TruncateTable { name } => truncate_table(database, name),
+        Ddl::OptimizeTable { name } => rewrite::compact_table(database, name),
         Ddl::RenameTable { from, to } => rename_table(database, from, to),
         _ => Err("database mode does not support ALTER yet".into()),
     }
