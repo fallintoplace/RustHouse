@@ -161,7 +161,7 @@ where
 struct InnerJoinColumns<'a> {
     left_names: &'a [String],
     right_names: &'a [String],
-    selected: &'a [(usize, String)],
+    selected: &'a [(usize, String, Option<usize>)],
     left_keys: &'a [usize],
     right_keys: &'a [usize],
 }
@@ -223,7 +223,7 @@ fn execute_streaming_inner<W: Write>(
         &hash,
         |left, right| {
             if position >= query.offset && position < end {
-                for (index, (column, _)) in selected.iter().enumerate() {
+                for (index, (column, _, _)) in selected.iter().enumerate() {
                     if index != 0 {
                         output.write_all(b"\t")?;
                     }
@@ -263,38 +263,44 @@ pub fn execute_join<W: Write>(
         .map(|col| col.name.clone())
         .collect::<Vec<_>>();
     let width = left_names.len();
-    let selected =
-        if let Some(columns) = &query.columns {
-            columns
-                .iter()
-                .map(|col| {
-                    resolve(query, col, &left_names, &right_names)
-                        .map(|index| (index, format!("{}.{}", col.relation, col.name), None))
-                })
-                .collect::<Result<Vec<_>, _>>()?
-        } else {
-            left_names
-                .iter()
-                .enumerate()
-                .map(|(index, name)| {
-                    // A USING key appears once in SELECT *. For unmatched right
-                    // rows, its value comes from the right side.
-                    let fallback = if query.using_keys.contains(name) {
-                        right_names.iter().position(|right| right == name).map(|right| width + right)
-                    } else {
-                        None
-                    };
-                    (index, format!("{}.{}", query.left_alias, name), fallback)
-                })
-                .chain(right_names.iter().enumerate().filter_map(|(index, name)| {
-                    if query.using_keys.contains(name) {
-                        None
-                    } else {
-                        Some((width + index, format!("{}.{}", query.right_alias, name), None))
-                    }
-                }))
-                .collect::<Vec<_>>()
-        };
+    let selected: Vec<(usize, String, Option<usize>)> = if let Some(columns) = &query.columns {
+        columns
+            .iter()
+            .map(|col| {
+                resolve(query, col, &left_names, &right_names)
+                    .map(|index| (index, format!("{}.{}", col.relation, col.name), None))
+            })
+            .collect::<Result<Vec<_>, _>>()?
+    } else {
+        left_names
+            .iter()
+            .enumerate()
+            .map(|(index, name)| {
+                // A USING key appears once in SELECT *. For unmatched right
+                // rows, its value comes from the right side.
+                let fallback = if query.using_keys.contains(name) {
+                    right_names
+                        .iter()
+                        .position(|right| right == name)
+                        .map(|right| width + right)
+                } else {
+                    None
+                };
+                (index, format!("{}.{}", query.left_alias, name), fallback)
+            })
+            .chain(right_names.iter().enumerate().filter_map(|(index, name)| {
+                if query.using_keys.contains(name) {
+                    None
+                } else {
+                    Some((
+                        width + index,
+                        format!("{}.{}", query.right_alias, name),
+                        None,
+                    ))
+                }
+            }))
+            .collect::<Vec<_>>()
+    };
     let order = query
         .order_by
         .as_ref()
@@ -388,7 +394,7 @@ pub fn execute_join<W: Write>(
     }
     let header = selected
         .iter()
-        .map(|(_, name)| name.as_str())
+        .map(|(_, name, _)| name.as_str())
         .collect::<Vec<_>>()
         .join("\t");
     writeln!(output, "{header}")?;
@@ -403,7 +409,9 @@ pub fn execute_join<W: Write>(
             }
             let null = typed::Cell::Null;
             let value = cell_at(&left_rows, &right_rows, pair, *index, width)
-                .or_else(|| fallback.and_then(|index| cell_at(&left_rows, &right_rows, pair, index, width)))
+                .or_else(|| {
+                    fallback.and_then(|index| cell_at(&left_rows, &right_rows, pair, index, width))
+                })
                 .unwrap_or(&null);
             typed::write_value(output, value)?;
         }
