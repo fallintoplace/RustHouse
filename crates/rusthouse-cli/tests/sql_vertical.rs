@@ -22,10 +22,7 @@ fn prints_numeric_sql_results_in_vertical_format() {
 fn vertical_format_handles_multiple_projected_columns() {
     let result = sql_vertical("SELECT number, number FROM numbers(2) LIMIT 1", &[]);
     assert!(result.status.success(), "{result:?}");
-    assert_eq!(
-        result.stdout,
-        b"Row 1:\n  number: 0\n  number: 0\n\n"
-    );
+    assert_eq!(result.stdout, b"Row 1:\n  number: 0\n  number: 0\n\n");
 }
 
 #[test]
@@ -37,10 +34,8 @@ fn vertical_format_prints_nothing_for_no_rows() {
 
 #[test]
 fn vertical_format_respects_output_file() {
-    let path = std::env::temp_dir().join(format!(
-        "rusthouse-sql-vertical-{}.txt",
-        std::process::id()
-    ));
+    let path =
+        std::env::temp_dir().join(format!("rusthouse-sql-vertical-{}.txt", std::process::id()));
     let result = Command::new(env!("CARGO_BIN_EXE_rusthouse"))
         .args(["sql", "SELECT 1", "--format", "vertical", "--output"])
         .arg(&path)
@@ -48,9 +43,6 @@ fn vertical_format_respects_output_file() {
         .unwrap();
     assert!(result.status.success(), "{result:?}");
     assert!(result.stdout.is_empty());
-    assert_eq!(
-        std::fs::read(&path).unwrap(),
-        b"Row 1:\n  1: 1\n\n"
-    );
+    assert_eq!(std::fs::read(&path).unwrap(), b"Row 1:\n  1: 1\n\n");
     std::fs::remove_file(path).unwrap();
 }
