@@ -17,6 +17,7 @@ mod numeric;
 mod part_scan;
 mod part_verify;
 mod primary_index;
+mod scan_layout;
 mod stream;
 mod string_arrays;
 mod strings;
