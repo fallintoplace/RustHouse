@@ -43,10 +43,14 @@ cargo run -p rusthouse-cli -- sql "SELECT id, count(*) FROM part GROUP BY id ORD
 cargo run -p rusthouse-cli -- sql "CREATE TABLE events (id UInt64, name String)" --database ./mydb
 cargo run -p rusthouse-cli -- sql "INSERT INTO events VALUES (1, 'Ada'), (2, 'Grace')" --database ./mydb
 cargo run -p rusthouse-cli -- sql "SELECT id, name FROM events ORDER BY id" --database ./mydb
+cargo run -p rusthouse-cli -- sql "CREATE TABLE generated (id UInt64)" --database ./mydb
+cargo run -p rusthouse-cli -- sql "INSERT INTO generated (id) SELECT number FROM numbers(5)" --database ./mydb
 cargo run -p rusthouse-cli -- sql "COPY events FROM '/path/to/events.csv' WITH (FORMAT CSV, HEADER TRUE)" --database ./mydb
 ```
 
 COPY FROM CSV imports local UTF-8 CSV with quoted commas, quotes, and newlines. With `HEADER TRUE`, CSV headers map fields to named table columns. Without a header, CSV fields follow table column order. Unquoted empty fields become NULL; quoted empty fields remain empty strings. Imports are limited to 4,096 records and 8 MiB and publish one part only after parsing succeeds.
+
+INSERT ... SELECT reads up to 4,096 rows from another table or a supported generated source and appends them as one part. It supports named target columns and the same type checks as INSERT VALUES. A SELECT that yields no rows is a no-op. The read and write are separate operations, **not a transaction**.
 
 `--database` stores table schemas and **immutable wide parts** locally. Supported SQL includes `CREATE TABLE`, `INSERT ... VALUES`, `SELECT`, `SHOW TABLES`, `SHOW CREATE TABLE`, `DESCRIBE TABLE`, `CREATE TABLE ... LIKE`, `RENAME TABLE`, `DROP TABLE` and `TRUNCATE TABLE`. Queries support the existing `--format`, `--output`, `--max-rows` and `--explain` options. Database writes are single-writer, limited to supported numeric, String and Nullable columns, and **not transactional across statements**. This is for local experiments, not concurrent production workloads. Run a sequence of up to 128 statements (256 KiB total) with `rusthouse sql --script setup.sql --database ./mydb`. Scripts permit SQL line comments and stop on the first error; they are **not transactions**.
 
