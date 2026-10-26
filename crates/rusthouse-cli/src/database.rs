@@ -68,6 +68,7 @@ fn acquire_lock(database: &Path, exclusive: bool) -> Result<DatabaseLock, String
         .read(true)
         .write(true)
         .create(true)
+        .truncate(false)
         .open(&path)
         .map_err(|error| {
             format!(
