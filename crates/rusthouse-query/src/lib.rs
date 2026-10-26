@@ -6,7 +6,7 @@ mod insert;
 mod lexer;
 pub use ddl::{ColumnDef, Ddl, parse_ddl};
 pub use delete::{Delete, parse_delete};
-pub use execute::{ExecutionError, execute, read_matching_rows};
+pub use execute::{ExecutionError, MatchedRow, execute, read_matching_rows};
 pub use explain::explain_select;
 pub use insert::{Insert, parse_insert};
 
