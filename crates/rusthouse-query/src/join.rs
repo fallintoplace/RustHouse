@@ -156,6 +156,20 @@ pub fn parse_join(sql: &str) -> Result<Option<JoinSelect>, ParseError> {
         ));
     }
     let second = qualified(&mut parser)?;
+    let mut keys = vec![(first, second)];
+    while parser.keyword("AND") {
+        if keys.len() >= 8 {
+            return Err(ParseError("JOIN supports at most 8 equality keys".into()));
+        }
+        let first = qualified(&mut parser)?;
+        if !parser.take(Token::Operator(super::Operator::Eq)) {
+            return Err(ParseError(
+                "JOIN ON supports AND-connected equality keys".into(),
+            ));
+        }
+        let second = qualified(&mut parser)?;
+        keys.push((first, second));
+    }
     let order_by = if parser.keyword("ORDER") {
         if !parser.keyword("BY") {
             return Err(ParseError("ORDER requires BY".into()));
@@ -197,7 +211,7 @@ pub fn parse_join(sql: &str) -> Result<Option<JoinSelect>, ParseError> {
         right_alias,
         kind,
         columns,
-        keys: vec![(first, second)],
+        keys,
         order_by,
         limit,
         offset,
@@ -253,6 +267,25 @@ mod tests {
         assert_eq!(query.limit, Some(5));
         assert_eq!(query.offset, 2);
         assert!(parse_join("SELECT id FROM users").unwrap().is_none());
+    }
+
+    #[test]
+    fn parses_composite_join_predicates() {
+        let query = parse_join(
+            "SELECT a.id, b.id FROM first a LEFT JOIN second b ON a.tenant = b.tenant AND b.user_id = a.user_id ORDER BY a.id LIMIT 2",
+        )
+        .unwrap()
+        .unwrap();
+        assert_eq!(query.keys.len(), 2);
+        assert_eq!(query.keys[1].0.relation, "b");
+        let excess = format!(
+            "SELECT * FROM a JOIN b ON {}",
+            vec!["a.id = b.id"; 9].join(" AND ")
+        );
+        assert!(parse_join(&excess).is_err());
+        assert!(
+            parse_join("SELECT * FROM a JOIN b ON a.id = b.id AND a.user_id != b.user_id").is_err()
+        );
     }
 
     #[test]
