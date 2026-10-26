@@ -134,7 +134,9 @@ fn checked_bit_shift(value: i64, amount: i64, left: bool) -> Result<i64, ParseEr
     let shift = u32::try_from(amount)
         .map_err(|_| ParseError("bit shift count must be between 0 and 63".into()))?;
     if shift >= i64::BITS {
-        return Err(ParseError("bit shift count must be between 0 and 63".into()));
+        return Err(ParseError(
+            "bit shift count must be between 0 and 63".into(),
+        ));
     }
     if left {
         i64::try_from(i128::from(value) << shift).map_err(|_| overflow())

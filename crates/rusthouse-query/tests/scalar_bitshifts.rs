@@ -12,7 +12,11 @@ fn supports_checked_left_and_arithmetic_right_bit_shifts() {
         ("SELECT bitShiftRight(8, 1 + 1) + 3", 5),
         ("SELECT bitAnd(bitShiftLeft(3, 2), 15)", 12),
     ] {
-        assert_eq!(parse_select(sql).unwrap().projection, Projection::Literal(expected), "{sql}");
+        assert_eq!(
+            parse_select(sql).unwrap().projection,
+            Projection::Literal(expected),
+            "{sql}"
+        );
     }
 }
 
