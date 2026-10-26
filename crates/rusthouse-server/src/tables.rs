@@ -37,6 +37,10 @@ fn valid_schema(path: &Path) -> bool {
     let Ok(contents) = std::str::from_utf8(&bytes) else {
         return false;
     };
+    valid_schema_contents(contents)
+}
+
+fn valid_schema_contents(contents: &str) -> bool {
     if !contents.ends_with('\n') {
         return false;
     }
@@ -145,6 +149,15 @@ mod tests {
         ));
         fs::create_dir_all(&db).unwrap();
         db
+    }
+
+    #[test]
+    fn validates_schema_contents_independently_of_catalog_io() {
+        assert!(valid_schema_contents("rusthouse-schema-v1\nid\tUInt64\n"));
+        assert!(!valid_schema_contents("rusthouse-schema-v1\n"));
+        assert!(!valid_schema_contents("rusthouse-schema-v1\nid\tUInt64"));
+        assert!(!valid_schema_contents("wrong-version\nid\tUInt64\n"));
+        assert!(!valid_schema_contents("rusthouse-schema-v1\nno-type\n"));
     }
 
     #[test]
