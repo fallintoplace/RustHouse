@@ -73,11 +73,144 @@ fn validated_parts(
     Ok((path, parts))
 }
 
-/// Resolve a local table only after its stored parts match the schema.
-pub(super) fn select_path(database: &Path, table: &str) -> Result<PathBuf, String> {
+/// Resolve a named SQL table to its immutable on-disk parts.
+pub(super) fn select_source(database: &Path, table: &str) -> Result<PathBuf, String> {
     let cols = columns(database, table)?;
     let (path, _) = validated_parts(database, table, &cols)?;
     Ok(path)
+}
+
+fn existing_path(path: &Path) -> Result<bool, String> {
+    match fs::symlink_metadata(path) {
+        Ok(_) => Ok(true),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(false),
+        Err(error) => Err(format!("cannot inspect {}: {error}", path.display())),
+    }
+}
+
+fn drop_table(database: &Path, name: &str, if_exists: bool) -> Result<(), String> {
+    let _lock = lock(database)?;
+    let schema = database.join(format!("{name}.schema"));
+    let parts = data_path(database, name);
+    if !existing_path(&schema)? {
+        if existing_path(&parts)? {
+            return Err(format!("table {name} has orphaned data; refusing DROP"));
+        }
+        if if_exists {
+            return Ok(());
+        }
+        return Err(format!("unknown database table: {name}"));
+    }
+    let cols = columns(database, name)?;
+    validated_parts(database, name, &cols)?;
+
+    // Hide the schema first. Interrupted DROP cannot attach old data to a new table.
+    let tombstone = database.join(format!(
+        ".{name}.drop-{}-{}.schema",
+        std::process::id(),
+        NEXT_STAGE.fetch_add(1, Ordering::Relaxed)
+    ));
+    if existing_path(&tombstone)? {
+        return Err(format!("stale DROP metadata at {}", tombstone.display()));
+    }
+    fs::rename(&schema, &tombstone)
+        .map_err(|error| format!("cannot hide table schema {name}: {error}"))?;
+    if let Err(error) = fs::remove_dir_all(&parts) {
+        return Err(format!(
+            "cannot finish DROP for {name}: {error}; recovery schema is at {}",
+            tombstone.display()
+        ));
+    }
+    fs::remove_file(&tombstone)
+        .map_err(|error| format!("cannot remove dropped schema for {name}: {error}"))?;
+    fs::File::open(database)
+        .and_then(|dir| dir.sync_all())
+        .map_err(|error| format!("table {name} was dropped but sync failed: {error}"))?;
+    println!("Dropped table {name}");
+    Ok(())
+}
+
+fn rename_table(database: &Path, from: &str, to: &str) -> Result<(), String> {
+    if from == to {
+        return Err("source and destination table names must differ".into());
+    }
+    let _lock = lock(database)?;
+    let cols = columns(database, from)?;
+    let (source_parts, _) = validated_parts(database, from, &cols)?;
+    let source_schema = database.join(format!("{from}.schema"));
+    let destination_schema = database.join(format!("{to}.schema"));
+    let destination_parts = data_path(database, to);
+    if existing_path(&destination_schema)? || existing_path(&destination_parts)? {
+        return Err(format!("table already exists or has orphaned data: {to}"));
+    }
+
+    // Two paths cannot be renamed atomically together. Roll back a failed
+    // schema rename and never overwrite an existing destination.
+    fs::rename(&source_parts, &destination_parts)
+        .map_err(|error| format!("cannot move table data from {from}: {error}"))?;
+    if let Err(error) = fs::rename(&source_schema, &destination_schema) {
+        fs::rename(&destination_parts, &source_parts).map_err(|rollback| {
+            format!("cannot rename schema from {from}: {error}; data rollback failed: {rollback}")
+        })?;
+        return Err(format!("cannot rename schema from {from}: {error}"));
+    }
+    fs::File::open(database)
+        .and_then(|dir| dir.sync_all())
+        .map_err(|error| format!("table {from} was renamed but sync failed: {error}"))?;
+    println!("Renamed table {from} to {to}");
+    Ok(())
+}
+
+/// Replace all stored rows with one empty part while preserving the schema.
+/// This is a single-writer operation, not an online snapshot transaction.
+fn truncate_table(database: &Path, name: &str) -> Result<(), String> {
+    let _lock = lock(database)?;
+    let cols = columns(database, name)?;
+    let (parts, _) = validated_parts(database, name, &cols)?;
+    let sequence = NEXT_STAGE.fetch_add(1, Ordering::Relaxed);
+    let staging = database.join(format!(
+        ".{name}.truncate-new-{}-{sequence}",
+        std::process::id()
+    ));
+    let retired = database.join(format!(
+        ".{name}.truncate-old-{}-{sequence}",
+        std::process::id()
+    ));
+    if existing_path(&staging)? || existing_path(&retired)? {
+        return Err("TRUNCATE staging path already exists".into());
+    }
+    fs::create_dir(&staging)
+        .map_err(|error| format!("cannot stage TRUNCATE for {name}: {error}"))?;
+    let prepared = write_wide_part(&staging.join("all_0_0_0"), &cols, &[])
+        .map_err(|error| error.to_string())
+        .and_then(|_| {
+            verify_wide_part(staging.join("all_0_0_0")).map_err(|error| error.to_string())
+        });
+    if let Err(error) = prepared {
+        let _ = fs::remove_dir_all(&staging);
+        return Err(error);
+    }
+    if let Err(error) = fs::rename(&parts, &retired) {
+        let _ = fs::remove_dir_all(&staging);
+        return Err(format!("cannot retire stored rows of {name}: {error}"));
+    }
+    if let Err(error) = fs::rename(&staging, &parts) {
+        let rollback = fs::rename(&retired, &parts);
+        let _ = fs::remove_dir_all(&staging);
+        return match rollback {
+            Ok(()) => Err(format!("cannot publish empty table {name}: {error}")),
+            Err(rollback) => Err(format!(
+                "cannot publish empty table {name}: {error}; rollback failed: {rollback}"
+            )),
+        };
+    }
+    fs::File::open(database)
+        .and_then(|dir| dir.sync_all())
+        .map_err(|error| format!("table {name} was truncated but sync failed: {error}"))?;
+    fs::remove_dir_all(&retired)
+        .map_err(|error| format!("table {name} was truncated but cleanup failed: {error}"))?;
+    println!("Truncated table {name}");
+    Ok(())
 }
 
 pub(super) fn apply_ddl(database: &Path, ddl: &Ddl) -> Result<(), String> {
@@ -85,7 +218,11 @@ pub(super) fn apply_ddl(database: &Path, ddl: &Ddl) -> Result<(), String> {
         Ddl::ShowTables | Ddl::ShowCreateTable { .. } | Ddl::DescribeTable { .. } => {
             catalog::apply(database, ddl)
         }
-        Ddl::CreateTable { name, columns: definitions, if_not_exists } => {
+        Ddl::CreateTable {
+            name,
+            columns: definitions,
+            if_not_exists,
+        } => {
             let _lock = lock(database)?;
             let schema = database.join(format!("{name}.schema"));
             if schema.exists() {
@@ -97,12 +234,16 @@ pub(super) fn apply_ddl(database: &Path, ddl: &Ddl) -> Result<(), String> {
                 return Ok(());
             }
             let parts = data_path(database, name);
-            fs::create_dir(&parts)
-                .map_err(|error| format!("cannot create table data {}: {error}", parts.display()))?;
-            let cols: Vec<Column> = definitions.iter().map(|column| Column {
-                name: column.name.clone(),
-                data_type: column.data_type.clone(),
-            }).collect();
+            fs::create_dir(&parts).map_err(|error| {
+                format!("cannot create table data {}: {error}", parts.display())
+            })?;
+            let cols: Vec<Column> = definitions
+                .iter()
+                .map(|column| Column {
+                    name: column.name.clone(),
+                    data_type: column.data_type.clone(),
+                })
+                .collect();
             let result = write_wide_part(&parts.join("all_0_0_0"), &cols, &[])
                 .map_err(|error| error.to_string())
                 .and_then(|_| catalog::apply(database, ddl));
@@ -111,7 +252,10 @@ pub(super) fn apply_ddl(database: &Path, ddl: &Ddl) -> Result<(), String> {
             }
             result
         }
-        _ => Err("database mode currently supports CREATE, SHOW and DESCRIBE; ALTER, DROP and RENAME are not supported".into()),
+        Ddl::DropTable { name, if_exists } => drop_table(database, name, *if_exists),
+        Ddl::TruncateTable { name } => truncate_table(database, name),
+        Ddl::RenameTable { from, to } => rename_table(database, from, to),
+        _ => Err("database mode does not support ALTER yet".into()),
     }
 }
 
@@ -175,7 +319,7 @@ pub(super) fn insert(database: &Path, insert: &Insert) -> Result<(), String> {
     }
     let next = last.checked_add(1).ok_or("part block number overflow")?;
     let destination = parts_dir.join(format!("all_{next}_{next}_0"));
-    if destination.exists() {
+    if existing_path(&destination)? {
         return Err("destination part already exists".into());
     }
     // An interrupted write must not become visible as an active part.
