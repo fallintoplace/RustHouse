@@ -237,12 +237,15 @@ mod tests {
     #[test]
     fn tsv_decodes_nulls_and_escaped_fields() {
         assert_eq!(
-            parse_tsv("id\tname\tnote\r\n1\tAda\\tLovelace\t\\N\r\n2\tGrace\\nHopper\t\n")
-                .unwrap(),
+            parse_tsv("id\tname\tnote\r\n1\tAda\\tLovelace\t\\N\r\n2\tGrace\\nHopper\t\n").unwrap(),
             vec![
                 vec![Some("id".into()), Some("name".into()), Some("note".into())],
                 vec![Some("1".into()), Some("Ada\tLovelace".into()), None],
-                vec![Some("2".into()), Some("Grace\nHopper".into()), Some("".into())],
+                vec![
+                    Some("2".into()),
+                    Some("Grace\nHopper".into()),
+                    Some("".into())
+                ],
             ]
         );
     }
