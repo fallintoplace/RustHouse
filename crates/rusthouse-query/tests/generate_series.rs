@@ -18,7 +18,10 @@ fn generates_inclusive_ranges_and_steps() {
         "count\n4\n"
     );
     assert_eq!(run("SELECT number FROM generate_series(11, 5)"), "number\n");
-    assert_eq!(run("SELECT number FROM generate_series(0, 0)"), "number\n0\n");
+    assert_eq!(
+        run("SELECT number FROM generate_series(0, 0)"),
+        "number\n0\n"
+    );
 }
 
 #[test]
@@ -29,7 +32,9 @@ fn handles_u64_boundary_without_overflow() {
         format!("number\n{max}\n")
     );
     assert_eq!(
-        run(&format!("SELECT number FROM generate_series(0, {max}, {max})")),
+        run(&format!(
+            "SELECT number FROM generate_series(0, {max}, {max})"
+        )),
         format!("number\n0\n{max}\n")
     );
 }
@@ -37,7 +42,9 @@ fn handles_u64_boundary_without_overflow() {
 #[test]
 fn uses_existing_filters_sorting_and_pagination() {
     assert_eq!(
-        run("SELECT number FROM generate_series(2, 10, 2) WHERE number > 4 ORDER BY number DESC LIMIT 2"),
+        run(
+            "SELECT number FROM generate_series(2, 10, 2) WHERE number > 4 ORDER BY number DESC LIMIT 2"
+        ),
         "number\n10\n8\n"
     );
     let query = parse_select("SELECT number FROM generate_series(5, 11, 3)").unwrap();

@@ -410,7 +410,9 @@ pub fn parse_select(sql: &str) -> Result<Select, ParseError> {
             Some(source)
         } else if name.eq_ignore_ascii_case("generate_series") {
             if !parser.take(Token::LParen) {
-                return Err(ParseError("generate_series requires (start, stop[, step])".into()));
+                return Err(ParseError(
+                    "generate_series requires (start, stop[, step])".into(),
+                ));
             }
             let parse_argument = |parser: &mut Parser, label: &str| -> Result<u64, ParseError> {
                 let value = parser.number()?;
@@ -419,13 +421,15 @@ pub fn parse_select(sql: &str) -> Result<Select, ParseError> {
                         "generate_series {label} must be a non-negative UInt64"
                     )));
                 }
-                value.parse::<u64>().map_err(|_| {
-                    ParseError(format!("generate_series {label} is too large"))
-                })
+                value
+                    .parse::<u64>()
+                    .map_err(|_| ParseError(format!("generate_series {label} is too large")))
             };
             let start = parse_argument(&mut parser, "start")?;
             if !parser.take(Token::Comma) {
-                return Err(ParseError("generate_series requires a stop argument".into()));
+                return Err(ParseError(
+                    "generate_series requires a stop argument".into(),
+                ));
             }
             let stop = parse_argument(&mut parser, "stop")?;
             let step = if parser.take(Token::Comma) {
@@ -437,7 +441,9 @@ pub fn parse_select(sql: &str) -> Result<Select, ParseError> {
                 return Err(ParseError("generate_series step must be positive".into()));
             }
             if !parser.take(Token::RParen) {
-                return Err(ParseError("expected ')' after generate_series arguments".into()));
+                return Err(ParseError(
+                    "expected ')' after generate_series arguments".into(),
+                ));
             }
             let count = if stop < start {
                 0
@@ -447,7 +453,9 @@ pub fn parse_select(sql: &str) -> Result<Select, ParseError> {
                 })?
             };
             if count > 1_000_000 {
-                return Err(ParseError("generate_series supports at most 1000000 rows".into()));
+                return Err(ParseError(
+                    "generate_series supports at most 1000000 rows".into(),
+                ));
             }
             Some(Source::GenerateSeries { start, count, step })
         } else {
