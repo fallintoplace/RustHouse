@@ -48,10 +48,7 @@ fn using_joins_deduplicate_wildcard_keys_and_preserve_outer_values() {
     );
     assert!(explicit.status.success(), "{explicit:?}");
     assert_eq!(explicit.stdout, b"l.id\tr.label\n2\tright-match\n");
-    let invalid = sql(
-        "SELECT * FROM lefts l JOIN rights r USING (missing)",
-        &db,
-    );
+    let invalid = sql("SELECT * FROM lefts l JOIN rights r USING (missing)", &db);
     assert!(!invalid.status.success());
     assert!(String::from_utf8_lossy(&invalid.stderr).contains("unknown JOIN column"));
     fs::remove_dir_all(db).unwrap();
