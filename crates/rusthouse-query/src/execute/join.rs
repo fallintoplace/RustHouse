@@ -205,7 +205,7 @@ fn execute_streaming_inner<W: Write>(
 
     let header = selected
         .iter()
-        .map(|(_, name)| name.as_str())
+        .map(|(_, name, _)| name.as_str())
         .collect::<Vec<_>>()
         .join("\t");
     writeln!(output, "{header}")?;
@@ -269,16 +269,29 @@ pub fn execute_join<W: Write>(
                 .iter()
                 .map(|col| {
                     resolve(query, col, &left_names, &right_names)
-                        .map(|index| (index, format!("{}.{}", col.relation, col.name)))
+                        .map(|index| (index, format!("{}.{}", col.relation, col.name), None))
                 })
                 .collect::<Result<Vec<_>, _>>()?
         } else {
             left_names
                 .iter()
                 .enumerate()
-                .map(|(index, name)| (index, format!("{}.{}", query.left_alias, name)))
-                .chain(right_names.iter().enumerate().map(|(index, name)| {
-                    (width + index, format!("{}.{}", query.right_alias, name))
+                .map(|(index, name)| {
+                    // A USING key appears once in SELECT *. For unmatched right
+                    // rows, its value comes from the right side.
+                    let fallback = if query.using_keys.contains(name) {
+                        right_names.iter().position(|right| right == name).map(|right| width + right)
+                    } else {
+                        None
+                    };
+                    (index, format!("{}.{}", query.left_alias, name), fallback)
+                })
+                .chain(right_names.iter().enumerate().filter_map(|(index, name)| {
+                    if query.using_keys.contains(name) {
+                        None
+                    } else {
+                        Some((width + index, format!("{}.{}", query.right_alias, name), None))
+                    }
                 }))
                 .collect::<Vec<_>>()
         };
@@ -384,12 +397,14 @@ pub fn execute_join<W: Write>(
         .skip(query.offset)
         .take(query.limit.unwrap_or(usize::MAX))
     {
-        for (position, (index, _)) in selected.iter().enumerate() {
+        for (position, (index, _, fallback)) in selected.iter().enumerate() {
             if position != 0 {
                 output.write_all(b"\t")?;
             }
             let null = typed::Cell::Null;
-            let value = cell_at(&left_rows, &right_rows, pair, *index, width).unwrap_or(&null);
+            let value = cell_at(&left_rows, &right_rows, pair, *index, width)
+                .or_else(|| fallback.and_then(|index| cell_at(&left_rows, &right_rows, pair, index, width)))
+                .unwrap_or(&null);
             typed::write_value(output, value)?;
         }
         output.write_all(b"\n")?;
