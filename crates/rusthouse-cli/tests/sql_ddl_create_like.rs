@@ -18,12 +18,23 @@ fn schema_only_catalog_supports_create_table_like() {
             .output()
             .unwrap()
     };
-    assert!(sql("CREATE TABLE source (id UInt64, message Nullable(String))").status.success());
+    assert!(
+        sql("CREATE TABLE source (id UInt64, message Nullable(String))")
+            .status
+            .success()
+    );
     assert!(sql("CREATE TABLE copied LIKE source").status.success());
     let described = sql("DESCRIBE TABLE copied");
     assert!(described.status.success(), "{described:?}");
-    assert_eq!(described.stdout, b"name\ttype\nid\tUInt64\nmessage\tNullable(String)\n");
-    assert!(sql("CREATE TABLE IF NOT EXISTS copied LIKE source").status.success());
+    assert_eq!(
+        described.stdout,
+        b"name\ttype\nid\tUInt64\nmessage\tNullable(String)\n"
+    );
+    assert!(
+        sql("CREATE TABLE IF NOT EXISTS copied LIKE source")
+            .status
+            .success()
+    );
     assert!(!sql("CREATE TABLE copied LIKE source").status.success());
     assert!(!sql("CREATE TABLE missing LIKE unknown").status.success());
     fs::remove_dir_all(catalog).unwrap();
