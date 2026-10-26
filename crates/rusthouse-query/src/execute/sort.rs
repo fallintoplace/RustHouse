@@ -149,11 +149,9 @@ impl SortedRows {
         let retained = self.requested.min(MAX_SORTED_ROWS);
         if self.rows.len() < retained {
             self.rows.push(row);
-        } else if let Some(mut worst) = self.rows.peek_mut() {
-            // Reheapify only once when the incoming row beats the current worst.
-            if row < *worst {
-                *worst = row;
-            }
+        } else if self.rows.peek().is_some_and(|worst| row < *worst) {
+            // Check before peek_mut: dropping PeekMut sifts even on rejected rows.
+            *self.rows.peek_mut().unwrap() = row;
         }
         Ok(())
     }
