@@ -53,8 +53,8 @@ fn read_schema(catalog: &Path, name: &str) -> Result<Vec<ColumnDef>, String> {
     if metadata.len() > MAX_SCHEMA_BYTES {
         return Err(format!("schema is too large for table {name}"));
     }
-    let content = fs::read_to_string(&path)
-        .map_err(|error| format!("cannot read table {name}: {error}"))?;
+    let content =
+        fs::read_to_string(&path).map_err(|error| format!("cannot read table {name}: {error}"))?;
     let mut lines = content.lines();
     if lines.next() != Some("rusthouse-schema-v1") {
         return Err(format!("invalid schema version for table {name}"));
@@ -67,7 +67,9 @@ fn read_schema(catalog: &Path, name: &str) -> Result<Vec<ColumnDef>, String> {
         let sql = format!("CREATE TABLE _check ({column_name} {data_type})");
         if columns.len() == 64
             || !matches!(parse_ddl(&sql), Ok(Some(Ddl::CreateTable { .. })))
-            || columns.iter().any(|column: &ColumnDef| column.name == column_name)
+            || columns
+                .iter()
+                .any(|column: &ColumnDef| column.name == column_name)
         {
             return Err(format!("corrupt schema for table {name}"));
         }
@@ -101,7 +103,10 @@ fn replace_schema(catalog: &Path, name: &str, columns: &[ColumnDef]) -> Result<(
         NEXT_TEMP.fetch_add(1, Ordering::Relaxed)
     ));
     let update = || -> Result<(), std::io::Error> {
-        let mut file = OpenOptions::new().write(true).create_new(true).open(&temp)?;
+        let mut file = OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(&temp)?;
         file.write_all(schema_contents(columns).as_bytes())?;
         file.sync_all()?;
         fs::rename(&temp, &path)
