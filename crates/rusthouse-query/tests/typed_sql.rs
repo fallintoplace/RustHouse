@@ -186,7 +186,6 @@ fn skips_end_of_file_terminal_zero_row_marks() {
     fs::remove_dir_all(part).unwrap();
 }
 
-
 #[test]
 fn queries_typed_columns_across_frozen_parts() {
     let table = std::env::temp_dir().join(format!(

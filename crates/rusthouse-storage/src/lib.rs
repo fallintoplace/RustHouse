@@ -22,8 +22,8 @@ mod query_source;
 mod scan_layout;
 mod stream;
 mod string_arrays;
-mod typed_scan;
 mod strings;
+mod typed_scan;
 mod uuid;
 
 pub use arrays::{
@@ -62,12 +62,12 @@ pub use part_verify::{PartVerification, verify_wide_part};
 pub use primary_index::{FixedPrimaryIndex, read_fixed_primary_index};
 pub use query_source::{NumericQueryReader, inspect_query_source, query_parts};
 pub use stream::UInt64ColumnReader;
-pub use typed_scan::{TypedColumn, TypedPartReader, TypedQueryReader};
 pub use string_arrays::{
     StringArrayColumn, StringArrayReadError, read_legacy_string_array_column,
     read_sized_string_array_column,
 };
 pub use strings::{StringColumn, StringReadError, read_legacy_strings, read_sized_strings};
+pub use typed_scan::{TypedColumn, TypedPartReader, TypedQueryReader};
 pub use uuid::{UuidValue, read_uuid_values};
 
 use std::error::Error;
