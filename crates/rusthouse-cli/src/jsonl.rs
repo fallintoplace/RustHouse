@@ -132,8 +132,12 @@ pub(super) fn write_json_value<W: Write>(output: &mut W, value: &[u8]) -> io::Re
     if value == b"NULL" || value == b"\\N" {
         output.write_all(b"null")
     } else {
-        let decoded = decode_tsv_field(value)?;
-        write_json_string(output, &decoded)
+        if value.contains(&b'\\') {
+            let decoded = decode_tsv_field(value)?;
+            write_json_string(output, &decoded)
+        } else {
+            write_json_string(output, value)
+        }
     }
 }
 
@@ -357,4 +361,13 @@ mod decoded_tsv_json_regressions {
             io::ErrorKind::InvalidData
         );
     }
+    #[test]
+    fn skips_decode_for_plain_fields_without_changing_output() {
+        let mut output = Vec::new();
+        write_json_value(&mut output, "café".as_bytes()).unwrap();
+        write_json_value(&mut output, b"a\\tb").unwrap();
+        assert_eq!(output, "\"café\"\"a\\tb\"".as_bytes());
+        assert!(write_json_value(&mut Vec::new(), &[0xff]).is_err());
+    }
+
 }
