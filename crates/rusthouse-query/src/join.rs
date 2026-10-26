@@ -280,7 +280,7 @@ mod tests {
         assert_eq!(query.keys[1].0.relation, "b");
         let excess = format!(
             "SELECT * FROM a JOIN b ON {}",
-            vec!["a.id = b.id"; 9].join(" AND ")
+            ["a.id = b.id"; 9].join(" AND ")
         );
         assert!(parse_join(&excess).is_err());
         assert!(
