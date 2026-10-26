@@ -180,7 +180,11 @@ fn query_parameters(target: &str) -> Result<(String, Option<String>, QueryFormat
             _ => return Err("unsupported URL query parameter"),
         }
     }
-    Ok((path.to_owned(), statement, format.unwrap_or(QueryFormat::Tsv)))
+    Ok((
+        path.to_owned(),
+        statement,
+        format.unwrap_or(QueryFormat::Tsv),
+    ))
 }
 
 /// Runs only the subset accepted by the existing SELECT parser. DDL and
