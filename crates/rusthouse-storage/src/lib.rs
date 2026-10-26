@@ -1,8 +1,8 @@
 mod arrays;
 mod checksums;
 mod columns;
-mod database_lock;
 mod compression;
+mod database_lock;
 mod decimal;
 mod enums;
 mod file_sizes;
@@ -36,8 +36,8 @@ pub use checksums::{
     ChecksumSizeSummary, FileChecksum, PartChecksums, UncompressedChecksum, read_checksums,
 };
 pub use columns::parse_columns;
-pub use database_lock::{DatabaseLock, acquire_database_lock};
 pub use compression::{CompressedBlock, CompressedBlockReader, DecodedBlock};
+pub use database_lock::{DatabaseLock, acquire_database_lock};
 pub use decimal::{DecimalColumn, DecimalReadError, read_decimal_column};
 pub use enums::{EnumColumn, EnumReadError, read_enum_column};
 pub use file_sizes::{FileSizeVerification, verify_part_file_sizes};

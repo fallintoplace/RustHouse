@@ -526,7 +526,6 @@ mod tests {
         fs::remove_dir_all(database).unwrap();
     }
 
-
     #[cfg(unix)]
     #[test]
     fn database_http_query_respects_cli_exclusive_lock() {
@@ -543,12 +542,23 @@ mod tests {
         fs::create_dir_all(&parts).unwrap();
         write_wide_part(
             &parts.join("all_0_0_0"),
-            &[Column { name: "id".into(), data_type: "UInt64".into() }],
+            &[Column {
+                name: "id".into(),
+                data_type: "UInt64".into(),
+            }],
             &[vec![Some("5".into())]],
         )
         .unwrap();
-        fs::write(database.join("events.schema"), "rusthouse-schema-v1\nid\tUInt64\n").unwrap();
-        let config = Config { database: Some(database.clone()), part: None, max_rows: 10 };
+        fs::write(
+            database.join("events.schema"),
+            "rusthouse-schema-v1\nid\tUInt64\n",
+        )
+        .unwrap();
+        let config = Config {
+            database: Some(database.clone()),
+            part: None,
+            max_rows: 10,
+        };
 
         let writer = acquire_database_lock(&database, true).unwrap();
         let blocked = handle_request("POST", "/", b"SELECT id FROM events", &config);

@@ -62,24 +62,37 @@ pub fn acquire_database_lock(database: &Path, exclusive: bool) -> Result<Databas
         .create(true)
         .truncate(false)
         .open(&path)
-        .map_err(|error| format!("cannot open database {kind} lock {}: {error}", path.display()))?;
+        .map_err(|error| {
+            format!(
+                "cannot open database {kind} lock {}: {error}",
+                path.display()
+            )
+        })?;
 
     #[cfg(unix)]
     {
         use std::os::unix::fs::MetadataExt;
         let metadata = fs::symlink_metadata(&path)
             .map_err(|error| format!("cannot inspect database lock {}: {error}", path.display()))?;
-        let opened = file.metadata()
+        let opened = file
+            .metadata()
             .map_err(|error| format!("cannot inspect opened database lock: {error}"))?;
         if !metadata.file_type().is_file()
             || !opened.file_type().is_file()
             || metadata.ino() != opened.ino()
             || metadata.dev() != opened.dev()
         {
-            return Err(format!("database lock is not a stable regular file: {}", path.display()));
+            return Err(format!(
+                "database lock is not a stable regular file: {}",
+                path.display()
+            ));
         }
-        advisory::try_lock(&file, exclusive)
-            .map_err(|error| format!("cannot acquire database {kind} lock {}: {error}", path.display()))?;
+        advisory::try_lock(&file, exclusive).map_err(|error| {
+            format!(
+                "cannot acquire database {kind} lock {}: {error}",
+                path.display()
+            )
+        })?;
     }
 
     #[cfg(not(unix))]
@@ -87,7 +100,12 @@ pub fn acquire_database_lock(database: &Path, exclusive: bool) -> Result<Databas
         .write(true)
         .create_new(true)
         .open(&path)
-        .map_err(|error| format!("cannot acquire database {kind} lock {}: {error}", path.display()))?;
+        .map_err(|error| {
+            format!(
+                "cannot acquire database {kind} lock {}: {error}",
+                path.display()
+            )
+        })?;
 
     Ok(DatabaseLock {
         _file: file,
