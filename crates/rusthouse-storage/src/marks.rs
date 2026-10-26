@@ -54,7 +54,10 @@ pub fn read_wide_marks(path: impl AsRef<Path>) -> Result<WideMarks, PartError> {
         if !entry.file_type().is_file() {
             return Err(PartError::Io {
                 path: path.to_path_buf(),
-                source: io::Error::new(io::ErrorKind::InvalidInput, "expected a regular marks file"),
+                source: io::Error::new(
+                    io::ErrorKind::InvalidInput,
+                    "expected a regular marks file",
+                ),
             });
         }
         let file = File::open(path).map_err(|source| PartError::Io {
