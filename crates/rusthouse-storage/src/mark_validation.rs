@@ -14,7 +14,6 @@ pub fn validate_wide_marks<R: Read + Seek>(
     let mut previous: Option<&WideMark> = None;
 
     for (index, mark) in marks.marks.iter().enumerate() {
-        let terminal = mark.rows == Some(0);
         validate_mark_sequence(marks, index, mark, previous)?;
 
         while let Some(current) = block {
@@ -25,35 +24,47 @@ pub fn validate_wide_marks<R: Read + Seek>(
             block = reader.next().transpose()?;
         }
 
-        match block {
-            Some(current) if current.offset == mark.compressed_offset => {
-                let size = u64::from(current.decompressed_size);
-                if mark.decompressed_offset > size
-                    || (!terminal && mark.decompressed_offset == size)
-                {
-                    return Err(invalid_mark(
-                        marks,
-                        index,
-                        "decompressed offset is outside the block",
-                    ));
-                }
-            }
-            None if terminal
-                && mark.compressed_offset == preceding_end
-                && mark.decompressed_offset == 0 => {}
-            _ => {
-                return Err(invalid_mark(
-                    marks,
-                    index,
-                    "mark does not point to a compressed block",
-                ));
-            }
-        }
+        validate_mark_target(marks, index, mark, block, preceding_end)?;
         previous = Some(mark);
     }
 
     while block.is_some() {
         block = reader.next().transpose()?;
+    }
+    Ok(())
+}
+
+fn validate_mark_target(
+    marks: &WideMarks,
+    index: usize,
+    mark: &WideMark,
+    block: Option<crate::CompressedBlock>,
+    preceding_end: u64,
+) -> Result<(), PartError> {
+    let terminal = mark.rows == Some(0);
+    match block {
+        Some(current) if current.offset == mark.compressed_offset => {
+            let size = u64::from(current.decompressed_size);
+            if mark.decompressed_offset > size
+                || (!terminal && mark.decompressed_offset == size)
+            {
+                return Err(invalid_mark(
+                    marks,
+                    index,
+                    "decompressed offset is outside the block",
+                ));
+            }
+        }
+        None if terminal
+            && mark.compressed_offset == preceding_end
+            && mark.decompressed_offset == 0 => {}
+        _ => {
+            return Err(invalid_mark(
+                marks,
+                index,
+                "mark does not point to a compressed block",
+            ));
+        }
     }
     Ok(())
 }
