@@ -22,6 +22,7 @@ fn describe_projection(projection: &Projection) -> String {
         Projection::All => "Project: *".to_owned(),
         Projection::Columns(columns) => format!("Project: {}", columns.join(", ")),
         Projection::Count => "Aggregate: count(*)".to_owned(),
+        Projection::CountColumn { column } => format!("Aggregate: count({column})"),
         Projection::CountDistinct { column } => {
             format!("Aggregate: count(DISTINCT {column})")
         }

@@ -175,6 +175,9 @@ fn execute_into<W: Write>(
         }
         return typed::execute_typed(query, part, output);
     }
+    if let Projection::CountColumn { column } = &query.projection {
+        return execute_count_column_part(query, part, column, output);
+    }
     if let Projection::CountDistinct { column } = &query.projection {
         return execute_count_distinct_part(query, part, column, output);
     }
@@ -206,6 +209,7 @@ fn execute_into<W: Write>(
         Projection::Columns(names) => names.clone(),
         Projection::Count => Vec::new(),
         Projection::Aggregate { .. }
+        | Projection::CountColumn { .. }
         | Projection::CountDistinct { .. }
         | Projection::GroupedCount { .. }
         | Projection::Literal(_) => unreachable!(),
@@ -493,6 +497,43 @@ fn execute_grouped_numbers<W: Write>(
     groups.write(query, column, output)
 }
 
+fn execute_count_column_part<W: Write>(
+    query: &Select,
+    part: &Path,
+    column: &str,
+    output: &mut W,
+) -> Result<(), ExecutionError> {
+    let metadata = inspect_query_source(part)?;
+    let mut scan_columns = vec![column.to_owned()];
+    let comparisons = compile_part_where(query, &mut scan_columns, |name, literal| {
+        let col = metadata
+            .columns
+            .iter()
+            .find(|candidate| candidate.name == name)
+            .ok_or_else(|| ExecutionError::Invalid(format!("unknown WHERE column: {name}")))?;
+        parse_numeric(&col.data_type, literal)
+    })?;
+    let mut reader = NumericQueryReader::open(part, &scan_columns)?;
+    write_header(query, output, &format!("count({column})"))?;
+    if query.limit == Some(0) {
+        return Ok(());
+    }
+    let mut count = 0u64;
+    while let Some(batch) = reader.next_batch()? {
+        for row in 0..batch[0].len() {
+            if batch_matches(&batch, row, &comparisons) {
+                count = count
+                    .checked_add(1)
+                    .ok_or_else(|| ExecutionError::Invalid("count overflow".into()))?;
+            }
+        }
+    }
+    if query.offset.unwrap_or(0) == 0 {
+        writeln!(output, "{count}")?;
+    }
+    Ok(())
+}
+
 fn execute_count_distinct_part<W: Write>(
     query: &Select,
     part: &Path,
@@ -652,6 +693,31 @@ fn execute_numbers<W: Write>(
             "--part cannot be used with numbers(N)".into(),
         ));
     }
+    if let Projection::CountColumn { column } = &query.projection {
+        if column != "number" {
+            return Err(ExecutionError::Invalid(
+                "numbers(N) exposes only the number column".into(),
+            ));
+        }
+        let comparisons = compile_numbers_predicates(query)?;
+        write_header(query, output, "count(number)")?;
+        if query.limit != Some(0) && query.offset.unwrap_or(0) == 0 {
+            let count = if query.predicates.is_empty() && query.or_predicates.is_empty() {
+                rows
+            } else {
+                let mut count = 0u64;
+                for index in 0..rows {
+                    let number = start + index * step;
+                    if number_matches_all(Number::Unsigned(u128::from(number)), &comparisons) {
+                        count += 1;
+                    }
+                }
+                count
+            };
+            writeln!(output, "{count}")?;
+        }
+        return Ok(());
+    }
     if let Projection::CountDistinct { column } = &query.projection {
         if column != "number" {
             return Err(ExecutionError::Invalid(
@@ -696,6 +762,7 @@ fn execute_numbers<W: Write>(
         }
         Projection::Count => Vec::new(),
         Projection::Aggregate { .. }
+        | Projection::CountColumn { .. }
         | Projection::CountDistinct { .. }
         | Projection::GroupedCount { .. }
         | Projection::Literal(_) => unreachable!(),

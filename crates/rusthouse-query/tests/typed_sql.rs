@@ -78,6 +78,38 @@ fn query(sql: &str, part: &Path) -> String {
 }
 
 #[test]
+fn count_column_excludes_nulls_after_typed_filters() {
+    let part = part();
+    for (sql, expected) in [
+        ("SELECT count(*) FROM part", "count\n3\n"),
+        ("SELECT count(attempt) FROM part", "count(attempt)\n2\n"),
+        (
+            "SELECT count(message) FROM part WHERE service = 'api'",
+            "count(message)\n2\n",
+        ),
+        (
+            "SELECT count(attempt) FROM part WHERE service = 'db'",
+            "count(attempt)\n0\n",
+        ),
+        ("SELECT count(uid) AS total FROM part", "total\n3\n"),
+        (
+            "SELECT count(attempt) FROM part WHERE message IS NULL",
+            "count(attempt)\n0\n",
+        ),
+        ("SELECT count(attempt) FROM part LIMIT 0", "count(attempt)\n"),
+        (
+            "SELECT count(attempt) FROM part LIMIT 1 OFFSET 1",
+            "count(attempt)\n",
+        ),
+    ] {
+        assert_eq!(query(sql, &part), expected, "{sql}");
+    }
+    let invalid = parse_select("SELECT count(unknown) FROM part").unwrap();
+    assert!(execute(&invalid, Some(&part), &mut Vec::new()).is_err());
+    fs::remove_dir_all(part).unwrap();
+}
+
+#[test]
 fn aggregates_numeric_values_after_text_filters() {
     let part = part();
     for (sql, expected) in [
