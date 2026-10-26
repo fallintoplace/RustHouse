@@ -13,9 +13,9 @@ use csv_no_header::WithoutHeader;
 use json_array::JsonArraySink;
 use json_compact_each_row::JsonCompactEachRowWriter;
 use jsonl::JsonlWriter;
-use sql_values::SqlValuesWriter;
 use rusthouse_query::{Source, execute, explain_select, parse_select};
 use rusthouse_storage::{inspect_query_source, resolve_active_snapshot};
+use sql_values::SqlValuesWriter;
 use std::fs;
 use std::io::{self, Read, Write};
 use std::path::{Path, PathBuf};
@@ -475,11 +475,8 @@ pub fn handle_request(method: &str, target: &str, body: &[u8], config: &Config) 
         }
         QueryFormat::SqlValues => {
             let mut values = SqlValuesWriter::new(&mut writer);
-            execute(&select, part.as_deref(), &mut values).and_then(|()| {
-                values
-                    .finish()
-                    .map_err(rusthouse_query::ExecutionError::Io)
-            })
+            execute(&select, part.as_deref(), &mut values)
+                .and_then(|()| values.finish().map_err(rusthouse_query::ExecutionError::Io))
         }
         QueryFormat::Jsonl => {
             let mut jsonl = JsonlWriter::new(&mut writer);
