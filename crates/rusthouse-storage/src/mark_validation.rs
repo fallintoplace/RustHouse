@@ -45,9 +45,7 @@ fn validate_mark_target(
     match block {
         Some(current) if current.offset == mark.compressed_offset => {
             let size = u64::from(current.decompressed_size);
-            if mark.decompressed_offset > size
-                || (!terminal && mark.decompressed_offset == size)
-            {
+            if mark.decompressed_offset > size || (!terminal && mark.decompressed_offset == size) {
                 return Err(invalid_mark(
                     marks,
                     index,
