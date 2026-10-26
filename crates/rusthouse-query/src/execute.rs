@@ -605,7 +605,9 @@ fn execute_aggregate_numbers<W: Write>(
                     AggregateFunction::Sum => ((first + last) * u128::from(rows) / 2).to_string(),
                     AggregateFunction::Min => first.to_string(),
                     AggregateFunction::Max => last.to_string(),
-                    AggregateFunction::Avg => unreachable!(),
+                    AggregateFunction::Avg
+                    | AggregateFunction::VarPop
+                    | AggregateFunction::StddevPop => unreachable!(),
                 }
             };
             writeln!(output, "{result}")?;
@@ -812,6 +814,7 @@ struct AggregateState {
     function: AggregateFunction,
     value: Option<Number>,
     mean: f64,
+    squared_deviations: f64,
     count: u64,
 }
 
@@ -821,6 +824,7 @@ impl AggregateState {
             function,
             value: None,
             mean: 0.0,
+            squared_deviations: 0.0,
             count: 0,
         }
     }
@@ -850,13 +854,21 @@ impl AggregateState {
                 };
                 self.value = Some(sum);
             }
-            AggregateFunction::Avg => {
+            AggregateFunction::Avg | AggregateFunction::VarPop | AggregateFunction::StddevPop => {
                 let numeric = match value {
                     Number::Unsigned(n) => n as f64,
                     Number::Signed(n) => n as f64,
                     Number::Float(n) => n,
                 };
-                self.mean += (numeric - self.mean) / next_count as f64;
+                let difference = numeric - self.mean;
+                self.mean += difference / next_count as f64;
+                if matches!(
+                    self.function,
+                    AggregateFunction::VarPop | AggregateFunction::StddevPop
+                ) {
+                    // Welford's algorithm avoids subtracting large squared sums.
+                    self.squared_deviations += difference * (numeric - self.mean);
+                }
             }
             AggregateFunction::Min | AggregateFunction::Max => {
                 let replace = self.value.is_none_or(|current| {
@@ -882,6 +894,10 @@ impl AggregateState {
         }
         match self.function {
             AggregateFunction::Avg => self.mean.to_string(),
+            AggregateFunction::VarPop => (self.squared_deviations / self.count as f64).to_string(),
+            AggregateFunction::StddevPop => (self.squared_deviations / self.count as f64)
+                .sqrt()
+                .to_string(),
             _ => self
                 .value
                 .map_or_else(String::new, |value| value.to_string()),
@@ -1375,6 +1391,64 @@ mod tests {
             "sum(number)\n"
         );
         assert!(run("SELECT sum(missing) FROM numbers(0)", None).is_err());
+    }
+
+    #[test]
+    fn calculates_population_variance_and_standard_deviation() {
+        assert_eq!(
+            run("SELECT varPop(number) FROM numbers(4)", None).unwrap(),
+            "varPop(number)\n1.25\n"
+        );
+        assert_eq!(
+            run("SELECT stddevPop(number) FROM numbers(1)", None).unwrap(),
+            "stddevPop(number)\n0\n"
+        );
+        assert_eq!(
+            run("SELECT varPop(number) FROM numbers(0)", None).unwrap(),
+            "varPop(number)\nNULL\n"
+        );
+        assert_eq!(
+            run(
+                "SELECT stddevPop(number) FROM numbers(10) WHERE number > 99",
+                None
+            )
+            .unwrap(),
+            "stddevPop(number)\nNULL\n"
+        );
+        assert_eq!(
+            run("SELECT varPop(number) FROM numbers(4) LIMIT 0", None).unwrap(),
+            "varPop(number)\n"
+        );
+
+        let output = run(
+            "SELECT stddevPop(number) FROM numbers(10) WHERE number >= 7",
+            None,
+        )
+        .unwrap();
+        let actual = output.lines().nth(1).unwrap().parse::<f64>().unwrap();
+        let expected = (2.0_f64 / 3.0).sqrt();
+        assert!((actual - expected).abs() < 1e-12);
+    }
+
+    #[test]
+    fn population_statistics_handle_signed_values_and_stable_large_offsets() {
+        let mut variance = AggregateState::new(AggregateFunction::VarPop);
+        for n in [-2, 0, 2] {
+            variance.update(Number::Signed(n)).unwrap();
+        }
+        assert!((variance.render().parse::<f64>().unwrap() - 8.0 / 3.0).abs() < 1e-12);
+
+        let mut deviation = AggregateState::new(AggregateFunction::StddevPop);
+        for n in [
+            1_000_000_000_000.0,
+            1_000_000_000_001.0,
+            1_000_000_000_002.0,
+        ] {
+            deviation.update(Number::Float(n)).unwrap();
+        }
+        assert!(
+            (deviation.render().parse::<f64>().unwrap() - (2.0_f64 / 3.0).sqrt()).abs() < 1e-12
+        );
     }
 
     #[test]

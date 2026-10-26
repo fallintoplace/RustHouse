@@ -15,6 +15,8 @@ pub enum AggregateFunction {
     Avg,
     Min,
     Max,
+    VarPop,
+    StddevPop,
 }
 
 impl AggregateFunction {
@@ -24,6 +26,8 @@ impl AggregateFunction {
             Self::Avg => "avg",
             Self::Min => "min",
             Self::Max => "max",
+            Self::VarPop => "varPop",
+            Self::StddevPop => "stddevPop",
         }
     }
 }
@@ -234,6 +238,8 @@ pub fn parse_select(sql: &str) -> Result<Select, ParseError> {
             "AVG" => AggregateFunction::Avg,
             "MIN" => AggregateFunction::Min,
             "MAX" => AggregateFunction::Max,
+            "VARPOP" => AggregateFunction::VarPop,
+            "STDDEVPOP" => AggregateFunction::StddevPop,
             _ => return Err(ParseError(format!("unsupported aggregate: {name}"))),
         };
         parser.take(Token::LParen);
@@ -822,6 +828,8 @@ mod tests {
             ("AVG", AggregateFunction::Avg),
             ("MIN", AggregateFunction::Min),
             ("MAX", AggregateFunction::Max),
+            ("VARPOP", AggregateFunction::VarPop),
+            ("STDDEVPOP", AggregateFunction::StddevPop),
         ] {
             let sql = format!("SELECT {name}(price) FROM part WHERE id > 2");
             assert_eq!(
