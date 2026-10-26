@@ -206,8 +206,6 @@ pub fn write_wide_part(
     for col in columns {
         definitions.push_str(&format!("`{}` {}\n", col.name, col.data_type));
     }
-    // Backticks are mandatory in columns.txt, and must not be escaped as HTML.
-    let definitions = definitions.replace("`", "\u{0060}");
     write_file(&part.join("columns.txt"), definitions.as_bytes())?;
     write_file(
         &part.join("count.txt"),
