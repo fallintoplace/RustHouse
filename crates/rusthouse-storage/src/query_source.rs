@@ -369,8 +369,14 @@ mod tests {
         assert_eq!(part_span("all__1_2_0"), Some(("all_".into(), 1, 2)));
         assert_eq!(part_span("all_1_2_0_"), None);
         assert_eq!(part_span("all_1_2_3_4"), None);
-        assert_eq!(part_span("region_west_5_9_0"), Some(("region_west".into(), 5, 9)));
-        assert_eq!(part_span("region_west_5_9_0_12"), Some(("region_west".into(), 5, 9)));
+        assert_eq!(
+            part_span("region_west_5_9_0"),
+            Some(("region_west".into(), 5, 9))
+        );
+        assert_eq!(
+            part_span("region_west_5_9_0_12"),
+            Some(("region_west".into(), 5, 9))
+        );
     }
     #[test]
     fn checks_overlapping_block_ranges_independently_of_directory_order() {
