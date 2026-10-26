@@ -279,6 +279,27 @@ fn parses_numeric_aggregates_and_rejects_unsupported_functions() {
 }
 
 #[test]
+fn parses_count_column_and_rejects_malformed_arguments() {
+    let parsed = parse_select("SELECT COUNT(number) AS total FROM numbers(10)").unwrap();
+    assert_eq!(
+        parsed.projection,
+        Projection::CountColumn {
+            column: "number".into(),
+        }
+    );
+    assert_eq!(parsed.alias.as_deref(), Some("total"));
+    for sql in [
+        "SELECT count(number, other) FROM numbers(10)",
+        "SELECT count(1) FROM numbers(10)",
+        "SELECT count(*number) FROM numbers(10)",
+        "SELECT count(number FROM numbers(10)",
+        "SELECT count(number) FROM numbers(5) ORDER BY number",
+    ] {
+        assert!(parse_select(sql).is_err(), "{sql}");
+    }
+}
+
+#[test]
 fn parses_count_distinct_projection() {
     assert_eq!(
         parse_select("SELECT count(DISTINCT number) FROM numbers(10)")

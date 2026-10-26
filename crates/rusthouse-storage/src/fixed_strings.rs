@@ -70,10 +70,7 @@ impl From<io::Error> for FixedStringReadError {
     }
 }
 
-pub(crate) fn checked_size(
-    data_type: &str,
-    rows: usize,
-) -> Result<(usize, usize), FixedStringReadError> {
+fn parse_fixed_width(data_type: &str) -> Result<usize, FixedStringReadError> {
     let width = data_type
         .strip_prefix("FixedString(")
         .and_then(|value| value.strip_suffix(')'))
@@ -81,6 +78,14 @@ pub(crate) fn checked_size(
         .and_then(|value| value.parse::<usize>().ok())
         .filter(|width| (1..=MAX_FIXED_STRING_WIDTH).contains(width))
         .ok_or_else(|| FixedStringReadError::InvalidType(data_type.to_owned()))?;
+    Ok(width)
+}
+
+pub(crate) fn checked_size(
+    data_type: &str,
+    rows: usize,
+) -> Result<(usize, usize), FixedStringReadError> {
+    let width = parse_fixed_width(data_type)?;
     if rows > MAX_BATCH_ROWS {
         return Err(FixedStringReadError::TooManyRows(rows));
     }

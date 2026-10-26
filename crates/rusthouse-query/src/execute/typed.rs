@@ -70,6 +70,7 @@ pub(super) fn requires_typed_scan(query: &Select, path: &Path) -> Result<bool, E
         Projection::All => names.extend(metadata.columns.iter().map(|c| c.name.as_str())),
         Projection::Columns(values) => names.extend(values.iter().map(String::as_str)),
         Projection::Aggregate { column, .. }
+        | Projection::CountColumn { column }
         | Projection::CountDistinct { column }
         | Projection::GroupedCount { column } => names.push(column),
         _ => {}
@@ -130,6 +131,13 @@ fn parse_literal(data_type: &str, literal: &str) -> Result<Cell, ExecutionError>
             super::predicates::parse_numeric(numeric_kind, literal).map(Cell::Numeric)
         }
     }
+}
+
+fn parse_literals(data_type: &str, values: &[String]) -> Result<Vec<Cell>, ExecutionError> {
+    values
+        .iter()
+        .map(|value| parse_literal(data_type, value))
+        .collect()
 }
 
 #[derive(Clone, Copy)]
@@ -260,20 +268,8 @@ pub(super) fn compile(
                 Predicate::Comparison {
                     operator, value, ..
                 } => Test::Compare(*operator, parse_literal(kind, value)?),
-                Predicate::In { values, .. } => Test::In(
-                    values
-                        .iter()
-                        .map(|v| parse_literal(kind, v))
-                        .collect::<Result<Vec<_>, _>>()?,
-                    false,
-                ),
-                Predicate::NotIn { values, .. } => Test::In(
-                    values
-                        .iter()
-                        .map(|v| parse_literal(kind, v))
-                        .collect::<Result<Vec<_>, _>>()?,
-                    true,
-                ),
+                Predicate::In { values, .. } => Test::In(parse_literals(kind, values)?, false),
+                Predicate::NotIn { values, .. } => Test::In(parse_literals(kind, values)?, true),
                 Predicate::NotBetween { lower, upper, .. } => {
                     Test::NotBetween(parse_literal(kind, lower)?, parse_literal(kind, upper)?)
                 }
@@ -437,13 +433,14 @@ pub(super) fn execute_typed<W: Write>(
             .collect::<Vec<_>>(),
         Projection::Columns(cols) => cols.clone(),
         Projection::Count => Vec::new(),
-        Projection::CountDistinct { column } | Projection::GroupedCount { column } => {
+        Projection::CountColumn { column }
+        | Projection::CountDistinct { column }
+        | Projection::GroupedCount { column } => {
             vec![column.clone()]
         }
         _ => {
             return Err(ExecutionError::Invalid(
-                "typed SQL currently supports SELECT columns, COUNT(*) and COUNT(DISTINCT col)"
-                    .into(),
+                "typed SQL currently supports SELECT columns and COUNT aggregates".into(),
             ));
         }
     };
@@ -508,6 +505,7 @@ pub(super) fn execute_typed<W: Write>(
     let mut scan = TypedQueryReader::open(part, &names)?;
     let header = match &query.projection {
         Projection::Count => "count".to_string(),
+        Projection::CountColumn { column } => format!("count({column})"),
         Projection::CountDistinct { column } => format!("countDistinct({column})"),
         Projection::GroupedCount { column } => format!("{column}\tcount"),
         _ => projection.join("\t"),
@@ -517,6 +515,7 @@ pub(super) fn execute_typed<W: Write>(
         return Ok(());
     }
     let is_count = matches!(query.projection, Projection::Count);
+    let is_count_column = matches!(query.projection, Projection::CountColumn { .. });
     let is_count_distinct = matches!(query.projection, Projection::CountDistinct { .. });
     let is_grouped = matches!(query.projection, Projection::GroupedCount { .. });
     let mut count = 0u64;
@@ -533,10 +532,12 @@ pub(super) fn execute_typed<W: Write>(
             if !passes(&batch, index, &conditions) {
                 continue;
             }
-            if is_count {
-                count = count
-                    .checked_add(1)
-                    .ok_or_else(|| ExecutionError::Invalid("count overflow".into()))?;
+            if is_count || is_count_column {
+                if is_count || !matches!(cell(&batch[projection_indices[0]], index), Cell::Null) {
+                    count = count
+                        .checked_add(1)
+                        .ok_or_else(|| ExecutionError::Invalid("count overflow".into()))?;
+                }
                 continue;
             }
             if is_grouped {
@@ -633,9 +634,9 @@ pub(super) fn execute_typed<W: Write>(
         }
         return Ok(());
     }
-    if is_count || is_count_distinct {
+    if is_count || is_count_column || is_count_distinct {
         if offset == 0 {
-            let result = if is_count {
+            let result = if is_count || is_count_column {
                 count
             } else {
                 distinct.len() as u64

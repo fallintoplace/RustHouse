@@ -5,6 +5,7 @@ mod json_array;
 mod jsonl;
 mod markdown;
 mod part_json;
+mod snapshot;
 mod sql;
 mod vertical;
 
@@ -18,7 +19,7 @@ use std::ffi::OsString;
 use std::path::PathBuf;
 use std::process::ExitCode;
 
-const USAGE: &str = "Usage:\n  rusthouse inspect-part <path> [--json]\n  rusthouse verify-part <path-to-wide-part>\n  rusthouse verify-file-sizes <path-to-part>\n  rusthouse inspect-checksums <path-to-checksums.txt> [--summary]\n  rusthouse inspect-marks <path-to-wide-marks>\n  rusthouse inspect-primary-index <primary.idx|primary.cidx> <field-width> [field-width ...]\n  rusthouse inspect-blocks <path-to-.bin>\n  rusthouse verify-blocks <path-to-.bin>\n  rusthouse validate-marks <path-to-wide-marks> <path-to-.bin>\n  rusthouse read-u64 <data.bin> <marks.mrk2> <mark-index>\n  rusthouse scan-u64 <path-to-UInt64-.bin>\n  rusthouse read-numeric <data.bin> <marks.mrk2> <mark-index> <type>\n  rusthouse sql <SQL> [--part <path-to-wide-part>] [--format tsv|tsv-no-header|csv|csv-no-header|jsonl|json|markdown|vertical] [--output <path>] [--max-rows <n>] [--show-ast|--explain] [--time]\n  rusthouse sql --stdin [--part <path-to-wide-part>] [--format tsv|tsv-no-header|csv|csv-no-header|jsonl|json|markdown|vertical] [--output <path>] [--max-rows <n>] [--show-ast|--explain] [--time]\n  rusthouse sql --file <path.sql> [--part <path-to-wide-part>] [--format tsv|tsv-no-header|csv|csv-no-header|jsonl|json|markdown|vertical] [--output <path>] [--max-rows <n>] [--show-ast|--explain] [--time]\n  rusthouse sql <DDL> --catalog <directory> [--show-ast]\n  rusthouse --help\n\nInspect local MergeTree metadata, marks, and compressed blocks.";
+const USAGE: &str = "Usage:\n  rusthouse inspect-part <path> [--json]\n  rusthouse inspect-snapshot <frozen-part-or-active-parts-directory> [--json]\n  rusthouse verify-part <path-to-wide-part>\n  rusthouse verify-file-sizes <path-to-part>\n  rusthouse inspect-checksums <path-to-checksums.txt> [--summary]\n  rusthouse inspect-marks <path-to-wide-marks>\n  rusthouse inspect-primary-index <primary.idx|primary.cidx> <field-width> [field-width ...]\n  rusthouse inspect-blocks <path-to-.bin>\n  rusthouse verify-blocks <path-to-.bin>\n  rusthouse validate-marks <path-to-wide-marks> <path-to-.bin>\n  rusthouse read-u64 <data.bin> <marks.mrk2> <mark-index>\n  rusthouse scan-u64 <path-to-UInt64-.bin>\n  rusthouse read-numeric <data.bin> <marks.mrk2> <mark-index> <type>\n  rusthouse sql <SQL> [--part <path-to-wide-part>] [--format tsv|tsv-no-header|csv|csv-no-header|jsonl|json|markdown|vertical] [--output <path>] [--max-rows <n>] [--show-ast|--explain] [--time]\n  rusthouse sql --stdin [--part <path-to-wide-part>] [--format tsv|tsv-no-header|csv|csv-no-header|jsonl|json|markdown|vertical] [--output <path>] [--max-rows <n>] [--show-ast|--explain] [--time]\n  rusthouse sql --file <path.sql> [--part <path-to-wide-part>] [--format tsv|tsv-no-header|csv|csv-no-header|jsonl|json|markdown|vertical] [--output <path>] [--max-rows <n>] [--show-ast|--explain] [--time]\n  rusthouse sql <DDL> --catalog <directory> [--show-ast]\n  rusthouse --help\n\nInspect local MergeTree metadata, marks, and compressed blocks.";
 
 fn main() -> ExitCode {
     let mut args = env::args_os().skip(1);
@@ -32,6 +33,7 @@ fn main() -> ExitCode {
         return ExitCode::SUCCESS;
     }
     if command != "inspect-part"
+        && command != "inspect-snapshot"
         && command != "verify-part"
         && command != "verify-file-sizes"
         && command != "inspect-checksums"
@@ -109,6 +111,20 @@ fn main() -> ExitCode {
                 eprintln!("{USAGE}");
                 return ExitCode::from(2);
             }
+        } else if command == "inspect-snapshot" {
+            let (Some(path), option, None) = (args.next(), args.next(), args.next()) else {
+                eprintln!("{USAGE}");
+                return ExitCode::from(2);
+            };
+            let json = match option.as_deref() {
+                None => false,
+                Some(value) if value == "--json" => true,
+                _ => {
+                    eprintln!("{USAGE}");
+                    return ExitCode::from(2);
+                }
+            };
+            snapshot::inspect_and_print(&PathBuf::from(path), json)
         } else if command == "inspect-checksums" {
             let (Some(path), option, None) = (args.next(), args.next(), args.next()) else {
                 eprintln!("{USAGE}");

@@ -75,22 +75,32 @@ pub fn read_decimal_column<R: Read>(
     })
 }
 
+fn decimal_storage_type(precision: u8) -> &'static str {
+    if precision <= 9 {
+        "Int32"
+    } else if precision <= 18 {
+        "Int64"
+    } else {
+        "Int128"
+    }
+}
+
 fn parse_decimal_type(data_type: &str) -> Option<(u8, u8, &'static str)> {
     if data_type == "Decimal" {
         return Some((10, 0, "Int64"));
     }
 
-    for (prefix, precision, storage) in [
-        ("Decimal32(", 9, "Int32"),
-        ("Decimal64(", 18, "Int64"),
-        ("Decimal128(", 38, "Int128"),
-    ] {
+    for (prefix, precision) in [("Decimal32(", 9), ("Decimal64(", 18), ("Decimal128(", 38)] {
         if let Some(inner) = data_type
             .strip_prefix(prefix)
             .and_then(|value| value.strip_suffix(')'))
         {
             let scale = inner.parse::<u8>().ok()?;
-            return (scale <= precision).then_some((precision, scale, storage));
+            return (scale <= precision).then_some((
+                precision,
+                scale,
+                decimal_storage_type(precision),
+            ));
         }
     }
 
@@ -105,14 +115,7 @@ fn parse_decimal_type(data_type: &str) -> Option<(u8, u8, &'static str)> {
         return None;
     }
 
-    let storage = if precision <= 9 {
-        "Int32"
-    } else if precision <= 18 {
-        "Int64"
-    } else {
-        "Int128"
-    };
-    Some((precision, scale, storage))
+    Some((precision, scale, decimal_storage_type(precision)))
 }
 
 #[cfg(test)]

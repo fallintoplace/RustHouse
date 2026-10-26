@@ -1,7 +1,9 @@
 //! Minimal read-only SQL HTTP interface, bound to loopback by the binary.
 //! This is intentionally not a full database wire protocol.
+mod csv;
 mod jsonl;
 
+use csv::CsvWriter;
 use jsonl::JsonlWriter;
 use rusthouse_query::{execute, explain_select, parse_select};
 use rusthouse_storage::inspect_query_source;
@@ -71,6 +73,10 @@ impl Write for LimitedWriter {
     }
 }
 
+fn hex_digit(value: u8) -> Option<u8> {
+    (value as char).to_digit(16).map(|digit| digit as u8)
+}
+
 fn decode_url(value: &str) -> Result<String, &'static str> {
     let bytes = value.as_bytes();
     let mut decoded = Vec::with_capacity(bytes.len());
@@ -81,9 +87,8 @@ fn decode_url(value: &str) -> Result<String, &'static str> {
             if index + 2 >= bytes.len() {
                 return Err("invalid percent encoding");
             }
-            let hex = |v: u8| (v as char).to_digit(16).map(|digit| digit as u8);
-            let hi = hex(bytes[index + 1]).ok_or("invalid percent encoding")?;
-            let lo = hex(bytes[index + 2]).ok_or("invalid percent encoding")?;
+            let hi = hex_digit(bytes[index + 1]).ok_or("invalid percent encoding")?;
+            let lo = hex_digit(bytes[index + 2]).ok_or("invalid percent encoding")?;
             decoded.push((hi << 4) | lo);
             index += 3;
         } else {
@@ -151,6 +156,7 @@ fn schema_response(config: &Config) -> Response {
 #[derive(Clone, Copy)]
 enum QueryFormat {
     Tsv,
+    Csv,
     Jsonl,
 }
 
@@ -178,6 +184,7 @@ fn query_parameters(target: &str) -> Result<(String, Option<String>, QueryFormat
                 }
                 format = Some(match decode_url(value)?.as_str() {
                     "tsv" => QueryFormat::Tsv,
+                    "csv" => QueryFormat::Csv,
                     "jsonl" => QueryFormat::Jsonl,
                     _ => return Err("unsupported query format"),
                 });
@@ -267,6 +274,10 @@ pub fn handle_request(method: &str, target: &str, body: &[u8], config: &Config) 
     let mut writer = LimitedWriter::new();
     let result = match format {
         QueryFormat::Tsv => execute(&select, config.part.as_deref(), &mut writer),
+        QueryFormat::Csv => {
+            let mut csv = CsvWriter::new(&mut writer);
+            execute(&select, config.part.as_deref(), &mut csv)
+        }
         QueryFormat::Jsonl => {
             let mut jsonl = JsonlWriter::new(&mut writer);
             execute(&select, config.part.as_deref(), &mut jsonl)
@@ -277,6 +288,7 @@ pub fn handle_request(method: &str, target: &str, body: &[u8], config: &Config) 
             status: "200 OK",
             content_type: match format {
                 QueryFormat::Tsv => "text/tab-separated-values; charset=utf-8",
+                QueryFormat::Csv => "text/csv; charset=utf-8",
                 QueryFormat::Jsonl => "application/x-ndjson; charset=utf-8",
             },
             body: writer.data,
@@ -486,6 +498,31 @@ mod tests {
         let response = handle_request("POST", "/?format=tsv", b"SELECT 7", &config());
         assert_eq!(response.status, "200 OK");
         assert_eq!(response.body, b"7\n7\n");
+    }
+
+    #[test]
+    fn returns_csv_for_get_and_post_with_row_cap() {
+        let get = handle_request(
+            "GET",
+            "/?query=SELECT+number+FROM+numbers%2810%29&format=csv",
+            b"",
+            &config(),
+        );
+        assert_eq!(get.status, "200 OK");
+        assert_eq!(get.content_type, "text/csv; charset=utf-8");
+        assert_eq!(get.body, b"number\r\n0\r\n1\r\n2\r\n");
+
+        let post = handle_request(
+            "POST",
+            "/?format=csv",
+            b"SELECT count(*) FROM numbers(0)",
+            &config(),
+        );
+        assert_eq!(post.status, "200 OK");
+        assert_eq!(post.body, b"count\r\n0\r\n");
+
+        let bad = handle_request("POST", "/?format=csv&format=tsv", b"SELECT 1", &config());
+        assert_eq!(bad.status, "400 Bad Request");
     }
 
     #[test]

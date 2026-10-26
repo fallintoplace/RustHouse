@@ -19,6 +19,13 @@ pub struct PartMetadata {
     pub columns: Vec<Column>,
 }
 
+fn io_error(path: &Path, source: io::Error) -> PartError {
+    PartError::Io {
+        path: path.to_path_buf(),
+        source,
+    }
+}
+
 pub fn inspect_part(path: impl AsRef<Path>) -> Result<PartMetadata, PartError> {
     let path = path.as_ref();
     let rows = parse_count(&read_metadata(&path.join("count.txt"), MAX_COUNT_BYTES)?)?;
@@ -35,10 +42,7 @@ pub fn inspect_part(path: impl AsRef<Path>) -> Result<PartMetadata, PartError> {
 }
 
 fn read_metadata(path: &Path, max_bytes: u64) -> Result<String, PartError> {
-    let metadata = fs::symlink_metadata(path).map_err(|source| PartError::Io {
-        path: path.to_path_buf(),
-        source,
-    })?;
+    let metadata = fs::symlink_metadata(path).map_err(|source| io_error(path, source))?;
     if !metadata.file_type().is_file() {
         return Err(PartError::Io {
             path: path.to_path_buf(),
@@ -48,27 +52,19 @@ fn read_metadata(path: &Path, max_bytes: u64) -> Result<String, PartError> {
             ),
         });
     }
-    let file = fs::File::open(path).map_err(|source| PartError::Io {
-        path: path.to_path_buf(),
-        source,
-    })?;
+    let file = fs::File::open(path).map_err(|source| io_error(path, source))?;
     let mut bytes = Vec::new();
     file.take(max_bytes + 1)
         .read_to_end(&mut bytes)
-        .map_err(|source| PartError::Io {
-            path: path.to_path_buf(),
-            source,
-        })?;
+        .map_err(|source| io_error(path, source))?;
     if bytes.len() as u64 > max_bytes {
         return Err(PartError::Io {
             path: path.to_path_buf(),
             source: io::Error::new(io::ErrorKind::InvalidData, "metadata exceeds size limit"),
         });
     }
-    String::from_utf8(bytes).map_err(|source| PartError::Io {
-        path: path.to_path_buf(),
-        source: io::Error::new(io::ErrorKind::InvalidData, source),
-    })
+    String::from_utf8(bytes)
+        .map_err(|source| io_error(path, io::Error::new(io::ErrorKind::InvalidData, source)))
 }
 
 fn parse_count(content: &str) -> Result<u64, PartError> {

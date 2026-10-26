@@ -40,6 +40,9 @@ impl AggregateFunction {
 pub enum Projection {
     Literal(i64),
     Count,
+    CountColumn {
+        column: String,
+    },
     CountDistinct {
         column: String,
     },
@@ -259,13 +262,19 @@ pub fn parse_select(sql: &str) -> Result<Select, ParseError> {
                 ));
             }
             Projection::CountDistinct { column }
-        } else {
-            if !parser.take(Token::RParen)
-                && !(parser.take(Token::Star) && parser.take(Token::RParen))
-            {
-                return Err(ParseError("expected COUNT() or COUNT(*)".into()));
+        } else if parser.take(Token::RParen) {
+            Projection::Count
+        } else if parser.take(Token::Star) {
+            if !parser.take(Token::RParen) {
+                return Err(ParseError("expected ')' after COUNT(*)".into()));
             }
             Projection::Count
+        } else {
+            let column = parser.word()?;
+            if !parser.take(Token::RParen) {
+                return Err(ParseError("expected ')' after COUNT(column)".into()));
+            }
+            Projection::CountColumn { column }
         }
     } else if matches!(parser.tokens.get(parser.index + 1), Some(Token::LParen)) {
         let name = parser.word()?;
@@ -330,6 +339,7 @@ pub fn parse_select(sql: &str) -> Result<Select, ParseError> {
             &projection,
             Projection::Literal(_)
                 | Projection::Count
+                | Projection::CountColumn { .. }
                 | Projection::CountDistinct { .. }
                 | Projection::Aggregate { .. }
         ) || matches!(&projection, Projection::Columns(columns) if columns.len() == 1);
@@ -669,6 +679,7 @@ pub fn parse_select(sql: &str) -> Result<Select, ParseError> {
         && matches!(
             projection,
             Projection::Count
+                | Projection::CountColumn { .. }
                 | Projection::CountDistinct { .. }
                 | Projection::Aggregate { .. }
                 | Projection::Literal(_)

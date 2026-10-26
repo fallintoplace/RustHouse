@@ -25,6 +25,23 @@ fn write_visible<W: Write>(output: &mut W, bytes: &[u8]) -> io::Result<()> {
     output.write_all(&bytes[start..])
 }
 
+fn write_row<W: Write>(
+    output: &mut W,
+    row: usize,
+    headers: &[Vec<u8>],
+    line: &[u8],
+) -> io::Result<()> {
+    writeln!(output, "Row {row}:")?;
+    for (header, field) in headers.iter().zip(line.split(|&byte| byte == b'\t')) {
+        output.write_all(b"  ")?;
+        write_visible(output, header)?;
+        output.write_all(b": ")?;
+        write_visible(output, field)?;
+        output.write_all(b"\n")?;
+    }
+    output.write_all(b"\n")
+}
+
 impl<W: Write> VerticalWriter<W> {
     pub fn new(output: W) -> Self {
         Self {
@@ -61,15 +78,7 @@ impl<W: Write> VerticalWriter<W> {
             .rows
             .checked_add(1)
             .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidData, "too many vertical rows"))?;
-        writeln!(self.output, "Row {row}:")?;
-        for (header, field) in headers.iter().zip(self.line.split(|&byte| byte == b'\t')) {
-            self.output.write_all(b"  ")?;
-            write_visible(&mut self.output, header)?;
-            self.output.write_all(b": ")?;
-            write_visible(&mut self.output, field)?;
-            self.output.write_all(b"\n")?;
-        }
-        self.output.write_all(b"\n")?;
+        write_row(&mut self.output, row, headers, &self.line)?;
         self.rows = row;
         self.line.clear();
         Ok(())

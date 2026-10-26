@@ -85,6 +85,18 @@ impl Error for NestedArrayReadError {
     }
 }
 
+fn numeric_leaf_type(data_type: &str) -> Result<&str, NestedArrayReadError> {
+    let leaf_type = data_type
+        .strip_prefix("Array(Array(")
+        .and_then(|inner| inner.strip_suffix("))"))
+        .filter(|inner| !inner.is_empty())
+        .ok_or_else(|| NestedArrayReadError::InvalidType(data_type.to_owned()))?;
+    if read_numeric_column(&mut io::empty(), leaf_type, 0).is_err() {
+        return Err(NestedArrayReadError::InvalidType(data_type.to_owned()));
+    }
+    Ok(leaf_type)
+}
+
 /// Decode separate outer and inner offsets and one flattened numeric value stream.
 ///
 /// Each offset stream has its own encoding and absolute position, allowing
@@ -98,17 +110,8 @@ pub fn read_nested_numeric_array_column<O: Read, I: Read, D: Read>(
     outer_encoding: ArrayOffsetsEncoding,
     inner_encoding: ArrayOffsetsEncoding,
 ) -> Result<NestedNumericArrayColumn, NestedArrayReadError> {
-    let leaf_type = data_type
-        .strip_prefix("Array(Array(")
-        .and_then(|inner| inner.strip_suffix("))"))
-        .filter(|inner| !inner.is_empty())
-        .ok_or_else(|| NestedArrayReadError::InvalidType(data_type.to_owned()))?;
-
-    // Validate the scalar type before consuming either offset stream.
-    if read_numeric_column(&mut io::empty(), leaf_type, 0).is_err() {
-        return Err(NestedArrayReadError::InvalidType(data_type.to_owned()));
-    }
-
+    // Reject invalid leaf types before consuming either offset stream.
+    let leaf_type = numeric_leaf_type(data_type)?;
     let outer = read_array_offsets(outer_stream, rows, outer_encoding)
         .map_err(NestedArrayReadError::OuterOffsets)?;
     let inner = read_array_offsets(inner_stream, outer.element_count(), inner_encoding)

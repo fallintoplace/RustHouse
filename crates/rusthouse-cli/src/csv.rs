@@ -40,21 +40,23 @@ fn write_csv_field<W: Write>(output: &mut W, field: &[u8]) -> io::Result<()> {
     let needs_quotes = field
         .iter()
         .any(|byte| matches!(byte, b',' | b'"' | b'\r' | b'\n'));
-    if needs_quotes {
-        output.write_all(b"\"")?;
-        let mut pieces = field.split(|byte| *byte == b'"');
-        if let Some(first) = pieces.next() {
-            output.write_all(first)?;
-        }
-        for piece in pieces {
-            output.write_all(b"\"\"")?;
-            output.write_all(piece)?;
-        }
-        output.write_all(b"\"")?;
-    } else {
-        output.write_all(field)?;
+    if !needs_quotes {
+        return output.write_all(field);
     }
-    Ok(())
+    write_quoted_field(output, field)
+}
+
+fn write_quoted_field<W: Write>(output: &mut W, field: &[u8]) -> io::Result<()> {
+    output.write_all(b"\"")?;
+    let mut pieces = field.split(|byte| *byte == b'"');
+    if let Some(first) = pieces.next() {
+        output.write_all(first)?;
+    }
+    for piece in pieces {
+        output.write_all(b"\"\"")?;
+        output.write_all(piece)?;
+    }
+    output.write_all(b"\"")
 }
 
 impl<W: Write> Write for CsvWriter<W> {

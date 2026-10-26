@@ -1,6 +1,6 @@
 //! Convert bounded TSV query results into newline-delimited JSON objects.
 //! Numeric values remain strings to preserve Int128 and UInt128 precision.
-use super::write_json_string;
+use super::{hex_digit, write_json_string};
 use std::collections::HashSet;
 use std::io::{self, Write};
 
@@ -10,7 +10,7 @@ fn invalid(message: &'static str) -> io::Error {
     io::Error::new(io::ErrorKind::InvalidData, message)
 }
 
-fn decode_tsv_value(value: &[u8]) -> io::Result<String> {
+pub(super) fn decode_tsv_value(value: &[u8]) -> io::Result<String> {
     let mut decoded = Vec::with_capacity(value.len());
     let mut index = 0;
     while index < value.len() {
@@ -36,9 +36,8 @@ fn decode_tsv_value(value: &[u8]) -> io::Result<String> {
                 let low = *value
                     .get(index + 2)
                     .ok_or_else(|| invalid("short TSV hex escape"))?;
-                let digit = |byte: u8| (byte as char).to_digit(16).map(|value| value as u8);
-                let high = digit(high).ok_or_else(|| invalid("invalid TSV hex escape"))?;
-                let low = digit(low).ok_or_else(|| invalid("invalid TSV hex escape"))?;
+                let high = hex_digit(high).ok_or_else(|| invalid("invalid TSV hex escape"))?;
+                let low = hex_digit(low).ok_or_else(|| invalid("invalid TSV hex escape"))?;
                 decoded.push((high << 4) | low);
                 index += 2;
             }

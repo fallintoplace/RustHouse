@@ -92,19 +92,12 @@ fn compile_part_predicates(
                     target,
                 }
             }
-            Predicate::In { values, .. } => compile_in_test(
+            Predicate::In { values, .. } | Predicate::NotIn { values, .. } => compile_in_test(
                 values
                     .iter()
                     .map(|value| convert(column, value))
                     .collect::<Result<Vec<_>, _>>()?,
-                false,
-            ),
-            Predicate::NotIn { values, .. } => compile_in_test(
-                values
-                    .iter()
-                    .map(|value| convert(column, value))
-                    .collect::<Result<Vec<_>, _>>()?,
-                true,
+                matches!(predicate, Predicate::NotIn { .. }),
             ),
             Predicate::IsNull { .. } => {
                 return Err(ExecutionError::Invalid(

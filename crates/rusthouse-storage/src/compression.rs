@@ -192,33 +192,14 @@ impl<R: Read + Seek> CompressedBlockReader<R> {
                 encoded.truncate(block.decompressed_size as usize);
                 encoded
             }
-            0x82 => {
-                let mut decoded = vec![0u8; block.decompressed_size as usize];
-                match decompress_into(&encoded[HEADER_SIZE as usize..], &mut decoded) {
-                    Ok(size) if size == decoded.len() => decoded,
-                    _ => {
-                        return self.decoded_error(
-                            block.offset,
-                            "invalid LZ4 payload or decompressed size",
-                        );
-                    }
-                }
-            }
-            0x90 => {
-                let mut decoded = vec![0u8; block.decompressed_size as usize];
-                match zstd::bulk::decompress_to_buffer(
-                    &encoded[HEADER_SIZE as usize..],
-                    &mut decoded,
-                ) {
-                    Ok(size) if size == decoded.len() => decoded,
-                    _ => {
-                        return self.decoded_error(
-                            block.offset,
-                            "invalid ZSTD payload or decompressed size",
-                        );
-                    }
-                }
-            }
+            0x82 | 0x90 => match decode_codec_payload(
+                block.method,
+                &encoded[HEADER_SIZE as usize..],
+                block.decompressed_size as usize,
+            ) {
+                Ok(decoded) => decoded,
+                Err(reason) => return self.decoded_error(block.offset, reason),
+            },
             _ => return self.decoded_error(block.offset, "unsupported compression method"),
         };
         Some(Ok(DecodedBlock { block, data }))
@@ -252,6 +233,26 @@ impl<R: Read + Seek> CompressedBlockReader<R> {
             path: self.path.clone(),
             source,
         }))
+    }
+}
+
+fn decode_codec_payload(
+    method: u8,
+    payload: &[u8],
+    decompressed_size: usize,
+) -> Result<Vec<u8>, &'static str> {
+    let mut decoded = vec![0u8; decompressed_size];
+    let size = match method {
+        0x82 => decompress_into(payload, &mut decoded).ok(),
+        0x90 => zstd::bulk::decompress_to_buffer(payload, &mut decoded).ok(),
+        _ => return Err("unsupported compression method"),
+    };
+    if size == Some(decoded.len()) {
+        Ok(decoded)
+    } else if method == 0x82 {
+        Err("invalid LZ4 payload or decompressed size")
+    } else {
+        Err("invalid ZSTD payload or decompressed size")
     }
 }
 

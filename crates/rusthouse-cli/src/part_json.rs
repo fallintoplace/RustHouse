@@ -23,7 +23,7 @@ pub fn inspect_and_print_json(path: PathBuf) -> Result<(), PartError> {
     Ok(())
 }
 
-fn json_string(value: &str) -> String {
+pub(crate) fn json_string(value: &str) -> String {
     let mut escaped = String::with_capacity(value.len() + 2);
     escaped.push('"');
     for character in value.chars() {
