@@ -442,8 +442,21 @@ pub(super) fn delete(database: &Path, select: &Select) -> Result<(), String> {
     Ok(())
 }
 
-pub(super) fn insert(database: &Path, insert: &Insert) -> Result<(), String> {
+/// Run a bounded statement while holding the database's exclusive lock.
+pub(super) fn with_write_lock<T>(
+    database: &Path,
+    operation: impl FnOnce() -> Result<T, String>,
+) -> Result<T, String> {
     let _lock = lock(database)?;
+    operation()
+}
+
+pub(super) fn insert(database: &Path, insert: &Insert) -> Result<(), String> {
+    with_write_lock(database, || insert_locked(database, insert))
+}
+
+/// The caller must already own the exclusive database write lock.
+pub(super) fn insert_locked(database: &Path, insert: &Insert) -> Result<(), String> {
     let cols = columns(database, &insert.table)?;
     let (parts_dir, parts) = validated_parts(database, &insert.table, &cols)?;
     let indices: Vec<usize> = match &insert.columns {
