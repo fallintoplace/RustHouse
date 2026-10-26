@@ -109,6 +109,7 @@ pub struct Having {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Select {
     pub projection: Projection,
+    pub alias: Option<String>,
     pub distinct: bool,
     pub source: Option<Source>,
     pub predicates: Vec<Predicate>,
@@ -289,6 +290,21 @@ pub fn parse_select(sql: &str) -> Result<Select, ParseError> {
     if distinct && !matches!(projection, Projection::All | Projection::Columns(_)) {
         return Err(ParseError("DISTINCT supports only row projections".into()));
     }
+    let alias = if parser.keyword("AS") {
+        let single_result = matches!(
+            &projection,
+            Projection::Literal(_)
+                | Projection::Count
+                | Projection::CountDistinct { .. }
+                | Projection::Aggregate { .. }
+        ) || matches!(&projection, Projection::Columns(columns) if columns.len() == 1);
+        if !single_result {
+            return Err(ParseError("AS supports only a single result column".into()));
+        }
+        Some(parser.word()?)
+    } else {
+        None
+    };
 
     let source = if parser.keyword("FROM") {
         let name = parser.word()?;
@@ -614,6 +630,7 @@ pub fn parse_select(sql: &str) -> Result<Select, ParseError> {
     }
     Ok(Select {
         projection,
+        alias,
         distinct,
         source,
         predicates,
@@ -748,6 +765,7 @@ mod tests {
             parse_select(" SELECT -42; ").unwrap(),
             Select {
                 projection: Projection::Literal(-42),
+                alias: None,
                 distinct: false,
                 source: None,
                 predicates: Vec::new(),
@@ -762,6 +780,7 @@ mod tests {
             parse_select("select id, price from part limit 2;").unwrap(),
             Select {
                 projection: Projection::Columns(vec!["id".into(), "price".into()]),
+                alias: None,
                 distinct: false,
                 source: Some(Source::Table("part".into())),
                 predicates: Vec::new(),
@@ -788,6 +807,39 @@ mod tests {
                 .projection,
             Projection::Count
         );
+    }
+
+    #[test]
+    fn parses_single_column_result_aliases() {
+        assert_eq!(
+            parse_select("SELECT number AS n FROM numbers(10)")
+                .unwrap()
+                .alias
+                .as_deref(),
+            Some("n")
+        );
+        assert_eq!(
+            parse_select("SELECT count(*) AS total FROM numbers(10)")
+                .unwrap()
+                .alias
+                .as_deref(),
+            Some("total")
+        );
+        assert_eq!(
+            parse_select("SELECT -3 AS result")
+                .unwrap()
+                .alias
+                .as_deref(),
+            Some("result")
+        );
+        for sql in [
+            "SELECT number AS FROM numbers(5)",
+            "SELECT number, number AS alias FROM numbers(5)",
+            "SELECT * AS everything FROM numbers(5)",
+            "SELECT number AS 3 FROM numbers(5)",
+        ] {
+            assert!(parse_select(sql).is_err(), "{sql}");
+        }
     }
 
     #[test]
