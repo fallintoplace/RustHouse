@@ -116,10 +116,7 @@ pub fn read_checksums(path: impl AsRef<Path>) -> Result<PartChecksums, PartError
     parse_checksums(&content, path)
 }
 
-fn parse_checksum_header<'a>(
-    content: &'a [u8],
-    path: &Path,
-) -> Result<(u8, &'a [u8]), PartError> {
+fn parse_checksum_header<'a>(content: &'a [u8], path: &Path) -> Result<(u8, &'a [u8]), PartError> {
     let header = content
         .strip_prefix(HEADER)
         .ok_or_else(|| invalid(path, "missing format header"))?;
