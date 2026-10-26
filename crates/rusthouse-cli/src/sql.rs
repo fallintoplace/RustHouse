@@ -320,6 +320,20 @@ pub(super) fn run_sql_args(mut args: impl Iterator<Item = OsString>) -> Result<(
             }
             return crate::database::apply_ddl(database_dir, &ddl);
         }
+        if let Some(copy) =
+            rusthouse_query::parse_copy_from(&query).map_err(|error| error.to_string())?
+        {
+            if explain || time || format.is_some() || output_path.is_some() || max_rows.is_some() {
+                return Err(
+                    "COPY cannot use --explain, --time, --format, --output, or --max-rows".into(),
+                );
+            }
+            if show_ast {
+                println!("{copy:#?}");
+                return Ok(());
+            }
+            return crate::copy_from::run(database_dir, &copy);
+        }
         if let Some(insert) = parse_insert(&query).map_err(|error| error.to_string())? {
             if explain || time || format.is_some() || output_path.is_some() || max_rows.is_some() {
                 return Err(
