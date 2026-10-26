@@ -10,6 +10,9 @@ pub struct JoinColumn {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum JoinType {
     Inner,
+    Left,
+    Right,
+    Full,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -117,12 +120,21 @@ pub fn parse_join(sql: &str) -> Result<Option<JoinSelect>, ParseError> {
             "table identifiers cannot exceed 128 bytes".into(),
         ));
     }
-    if parser.keyword("LEFT") || parser.keyword("RIGHT") || parser.keyword("FULL") {
-        return Err(ParseError("outer joins are not supported yet".into()));
+    let kind = if parser.keyword("LEFT") {
+        JoinType::Left
+    } else if parser.keyword("RIGHT") {
+        JoinType::Right
+    } else if parser.keyword("FULL") {
+        JoinType::Full
+    } else {
+        parser.keyword("INNER");
+        JoinType::Inner
+    };
+    if !matches!(kind, JoinType::Inner) {
+        parser.keyword("OUTER");
     }
-    parser.keyword("INNER");
     if !parser.keyword("JOIN") {
-        return Err(ParseError("expected INNER JOIN or JOIN".into()));
+        return Err(ParseError("expected JOIN after join type".into()));
     }
     let right = parser.word()?;
     let right_alias = alias(&mut parser, &right)?;
@@ -183,7 +195,7 @@ pub fn parse_join(sql: &str) -> Result<Option<JoinSelect>, ParseError> {
         right,
         left_alias,
         right_alias,
-        kind: JoinType::Inner,
+        kind,
         columns,
         keys: vec![(first, second)],
         order_by,
@@ -248,7 +260,6 @@ mod tests {
         for sql in [
             "SELECT * FROM users JOIN users ON users.id = users.id",
             "SELECT * FROM a JOIN b ON a.id > b.id",
-            "SELECT * FROM a LEFT JOIN b ON a.id = b.id",
             "SELECT id FROM a JOIN b ON a.id = b.id",
             "SELECT * FROM a JOIN b ON a.id = b.id OR a.id = b.id",
             "SELECT * FROM a JOIN b ON a.id = b.id OFFSET 2",

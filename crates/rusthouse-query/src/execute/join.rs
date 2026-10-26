@@ -1,6 +1,6 @@
 //! In-memory, bounded equi-join over validated immutable typed snapshots.
 use super::{ExecutionError, Number, typed};
-use crate::{JoinColumn, JoinSelect};
+use crate::{JoinColumn, JoinSelect, JoinType};
 use rusthouse_storage::{TypedQueryReader, inspect_query_source};
 use std::collections::HashMap;
 use std::io::Write;
@@ -196,12 +196,26 @@ pub fn execute_join<W: Write>(
         }
     }
     let mut pairs: Vec<Pair> = Vec::new();
+    let mut matched_right = vec![false; right_rows.len()];
     for (left_index, row) in left_rows.iter().enumerate() {
+        let mut matched = false;
         if let Some(key) = row_key(row, &left_keys) {
             if let Some(matches) = hash.get(&key) {
                 for &right_index in matches {
+                    matched = true;
+                    matched_right[right_index] = true;
                     add_pair(&mut pairs, (Some(left_index), Some(right_index)))?;
                 }
+            }
+        }
+        if !matched && matches!(query.kind, JoinType::Left | JoinType::Full) {
+            add_pair(&mut pairs, (Some(left_index), None))?;
+        }
+    }
+    if matches!(query.kind, JoinType::Right | JoinType::Full) {
+        for (right_index, matched) in matched_right.into_iter().enumerate() {
+            if !matched {
+                add_pair(&mut pairs, (None, Some(right_index)))?;
             }
         }
     }
