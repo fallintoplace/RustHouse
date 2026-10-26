@@ -78,3 +78,5 @@ Remove a catalog column with `rusthouse sql "ALTER TABLE events DROP COLUMN age"
 
 Rename catalog metadata with `rusthouse sql "RENAME TABLE events TO archived_events" --catalog ./catalog`.
 The destination must be absent. No MergeTree parts are moved.
+
+Order by a selected column's 1-based position with `SELECT number FROM numbers(10) ORDER BY 1 DESC`. For `SELECT key, count(*) ... GROUP BY key`, positions 1 and 2 refer to the key and count. `SELECT *` requires named ORDER BY columns.
