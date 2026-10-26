@@ -218,10 +218,7 @@ impl NumericQueryReader {
         let mut skipped = 0usize;
         while skipped < max_rows && self.next_part < self.parts.len() {
             // Opening validates stream layout and marks before we skip them.
-            let mut reader = NumericPartReader::open(
-                &self.parts[self.next_part],
-                &self.columns,
-            )?;
+            let mut reader = NumericPartReader::open(&self.parts[self.next_part], &self.columns)?;
             self.next_part += 1;
             let amount = reader.skip_complete_marks(max_rows - skipped);
             skipped += amount;
