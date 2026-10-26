@@ -18,6 +18,7 @@ mod numeric;
 mod part_scan;
 mod part_verify;
 mod primary_index;
+mod query_source;
 mod scan_layout;
 mod stream;
 mod string_arrays;
@@ -28,7 +29,9 @@ pub use arrays::{
     ArrayOffsets, ArrayOffsetsEncoding, ArrayReadError, NumericArrayColumn, read_array_offsets,
     read_numeric_array_column,
 };
-pub use checksums::{FileChecksum, PartChecksums, UncompressedChecksum, read_checksums};
+pub use checksums::{
+    ChecksumSizeSummary, FileChecksum, PartChecksums, UncompressedChecksum, read_checksums,
+};
 pub use columns::parse_columns;
 pub use compression::{CompressedBlock, CompressedBlockReader, DecodedBlock};
 pub use decimal::{DecimalColumn, DecimalReadError, read_decimal_column};
@@ -56,6 +59,7 @@ pub use numeric::{NumericColumn, NumericReadError, read_numeric_column};
 pub use part_scan::NumericPartReader;
 pub use part_verify::{PartVerification, verify_wide_part};
 pub use primary_index::{FixedPrimaryIndex, read_fixed_primary_index};
+pub use query_source::{NumericQueryReader, inspect_query_source, query_parts};
 pub use stream::UInt64ColumnReader;
 pub use string_arrays::{
     StringArrayColumn, StringArrayReadError, read_legacy_string_array_column,
