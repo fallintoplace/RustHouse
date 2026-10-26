@@ -77,14 +77,20 @@ fn inspect_staging(report: &mut Report, root: &Path, table: &str) {
             Err(error) => report.error(table, format!("cannot list snapshot generations: {error}")),
         },
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
-        Err(error) => report.error(table, format!("cannot inspect snapshot generations: {error}")),
+        Err(error) => report.error(
+            table,
+            format!("cannot inspect snapshot generations: {error}"),
+        ),
     }
 }
 
 fn inspect_table(report: &mut Report, database: &Path, name: &str, schema: bool, parts: bool) {
     report.checked_tables += 1;
     if !schema {
-        report.error(name, "orphaned data directory without schema; preserve it for recovery");
+        report.error(
+            name,
+            "orphaned data directory without schema; preserve it for recovery",
+        );
         return;
     }
     if !parts {
@@ -101,14 +107,20 @@ fn inspect_table(report: &mut Report, database: &Path, name: &str, schema: bool,
     };
     let expected: Vec<Column> = definitions
         .into_iter()
-        .map(|column| Column { name: column.name, data_type: column.data_type })
+        .map(|column| Column {
+            name: column.name,
+            data_type: column.data_type,
+        })
         .collect();
 
     let root = database.join(format!("{name}.parts"));
     match fs::symlink_metadata(&root) {
         Ok(metadata) if metadata.file_type().is_dir() => {}
         Ok(_) => {
-            report.error(name, "data root must be a real directory, not a symlink or file");
+            report.error(
+                name,
+                "data root must be a real directory, not a symlink or file",
+            );
             return;
         }
         Err(error) => {
@@ -149,7 +161,10 @@ fn inspect_table(report: &mut Report, database: &Path, name: &str, schema: bool,
             report.error(name, format!("invalid part {}: {error}", part.display()));
         }
         if let Err(error) = verify_part_file_sizes(part) {
-            report.error(name, format!("invalid part manifest {}: {error}", part.display()));
+            report.error(
+                name,
+                format!("invalid part manifest {}: {error}", part.display()),
+            );
         }
     }
     if report.errors == before {
@@ -192,8 +207,15 @@ pub(super) fn run(mut args: impl Iterator<Item = OsString>) -> Result<(), String
             report.warning("catalog", "non-UTF-8 root entry was skipped");
             continue;
         };
-        if name.starts_with('.') && (name.contains(".pending-") || name.contains(".schema.tmp.") || name.contains(".drop-")) {
-            report.warning("catalog", format!("unpublished or interrupted staging entry: {name}"));
+        if name.starts_with('.')
+            && (name.contains(".pending-")
+                || name.contains(".schema.tmp.")
+                || name.contains(".drop-"))
+        {
+            report.warning(
+                "catalog",
+                format!("unpublished or interrupted staging entry: {name}"),
+            );
         }
         if let Some(table) = name.strip_suffix(".schema") {
             if valid_name(table) {
@@ -224,9 +246,14 @@ pub(super) fn run(mut args: impl Iterator<Item = OsString>) -> Result<(), String
         "Summary: {} table(s), {} warning(s), {} error(s)",
         report.checked_tables, report.warnings, report.errors
     );
-    println!("Validation includes block checksums and manifest file sizes, not full manifest file hashes.");
+    println!(
+        "Validation includes block checksums and manifest file sizes, not full manifest file hashes."
+    );
     if report.errors > 0 {
-        Err(format!("doctor found {} error(s); no files were changed", report.errors))
+        Err(format!(
+            "doctor found {} error(s); no files were changed",
+            report.errors
+        ))
     } else {
         Ok(())
     }

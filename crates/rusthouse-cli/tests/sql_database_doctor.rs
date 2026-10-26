@@ -45,7 +45,10 @@ fn healthy_database_is_verified_without_creating_files() {
     let result = doctor(&dir);
     assert!(result.status.success(), "{result:?}");
     let output = String::from_utf8(result.stdout).unwrap();
-    assert!(output.contains("OK events: 2 rows, 2 active parts, 1 columns"), "{output}");
+    assert!(
+        output.contains("OK events: 2 rows, 2 active parts, 1 columns"),
+        "{output}"
+    );
     assert!(output.contains("0 error(s)"), "{output}");
     assert_eq!(fs::read_dir(&dir).unwrap().count(), before);
     fs::remove_dir_all(dir).unwrap();
@@ -64,7 +67,10 @@ fn bad_pointer_and_orphaned_parts_are_reported_without_repairing() {
     let result = doctor(&dir);
     assert!(!result.status.success(), "{result:?}");
     let output = String::from_utf8(result.stdout).unwrap();
-    assert!(output.contains("cannot resolve active snapshot"), "{output}");
+    assert!(
+        output.contains("cannot resolve active snapshot"),
+        "{output}"
+    );
     assert!(output.contains("orphaned data directory"), "{output}");
     assert!(dir.join("lost.parts").exists());
     assert_eq!(fs::read_to_string(pointer).unwrap(), "../escape\n");
@@ -84,7 +90,10 @@ fn corruption_and_interrupted_staging_get_distinct_diagnostics() {
     let result = doctor(&dir);
     assert!(!result.status.success(), "{result:?}");
     let output = String::from_utf8(result.stdout).unwrap();
-    assert!(output.contains("WARN catalog: unpublished or interrupted staging entry"), "{output}");
+    assert!(
+        output.contains("WARN catalog: unpublished or interrupted staging entry"),
+        "{output}"
+    );
     assert!(output.contains("ERROR events: invalid part"), "{output}");
     assert!(interrupted.exists());
     fs::remove_dir_all(dir).unwrap();
