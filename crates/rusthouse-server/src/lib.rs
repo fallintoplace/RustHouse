@@ -294,7 +294,7 @@ mod tests {
         assert_eq!(response.content_type, "application/json; charset=utf-8");
         assert_eq!(
             response.body,
-            br#"{"rows":42,"columns":[{"name":"id","type":"UInt64"},{"name":"city","type":"LowCardinality(String)"}]}"#.iter().copied().chain([b'\n']).collect::<Vec<_>>()
+            br#"{"rows":42,"columns":[{"name":"id","type":"UInt64"},{"name":"city","type":"LowCardinality(String)"}]}"#.iter().copied().chain(b"\n".iter().copied()).collect::<Vec<_>>()
         );
 
         for (method, path, body, status) in [
