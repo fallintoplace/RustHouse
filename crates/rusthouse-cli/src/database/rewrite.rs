@@ -270,9 +270,11 @@ pub(super) fn compact_table(database: &Path, table: &str) -> Result<(), String> 
     let expected = inspect_query_source(&source)
         .map_err(|error| error.to_string())?
         .rows;
-    let names = cols.iter().map(|column| column.name.clone()).collect::<Vec<_>>();
-    let mut reader =
-        TypedQueryReader::open(&source, &names).map_err(|error| error.to_string())?;
+    let names = cols
+        .iter()
+        .map(|column| column.name.clone())
+        .collect::<Vec<_>>();
+    let mut reader = TypedQueryReader::open(&source, &names).map_err(|error| error.to_string())?;
     let mut scanned = 0u64;
     publish_snapshot_with(database, table, |staging| {
         let mut buffer = Vec::with_capacity(PART_ROWS);
