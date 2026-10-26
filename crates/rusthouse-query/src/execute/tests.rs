@@ -58,7 +58,11 @@ fn wildcard_rename_preserves_rows_and_resolves_order_alias() {
         "value\n4\n3\n"
     );
     assert_eq!(
-        run("SELECT DISTINCT * RENAME number AS value FROM numbers(2)", None).unwrap(),
+        run(
+            "SELECT DISTINCT * RENAME number AS value FROM numbers(2)",
+            None
+        )
+        .unwrap(),
         "value\n0\n1\n"
     );
     assert_eq!(
@@ -66,7 +70,10 @@ fn wildcard_rename_preserves_rows_and_resolves_order_alias() {
         "number\n"
     );
     assert!(matches!(
-        run("SELECT * RENAME missing AS label FROM numbers(0) LIMIT 0", None),
+        run(
+            "SELECT * RENAME missing AS label FROM numbers(0) LIMIT 0",
+            None
+        ),
         Err(ExecutionError::Invalid(_))
     ));
 }

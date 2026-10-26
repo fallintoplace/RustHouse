@@ -303,10 +303,7 @@ fn execute_into<W: Write>(
     })?;
     let sort_index = query.order_by.as_ref().map(|order| {
         let column_name = query.order_source_column(&order.column);
-        if let Some(index) = scan_columns
-            .iter()
-            .position(|column| column == column_name)
-        {
+        if let Some(index) = scan_columns.iter().position(|column| column == column_name) {
             index
         } else {
             scan_columns.push(column_name.to_owned());
