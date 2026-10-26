@@ -98,6 +98,14 @@ fn data_type(parser: &mut Parser, nesting: usize) -> Result<String, ParseError> 
     }
 }
 
+fn finish_ddl(parser: &mut Parser) -> Result<(), ParseError> {
+    parser.take(Token::Semicolon);
+    if parser.index != parser.tokens.len() {
+        return Err(ParseError("unexpected tokens after DDL statement".into()));
+    }
+    Ok(())
+}
+
 /// Recognize only supported schema-only DDL. SELECT is parsed by the existing parser.
 pub fn parse_ddl(sql: &str) -> Result<Option<Ddl>, ParseError> {
     let mut parser = Parser {
@@ -109,10 +117,7 @@ pub fn parse_ddl(sql: &str) -> Result<Option<Ddl>, ParseError> {
             return Err(ParseError("expected TABLE after DESCRIBE".into()));
         }
         let name = identifier(&mut parser)?;
-        parser.take(Token::Semicolon);
-        if parser.index != parser.tokens.len() {
-            return Err(ParseError("unexpected tokens after DDL statement".into()));
-        }
+        finish_ddl(&mut parser)?;
         return Ok(Some(Ddl::DescribeTable { name }));
     }
     if parser.keyword("SHOW") {
@@ -130,10 +135,7 @@ pub fn parse_ddl(sql: &str) -> Result<Option<Ddl>, ParseError> {
                 "expected TABLES or CREATE TABLE after SHOW".into(),
             ));
         };
-        parser.take(Token::Semicolon);
-        if parser.index != parser.tokens.len() {
-            return Err(ParseError("unexpected tokens after DDL statement".into()));
-        }
+        finish_ddl(&mut parser)?;
         return Ok(Some(statement));
     }
     if parser.keyword("RENAME") {
@@ -145,10 +147,7 @@ pub fn parse_ddl(sql: &str) -> Result<Option<Ddl>, ParseError> {
             return Err(ParseError("expected TO after source table".into()));
         }
         let to = identifier(&mut parser)?;
-        parser.take(Token::Semicolon);
-        if parser.index != parser.tokens.len() {
-            return Err(ParseError("unexpected tokens after DDL statement".into()));
-        }
+        finish_ddl(&mut parser)?;
         return Ok(Some(Ddl::RenameTable { from, to }));
     }
     if parser.keyword("ALTER") {
@@ -165,10 +164,7 @@ pub fn parse_ddl(sql: &str) -> Result<Option<Ddl>, ParseError> {
                 return Err(ParseError("expected TO after source column".into()));
             }
             let to = identifier(&mut parser)?;
-            parser.take(Token::Semicolon);
-            if parser.index != parser.tokens.len() {
-                return Err(ParseError("unexpected tokens after DDL statement".into()));
-            }
+            finish_ddl(&mut parser)?;
             return Ok(Some(Ddl::RenameColumn { table, from, to }));
         }
         if parser.keyword("MODIFY") {
@@ -177,10 +173,7 @@ pub fn parse_ddl(sql: &str) -> Result<Option<Ddl>, ParseError> {
             }
             let name = identifier(&mut parser)?;
             let data_type = data_type(&mut parser, 0)?;
-            parser.take(Token::Semicolon);
-            if parser.index != parser.tokens.len() {
-                return Err(ParseError("unexpected tokens after DDL statement".into()));
-            }
+            finish_ddl(&mut parser)?;
             return Ok(Some(Ddl::ModifyColumn {
                 table,
                 column: ColumnDef { name, data_type },
@@ -199,10 +192,7 @@ pub fn parse_ddl(sql: &str) -> Result<Option<Ddl>, ParseError> {
                 false
             };
             let column = identifier(&mut parser)?;
-            parser.take(Token::Semicolon);
-            if parser.index != parser.tokens.len() {
-                return Err(ParseError("unexpected tokens after DDL statement".into()));
-            }
+            finish_ddl(&mut parser)?;
             return Ok(Some(Ddl::DropColumn {
                 table,
                 column,
@@ -224,10 +214,7 @@ pub fn parse_ddl(sql: &str) -> Result<Option<Ddl>, ParseError> {
         };
         let name = identifier(&mut parser)?;
         let data_type = data_type(&mut parser, 0)?;
-        parser.take(Token::Semicolon);
-        if parser.index != parser.tokens.len() {
-            return Err(ParseError("unexpected tokens after DDL statement".into()));
-        }
+        finish_ddl(&mut parser)?;
         return Ok(Some(Ddl::AddColumn {
             table,
             column: ColumnDef { name, data_type },
@@ -247,10 +234,7 @@ pub fn parse_ddl(sql: &str) -> Result<Option<Ddl>, ParseError> {
             false
         };
         let name = identifier(&mut parser)?;
-        parser.take(Token::Semicolon);
-        if parser.index != parser.tokens.len() {
-            return Err(ParseError("unexpected tokens after DDL statement".into()));
-        }
+        finish_ddl(&mut parser)?;
         return Ok(Some(Ddl::DropTable { name, if_exists }));
     }
     if !parser.keyword("CREATE") {
@@ -293,10 +277,7 @@ pub fn parse_ddl(sql: &str) -> Result<Option<Ddl>, ParseError> {
     if !parser.take(Token::RParen) {
         return Err(ParseError("expected ')' after column definitions".into()));
     }
-    parser.take(Token::Semicolon);
-    if parser.index != parser.tokens.len() {
-        return Err(ParseError("unexpected tokens after DDL statement".into()));
-    }
+    finish_ddl(&mut parser)?;
     Ok(Some(Ddl::CreateTable {
         name,
         columns,

@@ -36,8 +36,8 @@ impl<W: Write> VerticalWriter<W> {
         }
 
         let headers = self.headers.as_ref().unwrap();
-        let fields = self.line.split(|&byte| byte == b'\t').collect::<Vec<_>>();
-        if fields.len() != headers.len() {
+        let field_count = 1 + self.line.iter().filter(|&&byte| byte == b'\t').count();
+        if field_count != headers.len() {
             self.line.clear();
             return Err(io::Error::new(
                 io::ErrorKind::InvalidData,
@@ -50,7 +50,7 @@ impl<W: Write> VerticalWriter<W> {
             .checked_add(1)
             .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidData, "too many vertical rows"))?;
         writeln!(self.output, "Row {row}:")?;
-        for (header, field) in headers.iter().zip(fields) {
+        for (header, field) in headers.iter().zip(self.line.split(|&byte| byte == b'\t')) {
             self.output.write_all(b"  ")?;
             self.output.write_all(header)?;
             self.output.write_all(b": ")?;

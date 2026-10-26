@@ -14,6 +14,30 @@ pub(super) enum Token {
     Operator(Operator),
 }
 
+fn scan_number(sql: &str, index: &mut usize) -> Result<Token, ParseError> {
+    let bytes = sql.as_bytes();
+    let start = *index;
+    if bytes[*index] == b'-' {
+        *index += 1;
+        if !matches!(bytes.get(*index), Some(b'0'..=b'9')) {
+            return Err(ParseError("expected digits after '-'".into()));
+        }
+    }
+    while matches!(bytes.get(*index), Some(b'0'..=b'9')) {
+        *index += 1;
+    }
+    if bytes.get(*index) == Some(&b'.') {
+        *index += 1;
+        if !matches!(bytes.get(*index), Some(b'0'..=b'9')) {
+            return Err(ParseError("expected digits after decimal point".into()));
+        }
+        while matches!(bytes.get(*index), Some(b'0'..=b'9')) {
+            *index += 1;
+        }
+    }
+    Ok(Token::Number(sql[start..*index].into()))
+}
+
 pub(super) fn tokenize(sql: &str) -> Result<Vec<Token>, ParseError> {
     if sql.len() > 4096 {
         return Err(ParseError("statement exceeds the 4096-byte limit".into()));
@@ -109,28 +133,7 @@ pub(super) fn tokenize(sql: &str) -> Result<Vec<Token>, ParseError> {
                 index += 2;
                 Token::Operator(Operator::Ne)
             }
-            b'0'..=b'9' | b'-' => {
-                let start = index;
-                if byte == b'-' {
-                    index += 1;
-                    if !matches!(bytes.get(index), Some(b'0'..=b'9')) {
-                        return Err(ParseError("expected digits after '-'".into()));
-                    }
-                }
-                while matches!(bytes.get(index), Some(b'0'..=b'9')) {
-                    index += 1;
-                }
-                if bytes.get(index) == Some(&b'.') {
-                    index += 1;
-                    if !matches!(bytes.get(index), Some(b'0'..=b'9')) {
-                        return Err(ParseError("expected digits after decimal point".into()));
-                    }
-                    while matches!(bytes.get(index), Some(b'0'..=b'9')) {
-                        index += 1;
-                    }
-                }
-                Token::Number(sql[start..index].into())
-            }
+            b'0'..=b'9' | b'-' => scan_number(sql, &mut index)?,
             b'a'..=b'z' | b'A'..=b'Z' | b'_' => {
                 let start = index;
                 index += 1;
