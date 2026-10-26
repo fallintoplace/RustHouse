@@ -1,5 +1,34 @@
 use crate::{PartError, WideMark};
 
+fn validate_mark_position(name: &str, marks: &[WideMark], index: usize) -> Result<(), PartError> {
+    let mark = &marks[index];
+    if mark.rows == Some(0) && index + 1 != marks.len() {
+        return Err(PartError::InvalidScan(format!(
+            "zero-row mark is not terminal for {name}"
+        )));
+    }
+    if index > 0 {
+        let previous = &marks[index - 1];
+        if (mark.compressed_offset, mark.decompressed_offset)
+            < (previous.compressed_offset, previous.decompressed_offset)
+        {
+            return Err(PartError::InvalidScan(format!(
+                "mark offsets are not ordered for {name}"
+            )));
+        }
+        if mark.rows != Some(0)
+            && (mark.compressed_offset, mark.decompressed_offset)
+                == (previous.compressed_offset, previous.decompressed_offset)
+        {
+            return Err(PartError::InvalidScan(format!(
+                "duplicate live mark offsets for {name}"
+            )));
+        }
+    }
+
+    Ok(())
+}
+
 /// Shared granule boundaries for every requested column in a part scan.
 #[derive(Default)]
 pub(crate) struct ScanLayout {
@@ -21,30 +50,7 @@ impl ScanLayout {
             .then(|| Vec::with_capacity(marks.len()));
         let mut total_rows = 0u64;
         for (index, mark) in marks.iter().enumerate() {
-            if mark.rows == Some(0) && index + 1 != marks.len() {
-                return Err(PartError::InvalidScan(format!(
-                    "zero-row mark is not terminal for {name}"
-                )));
-            }
-            if index > 0 {
-                let previous = &marks[index - 1];
-                if (mark.compressed_offset, mark.decompressed_offset)
-                    < (previous.compressed_offset, previous.decompressed_offset)
-                {
-                    return Err(PartError::InvalidScan(format!(
-                        "mark offsets are not ordered for {name}"
-                    )));
-                }
-                if mark.rows != Some(0)
-                    && (mark.compressed_offset, mark.decompressed_offset)
-                        == (previous.compressed_offset, previous.decompressed_offset)
-                {
-                    return Err(PartError::InvalidScan(format!(
-                        "duplicate live mark offsets for {name}"
-                    )));
-                }
-            }
-
+            validate_mark_position(name, marks, index)?;
             let rows = mark
                 .rows
                 .ok_or_else(|| PartError::InvalidScan("adaptive wide marks are required".into()))?;

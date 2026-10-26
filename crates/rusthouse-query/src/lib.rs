@@ -93,6 +93,7 @@ pub enum Predicate {
     Like {
         column: String,
         pattern: String,
+        case_insensitive: bool,
         negated: bool,
     },
 }
@@ -178,6 +179,16 @@ impl Parser {
             true
         } else {
             false
+        }
+    }
+
+    fn like_keyword(&mut self) -> Option<bool> {
+        if self.keyword("LIKE") {
+            Some(false)
+        } else if self.keyword("ILIKE") {
+            Some(true)
+        } else {
+            None
         }
     }
 
@@ -426,15 +437,25 @@ pub fn parse_select(sql: &str) -> Result<Select, ParseError> {
                     .unwrap()
                     .push(Predicate::IsNull { column, negated });
                 total_conditions += 1;
-            } else if parser.keyword("LIKE") {
+            } else if let Some(case_insensitive) = parser.like_keyword() {
                 let pattern = match parser.tokens.get(parser.index) {
                     Some(Token::String(value)) => value.clone(),
                     _ => return Err(ParseError("LIKE requires a string literal".into())),
                 };
+                let trailing_escapes = pattern
+                    .as_bytes()
+                    .iter()
+                    .rev()
+                    .take_while(|&&byte| byte == b'\\')
+                    .count();
+                if trailing_escapes % 2 != 0 {
+                    return Err(ParseError("LIKE pattern has a trailing escape".into()));
+                }
                 parser.index += 1;
                 branches.last_mut().unwrap().push(Predicate::Like {
                     column,
                     pattern,
+                    case_insensitive,
                     negated: negate_in,
                 });
                 total_conditions += 1;
@@ -953,11 +974,13 @@ mod tests {
                 Predicate::Like {
                     column: "service".into(),
                     pattern: "a%".into(),
+                    case_insensitive: false,
                     negated: false,
                 },
                 Predicate::Like {
                     column: "service".into(),
                     pattern: "%z".into(),
+                    case_insensitive: false,
                     negated: true,
                 },
             ]
@@ -968,6 +991,7 @@ mod tests {
             vec![Predicate::Like {
                 column: "service".into(),
                 pattern: "d%".into(),
+                case_insensitive: false,
                 negated: true,
             }]
         );
@@ -977,6 +1001,39 @@ mod tests {
             "SELECT service FROM part WHERE service NOT LIKE NULL",
         ] {
             assert!(parse_select(invalid).is_err(), "{invalid}");
+        }
+    }
+
+    #[test]
+    fn parses_ilike_and_rejects_malformed_patterns() {
+        let select = parse_select(
+            "SELECT service FROM part WHERE service ILIKE 'API%' OR service NOT ILIKE 'DB'",
+        )
+        .unwrap();
+        assert_eq!(
+            select.predicates,
+            vec![Predicate::Like {
+                column: "service".into(),
+                pattern: "API%".into(),
+                case_insensitive: true,
+                negated: false,
+            }]
+        );
+        assert_eq!(
+            select.or_predicates,
+            vec![vec![Predicate::Like {
+                column: "service".into(),
+                pattern: "DB".into(),
+                case_insensitive: true,
+                negated: true,
+            }]]
+        );
+        for sql in [
+            "SELECT service FROM part WHERE service ILIKE 1",
+            "SELECT service FROM part WHERE service ILIKE NULL",
+            "SELECT service FROM part WHERE service LIKE 'abc\\'",
+        ] {
+            assert!(parse_select(sql).is_err(), "{sql}");
         }
     }
 

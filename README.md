@@ -8,6 +8,8 @@ Sort rows with `cargo run -p rusthouse-cli -- sql "SELECT number FROM numbers(10
 
 Aggregate numeric values with `cargo run -p rusthouse-cli -- sql "SELECT sum(number) FROM numbers(1000) WHERE number >= 900"`.
 
+Aggregate numeric part columns through typed filters too: `SELECT sum(status) FROM part WHERE service = 'api'` and `SELECT avg(attempt) FROM part WHERE message IS NOT NULL`. Numeric aggregates ignore nullable values and return `NULL` when no numeric rows match.
+
 Page results with `cargo run -p rusthouse-cli -- sql "SELECT number FROM numbers(100) ORDER BY number DESC LIMIT 5 OFFSET 10"`.
 
 Combine filters with `cargo run -p rusthouse-cli -- sql "SELECT number FROM numbers(20) WHERE number >= 5 AND number < 12 ORDER BY number DESC"`.
@@ -22,7 +24,7 @@ Count occurrences of numeric keys with `cargo run -p rusthouse-cli -- sql "SELEC
 
 Filter alternatives with `cargo run -p rusthouse-cli -- sql "SELECT number FROM numbers(10) WHERE number = 1 OR number >= 8"`.
 
-Filter String columns from a frozen part with `rusthouse sql "SELECT service FROM part WHERE service LIKE 'api%'" --part ./snapshot`. `LIKE` accepts `%` for zero or more bytes and `_` for one byte; `NOT LIKE` excludes matching values. Backslash escapes the next pattern byte. Nulls do not match either predicate.
+Filter String and Nullable(String) columns from a frozen part with `rusthouse sql "SELECT service FROM part WHERE service ILIKE 'API%'" --part ./snapshot`. `LIKE` and `NOT LIKE` compare bytes, while `ILIKE` and `NOT ILIKE` fold ASCII case. `%` matches zero or more bytes and `_` matches one byte; backslash escapes the next pattern byte. NULL never matches, including under negated predicates.
 
 Start at a chosen number with `cargo run -p rusthouse-cli -- sql "SELECT number FROM numbers(100, 5)"`.
 

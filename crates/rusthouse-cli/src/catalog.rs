@@ -1,11 +1,15 @@
 use rusthouse_query::{ColumnDef, Ddl, parse_ddl};
 use std::fs::{self, OpenOptions};
 use std::io::{Read, Write};
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicUsize, Ordering};
 
 static NEXT_TEMP: AtomicUsize = AtomicUsize::new(0);
 const MAX_SCHEMA_BYTES: u64 = 32 * 1024;
+
+fn schema_path(catalog: &Path, name: &str) -> PathBuf {
+    catalog.join(format!("{name}.schema"))
+}
 
 pub(super) fn apply(catalog: &Path, ddl: &Ddl) -> Result<(), String> {
     match ddl {
@@ -104,7 +108,7 @@ fn show_tables(catalog: &Path) -> Result<(), String> {
 }
 
 fn drop_table(catalog: &Path, name: &str, if_exists: bool) -> Result<(), String> {
-    let path = catalog.join(format!("{name}.schema"));
+    let path = schema_path(catalog, name);
     let metadata = match fs::symlink_metadata(&path) {
         Ok(metadata) => metadata,
         Err(error) if error.kind() == std::io::ErrorKind::NotFound && if_exists => {
@@ -124,7 +128,7 @@ fn drop_table(catalog: &Path, name: &str, if_exists: bool) -> Result<(), String>
 }
 
 fn read_schema(catalog: &Path, name: &str) -> Result<Vec<ColumnDef>, String> {
-    let path = catalog.join(format!("{name}.schema"));
+    let path = schema_path(catalog, name);
     let metadata = fs::symlink_metadata(&path)
         .map_err(|error| format!("cannot read table {name}: {error}"))?;
     if !metadata.file_type().is_file() {
@@ -186,7 +190,7 @@ fn schema_contents(columns: &[ColumnDef]) -> String {
 }
 
 fn replace_schema(catalog: &Path, name: &str, columns: &[ColumnDef]) -> Result<(), String> {
-    let path = catalog.join(format!("{name}.schema"));
+    let path = schema_path(catalog, name);
     let temp = catalog.join(format!(
         ".{name}.schema.tmp.{}.{}",
         std::process::id(),
@@ -286,8 +290,8 @@ fn rename_table(catalog: &Path, from: &str, to: &str) -> Result<(), String> {
     }
     // Validate the source before moving it. Only versioned catalog files may be renamed.
     read_schema(catalog, from)?;
-    let source = catalog.join(format!("{from}.schema"));
-    let destination = catalog.join(format!("{to}.schema"));
+    let source = schema_path(catalog, from);
+    let destination = schema_path(catalog, to);
     // Hard-link creation fails if the destination exists, unlike rename on Unix.
     // Source removal comes second, so failures cannot silently overwrite a table.
     match fs::hard_link(&source, &destination) {
@@ -313,7 +317,7 @@ fn create_table(
 ) -> Result<(), String> {
     fs::create_dir_all(catalog)
         .map_err(|error| format!("cannot create catalog {}: {error}", catalog.display()))?;
-    let path = catalog.join(format!("{name}.schema"));
+    let path = schema_path(catalog, name);
     let mut file = match OpenOptions::new().write(true).create_new(true).open(&path) {
         Ok(file) => file,
         Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists && if_not_exists => {
