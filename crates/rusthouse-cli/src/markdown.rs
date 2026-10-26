@@ -26,13 +26,7 @@ impl<W: Write> MarkdownWriter<W> {
                 "Markdown row does not match header column count",
             ));
         }
-        self.output.write_all(b"|")?;
-        for field in self.line.split(|&byte| byte == b'\t') {
-            self.output.write_all(b" ")?;
-            write_cell(&mut self.output, field)?;
-            self.output.write_all(b" |")?;
-        }
-        self.output.write_all(b"\n")?;
+        write_markdown_row(&mut self.output, &self.line)?;
         if self.columns.is_none() {
             write_header_separator(&mut self.output, width)?;
             self.columns = Some(width);
@@ -40,6 +34,16 @@ impl<W: Write> MarkdownWriter<W> {
         self.line.clear();
         Ok(())
     }
+}
+
+fn write_markdown_row<W: Write>(output: &mut W, line: &[u8]) -> io::Result<()> {
+    output.write_all(b"|")?;
+    for field in line.split(|&byte| byte == b'\t') {
+        output.write_all(b" ")?;
+        write_cell(output, field)?;
+        output.write_all(b" |")?;
+    }
+    output.write_all(b"\n")
 }
 
 fn write_header_separator<W: Write>(output: &mut W, columns: usize) -> io::Result<()> {
@@ -92,6 +96,13 @@ impl<W: Write> Write for MarkdownWriter<W> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn row_renderer_keeps_cell_escaping_independent_of_writer_state() {
+        let mut output = Vec::new();
+        write_markdown_row(&mut output, b"first|col\t<a>&b").unwrap();
+        assert_eq!(output, b"| first\\|col | &lt;a&gt;&amp;b |\n");
+    }
 
     #[test]
     fn handles_chunked_writes_and_flush_without_splitting_rows() {
