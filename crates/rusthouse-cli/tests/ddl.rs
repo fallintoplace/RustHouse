@@ -39,7 +39,7 @@ fn create_table_persists_schema_and_handles_existing_tables() {
         fs::read_to_string(dir.join("events.rh")).unwrap(),
         "RustHouseTableV1\nid UInt64\nvalue Int64\n"
     );
-    fs::remove_dir_all(dir).unwrap();
+    fs::remove_dir_all(&dir).unwrap();
 }
 
 #[test]
