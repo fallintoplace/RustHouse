@@ -1,8 +1,10 @@
 mod ddl;
 mod execute;
+mod explain;
 mod lexer;
 pub use ddl::{ColumnDef, Ddl, parse_ddl};
 pub use execute::{ExecutionError, execute};
+pub use explain::explain_select;
 
 use std::error::Error;
 use std::fmt;
