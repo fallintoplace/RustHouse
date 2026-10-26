@@ -1,4 +1,6 @@
-use crate::fixed_width::{MAX_BATCH_BYTES, read_fixed_width};
+use crate::fixed_width::read_fixed_width;
+#[cfg(test)]
+use crate::fixed_width::MAX_BATCH_BYTES;
 use std::fmt;
 use std::io::{self, Read};
 
