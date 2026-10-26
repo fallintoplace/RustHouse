@@ -189,6 +189,11 @@ fn schema_contents(columns: &[ColumnDef]) -> String {
     schema
 }
 
+fn persist_schema(file: &mut fs::File, columns: &[ColumnDef]) -> std::io::Result<()> {
+    file.write_all(schema_contents(columns).as_bytes())?;
+    file.sync_all()
+}
+
 fn replace_schema(catalog: &Path, name: &str, columns: &[ColumnDef]) -> Result<(), String> {
     let path = schema_path(catalog, name);
     let temp = catalog.join(format!(
@@ -201,8 +206,7 @@ fn replace_schema(catalog: &Path, name: &str, columns: &[ColumnDef]) -> Result<(
             .write(true)
             .create_new(true)
             .open(&temp)?;
-        file.write_all(schema_contents(columns).as_bytes())?;
-        file.sync_all()?;
+        persist_schema(&mut file, columns)?;
         fs::rename(&temp, &path)
     };
     if let Err(error) = update() {
@@ -332,10 +336,7 @@ fn create_table(
             return Err(format!("cannot create table {name}: {error}"));
         }
     };
-    if let Err(error) = file
-        .write_all(schema_contents(columns).as_bytes())
-        .and_then(|()| file.sync_all())
-    {
+    if let Err(error) = persist_schema(&mut file, columns) {
         drop(file);
         let _ = fs::remove_file(&path);
         return Err(format!("cannot write schema for {name}: {error}"));
