@@ -329,7 +329,7 @@ fn parses_order_by_and_rejects_invalid_ordering() {
         Some(OrderBy {
             column: "number".into(),
             descending: true,
-        nulls_first: None,
+            nulls_first: None,
         })
     );
     assert_eq!(
@@ -339,7 +339,7 @@ fn parses_order_by_and_rejects_invalid_ordering() {
         Some(OrderBy {
             column: "price".into(),
             descending: false,
-        nulls_first: None,
+            nulls_first: None,
         })
     );
     for sql in [
@@ -356,12 +356,10 @@ fn parses_order_by_and_rejects_invalid_ordering() {
 
 #[test]
 fn parses_order_by_explicit_nulls_placement() {
-    let first = parse_select("SELECT attempt FROM part ORDER BY attempt DESC NULLS FIRST")
-        .unwrap();
+    let first = parse_select("SELECT attempt FROM part ORDER BY attempt DESC NULLS FIRST").unwrap();
     assert_eq!(first.order_by.unwrap().nulls_first, Some(true));
 
-    let last = parse_select("SELECT attempt FROM part ORDER BY attempt NULLS LAST")
-        .unwrap();
+    let last = parse_select("SELECT attempt FROM part ORDER BY attempt NULLS LAST").unwrap();
     assert_eq!(last.order_by.unwrap().nulls_first, Some(false));
 
     for sql in [
@@ -385,7 +383,7 @@ fn grouped_queries_can_order_by_count() {
             Some(OrderBy {
                 column: "count".into(),
                 descending: true,
-            nulls_first: None,
+                nulls_first: None,
             })
         );
     }
@@ -556,7 +554,7 @@ fn parses_grouped_counts_and_rejects_unsupported_grouping() {
         Some(OrderBy {
             column: "id".into(),
             descending: true,
-        nulls_first: None,
+            nulls_first: None,
         })
     );
     for sql in [
@@ -841,7 +839,7 @@ fn resolves_one_based_order_by_positions() {
         Some(OrderBy {
             column: "number".into(),
             descending: true,
-        nulls_first: None,
+            nulls_first: None,
         })
     );
     let grouped =
@@ -851,7 +849,7 @@ fn resolves_one_based_order_by_positions() {
         Some(OrderBy {
             column: "count".into(),
             descending: true,
-        nulls_first: None,
+            nulls_first: None,
         })
     );
     let grouped_key = parse_select("SELECT id, count(*) FROM part GROUP BY id ORDER BY 1").unwrap();
