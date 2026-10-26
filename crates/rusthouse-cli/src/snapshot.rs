@@ -17,7 +17,7 @@ pub(crate) fn inspect_and_print(path: &Path, json: bool) -> Result<(), PartError
             part_count,
             metadata.rows
         );
-            print_columns_json(&metadata.columns);
+        print_columns_json(&metadata.columns);
         println!("]}}");
     } else {
         println!("Parts: {part_count}");
