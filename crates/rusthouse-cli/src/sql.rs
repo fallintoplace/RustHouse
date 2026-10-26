@@ -18,6 +18,7 @@ pub(super) enum SqlOutputFormat {
     CsvNoHeader,
     Jsonl,
     Json,
+    JsonPretty,
     Markdown,
     Html,
     Vertical,
@@ -32,11 +33,12 @@ impl SqlOutputFormat {
             Some("csv-no-header") => Ok(Self::CsvNoHeader),
             Some("jsonl") => Ok(Self::Jsonl),
             Some("json") => Ok(Self::Json),
+            Some("json-pretty") => Ok(Self::JsonPretty),
             Some("markdown") => Ok(Self::Markdown),
             Some("html") => Ok(Self::Html),
             Some("vertical") => Ok(Self::Vertical),
             _ => Err(
-                "--format must be tsv, tsv-no-header, csv, csv-no-header, jsonl, json, markdown, html, or vertical"
+                "--format must be tsv, tsv-no-header, csv, csv-no-header, jsonl, json, json-pretty, markdown, html, or vertical"
                     .into(),
             ),
         }
@@ -557,6 +559,15 @@ pub(super) fn run_sql_args(mut args: impl Iterator<Item = OsString>) -> Result<(
                     .map_err(rusthouse_query::ExecutionError::Io)
             })
         }
+        SqlOutputFormat::JsonPretty => {
+            let mut writer = json_array::JsonArrayWriter::new_pretty(&mut output);
+            execute(&select, part.as_deref(), &mut writer).and_then(|()| {
+                writer
+                    .finish()
+                    .map(|_| ())
+                    .map_err(rusthouse_query::ExecutionError::Io)
+            })
+        }
     };
     if time {
         eprintln!("Elapsed: {:.3} ms", start.elapsed().as_secs_f64() * 1_000.0);
@@ -640,6 +651,7 @@ mod tests {
             "csv-no-header",
             "jsonl",
             "json",
+            "json-pretty",
             "markdown",
             "vertical",
         ] {
