@@ -150,6 +150,76 @@ pub(super) fn batch_matches(
     })
 }
 
+/// Count a numeric batch without constructing a Number for every row when
+/// a single simple comparison can use the underlying typed column directly.
+pub(super) fn count_batch_matches(
+    batch: &[NumericColumn],
+    branches: &[Vec<CompiledPredicate>],
+) -> usize {
+    if let [predicates] = branches {
+        if predicates.is_empty() {
+            return batch.first().map_or(0, NumericColumn::len);
+        }
+        if let [predicate] = predicates {
+            if let CompiledTest::Comparison { operator, target } = &predicate.test {
+                if !matches!(operator, Operator::Modulo(_) | Operator::ModuloNe(_)) {
+                    macro_rules! count_direct {
+                        ($values:expr, $target:expr, $operator:expr, $wide:ty) => {
+                            $values
+                                .iter()
+                                .filter(|&&value| compare(<$wide>::from(value), $target, $operator))
+                                .count()
+                        };
+                    }
+                    match (&batch[predicate.index], *target) {
+                        (NumericColumn::UInt8(values), Number::Unsigned(target)) => {
+                            return count_direct!(values, target, *operator, u128);
+                        }
+                        (NumericColumn::UInt16(values), Number::Unsigned(target)) => {
+                            return count_direct!(values, target, *operator, u128);
+                        }
+                        (NumericColumn::UInt32(values), Number::Unsigned(target)) => {
+                            return count_direct!(values, target, *operator, u128);
+                        }
+                        (NumericColumn::UInt64(values), Number::Unsigned(target)) => {
+                            return count_direct!(values, target, *operator, u128);
+                        }
+                        (NumericColumn::UInt128(values), Number::Unsigned(target)) => {
+                            return count_direct!(values, target, *operator, u128);
+                        }
+                        (NumericColumn::Int8(values), Number::Signed(target)) => {
+                            return count_direct!(values, target, *operator, i128);
+                        }
+                        (NumericColumn::Int16(values), Number::Signed(target)) => {
+                            return count_direct!(values, target, *operator, i128);
+                        }
+                        (NumericColumn::Int32(values), Number::Signed(target)) => {
+                            return count_direct!(values, target, *operator, i128);
+                        }
+                        (NumericColumn::Int64(values), Number::Signed(target)) => {
+                            return count_direct!(values, target, *operator, i128);
+                        }
+                        (NumericColumn::Int128(values), Number::Signed(target)) => {
+                            return count_direct!(values, target, *operator, i128);
+                        }
+                        (NumericColumn::Float32(values), Number::Float(target)) => {
+                            return count_direct!(values, target, *operator, f64);
+                        }
+                        (NumericColumn::Float64(values), Number::Float(target)) => {
+                            return count_direct!(values, target, *operator, f64);
+                        }
+                        _ => {}
+                    }
+                }
+            }
+        }
+    }
+    // Compound OR/AND, IN and modulo retain the original semantics.
+    (0..batch.first().map_or(0, NumericColumn::len))
+        .filter(|&row| batch_matches(batch, row, branches))
+        .count()
+}
+
 pub(super) fn compile_part_where(
     query: &Select,
     scan_columns: &mut Vec<String>,
@@ -272,6 +342,66 @@ mod tests {
         assert!(!included.matches(Number::Unsigned(16)));
         assert!(!excluded.matches(Number::Unsigned(0)));
         assert!(excluded.matches(Number::Unsigned(16)));
+    }
+
+    #[test]
+    fn batched_counts_match_rowwise_predicates_across_numeric_types() {
+        for (batch, target) in [
+            (NumericColumn::UInt8(vec![0, 1, 3, 5]), Number::Unsigned(3)),
+            (NumericColumn::UInt64(vec![0, 1, 3, u64::MAX]), Number::Unsigned(3)),
+            (
+                NumericColumn::Int64(vec![-9, -1, 3, 7]),
+                Number::Signed(3),
+            ),
+            (
+                NumericColumn::Float64(vec![f64::NAN, -1.0, 3.0, 5.0]),
+                Number::Float(3.0),
+            ),
+        ] {
+            for operator in [
+                Operator::Eq,
+                Operator::Ne,
+                Operator::Lt,
+                Operator::Le,
+                Operator::Gt,
+                Operator::Ge,
+            ] {
+                let branches = vec![vec![CompiledPredicate {
+                    index: 0,
+                    test: CompiledTest::Comparison { operator, target },
+                }]];
+                let expected = (0..batch.len())
+                    .filter(|&row| batch_matches(std::slice::from_ref(&batch), row, &branches))
+                    .count();
+                assert_eq!(
+                    count_batch_matches(std::slice::from_ref(&batch), &branches),
+                    expected
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn batched_counts_preserve_or_and_modulo_fallback() {
+        let batch = [NumericColumn::UInt64(vec![0, 1, 2, 3, 4, 5])];
+        let make = |operator, target| CompiledPredicate {
+            index: 0,
+            test: CompiledTest::Comparison {
+                operator,
+                target: Number::Unsigned(target),
+            },
+        };
+        for branches in [
+            vec![vec![make(Operator::Modulo(2), 1)]],
+            vec![vec![make(Operator::Lt, 2)], vec![make(Operator::Ge, 4)]],
+            vec![vec![make(Operator::Gt, 1), make(Operator::Lt, 5)]],
+        ] {
+            let expected = (0..batch[0].len())
+                .filter(|&row| batch_matches(&batch, row, &branches))
+                .count();
+            assert_eq!(count_batch_matches(&batch, &branches), expected);
+        }
+        assert_eq!(count_batch_matches(&batch, &[vec![]]), 6);
     }
 
     #[test]
