@@ -98,7 +98,12 @@ fn existing_path(path: &Path) -> Result<bool, String> {
 fn sync_database_directory(database: &Path) -> Result<(), String> {
     fs::File::open(database)
         .and_then(|directory| directory.sync_all())
-        .map_err(|error| format!("cannot sync database directory {}: {error}", database.display()))
+        .map_err(|error| {
+            format!(
+                "cannot sync database directory {}: {error}",
+                database.display()
+            )
+        })
 }
 
 fn drop_table(database: &Path, name: &str, if_exists: bool) -> Result<(), String> {
@@ -187,9 +192,8 @@ fn rename_table(database: &Path, from: &str, to: &str) -> Result<(), String> {
         return Err(format!("cannot move table data from {from}: {error}"));
     }
     // Do not remove the old schema until the new name is durably discoverable.
-    sync_database_directory(database).map_err(|error| {
-        format!("table data moved to {to}, but old schema remains: {error}")
-    })?;
+    sync_database_directory(database)
+        .map_err(|error| format!("table data moved to {to}, but old schema remains: {error}"))?;
     fs::remove_file(&source_schema)
         .map_err(|error| format!("table {to} is readable but cannot remove old schema: {error}"))?;
     sync_database_directory(database)
