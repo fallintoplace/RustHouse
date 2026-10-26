@@ -12,8 +12,8 @@ mod join;
 mod predicates;
 mod sort;
 mod typed;
-use sort::SortedRows;
 pub use join::execute_join;
+use sort::{MAX_SORTED_ROWS, SortedRows};
 mod typed_aggregate;
 #[cfg(test)]
 use predicates::{CompiledTest, compile_in_test};
@@ -1010,19 +1010,19 @@ fn execute_numbers<W: Write>(
         None
     };
     if let Some(sorted) = unfiltered_sort {
-        if rows > MAX_SORTED_ROWS as u64 && sorted.requested > MAX_SORTED_ROWS {
+        if rows > MAX_SORTED_ROWS as u64 && sorted.requested() > MAX_SORTED_ROWS {
             return Err(ExecutionError::Invalid(
                 "ORDER BY requires LIMIT <= 100000 for large results".into(),
             ));
         }
         let total = usize::try_from(rows).unwrap_or(usize::MAX);
-        let begin = sorted.offset.min(total);
+        let begin = sorted.offset().min(total);
         let end = sorted
-            .offset
+            .offset()
             .saturating_add(query.limit.unwrap_or(usize::MAX))
             .min(total);
         for position in begin..end {
-            let index = if sorted.descending {
+            let index = if sorted.descending() {
                 rows - position as u64 - 1
             } else {
                 position as u64
