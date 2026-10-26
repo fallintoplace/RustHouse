@@ -16,8 +16,13 @@ pub(super) enum Statement {
         columns: Vec<Column>,
     },
     ShowTables,
-    DescribeTable { name: String },
-    DropTable { name: String, if_exists: bool },
+    DescribeTable {
+        name: String,
+    },
+    DropTable {
+        name: String,
+        if_exists: bool,
+    },
 }
 
 struct Parser<'a> {
@@ -27,9 +32,11 @@ struct Parser<'a> {
 
 impl<'a> Parser<'a> {
     fn take(&mut self, value: &str) -> bool {
-        if self.tokens.get(self.index).is_some_and(|token| {
-            token.eq_ignore_ascii_case(value)
-        }) {
+        if self
+            .tokens
+            .get(self.index)
+            .is_some_and(|token| token.eq_ignore_ascii_case(value))
+        {
             self.index += 1;
             true
         } else {
@@ -46,7 +53,10 @@ impl<'a> Parser<'a> {
     }
 
     fn identifier(&mut self) -> Result<String, String> {
-        let value = self.tokens.get(self.index).ok_or("expected an identifier")?;
+        let value = self
+            .tokens
+            .get(self.index)
+            .ok_or("expected an identifier")?;
         if !valid_identifier(value) {
             return Err("expected an identifier".into());
         }
@@ -119,7 +129,10 @@ fn canonical_type(value: &str) -> Option<&'static str> {
 }
 
 pub(super) fn parse_ddl(sql: &str) -> Result<Option<Statement>, String> {
-    let first = sql.trim_start().split(|c: char| !c.is_ascii_alphabetic()).next();
+    let first = sql
+        .trim_start()
+        .split(|c: char| !c.is_ascii_alphabetic())
+        .next();
     if !first.is_some_and(|value| {
         value.eq_ignore_ascii_case("CREATE")
             || value.eq_ignore_ascii_case("SHOW")
@@ -169,7 +182,10 @@ pub(super) fn parse_ddl(sql: &str) -> Result<Option<Statement>, String> {
     let mut columns: Vec<Column> = Vec::new();
     loop {
         let column_name = parser.identifier()?;
-        if columns.iter().any(|col| col.name.eq_ignore_ascii_case(&column_name)) {
+        if columns
+            .iter()
+            .any(|col| col.name.eq_ignore_ascii_case(&column_name))
+        {
             return Err(format!("duplicate column: {column_name}"));
         }
         let raw_type = parser.identifier()?;
@@ -204,7 +220,9 @@ pub(super) fn execute_ddl(statement: Statement, root: &Path) -> Result<(), Strin
             let path = root.join(format!("{name}.rh"));
             let mut file = match OpenOptions::new().write(true).create_new(true).open(&path) {
                 Ok(file) => file,
-                Err(error) if if_not_exists && error.kind() == std::io::ErrorKind::AlreadyExists => {
+                Err(error)
+                    if if_not_exists && error.kind() == std::io::ErrorKind::AlreadyExists =>
+                {
                     return Ok(());
                 }
                 Err(error) => {
@@ -215,7 +233,10 @@ pub(super) fn execute_ddl(statement: Statement, root: &Path) -> Result<(), Strin
             for column in &columns {
                 contents.push_str(&format!("{} {}\n", column.name, column.data_type));
             }
-            if let Err(error) = file.write_all(contents.as_bytes()).and_then(|_| file.sync_all()) {
+            if let Err(error) = file
+                .write_all(contents.as_bytes())
+                .and_then(|_| file.sync_all())
+            {
                 drop(file);
                 let _ = fs::remove_file(&path);
                 return Err(format!("cannot write table {name}: {error}"));
@@ -241,7 +262,11 @@ pub(super) fn execute_ddl(statement: Statement, root: &Path) -> Result<(), Strin
                     {
                         continue;
                     }
-                    if let Some(name) = entry.file_name().to_str().and_then(|name| name.strip_suffix(".rh")) {
+                    if let Some(name) = entry
+                        .file_name()
+                        .to_str()
+                        .and_then(|name| name.strip_suffix(".rh"))
+                    {
                         if valid_identifier(name) {
                             names.push(name.to_string());
                         }
@@ -271,7 +296,10 @@ pub(super) fn execute_ddl(statement: Statement, root: &Path) -> Result<(), Strin
                 if !valid_identifier(column) || canonical_type(data_type) != Some(data_type) {
                     return Err(format!("invalid schema for table {name}"));
                 }
-                if columns.iter().any(|(existing, _): &(String, String)| existing.eq_ignore_ascii_case(column)) {
+                if columns
+                    .iter()
+                    .any(|(existing, _): &(String, String)| existing.eq_ignore_ascii_case(column))
+                {
                     return Err(format!("duplicate column in table {name}"));
                 }
                 columns.push((column.to_string(), data_type.to_string()));
@@ -289,9 +317,7 @@ pub(super) fn execute_ddl(statement: Statement, root: &Path) -> Result<(), Strin
             let path = root.join(format!("{name}.rh"));
             match fs::remove_file(&path) {
                 Ok(()) => Ok(()),
-                Err(error) if if_exists && error.kind() == std::io::ErrorKind::NotFound => {
-                    Ok(())
-                }
+                Err(error) if if_exists && error.kind() == std::io::ErrorKind::NotFound => Ok(()),
                 Err(error) => Err(format!("cannot drop table {name}: {error}")),
             }
         }

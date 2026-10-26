@@ -71,7 +71,10 @@ fn show_tables_lists_only_valid_catalog_entries_in_sorted_order() {
     fs::write(dir.join("bad-name.rh"), "ignore").unwrap();
     let shown = sql("SHOW TABLES;", &dir);
     assert!(shown.status.success(), "{shown:?}");
-    assert_eq!(String::from_utf8(shown.stdout).unwrap(), "name\nalpha\nbeta\n");
+    assert_eq!(
+        String::from_utf8(shown.stdout).unwrap(),
+        "name\nalpha\nbeta\n"
+    );
     fs::remove_dir_all(&dir).unwrap();
 
     let empty = sql("SHOW TABLES", &dir);
@@ -82,7 +85,11 @@ fn show_tables_lists_only_valid_catalog_entries_in_sorted_order() {
 #[test]
 fn describe_table_shows_schema_and_rejects_corruption() {
     let dir = catalog();
-    assert!(sql("CREATE TABLE readings (ts DateTime, value Float64)", &dir).status.success());
+    assert!(
+        sql("CREATE TABLE readings (ts DateTime, value Float64)", &dir)
+            .status
+            .success()
+    );
     let described = sql("DESCRIBE TABLE readings", &dir);
     assert!(described.status.success(), "{described:?}");
     assert_eq!(
@@ -102,7 +109,11 @@ fn describe_table_shows_schema_and_rejects_corruption() {
 fn drop_table_removes_only_the_named_schema() {
     let dir = catalog();
     assert!(sql("CREATE TABLE keep (id UInt64)", &dir).status.success());
-    assert!(sql("CREATE TABLE remove (id UInt64)", &dir).status.success());
+    assert!(
+        sql("CREATE TABLE remove (id UInt64)", &dir)
+            .status
+            .success()
+    );
     let dropped = sql("DROP TABLE remove", &dir);
     assert!(dropped.status.success(), "{dropped:?}");
     assert!(!dir.join("remove.rh").exists());
