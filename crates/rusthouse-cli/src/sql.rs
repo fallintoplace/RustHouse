@@ -280,7 +280,10 @@ mod tests {
     fn row_cap_parser_preserves_boundary_and_error_rules() {
         assert_eq!(parse_max_rows(Some(OsString::from("0003"))), Ok(3));
         assert_eq!(parse_max_rows(Some(OsString::from("0"))), Ok(0));
-        assert_eq!(parse_max_rows(None).unwrap_err(), "missing --max-rows value");
+        assert_eq!(
+            parse_max_rows(None).unwrap_err(),
+            "missing --max-rows value"
+        );
         for invalid in ["", "-1", "+2", "1.5", "no"] {
             assert_eq!(
                 parse_max_rows(Some(OsString::from(invalid))).unwrap_err(),
