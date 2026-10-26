@@ -85,11 +85,7 @@ fn decimal_storage_type(precision: u8) -> &'static str {
     }
 }
 
-fn parse_decimal_type(data_type: &str) -> Option<(u8, u8, &'static str)> {
-    if data_type == "Decimal" {
-        return Some((10, 0, "Int64"));
-    }
-
+fn parse_sized_decimal(data_type: &str) -> Option<(u8, u8, &'static str)> {
     for (prefix, precision) in [("Decimal32(", 9), ("Decimal64(", 18), ("Decimal128(", 38)] {
         if let Some(inner) = data_type
             .strip_prefix(prefix)
@@ -103,8 +99,10 @@ fn parse_decimal_type(data_type: &str) -> Option<(u8, u8, &'static str)> {
             ));
         }
     }
+    None
+}
 
-    let inner = data_type.strip_prefix("Decimal(")?.strip_suffix(')')?;
+fn parse_general_decimal(inner: &str) -> Option<(u8, u8, &'static str)> {
     let (precision, scale) = match inner.split_once(',') {
         Some((precision, scale)) => (precision.trim(), scale.trim()),
         None => (inner.trim(), "0"),
@@ -116,6 +114,17 @@ fn parse_decimal_type(data_type: &str) -> Option<(u8, u8, &'static str)> {
     }
 
     Some((precision, scale, decimal_storage_type(precision)))
+}
+
+fn parse_decimal_type(data_type: &str) -> Option<(u8, u8, &'static str)> {
+    if data_type == "Decimal" {
+        return Some((10, 0, "Int64"));
+    }
+    if let Some(decimal) = parse_sized_decimal(data_type) {
+        return Some(decimal);
+    }
+    let inner = data_type.strip_prefix("Decimal(")?.strip_suffix(')')?;
+    parse_general_decimal(inner)
 }
 
 #[cfg(test)]
@@ -195,6 +204,19 @@ mod tests {
                 Some((precision, scale, storage)),
                 "{data_type}"
             );
+        }
+    }
+
+    #[test]
+    fn keeps_explicit_width_and_precision_boundaries() {
+        for (data_type, expected) in [
+            ("Decimal32(9)", Some((9, 9, "Int32"))),
+            ("Decimal64(18)", Some((18, 18, "Int64"))),
+            ("Decimal128(38)", Some((38, 38, "Int128"))),
+            ("Decimal(19)", Some((19, 0, "Int128"))),
+            ("Decimal(38, 39)", None),
+        ] {
+            assert_eq!(parse_decimal_type(data_type), expected);
         }
     }
 
