@@ -26,7 +26,9 @@ pub fn resolve_active_snapshot(root: &Path) -> Result<PathBuf, PartError> {
         Err(error) => return Err(io_error(&pointer, error)),
     };
     if !metadata.file_type().is_file() || metadata.len() > 64 {
-        return Err(PartError::InvalidScan("invalid database snapshot pointer".into()));
+        return Err(PartError::InvalidScan(
+            "invalid database snapshot pointer".into(),
+        ));
     }
     let label = fs::read_to_string(&pointer).map_err(|error| io_error(&pointer, error))?;
     let label = label
@@ -36,12 +38,16 @@ pub fn resolve_active_snapshot(root: &Path) -> Result<PathBuf, PartError> {
         || label.len() < 2
         || !label.as_bytes()[1..].iter().all(u8::is_ascii_digit)
     {
-        return Err(PartError::InvalidScan("invalid database snapshot generation".into()));
+        return Err(PartError::InvalidScan(
+            "invalid database snapshot generation".into(),
+        ));
     }
     let active = root.join(".rusthouse-versions").join(label);
     let kind = fs::symlink_metadata(&active).map_err(|error| io_error(&active, error))?;
     if !kind.file_type().is_dir() {
-        return Err(PartError::InvalidScan("active database snapshot is not a directory".into()));
+        return Err(PartError::InvalidScan(
+            "active database snapshot is not a directory".into(),
+        ));
     }
     Ok(active)
 }
