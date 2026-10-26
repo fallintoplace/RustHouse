@@ -71,10 +71,6 @@ fn supports_join_explain_and_rejects_unknown_aliases() {
     );
     assert!(explain.status.success(), "{explain:?}");
     assert!(String::from_utf8_lossy(&explain.stdout).contains("Join: Inner"));
-    let unknown = sql(
-        "SELECT x.id FROM foo a JOIN bar b ON a.id = b.id",
-        &db,
-        &[],
-    );
+    let unknown = sql("SELECT x.id FROM foo a JOIN bar b ON a.id = b.id", &db, &[]);
     assert!(!unknown.status.success());
 }

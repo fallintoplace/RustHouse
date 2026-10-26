@@ -1,6 +1,6 @@
 //! Execute a bounded two-table JOIN using the existing SQL output adapters.
-use crate::{csv, csv_no_header, html, json_array, jsonl, markdown, vertical};
 use crate::sql::SqlOutputFormat;
+use crate::{csv, csv_no_header, html, json_array, jsonl, markdown, vertical};
 use rusthouse_query::{JoinSelect, execute_join};
 use std::path::{Path, PathBuf};
 
@@ -33,34 +33,54 @@ pub(super) fn run(
     let result = match format {
         SqlOutputFormat::Tsv => execute_join(query, &left, &right, &mut output),
         SqlOutputFormat::TsvNoHeader => execute_join(
-            query, &left, &right, &mut csv_no_header::WithoutHeader::new(&mut output),
+            query,
+            &left,
+            &right,
+            &mut csv_no_header::WithoutHeader::new(&mut output),
         ),
-        SqlOutputFormat::Csv => execute_join(
-            query, &left, &right, &mut csv::CsvWriter::new(&mut output),
-        ),
+        SqlOutputFormat::Csv => {
+            execute_join(query, &left, &right, &mut csv::CsvWriter::new(&mut output))
+        }
         SqlOutputFormat::CsvNoHeader => execute_join(
-            query, &left, &right,
+            query,
+            &left,
+            &right,
             &mut csv::CsvWriter::new(csv_no_header::WithoutHeader::new(&mut output)),
         ),
         SqlOutputFormat::Markdown => execute_join(
-            query, &left, &right, &mut markdown::MarkdownWriter::new(&mut output),
+            query,
+            &left,
+            &right,
+            &mut markdown::MarkdownWriter::new(&mut output),
         ),
         SqlOutputFormat::Html => {
             let mut writer = html::HtmlWriter::new(&mut output);
             execute_join(query, &left, &right, &mut writer).and_then(|()| {
-                writer.finish().map(|_| ()).map_err(rusthouse_query::ExecutionError::Io)
+                writer
+                    .finish()
+                    .map(|_| ())
+                    .map_err(rusthouse_query::ExecutionError::Io)
             })
         }
         SqlOutputFormat::Vertical => execute_join(
-            query, &left, &right, &mut vertical::VerticalWriter::new(&mut output),
+            query,
+            &left,
+            &right,
+            &mut vertical::VerticalWriter::new(&mut output),
         ),
         SqlOutputFormat::Jsonl => execute_join(
-            query, &left, &right, &mut jsonl::JsonlWriter::new(&mut output),
+            query,
+            &left,
+            &right,
+            &mut jsonl::JsonlWriter::new(&mut output),
         ),
         SqlOutputFormat::Json => {
             let mut writer = json_array::JsonArrayWriter::new(&mut output);
             execute_join(query, &left, &right, &mut writer).and_then(|()| {
-                writer.finish().map(|_| ()).map_err(rusthouse_query::ExecutionError::Io)
+                writer
+                    .finish()
+                    .map(|_| ())
+                    .map_err(rusthouse_query::ExecutionError::Io)
             })
         }
     };

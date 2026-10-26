@@ -427,7 +427,11 @@ pub(super) fn run_sql_args(mut args: impl Iterator<Item = OsString>) -> Result<(
             join.limit = Some(join.limit.map_or(cap, |limit| limit.min(cap)));
         }
         return crate::join::run(
-            database_dir, &join, format.unwrap_or(SqlOutputFormat::Tsv), output_path, time,
+            database_dir,
+            &join,
+            format.unwrap_or(SqlOutputFormat::Tsv),
+            output_path,
+            time,
         );
     }
     let mut select = parse_select(&query).map_err(|error| error.to_string())?;

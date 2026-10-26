@@ -2,7 +2,6 @@
 use super::{ExecutionError, Number, typed};
 use crate::{JoinColumn, JoinSelect};
 use rusthouse_storage::{TypedQueryReader, inspect_query_source};
-use std::cmp::Ordering;
 use std::collections::HashMap;
 use std::io::Write;
 use std::path::Path;
@@ -16,6 +15,13 @@ fn invalid(message: impl Into<String>) -> ExecutionError {
     ExecutionError::Invalid(message.into())
 }
 
+fn base_type(value: &str) -> &str {
+    value
+        .strip_prefix("Nullable(")
+        .and_then(|value| value.strip_suffix(')'))
+        .unwrap_or(value)
+}
+
 fn resolve(
     query: &JoinSelect,
     column: &JoinColumn,
@@ -27,13 +33,21 @@ fn resolve(
     } else if column.relation == query.right_alias {
         (right_names, left_names.len())
     } else {
-        return Err(invalid(format!("unknown JOIN qualifier: {}", column.relation)));
+        return Err(invalid(format!(
+            "unknown JOIN qualifier: {}",
+            column.relation
+        )));
     };
     names
         .iter()
         .position(|name| name == &column.name)
         .map(|index| start + index)
-        .ok_or_else(|| invalid(format!("unknown JOIN column: {}.{}", column.relation, column.name)))
+        .ok_or_else(|| {
+            invalid(format!(
+                "unknown JOIN column: {}.{}",
+                column.relation, column.name
+            ))
+        })
 }
 
 fn read_rows(
@@ -54,7 +68,12 @@ fn read_rows(
             if rows.len() >= MAX_INPUT_ROWS as usize {
                 return Err(invalid("JOIN input row limit exceeded"));
             }
-            rows.push(batch.iter().map(|column| typed::cell(column, row_index)).collect());
+            rows.push(
+                batch
+                    .iter()
+                    .map(|column| typed::cell(column, row_index))
+                    .collect(),
+            );
         }
     }
     if rows.len() as u64 != expected_rows {
@@ -108,27 +127,43 @@ pub fn execute_join<W: Write>(
 ) -> Result<(), ExecutionError> {
     let left_meta = inspect_query_source(left_path)?;
     let right_meta = inspect_query_source(right_path)?;
-    let left_names = left_meta.columns.iter().map(|col| col.name.clone()).collect::<Vec<_>>();
-    let right_names = right_meta.columns.iter().map(|col| col.name.clone()).collect::<Vec<_>>();
+    let left_names = left_meta
+        .columns
+        .iter()
+        .map(|col| col.name.clone())
+        .collect::<Vec<_>>();
+    let right_names = right_meta
+        .columns
+        .iter()
+        .map(|col| col.name.clone())
+        .collect::<Vec<_>>();
     let width = left_names.len();
-    let selected = if let Some(columns) = &query.columns {
-        columns
-            .iter()
-            .map(|col| {
-                resolve(query, col, &left_names, &right_names)
-                    .map(|index| (index, format!("{}.{}", col.relation, col.name)))
-            })
-            .collect::<Result<Vec<_>, _>>()?
-    } else {
-        left_names.iter().enumerate()
-            .map(|(index, name)| (index, format!("{}.{}", query.left_alias, name)))
-            .chain(right_names.iter().enumerate()
-                .map(|(index, name)| (width + index, format!("{}.{}", query.right_alias, name))))
-            .collect::<Vec<_>>()
-    };
-    let order = query.order_by.as_ref().map(|(column, descending)| {
-        resolve(query, column, &left_names, &right_names).map(|index| (index, *descending))
-    }).transpose()?;
+    let selected =
+        if let Some(columns) = &query.columns {
+            columns
+                .iter()
+                .map(|col| {
+                    resolve(query, col, &left_names, &right_names)
+                        .map(|index| (index, format!("{}.{}", col.relation, col.name)))
+                })
+                .collect::<Result<Vec<_>, _>>()?
+        } else {
+            left_names
+                .iter()
+                .enumerate()
+                .map(|(index, name)| (index, format!("{}.{}", query.left_alias, name)))
+                .chain(right_names.iter().enumerate().map(|(index, name)| {
+                    (width + index, format!("{}.{}", query.right_alias, name))
+                }))
+                .collect::<Vec<_>>()
+        };
+    let order = query
+        .order_by
+        .as_ref()
+        .map(|(column, descending)| {
+            resolve(query, column, &left_names, &right_names).map(|index| (index, *descending))
+        })
+        .transpose()?;
     let mut left_keys = Vec::new();
     let mut right_keys = Vec::new();
     for (first, second) in &query.keys {
@@ -143,12 +178,7 @@ pub fn execute_join<W: Write>(
         };
         let left_type = &left_meta.columns[left_index].data_type;
         let right_type = &right_meta.columns[right_index].data_type;
-        let base = |value: &str| {
-            value.strip_prefix("Nullable(")
-                .and_then(|value| value.strip_suffix(')'))
-                .unwrap_or(value)
-        };
-        if base(left_type) != base(right_type) {
+        if base_type(left_type) != base_type(right_type) {
             return Err(invalid(format!(
                 "JOIN key types differ: {left_type} and {right_type}"
             )));
@@ -181,12 +211,24 @@ pub fn execute_join<W: Write>(
             let a = cell_at(&left_rows, &right_rows, first, index, width).unwrap_or(&null);
             let b = cell_at(&left_rows, &right_rows, second, index, width).unwrap_or(&null);
             let comparison = typed::cmp(a, b);
-            if descending { comparison.reverse() } else { comparison }
+            if descending {
+                comparison.reverse()
+            } else {
+                comparison
+            }
         });
     }
-    let header = selected.iter().map(|(_, name)| name.as_str()).collect::<Vec<_>>().join("\t");
+    let header = selected
+        .iter()
+        .map(|(_, name)| name.as_str())
+        .collect::<Vec<_>>()
+        .join("\t");
     writeln!(output, "{header}")?;
-    for pair in pairs.iter().skip(query.offset).take(query.limit.unwrap_or(usize::MAX)) {
+    for pair in pairs
+        .iter()
+        .skip(query.offset)
+        .take(query.limit.unwrap_or(usize::MAX))
+    {
         for (position, (index, _)) in selected.iter().enumerate() {
             if position != 0 {
                 output.write_all(b"\t")?;

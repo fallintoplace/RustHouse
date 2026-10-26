@@ -8,9 +8,9 @@ use std::fmt;
 use std::io::{self, BufWriter, Write};
 use std::path::Path;
 
+mod join;
 mod predicates;
 mod typed;
-mod join;
 pub use join::execute_join;
 mod typed_aggregate;
 #[cfg(test)]

@@ -30,7 +30,9 @@ pub struct JoinSelect {
 fn qualified(parser: &mut Parser) -> Result<JoinColumn, ParseError> {
     let relation = parser.word()?;
     if !parser.take(Token::Dot) {
-        return Err(ParseError("JOIN columns must be qualified (alias.column)".into()));
+        return Err(ParseError(
+            "JOIN columns must be qualified (alias.column)".into(),
+        ));
     }
     let name = parser.word()?;
     Ok(JoinColumn { relation, name })
@@ -43,8 +45,8 @@ fn alias(parser: &mut Parser, table: &str) -> Result<String, ParseError> {
     match parser.tokens.get(parser.index) {
         Some(Token::Word(word))
             if ![
-                "INNER", "LEFT", "RIGHT", "FULL", "CROSS", "OUTER", "JOIN", "ON",
-                "WHERE", "GROUP", "ORDER", "LIMIT", "OFFSET",
+                "INNER", "LEFT", "RIGHT", "FULL", "CROSS", "OUTER", "JOIN", "ON", "WHERE", "GROUP",
+                "ORDER", "LIMIT", "OFFSET",
             ]
             .iter()
             .any(|keyword| word.eq_ignore_ascii_case(keyword)) =>
@@ -58,7 +60,9 @@ fn alias(parser: &mut Parser, table: &str) -> Result<String, ParseError> {
 fn bound(parser: &mut Parser, label: &str) -> Result<usize, ParseError> {
     let number = parser.number()?;
     if !number.bytes().all(|byte| byte.is_ascii_digit()) {
-        return Err(ParseError(format!("{label} must be a non-negative integer")));
+        return Err(ParseError(format!(
+            "{label} must be a non-negative integer"
+        )));
     }
     number
         .parse::<usize>()
@@ -71,14 +75,17 @@ pub fn parse_join(sql: &str) -> Result<Option<JoinSelect>, ParseError> {
     if !matches!(tokens.first(), Some(Token::Word(word)) if word.eq_ignore_ascii_case("SELECT")) {
         return Ok(None);
     }
-    let Some(from) = tokens.iter().position(
-        |token| matches!(token, Token::Word(word) if word.eq_ignore_ascii_case("FROM")),
-    ) else {
+    let Some(from) = tokens
+        .iter()
+        .position(|token| matches!(token, Token::Word(word) if word.eq_ignore_ascii_case("FROM")))
+    else {
         return Ok(None);
     };
-    if !tokens.iter().skip(from + 1).any(
-        |token| matches!(token, Token::Word(word) if word.eq_ignore_ascii_case("JOIN")),
-    ) {
+    if !tokens
+        .iter()
+        .skip(from + 1)
+        .any(|token| matches!(token, Token::Word(word) if word.eq_ignore_ascii_case("JOIN")))
+    {
         return Ok(None);
     }
     let mut parser = Parser { tokens, index: 0 };
@@ -89,7 +96,9 @@ pub fn parse_join(sql: &str) -> Result<Option<JoinSelect>, ParseError> {
         let mut columns = Vec::new();
         loop {
             if columns.len() == 64 {
-                return Err(ParseError("JOIN supports at most 64 projected columns".into()));
+                return Err(ParseError(
+                    "JOIN supports at most 64 projected columns".into(),
+                ));
             }
             columns.push(qualified(&mut parser)?);
             if !parser.take(Token::Comma) {
@@ -104,7 +113,9 @@ pub fn parse_join(sql: &str) -> Result<Option<JoinSelect>, ParseError> {
     let left = parser.word()?;
     let left_alias = alias(&mut parser, &left)?;
     if left.len() > 128 || left_alias.len() > 128 {
-        return Err(ParseError("table identifiers cannot exceed 128 bytes".into()));
+        return Err(ParseError(
+            "table identifiers cannot exceed 128 bytes".into(),
+        ));
     }
     if parser.keyword("LEFT") || parser.keyword("RIGHT") || parser.keyword("FULL") {
         return Err(ParseError("outer joins are not supported yet".into()));
@@ -116,7 +127,9 @@ pub fn parse_join(sql: &str) -> Result<Option<JoinSelect>, ParseError> {
     let right = parser.word()?;
     let right_alias = alias(&mut parser, &right)?;
     if right.len() > 128 || right_alias.len() > 128 {
-        return Err(ParseError("table identifiers cannot exceed 128 bytes".into()));
+        return Err(ParseError(
+            "table identifiers cannot exceed 128 bytes".into(),
+        ));
     }
     if left_alias == right_alias {
         return Err(ParseError("joined tables require distinct aliases".into()));
@@ -126,7 +139,9 @@ pub fn parse_join(sql: &str) -> Result<Option<JoinSelect>, ParseError> {
     }
     let first = qualified(&mut parser)?;
     if !parser.take(Token::Operator(super::Operator::Eq)) {
-        return Err(ParseError("JOIN ON currently supports only equality".into()));
+        return Err(ParseError(
+            "JOIN ON currently supports only equality".into(),
+        ));
     }
     let second = qualified(&mut parser)?;
     let order_by = if parser.keyword("ORDER") {
@@ -164,8 +179,16 @@ pub fn parse_join(sql: &str) -> Result<Option<JoinSelect>, ParseError> {
         ));
     }
     Ok(Some(JoinSelect {
-        left, right, left_alias, right_alias, kind: JoinType::Inner, columns,
-        keys: vec![(first, second)], order_by, limit, offset,
+        left,
+        right,
+        left_alias,
+        right_alias,
+        kind: JoinType::Inner,
+        columns,
+        keys: vec![(first, second)],
+        order_by,
+        limit,
+        offset,
     }))
 }
 
@@ -190,10 +213,15 @@ pub fn explain_join(query: &JoinSelect) -> String {
         query.kind,
         conditions,
         query.columns.as_ref().map_or("*".to_owned(), |columns| {
-            columns.iter().map(|col| format!("{}.{}", col.relation, col.name))
-                .collect::<Vec<_>>().join(", ")
+            columns
+                .iter()
+                .map(|col| format!("{}.{}", col.relation, col.name))
+                .collect::<Vec<_>>()
+                .join(", ")
         }),
-        query.limit.map_or("unbounded".to_owned(), |n| n.to_string())
+        query
+            .limit
+            .map_or("unbounded".to_owned(), |n| n.to_string())
     )
 }
 
