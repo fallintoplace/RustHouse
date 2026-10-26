@@ -73,6 +73,13 @@ fn validated_parts(
     Ok((path, parts))
 }
 
+/// Resolve a local table only after its stored parts match the schema.
+pub(super) fn select_path(database: &Path, table: &str) -> Result<PathBuf, String> {
+    let cols = columns(database, table)?;
+    let (path, _) = validated_parts(database, table, &cols)?;
+    Ok(path)
+}
+
 pub(super) fn apply_ddl(database: &Path, ddl: &Ddl) -> Result<(), String> {
     match ddl {
         Ddl::ShowTables | Ddl::ShowCreateTable { .. } | Ddl::DescribeTable { .. } => {
