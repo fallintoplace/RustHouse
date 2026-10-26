@@ -202,7 +202,7 @@ fn compile(
                         case_insensitive: *case_insensitive,
                         negated: *negated,
                     }
-                },
+                }
             };
             Ok(Condition { index, test })
         })
@@ -254,7 +254,6 @@ fn matches_comparison(value: &Cell, target: &Cell, operator: Operator) -> bool {
         _ => false,
     }
 }
-
 
 fn like_matches(value: &[u8], pattern: &[u8], case_insensitive: bool) -> bool {
     let mut input = 0usize;
@@ -310,7 +309,9 @@ fn passes(batch: &[TypedColumn], row: usize, branches: &[Vec<Condition>]) -> boo
                     case_insensitive,
                     negated,
                 } => match &value {
-                    Cell::Text(bytes) => like_matches(bytes, pattern, *case_insensitive) != *negated,
+                    Cell::Text(bytes) => {
+                        like_matches(bytes, pattern, *case_insensitive) != *negated
+                    }
                     _ => false,
                 },
                 Test::Compare(operator, target) => matches_comparison(&value, target, *operator),
