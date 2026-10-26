@@ -303,6 +303,26 @@ fn query_parameters(target: &str) -> Result<(String, Option<String>, QueryFormat
     ))
 }
 
+/// Discover the server's read-only mode and resource limits without opening files.
+fn capabilities_response(config: &Config) -> Response {
+    let source = match (config.part.is_some(), config.database.is_some()) {
+        (false, false) => "generated",
+        (true, false) => "part",
+        (false, true) => "database",
+        (true, true) => "invalid",
+    };
+    let body = format!(
+        "{{\"name\":\"RustHouse\",\"version\":\"{}\",\"source\":\"{source}\",\"read_only\":true,\"max_query_bytes\":{MAX_QUERY_BYTES},\"max_response_bytes\":{MAX_RESPONSE_BYTES},\"max_rows\":{}}}\n",
+        env!("CARGO_PKG_VERSION"),
+        config.max_rows.min(100_000),
+    );
+    Response {
+        status: "200 OK",
+        content_type: "application/json; charset=utf-8",
+        body: body.into_bytes(),
+    }
+}
+
 /// Runs only the subset accepted by the existing SELECT parser. DDL and
 /// writes cannot pass this interface. All responses are bounded in memory.
 pub fn handle_request(method: &str, target: &str, body: &[u8], config: &Config) -> Response {
@@ -314,6 +334,18 @@ pub fn handle_request(method: &str, target: &str, body: &[u8], config: &Config) 
             return Response::text("400 Bad Request", "GET must not contain a request body\n");
         }
         return Response::text("200 OK", "Ok.\n");
+    }
+    if target == "/capabilities" {
+        if method != "GET" {
+            return Response::text(
+                "405 Method Not Allowed",
+                "capabilities endpoint requires GET\n",
+            );
+        }
+        if !body.is_empty() {
+            return Response::text("400 Bad Request", "GET must not contain a request body\n");
+        }
+        return capabilities_response(config);
     }
     if target == "/tables" {
         return tables::handle(method, body, config);
@@ -677,6 +709,50 @@ mod tests {
         );
         assert_eq!(response.status, "200 OK");
         assert_eq!(response.body, b"number\n0\n1\n2\n");
+    }
+
+    #[test]
+    fn advertises_capabilities_without_opening_source_files() {
+        let default = handle_request("GET", "/capabilities", b"", &config());
+        assert_eq!(default.status, "200 OK");
+        assert_eq!(default.content_type, "application/json; charset=utf-8");
+        let body = String::from_utf8(default.body).unwrap();
+        assert!(body.contains("\"source\":\"generated\""));
+        assert!(body.contains("\"read_only\":true"));
+        assert!(body.contains("\"max_query_bytes\":4096"));
+        assert!(body.contains("\"max_rows\":3"));
+        assert!(!body.contains("/tmp/"));
+
+        let part = Config {
+            part: Some(PathBuf::from("/does/not/exist")),
+            database: None,
+            max_rows: 200_000,
+        };
+        let body = handle_request("GET", "/capabilities", b"", &part).body;
+        let body = String::from_utf8(body).unwrap();
+        assert!(body.contains("\"source\":\"part\""));
+        assert!(body.contains("\"max_rows\":100000"));
+
+        for (method, target, body, expected) in [
+            (
+                "POST",
+                "/capabilities",
+                b"".as_slice(),
+                "405 Method Not Allowed",
+            ),
+            ("GET", "/capabilities", b"sql".as_slice(), "400 Bad Request"),
+            (
+                "GET",
+                "/capabilities?query=SELECT+1",
+                b"".as_slice(),
+                "400 Bad Request",
+            ),
+        ] {
+            assert_eq!(
+                handle_request(method, target, body, &config()).status,
+                expected
+            );
+        }
     }
 
     #[test]
