@@ -1,5 +1,5 @@
 use crate::{csv, csv_no_header, json_array, jsonl};
-use rusthouse_query::{execute, parse_select};
+use rusthouse_query::{execute, parse_ddl, parse_select};
 use std::ffi::OsString;
 use std::path::PathBuf;
 
@@ -36,6 +36,7 @@ pub(super) fn run_sql_args(mut args: impl Iterator<Item = OsString>) -> Result<(
     let mut file = None;
     let mut read_stdin = false;
     let mut part = None;
+    let mut catalog = None;
     let mut format = None;
     let mut output_path = None;
     let mut show_ast = false;
@@ -88,6 +89,13 @@ pub(super) fn run_sql_args(mut args: impl Iterator<Item = OsString>) -> Result<(
             part = Some(PathBuf::from(
                 args.next().ok_or("missing --part directory")?,
             ));
+        } else if arg.to_str() == Some("--catalog") {
+            if catalog.is_some() {
+                return Err("duplicate --catalog option".into());
+            }
+            catalog = Some(PathBuf::from(
+                args.next().ok_or("missing --catalog directory")?,
+            ));
         } else if arg.to_str() == Some("--file") {
             if file.is_some() || query.is_some() {
                 return Err("provide SQL text or --file, not both".into());
@@ -131,6 +139,19 @@ pub(super) fn run_sql_args(mut args: impl Iterator<Item = OsString>) -> Result<(
     } else {
         query.ok_or("missing SQL statement")?
     };
+    if let Some(catalog_path) = catalog {
+        if let Some(ddl) = parse_ddl(&query).map_err(|error| error.to_string())? {
+            if part.is_some() || output_path.is_some() || format.is_some() || max_rows.is_some() {
+                return Err("DDL cannot use --part, --output, --format, or --max-rows".into());
+            }
+            if show_ast {
+                println!("{ddl:#?}");
+                return Ok(());
+            }
+            return crate::catalog::apply(&catalog_path, &ddl);
+        }
+        return Err("--catalog is only supported for DDL statements".into());
+    }
     let mut select = parse_select(&query).map_err(|error| error.to_string())?;
     if show_ast {
         if output_path.is_some() {
