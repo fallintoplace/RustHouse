@@ -77,6 +77,7 @@ pub(crate) fn checked_size(
     let width = data_type
         .strip_prefix("FixedString(")
         .and_then(|value| value.strip_suffix(')'))
+        .filter(|value| !value.is_empty() && value.bytes().all(|b| b.is_ascii_digit()))
         .and_then(|value| value.parse::<usize>().ok())
         .filter(|width| (1..=MAX_FIXED_STRING_WIDTH).contains(width))
         .ok_or_else(|| FixedStringReadError::InvalidType(data_type.to_owned()))?;
@@ -218,6 +219,8 @@ mod tests {
             "String",
             "FixedString(0)",
             "FixedString(-1)",
+            "FixedString(+3)",
+            "FixedString(3 )",
             "FixedString( 3)",
             "FixedString()",
             "FixedString(16777216)",
