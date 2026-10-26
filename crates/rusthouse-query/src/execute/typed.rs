@@ -162,13 +162,16 @@ fn compile_like(pattern: &str) -> Result<Vec<LikeToken>, ExecutionError> {
     Ok(tokens)
 }
 
-fn like_matches(value: &[u8], pattern: &[LikeToken]) -> bool {
+fn like_matches(value: &[u8], pattern: &[LikeToken], case_insensitive: bool) -> bool {
     let (mut row, mut pat) = (0, 0);
     let mut last_any = None;
     let mut restart = 0;
     while row < value.len() {
         match pattern.get(pat) {
-            Some(LikeToken::Byte(byte)) if *byte == value[row] => {
+            Some(LikeToken::Byte(byte))
+                if *byte == value[row]
+                    || (case_insensitive && value[row].eq_ignore_ascii_case(byte)) =>
+            {
                 row += 1;
                 pat += 1;
             }
@@ -202,7 +205,11 @@ enum Test {
     In(Vec<Cell>, bool),
     NotBetween(Cell, Cell),
     IsNull(bool),
-    Like(Vec<LikeToken>, bool),
+    Like {
+        pattern: Vec<LikeToken>,
+        case_insensitive: bool,
+        negated: bool,
+    },
 }
 
 struct Condition {
@@ -248,14 +255,21 @@ fn compile(
                 }
                 Predicate::IsNull { negated, .. } => Test::IsNull(*negated),
                 Predicate::Like {
-                    pattern, negated, ..
+                    pattern,
+                    case_insensitive,
+                    negated,
+                    ..
                 } => {
                     if base_type(kind) != "String" {
                         return Err(ExecutionError::Invalid(
                             "LIKE requires a String column".into(),
                         ));
                     }
-                    Test::Like(compile_like(pattern)?, *negated)
+                    Test::Like {
+                        pattern: compile_like(pattern)?,
+                        case_insensitive: *case_insensitive,
+                        negated: *negated,
+                    }
                 }
             };
             Ok(Condition { index, test })
@@ -315,8 +329,14 @@ fn passes(batch: &[TypedColumn], row: usize, branches: &[Vec<Condition>]) -> boo
             let value = cell(&batch[condition.index], row);
             match &condition.test {
                 Test::IsNull(negated) => matches!(value, Cell::Null) != *negated,
-                Test::Like(pattern, negated) => match &value {
-                    Cell::Text(bytes) => like_matches(bytes, pattern) != *negated,
+                Test::Like {
+                    pattern,
+                    case_insensitive,
+                    negated,
+                } => match &value {
+                    Cell::Text(bytes) => {
+                        like_matches(bytes, pattern, *case_insensitive) != *negated
+                    }
                     _ => false,
                 },
                 Test::Compare(operator, target) => matches_comparison(&value, target, *operator),
@@ -619,7 +639,16 @@ mod like_tests {
 
     fn matches(text: &[u8], pattern: &str) -> bool {
         let compiled = compile_like(pattern).unwrap();
-        like_matches(text, &compiled)
+        like_matches(text, &compiled, false)
+    }
+
+    #[test]
+    fn folds_ascii_case_but_keeps_escaping() {
+        let pattern = compile_like("FOO\\_bAR%").unwrap();
+        assert!(like_matches(b"foo_BarExtra", &pattern, true));
+        assert!(!like_matches(b"foo_BarExtra", &pattern, false));
+        assert!(like_matches(b"100%done", &compile_like("100\\%D%").unwrap(), true));
+        assert!(!like_matches(b"foobarextra", &pattern, true));
     }
 
     #[test]

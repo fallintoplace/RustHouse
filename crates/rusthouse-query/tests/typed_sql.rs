@@ -312,3 +312,32 @@ fn groups_nullable_and_uuid_keys_including_null() {
     );
     fs::remove_dir_all(part).unwrap();
 }
+
+#[test]
+fn matches_ilike_on_string_and_nullable_columns() {
+    let part = part();
+    assert_eq!(
+        query("SELECT service FROM part WHERE service ILIKE 'A_I'", &part),
+        "service\napi\napi\n"
+    );
+    assert_eq!(
+        query("SELECT service FROM part WHERE service NOT ILIKE 'API'", &part),
+        "service\ndb\n"
+    );
+    assert_eq!(
+        query(
+            "SELECT service FROM part WHERE service ILIKE 'API' OR service LIKE 'd_'",
+            &part
+        ),
+        "service\napi\ndb\napi\n"
+    );
+    assert_eq!(
+        query("SELECT message FROM part WHERE message NOT ILIKE '%O%'", &part),
+        "message\n"
+    );
+    let mut output = Vec::new();
+    let numeric = parse_select("SELECT status FROM part WHERE status ILIKE '5%'").unwrap();
+    assert!(execute(&numeric, Some(&part), &mut output).is_err());
+    fs::remove_dir_all(part).unwrap();
+}
+
