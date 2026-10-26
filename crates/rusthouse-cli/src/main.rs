@@ -5,8 +5,8 @@ mod json_array;
 mod jsonl;
 mod markdown;
 mod part_json;
-mod sql;
 mod snapshot;
+mod sql;
 mod vertical;
 
 use rusthouse_storage::{
