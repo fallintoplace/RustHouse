@@ -13,6 +13,23 @@ fn usage() -> &'static str {
      Listens on 127.0.0.1 only. Supports GET /ping, GET /?query=... and POST / with a raw SELECT body.\n"
 }
 
+fn parse_header(line: &str) -> Result<(&str, &str), Response> {
+    let (key, value) = line
+        .split_once(':')
+        .ok_or_else(|| Response::text("400 Bad Request", "invalid HTTP header\n"))?;
+    if key.is_empty()
+        || !key
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || b"!#$%&'*+-.^_`|~".contains(&byte))
+        || value
+            .bytes()
+            .any(|byte| byte.is_ascii_control() && byte != b'\t')
+    {
+        return Err(Response::text("400 Bad Request", "invalid HTTP header\n"));
+    }
+    Ok((key, value))
+}
+
 fn read_request(stream: &mut TcpStream) -> Result<(String, String, Vec<u8>), Response> {
     let mut input = BufReader::new(stream);
     let mut head = Vec::new();
@@ -56,9 +73,7 @@ fn read_request(stream: &mut TcpStream) -> Result<(String, String, Vec<u8>), Res
         if line.is_empty() {
             break;
         }
-        let (key, value) = line
-            .split_once(':')
-            .ok_or_else(|| Response::text("400 Bad Request", "invalid HTTP header\n"))?;
+        let (key, value) = parse_header(line)?;
         if key.eq_ignore_ascii_case("content-length") {
             if size.is_some() {
                 return Err(Response::text(
@@ -212,4 +227,39 @@ fn main() -> io::Result<()> {
         });
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn accepts_http_token_header_names_and_optional_tabs() {
+        assert_eq!(
+            parse_header("Content-Length: 3").ok(),
+            Some(("Content-Length", " 3"))
+        );
+        assert_eq!(
+            parse_header("X_Request: hello\tworld").ok(),
+            Some(("X_Request", " hello\tworld"))
+        );
+    }
+
+    #[test]
+    fn rejects_invalid_header_names_and_embedded_controls() {
+        for header in [
+            "NoColon",
+            ": value",
+            "Content-Length : 3",
+            "Bad Name: value",
+            "X-Test: hello\u{0000}world",
+            "X-Test: hello\u{001b}world",
+        ] {
+            assert_eq!(
+                parse_header(header).unwrap_err().status,
+                "400 Bad Request",
+                "{header:?}"
+            );
+        }
+    }
 }
