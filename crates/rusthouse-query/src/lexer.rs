@@ -78,6 +78,20 @@ fn scan_string(sql: &str, index: &mut usize) -> Result<Token, ParseError> {
     Ok(Token::String(value))
 }
 
+fn scan_comparison(bytes: &[u8], index: &mut usize) -> Operator {
+    let (operator, width) = match (bytes[*index], bytes.get(*index + 1)) {
+        (b'<', Some(b'=')) => (Operator::Le, 2),
+        (b'<', Some(b'>')) | (b'!', Some(b'=')) => (Operator::Ne, 2),
+        (b'>', Some(b'=')) => (Operator::Ge, 2),
+        (b'=', _) => (Operator::Eq, 1),
+        (b'<', _) => (Operator::Lt, 1),
+        (b'>', _) => (Operator::Gt, 1),
+        _ => unreachable!("only comparison operator starters reach this helper"),
+    };
+    *index += width;
+    operator
+}
+
 pub(super) fn tokenize(sql: &str) -> Result<Vec<Token>, ParseError> {
     if sql.len() > 4096 {
         return Err(ParseError("statement exceeds the 4096-byte limit".into()));
@@ -132,36 +146,9 @@ pub(super) fn tokenize(sql: &str) -> Result<Vec<Token>, ParseError> {
                 index += 1;
                 Token::Semicolon
             }
-            b'=' => {
-                index += 1;
-                Token::Operator(Operator::Eq)
-            }
-            b'<' => {
-                index += 1;
-                let op = match bytes.get(index) {
-                    Some(b'=') => Some(Operator::Le),
-                    Some(b'>') => Some(Operator::Ne),
-                    _ => None,
-                };
-                if let Some(op) = op {
-                    index += 1;
-                    Token::Operator(op)
-                } else {
-                    Token::Operator(Operator::Lt)
-                }
-            }
-            b'>' => {
-                index += 1;
-                if bytes.get(index) == Some(&b'=') {
-                    index += 1;
-                    Token::Operator(Operator::Ge)
-                } else {
-                    Token::Operator(Operator::Gt)
-                }
-            }
+            b'=' | b'<' | b'>' => Token::Operator(scan_comparison(bytes, &mut index)),
             b'!' if bytes.get(index + 1) == Some(&b'=') => {
-                index += 2;
-                Token::Operator(Operator::Ne)
+                Token::Operator(scan_comparison(bytes, &mut index))
             }
             b'0'..=b'9' | b'-' => scan_number(sql, &mut index)?,
             b'a'..=b'z' | b'A'..=b'Z' | b'_' => {
@@ -261,6 +248,19 @@ mod tests {
                 Token::RParen,
                 Token::Percent,
                 Token::Number("5".into()),
+            ]
+        );
+    }
+
+    #[test]
+    fn rejects_unpaired_exclamation_mark() {
+        assert!(tokenize("SELECT 1 ! 2").is_err());
+        assert_eq!(
+            tokenize("1!=2").unwrap(),
+            vec![
+                Token::Number("1".into()),
+                Token::Operator(Operator::Ne),
+                Token::Number("2".into()),
             ]
         );
     }
