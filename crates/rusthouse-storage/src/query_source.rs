@@ -54,23 +54,27 @@ pub fn resolve_active_snapshot(root: &Path) -> Result<PathBuf, PartError> {
 
 // upstream names are partition_minBlock_maxBlock_level[_mutation].
 // The partition id may contain underscores; split from the right instead.
+fn parse_part_span_suffix(tokens: &[&str], suffix: usize) -> Option<(String, u64, u64)> {
+    if tokens.len() <= suffix {
+        return None;
+    }
+    let index = tokens.len() - suffix;
+    let min = tokens[index].parse::<u64>().ok()?;
+    let max = tokens[index + 1].parse::<u64>().ok()?;
+    let _level = tokens[index + 2].parse::<u64>().ok()?;
+    if suffix == 4 {
+        let _mutation = tokens[index + 3].parse::<u64>().ok()?;
+    }
+    let partition = tokens[..index].join("_");
+    (min <= max && !partition.is_empty()).then_some((partition, min, max))
+}
+
 fn part_span(name: &str) -> Option<(String, u64, u64)> {
     let tokens: Vec<&str> = name.split('_').collect();
-    let candidate = |suffix: usize| {
-        if tokens.len() <= suffix {
-            return None;
-        }
-        let index = tokens.len() - suffix;
-        let min = tokens[index].parse::<u64>().ok()?;
-        let max = tokens[index + 1].parse::<u64>().ok()?;
-        let _level = tokens[index + 2].parse::<u64>().ok()?;
-        if suffix == 4 {
-            let _mutation = tokens[index + 3].parse::<u64>().ok()?;
-        }
-        let partition = tokens[..index].join("_");
-        (min <= max && !partition.is_empty()).then_some((partition, min, max))
-    };
-    match (candidate(3), candidate(4)) {
+    match (
+        parse_part_span_suffix(&tokens, 3),
+        parse_part_span_suffix(&tokens, 4),
+    ) {
         (Some(part), None) | (None, Some(part)) => Some(part),
         // A numeric partition suffix can look like a mutation suffix.
         // Refuse to guess when both parses are plausible.
@@ -289,6 +293,7 @@ mod tests {
         assert_eq!(part_span("_1_2_0"), None);
         assert_eq!(part_span("all__1_2_0"), Some(("all_".into(), 1, 2)));
         assert_eq!(part_span("all_1_2_0_"), None);
+        assert_eq!(part_span("all_1_2_3_4"), None);
     }
     #[test]
     fn checks_overlapping_block_ranges_independently_of_directory_order() {
