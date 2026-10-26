@@ -48,6 +48,34 @@ fn single_result_aliases_change_headers_and_support_order_by() {
 }
 
 #[test]
+fn groups_numeric_aggregates_on_generated_sources() {
+    assert_eq!(
+        run(
+            "SELECT number, sum(number) FROM numbers(3) GROUP BY number ORDER BY number DESC",
+            None,
+        ).unwrap(),
+        "number\tsum(number)\n2\t2\n1\t1\n0\t0\n",
+    );
+    assert_eq!(
+        run(
+            "SELECT number, median(number) FROM numbers(5) WHERE number >= 2 GROUP BY number ORDER BY number LIMIT 1 OFFSET 1",
+            None,
+        ).unwrap(),
+        "number\tmedian(number)\n3\t3\n",
+    );
+    assert_eq!(
+        run(
+            "SELECT number, avg(number) FROM numbers(0) GROUP BY number",
+            None,
+        ).unwrap(),
+        "number\tavg(number)\n",
+    );
+    assert!(run(
+        "SELECT number, sum(other) FROM numbers(2) GROUP BY number", None
+    ).is_err());
+}
+
+#[test]
 fn clickhouse_count_empty_parentheses_matches_count_star() {
     assert_eq!(
         run("SELECT count() FROM numbers(17) WHERE number >= 12", None).unwrap(),
