@@ -198,5 +198,4 @@ mod tests {
         let actual = scan(blocks).collect::<Result<Vec<_>, _>>().unwrap();
         assert_eq!(actual, expected);
     }
-
 }
