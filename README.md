@@ -33,3 +33,5 @@ Export numeric rows as JSON Lines with `cargo run -p rusthouse-cli -- sql "SELEC
 Inspect the parsed SQL structure without touching data using `cargo run -p rusthouse-cli -- sql --show-ast "SELECT id FROM part WHERE id >= 3"`.
 
 Exclude selected values with `cargo run -p rusthouse-cli -- sql "SELECT number FROM numbers(10) WHERE number NOT IN (1, 4, 9)"`.
+
+Export data-only TSV without the header row with `cargo run -p rusthouse-cli -- sql "SELECT number FROM numbers(3)" --format tsv-no-header`.
