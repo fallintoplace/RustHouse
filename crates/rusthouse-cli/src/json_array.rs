@@ -34,6 +34,22 @@ impl<W: Write> JsonArraySink<W> {
         self.first = false;
         Ok(())
     }
+
+    fn finish(mut self) -> io::Result<W> {
+        if !self.row.is_empty() {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                "incomplete JSON row",
+            ));
+        }
+        if self.started {
+            self.output.write_all(b"]\n")?;
+        } else {
+            self.output.write_all(b"[]\n")?;
+        }
+        self.output.flush()?;
+        Ok(self.output)
+    }
 }
 
 impl<W: Write> Write for JsonArraySink<W> {
@@ -82,20 +98,7 @@ impl<W: Write> JsonArrayWriter<W> {
             ));
         }
         self.inner.flush()?;
-        let mut sink = self.inner.into_inner();
-        if !sink.row.is_empty() {
-            return Err(io::Error::new(
-                io::ErrorKind::InvalidData,
-                "incomplete JSON row",
-            ));
-        }
-        if sink.started {
-            sink.output.write_all(b"]\n")?;
-        } else {
-            sink.output.write_all(b"[]\n")?;
-        }
-        sink.output.flush()?;
-        Ok(sink.output)
+        self.inner.into_inner().finish()
     }
 }
 
