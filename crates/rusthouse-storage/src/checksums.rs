@@ -56,17 +56,17 @@ impl PartChecksums {
             summary.stored_bytes = summary
                 .stored_bytes
                 .checked_add(file.size)
-                .ok_or_else(&overflow)?;
+                .ok_or_else(overflow)?;
             if let Some(uncompressed) = &file.uncompressed {
                 summary.compressed_files += 1;
                 summary.compressed_stored_bytes = summary
                     .compressed_stored_bytes
                     .checked_add(file.size)
-                    .ok_or_else(&overflow)?;
+                    .ok_or_else(overflow)?;
                 summary.compressed_original_bytes = summary
                     .compressed_original_bytes
                     .checked_add(uncompressed.size)
-                    .ok_or_else(&overflow)?;
+                    .ok_or_else(overflow)?;
             }
         }
         Ok(summary)
