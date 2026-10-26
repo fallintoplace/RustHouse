@@ -1,6 +1,6 @@
 use rusthouse_query::{ColumnDef, Ddl, parse_ddl};
 use std::fs::{self, OpenOptions};
-use std::io::Write;
+use std::io::{Read, Write};
 use std::path::Path;
 use std::sync::atomic::{AtomicUsize, Ordering};
 
@@ -119,8 +119,18 @@ fn read_schema(catalog: &Path, name: &str) -> Result<Vec<ColumnDef>, String> {
     if metadata.len() > MAX_SCHEMA_BYTES {
         return Err(format!("schema is too large for table {name}"));
     }
-    let content =
-        fs::read_to_string(&path).map_err(|error| format!("cannot read table {name}: {error}"))?;
+    // Limit reads even if a schema grows between metadata inspection and open.
+    let mut bytes = Vec::new();
+    fs::File::open(&path)
+        .map_err(|error| format!("cannot read table {name}: {error}"))?
+        .take(MAX_SCHEMA_BYTES + 1)
+        .read_to_end(&mut bytes)
+        .map_err(|error| format!("cannot read table {name}: {error}"))?;
+    if bytes.len() as u64 > MAX_SCHEMA_BYTES {
+        return Err(format!("schema is too large for table {name}"));
+    }
+    let content = String::from_utf8(bytes)
+        .map_err(|_| format!("invalid UTF-8 in schema for table {name}"))?;
     let mut lines = content.lines();
     if lines.next() != Some("rusthouse-schema-v1") {
         return Err(format!("invalid schema version for table {name}"));
