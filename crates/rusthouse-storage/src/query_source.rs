@@ -180,7 +180,7 @@ fn inspect_parts_metadata(path: &Path, paths: &[PathBuf]) -> Result<PartMetadata
                     scope.spawn(move || {
                         chunk
                             .iter()
-                            .map(|part| inspect_part(part))
+                            .map(inspect_part)
                             .collect::<Vec<_>>()
                     })
                 })
