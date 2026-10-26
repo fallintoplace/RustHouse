@@ -113,6 +113,50 @@ fn hex_digit(byte: u8) -> Option<u8> {
     }
 }
 
+fn parse_enum_label(bytes: &[u8], position: &mut usize) -> Option<String> {
+    if bytes.get(*position) != Some(&b'\'') {
+        return None;
+    }
+    *position += 1;
+    let mut name = Vec::new();
+    while let Some(&byte) = bytes.get(*position) {
+        *position += 1;
+        match byte {
+            b'\'' => {
+                if bytes.get(*position) == Some(&b'\'') {
+                    *position += 1;
+                    name.push(b'\'');
+                } else {
+                    return String::from_utf8(name).ok();
+                }
+            }
+            b'\\' => {
+                let escaped = *bytes.get(*position)?;
+                *position += 1;
+                let decoded = match escaped {
+                    b'\\' => b'\\',
+                    b'\'' => b'\'',
+                    b'"' => b'"',
+                    b'n' => b'\n',
+                    b'r' => b'\r',
+                    b't' => b'\t',
+                    b'0' => 0,
+                    b'x' => {
+                        let high = hex_digit(*bytes.get(*position)?)?;
+                        let low = hex_digit(*bytes.get(*position + 1)?)?;
+                        *position += 2;
+                        (high << 4) | low
+                    }
+                    _ => return None,
+                };
+                name.push(decoded);
+            }
+            _ => name.push(byte),
+        }
+    }
+    None
+}
+
 /// Accept canonical explicit value declarations and common ClickHouse escapes.
 /// Implicit Enum numbering is not used for persisted columns.txt type names.
 fn parse_enum_type(data_type: &str) -> Option<(u8, BTreeMap<i16, String>)> {
@@ -132,53 +176,7 @@ fn parse_enum_type(data_type: &str) -> Option<(u8, BTreeMap<i16, String>)> {
     skip_space(bytes, &mut position);
 
     while position < bytes.len() {
-        if bytes[position] != b'\'' {
-            return None;
-        }
-        position += 1;
-        let mut name = Vec::new();
-        let mut terminated = false;
-
-        while let Some(&byte) = bytes.get(position) {
-            position += 1;
-            match byte {
-                b'\'' => {
-                    if bytes.get(position) == Some(&b'\'') {
-                        position += 1;
-                        name.push(b'\'');
-                    } else {
-                        terminated = true;
-                        break;
-                    }
-                }
-                b'\\' => {
-                    let escaped = *bytes.get(position)?;
-                    position += 1;
-                    let decoded = match escaped {
-                        b'\\' => b'\\',
-                        b'\'' => b'\'',
-                        b'"' => b'"',
-                        b'n' => b'\n',
-                        b'r' => b'\r',
-                        b't' => b'\t',
-                        b'0' => 0,
-                        b'x' => {
-                            let high = hex_digit(*bytes.get(position)?)?;
-                            let low = hex_digit(*bytes.get(position + 1)?)?;
-                            position += 2;
-                            (high << 4) | low
-                        }
-                        _ => return None,
-                    };
-                    name.push(decoded);
-                }
-                _ => name.push(byte),
-            }
-        }
-        if !terminated {
-            return None;
-        }
-        let name = String::from_utf8(name).ok()?;
+        let name = parse_enum_label(bytes, &mut position)?;
         skip_space(bytes, &mut position);
         if bytes.get(position) != Some(&b'=') {
             return None;
