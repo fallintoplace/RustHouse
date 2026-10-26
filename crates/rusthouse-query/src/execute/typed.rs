@@ -312,6 +312,22 @@ fn cmp(left: &Cell, right: &Cell) -> Ordering {
     }
 }
 
+fn compare_for_order(left: &Cell, right: &Cell, order: &crate::OrderBy) -> Ordering {
+    match (left, right, order.nulls_first) {
+        (Cell::Null, Cell::Null, _) => Ordering::Equal,
+        (Cell::Null, _, Some(true)) | (_, Cell::Null, Some(false)) => Ordering::Less,
+        (Cell::Null, _, Some(false)) | (_, Cell::Null, Some(true)) => Ordering::Greater,
+        _ => {
+            let ordering = cmp(left, right);
+            if order.descending {
+                ordering.reverse()
+            } else {
+                ordering
+            }
+        }
+    }
+}
+
 fn matches_comparison(value: &Cell, target: &Cell, operator: Operator) -> bool {
     if matches!(value, Cell::Null) || matches!(target, Cell::Null) {
         return false;
@@ -616,14 +632,14 @@ pub(super) fn execute_typed<W: Write>(
         if let Some(order) = &query.order_by {
             grouped_rows.sort_by(|(left_key, left_count), (right_key, right_count)| {
                 let ordering = if order.column == "count" {
-                    left_count.cmp(right_count)
+                    let ordering = left_count.cmp(right_count);
+                    if order.descending {
+                        ordering.reverse()
+                    } else {
+                        ordering
+                    }
                 } else {
-                    cmp(left_key, right_key)
-                };
-                let ordering = if order.descending {
-                    ordering.reverse()
-                } else {
-                    ordering
+                    compare_for_order(left_key, right_key, order)
                 };
                 ordering.then_with(|| cmp(left_key, right_key))
             });
@@ -647,12 +663,7 @@ pub(super) fn execute_typed<W: Write>(
     }
     if let Some(order) = &query.order_by {
         ordered.sort_by(|left, right| {
-            let comparison = cmp(&left.sort_key, &right.sort_key);
-            if order.descending {
-                comparison.reverse()
-            } else {
-                comparison
-            }
+            compare_for_order(&left.sort_key, &right.sort_key, order)
         });
         for row in ordered.into_iter().skip(offset).take(limit) {
             write_row(output, &row.values)?;

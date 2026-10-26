@@ -77,9 +77,14 @@ pub fn explain_select(query: &Select) -> String {
     }
     if let Some(order) = &query.order_by {
         steps.push(format!(
-            "Sort: {} {}",
+            "Sort: {} {}{}",
             order.column,
-            if order.descending { "DESC" } else { "ASC" }
+            if order.descending { "DESC" } else { "ASC" },
+            match order.nulls_first {
+                Some(true) => " NULLS FIRST",
+                Some(false) => " NULLS LAST",
+                None => "",
+            }
         ));
     }
     if let Some(offset) = query.offset {

@@ -129,6 +129,8 @@ pub enum Source {
 pub struct OrderBy {
     pub column: String,
     pub descending: bool,
+    /// None preserves the existing ASC/DESC null ordering.
+    pub nulls_first: Option<bool>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -724,7 +726,22 @@ pub fn parse_select(sql: &str) -> Result<Select, ParseError> {
             parser.keyword("ASC");
             false
         };
-        Some(OrderBy { column, descending })
+        let nulls_first = if parser.keyword("NULLS") {
+            if parser.keyword("FIRST") {
+                Some(true)
+            } else if parser.keyword("LAST") {
+                Some(false)
+            } else {
+                return Err(ParseError("NULLS requires FIRST or LAST".into()));
+            }
+        } else {
+            None
+        };
+        Some(OrderBy {
+            column,
+            descending,
+            nulls_first,
+        })
     } else {
         None
     };

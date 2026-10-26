@@ -450,6 +450,27 @@ fn groups_nullable_and_uuid_keys_including_null() {
 }
 
 #[test]
+fn orders_nullable_columns_with_explicit_null_precedence() {
+    let part = part();
+    assert_eq!(
+        query("SELECT attempt FROM part ORDER BY attempt ASC NULLS LAST", &part),
+        "attempt\n1\n3\n\\N\n"
+    );
+    assert_eq!(
+        query("SELECT attempt FROM part ORDER BY attempt DESC NULLS FIRST", &part),
+        "attempt\n\\N\n3\n1\n"
+    );
+    assert_eq!(
+        query(
+            "SELECT message, count(*) FROM part GROUP BY message ORDER BY message DESC NULLS FIRST",
+            &part,
+        ),
+        "message\tcount\n\\N\t1\nworld\t1\nhello\t1\n"
+    );
+    fs::remove_dir_all(part).unwrap();
+}
+
+#[test]
 fn matches_ilike_on_string_and_nullable_columns() {
     let part = part();
     assert_eq!(
