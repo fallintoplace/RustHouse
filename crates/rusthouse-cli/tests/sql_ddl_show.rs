@@ -33,7 +33,10 @@ fn show_tables_lists_regular_schemas_in_sorted_order() {
 
     let listed = sql("SHOW TABLES;", &dir);
     assert!(listed.status.success(), "{listed:?}");
-    assert_eq!(String::from_utf8(listed.stdout).unwrap(), "name\nalpha\nbeta\nzeta\n");
+    assert_eq!(
+        String::from_utf8(listed.stdout).unwrap(),
+        "name\nalpha\nbeta\nzeta\n"
+    );
     fs::remove_dir_all(dir).unwrap();
 }
 

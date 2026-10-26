@@ -10,7 +10,9 @@ pub struct ColumnDef {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Ddl {
     ShowTables,
-    DescribeTable { name: String },
+    DescribeTable {
+        name: String,
+    },
     CreateTable {
         name: String,
         columns: Vec<ColumnDef>,

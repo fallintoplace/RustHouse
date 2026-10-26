@@ -47,7 +47,12 @@ fn show_tables(catalog: &Path) -> Result<(), String> {
             println!("name");
             return Ok(());
         }
-        Err(error) => return Err(format!("cannot list catalog {}: {error}", catalog.display())),
+        Err(error) => {
+            return Err(format!(
+                "cannot list catalog {}: {error}",
+                catalog.display()
+            ));
+        }
     };
 
     let mut names = Vec::new();
