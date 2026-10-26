@@ -13,6 +13,14 @@ fn describe_source(source: Option<&Source>) -> String {
             length,
             step,
         }) => format!("numbers({start}, {length}, {step})"),
+        Some(Source::GenerateSeries { start, count, step }) => {
+            if *count == 0 {
+                format!("generate_series({start}, empty, {step})")
+            } else {
+                let last = u128::from(*start) + u128::from(*count - 1) * u128::from(*step);
+                format!("generate_series({start}, {last}, {step})")
+            }
+        }
     }
 }
 

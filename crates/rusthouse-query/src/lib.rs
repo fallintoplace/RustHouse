@@ -120,6 +120,7 @@ pub enum Source {
     Numbers(u64),
     NumbersRange { start: u64, count: u64 },
     NumbersStepped { start: u64, length: u64, step: u64 },
+    GenerateSeries { start: u64, count: u64, step: u64 },
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -407,6 +408,48 @@ pub fn parse_select(sql: &str) -> Result<Select, ParseError> {
                 return Err(ParseError("expected ')' after numbers row count".into()));
             }
             Some(source)
+        } else if name.eq_ignore_ascii_case("generate_series") {
+            if !parser.take(Token::LParen) {
+                return Err(ParseError("generate_series requires (start, stop[, step])".into()));
+            }
+            let parse_argument = |parser: &mut Parser, label: &str| -> Result<u64, ParseError> {
+                let value = parser.number()?;
+                if !value.bytes().all(|byte| byte.is_ascii_digit()) {
+                    return Err(ParseError(format!(
+                        "generate_series {label} must be a non-negative UInt64"
+                    )));
+                }
+                value.parse::<u64>().map_err(|_| {
+                    ParseError(format!("generate_series {label} is too large"))
+                })
+            };
+            let start = parse_argument(&mut parser, "start")?;
+            if !parser.take(Token::Comma) {
+                return Err(ParseError("generate_series requires a stop argument".into()));
+            }
+            let stop = parse_argument(&mut parser, "stop")?;
+            let step = if parser.take(Token::Comma) {
+                parse_argument(&mut parser, "step")?
+            } else {
+                1
+            };
+            if step == 0 {
+                return Err(ParseError("generate_series step must be positive".into()));
+            }
+            if !parser.take(Token::RParen) {
+                return Err(ParseError("expected ')' after generate_series arguments".into()));
+            }
+            let count = if stop < start {
+                0
+            } else {
+                ((stop - start) / step).checked_add(1).ok_or_else(|| {
+                    ParseError("generate_series supports at most 1000000 rows".into())
+                })?
+            };
+            if count > 1_000_000 {
+                return Err(ParseError("generate_series supports at most 1000000 rows".into()));
+            }
+            Some(Source::GenerateSeries { start, count, step })
         } else {
             Some(Source::Table(name))
         }

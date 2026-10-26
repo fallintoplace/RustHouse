@@ -159,6 +159,9 @@ fn execute_into<W: Write>(
             let rows = length / step + u64::from(length % step != 0);
             return execute_numbers(query, *start, rows, *step, part, output);
         }
+        Some(Source::GenerateSeries { start, count, step }) => {
+            return execute_numbers(query, *start, *count, *step, part, output);
+        }
         Some(Source::Table(table)) if table == "part" => {}
         _ => {
             return Err(ExecutionError::Invalid(
