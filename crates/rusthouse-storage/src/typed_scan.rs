@@ -233,6 +233,25 @@ impl TypedPartReader {
         })
     }
 
+    /// Number of validated granules in this immutable part.
+    pub fn mark_count(&self) -> usize {
+        self.marks
+    }
+
+    /// Seek to a validated granule without decoding preceding granules.
+    /// The end sentinel (mark_count) is accepted and yields no further batches.
+    /// Callers must still evaluate row predicates on returned batches.
+    pub fn seek_to_mark(&mut self, index: usize) -> Result<(), PartError> {
+        if index > self.marks {
+            return Err(PartError::InvalidGranuleIndex {
+                index,
+                marks: self.marks,
+            });
+        }
+        self.next_mark = index;
+        Ok(())
+    }
+
     pub fn next_batch(&mut self) -> Result<Option<Vec<TypedColumn>>, PartError> {
         if self.next_mark >= self.marks {
             return Ok(None);
@@ -370,4 +389,67 @@ mod tests {
         }
         assert!(StorageKind::from_data_type("Nullable(UUID)").is_err());
     }
+
+    #[test]
+    fn typed_reader_seeks_to_validated_granule_boundaries() {
+        use crate::{Column, write_wide_part};
+        use std::fs;
+        use std::sync::atomic::{AtomicUsize, Ordering};
+
+        static NEXT: AtomicUsize = AtomicUsize::new(0);
+        let root = std::env::temp_dir().join(format!(
+            "rusthouse-typed-mark-seek-{}-{}",
+            std::process::id(),
+            NEXT.fetch_add(1, Ordering::Relaxed)
+        ));
+        fs::create_dir(&root).unwrap();
+        let part = root.join("all_1_1_0");
+        let columns = vec![
+            Column {
+                name: "id".into(),
+                data_type: "UInt64".into(),
+            },
+            Column {
+                name: "note".into(),
+                data_type: "Nullable(String)".into(),
+            },
+        ];
+        let rows = (0..2050)
+            .map(|id| {
+                vec![
+                    Some(id.to_string()),
+                    if id % 2 == 0 {
+                        None
+                    } else {
+                        Some(format!("row-{id}"))
+                    },
+                ]
+            })
+            .collect::<Vec<_>>();
+        write_wide_part(&part, &columns, &rows).unwrap();
+
+        let mut reader = TypedPartReader::open(&part, &["id".into(), "note".into()]).unwrap();
+        assert_eq!(reader.mark_count(), 3);
+        reader.seek_to_mark(2).unwrap();
+        let tail = reader.next_batch().unwrap().unwrap();
+        match &tail[0] {
+            TypedColumn::Numeric(NumericColumn::UInt64(values)) => {
+                assert_eq!(values, &[2048, 2049]);
+            }
+            _ => panic!("expected UInt64"),
+        }
+        assert_eq!(tail[1].len(), 2);
+        assert!(reader.next_batch().unwrap().is_none());
+
+        reader.seek_to_mark(0).unwrap();
+        assert_eq!(reader.next_batch().unwrap().unwrap()[0].len(), 1024);
+        reader.seek_to_mark(reader.mark_count()).unwrap();
+        assert!(reader.next_batch().unwrap().is_none());
+        assert!(matches!(
+            reader.seek_to_mark(4),
+            Err(PartError::InvalidGranuleIndex { index: 4, marks: 3 })
+        ));
+        fs::remove_dir_all(root).unwrap();
+    }
+
 }
