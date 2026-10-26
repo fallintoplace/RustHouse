@@ -20,6 +20,9 @@ fn io_error(path: &Path, source: io::Error) -> PartError {
 // The partition id may contain underscores; split from the right instead.
 fn part_span(name: &str) -> Option<(String, u64, u64)> {
     let tokens: Vec<&str> = name.split('_').collect();
+    if tokens.iter().any(|token| token.is_empty()) {
+        return None;
+    }
     let candidate = |suffix: usize| {
         if tokens.len() <= suffix {
             return None;
@@ -181,5 +184,8 @@ mod tests {
         assert_eq!(part_span("2026_10_1_2_0"), Some(("2026_10".into(), 1, 2)));
         assert_eq!(part_span("all_1_2_0_7"), Some(("all".into(), 1, 2)));
         assert_eq!(part_span("all_3_2_0"), None);
+        assert_eq!(part_span("_1_2_0"), None);
+        assert_eq!(part_span("all__1_2_0"), None);
+        assert_eq!(part_span("all_1_2_0_"), None);
     }
 }
