@@ -37,21 +37,26 @@ impl Response {
 
 struct LimitedWriter {
     data: Vec<u8>,
+    exceeded: bool,
 }
 
 impl LimitedWriter {
     fn new() -> Self {
-        Self { data: Vec::new() }
+        Self {
+            data: Vec::new(),
+            exceeded: false,
+        }
     }
 }
 
 impl Write for LimitedWriter {
     fn write(&mut self, bytes: &[u8]) -> io::Result<usize> {
-        let new_size =
-            self.data.len().checked_add(bytes.len()).ok_or_else(|| {
-                io::Error::new(io::ErrorKind::InvalidData, "response size overflow")
-            })?;
+        let new_size = self.data.len().checked_add(bytes.len()).ok_or_else(|| {
+            self.exceeded = true;
+            io::Error::new(io::ErrorKind::InvalidData, "response size overflow")
+        })?;
         if new_size > MAX_RESPONSE_BYTES {
+            self.exceeded = true;
             return Err(io::Error::new(
                 io::ErrorKind::InvalidData,
                 "SQL response exceeds 8 MiB",
@@ -276,6 +281,9 @@ pub fn handle_request(method: &str, target: &str, body: &[u8], config: &Config) 
             },
             body: writer.data,
         },
+        Err(_) if writer.exceeded => {
+            Response::text("413 Payload Too Large", "SQL response exceeds 8 MiB\n")
+        }
         Err(error) => Response::text("400 Bad Request", &format!("{error}\n")),
     }
 }
@@ -346,8 +354,10 @@ mod tests {
         assert_eq!(result.body, b"7\n7\n");
         let mut writer = LimitedWriter {
             data: vec![0; MAX_RESPONSE_BYTES],
+            exceeded: false,
         };
         assert!(writer.write_all(b"x").is_err());
+        assert!(writer.exceeded);
         assert_eq!(writer.data.len(), MAX_RESPONSE_BYTES);
     }
 
