@@ -47,7 +47,10 @@ fn script_creates_inserts_and_queries_persistent_data() {
     let result = run_script(&file, &db);
     assert!(result.status.success(), "{result:?}");
     assert!(String::from_utf8_lossy(&result.stdout).contains("a;b"));
-    assert_eq!(query("SELECT count(*) FROM events", &db).stdout, b"count\n2\n");
+    assert_eq!(
+        query("SELECT count(*) FROM events", &db).stdout,
+        b"count\n2\n"
+    );
     fs::remove_dir_all(root).unwrap();
 }
 

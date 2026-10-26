@@ -77,10 +77,7 @@ fn split_sql_script(input: &str) -> Result<Vec<String>, String> {
     let mut index = 0;
     let mut quoted = false;
     while index < bytes.len() {
-        if bytes[index] == b'\\'
-            && quoted
-            && matches!(bytes.get(index + 1), Some(b'\\' | b'\''))
-        {
+        if bytes[index] == b'\\' && quoted && matches!(bytes.get(index + 1), Some(b'\\' | b'\'')) {
             index += 2;
             continue;
         }
@@ -154,8 +151,8 @@ fn read_script(path: &std::path::Path) -> Result<Vec<String>, String> {
     if bytes.len() > MAX_SCRIPT_BYTES {
         return Err("SQL script exceeds the 256 KiB limit".into());
     }
-    let input = String::from_utf8(bytes)
-        .map_err(|_| "SQL script must be valid UTF-8".to_string())?;
+    let input =
+        String::from_utf8(bytes).map_err(|_| "SQL script must be valid UTF-8".to_string())?;
     split_sql_script(&input)
 }
 
@@ -456,13 +453,15 @@ mod tests {
     #[test]
     fn script_splitter_respects_strings_escapes_and_comments() {
         assert_eq!(
-            split_sql_script("-- header\\nINSERT INTO t VALUES ('a;b', 'it''s'); -- skip\\nSELECT 1;")
-                .unwrap(),
+            split_sql_script(
+                "-- header\nINSERT INTO t VALUES ('a;b', 'it''s'); -- skip\nSELECT 1;"
+            )
+            .unwrap(),
             ["INSERT INTO t VALUES ('a;b', 'it''s')", "SELECT 1"]
         );
         assert_eq!(
-            split_sql_script(r"INSERT INTO t VALUES ('it\\'s;x'); SELECT 2").unwrap(),
-            [r"INSERT INTO t VALUES ('it\\'s;x')", "SELECT 2"]
+            split_sql_script(r"INSERT INTO t VALUES ('it\'s;x'); SELECT 2").unwrap(),
+            [r"INSERT INTO t VALUES ('it\'s;x')", "SELECT 2"]
         );
         assert!(split_sql_script("-- only comment").is_err());
         assert!(split_sql_script("SELECT 'unfinished").is_err());
