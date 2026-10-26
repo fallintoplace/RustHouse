@@ -189,9 +189,9 @@ mod tests {
     #[test]
     fn failed_header_keeps_writer_ready_for_new_header() {
         let mut writer = JsonlWriter::new(Vec::new());
-        assert!(writer.write_all(b"key\\tkey\\n").is_err());
-        writer.write_all(b"key\\nvalue\\n").unwrap();
-        assert_eq!(writer.output, b"{\"key\":\"value\"}\\n");
+        assert!(writer.write_all(b"key\tkey\n").is_err());
+        writer.write_all(b"key\nvalue\n").unwrap();
+        assert_eq!(writer.output, b"{\"key\":\"value\"}\n");
     }
 
     #[test]
