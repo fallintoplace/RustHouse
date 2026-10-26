@@ -2,9 +2,11 @@ mod ddl;
 mod execute;
 mod explain;
 mod lexer;
+mod insert;
 pub use ddl::{ColumnDef, Ddl, parse_ddl};
 pub use execute::{ExecutionError, execute};
 pub use explain::explain_select;
+pub use insert::{Insert, parse_insert};
 
 use std::error::Error;
 use std::fmt;
