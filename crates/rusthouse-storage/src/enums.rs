@@ -268,8 +268,7 @@ mod tests {
     #[test]
     fn supports_doubled_quote_enum_labels() {
         let mut input = &[255u8, 2][..];
-        let column =
-            read_enum_column(&mut input, "Enum8('it''s' = -1, 'don''t' = 2)", 2).unwrap();
+        let column = read_enum_column(&mut input, "Enum8('it''s' = -1, 'don''t' = 2)", 2).unwrap();
         assert_eq!(column.name(0), Some("it's"));
         assert_eq!(column.name(1), Some("don't"));
         assert!(input.is_empty());
