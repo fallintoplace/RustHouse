@@ -1,6 +1,6 @@
 use std::io::{self, Read};
 
-const MAX_BATCH_BYTES: usize = 64 * 1024 * 1024;
+pub(crate) const MAX_BATCH_BYTES: usize = 64 * 1024 * 1024;
 
 const READ_BUFFER_BYTES: usize = 16 * 1024;
 
@@ -27,4 +27,3 @@ pub(crate) fn read_fixed_width<R: Read, T, const WIDTH: usize>(
     }
     Ok(result)
 }
-
