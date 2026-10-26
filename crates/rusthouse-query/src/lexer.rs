@@ -175,5 +175,6 @@ mod tests {
             assert!(tokenize(sql).is_err(), "{sql:?}");
         }
         assert!(tokenize(&" ".repeat(4096)).is_ok());
-     }
+
+    }
 }
