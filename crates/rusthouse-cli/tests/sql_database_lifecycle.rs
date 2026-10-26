@@ -64,6 +64,61 @@ fn rename_preserves_stored_rows_and_drop_removes_both_files() {
 }
 
 #[test]
+fn create_table_like_copies_schema_but_not_rows() {
+    let db = database();
+    assert!(
+        sql(
+            "CREATE TABLE events (id UInt64, name Nullable(String))",
+            &db
+        )
+        .status
+        .success()
+    );
+    assert!(
+        sql("INSERT INTO events VALUES (1, 'original')", &db)
+            .status
+            .success()
+    );
+
+    let copy = sql("CREATE TABLE replica LIKE events", &db);
+    assert!(copy.status.success(), "{copy:?}");
+    assert_eq!(
+        sql("DESCRIBE TABLE replica", &db).stdout,
+        b"name\ttype\nid\tUInt64\nname\tNullable(String)\n"
+    );
+    assert_eq!(
+        sql("SELECT count(*) FROM replica", &db).stdout,
+        b"count\n0\n"
+    );
+    assert!(
+        sql("INSERT INTO replica VALUES (2, NULL)", &db)
+            .status
+            .success()
+    );
+    assert_eq!(
+        sql("SELECT count(*) FROM events", &db).stdout,
+        b"count\n1\n"
+    );
+    assert!(
+        sql("CREATE TABLE IF NOT EXISTS replica LIKE events", &db)
+            .status
+            .success()
+    );
+    assert!(
+        !sql("CREATE TABLE replica LIKE events", &db)
+            .status
+            .success()
+    );
+    assert!(
+        !sql("CREATE TABLE missing_copy LIKE unknown", &db)
+            .status
+            .success()
+    );
+    assert!(!db.join("missing_copy.parts").exists());
+    fs::remove_dir_all(db).unwrap();
+}
+
+#[test]
 fn conflicting_rename_does_not_modify_either_table() {
     let db = database();
     assert!(sql("CREATE TABLE a (id UInt64)", &db).status.success());
@@ -87,5 +142,39 @@ fn drop_does_not_silently_ignore_orphaned_parts() {
     assert!(!result.status.success());
     assert!(String::from_utf8_lossy(&result.stderr).contains("orphaned data"));
     assert!(db.join("t.parts").exists());
+    fs::remove_dir_all(db).unwrap();
+}
+
+#[test]
+fn interrupted_rename_preserves_a_readable_table_at_each_stage() {
+    let db = database();
+    assert!(sql("CREATE TABLE source (id UInt64)", &db).status.success());
+    assert!(
+        sql("INSERT INTO source VALUES (9), (10)", &db)
+            .status
+            .success()
+    );
+
+    // Simulate the state after publishing the destination schema but before
+    // the part directory has moved. The original table is still usable.
+    fs::hard_link(db.join("source.schema"), db.join("destination.schema")).unwrap();
+    assert_eq!(
+        sql("SELECT id FROM source ORDER BY id", &db).stdout,
+        b"id\n9\n10\n"
+    );
+
+    // Simulate a crash after the part directory has moved but before the old
+    // schema is removed. The destination is now a complete, readable table.
+    fs::rename(db.join("source.parts"), db.join("destination.parts")).unwrap();
+    assert_eq!(
+        sql("SELECT id FROM destination ORDER BY id", &db).stdout,
+        b"id\n9\n10\n"
+    );
+
+    fs::remove_file(db.join("source.schema")).unwrap();
+    assert_eq!(
+        sql("SELECT count(*) FROM destination", &db).stdout,
+        b"count\n2\n"
+    );
     fs::remove_dir_all(db).unwrap();
 }

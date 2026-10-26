@@ -206,6 +206,47 @@ fn aggregates_typed_filters_across_frozen_parts() {
 }
 
 #[test]
+fn typed_topk_keeps_stable_ties_and_respects_offsets() {
+    let part = part();
+    assert_eq!(
+        query(
+            "SELECT service FROM part ORDER BY status DESC LIMIT 1 OFFSET 1",
+            &part
+        ),
+        "service\napi\n"
+    );
+    assert_eq!(
+        query(
+            "SELECT status FROM part ORDER BY service ASC LIMIT 2",
+            &part
+        ),
+        "status\n200\n500\n"
+    );
+    assert_eq!(
+        query(
+            "SELECT status FROM part ORDER BY service ASC LIMIT 1 OFFSET 1",
+            &part
+        ),
+        "status\n500\n"
+    );
+    assert_eq!(
+        query(
+            "SELECT status FROM part ORDER BY service DESC LIMIT 2",
+            &part
+        ),
+        "status\n503\n200\n"
+    );
+    assert_eq!(
+        query(
+            "SELECT status FROM part ORDER BY service ASC, status DESC LIMIT 2",
+            &part
+        ),
+        "status\n500\n200\n"
+    );
+    fs::remove_dir_all(part).unwrap();
+}
+
+#[test]
 fn selects_mixed_string_and_numeric_rows() {
     let part = part();
     assert_eq!(
@@ -223,6 +264,35 @@ fn selects_mixed_string_and_numeric_rows() {
         query("SELECT uid FROM part WHERE service = 'db'", &part),
         "uid\n00000000-0000-0000-0000-000000000000\n"
     );
+    fs::remove_dir_all(part).unwrap();
+}
+
+#[test]
+fn wildcard_rename_works_with_typed_parts_and_rejects_name_collisions() {
+    let part = part();
+    assert_eq!(
+        query(
+            "SELECT * RENAME service AS origin FROM part WHERE service = 'db'",
+            &part
+        ),
+        "origin\tstatus\tmessage\tuid\tattempt\ndb\t503\t\\N\t00000000-0000-0000-0000-000000000000\t\\N\n"
+    );
+    assert_eq!(
+        query(
+            "SELECT * RENAME status AS code FROM part ORDER BY code DESC LIMIT 1",
+            &part
+        ),
+        "service\tcode\tmessage\tuid\tattempt\ndb\t503\t\\N\t00000000-0000-0000-0000-000000000000\t\\N\n"
+    );
+    for sql in [
+        "SELECT * RENAME service AS status FROM part",
+        "SELECT * RENAME missing AS renamed FROM part LIMIT 0",
+    ] {
+        let select = parse_select(sql).unwrap();
+        let mut output = Vec::new();
+        assert!(execute(&select, Some(&part), &mut output).is_err(), "{sql}");
+        assert!(output.is_empty(), "{sql}");
+    }
     fs::remove_dir_all(part).unwrap();
 }
 
@@ -450,6 +520,50 @@ fn groups_nullable_and_uuid_keys_including_null() {
 }
 
 #[test]
+fn groups_numeric_aggregates_by_typed_keys() {
+    let part = part();
+    assert_eq!(
+        query(
+            "SELECT service, sum(status) FROM part GROUP BY service ORDER BY service",
+            &part,
+        ),
+        "service\tsum(status)\napi\t700\ndb\t503\n"
+    );
+    assert_eq!(
+        query(
+            "SELECT service, avg(status) FROM part GROUP BY service ORDER BY service",
+            &part,
+        ),
+        "service\tavg(status)\napi\t350\ndb\t503\n"
+    );
+    assert_eq!(
+        query(
+            "SELECT service, sum(attempt) FROM part GROUP BY service ORDER BY service",
+            &part,
+        ),
+        "service\tsum(attempt)\napi\t4\ndb\tNULL\n"
+    );
+    assert_eq!(
+        query(
+            "SELECT message, min(status) FROM part GROUP BY message ORDER BY message",
+            &part,
+        ),
+        "message\tmin(status)\n\\N\t503\nhello\t200\nworld\t500\n"
+    );
+    assert_eq!(
+        query(
+            "SELECT service, max(status) FROM part WHERE status >= 500 GROUP BY service ORDER BY service",
+            &part,
+        ),
+        "service\tmax(status)\napi\t500\ndb\t503\n"
+    );
+    let invalid = parse_select("SELECT service, sum(message) FROM part GROUP BY service").unwrap();
+    let mut output = Vec::new();
+    assert!(execute(&invalid, Some(&part), &mut output).is_err());
+    fs::remove_dir_all(part).unwrap();
+}
+
+#[test]
 fn orders_nullable_columns_with_explicit_null_precedence() {
     let part = part();
     assert_eq!(
@@ -473,6 +587,12 @@ fn orders_nullable_columns_with_explicit_null_precedence() {
         ),
         "message\tcount\n\\N\t1\nworld\t1\nhello\t1\n"
     );
+    let sql = "SELECT message, attempt FROM part ORDER BY attempt ASC NULLS LAST, message DESC";
+    let whole = query(sql, &part);
+    assert_eq!(whole, "message\tattempt\nhello\t1\nworld\t3\n\\N\t\\N\n");
+    let limited = query(&format!("{sql} LIMIT 2"), &part);
+    assert_eq!(limited, "message\tattempt\nhello\t1\nworld\t3\n");
+    assert_eq!(limited, format!("{}\n", whole.lines().take(3).collect::<Vec<_>>().join("\n")));
     fs::remove_dir_all(part).unwrap();
 }
 

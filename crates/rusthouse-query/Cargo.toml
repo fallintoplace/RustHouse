@@ -9,6 +9,10 @@ description = "Read-only SQL parsing and query execution for RustHouse"
 name = "queries"
 harness = false
 
+[[bench]]
+name = "parts"
+harness = false
+
 [dependencies]
 rusthouse-storage = { path = "../rusthouse-storage" }
 

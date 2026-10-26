@@ -45,6 +45,21 @@ fn reads_empty_and_persisted_named_tables() {
     assert!(result.status.success(), "{result:?}");
     assert_eq!(result.stdout, b"id\tname\n1\tAda\n2\tGrace\n");
 
+    let renamed = sql(
+        "SELECT * RENAME name AS customer_name FROM events ORDER BY customer_name DESC",
+        &db,
+        &[],
+    );
+    assert!(renamed.status.success(), "{renamed:?}");
+    assert_eq!(renamed.stdout, b"id\tcustomer_name\n2\tGrace\n1\tAda\n");
+    let renamed_json = sql(
+        "SELECT * RENAME name AS customer_name FROM events LIMIT 1",
+        &db,
+        &["--format", "json"],
+    );
+    assert!(renamed_json.status.success(), "{renamed_json:?}");
+    assert!(String::from_utf8_lossy(&renamed_json.stdout).contains("\"customer_name\""));
+
     let count = sql("SELECT count(*) FROM events", &db, &[]);
     assert_eq!(count.stdout, b"count\n2\n");
     let capped = sql(
@@ -61,6 +76,41 @@ fn reads_empty_and_persisted_named_tables() {
     assert!(json.status.success(), "{json:?}");
     assert!(String::from_utf8_lossy(&json.stdout).contains("Ada"));
     assert!(String::from_utf8_lossy(&json.stdout).contains("Grace"));
+    fs::remove_dir_all(db).unwrap();
+}
+
+#[test]
+fn aggregates_persistent_table_rows_by_string_key() {
+    let db = database();
+    let created = sql(
+        "CREATE TABLE events (category String, amount Nullable(UInt64))",
+        &db,
+        &[],
+    );
+    assert!(created.status.success(), "{created:?}");
+    let inserted = sql(
+        "INSERT INTO events VALUES ('food', 10), ('travel', 7), ('food', 12), ('travel', NULL)",
+        &db,
+        &[],
+    );
+    assert!(inserted.status.success(), "{inserted:?}");
+    let grouped = sql(
+        "SELECT category, sum(amount) FROM events GROUP BY category ORDER BY category",
+        &db,
+        &[],
+    );
+    assert!(grouped.status.success(), "{grouped:?}");
+    assert_eq!(
+        grouped.stdout,
+        b"category\tsum(amount)\nfood\t22\ntravel\t7\n"
+    );
+    let filtered = sql(
+        "SELECT category, max(amount) FROM events WHERE category = 'food' GROUP BY category",
+        &db,
+        &[],
+    );
+    assert!(filtered.status.success(), "{filtered:?}");
+    assert_eq!(filtered.stdout, b"category\tmax(amount)\nfood\t12\n");
     fs::remove_dir_all(db).unwrap();
 }
 

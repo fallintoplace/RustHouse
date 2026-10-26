@@ -1,13 +1,15 @@
 //! Small immutable wide-part writer for local SQL inserts.
 //! The caller publishes the completed directory with an atomic rename.
-use crate::{Column, PartError};
+use crate::{Column, FileChecksum, PartError, UncompressedChecksum};
 use ch_cityhash102::cityhash128;
+use naive_cityhash::{U128, cityhash128_with_seed};
 use std::collections::HashSet;
 use std::fs::{self, OpenOptions};
 use std::io::{self, Write};
 use std::path::Path;
 
 const MAX_PART_ROWS: usize = 4096;
+const GRANULE_ROWS: usize = 1024;
 const MAX_STREAM_BYTES: usize = 8 * 1024 * 1024;
 
 fn invalid(message: impl Into<String>) -> PartError {
@@ -127,13 +129,76 @@ fn write_file(path: &Path, bytes: &[u8]) -> Result<(), PartError> {
     file.sync_all().map_err(|error| io_error(path, error))
 }
 
+/// ClickHouse HashingWriteBuffer hashes 2048-byte blocks with CityHash128WithSeed,
+/// starting with a zero seed. This differs from compressed block checksums.
+fn checksum_hash(data: &[u8]) -> u128 {
+    const HASH_BLOCK_BYTES: usize = 2048;
+    let mut seed = U128::new(0, 0);
+    let mut chunks = data.chunks_exact(HASH_BLOCK_BYTES);
+    for chunk in chunks.by_ref() {
+        seed = cityhash128_with_seed(chunk, seed);
+    }
+    if !chunks.remainder().is_empty() {
+        seed = cityhash128_with_seed(chunks.remainder(), seed);
+    }
+    seed.into()
+}
+
+fn write_tracked_file(
+    part: &Path,
+    name: &str,
+    bytes: &[u8],
+    uncompressed: Option<&[u8]>,
+    files: &mut Vec<FileChecksum>,
+) -> Result<(), PartError> {
+    write_file(&part.join(name), bytes)?;
+    files.push(FileChecksum {
+        name: name.to_owned(),
+        size: bytes.len() as u64,
+        hash: checksum_hash(bytes),
+        uncompressed: uncompressed.map(|data| UncompressedChecksum {
+            size: data.len() as u64,
+            hash: checksum_hash(data),
+        }),
+    });
+    Ok(())
+}
+
+fn encode_checksums(files: &[FileChecksum]) -> Vec<u8> {
+    let mut bytes = b"checksums format version: 3\n".to_vec();
+    push_varuint(files.len() as u64, &mut bytes);
+    for file in files {
+        push_varuint(file.name.len() as u64, &mut bytes);
+        bytes.extend_from_slice(file.name.as_bytes());
+        push_varuint(file.size, &mut bytes);
+        bytes.extend_from_slice(&file.hash.to_le_bytes());
+        match &file.uncompressed {
+            Some(original) => {
+                bytes.push(1);
+                push_varuint(original.size, &mut bytes);
+                bytes.extend_from_slice(&original.hash.to_le_bytes());
+            }
+            None => bytes.push(0),
+        }
+    }
+    bytes
+}
+
 fn block(data: &[u8]) -> Result<Vec<u8>, PartError> {
     let length = u32::try_from(data.len()).map_err(|_| invalid("part column is too large"))?;
-    let mut encoded = Vec::with_capacity(25 + data.len());
-    encoded.push(0x02); // Uncompressed block, supported by the existing reader.
-    encoded.extend_from_slice(&(length + 9).to_le_bytes());
+    // Small and incompressible columns keep the lightweight uncompressed codec.
+    let compressed = (data.len() >= 128).then(|| lz4_flex::block::compress(data));
+    let (method, payload) = match compressed.as_ref() {
+        Some(bytes) if bytes.len().saturating_add(16) < data.len() => (0x82, bytes.as_slice()),
+        _ => (0x02, data),
+    };
+    let compressed_size =
+        u32::try_from(payload.len()).map_err(|_| invalid("part column is too large"))?;
+    let mut encoded = Vec::with_capacity(9 + payload.len());
+    encoded.push(method);
+    encoded.extend_from_slice(&(compressed_size + 9).to_le_bytes());
     encoded.extend_from_slice(&length.to_le_bytes());
-    encoded.extend_from_slice(data);
+    encoded.extend_from_slice(payload);
     let checksum = u128::from(cityhash128(&encoded)).to_le_bytes();
     let mut result = Vec::with_capacity(16 + encoded.len());
     result.extend_from_slice(&checksum);
@@ -143,7 +208,7 @@ fn block(data: &[u8]) -> Result<Vec<u8>, PartError> {
 
 /// Write a new immutable wide part. This function never replaces an existing path.
 /// Each row contains one value per column; None denotes SQL NULL.
-/// For empty tables only count.txt and columns.txt are needed.
+/// Empty tables have no data streams but still include a checksums manifest.
 pub fn write_wide_part(
     part: &Path,
     columns: &[Column],
@@ -182,46 +247,78 @@ pub fn write_wide_part(
     let mut streams = Vec::new();
     if !rows.is_empty() {
         for (index, col) in columns.iter().enumerate() {
-            let mut data = Vec::new();
-            let mut nulls = Vec::new();
             let (_, nullable) = base_type(&col.data_type);
-            for row in rows {
-                if row.len() != columns.len() {
-                    return Err(invalid("INSERT row width does not match table schema"));
+            let mut data_granules = Vec::new();
+            let mut null_granules = Vec::new();
+            for granule in rows.chunks(GRANULE_ROWS) {
+                let mut data = Vec::new();
+                let mut nulls = Vec::new();
+                for row in granule {
+                    if row.len() != columns.len() {
+                        return Err(invalid("INSERT row width does not match table schema"));
+                    }
+                    let null = push_cell(&col.data_type, row[index].as_deref(), &mut data)?;
+                    if nullable {
+                        nulls.push(u8::from(null));
+                    }
                 }
-                let null = push_cell(&col.data_type, row[index].as_deref(), &mut data)?;
+                data_granules.push(data);
                 if nullable {
-                    nulls.push(u8::from(null));
+                    null_granules.push(nulls);
                 }
             }
-            streams.push((col.name.clone(), data));
+            streams.push((col.name.clone(), data_granules));
             if nullable {
-                streams.push((format!("{}.null", col.name), nulls));
+                streams.push((format!("{}.null", col.name), null_granules));
             }
         }
     }
 
     fs::create_dir(part).map_err(|error| io_error(part, error))?;
+    let mut files = Vec::new();
     let mut definitions = format!("columns format version: 1\n{} columns:\n", columns.len());
     for col in columns {
         definitions.push_str(&format!("`{}` {}\n", col.name, col.data_type));
     }
-    write_file(&part.join("columns.txt"), definitions.as_bytes())?;
-    write_file(
-        &part.join("count.txt"),
-        format!("{}\n", rows.len()).as_bytes(),
+    write_tracked_file(
+        part,
+        "columns.txt",
+        definitions.as_bytes(),
+        None,
+        &mut files,
     )?;
+    let count = format!("{}\n", rows.len());
+    write_tracked_file(part, "count.txt", count.as_bytes(), None, &mut files)?;
 
     if !rows.is_empty() {
-        let mut marks = Vec::with_capacity(24);
-        marks.extend_from_slice(&0u64.to_le_bytes());
-        marks.extend_from_slice(&0u64.to_le_bytes());
-        marks.extend_from_slice(&(rows.len() as u64).to_le_bytes());
-        for (name, data) in streams {
-            write_file(&part.join(format!("{name}.bin")), &block(&data)?)?;
-            write_file(&part.join(format!("{name}.mrk2")), &marks)?;
+        for (name, granules) in streams {
+            let mut encoded = Vec::new();
+            let mut uncompressed = Vec::new();
+            let mut marks = Vec::with_capacity(24 * granules.len());
+            for (index, data) in granules.iter().enumerate() {
+                if data.len() > MAX_STREAM_BYTES - uncompressed.len() {
+                    return Err(invalid("part column exceeds 8 MiB"));
+                }
+                marks.extend_from_slice(&(encoded.len() as u64).to_le_bytes());
+                marks.extend_from_slice(&0u64.to_le_bytes());
+                let row_count = (rows.len() - index * GRANULE_ROWS).min(GRANULE_ROWS);
+                marks.extend_from_slice(&(row_count as u64).to_le_bytes());
+                encoded.extend_from_slice(&block(data)?);
+                uncompressed.extend_from_slice(data);
+            }
+            write_tracked_file(
+                part,
+                &format!("{name}.bin"),
+                &encoded,
+                Some(&uncompressed),
+                &mut files,
+            )?;
+            write_tracked_file(part, &format!("{name}.mrk2"), &marks, None, &mut files)?;
         }
     }
+
+    // Write the manifest only after all listed files have been synced.
+    write_file(&part.join("checksums.txt"), &encode_checksums(&files))?;
     fs::File::open(part)
         .and_then(|dir| dir.sync_all())
         .map_err(|error| io_error(part, error))
@@ -230,7 +327,10 @@ pub fn write_wide_part(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{NumericColumn, TypedColumn, TypedPartReader, inspect_part};
+    use crate::{
+        NumericColumn, TypedColumn, TypedPartReader, inspect_part, read_checksums, read_wide_marks,
+        verify_part_file_sizes, verify_wide_part,
+    };
     use std::sync::atomic::{AtomicUsize, Ordering};
 
     static NEXT: AtomicUsize = AtomicUsize::new(0);
@@ -243,6 +343,22 @@ mod tests {
         ));
         fs::create_dir(&path).unwrap();
         path
+    }
+
+    #[test]
+    fn compresses_repeating_streams_but_leaves_tiny_blocks_raw() {
+        use crate::CompressedBlockReader;
+        use std::io::Cursor;
+
+        for (data, codec) in [(vec![7u8; 4096], 0x82u8), (vec![1, 2, 3], 0x02)] {
+            let encoded = block(&data).unwrap();
+            let mut reader =
+                CompressedBlockReader::new(Cursor::new(encoded), "column.bin").unwrap();
+            let decoded = reader.next_decoded().unwrap().unwrap();
+            assert_eq!(decoded.block.method, codec);
+            assert_eq!(decoded.data, data);
+            assert!(reader.next_decoded().is_none());
+        }
     }
 
     #[test]
@@ -294,6 +410,147 @@ mod tests {
     }
 
     #[test]
+    fn computes_clickhouse_blockwise_seeded_manifest_hashes() {
+        assert_eq!(checksum_hash(b""), 0);
+        // CityHash v1.0.2 with seed (0, 0), not CityHash128.
+        assert_eq!(
+            checksum_hash(b"abc"),
+            0xa78da83cc4e0210684541c08b5db83dcu128
+        );
+        assert_ne!(checksum_hash(b"abc"), u128::from(cityhash128(b"abc")));
+
+        let one_block = vec![42u8; 2048];
+        assert_eq!(
+            checksum_hash(&one_block),
+            u128::from(cityhash128_with_seed(&one_block, U128::new(0, 0)))
+        );
+
+        let input = vec![42u8; 4097];
+        let first = cityhash128_with_seed(&input[..2048], U128::new(0, 0));
+        let second = cityhash128_with_seed(&input[2048..4096], first);
+        let tail = cityhash128_with_seed(&input[4096..], second);
+        assert_eq!(checksum_hash(&input), u128::from(tail));
+        assert_ne!(checksum_hash(&input), u128::from(cityhash128(&input)));
+    }
+
+    #[test]
+    fn writes_valid_checksums_for_metadata_and_compressed_streams() {
+        let root = root();
+        let part = root.join("all_1_1_0");
+        let columns = vec![
+            Column {
+                name: "id".into(),
+                data_type: "UInt64".into(),
+            },
+            Column {
+                name: "note".into(),
+                data_type: "Nullable(String)".into(),
+            },
+        ];
+        write_wide_part(
+            &part,
+            &columns,
+            &[
+                vec![Some("10".into()), Some("hi".into())],
+                vec![Some("20".into()), None],
+            ],
+        )
+        .unwrap();
+
+        let manifest = read_checksums(part.join("checksums.txt")).unwrap();
+        assert_eq!(manifest.version, 3);
+        assert_eq!(manifest.files.len(), 8);
+        for entry in &manifest.files {
+            let bytes = fs::read(part.join(&entry.name)).unwrap();
+            assert_eq!(entry.size, bytes.len() as u64);
+            assert_eq!(entry.hash, checksum_hash(&bytes));
+            assert_eq!(entry.uncompressed.is_some(), entry.name.ends_with(".bin"));
+        }
+
+        let id = manifest
+            .files
+            .iter()
+            .find(|file| file.name == "id.bin")
+            .unwrap();
+        let raw_ids = [10u64, 20]
+            .into_iter()
+            .flat_map(u64::to_le_bytes)
+            .collect::<Vec<_>>();
+        assert_eq!(
+            id.uncompressed,
+            Some(UncompressedChecksum {
+                size: raw_ids.len() as u64,
+                hash: checksum_hash(&raw_ids),
+            })
+        );
+        let nulls = manifest
+            .files
+            .iter()
+            .find(|file| file.name == "note.null.bin")
+            .unwrap();
+        assert_eq!(
+            nulls.uncompressed,
+            Some(UncompressedChecksum {
+                size: 2,
+                hash: checksum_hash(&[0, 1]),
+            })
+        );
+        assert_eq!(verify_part_file_sizes(&part).unwrap().files, 8);
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn writes_multiple_aligned_granules_and_reads_each_batch() {
+        let root = root();
+        let part = root.join("all_2_2_0");
+        let cols = vec![
+            Column {
+                name: "id".into(),
+                data_type: "UInt64".into(),
+            },
+            Column {
+                name: "note".into(),
+                data_type: "Nullable(String)".into(),
+            },
+        ];
+        let rows: Vec<Vec<Option<String>>> = (0..2100)
+            .map(|i| vec![Some(i.to_string()), (i % 3 != 0).then(|| format!("row{i}"))])
+            .collect();
+        write_wide_part(&part, &cols, &rows).unwrap();
+        let marks = read_wide_marks(part.join("id.mrk2")).unwrap();
+        assert_eq!(
+            marks.marks.iter().map(|mark| mark.rows).collect::<Vec<_>>(),
+            vec![Some(1024), Some(1024), Some(52)]
+        );
+        assert!(marks.marks[0].compressed_offset < marks.marks[1].compressed_offset);
+        let note_marks = read_wide_marks(part.join("note.null.mrk2")).unwrap();
+        assert_eq!(
+            note_marks
+                .marks
+                .iter()
+                .map(|mark| mark.rows)
+                .collect::<Vec<_>>(),
+            vec![Some(1024), Some(1024), Some(52)]
+        );
+        verify_wide_part(&part).unwrap();
+        let mut scan = TypedPartReader::open(&part, &["id".into(), "note".into()]).unwrap();
+        for (first, count) in [(0u64, 1024usize), (1024, 1024), (2048, 52)] {
+            let batch = scan.next_batch().unwrap().unwrap();
+            assert_eq!(batch[0].len(), count);
+            assert_eq!(batch[1].len(), count);
+            assert!(
+                matches!(&batch[0], TypedColumn::Numeric(NumericColumn::UInt64(values))
+                    if values.first() == Some(&first)
+                        && values.last() == Some(&(first + count as u64 - 1)))
+            );
+            assert!(matches!(&batch[1], TypedColumn::NullableText { nulls, .. }
+                if nulls[0] == u8::from(first % 3 == 0)));
+        }
+        assert!(scan.next_batch().unwrap().is_none());
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
     fn accepts_empty_parts_and_rejects_invalid_rows() {
         let root = root();
         let cols = vec![Column {
@@ -303,6 +560,16 @@ mod tests {
         let empty = root.join("all_0_0_0");
         write_wide_part(&empty, &cols, &[]).unwrap();
         assert_eq!(inspect_part(&empty).unwrap().rows, 0);
+        let manifest = read_checksums(empty.join("checksums.txt")).unwrap();
+        assert_eq!(
+            manifest
+                .files
+                .iter()
+                .map(|file| file.name.as_str())
+                .collect::<Vec<_>>(),
+            vec!["columns.txt", "count.txt"]
+        );
+        assert_eq!(verify_part_file_sizes(&empty).unwrap().files, 2);
         assert!(write_wide_part(&root.join("bad"), &cols, &[vec![Some("256".into())]]).is_err());
         assert!(!root.join("bad").exists());
         assert!(write_wide_part(&root.join("null"), &cols, &[vec![None]]).is_err());

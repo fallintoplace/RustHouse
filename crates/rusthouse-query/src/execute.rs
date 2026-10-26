@@ -118,8 +118,65 @@ fn write_header<W: Write>(
     output: &mut W,
     default: &str,
 ) -> Result<(), ExecutionError> {
-    writeln!(output, "{}", query.alias.as_deref().unwrap_or(default))?;
+    if let Some((source, target)) = &query.rename {
+        let columns: Vec<&str> = default.split('\t').collect();
+        if !columns.contains(&source.as_str()) {
+            return Err(ExecutionError::Invalid(format!(
+                "unknown RENAME column: {source}"
+            )));
+        }
+        if source != target && columns.contains(&target.as_str()) {
+            return Err(ExecutionError::Invalid(format!(
+                "RENAME target already exists: {target}"
+            )));
+        }
+        let header = columns
+            .into_iter()
+            .map(|column| {
+                if column == source.as_str() {
+                    target.as_str()
+                } else {
+                    column
+                }
+            })
+            .collect::<Vec<_>>()
+            .join("\t");
+        writeln!(output, "{header}")?;
+    } else {
+        writeln!(output, "{}", query.alias.as_deref().unwrap_or(default))?;
+    }
     Ok(())
+}
+
+/// Reuse the typed SELECT predicate semantics for bounded local mutations.
+pub struct RowPredicate {
+    branches: Vec<Vec<typed::Condition>>,
+}
+
+impl RowPredicate {
+    pub fn new(
+        query: &Select,
+        columns: &[rusthouse_storage::Column],
+    ) -> Result<Self, ExecutionError> {
+        let indices = columns
+            .iter()
+            .enumerate()
+            .map(|(index, column)| (column.name.clone(), index))
+            .collect::<HashMap<_, _>>();
+        let kinds = columns
+            .iter()
+            .map(|column| (column.name.clone(), column.data_type.clone()))
+            .collect::<HashMap<_, _>>();
+        let branches = std::iter::once(query.predicates.as_slice())
+            .chain(query.or_predicates.iter().map(Vec::as_slice))
+            .map(|predicates| typed::compile(predicates, &indices, &kinds))
+            .collect::<Result<Vec<_>, _>>()?;
+        Ok(Self { branches })
+    }
+
+    pub fn matches(&self, batch: &[rusthouse_storage::TypedColumn], row: usize) -> bool {
+        typed::passes(batch, row, &self.branches)
+    }
 }
 
 pub fn execute<W: Write>(
@@ -138,6 +195,29 @@ fn execute_into<W: Write>(
     part: Option<&Path>,
     output: &mut W,
 ) -> Result<(), ExecutionError> {
+    if let Projection::Constants(columns) = &query.projection {
+        let headers: Vec<_> = columns.iter().map(crate::Constant::header).collect();
+        write_header(query, output, &headers.join("\t"))?;
+        if query.limit != Some(0) && query.offset.unwrap_or(0) == 0 {
+            for (index, column) in columns.iter().enumerate() {
+                if index != 0 {
+                    output.write_all(b"\t")?;
+                }
+                let value = match &column.value {
+                    crate::ConstantValue::Integer(value) => {
+                        typed::Cell::Numeric(Number::Signed(i128::from(*value)))
+                    }
+                    crate::ConstantValue::Text(value) => {
+                        typed::Cell::Text(value.as_bytes().to_vec())
+                    }
+                    crate::ConstantValue::Null => typed::Cell::Null,
+                };
+                typed::write_value(output, &value)?;
+            }
+            writeln!(output)?;
+        }
+        return Ok(());
+    }
     if let Projection::Literal(value) = query.projection {
         write_header(query, output, &value.to_string())?;
         if query.limit != Some(0) && query.offset.unwrap_or(0) == 0 {
@@ -172,6 +252,9 @@ fn execute_into<W: Write>(
     let part = part.ok_or_else(|| {
         ExecutionError::Invalid("pass --part <directory> for table queries".into())
     })?;
+    if matches!(query.projection, Projection::GroupedAggregate { .. }) {
+        return typed_aggregate::execute_grouped_aggregate(query, part, output);
+    }
     if typed::requires_typed_scan(query, part)? {
         if matches!(query.projection, Projection::Aggregate { .. }) {
             return typed_aggregate::execute_typed_aggregate(query, part, output);
@@ -215,12 +298,15 @@ fn execute_into<W: Write>(
         | Projection::CountColumn { .. }
         | Projection::CountDistinct { .. }
         | Projection::GroupedCount { .. }
-        | Projection::Literal(_) => unreachable!(),
+        | Projection::GroupedAggregate { .. }
+        | Projection::Literal(_)
+        | Projection::Constants(_) => unreachable!(),
     };
     if query.distinct
-        && query.order_by.as_ref().is_some_and(|order| {
-            !projected.iter().any(|column| column == &order.column)
-                && query.alias.as_deref() != Some(order.column.as_str())
+        && query.order_terms().any(|order| {
+            !projected
+                .iter()
+                .any(|column| column == query.order_source_column(&order.column))
         })
     {
         return Err(ExecutionError::Invalid(
@@ -251,25 +337,36 @@ fn execute_into<W: Write>(
         parse_numeric(&column.data_type, literal)
     })?;
     let sort_index = query.order_by.as_ref().map(|order| {
-        let column_name =
-            if query.alias.as_deref() == Some(order.column.as_str()) && projected.len() == 1 {
-                &projected[0]
-            } else {
-                &order.column
-            };
+        let column_name = query.order_source_column(&order.column);
         if let Some(index) = scan_columns.iter().position(|column| column == column_name) {
             index
         } else {
-            scan_columns.push(column_name.clone());
+            scan_columns.push(column_name.to_owned());
             scan_columns.len() - 1
         }
     });
+    let mut extra_sort_indices = Vec::new();
+    for order in &query.order_by_extra {
+        let column_name = query.order_source_column(&order.column);
+        let index = if let Some(index) = scan_columns.iter().position(|c| c == column_name) {
+            index
+        } else {
+            scan_columns.push(column_name.to_owned());
+            scan_columns.len() - 1
+        };
+        extra_sort_indices.push(index);
+    }
     let mut reader = NumericQueryReader::open(part, &scan_columns)?;
     let mut distinct: Option<HashSet<Vec<NumberKey>>> = query.distinct.then(HashSet::new);
 
     if let (Some(order), Some(index)) = (&query.order_by, sort_index) {
         let mut sorted =
             SortedRows::with_offset(query.limit, query.offset.unwrap_or(0), order.descending)?;
+        sorted.extra_descending = query
+            .order_by_extra
+            .iter()
+            .map(|term| term.descending)
+            .collect();
         write_header(query, output, &projected.join("\t"))?;
         if query.limit == Some(0) {
             return Ok(());
@@ -288,7 +385,11 @@ fn execute_into<W: Write>(
                         continue;
                     }
                 }
-                sorted.push(number_at(&batch[index], row), values)?;
+                let extra_keys = extra_sort_indices
+                    .iter()
+                    .map(|&index| number_at(&batch[index], row))
+                    .collect();
+                sorted.push_with_extra(number_at(&batch[index], row), extra_keys, values)?;
             }
         }
         return sorted.write(output);
@@ -405,25 +506,33 @@ impl GroupedCounts {
                 )
             });
         }
-        if let Some(order) = &query.order_by {
+        let terms: Vec<_> = query.order_terms().collect();
+        for order in &terms {
             if order.column != column && order.column != "count" {
                 return Err(ExecutionError::Invalid(
                     "grouped ORDER BY must use the group key or count".into(),
                 ));
             }
+        }
+        if !terms.is_empty() {
             self.rows
                 .sort_by(|(left_key, left_count), (right_key, right_count)| {
-                    let ordering = if order.column == "count" {
-                        left_count.cmp(right_count)
-                    } else {
-                        compare_numbers(*left_key, *right_key)
-                    };
-                    let ordering = if order.descending {
-                        ordering.reverse()
-                    } else {
-                        ordering
-                    };
-                    ordering.then_with(|| compare_numbers(*left_key, *right_key))
+                    for order in &terms {
+                        let comparison = if order.column == "count" {
+                            left_count.cmp(right_count)
+                        } else {
+                            compare_numbers(*left_key, *right_key)
+                        };
+                        let comparison = if order.descending {
+                            comparison.reverse()
+                        } else {
+                            comparison
+                        };
+                        if comparison != Ordering::Equal {
+                            return comparison;
+                        }
+                    }
+                    compare_numbers(*left_key, *right_key)
                 });
         }
         writeln!(output, "{column}\tcount")?;
@@ -498,6 +607,74 @@ fn execute_grouped_numbers<W: Write>(
         }
     }
     groups.write(query, column, output)
+}
+
+fn execute_grouped_aggregate_numbers<W: Write>(
+    query: &Select,
+    start: u64,
+    rows: u64,
+    step: u64,
+    output: &mut W,
+) -> Result<(), ExecutionError> {
+    let Projection::GroupedAggregate {
+        column,
+        function,
+        value_column,
+    } = &query.projection
+    else {
+        unreachable!("grouped aggregate source requires a grouped projection")
+    };
+    if column != "number" || value_column != "number" {
+        return Err(ExecutionError::Invalid(
+            "numbers(N) exposes only the number column".into(),
+        ));
+    }
+    let comparisons = compile_numbers_predicates(query)?;
+    writeln!(output, "{column}\t{}({value_column})", function.name())?;
+    if query.limit == Some(0) {
+        return Ok(());
+    }
+    let mut by_key = HashMap::<NumberKey, usize>::new();
+    let mut groups = Vec::<(Number, AggregateState)>::new();
+    for index in 0..rows {
+        let number = start + index * step;
+        let value = Number::Unsigned(u128::from(number));
+        if !number_matches_all(value, &comparisons) {
+            continue;
+        }
+        match by_key.entry(NumberKey::from(value)) {
+            Entry::Occupied(entry) => groups[*entry.get()].1.update(value)?,
+            Entry::Vacant(entry) => {
+                if groups.len() >= MAX_GROUPS {
+                    return Err(ExecutionError::Invalid(
+                        "GROUP BY supports at most 100000 groups".into(),
+                    ));
+                }
+                entry.insert(groups.len());
+                let mut state = AggregateState::new(*function);
+                state.update(value)?;
+                groups.push((value, state));
+            }
+        }
+    }
+    if let Some(order) = &query.order_by {
+        groups.sort_by(|(left, _), (right, _)| {
+            let ordering = compare_numbers(*left, *right);
+            if order.descending {
+                ordering.reverse()
+            } else {
+                ordering
+            }
+        });
+    }
+    for (key, state) in groups
+        .into_iter()
+        .skip(query.offset.unwrap_or(0))
+        .take(query.limit.unwrap_or(usize::MAX))
+    {
+        writeln!(output, "{key}\t{}", state.render())?;
+    }
+    Ok(())
 }
 
 fn execute_count_column_part<W: Write>(
@@ -753,6 +930,9 @@ fn execute_numbers<W: Write>(
     if let Projection::GroupedCount { column } = &query.projection {
         return execute_grouped_numbers(query, start, rows, step, column, output);
     }
+    if matches!(query.projection, Projection::GroupedAggregate { .. }) {
+        return execute_grouped_aggregate_numbers(query, start, rows, step, output);
+    }
     let projected: Vec<&str> = match &query.projection {
         Projection::All => vec!["number"],
         Projection::Columns(names) => {
@@ -768,7 +948,9 @@ fn execute_numbers<W: Write>(
         | Projection::CountColumn { .. }
         | Projection::CountDistinct { .. }
         | Projection::GroupedCount { .. }
-        | Projection::Literal(_) => unreachable!(),
+        | Projection::GroupedAggregate { .. }
+        | Projection::Literal(_)
+        | Projection::Constants(_) => unreachable!(),
     };
     let comparisons = compile_numbers_predicates(query)?;
     let is_count = matches!(query.projection, Projection::Count);
@@ -776,7 +958,7 @@ fn execute_numbers<W: Write>(
         .order_by
         .as_ref()
         .map(|order| {
-            if order.column != "number" && query.alias.as_deref() != Some(order.column.as_str()) {
+            if query.order_source_column(&order.column) != "number" {
                 return Err(ExecutionError::Invalid(
                     "numbers(N) exposes only the number column".into(),
                 ));
@@ -784,6 +966,15 @@ fn execute_numbers<W: Write>(
             SortedRows::with_offset(query.limit, query.offset.unwrap_or(0), order.descending)
         })
         .transpose()?;
+    if query
+        .order_by_extra
+        .iter()
+        .any(|order| query.order_source_column(&order.column) != "number")
+    {
+        return Err(ExecutionError::Invalid(
+            "numbers(N) exposes only the number column".into(),
+        ));
+    }
     if is_count {
         write_header(query, output, "count")?;
         if query.predicates.is_empty() && query.or_predicates.is_empty() {
@@ -1016,9 +1207,11 @@ const MAX_SORTED_ROWS: usize = 100_000;
 
 struct SortedRow {
     key: Number,
+    extra_keys: Vec<Number>,
     values: Vec<Number>,
     sequence: usize,
     descending: bool,
+    extra_descending: Vec<bool>,
 }
 
 impl PartialEq for SortedRow {
@@ -1043,7 +1236,26 @@ impl Ord for SortedRow {
         } else {
             ordering
         };
-        ordering.then_with(|| self.sequence.cmp(&other.sequence))
+        if ordering != Ordering::Equal {
+            return ordering;
+        }
+        for ((left, right), descending) in self
+            .extra_keys
+            .iter()
+            .zip(&other.extra_keys)
+            .zip(&self.extra_descending)
+        {
+            let comparison = compare_numbers(*left, *right);
+            let comparison = if *descending {
+                comparison.reverse()
+            } else {
+                comparison
+            };
+            if comparison != Ordering::Equal {
+                return comparison;
+            }
+        }
+        self.sequence.cmp(&other.sequence)
     }
 }
 
@@ -1053,6 +1265,7 @@ struct SortedRows {
     offset: usize,
     seen: usize,
     descending: bool,
+    extra_descending: Vec<bool>,
 }
 
 impl SortedRows {
@@ -1063,6 +1276,7 @@ impl SortedRows {
             offset: 0,
             seen: 0,
             descending,
+            extra_descending: Vec::new(),
         }
     }
 
@@ -1085,6 +1299,15 @@ impl SortedRows {
     }
 
     fn push(&mut self, key: Number, values: Vec<Number>) -> Result<(), ExecutionError> {
+        self.push_with_extra(key, Vec::new(), values)
+    }
+
+    fn push_with_extra(
+        &mut self,
+        key: Number,
+        extra_keys: Vec<Number>,
+        values: Vec<Number>,
+    ) -> Result<(), ExecutionError> {
         if self.requested > MAX_SORTED_ROWS && self.seen >= MAX_SORTED_ROWS {
             return Err(ExecutionError::Invalid(
                 "ORDER BY requires LIMIT <= 100000 for large results".into(),
@@ -1097,9 +1320,11 @@ impl SortedRows {
             .ok_or_else(|| ExecutionError::Invalid("too many rows to sort".into()))?;
         let row = SortedRow {
             key,
+            extra_keys,
             values,
             sequence,
             descending: self.descending,
+            extra_descending: self.extra_descending.clone(),
         };
         let retained = self.requested.min(MAX_SORTED_ROWS);
         if self.rows.len() < retained {

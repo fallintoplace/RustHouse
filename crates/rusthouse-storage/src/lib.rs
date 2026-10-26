@@ -61,8 +61,10 @@ pub use numeric::{NumericColumn, NumericReadError, read_numeric_column};
 pub use part_scan::NumericPartReader;
 pub use part_verify::{PartVerification, verify_wide_part};
 pub use part_write::write_wide_part;
-pub use primary_index::{FixedPrimaryIndex, read_fixed_primary_index};
-pub use query_source::{NumericQueryReader, inspect_query_source, query_parts};
+pub use primary_index::{FixedPrimaryIndex, candidate_u64_mark_range, read_fixed_primary_index};
+pub use query_source::{
+    NumericQueryReader, inspect_query_source, query_parts, resolve_active_snapshot,
+};
 pub use stream::UInt64ColumnReader;
 pub use string_arrays::{
     StringArrayColumn, StringArrayReadError, read_legacy_string_array_column,

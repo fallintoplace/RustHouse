@@ -1,6 +1,7 @@
 use crate::{CompressedBlockReader, PartError};
 use std::fs::File;
 use std::io::Read;
+use std::ops::{Bound, Range};
 use std::path::Path;
 
 const MAX_INDEX_BYTES: usize = 256 * 1024 * 1024;
@@ -29,6 +30,40 @@ impl FixedPrimaryIndex {
         self.data
             .get(base.checked_add(start)?..base.checked_add(end)?)
     }
+}
+
+/// Conservative granule range for an ascending UInt64 first-key index.
+///
+/// Every mark contains the first key of a sorted granule. The predecessor of
+/// the first matching mark may still contain matching rows, so include it.
+/// This is an index-planning primitive, not a substitute for row predicates.
+/// Returns None for an unsupported field or an invalid/unsorted index.
+pub fn candidate_u64_mark_range(
+    index: &FixedPrimaryIndex,
+    field: usize,
+    lower: Bound<u64>,
+    upper: Bound<u64>,
+) -> Option<Range<usize>> {
+    let keys = (0..index.len())
+        .map(|mark| {
+            let bytes: [u8; 8] = index.field(mark, field)?.try_into().ok()?;
+            Some(u64::from_le_bytes(bytes))
+        })
+        .collect::<Option<Vec<_>>>()?;
+    if keys.windows(2).any(|values| values[0] > values[1]) {
+        return None;
+    }
+    let start = match lower {
+        Bound::Included(value) => keys.partition_point(|key| *key < value).saturating_sub(1),
+        Bound::Excluded(value) => keys.partition_point(|key| *key <= value).saturating_sub(1),
+        Bound::Unbounded => 0,
+    };
+    let end = match upper {
+        Bound::Included(value) => keys.partition_point(|key| *key <= value),
+        Bound::Excluded(value) => keys.partition_point(|key| *key < value),
+        Bound::Unbounded => keys.len(),
+    };
+    Some(start.min(end)..end)
 }
 
 pub fn read_fixed_primary_index(
@@ -133,6 +168,68 @@ mod tests {
     use std::sync::atomic::{AtomicUsize, Ordering};
 
     static NEXT_FILE: AtomicUsize = AtomicUsize::new(0);
+
+    #[test]
+    fn conservative_u64_pruning_never_drops_a_matching_granule() {
+        let mut data = Vec::new();
+        for value in [10u64, 20, 30, 40] {
+            data.extend_from_slice(&value.to_le_bytes());
+        }
+        let index = FixedPrimaryIndex {
+            data,
+            field_offsets: vec![0, 8],
+            row_width: 8,
+        };
+        // Every granule begins with its index key but can contain later keys.
+        let rows = [10..20, 20..30, 30..40, 40..50];
+        for lower in 0..60 {
+            for upper in lower..60 {
+                let candidate = candidate_u64_mark_range(
+                    &index,
+                    0,
+                    Bound::Included(lower),
+                    Bound::Included(upper),
+                )
+                .unwrap();
+                for (mark, granule) in rows.iter().enumerate() {
+                    if granule
+                        .clone()
+                        .any(|value| value >= lower && value <= upper)
+                    {
+                        assert!(
+                            candidate.contains(&mark),
+                            "query [{lower}, {upper}] skipped matching mark {mark}"
+                        );
+                    }
+                }
+            }
+        }
+        assert_eq!(
+            candidate_u64_mark_range(&index, 0, Bound::Included(21), Bound::Excluded(30),),
+            Some(1..2)
+        );
+        assert_eq!(
+            candidate_u64_mark_range(&index, 0, Bound::Unbounded, Bound::Unbounded),
+            Some(0..4)
+        );
+    }
+
+    #[test]
+    fn invalid_primary_key_layout_disables_pruning() {
+        let index = FixedPrimaryIndex {
+            data: [20u64, 10].into_iter().flat_map(u64::to_le_bytes).collect(),
+            field_offsets: vec![0, 8],
+            row_width: 8,
+        };
+        assert_eq!(
+            candidate_u64_mark_range(&index, 0, Bound::Unbounded, Bound::Unbounded),
+            None
+        );
+        assert_eq!(
+            candidate_u64_mark_range(&index, 1, Bound::Unbounded, Bound::Unbounded),
+            None
+        );
+    }
 
     #[test]
     fn checks_primary_key_field_layout_before_io() {

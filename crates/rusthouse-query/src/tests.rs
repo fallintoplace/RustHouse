@@ -22,11 +22,13 @@ fn parses_scalar_and_table_queries() {
         Select {
             projection: Projection::Literal(-42),
             alias: None,
+            rename: None,
             distinct: false,
             source: None,
             predicates: Vec::new(),
             or_predicates: Vec::new(),
             order_by: None,
+            order_by_extra: Vec::new(),
             having: None,
             limit: None,
             offset: None,
@@ -37,11 +39,13 @@ fn parses_scalar_and_table_queries() {
         Select {
             projection: Projection::Columns(vec!["id".into(), "price".into()]),
             alias: None,
+            rename: None,
             distinct: false,
             source: Some(Source::Table("part".into())),
             predicates: Vec::new(),
             or_predicates: Vec::new(),
             order_by: None,
+            order_by_extra: Vec::new(),
             having: None,
             limit: Some(2),
             offset: None,
@@ -63,6 +67,27 @@ fn parses_scalar_and_table_queries() {
             .projection,
         Projection::Count
     );
+}
+
+#[test]
+fn parses_wildcard_rename_and_rejects_invalid_forms() {
+    let query = parse_select(
+        "SELECT DISTINCT * ReNaMe number aS value FROM numbers(5) ORDER BY value DESC LIMIT 2",
+    )
+    .unwrap();
+    assert_eq!(query.projection, Projection::All);
+    assert_eq!(query.rename, Some(("number".into(), "value".into())));
+    assert_eq!(query.order_by.unwrap().column, "value");
+    for sql in [
+        "SELECT * RENAME number TO value FROM numbers(1)",
+        "SELECT * RENAME number AS FROM numbers(1)",
+        "SELECT * RENAME AS value FROM numbers(1)",
+        "SELECT number RENAME number AS value FROM numbers(1)",
+        "SELECT * RENAME number AS value, other AS name FROM numbers(1)",
+        "SELECT * RENAME number AS value RENAME number AS again FROM numbers(1)",
+    ] {
+        assert!(parse_select(sql).is_err(), "{sql}");
+    }
 }
 
 #[test]
@@ -93,6 +118,92 @@ fn parses_single_column_result_aliases() {
         "SELECT number, number AS alias FROM numbers(5)",
         "SELECT * AS everything FROM numbers(5)",
         "SELECT number AS 3 FROM numbers(5)",
+    ] {
+        assert!(parse_select(sql).is_err(), "{sql}");
+    }
+}
+
+#[test]
+fn projects_bounded_mixed_constant_rows() {
+    let select = parse_select("SELECT 'Ada' AS name, -7 AS id, NULL AS missing").unwrap();
+    assert_eq!(
+        select.projection,
+        Projection::Constants(vec![
+            Constant {
+                value: ConstantValue::Text("Ada".into()),
+                alias: Some("name".into()),
+            },
+            Constant {
+                value: ConstantValue::Integer(-7),
+                alias: Some("id".into()),
+            },
+            Constant {
+                value: ConstantValue::Null,
+                alias: Some("missing".into()),
+            },
+        ])
+    );
+    let mut output = Vec::new();
+    execute(&select, None, &mut output).unwrap();
+    assert_eq!(output, b"name\tid\tmissing\nAda\t-7\t\\N\n");
+
+    let mut output = Vec::new();
+    execute(
+        &parse_select("SELECT 'hi', NULL LIMIT 0").unwrap(),
+        None,
+        &mut output,
+    )
+    .unwrap();
+    assert_eq!(output, b"'hi'\tNULL\n");
+
+    let mut output = Vec::new();
+    execute(
+        &parse_select("SELECT 'hi', 2 LIMIT 1 OFFSET 1").unwrap(),
+        None,
+        &mut output,
+    )
+    .unwrap();
+    assert_eq!(output, b"'hi'\t2\n");
+
+    for sql in [
+        "SELECT 1,",
+        "SELECT 'hi' FROM numbers(2)",
+        "SELECT NULL AS",
+        "SELECT 1, unknown",
+    ] {
+        assert!(parse_select(sql).is_err(), "{sql}");
+    }
+}
+
+#[test]
+fn accepts_composite_order_by_keys_and_bounds_the_count() {
+    let parsed =
+        parse_select("SELECT id, price FROM part ORDER BY 2 DESC, id ASC, 1 LIMIT 3").unwrap();
+    assert_eq!(parsed.order_by.unwrap().column, "price");
+    assert_eq!(
+        parsed.order_by_extra,
+        vec![
+            OrderBy {
+                column: "id".into(),
+                descending: false,
+                nulls_first: None,
+            },
+            OrderBy {
+                column: "id".into(),
+                descending: false,
+                nulls_first: None,
+            },
+        ]
+    );
+    let grouped =
+        parse_select("SELECT id, count(*) FROM part GROUP BY id ORDER BY count DESC, id").unwrap();
+    assert_eq!(grouped.order_by_extra[0].column, "id");
+    for sql in [
+        "SELECT id FROM part ORDER BY id,",
+        "SELECT id FROM part ORDER BY id, 2",
+        "SELECT count(*) FROM part ORDER BY id, id",
+        "SELECT id, count(*) FROM part GROUP BY id ORDER BY id, missing",
+        "SELECT id FROM part ORDER BY id, id, id, id, id, id, id, id, id",
     ] {
         assert!(parse_select(sql).is_err(), "{sql}");
     }
@@ -355,17 +466,19 @@ fn parses_order_by_and_rejects_invalid_ordering() {
 }
 
 #[test]
-fn parses_order_by_explicit_nulls_placement() {
-    let first = parse_select("SELECT attempt FROM part ORDER BY attempt DESC NULLS FIRST").unwrap();
-    assert_eq!(first.order_by.unwrap().nulls_first, Some(true));
-
-    let last = parse_select("SELECT attempt FROM part ORDER BY attempt NULLS LAST").unwrap();
-    assert_eq!(last.order_by.unwrap().nulls_first, Some(false));
+fn parses_explicit_nulls_precedence_per_order_term() {
+    let query = parse_select(
+        "SELECT attempt, message FROM part ORDER BY attempt DESC NULLS FIRST, message ASC NULLS LAST",
+    )
+    .unwrap();
+    assert_eq!(query.order_by.as_ref().unwrap().nulls_first, Some(true));
+    assert_eq!(query.order_by_extra[0].nulls_first, Some(false));
 
     for sql in [
         "SELECT attempt FROM part ORDER BY attempt NULLS",
         "SELECT attempt FROM part ORDER BY attempt NULLS MIDDLE",
         "SELECT attempt FROM part ORDER BY attempt NULLS FIRST NULLS LAST",
+        "SELECT attempt FROM part ORDER BY attempt NULLS LAST, message NULLS MIDDLE",
     ] {
         assert!(parse_select(sql).is_err(), "{sql}");
     }
@@ -426,6 +539,46 @@ fn allows_quoted_predicate_values_for_type_validation_at_execution() {
 }
 
 #[test]
+fn parses_scalar_arithmetic_with_checked_overflow_and_precedence() {
+    for (sql, value) in [
+        ("SELECT 1 + 2 * 3", 7),
+        ("SELECT (1 + 2) * 3", 9),
+        ("SELECT 10 % 4", 2),
+        ("SELECT 12 - 5 * 2", 2),
+        ("SELECT 12-5*2", 2),
+        ("SELECT 10 + -4", 6),
+        ("SELECT - 2 * 3", -6),
+        ("SELECT -9223372036854775808", i64::MIN),
+        ("SELECT 1--2", 3),
+    ] {
+        assert_eq!(
+            parse_select(sql).unwrap().projection,
+            Projection::Literal(value),
+            "{sql}"
+        );
+    }
+    let aliased = parse_select("SELECT 5 * (2 + 1) AS answer LIMIT 1").unwrap();
+    assert_eq!(aliased.projection, Projection::Literal(15));
+    assert_eq!(aliased.alias.as_deref(), Some("answer"));
+    for sql in [
+        "SELECT 1 +",
+        "SELECT 1 -",
+        "SELECT 1 % 0",
+        "SELECT 1 + 9223372036854775807",
+        "SELECT 9223372036854775807 * 2",
+        "SELECT -9223372036854775808 - 1",
+        "SELECT 1 + (2 * 3",
+        "SELECT 1 + 2 FROM part",
+        "SELECT 1.5 + 2",
+        "SELECT 1 / 2",
+    ] {
+        assert!(parse_select(sql).is_err(), "{sql}");
+    }
+    let deeply_nested = format!("SELECT {}1{}", "(".repeat(20), ")".repeat(20));
+    assert!(parse_select(&deeply_nested).is_err());
+}
+
+#[test]
 fn rejects_malformed_and_unsupported_statements() {
     for sql in [
         "",
@@ -439,7 +592,7 @@ fn rejects_malformed_and_unsupported_statements() {
         "SELECT id FROM part LIMIT 1.5",
         "SELECT id FROM part WHERE id =",
         "SELECT id FROM part LIMIT 184467440737095516161",
-        "SELECT 1 + 2",
+        "SELECT 1 / 2",
     ] {
         assert!(parse_select(sql).is_err(), "{sql}");
     }
@@ -565,8 +718,43 @@ fn parses_grouped_counts_and_rejects_unsupported_grouping() {
         "SELECT id, count(*) FROM part GROUP BY id ORDER BY price",
         "SELECT id FROM part GROUP BY id",
         "SELECT count(*) FROM part GROUP BY id",
-        "SELECT id, sum(price) FROM part GROUP BY id",
         "SELECT DISTINCT id, count(*) FROM part GROUP BY id",
+    ] {
+        assert!(parse_select(sql).is_err(), "{sql}");
+    }
+}
+
+#[test]
+fn parses_grouped_numeric_aggregates_and_bounds_ordering() {
+    for name in ["sum", "avg", "min", "max", "varPop", "stddevPop", "median"] {
+        let sql = format!(
+            "SELECT service, {name}(status) FROM part WHERE status > 0 GROUP BY service ORDER BY service DESC LIMIT 3"
+        );
+        let select = parse_select(&sql).unwrap();
+        let Projection::GroupedAggregate {
+            column,
+            function,
+            value_column,
+        } = select.projection
+        else {
+            panic!("not a grouped aggregate: {sql}");
+        };
+        assert_eq!(column, "service");
+        assert_eq!(
+            function.name().to_ascii_lowercase(),
+            name.to_ascii_lowercase()
+        );
+        assert_eq!(value_column, "status");
+    }
+    for sql in [
+        "SELECT service, sum(status) FROM part",
+        "SELECT service, sum(status) FROM part GROUP BY status",
+        "SELECT service, sum(status) FROM part GROUP BY service ORDER BY status",
+        "SELECT service, sum(status) FROM part GROUP BY service ORDER BY 2",
+        "SELECT DISTINCT service, sum(status) FROM part GROUP BY service",
+        "SELECT service, sum(*) FROM part GROUP BY service",
+        "SELECT service, sum(status, id) FROM part GROUP BY service",
+        "SELECT service, avg(status) FROM part GROUP BY service HAVING count(*) > 1",
     ] {
         assert!(parse_select(sql).is_err(), "{sql}");
     }

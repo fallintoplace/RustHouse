@@ -1,9 +1,11 @@
 //! Single-writer local database mode.
 //! Tables use existing .schema metadata and immutable, atomically published wide parts.
 use crate::catalog;
-use rusthouse_query::{Ddl, Insert};
+mod rewrite;
+use rusthouse_query::{Ddl, Insert, RowPredicate, Select, Source, Update};
 use rusthouse_storage::{
-    Column, inspect_query_source, query_parts, verify_wide_part, write_wide_part,
+    Column, inspect_query_source, query_parts, resolve_active_snapshot, verify_wide_part,
+    write_wide_part,
 };
 use std::fs::{self, OpenOptions};
 use std::path::{Path, PathBuf};
@@ -11,32 +13,113 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 
 static NEXT_STAGE: AtomicUsize = AtomicUsize::new(0);
 
-struct WriteLock {
-    path: PathBuf,
-    _file: fs::File,
+// Keep this file on disk. Unix advisory locks are released by the kernel when
+// the process exits, including after SIGKILL, so a stale pathname is harmless.
+// Unlinking a locked file would let another writer lock a different inode.
+#[cfg(unix)]
+mod advisory {
+    use std::fs::File;
+    use std::io;
+    use std::os::fd::AsRawFd;
+    use std::os::raw::c_int;
+
+    unsafe extern "C" {
+        fn flock(fd: c_int, operation: c_int) -> c_int;
+    }
+
+    const LOCK_SH: c_int = 1;
+    const LOCK_EX: c_int = 2;
+    const LOCK_NB: c_int = 4;
+
+    pub(super) fn try_lock(file: &File, exclusive: bool) -> io::Result<()> {
+        let mode = if exclusive { LOCK_EX } else { LOCK_SH };
+        if unsafe { flock(file.as_raw_fd(), mode | LOCK_NB) } == -1 {
+            Err(io::Error::last_os_error())
+        } else {
+            Ok(())
+        }
+    }
 }
 
-impl Drop for WriteLock {
+pub(super) struct DatabaseLock {
+    _file: fs::File,
+    #[cfg(not(unix))]
+    path: PathBuf,
+}
+
+// Platforms without flock retain the original create-new lock semantics.
+#[cfg(not(unix))]
+impl Drop for DatabaseLock {
     fn drop(&mut self) {
         let _ = fs::remove_file(&self.path);
     }
 }
 
-fn lock(database: &Path) -> Result<WriteLock, String> {
-    fs::create_dir_all(database)
-        .map_err(|error| format!("cannot create database {}: {error}", database.display()))?;
+fn acquire_lock(database: &Path, exclusive: bool) -> Result<DatabaseLock, String> {
+    if exclusive {
+        fs::create_dir_all(database)
+            .map_err(|error| format!("cannot create database {}: {error}", database.display()))?;
+    }
     let path = database.join(".rusthouse-write.lock");
+    let kind = if exclusive { "write" } else { "read" };
+
+    #[cfg(unix)]
     let file = OpenOptions::new()
-        .create_new(true)
+        .read(true)
         .write(true)
+        .create(true)
+        .truncate(false)
         .open(&path)
         .map_err(|error| {
             format!(
-                "cannot acquire database write lock {}: {error}",
+                "cannot open database {kind} lock {}: {error}",
                 path.display()
             )
         })?;
-    Ok(WriteLock { path, _file: file })
+
+    #[cfg(unix)]
+    {
+        let metadata = fs::symlink_metadata(&path)
+            .map_err(|error| format!("cannot inspect database lock {}: {error}", path.display()))?;
+        if !metadata.file_type().is_file() {
+            return Err(format!(
+                "database lock is not a regular file: {}",
+                path.display()
+            ));
+        }
+        advisory::try_lock(&file, exclusive).map_err(|error| {
+            format!(
+                "cannot acquire database {kind} lock {}: {error}",
+                path.display()
+            )
+        })?;
+    }
+
+    #[cfg(not(unix))]
+    let file = OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(&path)
+        .map_err(|error| {
+            format!(
+                "cannot acquire database {kind} lock {}: {error}",
+                path.display()
+            )
+        })?;
+
+    Ok(DatabaseLock {
+        _file: file,
+        #[cfg(not(unix))]
+        path,
+    })
+}
+
+fn lock(database: &Path) -> Result<DatabaseLock, String> {
+    acquire_lock(database, true)
+}
+
+pub(super) fn read_lock(database: &Path) -> Result<DatabaseLock, String> {
+    acquire_lock(database, false)
 }
 
 fn data_path(database: &Path, name: &str) -> PathBuf {
@@ -65,12 +148,17 @@ fn validated_parts(
     if !metadata.file_type().is_dir() {
         return Err(format!("table data is not a real directory: {name}"));
     }
-    let parts = query_parts(&path).map_err(|error| error.to_string())?;
-    let source = inspect_query_source(&path).map_err(|error| error.to_string())?;
+    let active = active_source(database, name)?;
+    let parts = query_parts(&active).map_err(|error| error.to_string())?;
+    let source = inspect_query_source(&active).map_err(|error| error.to_string())?;
     if source.columns != cols {
         return Err(format!("table {name} schema differs from its stored data"));
     }
-    Ok((path, parts))
+    Ok((active, parts))
+}
+
+fn active_source(database: &Path, name: &str) -> Result<PathBuf, String> {
+    resolve_active_snapshot(&data_path(database, name)).map_err(|error| error.to_string())
 }
 
 /// Resolve a named SQL table to its immutable on-disk parts.
@@ -86,6 +174,17 @@ fn existing_path(path: &Path) -> Result<bool, String> {
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(false),
         Err(error) => Err(format!("cannot inspect {}: {error}", path.display())),
     }
+}
+
+fn sync_database_directory(database: &Path) -> Result<(), String> {
+    fs::File::open(database)
+        .and_then(|directory| directory.sync_all())
+        .map_err(|error| {
+            format!(
+                "cannot sync database directory {}: {error}",
+                database.display()
+            )
+        })
 }
 
 fn drop_table(database: &Path, name: &str, if_exists: bool) -> Result<(), String> {
@@ -136,7 +235,9 @@ fn rename_table(database: &Path, from: &str, to: &str) -> Result<(), String> {
     }
     let _lock = lock(database)?;
     let cols = columns(database, from)?;
-    let (source_parts, _) = validated_parts(database, from, &cols)?;
+    validated_parts(database, from, &cols)?;
+    // Move the complete table root, including its snapshot pointer and all generations.
+    let source_parts = data_path(database, from);
     let source_schema = database.join(format!("{from}.schema"));
     let destination_schema = database.join(format!("{to}.schema"));
     let destination_parts = data_path(database, to);
@@ -144,79 +245,115 @@ fn rename_table(database: &Path, from: &str, to: &str) -> Result<(), String> {
         return Err(format!("table already exists or has orphaned data: {to}"));
     }
 
-    // Two paths cannot be renamed atomically together. Roll back a failed
-    // schema rename and never overwrite an existing destination.
-    fs::rename(&source_parts, &destination_parts)
-        .map_err(|error| format!("cannot move table data from {from}: {error}"))?;
-    if let Err(error) = fs::rename(&source_schema, &destination_schema) {
-        fs::rename(&destination_parts, &source_parts).map_err(|rollback| {
-            format!("cannot rename schema from {from}: {error}; data rollback failed: {rollback}")
-        })?;
-        return Err(format!("cannot rename schema from {from}: {error}"));
+    // Both the schema and parts have to move, so RENAME is not a single
+    // filesystem operation. Link the destination schema *before* moving the
+    // parts: before the move the source remains readable, and afterwards the
+    // destination is readable. A crash can leave an extra schema alias, but
+    // never a window where neither name has both schema and data.
+    fs::hard_link(&source_schema, &destination_schema)
+        .map_err(|error| format!("cannot stage destination schema {to}: {error}"))?;
+    if let Err(error) = sync_database_directory(database) {
+        let rollback = fs::remove_file(&destination_schema)
+            .and_then(|_| fs::File::open(database).and_then(|dir| dir.sync_all()));
+        if let Err(rollback) = rollback {
+            return Err(format!(
+                "cannot sync staged rename {from} to {to}: {error}; schema rollback failed: {rollback}"
+            ));
+        }
+        return Err(format!("cannot sync staged rename {from} to {to}: {error}"));
     }
-    fs::File::open(database)
-        .and_then(|dir| dir.sync_all())
-        .map_err(|error| format!("table {from} was renamed but sync failed: {error}"))?;
+    if let Err(error) = fs::rename(&source_parts, &destination_parts) {
+        let rollback = fs::remove_file(&destination_schema)
+            .and_then(|_| fs::File::open(database).and_then(|dir| dir.sync_all()));
+        if let Err(rollback) = rollback {
+            return Err(format!(
+                "cannot move table data from {from}: {error}; schema rollback failed: {rollback}"
+            ));
+        }
+        return Err(format!("cannot move table data from {from}: {error}"));
+    }
+    // Do not remove the old schema until the new name is durably discoverable.
+    sync_database_directory(database)
+        .map_err(|error| format!("table data moved to {to}, but old schema remains: {error}"))?;
+    fs::remove_file(&source_schema)
+        .map_err(|error| format!("table {to} is readable but cannot remove old schema: {error}"))?;
+    sync_database_directory(database)
+        .map_err(|error| format!("table {to} was renamed but final sync failed: {error}"))?;
     println!("Renamed table {from} to {to}");
     Ok(())
 }
 
-/// Replace all stored rows with one empty part while preserving the schema.
-/// This is a single-writer operation, not an online snapshot transaction.
+/// Publish a new empty snapshot without temporarily removing the active table.
 fn truncate_table(database: &Path, name: &str) -> Result<(), String> {
     let _lock = lock(database)?;
     let cols = columns(database, name)?;
-    let (parts, _) = validated_parts(database, name, &cols)?;
-    let sequence = NEXT_STAGE.fetch_add(1, Ordering::Relaxed);
-    let staging = database.join(format!(
-        ".{name}.truncate-new-{}-{sequence}",
-        std::process::id()
-    ));
-    let retired = database.join(format!(
-        ".{name}.truncate-old-{}-{sequence}",
-        std::process::id()
-    ));
-    if existing_path(&staging)? || existing_path(&retired)? {
-        return Err("TRUNCATE staging path already exists".into());
-    }
-    fs::create_dir(&staging)
-        .map_err(|error| format!("cannot stage TRUNCATE for {name}: {error}"))?;
-    let prepared = write_wide_part(&staging.join("all_0_0_0"), &cols, &[])
-        .map_err(|error| error.to_string())
-        .and_then(|_| {
-            verify_wide_part(staging.join("all_0_0_0")).map_err(|error| error.to_string())
-        });
-    if let Err(error) = prepared {
-        let _ = fs::remove_dir_all(&staging);
-        return Err(error);
-    }
-    if let Err(error) = fs::rename(&parts, &retired) {
-        let _ = fs::remove_dir_all(&staging);
-        return Err(format!("cannot retire stored rows of {name}: {error}"));
-    }
-    if let Err(error) = fs::rename(&staging, &parts) {
-        let rollback = fs::rename(&retired, &parts);
-        let _ = fs::remove_dir_all(&staging);
-        return match rollback {
-            Ok(()) => Err(format!("cannot publish empty table {name}: {error}")),
-            Err(rollback) => Err(format!(
-                "cannot publish empty table {name}: {error}; rollback failed: {rollback}"
-            )),
-        };
-    }
-    fs::File::open(database)
-        .and_then(|dir| dir.sync_all())
-        .map_err(|error| format!("table {name} was truncated but sync failed: {error}"))?;
-    fs::remove_dir_all(&retired)
-        .map_err(|error| format!("table {name} was truncated but cleanup failed: {error}"))?;
+    validated_parts(database, name, &cols)?;
+    rewrite::publish_snapshot(database, name, &cols, &[])?;
     println!("Truncated table {name}");
     Ok(())
+}
+
+fn create_table_locked(
+    database: &Path,
+    name: &str,
+    definitions: &[rusthouse_query::ColumnDef],
+    if_not_exists: bool,
+) -> Result<(), String> {
+    let schema = database.join(format!("{name}.schema"));
+    if existing_path(&schema)? {
+        if !if_not_exists {
+            return Err(format!("table already exists: {name}"));
+        }
+        let existing = columns(database, name)?;
+        validated_parts(database, name, &existing)?;
+        return Ok(());
+    }
+    let parts = data_path(database, name);
+    fs::create_dir(&parts)
+        .map_err(|error| format!("cannot create table data {}: {error}", parts.display()))?;
+    let cols: Vec<Column> = definitions
+        .iter()
+        .map(|column| Column {
+            name: column.name.clone(),
+            data_type: column.data_type.clone(),
+        })
+        .collect();
+    let ddl = Ddl::CreateTable {
+        name: name.to_owned(),
+        columns: definitions.to_vec(),
+        if_not_exists,
+    };
+    let result = (|| -> Result<(), String> {
+        write_wide_part(&parts.join("all_0_0_0"), &cols, &[]).map_err(|error| error.to_string())?;
+        // Persist the parts directory and its parent before the schema name
+        // becomes visible. A published schema must not point at missing data
+        // after a crash.
+        fs::File::open(&parts)
+            .and_then(|directory| directory.sync_all())
+            .map_err(|error| format!("cannot sync new table parts: {error}"))?;
+        fs::File::open(database)
+            .and_then(|directory| directory.sync_all())
+            .map_err(|error| format!("cannot sync new table directory: {error}"))?;
+        catalog::apply(database, &ddl)
+    })();
+    if result.is_err() && matches!(existing_path(&schema), Ok(false)) {
+        // A schema may have been published before its final sync failed.
+        // Never remove its data in that case.
+        let _ = fs::remove_dir_all(&parts);
+    }
+    result
 }
 
 pub(super) fn apply_ddl(database: &Path, ddl: &Ddl) -> Result<(), String> {
     match ddl {
         Ddl::ShowTables | Ddl::ShowCreateTable { .. } | Ddl::DescribeTable { .. } => {
-            catalog::apply(database, ddl)
+            // Do not create a new database just to list empty tables.
+            if database.is_dir() {
+                let _read_lock = read_lock(database)?;
+                catalog::apply(database, ddl)
+            } else {
+                catalog::apply(database, ddl)
+            }
         }
         Ddl::CreateTable {
             name,
@@ -224,39 +361,85 @@ pub(super) fn apply_ddl(database: &Path, ddl: &Ddl) -> Result<(), String> {
             if_not_exists,
         } => {
             let _lock = lock(database)?;
-            let schema = database.join(format!("{name}.schema"));
-            if schema.exists() {
-                if !if_not_exists {
-                    return Err(format!("table already exists: {name}"));
-                }
-                let existing = columns(database, name)?;
-                validated_parts(database, name, &existing)?;
-                return Ok(());
-            }
-            let parts = data_path(database, name);
-            fs::create_dir(&parts).map_err(|error| {
-                format!("cannot create table data {}: {error}", parts.display())
-            })?;
-            let cols: Vec<Column> = definitions
+            create_table_locked(database, name, definitions, *if_not_exists)
+        }
+        Ddl::CreateTableLike {
+            name,
+            source,
+            if_not_exists,
+        } => {
+            let _lock = lock(database)?;
+            let source_columns = catalog::read_schema(database, source)?;
+            let physical_columns: Vec<Column> = source_columns
                 .iter()
                 .map(|column| Column {
                     name: column.name.clone(),
                     data_type: column.data_type.clone(),
                 })
                 .collect();
-            let result = write_wide_part(&parts.join("all_0_0_0"), &cols, &[])
-                .map_err(|error| error.to_string())
-                .and_then(|_| catalog::apply(database, ddl));
-            if result.is_err() {
-                let _ = fs::remove_dir_all(&parts);
-            }
-            result
+            validated_parts(database, source, &physical_columns)?;
+            create_table_locked(database, name, &source_columns, *if_not_exists)
         }
         Ddl::DropTable { name, if_exists } => drop_table(database, name, *if_exists),
         Ddl::TruncateTable { name } => truncate_table(database, name),
+        Ddl::OptimizeTable { name } => rewrite::compact_table(database, name),
         Ddl::RenameTable { from, to } => rename_table(database, from, to),
         _ => Err("database mode does not support ALTER yet".into()),
     }
+}
+
+pub(super) fn update(database: &Path, update: &Update) -> Result<(), String> {
+    let cols = columns(database, &update.table)?;
+    let filter = RowPredicate::new(&update.select, &cols).map_err(|error| error.to_string())?;
+    let assignments = update
+        .assignments
+        .iter()
+        .map(|(name, value)| {
+            let index = cols
+                .iter()
+                .position(|column| column.name == *name)
+                .ok_or_else(|| format!("unknown UPDATE column: {name}"))?;
+            if value.is_none() && !cols[index].data_type.starts_with("Nullable(") {
+                return Err(format!("NULL is not allowed for UPDATE column: {name}"));
+            }
+            Ok((index, value.clone()))
+        })
+        .collect::<Result<Vec<_>, String>>()?;
+    let mut changed = 0usize;
+    rewrite::rewrite_rows(database, &update.table, |batch, row, values| {
+        if filter.matches(batch, row) {
+            for (index, literal) in &assignments {
+                values[*index] = literal.clone();
+            }
+            changed += 1;
+        }
+        Ok(true)
+    })?;
+    println!("Updated {changed} rows in {}", update.table);
+    Ok(())
+}
+
+/// Delete matching rows by switching a complete immutable snapshot.
+pub(super) fn delete(database: &Path, select: &Select) -> Result<(), String> {
+    let Some(Source::Table(name)) = select.source.as_ref() else {
+        return Err("DELETE requires a stored database table".into());
+    };
+    let cols = columns(database, name)?;
+    let filter = RowPredicate::new(select, &cols).map_err(|error| error.to_string())?;
+    let mut removed = 0usize;
+    let (scanned, retained) = rewrite::rewrite_rows(database, name, |batch, row, _| {
+        if filter.matches(batch, row) {
+            removed += 1;
+            Ok(false)
+        } else {
+            Ok(true)
+        }
+    })?;
+    if scanned != removed + retained {
+        return Err("DELETE row count mismatch".into());
+    }
+    println!("Deleted {removed} rows from {name}");
+    Ok(())
 }
 
 pub(super) fn insert(database: &Path, insert: &Insert) -> Result<(), String> {
@@ -274,6 +457,10 @@ pub(super) fn insert(database: &Path, insert: &Insert) -> Result<(), String> {
             .collect::<Result<Vec<_>, _>>()?,
         None => (0..cols.len()).collect(),
     };
+    if insert.rows.is_empty() {
+        println!("Inserted 0 rows into {}", insert.table);
+        return Ok(());
+    }
     let mut rows = Vec::with_capacity(insert.rows.len());
     for source in &insert.rows {
         if source.len() != indices.len() {
@@ -345,4 +532,54 @@ pub(super) fn insert(database: &Path, insert: &Insert) -> Result<(), String> {
     result?;
     println!("Inserted {} rows into {}", rows.len(), insert.table);
     Ok(())
+}
+
+#[cfg(all(test, unix))]
+mod lock_tests {
+    use super::*;
+
+    #[test]
+    fn stale_lock_is_reusable_and_readers_block_writers() {
+        let directory = std::env::temp_dir().join(format!(
+            "rusthouse-advisory-lock-test-{}",
+            std::process::id()
+        ));
+        fs::create_dir_all(&directory).unwrap();
+        let path = directory.join(".rusthouse-write.lock");
+        fs::write(&path, b"left behind by a terminated writer").unwrap();
+
+        let writer = lock(&directory).unwrap();
+        assert!(lock(&directory).is_err());
+        assert!(read_lock(&directory).is_err());
+        drop(writer);
+
+        let first_reader = read_lock(&directory).unwrap();
+        let second_reader = read_lock(&directory).unwrap();
+        assert!(lock(&directory).is_err());
+        drop(first_reader);
+        assert!(lock(&directory).is_err());
+        drop(second_reader);
+
+        let writer = lock(&directory).unwrap();
+        drop(writer);
+        assert!(path.is_file(), "lock inode must stay available for reuse");
+        fs::remove_dir_all(directory).unwrap();
+    }
+
+    #[test]
+    fn rejects_symlinked_lock_file() {
+        use std::os::unix::fs::symlink;
+
+        let directory = std::env::temp_dir().join(format!(
+            "rusthouse-advisory-symlink-test-{}",
+            std::process::id()
+        ));
+        fs::create_dir_all(&directory).unwrap();
+        let target = directory.join("target");
+        fs::write(&target, b"untouched").unwrap();
+        symlink(&target, directory.join(".rusthouse-write.lock")).unwrap();
+        assert!(lock(&directory).is_err());
+        assert_eq!(fs::read(target).unwrap(), b"untouched");
+        fs::remove_dir_all(directory).unwrap();
+    }
 }

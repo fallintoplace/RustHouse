@@ -11,6 +11,12 @@ fn schema_path(catalog: &Path, name: &str) -> PathBuf {
     catalog.join(format!("{name}.schema"))
 }
 
+fn sync_catalog_dir(catalog: &Path) -> Result<(), String> {
+    fs::File::open(catalog)
+        .and_then(|directory| directory.sync_all())
+        .map_err(|error| format!("cannot sync catalog {}: {error}", catalog.display()))
+}
+
 pub(super) fn apply(catalog: &Path, ddl: &Ddl) -> Result<(), String> {
     match ddl {
         Ddl::ShowTables => show_tables(catalog),
@@ -21,8 +27,17 @@ pub(super) fn apply(catalog: &Path, ddl: &Ddl) -> Result<(), String> {
             columns,
             if_not_exists,
         } => create_table(catalog, name, columns, *if_not_exists),
+        Ddl::CreateTableLike {
+            name,
+            source,
+            if_not_exists,
+        } => {
+            let source_columns = read_schema(catalog, source)?;
+            create_table(catalog, name, &source_columns, *if_not_exists)
+        }
         Ddl::DropTable { name, if_exists } => drop_table(catalog, name, *if_exists),
         Ddl::TruncateTable { .. } => Err("TRUNCATE requires --database".into()),
+        Ddl::OptimizeTable { .. } => Err("OPTIMIZE requires --database".into()),
         Ddl::AddColumn {
             table,
             column,
@@ -214,6 +229,8 @@ fn replace_schema(catalog: &Path, name: &str, columns: &[ColumnDef]) -> Result<(
         let _ = fs::remove_file(&temp);
         return Err(format!("cannot update schema for {name}: {error}"));
     }
+    // The replacement is visible now; sync its directory entry for durability.
+    sync_catalog_dir(catalog)?;
     Ok(())
 }
 
@@ -323,25 +340,48 @@ fn create_table(
     fs::create_dir_all(catalog)
         .map_err(|error| format!("cannot create catalog {}: {error}", catalog.display()))?;
     let path = schema_path(catalog, name);
-    let mut file = match OpenOptions::new().write(true).create_new(true).open(&path) {
-        Ok(file) => file,
-        Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists && if_not_exists => {
-            // An existing schema must be safe and readable before ignoring CREATE.
-            read_schema(catalog, name)?;
-            return Ok(());
-        }
-        Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {
-            return Err(format!("table already exists: {name}"));
-        }
-        Err(error) => {
-            return Err(format!("cannot create table {name}: {error}"));
-        }
-    };
-    if let Err(error) = persist_schema(&mut file, columns) {
-        drop(file);
-        let _ = fs::remove_file(&path);
-        return Err(format!("cannot write schema for {name}: {error}"));
+    let temp = catalog.join(format!(
+        ".{name}.schema.tmp.{}.{}",
+        std::process::id(),
+        NEXT_TEMP.fetch_add(1, Ordering::Relaxed)
+    ));
+    // Never expose an incomplete schema at its public table name. Write and
+    // sync the staging file first, then link it without replacing an existing
+    // table (CREATE IF NOT EXISTS must still validate existing schemas).
+    let staged = (|| -> Result<(), std::io::Error> {
+        let mut file = OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(&temp)?;
+        persist_schema(&mut file, columns)
+    })();
+    if let Err(error) = staged {
+        let _ = fs::remove_file(&temp);
+        return Err(format!("cannot stage schema for {name}: {error}"));
     }
+    match fs::hard_link(&temp, &path) {
+        Ok(()) => {}
+        Err(error) => {
+            let _ = fs::remove_file(&temp);
+            if error.kind() == std::io::ErrorKind::AlreadyExists {
+                if if_not_exists {
+                    read_schema(catalog, name)?;
+                    return Ok(());
+                }
+                return Err(format!("table already exists: {name}"));
+            }
+            return Err(format!("cannot publish schema for {name}: {error}"));
+        }
+    }
+
+    // After hard_link succeeds the schema may already be observable. On a
+    // sync failure, leave the complete public file in place for recovery.
+    sync_catalog_dir(catalog).map_err(|error| {
+        format!("schema for {name} was published but durability is uncertain: {error}")
+    })?;
+    fs::remove_file(&temp)
+        .map_err(|error| format!("schema for {name} was published but cleanup failed: {error}"))?;
+    sync_catalog_dir(catalog)?;
     println!("Created table {name} (schema only)");
     Ok(())
 }

@@ -1,12 +1,21 @@
+mod copy;
 mod ddl;
+mod delete;
 mod execute;
 mod explain;
 mod insert;
+mod insert_select;
 mod lexer;
+mod scalar;
+mod update;
+pub use copy::{CopyFrom, parse_copy_from};
 pub use ddl::{ColumnDef, Ddl, parse_ddl};
-pub use execute::{ExecutionError, execute};
+pub use delete::parse_delete;
+pub use execute::{ExecutionError, RowPredicate, execute};
 pub use explain::explain_select;
 pub use insert::{Insert, parse_insert};
+pub use insert_select::{InsertSelect, parse_insert_select};
+pub use update::{Update, parse_update};
 
 use std::error::Error;
 use std::fmt;
@@ -39,8 +48,43 @@ impl AggregateFunction {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ConstantValue {
+    Integer(i64),
+    Text(String),
+    Null,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Constant {
+    pub value: ConstantValue,
+    pub alias: Option<String>,
+}
+
+impl Constant {
+    fn header(&self) -> String {
+        if let Some(alias) = &self.alias {
+            return alias.clone();
+        }
+        match &self.value {
+            ConstantValue::Integer(value) => value.to_string(),
+            ConstantValue::Null => "NULL".into(),
+            ConstantValue::Text(value) => format!(
+                "'{}'",
+                value
+                    .replace('\\', "\\\\")
+                    .replace('\t', "\\t")
+                    .replace('\n', "\\n")
+                    .replace('\r', "\\r")
+                    .replace('\'', "''")
+            ),
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Projection {
     Literal(i64),
+    Constants(Vec<Constant>),
     Count,
     CountColumn {
         column: String,
@@ -50,6 +94,11 @@ pub enum Projection {
     },
     GroupedCount {
         column: String,
+    },
+    GroupedAggregate {
+        column: String,
+        function: AggregateFunction,
+        value_column: String,
     },
     Aggregate {
         function: AggregateFunction,
@@ -129,7 +178,7 @@ pub enum Source {
 pub struct OrderBy {
     pub column: String,
     pub descending: bool,
-    /// None preserves the existing ASC/DESC null ordering.
+    /// None keeps the existing ASC/DESC NULL ordering.
     pub nulls_first: Option<bool>,
 }
 
@@ -143,15 +192,42 @@ pub struct Having {
 pub struct Select {
     pub projection: Projection,
     pub alias: Option<String>,
+    /// One wildcard column rename. Applies to query output only.
+    pub rename: Option<(String, String)>,
     pub distinct: bool,
     pub source: Option<Source>,
     pub predicates: Vec<Predicate>,
     /// Additional OR branches, each containing AND-connected predicates.
     pub or_predicates: Vec<Vec<Predicate>>,
     pub order_by: Option<OrderBy>,
+    pub order_by_extra: Vec<OrderBy>,
     pub having: Option<Having>,
     pub limit: Option<usize>,
     pub offset: Option<usize>,
+}
+
+impl Select {
+    /// ORDER BY keys in SQL precedence order.
+    pub fn order_terms(&self) -> impl Iterator<Item = &OrderBy> {
+        self.order_by.iter().chain(self.order_by_extra.iter())
+    }
+
+    /// Map SELECT output aliases to the underlying column used for ORDER BY.
+    pub(crate) fn order_source_column<'a>(&'a self, column: &'a str) -> &'a str {
+        if let Some((source, target)) = &self.rename {
+            if column == target.as_str() {
+                return source;
+            }
+        }
+        if self.alias.as_deref() == Some(column) {
+            if let Projection::Columns(columns) = &self.projection {
+                if let [source] = columns.as_slice() {
+                    return source;
+                }
+            }
+        }
+        column
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -239,17 +315,95 @@ impl Parser {
             _ => Err(ParseError("expected a comparison operator".into())),
         }
     }
+    fn order_term(&mut self, projection: &Projection) -> Result<OrderBy, ParseError> {
+        // Positions are 1-based and refer to projected columns.
+        let column = if matches!(self.tokens.get(self.index), Some(Token::Number(_))) {
+            let position = self
+                .number()?
+                .parse::<usize>()
+                .map_err(|_| ParseError("ORDER BY position is too large".into()))?;
+            match projection {
+                Projection::Columns(columns) => position
+                    .checked_sub(1)
+                    .and_then(|index| columns.get(index))
+                    .cloned()
+                    .ok_or_else(|| ParseError("ORDER BY position is out of range".into()))?,
+                Projection::GroupedCount { column } => match position {
+                    1 => column.clone(),
+                    2 => "count".into(),
+                    _ => return Err(ParseError("ORDER BY position is out of range".into())),
+                },
+                Projection::GroupedAggregate { column, .. } => match position {
+                    1 => column.clone(),
+                    _ => {
+                        return Err(ParseError(
+                            "grouped numeric aggregates only support ORDER BY the group key".into(),
+                        ));
+                    }
+                },
+                Projection::All => {
+                    return Err(ParseError(
+                        "ORDER BY positions require explicit projected columns".into(),
+                    ));
+                }
+                _ => return Err(ParseError("ORDER BY requires column projections".into())),
+            }
+        } else {
+            self.word()?
+        };
+        if matches!(projection, Projection::GroupedCount { .. })
+            && column.eq_ignore_ascii_case("count")
+            && self.take(Token::LParen)
+            && !self.take(Token::RParen)
+            && !(self.take(Token::Star) && self.take(Token::RParen))
+        {
+            return Err(ParseError(
+                "expected COUNT() or COUNT(*) in ORDER BY".into(),
+            ));
+        }
+        let column = if matches!(projection, Projection::GroupedCount { .. })
+            && column.eq_ignore_ascii_case("count")
+        {
+            "count".to_string()
+        } else {
+            column
+        };
+        let descending = if self.keyword("DESC") {
+            true
+        } else {
+            self.keyword("ASC");
+            false
+        };
+        let nulls_first = if self.keyword("NULLS") {
+            if self.keyword("FIRST") {
+                Some(true)
+            } else if self.keyword("LAST") {
+                Some(false)
+            } else {
+                return Err(ParseError("NULLS requires FIRST or LAST".into()));
+            }
+        } else {
+            None
+        };
+        Ok(OrderBy {
+            column,
+            descending,
+            nulls_first,
+        })
+    }
 }
 
 pub fn parse_select(sql: &str) -> Result<Select, ParseError> {
-    let mut parser = Parser {
-        tokens: tokenize(sql)?,
-        index: 0,
-    };
+    parse_select_tokens(tokenize(sql)?)
+}
+
+fn parse_select_tokens(tokens: Vec<Token>) -> Result<Select, ParseError> {
+    let mut parser = Parser { tokens, index: 0 };
     if !parser.keyword("SELECT") {
         return Err(ParseError("only SELECT statements are supported".into()));
     }
     let distinct = parser.keyword("DISTINCT");
+    let mut literal_alias = None;
 
     let projection = if parser.take(Token::Star) {
         Projection::All
@@ -299,15 +453,59 @@ pub fn parse_select(sql: &str) -> Result<Select, ParseError> {
             return Err(ParseError("expected ')' after aggregate column".into()));
         }
         Projection::Aggregate { function, column }
-    } else if matches!(parser.tokens.get(parser.index), Some(Token::Number(_))) {
-        let literal = parser
-            .number()?
-            .parse::<i64>()
-            .map_err(|_| ParseError("SELECT literals must be signed 64-bit integers".into()))?;
-        Projection::Literal(literal)
+    } else if matches!(
+        parser.tokens.get(parser.index),
+        Some(Token::Number(_) | Token::String(_) | Token::LParen | Token::Plus | Token::Minus)
+    ) || matches!(
+        parser.tokens.get(parser.index),
+        Some(Token::Word(word)) if word.eq_ignore_ascii_case("NULL")
+    ) {
+        let mut columns = Vec::new();
+        loop {
+            if columns.len() >= 64 {
+                return Err(ParseError("SELECT supports at most 64 constants".into()));
+            }
+            let value = match parser.tokens.get(parser.index) {
+                Some(Token::Number(_) | Token::LParen | Token::Plus | Token::Minus) => {
+                    ConstantValue::Integer(scalar::parse(&mut parser)?)
+                }
+                Some(Token::String(value)) => {
+                    let value = value.clone();
+                    parser.index += 1;
+                    ConstantValue::Text(value)
+                }
+                Some(Token::Word(word)) if word.eq_ignore_ascii_case("NULL") => {
+                    parser.index += 1;
+                    ConstantValue::Null
+                }
+                _ => return Err(ParseError("expected a constant after comma".into())),
+            };
+            let alias = if parser.keyword("AS") {
+                Some(parser.word()?)
+            } else {
+                None
+            };
+            columns.push(Constant { value, alias });
+            if !parser.take(Token::Comma) {
+                break;
+            }
+        }
+        if let [
+            Constant {
+                value: ConstantValue::Integer(value),
+                alias,
+            },
+        ] = columns.as_slice()
+        {
+            literal_alias = alias.clone();
+            Projection::Literal(*value)
+        } else {
+            Projection::Constants(columns)
+        }
     } else {
         let mut columns = vec![parser.word()?];
         let mut grouped_count = false;
+        let mut grouped_aggregate = None;
         while parser.take(Token::Comma) {
             if columns.len() == 1
                 && matches!(parser.tokens.get(parser.index), Some(Token::Word(word)) if word.eq_ignore_ascii_case("COUNT"))
@@ -325,11 +523,42 @@ pub fn parse_select(sql: &str) -> Result<Select, ParseError> {
                 grouped_count = true;
                 break;
             }
+            if columns.len() == 1 && parser.tokens.get(parser.index + 1) == Some(&Token::LParen) {
+                let function = match parser.tokens.get(parser.index) {
+                    Some(Token::Word(name)) => match name.to_ascii_uppercase().as_str() {
+                        "SUM" => Some(AggregateFunction::Sum),
+                        "AVG" => Some(AggregateFunction::Avg),
+                        "MIN" => Some(AggregateFunction::Min),
+                        "MAX" => Some(AggregateFunction::Max),
+                        "VARPOP" => Some(AggregateFunction::VarPop),
+                        "STDDEVPOP" => Some(AggregateFunction::StddevPop),
+                        "MEDIAN" => Some(AggregateFunction::Median),
+                        _ => None,
+                    },
+                    _ => None,
+                };
+                if let Some(function) = function {
+                    parser.index += 1;
+                    parser.take(Token::LParen);
+                    let value_column = parser.word()?;
+                    if !parser.take(Token::RParen) {
+                        return Err(ParseError("expected ')' after grouped aggregate".into()));
+                    }
+                    grouped_aggregate = Some((function, value_column));
+                    break;
+                }
+            }
             columns.push(parser.word()?);
         }
         if grouped_count {
             Projection::GroupedCount {
                 column: columns.remove(0),
+            }
+        } else if let Some((function, value_column)) = grouped_aggregate {
+            Projection::GroupedAggregate {
+                column: columns.remove(0),
+                function,
+                value_column,
             }
         } else {
             Projection::Columns(columns)
@@ -339,7 +568,22 @@ pub fn parse_select(sql: &str) -> Result<Select, ParseError> {
     if distinct && !matches!(projection, Projection::All | Projection::Columns(_)) {
         return Err(ParseError("DISTINCT supports only row projections".into()));
     }
-    let alias = if parser.keyword("AS") {
+    let rename = if parser.keyword("RENAME") {
+        if !matches!(projection, Projection::All) {
+            return Err(ParseError("RENAME requires SELECT *".into()));
+        }
+        let source = parser.word()?;
+        if !parser.keyword("AS") {
+            return Err(ParseError("RENAME requires AS".into()));
+        }
+        Some((source, parser.word()?))
+    } else {
+        None
+    };
+
+    let alias = if let Some(alias) = literal_alias {
+        Some(alias)
+    } else if parser.keyword("AS") {
         let single_result = matches!(
             &projection,
             Projection::Literal(_)
@@ -468,10 +712,20 @@ pub fn parse_select(sql: &str) -> Result<Select, ParseError> {
     } else {
         None
     };
-    if source.is_none() && !matches!(projection, Projection::Literal(_)) {
+    if source.is_none()
+        && !matches!(
+            projection,
+            Projection::Literal(_) | Projection::Constants(_)
+        )
+    {
         return Err(ParseError("a table source is required".into()));
     }
-    if source.is_some() && matches!(projection, Projection::Literal(_)) {
+    if source.is_some()
+        && matches!(
+            projection,
+            Projection::Literal(_) | Projection::Constants(_)
+        )
+    {
         return Err(ParseError("literal SELECT does not support FROM".into()));
     }
 
@@ -639,16 +893,22 @@ pub fn parse_select(sql: &str) -> Result<Select, ParseError> {
         }
         let group_column = parser.word()?;
         match &projection {
-            Projection::GroupedCount { column } if column == &group_column => {}
-            Projection::GroupedCount { .. } => {
+            Projection::GroupedCount { column } | Projection::GroupedAggregate { column, .. }
+                if column == &group_column => {}
+            Projection::GroupedCount { .. } | Projection::GroupedAggregate { .. } => {
                 return Err(ParseError("GROUP BY must match the selected key".into()));
             }
             _ => {
-                return Err(ParseError("GROUP BY requires SELECT key, COUNT(*)".into()));
+                return Err(ParseError(
+                    "GROUP BY requires SELECT key, aggregate(column)".into(),
+                ));
             }
         }
-    } else if matches!(projection, Projection::GroupedCount { .. }) {
-        return Err(ParseError("COUNT(*) with a key requires GROUP BY".into()));
+    } else if matches!(
+        projection,
+        Projection::GroupedCount { .. } | Projection::GroupedAggregate { .. }
+    ) {
+        return Err(ParseError("grouped aggregates require GROUP BY".into()));
     }
 
     let having = if parser.keyword("HAVING") {
@@ -672,76 +932,19 @@ pub fn parse_select(sql: &str) -> Result<Select, ParseError> {
         None
     };
 
+    let mut order_by_extra = Vec::new();
     let order_by = if parser.keyword("ORDER") {
         if !parser.keyword("BY") {
             return Err(ParseError("expected BY after ORDER".into()));
         }
-        // Resolve SQL's 1-based ORDER BY positions while the SELECT list is available.
-        let column = if matches!(parser.tokens.get(parser.index), Some(Token::Number(_))) {
-            let position = parser
-                .number()?
-                .parse::<usize>()
-                .map_err(|_| ParseError("ORDER BY position is too large".into()))?;
-            match &projection {
-                Projection::Columns(columns) => position
-                    .checked_sub(1)
-                    .and_then(|index| columns.get(index))
-                    .cloned()
-                    .ok_or_else(|| ParseError("ORDER BY position is out of range".into()))?,
-                Projection::GroupedCount { column } => match position {
-                    1 => column.clone(),
-                    2 => "count".into(),
-                    _ => return Err(ParseError("ORDER BY position is out of range".into())),
-                },
-                Projection::All => {
-                    return Err(ParseError(
-                        "ORDER BY positions require explicit projected columns".into(),
-                    ));
-                }
-                _ => return Err(ParseError("ORDER BY requires column projections".into())),
+        let first = parser.order_term(&projection)?;
+        while parser.take(Token::Comma) {
+            if order_by_extra.len() >= 7 {
+                return Err(ParseError("ORDER BY supports at most 8 columns".into()));
             }
-        } else {
-            parser.word()?
-        };
-        if matches!(projection, Projection::GroupedCount { .. })
-            && column.eq_ignore_ascii_case("count")
-            && parser.take(Token::LParen)
-            && !parser.take(Token::RParen)
-            && !(parser.take(Token::Star) && parser.take(Token::RParen))
-        {
-            return Err(ParseError(
-                "expected COUNT() or COUNT(*) in ORDER BY".into(),
-            ));
+            order_by_extra.push(parser.order_term(&projection)?);
         }
-        let column = if matches!(projection, Projection::GroupedCount { .. })
-            && column.eq_ignore_ascii_case("count")
-        {
-            "count".to_string()
-        } else {
-            column
-        };
-        let descending = if parser.keyword("DESC") {
-            true
-        } else {
-            parser.keyword("ASC");
-            false
-        };
-        let nulls_first = if parser.keyword("NULLS") {
-            if parser.keyword("FIRST") {
-                Some(true)
-            } else if parser.keyword("LAST") {
-                Some(false)
-            } else {
-                return Err(ParseError("NULLS requires FIRST or LAST".into()));
-            }
-        } else {
-            None
-        };
-        Some(OrderBy {
-            column,
-            descending,
-            nulls_first,
-        })
+        Some(first)
     } else {
         None
     };
@@ -760,10 +963,21 @@ pub fn parse_select(sql: &str) -> Result<Select, ParseError> {
 
     if let Projection::GroupedCount { column } = &projection {
         if order_by
-            .as_ref()
-            .is_some_and(|order| &order.column != column && order.column != "count")
+            .iter()
+            .chain(order_by_extra.iter())
+            .any(|order| &order.column != column && order.column != "count")
         {
             return Err(ParseError("grouped ORDER BY must use the group key".into()));
+        }
+    }
+    if let Projection::GroupedAggregate { column, .. } = &projection {
+        if order_by
+            .as_ref()
+            .is_some_and(|order| &order.column != column)
+        {
+            return Err(ParseError(
+                "grouped numeric ORDER BY must use the group key".into(),
+            ));
         }
     }
 
@@ -853,11 +1067,13 @@ pub fn parse_select(sql: &str) -> Result<Select, ParseError> {
     Ok(Select {
         projection,
         alias,
+        rename,
         distinct,
         source,
         predicates,
         or_predicates,
         order_by,
+        order_by_extra,
         having,
         limit,
         offset,

@@ -27,6 +27,14 @@ fn describe_source(source: Option<&Source>) -> String {
 fn describe_projection(projection: &Projection) -> String {
     match projection {
         Projection::Literal(value) => format!("Project: {value}"),
+        Projection::Constants(columns) => format!(
+            "Project: {}",
+            columns
+                .iter()
+                .map(crate::Constant::header)
+                .collect::<Vec<_>>()
+                .join(", ")
+        ),
         Projection::All => "Project: *".to_owned(),
         Projection::Columns(columns) => format!("Project: {}", columns.join(", ")),
         Projection::Count => "Aggregate: count(*)".to_owned(),
@@ -37,6 +45,14 @@ fn describe_projection(projection: &Projection) -> String {
         Projection::GroupedCount { column } => {
             format!("Aggregate: GROUP BY {column}, count(*)")
         }
+        Projection::GroupedAggregate {
+            column,
+            function,
+            value_column,
+        } => format!(
+            "Aggregate: GROUP BY {column}, {}({value_column})",
+            function.name()
+        ),
         Projection::Aggregate { function, column } => {
             format!("Aggregate: {}({column})", function.name())
         }
@@ -63,6 +79,9 @@ pub fn explain_select(query: &Select) -> String {
     }
 
     steps.push(describe_projection(&query.projection));
+    if let Some((source, target)) = &query.rename {
+        steps.push(format!("Rename: {source} -> {target}"));
+    }
     if let Some(alias) = &query.alias {
         steps.push(format!("Alias: {alias}"));
     }
@@ -75,17 +94,24 @@ pub fn explain_select(query: &Select) -> String {
     if query.distinct {
         steps.push("Distinct: projected rows".into());
     }
-    if let Some(order) = &query.order_by {
-        steps.push(format!(
-            "Sort: {} {}{}",
-            order.column,
-            if order.descending { "DESC" } else { "ASC" },
-            match order.nulls_first {
-                Some(true) => " NULLS FIRST",
-                Some(false) => " NULLS LAST",
-                None => "",
-            }
-        ));
+    if query.order_by.is_some() {
+        let keys = query
+            .order_terms()
+            .map(|order| {
+                format!(
+                    "{} {}{}",
+                    order.column,
+                    if order.descending { "DESC" } else { "ASC" },
+                    match order.nulls_first {
+                        Some(true) => " NULLS FIRST",
+                        Some(false) => " NULLS LAST",
+                        None => "",
+                    }
+                )
+            })
+            .collect::<Vec<_>>()
+            .join(", ");
+        steps.push(format!("Sort: {keys}"));
     }
     if let Some(offset) = query.offset {
         steps.push(format!("Offset: {offset}"));
@@ -125,6 +151,15 @@ mod tests {
         assert_eq!(
             explain_select(&query),
             "Source: numbers(20)\nFilter: 2 conditions across 2 OR branches\nProject: number\nSort: number DESC\nOffset: 4\nLimit: 2"
+        );
+    }
+
+    #[test]
+    fn explains_wildcard_rename_without_scanning_rows() {
+        let query = parse_select("SELECT * RENAME number AS value FROM numbers(3)").unwrap();
+        assert_eq!(
+            explain_select(&query),
+            "Source: numbers(3)\nProject: *\nRename: number -> value"
         );
     }
 
