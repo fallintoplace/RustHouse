@@ -150,4 +150,31 @@ mod tests {
             ]
         );
     }
+
+    #[test]
+    fn recognizes_all_comparison_spellings_and_decimal_literals() {
+        assert_eq!(
+            tokenize("<= >= <> != < > = -3.5 2.0").unwrap(),
+            vec![
+                Token::Operator(Operator::Le),
+                Token::Operator(Operator::Ge),
+                Token::Operator(Operator::Ne),
+                Token::Operator(Operator::Ne),
+                Token::Operator(Operator::Lt),
+                Token::Operator(Operator::Gt),
+                Token::Operator(Operator::Eq),
+                Token::Number("-3.5".into()),
+                Token::Number("2.0".into()),
+            ]
+        );
+    }
+
+    #[test]
+    fn rejects_incomplete_numbers_and_accepts_exact_size_limit() {
+        for sql in ["-", "1.", "-.2", "SELECT é"] {
+            assert!(tokenize(sql).is_err(), "{sql:?}");
+        }
+        assert!(tokenize(&" ".repeat(4096)).is_ok());
+    }
+
 }
