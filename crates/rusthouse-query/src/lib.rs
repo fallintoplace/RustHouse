@@ -646,7 +646,9 @@ pub fn parse_select(sql: &str) -> Result<Select, ParseError> {
         }
         let value = parser.number()?;
         if !value.bytes().all(|byte| byte.is_ascii_digit()) {
-            return Err(ParseError("FETCH count must be a non-negative integer".into()));
+            return Err(ParseError(
+                "FETCH count must be a non-negative integer".into(),
+            ));
         }
         let count = value
             .parse::<usize>()
@@ -1392,8 +1394,7 @@ mod tests {
         .unwrap();
         assert_eq!(query.limit, Some(3));
         assert_eq!(query.offset, Some(2));
-        let fetch =
-            parse_select("SELECT number FROM numbers(10) FETCH FIRST 0 ROW ONLY").unwrap();
+        let fetch = parse_select("SELECT number FROM numbers(10) FETCH FIRST 0 ROW ONLY").unwrap();
         assert_eq!(fetch.limit, Some(0));
         assert_eq!(fetch.offset, None);
         let legacy = parse_select("SELECT number FROM numbers(10) LIMIT 3 OFFSET 2").unwrap();
@@ -1416,5 +1417,4 @@ mod tests {
             assert!(parse_select(sql).is_err(), "{sql}");
         }
     }
-
 }
