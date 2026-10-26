@@ -176,6 +176,17 @@ fn existing_path(path: &Path) -> Result<bool, String> {
     }
 }
 
+fn sync_database_directory(database: &Path) -> Result<(), String> {
+    fs::File::open(database)
+        .and_then(|directory| directory.sync_all())
+        .map_err(|error| {
+            format!(
+                "cannot sync database directory {}: {error}",
+                database.display()
+            )
+        })
+}
+
 fn drop_table(database: &Path, name: &str, if_exists: bool) -> Result<(), String> {
     let _lock = lock(database)?;
     let schema = database.join(format!("{name}.schema"));
@@ -234,19 +245,40 @@ fn rename_table(database: &Path, from: &str, to: &str) -> Result<(), String> {
         return Err(format!("table already exists or has orphaned data: {to}"));
     }
 
-    // Two paths cannot be renamed atomically together. Roll back a failed
-    // schema rename and never overwrite an existing destination.
-    fs::rename(&source_parts, &destination_parts)
-        .map_err(|error| format!("cannot move table data from {from}: {error}"))?;
-    if let Err(error) = fs::rename(&source_schema, &destination_schema) {
-        fs::rename(&destination_parts, &source_parts).map_err(|rollback| {
-            format!("cannot rename schema from {from}: {error}; data rollback failed: {rollback}")
-        })?;
-        return Err(format!("cannot rename schema from {from}: {error}"));
+    // Both the schema and parts have to move, so RENAME is not a single
+    // filesystem operation. Link the destination schema *before* moving the
+    // parts: before the move the source remains readable, and afterwards the
+    // destination is readable. A crash can leave an extra schema alias, but
+    // never a window where neither name has both schema and data.
+    fs::hard_link(&source_schema, &destination_schema)
+        .map_err(|error| format!("cannot stage destination schema {to}: {error}"))?;
+    if let Err(error) = sync_database_directory(database) {
+        let rollback = fs::remove_file(&destination_schema)
+            .and_then(|_| fs::File::open(database).and_then(|dir| dir.sync_all()));
+        if let Err(rollback) = rollback {
+            return Err(format!(
+                "cannot sync staged rename {from} to {to}: {error}; schema rollback failed: {rollback}"
+            ));
+        }
+        return Err(format!("cannot sync staged rename {from} to {to}: {error}"));
     }
-    fs::File::open(database)
-        .and_then(|dir| dir.sync_all())
-        .map_err(|error| format!("table {from} was renamed but sync failed: {error}"))?;
+    if let Err(error) = fs::rename(&source_parts, &destination_parts) {
+        let rollback = fs::remove_file(&destination_schema)
+            .and_then(|_| fs::File::open(database).and_then(|dir| dir.sync_all()));
+        if let Err(rollback) = rollback {
+            return Err(format!(
+                "cannot move table data from {from}: {error}; schema rollback failed: {rollback}"
+            ));
+        }
+        return Err(format!("cannot move table data from {from}: {error}"));
+    }
+    // Do not remove the old schema until the new name is durably discoverable.
+    sync_database_directory(database)
+        .map_err(|error| format!("table data moved to {to}, but old schema remains: {error}"))?;
+    fs::remove_file(&source_schema)
+        .map_err(|error| format!("table {to} is readable but cannot remove old schema: {error}"))?;
+    sync_database_directory(database)
+        .map_err(|error| format!("table {to} was renamed but final sync failed: {error}"))?;
     println!("Renamed table {from} to {to}");
     Ok(())
 }
