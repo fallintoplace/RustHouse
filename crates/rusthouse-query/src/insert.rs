@@ -68,6 +68,25 @@ pub fn parse_insert(sql: &str) -> Result<Option<Insert>, ParseError> {
     } else {
         None
     };
+    // DEFAULT VALUES inserts one row with no explicit column values.
+    // The database writer validates that every omitted column is nullable.
+    if parser.keyword("DEFAULT") {
+        if columns.is_some() {
+            return Err(ParseError("DEFAULT VALUES cannot use a column list".into()));
+        }
+        if !parser.keyword("VALUES") {
+            return Err(ParseError("expected VALUES after DEFAULT".into()));
+        }
+        parser.take(Token::Semicolon);
+        if parser.index != parser.tokens.len() {
+            return Err(ParseError("unexpected tokens after INSERT statement".into()));
+        }
+        return Ok(Some(Insert {
+            table,
+            columns: Some(Vec::new()),
+            rows: vec![Vec::new()],
+        }));
+    }
     if !parser.keyword("VALUES") {
         return Err(ParseError("expected VALUES after INSERT table".into()));
     }
@@ -150,6 +169,26 @@ mod tests {
             vec![vec![Some("-2".into()), None]]
         );
         assert!(parse_insert("SELECT 1").unwrap().is_none());
+    }
+
+    #[test]
+    fn default_values_is_one_row_without_explicit_columns() {
+        assert_eq!(
+            parse_insert("INSERT INTO events DEFAULT VALUES;").unwrap(),
+            Some(Insert {
+                table: "events".into(),
+                columns: Some(Vec::new()),
+                rows: vec![Vec::new()],
+            })
+        );
+        for sql in [
+            "INSERT INTO events DEFAULT",
+            "INSERT INTO events DEFAULT VALUES, (1)",
+            "INSERT INTO events (id) DEFAULT VALUES",
+            "INSERT INTO events DEFAULT VALUES; SELECT 1",
+        ] {
+            assert!(parse_insert(sql).is_err(), "{sql}");
+        }
     }
 
     #[test]
