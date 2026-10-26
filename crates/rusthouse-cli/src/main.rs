@@ -2,6 +2,7 @@ mod csv;
 mod csv_no_header;
 mod json_array;
 mod jsonl;
+mod markdown;
 mod sql;
 
 use rusthouse_storage::{

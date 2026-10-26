@@ -10,10 +10,7 @@ fn sql_markdown(query: &str, flags: &[&str]) -> std::process::Output {
 
 #[test]
 fn formats_numeric_queries_as_markdown_tables() {
-    let output = sql_markdown(
-        "SELECT number, number FROM numbers(3) LIMIT 2",
-        &[],
-    );
+    let output = sql_markdown("SELECT number, number FROM numbers(3) LIMIT 2", &[]);
     assert!(output.status.success(), "{output:?}");
     assert_eq!(
         output.stdout,

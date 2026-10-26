@@ -25,7 +25,8 @@ impl SqlOutputFormat {
             Some("json") => Ok(Self::Json),
             Some("markdown") => Ok(Self::Markdown),
             _ => Err(
-                "--format must be tsv, tsv-no-header, csv, csv-no-header, jsonl, json, or markdown".into(),
+                "--format must be tsv, tsv-no-header, csv, csv-no-header, jsonl, json, or markdown"
+                    .into(),
             ),
         }
     }
