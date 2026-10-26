@@ -187,7 +187,7 @@ pub(super) fn run_sql_args(mut args: impl Iterator<Item = OsString>) -> Result<(
                 println!("{ddl:#?}");
                 return Ok(());
             }
-            return crate::database::apply_ddl(&database_dir, &ddl);
+            return crate::database::apply_ddl(database_dir, &ddl);
         }
         if let Some(insert) = parse_insert(&query).map_err(|error| error.to_string())? {
             if explain || time || format.is_some() || output_path.is_some() || max_rows.is_some() {
@@ -199,7 +199,7 @@ pub(super) fn run_sql_args(mut args: impl Iterator<Item = OsString>) -> Result<(
                 println!("{insert:#?}");
                 return Ok(());
             }
-            return crate::database::insert(&database_dir, &insert);
+            return crate::database::insert(database_dir, &insert);
         }
     }
     if let Some(catalog_path) = catalog {
