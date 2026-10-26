@@ -193,7 +193,13 @@ fn query_parameters(target: &str) -> Result<(String, Option<String>, QueryFormat
 /// Runs only the subset accepted by the existing SELECT parser. DDL and
 /// writes cannot pass this interface. All responses are bounded in memory.
 pub fn handle_request(method: &str, target: &str, body: &[u8], config: &Config) -> Response {
-    if method == "GET" && target == "/ping" {
+    if target == "/ping" {
+        if method != "GET" {
+            return Response::text("405 Method Not Allowed", "ping endpoint requires GET\n");
+        }
+        if !body.is_empty() {
+            return Response::text("400 Bad Request", "GET must not contain a request body\n");
+        }
         return Response::text("200 OK", "Ok.\n");
     }
     if target == "/schema" {
@@ -283,6 +289,22 @@ mod tests {
             part: None,
             max_rows: 3,
         }
+    }
+
+    #[test]
+    fn rejects_invalid_ping_methods_and_bodies() {
+        assert_eq!(
+            handle_request("GET", "/ping", b"payload", &config()).status,
+            "400 Bad Request"
+        );
+        assert_eq!(
+            handle_request("POST", "/ping", b"", &config()).status,
+            "405 Method Not Allowed"
+        );
+        assert_eq!(
+            handle_request("PUT", "/ping", b"", &config()).status,
+            "405 Method Not Allowed"
+        );
     }
 
     #[test]
