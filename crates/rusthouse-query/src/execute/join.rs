@@ -9,6 +9,10 @@ use std::path::Path;
 const MAX_INPUT_ROWS: u64 = 4096;
 const MAX_RESULT_ROWS: usize = 65_536;
 const MAX_STREAM_LEFT_ROWS: u64 = 100_000;
+// Unordered INNER joins can build a larger hash side than sorted/outer joins.
+// Bound retained cells as well as row count to protect against wide String rows.
+const MAX_STREAM_BUILD_ROWS: u64 = 32_768;
+const MAX_STREAM_BUILD_BYTES: usize = 32 * 1024 * 1024;
 
 type Pair = (Option<usize>, Option<usize>);
 
@@ -55,26 +59,54 @@ fn read_rows(
     path: &Path,
     names: &[String],
     expected_rows: u64,
+    row_limit: u64,
+    byte_limit: usize,
 ) -> Result<Vec<Vec<typed::Cell>>, ExecutionError> {
-    if expected_rows > MAX_INPUT_ROWS {
-        return Err(invalid("JOIN supports at most 4096 input rows per table"));
+    if expected_rows > row_limit {
+        return Err(invalid(format!(
+            "JOIN supports at most {row_limit} input rows per table"
+        )));
     }
     if names.is_empty() {
         return Err(invalid("JOIN requires nonempty table schemas"));
     }
     let mut reader = TypedQueryReader::open(path, names)?;
     let mut rows = Vec::new();
+    let mut retained_bytes = 0usize;
     while let Some(batch) = reader.next_batch()? {
         for row_index in 0..batch[0].len() {
-            if rows.len() >= MAX_INPUT_ROWS as usize {
+            if rows.len() >= row_limit as usize {
                 return Err(invalid("JOIN input row limit exceeded"));
             }
-            rows.push(
-                batch
-                    .iter()
-                    .map(|column| typed::cell(column, row_index))
-                    .collect(),
-            );
+            let cells: Vec<typed::Cell> = batch
+                .iter()
+                .map(|column| typed::cell(column, row_index))
+                .collect();
+            // Include row/Cell storage and variable-width payload. The hash
+            // table adds overhead, so this is a conservative input budget,
+            // not a guarantee about total process RSS.
+            let row_bytes = cells
+                .len()
+                .checked_mul(std::mem::size_of::<typed::Cell>())
+                .and_then(|size| size.checked_add(std::mem::size_of::<Vec<typed::Cell>>()))
+                .and_then(|size| {
+                    cells.iter().try_fold(size, |total, cell| {
+                        let additional = match cell {
+                            typed::Cell::Text(value) => value.len(),
+                            typed::Cell::Uuid(value) => value.len(),
+                            _ => 0,
+                        };
+                        total.checked_add(additional)
+                    })
+                })
+                .ok_or_else(|| invalid("JOIN build size overflow"))?;
+            retained_bytes = retained_bytes
+                .checked_add(row_bytes)
+                .ok_or_else(|| invalid("JOIN build size overflow"))?;
+            if retained_bytes > byte_limit {
+                return Err(invalid("JOIN exceeds its retained-row memory budget"));
+            }
+            rows.push(cells);
         }
     }
     if rows.len() as u64 != expected_rows {
@@ -187,7 +219,13 @@ fn execute_streaming_inner<W: Write>(
         ));
     }
     let right_meta = inspect_query_source(right_path)?;
-    let right_rows = read_rows(right_path, right_names, right_meta.rows)?;
+    let right_rows = read_rows(
+        right_path,
+        right_names,
+        right_meta.rows,
+        MAX_STREAM_BUILD_ROWS,
+        MAX_STREAM_BUILD_BYTES,
+    )?;
     let mut hash: HashMap<Vec<typed::Key>, Vec<usize>> = HashMap::new();
     for (index, row) in right_rows.iter().enumerate() {
         if let Some(key) = row_key(row, right_keys) {
@@ -347,8 +385,20 @@ pub fn execute_join<W: Write>(
         );
     }
 
-    let left_rows = read_rows(left_path, &left_names, left_meta.rows)?;
-    let right_rows = read_rows(right_path, &right_names, right_meta.rows)?;
+    let left_rows = read_rows(
+        left_path,
+        &left_names,
+        left_meta.rows,
+        MAX_INPUT_ROWS,
+        MAX_STREAM_BUILD_BYTES,
+    )?;
+    let right_rows = read_rows(
+        right_path,
+        &right_names,
+        right_meta.rows,
+        MAX_INPUT_ROWS,
+        MAX_STREAM_BUILD_BYTES,
+    )?;
     let mut hash: HashMap<Vec<typed::Key>, Vec<usize>> = HashMap::new();
     for (index, row) in right_rows.iter().enumerate() {
         if let Some(key) = row_key(row, &right_keys) {

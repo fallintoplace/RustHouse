@@ -28,7 +28,7 @@ Two persistent tables can be queried with a typed, in-memory INNER equi-join:
 cargo run -p rusthouse-cli -- sql "SELECT u.id, t.label FROM users u JOIN teams t ON u.team_id = t.id ORDER BY u.id LIMIT 10" --database ./mydb
 ```
 
-Join columns must use qualified names. The current join executor supports two named tables, up to eight equi-keys connected by AND, INNER/LEFT/RIGHT/FULL [OUTER] JOIN, optional aliases, \`SELECT *\`, ORDER BY, LIMIT and OFFSET. NULL join keys do not match. Unsorted INNER JOIN streams up to 100,000 rows on the left with at most 4,096 build rows on the right. Sorted INNER joins and outer joins remain limited to 4,096 rows per table. All joins reject more than 65,536 matched output rows.
+Join columns must use qualified names. The current join executor supports two named tables, up to eight equi-keys connected by AND, INNER/LEFT/RIGHT/FULL [OUTER] JOIN, optional aliases, \`SELECT *\`, ORDER BY, LIMIT and OFFSET. NULL join keys do not match. Unsorted INNER JOIN streams up to 100,000 rows on the left and builds up to 32,768 right-side rows (with a 32 MiB estimated retained-cell budget). Sorted INNER joins and outer joins remain limited to 4,096 rows per table. All joins reject more than 65,536 matched output rows.
 
 ## Query frozen parts
 

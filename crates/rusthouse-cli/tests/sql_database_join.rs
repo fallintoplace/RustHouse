@@ -62,6 +62,38 @@ fn joins_persisted_tables_with_duplicates_nulls_and_aliases() {
 }
 
 #[test]
+fn inner_join_builds_more_than_one_4096_row_part() {
+    let db = database();
+    for statement in [
+        "CREATE TABLE facts (id UInt64)",
+        "CREATE TABLE dimensions (id UInt64)",
+        "INSERT INTO facts VALUES (17), (5000)",
+        "INSERT INTO dimensions SELECT number FROM numbers(4096)",
+        "INSERT INTO dimensions SELECT number FROM numbers(4096, 2048)",
+    ] {
+        let result = sql(statement, &db, &[]);
+        assert!(result.status.success(), "{statement}: {result:?}");
+    }
+    let joined = sql(
+        "SELECT f.id, d.id FROM facts f INNER JOIN dimensions d ON f.id = d.id LIMIT 10",
+        &db,
+        &[],
+    );
+    assert!(joined.status.success(), "{joined:?}");
+    assert_eq!(joined.stdout, b"f.id\td.id\n17\t17\n5000\t5000\n");
+
+    // Ordered and outer joins still use the smaller pair-materializing path.
+    let ordered = sql(
+        "SELECT f.id FROM facts f JOIN dimensions d ON f.id = d.id ORDER BY d.id LIMIT 2",
+        &db,
+        &[],
+    );
+    assert!(!ordered.status.success());
+    assert!(String::from_utf8_lossy(&ordered.stderr).contains("4096"));
+    fs::remove_dir_all(db).unwrap();
+}
+
+#[test]
 fn supports_join_explain_and_rejects_unknown_aliases() {
     let db = database();
     let explain = sql(
