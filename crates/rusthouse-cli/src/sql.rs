@@ -34,8 +34,21 @@ impl SqlOutputFormat {
     }
 }
 
-pub(super) fn run_sql_args(mut args: impl Iterator<Item = OsString>) -> Result<(), String> {
+fn read_sql_input(input: impl std::io::Read, source: &str, label: &str) -> Result<String, String> {
     use std::io::Read;
+
+    let mut bytes = Vec::new();
+    input
+        .take(4097)
+        .read_to_end(&mut bytes)
+        .map_err(|error| format!("cannot read {source}: {error}"))?;
+    if bytes.len() > 4096 {
+        return Err(format!("{label} exceeds the 4096-byte statement limit"));
+    }
+    String::from_utf8(bytes).map_err(|_| format!("{label} must be valid UTF-8"))
+}
+
+pub(super) fn run_sql_args(mut args: impl Iterator<Item = OsString>) -> Result<(), String> {
 
     let mut query = None;
     let mut file = None;
@@ -135,28 +148,11 @@ pub(super) fn run_sql_args(mut args: impl Iterator<Item = OsString>) -> Result<(
         return Err("provide SQL text, --file, or --stdin, not both".into());
     }
     let query = if read_stdin {
-        let mut bytes = Vec::new();
-        std::io::stdin()
-            .take(4097)
-            .read_to_end(&mut bytes)
-            .map_err(|error| format!("cannot read SQL from stdin: {error}"))?;
-        if bytes.len() > 4096 {
-            return Err("SQL from stdin exceeds the 4096-byte statement limit".into());
-        }
-        String::from_utf8(bytes).map_err(|_| "SQL from stdin must be valid UTF-8".to_string())?
+        read_sql_input(std::io::stdin(), "SQL from stdin", "SQL from stdin")?
     } else if let Some(file) = file {
-        let mut input = std::fs::File::open(&file)
+        let input = std::fs::File::open(&file)
             .map_err(|error| format!("cannot open {}: {error}", file.display()))?;
-        let mut bytes = Vec::new();
-        input
-            .by_ref()
-            .take(4097)
-            .read_to_end(&mut bytes)
-            .map_err(|error| format!("cannot read {}: {error}", file.display()))?;
-        if bytes.len() > 4096 {
-            return Err("SQL file exceeds the 4096-byte statement limit".into());
-        }
-        String::from_utf8(bytes).map_err(|_| "SQL file must be valid UTF-8".to_string())?
+        read_sql_input(input, &file.display().to_string(), "SQL file")?
     } else {
         query.ok_or("missing SQL statement")?
     };
@@ -274,6 +270,22 @@ pub(super) fn run_sql_args(mut args: impl Iterator<Item = OsString>) -> Result<(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn bounded_input_accepts_exact_limit_and_rejects_invalid_input() {
+        assert_eq!(
+            read_sql_input(&vec![b'x'; 4096][..], "SQL file", "SQL file").unwrap().len(),
+            4096
+        );
+        assert_eq!(
+            read_sql_input(&vec![b'x'; 4097][..], "SQL file", "SQL file").unwrap_err(),
+            "SQL file exceeds the 4096-byte statement limit"
+        );
+        assert_eq!(
+            read_sql_input(&[0xff][..], "SQL file", "SQL file").unwrap_err(),
+            "SQL file must be valid UTF-8"
+        );
+    }
 
     #[test]
     fn format_parser_accepts_all_supported_formats() {
