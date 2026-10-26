@@ -78,3 +78,22 @@ Remove a catalog column with `rusthouse sql "ALTER TABLE events DROP COLUMN age"
 
 Rename catalog metadata with `rusthouse sql "RENAME TABLE events TO archived_events" --catalog ./catalog`.
 The destination must be absent. No MergeTree parts are moved.
+
+
+## Query frozen multi-part MergeTree snapshots
+
+Pass a directory containing the **active** wide part subdirectories to `--part`:
+
+```sh
+rusthouse sql "SELECT count(*) FROM part" --part ./snapshot/active-parts
+rusthouse sql "SELECT id, count(*) FROM part GROUP BY id ORDER BY id" --part ./snapshot/active-parts
+```
+
+RustHouse now treats either a single wide part or an offline directory of
+ClickHouse-named active parts as a query source. It streams one part at a time;
+aggregates, filtering, ORDER BY, DISTINCT, LIMIT and OFFSET apply to the full set.
+For safety, it rejects overlapping block ranges, inconsistent schemas, malformed
+parts and more than 10,000 parts. It ignores non-part subdirectories such as
+`detached/`. **Only use a frozen snapshot of active parts**, never a live table
+directory being mutated by ClickHouse. Predicate pruning across the primary index
+is not implemented by this change.

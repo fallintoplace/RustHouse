@@ -16,6 +16,7 @@ mod nullable;
 mod nullable_arrays;
 mod numeric;
 mod part_scan;
+mod query_source;
 mod part_verify;
 mod primary_index;
 mod scan_layout;
@@ -54,6 +55,7 @@ pub use nullable_arrays::{
 };
 pub use numeric::{NumericColumn, NumericReadError, read_numeric_column};
 pub use part_scan::NumericPartReader;
+pub use query_source::{NumericQueryReader, inspect_query_source, query_parts};
 pub use part_verify::{PartVerification, verify_wide_part};
 pub use primary_index::{FixedPrimaryIndex, read_fixed_primary_index};
 pub use stream::UInt64ColumnReader;
