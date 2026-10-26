@@ -81,3 +81,26 @@ fn show_tables_lists_only_valid_catalog_entries_in_sorted_order() {
     assert!(empty.status.success(), "{empty:?}");
     assert_eq!(String::from_utf8(empty.stdout).unwrap(), "name\n");
 }
+
+#[test]
+fn describe_table_shows_schema_and_rejects_corruption() {
+    let dir = catalog();
+    assert!(
+        sql("CREATE TABLE readings (ts DateTime, value Float64)", &dir)
+            .status
+            .success()
+    );
+    let described = sql("DESCRIBE TABLE readings", &dir);
+    assert!(described.status.success(), "{described:?}");
+    assert_eq!(
+        String::from_utf8(described.stdout).unwrap(),
+        "name\ttype\nts\tDateTime\nvalue\tFloat64\n"
+    );
+    let missing = sql("DESCRIBE TABLE unknown", &dir);
+    assert!(!missing.status.success());
+    fs::write(dir.join("readings.rh"), "invalid schema").unwrap();
+    let broken = sql("DESCRIBE TABLE readings", &dir);
+    assert!(!broken.status.success());
+    assert!(broken.stdout.is_empty());
+    fs::remove_dir_all(&dir).unwrap();
+}

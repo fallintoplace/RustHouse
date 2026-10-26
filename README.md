@@ -49,3 +49,5 @@ Negate a numeric predicate using `WHERE NOT number < 5`, `WHERE NOT number IN (1
 Create a local schema catalog with `cargo run -p rusthouse-cli -- sql "CREATE TABLE events (id UInt64, value Int64)" --catalog ./catalog`. A table is a `.rh` schema file inside the chosen catalog directory. This does not allocate MergeTree parts or enable inserts. For now, DDL accepts a limited type list and simple unquoted identifiers. `--show-ast` works without a catalog.
 
 List tables with `cargo run -p rusthouse-cli -- sql "SHOW TABLES" --catalog ./catalog`.
+
+Inspect columns with `cargo run -p rusthouse-cli -- sql "DESCRIBE TABLE events" --catalog ./catalog`.

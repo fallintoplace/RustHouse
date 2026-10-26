@@ -16,6 +16,9 @@ pub(super) enum Statement {
         columns: Vec<Column>,
     },
     ShowTables,
+    DescribeTable {
+        name: String,
+    },
 }
 
 struct Parser<'a> {
@@ -127,7 +130,9 @@ pub(super) fn parse_ddl(sql: &str) -> Result<Option<Statement>, String> {
         .split(|c: char| !c.is_ascii_alphabetic())
         .next();
     if !first.is_some_and(|value| {
-        value.eq_ignore_ascii_case("CREATE") || value.eq_ignore_ascii_case("SHOW")
+        value.eq_ignore_ascii_case("CREATE")
+            || value.eq_ignore_ascii_case("SHOW")
+            || value.eq_ignore_ascii_case("DESCRIBE")
     }) {
         return Ok(None);
     }
@@ -139,6 +144,12 @@ pub(super) fn parse_ddl(sql: &str) -> Result<Option<Statement>, String> {
         parser.expect("TABLES")?;
         parser.finish()?;
         return Ok(Some(Statement::ShowTables));
+    }
+    if parser.take("DESCRIBE") {
+        parser.expect("TABLE")?;
+        let name = parser.identifier()?;
+        parser.finish()?;
+        return Ok(Some(Statement::DescribeTable { name }));
     }
     parser.expect("CREATE")?;
     parser.expect("TABLE")?;
@@ -249,6 +260,39 @@ pub(super) fn execute_ddl(statement: Statement, root: &Path) -> Result<(), Strin
             println!("name");
             for name in names {
                 println!("{name}");
+            }
+            Ok(())
+        }
+        Statement::DescribeTable { name } => {
+            let path = root.join(format!("{name}.rh"));
+            let contents = fs::read_to_string(&path)
+                .map_err(|error| format!("cannot describe table {name}: {error}"))?;
+            let mut lines = contents.lines();
+            if lines.next() != Some("RustHouseTableV1") {
+                return Err(format!("invalid schema for table {name}"));
+            }
+            let mut columns = Vec::new();
+            for line in lines {
+                let (column, data_type) = line
+                    .split_once(' ')
+                    .ok_or_else(|| format!("invalid schema for table {name}"))?;
+                if !valid_identifier(column) || canonical_type(data_type) != Some(data_type) {
+                    return Err(format!("invalid schema for table {name}"));
+                }
+                if columns
+                    .iter()
+                    .any(|(existing, _): &(String, String)| existing.eq_ignore_ascii_case(column))
+                {
+                    return Err(format!("duplicate column in table {name}"));
+                }
+                columns.push((column.to_string(), data_type.to_string()));
+            }
+            if columns.is_empty() {
+                return Err(format!("empty schema for table {name}"));
+            }
+            println!("name\ttype");
+            for (column, data_type) in columns {
+                println!("{column}\t{data_type}");
             }
             Ok(())
         }
