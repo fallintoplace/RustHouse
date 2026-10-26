@@ -1,10 +1,12 @@
 mod ddl;
+mod delete;
 mod execute;
 mod explain;
 mod insert;
 mod lexer;
 pub use ddl::{ColumnDef, Ddl, parse_ddl};
-pub use execute::{ExecutionError, execute};
+pub use delete::parse_delete;
+pub use execute::{ExecutionError, RowPredicate, execute};
 pub use explain::explain_select;
 pub use insert::{Insert, parse_insert};
 
