@@ -25,6 +25,8 @@ pub(super) fn is_function(name: &str) -> bool {
         || is_extrema(name)
         || is_power(name)
         || is_bitwise(name)
+        || name.eq_ignore_ascii_case("GCD")
+        || name.eq_ignore_ascii_case("LCM")
 }
 
 pub(super) fn parse(parser: &mut Parser) -> Result<i64, ParseError> {
@@ -130,6 +132,42 @@ fn parse_extrema(parser: &mut Parser, depth: usize) -> Result<i64, ParseError> {
     Ok(value)
 }
 
+fn gcd(mut left: u64, mut right: u64) -> u64 {
+    while right != 0 {
+        let remainder = left % right;
+        left = right;
+        right = remainder;
+    }
+    left
+}
+
+fn parse_gcd_lcm(parser: &mut Parser, depth: usize) -> Result<i64, ParseError> {
+    let name = parser.word()?;
+    if !parser.take(Token::LParen) {
+        return Err(ParseError(format!("{name} requires '('")));
+    }
+    let left = expression(parser, depth + 1)?;
+    if !parser.take(Token::Comma) {
+        return Err(ParseError(format!("{name} requires two arguments")));
+    }
+    let right = expression(parser, depth + 1)?;
+    if !parser.take(Token::RParen) {
+        return Err(ParseError(format!("expected ')' after {name} arguments")));
+    }
+    let left = left.unsigned_abs();
+    let right = right.unsigned_abs();
+    let result = if name.eq_ignore_ascii_case("GCD") {
+        gcd(left, right)
+    } else if left == 0 || right == 0 {
+        0
+    } else {
+        (left / gcd(left, right))
+            .checked_mul(right)
+            .ok_or_else(overflow)?
+    };
+    i64::try_from(result).map_err(|_| overflow())
+}
+
 fn factor(parser: &mut Parser, depth: usize) -> Result<i64, ParseError> {
     if depth >= MAX_DEPTH {
         return Err(ParseError(
@@ -146,6 +184,9 @@ fn factor(parser: &mut Parser, depth: usize) -> Result<i64, ParseError> {
     }
     if parser.keyword("POWER") || parser.keyword("POW") {
         return parse_power(parser, depth);
+    }
+    if matches!(parser.tokens.get(parser.index), Some(Token::Word(name)) if name.eq_ignore_ascii_case("GCD") || name.eq_ignore_ascii_case("LCM")) {
+        return parse_gcd_lcm(parser, depth);
     }
     if matches!(parser.tokens.get(parser.index), Some(Token::Word(name)) if is_extrema(name)) {
         return parse_extrema(parser, depth);

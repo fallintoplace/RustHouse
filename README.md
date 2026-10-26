@@ -42,6 +42,7 @@ cargo run -p rusthouse-cli -- sql "SELECT id, count(*) FROM part GROUP BY id ORD
 ## Supported features
 
 - **SQL:** `SELECT * RENAME old AS new` (query output only), `WHERE` (including `IN`, `BETWEEN`, `LIKE`, and `ILIKE`), sorting (including `ORDER BY ... NULLS FIRST/LAST`), `DISTINCT`, numeric aggregates (including `median`), grouped numeric aggregates by one key, `COUNT(column)` (skips NULLs), grouped counts with `HAVING`, and pagination. Scalar `SELECT` without `FROM` also supports signed integer arithmetic (`+`, `-`, `*`, `%`) with parentheses, checked 64-bit overflow and zero-divisor errors, plus `GREATEST` and `LEAST` with 2 to 16 integer expressions. This is a limited SQL subset.
+- **Integer arithmetic:** Scalar `GCD(a, b)` and `LCM(a, b)` work on signed constants, return non-negative signed results, and report overflow when a magnitude exceeds `Int64`.
 - **Data:** `numbers()` and inclusive `generate_series(start, stop[, step])` without files, plus supported numeric, `String`, `UUID`, and `Nullable` part columns.
 - **Output:** TSV, CSV, JSON, JSON Lines, compact JSON row arrays (`--format json-compact-each-row`), Markdown, HTML, and vertical formats via `--format`; also `--output`, `--max-rows`, `--time`, `--show-ast`, `--explain`, `--file`, and `--stdin`.
 - **Inspection:** `verify-part`, `verify-file-sizes`, `inspect-marks`, `inspect-checksums`, `inspect-blocks`, and `inspect-primary-index`. Run `cargo run -p rusthouse-cli -- --help` for the full CLI.
