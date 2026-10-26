@@ -60,11 +60,11 @@ cargo run -p rusthouse-cli -- sql "COPY events FROM '/path/to/events.csv' WITH (
 
 COPY FROM CSV imports local UTF-8 CSV with quoted commas, quotes, and newlines. With `HEADER TRUE`, CSV headers map fields to named table columns. Without a header, CSV fields follow table column order. Unquoted empty fields become NULL; quoted empty fields remain empty strings. Imports are limited to 4,096 records and 8 MiB and publish one part only after parsing succeeds.
 
-INSERT ... SELECT reads up to 4,096 rows from another table or a supported generated source and appends them as one part. It supports named target columns and the same type checks as INSERT VALUES. A SELECT that yields no rows is a no-op. The read and write are separate operations, **not a transaction**.
+INSERT ... SELECT reads up to 4,096 rows from another table or a supported generated source and appends them as one part. It supports named target columns and the same type checks as INSERT VALUES. A SELECT that yields no rows is a no-op. The source read and append hold a single exclusive database lock, preventing concurrent table changes during the statement. This is **not** a cross-statement transaction.
 
 `--database` stores table schemas and **immutable wide parts** locally. Supported SQL includes `CREATE TABLE`, `INSERT ... VALUES`, `SELECT`, `SHOW TABLES`, `SHOW CREATE TABLE`, `DESCRIBE TABLE`, `CREATE TABLE ... LIKE`, `RENAME TABLE`, `DROP TABLE` and `TRUNCATE TABLE`. Queries support the existing `--format`, `--output`, `--max-rows` and `--explain` options. Database writes are single-writer, limited to supported numeric, String and Nullable columns, and **not transactional across statements**. This is for local experiments, not concurrent production workloads. Run a sequence of up to 128 statements (256 KiB total) with `rusthouse sql --script setup.sql --database ./mydb`. Scripts permit SQL line comments and stop on the first error; they are **not transactions**.
 
-**Current limits:** SQL statements are limited to 4 KiB, INSERT supports up to 4,096 rows per statement, and tables are limited to 10,000 immutable parts. There is no JOIN, background compaction, or cross-statement transaction. On Unix, the persistent `.rusthouse-write.lock` file uses a kernel advisory lock, automatically released when a process exits or crashes. Do not delete this file while the database is in use. Stop older RustHouse processes before upgrading. Other platforms retain create-new lock-file semantics. The standalone HTTP server does not participate in the CLI database lock protocol.
+**Current limits:** SQL statements are limited to 4 KiB, INSERT supports up to 4,096 rows per statement, and tables are limited to 10,000 immutable parts. There is no JOIN, background compaction, or cross-statement transaction. On Unix, the persistent `.rusthouse-write.lock` file uses a kernel advisory lock, automatically released when a process exits or crashes. Do not delete this file while the database is in use. Stop older RustHouse processes before upgrading. Other platforms retain create-new lock-file semantics. The localhost HTTP server shares the CLI database read lock for persistent table queries.
 
 `DELETE FROM events WHERE id = 1` removes matching rows from the active snapshot, preserving the previous generation for recovery. `DELETE FROM events` removes all rows, while `TRUNCATE TABLE events` is the faster option when there is no predicate. DELETE shares the 25,000-row and 16 MiB rewrite limits.
 
@@ -118,3 +118,37 @@ cargo fmt --all -- --check
 cargo clippy --workspace --all-targets --locked -- -D warnings
 cargo test --workspace --locked
 ```
+
+## Diagnose a local database without changing it
+
+Stop writers and the HTTP server before running the offline diagnostic command:
+
+```sh
+rusthouse doctor --database ./mydb
+```
+
+It checks catalog schemas against active parts, validates stream checksums,
+mark layouts, and manifest file sizes, and reports missing or orphaned tables,
+bad snapshot pointers, and interrupted staging paths. Reports are sorted by
+table name. Errors produce a nonzero exit code. The command does not delete,
+repair, or create database files, including the lock file.
+
+Run it only with writers stopped: doctor does not take a database lock.
+It does **not** verify checksums.txt file hashes, older inactive generations,
+or power-loss durability. Preserve damaged files before manual recovery.
+
+## Debug-only storage crash testing
+
+Debug builds provide internal process-exit fault points around INSERT and
+snapshot publication. These are disabled in release builds and must not be used
+for a running database. The test command below launches disposable databases,
+forces process exit 86 at each selected point, reopens storage, and checks
+committed rows and subsequent writes:
+
+```sh
+cargo test -p rusthouse-cli --test sql_database_crash_points --locked
+```
+
+This models sudden **process termination**, not power loss or a filesystem
+that violates flush guarantees. Ordinary tests do not set the fault-point
+environment variable.

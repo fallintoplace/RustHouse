@@ -87,3 +87,22 @@ fn generated_rows_and_empty_inserts_use_existing_publish_path() {
     assert_eq!(ok("SELECT count(*) FROM target", &db), "count\n3\n");
     fs::remove_dir_all(db).unwrap();
 }
+
+#[test]
+fn inserting_from_the_same_table_reads_only_preexisting_rows() {
+    let db = database();
+    ok("CREATE TABLE events (id UInt64)", &db);
+    ok("INSERT INTO events VALUES (1), (2)", &db);
+    ok("INSERT INTO events SELECT id FROM events ORDER BY id", &db);
+    assert_eq!(
+        ok("SELECT id FROM events ORDER BY id", &db),
+        "id\n1\n1\n2\n2\n"
+    );
+    assert_eq!(ok("SELECT count(*) FROM events", &db), "count\n4\n");
+
+    // A failed source query must leave the destination unchanged.
+    let result = sql("INSERT INTO events SELECT id FROM missing", &db);
+    assert!(!result.status.success());
+    assert_eq!(ok("SELECT count(*) FROM events", &db), "count\n4\n");
+    fs::remove_dir_all(db).unwrap();
+}
