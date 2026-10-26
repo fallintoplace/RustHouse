@@ -21,18 +21,18 @@ impl<W: Write> CsvWriter<W> {
     }
 
     fn finish_row(&mut self) -> io::Result<()> {
-        let fields: Vec<&[u8]> = self.line.split(|byte| *byte == b'\t').collect();
+        let field_count = 1 + self.line.iter().filter(|&&byte| byte == b'\t').count();
         if let Some(columns) = self.columns {
-            if columns != fields.len() {
+            if columns != field_count {
                 return Err(io::Error::new(
                     io::ErrorKind::InvalidData,
                     "CSV row has a different column count",
                 ));
             }
         } else {
-            self.columns = Some(fields.len());
+            self.columns = Some(field_count);
         }
-        for (index, field) in fields.into_iter().enumerate() {
+        for (index, field) in self.line.split(|byte| *byte == b'\t').enumerate() {
             if index != 0 {
                 self.output.write_all(b",")?;
             }
@@ -176,4 +176,15 @@ mod literal_null_marker_regressions {
         csv.write_all(b"value\n\\N\n\\\\N\n").unwrap();
         assert_eq!(csv.output, b"value\r\n\\N\r\n\"\\N\"\r\n");
     }
+    #[test]
+    fn streams_wide_rows_and_rejects_width_changes() {
+        let header = std::iter::repeat_n("column", 256).collect::<Vec<_>>().join("\t");
+        let row = std::iter::repeat_n("123", 256).collect::<Vec<_>>().join("\t");
+        let mut writer = CsvWriter::new(Vec::new());
+        writer.write_all(format!("{header}\n{row}\n").as_bytes()).unwrap();
+        assert_eq!(writer.output.lines().count(), 0); // Bytes are CRLF separated.
+        assert_eq!(writer.columns, Some(256));
+        assert!(writer.write_all(b"one\tcolumn\n").is_err());
+    }
+
 }
