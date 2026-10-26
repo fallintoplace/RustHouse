@@ -114,6 +114,25 @@ impl Error for ArrayReadError {
     }
 }
 
+fn decode_next_offset(
+    encoding: ArrayOffsetsEncoding,
+    previous: u64,
+    encoded: u64,
+    row: usize,
+) -> Result<u64, ArrayReadError> {
+    match encoding {
+        ArrayOffsetsEncoding::Sizes => {
+            previous
+                .checked_add(encoded)
+                .ok_or(ArrayReadError::InvalidOffset {
+                    row,
+                    reason: "array size overflows u64",
+                })
+        }
+        ArrayOffsetsEncoding::Absolute { .. } => Ok(encoded),
+    }
+}
+
 pub fn read_array_offsets<O: Read>(
     offset_stream: &mut O,
     rows: usize,
@@ -141,17 +160,7 @@ pub fn read_array_offsets<O: Read>(
 
         for bytes in buffer[..count * 8].chunks_exact(8) {
             let encoded = u64::from_le_bytes(bytes.try_into().unwrap());
-            let next = match encoding {
-                ArrayOffsetsEncoding::Sizes => {
-                    absolute
-                        .checked_add(encoded)
-                        .ok_or(ArrayReadError::InvalidOffset {
-                            row,
-                            reason: "array size overflows u64",
-                        })?
-                }
-                ArrayOffsetsEncoding::Absolute { .. } => encoded,
-            };
+            let next = decode_next_offset(encoding, absolute, encoded, row)?;
             if next < absolute {
                 return Err(ArrayReadError::InvalidOffset {
                     row,
