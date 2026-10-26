@@ -68,11 +68,11 @@ INSERT ... SELECT reads up to 4,096 rows from another table or a supported gener
 
 `DELETE FROM events WHERE id = 1` removes matching rows from the active snapshot, preserving the previous generation for recovery. `DELETE FROM events` removes all rows, while `TRUNCATE TABLE events` is the faster option when there is no predicate. DELETE shares the 25,000-row and 16 MiB rewrite limits.
 
-Use `UPDATE events SET message = 'fixed' WHERE id = 2` to replace literal values in matching rows. Multiple assignments and `NULL` are supported when the target column allows NULL. UPDATE uses the same bounded copy-on-write snapshots as DELETE and OPTIMIZE; expressions such as `SET count = count + 1` are not supported yet.
+Use `UPDATE events SET message = 'fixed' WHERE id = 2` to replace literal values in matching rows. Multiple assignments and `NULL` are supported when the target column allows NULL. UPDATE uses the same bounded copy-on-write snapshot publication as DELETE; expressions such as `SET count = count + 1` are not supported yet.
 
 ## Reclaim active parts safely
 
-`OPTIMIZE TABLE events` rewrites a bounded local table into new immutable parts and switches its active snapshot with an atomic pointer replacement. Previous snapshots are retained for existing readers and recovery. A rewrite supports at most 25,000 rows and 16 MiB of materialized values; use this only for local experiments.
+`OPTIMIZE TABLE events` rewrites a bounded local table into new immutable parts and switches its active snapshot with an atomic pointer replacement. Previous snapshots are retained for existing readers and recovery. OPTIMIZE streams rows in batches of at most 4,096 to verified immutable parts, then atomically switches the active snapshot. UPDATE and DELETE still use the 25,000-row / 16 MiB rewrite limits. Use only for local experiments.
 
 ```sh
 cargo run -p rusthouse-cli -- sql "OPTIMIZE TABLE events" --database ./mydb
