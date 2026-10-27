@@ -20,7 +20,10 @@ fn concat_joins_strings_and_supports_nested_calls() {
     }
     assert_eq!(value("SELECT CONCAT(NULL, 'hello')"), ConstantValue::Null);
     assert_eq!(value("SELECT CONCAT('x', NULL)"), ConstantValue::Null);
-    assert_eq!(value("SELECT LENGTH(CONCAT('abc', 'd'))"), ConstantValue::Integer(4));
+    assert_eq!(
+        value("SELECT LENGTH(CONCAT('abc', 'd'))"),
+        ConstantValue::Integer(4)
+    );
 }
 
 #[test]
