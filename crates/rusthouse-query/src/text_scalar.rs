@@ -13,6 +13,7 @@ pub(super) fn is_function(name: &str) -> bool {
             | "REVERSE"
             | "CONCAT"
             | "SUBSTRING"
+            | "SPLIT_PART"
             | "TRIM"
             | "REPLACE"
             | "STRPOS"
@@ -111,6 +112,29 @@ fn parse_at_depth(parser: &mut Parser, depth: usize) -> Result<ConstantValue, Pa
                 ConstantValue::Null
             } else {
                 ConstantValue::Text(result)
+            }
+        }
+        "SPLIT_PART" => {
+            let input = text_arg(parser, depth + 1)?;
+            require(parser, Token::Comma, "SPLIT_PART requires a delimiter")?;
+            let delimiter = text_arg(parser, depth + 1)?;
+            require(parser, Token::Comma, "SPLIT_PART requires a field index")?;
+            let index = integer_arg(parser, depth + 1)?;
+            require(parser, Token::RParen, "expected ')' after SPLIT_PART arguments")?;
+            match (input, delimiter, index) {
+                (Some(input), Some(delimiter), Some(index)) => {
+                    if delimiter.is_empty() {
+                        return Err(ParseError("SPLIT_PART delimiter cannot be empty".into()));
+                    }
+                    if index < 1 {
+                        return Err(ParseError("SPLIT_PART index must be positive".into()));
+                    }
+                    let index = usize::try_from(index - 1).unwrap_or(usize::MAX);
+                    ConstantValue::Text(
+                        input.split(delimiter.as_str()).nth(index).unwrap_or("").to_owned(),
+                    )
+                }
+                _ => ConstantValue::Null,
             }
         }
         "SUBSTRING" => {
