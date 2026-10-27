@@ -71,15 +71,18 @@ fn parse_response(raw: &[u8]) -> Result<PeerResponse, String> {
     let head = std::str::from_utf8(&raw[..head_end]).map_err(|_| "peer headers are not UTF-8")?;
     let mut lines = head.split("\r\n");
     let status_line = lines.next().ok_or("missing peer status")?;
-    let words: Vec<&str> = status_line.split(' ').collect();
-    if words.len() < 3
-        || !matches!(words[0], "HTTP/1.1" | "HTTP/1.0")
-        || words[1].len() != 3
-        || !words[1].bytes().all(|byte| byte.is_ascii_digit())
+    let mut words = status_line.splitn(3, ' ');
+    let version = words.next().ok_or("invalid peer HTTP status")?;
+    let code = words.next().ok_or("invalid peer HTTP status")?;
+    let reason = words.next().ok_or("invalid peer HTTP status")?;
+    if !matches!(version, "HTTP/1.1" | "HTTP/1.0")
+        || code.len() != 3
+        || !code.bytes().all(|byte| byte.is_ascii_digit())
+        || reason.bytes().any(|byte| byte.is_ascii_control())
     {
         return Err("invalid peer HTTP status".into());
     }
-    let status = words[1]
+    let status = code
         .parse::<u16>()
         .map_err(|_| "invalid peer HTTP status")?;
     if !(200..=599).contains(&status) {
@@ -89,6 +92,16 @@ fn parse_response(raw: &[u8]) -> Result<PeerResponse, String> {
     let mut content_type = None;
     for line in lines {
         let (name, value) = line.split_once(':').ok_or("invalid peer header")?;
+        if name.is_empty()
+            || !name
+                .bytes()
+                .all(|byte| byte.is_ascii_alphanumeric() || byte == b'-')
+            || value
+                .bytes()
+                .any(|byte| byte.is_ascii_control() && byte != b'\t')
+        {
+            return Err("invalid peer header".into());
+        }
         let value = value.trim();
         if name.eq_ignore_ascii_case("content-length") {
             if length.is_some() || !value.bytes().all(|b| b.is_ascii_digit()) || value.is_empty() {
@@ -172,6 +185,18 @@ mod tests {
             b"HTTP/1.1 200 OK\r\nContent-Length: 1\r\nContent-Type: text/plain\r\n\r\nab",
         ] {
             assert!(parse_response(reply).is_err());
+        }
+    }
+
+    #[test]
+    fn rejects_control_bytes_in_peer_http_status_and_headers() {
+        let malformed = [
+            b"HTTP/1.1 200 OK\nInjected\r\nContent-Length: 2\r\nContent-Type: text/plain\r\n\r\nOk".as_slice(),
+            b"HTTP/1.1 200 OK\r\nContent-Length: 2\r\nContent-Type: text/plain\nInjected: yes\r\n\r\nOk",
+            b"HTTP/1.1 200 OK\r\nContent-Length: 2\r\nContent-Type : text/plain\r\n\r\nOk",
+        ];
+        for response in malformed {
+            assert!(parse_response(response).is_err());
         }
     }
 
