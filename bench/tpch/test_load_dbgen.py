@@ -37,6 +37,13 @@ class DbgenLoadTests(unittest.TestCase):
                             execute=lambda sql: called.append(sql))
             self.assertEqual(called, [])
 
+    def test_preflight_counts_binary_records_with_crlf(self):
+        with tempfile.TemporaryDirectory() as root:
+            path = Path(root) / "region.tsv"
+            header = "\t".join(names("region")).encode("utf-8")
+            path.write_bytes(header + b"\r\n" + b"1\tEUROPE\tname\r\n" + b"2\tASIA\tname\n")
+            self.assertEqual(inspect_tsv(path, "region"), 2)
+
     def test_disallows_duplicate_table_selection(self):
         with self.assertRaisesRegex(ValueError, "unique"):
             load_tables(Path("fake"), Path("db"), Path("input"), ["part", "part"])
