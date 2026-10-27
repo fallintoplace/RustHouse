@@ -204,7 +204,10 @@ fn main() -> io::Result<()> {
                 ));
             }
             "--peer" => {
-                peers.push(args.next().ok_or_else(|| io::Error::other("missing peer"))?);
+                peers.push(
+                    args.next()
+                        .ok_or_else(|| io::Error::other("missing peer"))?,
+                );
             }
             "--bind" => {
                 bind = args
@@ -235,8 +238,7 @@ fn main() -> io::Result<()> {
     if part.is_some() && database.is_some() {
         return Err(io::Error::other("--part and --database cannot be combined"));
     }
-    if bind != Ipv4Addr::LOCALHOST
-        && (!allow_private_network || !cluster::is_private_address(bind))
+    if bind != Ipv4Addr::LOCALHOST && (!allow_private_network || !cluster::is_private_address(bind))
     {
         return Err(io::Error::other(
             "non-loopback bind requires --allow-private-network and a private IPv4 address",
@@ -244,11 +246,17 @@ fn main() -> io::Result<()> {
     }
     let peers: Vec<Peer> = peers
         .iter()
-        .map(|address| Peer::parse_with_private_network(address, allow_private_network)
-            .map_err(io::Error::other))
+        .map(|address| {
+            Peer::parse_with_private_network(address, allow_private_network)
+                .map_err(io::Error::other)
+        })
         .collect::<io::Result<_>>()?;
     let cluster = Arc::new(Cluster::new(peers).map_err(io::Error::other)?);
-    if cluster.peers().iter().any(|peer| *peer.address().ip() == bind && peer.port() == port) {
+    if cluster
+        .peers()
+        .iter()
+        .any(|peer| *peer.address().ip() == bind && peer.port() == port)
+    {
         return Err(io::Error::other("server cannot be its own peer"));
     }
     let config = Arc::new(Config {
