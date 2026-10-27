@@ -135,12 +135,17 @@ fn count_column_excludes_nulls_after_typed_filters() {
 #[test]
 fn fused_count_columns_respects_string_uuid_and_nullable_null_maps() {
     let part = part();
+    let all = "SELECT count(service), count(message), count(uid), count(attempt) FROM part";
+    let api = concat!(
+        "SELECT count(service), count(message), count(uid), count(attempt) ",
+        "FROM part WHERE service = 'api'"
+    );
     assert_eq!(
-        query("SELECT count(service), count(message), count(uid), count(attempt) FROM part", &part),
+        query(all, &part),
         "count(service)\tcount(message)\tcount(uid)\tcount(attempt)\n3\t2\t3\t2\n"
     );
     assert_eq!(
-        query("SELECT count(service), count(message), count(uid), count(attempt) FROM part WHERE service = 'api'", &part),
+        query(api, &part),
         "count(service)\tcount(message)\tcount(uid)\tcount(attempt)\n2\t2\t2\t2\n"
     );
     fs::remove_dir_all(part).unwrap();
