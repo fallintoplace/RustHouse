@@ -168,7 +168,7 @@ fn ordered_join_accepts_16384_rows_but_rejects_one_more() {
     assert_eq!(accepted.stdout, b"f.id\n0\n1\n");
 
     let append = sql(
-        "INSERT INTO facts SELECT number FROM numbers(1, 16384)",
+        "INSERT INTO facts VALUES (16384)",
         &db,
         &[],
     );
