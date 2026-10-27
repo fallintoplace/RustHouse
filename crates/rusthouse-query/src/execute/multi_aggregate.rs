@@ -416,3 +416,41 @@ pub(super) fn execute<W: Write>(
     }
     Ok(())
 }
+
+#[cfg(test)]
+mod affine_tests {
+    use super::*;
+
+    #[test]
+    fn binds_column_arithmetic_without_recursive_dispatch() {
+        let indices = HashMap::from([("width".to_owned(), 0_usize)]);
+        let column = || ScalarExpr::Column("width".into());
+        let literal = || ScalarExpr::Integer(3);
+        let add = ScalarExpr::Add(Box::new(column()), Box::new(literal()));
+        let sub = ScalarExpr::Subtract(Box::new(column()), Box::new(literal()));
+
+        assert!(matches!(
+            BoundExpr::bind(&add, &indices).unwrap(),
+            BoundExpr::AffineColumn {
+                index: 0,
+                constant: 3,
+                subtract: false,
+            }
+        ));
+        assert!(matches!(
+            BoundExpr::bind(&sub, &indices).unwrap(),
+            BoundExpr::AffineColumn {
+                index: 0,
+                constant: 3,
+                subtract: true,
+            }
+        ));
+
+        // Reversed addition must keep the generic path until it is proven safe.
+        let reversed = ScalarExpr::Add(Box::new(literal()), Box::new(column()));
+        assert!(matches!(
+            BoundExpr::bind(&reversed, &indices).unwrap(),
+            BoundExpr::Add(_, _)
+        ));
+    }
+}
