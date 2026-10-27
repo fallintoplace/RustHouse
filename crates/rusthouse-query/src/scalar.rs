@@ -48,6 +48,7 @@ pub(super) fn is_function(name: &str) -> bool {
         || name.eq_ignore_ascii_case("REVERSE_DIGITS")
         || name.eq_ignore_ascii_case("LCM")
         || name.eq_ignore_ascii_case("FIBONACCI")
+        || name.eq_ignore_ascii_case("IN_RANGE")
         || name.eq_ignore_ascii_case("CLAMP")
         || name.eq_ignore_ascii_case("CEIL_DIV")
         || name.eq_ignore_ascii_case("FLOOR_DIV")
@@ -376,6 +377,23 @@ fn parse_bit_extract(parser: &mut Parser, depth: usize) -> Result<i64, ParseErro
     Ok((((value as u64) >> offset) & mask) as i64)
 }
 
+/// Return one when a signed integer is between inclusive bounds.
+fn parse_in_range(parser: &mut Parser, depth: usize) -> Result<i64, ParseError> {
+    require_token(parser, Token::LParen, "IN_RANGE requires '('")?;
+    let value = expression(parser, depth + 1)?;
+    require_token(parser, Token::Comma, "IN_RANGE requires three arguments")?;
+    let lower = expression(parser, depth + 1)?;
+    require_token(parser, Token::Comma, "IN_RANGE requires three arguments")?;
+    let upper = expression(parser, depth + 1)?;
+    require_token(parser, Token::RParen, "IN_RANGE requires ')'")?;
+    if lower > upper {
+        return Err(ParseError(
+            "IN_RANGE lower bound exceeds upper bound".into(),
+        ));
+    }
+    Ok(i64::from((lower..=upper).contains(&value)))
+}
+
 fn gcd(mut left: u64, mut right: u64) -> u64 {
     while right != 0 {
         let remainder = left % right;
@@ -592,6 +610,9 @@ fn factor(parser: &mut Parser, depth: usize) -> Result<i64, ParseError> {
     }
     if parser.keyword("BIT_EXTRACT") {
         return parse_bit_extract(parser, depth);
+    }
+    if parser.keyword("IN_RANGE") {
+        return parse_in_range(parser, depth);
     }
     if matches!(parser.tokens.get(parser.index), Some(Token::Word(name)) if name.eq_ignore_ascii_case("GCD") || name.eq_ignore_ascii_case("LCM"))
     {
