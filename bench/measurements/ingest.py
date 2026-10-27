@@ -74,11 +74,12 @@ def verify(binary, database, rows, stations, minimum, maximum, timeout):
     actual_max = float(
         sql(binary, database, "SELECT max(temperature) FROM measurements", timeout)
     )
-    if (count != rows or distinct_stations != stations
-            or not math.isclose(actual_min, minimum, abs_tol=1e-9)
-            or not math.isclose(
-        actual_max, maximum, abs_tol=1e-9
-    )):
+    if (
+        count != rows
+        or distinct_stations != stations
+        or not math.isclose(actual_min, minimum, abs_tol=1e-9)
+        or not math.isclose(actual_max, maximum, abs_tol=1e-9)
+    ):
         raise RuntimeError(
             f"import result mismatch: count={count}, stations={distinct_stations}, "
             f"min={actual_min}, max={actual_max}"
