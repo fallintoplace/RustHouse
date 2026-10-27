@@ -187,7 +187,6 @@ mod tests {
         assert!(decode_row_fields(b"bad\\q").is_err());
     }
 
-
     #[test]
     fn borrows_unescaped_fields_and_null_markers() {
         let fields = decode_row_fields(b"plain\tone\\ttwo\t\\N").unwrap();
