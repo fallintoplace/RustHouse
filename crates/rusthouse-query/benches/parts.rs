@@ -1,5 +1,3 @@
-//! Reproducible on-disk scan benchmark using RustHouse-written MergeTree wide parts.
-//! Fixture creation and SQL parsing happen outside the timed region.
 use rusthouse_query::{execute, parse_select};
 use rusthouse_storage::{Column, write_wide_part};
 use std::fmt::Write as _;
@@ -34,8 +32,6 @@ enum Output {
     Csv,
 }
 
-/// SplitMix64 keeps the shuffled workload reproducible across Rust versions
-/// without adding benchmark-only dependencies.
 fn next_random(seed: &mut u64) -> u64 {
     *seed = seed.wrapping_add(0x9e37_79b9_7f4a_7c15);
     let mut value = *seed;
@@ -202,7 +198,6 @@ fn main() {
     let retained = rows - middle;
     let sum = (middle as u128 + rows as u128 - 1) * retained as u128 / 2;
 
-    // OFFSET is in physical scan order, so the oracle must use that order.
     let mut page = String::from("id\n");
     for id in fixture.ids.iter().skip(middle).take(100) {
         writeln!(&mut page, "{id}").unwrap();

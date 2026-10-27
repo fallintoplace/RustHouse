@@ -16,12 +16,12 @@ fn temp_dir() -> std::path::PathBuf {
 
 fn manifest() -> Vec<u8> {
     let mut bytes = b"checksums format version: 3\n".to_vec();
-    bytes.push(1); // one file
-    bytes.push(6); // "id.bin"
+    bytes.push(1);
+    bytes.push(6);
     bytes.extend_from_slice(b"id.bin");
-    bytes.push(3); // expected length
+    bytes.push(3);
     bytes.extend_from_slice(&0u128.to_le_bytes());
-    bytes.push(0); // not compressed
+    bytes.push(0);
     bytes
 }
 
