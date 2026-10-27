@@ -15,12 +15,28 @@ pub struct FileSizeVerification {
 /// Check that every file listed by checksums.txt exists with the expected size.
 /// Symlinks are not followed, including symlinks in nested paths.
 pub fn verify_part_file_sizes(part: impl AsRef<Path>) -> Result<FileSizeVerification, PartError> {
-    let part = part.as_ref();
+    verify_part_files(part.as_ref(), false)
+}
+
+/// Verify stored-byte CityHash128WithSeed checksums, in addition to file sizes.
+///
+/// This intentionally checks the stored hash only, not the optional
+/// uncompressed hash of compressed streams. It reads each listed file in
+/// bounded 2048-byte chunks, matching ClickHouse's HashingWriteBuffer.
+/// Run only on frozen parts while writers are stopped.
+pub fn verify_part_file_hashes(part: impl AsRef<Path>) -> Result<FileSizeVerification, PartError> {
+    verify_part_files(part.as_ref(), true)
+}
+
+fn verify_part_files(part: &Path, full_hashes: bool) -> Result<FileSizeVerification, PartError> {
     let manifest = read_checksums(&validated_checksums_path(part)?)?;
     let mut total_bytes = 0u64;
 
     for entry in &manifest.files {
         verify_listed_file(part, &manifest.path, &entry.name, entry.size)?;
+        if full_hashes {
+            verify_stored_hash(&part.join(&entry.name), entry.size, entry.hash)?;
+        }
         total_bytes = total_bytes
             .checked_add(entry.size)
             .ok_or_else(|| invalid(&manifest.path, "file sizes overflow u64"))?;
@@ -32,59 +48,35 @@ pub fn verify_part_file_sizes(part: impl AsRef<Path>) -> Result<FileSizeVerifica
     })
 }
 
-/// Verify stored-byte CityHash128WithSeed checksums, in addition to file sizes.
-///
-/// This intentionally checks the stored hash only, not the optional
-/// uncompressed hash of compressed streams. It reads each listed file in
-/// bounded 2048-byte chunks, matching ClickHouse's HashingWriteBuffer.
-/// Run only on frozen parts while writers are stopped.
-pub fn verify_part_file_hashes(part: impl AsRef<Path>) -> Result<FileSizeVerification, PartError> {
+fn verify_stored_hash(path: &Path, expected_size: u64, expected_hash: u128) -> Result<(), PartError> {
     const BLOCK_BYTES: usize = 2048;
-    let part = part.as_ref();
-    let manifest = read_checksums(&validated_checksums_path(part)?)?;
-    let mut total_bytes = 0u64;
-
-    for entry in &manifest.files {
-        verify_listed_file(part, &manifest.path, &entry.name, entry.size)?;
-        let path = part.join(&entry.name);
-        let mut file = fs::File::open(&path).map_err(|source| io_error(&path, source))?;
-        #[cfg(unix)]
-        ensure_opened_file_identity(&path, &file)?;
-        let mut hash = U128::new(0, 0);
-        let mut remaining = entry.size;
-        let mut buffer = [0u8; BLOCK_BYTES];
-        while remaining > 0 {
-            let length = remaining.min(BLOCK_BYTES as u64) as usize;
-            file.read_exact(&mut buffer[..length])
-                .map_err(|source| io_error(&path, source))?;
-            hash = cityhash128_with_seed(&buffer[..length], hash);
-            remaining -= length as u64;
-        }
-        // Catch files extended after the size check, as well as changed data.
-        if file
-            .read(&mut buffer[..1])
-            .map_err(|source| io_error(&path, source))?
-            != 0
-        {
-            return Err(invalid(&path, "file changed during hash verification"));
-        }
-        #[cfg(unix)]
-        ensure_opened_file_identity(&path, &file)?;
-        if u128::from(hash) != entry.hash {
-            return Err(invalid(
-                &path,
-                "stored file hash differs from checksums.txt",
-            ));
-        }
-        total_bytes = total_bytes
-            .checked_add(entry.size)
-            .ok_or_else(|| invalid(&manifest.path, "file sizes overflow u64"))?;
+    let mut file = fs::File::open(path).map_err(|source| io_error(path, source))?;
+    #[cfg(unix)]
+    ensure_opened_file_identity(path, &file)?;
+    let mut hash = U128::new(0, 0);
+    let mut remaining = expected_size;
+    let mut buffer = [0u8; BLOCK_BYTES];
+    while remaining > 0 {
+        let length = remaining.min(BLOCK_BYTES as u64) as usize;
+        file.read_exact(&mut buffer[..length])
+            .map_err(|source| io_error(path, source))?;
+        hash = cityhash128_with_seed(&buffer[..length], hash);
+        remaining -= length as u64;
     }
-
-    Ok(FileSizeVerification {
-        files: manifest.files.len(),
-        total_bytes,
-    })
+    // Catch files extended after the size check, as well as changed data.
+    if file
+        .read(&mut buffer[..1])
+        .map_err(|source| io_error(path, source))?
+        != 0
+    {
+        return Err(invalid(path, "file changed during hash verification"));
+    }
+    #[cfg(unix)]
+    ensure_opened_file_identity(path, &file)?;
+    if u128::from(hash) != expected_hash {
+        return Err(invalid(path, "stored file hash differs from checksums.txt"));
+    }
+    Ok(())
 }
 
 /// Detect inode replacement between path validation, open, and hash completion.
