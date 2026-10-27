@@ -849,12 +849,7 @@ fn execute_aggregate_numbers<W: Write>(
                     AggregateFunction::Sum => ((first + last) * u128::from(rows) / 2).to_string(),
                     AggregateFunction::Min => first.to_string(),
                     AggregateFunction::Max => last.to_string(),
-                    AggregateFunction::Avg
-                    | AggregateFunction::VarPop
-                    | AggregateFunction::StddevPop
-                    | AggregateFunction::VarSamp
-                    | AggregateFunction::StddevSamp
-                    | AggregateFunction::Median => unreachable!(),
+                    _ => unreachable!(),
                 }
             };
             writeln!(output, "{result}")?;
@@ -1166,6 +1161,16 @@ impl AggregateState {
                     self.squared_deviations += difference * (numeric - self.mean);
                 }
             }
+            AggregateFunction::Rms => {
+                let numeric = match value {
+                    Number::Unsigned(n) => n as f64,
+                    Number::Signed(n) => n as f64,
+                    Number::Float(n) => n,
+                };
+                let total = next_count as f64;
+                let old_weight = (self.count as f64 / total).sqrt();
+                self.mean = (self.mean * old_weight).hypot(numeric / total.sqrt());
+            }
             AggregateFunction::Median => {
                 if self.median_values.len() >= MAX_MEDIAN_ROWS {
                     return Err(ExecutionError::Invalid(
@@ -1204,6 +1209,7 @@ impl AggregateState {
         }
         match self.function {
             AggregateFunction::Avg => self.mean.to_string(),
+            AggregateFunction::Rms => self.mean.to_string(),
             AggregateFunction::VarPop => (self.squared_deviations / self.count as f64).to_string(),
             AggregateFunction::StddevPop => (self.squared_deviations / self.count as f64)
                 .sqrt()
