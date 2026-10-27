@@ -72,8 +72,16 @@ fn integer_type(kind: &str) -> bool {
         .unwrap_or(kind);
     matches!(
         base,
-        "UInt8" | "UInt16" | "UInt32" | "UInt64" | "UInt128"
-            | "Int8" | "Int16" | "Int32" | "Int64" | "Int128"
+        "UInt8"
+            | "UInt16"
+            | "UInt32"
+            | "UInt64"
+            | "UInt128"
+            | "Int8"
+            | "Int16"
+            | "Int32"
+            | "Int64"
+            | "Int128"
     )
 }
 
@@ -132,8 +140,8 @@ fn shard_integer_kind(peer: Peer, table: &str, column: &str) -> Result<String, S
     if response.status != 200 || !response.content_type.starts_with("application/json") {
         return Err("peer schema lookup failed".into());
     }
-    let contents = std::str::from_utf8(&response.body)
-        .map_err(|_| "peer schema response is not UTF-8")?;
+    let contents =
+        std::str::from_utf8(&response.body).map_err(|_| "peer schema response is not UTF-8")?;
     let needle = format!("\"name\":\"{column}\",\"type\":\"");
     let (_, tail) = contents
         .split_once(needle.as_str())
@@ -264,15 +272,15 @@ fn sum_shard_counts(shards: &[(usize, Vec<u8>)]) -> Result<Vec<u8>, MergeError> 
 
 /// Reduce SUM only after all peers agree on the exact integer column type.
 /// NULL represents an empty shard rather than zero or a failed parse.
-fn merge_integer_sums(
-    shards: &[(usize, Vec<u8>)],
-    kind: &str,
-) -> Result<Vec<u8>, MergeError> {
+fn merge_integer_sums(shards: &[(usize, Vec<u8>)], kind: &str) -> Result<Vec<u8>, MergeError> {
     let mut expected_header: Option<&[u8]> = None;
     let mut signed_total = 0i128;
     let mut unsigned_total = 0u128;
     let mut seen = false;
-    let unsigned = kind.strip_prefix("Nullable(").unwrap_or(kind).starts_with("UInt");
+    let unsigned = kind
+        .strip_prefix("Nullable(")
+        .unwrap_or(kind)
+        .starts_with("UInt");
 
     for (_, body) in shards {
         if !body.ends_with(b"\n") {
@@ -495,7 +503,10 @@ pub fn handle(method: &str, body: &[u8], cluster: &Cluster, max_rows: usize) -> 
         match result {
             Ok((cap, body, kind)) => {
                 if let Some(kind) = kind {
-                    if sum_type.as_deref().is_some_and(|existing| existing != kind.as_str()) {
+                    if sum_type
+                        .as_deref()
+                        .is_some_and(|existing| existing != kind.as_str())
+                    {
                         return Response::text(
                             "409 Conflict",
                             "distributed SUM shard column types disagree\n",
@@ -513,9 +524,11 @@ pub fn handle(method: &str, body: &[u8], cluster: &Cluster, max_rows: usize) -> 
     let merged = if count_query {
         sum_shard_counts(&shards)
     } else if sum_query {
-        sum_type.as_deref().map_or(Err(MergeError::InvalidSum), |kind| {
-            merge_integer_sums(&shards, kind)
-        })
+        sum_type
+            .as_deref()
+            .map_or(Err(MergeError::InvalidSum), |kind| {
+                merge_integer_sums(&shards, kind)
+            })
     } else if grouped_count_query {
         merge_grouped_counts(&shards, max_rows.min(100_000))
     } else {
@@ -812,10 +825,7 @@ mod tests {
         }
         assert_eq!(
             merge_integer_sums(
-                &[
-                    shard(10, "sum(amount)\n1\n"),
-                    shard(10, "sum(total)\n2\n"),
-                ],
+                &[shard(10, "sum(amount)\n1\n"), shard(10, "sum(total)\n2\n"),],
                 "UInt64",
             ),
             Err(MergeError::SchemaMismatch)
