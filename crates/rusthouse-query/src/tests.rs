@@ -749,7 +749,6 @@ fn parses_grouped_numeric_aggregates_and_bounds_ordering() {
         "SELECT service, sum(status) FROM part",
         "SELECT service, sum(status) FROM part GROUP BY status",
         "SELECT service, sum(status) FROM part GROUP BY service ORDER BY status",
-        "SELECT service, sum(status) FROM part GROUP BY service ORDER BY 2",
         "SELECT DISTINCT service, sum(status) FROM part GROUP BY service",
         "SELECT service, sum(*) FROM part GROUP BY service",
         "SELECT service, sum(status, id) FROM part GROUP BY service",
@@ -1086,5 +1085,27 @@ fn rejects_malformed_fetch_clauses() {
         "SELECT number FROM numbers(10) FETCH NEXT 184467440737095516160 ROWS ONLY",
     ] {
         assert!(parse_select(sql).is_err(), "{sql}");
+    }
+}
+
+#[test]
+fn allows_grouped_numeric_ordering_by_aggregate_position() {
+    for aggregate in ["sum", "avg", "min", "max"] {
+        let query = parse_select(&format!(
+            "SELECT category, {aggregate}(amount) FROM part GROUP BY category ORDER BY 2 DESC LIMIT 3"
+        ))
+        .unwrap();
+        assert_eq!(query.order_by.unwrap().column, "#aggregate");
+    }
+    let query = parse_select(
+        "SELECT category, sum(amount) FROM part GROUP BY category ORDER BY 2 DESC, category ASC"
+    )
+    .unwrap();
+    assert_eq!(query.order_by_extra.len(), 1);
+    for invalid in [
+        "SELECT category, median(amount) FROM part GROUP BY category ORDER BY 2",
+        "SELECT category, sum(amount) FROM part GROUP BY category ORDER BY 3",
+    ] {
+        assert!(parse_select(invalid).is_err(), "{invalid}");
     }
 }
