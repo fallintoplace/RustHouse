@@ -33,6 +33,7 @@ pub(super) fn is_function(name: &str) -> bool {
             | "SUBSTRING_INDEX"
             | "TRIM"
             | "LTRIM"
+            | "TRIM_WHITESPACE"
             | "LPAD"
             | "HEX_DECODE"
             | "REPLACE"
@@ -609,6 +610,14 @@ fn parse_at_depth(parser: &mut Parser, depth: usize) -> Result<ConstantValue, Pa
                     input.trim_start_matches(|ch| characters.contains(ch)).to_owned(),
                 ),
                 _ => ConstantValue::Null,
+            }
+        }
+        "TRIM_WHITESPACE" => {
+            let input = text_arg(parser, depth + 1)?;
+            require(parser, Token::RParen, "TRIM_WHITESPACE requires one argument")?;
+            match input {
+                Some(value) => ConstantValue::Text(value.trim().to_owned()),
+                None => ConstantValue::Null,
             }
         }
         "TRIM" => {
