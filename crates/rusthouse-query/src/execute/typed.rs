@@ -897,6 +897,7 @@ pub(super) fn execute_typed<W: Write>(
             // can enter the heap before we clone projected text or UUID values.
             let mut candidate_sort_keys = None;
             if !query.distinct
+                && !is_count_distinct
                 && !sort_indices.is_empty()
                 && top_capacity.is_some_and(|capacity| capacity > 0 && top.len() >= capacity)
             {
