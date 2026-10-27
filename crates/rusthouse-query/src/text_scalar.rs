@@ -19,6 +19,7 @@ pub(super) fn is_function(name: &str) -> bool {
             | "CONCAT_WS"
             | "SUBSTRING"
             | "SPLIT_PART"
+            | "SUBSTRING_INDEX"
             | "TRIM"
             | "LTRIM"
             | "LPAD"
@@ -206,6 +207,38 @@ fn parse_at_depth(parser: &mut Parser, depth: usize) -> Result<ConstantValue, Pa
                 ConstantValue::Null
             } else {
                 ConstantValue::Text(result)
+            }
+        }
+        "SUBSTRING_INDEX" => {
+            let input = text_arg(parser, depth + 1)?;
+            require(parser, Token::Comma, "SUBSTRING_INDEX requires a delimiter")?;
+            let delimiter = text_arg(parser, depth + 1)?;
+            require(parser, Token::Comma, "SUBSTRING_INDEX requires a field count")?;
+            let count = integer_arg(parser, depth + 1)?;
+            require(parser, Token::RParen, "expected ')' after SUBSTRING_INDEX arguments")?;
+            match (input, delimiter, count) {
+                (Some(input), Some(delimiter), Some(count)) => {
+                    if delimiter.is_empty() || count == 0 {
+                        ConstantValue::Text(String::new())
+                    } else {
+                        let field = usize::try_from(count.unsigned_abs())
+                            .unwrap_or(usize::MAX)
+                            .saturating_sub(1);
+                        let result = if count > 0 {
+                            input.match_indices(delimiter.as_str())
+                                .nth(field)
+                                .map(|(index, _)| &input[..index])
+                                .unwrap_or(&input)
+                        } else {
+                            input.rmatch_indices(delimiter.as_str())
+                                .nth(field)
+                                .map(|(index, _)| &input[index + delimiter.len()..])
+                                .unwrap_or(&input)
+                        };
+                        ConstantValue::Text(result.to_owned())
+                    }
+                }
+                _ => ConstantValue::Null,
             }
         }
         "SPLIT_PART" => {
