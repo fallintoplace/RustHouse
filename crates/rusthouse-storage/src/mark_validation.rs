@@ -77,10 +77,13 @@ fn validate_mark_sequence(
         return Err(invalid_mark(marks, index, "zero-row mark must be last"));
     }
     if let Some(previous) = previous {
-        if (mark.compressed_offset, mark.decompressed_offset)
-            < (previous.compressed_offset, previous.decompressed_offset)
-        {
+        let current_offset = (mark.compressed_offset, mark.decompressed_offset);
+        let previous_offset = (previous.compressed_offset, previous.decompressed_offset);
+        if current_offset < previous_offset {
             return Err(invalid_mark(marks, index, "mark offsets are not ordered"));
+        }
+        if current_offset == previous_offset && mark.rows != Some(0) {
+            return Err(invalid_mark(marks, index, "nonterminal mark must advance"));
         }
     }
     Ok(())
@@ -210,6 +213,25 @@ mod tests {
             ),
             Err(PartError::InvalidMarkOffset { index: 0, .. })
         ));
+    }
+
+    #[test]
+    fn rejects_repeated_nonterminal_marks_but_allows_zero_row_terminal() {
+        let bytes = block(16);
+        assert!(matches!(
+            check(
+                vec![mark(0, 0, Some(1)), mark(0, 0, Some(1))],
+                WideMarkFormat::Adaptive,
+                bytes.clone(),
+            ),
+            Err(PartError::InvalidMarkOffset { index: 1, .. })
+        ));
+        check(
+            vec![mark(0, 0, Some(1)), mark(0, 0, Some(0))],
+            WideMarkFormat::Adaptive,
+            bytes,
+        )
+        .unwrap();
     }
 
     #[test]
