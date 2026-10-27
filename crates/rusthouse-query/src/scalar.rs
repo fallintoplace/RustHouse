@@ -27,6 +27,7 @@ pub(super) fn is_function(name: &str) -> bool {
         || is_bitwise(name)
         || name.eq_ignore_ascii_case("GCD")
         || name.eq_ignore_ascii_case("LCM")
+        || name.eq_ignore_ascii_case("MUL_DIV")
         || name.eq_ignore_ascii_case("CLAMP")
 }
 
@@ -164,6 +165,22 @@ fn parse_clamp(parser: &mut Parser, depth: usize) -> Result<i64, ParseError> {
     Ok(value.clamp(lower, upper))
 }
 
+/// Multiply in Int128 before dividing, then require an Int64 result.
+fn parse_mul_div(parser: &mut Parser, depth: usize) -> Result<i64, ParseError> {
+    require_token(parser, Token::LParen, "MUL_DIV requires '('")?;
+    let left = expression(parser, depth + 1)?;
+    require_token(parser, Token::Comma, "MUL_DIV requires three arguments")?;
+    let right = expression(parser, depth + 1)?;
+    require_token(parser, Token::Comma, "MUL_DIV requires three arguments")?;
+    let divisor = expression(parser, depth + 1)?;
+    require_token(parser, Token::RParen, "MUL_DIV requires ')'")?;
+    let numerator = i128::from(left) * i128::from(right);
+    let quotient = numerator
+        .checked_div(i128::from(divisor))
+        .ok_or_else(|| ParseError("MUL_DIV divisor cannot be zero".into()))?;
+    i64::try_from(quotient).map_err(|_| overflow())
+}
+
 fn gcd(mut left: u64, mut right: u64) -> u64 {
     while right != 0 {
         let remainder = left % right;
@@ -219,6 +236,9 @@ fn factor(parser: &mut Parser, depth: usize) -> Result<i64, ParseError> {
     }
     if parser.keyword("CLAMP") {
         return parse_clamp(parser, depth);
+    }
+    if parser.keyword("MUL_DIV") {
+        return parse_mul_div(parser, depth);
     }
     if matches!(parser.tokens.get(parser.index), Some(Token::Word(name)) if name.eq_ignore_ascii_case("GCD") || name.eq_ignore_ascii_case("LCM"))
     {
