@@ -274,7 +274,10 @@ fn verify_part_and_print(path: OsString) -> Result<(), rusthouse_storage::PartEr
     Ok(())
 }
 
-fn verify_file_sizes_and_print(path: OsString, mode: u8) -> Result<(), rusthouse_storage::PartError> {
+fn verify_file_sizes_and_print(
+    path: OsString,
+    mode: u8,
+) -> Result<(), rusthouse_storage::PartError> {
     let path = PathBuf::from(path);
     let (report, status) = match mode {
         0 => (verify_part_file_sizes(&path)?, "file hashes not verified"),
