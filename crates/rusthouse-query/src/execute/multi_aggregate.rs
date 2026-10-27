@@ -147,20 +147,20 @@ fn eval_number(
 ) -> Result<Option<Number>, ExecutionError> {
     match expression {
         BoundExpr::Column(index) => match typed::cell(&batch[*index], row) {
-                Cell::Numeric(value) => Ok(Some(value)),
-                Cell::Null => Ok(None),
-                _ => Err(ExecutionError::Invalid(
-                    "aggregate expression requires numeric columns".into(),
-                )),
-            },
+            Cell::Numeric(value) => Ok(Some(value)),
+            Cell::Null => Ok(None),
+            _ => Err(ExecutionError::Invalid(
+                "aggregate expression requires numeric columns".into(),
+            )),
+        },
         BoundExpr::Integer(value) => Ok(Some(Number::Signed(i128::from(*value)))),
         BoundExpr::TextLength(index) => match typed::cell(&batch[*index], row) {
-                Cell::Text(bytes) => Ok(Some(Number::Unsigned(bytes.len() as u128))),
-                Cell::Null => Ok(None),
-                _ => Err(ExecutionError::Invalid(
-                    "length requires a String column".into(),
-                )),
-            },
+            Cell::Text(bytes) => Ok(Some(Number::Unsigned(bytes.len() as u128))),
+            Cell::Null => Ok(None),
+            _ => Err(ExecutionError::Invalid(
+                "length requires a String column".into(),
+            )),
+        },
         BoundExpr::Divide(left, right) => {
             let Some(left) = eval_number(left, batch, row)? else {
                 return Ok(None);
@@ -224,15 +224,13 @@ fn distinct_argument(
 }
 
 fn count_argument(
-    argument: Option<&ScalarExpr>,
+    argument: Option<&BoundExpr>,
     batch: &[TypedColumn],
     row: usize,
 ) -> Result<bool, ExecutionError> {
     match argument {
         None => Ok(true),
-        Some(BoundExpr::Column(index)) => {
-            Ok(!matches!(typed::cell(&batch[*index], row), Cell::Null))
-        }
+        Some(BoundExpr::Column(index)) => Ok(!matches!(typed::cell(&batch[*index], row), Cell::Null)),
         Some(expression) => Ok(eval_number(expression, batch, row)?.is_some()),
     }
 }
