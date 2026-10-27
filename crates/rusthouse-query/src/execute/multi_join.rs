@@ -187,8 +187,13 @@ pub fn execute_multi_join<W: Write>(
         .chain(query.steps.iter())
         .enumerate()
     {
-        if step.kind != JoinType::Inner || step.any || !step.using_keys.is_empty() {
-            return Err(invalid("chained JOIN currently supports only INNER JOIN ON"));
+        if !matches!(step.kind, JoinType::Inner | JoinType::Left)
+            || step.any
+            || !step.using_keys.is_empty()
+        {
+            return Err(invalid(
+                "chained JOIN currently supports only INNER and LEFT JOIN ON",
+            ));
         }
         let right_relation = &relations[step_index + 1];
         let left_width = right_relation.start;
@@ -211,15 +216,23 @@ pub fn execute_multi_join<W: Write>(
         let mut next = Vec::new();
         let mut retained = 0usize;
         for row in &rows {
+            let mut matched = false;
             if let Some(key) = row_key(row, &left_keys) {
                 if let Some(matches) = hash.get(&key) {
                     for &match_index in matches {
+                        matched = true;
                         let mut joined = Vec::with_capacity(left_width + right_relation.names.len());
                         joined.extend_from_slice(row);
                         joined.extend_from_slice(&right_rows[match_index]);
                         push_row(&mut next, joined, &mut retained)?;
                     }
                 }
+            }
+            if !matched && step.kind == JoinType::Left {
+                let mut joined = Vec::with_capacity(left_width + right_relation.names.len());
+                joined.extend_from_slice(row);
+                joined.resize(left_width + right_relation.names.len(), typed::Cell::Null);
+                push_row(&mut next, joined, &mut retained)?;
             }
         }
         rows = next;
