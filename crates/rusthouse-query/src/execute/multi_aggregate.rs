@@ -95,17 +95,59 @@ fn checked_multiply(left: Number, right: Number) -> Result<Number, ExecutionErro
     }
 }
 
+// Resolve column names once per query rather than for every aggregate and row.
+enum BoundExpr {
+    Column(usize),
+    TextLength(usize),
+    Integer(i64),
+    Add(Box<Self>, Box<Self>),
+    Subtract(Box<Self>, Box<Self>),
+    Multiply(Box<Self>, Box<Self>),
+    Divide(Box<Self>, Box<Self>),
+}
+
+impl BoundExpr {
+    fn bind(
+        expression: &ScalarExpr,
+        indices: &HashMap<String, usize>,
+    ) -> Result<Self, ExecutionError> {
+        let index = |name: &str| {
+            indices
+                .get(name)
+                .copied()
+                .ok_or_else(|| ExecutionError::Invalid(format!("unknown aggregate column: {name}")))
+        };
+        Ok(match expression {
+            ScalarExpr::Column(name) => Self::Column(index(name)?),
+            ScalarExpr::TextLength(name) => Self::TextLength(index(name)?),
+            ScalarExpr::Integer(number) => Self::Integer(*number),
+            ScalarExpr::Add(left, right) => Self::Add(
+                Box::new(Self::bind(left, indices)?),
+                Box::new(Self::bind(right, indices)?),
+            ),
+            ScalarExpr::Subtract(left, right) => Self::Subtract(
+                Box::new(Self::bind(left, indices)?),
+                Box::new(Self::bind(right, indices)?),
+            ),
+            ScalarExpr::Multiply(left, right) => Self::Multiply(
+                Box::new(Self::bind(left, indices)?),
+                Box::new(Self::bind(right, indices)?),
+            ),
+            ScalarExpr::Divide(left, right) => Self::Divide(
+                Box::new(Self::bind(left, indices)?),
+                Box::new(Self::bind(right, indices)?),
+            ),
+        })
+    }
+}
+
 fn eval_number(
-    expression: &ScalarExpr,
+    expression: &BoundExpr,
     batch: &[TypedColumn],
     row: usize,
-    indices: &HashMap<String, usize>,
-) -> Result<Option<Number>, ExecutionError> {
+    ) -> Result<Option<Number>, ExecutionError> {
     match expression {
-        ScalarExpr::Column(name) => {
-            let index = indices.get(name).ok_or_else(|| {
-                ExecutionError::Invalid(format!("unknown aggregate column: {name}"))
-            })?;
+        BoundExpr::Column(index) => {
             match typed::cell(&batch[*index], row) {
                 Cell::Numeric(value) => Ok(Some(value)),
                 Cell::Null => Ok(None),
@@ -114,11 +156,8 @@ fn eval_number(
                 )),
             }
         }
-        ScalarExpr::Integer(value) => Ok(Some(Number::Signed(i128::from(*value)))),
-        ScalarExpr::TextLength(name) => {
-            let index = indices.get(name).ok_or_else(|| {
-                ExecutionError::Invalid(format!("unknown aggregate column: {name}"))
-            })?;
+        BoundExpr::Integer(value) => Ok(Some(Number::Signed(i128::from(*value)))),
+        BoundExpr::TextLength(index) => {
             match typed::cell(&batch[*index], row) {
                 Cell::Text(bytes) => Ok(Some(Number::Unsigned(bytes.len() as u128))),
                 Cell::Null => Ok(None),
@@ -127,11 +166,11 @@ fn eval_number(
                 )),
             }
         }
-        ScalarExpr::Divide(left, right) => {
-            let Some(left) = eval_number(left, batch, row, indices)? else {
+        BoundExpr::Divide(left, right) => {
+            let Some(left) = eval_number(left, batch, row)? else {
                 return Ok(None);
             };
-            let Some(right) = eval_number(right, batch, row, indices)? else {
+            let Some(right) = eval_number(right, batch, row)? else {
                 return Ok(None);
             };
             let to_float = |value: Number| match value {
@@ -153,61 +192,53 @@ fn eval_number(
             }
             Ok(Some(Number::Float(quotient)))
         }
-        ScalarExpr::Multiply(left, right) => {
-            let Some(left) = eval_number(left, batch, row, indices)? else {
+        BoundExpr::Multiply(left, right) => {
+            let Some(left) = eval_number(left, batch, row)? else {
                 return Ok(None);
             };
-            let Some(right) = eval_number(right, batch, row, indices)? else {
+            let Some(right) = eval_number(right, batch, row)? else {
                 return Ok(None);
             };
             checked_multiply(left, right).map(Some)
         }
-        ScalarExpr::Add(left, right) | ScalarExpr::Subtract(left, right) => {
-            let Some(left) = eval_number(left, batch, row, indices)? else {
+        BoundExpr::Add(left, right) | BoundExpr::Subtract(left, right) => {
+            let Some(left) = eval_number(left, batch, row)? else {
                 return Ok(None);
             };
-            let Some(right) = eval_number(right, batch, row, indices)? else {
+            let Some(right) = eval_number(right, batch, row)? else {
                 return Ok(None);
             };
-            checked_binary(left, right, matches!(expression, ScalarExpr::Subtract(..))).map(Some)
+            checked_binary(left, right, matches!(expression, BoundExpr::Subtract(..))).map(Some)
         }
     }
 }
 
 fn distinct_argument(
-    expression: &ScalarExpr,
+    expression: &BoundExpr,
     batch: &[TypedColumn],
     row: usize,
-    indices: &HashMap<String, usize>,
-) -> Result<Option<typed::Key>, ExecutionError> {
-    if let ScalarExpr::Column(name) = expression {
-        let index = indices
-            .get(name)
-            .ok_or_else(|| ExecutionError::Invalid(format!("unknown aggregate column: {name}")))?;
+    ) -> Result<Option<typed::Key>, ExecutionError> {
+    if let BoundExpr::Column(index) = expression {
         let value = typed::cell(&batch[*index], row);
         return match value {
             Cell::Null => Ok(None),
             _ => Ok(Some(value.key())),
         };
     }
-    Ok(eval_number(expression, batch, row, indices)?.map(|value| Cell::Numeric(value).key()))
+    Ok(eval_number(expression, batch, row)?.map(|value| Cell::Numeric(value).key()))
 }
 
 fn count_argument(
     argument: Option<&ScalarExpr>,
     batch: &[TypedColumn],
     row: usize,
-    indices: &HashMap<String, usize>,
-) -> Result<bool, ExecutionError> {
+    ) -> Result<bool, ExecutionError> {
     match argument {
         None => Ok(true),
-        Some(ScalarExpr::Column(name)) => {
-            let index = indices.get(name).ok_or_else(|| {
-                ExecutionError::Invalid(format!("unknown aggregate column: {name}"))
-            })?;
+        Some(BoundExpr::Column(index)) => {
             Ok(!matches!(typed::cell(&batch[*index], row), Cell::Null))
         }
-        Some(expression) => Ok(eval_number(expression, batch, row, indices)?.is_some()),
+        Some(expression) => Ok(eval_number(expression, batch, row)?.is_some()),
     }
 }
 
@@ -282,26 +313,35 @@ pub(super) fn execute<W: Write>(
             None => State::Count(0),
         })
         .collect::<Vec<_>>();
+    let arguments = items
+        .iter()
+        .map(|item| {
+            item.argument
+                .as_ref()
+                .map(|expression| BoundExpr::bind(expression, &indices))
+                .transpose()
+        })
+        .collect::<Result<Vec<_>, _>>()?;
     let mut reader = TypedQueryReader::open(part, &names)?;
     while let Some(batch) = reader.next_batch()? {
         for row in 0..batch[0].len() {
             if !typed::passes(&batch, row, &conditions) {
                 continue;
             }
-            for (item, state) in items.iter().zip(&mut states) {
+            for (state, argument) in states.iter_mut().zip(&arguments) {
                 match state {
                     State::Count(value) => {
-                        if count_argument(item.argument.as_ref(), &batch, row, &indices)? {
+                        if count_argument(argument.as_ref(), &batch, row)? {
                             *value = value
                                 .checked_add(1)
                                 .ok_or_else(|| ExecutionError::Invalid("COUNT overflow".into()))?;
                         }
                     }
                     State::Distinct(seen) => {
-                        let expression = item.argument.as_ref().ok_or_else(|| {
+                        let expression = argument.as_ref().ok_or_else(|| {
                             ExecutionError::Invalid("distinct argument missing".into())
                         })?;
-                        if let Some(key) = distinct_argument(expression, &batch, row, &indices)? {
+                        if let Some(key) = distinct_argument(expression, &batch, row)? {
                             if seen.len() >= 100_000 && !seen.contains(&key) {
                                 return Err(ExecutionError::Invalid(
                                     "COUNT(DISTINCT) supports at most 100000 values".into(),
@@ -311,10 +351,10 @@ pub(super) fn execute<W: Write>(
                         }
                     }
                     State::Numeric(state) => {
-                        let expression = item.argument.as_ref().ok_or_else(|| {
+                        let expression = argument.as_ref().ok_or_else(|| {
                             ExecutionError::Invalid("aggregate argument missing".into())
                         })?;
-                        if let Some(value) = eval_number(expression, &batch, row, &indices)? {
+                        if let Some(value) = eval_number(expression, &batch, row)? {
                             state.update(value)?;
                         }
                     }
