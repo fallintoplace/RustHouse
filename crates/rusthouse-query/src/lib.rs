@@ -333,6 +333,14 @@ impl Parser {
         }
     }
 
+    fn bounded_word(&mut self) -> Result<String, ParseError> {
+        let name = self.word()?;
+        if name.len() > 128 {
+            return Err(ParseError("identifiers cannot exceed 128 bytes".into()));
+        }
+        Ok(name)
+    }
+
     fn literal(&mut self) -> Result<String, ParseError> {
         // Typed dates and timestamps use the same storage format as quoted
         // literals. Support the DATE + INTERVAL 'N' YEAR form used by TPC-H Q6.
