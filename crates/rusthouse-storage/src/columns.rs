@@ -10,11 +10,8 @@ pub fn parse_columns(content: &str) -> Result<Vec<Column>, PartError> {
     let header = lines
         .next()
         .ok_or_else(|| invalid(2, "missing column-count header"))?;
-    let expected = header
-        .strip_suffix(" columns:")
-        .filter(|value| !value.is_empty() && value.bytes().all(|b| b.is_ascii_digit()))
-        .and_then(|value| value.parse::<usize>().ok())
-        .ok_or_else(|| invalid(2, "expected '<count> columns:'"))?;
+    let expected =
+        parse_column_count(header).ok_or_else(|| invalid(2, "expected '<count> columns:'"))?;
 
     let mut columns = Vec::new();
     let mut names = HashSet::new();
@@ -37,6 +34,13 @@ pub fn parse_columns(content: &str) -> Result<Vec<Column>, PartError> {
     }
 
     Ok(columns)
+}
+
+fn parse_column_count(header: &str) -> Option<usize> {
+    header
+        .strip_suffix(" columns:")
+        .filter(|value| !value.is_empty() && value.bytes().all(|b| b.is_ascii_digit()))
+        .and_then(|value| value.parse::<usize>().ok())
 }
 
 fn invalid(line: usize, message: &'static str) -> PartError {
