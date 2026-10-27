@@ -1,0 +1,14 @@
+{
+  "name": "category-revenue-aggregation",
+  "description": "Measure grouped sales revenue, minimum and maximum amount",
+  "queries": [
+    {
+      "name": "revenue-by-category",
+      "sql": "SELECT category, SUM(amount) FROM events GROUP BY category ORDER BY category"
+    },
+    {
+      "name": "category-amount-extrema",
+      "sql": "SELECT category, MIN(amount), MAX(amount) FROM events GROUP BY category ORDER BY category"
+    }
+  ]
+}
