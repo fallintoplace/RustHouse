@@ -91,9 +91,15 @@ mod tests {
     fn accepts_only_canonical_ipv4_loopback_peers() {
         assert_eq!(Peer::parse("127.0.0.1:8124").unwrap().port(), 8124);
         for input in [
-            "", "localhost:8124", "0.0.0.0:8124", "127.0.0.2:8124",
-            "8.8.8.8:8124", "127.0.0.1:0", "127.0.0.1:65536",
-            "127.0.0.1:-1", "127.0.0.1:8123/path",
+            "",
+            "localhost:8124",
+            "0.0.0.0:8124",
+            "127.0.0.2:8124",
+            "8.8.8.8:8124",
+            "127.0.0.1:0",
+            "127.0.0.1:65536",
+            "127.0.0.1:-1",
+            "127.0.0.1:8123/path",
         ] {
             assert!(Peer::parse(input).is_err(), "{input}");
         }
@@ -118,7 +124,10 @@ mod tests {
             response.body,
             b"{\"mode\":\"read-only\",\"peer_count\":1,\"peers\":[\"127.0.0.1:8124\"]}\n"
         );
-        assert_eq!(handle("POST", b"", &cluster).status, "405 Method Not Allowed");
+        assert_eq!(
+            handle("POST", b"", &cluster).status,
+            "405 Method Not Allowed"
+        );
         assert_eq!(handle("GET", b"x", &cluster).status, "400 Bad Request");
     }
 }
