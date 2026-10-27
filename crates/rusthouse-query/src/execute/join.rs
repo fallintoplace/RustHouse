@@ -132,18 +132,24 @@ fn row_key(row: &[typed::Cell], indices: &[usize]) -> Option<Vec<typed::Key>> {
 
 // Build the probe key directly from its batch columns so misses never
 // materialize the full row, which may contain wide String payloads.
-fn batch_key(batch: &[TypedColumn], row: usize, indices: &[usize]) -> Option<Vec<typed::Key>> {
-    let mut result = Vec::with_capacity(indices.len());
+fn batch_key_into(
+    batch: &[TypedColumn],
+    row: usize,
+    indices: &[usize],
+    result: &mut Vec<typed::Key>,
+) -> bool {
+    result.clear();
     for &index in indices {
         let value = typed::cell(&batch[index], row);
         if matches!(value, typed::Cell::Null)
             || matches!(value, typed::Cell::Numeric(Number::Float(number)) if number.is_nan())
         {
-            return None;
+            result.clear();
+            return false;
         }
         result.push(value.key());
     }
-    Some(result)
+    true
 }
 
 fn cell_at<'a>(
@@ -193,10 +199,11 @@ where
     }
     let mut reader = TypedQueryReader::open(left_path, left_names)?;
     let mut matches = 0usize;
+    let mut probe_key = Vec::with_capacity(left_keys.len());
     'scan: while let Some(batch) = reader.next_batch()? {
         for index in 0..batch[0].len() {
-            if let Some(key) = batch_key(&batch, index, left_keys) {
-                if let Some(right_indices) = hash.get(&key) {
+            if batch_key_into(&batch, index, left_keys, &mut probe_key) {
+                if let Some(right_indices) = hash.get(probe_key.as_slice()) {
                     // Materialize only after a row survives the join filter.
                     let mut left_row: Option<Vec<typed::Cell>> = None;
                     for &right_index in
@@ -379,10 +386,11 @@ where
     let left_width = left_rows.first().map_or(0, Vec::len);
     // Each retained left row can match only its first right row.
     let mut seen_left = options.any.then(|| vec![false; left_rows.len()]);
+    let mut probe_key = Vec::with_capacity(right_keys.len());
     'scan: while let Some(batch) = reader.next_batch()? {
         for index in 0..batch[0].len() {
-            if let Some(key) = batch_key(&batch, index, right_keys) {
-                if let Some(left_indices) = hash.get(&key) {
+            if batch_key_into(&batch, index, right_keys, &mut probe_key) {
+                if let Some(left_indices) = hash.get(probe_key.as_slice()) {
                     let right_row = if options.materialize_rows {
                         batch
                             .iter()
@@ -774,15 +782,25 @@ mod tests {
             },
             TypedColumn::Numeric(NumericColumn::Float64(vec![2.0, f64::NAN, 4.0])),
         ];
+        let mut reused = Vec::new();
         for row in 0..3 {
             let materialized = batch
                 .iter()
                 .map(|column| typed::cell(column, row))
                 .collect::<Vec<_>>();
-            assert!(batch_key(&batch, row, &[0, 1]) == row_key(&materialized, &[0, 1]));
+            let valid = batch_key_into(&batch, row, &[0, 1], &mut reused);
+            assert_eq!(valid, row_key(&materialized, &[0, 1]).is_some());
+            if let Some(expected) = row_key(&materialized, &[0, 1]) {
+                assert!(reused == expected);
+            } else {
+                assert!(reused.is_empty());
+            }
         }
-        assert!(batch_key(&batch, 0, &[0, 1]).is_some());
-        assert!(batch_key(&batch, 1, &[0, 1]).is_none());
-        assert!(batch_key(&batch, 2, &[0, 1]).is_none());
+        assert!(batch_key_into(&batch, 0, &[0, 1], &mut reused));
+        assert_eq!(reused.len(), 2);
+        assert!(!batch_key_into(&batch, 1, &[0, 1], &mut reused));
+        assert!(reused.is_empty());
+        assert!(!batch_key_into(&batch, 2, &[0, 1], &mut reused));
+        assert!(reused.is_empty());
     }
 }
