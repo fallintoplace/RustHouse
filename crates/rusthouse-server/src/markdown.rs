@@ -38,16 +38,18 @@ impl<W: Write> MarkdownWriter<W> {
     }
 }
 
+fn decode_markdown_field(field: &[u8], data_row: bool) -> io::Result<Cow<'_, [u8]>> {
+    if data_row && field != b"\\N" && field.contains(&b'\\') {
+        decode_tsv_value(field).map(|text| Cow::Owned(text.into_bytes()))
+    } else {
+        Ok(Cow::Borrowed(field))
+    }
+}
+
 fn write_markdown_row<W: Write>(output: &mut W, line: &[u8], data_row: bool) -> io::Result<()> {
     let fields = line
         .split(|&byte| byte == b'\t')
-        .map(|field| {
-            if data_row && field != b"\\N" && field.contains(&b'\\') {
-                decode_tsv_value(field).map(|text| Cow::Owned(text.into_bytes()))
-            } else {
-                Ok(Cow::Borrowed(field))
-            }
-        })
+        .map(|field| decode_markdown_field(field, data_row))
         .collect::<io::Result<Vec<_>>>()?;
     output.write_all(b"|")?;
     for field in fields {
@@ -126,6 +128,14 @@ impl<W: Write> Write for MarkdownWriter<W> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn field_decoder_borrows_plain_and_null_fields() {
+        assert!(matches!(decode_markdown_field(b"plain", true).unwrap(), Cow::Borrowed(_)));
+        assert!(matches!(decode_markdown_field(b"\\N", true).unwrap(), Cow::Borrowed(_)));
+        assert!(matches!(decode_markdown_field(b"a\\tb", false).unwrap(), Cow::Borrowed(_)));
+        assert!(matches!(decode_markdown_field(b"a\\tb", true).unwrap(), Cow::Owned(_)));
+    }
 
     #[test]
     fn row_renderer_keeps_cell_escaping_independent_of_writer_state() {

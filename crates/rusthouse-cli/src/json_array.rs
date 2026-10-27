@@ -59,6 +59,23 @@ fn write_pretty_row<W: Write>(output: &mut W, row: &[u8]) -> io::Result<()> {
     output.write_all(&row[start..])
 }
 
+fn array_prefix(first: bool, pretty: bool) -> &'static [u8] {
+    match (first, pretty) {
+        (true, true) => b"[\n  ",
+        (true, false) => b"[",
+        (false, true) => b",\n  ",
+        (false, false) => b",",
+    }
+}
+
+fn array_suffix(empty: bool, pretty: bool) -> &'static [u8] {
+    match (empty, pretty) {
+        (true, _) => b"[]\n",
+        (false, true) => b"\n]\n",
+        (false, false) => b"]\n",
+    }
+}
+
 /// Convert a stream of JSONL objects to a valid JSON array without buffering all rows.
 struct JsonArraySink<W: Write> {
     output: W,
@@ -78,13 +95,7 @@ impl<W: Write> JsonArraySink<W> {
     }
 
     fn finish_row(&mut self) -> io::Result<()> {
-        if self.first {
-            self.output
-                .write_all(if self.pretty { b"[\n  " } else { b"[" })?;
-        } else {
-            self.output
-                .write_all(if self.pretty { b",\n  " } else { b"," })?;
-        }
+        self.output.write_all(array_prefix(self.first, self.pretty))?;
         if self.pretty {
             write_pretty_row(&mut self.output, &self.row)?;
         } else {
@@ -102,13 +113,7 @@ impl<W: Write> JsonArraySink<W> {
                 "incomplete JSON row",
             ));
         }
-        if self.first {
-            self.output.write_all(b"[]\n")?;
-        } else if self.pretty {
-            self.output.write_all(b"\n]\n")?;
-        } else {
-            self.output.write_all(b"]\n")?;
-        }
+        self.output.write_all(array_suffix(self.first, self.pretty))?;
         self.output.flush()?;
         Ok(self.output)
     }
@@ -194,6 +199,18 @@ impl<W: Write> Write for JsonArrayWriter<W> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn framing_handles_empty_compact_and_pretty_arrays() {
+        assert_eq!(array_prefix(true, false), &b"["[..]);
+        assert_eq!(array_prefix(false, false), &b","[..]);
+        assert_eq!(array_prefix(true, true), &b"[\n  "[..]);
+        assert_eq!(array_prefix(false, true), &b",\n  "[..]);
+        assert_eq!(array_suffix(true, false), &b"[]\n"[..]);
+        assert_eq!(array_suffix(true, true), &b"[]\n"[..]);
+        assert_eq!(array_suffix(false, false), &b"]\n"[..]);
+        assert_eq!(array_suffix(false, true), &b"\n]\n"[..]);
+    }
 
     #[test]
     fn writes_streamed_json_array_with_escaped_values() {
