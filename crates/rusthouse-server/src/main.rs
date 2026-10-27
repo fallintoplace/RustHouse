@@ -1,4 +1,5 @@
 use rusthouse_server::cluster::{self, Cluster, Peer};
+use rusthouse_server::health;
 use rusthouse_server::{
     Config, MAX_CONNECTIONS, MAX_HEADER_BYTES, MAX_QUERY_BYTES, Response, handle_request,
 };
@@ -150,6 +151,9 @@ fn serve(mut stream: TcpStream, config: &Config, cluster: &Cluster) {
     let response = match read_request(&mut stream) {
         Ok((method, target, body)) if target == "/cluster" => {
             cluster::handle(&method, &body, cluster)
+        }
+        Ok((method, target, body)) if target == "/cluster/health" => {
+            health::handle(&method, &body, cluster)
         }
         Ok((method, target, body)) => handle_request(&method, &target, &body, config),
         Err(response) => response,
