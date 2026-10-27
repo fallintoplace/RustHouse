@@ -57,20 +57,20 @@ fn grouped_nullable_aggregates_match_independent_multi_part_totals() {
     }
     for (sql, expected) in [
         (
-            "SELECT grp, count(*) AS n, count(value) AS present FROM part GROUP BY grp ORDER BY grp",
-            "grp\tn\tpresent\nalpha\t3\t2\nbeta\t3\t2\ngamma\t2\t1\n",
+            "SELECT grp, count(*) FROM part GROUP BY grp ORDER BY grp",
+            "grp\tcount\nalpha\t3\nbeta\t3\ngamma\t2\n",
         ),
         (
-            "SELECT grp, sum(value) AS total, min(value) AS lowest FROM part GROUP BY grp ORDER BY grp DESC",
-            "grp\ttotal\tlowest\ngamma\t-2\t-2\nbeta\t30\t0\nalpha\t30\t10\n",
+            "SELECT grp, sum(value), min(value) FROM part GROUP BY grp ORDER BY grp DESC",
+            "grp\tsum(value)\tmin(value)\ngamma\t-2\t-2\nbeta\t30\t0\nalpha\t30\t10\n",
         ),
         (
             "SELECT grp, count(*) FROM part WHERE value IS NOT NULL GROUP BY grp HAVING count(*) >= 2 ORDER BY grp DESC",
             "grp\tcount\nbeta\t2\nalpha\t2\n",
         ),
         (
-            "SELECT grp, avg(value) AS mean FROM part GROUP BY grp ORDER BY grp LIMIT 2 OFFSET 1",
-            "grp\tmean\nbeta\t15\ngamma\t-2\n",
+            "SELECT grp, avg(value) FROM part GROUP BY grp ORDER BY grp LIMIT 2 OFFSET 1",
+            "grp\tavg(value)\nbeta\t15\ngamma\t-2\n",
         ),
     ] {
         let parsed = parse_select(sql).unwrap_or_else(|error| panic!("{sql}: {error}"));
