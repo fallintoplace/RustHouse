@@ -16,6 +16,16 @@ pub enum JoinType {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+pub struct JoinStep {
+    pub table: String,
+    pub alias: String,
+    pub kind: JoinType,
+    pub any: bool,
+    pub keys: Vec<(JoinColumn, JoinColumn)>,
+    pub using_keys: Vec<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct JoinSelect {
     pub left: String,
     pub right: String,
@@ -35,6 +45,8 @@ pub struct JoinSelect {
     pub order_by: Option<(JoinColumn, bool, Option<bool>)>,
     pub limit: Option<usize>,
     pub offset: usize,
+    /// Additional JOIN steps after the first two-table join.
+    pub steps: Vec<JoinStep>,
 }
 
 fn qualified(parser: &mut Parser) -> Result<JoinColumn, ParseError> {
@@ -239,6 +251,80 @@ pub fn parse_join(sql: &str) -> Result<Option<JoinSelect>, ParseError> {
     } else {
         return Err(ParseError("JOIN requires ON or USING".into()));
     };
+    let mut steps: Vec<JoinStep> = Vec::new();
+    while matches!(
+        parser.tokens.get(parser.index),
+        Some(Token::Word(word))
+            if ["JOIN", "INNER", "LEFT", "RIGHT", "FULL", "ANY"]
+                .iter()
+                .any(|keyword| word.eq_ignore_ascii_case(keyword))
+    ) {
+        if steps.len() >= 6 {
+            return Err(ParseError("JOIN supports at most 8 tables".into()));
+        }
+        let leading_any = parser.keyword("ANY");
+        let step_kind = parse_join_kind(&mut parser);
+        let step_any = parser.keyword("ANY") || leading_any;
+        if !parser.keyword("JOIN") {
+            return Err(ParseError("expected JOIN after join type".into()));
+        }
+        let table = parser.word()?;
+        let alias = alias(&mut parser, &table)?;
+        if table.len() > 128 || alias.len() > 128 {
+            return Err(ParseError(
+                "table identifiers cannot exceed 128 bytes".into(),
+            ));
+        }
+        if alias == left_alias
+            || alias == right_alias
+            || steps.iter().any(|step| step.alias == alias)
+        {
+            return Err(ParseError("joined tables require distinct aliases".into()));
+        }
+        if step_kind != JoinType::Inner || step_any || kind != JoinType::Inner || any {
+            return Err(ParseError(
+                "chained JOIN currently supports only INNER JOIN".into(),
+            ));
+        }
+        if parser.keyword("USING") {
+            return Err(ParseError(
+                "chained JOIN currently requires qualified ON keys".into(),
+            ));
+        }
+        if !parser.keyword("ON") {
+            return Err(ParseError("JOIN requires ON".into()));
+        }
+        let mut step_keys = Vec::new();
+        loop {
+            if step_keys.len() == 8 {
+                return Err(ParseError("JOIN supports at most 8 equality keys".into()));
+            }
+            let first = qualified(&mut parser)?;
+            if !parser.take(Token::Operator(super::Operator::Eq)) {
+                return Err(ParseError(
+                    "JOIN ON supports AND-connected equality keys".into(),
+                ));
+            }
+            let second = qualified(&mut parser)?;
+            step_keys.push((first, second));
+            if !parser.keyword("AND") {
+                break;
+            }
+        }
+        steps.push(JoinStep {
+            table,
+            alias,
+            kind: step_kind,
+            any: step_any,
+            keys: step_keys,
+            using_keys: Vec::new(),
+        });
+    }
+    if !steps.is_empty() && !using_keys.is_empty() {
+        return Err(ParseError(
+            "chained JOIN currently requires qualified ON keys".into(),
+        ));
+    }
     let where_null = if parser.keyword("WHERE") {
         let column = qualified(&mut parser)?;
         if !parser.keyword("IS") {
@@ -324,6 +410,7 @@ pub fn parse_join(sql: &str) -> Result<Option<JoinSelect>, ParseError> {
         order_by,
         limit,
         offset,
+        steps,
     }))
 }
 
@@ -339,8 +426,29 @@ pub fn explain_join(query: &JoinSelect) -> String {
         })
         .collect::<Vec<_>>()
         .join(" AND ");
+    let extra = query
+        .steps
+        .iter()
+        .map(|step| {
+            let conditions = step
+                .keys
+                .iter()
+                .map(|(left, right)| {
+                    format!(
+                        "{}.{} = {}.{}",
+                        left.relation, left.name, right.relation, right.name
+                    )
+                })
+                .collect::<Vec<_>>()
+                .join(" AND ");
+            format!(
+                "\nSource: table {} AS {}\nJoin: {:?} ON {}",
+                step.table, step.alias, step.kind, conditions
+            )
+        })
+        .collect::<String>();
     format!(
-        "Source: table {} AS {}\nSource: table {} AS {}\nJoin: {}{:?} ON {}\nProject: {}\nLimit: {}",
+        "Source: table {} AS {}\nSource: table {} AS {}\nJoin: {}{:?} ON {}{}\nProject: {}\nLimit: {}",
         query.left,
         query.left_alias,
         query.right,
@@ -348,6 +456,7 @@ pub fn explain_join(query: &JoinSelect) -> String {
         if query.any { "Any " } else { "" },
         query.kind,
         conditions,
+        extra,
         query.columns.as_ref().map_or("*".to_owned(), |columns| {
             columns
                 .iter()
@@ -364,6 +473,27 @@ pub fn explain_join(query: &JoinSelect) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn parses_three_table_inner_joins() {
+        let query = parse_join(
+            "SELECT o.id, c.name, r.label FROM orders o JOIN customers c ON o.customer_id = c.id JOIN regions r ON c.region_id = r.id ORDER BY o.id LIMIT 5",
+        )
+        .unwrap()
+        .unwrap();
+        assert_eq!(query.steps.len(), 1);
+        assert_eq!(query.steps[0].table, "regions");
+        assert_eq!(query.steps[0].keys[0].0.relation, "c");
+        assert_eq!(query.order_by.unwrap().0.relation, "o");
+        assert!(parse_join(
+            "SELECT * FROM a x JOIN b y ON x.id = y.id JOIN c x ON y.id = x.id"
+        )
+        .is_err());
+        assert!(parse_join(
+            "SELECT * FROM a x JOIN b y ON x.id = y.id LEFT JOIN c z ON y.id = z.id"
+        )
+        .is_err());
+    }
 
     #[test]
     fn parses_inner_joins_with_aliases_and_bounds() {
