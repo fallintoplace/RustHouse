@@ -1,0 +1,18 @@
+{
+  "name": "customer-cardinality",
+  "description": "Measure distinct user counting with and without selective filters",
+  "queries": [
+    {
+      "name": "unique-users",
+      "sql": "SELECT COUNT(DISTINCT user_id) FROM events"
+    },
+    {
+      "name": "paid-users",
+      "sql": "SELECT COUNT(DISTINCT user_id) FROM events WHERE status = 'paid'"
+    },
+    {
+      "name": "regional-users",
+      "sql": "SELECT COUNT(DISTINCT user_id) FROM events WHERE region = 'LATAM'"
+    }
+  ]
+}

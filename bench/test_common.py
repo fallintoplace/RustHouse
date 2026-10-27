@@ -44,7 +44,7 @@ class SharedWorkloadTests(unittest.TestCase):
 
     def test_json_output_matches_saved_file(self):
         with tempfile.TemporaryDirectory() as directory:
-            target = Path(directory) / "report.json"
+            target = Path(directory) / "nested" / "reports" / "report.json"
             buffer = io.StringIO()
             with redirect_stdout(buffer):
                 emit_json({"verified": True}, target)
