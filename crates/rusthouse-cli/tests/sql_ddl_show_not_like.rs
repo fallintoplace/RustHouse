@@ -25,7 +25,11 @@ fn sql(statement: &str, directory: &Path, mode: &str) -> Output {
 fn show_tables_not_like_filters_catalog_with_existing_like_semantics() {
     let catalog = directory();
     for table in ["events_1", "eventsX2", "metrics"] {
-        let created = sql(&format!("CREATE TABLE {table} (id UInt64)"), &catalog, "--catalog");
+        let created = sql(
+            &format!("CREATE TABLE {table} (id UInt64)"),
+            &catalog,
+            "--catalog",
+        );
         assert!(created.status.success(), "{created:?}");
     }
 
@@ -51,7 +55,11 @@ fn show_tables_not_like_works_in_database_mode_and_missing_catalog() {
     assert!(!database.exists());
 
     for table in ["logs_1", "users"] {
-        let created = sql(&format!("CREATE TABLE {table} (id UInt64)"), &database, "--database");
+        let created = sql(
+            &format!("CREATE TABLE {table} (id UInt64)"),
+            &database,
+            "--database",
+        );
         assert!(created.status.success(), "{created:?}");
     }
     let result = sql("SHOW TABLES NOT LIKE 'logs%'", &database, "--database");
