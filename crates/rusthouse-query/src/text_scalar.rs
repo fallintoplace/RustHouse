@@ -16,6 +16,7 @@ pub(super) fn is_function(name: &str) -> bool {
             | "CONCAT_WS"
             | "SUBSTRING"
             | "SPLIT_PART"
+            | "TO_INT64"
             | "TRIM"
             | "LPAD"
             | "REPLACE"
@@ -225,6 +226,18 @@ fn parse_at_depth(parser: &mut Parser, depth: usize) -> Result<ConstantValue, Pa
                     ConstantValue::Text(value.chars().skip(start).take(count).collect())
                 }
                 _ => ConstantValue::Null,
+            }
+        }
+        "TO_INT64" => {
+            let input = text_arg(parser, depth + 1)?;
+            require(parser, Token::RParen, "TO_INT64 requires one argument")?;
+            match input {
+                Some(value) => ConstantValue::Integer(
+                    value
+                        .parse::<i64>()
+                        .map_err(|_| ParseError("TO_INT64 requires an Int64 string".into()))?,
+                ),
+                None => ConstantValue::Null,
             }
         }
         "LPAD" => {
