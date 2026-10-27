@@ -39,6 +39,12 @@ when comparing results. Query execution benchmarks exclude SQL parsing
 and fixture generation; part scans include normal OS cache effects.
 These are not certified cross-engine benchmark results.
 
+## Projection-aware ClickBench smoke checks
+
+Run the upstream ClickBench SQL against a local projected table. Pass an explicit
+column-requirements manifest so omitted columns do not become false SQL failures.
+See [ClickBench projection checks](clickbench/README.md).
+
 ## End-to-end SQL workload runners
 
 ```sh
