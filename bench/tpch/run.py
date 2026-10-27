@@ -71,6 +71,9 @@ def benchmark_one(number, sql, execute, runs, warmups, reference=None):
             break
         if started is not None:
             elapsed.append(time.perf_counter() - started)
+    # Do not publish incomplete latency distributions for failed queries.
+    if status not in ("passed", "unverified"):
+        elapsed = []
     return {
         "query": number, "status": status,
         "timings_seconds": elapsed, "latency": summary(elapsed),
@@ -92,13 +95,35 @@ def summarize_coverage(results):
     }
 
 
+def official_22_coverage(queries):
+    present = {number for number, _ in queries}
+    expected = set(range(1, 23))
+    return {
+        "available_queries": len(present & expected),
+        "missing_query_ids": sorted(expected - present),
+        "unexpected_query_ids": sorted(present - expected),
+        "coverage_percent": round(100 * len(present & expected) / 22, 2),
+    }
+
+
 def select_queries(queries, spec):
-    if not spec:
+    if spec is None:
         return queries
+    selected = set()
     try:
-        selected = {int(fragment) for fragment in spec.split(",")}
+        for fragment in spec.split(","):
+            parts = fragment.strip().split("-")
+            if not 1 <= len(parts) <= 2 or not all(
+                part.isascii() and part.isdecimal() for part in parts
+            ):
+                raise ValueError("invalid query ID or range")
+            first = int(parts[0])
+            last = int(parts[-1])
+            if first < 1 or last < first or last > 99:
+                raise ValueError("query IDs must be in increasing order within 1..99")
+            selected.update(range(first, last + 1))
     except ValueError as exc:
-        raise ValueError("--only must contain comma-separated integer IDs") from exc
+        raise ValueError("--only must contain query IDs or ranges such as 1,6,10-12") from exc
     available = {number for number, _ in queries}
     if not selected or not selected.issubset(available):
         raise ValueError("--only contains an unavailable query ID")
@@ -112,6 +137,8 @@ def main(argv=None):
     parser.add_argument("--queries-dir", type=Path, required=True)
     parser.add_argument("--reference-dir", type=Path)
     parser.add_argument("--only", help="Comma-separated query IDs, e.g. 1,6,12")
+    parser.add_argument("--require-22", action="store_true",
+                        help="Reject query directories missing any of the 22 official IDs")
     parser.add_argument("--runs", type=int, default=5)
     parser.add_argument("--warmups", type=int, default=1)
     parser.add_argument("--timeout", type=float, default=120)
@@ -127,6 +154,10 @@ def main(argv=None):
     except (OSError, ValueError) as exc:
         parser.error(str(exc))
     try:
+        official_coverage = official_22_coverage(queries)
+        if args.require_22 and (official_coverage["missing_query_ids"]
+                                or official_coverage["unexpected_query_ids"]):
+            parser.error("query directory must contain exactly q01.sql to q22.sql")
         queries = select_queries(queries, args.only)
     except ValueError as exc:
         parser.error(str(exc))
@@ -163,6 +194,7 @@ def main(argv=None):
         "query_sha256": query_fingerprint(queries),
         "reference_checked": args.reference_dir is not None,
         "coverage": summarize_coverage(results),
+        "official_22_coverage": official_coverage,
         "results": results,
     }
     emit_json(report, args.output)

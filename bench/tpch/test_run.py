@@ -3,7 +3,7 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from run import benchmark_one, load_queries, query_fingerprint, select_queries, summary, summarize_coverage
+from run import benchmark_one, load_queries, official_22_coverage, query_fingerprint, select_queries, summary, summarize_coverage
 
 class RunnerTests(unittest.TestCase):
     def test_query_discovery_is_numeric(self):
@@ -28,7 +28,7 @@ class RunnerTests(unittest.TestCase):
         self.assertEqual(select_queries(queries, None), queries)
         with self.assertRaisesRegex(ValueError, "unavailable"):
             select_queries(queries, "1")
-        with self.assertRaisesRegex(ValueError, "comma-separated"):
+        with self.assertRaisesRegex(ValueError, "query IDs or ranges"):
             select_queries(queries, "invalid")
 
     def test_correctness_is_checked_before_timing(self):
@@ -38,6 +38,37 @@ class RunnerTests(unittest.TestCase):
         mismatched = benchmark_one(6, "SELECT 1", lambda _: b"2\n", 3, 1, b"1\n")
         self.assertEqual(mismatched["status"], "mismatch")
         self.assertEqual(mismatched["timings_seconds"], [])
+
+    def test_failed_late_iteration_discards_partial_samples(self):
+        calls = 0
+        def flaky(_):
+            nonlocal calls
+            calls += 1
+            return b"good\\n" if calls == 1 else b"bad\\n"
+        result = benchmark_one(6, "SELECT 1", flaky, 3, 0, b"good\\n")
+        self.assertEqual(result["status"], "mismatch")
+        self.assertEqual(result["timings_seconds"], [])
+        self.assertIsNone(result["latency"])
+
+    def test_select_query_ranges_and_reject_gaps(self):
+        queries = [(number, f"SELECT {number}") for number in range(1, 23)]
+        result = select_queries(queries, " 1, 6, 10-12 ")
+        self.assertEqual([number for number, _ in result], [1, 6, 10, 11, 12])
+        for spec in ("", "1-", "5-3", "1,,2", "1-200", "-1"):
+            with self.subTest(spec=spec):
+                with self.assertRaises(ValueError):
+                    select_queries(queries, spec)
+        with self.assertRaisesRegex(ValueError, "unavailable"):
+            select_queries([(1, "SELECT 1")], "1-2")
+
+    def test_official_22_denominator_is_not_selected_query_count(self):
+        few = official_22_coverage([(1, "SELECT 1"), (6, "SELECT 6")])
+        self.assertEqual(few["available_queries"], 2)
+        self.assertEqual(len(few["missing_query_ids"]), 20)
+        self.assertEqual(few["coverage_percent"], 9.09)
+        complete = official_22_coverage([(i, "SELECT 1") for i in range(1, 23)])
+        self.assertEqual(complete["coverage_percent"], 100.0)
+        self.assertEqual(complete["unexpected_query_ids"], [])
 
     def test_query_fingerprint_stable_and_sensitive_to_sql(self):
         first = [(6, "SELECT 6"), (1, "SELECT 1")]
