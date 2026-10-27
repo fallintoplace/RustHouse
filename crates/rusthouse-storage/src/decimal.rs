@@ -86,20 +86,15 @@ fn decimal_storage_type(precision: u8) -> &'static str {
 }
 
 fn parse_sized_decimal(data_type: &str) -> Option<(u8, u8, &'static str)> {
-    for (prefix, precision) in [("Decimal32(", 9), ("Decimal64(", 18), ("Decimal128(", 38)] {
-        if let Some(inner) = data_type
-            .strip_prefix(prefix)
-            .and_then(|value| value.strip_suffix(')'))
-        {
-            let scale = inner.parse::<u8>().ok()?;
-            return (scale <= precision).then_some((
-                precision,
-                scale,
-                decimal_storage_type(precision),
-            ));
-        }
-    }
-    None
+    let (width, arguments) = data_type.strip_prefix("Decimal")?.split_once('(')?;
+    let (precision, storage) = match width {
+        "32" => (9, "Int32"),
+        "64" => (18, "Int64"),
+        "128" => (38, "Int128"),
+        _ => return None,
+    };
+    let scale = arguments.strip_suffix(')')?.parse::<u8>().ok()?;
+    (scale <= precision).then_some((precision, scale, storage))
 }
 
 fn parse_general_decimal(inner: &str) -> Option<(u8, u8, &'static str)> {
@@ -229,6 +224,7 @@ mod tests {
             "Decimal64(19)",
             "Decimal128(39)",
             "Decimal256(2)",
+            "Decimal16(2)",
             "Decimal256(38, 2)",
             "Decimal(0, 0)",
             "Decimal(39, 0)",
