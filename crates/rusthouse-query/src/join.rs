@@ -227,12 +227,19 @@ pub fn parse_join(sql: &str) -> Result<Option<JoinSelect>, ParseError> {
     } else {
         None
     };
-    let limit = if parser.keyword("LIMIT") {
-        Some(bound(&mut parser, "LIMIT")?)
+    let (limit, comma_offset) = if parser.keyword("LIMIT") {
+        let first = bound(&mut parser, "LIMIT")?;
+        if parser.take(Token::Comma) {
+            (Some(bound(&mut parser, "LIMIT")?), Some(first))
+        } else {
+            (Some(first), None)
+        }
     } else {
-        None
+        (None, None)
     };
-    let offset = if parser.keyword("OFFSET") {
+    let offset = if let Some(offset) = comma_offset {
+        offset
+    } else if parser.keyword("OFFSET") {
         if limit.is_none() {
             return Err(ParseError("OFFSET requires LIMIT".into()));
         }
@@ -360,6 +367,26 @@ mod tests {
                 .join(", ")
         );
         assert!(parse_join(&too_many).is_err());
+    }
+
+    #[test]
+    fn parses_clickhouse_style_join_limit_offset_count() {
+        let query = parse_join(
+            "SELECT * FROM l JOIN r ON l.id = r.id LIMIT 7, 3",
+        )
+        .unwrap()
+        .unwrap();
+        assert_eq!(query.offset, 7);
+        assert_eq!(query.limit, Some(3));
+        let query = parse_join(
+            "SELECT * FROM l JOIN r ON l.id = r.id LIMIT 3 OFFSET 7",
+        )
+        .unwrap()
+        .unwrap();
+        assert_eq!(query.offset, 7);
+        assert_eq!(query.limit, Some(3));
+        assert!(parse_join("SELECT * FROM l JOIN r ON l.id = r.id LIMIT 2, 3 OFFSET 1").is_err());
+        assert!(parse_join("SELECT * FROM l JOIN r ON l.id = r.id LIMIT 2, -1").is_err());
     }
 
     #[test]
