@@ -17,6 +17,7 @@ pub(super) fn is_function(name: &str) -> bool {
             | "SUBSTRING"
             | "SPLIT_PART"
             | "TRIM"
+            | "TRY_TO_INT64"
             | "LPAD"
             | "REPLACE"
             | "STRPOS"
@@ -399,6 +400,16 @@ fn parse_at_depth(parser: &mut Parser, depth: usize) -> Result<ConstantValue, Pa
                     ConstantValue::Text(value.chars().skip(skip).collect())
                 }
                 _ => ConstantValue::Null,
+            }
+        }
+        "TRY_TO_INT64" => {
+            let input = text_arg(parser, depth + 1)?;
+            require(parser, Token::RParen, "TRY_TO_INT64 requires one argument")?;
+            match input {
+                Some(value) => value
+                    .parse::<i64>()
+                    .map_or(ConstantValue::Null, ConstantValue::Integer),
+                None => ConstantValue::Null,
             }
         }
         "RPAD" => {
