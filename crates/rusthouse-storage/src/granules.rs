@@ -117,6 +117,20 @@ pub(crate) fn read_numeric_granule_cached<R: Read + Seek>(
     let byte_count = rows
         .checked_mul(width)
         .ok_or_else(|| invalid_mark(mark, "granule size overflows"))?;
+    // A verified cached block can be decoded directly. This avoids allocating
+    // and copying the bytes of every adaptive mark sharing a compressed block.
+    if let Some(bytes) = cached
+        .as_ref()
+        .filter(|block| block.block.offset == mark.compressed_offset)
+        .and_then(|block| {
+            usize::try_from(mark.decompressed_offset)
+                .ok()
+                .and_then(|offset| offset.checked_add(byte_count).and_then(|end| block.data.get(offset..end)))
+        })
+    {
+        return read_numeric_column(&mut &bytes[..], data_type, rows)
+            .map_err(PartError::NumericRead);
+    }
     let bytes = read_mark_bytes_cached(reader, mark, byte_count, cached)?;
     read_numeric_column(&mut bytes.as_slice(), data_type, rows).map_err(PartError::NumericRead)
 }
