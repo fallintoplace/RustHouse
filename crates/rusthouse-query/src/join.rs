@@ -1,4 +1,3 @@
-//! Bounded two-table equi-join syntax for persistent SQL tables.
 use super::{ParseError, Parser, Token, tokenize};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -22,16 +21,11 @@ pub struct JoinSelect {
     pub left_alias: String,
     pub right_alias: String,
     pub kind: JoinType,
-    /// Select only the first matching right row for INNER and LEFT joins.
     pub any: bool,
-    /// None projects every column from both tables.
     pub columns: Option<Vec<JoinColumn>>,
     pub keys: Vec<(JoinColumn, JoinColumn)>,
-    /// Shared-key names for JOIN USING; star output projects each key once.
     pub using_keys: Vec<String>,
-    /// Optional post-join IS [NOT] NULL filter (true means IS NOT NULL).
     pub where_null: Option<(JoinColumn, bool)>,
-    /// Ordered key, descending flag, and optional explicit NULL placement.
     pub order_by: Option<(JoinColumn, bool, Option<bool>)>,
     pub limit: Option<usize>,
     pub offset: usize,
@@ -111,7 +105,6 @@ fn bound(parser: &mut Parser, label: &str) -> Result<usize, ParseError> {
         .map_err(|_| ParseError(format!("{label} exceeds address space")))
 }
 
-/// Return None for queries without a JOIN keyword after FROM.
 pub fn parse_join(sql: &str) -> Result<Option<JoinSelect>, ParseError> {
     let tokens = tokenize(sql)?;
     if !matches!(tokens.first(), Some(Token::Word(word)) if word.eq_ignore_ascii_case("SELECT")) {

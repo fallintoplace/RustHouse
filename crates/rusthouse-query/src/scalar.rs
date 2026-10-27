@@ -1,5 +1,3 @@
-//! Bounded constant-expression evaluation for scalar SELECT without FROM.
-//! Calculation happens in the parser: the executor still sees a single Literal.
 use super::{ParseError, Parser, Token};
 
 const MAX_DEPTH: usize = 16;
@@ -182,7 +180,6 @@ fn parse_power(parser: &mut Parser, depth: usize) -> Result<i64, ParseError> {
     base.checked_pow(exponent).ok_or_else(overflow)
 }
 
-/// SQL-style truncating integer division and remainder.
 fn parse_div_mod(parser: &mut Parser, depth: usize, divide: bool) -> Result<i64, ParseError> {
     require_token(parser, Token::LParen, "DIV/MOD requires '('")?;
     let left = expression(parser, depth + 1)?;
@@ -268,7 +265,6 @@ fn parse_bit_width(parser: &mut Parser, depth: usize) -> Result<i64, ParseError>
     Ok(i64::from(u64::BITS - value.unsigned_abs().leading_zeros()))
 }
 
-/// Parity of all 64 bits in the signed two's-complement representation.
 fn parse_bit_parity(parser: &mut Parser, depth: usize) -> Result<i64, ParseError> {
     require_token(parser, Token::LParen, "BIT_PARITY requires '('")?;
     let value = expression(parser, depth + 1)?;
@@ -276,7 +272,6 @@ fn parse_bit_parity(parser: &mut Parser, depth: usize) -> Result<i64, ParseError
     Ok(i64::from(value.count_ones() & 1))
 }
 
-/// Set the lowest 0 to 64 bits in a signed Int64 bit pattern.
 fn parse_bit_mask(parser: &mut Parser, depth: usize) -> Result<i64, ParseError> {
     require_token(parser, Token::LParen, "BIT_MASK requires '('")?;
     let width = expression(parser, depth + 1)?;
@@ -365,7 +360,6 @@ fn parse_clamp(parser: &mut Parser, depth: usize) -> Result<i64, ParseError> {
     Ok(value.clamp(lower, upper))
 }
 
-/// Round a signed integer upward to a positive step.
 fn parse_ceil_to_multiple(parser: &mut Parser, depth: usize) -> Result<i64, ParseError> {
     require_token(parser, Token::LParen, "CEIL_TO_MULTIPLE requires '('")?;
     let value = expression(parser, depth + 1)?;
@@ -436,7 +430,6 @@ fn parse_round_to_multiple(parser: &mut Parser, depth: usize) -> Result<i64, Par
     i64::try_from(rounded).map_err(|_| overflow())
 }
 
-/// Round down to the next multiple, including negative values.
 fn parse_floor_to_multiple(parser: &mut Parser, depth: usize) -> Result<i64, ParseError> {
     require_token(parser, Token::LParen, "FLOOR_TO_MULTIPLE requires '('")?;
     let value = expression(parser, depth + 1)?;
@@ -482,7 +475,6 @@ fn parse_bit_extract(parser: &mut Parser, depth: usize) -> Result<i64, ParseErro
     Ok((((value as u64) >> offset) & mask) as i64)
 }
 
-/// Return one when a signed integer is between inclusive bounds.
 fn parse_in_range(parser: &mut Parser, depth: usize) -> Result<i64, ParseError> {
     require_token(parser, Token::LParen, "IN_RANGE requires '('")?;
     let value = expression(parser, depth + 1)?;
@@ -499,8 +491,6 @@ fn parse_in_range(parser: &mut Parser, depth: usize) -> Result<i64, ParseError> 
     Ok(i64::from((lower..=upper).contains(&value)))
 }
 
-/// Multiply in Int128 before dividing, then require an Int64 result.
-/// Euclidean quotient and nonnegative remainder, including negative operands.
 fn parse_euclidean_division(
     parser: &mut Parser,
     depth: usize,
@@ -538,8 +528,6 @@ fn parse_mul_div(parser: &mut Parser, depth: usize) -> Result<i64, ParseError> {
     i64::try_from(quotient).map_err(|_| overflow())
 }
 
-/// Equal-width histogram buckets for a signed range [lower, upper).
-/// Return one if the signed divisor divides the dividend exactly.
 fn parse_is_divisible(parser: &mut Parser, depth: usize) -> Result<i64, ParseError> {
     require_token(parser, Token::LParen, "IS_DIVISIBLE requires '('")?;
     let dividend = expression(parser, depth + 1)?;
@@ -582,7 +570,6 @@ fn parse_width_bucket(parser: &mut Parser, depth: usize) -> Result<i64, ParseErr
     i64::try_from(bucket).map_err(|_| overflow())
 }
 
-/// Modify a single bit in the signed 64-bit two's-complement representation.
 fn parse_bit_update(parser: &mut Parser, depth: usize) -> Result<i64, ParseError> {
     let name = parser.word()?;
     require_token(parser, Token::LParen, "bit update requires '('")?;
@@ -606,7 +593,6 @@ fn parse_bit_update(parser: &mut Parser, depth: usize) -> Result<i64, ParseError
     Ok(result as i64)
 }
 
-/// Count zero bits on the left or right of an Int64 bit pattern.
 fn parse_bit_scans(parser: &mut Parser, depth: usize) -> Result<i64, ParseError> {
     let name = parser.word()?;
     require_token(parser, Token::LParen, "bit scan requires '('")?;
@@ -620,7 +606,6 @@ fn parse_bit_scans(parser: &mut Parser, depth: usize) -> Result<i64, ParseError>
     Ok(i64::from(result))
 }
 
-/// Decimal digital root of the unsigned magnitude; zero maps to zero.
 fn parse_digital_root(parser: &mut Parser, depth: usize) -> Result<i64, ParseError> {
     require_token(parser, Token::LParen, "DIGITAL_ROOT requires '('")?;
     let value = expression(parser, depth + 1)?;
@@ -633,7 +618,6 @@ fn parse_digital_root(parser: &mut Parser, depth: usize) -> Result<i64, ParseErr
     i64::try_from(root).map_err(|_| overflow())
 }
 
-/// Checked signed Int64 power of ten for nonnegative integer exponents.
 fn parse_pow10(parser: &mut Parser, depth: usize) -> Result<i64, ParseError> {
     require_token(parser, Token::LParen, "POW10 requires '('")?;
     let exponent = expression(parser, depth + 1)?;
@@ -643,8 +627,6 @@ fn parse_pow10(parser: &mut Parser, depth: usize) -> Result<i64, ParseError> {
     10_i64.checked_pow(exponent).ok_or_else(overflow)
 }
 
-/// Compute the triangular number with a wide intermediate product.
-/// Integer floor(log_base(value)), without floating-point precision loss.
 fn parse_intlog(parser: &mut Parser, depth: usize) -> Result<i64, ParseError> {
     require_token(parser, Token::LParen, "INTLOG requires '('")?;
     let value = expression(parser, depth + 1)?;
@@ -674,7 +656,6 @@ fn parse_triangular(parser: &mut Parser, depth: usize) -> Result<i64, ParseError
     i64::try_from(value * (value + 1) / 2).map_err(|_| overflow())
 }
 
-/// Test primality with bounded 6k +/- 1 trial division.
 fn parse_is_prime(parser: &mut Parser, depth: usize) -> Result<i64, ParseError> {
     require_token(parser, Token::LParen, "IS_PRIME requires '('")?;
     let value = expression(parser, depth + 1)?;
@@ -705,7 +686,6 @@ fn parse_is_prime(parser: &mut Parser, depth: usize) -> Result<i64, ParseError> 
     Ok(1)
 }
 
-/// Compute n choose k exactly for n up to 66.
 fn parse_binomial(parser: &mut Parser, depth: usize) -> Result<i64, ParseError> {
     require_token(parser, Token::LParen, "BINOMIAL requires '('")?;
     let n = expression(parser, depth + 1)?;
@@ -723,7 +703,6 @@ fn parse_binomial(parser: &mut Parser, depth: usize) -> Result<i64, ParseError> 
     i64::try_from(result).map_err(|_| overflow())
 }
 
-/// Number of ordered selections nPk for 0 <= k <= n <= 20.
 fn parse_permutations(parser: &mut Parser, depth: usize) -> Result<i64, ParseError> {
     require_token(parser, Token::LParen, "PERMUTATIONS requires '('")?;
     let n = expression(parser, depth + 1)?;
@@ -826,7 +805,6 @@ fn parse_rounded_division(parser: &mut Parser, depth: usize) -> Result<i64, Pars
         return Err(ParseError("rounded division by zero".into()));
     }
 
-    // i128 also handles i64::MIN / -1 without overflowing before validation.
     let dividend = i128::from(dividend);
     let divisor = i128::from(divisor);
     let quotient = dividend / divisor;
@@ -844,7 +822,6 @@ fn parse_rounded_division(parser: &mut Parser, depth: usize) -> Result<i64, Pars
     i64::try_from(result).map_err(|_| overflow())
 }
 
-/// Round a signed quotient to nearest, with ties away from zero.
 fn parse_round_div(parser: &mut Parser, depth: usize) -> Result<i64, ParseError> {
     require_token(parser, Token::LParen, "ROUND_DIV requires '('")?;
     let dividend = expression(parser, depth + 1)?;

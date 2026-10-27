@@ -204,7 +204,6 @@ pub enum Source {
 pub struct OrderBy {
     pub column: String,
     pub descending: bool,
-    /// None keeps the existing ASC/DESC NULL ordering.
     pub nulls_first: Option<bool>,
 }
 
@@ -218,12 +217,10 @@ pub struct Having {
 pub struct Select {
     pub projection: Projection,
     pub alias: Option<String>,
-    /// One wildcard column rename. Applies to query output only.
     pub rename: Option<(String, String)>,
     pub distinct: bool,
     pub source: Option<Source>,
     pub predicates: Vec<Predicate>,
-    /// Additional OR branches, each containing AND-connected predicates.
     pub or_predicates: Vec<Vec<Predicate>>,
     pub order_by: Option<OrderBy>,
     pub order_by_extra: Vec<OrderBy>,
@@ -233,12 +230,10 @@ pub struct Select {
 }
 
 impl Select {
-    /// ORDER BY keys in SQL precedence order.
     pub fn order_terms(&self) -> impl Iterator<Item = &OrderBy> {
         self.order_by.iter().chain(self.order_by_extra.iter())
     }
 
-    /// Map SELECT output aliases to the underlying column used for ORDER BY.
     pub(crate) fn order_source_column<'a>(&'a self, column: &'a str) -> &'a str {
         if let Some((source, target)) = &self.rename {
             if column == target.as_str() {
@@ -342,7 +337,6 @@ impl Parser {
         }
     }
     fn order_term(&mut self, projection: &Projection) -> Result<OrderBy, ParseError> {
-        // Positions are 1-based and refer to projected columns.
         let column = if matches!(self.tokens.get(self.index), Some(Token::Number(_))) {
             let position = self
                 .number()?
@@ -1070,7 +1064,6 @@ fn parse_select_tokens(tokens: Vec<Token>) -> Result<Select, ParseError> {
         None
     };
 
-    // Accept both ClickHouse LIMIT pagination and SQL-standard OFFSET/FETCH.
     let offset = if parser.keyword("OFFSET") {
         if comma_offset.is_some() {
             return Err(ParseError(

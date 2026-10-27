@@ -1,4 +1,3 @@
-//! Bounded UPDATE table SET column = literal [WHERE ...] parser.
 use crate::{Operator, ParseError, Parser, Select, Source, Token, parse_select, tokenize};
 use std::collections::HashSet;
 
@@ -102,7 +101,6 @@ fn update_select_query(parser: &mut Parser, table: &str) -> Result<String, Parse
     Ok(query)
 }
 
-/// Rewrite predicates using the SELECT parser to keep NULL, LIKE and OR semantics shared.
 pub fn parse_update(sql: &str) -> Result<Option<Update>, ParseError> {
     let mut parser = Parser {
         tokens: tokenize(sql)?,
