@@ -117,6 +117,9 @@ pub(crate) fn read_numeric_granule_cached<R: Read + Seek>(
     let byte_count = rows
         .checked_mul(width)
         .ok_or_else(|| invalid_mark(mark, "granule size overflows"))?;
+    if byte_count > MAX_GRANULE_BYTES {
+        return Err(invalid_mark(mark, "granule exceeds the 64 MiB read limit"));
+    }
     // A verified cached block can be decoded directly. This avoids allocating
     // and copying the bytes of every adaptive mark sharing a compressed block.
     if let Some(bytes) = cached
