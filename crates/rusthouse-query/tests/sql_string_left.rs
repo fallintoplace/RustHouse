@@ -15,6 +15,7 @@ fn left_reads_bounded_prefixes_of_constant_strings() {
         ("SELECT left('abc', 0)", ""),
         ("SELECT LEFT('abc', 9)", "abc"),
         ("SELECT LEFT('', 2)", ""),
+        ("SELECT LEFT('é😀Z', 2)", "é😀"),
         ("SELECT LEFT(TRIM(' a '), 1)", "a"),
         ("SELECT LEFT('abc', LENGTH('ab'))", "ab"),
     ] {
