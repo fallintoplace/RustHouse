@@ -235,7 +235,7 @@ pub fn parse_join(sql: &str) -> Result<Option<JoinSelect>, ParseError> {
             let second = qualified(&mut parser)?;
             keys.push((first, second));
         }
-        let mut unique = Vec::with_capacity(keys.len());
+        let mut unique: Vec<(JoinColumn, JoinColumn)> = Vec::with_capacity(keys.len());
         for (first, second) in keys {
             if !unique.iter().any(|(left, right)| {
                 (left == &first && right == &second) || (left == &second && right == &first)
