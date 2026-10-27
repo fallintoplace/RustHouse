@@ -230,7 +230,9 @@ pub fn parse_join(sql: &str) -> Result<Option<JoinSelect>, ParseError> {
             } else if parser.keyword("LAST") {
                 Some(false)
             } else {
-                return Err(ParseError("JOIN ORDER BY NULLS requires FIRST or LAST".into()));
+                return Err(ParseError(
+                    "JOIN ORDER BY NULLS requires FIRST or LAST".into(),
+                ));
             }
         } else {
             None
@@ -381,15 +383,13 @@ mod tests {
             ("DESC NULLS LAST", Some(false)),
             ("ASC", None),
         ] {
-            let statement = format!(
-                "SELECT * FROM l LEFT JOIN r ON l.id = r.id ORDER BY r.id {suffix}"
-            );
+            let statement =
+                format!("SELECT * FROM l LEFT JOIN r ON l.id = r.id ORDER BY r.id {suffix}");
             let query = parse_join(&statement).unwrap().unwrap();
             assert_eq!(query.order_by.unwrap().2, expected);
         }
         assert!(
-            parse_join("SELECT * FROM l JOIN r ON l.id = r.id ORDER BY l.id NULLS MIDDLE")
-                .is_err()
+            parse_join("SELECT * FROM l JOIN r ON l.id = r.id ORDER BY l.id NULLS MIDDLE").is_err()
         );
     }
 
