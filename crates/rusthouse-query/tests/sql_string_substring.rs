@@ -16,6 +16,8 @@ fn substring_uses_one_based_positions_and_optional_lengths() {
         ("SELECT SUBSTRING('abc', 9, 1)", ""),
         ("SELECT SUBSTRING('abc', 2, 0)", ""),
         ("SELECT SUBSTRING('abc', 1, 99)", "abc"),
+        ("SELECT SUBSTRING('é😀Z', 2, 1)", "😀"),
+        ("SELECT SUBSTRING('é😀Z', 3)", "Z"),
         ("SELECT SUBSTRING(UPPER('abc'), 2, 1)", "B"),
         ("SELECT SUBSTRING('ab', LENGTH('ab'), 1)", "b"),
     ] {
