@@ -18,6 +18,15 @@ struct SortedRow {
     extra_descending: Arc<[bool]>,
 }
 
+fn compare_with_direction(left: Number, right: Number, descending: bool) -> Ordering {
+    let ordering = compare_numbers(left, right);
+    if descending {
+        ordering.reverse()
+    } else {
+        ordering
+    }
+}
+
 impl PartialEq for SortedRow {
     fn eq(&self, other: &Self) -> bool {
         self.cmp(other) == Ordering::Equal
@@ -34,12 +43,7 @@ impl PartialOrd for SortedRow {
 
 impl Ord for SortedRow {
     fn cmp(&self, other: &Self) -> Ordering {
-        let ordering = compare_numbers(self.key, other.key);
-        let ordering = if self.descending {
-            ordering.reverse()
-        } else {
-            ordering
-        };
+        let ordering = compare_with_direction(self.key, other.key, self.descending);
         if ordering != Ordering::Equal {
             return ordering;
         }
@@ -49,12 +53,7 @@ impl Ord for SortedRow {
             .zip(&other.extra_keys)
             .zip(self.extra_descending.iter())
         {
-            let comparison = compare_numbers(*left, *right);
-            let comparison = if *descending {
-                comparison.reverse()
-            } else {
-                comparison
-            };
+            let comparison = compare_with_direction(*left, *right, *descending);
             if comparison != Ordering::Equal {
                 return comparison;
             }
@@ -173,6 +172,15 @@ impl SortedRows {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn direction_comparison_reverses_order_without_changing_ties() {
+        let one = Number::Unsigned(1);
+        let two = Number::Unsigned(2);
+        assert_eq!(compare_with_direction(one, two, false), Ordering::Less);
+        assert_eq!(compare_with_direction(one, two, true), Ordering::Greater);
+        assert_eq!(compare_with_direction(one, one, true), Ordering::Equal);
+    }
 
     #[test]
     fn bounded_heap_keeps_the_best_rows_with_offset_and_ties() {
