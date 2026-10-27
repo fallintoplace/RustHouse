@@ -30,6 +30,18 @@ class AnalyticsRunnerTests(unittest.TestCase):
         self.assertEqual(results[0]["status"], "unverified")
         self.assertEqual(len(results[0]["seconds"]), 3)
 
+    def test_warmups_execute_without_affecting_timings(self):
+        calls = []
+
+        def execute(sql, _timeout):
+            calls.append(sql)
+            return b"1\\n"
+
+        results = runner.run_benchmark(["SELECT 1"], [0], 3, 1, execute, warmups=2)
+        self.assertEqual(len(calls), 5)
+        self.assertEqual(len(results[0]["seconds"]), 3)
+        self.assertEqual(results[0]["status"], "unverified")
+
     def test_reference_mismatch_is_a_failure(self):
         with tempfile.TemporaryDirectory() as temp:
             root = Path(temp)
