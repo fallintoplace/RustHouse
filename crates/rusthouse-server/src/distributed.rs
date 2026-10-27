@@ -84,9 +84,11 @@ fn read_shard(peer: Peer, sql: &str) -> Result<(usize, Vec<u8>), String> {
 /// Merge only identical TSV headers and whole, newline-terminated rows.
 /// Refuse capped shard results instead of silently returning an incomplete scan.
 fn merge_tsv(shards: &[(usize, Vec<u8>)], max_rows: usize) -> Result<Vec<u8>, MergeError> {
-    let mut output = Vec::new();
+    let mut chunks: Vec<&[u8]> = Vec::with_capacity(shards.len());
     let mut header: Option<&[u8]> = None;
     let mut total_rows = 0usize;
+    let mut total_bytes = 0usize;
+    // Validate every shard before allocating or copying the merged response.
     for (cap, body) in shards {
         if !body.ends_with(b"\n") {
             return Err(MergeError::InvalidResponse);
@@ -117,22 +119,19 @@ fn merge_tsv(shards: &[(usize, Vec<u8>)], max_rows: usize) -> Result<Vec<u8>, Me
         if total_rows > max_rows {
             return Err(MergeError::CoordinatorLimit);
         }
-        let added = if output.is_empty() {
-            body.as_slice()
-        } else {
-            rows
-        };
-        if output
-            .len()
+        let added = if chunks.is_empty() { body.as_slice() } else { rows };
+        total_bytes = total_bytes
             .checked_add(added.len())
-            .is_none_or(|n| n > MAX_RESPONSE_BYTES)
-        {
-            return Err(MergeError::CoordinatorLimit);
-        }
-        output.extend_from_slice(added);
+            .filter(|&size| size <= MAX_RESPONSE_BYTES)
+            .ok_or(MergeError::CoordinatorLimit)?;
+        chunks.push(added);
     }
     if header.is_none() {
         return Err(MergeError::InvalidResponse);
+    }
+    let mut output = Vec::with_capacity(total_bytes);
+    for bytes in chunks {
+        output.extend_from_slice(bytes);
     }
     Ok(output)
 }
