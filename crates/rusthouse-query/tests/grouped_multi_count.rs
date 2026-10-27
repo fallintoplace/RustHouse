@@ -39,9 +39,7 @@ fn groups_counts_by_two_keys_with_filter_having_and_sort() {
         String::from_utf8(output).unwrap()
     };
     assert_eq!(
-        run(
-            "SELECT region, event, count(*) FROM part WHERE active = 1 GROUP BY region, event ORDER BY count(*) DESC, region LIMIT 2"
-        ),
+        run("SELECT region, event, count(*) FROM part WHERE active = 1 GROUP BY region, event ORDER BY count(*) DESC, region LIMIT 2"),
         "region\tevent\tcount\n1\tview\t2\n2\tclick\t1\n"
     );
     assert_eq!(
@@ -49,9 +47,7 @@ fn groups_counts_by_two_keys_with_filter_having_and_sort() {
         "region\tevent\tcount\n1\tview\t2\n"
     );
     assert_eq!(
-        run(
-            "SELECT region, event, count(*) FROM part GROUP BY region, event ORDER BY 3 DESC LIMIT 1"
-        ),
+        run("SELECT region, event, count(*) FROM part GROUP BY region, event ORDER BY 3 DESC LIMIT 1"),
         "region\tevent\tcount\n1\tview\t2\n"
     );
     assert_eq!(
@@ -60,8 +56,6 @@ fn groups_counts_by_two_keys_with_filter_having_and_sort() {
         ),
         "region\tevent\tc\n1\tview\t2\n"
     );
-    assert!(
-        parse_select("SELECT region, event, count(*) FROM part GROUP BY event, region").is_err()
-    );
+    assert!(parse_select("SELECT region, event, count(*) FROM part GROUP BY event, region").is_err());
     fs::remove_dir_all(part).unwrap();
 }

@@ -139,6 +139,7 @@ pub enum Projection {
         column: String,
     },
     MultipleAggregates(Vec<AggregateItem>),
+    StringLength { column: String },
     All,
     Columns(Vec<String>),
 }
@@ -378,7 +379,7 @@ impl Parser {
                             .cloned()
                             .ok_or_else(|| ParseError("ORDER BY position is out of range".into()))?
                     }
-                }
+                },
                 Projection::GroupedAggregate { column, .. } => match position {
                     1 => column.clone(),
                     _ => {
@@ -400,7 +401,8 @@ impl Parser {
         if matches!(
             projection,
             Projection::GroupedCount { .. } | Projection::GroupedMultiCount { .. }
-        ) && column.eq_ignore_ascii_case("count")
+        )
+            && column.eq_ignore_ascii_case("count")
             && self.take(Token::LParen)
             && !self.take(Token::RParen)
             && !(self.take(Token::Star) && self.take(Token::RParen))
@@ -412,7 +414,8 @@ impl Parser {
         let column = if matches!(
             projection,
             Projection::GroupedCount { .. } | Projection::GroupedMultiCount { .. }
-        ) && column.eq_ignore_ascii_case("count")
+        )
+            && column.eq_ignore_ascii_case("count")
         {
             "count".to_string()
         } else {
@@ -458,6 +461,16 @@ fn parse_select_tokens(tokens: Vec<Token>) -> Result<Select, ParseError> {
     let multiple = multi_aggregate::parse_multiple(&mut parser)?;
     let projection = if let Some(items) = multiple {
         Projection::MultipleAggregates(items)
+    } else if matches!(parser.tokens.get(parser.index), Some(Token::Word(name)) if name.eq_ignore_ascii_case("LENGTH"))
+        && parser.tokens.get(parser.index + 1) == Some(&Token::LParen)
+        && matches!(parser.tokens.get(parser.index + 2), Some(Token::Word(name)) if !name.eq_ignore_ascii_case("NULL"))
+        && parser.tokens.get(parser.index + 3) == Some(&Token::RParen)
+    {
+        parser.keyword("LENGTH");
+        parser.take(Token::LParen);
+        let column = parser.word()?;
+        parser.take(Token::RParen);
+        Projection::StringLength { column }
     } else if parser.take(Token::Star) {
         Projection::All
     } else if matches!(parser.tokens.get(parser.index + 1), Some(Token::LParen))
@@ -684,6 +697,7 @@ fn parse_select_tokens(tokens: Vec<Token>) -> Result<Select, ParseError> {
                 | Projection::Aggregate { .. }
                 | Projection::GroupedCount { .. }
                 | Projection::GroupedMultiCount { .. }
+                | Projection::StringLength { .. }
         ) || matches!(&projection, Projection::Columns(columns) if columns.len() == 1);
         if !single_result {
             return Err(ParseError("AS supports only a single result column".into()));
@@ -991,7 +1005,24 @@ fn parse_select_tokens(tokens: Vec<Token>) -> Result<Select, ParseError> {
         if !parser.keyword("BY") {
             return Err(ParseError("expected BY after GROUP".into()));
         }
-        let mut group_columns = vec![parser.word()?];
+        let first_column = if matches!(parser.tokens.get(parser.index), Some(Token::Number(_))) {
+            let position = parser
+                .number()?
+                .parse::<usize>()
+                .map_err(|_| ParseError("GROUP BY position is too large".into()))?;
+            match &projection {
+                Projection::GroupedCount { column }
+                | Projection::GroupedAggregate { column, .. }
+                    if position == 1 =>
+                {
+                    column.clone()
+                }
+                _ => return Err(ParseError("GROUP BY position is out of range".into())),
+            }
+        } else {
+            parser.word()?
+        };
+        let mut group_columns = vec![first_column];
         while parser.take(Token::Comma) {
             if group_columns.len() >= 8 {
                 return Err(ParseError("GROUP BY supports at most 8 keys".into()));
@@ -1005,9 +1036,7 @@ fn parse_select_tokens(tokens: Vec<Token>) -> Result<Select, ParseError> {
             Projection::GroupedCount { .. }
             | Projection::GroupedMultiCount { .. }
             | Projection::GroupedAggregate { .. } => {
-                return Err(ParseError(
-                    "GROUP BY must match selected grouping keys".into(),
-                ));
+                return Err(ParseError("GROUP BY must match selected grouping keys".into()));
             }
             _ => {
                 return Err(ParseError(
@@ -1092,6 +1121,7 @@ fn parse_select_tokens(tokens: Vec<Token>) -> Result<Select, ParseError> {
                 | Projection::CountDistinct { .. }
                 | Projection::Aggregate { .. }
                 | Projection::MultipleAggregates(_)
+                | Projection::StringLength { .. }
                 | Projection::Literal(_)
         )
     {
@@ -1230,6 +1260,30 @@ fn parse_select_tokens(tokens: Vec<Token>) -> Result<Select, ParseError> {
 
 #[cfg(test)]
 mod tests;
+
+#[cfg(test)]
+mod group_by_position_tests {
+    use super::*;
+
+    #[test]
+    fn resolves_first_projected_group_key() {
+        for sql in [
+            "SELECT number, COUNT(*) FROM numbers(4) GROUP BY 1",
+            "SELECT number, SUM(number) FROM numbers(4) GROUP BY 1",
+        ] {
+            assert!(parse_select(sql).is_ok(), "{sql}");
+        }
+    }
+
+    #[test]
+    fn rejects_out_of_range_positions() {
+        for position in ["0", "2", "999"] {
+            let sql = format!("SELECT number, COUNT(*) FROM numbers(4) GROUP BY {position}");
+            assert!(parse_select(&sql).is_err(), "{sql}");
+        }
+    }
+}
+
 
 #[cfg(test)]
 mod generated_numbers_boundary_regressions {

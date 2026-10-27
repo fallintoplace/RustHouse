@@ -49,5 +49,13 @@ fn computes_multiple_aggregates_in_one_filtered_scan() {
         run("SELECT min(amount), max(amount), count(tag) FROM part WHERE tag = 'ok'"),
         "min(amount)\tmax(amount)\tcount(tag)\n2\t4\t2\n"
     );
+    assert_eq!(
+        run("SELECT count(DISTINCT tag), count(*), sum(width) FROM part"),
+        "count(DISTINCT tag)\tcount(*)\tsum(width)\n2\t3\t60\n"
+    );
+    assert_eq!(
+        run("SELECT count(DISTINCT amount + 1), count(*) FROM part WHERE tag = 'ok'"),
+        "count(DISTINCT amount + 1)\tcount(*)\n2\t2\n"
+    );
     fs::remove_dir_all(part).unwrap();
 }

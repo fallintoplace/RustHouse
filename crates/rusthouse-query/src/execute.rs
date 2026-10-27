@@ -8,14 +8,15 @@ use std::fmt;
 use std::io::{self, BufWriter, Write};
 use std::path::Path;
 
-mod grouped_multi;
 mod join;
+mod grouped_multi;
 mod predicates;
 mod sort;
 mod typed;
 pub use join::execute_join;
 use sort::{MAX_SORTED_ROWS, SortedRows};
 mod multi_aggregate;
+mod string_length;
 mod typed_aggregate;
 #[cfg(test)]
 use predicates::{CompiledTest, compile_in_test};
@@ -349,6 +350,9 @@ fn execute_into<W: Write>(
     if let Projection::GroupedMultiCount { columns } = &query.projection {
         return grouped_multi::execute(query, part, columns, output);
     }
+    if let Projection::StringLength { column } = &query.projection {
+        return string_length::execute(query, part, column, output);
+    }
     if let Projection::MultipleAggregates(items) = &query.projection {
         return multi_aggregate::execute(query, part, items, output);
     }
@@ -401,6 +405,7 @@ fn execute_into<W: Write>(
         | Projection::GroupedMultiCount { .. }
         | Projection::GroupedAggregate { .. }
         | Projection::MultipleAggregates(_)
+        | Projection::StringLength { .. }
         | Projection::Literal(_)
         | Projection::Constants(_) => unreachable!(),
     };
@@ -1079,6 +1084,7 @@ fn execute_numbers<W: Write>(
         | Projection::GroupedMultiCount { .. }
         | Projection::GroupedAggregate { .. }
         | Projection::MultipleAggregates(_)
+        | Projection::StringLength { .. }
         | Projection::Literal(_)
         | Projection::Constants(_) => unreachable!(),
     };
