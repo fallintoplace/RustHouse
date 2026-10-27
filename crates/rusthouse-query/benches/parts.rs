@@ -112,9 +112,11 @@ fn measure(label: &str, sql: &str, expected: &str, fixture: &Fixture, rows: usiz
     }
     timings.sort_unstable();
     let seconds = timings[samples / 2].as_secs_f64();
+    let p90_seconds = timings[samples.saturating_mul(9).div_ceil(10) - 1].as_secs_f64();
     println!(
-        "{label:<18} {:>10.3} {:>17.2}",
+        "{label:<18} {:>10.3} {:>10.3} {:>17.2}",
         seconds * 1000.0,
+        p90_seconds * 1000.0,
         rows as f64 / seconds / 1_000_000.0
     );
 }
@@ -136,9 +138,29 @@ fn main() {
     }
     println!("RustHouse frozen-parts benchmark: {rows} rows, {samples} samples");
     println!(
-        "{:<18} {:>10} {:>17}",
-        "workload", "median ms", "M logical rows/s"
+        "{:<18} {:>10} {:>10} {:>17}",
+        "workload", "median ms", "p90 ms", "M logical rows/s"
     );
+    println!(
+        "Logical rows/s uses input rows, not verified bytes read or cold-cache throughput."
+    );
+    for (label, fraction) in [
+        ("count 100%", 100usize),
+        ("count 50%", 50),
+        ("count 10%", 10),
+        ("count 1%", 1),
+    ] {
+        let selected = rows.saturating_mul(fraction).div_ceil(100).min(rows);
+        let cutoff = rows - selected;
+        measure(
+            label,
+            &format!("SELECT count(*) FROM part WHERE id >= {cutoff}"),
+            &format!("count\n{selected}\n"),
+            &fixture,
+            rows,
+            samples,
+        );
+    }
     measure(
         "filtered sum",
         &format!("SELECT sum(id) FROM part WHERE id >= {middle}"),
