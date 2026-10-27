@@ -2,6 +2,7 @@ import importlib.util
 import math
 import tempfile
 import unittest
+from unittest.mock import patch
 from pathlib import Path
 
 HERE = Path(__file__).resolve().parent
@@ -26,6 +27,16 @@ class IngestBenchmarkTests(unittest.TestCase):
             temperatures = [float(value) for _, value in rows]
             self.assertTrue(math.isclose(min(temperatures), expected[0]))
             self.assertTrue(math.isclose(max(temperatures), expected[1]))
+            self.assertTrue(math.isclose(sum(temperatures), expected[2], abs_tol=1e-8))
+
+    def test_verification_rejects_changed_sum_with_matching_count_and_extrema(self):
+        valid = ["3", "-1", "1", "0"]
+        with patch.object(runner, "sql", side_effect=valid):
+            runner.verify(Path("/missing"), Path("/missing"), 3, -1, 1, 0, 1)
+        invalid = ["3", "-1", "1", "0.5"]
+        with patch.object(runner, "sql", side_effect=invalid):
+            with self.assertRaisesRegex(RuntimeError, "sum="):
+                runner.verify(Path("/missing"), Path("/missing"), 3, -1, 1, 0, 1)
 
     def test_semicolon_input_uses_the_same_oracle(self):
         with tempfile.TemporaryDirectory() as temp:
