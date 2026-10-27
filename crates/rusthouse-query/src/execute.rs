@@ -1203,7 +1203,9 @@ impl AggregateState {
 
     fn render(&self) -> String {
         if self.function == AggregateFunction::CountIf {
-            return self.value.map_or_else(|| "0".into(), |count| count.to_string());
+            return self
+                .value
+                .map_or_else(|| "0".into(), |count| count.to_string());
         }
         if self.count == 0
             || (self.count == 1
