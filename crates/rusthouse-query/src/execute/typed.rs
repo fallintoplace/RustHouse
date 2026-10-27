@@ -692,7 +692,7 @@ pub(super) fn execute_typed<W: Write>(
         Projection::CountDistinct { column } => format!("countDistinct({column})"),
         Projection::GroupedCount { column } => {
             format!("{column}\t{}", query.alias.as_deref().unwrap_or("count"))
-        },
+        }
         _ => projection.join("\t"),
     };
     if matches!(query.projection, Projection::GroupedCount { .. }) {
