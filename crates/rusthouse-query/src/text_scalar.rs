@@ -39,6 +39,7 @@ pub(super) fn is_function(name: &str) -> bool {
             | "REPLACE_LAST"
             | "REPEAT"
             | "RPAD"
+            | "SPACE"
     )
 }
 
@@ -704,6 +705,21 @@ fn parse_at_depth(parser: &mut Parser, depth: usize) -> Result<ConstantValue, Pa
                     ConstantValue::Text(value.chars().skip(skip).collect())
                 }
                 _ => ConstantValue::Null,
+            }
+        }
+        "SPACE" => {
+            let count = integer_arg(parser, depth + 1)?;
+            require(parser, Token::RParen, "SPACE requires one argument")?;
+            match count {
+                Some(count) => {
+                    let width = usize::try_from(count)
+                        .map_err(|_| ParseError("SPACE count must be nonnegative".into()))?;
+                    if width > MAX_TEXT_BYTES {
+                        return Err(ParseError("SPACE result is too large".into()));
+                    }
+                    ConstantValue::Text(" ".repeat(width))
+                }
+                None => ConstantValue::Null,
             }
         }
         "RPAD" => {
