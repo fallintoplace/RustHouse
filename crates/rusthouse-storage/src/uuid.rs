@@ -16,8 +16,9 @@ impl UuidValue {
     }
 
     fn from_disk_bytes(mut bytes: [u8; 16]) -> Self {
-        bytes[..8].reverse();
-        bytes[8..].reverse();
+        for half in bytes.chunks_exact_mut(8) {
+            half.reverse();
+        }
         Self { bytes }
     }
 }
@@ -58,6 +59,16 @@ mod tests {
         0xe7, 0x11, 0xb3, 0x5c, 0x04, 0xc4, 0xf0, 0x61, 0xa0, 0xdb, 0xd3, 0x6a, 0x00, 0xa6, 0x7b,
         0x90,
     ];
+
+    #[test]
+    fn on_disk_half_reversal_is_reversible() {
+        let disk: [u8; 16] = std::array::from_fn(|index| index as u8);
+        let canonical = UuidValue::from_disk_bytes(disk);
+        assert_eq!(
+            *UuidValue::from_disk_bytes(*canonical.as_bytes()).as_bytes(),
+            disk
+        );
+    }
 
     #[test]
     fn canonical_group_lengths_are_explicit() {
