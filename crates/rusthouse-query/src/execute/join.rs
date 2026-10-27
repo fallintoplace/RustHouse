@@ -330,6 +330,154 @@ fn execute_streaming_inner<W: Write>(
     Ok(())
 }
 
+/// Stream the right input when it is too large to retain, hashing only the
+/// smaller left input. SELECT columns still follow their original left/right
+/// bindings; only the unordered probe traversal changes.
+fn probe_right<F>(
+    right_path: &Path,
+    right_names: &[String],
+    right_keys: &[usize],
+    left_rows: &[Vec<typed::Cell>],
+    hash: &HashMap<Vec<typed::Key>, Vec<usize>>,
+    options: ProbeOptions,
+    mut emit: F,
+) -> Result<(), ExecutionError>
+where
+    F: FnMut(&[typed::Cell], &[typed::Cell]) -> Result<(), ExecutionError>,
+{
+    if options.stop_after == Some(0) {
+        return Ok(());
+    }
+    let mut reader = TypedQueryReader::open(right_path, right_names)?;
+    let mut matches = 0usize;
+    // Each retained left row can match only its first right row.
+    let mut seen_left = options.any.then(|| vec![false; left_rows.len()]);
+    'scan: while let Some(batch) = reader.next_batch()? {
+        for index in 0..batch[0].len() {
+            if let Some(key) = batch_key(&batch, index, right_keys) {
+                if let Some(left_indices) = hash.get(&key) {
+                    let right_row = if options.materialize_rows {
+                        batch
+                            .iter()
+                            .map(|column| typed::cell(column, index))
+                            .collect::<Vec<_>>()
+                    } else {
+                        Vec::new()
+                    };
+                    for &left_index in left_indices {
+                        if seen_left.as_ref().is_some_and(|seen| seen[left_index]) {
+                            continue;
+                        }
+                        if options.stop_after.is_some_and(|end| matches >= end) {
+                            break 'scan;
+                        }
+                        if options.stop_after.is_none() && matches >= MAX_RESULT_ROWS {
+                            return Err(invalid("JOIN produces more than 65536 rows"));
+                        }
+                        emit(&left_rows[left_index], &right_row)?;
+                        if let Some(seen) = seen_left.as_mut() {
+                            seen[left_index] = true;
+                        }
+                        matches += 1;
+                    }
+                }
+            }
+        }
+    }
+    Ok(())
+}
+
+fn execute_streaming_right<W: Write>(
+    query: &JoinSelect,
+    left_path: &Path,
+    right_path: &Path,
+    columns: InnerJoinColumns<'_>,
+    output: &mut W,
+) -> Result<(), ExecutionError> {
+    let InnerJoinColumns {
+        left_names,
+        right_names,
+        selected,
+        left_keys,
+        right_keys,
+    } = columns;
+    let left_meta = inspect_query_source(left_path)?;
+    let left_rows = read_rows(
+        left_path,
+        left_names,
+        left_meta.rows,
+        MAX_STREAM_BUILD_ROWS,
+        MAX_STREAM_BUILD_BYTES,
+    )?;
+    let mut hash: HashMap<Vec<typed::Key>, Vec<usize>> = HashMap::new();
+    for (index, row) in left_rows.iter().enumerate() {
+        if let Some(key) = row_key(row, left_keys) {
+            hash.entry(key).or_default().push(index);
+        }
+    }
+    let stop_after = query
+        .limit
+        .filter(|&limit| limit <= MAX_RESULT_ROWS)
+        .and_then(|limit| query.offset.checked_add(limit));
+    // Validate cardinality before sending a header or output rows.
+    probe_right(
+        right_path,
+        right_names,
+        right_keys,
+        &left_rows,
+        &hash,
+        ProbeOptions {
+            materialize_rows: false,
+            stop_after,
+            any: query.any,
+        },
+        |_, _| Ok(()),
+    )?;
+    let header = selected
+        .iter()
+        .map(|(_, name, _)| name.as_str())
+        .collect::<Vec<_>>()
+        .join("\t");
+    writeln!(output, "{header}")?;
+
+    let left_width = left_names.len();
+    let end = query
+        .offset
+        .saturating_add(query.limit.unwrap_or(usize::MAX));
+    let mut position = 0usize;
+    probe_right(
+        right_path,
+        right_names,
+        right_keys,
+        &left_rows,
+        &hash,
+        ProbeOptions {
+            materialize_rows: true,
+            stop_after,
+            any: query.any,
+        },
+        |left, right| {
+            if position >= query.offset && position < end {
+                for (index, (column, _, _)) in selected.iter().enumerate() {
+                    if index != 0 {
+                        output.write_all(b"\t")?;
+                    }
+                    let value = if *column < left_width {
+                        &left[*column]
+                    } else {
+                        &right[*column - left_width]
+                    };
+                    typed::write_value(output, value)?;
+                }
+                output.write_all(b"\n")?;
+            }
+            position += 1;
+            Ok(())
+        },
+    )?;
+    Ok(())
+}
+
 /// Evaluate a two-table JOIN using typed values, not serialized TSV.
 pub fn execute_join<W: Write>(
     query: &JoinSelect,
@@ -431,6 +579,23 @@ pub fn execute_join<W: Write>(
     }
 
     if query.kind == JoinType::Inner && order.is_none() {
+        // A very large right table can be the streamed side if the left fits
+        // the same bounded hash-build budget.
+        if right_meta.rows > MAX_STREAM_BUILD_ROWS && left_meta.rows <= MAX_STREAM_BUILD_ROWS {
+            return execute_streaming_right(
+                query,
+                left_path,
+                right_path,
+                InnerJoinColumns {
+                    left_names: &left_names,
+                    right_names: &right_names,
+                    selected: &selected,
+                    left_keys: &left_keys,
+                    right_keys: &right_keys,
+                },
+                output,
+            );
+        }
         return execute_streaming_inner(
             query,
             left_path,
