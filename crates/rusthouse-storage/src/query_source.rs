@@ -54,30 +54,28 @@ pub fn resolve_active_snapshot(root: &Path) -> Result<PathBuf, PartError> {
 
 // upstream names are partition_minBlock_maxBlock_level[_mutation].
 // The partition id may contain underscores; split from the right instead.
-fn parse_part_span_suffix(tokens: &[&str], suffix: usize) -> Option<(String, u64, u64)> {
-    if tokens.len() <= suffix {
-        return None;
-    }
-    let index = tokens.len() - suffix;
-    let min = tokens[index].parse::<u64>().ok()?;
-    let max = tokens[index + 1].parse::<u64>().ok()?;
-    let _level = tokens[index + 2].parse::<u64>().ok()?;
+fn parse_part_span_suffix(name: &str, suffix: usize) -> Option<(&str, u64, u64)> {
+    let mut tokens = name.rsplitn(suffix + 1, '_');
     if suffix == 4 {
-        let _mutation = tokens[index + 3].parse::<u64>().ok()?;
+        let _mutation = tokens.next()?.parse::<u64>().ok()?;
     }
-    let partition = tokens[..index].join("_");
+    let _level = tokens.next()?.parse::<u64>().ok()?;
+    let max = tokens.next()?.parse::<u64>().ok()?;
+    let min = tokens.next()?.parse::<u64>().ok()?;
+    let partition = tokens.next()?;
     (min <= max && !partition.is_empty()).then_some((partition, min, max))
 }
 
 fn part_span(name: &str) -> Option<(String, u64, u64)> {
-    let tokens: Vec<&str> = name.split('_').collect();
+    // Preserve the numeric-suffix ambiguity check without allocating two
+    // candidate partition strings for each part in a large snapshot.
     match (
-        parse_part_span_suffix(&tokens, 3),
-        parse_part_span_suffix(&tokens, 4),
+        parse_part_span_suffix(name, 3),
+        parse_part_span_suffix(name, 4),
     ) {
-        (Some(part), None) | (None, Some(part)) => Some(part),
-        // A numeric partition suffix can look like a mutation suffix.
-        // Refuse to guess when both parses are plausible.
+        (Some((partition, min, max)), None) | (None, Some((partition, min, max))) => {
+            Some((partition.to_owned(), min, max))
+        }
         _ => None,
     }
 }
@@ -371,6 +369,14 @@ mod tests {
         assert_eq!(part_span("all__1_2_0"), Some(("all_".into(), 1, 2)));
         assert_eq!(part_span("all_1_2_0_"), None);
         assert_eq!(part_span("all_1_2_3_4"), None);
+        assert_eq!(
+            part_span("region_west_5_9_0"),
+            Some(("region_west".into(), 5, 9))
+        );
+        assert_eq!(
+            part_span("region_west_5_9_0_12"),
+            Some(("region_west".into(), 5, 9))
+        );
     }
     #[test]
     fn checks_overlapping_block_ranges_independently_of_directory_order() {
