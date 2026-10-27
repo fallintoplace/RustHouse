@@ -19,7 +19,11 @@ fn bit_extract_reads_unsigned_fields_from_signed_inputs() {
             "4611686018427387903",
         ),
     ] {
-        assert_eq!(evaluate(sql).unwrap(), format!("result\n{expected}\n"), "{sql}");
+        assert_eq!(
+            evaluate(sql).unwrap(),
+            format!("result\n{expected}\n"),
+            "{sql}"
+        );
     }
 }
 
