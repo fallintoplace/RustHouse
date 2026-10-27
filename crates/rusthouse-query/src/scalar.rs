@@ -60,6 +60,7 @@ pub(super) fn is_function(name: &str) -> bool {
         || name.eq_ignore_ascii_case("POW10")
         || name.eq_ignore_ascii_case("TRIANGULAR")
         || name.eq_ignore_ascii_case("IS_PRIME")
+        || name.eq_ignore_ascii_case("PERMUTATIONS")
         || name.eq_ignore_ascii_case("BINOMIAL")
         || name.eq_ignore_ascii_case("CLAMP")
         || name.eq_ignore_ascii_case("CEIL_DIV")
@@ -575,6 +576,23 @@ fn parse_binomial(parser: &mut Parser, depth: usize) -> Result<i64, ParseError> 
     i64::try_from(result).map_err(|_| overflow())
 }
 
+/// Number of ordered selections nPk for 0 <= k <= n <= 20.
+fn parse_permutations(parser: &mut Parser, depth: usize) -> Result<i64, ParseError> {
+    require_token(parser, Token::LParen, "PERMUTATIONS requires '('")?;
+    let n = expression(parser, depth + 1)?;
+    require_token(parser, Token::Comma, "PERMUTATIONS requires two arguments")?;
+    let k = expression(parser, depth + 1)?;
+    require_token(parser, Token::RParen, "PERMUTATIONS requires ')'")?;
+    if !(0..=20).contains(&n) || k < 0 || k > n {
+        return Err(ParseError("PERMUTATIONS requires 0 <= k <= n <= 20".into()));
+    }
+    let mut result = 1_i64;
+    for offset in 0..k {
+        result = result.checked_mul(n - offset).ok_or_else(overflow)?;
+    }
+    Ok(result)
+}
+
 fn gcd(mut left: u64, mut right: u64) -> u64 {
     while right != 0 {
         let remainder = left % right;
@@ -830,6 +848,9 @@ fn factor(parser: &mut Parser, depth: usize) -> Result<i64, ParseError> {
     }
     if parser.keyword("IS_PRIME") {
         return parse_is_prime(parser, depth);
+    }
+    if parser.keyword("PERMUTATIONS") {
+        return parse_permutations(parser, depth);
     }
     if parser.keyword("BINOMIAL") {
         return parse_binomial(parser, depth);
