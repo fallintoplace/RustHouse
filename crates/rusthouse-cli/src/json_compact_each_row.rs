@@ -42,14 +42,16 @@ impl<W: Write> JsonCompactEachRowWriter<W> {
                 "JSON row width differs from header",
             ));
         }
-        self.output.write_all(b"[")?;
+        let mut encoded = Vec::with_capacity(self.line.len() + 2);
+        encoded.write_all(b"[")?;
         for (index, value) in self.line.split(|byte| *byte == b'\t').enumerate() {
             if index != 0 {
-                self.output.write_all(b",")?;
+                encoded.write_all(b",")?;
             }
-            write_json_value(&mut self.output, value)?;
+            write_json_value(&mut encoded, value)?;
         }
-        self.output.write_all(b"]\n")?;
+        encoded.write_all(b"]\n")?;
+        self.output.write_all(&encoded)?;
         self.line.clear();
         Ok(())
     }
@@ -126,6 +128,17 @@ mod tests {
         let mut writer = JsonCompactEachRowWriter::new(Vec::new());
         writer.write_all(b"a\tb\n1\n").unwrap_err();
     }
+    #[test]
+    fn rejects_invalid_later_field_without_partial_json_output() {
+        let mut writer = JsonCompactEachRowWriter::new(Vec::new());
+        writer.write_all(b"first\tsecond\n").unwrap();
+        assert_eq!(
+            writer.write_all(b"good\tbad\\q\n").unwrap_err().kind(),
+            io::ErrorKind::InvalidData
+        );
+        assert!(writer.output.is_empty());
+    }
+
     #[test]
     fn processes_many_compact_rows_from_one_bulk_write() {
         let mut writer = JsonCompactEachRowWriter::new(Vec::new());
