@@ -401,14 +401,18 @@ fn merge_integer_extrema(
         }
         let number = std::str::from_utf8(value).map_err(|_| MergeError::InvalidExtremum)?;
         if unsigned {
-            let parsed = number.parse::<u128>().map_err(|_| MergeError::InvalidExtremum)?;
+            let parsed = number
+                .parse::<u128>()
+                .map_err(|_| MergeError::InvalidExtremum)?;
             unsigned_value = Some(unsigned_value.map_or(parsed, |prior| match function {
                 AggregateFunction::Min => prior.min(parsed),
                 AggregateFunction::Max => prior.max(parsed),
                 _ => unreachable!(),
             }));
         } else {
-            let parsed = number.parse::<i128>().map_err(|_| MergeError::InvalidExtremum)?;
+            let parsed = number
+                .parse::<i128>()
+                .map_err(|_| MergeError::InvalidExtremum)?;
             signed = Some(signed.map_or(parsed, |prior| match function {
                 AggregateFunction::Min => prior.min(parsed),
                 AggregateFunction::Max => prior.max(parsed),
@@ -921,20 +925,13 @@ mod tests {
             "min(amount)\n2",
         ] {
             assert_eq!(
-                merge_integer_extrema(
-                    &[shard(10, bad)],
-                    "Int64",
-                    AggregateFunction::Min
-                ),
+                merge_integer_extrema(&[shard(10, bad)], "Int64", AggregateFunction::Min),
                 Err(MergeError::InvalidExtremum),
             );
         }
         assert_eq!(
             merge_integer_extrema(
-                &[
-                    shard(10, "min(amount)\n1\n"),
-                    shard(10, "min(other)\n2\n"),
-                ],
+                &[shard(10, "min(amount)\n1\n"), shard(10, "min(other)\n2\n"),],
                 "Int64",
                 AggregateFunction::Min,
             ),
