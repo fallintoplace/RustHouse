@@ -71,13 +71,13 @@ INSERT ... SELECT reads up to 50,000 rows (8 MiB of TSV output) from another tab
 
 **Current limits:** SQL statements are limited to 4 KiB, INSERT supports up to 4,096 rows per statement, and tables are limited to 10,000 immutable parts. There is no JOIN, background compaction, or cross-statement transaction. On Unix, the persistent `.rusthouse-write.lock` file uses a kernel advisory lock, automatically released when a process exits or crashes. Do not delete this file while the database is in use. Stop older RustHouse processes before upgrading. Other platforms retain create-new lock-file semantics. The localhost HTTP server shares the CLI database read lock for persistent table queries.
 
-`DELETE FROM events WHERE id = 1` removes matching rows from the active snapshot, preserving the previous generation for recovery. `DELETE FROM events` removes all rows, while `TRUNCATE TABLE events` is the faster option when there is no predicate. DELETE shares the 25,000-row and 16 MiB rewrite limits.
+`DELETE FROM events WHERE id = 1` removes matching rows from the active snapshot, preserving the previous generation for recovery. `DELETE FROM events` removes all rows, while `TRUNCATE TABLE events` is the faster option when there is no predicate. DELETE streams replacement parts in bounded batches. A single rewritten row is limited to 16 MiB of values; the 10,000-part snapshot limit still applies.
 
 Use `UPDATE events SET message = 'fixed' WHERE id = 2` to replace literal values in matching rows. Multiple assignments and `NULL` are supported when the target column allows NULL. UPDATE uses the same bounded copy-on-write snapshot publication as DELETE; expressions such as `SET count = count + 1` are not supported yet.
 
 ## Reclaim active parts safely
 
-`OPTIMIZE TABLE events` rewrites a bounded local table into new immutable parts and switches its active snapshot with an atomic pointer replacement. Previous snapshots are retained for existing readers and recovery. OPTIMIZE streams rows in batches of at most 4,096 to verified immutable parts, then atomically switches the active snapshot. UPDATE and DELETE still use the 25,000-row / 16 MiB rewrite limits. Use only for local experiments.
+`OPTIMIZE TABLE events` rewrites a bounded local table into new immutable parts and switches its active snapshot with an atomic pointer replacement. Previous snapshots are retained for existing readers and recovery. OPTIMIZE streams rows in batches of at most 4,096 to verified immutable parts, then atomically switches the active snapshot. UPDATE and DELETE also stream copy-on-write replacements, with at most 4,096 rows buffered per part and a 4 MiB normal batch-value budget. Use only for local experiments.
 
 ```sh
 cargo run -p rusthouse-cli -- sql "OPTIMIZE TABLE events" --database ./mydb
