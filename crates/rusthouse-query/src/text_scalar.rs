@@ -308,7 +308,9 @@ fn parse_at_depth(parser: &mut Parser, depth: usize) -> Result<ConstantValue, Pa
                             result.push(character);
                         }
                         if result.len() > MAX_TEXT_BYTES {
-                            return Err(ParseError("COLLAPSE_WHITESPACE result is too large".into()));
+                            return Err(ParseError(
+                                "COLLAPSE_WHITESPACE result is too large".into(),
+                            ));
                         }
                     }
                     ConstantValue::Text(result)
