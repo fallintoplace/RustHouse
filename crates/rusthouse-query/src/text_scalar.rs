@@ -9,11 +9,11 @@ pub(super) fn is_function(name: &str) -> bool {
         "LENGTH"
             | "CHAR_LENGTH"
             | "BTRIM"
-            | "QUOTE_LITERAL"
             | "LOWER"
             | "UPPER"
             | "REVERSE"
             | "CONCAT"
+            | "QUOTE_LITERAL"
             | "CONCAT_WS"
             | "SUBSTRING"
             | "SPLIT_PART"
@@ -132,6 +132,33 @@ fn parse_at_depth(parser: &mut Parser, depth: usize) -> Result<ConstantValue, Pa
                 ConstantValue::Text(result)
             } else {
                 ConstantValue::Null
+            }
+        }
+        "QUOTE_LITERAL" => {
+            let input = text_arg(parser, depth + 1)?;
+            require(parser, Token::RParen, "QUOTE_LITERAL requires one argument")?;
+            match input {
+                Some(value) => {
+                    let quotes = value.bytes().filter(|byte| *byte == b'\'').count();
+                    let length = value.len()
+                        .checked_add(quotes)
+                        .and_then(|n| n.checked_add(2))
+                        .ok_or_else(|| ParseError("QUOTE_LITERAL result is too large".into()))?;
+                    if length > MAX_TEXT_BYTES {
+                        return Err(ParseError("QUOTE_LITERAL result is too large".into()));
+                    }
+                    let mut output = String::with_capacity(length);
+                    output.push('\'');
+                    for ch in value.chars() {
+                        if ch == '\'' {
+                            output.push('\'');
+                        }
+                        output.push(ch);
+                    }
+                    output.push('\'');
+                    ConstantValue::Text(output)
+                }
+                None => ConstantValue::Null,
             }
         }
         "CONCAT" => {
@@ -460,33 +487,6 @@ fn parse_at_depth(parser: &mut Parser, depth: usize) -> Result<ConstantValue, Pa
                     }
                 }
                 _ => ConstantValue::Null,
-            }
-        }
-        "QUOTE_LITERAL" => {
-            let input = text_arg(parser, depth + 1)?;
-            require(parser, Token::RParen, "QUOTE_LITERAL requires one argument")?;
-            match input {
-                Some(value) => {
-                    let quotes = value.bytes().filter(|byte| *byte == b'\'').count();
-                    let length = value.len()
-                        .checked_add(quotes)
-                        .and_then(|n| n.checked_add(2))
-                        .ok_or_else(|| ParseError("QUOTE_LITERAL result is too large".into()))?;
-                    if length > MAX_TEXT_BYTES {
-                        return Err(ParseError("QUOTE_LITERAL result is too large".into()));
-                    }
-                    let mut output = String::with_capacity(length);
-                    output.push('\'');
-                    for ch in value.chars() {
-                        if ch == '\'' {
-                            output.push('\'');
-                        }
-                        output.push(ch);
-                    }
-                    output.push('\'');
-                    ConstantValue::Text(output)
-                }
-                None => ConstantValue::Null,
             }
         }
         _ => return Err(ParseError(format!("unsupported string function: {name}"))),
