@@ -112,10 +112,9 @@ impl BoundExpr {
         indices: &HashMap<String, usize>,
     ) -> Result<Self, ExecutionError> {
         let index = |name: &str| {
-            indices
-                .get(name)
-                .copied()
-                .ok_or_else(|| ExecutionError::Invalid(format!("unknown aggregate column: {name}")))
+            indices.get(name).copied().ok_or_else(|| {
+                ExecutionError::Invalid(format!("unknown aggregate column: {name}"))
+            })
         };
         Ok(match expression {
             ScalarExpr::Column(name) => Self::Column(index(name)?),
@@ -145,27 +144,23 @@ fn eval_number(
     expression: &BoundExpr,
     batch: &[TypedColumn],
     row: usize,
-    ) -> Result<Option<Number>, ExecutionError> {
+) -> Result<Option<Number>, ExecutionError> {
     match expression {
-        BoundExpr::Column(index) => {
-            match typed::cell(&batch[*index], row) {
+        BoundExpr::Column(index) => match typed::cell(&batch[*index], row) {
                 Cell::Numeric(value) => Ok(Some(value)),
                 Cell::Null => Ok(None),
                 _ => Err(ExecutionError::Invalid(
                     "aggregate expression requires numeric columns".into(),
                 )),
-            }
-        }
+            },
         BoundExpr::Integer(value) => Ok(Some(Number::Signed(i128::from(*value)))),
-        BoundExpr::TextLength(index) => {
-            match typed::cell(&batch[*index], row) {
+        BoundExpr::TextLength(index) => match typed::cell(&batch[*index], row) {
                 Cell::Text(bytes) => Ok(Some(Number::Unsigned(bytes.len() as u128))),
                 Cell::Null => Ok(None),
                 _ => Err(ExecutionError::Invalid(
                     "length requires a String column".into(),
                 )),
-            }
-        }
+            },
         BoundExpr::Divide(left, right) => {
             let Some(left) = eval_number(left, batch, row)? else {
                 return Ok(None);
@@ -217,7 +212,7 @@ fn distinct_argument(
     expression: &BoundExpr,
     batch: &[TypedColumn],
     row: usize,
-    ) -> Result<Option<typed::Key>, ExecutionError> {
+) -> Result<Option<typed::Key>, ExecutionError> {
     if let BoundExpr::Column(index) = expression {
         let value = typed::cell(&batch[*index], row);
         return match value {
@@ -232,7 +227,7 @@ fn count_argument(
     argument: Option<&ScalarExpr>,
     batch: &[TypedColumn],
     row: usize,
-    ) -> Result<bool, ExecutionError> {
+) -> Result<bool, ExecutionError> {
     match argument {
         None => Ok(true),
         Some(BoundExpr::Column(index)) => {
