@@ -334,7 +334,9 @@ impl Parser {
                 self.index += 2;
                 return Ok(value.clone());
             }
-            return Err(ParseError("DATE/TIMESTAMP requires a quoted literal".into()));
+            return Err(ParseError(
+                "DATE/TIMESTAMP requires a quoted literal".into(),
+            ));
         }
         match self.tokens.get(self.index) {
             Some(Token::Number(value)) | Some(Token::String(value)) => {
