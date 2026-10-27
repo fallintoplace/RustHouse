@@ -23,7 +23,10 @@ fn substring_uses_one_based_positions_and_optional_lengths() {
     }
     assert_eq!(value("SELECT SUBSTRING(NULL, 1)"), ConstantValue::Null);
     assert_eq!(value("SELECT SUBSTRING('ab', NULL)"), ConstantValue::Null);
-    assert_eq!(value("SELECT SUBSTRING('ab', 1, NULL)"), ConstantValue::Null);
+    assert_eq!(
+        value("SELECT SUBSTRING('ab', 1, NULL)"),
+        ConstantValue::Null
+    );
 }
 
 #[test]
