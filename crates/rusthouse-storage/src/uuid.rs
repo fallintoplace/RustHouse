@@ -24,11 +24,13 @@ impl UuidValue {
 
 impl fmt::Display for UuidValue {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        for (index, byte) in self.bytes.iter().enumerate() {
-            if matches!(index, 4 | 6 | 8 | 10) {
+        for (start, end) in [(0, 4), (4, 6), (6, 8), (8, 10), (10, 16)] {
+            if start != 0 {
                 f.write_str("-")?;
             }
-            write!(f, "{byte:02x}")?;
+            for byte in &self.bytes[start..end] {
+                write!(f, "{byte:02x}")?;
+            }
         }
         Ok(())
     }
@@ -56,6 +58,15 @@ mod tests {
         0xe7, 0x11, 0xb3, 0x5c, 0x04, 0xc4, 0xf0, 0x61, 0xa0, 0xdb, 0xd3, 0x6a, 0x00, 0xa6, 0x7b,
         0x90,
     ];
+
+    #[test]
+    fn canonical_group_lengths_are_explicit() {
+        let value = UuidValue { bytes: [0xff; 16] };
+        assert_eq!(
+            value.to_string(),
+            "ffffffff-ffff-ffff-ffff-ffffffffffff"
+        );
+    }
 
     #[test]
     fn converts_uuid_disk_halves_independently() {
