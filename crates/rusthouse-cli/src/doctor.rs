@@ -39,41 +39,54 @@ fn valid_name(name: &str) -> bool {
         && bytes.all(|byte| byte.is_ascii_alphanumeric() || byte == b'_')
 }
 
+fn report_staging_entries(
+    report: &mut Report,
+    table: &str,
+    entries: fs::ReadDir,
+    prefix: &str,
+    read_error: &'static str,
+    warning: &str,
+) {
+    for entry in entries {
+        let Ok(entry) = entry else {
+            report.error(table, read_error);
+            continue;
+        };
+        let filename = entry.file_name();
+        let name = filename.to_string_lossy();
+        if name.starts_with(prefix) {
+            report.warning(table, format!("{warning}: {name}"));
+        }
+    }
+}
+
 fn inspect_staging(report: &mut Report, root: &Path, table: &str) {
     let Ok(entries) = fs::read_dir(root) else {
         report.error(table, "cannot list table parts directory");
         return;
     };
-    for entry in entries {
-        let Ok(entry) = entry else {
-            report.error(table, "cannot inspect table directory entry");
-            continue;
-        };
-        let filename = entry.file_name();
-        let name = filename.to_string_lossy();
-        if name.starts_with(".rusthouse-active.tmp-") {
-            report.warning(table, format!("unfinished snapshot pointer: {name}"));
-        }
-    }
+    report_staging_entries(
+        report,
+        table,
+        entries,
+        ".rusthouse-active.tmp-",
+        "cannot inspect table directory entry",
+        "unfinished snapshot pointer",
+    );
     let versions = root.join(".rusthouse-versions");
     match fs::symlink_metadata(&versions) {
         Ok(metadata) if !metadata.file_type().is_dir() => {
             report.error(table, "snapshot generations path is not a real directory");
         }
         Ok(_) => match fs::read_dir(&versions) {
-            Ok(entries) => {
-                for entry in entries {
-                    let Ok(entry) = entry else {
-                        report.error(table, "cannot inspect snapshot generation entry");
-                        continue;
-                    };
-                    let filename = entry.file_name();
-                    let name = filename.to_string_lossy();
-                    if name.starts_with(".pending-") {
-                        report.warning(table, format!("unpublished snapshot staging: {name}"));
-                    }
-                }
-            }
+            Ok(entries) => report_staging_entries(
+                report,
+                table,
+                entries,
+                ".pending-",
+                "cannot inspect snapshot generation entry",
+                "unpublished snapshot staging",
+            ),
             Err(error) => report.error(table, format!("cannot list snapshot generations: {error}")),
         },
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
@@ -274,6 +287,21 @@ pub(super) fn run(args: impl Iterator<Item = OsString>) -> Result<(), String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn finds_unpublished_entries_in_both_staging_directories() {
+        let root =
+            std::env::temp_dir().join(format!("rusthouse-doctor-staging-{}", std::process::id()));
+        fs::create_dir_all(root.join(".rusthouse-versions")).unwrap();
+        fs::write(root.join(".rusthouse-active.tmp-1"), b"").unwrap();
+        fs::write(root.join(".rusthouse-versions/.pending-1"), b"").unwrap();
+
+        let mut report = Report::default();
+        inspect_staging(&mut report, &root, "test");
+        assert_eq!(report.warnings, 2);
+        assert_eq!(report.errors, 0);
+        fs::remove_dir_all(root).unwrap();
+    }
 
     #[test]
     fn catalog_classifier_keeps_valid_tables_and_reports_staging_entries() {
