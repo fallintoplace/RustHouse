@@ -7,6 +7,7 @@ mod json_array;
 mod json_compact_each_row;
 mod jsonl;
 mod markdown;
+pub mod remote;
 mod sql_values;
 mod tables;
 
