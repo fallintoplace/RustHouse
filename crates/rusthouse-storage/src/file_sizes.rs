@@ -48,11 +48,7 @@ fn verify_part_files(part: &Path, full_hashes: bool) -> Result<FileSizeVerificat
     })
 }
 
-fn verify_stored_hash(
-    path: &Path,
-    expected_size: u64,
-    expected_hash: u128,
-) -> Result<(), PartError> {
+fn hash_stored_file(path: &Path, expected_size: u64) -> Result<u128, PartError> {
     const BLOCK_BYTES: usize = 2048;
     let mut file = fs::File::open(path).map_err(|source| io_error(path, source))?;
     #[cfg(unix)]
@@ -77,7 +73,15 @@ fn verify_stored_hash(
     }
     #[cfg(unix)]
     ensure_opened_file_identity(path, &file)?;
-    if u128::from(hash) != expected_hash {
+    Ok(u128::from(hash))
+}
+
+fn verify_stored_hash(
+    path: &Path,
+    expected_size: u64,
+    expected_hash: u128,
+) -> Result<(), PartError> {
+    if hash_stored_file(path, expected_size)? != expected_hash {
         return Err(invalid(path, "stored file hash differs from checksums.txt"));
     }
     Ok(())
