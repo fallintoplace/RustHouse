@@ -25,7 +25,7 @@ class SmokeTests(unittest.TestCase):
         self.assertEqual(report["coverage"]["verified_queries"], 1)
         self.assertEqual(report["results"][0]["status"], "passed")
         self.assertEqual(report["expected_matches"], fixture["matched_rows"])
-        self.assertEqual(len(statements), 7)
+        self.assertEqual(len(statements), 6)
         self.assertFalse(report["official_tpch"])
 
     def test_rejects_corrupt_import_and_bad_arguments(self):
