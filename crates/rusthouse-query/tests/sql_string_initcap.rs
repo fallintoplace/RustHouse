@@ -12,7 +12,7 @@ fn initcap_uses_unicode_and_word_boundaries() {
     for (sql, expected) in [
         ("SELECT INITCAP('hELLO wORLD')", "Hello World"),
         ("SELECT initcap('éCOLE À PARIS')", "École À Paris"),
-        ("SELECT INITCAP('a-B_c.d 42AB')", "A-B_c.D 42ab"),
+        ("SELECT INITCAP('a-B_c.d 42AB')", "A-B_C.D 42ab"),
         ("SELECT INITCAP('')", ""),
         ("SELECT INITCAP(LOWER('HEllo WORLD'))", "Hello World"),
     ] {
