@@ -119,7 +119,11 @@ fn merge_tsv(shards: &[(usize, Vec<u8>)], max_rows: usize) -> Result<Vec<u8>, Me
         if total_rows > max_rows {
             return Err(MergeError::CoordinatorLimit);
         }
-        let added = if chunks.is_empty() { body.as_slice() } else { rows };
+        let added = if chunks.is_empty() {
+            body.as_slice()
+        } else {
+            rows
+        };
         total_bytes = total_bytes
             .checked_add(added.len())
             .filter(|&size| size <= MAX_RESPONSE_BYTES)
