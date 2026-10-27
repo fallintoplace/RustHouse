@@ -10,13 +10,34 @@ permissions:
 
 concurrency:
   group: rust-ci-${{ github.workflow }}-${{ github.ref }}
-  cancel-in-progress: true
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
+  format:
+    name: Rust format (ubuntu-latest)
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v7
+      - run: cargo fmt --all -- --check
+
+  lint:
+    name: Rust Clippy (ubuntu-latest)
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v7
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: clippy
+          save-if: ${{ github.ref == 'refs/heads/main' }}
+          cache-on-failure: true
+      - run: cargo clippy --workspace --all-targets --locked -- -D warnings
+
   test:
     name: Rust (${{ matrix.os }})
     runs-on: ${{ matrix.os }}
-    timeout-minutes: 15
+    timeout-minutes: 20
     strategy:
       fail-fast: false
       matrix:
@@ -27,12 +48,27 @@ jobs:
         with:
           save-if: ${{ github.ref == 'refs/heads/main' }}
           cache-on-failure: true
-      - if: runner.os == 'Linux'
-        run: cargo fmt --all -- --check
-      - if: runner.os == 'Linux'
-        run: cargo clippy --workspace --all-targets --locked -- -D warnings
       - run: cargo test --workspace --locked
       - run: cargo build --workspace --locked
+
+  windows-smoke:
+    name: Windows compile and CLI unit smoke
+    runs-on: windows-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v7
+      - uses: Swatinem/rust-cache@v2
+        with:
+          save-if: ${{ github.ref == 'refs/heads/main' }}
+          cache-on-failure: true
+      # Full database integration tests require directory fsync, which is not available via std::fs on Windows.
+      - name: Check all targets compile
+        run: cargo check --workspace --all-targets --locked
+      - name: Run CLI unit tests
+        run: cargo test -p rusthouse-cli --bin rusthouse --locked
+      - name: Build workspace binaries
+        run: cargo build --workspace --locked
+
   analytics-harness:
     name: Analytics harness (Python)
     runs-on: ubuntu-latest
