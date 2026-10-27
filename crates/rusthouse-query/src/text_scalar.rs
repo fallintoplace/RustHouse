@@ -15,6 +15,7 @@ pub(super) fn is_function(name: &str) -> bool {
             | "CONCAT"
             | "CONCAT_WS"
             | "SUBSTRING"
+            | "OVERLAY"
             | "SPLIT_PART"
             | "TRIM"
             | "LPAD"
@@ -188,6 +189,58 @@ fn parse_at_depth(parser: &mut Parser, depth: usize) -> Result<ConstantValue, Pa
                     ConstantValue::Text(
                         input.split(delimiter.as_str()).nth(index).unwrap_or("").to_owned(),
                     )
+                }
+                _ => ConstantValue::Null,
+            }
+        }
+        "OVERLAY" => {
+            let input = text_arg(parser, depth + 1)?;
+            require(parser, Token::Comma, "OVERLAY requires replacement text")?;
+            let replacement = text_arg(parser, depth + 1)?;
+            require(parser, Token::Comma, "OVERLAY requires a start position")?;
+            let start = integer_arg(parser, depth + 1)?;
+            let length = if parser.take(Token::Comma) {
+                Some(integer_arg(parser, depth + 1)?)
+            } else {
+                None
+            };
+            require(parser, Token::RParen, "expected ')' after OVERLAY arguments")?;
+            match (input, replacement, start) {
+                (Some(input), Some(replacement), Some(start)) => {
+                    if start < 1 {
+                        return Err(ParseError("OVERLAY positions are 1-based".into()));
+                    }
+                    let remove = match length {
+                        None => replacement.chars().count(),
+                        Some(Some(length)) if length >= 0 => {
+                            usize::try_from(length).unwrap_or(usize::MAX)
+                        }
+                        Some(Some(_)) => {
+                            return Err(ParseError("OVERLAY length must be nonnegative".into()));
+                        }
+                        Some(None) => return Ok(ConstantValue::Null),
+                    };
+                    let start = usize::try_from(start - 1).unwrap_or(usize::MAX);
+                    let prefix = input
+                        .char_indices()
+                        .nth(start)
+                        .map_or(input.len(), |(index, _)| index);
+                    let suffix = input
+                        .char_indices()
+                        .nth(start.saturating_add(remove))
+                        .map_or(input.len(), |(index, _)| index);
+                    let size = prefix
+                        .checked_add(replacement.len())
+                        .and_then(|size| size.checked_add(input.len() - suffix))
+                        .ok_or_else(|| ParseError("OVERLAY result is too large".into()))?;
+                    if size > MAX_TEXT_BYTES {
+                        return Err(ParseError("OVERLAY result is too large".into()));
+                    }
+                    let mut result = String::with_capacity(size);
+                    result.push_str(&input[..prefix]);
+                    result.push_str(&replacement);
+                    result.push_str(&input[suffix..]);
+                    ConstantValue::Text(result)
                 }
                 _ => ConstantValue::Null,
             }
