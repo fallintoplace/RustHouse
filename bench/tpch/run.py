@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """Run SQL compatibility and end-to-end latency checks against RustHouse."""
 import argparse
+import hashlib
 import re
 import subprocess
 import sys
@@ -34,6 +35,15 @@ def load_queries(directory):
     if len({number for number, _ in queries}) != len(queries):
         raise ValueError("duplicate query numbers")
     return queries
+
+def query_fingerprint(queries):
+    digest = hashlib.sha256()
+    for number, sql in sorted(queries):
+        digest.update(f"q{number:02d}\\0".encode("ascii"))
+        digest.update(sql.encode("utf-8"))
+        digest.update(b"\\0")
+    return digest.hexdigest()
+
 
 def invoke(binary, database, sql, timeout):
     return cli_sql(binary, database, sql, timeout)
@@ -150,6 +160,7 @@ def main(argv=None):
         "engine": "rusthouse-cli",
         "timing_scope": "end-to-end CLI invocation, excluding query load and preflight",
         "runs": args.runs, "warmups": args.warmups,
+        "query_sha256": query_fingerprint(queries),
         "reference_checked": args.reference_dir is not None,
         "coverage": summarize_coverage(results),
         "results": results,
