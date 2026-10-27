@@ -108,7 +108,11 @@ fn parse_abs_diff(parser: &mut Parser, depth: usize) -> Result<i64, ParseError> 
     let left = expression(parser, depth + 1)?;
     require_token(parser, Token::Comma, "ABS_DIFF requires two arguments")?;
     let right = expression(parser, depth + 1)?;
-    require_token(parser, Token::RParen, "ABS_DIFF requires ')' after arguments")?;
+    require_token(
+        parser,
+        Token::RParen,
+        "ABS_DIFF requires ')' after arguments",
+    )?;
     let difference = (i128::from(left) - i128::from(right)).abs();
     i64::try_from(difference).map_err(|_| overflow())
 }
