@@ -1,67 +1,8 @@
 use crate::jsonl::JsonlWriter;
+use rusthouse_format::write_pretty_json_row;
 use std::io::{self, Write};
 
 const MAX_JSON_ROW_BYTES: usize = 4 * 1024 * 1024;
-
-fn write_indent<W: Write>(output: &mut W, depth: usize) -> io::Result<()> {
-    output.write_all(b"\n")?;
-    let spaces = [b' '; 64];
-    let mut remaining = (depth + 1) * 2;
-    while remaining > 0 {
-        let count = remaining.min(spaces.len());
-        output.write_all(&spaces[..count])?;
-        remaining -= count;
-    }
-    Ok(())
-}
-
-/// Indent validated JSONL rows, keeping quotes and escaped syntax intact.
-fn write_pretty_row<W: Write>(output: &mut W, row: &[u8]) -> io::Result<()> {
-    let mut quoted = false;
-    let mut escaped = false;
-    let mut depth = 0usize;
-    let mut start = 0usize;
-    for (index, &byte) in row.iter().enumerate() {
-        if quoted {
-            if escaped {
-                escaped = false;
-            } else if byte == b'\\' {
-                escaped = true;
-            } else if byte == b'"' {
-                quoted = false;
-            }
-            continue;
-        }
-        match byte {
-            b'"' => quoted = true,
-            b'{' | b'[' => {
-                output.write_all(&row[start..=index])?;
-                depth += 1;
-                write_indent(output, depth)?;
-                start = index + 1;
-            }
-            b'}' | b']' => {
-                output.write_all(&row[start..index])?;
-                depth = depth.saturating_sub(1);
-                write_indent(output, depth)?;
-                output.write_all(&row[index..=index])?;
-                start = index + 1;
-            }
-            b',' => {
-                output.write_all(&row[start..=index])?;
-                write_indent(output, depth)?;
-                start = index + 1;
-            }
-            b':' => {
-                output.write_all(&row[start..=index])?;
-                output.write_all(b" ")?;
-                start = index + 1;
-            }
-            _ => {}
-        }
-    }
-    output.write_all(&row[start..])
-}
 
 fn array_prefix(first: bool, pretty: bool) -> &'static [u8] {
     match (first, pretty) {
@@ -102,7 +43,7 @@ impl<W: Write> JsonArraySink<W> {
         self.output
             .write_all(array_prefix(self.first, self.pretty))?;
         if self.pretty {
-            write_pretty_row(&mut self.output, &self.row)?;
+            write_pretty_json_row(&mut self.output, &self.row)?;
         } else {
             self.output.write_all(&self.row)?;
         }
@@ -205,17 +146,6 @@ impl<W: Write> Write for JsonArrayWriter<W> {
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn indents_small_and_deep_json_rows() {
-        for depth in [0usize, 1, 40] {
-            let mut output = Vec::new();
-            write_indent(&mut output, depth).unwrap();
-            assert_eq!(output[0], b'\n');
-            assert_eq!(output.len(), 1 + (depth + 1) * 2);
-            assert!(output[1..].iter().all(|&byte| byte == b' '));
-        }
-    }
 
     #[test]
     fn framing_handles_empty_compact_and_pretty_arrays() {
