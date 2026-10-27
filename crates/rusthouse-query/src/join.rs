@@ -145,7 +145,9 @@ pub fn parse_join(sql: &str) -> Result<Option<JoinSelect>, ParseError> {
     let kind = parse_join_kind(&mut parser);
     let any = parser.keyword("ANY") || leading_any;
     if any && !matches!(kind, JoinType::Inner | JoinType::Left) {
-        return Err(ParseError("ANY JOIN supports only INNER and LEFT joins".into()));
+        return Err(ParseError(
+            "ANY JOIN supports only INNER and LEFT joins".into(),
+        ));
     }
     if !parser.keyword("JOIN") {
         return Err(ParseError("expected JOIN after join type".into()));
