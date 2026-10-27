@@ -41,7 +41,7 @@ pub use compression::{CompressedBlock, CompressedBlockReader, DecodedBlock};
 pub use database_lock::{DatabaseLock, acquire_database_lock};
 pub use decimal::{DecimalColumn, DecimalReadError, read_decimal_column};
 pub use enums::{EnumColumn, EnumReadError, read_enum_column};
-pub use file_sizes::{FileSizeVerification, verify_part_file_sizes};
+pub use file_sizes::{FileSizeVerification, verify_part_file_hashes, verify_part_file_sizes};
 pub use fixed_strings::{
     FixedStringColumn, FixedStringReadError, read_fixed_string_granule, read_fixed_strings,
 };

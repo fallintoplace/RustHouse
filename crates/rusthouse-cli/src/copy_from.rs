@@ -1,14 +1,16 @@
-//! Strict, bounded CSV loader for COPY table FROM 'local-file'.
+//! Bounded CSV loader and streaming TSV loader for COPY FROM local files.
 use rusthouse_query::{CopyFormat, CopyFrom, Insert};
 use std::collections::HashSet;
 use std::fs::File;
-use std::io::Read;
+use std::io::{BufRead, BufReader, Read};
 use std::path::Path;
 
 const MAX_COPY_BYTES: usize = 8 * 1024 * 1024;
 const MAX_CSV_DATA_RECORDS: usize = 50_000;
 const MAX_CSV_RECORDS: usize = MAX_CSV_DATA_RECORDS + 1;
-const MAX_TSV_RECORDS: usize = MAX_CSV_RECORDS; // includes an optional header
+#[cfg(test)]
+const MAX_TSV_RECORDS: usize = MAX_CSV_RECORDS; // legacy in-memory parser tests
+const MAX_TSV_RECORD_BYTES: usize = 8 * 1024 * 1024;
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum State {
@@ -150,6 +152,25 @@ fn decode_tsv_cell(field: &str) -> Result<String, String> {
     String::from_utf8(decoded).map_err(|_| "invalid UTF-8 in TSV field".into())
 }
 
+fn parse_tsv_record(line: &str) -> Result<Vec<Option<String>>, String> {
+    if line.contains('\r') {
+        return Err("TSV requires CRLF for carriage returns".into());
+    }
+    let mut row = Vec::new();
+    for field in line.split('\t') {
+        if row.len() >= 64 {
+            return Err("TSV records support at most 64 columns".into());
+        }
+        if field == "\\N" {
+            row.push(None);
+        } else {
+            row.push(Some(decode_tsv_cell(field)?));
+        }
+    }
+    Ok(row)
+}
+
+#[cfg(test)]
 fn parse_tsv(data: &str) -> Result<Vec<Vec<Option<String>>>, String> {
     let input = data.strip_prefix('\u{feff}').unwrap_or(data);
     if input.ends_with('\r') {
@@ -161,26 +182,85 @@ fn parse_tsv(data: &str) -> Result<Vec<Vec<Option<String>>>, String> {
             return Err("TSV supports at most 50001 records including the header".into());
         }
         let line = line.strip_suffix('\r').unwrap_or(line);
-        if line.contains('\r') {
-            return Err("TSV requires CRLF for carriage returns".into());
-        }
-        let mut row = Vec::new();
-        for field in line.split('\t') {
-            if row.len() >= 64 {
-                return Err("TSV records support at most 64 columns".into());
-            }
-            if field == "\\N" {
-                row.push(None);
-                continue;
-            }
-            row.push(Some(decode_tsv_cell(field)?));
-        }
-        records.push(row);
+        records.push(parse_tsv_record(line)?);
     }
     Ok(records)
 }
 
+struct TsvRecords {
+    reader: BufReader<File>,
+    buffer: Vec<u8>,
+    first: bool,
+}
+
+impl TsvRecords {
+    fn next_record(&mut self) -> Result<Option<Vec<Option<String>>>, String> {
+        self.buffer.clear();
+        // Bound a single record even when the file itself is many gigabytes.
+        let size = self
+            .reader
+            .by_ref()
+            .take((MAX_TSV_RECORD_BYTES + 1) as u64)
+            .read_until(b'\n', &mut self.buffer)
+            .map_err(|error| format!("cannot read COPY TSV record: {error}"))?;
+        if size == 0 {
+            return Ok(None);
+        }
+        if size > MAX_TSV_RECORD_BYTES {
+            return Err("COPY TSV record exceeds 8 MiB".into());
+        }
+        let line = std::str::from_utf8(&self.buffer).map_err(|_| "COPY requires UTF-8 data")?;
+        let line = if self.first {
+            line.strip_prefix('\u{feff}').unwrap_or(line)
+        } else {
+            line
+        };
+        self.first = false;
+        let line = if let Some(line) = line.strip_suffix('\n') {
+            line.strip_suffix('\r').unwrap_or(line)
+        } else {
+            line
+        };
+        Ok(Some(parse_tsv_record(line)?))
+    }
+}
+
+fn run_tsv(database: &Path, statement: &CopyFrom) -> Result<(), String> {
+    let file = File::open(&statement.path)
+        .map_err(|error| format!("cannot open COPY file {}: {error}", statement.path))?;
+    let mut input = TsvRecords {
+        reader: BufReader::new(file),
+        buffer: Vec::new(),
+        first: true,
+    };
+    let mut columns = statement.columns.clone();
+    if statement.header {
+        let headings = input
+            .next_record()?
+            .ok_or("COPY file is missing its header")?;
+        let names = headings
+            .into_iter()
+            .map(|value| value.ok_or("COPY header cannot contain empty columns"))
+            .collect::<Result<Vec<_>, _>>()?;
+        let mut unique = HashSet::new();
+        if names.iter().any(|name| !unique.insert(name.clone())) {
+            return Err("duplicate COPY header column".into());
+        }
+        if let Some(expected) = columns.as_ref() {
+            if expected != &names {
+                return Err("COPY header does not match explicit column list".into());
+            }
+        } else {
+            columns = Some(names);
+        }
+    }
+    crate::database::insert_stream(database, &statement.table, columns, || input.next_record())
+}
+
 pub(super) fn run(database: &Path, statement: &CopyFrom) -> Result<(), String> {
+    if statement.format == CopyFormat::Tsv {
+        return run_tsv(database, statement);
+    }
     let mut data = Vec::new();
     File::open(&statement.path)
         .map_err(|error| format!("cannot open COPY file {}: {error}", statement.path))?
@@ -191,10 +271,7 @@ pub(super) fn run(database: &Path, statement: &CopyFrom) -> Result<(), String> {
         return Err("COPY file exceeds 8 MiB".into());
     }
     let input = std::str::from_utf8(&data).map_err(|_| "COPY requires UTF-8 data")?;
-    let mut records = match statement.format {
-        CopyFormat::Csv => parse_csv(input)?,
-        CopyFormat::Tsv => parse_tsv(input)?,
-    };
+    let mut records = parse_csv(input)?;
     let mut columns = statement.columns.clone();
     if statement.header {
         if records.is_empty() {
@@ -217,10 +294,7 @@ pub(super) fn run(database: &Path, statement: &CopyFrom) -> Result<(), String> {
             columns = Some(names);
         }
     }
-    let max_data_records = match statement.format {
-        CopyFormat::Csv => MAX_CSV_DATA_RECORDS,
-        CopyFormat::Tsv => MAX_CSV_DATA_RECORDS,
-    };
+    let max_data_records = MAX_CSV_DATA_RECORDS;
     if records.len() > max_data_records {
         return Err(format!(
             "COPY supports at most {max_data_records} data rows"
