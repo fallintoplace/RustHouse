@@ -10,6 +10,17 @@ use std::path::Path;
 
 const MAX_BUFFERED_ROWS: usize = 100_000;
 
+fn remember_distinct_text(seen: &mut HashSet<Vec<u8>>, value: &[u8]) -> Result<(), ExecutionError> {
+    if seen.contains(value) {
+        return Ok(());
+    }
+    if seen.len() >= MAX_BUFFERED_ROWS {
+        return Err(ExecutionError::Invalid("too many distinct rows".into()));
+    }
+    seen.insert(value.to_vec());
+    Ok(())
+}
+
 #[derive(Clone)]
 pub(super) enum Cell {
     Numeric(Number),
@@ -802,6 +813,10 @@ pub(super) fn execute_typed<W: Write>(
     let is_grouped = matches!(query.projection, Projection::GroupedCount { .. });
     let mut count = 0u64;
     let mut distinct = HashSet::<Vec<Key>>::new();
+    // COUNT(DISTINCT column) has one key; avoid a Vec allocation per row.
+    let mut count_distinct_keys = HashSet::<Key>::new();
+    // Borrow decoded strings on duplicate probes. Own only new distinct values.
+    let mut count_distinct_text = HashSet::<Vec<u8>>::new();
     let mut group_indices = HashMap::<Key, usize>::new();
     // String group probes can borrow the decoded input instead of cloning it.
     let mut text_group_indices = HashMap::<Vec<u8>, usize>::new();
@@ -923,14 +938,42 @@ pub(super) fn execute_typed<W: Write>(
                 }
                 candidate_sort_keys = Some(keys);
             }
+            if is_count_distinct {
+                match &batch[projection_indices[0]] {
+                    TypedColumn::Text(strings) => {
+                        let value = strings.get(index).ok_or_else(|| {
+                            ExecutionError::Invalid("invalid String row index".into())
+                        })?;
+                        remember_distinct_text(&mut count_distinct_text, value)?;
+                    }
+                    TypedColumn::NullableText { values, nulls } => {
+                        if nulls[index] == 0 {
+                            let value = values.get(index).ok_or_else(|| {
+                                ExecutionError::Invalid("invalid String row index".into())
+                            })?;
+                            remember_distinct_text(&mut count_distinct_text, value)?;
+                        }
+                    }
+                    column => {
+                        let value = cell(column, index);
+                        if !matches!(&value, Cell::Null) {
+                            let key = value.key();
+                            if count_distinct_keys.len() >= MAX_BUFFERED_ROWS
+                                && !count_distinct_keys.contains(&key)
+                            {
+                                return Err(ExecutionError::Invalid("too many distinct rows".into()));
+                            }
+                            count_distinct_keys.insert(key);
+                        }
+                    }
+                }
+                continue;
+            }
             let cells = projection_indices
                 .iter()
                 .map(|&idx| cell(&batch[idx], index))
                 .collect::<Vec<_>>();
-            if is_count_distinct && cells.iter().any(|value| matches!(value, Cell::Null)) {
-                continue;
-            }
-            if is_count_distinct || query.distinct {
+            if query.distinct {
                 let key = cells.iter().map(Cell::key).collect::<Vec<_>>();
                 if distinct.len() >= MAX_BUFFERED_ROWS && !distinct.contains(&key) {
                     return Err(ExecutionError::Invalid("too many distinct rows".into()));
@@ -938,9 +981,6 @@ pub(super) fn execute_typed<W: Write>(
                 if !distinct.insert(key) {
                     continue;
                 }
-            }
-            if is_count_distinct {
-                continue;
             }
             if !sort_indices.is_empty() {
                 let row = Row {
@@ -1035,7 +1075,7 @@ pub(super) fn execute_typed<W: Write>(
             let result = if is_count || is_count_column {
                 count
             } else {
-                distinct.len() as u64
+                (count_distinct_keys.len() + count_distinct_text.len()) as u64
             };
             writeln!(output, "{result}")?;
         }
