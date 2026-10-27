@@ -37,6 +37,7 @@ pub(super) fn is_function(name: &str) -> bool {
         || name.eq_ignore_ascii_case("HAMMING_DISTANCE")
         || is_extrema(name)
         || name.eq_ignore_ascii_case("IS_POWER_OF_TWO")
+        || name.eq_ignore_ascii_case("BIT_REVERSE")
         || is_power(name)
         || name.eq_ignore_ascii_case("NEXT_POWER_OF_TWO")
         || is_bitwise(name)
@@ -260,6 +261,17 @@ fn checked_bit_rotate(value: i64, amount: i64, left: bool) -> Result<i64, ParseE
     })
 }
 
+fn parse_bit_reverse(parser: &mut Parser, depth: usize) -> Result<i64, ParseError> {
+    require_token(parser, Token::LParen, "BIT_REVERSE requires '('")?;
+    let value = expression(parser, depth + 1)?;
+    require_token(
+        parser,
+        Token::RParen,
+        "BIT_REVERSE requires ')' after argument",
+    )?;
+    Ok(value.reverse_bits())
+}
+
 fn parse_clamp(parser: &mut Parser, depth: usize) -> Result<i64, ParseError> {
     require_token(parser, Token::LParen, "CLAMP requires '('")?;
     let value = expression(parser, depth + 1)?;
@@ -461,6 +473,9 @@ fn factor(parser: &mut Parser, depth: usize) -> Result<i64, ParseError> {
     }
     if parser.keyword("BIT_WIDTH") {
         return parse_bit_width(parser, depth);
+    }
+    if parser.keyword("BIT_REVERSE") {
+        return parse_bit_reverse(parser, depth);
     }
     if parser.keyword("CLAMP") {
         return parse_clamp(parser, depth);
