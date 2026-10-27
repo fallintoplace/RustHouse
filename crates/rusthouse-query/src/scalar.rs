@@ -65,6 +65,7 @@ pub(super) fn is_function(name: &str) -> bool {
         || name.eq_ignore_ascii_case("TRIANGULAR")
         || name.eq_ignore_ascii_case("IS_PRIME")
         || name.eq_ignore_ascii_case("BINOMIAL")
+        || name.eq_ignore_ascii_case("CEIL_TO_MULTIPLE")
         || name.eq_ignore_ascii_case("CLAMP")
         || name.eq_ignore_ascii_case("ROUND_DIV")
         || name.eq_ignore_ascii_case("CEIL_DIV")
@@ -338,6 +339,31 @@ fn parse_clamp(parser: &mut Parser, depth: usize) -> Result<i64, ParseError> {
         return Err(ParseError("CLAMP lower bound exceeds upper bound".into()));
     }
     Ok(value.clamp(lower, upper))
+}
+
+/// Round a signed integer upward to a positive step.
+fn parse_ceil_to_multiple(parser: &mut Parser, depth: usize) -> Result<i64, ParseError> {
+    require_token(parser, Token::LParen, "CEIL_TO_MULTIPLE requires '('")?;
+    let value = expression(parser, depth + 1)?;
+    require_token(
+        parser,
+        Token::Comma,
+        "CEIL_TO_MULTIPLE requires two arguments",
+    )?;
+    let multiple = expression(parser, depth + 1)?;
+    require_token(parser, Token::RParen, "CEIL_TO_MULTIPLE requires ')'")?;
+    if multiple <= 0 {
+        return Err(ParseError(
+            "CEIL_TO_MULTIPLE requires a positive multiple".into(),
+        ));
+    }
+    let value = i128::from(value);
+    let multiple = i128::from(multiple);
+    let mut quotient = value.div_euclid(multiple);
+    if value.rem_euclid(multiple) != 0 {
+        quotient += 1;
+    }
+    i64::try_from(quotient * multiple).map_err(|_| overflow())
 }
 
 fn parse_digit_count(parser: &mut Parser, depth: usize) -> Result<i64, ParseError> {
@@ -864,6 +890,9 @@ fn factor(parser: &mut Parser, depth: usize) -> Result<i64, ParseError> {
     }
     if parser.keyword("BIT_REVERSE") {
         return parse_bit_reverse(parser, depth);
+    }
+    if parser.keyword("CEIL_TO_MULTIPLE") {
+        return parse_ceil_to_multiple(parser, depth);
     }
     if parser.keyword("CLAMP") {
         return parse_clamp(parser, depth);
