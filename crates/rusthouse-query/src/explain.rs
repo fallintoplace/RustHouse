@@ -56,6 +56,14 @@ fn describe_projection(projection: &Projection) -> String {
             "Aggregate: GROUP BY {column}, {}({value_column})",
             function.name()
         ),
+        Projection::GroupedAggregates { column, items } => format!(
+            "Aggregate: GROUP BY {column}, {}",
+            items
+                .iter()
+                .map(|(function, value)| format!("{}({value})", function.name()))
+                .collect::<Vec<_>>()
+                .join(", ")
+        ),
         Projection::Aggregate { function, column } => {
             format!("Aggregate: {}({column})", function.name())
         }

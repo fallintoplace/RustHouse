@@ -10,6 +10,7 @@ use std::path::Path;
 
 mod join;
 mod grouped_multi;
+mod grouped_numeric_multi;
 mod predicates;
 mod sort;
 mod typed;
@@ -359,6 +360,9 @@ fn execute_into<W: Write>(
     if matches!(query.projection, Projection::GroupedAggregate { .. }) {
         return typed_aggregate::execute_grouped_aggregate(query, part, output);
     }
+    if let Projection::GroupedAggregates { column, items } = &query.projection {
+        return grouped_numeric_multi::execute(query, part, column, items, output);
+    }
     if typed::requires_typed_scan(query, part)? {
         if matches!(query.projection, Projection::Aggregate { .. }) {
             return typed_aggregate::execute_typed_aggregate(query, part, output);
@@ -404,6 +408,7 @@ fn execute_into<W: Write>(
         | Projection::GroupedCount { .. }
         | Projection::GroupedMultiCount { .. }
         | Projection::GroupedAggregate { .. }
+        | Projection::GroupedAggregates { .. }
         | Projection::MultipleAggregates(_)
         | Projection::StringLength { .. }
         | Projection::Literal(_)
@@ -997,7 +1002,10 @@ fn execute_numbers<W: Write>(
             "--part cannot be used with numbers(N)".into(),
         ));
     }
-    if matches!(query.projection, Projection::MultipleAggregates(_)) {
+    if matches!(
+        query.projection,
+        Projection::MultipleAggregates(_) | Projection::GroupedAggregates { .. }
+    ) {
         return Err(ExecutionError::Invalid(
             "multiple aggregates require a stored table".into(),
         ));
@@ -1083,6 +1091,7 @@ fn execute_numbers<W: Write>(
         | Projection::GroupedCount { .. }
         | Projection::GroupedMultiCount { .. }
         | Projection::GroupedAggregate { .. }
+        | Projection::GroupedAggregates { .. }
         | Projection::MultipleAggregates(_)
         | Projection::StringLength { .. }
         | Projection::Literal(_)
