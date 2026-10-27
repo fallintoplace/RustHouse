@@ -9,6 +9,7 @@ const MAX_LINE_BYTES: usize = 1024 * 1024;
 pub(super) struct CsvWriter<W: Write> {
     output: W,
     line: Vec<u8>,
+    encoded: Vec<u8>,
     columns: Option<usize>,
 }
 
@@ -17,6 +18,7 @@ impl<W: Write> CsvWriter<W> {
         Self {
             output,
             line: Vec::new(),
+            encoded: Vec::new(),
             columns: None,
         }
     }
@@ -31,15 +33,15 @@ impl<W: Write> CsvWriter<W> {
                 ));
             }
         }
-        let mut encoded = Vec::with_capacity(self.line.len() + 2);
+        self.encoded.clear();
         for (index, field) in self.line.split(|byte| *byte == b'\t').enumerate() {
             if index != 0 {
-                encoded.write_all(b",")?;
+                self.encoded.write_all(b",")?;
             }
-            write_csv_field(&mut encoded, field)?;
+            write_csv_field(&mut self.encoded, field)?;
         }
-        encoded.write_all(b"\r\n")?;
-        self.output.write_all(&encoded)?;
+        self.encoded.write_all(b"\r\n")?;
+        self.output.write_all(&self.encoded)?;
         self.columns = Some(field_count);
         self.line.clear();
         Ok(())
@@ -63,17 +65,22 @@ fn write_csv_field<W: Write>(output: &mut W, field: &[u8]) -> io::Result<()> {
 
 impl<W: Write> Write for CsvWriter<W> {
     fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
-        for &byte in buf {
-            if byte == b'\n' {
-                self.finish_row()?;
+        for chunk in buf.split_inclusive(|&byte| byte == b'\n') {
+            let complete = chunk.last() == Some(&b'\n');
+            let data = if complete {
+                &chunk[..chunk.len() - 1]
             } else {
-                if self.line.len() >= MAX_LINE_BYTES {
-                    return Err(io::Error::new(
-                        io::ErrorKind::InvalidData,
-                        "CSV row exceeds 1 MiB",
-                    ));
-                }
-                self.line.push(byte);
+                chunk
+            };
+            if data.len() > MAX_LINE_BYTES.saturating_sub(self.line.len()) {
+                return Err(io::Error::new(
+                    io::ErrorKind::InvalidData,
+                    "CSV row exceeds 1 MiB",
+                ));
+            }
+            self.line.extend_from_slice(data);
+            if complete {
+                self.finish_row()?;
             }
         }
         Ok(buf.len())
@@ -181,6 +188,18 @@ mod tests {
         assert!(writer.write_all(b"bad\\q\n").is_err());
         assert!(writer.output.is_empty());
         assert_eq!(writer.columns, None);
+    }
+
+    #[test]
+    fn reuses_encoded_capacity_across_csv_rows() {
+        let mut writer = CsvWriter::new(Vec::new());
+        let row = vec![b'x'; 32 * 1024];
+        writer.write_all(&row).unwrap();
+        writer.write_all(b"\n").unwrap();
+        let capacity = writer.encoded.capacity();
+        writer.write_all(b"short\n").unwrap();
+        assert_eq!(writer.encoded.capacity(), capacity);
+        assert!(writer.output.ends_with(b"short\r\n"));
     }
 
     #[test]

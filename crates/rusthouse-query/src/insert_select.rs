@@ -42,6 +42,14 @@ fn parse_columns(parser: &mut Parser) -> Result<Option<Vec<String>>, ParseError>
     Ok(Some(columns))
 }
 
+fn parse_select_suffix(parser: &mut Parser) -> Result<Option<Select>, ParseError> {
+    if !parser.keyword("SELECT") {
+        return Ok(None);
+    }
+    // The SELECT parser expects the keyword as its first token.
+    parse_select_tokens(parser.tokens[parser.index - 1..].to_vec()).map(Some)
+}
+
 pub fn parse_insert_select(sql: &str) -> Result<Option<InsertSelect>, ParseError> {
     let mut parser = Parser {
         tokens: tokenize(sql)?,
@@ -55,11 +63,9 @@ pub fn parse_insert_select(sql: &str) -> Result<Option<InsertSelect>, ParseError
     }
     let table = parse_bounded_identifier(&mut parser)?;
     let columns = parse_columns(&mut parser)?;
-    if !parser.keyword("SELECT") {
+    let Some(select) = parse_select_suffix(&mut parser)? else {
         return Ok(None);
-    }
-    parser.index -= 1;
-    let select = parse_select_tokens(parser.tokens[parser.index..].to_vec())?;
+    };
     Ok(Some(InsertSelect {
         table,
         columns,

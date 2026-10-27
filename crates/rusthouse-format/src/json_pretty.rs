@@ -1,0 +1,88 @@
+//! Shared pretty-printing for complete, validated JSONL rows.
+use std::io::{self, Write};
+
+fn write_indent<W: Write>(output: &mut W, depth: usize) -> io::Result<()> {
+    output.write_all(b"\n")?;
+    let spaces = [b' '; 64];
+    let mut remaining = (depth + 1) * 2;
+    while remaining > 0 {
+        let count = remaining.min(spaces.len());
+        output.write_all(&spaces[..count])?;
+        remaining -= count;
+    }
+    Ok(())
+}
+
+/// Pretty-print a validated JSON row, preserving punctuation inside strings.
+pub fn write_pretty_json_row<W: Write>(output: &mut W, row: &[u8]) -> io::Result<()> {
+    let mut quoted = false;
+    let mut escaped = false;
+    let mut depth = 0usize;
+    let mut start = 0usize;
+    for (index, &byte) in row.iter().enumerate() {
+        if quoted {
+            if escaped {
+                escaped = false;
+            } else if byte == b'\\' {
+                escaped = true;
+            } else if byte == b'"' {
+                quoted = false;
+            }
+            continue;
+        }
+        match byte {
+            b'"' => quoted = true,
+            b'{' | b'[' => {
+                output.write_all(&row[start..=index])?;
+                depth += 1;
+                write_indent(output, depth)?;
+                start = index + 1;
+            }
+            b'}' | b']' => {
+                output.write_all(&row[start..index])?;
+                depth = depth.saturating_sub(1);
+                write_indent(output, depth)?;
+                output.write_all(&row[index..=index])?;
+                start = index + 1;
+            }
+            b',' => {
+                output.write_all(&row[start..=index])?;
+                write_indent(output, depth)?;
+                start = index + 1;
+            }
+            b':' => {
+                output.write_all(&row[start..=index])?;
+                output.write_all(b" ")?;
+                start = index + 1;
+            }
+            _ => {}
+        }
+    }
+    output.write_all(&row[start..])
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn emits_indentation_across_fixed_chunks() {
+        for depth in [0usize, 1, 40] {
+            let mut output = Vec::new();
+            write_indent(&mut output, depth).unwrap();
+            assert_eq!(output[0], b'\n');
+            assert_eq!(output.len(), 1 + (depth + 1) * 2);
+            assert!(output[1..].iter().all(|&byte| byte == b' '));
+        }
+    }
+
+    #[test]
+    fn leaves_json_string_punctuation_unchanged() {
+        let mut output = Vec::new();
+        write_pretty_json_row(&mut output, br#"{"text":"a,{}","ok":null}"#).unwrap();
+        assert_eq!(
+            output,
+            b"{\n    \"text\": \"a,{}\",\n    \"ok\": null\n  }"
+        );
+    }
+}

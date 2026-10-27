@@ -42,6 +42,16 @@ fn valid_schema(path: &Path) -> bool {
     valid_schema_contents(contents)
 }
 
+fn valid_schema_line<'a>(line: &'a str, names: &mut HashSet<&'a str>) -> bool {
+    let Some((name, data_type)) = line.split_once('\t') else {
+        return false;
+    };
+    let ddl = format!("CREATE TABLE _check ({name} {data_type})");
+    identifier(name)
+        && names.insert(name)
+        && matches!(parse_ddl(&ddl), Ok(Some(Ddl::CreateTable { .. })))
+}
+
 fn valid_schema_contents(contents: &str) -> bool {
     if !contents.ends_with('\n') {
         return false;
@@ -57,14 +67,7 @@ fn valid_schema_contents(contents: &str) -> bool {
         if count > 64 {
             return false;
         }
-        let Some((name, data_type)) = line.split_once('\t') else {
-            return false;
-        };
-        let ddl = format!("CREATE TABLE _check ({name} {data_type})");
-        if !identifier(name)
-            || !names.insert(name)
-            || !matches!(parse_ddl(&ddl), Ok(Some(Ddl::CreateTable { .. })))
-        {
+        if !valid_schema_line(line, &mut names) {
             return false;
         }
     }

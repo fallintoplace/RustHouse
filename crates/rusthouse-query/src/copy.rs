@@ -76,24 +76,31 @@ fn parse_copy_header(parser: &mut Parser) -> Result<bool, ParseError> {
     }
 }
 
-fn parse_copy_options(parser: &mut Parser) -> Result<(CopyFormat, bool), ParseError> {
-    let mut header = false;
-    let mut format = CopyFormat::Csv;
+struct CopyOptions {
+    format: CopyFormat,
+    header: bool,
+}
+
+fn parse_copy_options(parser: &mut Parser) -> Result<CopyOptions, ParseError> {
+    let mut options = CopyOptions {
+        format: CopyFormat::Csv,
+        header: false,
+    };
     if parser.keyword("WITH") {
         if !parser.take(Token::LParen) || !parser.keyword("FORMAT") {
             return Err(ParseError(
                 "COPY supports WITH (FORMAT CSV|TSV|SSV[, HEADER TRUE])".into(),
             ));
         }
-        format = parse_copy_format(parser)?;
+        options.format = parse_copy_format(parser)?;
         if parser.take(Token::Comma) {
-            header = parse_copy_header(parser)?;
+            options.header = parse_copy_header(parser)?;
         }
         if !parser.take(Token::RParen) {
             return Err(ParseError("expected ')' after COPY options".into()));
         }
     }
-    Ok((format, header))
+    Ok(options)
 }
 
 fn parse_copy_path(parser: &mut Parser) -> Result<String, ParseError> {
@@ -120,7 +127,7 @@ pub fn parse_copy_from(sql: &str) -> Result<Option<CopyFrom>, ParseError> {
         return Err(ParseError("COPY requires FROM 'path'".into()));
     }
     let path = parse_copy_path(&mut parser)?;
-    let (format, header) = parse_copy_options(&mut parser)?;
+    let options = parse_copy_options(&mut parser)?;
     parser.take(Token::Semicolon);
     if parser.index != parser.tokens.len() {
         return Err(ParseError("unexpected tokens after COPY statement".into()));
@@ -129,8 +136,8 @@ pub fn parse_copy_from(sql: &str) -> Result<Option<CopyFrom>, ParseError> {
         table,
         columns,
         path,
-        header,
-        format,
+        header: options.header,
+        format: options.format,
     }))
 }
 
