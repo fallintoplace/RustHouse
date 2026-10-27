@@ -6,7 +6,15 @@ const MAX_TEXT_BYTES: usize = 1_048_576;
 pub(super) fn is_function(name: &str) -> bool {
     matches!(
         name.to_ascii_uppercase().as_str(),
-        "LENGTH" | "CHAR_LENGTH" | "LOWER" | "UPPER" | "CONCAT" | "SUBSTRING" | "TRIM" | "REPLACE" | "LEFT"
+        "LENGTH"
+            | "CHAR_LENGTH"
+            | "LOWER"
+            | "UPPER"
+            | "CONCAT"
+            | "SUBSTRING"
+            | "TRIM"
+            | "REPLACE"
+            | "LEFT"
     )
 }
 
