@@ -702,6 +702,12 @@ pub(super) fn execute_typed<W: Write>(
                 }
                 continue;
             }
+            // In an ordinary unsorted scan, OFFSET can discard the row before
+            // cloning String or UUID projection values.
+            if !is_count_distinct && !query.distinct && sort_indices.is_empty() && skipped < offset {
+                skipped += 1;
+                continue;
+            }
             let cells = projection_indices
                 .iter()
                 .map(|&idx| cell(&batch[idx], index))
