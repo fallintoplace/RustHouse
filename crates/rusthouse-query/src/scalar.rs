@@ -21,6 +21,7 @@ fn is_bitwise(name: &str) -> bool {
 
 pub(super) fn is_function(name: &str) -> bool {
     name.eq_ignore_ascii_case("ABS")
+        || name.eq_ignore_ascii_case("ABS_DIFF")
         || name.eq_ignore_ascii_case("SIGN")
         || is_extrema(name)
         || is_power(name)
@@ -100,6 +101,16 @@ fn parse_power(parser: &mut Parser, depth: usize) -> Result<i64, ParseError> {
     let exponent = u32::try_from(exponent)
         .map_err(|_| ParseError("POWER exponent must be non-negative and fit UInt32".into()))?;
     base.checked_pow(exponent).ok_or_else(overflow)
+}
+
+fn parse_abs_diff(parser: &mut Parser, depth: usize) -> Result<i64, ParseError> {
+    require_token(parser, Token::LParen, "ABS_DIFF requires '('")?;
+    let left = expression(parser, depth + 1)?;
+    require_token(parser, Token::Comma, "ABS_DIFF requires two arguments")?;
+    let right = expression(parser, depth + 1)?;
+    require_token(parser, Token::RParen, "ABS_DIFF requires ')' after arguments")?;
+    let difference = (i128::from(left) - i128::from(right)).abs();
+    i64::try_from(difference).map_err(|_| overflow())
 }
 
 fn parse_extrema(parser: &mut Parser, depth: usize) -> Result<i64, ParseError> {
@@ -210,6 +221,9 @@ fn factor(parser: &mut Parser, depth: usize) -> Result<i64, ParseError> {
         return factor(parser, depth + 1)?
             .checked_neg()
             .ok_or_else(overflow);
+    }
+    if parser.keyword("ABS_DIFF") {
+        return parse_abs_diff(parser, depth);
     }
     if parser.take(Token::Plus) {
         return factor(parser, depth + 1);
