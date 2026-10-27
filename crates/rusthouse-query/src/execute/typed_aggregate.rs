@@ -59,11 +59,12 @@ pub(super) fn execute_typed_aggregate<W: Write>(
         return Ok(());
     }
     let mut reader = TypedQueryReader::open(part, &names)?;
+    let no_filters = query.predicates.is_empty() && query.or_predicates.is_empty();
 
     let mut state = AggregateState::new(*function);
     while let Some(batch) = reader.next_batch()? {
         for row in 0..batch[0].len() {
-            if !typed::passes(&batch, row, &conditions) {
+            if !no_filters && !typed::passes(&batch, row, &conditions) {
                 continue;
             }
             match typed::cell(&batch[projected_index], row) {

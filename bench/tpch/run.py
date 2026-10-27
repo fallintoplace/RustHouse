@@ -61,6 +61,9 @@ def benchmark_one(number, sql, execute, runs, warmups, reference=None):
             break
         if started is not None:
             elapsed.append(time.perf_counter() - started)
+    # Do not publish incomplete latency distributions for failed queries.
+    if status not in ("passed", "unverified"):
+        elapsed = []
     return {
         "query": number, "status": status,
         "timings_seconds": elapsed, "latency": summary(elapsed),
