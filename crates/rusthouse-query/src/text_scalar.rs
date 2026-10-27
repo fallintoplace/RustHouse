@@ -9,6 +9,7 @@ pub(super) fn is_function(name: &str) -> bool {
         "LENGTH"
             | "CHAR_LENGTH"
             | "BTRIM"
+            | "COLLAPSE_WHITESPACE"
             | "LOWER"
             | "UPPER"
             | "REVERSE"
@@ -287,6 +288,32 @@ fn parse_at_depth(parser: &mut Parser, depth: usize) -> Result<ConstantValue, Pa
                     )
                 }
                 _ => ConstantValue::Null,
+            }
+        }
+        "COLLAPSE_WHITESPACE" => {
+            let input = text_arg(parser, depth + 1)?;
+            require(parser, Token::RParen, "COLLAPSE_WHITESPACE requires one argument")?;
+            match input {
+                Some(value) => {
+                    let mut result = String::new();
+                    let mut pending_space = false;
+                    for character in value.chars() {
+                        if character.is_whitespace() {
+                            pending_space = !result.is_empty();
+                        } else {
+                            if pending_space {
+                                result.push(' ');
+                                pending_space = false;
+                            }
+                            result.push(character);
+                        }
+                        if result.len() > MAX_TEXT_BYTES {
+                            return Err(ParseError("COLLAPSE_WHITESPACE result is too large".into()));
+                        }
+                    }
+                    ConstantValue::Text(result)
+                }
+                None => ConstantValue::Null,
             }
         }
         "BTRIM" => {
