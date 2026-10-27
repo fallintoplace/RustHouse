@@ -99,8 +99,8 @@ fn bulk_tsv_copy_passes_50000_rows_and_keeps_snapshot_on_failure() {
         })
         .count();
     // The empty CREATE part and prior INSERT part stay in the snapshot.
-    // The bulk COPY adds two more parts for 50,000 rows.
-    assert_eq!(active_parts, 4);
+    // The bulk COPY adds one 50,000-row part.
+    assert_eq!(active_parts, 3);
 
     // An extra data row no longer hits the old 50,000-row COPY limit.
     tsv.push_str("50000\tbeyond-old-limit\n");

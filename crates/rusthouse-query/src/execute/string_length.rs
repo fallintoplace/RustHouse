@@ -1,5 +1,5 @@
-use super::typed;
 use super::ExecutionError;
+use super::typed;
 use crate::Select;
 use rusthouse_storage::{TypedColumn, TypedQueryReader, inspect_query_source};
 use std::collections::HashMap;
@@ -55,7 +55,10 @@ pub(super) fn execute<W: Write>(
     writeln!(
         output,
         "{}",
-        query.alias.as_deref().unwrap_or(&format!("length({column})"))
+        query
+            .alias
+            .as_deref()
+            .unwrap_or(&format!("length({column})"))
     )?;
     if query.limit == Some(0) {
         return Ok(());
