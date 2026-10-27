@@ -16,6 +16,7 @@ pub(super) fn is_function(name: &str) -> bool {
             | "REPLACE"
             | "LEFT"
             | "RIGHT"
+            | "ENDS_WITH"
             | "REPEAT"
     )
 }
@@ -193,6 +194,18 @@ fn parse_at_depth(parser: &mut Parser, depth: usize) -> Result<ConstantValue, Pa
                     }
                     let count = usize::try_from(count).unwrap_or(usize::MAX);
                     ConstantValue::Text(value.chars().take(count).collect())
+                }
+                _ => ConstantValue::Null,
+            }
+        }
+        "ENDS_WITH" => {
+            let input = text_arg(parser, depth + 1)?;
+            require(parser, Token::Comma, "ENDS_WITH requires a suffix")?;
+            let suffix = text_arg(parser, depth + 1)?;
+            require(parser, Token::RParen, "expected ')' after ENDS_WITH arguments")?;
+            match (input, suffix) {
+                (Some(input), Some(suffix)) => {
+                    ConstantValue::Integer(if input.ends_with(&suffix) { 1 } else { 0 })
                 }
                 _ => ConstantValue::Null,
             }
