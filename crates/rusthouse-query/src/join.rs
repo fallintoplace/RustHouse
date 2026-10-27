@@ -286,44 +286,58 @@ pub fn parse_join(sql: &str) -> Result<Option<JoinSelect>, ParseError> {
                 "ANY JOIN supports only INNER and LEFT joins".into(),
             ));
         }
-        if parser.keyword("USING") {
-            return Err(ParseError(
-                "chained JOIN currently requires qualified ON keys".into(),
-            ));
-        }
-        if !parser.keyword("ON") {
-            return Err(ParseError("JOIN requires ON".into()));
-        }
-        let mut step_keys = Vec::new();
-        loop {
-            if step_keys.len() == 8 {
-                return Err(ParseError("JOIN supports at most 8 equality keys".into()));
+        let (step_keys, step_using) = if parser.keyword("USING") {
+            if !parser.take(Token::LParen) {
+                return Err(ParseError("JOIN USING requires '('".into()));
             }
-            let first = qualified(&mut parser)?;
-            if !parser.take(Token::Operator(super::Operator::Eq)) {
-                return Err(ParseError(
-                    "JOIN ON supports AND-connected equality keys".into(),
-                ));
+            let mut names = Vec::new();
+            loop {
+                if names.len() >= 8 {
+                    return Err(ParseError("JOIN USING supports at most 8 keys".into()));
+                }
+                let name = parser.word()?;
+                if names.contains(&name) {
+                    return Err(ParseError("duplicate JOIN USING column".into()));
+                }
+                names.push(name);
+                if !parser.take(Token::Comma) {
+                    break;
+                }
             }
-            let second = qualified(&mut parser)?;
-            step_keys.push((first, second));
-            if !parser.keyword("AND") {
-                break;
+            if !parser.take(Token::RParen) {
+                return Err(ParseError("JOIN USING requires ')'".into()));
             }
-        }
+            (Vec::new(), names)
+        } else if parser.keyword("ON") {
+            let mut keys = Vec::new();
+            loop {
+                if keys.len() == 8 {
+                    return Err(ParseError("JOIN supports at most 8 equality keys".into()));
+                }
+                let first = qualified(&mut parser)?;
+                if !parser.take(Token::Operator(super::Operator::Eq)) {
+                    return Err(ParseError(
+                        "JOIN ON supports AND-connected equality keys".into(),
+                    ));
+                }
+                let second = qualified(&mut parser)?;
+                keys.push((first, second));
+                if !parser.keyword("AND") {
+                    break;
+                }
+            }
+            (keys, Vec::new())
+        } else {
+            return Err(ParseError("JOIN requires ON or USING".into()));
+        };
         steps.push(JoinStep {
             table,
             alias,
             kind: step_kind,
             any: step_any,
             keys: step_keys,
-            using_keys: Vec::new(),
+            using_keys: step_using,
         });
-    }
-    if !steps.is_empty() && !using_keys.is_empty() {
-        return Err(ParseError(
-            "chained JOIN currently requires qualified ON keys".into(),
-        ));
     }
     let where_null = if parser.keyword("WHERE") {
         let column = qualified(&mut parser)?;
@@ -473,6 +487,27 @@ pub fn explain_join(query: &JoinSelect) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn parses_chained_using_keys_and_rejects_duplicates() {
+        let query = parse_join(
+            "SELECT * FROM facts f JOIN customers c ON f.customer_id = c.id JOIN regions r USING (region_id)",
+        )
+        .unwrap()
+        .unwrap();
+        assert_eq!(query.steps[0].using_keys, ["region_id"]);
+        assert!(query.steps[0].keys.is_empty());
+        let query = parse_join(
+            "SELECT * FROM facts f JOIN customers c USING (customer_id) JOIN regions r ON c.customer_id = r.customer_id",
+        )
+        .unwrap()
+        .unwrap();
+        assert_eq!(query.using_keys, ["customer_id"]);
+        assert!(parse_join(
+            "SELECT * FROM facts f JOIN customers c ON f.id = c.id JOIN regions r USING (id, id)"
+        )
+        .is_err());
+    }
 
     #[test]
     fn parses_chained_any_join_strictness() {
