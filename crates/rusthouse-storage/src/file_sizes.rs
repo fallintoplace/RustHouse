@@ -48,6 +48,8 @@ pub fn verify_part_file_hashes(part: impl AsRef<Path>) -> Result<FileSizeVerific
         verify_listed_file(part, &manifest.path, &entry.name, entry.size)?;
         let path = part.join(&entry.name);
         let mut file = fs::File::open(&path).map_err(|source| io_error(&path, source))?;
+        #[cfg(unix)]
+        ensure_opened_file_identity(&path, &file)?;
         let mut hash = U128::new(0, 0);
         let mut remaining = entry.size;
         let mut buffer = [0u8; BLOCK_BYTES];
@@ -66,6 +68,8 @@ pub fn verify_part_file_hashes(part: impl AsRef<Path>) -> Result<FileSizeVerific
         {
             return Err(invalid(&path, "file changed during hash verification"));
         }
+        #[cfg(unix)]
+        ensure_opened_file_identity(&path, &file)?;
         if u128::from(hash) != entry.hash {
             return Err(invalid(
                 &path,
@@ -81,6 +85,26 @@ pub fn verify_part_file_hashes(part: impl AsRef<Path>) -> Result<FileSizeVerific
         files: manifest.files.len(),
         total_bytes,
     })
+}
+
+/// Detect inode replacement between path validation, open, and hash completion.
+#[cfg(unix)]
+fn ensure_opened_file_identity(path: &Path, file: &fs::File) -> Result<(), PartError> {
+    use std::os::unix::fs::MetadataExt;
+
+    let named = fs::symlink_metadata(path).map_err(|source| io_error(path, source))?;
+    let opened = file.metadata().map_err(|source| io_error(path, source))?;
+    if !named.file_type().is_file()
+        || !opened.file_type().is_file()
+        || named.dev() != opened.dev()
+        || named.ino() != opened.ino()
+    {
+        return Err(invalid(
+            path,
+            "listed file was replaced during hash verification",
+        ));
+    }
+    Ok(())
 }
 
 fn validated_checksums_path(part: &Path) -> Result<PathBuf, PartError> {
@@ -257,6 +281,27 @@ mod tests {
             verify_part_file_hashes(&part),
             Err(PartError::InvalidChecksums {
                 reason: "stored file hash differs from checksums.txt",
+                ..
+            })
+        ));
+        fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn rejects_file_replacement_after_opening() {
+        let dir = temp_dir();
+        let path = dir.join("data.bin");
+        fs::write(&path, b"same contents").unwrap();
+        let file = fs::File::open(&path).unwrap();
+        ensure_opened_file_identity(&path, &file).unwrap();
+
+        fs::rename(&path, dir.join("old.bin")).unwrap();
+        fs::write(&path, b"same contents").unwrap();
+        assert!(matches!(
+            ensure_opened_file_identity(&path, &file),
+            Err(PartError::InvalidChecksums {
+                reason: "listed file was replaced during hash verification",
                 ..
             })
         ));
