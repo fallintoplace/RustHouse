@@ -141,7 +141,9 @@ pub(super) fn tokenize(sql: &str) -> Result<Vec<Token>, ParseError> {
                 index += 1;
                 punctuation_token(byte)
             }
-            b'-' if matches!(tokens.last(), Some(Token::Number(_) | Token::RParen)) => {
+            b'-' if matches!(tokens.last(), Some(Token::Number(_) | Token::RParen))
+                || matches!(tokens.last(), Some(Token::Word(word)) if !word.eq_ignore_ascii_case("SELECT")) =>
+            {
                 index += 1;
                 Token::Minus
             }
@@ -233,6 +235,18 @@ mod tests {
                 Token::RParen,
                 Token::Minus,
                 Token::Number("5".into()),
+            ]
+        );
+    }
+
+    #[test]
+    fn identifies_subtraction_adjacent_to_column_names() {
+        assert_eq!(
+            tokenize("count-2 count -2 SELECT -3").unwrap(),
+            vec![
+                Token::Word("count".into()), Token::Minus, Token::Number("2".into()),
+                Token::Word("count".into()), Token::Minus, Token::Number("2".into()),
+                Token::Word("SELECT".into()), Token::Number("-3".into()),
             ]
         );
     }
