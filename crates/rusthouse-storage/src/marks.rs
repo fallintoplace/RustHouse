@@ -35,15 +35,19 @@ pub struct WideMarks {
     pub marks: Vec<WideMark>,
 }
 
+fn marks_format(path: &Path) -> Result<(WideMarkFormat, bool), PartError> {
+    match path.extension().and_then(|extension| extension.to_str()) {
+        Some("mrk") => Ok((WideMarkFormat::Fixed, false)),
+        Some("mrk2") => Ok((WideMarkFormat::Adaptive, false)),
+        Some("cmrk") => Ok((WideMarkFormat::Fixed, true)),
+        Some("cmrk2") => Ok((WideMarkFormat::Adaptive, true)),
+        _ => Err(PartError::UnsupportedMarksFormat(path.to_path_buf())),
+    }
+}
+
 pub fn read_wide_marks(path: impl AsRef<Path>) -> Result<WideMarks, PartError> {
     let path = path.as_ref();
-    let (format, compressed) = match path.extension().and_then(|extension| extension.to_str()) {
-        Some("mrk") => (WideMarkFormat::Fixed, false),
-        Some("mrk2") => (WideMarkFormat::Adaptive, false),
-        Some("cmrk") => (WideMarkFormat::Fixed, true),
-        Some("cmrk2") => (WideMarkFormat::Adaptive, true),
-        _ => return Err(PartError::UnsupportedMarksFormat(path.to_path_buf())),
-    };
+    let (format, compressed) = marks_format(path)?;
     let marks = if compressed {
         read_compressed_wide_marks(CompressedBlockReader::open(path)?, path, format)?
     } else {

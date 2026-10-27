@@ -161,6 +161,21 @@ fn parse_enum_label(bytes: &[u8], position: &mut usize) -> Option<String> {
     None
 }
 
+fn parse_enum_code(inner: &str, bytes: &[u8], position: &mut usize) -> Option<i16> {
+    let start = *position;
+    if bytes.get(*position) == Some(&b'-') || bytes.get(*position) == Some(&b'+') {
+        *position += 1;
+    }
+    let digit_start = *position;
+    while bytes.get(*position).is_some_and(u8::is_ascii_digit) {
+        *position += 1;
+    }
+    if *position == digit_start {
+        return None;
+    }
+    inner[start..*position].parse::<i16>().ok()
+}
+
 /// Accept canonical explicit value declarations and common ClickHouse escapes.
 /// Implicit Enum numbering is not used for persisted columns.txt type names.
 fn parse_enum_type(data_type: &str) -> Option<(u8, BTreeMap<i16, String>)> {
@@ -188,18 +203,7 @@ fn parse_enum_type(data_type: &str) -> Option<(u8, BTreeMap<i16, String>)> {
         position += 1;
         skip_space(bytes, &mut position);
 
-        let start = position;
-        if bytes.get(position) == Some(&b'-') || bytes.get(position) == Some(&b'+') {
-            position += 1;
-        }
-        let digit_start = position;
-        while bytes.get(position).is_some_and(u8::is_ascii_digit) {
-            position += 1;
-        }
-        if position == digit_start {
-            return None;
-        }
-        let code = inner[start..position].parse::<i16>().ok()?;
+        let code = parse_enum_code(inner, bytes, &mut position)?;
         if width == 8 && !(-128..=127).contains(&code) {
             return None;
         }

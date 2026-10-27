@@ -185,6 +185,18 @@ pub fn read_array_offsets<O: Read>(
     })
 }
 
+fn numeric_array_inner_type(data_type: &str) -> Result<&str, ArrayReadError> {
+    let nested_type = data_type
+        .strip_prefix("Array(")
+        .and_then(|inner| inner.strip_suffix(')'))
+        .filter(|inner| !inner.is_empty())
+        .ok_or_else(|| ArrayReadError::UnsupportedType(data_type.to_owned()))?;
+    if read_numeric_column(&mut io::empty(), nested_type, 0).is_err() {
+        return Err(ArrayReadError::UnsupportedType(data_type.to_owned()));
+    }
+    Ok(nested_type)
+}
+
 pub fn read_numeric_array_column<O: Read, D: Read>(
     offset_stream: &mut O,
     data_stream: &mut D,
@@ -192,15 +204,7 @@ pub fn read_numeric_array_column<O: Read, D: Read>(
     rows: usize,
     encoding: ArrayOffsetsEncoding,
 ) -> Result<NumericArrayColumn, ArrayReadError> {
-    let nested_type = data_type
-        .strip_prefix("Array(")
-        .and_then(|inner| inner.strip_suffix(')'))
-        .filter(|inner| !inner.is_empty())
-        .ok_or_else(|| ArrayReadError::UnsupportedType(data_type.to_owned()))?;
-
-    if read_numeric_column(&mut io::empty(), nested_type, 0).is_err() {
-        return Err(ArrayReadError::UnsupportedType(data_type.to_owned()));
-    }
+    let nested_type = numeric_array_inner_type(data_type)?;
 
     let offsets = read_array_offsets(offset_stream, rows, encoding)?;
     let values = read_numeric_column(data_stream, nested_type, offsets.element_count())

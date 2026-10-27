@@ -83,18 +83,20 @@ fn term(parser: &mut Parser, depth: usize) -> Result<i64, ParseError> {
     Ok(value)
 }
 
+fn require_token(parser: &mut Parser, token: Token, message: &str) -> Result<(), ParseError> {
+    if parser.take(token) {
+        Ok(())
+    } else {
+        Err(ParseError(message.into()))
+    }
+}
+
 fn parse_power(parser: &mut Parser, depth: usize) -> Result<i64, ParseError> {
-    if !parser.take(Token::LParen) {
-        return Err(ParseError("POWER requires '('".into()));
-    }
+    require_token(parser, Token::LParen, "POWER requires '('")?;
     let base = expression(parser, depth + 1)?;
-    if !parser.take(Token::Comma) {
-        return Err(ParseError("POWER requires two arguments".into()));
-    }
+    require_token(parser, Token::Comma, "POWER requires two arguments")?;
     let exponent = expression(parser, depth + 1)?;
-    if !parser.take(Token::RParen) {
-        return Err(ParseError("POWER requires ')' after exponent".into()));
-    }
+    require_token(parser, Token::RParen, "POWER requires ')' after exponent")?;
     let exponent = u32::try_from(exponent)
         .map_err(|_| ParseError("POWER exponent must be non-negative and fit UInt32".into()))?;
     base.checked_pow(exponent).ok_or_else(overflow)
@@ -149,21 +151,13 @@ fn checked_bit_shift(value: i64, amount: i64, left: bool) -> Result<i64, ParseEr
 }
 
 fn parse_clamp(parser: &mut Parser, depth: usize) -> Result<i64, ParseError> {
-    if !parser.take(Token::LParen) {
-        return Err(ParseError("CLAMP requires '('".into()));
-    }
+    require_token(parser, Token::LParen, "CLAMP requires '('")?;
     let value = expression(parser, depth + 1)?;
-    if !parser.take(Token::Comma) {
-        return Err(ParseError("CLAMP requires three arguments".into()));
-    }
+    require_token(parser, Token::Comma, "CLAMP requires three arguments")?;
     let lower = expression(parser, depth + 1)?;
-    if !parser.take(Token::Comma) {
-        return Err(ParseError("CLAMP requires three arguments".into()));
-    }
+    require_token(parser, Token::Comma, "CLAMP requires three arguments")?;
     let upper = expression(parser, depth + 1)?;
-    if !parser.take(Token::RParen) {
-        return Err(ParseError("expected ')' after CLAMP arguments".into()));
-    }
+    require_token(parser, Token::RParen, "expected ')' after CLAMP arguments")?;
     if lower > upper {
         return Err(ParseError("CLAMP lower bound exceeds upper bound".into()));
     }

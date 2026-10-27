@@ -55,17 +55,35 @@ fn write_header_separator<W: Write>(output: &mut W, columns: usize) -> io::Resul
 }
 
 fn write_cell<W: Write>(output: &mut W, field: &[u8]) -> io::Result<()> {
-    for &byte in field {
-        match byte {
-            b'|' => output.write_all(b"\\|")?,
-            b'\\' => output.write_all(b"\\\\")?,
-            b'&' => output.write_all(b"&amp;")?,
-            b'<' => output.write_all(b"&lt;")?,
-            b'>' => output.write_all(b"&gt;")?,
-            b'\r' => output.write_all(b"&#13;")?,
-            byte if byte.is_ascii_control() => write!(output, "&#{byte};")?,
-            other => output.write_all(&[other])?,
+    let mut start = 0;
+    for (index, &byte) in field.iter().enumerate() {
+        let escape: Option<&[u8]> = match byte {
+            b'|' => Some(b"\\|"),
+            b'\\' => Some(b"\\\\"),
+            b'&' => Some(b"&amp;"),
+            b'<' => Some(b"&lt;"),
+            b'>' => Some(b"&gt;"),
+            b'\r' => Some(b"&#13;"),
+            byte if byte.is_ascii_control() => {
+                if start < index {
+                    output.write_all(&field[start..index])?;
+                }
+                write!(output, "&#{byte};")?;
+                start = index + 1;
+                continue;
+            }
+            _ => None,
+        };
+        if let Some(escape) = escape {
+            if start < index {
+                output.write_all(&field[start..index])?;
+            }
+            output.write_all(escape)?;
+            start = index + 1;
         }
+    }
+    if start < field.len() {
+        output.write_all(&field[start..])?;
     }
     Ok(())
 }
@@ -166,5 +184,37 @@ mod markdown_width_regressions {
             writer.write_all(b"one\ttwo\tthree\n").unwrap_err().kind(),
             io::ErrorKind::InvalidData
         );
+    }
+}
+
+#[cfg(test)]
+mod markdown_bulk_output_tests {
+    use super::*;
+    struct CountingWriter {
+        calls: usize,
+        bytes: usize,
+    }
+    impl Write for CountingWriter {
+        fn write(&mut self, bytes: &[u8]) -> io::Result<usize> {
+            self.calls += 1;
+            self.bytes += bytes.len();
+            Ok(bytes.len())
+        }
+        fn flush(&mut self) -> io::Result<()> {
+            Ok(())
+        }
+    }
+    #[test]
+    fn writes_plain_markdown_cell_with_one_bulk_call() {
+        let mut output = CountingWriter { calls: 0, bytes: 0 };
+        write_cell(&mut output, &vec![b'a'; 16 * 1024]).unwrap();
+        assert_eq!(output.bytes, 16 * 1024);
+        assert_eq!(output.calls, 1);
+    }
+    #[test]
+    fn keeps_escaped_bytes_and_control_formatting() {
+        let mut output = Vec::new();
+        write_cell(&mut output, b"abc|xyz<&>\r\x01").unwrap();
+        assert_eq!(output, b"abc\\|xyz&lt;&amp;&gt;&#13;&#1;");
     }
 }

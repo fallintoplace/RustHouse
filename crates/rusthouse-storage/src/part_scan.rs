@@ -6,7 +6,22 @@ use crate::{
     read_wide_marks,
 };
 use std::fs::File;
-use std::path::Path;
+use std::path::{Path, PathBuf};
+
+fn numeric_marks_path(part: &Path, name: &str) -> Result<PathBuf, PartError> {
+    let plain_marks = part.join(format!("{name}.mrk2"));
+    let compressed_marks = part.join(format!("{name}.cmrk2"));
+    if plain_marks.exists() && compressed_marks.exists() {
+        return Err(PartError::InvalidScan(format!(
+            "multiple mark files for {name}"
+        )));
+    }
+    Ok(if plain_marks.exists() || !compressed_marks.exists() {
+        plain_marks
+    } else {
+        compressed_marks
+    })
+}
 
 struct ColumnStream {
     data_type: String,
@@ -58,18 +73,7 @@ impl NumericPartReader {
             if metadata.rows == 0 {
                 continue;
             }
-            let plain_marks = part.join(format!("{name}.mrk2"));
-            let compressed_marks = part.join(format!("{name}.cmrk2"));
-            if plain_marks.exists() && compressed_marks.exists() {
-                return Err(PartError::InvalidScan(format!(
-                    "multiple mark files for {name}"
-                )));
-            }
-            let marks_path = if plain_marks.exists() || !compressed_marks.exists() {
-                plain_marks
-            } else {
-                compressed_marks
-            };
+            let marks_path = numeric_marks_path(part, name)?;
             let marks_file = read_wide_marks(&marks_path)?;
             layout.validate(name, &marks_file.marks, metadata.rows)?;
             let data_path = part.join(format!("{name}.bin"));

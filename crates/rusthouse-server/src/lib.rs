@@ -117,18 +117,36 @@ fn decode_url(value: &str) -> Result<String, &'static str> {
 
 fn write_json_string<W: Write>(writer: &mut W, value: &str) -> io::Result<()> {
     writer.write_all(b"\"")?;
-    for ch in value.chars() {
-        match ch {
-            '"' => writer.write_all(b"\\\"")?,
-            '\\' => writer.write_all(b"\\\\")?,
-            '\n' => writer.write_all(b"\\n")?,
-            '\r' => writer.write_all(b"\\r")?,
-            '\t' => writer.write_all(b"\\t")?,
-            '\u{08}' => writer.write_all(b"\\b")?,
-            '\u{0c}' => writer.write_all(b"\\f")?,
-            ch if ch <= '\u{1f}' => write!(writer, "\\u{:04x}", ch as u32)?,
-            ch => writer.write_all(ch.encode_utf8(&mut [0; 4]).as_bytes())?,
+    let mut start = 0;
+    for (index, ch) in value.char_indices() {
+        let escape: Option<&[u8]> = match ch {
+            '"' => Some(b"\\\""),
+            '\\' => Some(b"\\\\"),
+            '\n' => Some(b"\\n"),
+            '\r' => Some(b"\\r"),
+            '\t' => Some(b"\\t"),
+            '\u{08}' => Some(b"\\b"),
+            '\u{0c}' => Some(b"\\f"),
+            ch if ch <= '\u{1f}' => {
+                if start < index {
+                    writer.write_all(&value.as_bytes()[start..index])?;
+                }
+                write!(writer, "\\u{:04x}", ch as u32)?;
+                start = index + ch.len_utf8();
+                continue;
+            }
+            _ => None,
+        };
+        if let Some(escape) = escape {
+            if start < index {
+                writer.write_all(&value.as_bytes()[start..index])?;
+            }
+            writer.write_all(escape)?;
+            start = index + ch.len_utf8();
         }
+    }
+    if start < value.len() {
+        writer.write_all(&value.as_bytes()[start..])?;
     }
     writer.write_all(b"\"")
 }
@@ -271,6 +289,23 @@ enum QueryFormat {
     Markdown,
 }
 
+impl QueryFormat {
+    fn parse(value: &str) -> Result<Self, &'static str> {
+        Ok(match value {
+            "tsv" => Self::Tsv,
+            "tsv-no-header" => Self::TsvNoHeader,
+            "csv" => Self::Csv,
+            "csv-no-header" => Self::CsvNoHeader,
+            "jsonl" => Self::Jsonl,
+            "json" => Self::Json,
+            "json-compact-each-row" => Self::JsonCompactEachRow,
+            "sql-values" => Self::SqlValues,
+            "markdown" => Self::Markdown,
+            _ => return Err("unsupported query format"),
+        })
+    }
+}
+
 fn query_parameters(target: &str) -> Result<(String, Option<String>, QueryFormat), &'static str> {
     let (path, query) = target.split_once('?').unwrap_or((target, ""));
     if path != "/" && path != "/explain" {
@@ -293,18 +328,7 @@ fn query_parameters(target: &str) -> Result<(String, Option<String>, QueryFormat
                 if format.is_some() {
                     return Err("duplicate format parameter");
                 }
-                format = Some(match decode_url(value)?.as_str() {
-                    "tsv" => QueryFormat::Tsv,
-                    "tsv-no-header" => QueryFormat::TsvNoHeader,
-                    "csv" => QueryFormat::Csv,
-                    "csv-no-header" => QueryFormat::CsvNoHeader,
-                    "jsonl" => QueryFormat::Jsonl,
-                    "json" => QueryFormat::Json,
-                    "json-compact-each-row" => QueryFormat::JsonCompactEachRow,
-                    "sql-values" => QueryFormat::SqlValues,
-                    "markdown" => QueryFormat::Markdown,
-                    _ => return Err("unsupported query format"),
-                });
+                format = Some(QueryFormat::parse(&decode_url(value)?)?);
             }
             _ => return Err("unsupported URL query parameter"),
         }
@@ -1125,5 +1149,47 @@ mod tests {
         let empty = handle_request("POST", "/?format=tsv-no-header", b"SELECT 1", &cap);
         assert_eq!(empty.status, "200 OK");
         assert!(empty.body.is_empty());
+    }
+}
+
+#[cfg(test)]
+mod json_string_bulk_perf_tests {
+    use super::*;
+
+    struct CountingWriter {
+        writes: usize,
+        bytes: Vec<u8>,
+    }
+
+    impl Write for CountingWriter {
+        fn write(&mut self, bytes: &[u8]) -> io::Result<usize> {
+            self.writes += 1;
+            self.bytes.extend_from_slice(bytes);
+            Ok(bytes.len())
+        }
+
+        fn flush(&mut self) -> io::Result<()> {
+            Ok(())
+        }
+    }
+
+    #[test]
+    fn encodes_long_plain_utf8_string_with_three_writes() {
+        let value = "café".repeat(4096);
+        let mut output = CountingWriter {
+            writes: 0,
+            bytes: Vec::new(),
+        };
+        write_json_string(&mut output, &value).unwrap();
+        assert_eq!(output.writes, 3);
+        assert_eq!(output.bytes.len(), value.len() + 2);
+        assert_eq!(&output.bytes[1..1 + value.len()], value.as_bytes());
+    }
+
+    #[test]
+    fn preserves_all_json_escape_variants() {
+        let mut output = Vec::new();
+        write_json_string(&mut output, "a\"b\\\n\r\t\u{08}\u{0c}\u{0001}é").unwrap();
+        assert_eq!(output, "\"a\\\"b\\\\\\n\\r\\t\\b\\f\\u0001é\"".as_bytes());
     }
 }

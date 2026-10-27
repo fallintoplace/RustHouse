@@ -128,14 +128,22 @@ pub fn read_nullable_fixed_strings<N: Read, D: Read>(
     Ok(NullableColumn { null_map, values })
 }
 
+fn read_nullable_strings<N: Read>(
+    nulls: &mut N,
+    rows: usize,
+    read_values: impl FnOnce() -> Result<StringColumn, StringReadError>,
+) -> Result<NullableColumn<StringColumn>, NullableReadError> {
+    let null_map = read_null_map(nulls, rows)?;
+    let values = read_values().map_err(NullableReadError::String)?;
+    Ok(NullableColumn { null_map, values })
+}
+
 pub fn read_nullable_legacy_strings<N: Read, D: Read>(
     nulls: &mut N,
     data: &mut D,
     rows: usize,
 ) -> Result<NullableColumn<StringColumn>, NullableReadError> {
-    let null_map = read_null_map(nulls, rows)?;
-    let values = read_legacy_strings(data, rows).map_err(NullableReadError::String)?;
-    Ok(NullableColumn { null_map, values })
+    read_nullable_strings(nulls, rows, || read_legacy_strings(data, rows))
 }
 
 pub fn read_nullable_sized_strings<N: Read, S: Read, D: Read>(
@@ -144,9 +152,7 @@ pub fn read_nullable_sized_strings<N: Read, S: Read, D: Read>(
     data: &mut D,
     rows: usize,
 ) -> Result<NullableColumn<StringColumn>, NullableReadError> {
-    let null_map = read_null_map(nulls, rows)?;
-    let values = read_sized_strings(sizes, data, rows).map_err(NullableReadError::String)?;
-    Ok(NullableColumn { null_map, values })
+    read_nullable_strings(nulls, rows, || read_sized_strings(sizes, data, rows))
 }
 
 #[cfg(test)]
