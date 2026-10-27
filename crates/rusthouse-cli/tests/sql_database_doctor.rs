@@ -68,8 +68,14 @@ fn full_hashes_validates_healthy_database_without_creating_files() {
         .unwrap();
     assert!(result.status.success(), "{result:?}");
     let output = String::from_utf8(result.stdout).unwrap();
-    assert!(output.contains("OK events: 2 rows, 2 active parts"), "{output}");
-    assert!(output.contains("Validation includes stored file hashes"), "{output}");
+    assert!(
+        output.contains("OK events: 2 rows, 2 active parts"),
+        "{output}"
+    );
+    assert!(
+        output.contains("Validation includes stored file hashes"),
+        "{output}"
+    );
     assert_eq!(fs::read_dir(&dir).unwrap().count(), before);
     fs::remove_dir_all(dir).unwrap();
 }
