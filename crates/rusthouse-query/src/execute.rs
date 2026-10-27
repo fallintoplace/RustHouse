@@ -849,12 +849,7 @@ fn execute_aggregate_numbers<W: Write>(
                     AggregateFunction::Sum => ((first + last) * u128::from(rows) / 2).to_string(),
                     AggregateFunction::Min => first.to_string(),
                     AggregateFunction::Max => last.to_string(),
-                    AggregateFunction::Avg
-                    | AggregateFunction::VarPop
-                    | AggregateFunction::StddevPop
-                    | AggregateFunction::VarSamp
-                    | AggregateFunction::StddevSamp
-                    | AggregateFunction::Median => unreachable!(),
+                    _ => unreachable!(),
                 }
             };
             writeln!(output, "{result}")?;
@@ -1165,6 +1160,19 @@ impl AggregateState {
                     // Welford's algorithm avoids subtracting large squared sums.
                     self.squared_deviations += difference * (numeric - self.mean);
                 }
+            }
+            AggregateFunction::GroupBitXor => {
+                let combined = match (self.value, value) {
+                    (None, value @ (Number::Unsigned(_) | Number::Signed(_))) => value,
+                    (Some(Number::Unsigned(a)), Number::Unsigned(b)) => Number::Unsigned(a ^ b),
+                    (Some(Number::Signed(a)), Number::Signed(b)) => Number::Signed(a ^ b),
+                    _ => {
+                        return Err(ExecutionError::Invalid(
+                            "groupBitXor requires integer values".into(),
+                        ));
+                    }
+                };
+                self.value = Some(combined);
             }
             AggregateFunction::Median => {
                 if self.median_values.len() >= MAX_MEDIAN_ROWS {
