@@ -102,9 +102,17 @@ fn is_saturating(name: &str) -> bool {
 fn parse_saturating(parser: &mut Parser, depth: usize, name: &str) -> Result<i64, ParseError> {
     require_token(parser, Token::LParen, "saturating arithmetic requires '('")?;
     let left = expression(parser, depth + 1)?;
-    require_token(parser, Token::Comma, "saturating arithmetic requires two arguments")?;
+    require_token(
+        parser,
+        Token::Comma,
+        "saturating arithmetic requires two arguments",
+    )?;
     let right = expression(parser, depth + 1)?;
-    require_token(parser, Token::RParen, "expected ')' after saturating arguments")?;
+    require_token(
+        parser,
+        Token::RParen,
+        "expected ')' after saturating arguments",
+    )?;
     Ok(match name.to_ascii_uppercase().as_str() {
         "SATURATING_ADD" => left.saturating_add(right),
         "SATURATING_SUB" => left.saturating_sub(right),
