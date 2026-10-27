@@ -9,7 +9,6 @@ pub(super) fn is_function(name: &str) -> bool {
         "LENGTH"
             | "CHAR_LENGTH"
             | "BTRIM"
-            | "BASE64_DECODE"
             | "LOWER"
             | "UPPER"
             | "REVERSE"
@@ -26,6 +25,7 @@ pub(super) fn is_function(name: &str) -> bool {
             | "RIGHT"
             | "ENDS_WITH"
             | "REPEAT"
+            | "BASE64_DECODE"
             | "RPAD"
     )
 }
@@ -435,33 +435,6 @@ fn parse_at_depth(parser: &mut Parser, depth: usize) -> Result<ConstantValue, Pa
                 _ => ConstantValue::Null,
             }
         }
-        "REPEAT" => {
-            let input = text_arg(parser, depth + 1)?;
-            require(parser, Token::Comma, "REPEAT requires a count")?;
-            let count = integer_arg(parser, depth + 1)?;
-            require(parser, Token::RParen, "expected ')' after REPEAT arguments")?;
-            match (input, count) {
-                (Some(value), Some(count)) => {
-                    if count < 0 {
-                        return Err(ParseError("REPEAT count must be nonnegative".into()));
-                    }
-                    if value.is_empty() {
-                        ConstantValue::Text(String::new())
-                    } else {
-                        let count = usize::try_from(count).unwrap_or(usize::MAX);
-                        let length = value
-                            .len()
-                            .checked_mul(count)
-                            .ok_or_else(|| ParseError("REPEAT result is too large".into()))?;
-                        if length > MAX_TEXT_BYTES {
-                            return Err(ParseError("REPEAT result is too large".into()));
-                        }
-                        ConstantValue::Text(value.repeat(count))
-                    }
-                }
-                _ => ConstantValue::Null,
-            }
-        }
         "BASE64_DECODE" => {
             let input = text_arg(parser, depth + 1)?;
             require(parser, Token::RParen, "BASE64_DECODE requires one argument")?;
@@ -525,6 +498,33 @@ fn parse_at_depth(parser: &mut Parser, depth: usize) -> Result<ConstantValue, Pa
                     )
                 }
                 None => ConstantValue::Null,
+            }
+        }
+        "REPEAT" => {
+            let input = text_arg(parser, depth + 1)?;
+            require(parser, Token::Comma, "REPEAT requires a count")?;
+            let count = integer_arg(parser, depth + 1)?;
+            require(parser, Token::RParen, "expected ')' after REPEAT arguments")?;
+            match (input, count) {
+                (Some(value), Some(count)) => {
+                    if count < 0 {
+                        return Err(ParseError("REPEAT count must be nonnegative".into()));
+                    }
+                    if value.is_empty() {
+                        ConstantValue::Text(String::new())
+                    } else {
+                        let count = usize::try_from(count).unwrap_or(usize::MAX);
+                        let length = value
+                            .len()
+                            .checked_mul(count)
+                            .ok_or_else(|| ParseError("REPEAT result is too large".into()))?;
+                        if length > MAX_TEXT_BYTES {
+                            return Err(ParseError("REPEAT result is too large".into()));
+                        }
+                        ConstantValue::Text(value.repeat(count))
+                    }
+                }
+                _ => ConstantValue::Null,
             }
         }
         _ => return Err(ParseError(format!("unsupported string function: {name}"))),
