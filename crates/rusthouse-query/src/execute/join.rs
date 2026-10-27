@@ -9,7 +9,6 @@ use std::path::Path;
 // Ordered and outer joins retain both inputs, bounded by row count and bytes.
 const MAX_INPUT_ROWS: u64 = 16_384;
 const MAX_RESULT_ROWS: usize = 65_536;
-const MAX_STREAM_LEFT_ROWS: u64 = 100_000;
 // Unordered INNER joins can build a larger hash side than sorted/outer joins.
 // Bound retained cells as well as row count to protect against wide String rows.
 const MAX_STREAM_BUILD_ROWS: u64 = 32_768;
@@ -236,12 +235,8 @@ fn execute_streaming_inner<W: Write>(
         left_keys,
         right_keys,
     } = columns;
-    let left_meta = inspect_query_source(left_path)?;
-    if left_meta.rows > MAX_STREAM_LEFT_ROWS {
-        return Err(invalid(
-            "streaming INNER JOIN supports at most 100000 left rows",
-        ));
-    }
+    // The probe side is scanned in batches and never retained. Keep the
+    // hash-build and matched-output limits, not an artificial probe-row cap.
     let right_meta = inspect_query_source(right_path)?;
     let right_rows = read_rows(
         right_path,
