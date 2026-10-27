@@ -99,11 +99,12 @@ curl -X POST http://127.0.0.1:8123/distributed --data-binary 'SELECT id, name FR
 The coordinator executes an unordered, read-only table SELECT on each peer,
 then concatenates TSV rows in configured peer order with one shared header.
 It accepts column projections, `SELECT *`, and pushed-down WHERE clauses;
-rejects ORDER BY, LIMIT, OFFSET, DISTINCT, JOIN, and aggregates that require
-global semantics. Peers must expose the same table and column layout. It
+rejects ORDER BY, DISTINCT, JOIN, and aggregates that require
+global semantics. Global LIMIT/OFFSET is supported for unordered scans. Peers must expose the same table and column layout. It
 rejects a shard that reaches its advertised result cap, mismatched headers,
 non-200 responses, and coordinator row/byte overflows instead of returning
-partial data. This is a snapshot-by-peer scan, **not** an atomic cross-shard
+partial data. LIMIT/OFFSET is applied by the coordinator after validating full shard
+responses. Pagination does not bypass shard caps. This is a snapshot-by-peer scan, **not** an atomic cross-shard
 snapshot, automatic partitioning, replication, or remote machine networking.
 
 Distributed grouped counts are supported when all shards contain disjoint rows:
