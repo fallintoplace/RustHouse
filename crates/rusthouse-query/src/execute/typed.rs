@@ -364,6 +364,34 @@ fn matches_comparison(value: &Cell, target: &Cell, operator: Operator) -> bool {
     }
 }
 
+// Avoid cloning String bytes for ordinary equality/range comparisons.
+fn matches_comparison_at(
+    column: &TypedColumn,
+    row: usize,
+    target: &Cell,
+    operator: Operator,
+) -> bool {
+    let text = match column {
+        TypedColumn::Text(values) => values.get(row),
+        TypedColumn::NullableText { values, nulls } if nulls[row] == 0 => values.get(row),
+        TypedColumn::NullableText { .. } => return false,
+        _ => return matches_comparison(&cell(column, row), target, operator),
+    };
+    let (Some(text), Cell::Text(target)) = (text, target) else {
+        return false;
+    };
+    let order = text.cmp(target.as_slice());
+    match operator {
+        Operator::Eq => order.is_eq(),
+        Operator::Ne => order.is_ne(),
+        Operator::Lt => order.is_lt(),
+        Operator::Le => order.is_le(),
+        Operator::Gt => order.is_gt(),
+        Operator::Ge => order.is_ge(),
+        _ => false,
+    }
+}
+
 pub(super) fn passes(batch: &[TypedColumn], row: usize, branches: &[Vec<Condition>]) -> bool {
     branches.iter().any(|branch| {
         branch.iter().all(|condition| {
@@ -396,7 +424,7 @@ pub(super) fn passes(batch: &[TypedColumn], row: usize, branches: &[Vec<Conditio
                     })
                 }
                 Test::Compare(operator, target) => {
-                    matches_comparison(&cell(column, row), target, *operator)
+                    matches_comparison_at(column, row, target, *operator)
                 }
                 Test::In(targets, negated) => {
                     let value = cell(column, row);
@@ -907,6 +935,25 @@ mod like_tests {
         }]];
         assert!(passes(&batch, 0, &not_null));
         assert!(!passes(&batch, 1, &not_null));
+    }
+
+    #[test]
+    fn compares_text_columns_without_copying_values() {
+        use super::{Cell, matches_comparison_at};
+        use crate::Operator;
+
+        let mut encoded: &[u8] = b"\x03api\x02db";
+        let values = read_legacy_strings(&mut encoded, 2).unwrap();
+        let column = TypedColumn::NullableText {
+            values,
+            nulls: vec![0, 1],
+        };
+        let target = Cell::Text(b"api".to_vec());
+        assert!(matches_comparison_at(&column, 0, &target, Operator::Eq));
+        assert!(matches_comparison_at(&column, 0, &Cell::Text(b"app".to_vec()), Operator::Lt));
+        assert!(!matches_comparison_at(&column, 0, &target, Operator::Ne));
+        assert!(!matches_comparison_at(&column, 1, &target, Operator::Ne));
+        assert!(!matches_comparison_at(&column, 0, &Cell::Null, Operator::Eq));
     }
 
     #[test]
