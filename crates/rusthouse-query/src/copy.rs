@@ -32,8 +32,8 @@ fn parse_copy_columns(parser: &mut Parser) -> Result<Option<Vec<String>>, ParseE
     let mut columns = Vec::new();
     let mut seen = HashSet::new();
     loop {
-        if columns.len() >= 64 {
-            return Err(ParseError("COPY supports at most 64 columns".into()));
+        if columns.len() >= 128 {
+            return Err(ParseError("COPY supports at most 128 columns".into()));
         }
         let column = identifier(parser)?;
         if !seen.insert(column.clone()) {

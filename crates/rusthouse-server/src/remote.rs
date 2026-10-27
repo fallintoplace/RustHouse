@@ -1,11 +1,11 @@
-//! Bounded, loopback-only HTTP client for read-only RustHouse peers.
-//! This is not a general HTTP or authenticated network transport.
+//! Bounded HTTP client for explicitly configured RustHouse peers.
+//! Non-loopback transport is opt-in, plaintext, and unauthenticated.
 
 use crate::cluster::Peer;
 use crate::{MAX_HEADER_BYTES, MAX_QUERY_BYTES, MAX_RESPONSE_BYTES};
 use std::io::{Read, Write};
 use std::net::{SocketAddr, TcpStream};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 const CONNECT_TIMEOUT: Duration = Duration::from_millis(750);
 const IO_TIMEOUT: Duration = Duration::from_secs(3);
@@ -45,31 +45,63 @@ pub fn query(peer: Peer, sql: &str) -> Result<PeerResponse, String> {
     request(peer, "POST", "/", sql.as_bytes())
 }
 
-/// Never follows redirects, negotiates compression, or connects to non-loopback addresses.
+/// A deadline on the entire response, not on each individual read.
+/// A peer that trickles one byte per read must not keep a coordinator thread alive.
+fn read_with_deadline(stream: &mut TcpStream, timeout: Duration) -> Result<Vec<u8>, String> {
+    let started = Instant::now();
+    let max_wire = MAX_HEADER_BYTES + MAX_RESPONSE_BYTES + 1;
+    let mut raw = Vec::new();
+    let mut buffer = [0u8; 8192];
+    loop {
+        let remaining = timeout
+            .checked_sub(started.elapsed())
+            .filter(|duration| !duration.is_zero())
+            .ok_or("peer response deadline exceeded")?;
+        stream
+            .set_read_timeout(Some(remaining))
+            .map_err(|error| error.to_string())?;
+        let available = max_wire
+            .checked_sub(raw.len())
+            .ok_or("peer response exceeds wire limit")?;
+        if available == 0 {
+            return Err("peer response exceeds wire limit".into());
+        }
+        let capacity = available.min(buffer.len());
+        let size = stream.read(&mut buffer[..capacity]).map_err(|error| {
+            if matches!(
+                error.kind(),
+                std::io::ErrorKind::TimedOut | std::io::ErrorKind::WouldBlock
+            ) {
+                "peer response deadline exceeded".to_owned()
+            } else {
+                format!("cannot read peer response: {error}")
+            }
+        })?;
+        if size == 0 {
+            break;
+        }
+        raw.extend_from_slice(&buffer[..size]);
+    }
+    Ok(raw)
+}
+
+/// Never follows redirects, negotiates compression, or resolves hostnames.
 fn request(peer: Peer, method: &str, path: &str, body: &[u8]) -> Result<PeerResponse, String> {
     let address = SocketAddr::V4(peer.address());
     let mut stream = TcpStream::connect_timeout(&address, CONNECT_TIMEOUT)
         .map_err(|error| format!("cannot reach peer: {error}"))?;
     stream
-        .set_read_timeout(Some(IO_TIMEOUT))
-        .map_err(|error| error.to_string())?;
-    stream
         .set_write_timeout(Some(IO_TIMEOUT))
         .map_err(|error| error.to_string())?;
     write!(
         stream,
-        "{method} {path} HTTP/1.1\r\nHost: 127.0.0.1\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+        "{method} {path} HTTP/1.1\r\nHost: {}\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+        peer.address().ip(),
         body.len()
     )
     .map_err(|error| error.to_string())?;
     stream.write_all(body).map_err(|error| error.to_string())?;
-    // Include one extra byte so oversized replies cannot look like complete responses.
-    let max_wire = MAX_HEADER_BYTES + MAX_RESPONSE_BYTES + 1;
-    let mut raw = Vec::new();
-    stream
-        .take(max_wire as u64)
-        .read_to_end(&mut raw)
-        .map_err(|error| format!("cannot read peer response: {error}"))?;
+    let raw = read_with_deadline(&mut stream, IO_TIMEOUT)?;
     parse_response(&raw)
 }
 
@@ -190,6 +222,31 @@ mod tests {
         assert_eq!(result.status, 200);
         assert_eq!(result.body, b"1\n1\n");
         server.join().unwrap();
+    }
+
+    #[test]
+    fn peer_trickling_bytes_cannot_extend_total_read_deadline() {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let address = listener.local_addr().unwrap();
+        let writer = std::thread::spawn(move || {
+            let (mut stream, _) = listener.accept().unwrap();
+            for _ in 0..8 {
+                if stream.write_all(b"x").is_err() {
+                    break;
+                }
+                std::thread::sleep(Duration::from_millis(40));
+            }
+        });
+        let mut stream = TcpStream::connect(address).unwrap();
+        let begun = Instant::now();
+        let error = read_with_deadline(&mut stream, Duration::from_millis(115)).unwrap_err();
+        assert!(
+            error.contains("deadline") || error.contains("timed out"),
+            "{error}"
+        );
+        assert!(begun.elapsed() < Duration::from_millis(280));
+        drop(stream);
+        writer.join().unwrap();
     }
 
     #[test]

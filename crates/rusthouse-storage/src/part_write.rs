@@ -49,6 +49,8 @@ fn supported(kind: &str) -> bool {
     matches!(
         base,
         "String"
+            | "Date"
+            | "DateTime"
             | "UInt8"
             | "UInt16"
             | "UInt32"
@@ -91,6 +93,18 @@ fn push_cell(kind: &str, value: Option<&str>, output: &mut Vec<u8>) -> Result<bo
         "String" => {
             push_varuint(value.len() as u64, output);
             output.extend_from_slice(value.as_bytes());
+        }
+        "Date" => {
+            let days = crate::parse_date(value)
+                .or_else(|| value.parse::<u16>().ok())
+                .ok_or_else(|| invalid(format!("invalid Date value: {value}")))?;
+            output.extend_from_slice(&days.to_le_bytes());
+        }
+        "DateTime" => {
+            let seconds = crate::parse_datetime(value)
+                .or_else(|| value.parse::<u32>().ok())
+                .ok_or_else(|| invalid(format!("invalid DateTime value: {value}")))?;
+            output.extend_from_slice(&seconds.to_le_bytes());
         }
         "UInt8" => numeric!(u8),
         "UInt16" => numeric!(u16),
@@ -277,8 +291,8 @@ pub fn write_wide_part_with_compression(
     rows: &[Vec<Option<String>>],
     compression: PartCompression,
 ) -> Result<(), PartError> {
-    if columns.is_empty() || columns.len() > 64 {
-        return Err(invalid("part requires 1 to 64 columns"));
+    if columns.is_empty() || columns.len() > 128 {
+        return Err(invalid("part requires 1 to 128 columns"));
     }
     if rows.len() > MAX_PART_ROWS {
         return Err(invalid("a wide part supports at most 32768 rows"));
@@ -383,6 +397,34 @@ mod tests {
         ));
         fs::create_dir(&path).unwrap();
         path
+    }
+
+    #[test]
+    fn writes_105_columns_and_rejects_129() {
+        let root = std::env::temp_dir().join(format!(
+            "rusthouse-wide-columns-{}-{:?}",
+            std::process::id(),
+            std::thread::current().id()
+        ));
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(&root).unwrap();
+        let cols = (0..105)
+            .map(|i| Column {
+                name: format!("field{i}"),
+                data_type: "UInt64".to_owned(),
+            })
+            .collect::<Vec<_>>();
+        let values = vec![Some("3".to_owned()); 105];
+        write_wide_part(&root.join("wide"), &cols, &[values]).unwrap();
+        assert_eq!(crate::inspect_part(&root.join("wide")).unwrap().columns.len(), 105);
+        let too_wide = (0..129)
+            .map(|i| Column {
+                name: format!("field{i}"),
+                data_type: "UInt64".to_owned(),
+            })
+            .collect::<Vec<_>>();
+        assert!(write_wide_part(&root.join("too-wide"), &too_wide, &[]).is_err());
+        std::fs::remove_dir_all(root).unwrap();
     }
 
     #[test]

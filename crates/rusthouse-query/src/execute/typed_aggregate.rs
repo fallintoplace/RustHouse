@@ -1,7 +1,7 @@
 //! Numeric aggregates over typed wide parts, including text filters and nullable values.
 use super::typed::{self, Cell};
 use super::{AggregateState, ExecutionError};
-use crate::{Projection, Select};
+use crate::{AggregateFunction, Projection, Select};
 use rusthouse_storage::{TypedQueryReader, inspect_query_source};
 use std::collections::{HashMap, hash_map::Entry};
 use std::io::Write;
@@ -53,12 +53,12 @@ pub(super) fn execute_typed_aggregate<W: Write>(
         conditions.push(typed::compile(branch, &indices, &types)?);
     }
     let projected_index = indices[column];
-    let mut reader = TypedQueryReader::open(part, &names)?;
     let header = format!("{}({column})", function.name());
     writeln!(output, "{}", query.alias.as_deref().unwrap_or(&header))?;
     if query.limit == Some(0) {
         return Ok(());
     }
+    let mut reader = TypedQueryReader::open(part, &names)?;
 
     let mut state = AggregateState::new(*function);
     while let Some(batch) = reader.next_batch()? {
@@ -78,7 +78,19 @@ pub(super) fn execute_typed_aggregate<W: Write>(
         }
     }
     if query.offset.unwrap_or(0) == 0 {
-        writeln!(output, "{}", state.render())?;
+        let rendered = state.render();
+        let rendered = match (function, selected.data_type.as_str()) {
+            (AggregateFunction::Min | AggregateFunction::Max, "Date") => rendered
+                .parse::<u16>()
+                .map(rusthouse_storage::format_date)
+                .unwrap_or(rendered),
+            (AggregateFunction::Min | AggregateFunction::Max, "DateTime") => rendered
+                .parse::<u32>()
+                .map(rusthouse_storage::format_datetime)
+                .unwrap_or(rendered),
+            _ => rendered,
+        };
+        writeln!(output, "{rendered}")?;
     }
     Ok(())
 }
@@ -142,11 +154,11 @@ pub(super) fn execute_grouped_aggregate<W: Write>(
     }
     let group_index = indices[column];
     let value_index = indices[value_column];
-    let mut reader = TypedQueryReader::open(part, &names)?;
     writeln!(output, "{column}\t{}({value_column})", function.name())?;
     if query.limit == Some(0) {
         return Ok(());
     }
+    let mut reader = TypedQueryReader::open(part, &names)?;
 
     let mut by_key = HashMap::<typed::Key, usize>::new();
     let mut groups = Vec::<(Cell, AggregateState)>::new();
@@ -196,7 +208,13 @@ pub(super) fn execute_grouped_aggregate<W: Write>(
         .skip(query.offset.unwrap_or(0))
         .take(query.limit.unwrap_or(usize::MAX))
     {
-        typed::write_value(output, &key)?;
+        let group_type = metadata
+            .columns
+            .iter()
+            .find(|candidate| candidate.name == *column)
+            .map(|candidate| candidate.data_type.as_str())
+            .ok_or_else(|| ExecutionError::Invalid("unknown group column".into()))?;
+        typed::write_typed_value(output, &key, group_type)?;
         writeln!(output, "\t{}", state.render())?;
     }
     Ok(())

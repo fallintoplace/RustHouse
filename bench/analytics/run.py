@@ -1,0 +1,143 @@
+#!/usr/bin/env python3
+"""Run Analytics SQL against the RustHouse CLI or HTTP server."""
+import argparse
+import json
+import subprocess
+import sys
+import time
+import urllib.error
+import urllib.parse
+import urllib.request
+from pathlib import Path
+
+
+DEFAULT_QUERIES = Path(__file__).with_name("queries.sql")
+
+
+def load_queries(path):
+    lines = path.read_text(encoding="utf-8").splitlines()
+    return [line.strip().rstrip(";") for line in lines if line.strip() and not line.lstrip().startswith("--")]
+
+
+def select_indices(spec, count):
+    if not spec:
+        return list(range(count))
+    indices = set()
+    for fragment in spec.split(","):
+        pair = fragment.split("-", 1)
+        first = int(pair[0])
+        last = int(pair[1]) if len(pair) == 2 else first
+        if not (1 <= first <= last <= count):
+            raise ValueError("query numbers must be within 1..%d" % count)
+        indices.update(range(first - 1, last))
+    return sorted(indices)
+
+
+def execute_cli(binary, database, sql, timeout):
+    result = subprocess.run(
+        [str(binary), "sql", sql, "--database", str(database), "--format", "tsv-no-header"],
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        timeout=timeout,
+        check=False,
+    )
+    if result.returncode:
+        raise RuntimeError(
+            "exit %d: %s" % (result.returncode, result.stderr.decode("utf-8", "replace")[:2000])
+        )
+    return result.stdout
+
+
+def execute_http(endpoint, sql, timeout):
+    parsed = urllib.parse.urlsplit(endpoint)
+    if parsed.scheme not in ("http", "https") or not parsed.netloc:
+        raise ValueError("--url requires an HTTP(S) URL")
+    params = urllib.parse.parse_qsl(parsed.query, keep_blank_values=True)
+    params.append(("format", "tsv-no-header"))
+    target = urllib.parse.urlunsplit(
+        (parsed.scheme, parsed.netloc, parsed.path or "/", urllib.parse.urlencode(params), "")
+    )
+    request = urllib.request.Request(target, sql.encode("utf-8"), method="POST")
+    try:
+        with urllib.request.urlopen(request, timeout=timeout) as response:
+            return response.read()
+    except urllib.error.HTTPError as error:
+        raise RuntimeError("HTTP %d: %s" % (error.code, error.read(2000).decode("utf-8", "replace"))) from error
+
+
+def run_benchmark(queries, indices, runs, timeout, execute, reference_dir=None):
+    results = []
+    for index in indices:
+        sql = queries[index]
+        expected_path = None if reference_dir is None else reference_dir / ("q%02d.tsv" % (index + 1))
+        timings = []
+        status = "unverified" if expected_path is None else "passed"
+        failure = None
+        for _ in range(runs):
+            start = time.perf_counter_ns()
+            try:
+                output = execute(sql, timeout)
+            except (OSError, RuntimeError, subprocess.TimeoutExpired, urllib.error.URLError) as error:
+                status, failure = "error", str(error)[:2000]
+                break
+            elapsed = (time.perf_counter_ns() - start) / 1_000_000_000
+            timings.append(round(elapsed, 9))
+            if expected_path is not None:
+                if not expected_path.is_file():
+                    status, failure = "missing_reference", str(expected_path)
+                    break
+                if output != expected_path.read_bytes():
+                    status, failure = "mismatch", "query output differs from expected TSV"
+                    break
+        results.append({"query": index + 1, "status": status, "seconds": timings, "error": failure})
+    return results
+
+
+def main(argv=None):
+    parser = argparse.ArgumentParser(description=__doc__)
+    mode = parser.add_mutually_exclusive_group(required=True)
+    mode.add_argument("--binary", type=Path, help="Built RustHouse CLI binary")
+    mode.add_argument("--url", help="RustHouse HTTP server root URL")
+    parser.add_argument("--database", type=Path, help="Required with --binary")
+    parser.add_argument("--queries", type=Path, default=DEFAULT_QUERIES)
+    parser.add_argument("--only", help="Query numbers, e.g. 1,3-5")
+    parser.add_argument("--runs", type=int, default=3)
+    parser.add_argument("--timeout", type=float, default=600)
+    parser.add_argument("--reference-dir", type=Path, help="Exact q01.tsv ... q43.tsv expected outputs")
+    parser.add_argument("--output", type=Path, help="JSON result file")
+    args = parser.parse_args(argv)
+    if args.binary and not args.database:
+        parser.error("--database is required with --binary")
+    if args.runs < 1 or args.timeout <= 0:
+        parser.error("--runs and --timeout must be positive")
+    queries = load_queries(args.queries)
+    if args.queries.resolve() == DEFAULT_QUERIES.resolve() and len(queries) != 43:
+        parser.error("pinned workload must contain exactly 43 queries")
+    if not queries:
+        parser.error("query file is empty")
+    try:
+        indices = select_indices(args.only, len(queries))
+    except ValueError as error:
+        parser.error(str(error))
+    if args.binary:
+        execute = lambda sql, timeout: execute_cli(args.binary, args.database, sql, timeout)
+        engine = "rusthouse-cli"
+    else:
+        execute = lambda sql, timeout: execute_http(args.url, sql, timeout)
+        engine = "rusthouse-http"
+    results = run_benchmark(queries, indices, args.runs, args.timeout, execute, args.reference_dir)
+    report = {
+        "engine": engine,
+        "runs": args.runs,
+        "reference_checked": args.reference_dir is not None,
+        "results": results,
+    }
+    rendered = json.dumps(report, indent=2) + "\n"
+    if args.output:
+        args.output.write_text(rendered, encoding="utf-8")
+    sys.stdout.write(rendered)
+    return int(any(item["status"] not in ("passed", "unverified") for item in results))
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

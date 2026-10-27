@@ -1,5 +1,5 @@
 //! Experimental read-only scatter/gather SELECT against distinct local shards.
-//! Only unordered row projections are safe to concatenate without global planning.
+//! Unordered row projections and global pagination preserve configured peer order.
 
 use crate::cluster::{Cluster, Peer};
 use crate::remote;
@@ -15,7 +15,9 @@ enum MergeError {
     CoordinatorLimit,
     InvalidCount,
     InvalidGroupedCount,
+    InvalidGroupedSum,
     InvalidSum,
+    InvalidExtremum,
     CountOverflow,
     SumOverflow,
 }
@@ -28,8 +30,6 @@ fn is_safe_scan(select: &Select) -> bool {
         && select.order_by.is_none()
         && select.order_by_extra.is_empty()
         && select.having.is_none()
-        && select.limit.is_none()
-        && select.offset.is_none()
 }
 
 /// Counts can be summed across disjoint shards, but DISTINCT counts cannot.
@@ -53,6 +53,40 @@ fn is_safe_sum(select: &Select) -> bool {
         select.projection,
         Projection::Aggregate {
             function: AggregateFunction::Sum,
+            ..
+        }
+    ) && matches!(select.source, Some(Source::Table(_)))
+        && !select.distinct
+        && select.rename.is_none()
+        && select.order_by.is_none()
+        && select.order_by_extra.is_empty()
+        && select.having.is_none()
+        && select.limit.is_none()
+        && select.offset.is_none()
+}
+
+fn is_safe_count_if(select: &Select) -> bool {
+    matches!(
+        select.projection,
+        Projection::Aggregate {
+            function: AggregateFunction::CountIf,
+            ..
+        }
+    ) && matches!(select.source, Some(Source::Table(_)))
+        && !select.distinct
+        && select.rename.is_none()
+        && select.order_by.is_none()
+        && select.order_by_extra.is_empty()
+        && select.having.is_none()
+        && select.limit.is_none()
+        && select.offset.is_none()
+}
+
+fn is_safe_extremum(select: &Select) -> bool {
+    matches!(
+        select.projection,
+        Projection::Aggregate {
+            function: AggregateFunction::Min | AggregateFunction::Max,
             ..
         }
     ) && matches!(select.source, Some(Source::Table(_)))
@@ -99,6 +133,63 @@ fn is_safe_grouped_count(select: &Select) -> bool {
         && select.offset.is_none()
 }
 
+fn is_safe_grouped_sum(select: &Select) -> bool {
+    matches!(
+        select.projection,
+        Projection::GroupedAggregate {
+            function: AggregateFunction::Sum,
+            ..
+        }
+    ) && matches!(select.source, Some(Source::Table(_)))
+        && !select.distinct
+        && select.rename.is_none()
+        && select.order_by.is_none()
+        && select.order_by_extra.is_empty()
+        && select.having.is_none()
+        && select.limit.is_none()
+        && select.offset.is_none()
+}
+
+fn group_key_type(kind: &str) -> bool {
+    let base = kind
+        .strip_prefix("Nullable(")
+        .and_then(|inner| inner.strip_suffix(')'))
+        .unwrap_or(kind);
+    integer_type(kind) || matches!(base, "String" | "UUID")
+}
+
+/// Remove pagination before sending a scan to shards. Sending the original
+/// LIMIT/OFFSET would drop rows on each shard and produce incorrect results.
+/// Accept only a prefix that reparses to the exact unpaged query AST.
+fn unpaged_scan_sql(sql: &str, select: &Select) -> Option<String> {
+    if select.limit.is_none() && select.offset.is_none() {
+        return Some(sql.to_owned());
+    }
+    let mut expected = select.clone();
+    expected.limit = None;
+    expected.offset = None;
+    for (index, _) in sql.char_indices() {
+        let suffix = &sql[index..];
+        let keyword = ["LIMIT", "OFFSET"].iter().any(|keyword| {
+            suffix
+                .get(..keyword.len())
+                .is_some_and(|prefix| prefix.eq_ignore_ascii_case(keyword))
+                && suffix
+                    .as_bytes()
+                    .get(keyword.len())
+                    .is_some_and(u8::is_ascii_whitespace)
+        });
+        if !keyword || (index > 0 && !sql.as_bytes()[index - 1].is_ascii_whitespace()) {
+            continue;
+        }
+        let candidate = sql[..index].trim_end();
+        if parse_select(candidate).is_ok_and(|parsed| parsed == expected) {
+            return Some(candidate.to_owned());
+        }
+    }
+    None
+}
+
 fn shard_row_cap(peer: Peer) -> Result<usize, String> {
     let response = remote::capabilities(peer)?;
     if response.status != 200 || !response.content_type.starts_with("application/json") {
@@ -125,16 +216,16 @@ fn shard_row_cap(peer: Peer) -> Result<usize, String> {
     Ok(cap)
 }
 
-/// Validate the exact integer data type before adding partial sums.
+/// Fetch a column type for distributed aggregate validation.
 /// Simple ASCII identifiers cannot inject JSON or an HTTP request target.
-fn shard_integer_kind(peer: Peer, table: &str, column: &str) -> Result<String, String> {
+fn shard_column_kind(peer: Peer, table: &str, column: &str) -> Result<String, String> {
     let mut bytes = column.bytes();
     if !bytes
         .next()
         .is_some_and(|first| first.is_ascii_alphabetic() || first == b'_')
         || !bytes.all(|byte| byte.is_ascii_alphanumeric() || byte == b'_')
     {
-        return Err("distributed SUM requires a simple column identifier".into());
+        return Err("distributed aggregate requires a simple column identifier".into());
     }
     let response = remote::schema(peer, table)?;
     if response.status != 200 || !response.content_type.starts_with("application/json") {
@@ -145,25 +236,81 @@ fn shard_integer_kind(peer: Peer, table: &str, column: &str) -> Result<String, S
     let needle = format!("\"name\":\"{column}\",\"type\":\"");
     let (_, tail) = contents
         .split_once(needle.as_str())
-        .ok_or("SUM column missing from peer schema")?;
+        .ok_or("aggregate column missing from peer schema")?;
     let (kind, trailing) = tail
         .split_once('"')
         .ok_or("invalid peer schema column type")?;
-    if !trailing.starts_with('}') || !integer_type(kind) {
-        return Err("distributed SUM only supports exact integer columns".into());
+    if !trailing.starts_with('}') {
+        return Err("invalid peer schema column type".into());
     }
     Ok(kind.to_owned())
+}
+
+fn shard_integer_kind(peer: Peer, table: &str, column: &str) -> Result<String, String> {
+    let kind = shard_column_kind(peer, table, column)?;
+    if !integer_type(&kind) {
+        return Err("distributed SUM only supports exact integer columns".into());
+    }
+    Ok(kind)
+}
+
+/// Compare column names, types, and order, not row counts. Each shard
+/// independently reports its own row count and should differ on real clusters.
+fn schema_signature(response: &remote::PeerResponse) -> Result<Vec<u8>, String> {
+    if response.status != 200 || response.content_type != "application/json; charset=utf-8" {
+        return Err("peer schema request failed".into());
+    }
+    let body = std::str::from_utf8(&response.body).map_err(|_| "peer schema is not UTF-8")?;
+    let body = body
+        .strip_suffix("}\n")
+        .ok_or("invalid peer schema response")?;
+    let (rows, columns) = body
+        .split_once(",\"columns\":")
+        .ok_or("peer schema has no columns")?;
+    let count = rows
+        .strip_prefix("{\"rows\":")
+        .ok_or("peer schema has no row count")?;
+    if count.is_empty()
+        || !count.bytes().all(|b| b.is_ascii_digit())
+        || !columns.starts_with('[')
+        || !columns.ends_with(']')
+        || !columns.contains("\"name\":")
+        || !columns.contains("\"type\":")
+    {
+        return Err("invalid peer schema response".into());
+    }
+    Ok(columns.as_bytes().to_vec())
+}
+
+struct ShardResponse {
+    cap: usize,
+    body: Vec<u8>,
+    kind: Option<String>,
+    key_kind: Option<String>,
+    schema: Vec<u8>,
 }
 
 fn read_shard(
     peer: Peer,
     sql: &str,
     sum_schema: Option<(&str, &str)>,
-) -> Result<(usize, Vec<u8>, Option<String>), String> {
+    group_schema: Option<(&str, &str)>,
+    table: &str,
+) -> Result<ShardResponse, String> {
     let cap = shard_row_cap(peer)?;
     let kind = sum_schema
         .map(|(table, column)| shard_integer_kind(peer, table, column))
         .transpose()?;
+    let key_kind = group_schema
+        .map(|(table, column)| {
+            let kind = shard_column_kind(peer, table, column)?;
+            if !group_key_type(&kind) {
+                return Err("distributed GROUP BY SUM does not support this key type".to_owned());
+            }
+            Ok(kind)
+        })
+        .transpose()?;
+    let schema = schema_signature(&remote::schema(peer, table)?)?;
     let result = remote::query(peer, sql)?;
     if result.status != 200 {
         return Err(format!("peer returned HTTP {}", result.status));
@@ -171,7 +318,13 @@ fn read_shard(
     if result.content_type != "text/tab-separated-values; charset=utf-8" {
         return Err("peer did not return TSV".into());
     }
-    Ok((cap, result.body, kind))
+    Ok(ShardResponse {
+        cap,
+        body: result.body,
+        kind,
+        key_kind,
+        schema,
+    })
 }
 
 /// Merge only identical TSV headers and whole, newline-terminated rows.
@@ -229,6 +382,72 @@ fn merge_tsv(shards: &[(usize, Vec<u8>)], max_rows: usize) -> Result<Vec<u8>, Me
     let mut output = Vec::with_capacity(total_bytes);
     for bytes in chunks {
         output.extend_from_slice(bytes);
+    }
+    Ok(output)
+}
+
+/// Apply LIMIT/OFFSET only after validating every shard's full result and
+/// advertised cap. Rows are paged in stable configured-peer order.
+fn merge_tsv_page(
+    shards: &[(usize, Vec<u8>)],
+    max_rows: usize,
+    offset: usize,
+    limit: Option<usize>,
+) -> Result<Vec<u8>, MergeError> {
+    let mut output = Vec::new();
+    let mut header: Option<&[u8]> = None;
+    let mut seen_rows = 0usize;
+    let mut returned_rows = 0usize;
+    for (cap, body) in shards {
+        if !body.ends_with(b"\n") {
+            return Err(MergeError::InvalidResponse);
+        }
+        let header_end = body
+            .iter()
+            .position(|&b| b == b'\n')
+            .ok_or(MergeError::InvalidResponse)?;
+        let shard_header = &body[..=header_end];
+        if shard_header.len() <= 1 {
+            return Err(MergeError::InvalidResponse);
+        }
+        if let Some(expected) = header {
+            if expected != shard_header {
+                return Err(MergeError::SchemaMismatch);
+            }
+        } else {
+            header = Some(shard_header);
+            output.extend_from_slice(shard_header);
+        }
+        let rows = &body[header_end + 1..];
+        let shard_rows = rows.iter().filter(|&&b| b == b'\n').count();
+        if *cap == 0 || shard_rows >= *cap {
+            return Err(MergeError::ShardRowLimit);
+        }
+        for row in rows.split_inclusive(|&b| b == b'\n') {
+            if row.is_empty() {
+                continue;
+            }
+            let in_page = seen_rows >= offset && limit.is_none_or(|limit| returned_rows < limit);
+            seen_rows = seen_rows
+                .checked_add(1)
+                .ok_or(MergeError::CoordinatorLimit)?;
+            if !in_page {
+                continue;
+            }
+            if returned_rows >= max_rows
+                || output
+                    .len()
+                    .checked_add(row.len())
+                    .is_none_or(|n| n > MAX_RESPONSE_BYTES)
+            {
+                return Err(MergeError::CoordinatorLimit);
+            }
+            output.extend_from_slice(row);
+            returned_rows += 1;
+        }
+    }
+    if header.is_none() {
+        return Err(MergeError::InvalidResponse);
     }
     Ok(output)
 }
@@ -336,6 +555,191 @@ fn merge_integer_sums(shards: &[(usize, Vec<u8>)], kind: &str) -> Result<Vec<u8>
     let mut output = header.to_vec();
     output.extend_from_slice(result.as_bytes());
     output.push(b'\n');
+    Ok(output)
+}
+
+fn merge_integer_extrema(
+    shards: &[(usize, Vec<u8>)],
+    kind: &str,
+    function: AggregateFunction,
+) -> Result<Vec<u8>, MergeError> {
+    if !matches!(function, AggregateFunction::Min | AggregateFunction::Max) {
+        return Err(MergeError::InvalidExtremum);
+    }
+    let unsigned = kind
+        .strip_prefix("Nullable(")
+        .unwrap_or(kind)
+        .starts_with("UInt");
+    let mut expected_header: Option<&[u8]> = None;
+    let mut signed: Option<i128> = None;
+    let mut unsigned_value: Option<u128> = None;
+    for (_, body) in shards {
+        if !body.ends_with(b"\n") {
+            return Err(MergeError::InvalidExtremum);
+        }
+        let end = body
+            .iter()
+            .position(|&byte| byte == b'\n')
+            .ok_or(MergeError::InvalidExtremum)?;
+        let header = &body[..=end];
+        if header.len() <= 1 || body.len() <= end + 1 {
+            return Err(MergeError::InvalidExtremum);
+        }
+        if let Some(expected) = expected_header {
+            if expected != header {
+                return Err(MergeError::SchemaMismatch);
+            }
+        } else {
+            expected_header = Some(header);
+        }
+        let value = &body[end + 1..body.len() - 1];
+        if value == b"NULL" {
+            continue;
+        }
+        let number = std::str::from_utf8(value).map_err(|_| MergeError::InvalidExtremum)?;
+        if unsigned {
+            let parsed = number
+                .parse::<u128>()
+                .map_err(|_| MergeError::InvalidExtremum)?;
+            unsigned_value = Some(unsigned_value.map_or(parsed, |prior| match function {
+                AggregateFunction::Min => prior.min(parsed),
+                AggregateFunction::Max => prior.max(parsed),
+                _ => unreachable!(),
+            }));
+        } else {
+            let parsed = number
+                .parse::<i128>()
+                .map_err(|_| MergeError::InvalidExtremum)?;
+            signed = Some(signed.map_or(parsed, |prior| match function {
+                AggregateFunction::Min => prior.min(parsed),
+                AggregateFunction::Max => prior.max(parsed),
+                _ => unreachable!(),
+            }));
+        }
+    }
+    let header = expected_header.ok_or(MergeError::InvalidExtremum)?;
+    let rendered = if unsigned {
+        unsigned_value.map(|number| number.to_string())
+    } else {
+        signed.map(|number| number.to_string())
+    }
+    .unwrap_or_else(|| "NULL".to_owned());
+    let mut output = header.to_vec();
+    output.extend_from_slice(rendered.as_bytes());
+    output.push(b'\n');
+    Ok(output)
+}
+
+fn merge_grouped_integer_sums(
+    shards: &[(usize, Vec<u8>)],
+    max_rows: usize,
+    kind: &str,
+    key_column: &str,
+    value_column: &str,
+) -> Result<Vec<u8>, MergeError> {
+    let header = format!("{key_column}\tsum({value_column})\n");
+    let unsigned = kind
+        .strip_prefix("Nullable(")
+        .unwrap_or(kind)
+        .starts_with("UInt");
+    let mut positions = HashMap::<Vec<u8>, usize>::new();
+    let mut groups = Vec::<(Vec<u8>, Option<i128>, Option<u128>)>::new();
+    for (cap, body) in shards {
+        if *cap == 0 || !body.ends_with(b"\n") {
+            return Err(MergeError::InvalidGroupedSum);
+        }
+        let header_end = body
+            .iter()
+            .position(|&byte| byte == b'\n')
+            .ok_or(MergeError::InvalidGroupedSum)?;
+        if &body[..=header_end] != header.as_bytes() {
+            return Err(MergeError::SchemaMismatch);
+        }
+        let rows = &body[header_end + 1..];
+        if rows.is_empty() {
+            continue;
+        }
+        let mut shard_rows = 0usize;
+        for row in rows[..rows.len() - 1].split(|&byte| byte == b'\n') {
+            if row.is_empty() {
+                return Err(MergeError::InvalidGroupedSum);
+            }
+            shard_rows = shard_rows
+                .checked_add(1)
+                .ok_or(MergeError::CoordinatorLimit)?;
+            if shard_rows >= *cap {
+                return Err(MergeError::ShardRowLimit);
+            }
+            let delimiter = row
+                .iter()
+                .position(|&byte| byte == b'\t')
+                .ok_or(MergeError::InvalidGroupedSum)?;
+            let key = &row[..delimiter];
+            let value = &row[delimiter + 1..];
+            let partial = if value == b"NULL" {
+                None
+            } else {
+                Some(std::str::from_utf8(value).map_err(|_| MergeError::InvalidGroupedSum)?)
+            };
+            let index = if let Some(&index) = positions.get(key) {
+                index
+            } else {
+                if groups.len() >= max_rows {
+                    return Err(MergeError::CoordinatorLimit);
+                }
+                let index = groups.len();
+                positions.insert(key.to_vec(), index);
+                groups.push((key.to_vec(), None, None));
+                index
+            };
+            if let Some(number) = partial {
+                if unsigned {
+                    let number = number
+                        .parse::<u128>()
+                        .map_err(|_| MergeError::InvalidGroupedSum)?;
+                    groups[index].2 = Some(
+                        groups[index]
+                            .2
+                            .unwrap_or(0)
+                            .checked_add(number)
+                            .ok_or(MergeError::SumOverflow)?,
+                    );
+                } else {
+                    let number = number
+                        .parse::<i128>()
+                        .map_err(|_| MergeError::InvalidGroupedSum)?;
+                    groups[index].1 = Some(
+                        groups[index]
+                            .1
+                            .unwrap_or(0)
+                            .checked_add(number)
+                            .ok_or(MergeError::SumOverflow)?,
+                    );
+                }
+            }
+        }
+    }
+    let mut output = Vec::with_capacity(header.len());
+    output.extend_from_slice(header.as_bytes());
+    for (key, signed, unsigned_value) in groups {
+        let rendered = if unsigned {
+            unsigned_value.map(|value| value.to_string())
+        } else {
+            signed.map(|value| value.to_string())
+        }
+        .unwrap_or_else(|| "NULL".to_owned());
+        if output
+            .len()
+            .checked_add(key.len() + rendered.len() + 2)
+            .is_none_or(|length| length > MAX_RESPONSE_BYTES)
+        {
+            return Err(MergeError::CoordinatorLimit);
+        }
+        output.extend_from_slice(&key);
+        output.push(b'\t');
+        output.extend_from_slice(rendered.as_bytes());
+        output.push(b'\n');
+    }
     Ok(output)
 }
 
@@ -453,27 +857,67 @@ pub fn handle(method: &str, body: &[u8], cluster: &Cluster, max_rows: usize) -> 
         Ok(select)
             if is_safe_scan(&select)
                 || is_safe_count(&select)
+                || is_safe_count_if(&select)
                 || is_safe_grouped_count(&select)
-                || is_safe_sum(&select) =>
+                || is_safe_grouped_sum(&select)
+                || is_safe_sum(&select)
+                || is_safe_extremum(&select) =>
         {
             select
         }
         _ => {
             return Response::text(
                 "400 Bad Request",
-                "distributed queries require unordered SELECT, COUNT, integer SUM, or grouped COUNT without global clauses\n",
+                "distributed queries require unordered SELECT, COUNT, COUNTIF, integer SUM, MIN, MAX, grouped COUNT, or grouped integer SUM without global clauses\n",
             );
         }
     };
-    let count_query = is_safe_count(&select);
+    let count_query = is_safe_count(&select) || is_safe_count_if(&select);
     let grouped_count_query = is_safe_grouped_count(&select);
+    let grouped_sum_query = is_safe_grouped_sum(&select);
     let sum_query = is_safe_sum(&select);
+    let shard_sql = if is_safe_scan(&select) {
+        match unpaged_scan_sql(sql, &select) {
+            Some(query) => query,
+            None => {
+                return Response::text("400 Bad Request", "unsupported distributed pagination\n");
+            }
+        }
+    } else {
+        sql.to_owned()
+    };
+    let extrema_function = match &select.projection {
+        Projection::Aggregate {
+            function: function @ (AggregateFunction::Min | AggregateFunction::Max),
+            ..
+        } => Some(*function),
+        _ => None,
+    };
     let sum_schema = match (&select.source, &select.projection) {
         (
             Some(Source::Table(table)),
             Projection::Aggregate {
+                function: AggregateFunction::Sum | AggregateFunction::Min | AggregateFunction::Max,
+                column,
+            },
+        ) => Some((table.as_str(), column.as_str())),
+        (
+            Some(Source::Table(table)),
+            Projection::GroupedAggregate {
+                function: AggregateFunction::Sum,
+                value_column,
+                ..
+            },
+        ) => Some((table.as_str(), value_column.as_str())),
+        _ => None,
+    };
+    let group_schema = match (&select.source, &select.projection) {
+        (
+            Some(Source::Table(table)),
+            Projection::GroupedAggregate {
                 function: AggregateFunction::Sum,
                 column,
+                ..
             },
         ) => Some((table.as_str(), column.as_str())),
         _ => None,
@@ -485,11 +929,18 @@ pub fn handle(method: &str, body: &[u8], cluster: &Cluster, max_rows: usize) -> 
             "no distributed database peers configured\n",
         );
     }
+    let table = match &select.source {
+        Some(Source::Table(table)) => table.as_str(),
+        _ => unreachable!("validated named table"),
+    };
     let results = std::thread::scope(|scope| {
+        let shard_query = shard_sql.as_str();
         let handles = cluster
             .peers()
             .iter()
-            .map(|&peer| scope.spawn(move || read_shard(peer, sql, sum_schema)))
+            .map(|&peer| {
+                scope.spawn(move || read_shard(peer, shard_query, sum_schema, group_schema, table))
+            })
             .collect::<Vec<_>>();
         handles
             .into_iter()
@@ -502,9 +953,26 @@ pub fn handle(method: &str, body: &[u8], cluster: &Cluster, max_rows: usize) -> 
     });
     let mut shards = Vec::with_capacity(results.len());
     let mut sum_type: Option<String> = None;
+    let mut group_key_kind: Option<String> = None;
+    let mut expected_schema: Option<Vec<u8>> = None;
     for result in results {
         match result {
-            Ok((cap, body, kind)) => {
+            Ok(ShardResponse {
+                cap,
+                body,
+                kind,
+                key_kind,
+                schema,
+            }) => {
+                if expected_schema
+                    .as_ref()
+                    .is_some_and(|expected| expected != &schema)
+                {
+                    return Response::text("409 Conflict", "distributed shard schemas disagree\n");
+                }
+                if expected_schema.is_none() {
+                    expected_schema = Some(schema);
+                }
                 if let Some(kind) = kind {
                     if sum_type
                         .as_deref()
@@ -512,10 +980,22 @@ pub fn handle(method: &str, body: &[u8], cluster: &Cluster, max_rows: usize) -> 
                     {
                         return Response::text(
                             "409 Conflict",
-                            "distributed SUM shard column types disagree\n",
+                            "distributed integer aggregate shard column types disagree\n",
                         );
                     }
                     sum_type = Some(kind);
+                }
+                if let Some(key_kind) = key_kind {
+                    if group_key_kind
+                        .as_deref()
+                        .is_some_and(|existing| existing != key_kind.as_str())
+                    {
+                        return Response::text(
+                            "409 Conflict",
+                            "distributed GROUP BY key types disagree\n",
+                        );
+                    }
+                    group_key_kind = Some(key_kind);
                 }
                 shards.push((cap, body));
             }
@@ -532,8 +1012,28 @@ pub fn handle(method: &str, body: &[u8], cluster: &Cluster, max_rows: usize) -> 
             .map_or(Err(MergeError::InvalidSum), |kind| {
                 merge_integer_sums(&shards, kind)
             })
+    } else if let Some(function) = extrema_function {
+        sum_type
+            .as_deref()
+            .map_or(Err(MergeError::InvalidExtremum), |kind| {
+                merge_integer_extrema(&shards, kind, function)
+            })
+    } else if grouped_sum_query {
+        match (sum_type.as_deref(), group_schema, sum_schema) {
+            (Some(kind), Some((_, key)), Some((_, value))) => {
+                merge_grouped_integer_sums(&shards, max_rows.min(100_000), kind, key, value)
+            }
+            _ => Err(MergeError::InvalidGroupedSum),
+        }
     } else if grouped_count_query {
         merge_grouped_counts(&shards, max_rows.min(100_000))
+    } else if select.limit.is_some() || select.offset.is_some() {
+        merge_tsv_page(
+            &shards,
+            max_rows.min(100_000),
+            select.offset.unwrap_or(0),
+            select.limit,
+        )
     } else {
         merge_tsv(&shards, max_rows.min(100_000))
     };
@@ -563,8 +1063,14 @@ pub fn handle(method: &str, body: &[u8], cluster: &Cluster, max_rows: usize) -> 
         Err(MergeError::InvalidGroupedCount) => {
             Response::text("502 Bad Gateway", "malformed shard GROUP BY response\n")
         }
+        Err(MergeError::InvalidGroupedSum) => {
+            Response::text("502 Bad Gateway", "malformed shard grouped SUM response\n")
+        }
         Err(MergeError::InvalidSum) => {
             Response::text("502 Bad Gateway", "malformed shard SUM response\n")
+        }
+        Err(MergeError::InvalidExtremum) => {
+            Response::text("502 Bad Gateway", "malformed shard MIN/MAX response\n")
         }
         Err(MergeError::SumOverflow) => {
             Response::text("413 Payload Too Large", "distributed SUM overflow\n")
@@ -597,6 +1103,48 @@ mod tests {
     }
 
     #[test]
+    fn applies_global_limit_and_offset_in_peer_order() {
+        let shards = [shard(8, "id\n1\n2\n3\n"), shard(8, "id\n4\n5\n")];
+        assert_eq!(
+            merge_tsv_page(&shards, 2, 2, Some(2)).unwrap(),
+            b"id\n3\n4\n"
+        );
+        assert_eq!(merge_tsv_page(&shards, 2, 3, None).unwrap(), b"id\n4\n5\n");
+        assert_eq!(merge_tsv_page(&shards, 2, 0, Some(0)).unwrap(), b"id\n");
+        assert_eq!(merge_tsv_page(&shards, 2, 999, Some(2)).unwrap(), b"id\n");
+        assert_eq!(
+            merge_tsv_page(&shards, 1, 0, Some(2)),
+            Err(MergeError::CoordinatorLimit)
+        );
+        assert_eq!(
+            merge_tsv_page(&[shard(2, "id\n1\n2\n")], 10, 0, Some(1)),
+            Err(MergeError::ShardRowLimit)
+        );
+    }
+
+    #[test]
+    fn strips_only_validated_global_pagination_from_shard_sql() {
+        for sql in [
+            "SELECT id FROM events LIMIT 2",
+            "SELECT id FROM events LIMIT 2 OFFSET 3",
+        ] {
+            let parsed = parse_select(sql).unwrap();
+            assert!(is_safe_scan(&parsed), "{sql}");
+            assert_eq!(
+                unpaged_scan_sql(sql, &parsed),
+                Some("SELECT id FROM events".to_string()),
+                "{sql}"
+            );
+        }
+        let sql = "SELECT name FROM events WHERE name = 'LIMIT 2' LIMIT 1";
+        let parsed = parse_select(sql).unwrap();
+        assert_eq!(
+            unpaged_scan_sql(sql, &parsed),
+            Some("SELECT name FROM events WHERE name = 'LIMIT 2'".into())
+        );
+    }
+
+    #[test]
     fn refuses_incomplete_or_incompatible_shard_outputs() {
         assert_eq!(
             merge_tsv(&[shard(10, "id\n1\n"), shard(10, "name\n2\n")], 5),
@@ -621,10 +1169,8 @@ mod tests {
         for sql in [
             "SELECT count(*) FROM events",
             "SELECT id FROM events ORDER BY id",
-            "SELECT id FROM events LIMIT 10",
             "SELECT DISTINCT id FROM events",
             "SELECT number FROM numbers(10)",
-            "SELECT id FROM events OFFSET 1",
         ] {
             assert!(
                 parse_select(sql).map_or(true, |select| !is_safe_scan(&select)),
@@ -634,6 +1180,30 @@ mod tests {
         assert!(is_safe_scan(
             &parse_select("SELECT id FROM events WHERE id > 2").unwrap()
         ));
+    }
+
+    #[test]
+    fn compares_shard_column_types_independently_of_row_counts() {
+        let response = |body: &'static [u8]| remote::PeerResponse {
+            status: 200,
+            content_type: "application/json; charset=utf-8".into(),
+            body: body.to_vec(),
+        };
+        let a = schema_signature(&response(
+            b"{\"rows\":4,\"columns\":[{\"name\":\"id\",\"type\":\"UInt64\"}]}\n",
+        ))
+        .unwrap();
+        let b = schema_signature(&response(
+            b"{\"rows\":900,\"columns\":[{\"name\":\"id\",\"type\":\"UInt64\"}]}\n",
+        ))
+        .unwrap();
+        let different = schema_signature(&response(
+            b"{\"rows\":4,\"columns\":[{\"name\":\"id\",\"type\":\"String\"}]}\n",
+        ))
+        .unwrap();
+        assert_eq!(a, b);
+        assert_ne!(a, different);
+        assert!(schema_signature(&response(b"bad")).is_err());
     }
 
     #[test]
@@ -655,6 +1225,40 @@ mod tests {
             ])
             .unwrap(),
             b"count\n320\n"
+        );
+    }
+
+    #[test]
+    fn reduces_count_if_for_disjoint_shards() {
+        assert!(is_safe_count_if(
+            &parse_select("SELECT countIf(flag) FROM events WHERE id > 0").unwrap()
+        ));
+        for sql in [
+            "SELECT countIf(flag) FROM events LIMIT 1",
+            "SELECT countIf(flag) FROM numbers(10)",
+            "SELECT countIf(flag) FROM events OFFSET 1",
+            "SELECT sum(flag) FROM events",
+        ] {
+            assert!(
+                parse_select(sql).map_or(true, |query| !is_safe_count_if(&query)),
+                "{sql}"
+            );
+        }
+        assert_eq!(
+            sum_shard_counts(&[
+                shard(1, "countIf(flag)\n2\n"),
+                shard(1, "countIf(flag)\n0\n"),
+                shard(1, "countIf(flag)\n3\n"),
+            ])
+            .unwrap(),
+            b"countIf(flag)\n5\n"
+        );
+        assert_eq!(
+            sum_shard_counts(&[
+                shard(1, "countIf(flag)\n1\n"),
+                shard(1, "countIf(other)\n2\n"),
+            ]),
+            Err(MergeError::SchemaMismatch)
         );
     }
 
@@ -755,6 +1359,210 @@ mod tests {
                 10
             ),
             Err(MergeError::CountOverflow)
+        );
+    }
+
+    #[test]
+    fn allows_distributed_integer_min_and_max_only_without_global_clauses() {
+        for sql in [
+            "SELECT min(amount) FROM events WHERE id > 3",
+            "SELECT max(amount) FROM events",
+        ] {
+            assert!(is_safe_extremum(&parse_select(sql).unwrap()), "{sql}");
+        }
+        for sql in [
+            "SELECT max(amount) FROM events LIMIT 1",
+            "SELECT min(amount) FROM numbers(10)",
+            "SELECT min(amount) FROM events OFFSET 1",
+            "SELECT avg(amount) FROM events",
+        ] {
+            assert!(
+                parse_select(sql).map_or(true, |query| !is_safe_extremum(&query)),
+                "{sql}"
+            );
+        }
+    }
+
+    #[test]
+    fn reduces_signed_and_unsigned_extrema_with_null_shards() {
+        let shards = [
+            shard(10, "min(amount)\nNULL\n"),
+            shard(10, "min(amount)\n-9\n"),
+            shard(10, "min(amount)\n13\n"),
+        ];
+        assert_eq!(
+            merge_integer_extrema(&shards, "Nullable(Int64)", AggregateFunction::Min).unwrap(),
+            b"min(amount)\n-9\n"
+        );
+        let shards = [
+            shard(10, "max(amount)\n18446744073709551615\n"),
+            shard(10, "max(amount)\n2\n"),
+        ];
+        assert_eq!(
+            merge_integer_extrema(&shards, "UInt64", AggregateFunction::Max).unwrap(),
+            b"max(amount)\n18446744073709551615\n"
+        );
+        assert_eq!(
+            merge_integer_extrema(
+                &[shard(10, "min(amount)\nNULL\n")],
+                "Int64",
+                AggregateFunction::Min,
+            )
+            .unwrap(),
+            b"min(amount)\nNULL\n"
+        );
+    }
+
+    #[test]
+    fn rejects_incompatible_or_malformed_extrema() {
+        for bad in [
+            "min(amount)\n",
+            "min(amount)\n2.5\n",
+            "min(amount)\n2\n3\n",
+            "min(amount)\n2",
+        ] {
+            assert_eq!(
+                merge_integer_extrema(&[shard(10, bad)], "Int64", AggregateFunction::Min),
+                Err(MergeError::InvalidExtremum),
+            );
+        }
+        assert_eq!(
+            merge_integer_extrema(
+                &[shard(10, "min(amount)\n1\n"), shard(10, "min(other)\n2\n"),],
+                "Int64",
+                AggregateFunction::Min,
+            ),
+            Err(MergeError::SchemaMismatch)
+        );
+        assert_eq!(
+            merge_integer_extrema(
+                &[shard(10, "max(amount)\n-1\n")],
+                "UInt64",
+                AggregateFunction::Max,
+            ),
+            Err(MergeError::InvalidExtremum)
+        );
+    }
+
+    #[test]
+    fn accepts_grouped_integer_sum_without_global_clauses() {
+        assert!(is_safe_grouped_sum(
+            &parse_select("SELECT region, sum(amount) FROM events WHERE id > 0 GROUP BY region")
+                .unwrap()
+        ));
+        for sql in [
+            "SELECT region, sum(amount) FROM events GROUP BY region LIMIT 1",
+            "SELECT region, avg(amount) FROM events GROUP BY region",
+            "SELECT region, sum(amount) FROM numbers(10) GROUP BY region",
+            "SELECT region, sum(amount) FROM events GROUP BY region ORDER BY region",
+        ] {
+            assert!(
+                parse_select(sql).map_or(true, |query| !is_safe_grouped_sum(&query)),
+                "{sql}"
+            );
+        }
+        assert!(group_key_type("String"));
+        assert!(group_key_type("Nullable(UUID)"));
+        assert!(group_key_type("UInt64"));
+        assert!(!group_key_type("Float64"));
+    }
+
+    #[test]
+    fn merges_grouped_sum_with_overlapping_keys_and_null_values() {
+        let shards = [
+            shard(10, "region\tsum(amount)\nnorth\t15\nsouth\tNULL\n"),
+            shard(10, "region\tsum(amount)\nnorth\t-7\nsouth\t5\n"),
+            shard(10, "region\tsum(amount)\nnorth\tNULL\neast\t9\n"),
+        ];
+        assert_eq!(
+            merge_grouped_integer_sums(&shards, 3, "Nullable(Int64)", "region", "amount").unwrap(),
+            b"region\tsum(amount)\nnorth\t8\nsouth\t5\neast\t9\n"
+        );
+        assert_eq!(
+            merge_grouped_integer_sums(
+                &[shard(10, "id\tsum(amount)\n1\tNULL\n")],
+                1,
+                "UInt64",
+                "id",
+                "amount"
+            )
+            .unwrap(),
+            b"id\tsum(amount)\n1\tNULL\n"
+        );
+        assert_eq!(
+            merge_grouped_integer_sums(
+                &[
+                    shard(10, "id\tsum(amount)\n1\t18446744073709551615\n"),
+                    shard(10, "id\tsum(amount)\n1\t2\n")
+                ],
+                1,
+                "UInt64",
+                "id",
+                "amount"
+            )
+            .unwrap(),
+            b"id\tsum(amount)\n1\t18446744073709551617\n"
+        );
+    }
+
+    #[test]
+    fn rejects_malformed_capped_incompatible_or_overflowing_grouped_sums() {
+        for bad in [
+            "region\tsum(amount)\na\t1\t2\n",
+            "region\tsum(amount)\na\t1.1\n",
+            "region\tsum(amount)\na\t1",
+            "region\tsum(amount)\na\t\n",
+        ] {
+            assert_eq!(
+                merge_grouped_integer_sums(&[shard(10, bad)], 10, "Int64", "region", "amount"),
+                Err(MergeError::InvalidGroupedSum)
+            );
+        }
+        assert_eq!(
+            merge_grouped_integer_sums(
+                &[shard(1, "region\tsum(amount)\na\t1\n")],
+                10,
+                "Int64",
+                "region",
+                "amount"
+            ),
+            Err(MergeError::ShardRowLimit)
+        );
+        assert_eq!(
+            merge_grouped_integer_sums(
+                &[shard(10, "region\tsum(amount)\na\t1\nb\t2\n")],
+                1,
+                "Int64",
+                "region",
+                "amount"
+            ),
+            Err(MergeError::CoordinatorLimit)
+        );
+        assert_eq!(
+            merge_grouped_integer_sums(
+                &[shard(10, "other\tsum(amount)\na\t1\n")],
+                10,
+                "Int64",
+                "region",
+                "amount"
+            ),
+            Err(MergeError::SchemaMismatch)
+        );
+        assert_eq!(
+            merge_grouped_integer_sums(
+                &[
+                    shard(
+                        10,
+                        "region\tsum(amount)\na\t170141183460469231731687303715884105727\n"
+                    ),
+                    shard(10, "region\tsum(amount)\na\t1\n")
+                ],
+                10,
+                "Int128",
+                "region",
+                "amount"
+            ),
+            Err(MergeError::SumOverflow)
         );
     }
 

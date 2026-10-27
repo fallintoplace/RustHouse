@@ -11,6 +11,8 @@ use std::path::Path;
 
 const MAX_REWRITE_BYTES: usize = 16 * 1024 * 1024;
 const MAX_PART_BUFFER_BYTES: usize = 4 * 1024 * 1024;
+const MAX_STREAMED_PART_BYTES: usize = 64 * 1024 * 1024;
+const MAX_STREAMED_COLUMN_BYTES: usize = 7 * 1024 * 1024;
 const MAX_REWRITE_PARTS: u64 = 10_000;
 // The writer accepts 32,768 rows. Rewrites also retain a 4 MiB value budget.
 const PART_ROWS: usize = 32_768;
@@ -344,8 +346,12 @@ pub(super) fn append_parts_stream(
         }
         let mut buffer: StoredRows = Vec::with_capacity(PART_ROWS);
         let mut buffered_bytes = 0usize;
+        let mut column_bytes = vec![0usize; cols.len()];
         let mut part_index = 0usize;
-        let mut flush = |rows: &mut StoredRows, bytes: &mut usize| -> Result<(), String> {
+        let mut flush = |rows: &mut StoredRows,
+                         bytes: &mut usize,
+                         per_column: &mut [usize]|
+         -> Result<(), String> {
             if rows.is_empty() {
                 return Ok(());
             }
@@ -365,28 +371,50 @@ pub(super) fn append_parts_stream(
             verify_wide_part(&part).map_err(|error| error.to_string())?;
             rows.clear();
             *bytes = 0;
+            per_column.fill(0);
             Ok(())
         };
         while let Some(row) = next_row()? {
-            let row_bytes = row.iter().flatten().try_fold(0usize, |size, value| {
-                size.checked_add(value.len())
+            if row.len() != cols.len() {
+                return Err("COPY row width does not match table schema".into());
+            }
+            let estimate = |value: &Option<String>| {
+                value.as_ref().map_or(16, |value| value.len().saturating_add(16))
+            };
+            let row_bytes = row.iter().try_fold(0usize, |size, value| {
+                size.checked_add(estimate(value))
                     .ok_or_else(|| "COPY record size overflow".to_string())
             })?;
+            if row_bytes > MAX_STREAMED_PART_BYTES
+                || row.iter().any(|value| estimate(value) > MAX_STREAMED_COLUMN_BYTES)
+            {
+                return Err("COPY row exceeds streaming part budget".into());
+            }
+            let column_overflow = row.iter().zip(&column_bytes).any(|(value, used)| {
+                used.checked_add(estimate(value))
+                    .is_none_or(|size| size > MAX_STREAMED_COLUMN_BYTES)
+            });
             if !buffer.is_empty()
                 && (buffer.len() >= PART_ROWS
                     || buffered_bytes
                         .checked_add(row_bytes)
-                        .is_none_or(|size| size > MAX_PART_BUFFER_BYTES))
+                        .is_none_or(|size| size > MAX_STREAMED_PART_BYTES)
+                    || column_overflow)
             {
-                flush(&mut buffer, &mut buffered_bytes)?;
+                flush(&mut buffer, &mut buffered_bytes, &mut column_bytes)?;
             }
             buffered_bytes = buffered_bytes
                 .checked_add(row_bytes)
                 .ok_or("COPY batch size overflow")?;
+            for (value, used) in row.iter().zip(&mut column_bytes) {
+                *used = used
+                    .checked_add(estimate(value))
+                    .ok_or("COPY column size overflow")?;
+            }
             buffer.push(row);
             count = count.checked_add(1).ok_or("COPY row count overflow")?;
         }
-        flush(&mut buffer, &mut buffered_bytes)?;
+        flush(&mut buffer, &mut buffered_bytes, &mut column_bytes)?;
         Ok(())
     })?;
     Ok(count)
