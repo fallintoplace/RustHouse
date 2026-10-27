@@ -28,6 +28,12 @@ class AnalyticsRunnerTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "preflight result differs"):
             runner.verify_input(execute, "SELECT COUNT(*) FROM sample", "43", 5)
 
+    def test_preflight_does_not_ignore_value_whitespace(self):
+        for actual in [b" 42\n", b"42 \n", b"\t42\n"]:
+            with self.subTest(actual=actual):
+                with self.assertRaisesRegex(ValueError, "preflight result differs"):
+                    runner.verify_input(lambda _sql, _timeout: actual, "SELECT 1", "42", 5)
+
     def test_query_selection_preserves_order_and_checks_ranges(self):
         self.assertEqual(runner.select_indices("3,1-2,2", 43), [0, 1, 2])
         with self.assertRaises(ValueError):
