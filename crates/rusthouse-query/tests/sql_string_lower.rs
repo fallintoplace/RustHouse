@@ -10,11 +10,23 @@ fn value(sql: &str) -> ConstantValue {
 
 #[test]
 fn lower_folds_ascii_and_propagates_null() {
-    assert_eq!(value("SELECT LOWER('HeLLo')"), ConstantValue::Text("hello".into()));
-    assert_eq!(value("SELECT lower('A''B')"), ConstantValue::Text("a'b".into()));
-    assert_eq!(value("SELECT LOWER('123 !')"), ConstantValue::Text("123 !".into()));
+    assert_eq!(
+        value("SELECT LOWER('HeLLo')"),
+        ConstantValue::Text("hello".into())
+    );
+    assert_eq!(
+        value("SELECT lower('A''B')"),
+        ConstantValue::Text("a'b".into())
+    );
+    assert_eq!(
+        value("SELECT LOWER('123 !')"),
+        ConstantValue::Text("123 !".into())
+    );
     assert_eq!(value("SELECT LOWER(NULL)"), ConstantValue::Null);
-    assert_eq!(value("SELECT LENGTH(LOWER('ABC'))"), ConstantValue::Integer(3));
+    assert_eq!(
+        value("SELECT LENGTH(LOWER('ABC'))"),
+        ConstantValue::Integer(3)
+    );
 }
 
 #[test]
