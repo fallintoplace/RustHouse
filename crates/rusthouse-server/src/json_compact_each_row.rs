@@ -12,25 +12,27 @@ fn write_compact_row<W: Write>(output: &mut W, line: &[u8], columns: usize) -> i
             "JSON row width differs from header",
         ));
     }
-    output.write_all(b"[")?;
+    let mut row = Vec::new();
+    row.write_all(b"[")?;
     for (index, value) in line.split(|byte| *byte == b'\t').enumerate() {
         if index > 0 {
-            output.write_all(b",")?;
+            row.write_all(b",")?;
         }
         if value == b"\\N" {
-            output.write_all(b"null")?;
+            row.write_all(b"null")?;
         } else {
             if value.contains(&b'\\') {
-                write_json_string(output, &decode_tsv_value(value)?)?;
+                write_json_string(&mut row, &decode_tsv_value(value)?)?;
             } else {
                 let text = std::str::from_utf8(value).map_err(|_| {
                     io::Error::new(io::ErrorKind::InvalidData, "invalid UTF-8 field")
                 })?;
-                write_json_string(output, text)?;
+                write_json_string(&mut row, text)?;
             }
         }
     }
-    output.write_all(b"]\n")
+    row.write_all(b"]\n")?;
+    output.write_all(&row)
 }
 
 pub(super) struct JsonCompactEachRowWriter<W: Write> {
@@ -118,6 +120,13 @@ mod tests {
             out.finish().unwrap(),
             b"[\"7\",\"hello\\tworld\",null]\n[\"8\",\"NULL\",null]\n"
         );
+    }
+
+    #[test]
+    fn invalid_late_field_does_not_emit_a_partial_json_row() {
+        let mut output = Vec::new();
+        assert!(write_compact_row(&mut output, b"ok\tbad\\q", 2).is_err());
+        assert!(output.is_empty());
     }
 
     #[test]
