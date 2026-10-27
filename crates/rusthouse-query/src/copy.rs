@@ -6,6 +6,7 @@ use std::collections::HashSet;
 pub enum CopyFormat {
     Csv,
     Tsv,
+    Ssv,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -56,15 +57,17 @@ fn parse_copy_options(parser: &mut Parser) -> Result<(CopyFormat, bool), ParseEr
     if parser.keyword("WITH") {
         if !parser.take(Token::LParen) || !parser.keyword("FORMAT") {
             return Err(ParseError(
-                "COPY supports WITH (FORMAT CSV|TSV[, HEADER TRUE])".into(),
+                "COPY supports WITH (FORMAT CSV|TSV|SSV[, HEADER TRUE])".into(),
             ));
         }
         format = if parser.keyword("CSV") {
             CopyFormat::Csv
         } else if parser.keyword("TSV") {
             CopyFormat::Tsv
+        } else if parser.keyword("SSV") {
+            CopyFormat::Ssv
         } else {
-            return Err(ParseError("COPY format must be CSV or TSV".into()));
+            return Err(ParseError("COPY format must be CSV, TSV or SSV".into()));
         };
         if parser.take(Token::Comma) {
             if !parser.keyword("HEADER") {
@@ -148,6 +151,11 @@ mod tests {
             .unwrap();
         assert_eq!(copy.format, CopyFormat::Tsv);
         assert!(copy.header);
+        let semicolon = parse_copy_from("COPY readings FROM 'measurements.txt' WITH (FORMAT SSV)")
+            .unwrap()
+            .unwrap();
+        assert_eq!(semicolon.format, CopyFormat::Ssv);
+        assert!(!semicolon.header);
         assert_eq!(
             parse_copy_from("COPY events FROM 'events.tsv' WITH (FORMAT TSV, HEADER FALSE)")
                 .unwrap()
