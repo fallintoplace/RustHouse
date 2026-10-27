@@ -54,8 +54,9 @@ must document the filesystem and operating systems used in storage testing.
 5. Reopen the restored database and compare row counts and representative
    values with the source. Test that a subsequent supported write succeeds.
 
-The doctor command validates active parts. It does not certify inactive
-generations, every conceivable corruption type, or power-loss safety.
+By default, doctor validates active parts, not inactive generations. Even
+an optional historical-generation audit cannot prove every possible corruption
+type or power-loss safety.
 
 ## Release gates
 
