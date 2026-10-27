@@ -83,11 +83,7 @@ fn validate_mark_sequence(
             return Err(invalid_mark(marks, index, "mark offsets are not ordered"));
         }
         if current_offset == previous_offset && mark.rows != Some(0) {
-            return Err(invalid_mark(
-                marks,
-                index,
-                "nonterminal mark must advance",
-            ));
+            return Err(invalid_mark(marks, index, "nonterminal mark must advance"));
         }
     }
     Ok(())
