@@ -45,7 +45,6 @@ fn is_safe_count(select: &Select) -> bool {
         && select.offset.is_none()
 }
 
-
 /// GROUP BY counts can be reduced by key across disjoint read-only shards.
 /// A global HAVING, ORDER BY or LIMIT would require different planning.
 fn is_safe_grouped_count(select: &Select) -> bool {
@@ -194,7 +193,6 @@ fn sum_shard_counts(shards: &[(usize, Vec<u8>)]) -> Result<Vec<u8>, MergeError> 
     Ok(result)
 }
 
-
 /// Reduce grouped COUNT results by their canonical TSV-encoded key.
 /// Preserve first-seen key order, reject malformed rows, and only emit a
 /// complete bounded result. Shards may hold overlapping group *keys*, but
@@ -230,7 +228,14 @@ fn merge_grouped_counts(
             expected_header = Some(header);
         }
         let mut shard_rows = 0usize;
-        for row in body[header_end + 1..].split_terminator(|&byte| byte == b'\n') {
+        let rows = &body[header_end + 1..];
+        if rows.is_empty() {
+            continue;
+        }
+        for row in rows[..rows.len() - 1].split(|&byte| byte == b'\n') {
+            if row.is_empty() {
+                return Err(MergeError::InvalidGroupedCount);
+            }
             shard_rows = shard_rows
                 .checked_add(1)
                 .ok_or(MergeError::CoordinatorLimit)?;
@@ -252,7 +257,9 @@ fn merge_grouped_counts(
                 .map_err(|_| MergeError::CountOverflow)?;
             if let Some(&index) = positions.get(key) {
                 let previous = &mut groups[index].1;
-                *previous = previous.checked_add(count).ok_or(MergeError::CountOverflow)?;
+                *previous = previous
+                    .checked_add(count)
+                    .ok_or(MergeError::CountOverflow)?;
             } else {
                 if groups.len() >= max_rows {
                     return Err(MergeError::CoordinatorLimit);
@@ -267,7 +274,9 @@ fn merge_grouped_counts(
     output.extend_from_slice(header);
     for (key, count) in groups {
         let count = count.to_string();
-        if output.len().checked_add(key.len() + count.len() + 2)
+        if output
+            .len()
+            .checked_add(key.len() + count.len() + 2)
             .is_none_or(|length| length > MAX_RESPONSE_BYTES)
         {
             return Err(MergeError::CoordinatorLimit);
@@ -295,7 +304,13 @@ pub fn handle(method: &str, body: &[u8], cluster: &Cluster, max_rows: usize) -> 
         Err(_) => return Response::text("400 Bad Request", "SQL must be UTF-8\n"),
     };
     let select = match parse_select(sql) {
-        Ok(select) if is_safe_scan(&select) || is_safe_count(&select) || is_safe_grouped_count(&select) => select,
+        Ok(select)
+            if is_safe_scan(&select)
+                || is_safe_count(&select)
+                || is_safe_grouped_count(&select) =>
+        {
+            select
+        }
         _ => {
             return Response::text(
                 "400 Bad Request",
@@ -479,7 +494,6 @@ mod tests {
         );
     }
 
-
     #[test]
     fn reduces_grouped_count_across_disjoint_shards() {
         assert!(is_safe_grouped_count(
@@ -530,7 +544,13 @@ mod tests {
             Err(MergeError::InvalidGroupedCount)
         );
         assert_eq!(
-            merge_grouped_counts(&[shard(10, "kind\tcount\na\t1\n"), shard(10, "id\tcount\na\t2\n")], 10),
+            merge_grouped_counts(
+                &[
+                    shard(10, "kind\tcount\na\t1\n"),
+                    shard(10, "id\tcount\na\t2\n")
+                ],
+                10
+            ),
             Err(MergeError::SchemaMismatch)
         );
         assert_eq!(
@@ -542,10 +562,13 @@ mod tests {
             Err(MergeError::CoordinatorLimit)
         );
         assert_eq!(
-            merge_grouped_counts(&[
-                shard(10, "kind\tcount\na\t18446744073709551615\n"),
-                shard(10, "kind\tcount\na\t1\n"),
-            ], 10),
+            merge_grouped_counts(
+                &[
+                    shard(10, "kind\tcount\na\t18446744073709551615\n"),
+                    shard(10, "kind\tcount\na\t1\n"),
+                ],
+                10
+            ),
             Err(MergeError::CountOverflow)
         );
     }
