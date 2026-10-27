@@ -849,12 +849,7 @@ fn execute_aggregate_numbers<W: Write>(
                     AggregateFunction::Sum => ((first + last) * u128::from(rows) / 2).to_string(),
                     AggregateFunction::Min => first.to_string(),
                     AggregateFunction::Max => last.to_string(),
-                    AggregateFunction::Avg
-                    | AggregateFunction::VarPop
-                    | AggregateFunction::StddevPop
-                    | AggregateFunction::VarSamp
-                    | AggregateFunction::StddevSamp
-                    | AggregateFunction::Median => unreachable!(),
+                    _ => unreachable!(),
                 }
             };
             writeln!(output, "{result}")?;
@@ -1142,6 +1137,28 @@ impl AggregateState {
                     }
                 };
                 self.value = Some(sum);
+            }
+            AggregateFunction::Product => {
+                let product = match (self.value, value) {
+                    (None, value) => value,
+                    (Some(Number::Unsigned(a)), Number::Unsigned(b)) => {
+                        Number::Unsigned(a.checked_mul(b).ok_or_else(|| {
+                            ExecutionError::Invalid("unsigned PRODUCT overflow".into())
+                        })?)
+                    }
+                    (Some(Number::Signed(a)), Number::Signed(b)) => Number::Signed(
+                        a.checked_mul(b).ok_or_else(|| {
+                            ExecutionError::Invalid("signed PRODUCT overflow".into())
+                        })?,
+                    ),
+                    (Some(Number::Float(a)), Number::Float(b)) => Number::Float(a * b),
+                    _ => {
+                        return Err(ExecutionError::Invalid(
+                            "incompatible types in PRODUCT".into(),
+                        ));
+                    }
+                };
+                self.value = Some(product);
             }
             AggregateFunction::Avg
             | AggregateFunction::VarPop
