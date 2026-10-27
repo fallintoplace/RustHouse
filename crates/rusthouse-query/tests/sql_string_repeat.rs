@@ -21,7 +21,10 @@ fn repeat_builds_bounded_constant_strings_and_nests() {
     }
     assert_eq!(value("SELECT REPEAT(NULL, 2)"), ConstantValue::Null);
     assert_eq!(value("SELECT REPEAT('x', NULL)"), ConstantValue::Null);
-    assert_eq!(value("SELECT LENGTH(REPEAT('abc', 4))"), ConstantValue::Integer(12));
+    assert_eq!(
+        value("SELECT LENGTH(REPEAT('abc', 4))"),
+        ConstantValue::Integer(12)
+    );
 }
 
 #[test]
