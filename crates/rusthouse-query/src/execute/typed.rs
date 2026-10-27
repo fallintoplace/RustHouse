@@ -1087,7 +1087,9 @@ pub(super) fn execute_typed<W: Write>(
             let result = if is_count || is_count_column {
                 count
             } else {
-                (count_distinct_keys.len() + count_distinct_text.len() + count_distinct_uuids.len()) as u64
+                (count_distinct_keys.len()
+                    + count_distinct_text.len()
+                    + count_distinct_uuids.len()) as u64
             };
             writeln!(output, "{result}")?;
         }
