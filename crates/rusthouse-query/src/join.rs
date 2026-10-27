@@ -32,7 +32,7 @@ pub struct JoinSelect {
     /// Optional post-join IS [NOT] NULL filter (true means IS NOT NULL).
     pub where_null: Option<(JoinColumn, bool)>,
     /// Ordered key, descending flag, and optional explicit NULL placement.
-    pub order_by: Option<(JoinColumn, bool, Option<bool>)>,
+    pub order_by: Vec<(JoinColumn, bool, Option<bool>)>,
     pub limit: Option<usize>,
     pub offset: usize,
 }
@@ -260,29 +260,39 @@ pub fn parse_join(sql: &str) -> Result<Option<JoinSelect>, ParseError> {
         if !parser.keyword("BY") {
             return Err(ParseError("ORDER requires BY".into()));
         }
-        let key = qualified(&mut parser)?;
-        let descending = if parser.keyword("DESC") {
-            true
-        } else {
-            parser.keyword("ASC");
-            false
-        };
-        let nulls_first = if parser.keyword("NULLS") {
-            if parser.keyword("FIRST") {
-                Some(true)
-            } else if parser.keyword("LAST") {
-                Some(false)
-            } else {
-                return Err(ParseError(
-                    "JOIN ORDER BY NULLS requires FIRST or LAST".into(),
-                ));
+        let mut terms = Vec::new();
+        loop {
+            if terms.len() == 8 {
+                return Err(ParseError("JOIN ORDER BY supports at most 8 keys".into()));
             }
-        } else {
-            None
-        };
-        Some((key, descending, nulls_first))
+            let key = qualified(&mut parser)?;
+            let descending = if parser.keyword("DESC") {
+                true
+            } else {
+                parser.keyword("ASC");
+                false
+            };
+            let nulls_first = if parser.keyword("NULLS") {
+                if parser.keyword("FIRST") {
+                    Some(true)
+                } else if parser.keyword("LAST") {
+                    Some(false)
+                } else {
+                    return Err(ParseError(
+                        "JOIN ORDER BY NULLS requires FIRST or LAST".into(),
+                    ));
+                }
+            } else {
+                None
+            };
+            terms.push((key, descending, nulls_first));
+            if !parser.take(Token::Comma) {
+                break;
+            }
+        }
+        terms
     } else {
-        None
+        Vec::new()
     };
     let (limit, comma_offset) = if parser.keyword("LIMIT") {
         let first = bound(&mut parser, "LIMIT")?;
@@ -517,11 +527,31 @@ mod tests {
             let statement =
                 format!("SELECT * FROM l LEFT JOIN r ON l.id = r.id ORDER BY r.id {suffix}");
             let query = parse_join(&statement).unwrap().unwrap();
-            assert_eq!(query.order_by.unwrap().2, expected);
+            assert_eq!(query.order_by[0].2, expected);
         }
         assert!(
             parse_join("SELECT * FROM l JOIN r ON l.id = r.id ORDER BY l.id NULLS MIDDLE").is_err()
         );
+    }
+
+    #[test]
+    fn parses_multiple_join_sort_columns() {
+        let query = parse_join(
+            "SELECT l.id, r.rank FROM lefts l JOIN rights r USING (id) ORDER BY r.rank DESC NULLS LAST, l.id ASC LIMIT 10",
+        )
+        .unwrap()
+        .unwrap();
+        assert_eq!(query.order_by.len(), 2);
+        assert_eq!(query.order_by[0].0.relation, "r");
+        assert!(query.order_by[0].1);
+        assert_eq!(query.order_by[0].2, Some(false));
+        assert_eq!(query.order_by[1].0.name, "id");
+        assert!(!query.order_by[1].1);
+        let too_many = format!(
+            "SELECT * FROM l JOIN r USING (id) ORDER BY {}",
+            ["l.id"; 9].join(", ")
+        );
+        assert!(parse_join(&too_many).is_err());
     }
 
     #[test]
