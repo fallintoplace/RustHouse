@@ -28,6 +28,7 @@ pub(super) fn is_function(name: &str) -> bool {
         || name.eq_ignore_ascii_case("GCD")
         || name.eq_ignore_ascii_case("LCM")
         || name.eq_ignore_ascii_case("CLAMP")
+        || name.eq_ignore_ascii_case("PMOD")
 }
 
 pub(super) fn parse(parser: &mut Parser) -> Result<i64, ParseError> {
@@ -100,6 +101,18 @@ fn parse_power(parser: &mut Parser, depth: usize) -> Result<i64, ParseError> {
     let exponent = u32::try_from(exponent)
         .map_err(|_| ParseError("POWER exponent must be non-negative and fit UInt32".into()))?;
     base.checked_pow(exponent).ok_or_else(overflow)
+}
+
+fn parse_pmod(parser: &mut Parser, depth: usize) -> Result<i64, ParseError> {
+    require_token(parser, Token::LParen, "PMOD requires '('")?;
+    let value = expression(parser, depth + 1)?;
+    require_token(parser, Token::Comma, "PMOD requires two arguments")?;
+    let divisor = expression(parser, depth + 1)?;
+    require_token(parser, Token::RParen, "expected ')' after PMOD arguments")?;
+    if divisor <= 0 {
+        return Err(ParseError("PMOD divisor must be positive".into()));
+    }
+    Ok(value.rem_euclid(divisor))
 }
 
 fn parse_extrema(parser: &mut Parser, depth: usize) -> Result<i64, ParseError> {
@@ -219,6 +232,9 @@ fn factor(parser: &mut Parser, depth: usize) -> Result<i64, ParseError> {
     }
     if parser.keyword("CLAMP") {
         return parse_clamp(parser, depth);
+    }
+    if parser.keyword("PMOD") {
+        return parse_pmod(parser, depth);
     }
     if matches!(parser.tokens.get(parser.index), Some(Token::Word(name)) if name.eq_ignore_ascii_case("GCD") || name.eq_ignore_ascii_case("LCM"))
     {
