@@ -139,7 +139,7 @@ mod tests {
         let mut writer = MarkdownWriter::new(Vec::new());
         writer.write_all(b"a|b\tpath\nx").unwrap();
         writer.flush().unwrap();
-        writer.write_all(b"y\tz\\q\n").unwrap();
+        writer.write_all(b"y\tz\\\\q\n").unwrap();
         assert_eq!(
             writer.output,
             b"| a\\|b | path |\n| --- | --- |\n| xy | z\\\\q |\n"
