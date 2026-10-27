@@ -642,8 +642,8 @@ fn merge_grouped_integer_sums(
         .strip_prefix("Nullable(")
         .unwrap_or(kind)
         .starts_with("UInt");
-    let mut positions = HashMap::<Vec<u8>, usize>::new();
-    let mut groups = Vec::<(Vec<u8>, Option<i128>, Option<u128>)>::new();
+    let mut positions = HashMap::<&[u8], usize>::new();
+    let mut groups = Vec::<(&[u8], Option<i128>, Option<u128>)>::new();
     for (cap, body) in shards {
         if *cap == 0 || !body.ends_with(b"\n") {
             return Err(MergeError::InvalidGroupedSum);
@@ -688,8 +688,8 @@ fn merge_grouped_integer_sums(
                     return Err(MergeError::CoordinatorLimit);
                 }
                 let index = groups.len();
-                positions.insert(key.to_vec(), index);
-                groups.push((key.to_vec(), None, None));
+                positions.insert(key, index);
+                groups.push((key, None, None));
                 index
             };
             if let Some(number) = partial {
@@ -735,7 +735,7 @@ fn merge_grouped_integer_sums(
         {
             return Err(MergeError::CoordinatorLimit);
         }
-        output.extend_from_slice(&key);
+        output.extend_from_slice(key);
         output.push(b'\t');
         output.extend_from_slice(rendered.as_bytes());
         output.push(b'\n');
