@@ -39,7 +39,6 @@ fn read_schema_bytes(path: &Path) -> Option<Vec<u8>> {
     Some(bytes)
 }
 
-
 fn valid_schema(path: &Path) -> bool {
     let Some(bytes) = read_schema_bytes(path) else {
         return false;
