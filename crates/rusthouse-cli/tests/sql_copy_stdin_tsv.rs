@@ -7,7 +7,11 @@ static NEXT: AtomicUsize = AtomicUsize::new(0);
 
 fn run(db: &Path, statement: &str, input: Option<&[u8]>) -> std::process::Output {
     let mut command = Command::new(env!("CARGO_BIN_EXE_rusthouse"));
-    command.args(["sql", statement, "--database"]).arg(db);
+    command
+        .args(["sql", statement, "--database"])
+        .arg(db)
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped());
     if input.is_some() {
         command.stdin(Stdio::piped());
     }
@@ -35,6 +39,7 @@ fn accepts_streamed_tsv_without_a_temporary_file() {
     assert!(copied.status.success(), "{copied:?}");
     let count = run(&dir, "SELECT count(*) FROM events", None);
     assert!(count.status.success(), "{count:?}");
+    assert_eq!(count.stdout, b"count\n2\n");
     let rejected = run(
         &dir,
         "COPY events FROM '-' WITH (FORMAT CSV)",
