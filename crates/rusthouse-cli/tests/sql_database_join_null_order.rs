@@ -27,15 +27,20 @@ fn join_order_by_respects_explicit_null_placement() {
         let result = sql(statement);
         assert!(result.status.success(), "{statement}: {result:?}");
     }
-    let first = sql("SELECT l.id, r.label FROM lefts l LEFT JOIN rights r ON l.k = r.k ORDER BY r.label DESC NULLS FIRST LIMIT 10");
+    let first = sql(
+        "SELECT l.id, r.label FROM lefts l LEFT JOIN rights r ON l.k = r.k ORDER BY r.label DESC NULLS FIRST LIMIT 10",
+    );
     assert!(first.status.success(), "{first:?}");
     assert_eq!(first.stdout, b"l.id\tr.label\n2\t\\N\n3\tb\n1\ta\n");
 
-    let last = sql("SELECT l.id, r.label FROM lefts l LEFT JOIN rights r ON l.k = r.k ORDER BY r.label ASC NULLS LAST LIMIT 10");
+    let last = sql(
+        "SELECT l.id, r.label FROM lefts l LEFT JOIN rights r ON l.k = r.k ORDER BY r.label ASC NULLS LAST LIMIT 10",
+    );
     assert!(last.status.success(), "{last:?}");
     assert_eq!(last.stdout, b"l.id\tr.label\n1\ta\n3\tb\n2\t\\N\n");
 
-    let default = sql("SELECT l.id FROM lefts l LEFT JOIN rights r ON l.k = r.k ORDER BY r.label LIMIT 10");
+    let default =
+        sql("SELECT l.id FROM lefts l LEFT JOIN rights r ON l.k = r.k ORDER BY r.label LIMIT 10");
     assert!(default.status.success(), "{default:?}");
     assert_eq!(default.stdout, b"l.id\n2\n1\n3\n");
     fs::remove_dir_all(db).unwrap();
