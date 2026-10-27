@@ -49,5 +49,9 @@ fn computes_multiple_aggregates_in_one_filtered_scan() {
         run("SELECT min(amount), max(amount), count(tag) FROM part WHERE tag = 'ok'"),
         "min(amount)\tmax(amount)\tcount(tag)\n2\t4\t2\n"
     );
+    assert_eq!(
+        run("SELECT sum(length(tag)), avg(length(tag)) FROM part WHERE amount > 2"),
+        "sum(length(tag))\tavg(length(tag))\n4\t2\n"
+    );
     fs::remove_dir_all(part).unwrap();
 }
