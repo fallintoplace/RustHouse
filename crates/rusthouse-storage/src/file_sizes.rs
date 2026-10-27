@@ -48,7 +48,11 @@ fn verify_part_files(part: &Path, full_hashes: bool) -> Result<FileSizeVerificat
     })
 }
 
-fn verify_stored_hash(path: &Path, expected_size: u64, expected_hash: u128) -> Result<(), PartError> {
+fn verify_stored_hash(
+    path: &Path,
+    expected_size: u64,
+    expected_hash: u128,
+) -> Result<(), PartError> {
     const BLOCK_BYTES: usize = 2048;
     let mut file = fs::File::open(path).map_err(|source| io_error(path, source))?;
     #[cfg(unix)]
