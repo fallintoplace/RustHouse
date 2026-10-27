@@ -205,7 +205,7 @@ fn parse_at_depth(parser: &mut Parser, depth: usize) -> Result<ConstantValue, Pa
             require(parser, Token::RParen, "expected ')' after ENDS_WITH arguments")?;
             match (input, suffix) {
                 (Some(input), Some(suffix)) => {
-                    ConstantValue::Integer(if input.ends_with(&suffix) { 1 } else { 0 })
+                    ConstantValue::Integer(i64::from(input.ends_with(suffix.as_str())))
                 }
                 _ => ConstantValue::Null,
             }
