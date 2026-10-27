@@ -16,6 +16,7 @@ pub(super) fn is_function(name: &str) -> bool {
             | "RTRIM"
             | "LOWER"
             | "HEX_ENCODE"
+            | "IS_ASCII"
             | "UPPER"
             | "URL_DECODE"
             | "REVERSE"
@@ -205,6 +206,14 @@ fn parse_at_depth(parser: &mut Parser, depth: usize) -> Result<ConstantValue, Pa
                     }
                     ConstantValue::Text(result)
                 }
+                None => ConstantValue::Null,
+            }
+        }
+        "IS_ASCII" => {
+            let input = text_arg(parser, depth + 1)?;
+            require(parser, Token::RParen, "IS_ASCII requires one argument")?;
+            match input {
+                Some(value) => ConstantValue::Integer(i64::from(value.is_ascii())),
                 None => ConstantValue::Null,
             }
         }
