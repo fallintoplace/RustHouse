@@ -18,10 +18,10 @@ pub use delete::parse_delete;
 pub use execute::{ExecutionError, RowPredicate, execute, execute_join};
 pub use explain::explain_select;
 pub use expression::{ScalarExpr, parse_scalar_expression};
-pub use multi_aggregate::AggregateItem;
 pub use insert::{Insert, parse_insert};
 pub use insert_select::{InsertSelect, parse_insert_select};
 pub use join::{JoinColumn, JoinSelect, JoinType, explain_join, parse_join};
+pub use multi_aggregate::AggregateItem;
 pub use update::{Update, parse_update};
 
 use std::error::Error;

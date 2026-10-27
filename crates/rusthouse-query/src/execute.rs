@@ -14,8 +14,8 @@ mod sort;
 mod typed;
 pub use join::execute_join;
 use sort::{MAX_SORTED_ROWS, SortedRows};
-mod typed_aggregate;
 mod multi_aggregate;
+mod typed_aggregate;
 #[cfg(test)]
 use predicates::{CompiledTest, compile_in_test};
 use predicates::{

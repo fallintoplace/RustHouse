@@ -11,13 +11,13 @@ enum State {
     Numeric(AggregateState),
 }
 
-fn checked_binary(
-    left: Number,
-    right: Number,
-    subtract: bool,
-) -> Result<Number, ExecutionError> {
+fn checked_binary(left: Number, right: Number, subtract: bool) -> Result<Number, ExecutionError> {
     let op = |a: i128, b: i128| {
-        if subtract { a.checked_sub(b) } else { a.checked_add(b) }
+        if subtract {
+            a.checked_sub(b)
+        } else {
+            a.checked_add(b)
+        }
     };
     match (left, right) {
         (Number::Float(a), b) => {
@@ -37,7 +37,11 @@ fn checked_binary(
             Ok(Number::Float(if subtract { a - b } else { a + b }))
         }
         (Number::Unsigned(a), Number::Unsigned(b)) => {
-            let value = if subtract { a.checked_sub(b) } else { a.checked_add(b) };
+            let value = if subtract {
+                a.checked_sub(b)
+            } else {
+                a.checked_add(b)
+            };
             value.map(Number::Unsigned).ok_or_else(|| {
                 ExecutionError::Invalid("unsigned aggregate expression overflow".into())
             })
@@ -189,9 +193,9 @@ pub(super) fn execute<W: Write>(
                 match state {
                     State::Count(value) => {
                         if count_argument(item.argument.as_ref(), &batch, row, &indices)? {
-                            *value = value.checked_add(1).ok_or_else(|| {
-                                ExecutionError::Invalid("COUNT overflow".into())
-                            })?;
+                            *value = value
+                                .checked_add(1)
+                                .ok_or_else(|| ExecutionError::Invalid("COUNT overflow".into()))?;
                         }
                     }
                     State::Numeric(state) => {

@@ -44,7 +44,9 @@ fn primary(parser: &mut Parser) -> Result<ScalarExpr, ParseError> {
             }
             Ok(result)
         }
-        _ => Err(ParseError("expected column, integer, or '(' in expression".into())),
+        _ => Err(ParseError(
+            "expected column, integer, or '(' in expression".into(),
+        )),
     }
 }
 
@@ -75,7 +77,9 @@ pub fn parse_scalar_expression(sql: &str) -> Result<ScalarExpr, ParseError> {
     };
     let expr = parse_expression_tokens(&mut parser)?;
     if parser.index != parser.tokens.len() {
-        return Err(ParseError("unexpected tokens after scalar expression".into()));
+        return Err(ParseError(
+            "unexpected tokens after scalar expression".into(),
+        ));
     }
     Ok(expr)
 }
