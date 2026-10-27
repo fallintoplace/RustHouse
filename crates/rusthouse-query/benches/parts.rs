@@ -141,9 +141,7 @@ fn main() {
         "{:<18} {:>10} {:>10} {:>17}",
         "workload", "median ms", "p90 ms", "M logical rows/s"
     );
-    println!(
-        "Logical rows/s uses input rows, not verified bytes read or cold-cache throughput."
-    );
+    println!("Logical rows/s uses input rows, not verified bytes read or cold-cache throughput.");
     for (label, fraction) in [
         ("count 100%", 100usize),
         ("count 50%", 50),
