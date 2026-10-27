@@ -9,7 +9,6 @@ pub(super) fn is_function(name: &str) -> bool {
         "LENGTH"
             | "CHAR_LENGTH"
             | "BTRIM"
-            | "BASE64_ENCODE"
             | "LOWER"
             | "UPPER"
             | "REVERSE"
@@ -24,6 +23,7 @@ pub(super) fn is_function(name: &str) -> bool {
             | "LEFT"
             | "STARTS_WITH"
             | "RIGHT"
+            | "BASE64_ENCODE"
             | "ENDS_WITH"
             | "REPEAT"
             | "RPAD"
@@ -385,6 +385,48 @@ fn parse_at_depth(parser: &mut Parser, depth: usize) -> Result<ConstantValue, Pa
                 _ => ConstantValue::Null,
             }
         }
+        "BASE64_ENCODE" => {
+            let input = text_arg(parser, depth + 1)?;
+            require(parser, Token::RParen, "BASE64_ENCODE requires one argument")?;
+            match input {
+                Some(value) => {
+                    let output_len = value.len()
+                        .checked_add(2)
+                        .and_then(|length| length.checked_div(3))
+                        .and_then(|groups| groups.checked_mul(4))
+                        .ok_or_else(|| ParseError("BASE64_ENCODE result is too large".into()))?;
+                    if output_len > MAX_TEXT_BYTES {
+                        return Err(ParseError("BASE64_ENCODE result is too large".into()));
+                    }
+                    const ALPHABET: &[u8; 64] =
+                        b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+                    let mut result = String::with_capacity(output_len);
+                    for chunk in value.as_bytes().chunks(3) {
+                        let mut bits = u32::from(chunk[0]) << 16;
+                        if chunk.len() > 1 {
+                            bits |= u32::from(chunk[1]) << 8;
+                        }
+                        if chunk.len() > 2 {
+                            bits |= u32::from(chunk[2]);
+                        }
+                        result.push(char::from(ALPHABET[((bits >> 18) & 63) as usize]));
+                        result.push(char::from(ALPHABET[((bits >> 12) & 63) as usize]));
+                        if chunk.len() > 1 {
+                            result.push(char::from(ALPHABET[((bits >> 6) & 63) as usize]));
+                        } else {
+                            result.push('=');
+                        }
+                        if chunk.len() > 2 {
+                            result.push(char::from(ALPHABET[(bits & 63) as usize]));
+                        } else {
+                            result.push('=');
+                        }
+                    }
+                    ConstantValue::Text(result)
+                }
+                None => ConstantValue::Null,
+            }
+        }
         "RIGHT" => {
             let input = text_arg(parser, depth + 1)?;
             require(parser, Token::Comma, "RIGHT requires a character count")?;
@@ -460,48 +502,6 @@ fn parse_at_depth(parser: &mut Parser, depth: usize) -> Result<ConstantValue, Pa
                     }
                 }
                 _ => ConstantValue::Null,
-            }
-        }
-        "BASE64_ENCODE" => {
-            let input = text_arg(parser, depth + 1)?;
-            require(parser, Token::RParen, "BASE64_ENCODE requires one argument")?;
-            match input {
-                Some(value) => {
-                    let output_len = value.len()
-                        .checked_add(2)
-                        .and_then(|length| length.checked_div(3))
-                        .and_then(|groups| groups.checked_mul(4))
-                        .ok_or_else(|| ParseError("BASE64_ENCODE result is too large".into()))?;
-                    if output_len > MAX_TEXT_BYTES {
-                        return Err(ParseError("BASE64_ENCODE result is too large".into()));
-                    }
-                    const ALPHABET: &[u8; 64] =
-                        b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
-                    let mut result = String::with_capacity(output_len);
-                    for chunk in value.as_bytes().chunks(3) {
-                        let mut bits = u32::from(chunk[0]) << 16;
-                        if chunk.len() > 1 {
-                            bits |= u32::from(chunk[1]) << 8;
-                        }
-                        if chunk.len() > 2 {
-                            bits |= u32::from(chunk[2]);
-                        }
-                        result.push(char::from(ALPHABET[((bits >> 18) & 63) as usize]));
-                        result.push(char::from(ALPHABET[((bits >> 12) & 63) as usize]));
-                        if chunk.len() > 1 {
-                            result.push(char::from(ALPHABET[((bits >> 6) & 63) as usize]));
-                        } else {
-                            result.push('=');
-                        }
-                        if chunk.len() > 2 {
-                            result.push(char::from(ALPHABET[(bits & 63) as usize]));
-                        } else {
-                            result.push('=');
-                        }
-                    }
-                    ConstantValue::Text(result)
-                }
-                None => ConstantValue::Null,
             }
         }
         _ => return Err(ParseError(format!("unsupported string function: {name}"))),
