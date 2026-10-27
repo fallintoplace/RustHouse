@@ -851,8 +851,11 @@ fn parse_at_depth(parser: &mut Parser, depth: usize) -> Result<ConstantValue, Pa
             let input = text_arg(parser, depth + 1)?;
             require(parser, Token::Comma, "RPAD requires a width")?;
             let width = integer_arg(parser, depth + 1)?;
-            require(parser, Token::Comma, "RPAD requires padding text")?;
-            let padding = text_arg(parser, depth + 1)?;
+            let padding = if parser.take(Token::Comma) {
+                text_arg(parser, depth + 1)?
+            } else {
+                Some(" ".to_owned())
+            };
             require(parser, Token::RParen, "expected ')' after RPAD arguments")?;
             match (input, width, padding) {
                 (Some(input), Some(width), Some(padding)) => {
