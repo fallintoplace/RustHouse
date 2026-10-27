@@ -111,14 +111,13 @@ fn seeded_typed_predicates_and_pagination_match_reference_rows() {
     }
 
     let sql = "SELECT id FROM part WHERE note IS NULL ORDER BY id DESC LIMIT 5";
-    let expected = (0..ROWS)
-        .rev()
-        .filter(|id| id % 13 == 0)
-        .take(5)
-        .fold(String::from("id\n"), |mut output, id| {
+    let expected = (0..ROWS).rev().filter(|id| id % 13 == 0).take(5).fold(
+        String::from("id\n"),
+        |mut output, id| {
             output.push_str(&format!("{id}\n"));
             output
-        });
+        },
+    );
     assert_eq!(run(sql, &root), expected);
     fs::remove_dir_all(root).unwrap();
 }
