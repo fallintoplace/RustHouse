@@ -79,8 +79,6 @@ impl NumericPartReader {
             let data_path = part.join(format!("{name}.bin"));
             let mut reader = CompressedBlockReader::open(&data_path)?;
             crate::mark_validation::validate_wide_marks_reader(&marks_file, &mut reader)?;
-            // Mark validation leaves the reader at EOF. Rewind the verified
-            // file instead of reopening it for the actual granule scan.
             reader.seek_to_block(0)?;
             streams.push(ColumnStream {
                 data_type: column.data_type.clone(),
@@ -106,8 +104,6 @@ impl NumericPartReader {
         self.marks
     }
 
-    /// Position the next scan batch at a mark without reading earlier granules.
-    /// The index may equal mark_count() to seek to the end of the part.
     pub fn seek_to_mark(&mut self, index: usize) -> Result<(), PartError> {
         if index > self.marks {
             return Err(PartError::InvalidGranuleIndex {
@@ -119,9 +115,6 @@ impl NumericPartReader {
         Ok(())
     }
 
-    /// Skip whole validated adaptive marks without decompressing their streams.
-    /// The caller must still discard any remaining rows inside the next mark.
-    /// Legacy marks without row counts cannot be skipped safely.
     pub fn skip_complete_marks(&mut self, max_rows: usize) -> usize {
         let Some(stream) = self.streams.first() else {
             return 0;

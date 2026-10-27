@@ -1,6 +1,3 @@
-//! Read a frozen directory containing active, non-overlapping wide MergeTree parts.
-//! Do not point this at a live upstream table directory: renames during merges
-//! make a filesystem directory scan an inconsistent snapshot.
 use crate::{Column, NumericColumn, NumericPartReader, PartError, PartMetadata, inspect_part};
 use std::collections::HashMap;
 use std::fs;
@@ -22,8 +19,6 @@ fn valid_generation_label(label: &str) -> bool {
         && label.as_bytes()[1..].iter().all(u8::is_ascii_digit)
 }
 
-/// Resolve the immutable active generation of a local table.
-/// Legacy tables without a pointer use their original parts directory.
 pub fn resolve_active_snapshot(root: &Path) -> Result<PathBuf, PartError> {
     let pointer = root.join(".rusthouse-active");
     let metadata = match fs::symlink_metadata(&pointer) {
@@ -55,8 +50,6 @@ pub fn resolve_active_snapshot(root: &Path) -> Result<PathBuf, PartError> {
     Ok(active)
 }
 
-// upstream names are partition_minBlock_maxBlock_level[_mutation].
-// The partition id may contain underscores; split from the right instead.
 fn parse_part_span_suffix(name: &str, suffix: usize) -> Option<(&str, u64, u64)> {
     let mut tokens = name.rsplitn(suffix + 1, '_');
     if suffix == 4 {
@@ -70,8 +63,6 @@ fn parse_part_span_suffix(name: &str, suffix: usize) -> Option<(&str, u64, u64)>
 }
 
 fn part_span(name: &str) -> Option<(String, u64, u64)> {
-    // Preserve the numeric-suffix ambiguity check without allocating two
-    // candidate partition strings for each part in a large snapshot.
     match (
         parse_part_span_suffix(name, 3),
         parse_part_span_suffix(name, 4),
@@ -97,8 +88,6 @@ fn validate_block_ranges(ranges: &mut HashMap<String, Vec<(u64, u64)>>) -> Resul
     Ok(())
 }
 
-/// List complete active wide parts from an offline snapshot.
-/// Refuse overlapping block ranges rather than double-count replaced parts.
 pub fn query_parts(path: &Path) -> Result<Vec<PathBuf>, PartError> {
     if path.join("count.txt").exists() || path.join("columns.txt").exists() {
         return Ok(vec![path.to_owned()]);
@@ -109,11 +98,9 @@ pub fn query_parts(path: &Path) -> Result<Vec<PathBuf>, PartError> {
         let entry = entry.map_err(|e| io_error(path, e))?;
         let file_type = entry.file_type().map_err(|e| io_error(&entry.path(), e))?;
         if !file_type.is_dir() {
-            continue; // Symlinks are deliberately not followed.
+            continue;
         }
         let name = entry.file_name();
-        // Older local writers staged data inside the active parts directory.
-        // Never expose those incomplete, unpublished parts to SQL reads.
         if name
             .to_str()
             .is_some_and(|name| name.starts_with(".pending-"))
@@ -124,7 +111,7 @@ pub fn query_parts(path: &Path) -> Result<Vec<PathBuf>, PartError> {
         let has_count = child.join("count.txt").exists();
         let has_columns = child.join("columns.txt").exists();
         if !has_count && !has_columns {
-            continue; // e.g. detached/, shadow/ or non-part metadata.
+            continue;
         }
         if has_count != has_columns {
             return Err(PartError::InvalidScan(format!(
@@ -156,7 +143,6 @@ pub fn query_parts(path: &Path) -> Result<Vec<PathBuf>, PartError> {
     Ok(parts)
 }
 
-/// Return consistent metadata for a single part or a frozen table snapshot.
 pub fn inspect_query_source(path: &Path) -> Result<PartMetadata, PartError> {
     let paths = query_parts(path)?;
     inspect_parts_metadata(path, &paths)
@@ -166,9 +152,6 @@ pub(crate) fn inspect_parts_metadata(
     path: &Path,
     paths: &[PathBuf],
 ) -> Result<PartMetadata, PartError> {
-    // Part metadata is immutable for an offline snapshot. For tables with many
-    // parts, inspect independent files in parallel without spawning one thread
-    // per part. Preserve input order so corruption reports stay deterministic.
     const PARALLEL_THRESHOLD: usize = 32;
     const MAX_WORKERS: usize = 8;
     let workers = std::thread::available_parallelism()
@@ -222,8 +205,6 @@ pub(crate) fn inspect_parts_metadata(
     })
 }
 
-/// Keep only one part's streams open at once; the executor sees a single
-/// continuous sequence, so GROUP BY, ORDER BY, DISTINCT and LIMIT are global.
 pub struct NumericQueryReader {
     parts: Vec<PathBuf>,
     columns: Vec<String>,
@@ -248,10 +229,6 @@ impl NumericQueryReader {
         })
     }
 
-    /// Skip as much of an unfiltered OFFSET as possible using part/mark
-    /// boundaries. No predicate or DISTINCT rows may be discarded this way.
-    /// The result is the number of complete rows skipped, so the executor can
-    /// still discard a remainder in the first decoded batch.
     pub fn skip_prefix_rows(&mut self, max_rows: usize) -> Result<usize, PartError> {
         if self.next_part != 0 || self.current.is_some() {
             return Err(PartError::InvalidScan(
@@ -260,7 +237,6 @@ impl NumericQueryReader {
         }
         let mut skipped = 0usize;
         while skipped < max_rows && self.next_part < self.parts.len() {
-            // Opening validates stream layout and marks before we skip them.
             let mut reader = NumericPartReader::open(&self.parts[self.next_part], &self.columns)?;
             self.next_part += 1;
             let amount = reader.skip_complete_marks(max_rows - skipped);

@@ -297,8 +297,6 @@ mod tests {
             }
         );
 
-        // The total row count still matches count.txt, but the score column
-        // splits the two rows into different granules.
         let mut marks = Vec::new();
         for offset in [0u64, 8] {
             marks.extend_from_slice(&0u64.to_le_bytes());

@@ -1,5 +1,3 @@
-//! Read typed batches from immutable wide MergeTree parts.
-//! This reader is deliberately separate from the optimized numeric-only scan.
 use crate::granules::{read_mark_bytes_cached, read_numeric_granule_cached};
 use crate::numeric::numeric_storage_type;
 use crate::query_parts;
@@ -82,7 +80,6 @@ impl Stream {
     }
 }
 
-/// Read logical variable-width bytes across verified compressed blocks.
 struct MarkStream<'a> {
     stream: &'a mut Stream,
     block: Option<DecodedBlock>,
@@ -95,8 +92,6 @@ impl<'a> MarkStream<'a> {
         let offset = usize::try_from(mark.decompressed_offset).map_err(|_| {
             PartError::InvalidScan("String mark offset exceeds address space".into())
         })?;
-        // Adjacent String marks can point into the same compressed block.
-        // Reuse its verified decoded bytes instead of decompressing them again.
         let block = match stream
             .cached
             .take()
@@ -151,7 +146,6 @@ impl Read for MarkStream<'_> {
 
 impl Drop for MarkStream<'_> {
     fn drop(&mut self) {
-        // Preserve the last decoded block for the following adaptive mark.
         self.stream.cached = self.block.take();
     }
 }
@@ -262,14 +256,10 @@ impl TypedPartReader {
         })
     }
 
-    /// Number of validated granules in this immutable part.
     pub fn mark_count(&self) -> usize {
         self.marks
     }
 
-    /// Seek to a validated granule without decoding preceding granules.
-    /// The end sentinel (mark_count) is accepted and yields no further batches.
-    /// Callers must still evaluate row predicates on returned batches.
     pub fn seek_to_mark(&mut self, index: usize) -> Result<(), PartError> {
         if index > self.marks {
             return Err(PartError::InvalidGranuleIndex {
@@ -287,7 +277,6 @@ impl TypedPartReader {
         }
         let index = self.next_mark;
         if self.columns[0].data.marks[index].rows == Some(0) {
-            // A terminal zero-row mark is metadata only, not a data granule.
             self.next_mark = self.marks;
             return Ok(None);
         }
@@ -345,8 +334,6 @@ impl TypedPartReader {
     }
 }
 
-/// Read typed rows from one part or a frozen multi-part snapshot.
-/// Only one part's file streams are held open at a time.
 pub struct TypedQueryReader {
     parts: Vec<PathBuf>,
     columns: Vec<String>,

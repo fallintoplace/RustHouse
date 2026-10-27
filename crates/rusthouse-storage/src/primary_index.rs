@@ -32,12 +32,6 @@ impl FixedPrimaryIndex {
     }
 }
 
-/// Conservative granule range for an ascending UInt64 first-key index.
-///
-/// Every mark contains the first key of a sorted granule. The predecessor of
-/// the first matching mark may still contain matching rows, so include it.
-/// This is an index-planning primitive, not a substitute for row predicates.
-/// Returns None for an unsupported field or an invalid/unsorted index.
 fn u64_mark_key(index: &FixedPrimaryIndex, mark: usize, field: usize) -> Option<u64> {
     let bytes: [u8; 8] = index.field(mark, field)?.try_into().ok()?;
     Some(u64::from_le_bytes(bytes))
@@ -50,7 +44,6 @@ pub fn candidate_u64_mark_range(
     upper: Bound<u64>,
 ) -> Option<Range<usize>> {
     let len = index.len();
-    // Keep the same conservative safety check without materializing every key.
     let mut previous = None;
     for mark in 0..len {
         let key = u64_mark_key(index, mark, field)?;
@@ -60,7 +53,6 @@ pub fn candidate_u64_mark_range(
         previous = Some(key);
     }
 
-    // The complete index layout and ordering have been validated above.
     let key_at = |mark| u64_mark_key(index, mark, field).unwrap();
     let partition_point = |target: u64, inclusive: bool| {
         let mut low = 0;
@@ -201,7 +193,6 @@ mod tests {
             field_offsets: vec![0, 8],
             row_width: 8,
         };
-        // Every granule begins with its index key but can contain later keys.
         let rows = [10..20, 20..30, 30..40, 40..50];
         for lower in 0..60 {
             for upper in lower..60 {

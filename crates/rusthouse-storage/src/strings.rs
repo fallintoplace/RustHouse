@@ -132,7 +132,6 @@ pub fn read_sized_strings<S: Read, D: Read>(
 ) -> Result<StringColumn, StringReadError> {
     checked_rows(rows)?;
     let mut values = StringColumn::new(rows);
-    // Read size entries in bounded chunks without consuming bytes from the next batch.
     let mut buffer = [0u8; 8 * 1024];
     let mut decoded_rows = 0;
     while decoded_rows < rows {

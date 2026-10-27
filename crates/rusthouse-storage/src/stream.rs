@@ -73,8 +73,6 @@ impl<R: Read + Seek> Iterator for UInt64ColumnReader<R> {
             return None;
         }
 
-        // Most values fit entirely in the current decoded block. Skip the
-        // incremental copy loop, while keeping its cross-block fallback.
         if self.current.len().saturating_sub(self.position) >= 8 {
             let start = self.position;
             self.position += 8;

@@ -35,8 +35,6 @@ fn validate_mark_rows(
     expected_rows: u64,
     reference: Option<&[u64]>,
 ) -> Result<Option<Vec<u64>>, PartError> {
-    // Capture only the first column's row counts. Later columns validate
-    // against the reference without allocating another boundary vector.
     let mut first_row_counts = reference.is_none().then(|| Vec::with_capacity(marks.len()));
     let mut total_rows = 0u64;
     for (index, mark) in marks.iter().enumerate() {
@@ -70,7 +68,6 @@ fn validate_mark_rows(
     Ok(first_row_counts)
 }
 
-/// Shared granule boundaries for every requested column in a part scan.
 #[derive(Default)]
 pub(crate) struct ScanLayout {
     reference_row_counts: Option<Vec<u64>>,

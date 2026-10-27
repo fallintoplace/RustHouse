@@ -1,5 +1,3 @@
-//! Small immutable wide-part writer for local SQL inserts.
-//! The caller publishes the completed directory with an atomic rename.
 use crate::{Column, FileChecksum, PartError, UncompressedChecksum};
 use ch_cityhash102::cityhash128;
 use naive_cityhash::{U128, cityhash128_with_seed};
@@ -8,13 +6,10 @@ use std::fs::{self, OpenOptions};
 use std::io::{self, Write};
 use std::path::Path;
 
-// Larger parts reduce open-file and metadata overhead for bulk imports and OPTIMIZE.
 const MAX_PART_ROWS: usize = 32_768;
 const GRANULE_ROWS: usize = 1024;
 const MAX_STREAM_BYTES: usize = 8 * 1024 * 1024;
 
-/// Compression for newly written wide parts. Tiny or incompressible blocks
-/// are still stored uncompressed to avoid making them larger.
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 pub enum PartCompression {
     #[default]
@@ -139,8 +134,6 @@ fn write_file(path: &Path, bytes: &[u8]) -> Result<(), PartError> {
     file.sync_all().map_err(|error| io_error(path, error))
 }
 
-/// ClickHouse HashingWriteBuffer hashes 2048-byte blocks with CityHash128WithSeed,
-/// starting with a zero seed. This differs from compressed block checksums.
 fn checksum_hash(data: &[u8]) -> u128 {
     const HASH_BLOCK_BYTES: usize = 2048;
     let mut seed = U128::new(0, 0);
@@ -196,7 +189,6 @@ fn encode_checksums(files: &[FileChecksum]) -> Vec<u8> {
 
 fn block(data: &[u8], compression: PartCompression) -> Result<Vec<u8>, PartError> {
     let length = u32::try_from(data.len()).map_err(|_| invalid("part column is too large"))?;
-    // Keep tiny and incompressible blocks in the ClickHouse NONE format.
     let compressed = if data.len() >= 128 {
         Some(match compression {
             PartCompression::Lz4 => (0x82, lz4_flex::block::compress(data)),
@@ -217,8 +209,6 @@ fn block(data: &[u8], compression: PartCompression) -> Result<Vec<u8>, PartError
     };
     let compressed_size =
         u32::try_from(payload.len()).map_err(|_| invalid("part column is too large"))?;
-    // Reserve the checksum prefix and write the checked header and payload
-    // directly into the final buffer, avoiding a second allocation and copy.
     let mut result = Vec::with_capacity(16 + 9 + payload.len());
     result.resize(16, 0);
     result.push(method);
@@ -258,9 +248,6 @@ fn validate_part_columns(columns: &[Column]) -> Result<(), PartError> {
     Ok(())
 }
 
-/// Write a new immutable wide part. This function never replaces an existing path.
-/// Each row contains one value per column; None denotes SQL NULL.
-/// Empty tables have no data streams but still include a checksums manifest.
 pub fn write_wide_part(
     part: &Path,
     columns: &[Column],
@@ -269,8 +256,6 @@ pub fn write_wide_part(
     write_wide_part_with_compression(part, columns, rows, PartCompression::Lz4)
 }
 
-/// Write a wide part with an explicit compression codec. Existing callers
-/// continue to use LZ4 through `write_wide_part`.
 pub fn write_wide_part_with_compression(
     part: &Path,
     columns: &[Column],
@@ -357,7 +342,6 @@ pub fn write_wide_part_with_compression(
         }
     }
 
-    // Write the manifest only after all listed files have been synced.
     write_file(&part.join("checksums.txt"), &encode_checksums(&files))?;
     fs::File::open(part)
         .and_then(|dir| dir.sync_all())
@@ -542,7 +526,6 @@ mod tests {
     #[test]
     fn computes_clickhouse_blockwise_seeded_manifest_hashes() {
         assert_eq!(checksum_hash(b""), 0);
-        // CityHash v1.0.2 with seed (0, 0), not CityHash128.
         assert_eq!(
             checksum_hash(b"abc"),
             0xa78da83cc4e0210684541c08b5db83dcu128

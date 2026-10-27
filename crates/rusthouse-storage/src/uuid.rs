@@ -4,7 +4,6 @@ use crate::fixed_width::read_fixed_width;
 use std::fmt;
 use std::io::{self, Read};
 
-/// A UUID in canonical byte order, independent of ClickHouse's disk encoding.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct UuidValue {
     bytes: [u8; 16],
@@ -36,10 +35,6 @@ impl fmt::Display for UuidValue {
     }
 }
 
-/// Decode ClickHouse UUID values from pairs of little-endian UInt64 halves.
-///
-/// Each half is reversed separately to obtain the canonical UUID byte order.
-/// Rows are bounded to 64 MiB and decoded without reading into the next batch.
 pub fn read_uuid_values<R: Read>(reader: &mut R, rows: usize) -> io::Result<Vec<UuidValue>> {
     read_fixed_width(
         reader,
