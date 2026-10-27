@@ -12,7 +12,7 @@ From the repository root:
       --binary target/release/rusthouse \
       --database /path/to/db \
       --queries-file /path/to/ClickBench/clickhouse/queries.sql \
-      --projection-manifest /path/to/projected-columns.json \
+      --projection-manifest bench/clickbench/three-column-projection.json \
       --reference-dir /path/to/sqlite-expected \
       --only 1,2,3,4,5,8,16,20,30 \
       --runs 7 --warmups 2 \
@@ -21,17 +21,23 @@ From the repository root:
 The projection manifest must be explicit. Example:
 
     {
-      "available_columns": ["UserID", "AdvEngineID"],
+      "available_columns": ["UserID", "AdvEngineID", "ResolutionWidth"],
       "query_columns": {
         "1": [],
         "2": ["AdvEngineID"],
-        "3": ["AdvEngineID"],
+        "3": ["AdvEngineID", "ResolutionWidth"],
         "4": ["UserID"]
       }
     }
 
-The example is illustrative; derive dependencies from the exact upstream SQL
-and column names in your actual schema before using it. An empty query list
+The example is illustrative. The repository also ships a validated
+three-column projection manifest for the official 43-query file: queries
+1,2,3,4,5,8,16,20,30 are runnable, 33 queries need omitted columns, and
+query 24 (SELECT *) is intentionally unknown because its full-schema
+requirements cannot be described by the three-column projection.
+Use the included manifest only when the table has exactly UserID, AdvEngineID
+and ResolutionWidth; otherwise derive the manifest from your own schema.
+An empty query list
 means the query needs no physical input columns. A query is skipped as
 skipped_missing_columns if its requirements mention absent columns.
 Unmapped query numbers are unknown_requirements and are **not** counted as
