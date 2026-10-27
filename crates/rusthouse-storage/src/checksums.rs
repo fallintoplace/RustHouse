@@ -150,32 +150,11 @@ fn parse_checksums(content: &[u8], path: &Path) -> Result<PartChecksums, PartErr
     let mut files = Vec::new();
     let mut names = HashSet::new();
     for _ in 0..count {
-        let length = usize::try_from(reader.varuint()?)
-            .map_err(|_| invalid(path, "file name length exceeds address space"))?;
-        let name = std::str::from_utf8(reader.take(length)?)
-            .map_err(|_| invalid(path, "file name is not UTF-8"))?;
-        if !valid_name(name) {
-            return Err(invalid(path, "unsafe or empty file name"));
-        }
-        if !names.insert(name.to_owned()) {
+        let entry = reader.file_checksum()?;
+        if !names.insert(entry.name.clone()) {
             return Err(invalid(path, "duplicate file name"));
         }
-        let size = reader.varuint()?;
-        let hash = reader.hash()?;
-        let uncompressed = match reader.take(1)?[0] {
-            0 => None,
-            1 => Some(UncompressedChecksum {
-                size: reader.varuint()?,
-                hash: reader.hash()?,
-            }),
-            _ => return Err(invalid(path, "invalid compressed flag")),
-        };
-        files.push(FileChecksum {
-            name: name.to_owned(),
-            size,
-            hash,
-            uncompressed,
-        });
+        files.push(entry);
     }
     if reader.remaining() != 0 {
         return Err(invalid(path, "trailing checksums data"));
@@ -248,6 +227,32 @@ impl<'a> BinaryReader<'a> {
 
     fn hash(&mut self) -> Result<u128, PartError> {
         Ok(u128::from_le_bytes(self.take(16)?.try_into().unwrap()))
+    }
+
+    fn file_checksum(&mut self) -> Result<FileChecksum, PartError> {
+        let length = usize::try_from(self.varuint()?)
+            .map_err(|_| invalid(self.path, "file name length exceeds address space"))?;
+        let name = std::str::from_utf8(self.take(length)?)
+            .map_err(|_| invalid(self.path, "file name is not UTF-8"))?;
+        if !valid_name(name) {
+            return Err(invalid(self.path, "unsafe or empty file name"));
+        }
+        let size = self.varuint()?;
+        let hash = self.hash()?;
+        let uncompressed = match self.take(1)?[0] {
+            0 => None,
+            1 => Some(UncompressedChecksum {
+                size: self.varuint()?,
+                hash: self.hash()?,
+            }),
+            _ => return Err(invalid(self.path, "invalid compressed flag")),
+        };
+        Ok(FileChecksum {
+            name: name.to_owned(),
+            size,
+            hash,
+            uncompressed,
+        })
     }
 
     fn varuint(&mut self) -> Result<u64, PartError> {
