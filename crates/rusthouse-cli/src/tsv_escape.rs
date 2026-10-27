@@ -9,6 +9,16 @@ fn hex_digit(value: u8) -> Option<u8> {
     }
 }
 
+fn decode_hex_byte(field: &[u8], index: usize) -> io::Result<u8> {
+    let digits = field.get(index..index + 2).ok_or_else(|| {
+        io::Error::new(io::ErrorKind::InvalidData, "short TSV hex escape")
+    })?;
+    let invalid = || io::Error::new(io::ErrorKind::InvalidData, "invalid TSV hex escape");
+    let high = hex_digit(digits[0]).ok_or_else(invalid)?;
+    let low = hex_digit(digits[1]).ok_or_else(invalid)?;
+    Ok((high << 4) | low)
+}
+
 pub(crate) fn decode_tsv_field(field: &[u8]) -> io::Result<Vec<u8>> {
     let invalid = |message| io::Error::new(io::ErrorKind::InvalidData, message);
     let mut output = Vec::with_capacity(field.len());
@@ -30,15 +40,7 @@ pub(crate) fn decode_tsv_field(field: &[u8]) -> io::Result<Vec<u8>> {
             b'r' => output.push(b'\r'),
             b'0' => output.push(0),
             b'x' => {
-                let high = *field
-                    .get(index + 1)
-                    .ok_or_else(|| invalid("short TSV hex escape"))?;
-                let low = *field
-                    .get(index + 2)
-                    .ok_or_else(|| invalid("short TSV hex escape"))?;
-                let high = hex_digit(high).ok_or_else(|| invalid("invalid TSV hex escape"))?;
-                let low = hex_digit(low).ok_or_else(|| invalid("invalid TSV hex escape"))?;
-                output.push((high << 4) | low);
+                output.push(decode_hex_byte(field, index + 1)?);
                 index += 2;
             }
             _ => return Err(invalid("unknown TSV escape")),
@@ -51,6 +53,19 @@ pub(crate) fn decode_tsv_field(field: &[u8]) -> io::Result<Vec<u8>> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn reads_hex_pairs_and_keeps_error_categories() {
+        assert_eq!(decode_hex_byte(b"aF", 0).unwrap(), 0xaf);
+        assert_eq!(
+            decode_hex_byte(b"0", 0).unwrap_err().kind(),
+            io::ErrorKind::InvalidData
+        );
+        assert_eq!(
+            decode_hex_byte(b"g0", 0).unwrap_err().kind(),
+            io::ErrorKind::InvalidData
+        );
+    }
 
     #[test]
     fn decodes_control_and_hex_escapes() {
