@@ -73,15 +73,17 @@ fn checked_multiply(left: Number, right: Number) -> Result<Number, ExecutionErro
         (Number::Float(_), _) | (_, Number::Float(_)) => {
             Ok(Number::Float(as_float(left) * as_float(right)))
         }
-        (Number::Unsigned(a), Number::Unsigned(b)) => a
-            .checked_mul(b)
-            .map(Number::Unsigned)
-            .ok_or_else(|| ExecutionError::Invalid("unsigned aggregate expression overflow".into())),
+        (Number::Unsigned(a), Number::Unsigned(b)) => {
+            a.checked_mul(b).map(Number::Unsigned).ok_or_else(|| {
+                ExecutionError::Invalid("unsigned aggregate expression overflow".into())
+            })
+        }
         (a, b) => {
             let signed = |number: Number| match number {
                 Number::Signed(value) => Ok(value),
-                Number::Unsigned(value) => i128::try_from(value)
-                    .map_err(|_| ExecutionError::Invalid("aggregate expression exceeds Int128".into())),
+                Number::Unsigned(value) => i128::try_from(value).map_err(|_| {
+                    ExecutionError::Invalid("aggregate expression exceeds Int128".into())
+                }),
                 Number::Float(_) => unreachable!(),
             };
             signed(a)?
