@@ -560,9 +560,7 @@ pub fn handle_request(method: &str, target: &str, body: &[u8], config: &Config) 
                 }
                 QueryFormat::Csv | QueryFormat::CsvNoHeader => "text/csv; charset=utf-8",
                 QueryFormat::Jsonl => "application/x-ndjson; charset=utf-8",
-                QueryFormat::Json | QueryFormat::JsonPretty => {
-                    "application/json; charset=utf-8"
-                },
+                QueryFormat::Json | QueryFormat::JsonPretty => "application/json; charset=utf-8",
                 QueryFormat::JsonCompactEachRow => "application/x-ndjson; charset=utf-8",
                 QueryFormat::SqlValues => "text/plain; charset=utf-8",
                 QueryFormat::Markdown => "text/markdown; charset=utf-8",

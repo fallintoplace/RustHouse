@@ -54,11 +54,6 @@ fn pretty_json_rejects_duplicate_columns_and_unknown_formats() {
     );
     assert_eq!(invalid.status, "400 Bad Request");
 
-    let unsupported = handle_request(
-        "POST",
-        "/?format=json-prettyx",
-        b"SELECT 1",
-        &config(),
-    );
+    let unsupported = handle_request("POST", "/?format=json-prettyx", b"SELECT 1", &config());
     assert_eq!(unsupported.status, "400 Bad Request");
 }
