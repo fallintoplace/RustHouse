@@ -51,6 +51,9 @@ pub(super) fn is_function(name: &str) -> bool {
         || name.eq_ignore_ascii_case("IN_RANGE")
         || name.eq_ignore_ascii_case("MUL_DIV")
         || name.eq_ignore_ascii_case("WIDTH_BUCKET")
+        || name.eq_ignore_ascii_case("BIT_SET")
+        || name.eq_ignore_ascii_case("BIT_CLEAR")
+        || name.eq_ignore_ascii_case("BIT_TOGGLE")
         || name.eq_ignore_ascii_case("CLAMP")
         || name.eq_ignore_ascii_case("CEIL_DIV")
         || name.eq_ignore_ascii_case("FLOOR_DIV")
@@ -443,6 +446,30 @@ fn parse_width_bucket(parser: &mut Parser, depth: usize) -> Result<i64, ParseErr
     i64::try_from(bucket).map_err(|_| overflow())
 }
 
+/// Modify a single bit in the signed 64-bit two's-complement representation.
+fn parse_bit_update(parser: &mut Parser, depth: usize) -> Result<i64, ParseError> {
+    let name = parser.word()?;
+    require_token(parser, Token::LParen, "bit update requires '('")?;
+    let value = expression(parser, depth + 1)?;
+    require_token(parser, Token::Comma, "bit update requires two arguments")?;
+    let index = expression(parser, depth + 1)?;
+    require_token(parser, Token::RParen, "bit update requires ')'")?;
+    let index = u32::try_from(index)
+        .map_err(|_| ParseError("bit index must be between 0 and 63".into()))?;
+    if index >= i64::BITS {
+        return Err(ParseError("bit index must be between 0 and 63".into()));
+    }
+    let mask = 1_u64 << index;
+    let bits = value as u64;
+    let result = match name.to_ascii_uppercase().as_str() {
+        "BIT_SET" => bits | mask,
+        "BIT_CLEAR" => bits & !mask,
+        "BIT_TOGGLE" => bits ^ mask,
+        _ => unreachable!("only bit-update functions reach this parser"),
+    };
+    Ok(result as i64)
+}
+
 fn gcd(mut left: u64, mut right: u64) -> u64 {
     while right != 0 {
         let remainder = left % right;
@@ -668,6 +695,15 @@ fn factor(parser: &mut Parser, depth: usize) -> Result<i64, ParseError> {
     }
     if parser.keyword("WIDTH_BUCKET") {
         return parse_width_bucket(parser, depth);
+    }
+    if matches!(
+        parser.tokens.get(parser.index),
+        Some(Token::Word(name)) if matches!(
+            name.to_ascii_uppercase().as_str(),
+            "BIT_SET" | "BIT_CLEAR" | "BIT_TOGGLE"
+        )
+    ) {
+        return parse_bit_update(parser, depth);
     }
     if matches!(parser.tokens.get(parser.index), Some(Token::Word(name)) if name.eq_ignore_ascii_case("GCD") || name.eq_ignore_ascii_case("LCM"))
     {
