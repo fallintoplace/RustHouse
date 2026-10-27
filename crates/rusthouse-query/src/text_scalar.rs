@@ -6,7 +6,7 @@ const MAX_TEXT_BYTES: usize = 1_048_576;
 pub(super) fn is_function(name: &str) -> bool {
     matches!(
         name.to_ascii_uppercase().as_str(),
-        "LENGTH" | "CHAR_LENGTH" | "LOWER" | "UPPER" | "CONCAT" | "SUBSTRING" | "TRIM"
+        "LENGTH" | "CHAR_LENGTH" | "LOWER" | "UPPER" | "CONCAT" | "SUBSTRING" | "TRIM" | "REPLACE"
     )
 }
 
@@ -132,6 +132,35 @@ fn parse_at_depth(parser: &mut Parser, depth: usize) -> Result<ConstantValue, Pa
             match input {
                 Some(value) => ConstantValue::Text(value.trim_matches(' ').to_owned()),
                 None => ConstantValue::Null,
+            }
+        }
+        "REPLACE" => {
+            let input = text_arg(parser, depth + 1)?;
+            require(parser, Token::Comma, "REPLACE requires a search string")?;
+            let needle = text_arg(parser, depth + 1)?;
+            require(parser, Token::Comma, "REPLACE requires a replacement string")?;
+            let replacement = text_arg(parser, depth + 1)?;
+            require(parser, Token::RParen, "expected ')' after REPLACE arguments")?;
+            match (input, needle, replacement) {
+                (Some(input), Some(needle), Some(replacement)) => {
+                    if needle.is_empty() {
+                        ConstantValue::Text(input)
+                    } else {
+                        let matches = input.match_indices(&needle).count();
+                        let removed = matches * needle.len();
+                        let inserted = matches
+                            .checked_mul(replacement.len())
+                            .ok_or_else(|| ParseError("REPLACE result is too large".into()))?;
+                        let length = (input.len() - removed)
+                            .checked_add(inserted)
+                            .ok_or_else(|| ParseError("REPLACE result is too large".into()))?;
+                        if length > MAX_TEXT_BYTES {
+                            return Err(ParseError("REPLACE result is too large".into()));
+                        }
+                        ConstantValue::Text(input.replace(&needle, &replacement))
+                    }
+                }
+                _ => ConstantValue::Null,
             }
         }
         _ => return Err(ParseError(format!("unsupported string function: {name}"))),
