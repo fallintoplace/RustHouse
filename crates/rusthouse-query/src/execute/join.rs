@@ -374,7 +374,15 @@ fn execute_streaming_right<W: Write>(
         }
     }
     // Validate cardinality before sending a header or output rows.
-    probe_right(right_path, right_names, right_keys, &left_rows, &hash, false, |_, _| Ok(()))?;
+    probe_right(
+        right_path,
+        right_names,
+        right_keys,
+        &left_rows,
+        &hash,
+        false,
+        |_, _| Ok(()),
+    )?;
     let header = selected
         .iter()
         .map(|(_, name, _)| name.as_str())
@@ -387,24 +395,32 @@ fn execute_streaming_right<W: Write>(
         .offset
         .saturating_add(query.limit.unwrap_or(usize::MAX));
     let mut position = 0usize;
-    probe_right(right_path, right_names, right_keys, &left_rows, &hash, true, |left, right| {
-        if position >= query.offset && position < end {
-            for (index, (column, _, _)) in selected.iter().enumerate() {
-                if index != 0 {
-                    output.write_all(b"\t")?;
+    probe_right(
+        right_path,
+        right_names,
+        right_keys,
+        &left_rows,
+        &hash,
+        true,
+        |left, right| {
+            if position >= query.offset && position < end {
+                for (index, (column, _, _)) in selected.iter().enumerate() {
+                    if index != 0 {
+                        output.write_all(b"\t")?;
+                    }
+                    let value = if *column < left_width {
+                        &left[*column]
+                    } else {
+                        &right[*column - left_width]
+                    };
+                    typed::write_value(output, value)?;
                 }
-                let value = if *column < left_width {
-                    &left[*column]
-                } else {
-                    &right[*column - left_width]
-                };
-                typed::write_value(output, value)?;
+                output.write_all(b"\n")?;
             }
-            output.write_all(b"\n")?;
-        }
-        position += 1;
-        Ok(())
-    })?;
+            position += 1;
+            Ok(())
+        },
+    )?;
     Ok(())
 }
 
