@@ -181,8 +181,8 @@ fn parse_at_depth(parser: &mut Parser, depth: usize) -> Result<ConstantValue, Pa
                     if count < 0 {
                         return Err(ParseError("LEFT count must be nonnegative".into()));
                     }
-                    let count = usize::try_from(count).unwrap_or(usize::MAX).min(value.len());
-                    ConstantValue::Text(value[..count].to_owned())
+                    let count = usize::try_from(count).unwrap_or(usize::MAX);
+                    ConstantValue::Text(value.chars().take(count).collect())
                 }
                 _ => ConstantValue::Null,
             }
