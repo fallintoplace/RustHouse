@@ -28,6 +28,8 @@ pub(super) fn is_function(name: &str) -> bool {
         || name.eq_ignore_ascii_case("GCD")
         || name.eq_ignore_ascii_case("LCM")
         || name.eq_ignore_ascii_case("CLAMP")
+        || name.eq_ignore_ascii_case("CEIL_DIV")
+        || name.eq_ignore_ascii_case("FLOOR_DIV")
 }
 
 pub(super) fn parse(parser: &mut Parser) -> Result<i64, ParseError> {
@@ -200,6 +202,43 @@ fn parse_gcd_lcm(parser: &mut Parser, depth: usize) -> Result<i64, ParseError> {
     i64::try_from(result).map_err(|_| overflow())
 }
 
+fn parse_rounded_division(parser: &mut Parser, depth: usize) -> Result<i64, ParseError> {
+    let name = parser.word()?;
+    require_token(parser, Token::LParen, "rounded division requires '('")?;
+    let dividend = expression(parser, depth + 1)?;
+    require_token(
+        parser,
+        Token::Comma,
+        "rounded division requires two arguments",
+    )?;
+    let divisor = expression(parser, depth + 1)?;
+    require_token(
+        parser,
+        Token::RParen,
+        "expected ')' after rounded division arguments",
+    )?;
+    if divisor == 0 {
+        return Err(ParseError("rounded division by zero".into()));
+    }
+
+    // i128 also handles i64::MIN / -1 without overflowing before validation.
+    let dividend = i128::from(dividend);
+    let divisor = i128::from(divisor);
+    let quotient = dividend / divisor;
+    let remainder = dividend % divisor;
+    let same_sign = (dividend < 0) == (divisor < 0);
+    let result = if remainder == 0 {
+        quotient
+    } else if name.eq_ignore_ascii_case("CEIL_DIV") && same_sign {
+        quotient + 1
+    } else if name.eq_ignore_ascii_case("FLOOR_DIV") && !same_sign {
+        quotient - 1
+    } else {
+        quotient
+    };
+    i64::try_from(result).map_err(|_| overflow())
+}
+
 fn factor(parser: &mut Parser, depth: usize) -> Result<i64, ParseError> {
     if depth >= MAX_DEPTH {
         return Err(ParseError(
@@ -219,6 +258,10 @@ fn factor(parser: &mut Parser, depth: usize) -> Result<i64, ParseError> {
     }
     if parser.keyword("CLAMP") {
         return parse_clamp(parser, depth);
+    }
+    if matches!(parser.tokens.get(parser.index), Some(Token::Word(name)) if name.eq_ignore_ascii_case("CEIL_DIV") || name.eq_ignore_ascii_case("FLOOR_DIV"))
+    {
+        return parse_rounded_division(parser, depth);
     }
     if matches!(parser.tokens.get(parser.index), Some(Token::Word(name)) if name.eq_ignore_ascii_case("GCD") || name.eq_ignore_ascii_case("LCM"))
     {
