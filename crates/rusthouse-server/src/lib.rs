@@ -284,6 +284,7 @@ enum QueryFormat {
     CsvNoHeader,
     Jsonl,
     Json,
+    JsonPretty,
     JsonCompactEachRow,
     SqlValues,
     Markdown,
@@ -298,6 +299,7 @@ impl QueryFormat {
             "csv-no-header" => Self::CsvNoHeader,
             "jsonl" => Self::Jsonl,
             "json" => Self::Json,
+            "json-pretty" => Self::JsonPretty,
             "json-compact-each-row" => Self::JsonCompactEachRow,
             "sql-values" => Self::SqlValues,
             "markdown" => Self::Markdown,
@@ -523,8 +525,12 @@ pub fn handle_request(method: &str, target: &str, body: &[u8], config: &Config) 
                     .map_err(rusthouse_query::ExecutionError::Io)
             })
         }
-        QueryFormat::Json => {
-            let mut array = JsonArraySink::new(&mut writer);
+        QueryFormat::Json | QueryFormat::JsonPretty => {
+            let mut array = if matches!(format, QueryFormat::JsonPretty) {
+                JsonArraySink::new_pretty(&mut writer)
+            } else {
+                JsonArraySink::new(&mut writer)
+            };
             let result = {
                 let mut jsonl = JsonlWriter::new(&mut array);
                 execute(&select, part.as_deref(), &mut jsonl)
@@ -554,7 +560,7 @@ pub fn handle_request(method: &str, target: &str, body: &[u8], config: &Config) 
                 }
                 QueryFormat::Csv | QueryFormat::CsvNoHeader => "text/csv; charset=utf-8",
                 QueryFormat::Jsonl => "application/x-ndjson; charset=utf-8",
-                QueryFormat::Json => "application/json; charset=utf-8",
+                QueryFormat::Json | QueryFormat::JsonPretty => "application/json; charset=utf-8",
                 QueryFormat::JsonCompactEachRow => "application/x-ndjson; charset=utf-8",
                 QueryFormat::SqlValues => "text/plain; charset=utf-8",
                 QueryFormat::Markdown => "text/markdown; charset=utf-8",
