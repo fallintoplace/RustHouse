@@ -71,7 +71,8 @@ fn read_rows(
         return Err(invalid("JOIN requires nonempty table schemas"));
     }
     let mut reader = TypedQueryReader::open(path, names)?;
-    let mut rows = Vec::new();
+    // expected_rows is already bounded by row_limit, so reserve once for the build.
+    let mut rows = Vec::with_capacity(expected_rows as usize);
     let mut retained_bytes = 0usize;
     while let Some(batch) = reader.next_batch()? {
         for row_index in 0..batch[0].len() {
