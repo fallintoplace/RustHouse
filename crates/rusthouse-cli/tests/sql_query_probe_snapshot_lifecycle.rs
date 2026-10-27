@@ -42,8 +42,8 @@ fn snapshot_rewrites_keep_queries_consistent_before_and_after_changes() {
             "id\tamount\n4\t30\n3\t\\N\n2\t20\n",
         ),
         (
-            "SELECT bucket, sum(amount) AS total FROM accounts GROUP BY bucket ORDER BY bucket",
-            "bucket\ttotal\na\t30\nb\t30\nc\t0\n",
+            "SELECT bucket, sum(amount) FROM accounts GROUP BY bucket ORDER BY bucket",
+            "bucket\tsum(amount)\na\t30\nb\t30\nc\t0\n",
         ),
     ] {
         assert_eq!(run(&db, sql), expected, "{sql}");
