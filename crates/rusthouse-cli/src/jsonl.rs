@@ -44,6 +44,18 @@ fn parse_headers(line: &[u8]) -> io::Result<Vec<Vec<u8>>> {
     let mut seen = HashSet::new();
     let mut headers = Vec::new();
     for header in line.split(|byte| *byte == b'\t') {
+        if headers.len() >= 64 {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                "JSONL supports at most 64 columns",
+            ));
+        }
+        if header.is_empty() || std::str::from_utf8(header).is_err() {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                "JSONL header is empty or not UTF-8",
+            ));
+        }
         if !seen.insert(header) {
             return Err(io::Error::new(
                 io::ErrorKind::InvalidData,
@@ -205,6 +217,19 @@ mod tests {
     }
 
     #[test]
+    fn rejects_empty_and_excessive_headers() {
+        let mut writer = JsonlWriter::new(Vec::new());
+        assert!(writer.write_all(b"\n").is_err());
+
+        let columns = (0..65)
+            .map(|index| format!("c{index}"))
+            .collect::<Vec<_>>()
+            .join("\t");
+        let mut writer = JsonlWriter::new(Vec::new());
+        assert!(writer.write_all(format!("{columns}\n").as_bytes()).is_err());
+    }
+
+    #[test]
     fn rejects_oversized_rows() {
         let mut writer = JsonlWriter::new(Vec::new());
         assert!(writer.write_all(&vec![b'a'; MAX_LINE_BYTES + 1]).is_err());
@@ -227,9 +252,8 @@ mod tests {
     #[test]
     fn rejects_invalid_utf8_in_headers_and_values() {
         let mut writer = JsonlWriter::new(Vec::new());
-        writer.write_all(b"\xff\n").unwrap();
         assert_eq!(
-            writer.write_all(b"1\n").unwrap_err().kind(),
+            writer.write_all(b"\xff\n").unwrap_err().kind(),
             io::ErrorKind::InvalidData
         );
 
