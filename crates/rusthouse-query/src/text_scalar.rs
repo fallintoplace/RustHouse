@@ -9,6 +9,7 @@ pub(super) fn is_function(name: &str) -> bool {
         "LENGTH"
             | "CHAR_LENGTH"
             | "BTRIM"
+            | "RTRIM"
             | "LOWER"
             | "UPPER"
             | "REVERSE"
@@ -458,6 +459,24 @@ fn parse_at_depth(parser: &mut Parser, depth: usize) -> Result<ConstantValue, Pa
                         ConstantValue::Text(value.repeat(count))
                     }
                 }
+                _ => ConstantValue::Null,
+            }
+        }
+        "RTRIM" => {
+            let input = text_arg(parser, depth + 1)?;
+            let characters = if parser.take(Token::Comma) {
+                Some(text_arg(parser, depth + 1)?)
+            } else {
+                None
+            };
+            require(parser, Token::RParen, "expected ')' after RTRIM arguments")?;
+            match (input, characters) {
+                (Some(input), None) => {
+                    ConstantValue::Text(input.trim_end_matches(' ').to_owned())
+                }
+                (Some(input), Some(Some(characters))) => ConstantValue::Text(
+                    input.trim_end_matches(|ch| characters.contains(ch)).to_owned(),
+                ),
                 _ => ConstantValue::Null,
             }
         }
