@@ -28,11 +28,15 @@ fn join_filters_null_extended_rows_and_streamed_matches() {
         assert!(result.status.success(), "{statement}: {result:?}");
     }
 
-    let anti_left = sql("SELECT l.id FROM lefts l LEFT JOIN rights r ON l.k = r.k WHERE r.id IS NULL ORDER BY l.id LIMIT 10");
+    let anti_left = sql(
+        "SELECT l.id FROM lefts l LEFT JOIN rights r ON l.k = r.k WHERE r.id IS NULL ORDER BY l.id LIMIT 10",
+    );
     assert!(anti_left.status.success(), "{anti_left:?}");
     assert_eq!(anti_left.stdout, b"l.id\n2\n3\n");
 
-    let anti_right = sql("SELECT r.id FROM lefts l FULL JOIN rights r ON l.k = r.k WHERE l.id IS NULL ORDER BY r.id LIMIT 10");
+    let anti_right = sql(
+        "SELECT r.id FROM lefts l FULL JOIN rights r ON l.k = r.k WHERE l.id IS NULL ORDER BY r.id LIMIT 10",
+    );
     assert!(anti_right.status.success(), "{anti_right:?}");
     assert_eq!(anti_right.stdout, b"r.id\n8\n9\n");
 
