@@ -1,0 +1,76 @@
+#!/usr/bin/env python3
+"""Attempt all 22 supplied qNN.sql queries and report exact execution coverage.
+
+A successful query without a trusted reference is UNVERIFIED. This does not
+calculate a TPC-H Power, Throughput, or QphH score.
+"""
+import argparse
+import subprocess
+import sys
+from pathlib import Path
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+from common import cli_sql, emit_json
+from run import benchmark_one, summarize_coverage
+
+
+def clean_sql(path):
+    text = "\n".join(line for line in path.read_text(encoding="utf-8").splitlines()
+                     if not line.lstrip().startswith("--")).strip()
+    return text.rstrip(";").strip()
+
+
+def coverage(binary, database, query_dir, reference_dir=None, runs=3, warmups=1,
+             timeout=120, execute=None):
+    if runs < 1 or warmups < 0 or timeout <= 0:
+        raise ValueError("invalid timing parameters")
+    if execute is None:
+        execute = lambda sql: cli_sql(binary, database, sql, timeout)
+    results = []
+    for number in range(1, 23):
+        path = Path(query_dir) / f"q{number:02d}.sql"
+        if not path.is_file():
+            results.append({"query": number, "status": "missing_query",
+                            "timings_seconds": [], "latency": None, "error": str(path)})
+            continue
+        sql = clean_sql(path)
+        if not sql or len(sql.encode("utf-8")) > 4096:
+            results.append({"query": number, "status": "unsupported_query",
+                            "timings_seconds": [], "latency": None,
+                            "error": "empty query or exceeds SQL statement limit"})
+            continue
+        reference = None
+        if reference_dir is not None:
+            ref = Path(reference_dir) / f"q{number:02d}.tsv"
+            if not ref.is_file():
+                results.append({"query": number, "status": "missing_reference",
+                                "timings_seconds": [], "latency": None, "error": str(ref)})
+                continue
+            reference = ref.read_bytes()
+        results.append(benchmark_one(number, sql, execute, runs, warmups, reference))
+    return {"workload": "tpch-22-query-execution-inventory",
+            "official_tpch_score": False, "reference_checked": reference_dir is not None,
+            "coverage": summarize_coverage(results), "results": results}
+
+
+def main(argv=None):
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--binary", type=Path, required=True)
+    parser.add_argument("--database", type=Path, required=True)
+    parser.add_argument("--queries-dir", type=Path, required=True)
+    parser.add_argument("--reference-dir", type=Path)
+    parser.add_argument("--runs", type=int, default=3)
+    parser.add_argument("--warmups", type=int, default=1)
+    parser.add_argument("--timeout", type=float, default=120)
+    parser.add_argument("--output", type=Path)
+    args = parser.parse_args(argv)
+    try:
+        result = coverage(args.binary, args.database, args.queries_dir,
+                          args.reference_dir, args.runs, args.warmups, args.timeout)
+    except (OSError, ValueError) as error:
+        parser.exit(1, f"TPC-H inventory failed: {error}\n")
+    emit_json(result, args.output)
+    return int(result["coverage"]["failed_queries"] > 0)
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

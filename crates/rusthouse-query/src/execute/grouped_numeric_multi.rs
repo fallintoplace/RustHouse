@@ -58,6 +58,7 @@ pub(super) fn execute<W: Write>(
         return Ok(());
     }
 
+    let group_index = indices[column];
     let item_indices = items.iter().map(|(_, name)| indices[name]).collect::<Vec<_>>();
     let mut groups = Vec::<(Cell, Vec<AggregateState>)>::new();
     let mut by_key = HashMap::<typed::Key, usize>::new();
@@ -68,7 +69,7 @@ pub(super) fn execute<W: Write>(
             if !typed::passes(&batch, row, &conditions) {
                 continue;
             }
-            let index = if let TypedColumn::Text(values) = &batch[indices[column]] {
+            let index = if let TypedColumn::Text(values) = &batch[group_index] {
                 let key = values.get(row).ok_or_else(|| {
                     ExecutionError::Invalid("invalid String row index".into())
                 })?;
@@ -84,7 +85,7 @@ pub(super) fn execute<W: Write>(
                     group
                 }
             } else {
-                let key = typed::cell(&batch[indices[column]], row);
+                let key = typed::cell(&batch[group_index], row);
                 match by_key.entry(key.key()) {
                     Entry::Occupied(entry) => *entry.get(),
                     Entry::Vacant(entry) => {
