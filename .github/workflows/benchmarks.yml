@@ -1,0 +1,26 @@
+name: Rust benchmarks
+
+on:
+  workflow_dispatch:
+  schedule:
+    - cron: '17 3 * * *'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: rust-bench-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  benchmark:
+    name: Rust benchmarks (ubuntu-latest)
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v6
+      - uses: Swatinem/rust-cache@v2
+        with:
+          save-if: ${{ github.event_name == 'schedule' }}
+      - run: cargo bench -p rusthouse-query --bench queries --locked -- --rows 1000 --samples 3
+      - run: cargo bench -p rusthouse-query --bench parts --locked -- --rows 1024 --samples 3
