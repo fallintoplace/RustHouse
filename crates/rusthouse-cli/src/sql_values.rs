@@ -1,3 +1,4 @@
+use crate::tsv_escape::decode_tsv_field;
 use std::borrow::Cow;
 use std::io::{self, Write};
 
@@ -7,60 +8,13 @@ fn invalid(message: &'static str) -> io::Error {
     io::Error::new(io::ErrorKind::InvalidData, message)
 }
 
-fn hex(value: u8) -> Option<u8> {
-    match value {
-        b'0'..=b'9' => Some(value - b'0'),
-        b'a'..=b'f' => Some(value - b'a' + 10),
-        b'A'..=b'F' => Some(value - b'A' + 10),
-        _ => None,
-    }
-}
-
-fn decode_field(field: &[u8]) -> io::Result<Vec<u8>> {
-    let mut output = Vec::with_capacity(field.len());
-    let mut index = 0;
-    while index < field.len() {
-        if field[index] != b'\\' {
-            output.push(field[index]);
-            index += 1;
-            continue;
-        }
-        index += 1;
-        let escaped = *field
-            .get(index)
-            .ok_or_else(|| invalid("incomplete TSV escape"))?;
-        output.push(match escaped {
-            b'\\' => b'\\',
-            b't' => b'\t',
-            b'n' => b'\n',
-            b'r' => b'\r',
-            b'0' => 0,
-            b'x' => {
-                let high = field
-                    .get(index + 1)
-                    .and_then(|byte| hex(*byte))
-                    .ok_or_else(|| invalid("invalid TSV hex escape"))?;
-                let low = field
-                    .get(index + 2)
-                    .and_then(|byte| hex(*byte))
-                    .ok_or_else(|| invalid("invalid TSV hex escape"))?;
-                index += 2;
-                (high << 4) | low
-            }
-            _ => return Err(invalid("unknown TSV escape")),
-        });
-        index += 1;
-    }
-    Ok(output)
-}
-
 fn append_literal(output: &mut Vec<u8>, field: &[u8]) -> io::Result<()> {
     if field == b"\\N" {
         output.extend_from_slice(b"NULL");
         return Ok(());
     }
     let decoded: Cow<'_, [u8]> = if field.contains(&b'\\') {
-        Cow::Owned(decode_field(field)?)
+        Cow::Owned(decode_tsv_field(field)?)
     } else {
         Cow::Borrowed(field)
     };
@@ -198,6 +152,14 @@ mod tests {
         assert_eq!(&output[1..1 + field.len()], field.as_bytes());
         assert_eq!(output[0], b'\'');
         assert_eq!(*output.last().unwrap(), b'\'');
+    }
+
+    #[test]
+    fn decodes_hex_escapes_with_shared_decoder() {
+        assert_eq!(
+            render(b"value\nx\\x41\\x42\n").unwrap(),
+            "VALUES ('xAB');\n"
+        );
     }
 
     #[test]
