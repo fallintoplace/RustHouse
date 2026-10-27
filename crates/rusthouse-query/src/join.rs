@@ -281,9 +281,9 @@ pub fn parse_join(sql: &str) -> Result<Option<JoinSelect>, ParseError> {
         {
             return Err(ParseError("joined tables require distinct aliases".into()));
         }
-        if step_any || any {
+        if step_any && !matches!(step_kind, JoinType::Inner | JoinType::Left) {
             return Err(ParseError(
-                "chained ANY JOIN is not supported yet".into(),
+                "ANY JOIN supports only INNER and LEFT joins".into(),
             ));
         }
         if parser.keyword("USING") {
@@ -475,6 +475,22 @@ mod tests {
     use super::*;
 
     #[test]
+    fn parses_chained_any_join_strictness() {
+        let query = parse_join(
+            "SELECT * FROM a x LEFT ANY JOIN b y ON x.id = y.id ANY LEFT JOIN c z ON y.id = z.id",
+        )
+        .unwrap()
+        .unwrap();
+        assert!(query.any);
+        assert!(query.steps[0].any);
+        assert_eq!(query.steps[0].kind, JoinType::Left);
+        assert!(parse_join(
+            "SELECT * FROM a x JOIN b y ON x.id = y.id FULL ANY JOIN c z ON y.id = z.id"
+        )
+        .is_err());
+    }
+
+    #[test]
     fn parses_chained_right_and_full_joins() {
         let query = parse_join(
             "SELECT o.id, r.id FROM orders o JOIN customers c ON o.id = c.id RIGHT JOIN regions r ON c.id = r.id",
@@ -519,7 +535,7 @@ mod tests {
         )
         .is_err());
         assert!(parse_join(
-            "SELECT * FROM a x JOIN b y ON x.id = y.id ANY JOIN c z ON y.id = z.id"
+            "SELECT * FROM a x JOIN b y ON x.id = y.id RIGHT ANY JOIN c z ON y.id = z.id"
         )
         .is_err());
     }
