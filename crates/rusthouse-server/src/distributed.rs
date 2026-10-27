@@ -4,7 +4,7 @@
 use crate::cluster::{Cluster, Peer};
 use crate::remote;
 use crate::{MAX_QUERY_BYTES, MAX_RESPONSE_BYTES, Response};
-use rusthouse_query::{Projection, Select, Source, parse_select};
+use rusthouse_query::{AggregateFunction, Projection, Select, Source, parse_select};
 use std::collections::HashMap;
 
 #[derive(Debug, PartialEq, Eq)]
@@ -15,7 +15,9 @@ enum MergeError {
     CoordinatorLimit,
     InvalidCount,
     InvalidGroupedCount,
+    InvalidSum,
     CountOverflow,
+    SumOverflow,
 }
 
 fn is_safe_scan(select: &Select) -> bool {
@@ -43,6 +45,44 @@ fn is_safe_count(select: &Select) -> bool {
         && select.having.is_none()
         && select.limit.is_none()
         && select.offset.is_none()
+}
+
+/// Only exact integer SUM is decomposable without changing the result type.
+fn is_safe_sum(select: &Select) -> bool {
+    matches!(
+        select.projection,
+        Projection::Aggregate {
+            function: AggregateFunction::Sum,
+            ..
+        }
+    ) && matches!(select.source, Some(Source::Table(_)))
+        && !select.distinct
+        && select.rename.is_none()
+        && select.order_by.is_none()
+        && select.order_by_extra.is_empty()
+        && select.having.is_none()
+        && select.limit.is_none()
+        && select.offset.is_none()
+}
+
+fn integer_type(kind: &str) -> bool {
+    let base = kind
+        .strip_prefix("Nullable(")
+        .and_then(|inner| inner.strip_suffix(')'))
+        .unwrap_or(kind);
+    matches!(
+        base,
+        "UInt8"
+            | "UInt16"
+            | "UInt32"
+            | "UInt64"
+            | "UInt128"
+            | "Int8"
+            | "Int16"
+            | "Int32"
+            | "Int64"
+            | "Int128"
+    )
 }
 
 /// GROUP BY counts can be reduced by key across disjoint read-only shards.
@@ -85,8 +125,45 @@ fn shard_row_cap(peer: Peer) -> Result<usize, String> {
     Ok(cap)
 }
 
-fn read_shard(peer: Peer, sql: &str) -> Result<(usize, Vec<u8>), String> {
+/// Validate the exact integer data type before adding partial sums.
+/// Simple ASCII identifiers cannot inject JSON or an HTTP request target.
+fn shard_integer_kind(peer: Peer, table: &str, column: &str) -> Result<String, String> {
+    let mut bytes = column.bytes();
+    if !bytes
+        .next()
+        .is_some_and(|first| first.is_ascii_alphabetic() || first == b'_')
+        || !bytes.all(|byte| byte.is_ascii_alphanumeric() || byte == b'_')
+    {
+        return Err("distributed SUM requires a simple column identifier".into());
+    }
+    let response = remote::schema(peer, table)?;
+    if response.status != 200 || !response.content_type.starts_with("application/json") {
+        return Err("peer schema lookup failed".into());
+    }
+    let contents =
+        std::str::from_utf8(&response.body).map_err(|_| "peer schema response is not UTF-8")?;
+    let needle = format!("\"name\":\"{column}\",\"type\":\"");
+    let (_, tail) = contents
+        .split_once(needle.as_str())
+        .ok_or("SUM column missing from peer schema")?;
+    let (kind, trailing) = tail
+        .split_once('"')
+        .ok_or("invalid peer schema column type")?;
+    if !trailing.starts_with('}') || !integer_type(kind) {
+        return Err("distributed SUM only supports exact integer columns".into());
+    }
+    Ok(kind.to_owned())
+}
+
+fn read_shard(
+    peer: Peer,
+    sql: &str,
+    sum_schema: Option<(&str, &str)>,
+) -> Result<(usize, Vec<u8>, Option<String>), String> {
     let cap = shard_row_cap(peer)?;
+    let kind = sum_schema
+        .map(|(table, column)| shard_integer_kind(peer, table, column))
+        .transpose()?;
     let result = remote::query(peer, sql)?;
     if result.status != 200 {
         return Err(format!("peer returned HTTP {}", result.status));
@@ -94,7 +171,7 @@ fn read_shard(peer: Peer, sql: &str) -> Result<(usize, Vec<u8>), String> {
     if result.content_type != "text/tab-separated-values; charset=utf-8" {
         return Err("peer did not return TSV".into());
     }
-    Ok((cap, result.body))
+    Ok((cap, result.body, kind))
 }
 
 /// Merge only identical TSV headers and whole, newline-terminated rows.
@@ -194,6 +271,72 @@ fn sum_shard_counts(shards: &[(usize, Vec<u8>)]) -> Result<Vec<u8>, MergeError> 
     let mut result = header.to_vec();
     result.extend_from_slice(format!("{sum}\n").as_bytes());
     Ok(result)
+}
+
+/// Reduce SUM only after all peers agree on the exact integer column type.
+/// NULL represents an empty shard rather than zero or a failed parse.
+fn merge_integer_sums(shards: &[(usize, Vec<u8>)], kind: &str) -> Result<Vec<u8>, MergeError> {
+    let mut expected_header: Option<&[u8]> = None;
+    let mut signed_total = 0i128;
+    let mut unsigned_total = 0u128;
+    let mut seen = false;
+    let unsigned = kind
+        .strip_prefix("Nullable(")
+        .unwrap_or(kind)
+        .starts_with("UInt");
+
+    for (_, body) in shards {
+        if !body.ends_with(b"\n") {
+            return Err(MergeError::InvalidSum);
+        }
+        let end = body
+            .iter()
+            .position(|&byte| byte == b'\n')
+            .ok_or(MergeError::InvalidSum)?;
+        let header = &body[..=end];
+        if header.len() <= 1 || body.len() <= end + 1 {
+            return Err(MergeError::InvalidSum);
+        }
+        if let Some(expected) = expected_header {
+            if expected != header {
+                return Err(MergeError::SchemaMismatch);
+            }
+        } else {
+            expected_header = Some(header);
+        }
+        let value = &body[end + 1..body.len() - 1];
+        if value == b"NULL" {
+            continue;
+        }
+        let digits = std::str::from_utf8(value).map_err(|_| MergeError::InvalidSum)?;
+        if digits.is_empty() {
+            return Err(MergeError::InvalidSum);
+        }
+        if unsigned {
+            let partial = digits.parse::<u128>().map_err(|_| MergeError::InvalidSum)?;
+            unsigned_total = unsigned_total
+                .checked_add(partial)
+                .ok_or(MergeError::SumOverflow)?;
+        } else {
+            let partial = digits.parse::<i128>().map_err(|_| MergeError::InvalidSum)?;
+            signed_total = signed_total
+                .checked_add(partial)
+                .ok_or(MergeError::SumOverflow)?;
+        }
+        seen = true;
+    }
+    let header = expected_header.ok_or(MergeError::InvalidSum)?;
+    let result = if !seen {
+        "NULL".to_owned()
+    } else if unsigned {
+        unsigned_total.to_string()
+    } else {
+        signed_total.to_string()
+    };
+    let mut output = header.to_vec();
+    output.extend_from_slice(result.as_bytes());
+    output.push(b'\n');
+    Ok(output)
 }
 
 /// Reduce grouped COUNT results by their canonical TSV-encoded key.
@@ -310,19 +453,31 @@ pub fn handle(method: &str, body: &[u8], cluster: &Cluster, max_rows: usize) -> 
         Ok(select)
             if is_safe_scan(&select)
                 || is_safe_count(&select)
-                || is_safe_grouped_count(&select) =>
+                || is_safe_grouped_count(&select)
+                || is_safe_sum(&select) =>
         {
             select
         }
         _ => {
             return Response::text(
                 "400 Bad Request",
-                "distributed queries require unordered SELECT, COUNT, or grouped COUNT without global clauses\n",
+                "distributed queries require unordered SELECT, COUNT, integer SUM, or grouped COUNT without global clauses\n",
             );
         }
     };
     let count_query = is_safe_count(&select);
     let grouped_count_query = is_safe_grouped_count(&select);
+    let sum_query = is_safe_sum(&select);
+    let sum_schema = match (&select.source, &select.projection) {
+        (
+            Some(Source::Table(table)),
+            Projection::Aggregate {
+                function: AggregateFunction::Sum,
+                column,
+            },
+        ) => Some((table.as_str(), column.as_str())),
+        _ => None,
+    };
     // Verify that only a named database table can be scanned.
     if !matches!(select.source, Some(Source::Table(_))) || cluster.peers().is_empty() {
         return Response::text(
@@ -334,7 +489,7 @@ pub fn handle(method: &str, body: &[u8], cluster: &Cluster, max_rows: usize) -> 
         let handles = cluster
             .peers()
             .iter()
-            .map(|&peer| scope.spawn(move || read_shard(peer, sql)))
+            .map(|&peer| scope.spawn(move || read_shard(peer, sql, sum_schema)))
             .collect::<Vec<_>>();
         handles
             .into_iter()
@@ -346,9 +501,24 @@ pub fn handle(method: &str, body: &[u8], cluster: &Cluster, max_rows: usize) -> 
             .collect::<Vec<_>>()
     });
     let mut shards = Vec::with_capacity(results.len());
+    let mut sum_type: Option<String> = None;
     for result in results {
         match result {
-            Ok(shard) => shards.push(shard),
+            Ok((cap, body, kind)) => {
+                if let Some(kind) = kind {
+                    if sum_type
+                        .as_deref()
+                        .is_some_and(|existing| existing != kind.as_str())
+                    {
+                        return Response::text(
+                            "409 Conflict",
+                            "distributed SUM shard column types disagree\n",
+                        );
+                    }
+                    sum_type = Some(kind);
+                }
+                shards.push((cap, body));
+            }
             Err(message) => {
                 return Response::text("502 Bad Gateway", &format!("{message}\n"));
             }
@@ -356,6 +526,12 @@ pub fn handle(method: &str, body: &[u8], cluster: &Cluster, max_rows: usize) -> 
     }
     let merged = if count_query {
         sum_shard_counts(&shards)
+    } else if sum_query {
+        sum_type
+            .as_deref()
+            .map_or(Err(MergeError::InvalidSum), |kind| {
+                merge_integer_sums(&shards, kind)
+            })
     } else if grouped_count_query {
         merge_grouped_counts(&shards, max_rows.min(100_000))
     } else {
@@ -386,6 +562,12 @@ pub fn handle(method: &str, body: &[u8], cluster: &Cluster, max_rows: usize) -> 
         }
         Err(MergeError::InvalidGroupedCount) => {
             Response::text("502 Bad Gateway", "malformed shard GROUP BY response\n")
+        }
+        Err(MergeError::InvalidSum) => {
+            Response::text("502 Bad Gateway", "malformed shard SUM response\n")
+        }
+        Err(MergeError::SumOverflow) => {
+            Response::text("413 Payload Too Large", "distributed SUM overflow\n")
         }
         Err(MergeError::CountOverflow) => {
             Response::text("413 Payload Too Large", "distributed count overflow\n")
@@ -573,6 +755,103 @@ mod tests {
                 10
             ),
             Err(MergeError::CountOverflow)
+        );
+    }
+
+    #[test]
+    fn only_accepts_decomposable_integer_sum_queries() {
+        assert!(is_safe_sum(
+            &parse_select("SELECT sum(amount) FROM events WHERE id >= 2").unwrap()
+        ));
+        for sql in [
+            "SELECT sum(amount) FROM events ORDER BY amount",
+            "SELECT sum(amount) FROM events LIMIT 1",
+            "SELECT sum(amount) FROM numbers(10)",
+            "SELECT sum(amount) FROM events GROUP BY amount",
+            "SELECT avg(amount) FROM events",
+        ] {
+            assert!(
+                parse_select(sql).map_or(true, |query| !is_safe_sum(&query)),
+                "{sql}"
+            );
+        }
+        assert!(integer_type("UInt128"));
+        assert!(integer_type("Nullable(Int64)"));
+        assert!(!integer_type("Float64"));
+        assert!(!integer_type("Nullable(String)"));
+    }
+
+    #[test]
+    fn merges_exact_unsigned_signed_and_empty_integer_sums() {
+        assert_eq!(
+            merge_integer_sums(
+                &[
+                    shard(10, "sum(amount)\n18446744073709551615\n"),
+                    shard(10, "sum(amount)\n2\n"),
+                    shard(10, "sum(amount)\nNULL\n"),
+                ],
+                "UInt64",
+            )
+            .unwrap(),
+            b"sum(amount)\n18446744073709551617\n"
+        );
+        assert_eq!(
+            merge_integer_sums(
+                &[
+                    shard(10, "sum(amount)\n-13\n"),
+                    shard(10, "sum(amount)\n5\n"),
+                    shard(10, "sum(amount)\nNULL\n"),
+                ],
+                "Nullable(Int64)",
+            )
+            .unwrap(),
+            b"sum(amount)\n-8\n"
+        );
+        assert_eq!(
+            merge_integer_sums(&[shard(10, "sum(amount)\nNULL\n")], "Int64").unwrap(),
+            b"sum(amount)\nNULL\n"
+        );
+    }
+
+    #[test]
+    fn rejects_malformed_or_overflowing_distributed_sums() {
+        for invalid in [
+            "sum(amount)\n1.25\n",
+            "sum(amount)\n1\n2\n",
+            "sum(amount)\n",
+            "sum(amount)\n1",
+        ] {
+            assert_eq!(
+                merge_integer_sums(&[shard(10, invalid)], "Int64"),
+                Err(MergeError::InvalidSum)
+            );
+        }
+        assert_eq!(
+            merge_integer_sums(
+                &[shard(10, "sum(amount)\n1\n"), shard(10, "sum(total)\n2\n"),],
+                "UInt64",
+            ),
+            Err(MergeError::SchemaMismatch)
+        );
+        assert_eq!(
+            merge_integer_sums(
+                &[
+                    shard(10, "sum(amount)\n340282366920938463463374607431768211455\n"),
+                    shard(10, "sum(amount)\n1\n"),
+                ],
+                "UInt128",
+            ),
+            Err(MergeError::SumOverflow)
+        );
+        assert_eq!(
+            merge_integer_sums(
+                &[
+                    shard(10, "sum(amount)\n170141183460469231731687303715884105727\n"),
+                    shard(10, "sum(amount)\n1\n"),
+                ],
+                "Int128",
+            ),
+            Err(MergeError::SumOverflow)
         );
     }
 

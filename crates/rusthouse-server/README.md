@@ -123,3 +123,21 @@ computes its own count; the coordinator adds counts with checked UInt64
 arithmetic. Shards must hold **disjoint rows**, otherwise duplicated replicated
 rows are counted more than once. `COUNT(DISTINCT ...)` and grouped aggregates
 remain unsupported because summing their results would be incorrect.
+
+## Distributed exact integer SUM
+
+Scalar `SUM(column)` can be reduced across disjoint database shards:
+
+```sql
+SELECT sum(amount) FROM events WHERE id >= 10
+```
+
+The coordinator first verifies that the target column exists on every peer
+and has the **same signed or unsigned integer type** (including Nullable).
+It adds partial sums using checked 128-bit arithmetic. An empty shard
+returns NULL and does not erase a nonempty partial sum. All-empty shards
+produce NULL. Mixed types, floating-point sums, overflow, and global
+ORDER BY / LIMIT / OFFSET are not supported. Grouped SUM remains unsupported.
+
+SUM requests require an additional schema lookup per shard. As with COUNT,
+shards must hold **disjoint source rows** or results double-count data.
