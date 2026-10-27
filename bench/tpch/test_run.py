@@ -3,7 +3,7 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from run import benchmark_one, load_queries, official_22_coverage, select_queries, summary, summarize_coverage
+from run import benchmark_one, load_queries, official_22_coverage, query_fingerprint, select_queries, summary, summarize_coverage
 
 class RunnerTests(unittest.TestCase):
     def test_query_discovery_is_numeric(self):
@@ -69,6 +69,12 @@ class RunnerTests(unittest.TestCase):
         complete = official_22_coverage([(i, "SELECT 1") for i in range(1, 23)])
         self.assertEqual(complete["coverage_percent"], 100.0)
         self.assertEqual(complete["unexpected_query_ids"], [])
+
+    def test_query_fingerprint_stable_and_sensitive_to_sql(self):
+        first = [(6, "SELECT 6"), (1, "SELECT 1")]
+        self.assertEqual(query_fingerprint(first), query_fingerprint(list(reversed(first))))
+        self.assertNotEqual(query_fingerprint(first), query_fingerprint([(6, "SELECT 7"), first[1]]))
+        self.assertEqual(len(query_fingerprint(first)), 64)
 
     def test_error_and_timeout(self):
         def broken(_):
