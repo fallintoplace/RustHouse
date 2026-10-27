@@ -26,3 +26,9 @@ fn division_reports_zero_overflow_and_incomplete_expressions() {
         assert!(evaluate(sql).is_err(), "{sql}");
     }
 }
+
+#[test]
+fn subtraction_works_without_whitespace_and_after_parentheses() {
+    assert_eq!(evaluate("SELECT 10-2 * 3").unwrap(), "4\n4\n");
+    assert_eq!(evaluate("SELECT (10)- -3").unwrap(), "13\n13\n");
+}

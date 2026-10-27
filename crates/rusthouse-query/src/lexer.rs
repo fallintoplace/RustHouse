@@ -137,6 +137,10 @@ pub(super) fn tokenize(sql: &str) -> Result<Vec<Token>, ParseError> {
                 index += 1;
                 punctuation_token(byte)
             }
+            b'-' if matches!(tokens.last(), Some(Token::Number(_) | Token::RParen)) => {
+                index += 1;
+                Token::Minus
+            }
             b'-' if bytes.get(index + 1) == Some(&b'.') => {
                 return Err(ParseError("expected digits after '-'".into()));
             }
@@ -197,6 +201,26 @@ mod tests {
                 Token::Word("number".into()),
                 Token::Operator(Operator::Ne),
                 Token::Number("0".into()),
+            ]
+        );
+    }
+
+    #[test]
+    fn distinguishes_binary_subtraction_from_negative_literals() {
+        assert_eq!(
+            tokenize("1-2 + -3 * (4)-5").unwrap(),
+            vec![
+                Token::Number("1".into()),
+                Token::Minus,
+                Token::Number("2".into()),
+                Token::Plus,
+                Token::Number("-3".into()),
+                Token::Star,
+                Token::LParen,
+                Token::Number("4".into()),
+                Token::RParen,
+                Token::Minus,
+                Token::Number("5".into()),
             ]
         );
     }
