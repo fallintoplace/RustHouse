@@ -83,6 +83,21 @@ def benchmark_one(number, sql, execute, runs, warmups, reference=None):
         "error": error,
     }
 
+def summarize_coverage(results):
+    total = len(results)
+    verified = sum(result["status"] == "passed" for result in results)
+    unverified = sum(result["status"] == "unverified" for result in results)
+    executed = verified + unverified
+    return {
+        "total_queries": total,
+        "verified_queries": verified,
+        "unverified_queries": unverified,
+        "failed_queries": total - executed,
+        "execution_success_percent": round(100 * executed / total, 2) if total else 0.0,
+        "verified_correct_percent": round(100 * verified / total, 2) if total else 0.0,
+    }
+
+
 def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--binary", type=Path, required=True)
@@ -144,6 +159,7 @@ def main(argv=None):
         "timing_scope": "end-to-end CLI invocation, excluding query load and preflight",
         "runs": args.runs, "warmups": args.warmups,
         "reference_checked": args.reference_dir is not None,
+        "coverage": summarize_coverage(results),
         "results": results,
     }
     rendered = json.dumps(report, indent=2) + "\n"
