@@ -11,6 +11,7 @@ pub(super) fn is_function(name: &str) -> bool {
             | "BTRIM"
             | "LOWER"
             | "UPPER"
+            | "IS_EMPTY"
             | "REVERSE"
             | "CONCAT"
             | "CONCAT_WS"
@@ -83,6 +84,14 @@ fn parse_at_depth(parser: &mut Parser, depth: usize) -> Result<ConstantValue, Pa
                     }
                     ConstantValue::Text(result)
                 }
+                None => ConstantValue::Null,
+            }
+        }
+        "IS_EMPTY" => {
+            let input = text_arg(parser, depth + 1)?;
+            require(parser, Token::RParen, "IS_EMPTY requires one argument")?;
+            match input {
+                Some(value) => ConstantValue::Integer(i64::from(value.is_empty())),
                 None => ConstantValue::Null,
             }
         }
