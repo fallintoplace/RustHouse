@@ -78,6 +78,23 @@ fn query(sql: &str, part: &Path) -> String {
 }
 
 #[test]
+fn limit_zero_does_not_open_typed_data_streams() {
+    let part = part();
+    fs::remove_file(part.join("service.bin")).unwrap();
+    for (sql, expected) in [
+        ("SELECT service FROM part LIMIT 0", "service\n"),
+        ("SELECT sum(status) FROM part WHERE service = 'api' LIMIT 0", "sum(status)\n"),
+        (
+            "SELECT service, sum(status) FROM part GROUP BY service LIMIT 0",
+            "service\tsum(status)\n",
+        ),
+    ] {
+        assert_eq!(query(sql, &part), expected, "{sql}");
+    }
+    fs::remove_dir_all(part).unwrap();
+}
+
+#[test]
 fn count_column_excludes_nulls_after_typed_filters() {
     let part = part();
     for (sql, expected) in [
