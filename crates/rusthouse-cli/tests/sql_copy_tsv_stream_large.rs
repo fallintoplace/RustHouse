@@ -77,7 +77,10 @@ fn tsv_copy_groups_medium_rows_into_fewer_verified_parts() {
         NEXT.fetch_add(1, Ordering::Relaxed)
     ));
     fs::create_dir_all(&db).unwrap();
-    let created = sql("CREATE TABLE events (a String, b String, c String, d String)", &db);
+    let created = sql(
+        "CREATE TABLE events (a String, b String, c String, d String)",
+        &db,
+    );
     assert!(created.status.success(), "{created:?}");
     let input = db.join("medium.tsv");
     let value = "q".repeat(512);
@@ -93,16 +96,27 @@ fn tsv_copy_groups_medium_rows_into_fewer_verified_parts() {
         &db,
     );
     assert!(copied.status.success(), "{copied:?}");
-    assert_eq!(sql("SELECT count(*) FROM events", &db).stdout, b"count\n4000\n");
+    assert_eq!(
+        sql("SELECT count(*) FROM events", &db).stdout,
+        b"count\n4000\n"
+    );
     let parts = db.join("events.parts");
     let generation = fs::read_to_string(parts.join(".rusthouse-active")).unwrap();
     let active = parts.join(".rusthouse-versions").join(generation.trim());
     let count = fs::read_dir(active)
         .unwrap()
         .filter(|entry| {
-            entry.as_ref().unwrap().file_name().to_string_lossy().starts_with("all_")
+            entry
+                .as_ref()
+                .unwrap()
+                .file_name()
+                .to_string_lossy()
+                .starts_with("all_")
         })
         .count();
-    assert!(count <= 2, "expected one new data part, got {count} total parts");
+    assert!(
+        count <= 2,
+        "expected one new data part, got {count} total parts"
+    );
     fs::remove_dir_all(db).unwrap();
 }

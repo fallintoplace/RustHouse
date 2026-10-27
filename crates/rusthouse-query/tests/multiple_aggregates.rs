@@ -13,9 +13,18 @@ fn computes_multiple_aggregates_in_one_filtered_scan() {
         NEXT.fetch_add(1, Ordering::Relaxed)
     ));
     let columns = [
-        Column { name: "amount".into(), data_type: "UInt64".into() },
-        Column { name: "width".into(), data_type: "UInt16".into() },
-        Column { name: "tag".into(), data_type: "String".into() },
+        Column {
+            name: "amount".into(),
+            data_type: "UInt64".into(),
+        },
+        Column {
+            name: "width".into(),
+            data_type: "UInt16".into(),
+        },
+        Column {
+            name: "tag".into(),
+            data_type: "String".into(),
+        },
     ];
     let rows = [
         vec![Some("2".into()), Some("10".into()), Some("ok".into())],
