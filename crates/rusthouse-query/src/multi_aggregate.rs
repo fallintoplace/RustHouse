@@ -148,10 +148,9 @@ mod tests {
 
     #[test]
     fn parses_distinct_counts_with_other_aggregates() {
-        let query = parse_select(
-            "SELECT count(DISTINCT customer), count(*), sum(amount) FROM part",
-        )
-        .unwrap();
+        let query =
+            parse_select("SELECT count(DISTINCT customer), count(*), sum(amount) FROM part")
+                .unwrap();
         let Projection::MultipleAggregates(items) = query.projection else {
             panic!("expected multiple aggregates");
         };
