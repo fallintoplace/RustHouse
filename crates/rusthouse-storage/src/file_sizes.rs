@@ -49,10 +49,8 @@ fn verify_part_files(
         if full_hashes {
             verify_stored_hash(&part.join(&entry.name), entry.size, entry.hash)?;
         }
-        if verify_uncompressed {
-            if let Some(uncompressed) = &entry.uncompressed {
-                verify_uncompressed_hash(&part.join(&entry.name), uncompressed)?;
-            }
+        if let (true, Some(uncompressed)) = (verify_uncompressed, &entry.uncompressed) {
+            verify_uncompressed_hash(&part.join(&entry.name), uncompressed)?;
         }
         total_bytes = total_bytes
             .checked_add(entry.size)
