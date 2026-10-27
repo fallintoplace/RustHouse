@@ -52,15 +52,13 @@ fn text_arg(parser: &mut Parser, depth: usize) -> Result<Option<String>, ParseEr
             parser.index += 1;
             Ok(None)
         }
-        Some(Token::Word(word)) if is_function(word) => {
-            match parse_at_depth(parser, depth)? {
-                ConstantValue::Text(value) => Ok(Some(value)),
-                ConstantValue::Null => Ok(None),
-                ConstantValue::Integer(_) => {
-                    Err(ParseError("expected a string expression".into()))
-                }
-            }
-        }
-        _ => Err(ParseError("expected a string literal or string function".into())),
+        Some(Token::Word(word)) if is_function(word) => match parse_at_depth(parser, depth)? {
+            ConstantValue::Text(value) => Ok(Some(value)),
+            ConstantValue::Null => Ok(None),
+            ConstantValue::Integer(_) => Err(ParseError("expected a string expression".into())),
+        },
+        _ => Err(ParseError(
+            "expected a string literal or string function".into(),
+        )),
     }
 }
