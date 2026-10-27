@@ -1,0 +1,43 @@
+name: RustHouse general performance evaluation
+
+on:
+  push:
+    branches:
+      - bench/general-performance-20261027
+
+permissions:
+  contents: read
+
+jobs:
+  general-bench:
+    name: General SQL and storage benchmarks
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v7
+      - uses: Swatinem/rust-cache@v2
+      - name: Runner specifications
+        run: |
+          rustc --version
+          cargo --version
+          lscpu | grep -E 'Model name|CPU\(s\)|Thread\(s\) per core'
+          free -h
+      - name: In-memory filtered query benchmarks
+        run: cargo bench -p rusthouse-query --bench queries --locked -- --rows 100000 --samples 7
+      - name: Sorted part scans
+        run: cargo bench -p rusthouse-query --bench parts --locked -- --rows 65536 --samples 7 --layout sorted
+      - name: Shuffled part scans
+        run: cargo bench -p rusthouse-query --bench parts --locked -- --rows 65536 --samples 7 --layout shuffled
+      - name: Grouped aggregation scans
+        run: cargo bench -p rusthouse-query --bench grouped --locked -- --rows 65536 --stations 413 --samples 7
+      - name: Build CLI in release mode
+        run: cargo build --release -p rusthouse-cli --locked
+      - name: End-to-end join benchmark
+        run: python3 bench/joins/run.py --binary target/release/rusthouse --probe-rows 65536 --build-rows 8192 --runs 5 --warmups 2
+      - name: Synthetic analytical revenue query with reference
+        run: |
+          tmp="$(mktemp -d)"
+          python3 bench/tpch/make_fixture.py --output-dir "$tmp" --rows 60000 --seed 42
+          target/release/rusthouse sql "$(cat "$tmp/create.sql")" --database "$tmp/db"
+          target/release/rusthouse sql "$(cat "$tmp/copy.sql")" --database "$tmp/db"
+          python3 bench/tpch/run.py --binary target/release/rusthouse --database "$tmp/db" --queries-dir "$tmp/queries" --reference-dir "$tmp/references" --runs 5 --warmups 2 --expected-lineitem-rows 60000
