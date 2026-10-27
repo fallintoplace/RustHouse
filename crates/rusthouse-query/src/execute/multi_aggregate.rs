@@ -157,7 +157,7 @@ impl BoundExpr {
                         Box::new(Self::bind(right, indices)?),
                     )
                 }
-            },
+            }
             ScalarExpr::Multiply(left, right) => Self::Multiply(
                 Box::new(Self::bind(left, indices)?),
                 Box::new(Self::bind(right, indices)?),
