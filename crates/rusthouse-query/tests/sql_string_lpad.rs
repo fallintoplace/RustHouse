@@ -16,6 +16,8 @@ fn lpad_pads_truncates_and_counts_unicode_chars() {
         ("SELECT LPAD('abcdef', 3, '.')", "abc"),
         ("SELECT LPAD('猫', 3, '🙂')", "🙂🙂猫"),
         ("SELECT LPAD('x', 0, '.')", ""),
+        ("SELECT LPAD('x', 3)", "  x"),
+        ("SELECT LPAD('é', 3)", "  é"),
         ("SELECT LPAD('abc', 3, '')", "abc"),
         ("SELECT LPAD(UPPER('ab'), 4, '-')", "--AB"),
     ] {
@@ -36,7 +38,6 @@ fn lpad_rejects_invalid_widths_padding_and_oversize_results() {
         "SELECT LPAD('x', -1, '.')",
         "SELECT LPAD('x', 2, '')",
         "SELECT LPAD('x', 1048577, '.')",
-        "SELECT LPAD('x', 2)",
         "SELECT LPAD(1, 2, '.')",
         "SELECT LPAD('x', 2, '.', '.')",
         "SELECT LPAD('x', 2, '.') FROM numbers(1)",
