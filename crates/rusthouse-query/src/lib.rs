@@ -991,7 +991,24 @@ fn parse_select_tokens(tokens: Vec<Token>) -> Result<Select, ParseError> {
         if !parser.keyword("BY") {
             return Err(ParseError("expected BY after GROUP".into()));
         }
-        let mut group_columns = vec![parser.word()?];
+        let first_column = if matches!(parser.tokens.get(parser.index), Some(Token::Number(_))) {
+            let position = parser
+                .number()?
+                .parse::<usize>()
+                .map_err(|_| ParseError("GROUP BY position is too large".into()))?;
+            match &projection {
+                Projection::GroupedCount { column }
+                | Projection::GroupedAggregate { column, .. }
+                    if position == 1 =>
+                {
+                    column.clone()
+                }
+                _ => return Err(ParseError("GROUP BY position is out of range".into())),
+            }
+        } else {
+            parser.word()?
+        };
+        let mut group_columns = vec![first_column];
         while parser.take(Token::Comma) {
             if group_columns.len() >= 8 {
                 return Err(ParseError("GROUP BY supports at most 8 keys".into()));
@@ -1208,6 +1225,30 @@ fn parse_select_tokens(tokens: Vec<Token>) -> Result<Select, ParseError> {
 
 #[cfg(test)]
 mod tests;
+
+#[cfg(test)]
+mod group_by_position_tests {
+    use super::*;
+
+    #[test]
+    fn resolves_first_projected_group_key() {
+        for sql in [
+            "SELECT number, COUNT(*) FROM numbers(4) GROUP BY 1",
+            "SELECT number, SUM(number) FROM numbers(4) GROUP BY 1",
+        ] {
+            assert!(parse_select(sql).is_ok(), "{sql}");
+        }
+    }
+
+    #[test]
+    fn rejects_out_of_range_positions() {
+        for position in ["0", "2", "999"] {
+            let sql = format!("SELECT number, COUNT(*) FROM numbers(4) GROUP BY {position}");
+            assert!(parse_select(&sql).is_err(), "{sql}");
+        }
+    }
+}
+
 
 #[cfg(test)]
 mod generated_numbers_boundary_regressions {
