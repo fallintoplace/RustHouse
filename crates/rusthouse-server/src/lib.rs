@@ -1,5 +1,6 @@
 //! Minimal read-only SQL HTTP interface, bound to loopback by the binary.
 //! This is intentionally not a full database wire protocol.
+pub mod cluster;
 mod csv;
 mod csv_no_header;
 mod json_array;

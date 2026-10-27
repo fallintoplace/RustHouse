@@ -28,7 +28,7 @@ Two persistent tables can be queried with a typed, in-memory INNER equi-join:
 cargo run -p rusthouse-cli -- sql "SELECT u.id, t.label FROM users u JOIN teams t ON u.team_id = t.id ORDER BY u.id LIMIT 10" --database ./mydb
 ```
 
-Join columns must use qualified names. The current join executor supports two named tables, up to eight equi-keys connected by AND, INNER/LEFT/RIGHT/FULL [OUTER] JOIN, optional aliases, \`SELECT *\`, ORDER BY, LIMIT and OFFSET. NULL join keys do not match. Unsorted INNER JOIN streams the left table without a fixed probe-row cap and builds up to 32,768 right-side rows (with a 32 MiB estimated retained-cell budget). When the right side exceeds that row cap and the left fits the hash-build budget, the join instead builds the left and streams the right side. Sorted INNER joins and outer joins support up to 16,384 rows per table, subject to the 32 MiB retained-row budget per side. All joins reject more than 65,536 matched output rows.
+Join columns must use qualified names. The current join executor supports two named tables, up to eight equi-keys connected by AND, INNER/LEFT/RIGHT/FULL [OUTER] JOIN, optional aliases, \`SELECT *\`, ORDER BY, LIMIT and OFFSET. NULL join keys do not match. Unsorted INNER JOIN streams the left table without a fixed probe-row cap and builds up to 32,768 right-side rows (with a 32 MiB estimated retained-cell budget). When the right side exceeds that row cap and the left fits the hash-build budget, the join instead builds the left and streams the right side. Sorted INNER joins and outer joins support up to 16,384 rows per table, subject to the 32 MiB retained-row budget per side. Unbounded joins reject more than 65,536 matched output rows. Unsorted INNER JOINs can page through larger match counts with `LIMIT` (up to 65,536 returned rows) and `OFFSET`.
 
 ## Query frozen parts
 
@@ -63,7 +63,7 @@ cargo run -p rusthouse-cli -- sql "INSERT INTO generated (id) SELECT number FROM
 cargo run -p rusthouse-cli -- sql "COPY events FROM '/path/to/events.csv' WITH (FORMAT CSV, HEADER TRUE)" --database ./mydb
 ```
 
-COPY FROM CSV imports local UTF-8 CSV with quoted commas, quotes, and newlines. With `HEADER TRUE`, CSV headers map fields to named table columns. Without a header, CSV fields follow table column order. Unquoted empty fields become NULL; quoted empty fields remain empty strings. CSV imports are limited to 50,000 data rows and 8 MiB. Imports above 4,096 rows publish multiple verified parts by atomically switching the active snapshot. Existing immutable parts are preserved. TSV imports now support the same 50,000-row and 8 MiB limits as CSV, with atomic multi-part publication.
+COPY FROM CSV imports local UTF-8 CSV with quoted commas, quotes, and newlines. With `HEADER TRUE`, CSV headers map fields to named table columns. Without a header, CSV fields follow table column order. Unquoted empty fields become NULL; quoted empty fields remain empty strings. CSV imports are limited to 50,000 data rows and 8 MiB. Imports above 4,096 rows publish multiple verified parts by atomically switching the active snapshot. Existing immutable parts are preserved. TSV imports stream UTF-8 records instead of buffering the entire file. They support imports larger than 50,000 rows and 8 MiB of total input, with a per-record 8 MiB bound, a bounded part buffer, and the existing 10,000-part limit. CSV and TSV bulk inserts both publish verified parts atomically.
 
 INSERT ... SELECT reads up to 50,000 rows (8 MiB of TSV output) from another table or a supported generated source and publishes the rows in one or more parts atomically. It supports named target columns and the same type checks as INSERT VALUES. A SELECT that yields no rows is a no-op. The source read and append hold a single exclusive database lock, preventing concurrent table changes during the statement. This is **not** a cross-statement transaction.
 
@@ -71,13 +71,13 @@ INSERT ... SELECT reads up to 50,000 rows (8 MiB of TSV output) from another tab
 
 **Current limits:** SQL statements are limited to 4 KiB, INSERT supports up to 4,096 rows per statement, and tables are limited to 10,000 immutable parts. There is no JOIN, background compaction, or cross-statement transaction. On Unix, the persistent `.rusthouse-write.lock` file uses a kernel advisory lock, automatically released when a process exits or crashes. Do not delete this file while the database is in use. Stop older RustHouse processes before upgrading. Other platforms retain create-new lock-file semantics. The localhost HTTP server shares the CLI database read lock for persistent table queries.
 
-`DELETE FROM events WHERE id = 1` removes matching rows from the active snapshot, preserving the previous generation for recovery. `DELETE FROM events` removes all rows, while `TRUNCATE TABLE events` is the faster option when there is no predicate. DELETE shares the 25,000-row and 16 MiB rewrite limits.
+`DELETE FROM events WHERE id = 1` removes matching rows from the active snapshot, preserving the previous generation for recovery. `DELETE FROM events` removes all rows, while `TRUNCATE TABLE events` is the faster option when there is no predicate. DELETE streams replacement parts in bounded batches. A single rewritten row is limited to 16 MiB of values; the 10,000-part snapshot limit still applies.
 
 Use `UPDATE events SET message = 'fixed' WHERE id = 2` to replace literal values in matching rows. Multiple assignments and `NULL` are supported when the target column allows NULL. UPDATE uses the same bounded copy-on-write snapshot publication as DELETE; expressions such as `SET count = count + 1` are not supported yet.
 
 ## Reclaim active parts safely
 
-`OPTIMIZE TABLE events` rewrites a bounded local table into new immutable parts and switches its active snapshot with an atomic pointer replacement. Previous snapshots are retained for existing readers and recovery. OPTIMIZE streams rows in batches of at most 4,096 to verified immutable parts, then atomically switches the active snapshot. UPDATE and DELETE still use the 25,000-row / 16 MiB rewrite limits. Use only for local experiments.
+`OPTIMIZE TABLE events` rewrites a bounded local table into new immutable parts and switches its active snapshot with an atomic pointer replacement. Previous snapshots are retained for existing readers and recovery. OPTIMIZE streams rows in batches of at most 4,096 to verified immutable parts, then atomically switches the active snapshot. UPDATE and DELETE also stream copy-on-write replacements, with at most 4,096 rows buffered per part and a 4 MiB normal batch-value budget. Use only for local experiments.
 
 ```sh
 cargo run -p rusthouse-cli -- sql "OPTIMIZE TABLE events" --database ./mydb
@@ -130,6 +130,7 @@ Stop writers and the HTTP server before running the offline diagnostic command:
 
 ```sh
 rusthouse doctor --database ./mydb
+rusthouse doctor --database ./mydb --full-hashes
 ```
 
 It checks catalog schemas against active parts, validates stream checksums,
@@ -139,8 +140,13 @@ table name. Errors produce a nonzero exit code. The command does not delete,
 repair, or create database files, including the lock file.
 
 Run it only with writers stopped: doctor does not take a database lock.
-It does **not** verify checksums.txt file hashes, older inactive generations,
-or power-loss durability. Preserve damaged files before manual recovery.
+By default, doctor checks block checksums and manifest file sizes only.
+With `--full-hashes`, it also reads every active manifest-listed file and
+verifies its **stored-byte** CityHash128WithSeed checksum. This can detect
+same-size corruption in metadata, marks, and compressed streams, but may take
+significant time and disk I/O on large snapshots. Uncompressed manifest hashes,
+older inactive generations, and power-loss durability are not verified.
+Preserve damaged files before manual recovery.
 
 ## Debug-only storage crash testing
 
