@@ -15,7 +15,13 @@ fn is_power(name: &str) -> bool {
 fn is_bitwise(name: &str) -> bool {
     matches!(
         name.to_ascii_uppercase().as_str(),
-        "BITAND" | "BITOR" | "BITXOR" | "BITSHIFTLEFT" | "BITSHIFTRIGHT"
+        "BITAND"
+            | "BITOR"
+            | "BITXOR"
+            | "BITSHIFTLEFT"
+            | "BITSHIFTRIGHT"
+            | "BITROTATELEFT"
+            | "BITROTATERIGHT"
     )
 }
 
@@ -150,6 +156,21 @@ fn checked_bit_shift(value: i64, amount: i64, left: bool) -> Result<i64, ParseEr
     } else {
         Ok(value >> shift)
     }
+}
+
+fn checked_bit_rotate(value: i64, amount: i64, left: bool) -> Result<i64, ParseError> {
+    let shift = u32::try_from(amount)
+        .map_err(|_| ParseError("bit rotate count must be between 0 and 63".into()))?;
+    if shift >= i64::BITS {
+        return Err(ParseError(
+            "bit rotate count must be between 0 and 63".into(),
+        ));
+    }
+    Ok(if left {
+        value.rotate_left(shift)
+    } else {
+        value.rotate_right(shift)
+    })
 }
 
 fn parse_clamp(parser: &mut Parser, depth: usize) -> Result<i64, ParseError> {
@@ -287,6 +308,8 @@ fn factor(parser: &mut Parser, depth: usize) -> Result<i64, ParseError> {
                 "BITXOR" => first ^ second,
                 "BITSHIFTLEFT" => checked_bit_shift(first, second, true)?,
                 "BITSHIFTRIGHT" => checked_bit_shift(first, second, false)?,
+                "BITROTATELEFT" => checked_bit_rotate(first, second, true)?,
+                "BITROTATERIGHT" => checked_bit_rotate(first, second, false)?,
                 _ => unreachable!("only supported bitwise functions reach this branch"),
             }
         } else if name.eq_ignore_ascii_case("ABS") {
