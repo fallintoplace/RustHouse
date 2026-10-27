@@ -29,6 +29,9 @@ pub(super) fn decode_tsv_value(value: &[u8]) -> io::Result<String> {
             b't' => decoded.push(b'\t'),
             b'n' => decoded.push(b'\n'),
             b'r' => decoded.push(b'\r'),
+            b'b' => decoded.push(8),
+            b'f' => decoded.push(12),
+            b'v' => decoded.push(11),
             b'0' => decoded.push(0),
             b'x' => {
                 let high = *value
@@ -161,6 +164,14 @@ impl<W: Write> Write for JsonlWriter<W> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn decodes_additional_tsv_control_escapes() {
+        assert_eq!(
+            decode_tsv_value(br"\b\f\v").unwrap().as_bytes(),
+            b"\x08\x0c\x0b"
+        );
+    }
 
     #[test]
     fn borrows_plain_fields_and_decodes_only_escaped_fields() {
