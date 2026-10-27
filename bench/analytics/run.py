@@ -2,6 +2,8 @@
 """Run Analytics SQL against the RustHouse CLI or HTTP server."""
 import argparse
 import json
+import math
+import statistics
 import subprocess
 import sys
 import time
@@ -65,6 +67,19 @@ def execute_http(endpoint, sql, timeout):
         raise RuntimeError("HTTP %d: %s" % (error.code, error.read(2000).decode("utf-8", "replace"))) from error
 
 
+def summarize_times(timings):
+    if not timings:
+        return None
+    ordered = sorted(timings)
+    p90_index = math.ceil(0.9 * len(ordered)) - 1
+    return {
+        "min_seconds": ordered[0],
+        "median_seconds": statistics.median(ordered),
+        "p90_seconds": ordered[p90_index],
+        "max_seconds": ordered[-1],
+    }
+
+
 def run_benchmark(queries, indices, runs, timeout, execute, reference_dir=None, warmups=0):
     results = []
     for index in indices:
@@ -90,7 +105,13 @@ def run_benchmark(queries, indices, runs, timeout, execute, reference_dir=None, 
                 if output != expected_path.read_bytes():
                     status, failure = "mismatch", "query output differs from expected TSV"
                     break
-        results.append({"query": index + 1, "status": status, "seconds": timings, "error": failure})
+        results.append({
+            "query": index + 1,
+            "status": status,
+            "seconds": timings,
+            "latency": summarize_times(timings),
+            "error": failure,
+        })
     return results
 
 

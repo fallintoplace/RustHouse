@@ -30,6 +30,14 @@ class AnalyticsRunnerTests(unittest.TestCase):
         self.assertEqual(results[0]["status"], "unverified")
         self.assertEqual(len(results[0]["seconds"]), 3)
 
+    def test_latency_summary_includes_nearest_rank_p90(self):
+        stats = runner.summarize_times([0.3, 0.1, 0.2])
+        self.assertEqual(stats["min_seconds"], 0.1)
+        self.assertEqual(stats["median_seconds"], 0.2)
+        self.assertEqual(stats["p90_seconds"], 0.3)
+        self.assertEqual(stats["max_seconds"], 0.3)
+        self.assertIsNone(runner.summarize_times([]))
+
     def test_warmups_execute_without_affecting_timings(self):
         calls = []
 
