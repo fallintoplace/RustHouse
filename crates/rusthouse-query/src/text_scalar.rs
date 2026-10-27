@@ -18,6 +18,7 @@ pub(super) fn is_function(name: &str) -> bool {
             | "SUBSTRING"
             | "SPLIT_PART"
             | "TRIM"
+            | "LTRIM"
             | "LPAD"
             | "REPLACE"
             | "STRPOS"
@@ -284,6 +285,24 @@ fn parse_at_depth(parser: &mut Parser, depth: usize) -> Result<ConstantValue, Pa
                     result.push_str(&tail);
                     ConstantValue::Text(result)
                 }
+                _ => ConstantValue::Null,
+            }
+        }
+        "LTRIM" => {
+            let input = text_arg(parser, depth + 1)?;
+            let characters = if parser.take(Token::Comma) {
+                Some(text_arg(parser, depth + 1)?)
+            } else {
+                None
+            };
+            require(parser, Token::RParen, "expected ')' after LTRIM arguments")?;
+            match (input, characters) {
+                (Some(input), None) => {
+                    ConstantValue::Text(input.trim_start_matches(' ').to_owned())
+                }
+                (Some(input), Some(Some(characters))) => ConstantValue::Text(
+                    input.trim_start_matches(|ch| characters.contains(ch)).to_owned(),
+                ),
                 _ => ConstantValue::Null,
             }
         }
