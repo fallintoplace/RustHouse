@@ -29,20 +29,36 @@ pub(super) fn is_function(name: &str) -> bool {
     if name.eq_ignore_ascii_case("DIGIT_SUM") {
         return true;
     }
-    name.eq_ignore_ascii_case("ABS")
+    is_saturating(name)
+        || name.eq_ignore_ascii_case("ABS")
         || name.eq_ignore_ascii_case("BIT_WIDTH")
+        || name.eq_ignore_ascii_case("ABS_DIFF")
         || name.eq_ignore_ascii_case("SIGN")
         || name.eq_ignore_ascii_case("DIGIT_COUNT")
+        || name.eq_ignore_ascii_case("HAMMING_DISTANCE")
         || is_extrema(name)
+        || name.eq_ignore_ascii_case("IS_POWER_OF_TWO")
+        || name.eq_ignore_ascii_case("BIT_REVERSE")
         || is_power(name)
         || name.eq_ignore_ascii_case("NEXT_POWER_OF_TWO")
+        || name.eq_ignore_ascii_case("BIT_EXTRACT")
         || is_bitwise(name)
+        || name.eq_ignore_ascii_case("MOD_POW")
         || name.eq_ignore_ascii_case("GCD")
+        || name.eq_ignore_ascii_case("REVERSE_DIGITS")
         || name.eq_ignore_ascii_case("LCM")
         || name.eq_ignore_ascii_case("FIBONACCI")
         || name.eq_ignore_ascii_case("CLAMP")
         || name.eq_ignore_ascii_case("CEIL_DIV")
         || name.eq_ignore_ascii_case("FLOOR_DIV")
+        || name.eq_ignore_ascii_case("BITCOUNT")
+        || name.eq_ignore_ascii_case("BITNOT")
+        || name.eq_ignore_ascii_case("BITTEST")
+        || name.eq_ignore_ascii_case("ISQRT")
+        || name.eq_ignore_ascii_case("FACTORIAL")
+        || name.eq_ignore_ascii_case("INTLOG2")
+        || name.eq_ignore_ascii_case("ROUND_TO_MULTIPLE")
+        || name.eq_ignore_ascii_case("PMOD")
 }
 
 pub(super) fn parse(parser: &mut Parser) -> Result<i64, ParseError> {
@@ -106,6 +122,35 @@ fn require_token(parser: &mut Parser, token: Token, message: &str) -> Result<(),
     }
 }
 
+fn is_saturating(name: &str) -> bool {
+    matches!(
+        name.to_ascii_uppercase().as_str(),
+        "SATURATING_ADD" | "SATURATING_SUB" | "SATURATING_MUL"
+    )
+}
+
+fn parse_saturating(parser: &mut Parser, depth: usize, name: &str) -> Result<i64, ParseError> {
+    require_token(parser, Token::LParen, "saturating arithmetic requires '('")?;
+    let left = expression(parser, depth + 1)?;
+    require_token(
+        parser,
+        Token::Comma,
+        "saturating arithmetic requires two arguments",
+    )?;
+    let right = expression(parser, depth + 1)?;
+    require_token(
+        parser,
+        Token::RParen,
+        "expected ')' after saturating arguments",
+    )?;
+    Ok(match name.to_ascii_uppercase().as_str() {
+        "SATURATING_ADD" => left.saturating_add(right),
+        "SATURATING_SUB" => left.saturating_sub(right),
+        "SATURATING_MUL" => left.saturating_mul(right),
+        _ => unreachable!("only saturating functions reach this branch"),
+    })
+}
+
 fn parse_power(parser: &mut Parser, depth: usize) -> Result<i64, ParseError> {
     require_token(parser, Token::LParen, "POWER requires '('")?;
     let base = expression(parser, depth + 1)?;
@@ -115,6 +160,32 @@ fn parse_power(parser: &mut Parser, depth: usize) -> Result<i64, ParseError> {
     let exponent = u32::try_from(exponent)
         .map_err(|_| ParseError("POWER exponent must be non-negative and fit UInt32".into()))?;
     base.checked_pow(exponent).ok_or_else(overflow)
+}
+
+fn parse_pmod(parser: &mut Parser, depth: usize) -> Result<i64, ParseError> {
+    require_token(parser, Token::LParen, "PMOD requires '('")?;
+    let value = expression(parser, depth + 1)?;
+    require_token(parser, Token::Comma, "PMOD requires two arguments")?;
+    let divisor = expression(parser, depth + 1)?;
+    require_token(parser, Token::RParen, "expected ')' after PMOD arguments")?;
+    if divisor <= 0 {
+        return Err(ParseError("PMOD divisor must be positive".into()));
+    }
+    Ok(value.rem_euclid(divisor))
+}
+
+fn parse_abs_diff(parser: &mut Parser, depth: usize) -> Result<i64, ParseError> {
+    require_token(parser, Token::LParen, "ABS_DIFF requires '('")?;
+    let left = expression(parser, depth + 1)?;
+    require_token(parser, Token::Comma, "ABS_DIFF requires two arguments")?;
+    let right = expression(parser, depth + 1)?;
+    require_token(
+        parser,
+        Token::RParen,
+        "ABS_DIFF requires ')' after arguments",
+    )?;
+    let difference = (i128::from(left) - i128::from(right)).abs();
+    i64::try_from(difference).map_err(|_| overflow())
 }
 
 fn parse_extrema(parser: &mut Parser, depth: usize) -> Result<i64, ParseError> {
@@ -161,6 +232,23 @@ fn parse_bit_width(parser: &mut Parser, depth: usize) -> Result<i64, ParseError>
     Ok(i64::from(u64::BITS - value.unsigned_abs().leading_zeros()))
 }
 
+fn parse_hamming_distance(parser: &mut Parser, depth: usize) -> Result<i64, ParseError> {
+    require_token(parser, Token::LParen, "HAMMING_DISTANCE requires '('")?;
+    let left = expression(parser, depth + 1)?;
+    require_token(
+        parser,
+        Token::Comma,
+        "HAMMING_DISTANCE requires two arguments",
+    )?;
+    let right = expression(parser, depth + 1)?;
+    require_token(
+        parser,
+        Token::RParen,
+        "HAMMING_DISTANCE requires ')' after arguments",
+    )?;
+    Ok(i64::from((left ^ right).count_ones()))
+}
+
 fn checked_bit_shift(value: i64, amount: i64, left: bool) -> Result<i64, ParseError> {
     let shift = u32::try_from(amount)
         .map_err(|_| ParseError("bit shift count must be between 0 and 63".into()))?;
@@ -189,6 +277,17 @@ fn checked_bit_rotate(value: i64, amount: i64, left: bool) -> Result<i64, ParseE
     } else {
         value.rotate_right(shift)
     })
+}
+
+fn parse_bit_reverse(parser: &mut Parser, depth: usize) -> Result<i64, ParseError> {
+    require_token(parser, Token::LParen, "BIT_REVERSE requires '('")?;
+    let value = expression(parser, depth + 1)?;
+    require_token(
+        parser,
+        Token::RParen,
+        "BIT_REVERSE requires ')' after argument",
+    )?;
+    Ok(value.reverse_bits())
 }
 
 fn parse_clamp(parser: &mut Parser, depth: usize) -> Result<i64, ParseError> {
@@ -222,6 +321,60 @@ fn parse_digit_count(parser: &mut Parser, depth: usize) -> Result<i64, ParseErro
     Ok(i64::from(digits))
 }
 
+fn parse_round_to_multiple(parser: &mut Parser, depth: usize) -> Result<i64, ParseError> {
+    require_token(parser, Token::LParen, "ROUND_TO_MULTIPLE requires '('")?;
+    let value = expression(parser, depth + 1)?;
+    require_token(
+        parser,
+        Token::Comma,
+        "ROUND_TO_MULTIPLE requires two arguments",
+    )?;
+    let multiple = expression(parser, depth + 1)?;
+    require_token(
+        parser,
+        Token::RParen,
+        "expected ')' after ROUND_TO_MULTIPLE arguments",
+    )?;
+    if multiple <= 0 {
+        return Err(ParseError(
+            "ROUND_TO_MULTIPLE requires a positive multiple".into(),
+        ));
+    }
+    let step = i128::from(multiple);
+    let rounded_magnitude = ((i128::from(value).abs() + step / 2) / step) * step;
+    let rounded = if value < 0 {
+        -rounded_magnitude
+    } else {
+        rounded_magnitude
+    };
+    i64::try_from(rounded).map_err(|_| overflow())
+}
+
+fn parse_bit_extract(parser: &mut Parser, depth: usize) -> Result<i64, ParseError> {
+    require_token(parser, Token::LParen, "BIT_EXTRACT requires '('")?;
+    let value = expression(parser, depth + 1)?;
+    require_token(parser, Token::Comma, "BIT_EXTRACT requires three arguments")?;
+    let offset = expression(parser, depth + 1)?;
+    require_token(parser, Token::Comma, "BIT_EXTRACT requires three arguments")?;
+    let width = expression(parser, depth + 1)?;
+    require_token(
+        parser,
+        Token::RParen,
+        "BIT_EXTRACT requires ')' after arguments",
+    )?;
+    let offset = u32::try_from(offset)
+        .map_err(|_| ParseError("BIT_EXTRACT offset must be between 0 and 63".into()))?;
+    let width = u32::try_from(width)
+        .map_err(|_| ParseError("BIT_EXTRACT width must be between 1 and 63".into()))?;
+    if offset >= 64 || width == 0 || width > 63 || offset + width > 64 {
+        return Err(ParseError(
+            "BIT_EXTRACT field must fit within 64 bits".into(),
+        ));
+    }
+    let mask = (1_u64 << width) - 1;
+    Ok((((value as u64) >> offset) & mask) as i64)
+}
+
 fn gcd(mut left: u64, mut right: u64) -> u64 {
     while right != 0 {
         let remainder = left % right;
@@ -229,6 +382,37 @@ fn gcd(mut left: u64, mut right: u64) -> u64 {
         right = remainder;
     }
     left
+}
+
+fn parse_mod_pow(parser: &mut Parser, depth: usize) -> Result<i64, ParseError> {
+    require_token(parser, Token::LParen, "MOD_POW requires '('")?;
+    let base = expression(parser, depth + 1)?;
+    require_token(parser, Token::Comma, "MOD_POW requires three arguments")?;
+    let exponent = expression(parser, depth + 1)?;
+    require_token(parser, Token::Comma, "MOD_POW requires three arguments")?;
+    let modulus = expression(parser, depth + 1)?;
+    require_token(
+        parser,
+        Token::RParen,
+        "MOD_POW requires ')' after arguments",
+    )?;
+    if exponent < 0 || modulus <= 0 {
+        return Err(ParseError(
+            "MOD_POW exponent must be non-negative and modulus must be positive".into(),
+        ));
+    }
+    let mut factor = base.rem_euclid(modulus) as u128;
+    let modulus = modulus as u128;
+    let mut power = exponent as u64;
+    let mut result = 1_u128 % modulus;
+    while power > 0 {
+        if power & 1 != 0 {
+            result = (result * factor) % modulus;
+        }
+        factor = (factor * factor) % modulus;
+        power >>= 1;
+    }
+    i64::try_from(result).map_err(|_| overflow())
 }
 
 fn parse_gcd_lcm(parser: &mut Parser, depth: usize) -> Result<i64, ParseError> {
@@ -295,16 +479,80 @@ fn parse_rounded_division(parser: &mut Parser, depth: usize) -> Result<i64, Pars
     i64::try_from(result).map_err(|_| overflow())
 }
 
+fn parse_bit_introspection(parser: &mut Parser, depth: usize) -> Result<i64, ParseError> {
+    let name = parser.word()?;
+    require_token(parser, Token::LParen, "bit function requires '('")?;
+    let value = expression(parser, depth + 1)?;
+    let result = if name.eq_ignore_ascii_case("BITCOUNT") {
+        i64::from(value.count_ones())
+    } else if name.eq_ignore_ascii_case("BITNOT") {
+        !value
+    } else {
+        require_token(parser, Token::Comma, "BITTEST requires two arguments")?;
+        let index = expression(parser, depth + 1)?;
+        let bit = u32::try_from(index)
+            .map_err(|_| ParseError("BITTEST position must be between 0 and 63".into()))?;
+        if bit >= i64::BITS {
+            return Err(ParseError(
+                "BITTEST position must be between 0 and 63".into(),
+            ));
+        }
+        i64::from(((value as u64 >> bit) & 1) as u8)
+    };
+    require_token(parser, Token::RParen, "expected ')' after bit function")?;
+    Ok(result)
+}
+
+fn parse_is_power_of_two(parser: &mut Parser, depth: usize) -> Result<i64, ParseError> {
+    require_token(parser, Token::LParen, "IS_POWER_OF_TWO requires '('")?;
+    let value = expression(parser, depth + 1)?;
+    require_token(
+        parser,
+        Token::RParen,
+        "expected ')' after IS_POWER_OF_TWO argument",
+    )?;
+    Ok(if value > 0 && value.unsigned_abs().is_power_of_two() {
+        1
+    } else {
+        0
+    })
+}
+
+fn parse_reverse_digits(parser: &mut Parser, depth: usize) -> Result<i64, ParseError> {
+    require_token(parser, Token::LParen, "REVERSE_DIGITS requires '('")?;
+    let value = expression(parser, depth + 1)?;
+    require_token(
+        parser,
+        Token::RParen,
+        "REVERSE_DIGITS requires ')' after argument",
+    )?;
+    let mut magnitude = value.unsigned_abs();
+    let mut reversed = 0_i128;
+    while magnitude > 0 {
+        reversed = reversed * 10 + i128::from(magnitude % 10);
+        magnitude /= 10;
+    }
+    let signed = if value < 0 { -reversed } else { reversed };
+    i64::try_from(signed).map_err(|_| overflow())
+}
+
 fn factor(parser: &mut Parser, depth: usize) -> Result<i64, ParseError> {
     if depth >= MAX_DEPTH {
         return Err(ParseError(
             "scalar expressions nest at most 16 levels".into(),
         ));
     }
+    if matches!(parser.tokens.get(parser.index), Some(Token::Word(name)) if is_saturating(name)) {
+        let name = parser.word()?;
+        return parse_saturating(parser, depth, &name);
+    }
     if parser.take(Token::Minus) {
         return factor(parser, depth + 1)?
             .checked_neg()
             .ok_or_else(overflow);
+    }
+    if parser.keyword("ABS_DIFF") {
+        return parse_abs_diff(parser, depth);
     }
     if parser.take(Token::Plus) {
         return factor(parser, depth + 1);
@@ -312,11 +560,17 @@ fn factor(parser: &mut Parser, depth: usize) -> Result<i64, ParseError> {
     if parser.keyword("NEXT_POWER_OF_TWO") {
         return parse_next_power_of_two(parser, depth);
     }
+    if parser.keyword("HAMMING_DISTANCE") {
+        return parse_hamming_distance(parser, depth);
+    }
     if parser.keyword("POWER") || parser.keyword("POW") {
         return parse_power(parser, depth);
     }
     if parser.keyword("BIT_WIDTH") {
         return parse_bit_width(parser, depth);
+    }
+    if parser.keyword("BIT_REVERSE") {
+        return parse_bit_reverse(parser, depth);
     }
     if parser.keyword("CLAMP") {
         return parse_clamp(parser, depth);
@@ -325,6 +579,19 @@ fn factor(parser: &mut Parser, depth: usize) -> Result<i64, ParseError> {
     {
         return parse_rounded_division(parser, depth);
     }
+    if matches!(parser.tokens.get(parser.index), Some(Token::Word(name)) if name.eq_ignore_ascii_case("BITCOUNT") || name.eq_ignore_ascii_case("BITNOT") || name.eq_ignore_ascii_case("BITTEST"))
+    {
+        return parse_bit_introspection(parser, depth);
+    }
+    if parser.keyword("ROUND_TO_MULTIPLE") {
+        return parse_round_to_multiple(parser, depth);
+    }
+    if parser.keyword("PMOD") {
+        return parse_pmod(parser, depth);
+    }
+    if parser.keyword("BIT_EXTRACT") {
+        return parse_bit_extract(parser, depth);
+    }
     if matches!(parser.tokens.get(parser.index), Some(Token::Word(name)) if name.eq_ignore_ascii_case("GCD") || name.eq_ignore_ascii_case("LCM"))
     {
         return parse_gcd_lcm(parser, depth);
@@ -332,8 +599,17 @@ fn factor(parser: &mut Parser, depth: usize) -> Result<i64, ParseError> {
     if parser.keyword("DIGIT_COUNT") {
         return parse_digit_count(parser, depth);
     }
+    if parser.keyword("MOD_POW") {
+        return parse_mod_pow(parser, depth);
+    }
     if matches!(parser.tokens.get(parser.index), Some(Token::Word(name)) if is_extrema(name)) {
         return parse_extrema(parser, depth);
+    }
+    if parser.keyword("IS_POWER_OF_TWO") {
+        return parse_is_power_of_two(parser, depth);
+    }
+    if parser.keyword("REVERSE_DIGITS") {
+        return parse_reverse_digits(parser, depth);
     }
     if matches!(parser.tokens.get(parser.index), Some(Token::Word(name)) if is_function(name)) {
         let name = parser.word()?;
@@ -377,6 +653,25 @@ fn factor(parser: &mut Parser, depth: usize) -> Result<i64, ParseError> {
                 magnitude /= 10;
             }
             sum
+        } else if name.eq_ignore_ascii_case("ISQRT") {
+            if first < 0 {
+                return Err(ParseError("ISQRT requires a non-negative integer".into()));
+            }
+            first.isqrt()
+        } else if name.eq_ignore_ascii_case("FACTORIAL") {
+            if !(0..=20).contains(&first) {
+                return Err(ParseError(
+                    "FACTORIAL argument must be between 0 and 20".into(),
+                ));
+            }
+            (1..=first)
+                .try_fold(1i64, |acc, value| acc.checked_mul(value))
+                .ok_or_else(overflow)?
+        } else if name.eq_ignore_ascii_case("INTLOG2") {
+            if first <= 0 {
+                return Err(ParseError("INTLOG2 requires a positive integer".into()));
+            }
+            i64::from(first.ilog2())
         } else {
             first.signum()
         };
