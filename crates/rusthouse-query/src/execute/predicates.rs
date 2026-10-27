@@ -245,6 +245,102 @@ pub(super) fn compile_numbers_predicates(
     })
 }
 
+/// Count a single AND branch over an increasing generated UInt64 sequence
+/// without visiting its rows. Unsupported OR, IN and modulo predicates keep
+/// the normal row-wise executor. Arithmetic uses u128 at UInt64 boundaries.
+pub(super) fn count_monotonic_numbers(
+    branches: &[Vec<CompiledPredicate>],
+    start: u64,
+    rows: u64,
+    step: u64,
+) -> Option<u64> {
+    let [conjunction] = branches else {
+        return None;
+    };
+    if step == 0 {
+        return None;
+    }
+    let start = u128::from(start);
+    let step = u128::from(step);
+    let mut lower = 0u128;
+    let mut upper = u128::from(rows);
+    let mut excluded = Vec::new();
+
+    for predicate in conjunction {
+        let CompiledTest::Comparison {
+            operator,
+            target: Number::Unsigned(target),
+        } = &predicate.test
+        else {
+            return None;
+        };
+        let index_of = || {
+            if *target < start || (*target - start) % step != 0 {
+                None
+            } else {
+                Some((*target - start) / step)
+            }
+        };
+        match operator {
+            Operator::Eq => {
+                if let Some(index) = index_of() {
+                    lower = lower.max(index);
+                    upper = upper.min(index.saturating_add(1));
+                } else {
+                    upper = 0;
+                }
+            }
+            Operator::Ne => {
+                if let Some(index) = index_of() {
+                    if !excluded.contains(&index) {
+                        excluded.push(index);
+                    }
+                }
+            }
+            Operator::Lt => {
+                let end = if *target <= start {
+                    0
+                } else {
+                    (*target - start).div_ceil(step)
+                };
+                upper = upper.min(end);
+            }
+            Operator::Le => {
+                let end = if *target < start {
+                    0
+                } else {
+                    ((*target - start) / step).saturating_add(1)
+                };
+                upper = upper.min(end);
+            }
+            Operator::Gt => {
+                let begin = if *target < start {
+                    0
+                } else {
+                    ((*target - start) / step).saturating_add(1)
+                };
+                lower = lower.max(begin);
+            }
+            Operator::Ge => {
+                let begin = if *target <= start {
+                    0
+                } else {
+                    (*target - start).div_ceil(step)
+                };
+                lower = lower.max(begin);
+            }
+            Operator::Modulo(_) | Operator::ModuloNe(_) => return None,
+        }
+    }
+
+    let remaining = upper.saturating_sub(lower);
+    let excluded_in_range = excluded
+        .iter()
+        .filter(|&&index| index >= lower && index < upper)
+        .count() as u128;
+    u64::try_from(remaining - excluded_in_range).ok()
+}
+
 pub(super) fn number_matches_all(value: Number, branches: &[Vec<CompiledPredicate>]) -> bool {
     branches.iter().any(|predicates| {
         predicates
