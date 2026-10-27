@@ -36,6 +36,7 @@ pub(super) fn is_function(name: &str) -> bool {
             | "TRANSLATE"
             | "STRPOS"
             | "COUNT_SUBSTRING"
+            | "NULLIF"
             | "LEFT"
             | "REPLACE_FIRST"
             | "STARTS_WITH"
@@ -596,6 +597,17 @@ fn parse_at_depth(parser: &mut Parser, depth: usize) -> Result<ConstantValue, Pa
                     )
                 }
                 _ => ConstantValue::Null,
+            }
+        }
+        "NULLIF" => {
+            let left = text_arg(parser, depth + 1)?;
+            require(parser, Token::Comma, "NULLIF requires a second argument")?;
+            let right = text_arg(parser, depth + 1)?;
+            require(parser, Token::RParen, "expected ')' after NULLIF arguments")?;
+            match (left, right) {
+                (Some(left), Some(right)) if left == right => ConstantValue::Null,
+                (Some(left), _) => ConstantValue::Text(left),
+                (None, _) => ConstantValue::Null,
             }
         }
         "STRPOS" => {
