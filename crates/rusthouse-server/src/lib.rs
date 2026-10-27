@@ -3,6 +3,7 @@
 pub mod cluster;
 mod csv;
 mod csv_no_header;
+pub mod health;
 mod json_array;
 mod json_compact_each_row;
 mod jsonl;

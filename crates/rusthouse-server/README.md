@@ -79,3 +79,8 @@ whether a peer is alive or whether schemas and datasets agree. Peer addresses
 must be IPv4 loopback, cannot include the coordinator's own port, and are never
 automatically discovered. This is an early step toward read-only distributed
 queries, **not** cross-host networking, replicated storage or distributed writes.
+
+`GET /cluster/health` checks every configured peer's read-only `/ping`
+endpoint in parallel. It returns the number of healthy peers and their addresses
+as JSON. An unavailable or invalid peer response makes the HTTP status 503.
+The check does not verify data freshness, schema compatibility or consistency.
