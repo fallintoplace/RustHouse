@@ -30,7 +30,6 @@ impl ScalarExpr {
             | Self::Subtract(left, right)
             | Self::Multiply(left, right)
             | Self::Divide(left, right) => {
-            {
                 left.referenced_columns(out);
                 right.referenced_columns(out);
             }
