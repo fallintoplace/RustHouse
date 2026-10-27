@@ -14,9 +14,16 @@ fn bit_reverse_preserves_all_sixty_four_bits() {
         ("SELECT bit_reverse(-1) AS result", "-1"),
         ("SELECT BIT_REVERSE(1) AS result", "-9223372036854775808"),
         ("SELECT BIT_REVERSE(2) AS result", "4611686018427387904"),
-        ("SELECT BIT_REVERSE(-9223372036854775807 - 1) AS result", "1"),
+        (
+            "SELECT BIT_REVERSE(-9223372036854775807 - 1) AS result",
+            "1",
+        ),
     ] {
-        assert_eq!(evaluate(sql).unwrap(), format!("result\n{expected}\n"), "{sql}");
+        assert_eq!(
+            evaluate(sql).unwrap(),
+            format!("result\n{expected}\n"),
+            "{sql}"
+        );
     }
 }
 
