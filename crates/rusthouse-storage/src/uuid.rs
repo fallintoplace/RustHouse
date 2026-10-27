@@ -16,8 +16,9 @@ impl UuidValue {
     }
 
     fn from_disk_bytes(mut bytes: [u8; 16]) -> Self {
-        bytes[..8].reverse();
-        bytes[8..].reverse();
+        for half in bytes.chunks_exact_mut(8) {
+            half.reverse();
+        }
         Self { bytes }
     }
 }
@@ -84,6 +85,16 @@ mod tests {
         fmt::write(&mut sink, format_args!("{value}")).unwrap();
         assert_eq!(sink.calls, 1);
         assert_eq!(sink.output, "61f0c404-5cb3-11e7-907b-a6006ad3dba0");
+    }
+
+    #[test]
+    fn on_disk_half_reversal_is_reversible() {
+        let disk: [u8; 16] = std::array::from_fn(|index| index as u8);
+        let canonical = UuidValue::from_disk_bytes(disk);
+        assert_eq!(
+            *UuidValue::from_disk_bytes(*canonical.as_bytes()).as_bytes(),
+            disk
+        );
     }
 
     #[test]
