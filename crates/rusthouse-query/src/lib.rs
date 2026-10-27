@@ -8,6 +8,7 @@ mod insert;
 mod insert_select;
 mod join;
 mod lexer;
+mod multi_aggregate;
 mod scalar;
 mod text_scalar;
 mod update;
@@ -17,6 +18,7 @@ pub use delete::parse_delete;
 pub use execute::{ExecutionError, RowPredicate, execute, execute_join};
 pub use explain::explain_select;
 pub use expression::{ScalarExpr, parse_scalar_expression};
+pub use multi_aggregate::AggregateItem;
 pub use insert::{Insert, parse_insert};
 pub use insert_select::{InsertSelect, parse_insert_select};
 pub use join::{JoinColumn, JoinSelect, JoinType, explain_join, parse_join};
@@ -133,6 +135,7 @@ pub enum Projection {
         function: AggregateFunction,
         column: String,
     },
+    MultipleAggregates(Vec<AggregateItem>),
     All,
     Columns(Vec<String>),
 }
@@ -434,7 +437,10 @@ fn parse_select_tokens(tokens: Vec<Token>) -> Result<Select, ParseError> {
     let distinct = parser.keyword("DISTINCT");
     let mut literal_alias = None;
 
-    let projection = if parser.take(Token::Star) {
+    let multiple = multi_aggregate::parse_multiple(&mut parser)?;
+    let projection = if let Some(items) = multiple {
+        Projection::MultipleAggregates(items)
+    } else if parser.take(Token::Star) {
         Projection::All
     } else if matches!(parser.tokens.get(parser.index + 1), Some(Token::LParen))
         && parser.keyword("COUNT")
@@ -1023,6 +1029,7 @@ fn parse_select_tokens(tokens: Vec<Token>) -> Result<Select, ParseError> {
                 | Projection::CountColumn { .. }
                 | Projection::CountDistinct { .. }
                 | Projection::Aggregate { .. }
+                | Projection::MultipleAggregates(_)
                 | Projection::Literal(_)
         )
     {

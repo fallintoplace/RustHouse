@@ -15,6 +15,7 @@ mod typed;
 pub use join::execute_join;
 use sort::{MAX_SORTED_ROWS, SortedRows};
 mod typed_aggregate;
+mod multi_aggregate;
 #[cfg(test)]
 use predicates::{CompiledTest, compile_in_test};
 use predicates::{
@@ -344,6 +345,9 @@ fn execute_into<W: Write>(
         writeln!(output, "{count}")?;
         return Ok(());
     }
+    if let Projection::MultipleAggregates(items) = &query.projection {
+        return multi_aggregate::execute(query, part, items, output);
+    }
     if matches!(query.projection, Projection::GroupedAggregate { .. }) {
         return typed_aggregate::execute_grouped_aggregate(query, part, output);
     }
@@ -391,6 +395,7 @@ fn execute_into<W: Write>(
         | Projection::CountDistinct { .. }
         | Projection::GroupedCount { .. }
         | Projection::GroupedAggregate { .. }
+        | Projection::MultipleAggregates(_)
         | Projection::Literal(_)
         | Projection::Constants(_) => unreachable!(),
     };
@@ -978,6 +983,11 @@ fn execute_numbers<W: Write>(
             "--part cannot be used with numbers(N)".into(),
         ));
     }
+    if matches!(query.projection, Projection::MultipleAggregates(_)) {
+        return Err(ExecutionError::Invalid(
+            "multiple aggregates require a stored table".into(),
+        ));
+    }
     if let Projection::CountColumn { column } = &query.projection {
         if column != "number" {
             return Err(ExecutionError::Invalid(
@@ -1058,6 +1068,7 @@ fn execute_numbers<W: Write>(
         | Projection::CountDistinct { .. }
         | Projection::GroupedCount { .. }
         | Projection::GroupedAggregate { .. }
+        | Projection::MultipleAggregates(_)
         | Projection::Literal(_)
         | Projection::Constants(_) => unreachable!(),
     };
