@@ -39,6 +39,17 @@ fn decode_row_fields(line: &[u8]) -> io::Result<Vec<Cow<'_, [u8]>>> {
         .collect()
 }
 
+fn validate_row_width(headers: &[Vec<u8>], line: &[u8]) -> io::Result<()> {
+    let field_count = 1 + line.iter().filter(|&&byte| byte == b'\t').count();
+    if field_count != headers.len() {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            "vertical row does not match header column count",
+        ));
+    }
+    Ok(())
+}
+
 fn write_row<W: Write>(
     output: &mut W,
     row: usize,
@@ -80,13 +91,9 @@ impl<W: Write> VerticalWriter<W> {
         }
 
         let headers = self.headers.as_ref().unwrap();
-        let field_count = 1 + self.line.iter().filter(|&&byte| byte == b'\t').count();
-        if field_count != headers.len() {
+        if let Err(error) = validate_row_width(headers, &self.line) {
             self.line.clear();
-            return Err(io::Error::new(
-                io::ErrorKind::InvalidData,
-                "vertical row does not match header column count",
-            ));
+            return Err(error);
         }
 
         let row = self
