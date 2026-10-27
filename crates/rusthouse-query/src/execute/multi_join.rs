@@ -187,8 +187,8 @@ pub fn execute_multi_join<W: Write>(
         .chain(query.steps.iter())
         .enumerate()
     {
-        if step.any || !step.using_keys.is_empty() {
-            return Err(invalid("chained ANY JOIN or USING is not supported yet"));
+        if !step.using_keys.is_empty() {
+            return Err(invalid("chained JOIN USING is not supported yet"));
         }
         let right_relation = &relations[step_index + 1];
         let left_width = right_relation.start;
@@ -215,7 +215,7 @@ pub fn execute_multi_join<W: Write>(
             let mut matched = false;
             if let Some(key) = row_key(row, &left_keys) {
                 if let Some(matches) = hash.get(&key) {
-                    for &match_index in matches {
+                    for &match_index in matches.iter().take(if step.any { 1 } else { usize::MAX }) {
                         matched = true;
                         matched_right[match_index] = true;
                         let mut joined = Vec::with_capacity(left_width + right_relation.names.len());
