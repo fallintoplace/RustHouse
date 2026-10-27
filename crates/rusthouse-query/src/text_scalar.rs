@@ -60,7 +60,13 @@ fn parse_at_depth(parser: &mut Parser, depth: usize) -> Result<ConstantValue, Pa
             let input = text_arg(parser, depth + 1)?;
             require(parser, Token::RParen, "LOWER requires one argument")?;
             match input {
-                Some(value) => ConstantValue::Text(value.to_ascii_lowercase()),
+                Some(value) => {
+                    let result = value.to_lowercase();
+                    if result.len() > MAX_TEXT_BYTES {
+                        return Err(ParseError("LOWER result is too large".into()));
+                    }
+                    ConstantValue::Text(result)
+                }
                 None => ConstantValue::Null,
             }
         }
@@ -68,7 +74,13 @@ fn parse_at_depth(parser: &mut Parser, depth: usize) -> Result<ConstantValue, Pa
             let input = text_arg(parser, depth + 1)?;
             require(parser, Token::RParen, "UPPER requires one argument")?;
             match input {
-                Some(value) => ConstantValue::Text(value.to_ascii_uppercase()),
+                Some(value) => {
+                    let result = value.to_uppercase();
+                    if result.len() > MAX_TEXT_BYTES {
+                        return Err(ParseError("UPPER result is too large".into()));
+                    }
+                    ConstantValue::Text(result)
+                }
                 None => ConstantValue::Null,
             }
         }
