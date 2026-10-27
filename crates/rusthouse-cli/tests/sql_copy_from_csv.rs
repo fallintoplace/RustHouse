@@ -98,8 +98,7 @@ fn bulk_copy_publishes_all_parts_or_no_parts() {
     let pointer = db.join("events.parts/.rusthouse-active");
     assert_eq!(fs::read_to_string(&pointer).unwrap(), "g1\n");
 
-    // The invalid value appears after the first complete 4096-row part.
-    // The already-active generation must remain unchanged.
+    // An invalid value must not alter the already-active generation.
     csv.push_str("not-an-integer,invalid\n");
     fs::write(&input, &csv).unwrap();
     let rejected = sql(&statement, &db);
