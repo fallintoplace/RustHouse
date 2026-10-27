@@ -16,7 +16,11 @@ fn fibonacci_returns_exact_sequence_values() {
         ("SELECT FIBONACCI(10) AS result", "55"),
         ("SELECT FIBONACCI(92) AS result", "7540113804746346429"),
     ] {
-        assert_eq!(evaluate(sql).unwrap(), format!("result\n{expected}\n"), "{sql}");
+        assert_eq!(
+            evaluate(sql).unwrap(),
+            format!("result\n{expected}\n"),
+            "{sql}"
+        );
     }
 }
 
