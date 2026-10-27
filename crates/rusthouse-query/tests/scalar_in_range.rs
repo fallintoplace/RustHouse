@@ -9,7 +9,10 @@ fn in_range_checks_inclusive_signed_boundaries_and_nested_expressions() {
         ("SELECT IN_RANGE(11, 1, 10)", 0),
         ("SELECT IN_RANGE(-5, -10, -1)", 1),
         ("SELECT IN_RANGE(0, 1, 10)", 0),
-        ("SELECT IN_RANGE(-9223372036854775808, -9223372036854775808, 0)", 1),
+        (
+            "SELECT IN_RANGE(-9223372036854775808, -9223372036854775808, 0)",
+            1,
+        ),
         ("SELECT IN_RANGE(2 * 3, 2, 3 * 2) + 4", 5),
         ("SELECT IN_RANGE(CLAMP(7, 0, 5), 1, 5)", 1),
     ] {

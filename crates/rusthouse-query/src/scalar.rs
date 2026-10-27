@@ -175,7 +175,9 @@ fn parse_in_range(parser: &mut Parser, depth: usize) -> Result<i64, ParseError> 
     let upper = expression(parser, depth + 1)?;
     require_token(parser, Token::RParen, "IN_RANGE requires ')'")?;
     if lower > upper {
-        return Err(ParseError("IN_RANGE lower bound exceeds upper bound".into()));
+        return Err(ParseError(
+            "IN_RANGE lower bound exceeds upper bound".into(),
+        ));
     }
     Ok(i64::from((lower..=upper).contains(&value)))
 }
