@@ -88,7 +88,7 @@ cargo run -p rusthouse-cli -- sql "CREATE TABLE events (id UInt64, name String)"
 cargo run -p rusthouse-cli -- sql "SHOW TABLES" --catalog ./catalog
 ```
 
-`CREATE`, `ALTER`, `RENAME`, `DROP`, `DESCRIBE`, and `SHOW CREATE TABLE` manage **local schema metadata only**. `SHOW COLUMNS FROM events` and `DESC TABLE events` are aliases for `DESCRIBE TABLE events` in both catalog and database mode. They do not modify MergeTree data, and catalog tables cannot be queried with `SELECT`.
+`CREATE`, `ALTER`, `RENAME`, `DROP`, `DESCRIBE`, and `SHOW CREATE TABLE` manage **local schema metadata only**. `SHOW TABLES NOT LIKE 'pattern'` excludes matching schema names and supports the same `%`, `_`, and backslash escapes as `SHOW TABLES LIKE`. `SHOW COLUMNS FROM events` and `DESC TABLE events` are aliases for `DESCRIBE TABLE events` in both catalog and database mode. They do not modify MergeTree data, and catalog tables cannot be queried with `SELECT`.
 
 ## Safety and limits
 
