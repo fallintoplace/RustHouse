@@ -1,9 +1,6 @@
 #!/usr/bin/env python3
 """Run Analytics SQL against the RustHouse CLI or HTTP server."""
 import argparse
-import json
-import math
-import statistics
 import subprocess
 import sys
 import time
@@ -11,6 +8,9 @@ import urllib.error
 import urllib.parse
 import urllib.request
 from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+from common import cli_sql, emit_json, latency_summary
 
 
 DEFAULT_QUERIES = Path(__file__).with_name("queries.sql")
@@ -36,18 +36,7 @@ def select_indices(spec, count):
 
 
 def execute_cli(binary, database, sql, timeout):
-    result = subprocess.run(
-        [str(binary), "sql", sql, "--database", str(database), "--format", "tsv-no-header"],
-        stdout=subprocess.PIPE,
-        stderr=subprocess.PIPE,
-        timeout=timeout,
-        check=False,
-    )
-    if result.returncode:
-        raise RuntimeError(
-            "exit %d: %s" % (result.returncode, result.stderr.decode("utf-8", "replace")[:2000])
-        )
-    return result.stdout
+    return cli_sql(binary, database, sql, timeout)
 
 
 def execute_http(endpoint, sql, timeout):
@@ -69,21 +58,20 @@ def execute_http(endpoint, sql, timeout):
 
 def verify_input(execute, sql, expected, timeout):
     output = execute(sql, timeout)
-    if output.strip() != expected.encode("utf-8").strip():
+    if output.rstrip(b"\r\n") != expected.encode("utf-8").rstrip(b"\r\n"):
         raise ValueError("preflight result differs from the expected output")
 
 
 def summarize_times(timings):
-    if not timings:
-        return None
-    ordered = sorted(timings)
-    p90_index = math.ceil(0.9 * len(ordered)) - 1
-    return {
-        "min_seconds": ordered[0],
-        "median_seconds": statistics.median(ordered),
-        "p90_seconds": ordered[p90_index],
-        "max_seconds": ordered[-1],
-    }
+    return latency_summary(timings)
+
+
+def reference_failure(expected_path, output):
+    if not expected_path.is_file():
+        return "missing_reference", str(expected_path)
+    if output != expected_path.read_bytes():
+        return "mismatch", "query output differs from expected TSV"
+    return None
 
 
 def run_benchmark(queries, indices, runs, timeout, execute, reference_dir=None, warmups=0):
@@ -101,16 +89,14 @@ def run_benchmark(queries, indices, runs, timeout, execute, reference_dir=None, 
             except (OSError, RuntimeError, subprocess.TimeoutExpired, urllib.error.URLError) as error:
                 status, failure = "error", str(error)[:2000]
                 break
+            if expected_path is not None:
+                invalid = reference_failure(expected_path, output)
+                if invalid is not None:
+                    status, failure = invalid
+                    break
             if start is not None:
                 elapsed = (time.perf_counter_ns() - start) / 1_000_000_000
                 timings.append(round(elapsed, 9))
-            if expected_path is not None:
-                if not expected_path.is_file():
-                    status, failure = "missing_reference", str(expected_path)
-                    break
-                if output != expected_path.read_bytes():
-                    status, failure = "mismatch", "query output differs from expected TSV"
-                    break
         results.append({
             "query": index + 1,
             "status": status,
@@ -175,10 +161,7 @@ def main(argv=None):
         "reference_checked": args.reference_dir is not None,
         "results": results,
     }
-    rendered = json.dumps(report, indent=2) + "\n"
-    if args.output:
-        args.output.write_text(rendered, encoding="utf-8")
-    sys.stdout.write(rendered)
+    emit_json(report, args.output)
     return int(any(item["status"] not in ("passed", "unverified") for item in results))
 
 

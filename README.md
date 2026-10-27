@@ -100,6 +100,15 @@ cargo run -p rusthouse-cli -- sql "SHOW TABLES" --catalog ./catalog
 
 ## Benchmarks
 
+Run all four deterministic Rust benchmark variants with the [central runner](bench/README.md):
+
+```sh
+python3 -m bench benchmark --rows 65536 --samples 7
+```
+
+This records a machine/compiler manifest, raw output, and errors in `bench/results/`.
+The schedule uses the same command. You can still run individual Cargo benchmarks:
+
 Run the in-memory SQL execution benchmark in release mode:
 
 ```sh
@@ -119,6 +128,14 @@ The disk benchmark generates its parts once before timing, parses SQL before sam
 This covers query execution and formatting into a memory buffer, **not** disk scans, terminal rendering, or server overhead. Compare runs on the same machine and Rust compiler version; shared CI runners are not suitable for stable performance numbers.
 
 ## Development
+
+Run the full local check suite (Rust formatting, Clippy, tests, build and all Python harness tests):
+
+```sh
+python3 -m bench check
+```
+
+Individual Rust commands remain available:
 
 ```sh
 cargo fmt --all -- --check

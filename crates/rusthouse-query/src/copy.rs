@@ -51,41 +51,56 @@ fn parse_copy_columns(parser: &mut Parser) -> Result<Option<Vec<String>>, ParseE
     Ok(Some(columns))
 }
 
-fn parse_copy_options(parser: &mut Parser) -> Result<(CopyFormat, bool), ParseError> {
-    let mut header = false;
-    let mut format = CopyFormat::Csv;
+fn parse_copy_format(parser: &mut Parser) -> Result<CopyFormat, ParseError> {
+    if parser.keyword("CSV") {
+        Ok(CopyFormat::Csv)
+    } else if parser.keyword("TSV") {
+        Ok(CopyFormat::Tsv)
+    } else if parser.keyword("SSV") {
+        Ok(CopyFormat::Ssv)
+    } else {
+        Err(ParseError("COPY format must be CSV, TSV or SSV".into()))
+    }
+}
+
+fn parse_copy_header(parser: &mut Parser) -> Result<bool, ParseError> {
+    if !parser.keyword("HEADER") {
+        return Err(ParseError("expected HEADER after CSV".into()));
+    }
+    if parser.keyword("TRUE") {
+        Ok(true)
+    } else if parser.keyword("FALSE") {
+        Ok(false)
+    } else {
+        Err(ParseError("HEADER must be TRUE or FALSE".into()))
+    }
+}
+
+struct CopyOptions {
+    format: CopyFormat,
+    header: bool,
+}
+
+fn parse_copy_options(parser: &mut Parser) -> Result<CopyOptions, ParseError> {
+    let mut options = CopyOptions {
+        format: CopyFormat::Csv,
+        header: false,
+    };
     if parser.keyword("WITH") {
         if !parser.take(Token::LParen) || !parser.keyword("FORMAT") {
             return Err(ParseError(
                 "COPY supports WITH (FORMAT CSV|TSV|SSV[, HEADER TRUE])".into(),
             ));
         }
-        format = if parser.keyword("CSV") {
-            CopyFormat::Csv
-        } else if parser.keyword("TSV") {
-            CopyFormat::Tsv
-        } else if parser.keyword("SSV") {
-            CopyFormat::Ssv
-        } else {
-            return Err(ParseError("COPY format must be CSV, TSV or SSV".into()));
-        };
+        options.format = parse_copy_format(parser)?;
         if parser.take(Token::Comma) {
-            if !parser.keyword("HEADER") {
-                return Err(ParseError("expected HEADER after CSV".into()));
-            }
-            header = if parser.keyword("TRUE") {
-                true
-            } else if parser.keyword("FALSE") {
-                false
-            } else {
-                return Err(ParseError("HEADER must be TRUE or FALSE".into()));
-            };
+            options.header = parse_copy_header(parser)?;
         }
         if !parser.take(Token::RParen) {
             return Err(ParseError("expected ')' after COPY options".into()));
         }
     }
-    Ok((format, header))
+    Ok(options)
 }
 
 fn parse_copy_path(parser: &mut Parser) -> Result<String, ParseError> {
@@ -112,7 +127,7 @@ pub fn parse_copy_from(sql: &str) -> Result<Option<CopyFrom>, ParseError> {
         return Err(ParseError("COPY requires FROM 'path'".into()));
     }
     let path = parse_copy_path(&mut parser)?;
-    let (format, header) = parse_copy_options(&mut parser)?;
+    let options = parse_copy_options(&mut parser)?;
     parser.take(Token::Semicolon);
     if parser.index != parser.tokens.len() {
         return Err(ParseError("unexpected tokens after COPY statement".into()));
@@ -121,8 +136,8 @@ pub fn parse_copy_from(sql: &str) -> Result<Option<CopyFrom>, ParseError> {
         table,
         columns,
         path,
-        header,
-        format,
+        header: options.header,
+        format: options.format,
     }))
 }
 

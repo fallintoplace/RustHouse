@@ -53,7 +53,7 @@ pub fn inspect_part(path: impl AsRef<Path>) -> Result<PartMetadata, PartError> {
     })
 }
 
-fn read_metadata(path: &Path, max_bytes: u64) -> Result<String, PartError> {
+fn read_bounded_file(path: &Path, max_bytes: u64) -> Result<Vec<u8>, PartError> {
     let metadata = fs::symlink_metadata(path).map_err(|source| io_error(path, source))?;
     if !metadata.file_type().is_file() {
         return Err(invalid_metadata(path, "metadata must be a regular file"));
@@ -69,7 +69,11 @@ fn read_metadata(path: &Path, max_bytes: u64) -> Result<String, PartError> {
     if bytes.len() as u64 > max_bytes {
         return Err(invalid_metadata(path, "metadata exceeds size limit"));
     }
-    String::from_utf8(bytes)
+    Ok(bytes)
+}
+
+fn read_metadata(path: &Path, max_bytes: u64) -> Result<String, PartError> {
+    String::from_utf8(read_bounded_file(path, max_bytes)?)
         .map_err(|source| io_error(path, io::Error::new(io::ErrorKind::InvalidData, source)))
 }
 

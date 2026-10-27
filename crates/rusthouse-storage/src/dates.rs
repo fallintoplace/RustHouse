@@ -55,35 +55,41 @@ fn from_days(days: i64) -> (i64, i64, i64) {
     (year, month, day)
 }
 
-pub fn parse_date(text: &str) -> Option<u16> {
+fn parse_calendar_day(text: &str) -> Option<i64> {
     let (year, month, day) = ymd(text)?;
-    u16::try_from(to_days(year, month, day)).ok()
+    Some(to_days(year, month, day))
+}
+
+pub fn parse_date(text: &str) -> Option<u16> {
+    u16::try_from(parse_calendar_day(text)?).ok()
+}
+
+fn parse_clock_time(text: &str) -> Option<u64> {
+    let bytes = text.as_bytes();
+    if bytes.len() != 8
+        || bytes[2] != b':'
+        || bytes[5] != b':'
+        || bytes[..2].iter().any(|byte| !byte.is_ascii_digit())
+        || bytes[3..5].iter().any(|byte| !byte.is_ascii_digit())
+        || bytes[6..].iter().any(|byte| !byte.is_ascii_digit())
+    {
+        return None;
+    }
+    let hour = text[..2].parse::<u64>().ok()?;
+    let minute = text[3..5].parse::<u64>().ok()?;
+    let second = text[6..].parse::<u64>().ok()?;
+    (hour <= 23 && minute <= 59 && second <= 59)
+        .then_some(hour * 3_600 + minute * 60 + second)
 }
 
 pub fn parse_datetime(text: &str) -> Option<u32> {
     let bytes = text.as_bytes();
-    if bytes.len() != 19
-        || !text.is_char_boundary(10)
-        || !matches!(bytes[10], b' ' | b'T')
-        || bytes[13] != b':'
-        || bytes[16] != b':'
-        || bytes[11..13].iter().any(|byte| !byte.is_ascii_digit())
-        || bytes[14..16].iter().any(|byte| !byte.is_ascii_digit())
-        || bytes[17..19].iter().any(|byte| !byte.is_ascii_digit())
-    {
+    if bytes.len() != 19 || !text.is_char_boundary(10) || !matches!(bytes[10], b' ' | b'T') {
         return None;
     }
-    let (year, month, day) = ymd(&text[..10])?;
-    let hour = text[11..13].parse::<u64>().ok()?;
-    let minute = text[14..16].parse::<u64>().ok()?;
-    let second = text[17..19].parse::<u64>().ok()?;
-    if hour > 23 || minute > 59 || second > 59 {
-        return None;
-    }
-    let days = u64::try_from(to_days(year, month, day)).ok()?;
-    let seconds = days
-        .checked_mul(86_400)?
-        .checked_add(hour * 3_600 + minute * 60 + second)?;
+    let days = u64::try_from(parse_calendar_day(&text[..10])?).ok()?;
+    let time = parse_clock_time(&text[11..])?;
+    let seconds = days.checked_mul(86_400)?.checked_add(time)?;
     u32::try_from(seconds).ok()
 }
 

@@ -30,6 +30,30 @@ struct ColumnStream {
     cached: Option<DecodedBlock>,
 }
 
+fn open_numeric_stream(
+    part: &Path,
+    name: &str,
+    data_type: &str,
+    rows: u64,
+    layout: &mut ScanLayout,
+) -> Result<ColumnStream, PartError> {
+    let marks_path = numeric_marks_path(part, name)?;
+    let marks_file = read_wide_marks(&marks_path)?;
+    layout.validate(name, &marks_file.marks, rows)?;
+    let data_path = part.join(format!("{name}.bin"));
+    let mut reader = CompressedBlockReader::open(&data_path)?;
+    crate::mark_validation::validate_wide_marks_reader(&marks_file, &mut reader)?;
+    // Mark validation leaves the reader at EOF. Rewind the verified
+    // file instead of reopening it for the actual granule scan.
+    reader.seek_to_block(0)?;
+    Ok(ColumnStream {
+        data_type: data_type.to_owned(),
+        marks: marks_file.marks,
+        reader,
+        cached: None,
+    })
+}
+
 pub struct NumericPartReader {
     streams: Vec<ColumnStream>,
     rows: u64,
@@ -73,21 +97,13 @@ impl NumericPartReader {
             if metadata.rows == 0 {
                 continue;
             }
-            let marks_path = numeric_marks_path(part, name)?;
-            let marks_file = read_wide_marks(&marks_path)?;
-            layout.validate(name, &marks_file.marks, metadata.rows)?;
-            let data_path = part.join(format!("{name}.bin"));
-            let mut reader = CompressedBlockReader::open(&data_path)?;
-            crate::mark_validation::validate_wide_marks_reader(&marks_file, &mut reader)?;
-            // Mark validation leaves the reader at EOF. Rewind the verified
-            // file instead of reopening it for the actual granule scan.
-            reader.seek_to_block(0)?;
-            streams.push(ColumnStream {
-                data_type: column.data_type.clone(),
-                marks: marks_file.marks,
-                reader,
-                cached: None,
-            });
+            streams.push(open_numeric_stream(
+                part,
+                name,
+                &column.data_type,
+                metadata.rows,
+                &mut layout,
+            )?);
         }
 
         Ok(Self {

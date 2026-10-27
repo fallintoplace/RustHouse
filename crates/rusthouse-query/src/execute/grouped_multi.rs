@@ -98,26 +98,34 @@ pub(super) fn execute<W: Write>(
         });
     }
     if query.order_by.is_some() {
-        groups.sort_by(|(left_keys, left_count), (right_keys, right_count)| {
-            for order in query.order_terms() {
-                let cmp = if order.column == "count" {
-                    let order_count = left_count.cmp(right_count);
-                    if order.descending {
-                        order_count.reverse()
-                    } else {
-                        order_count
-                    }
-                } else {
-                    let index = columns
+        let sort_terms = query
+            .order_terms()
+            .map(|order| {
+                let index = (order.column != "count").then(|| {
+                    columns
                         .iter()
                         .position(|column| column == &order.column)
-                        .expect("ORDER BY was checked during parsing");
+                        .expect("ORDER BY was checked during parsing")
+                });
+                (index, order.descending, order.nulls_first)
+            })
+            .collect::<Vec<_>>();
+        groups.sort_by(|(left_keys, left_count), (right_keys, right_count)| {
+            for &(index, descending, nulls_first) in &sort_terms {
+                let cmp = if let Some(index) = index {
                     typed::compare_order_cells(
                         &left_keys[index],
                         &right_keys[index],
-                        order.descending,
-                        order.nulls_first,
+                        descending,
+                        nulls_first,
                     )
+                } else {
+                    let comparison = left_count.cmp(right_count);
+                    if descending {
+                        comparison.reverse()
+                    } else {
+                        comparison
+                    }
                 };
                 if cmp != Ordering::Equal {
                     return cmp;

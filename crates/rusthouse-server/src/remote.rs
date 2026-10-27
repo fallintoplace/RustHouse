@@ -105,17 +105,7 @@ fn request(peer: Peer, method: &str, path: &str, body: &[u8]) -> Result<PeerResp
     parse_response(&raw)
 }
 
-fn parse_response(raw: &[u8]) -> Result<PeerResponse, String> {
-    let head_end = raw
-        .windows(4)
-        .position(|bytes| bytes == b"\r\n\r\n")
-        .ok_or("peer response has no header terminator")?;
-    if head_end + 4 > MAX_HEADER_BYTES {
-        return Err("peer headers exceed 8 KiB".into());
-    }
-    let head = std::str::from_utf8(&raw[..head_end]).map_err(|_| "peer headers are not UTF-8")?;
-    let mut lines = head.split("\r\n");
-    let status_line = lines.next().ok_or("missing peer status")?;
+fn parse_http_status(status_line: &str) -> Result<u16, String> {
     let mut words = status_line.splitn(3, ' ');
     let version = words.next().ok_or("invalid peer HTTP status")?;
     let code = words.next().ok_or("invalid peer HTTP status")?;
@@ -133,21 +123,39 @@ fn parse_response(raw: &[u8]) -> Result<PeerResponse, String> {
     if !(200..=599).contains(&status) {
         return Err("unsupported peer HTTP status".into());
     }
+    Ok(status)
+}
+
+fn parse_peer_header(line: &str) -> Result<(&str, &str), String> {
+    let (name, value) = line.split_once(':').ok_or("invalid peer header")?;
+    if name.is_empty()
+        || !name
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || byte == b'-')
+        || value
+            .bytes()
+            .any(|byte| byte.is_ascii_control() && byte != b'\t')
+    {
+        return Err("invalid peer header".into());
+    }
+    Ok((name, value.trim()))
+}
+
+fn parse_response(raw: &[u8]) -> Result<PeerResponse, String> {
+    let head_end = raw
+        .windows(4)
+        .position(|bytes| bytes == b"\r\n\r\n")
+        .ok_or("peer response has no header terminator")?;
+    if head_end + 4 > MAX_HEADER_BYTES {
+        return Err("peer headers exceed 8 KiB".into());
+    }
+    let head = std::str::from_utf8(&raw[..head_end]).map_err(|_| "peer headers are not UTF-8")?;
+    let mut lines = head.split("\r\n");
+    let status = parse_http_status(lines.next().ok_or("missing peer status")?)?;
     let mut length = None;
     let mut content_type = None;
     for line in lines {
-        let (name, value) = line.split_once(':').ok_or("invalid peer header")?;
-        if name.is_empty()
-            || !name
-                .bytes()
-                .all(|byte| byte.is_ascii_alphanumeric() || byte == b'-')
-            || value
-                .bytes()
-                .any(|byte| byte.is_ascii_control() && byte != b'\t')
-        {
-            return Err("invalid peer header".into());
-        }
-        let value = value.trim();
+        let (name, value) = parse_peer_header(line)?;
         if name.eq_ignore_ascii_case("content-length") {
             if length.is_some() || !value.bytes().all(|b| b.is_ascii_digit()) || value.is_empty() {
                 return Err("invalid peer Content-Length".into());
