@@ -61,7 +61,7 @@ cargo run -p rusthouse-cli -- sql "INSERT INTO generated (id) SELECT number FROM
 cargo run -p rusthouse-cli -- sql "COPY events FROM '/path/to/events.csv' WITH (FORMAT CSV, HEADER TRUE)" --database ./mydb
 ```
 
-COPY FROM CSV imports local UTF-8 CSV with quoted commas, quotes, and newlines. With `HEADER TRUE`, CSV headers map fields to named table columns. Without a header, CSV fields follow table column order. Unquoted empty fields become NULL; quoted empty fields remain empty strings. CSV imports are limited to 50,000 data rows and 8 MiB. Imports above 4,096 rows publish multiple verified parts by atomically switching the active snapshot. Existing immutable parts are preserved. TSV imports remain limited to 4,096 rows.
+COPY FROM CSV imports local UTF-8 CSV with quoted commas, quotes, and newlines. With `HEADER TRUE`, CSV headers map fields to named table columns. Without a header, CSV fields follow table column order. Unquoted empty fields become NULL; quoted empty fields remain empty strings. CSV imports are limited to 50,000 data rows and 8 MiB. Imports above 4,096 rows publish multiple verified parts by atomically switching the active snapshot. Existing immutable parts are preserved. TSV imports now support the same 50,000-row and 8 MiB limits as CSV, with atomic multi-part publication.
 
 INSERT ... SELECT reads up to 4,096 rows from another table or a supported generated source and appends them as one part. It supports named target columns and the same type checks as INSERT VALUES. A SELECT that yields no rows is a no-op. The source read and append hold a single exclusive database lock, preventing concurrent table changes during the statement. This is **not** a cross-statement transaction.
 
