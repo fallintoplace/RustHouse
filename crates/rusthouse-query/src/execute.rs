@@ -194,6 +194,77 @@ pub fn execute<W: Write>(
     Ok(())
 }
 
+/// Evaluate filtered COUNT independently on immutable parts, then reduce the
+/// partial counts. Skip small snapshots where thread startup costs dominate.
+/// An unfiltered COUNT already has a cheaper metadata-only path.
+fn parallel_filtered_count(query: &Select, source: &Path) -> Result<Option<u64>, ExecutionError> {
+    if !matches!(query.projection, Projection::Count)
+        || (query.predicates.is_empty() && query.or_predicates.is_empty())
+        || query.limit.is_some()
+        || query.offset.is_some()
+        || query.distinct
+        || query.order_by.is_some()
+        || !query.order_by_extra.is_empty()
+        || query.having.is_some()
+    {
+        return Ok(None);
+    }
+    let parts = rusthouse_storage::query_parts(source)?;
+    const MIN_PARALLEL_PARTS: usize = 32;
+    const MAX_WORKERS: usize = 4;
+    let workers = std::thread::available_parallelism()
+        .map_or(1, |parallelism| parallelism.get())
+        .min(MAX_WORKERS);
+    if parts.len() < MIN_PARALLEL_PARTS || workers < 2 {
+        return Ok(None);
+    }
+    // Validate all part schemas before executing any partial count. A mismatched
+    // or incomplete snapshot must never produce a plausible partial answer.
+    inspect_query_source(source)?;
+    let chunk_size = parts.len().div_ceil(workers);
+    let total = std::thread::scope(|scope| -> Result<u64, ExecutionError> {
+        let handles = parts
+            .chunks(chunk_size)
+            .map(|chunk| {
+                scope.spawn(move || -> Result<u64, ExecutionError> {
+                    let mut sum = 0u64;
+                    let mut buffer = Vec::new();
+                    for part in chunk {
+                        buffer.clear();
+                        // A single-part source avoids re-entering this parallel path.
+                        execute(query, Some(part), &mut buffer)?;
+                        let header_end = buffer.iter().position(|&byte| byte == b'\n').ok_or_else(|| {
+                            ExecutionError::Invalid("malformed part COUNT header".into())
+                        })?;
+                        let value = buffer.get(header_end + 1..).and_then(|tail| tail.strip_suffix(b"\n"))
+                            .filter(|digits| !digits.is_empty() && digits.iter().all(u8::is_ascii_digit))
+                            .ok_or_else(|| ExecutionError::Invalid("malformed part COUNT value".into()))?;
+                        let count = std::str::from_utf8(value)
+                            .map_err(|_| ExecutionError::Invalid("invalid part COUNT encoding".into()))?
+                            .parse::<u64>()
+                            .map_err(|_| ExecutionError::Invalid("part COUNT overflow".into()))?;
+                        sum = sum.checked_add(count).ok_or_else(|| {
+                            ExecutionError::Invalid("parallel COUNT overflow".into())
+                        })?;
+                    }
+                    Ok(sum)
+                })
+            })
+            .collect::<Vec<_>>();
+        let mut total = 0u64;
+        for handle in handles {
+            let partial = handle.join().map_err(|_| {
+                ExecutionError::Invalid("parallel COUNT worker panicked".into())
+            })??;
+            total = total.checked_add(partial).ok_or_else(|| {
+                ExecutionError::Invalid("parallel COUNT overflow".into())
+            })?;
+        }
+        Ok(total)
+    })?;
+    Ok(Some(total))
+}
+
 fn execute_into<W: Write>(
     query: &Select,
     part: Option<&Path>,
@@ -256,6 +327,11 @@ fn execute_into<W: Write>(
     let part = part.ok_or_else(|| {
         ExecutionError::Invalid("pass --part <directory> for table queries".into())
     })?;
+    if let Some(count) = parallel_filtered_count(query, part)? {
+        write_header(query, output, "count")?;
+        writeln!(output, "{count}")?;
+        return Ok(());
+    }
     if matches!(query.projection, Projection::GroupedAggregate { .. }) {
         return typed_aggregate::execute_grouped_aggregate(query, part, output);
     }
