@@ -323,11 +323,17 @@ fn parse_clamp(parser: &mut Parser, depth: usize) -> Result<i64, ParseError> {
 fn parse_ceil_to_multiple(parser: &mut Parser, depth: usize) -> Result<i64, ParseError> {
     require_token(parser, Token::LParen, "CEIL_TO_MULTIPLE requires '('")?;
     let value = expression(parser, depth + 1)?;
-    require_token(parser, Token::Comma, "CEIL_TO_MULTIPLE requires two arguments")?;
+    require_token(
+        parser,
+        Token::Comma,
+        "CEIL_TO_MULTIPLE requires two arguments",
+    )?;
     let multiple = expression(parser, depth + 1)?;
     require_token(parser, Token::RParen, "CEIL_TO_MULTIPLE requires ')'")?;
     if multiple <= 0 {
-        return Err(ParseError("CEIL_TO_MULTIPLE requires a positive multiple".into()));
+        return Err(ParseError(
+            "CEIL_TO_MULTIPLE requires a positive multiple".into(),
+        ));
     }
     let value = i128::from(value);
     let multiple = i128::from(multiple);
