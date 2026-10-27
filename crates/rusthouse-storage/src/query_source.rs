@@ -45,7 +45,15 @@ pub fn resolve_active_snapshot(root: &Path) -> Result<PathBuf, PartError> {
             "invalid database snapshot generation".into(),
         ));
     }
-    let active = root.join(".rusthouse-versions").join(label);
+    let versions = root.join(".rusthouse-versions");
+    let versions_kind =
+        fs::symlink_metadata(&versions).map_err(|error| io_error(&versions, error))?;
+    if !versions_kind.file_type().is_dir() {
+        return Err(PartError::InvalidScan(
+            "database snapshot versions root is not a directory".into(),
+        ));
+    }
+    let active = versions.join(label);
     let kind = fs::symlink_metadata(&active).map_err(|error| io_error(&active, error))?;
     if !kind.file_type().is_dir() {
         return Err(PartError::InvalidScan(
@@ -293,6 +301,32 @@ impl NumericQueryReader {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[cfg(unix)]
+    #[test]
+    fn rejects_symlinked_snapshot_versions_directory() {
+        use std::os::unix::fs::symlink;
+        use std::sync::atomic::{AtomicUsize, Ordering};
+
+        static NEXT_TEMP: AtomicUsize = AtomicUsize::new(0);
+        let root = std::env::temp_dir().join(format!(
+            "rusthouse-versions-link-{}-{}",
+            std::process::id(),
+            NEXT_TEMP.fetch_add(1, Ordering::Relaxed)
+        ));
+        fs::create_dir(&root).unwrap();
+        fs::create_dir(root.join("other")).unwrap();
+        fs::create_dir(root.join("other/g1")).unwrap();
+        fs::write(root.join(".rusthouse-active"), b"g1\n").unwrap();
+        symlink("other", root.join(".rusthouse-versions")).unwrap();
+
+        assert!(matches!(
+            resolve_active_snapshot(&root),
+            Err(PartError::InvalidScan(message))
+                if message == "database snapshot versions root is not a directory"
+        ));
+        fs::remove_dir_all(root).unwrap();
+    }
 
     #[test]
     fn ignores_unpublished_pending_local_parts() {
