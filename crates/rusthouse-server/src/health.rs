@@ -1,5 +1,3 @@
-//! On-demand health probes for explicitly configured loopback peers.
-
 use crate::Response;
 use crate::cluster::Cluster;
 use crate::remote;
@@ -11,7 +9,6 @@ pub fn handle(method: &str, body: &[u8], cluster: &Cluster) -> Response {
     if !body.is_empty() {
         return Response::text("400 Bad Request", "GET must not contain a request body\n");
     }
-    // Probe each peer in parallel, bounded by the 16-peer registration limit.
     let healthy: Vec<bool> = std::thread::scope(|scope| {
         let handles = cluster
             .peers()
@@ -67,8 +64,6 @@ mod tests {
         let port = listener.local_addr().unwrap().port();
         let responder = std::thread::spawn(move || {
             let (mut socket, _) = listener.accept().unwrap();
-            // Drain the request before responding. Closing with unread TCP data
-            // can reset the connection and hide an otherwise valid reply.
             let mut reader = BufReader::new(&mut socket);
             loop {
                 let mut line = String::new();

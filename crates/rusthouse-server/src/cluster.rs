@@ -1,6 +1,3 @@
-//! Explicit localhost peer membership for an experimental read-only coordinator.
-//! No network discovery, DNS, remote hosts or implicit local data sharding.
-
 use crate::Response;
 use std::net::{Ipv4Addr, SocketAddrV4};
 
@@ -58,7 +55,6 @@ impl Cluster {
     }
 }
 
-/// Membership describes peer addresses, not their health or consistency.
 pub fn handle(method: &str, body: &[u8], cluster: &Cluster) -> Response {
     if method != "GET" {
         return Response::text("405 Method Not Allowed", "cluster endpoint requires GET\n");

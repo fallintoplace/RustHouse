@@ -1,5 +1,3 @@
-//! Convert bounded SQL TSV results into RFC 4180-style CSV on the HTTP interface.
-//! Decode TSV escapes before quoting values. NULL is represented as unquoted \\N.
 use super::jsonl::decode_tsv_value;
 use std::io::{self, Write};
 
@@ -113,7 +111,7 @@ mod tests {
         {
             let mut csv = CsvWriter::new(&mut output);
             csv.write_all(b"name\tmessage\tmissing\n").unwrap();
-            csv.write_all(b"service\tcomma,quote\"\n").unwrap_err(); // row width mismatch
+            csv.write_all(b"service\tcomma,quote\"\n").unwrap_err();
         }
         assert_eq!(output, b"name,message,missing\r\n");
 

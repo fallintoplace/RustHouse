@@ -1,4 +1,3 @@
-//! Stream validated JSONL objects as one bounded JSON array.
 use super::MAX_RESPONSE_BYTES;
 use std::io::{self, Write};
 
@@ -10,7 +9,6 @@ fn write_indent<W: Write>(output: &mut W, depth: usize) -> io::Result<()> {
     Ok(())
 }
 
-/// Pretty-print validated JSONL objects without parsing user string contents.
 fn write_pretty_row<W: Write>(output: &mut W, row: &[u8]) -> io::Result<()> {
     let mut quoted = false;
     let mut escaped = false;

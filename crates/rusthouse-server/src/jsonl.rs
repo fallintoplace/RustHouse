@@ -1,5 +1,3 @@
-//! Convert bounded TSV query results into newline-delimited JSON objects.
-//! Numeric values remain strings to preserve Int128 and UInt128 precision.
 use super::{hex_digit, write_json_string};
 use std::borrow::Cow;
 use std::collections::HashSet;

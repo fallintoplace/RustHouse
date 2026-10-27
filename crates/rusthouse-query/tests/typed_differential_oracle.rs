@@ -1,5 +1,3 @@
-//! Deterministic differential checks for persisted typed wide parts.
-//! Expected results come from an independent Rust row model.
 use rusthouse_query::{execute, parse_select};
 use rusthouse_storage::{Column, write_wide_part};
 use std::fs;
@@ -66,7 +64,6 @@ fn run(sql: &str, source: &Path) -> String {
 
 #[test]
 fn seeded_typed_predicates_and_pagination_match_reference_rows() {
-    // Includes a 1024-row granule boundary and a 4096-row part boundary.
     let root = fixture();
     let names = ["red", "blue", "green"];
     let mut seed = 0xd1ff_2026_1027_f00du64;
@@ -94,7 +91,6 @@ fn seeded_typed_predicates_and_pagination_match_reference_rows() {
         assert_eq!(run(&sql, &root), expected, "case {case}: {sql}");
 
         if case % 10 == 0 {
-            // Nullable aggregate semantics are checked independently of SQL.
             let sql = format!(
                 "SELECT count(amount) FROM part WHERE dept = '{}' AND id >= {cutoff}",
                 names[department as usize]

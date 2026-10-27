@@ -1,7 +1,5 @@
 use std::io::{self, Write};
 
-/// Discard exactly the first completed CSV record (the SELECT column names).
-/// Handles writes split at any byte boundary, including CRLF boundaries.
 pub(super) struct WithoutHeader<W: Write> {
     output: W,
     skipping_header: bool,

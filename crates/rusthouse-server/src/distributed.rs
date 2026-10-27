@@ -1,6 +1,3 @@
-//! Experimental read-only scatter/gather SELECT against distinct local shards.
-//! Only unordered row projections are safe to concatenate without global planning.
-
 use crate::cluster::{Cluster, Peer};
 use crate::remote;
 use crate::{MAX_QUERY_BYTES, MAX_RESPONSE_BYTES, Response};
@@ -32,7 +29,6 @@ fn is_safe_scan(select: &Select) -> bool {
         && select.offset.is_none()
 }
 
-/// Counts can be summed across disjoint shards, but DISTINCT counts cannot.
 fn is_safe_count(select: &Select) -> bool {
     matches!(
         select.projection,
@@ -47,7 +43,6 @@ fn is_safe_count(select: &Select) -> bool {
         && select.offset.is_none()
 }
 
-/// Only exact integer SUM is decomposable without changing the result type.
 fn is_safe_sum(select: &Select) -> bool {
     matches!(
         select.projection,
@@ -85,8 +80,6 @@ fn integer_type(kind: &str) -> bool {
     )
 }
 
-/// GROUP BY counts can be reduced by key across disjoint read-only shards.
-/// A global HAVING, ORDER BY or LIMIT would require different planning.
 fn is_safe_grouped_count(select: &Select) -> bool {
     matches!(select.source, Some(Source::Table(_)))
         && matches!(select.projection, Projection::GroupedCount { .. })
@@ -125,8 +118,6 @@ fn shard_row_cap(peer: Peer) -> Result<usize, String> {
     Ok(cap)
 }
 
-/// Validate the exact integer data type before adding partial sums.
-/// Simple ASCII identifiers cannot inject JSON or an HTTP request target.
 fn shard_integer_kind(peer: Peer, table: &str, column: &str) -> Result<String, String> {
     let mut bytes = column.bytes();
     if !bytes
@@ -174,14 +165,11 @@ fn read_shard(
     Ok((cap, result.body, kind))
 }
 
-/// Merge only identical TSV headers and whole, newline-terminated rows.
-/// Refuse capped shard results instead of silently returning an incomplete scan.
 fn merge_tsv(shards: &[(usize, Vec<u8>)], max_rows: usize) -> Result<Vec<u8>, MergeError> {
     let mut chunks: Vec<&[u8]> = Vec::with_capacity(shards.len());
     let mut header: Option<&[u8]> = None;
     let mut total_rows = 0usize;
     let mut total_bytes = 0usize;
-    // Validate every shard before allocating or copying the merged response.
     for (cap, body) in shards {
         if !body.ends_with(b"\n") {
             return Err(MergeError::InvalidResponse);
@@ -233,8 +221,6 @@ fn merge_tsv(shards: &[(usize, Vec<u8>)], max_rows: usize) -> Result<Vec<u8>, Me
     Ok(output)
 }
 
-/// A count shard must return exactly one non-negative integer in one TSV row.
-/// Summation checks overflow and never applies the coordinator's row cap to counts.
 fn sum_shard_counts(shards: &[(usize, Vec<u8>)]) -> Result<Vec<u8>, MergeError> {
     let mut expected_header: Option<&[u8]> = None;
     let mut sum = 0u64;
@@ -273,8 +259,6 @@ fn sum_shard_counts(shards: &[(usize, Vec<u8>)]) -> Result<Vec<u8>, MergeError> 
     Ok(result)
 }
 
-/// Reduce SUM only after all peers agree on the exact integer column type.
-/// NULL represents an empty shard rather than zero or a failed parse.
 fn merge_integer_sums(shards: &[(usize, Vec<u8>)], kind: &str) -> Result<Vec<u8>, MergeError> {
     let mut expected_header: Option<&[u8]> = None;
     let mut signed_total = 0i128;
@@ -339,10 +323,6 @@ fn merge_integer_sums(shards: &[(usize, Vec<u8>)], kind: &str) -> Result<Vec<u8>
     Ok(output)
 }
 
-/// Reduce grouped COUNT results by their canonical TSV-encoded key.
-/// Preserve first-seen key order, reject malformed rows, and only emit a
-/// complete bounded result. Shards may hold overlapping group *keys*, but
-/// the underlying source rows must be disjoint.
 fn merge_grouped_counts(
     shards: &[(usize, Vec<u8>)],
     max_rows: usize,
@@ -359,7 +339,6 @@ fn merge_grouped_counts(
             .position(|&byte| byte == b'\n')
             .ok_or(MergeError::InvalidGroupedCount)?;
         let header = &body[..=header_end];
-        // The local GROUP BY executor writes one key column and count.
         if header.len() <= b"\tcount\n".len()
             || !header.ends_with(b"\tcount\n")
             || header.iter().filter(|&&byte| byte == b'\t').count() != 1
@@ -478,7 +457,6 @@ pub fn handle(method: &str, body: &[u8], cluster: &Cluster, max_rows: usize) -> 
         ) => Some((table.as_str(), column.as_str())),
         _ => None,
     };
-    // Verify that only a named database table can be scanned.
     if !matches!(select.source, Some(Source::Table(_))) || cluster.peers().is_empty() {
         return Response::text(
             "400 Bad Request",

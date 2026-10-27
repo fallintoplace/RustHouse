@@ -1,5 +1,3 @@
-//! Minimal read-only SQL HTTP interface, bound to loopback by the binary.
-//! This is intentionally not a full database wire protocol.
 pub mod cluster;
 mod csv;
 mod csv_no_header;
@@ -126,7 +124,6 @@ fn decode_url(value: &str) -> Result<String, &'static str> {
 }
 
 fn write_json_string<W: Write>(writer: &mut W, value: &str) -> io::Result<()> {
-    // UTF-8 bytes other than ASCII controls, quotes and backslashes are safe.
     if !value
         .as_bytes()
         .iter()
@@ -171,8 +168,6 @@ fn write_json_string<W: Write>(writer: &mut W, value: &str) -> io::Result<()> {
     writer.write_all(b"\"")
 }
 
-/// Resolve only catalog-visible, on-disk tables. Never expose orphaned
-/// data directories or symlinks that the local database would not accept.
 fn database_part(database: &Path, table: &str) -> Result<PathBuf, String> {
     let mut chars = table.bytes();
     if table.len() > 128
@@ -242,8 +237,6 @@ fn schema_response(config: &Config, table: Option<&str>) -> Response {
     if config.part.is_some() && config.database.is_some() {
         return Response::text("400 Bad Request", "choose --part or --database, not both\n");
     }
-    // Hold the same shared lock as SQL queries while resolving the snapshot
-    // and building the response. Concurrent DROP/RENAME must not remove it.
     let _database_read_lock = if table.is_some() {
         let Some(database) = config.database.as_deref() else {
             return Response::text("400 Bad Request", "table discovery requires --database\n");
@@ -365,7 +358,6 @@ fn query_parameters(target: &str) -> Result<(String, Option<String>, QueryFormat
     ))
 }
 
-/// Discover the server's read-only mode and resource limits without opening files.
 fn capabilities_response(config: &Config) -> Response {
     let source = match (config.part.is_some(), config.database.is_some()) {
         (false, false) => "generated",
@@ -385,8 +377,6 @@ fn capabilities_response(config: &Config) -> Response {
     }
 }
 
-/// Runs only the subset accepted by the existing SELECT parser. DDL and
-/// writes cannot pass this interface. All responses are bounded in memory.
 pub fn handle_request(method: &str, target: &str, body: &[u8], config: &Config) -> Response {
     if target == "/ping" {
         if method != "GET" {
@@ -489,8 +479,6 @@ pub fn handle_request(method: &str, target: &str, body: &[u8], config: &Config) 
     if config.part.is_some() && config.database.is_some() {
         return Response::text("400 Bad Request", "choose --part or --database, not both\n");
     }
-    // Match the CLI read contract: DROP/RENAME cannot remove parts mid-query.
-    // Retain this guard through the entire execution and response conversion.
     let _database_read_lock = match (config.database.as_deref(), select.source.as_ref()) {
         (Some(database), Some(Source::Table(_))) => {
             match rusthouse_storage::acquire_database_lock(database, false) {
@@ -665,7 +653,6 @@ mod tests {
         assert_eq!(result.body, b"id\tname\n1\tAda\n2\tGrace\n");
         let count = handle_request("POST", "/", b"SELECT count(*) FROM events", &config);
         assert_eq!(count.body, b"count\n2\n");
-        // SQL over HTTP must follow the same active generation as the CLI.
         let generation = parts.join(".rusthouse-versions").join("g1");
         fs::create_dir_all(&generation).unwrap();
         write_wide_part(
@@ -942,7 +929,6 @@ mod tests {
             "Logical plan (no data read):\nSource: numbers(10)\nFilter: 1 conditions across 1 OR branches\nProject: number\nLimit: 3\n"
         );
 
-        // Planning a part query must not require --part or open data files.
         let planned = handle_request("POST", "/explain", b"SELECT id FROM part", &config());
         assert_eq!(planned.status, "200 OK");
         assert!(

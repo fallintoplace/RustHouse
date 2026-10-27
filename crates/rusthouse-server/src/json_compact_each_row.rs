@@ -1,4 +1,3 @@
-//! Write one JSON array per bounded TSV result row.
 use super::{jsonl::decode_tsv_value, write_json_string};
 use std::io::{self, Write};
 

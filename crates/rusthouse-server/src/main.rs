@@ -58,7 +58,6 @@ fn parse_request_line(line: &str) -> Result<(&str, &str), Response> {
 fn read_request(stream: &mut TcpStream) -> Result<(String, String, Vec<u8>), Response> {
     let mut input = BufReader::new(stream);
     let mut head = Vec::new();
-    // Read only until the headers end, without consuming the beginning of the body.
     while !head.ends_with(b"\r\n\r\n") {
         let mut byte = [0u8];
         input
