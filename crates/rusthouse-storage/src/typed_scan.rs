@@ -191,6 +191,17 @@ impl StorageKind {
     }
 }
 
+fn wrap_null_map(values: TypedColumn, nulls: Option<Vec<u8>>) -> Result<TypedColumn, PartError> {
+    match (values, nulls) {
+        (TypedColumn::Numeric(values), Some(nulls)) => {
+            Ok(TypedColumn::NullableNumeric { values, nulls })
+        }
+        (TypedColumn::Text(values), Some(nulls)) => Ok(TypedColumn::NullableText { values, nulls }),
+        (other, None) => Ok(other),
+        _ => Err(PartError::InvalidScan("unsupported null map".into())),
+    }
+}
+
 struct ColumnReader {
     kind: StorageKind,
     data: Stream,
@@ -321,16 +332,7 @@ impl TypedPartReader {
                     )
                 }
             };
-            let values = match (values, nulls) {
-                (TypedColumn::Numeric(values), Some(nulls)) => {
-                    TypedColumn::NullableNumeric { values, nulls }
-                }
-                (TypedColumn::Text(values), Some(nulls)) => {
-                    TypedColumn::NullableText { values, nulls }
-                }
-                (other, None) => other,
-                _ => return Err(PartError::InvalidScan("unsupported null map".into())),
-            };
+            let values = wrap_null_map(values, nulls)?;
             if values.len() != rows {
                 return Err(PartError::InvalidScan(
                     "typed batch row count mismatch".into(),
