@@ -57,5 +57,9 @@ fn computes_multiple_aggregates_in_one_filtered_scan() {
         run("SELECT count(DISTINCT amount + 1), count(*) FROM part WHERE tag = 'ok'"),
         "count(DISTINCT amount + 1)\tcount(*)\n2\t2\n"
     );
+    assert_eq!(
+        run("SELECT sum(length(tag)), avg(length(tag)) FROM part WHERE amount > 2"),
+        "sum(length(tag))\tavg(length(tag))\n4\t2\n"
+    );
     fs::remove_dir_all(part).unwrap();
 }

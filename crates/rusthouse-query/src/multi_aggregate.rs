@@ -28,6 +28,7 @@ impl AggregateItem {
 fn render_expr(expr: &ScalarExpr) -> String {
     match expr {
         ScalarExpr::Column(name) => name.clone(),
+        ScalarExpr::TextLength(name) => format!("length({name})"),
         ScalarExpr::Integer(number) => number.to_string(),
         ScalarExpr::Add(left, right) => format!("{} + {}", render_expr(left), render_expr(right)),
         ScalarExpr::Subtract(left, right) => {

@@ -4,6 +4,7 @@ use crate::{ParseError, Parser};
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ScalarExpr {
     Column(String),
+    TextLength(String),
     Integer(i64),
     Add(Box<ScalarExpr>, Box<ScalarExpr>),
     Subtract(Box<ScalarExpr>, Box<ScalarExpr>),
@@ -13,6 +14,11 @@ impl ScalarExpr {
     pub fn referenced_columns(&self, out: &mut Vec<String>) {
         match self {
             Self::Column(name) => {
+                if !out.contains(name) {
+                    out.push(name.clone());
+                }
+            }
+            Self::TextLength(name) => {
                 if !out.contains(name) {
                     out.push(name.clone());
                 }
@@ -28,6 +34,17 @@ impl ScalarExpr {
 
 fn primary(parser: &mut Parser) -> Result<ScalarExpr, ParseError> {
     match parser.tokens.get(parser.index) {
+        Some(Token::Word(name))
+            if name.eq_ignore_ascii_case("length")
+                && parser.tokens.get(parser.index + 1) == Some(&Token::LParen) =>
+        {
+            parser.index += 2;
+            let column = parser.word()?;
+            if !parser.take(Token::RParen) {
+                return Err(ParseError("length requires a single column".into()));
+            }
+            Ok(ScalarExpr::TextLength(column))
+        }
         Some(Token::Word(_)) => Ok(ScalarExpr::Column(parser.word()?)),
         Some(Token::Number(number)) => {
             let number = number.parse::<i64>().map_err(|_| {
@@ -110,6 +127,16 @@ mod tests {
         let mut columns = Vec::new();
         expr.referenced_columns(&mut columns);
         assert_eq!(columns, ["width"]);
+    }
+
+    #[test]
+    fn accepts_string_length_inside_numeric_expressions() {
+        let expr = parse_scalar_expression("length(URL) + 1").unwrap();
+        let mut columns = Vec::new();
+        expr.referenced_columns(&mut columns);
+        assert_eq!(columns, ["URL"]);
+        assert!(matches!(expr, ScalarExpr::Add(..)));
+        assert!(parse_scalar_expression("length(URL, Other)").is_err());
     }
 
     #[test]
