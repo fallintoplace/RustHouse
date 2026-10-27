@@ -12,11 +12,28 @@ enum MergeError {
     SchemaMismatch,
     ShardRowLimit,
     CoordinatorLimit,
+    InvalidCount,
+    CountOverflow,
 }
 
 fn is_safe_scan(select: &Select) -> bool {
     matches!(select.source, Some(Source::Table(_)))
         && matches!(select.projection, Projection::All | Projection::Columns(_))
+        && !select.distinct
+        && select.rename.is_none()
+        && select.order_by.is_none()
+        && select.order_by_extra.is_empty()
+        && select.having.is_none()
+        && select.limit.is_none()
+        && select.offset.is_none()
+}
+
+/// Counts can be summed across disjoint shards, but DISTINCT counts cannot.
+fn is_safe_count(select: &Select) -> bool {
+    matches!(
+        select.projection,
+        Projection::Count | Projection::CountColumn { .. }
+    ) && matches!(select.source, Some(Source::Table(_)))
         && !select.distinct
         && select.rename.is_none()
         && select.order_by.is_none()
@@ -120,6 +137,46 @@ fn merge_tsv(shards: &[(usize, Vec<u8>)], max_rows: usize) -> Result<Vec<u8>, Me
     Ok(output)
 }
 
+/// A count shard must return exactly one non-negative integer in one TSV row.
+/// Summation checks overflow and never applies the coordinator's row cap to counts.
+fn sum_shard_counts(shards: &[(usize, Vec<u8>)]) -> Result<Vec<u8>, MergeError> {
+    let mut expected_header: Option<&[u8]> = None;
+    let mut sum = 0u64;
+    for (_, body) in shards {
+        if !body.ends_with(b"\n") {
+            return Err(MergeError::InvalidCount);
+        }
+        let end = body
+            .iter()
+            .position(|&b| b == b'\n')
+            .ok_or(MergeError::InvalidCount)?;
+        let header = &body[..=end];
+        if header.len() <= 1 {
+            return Err(MergeError::InvalidCount);
+        }
+        if let Some(expected) = expected_header {
+            if expected != header {
+                return Err(MergeError::SchemaMismatch);
+            }
+        } else {
+            expected_header = Some(header);
+        }
+        let value = &body[end + 1..body.len() - 1];
+        if value.is_empty() || !value.iter().all(|b| b.is_ascii_digit()) {
+            return Err(MergeError::InvalidCount);
+        }
+        let count = std::str::from_utf8(value)
+            .map_err(|_| MergeError::InvalidCount)?
+            .parse::<u64>()
+            .map_err(|_| MergeError::CountOverflow)?;
+        sum = sum.checked_add(count).ok_or(MergeError::CountOverflow)?;
+    }
+    let header = expected_header.ok_or(MergeError::InvalidCount)?;
+    let mut result = header.to_vec();
+    result.extend_from_slice(format!("{sum}\n").as_bytes());
+    Ok(result)
+}
+
 pub fn handle(method: &str, body: &[u8], cluster: &Cluster, max_rows: usize) -> Response {
     if method != "POST" {
         return Response::text(
@@ -135,14 +192,15 @@ pub fn handle(method: &str, body: &[u8], cluster: &Cluster, max_rows: usize) -> 
         Err(_) => return Response::text("400 Bad Request", "SQL must be UTF-8\n"),
     };
     let select = match parse_select(sql) {
-        Ok(select) if is_safe_scan(&select) => select,
+        Ok(select) if is_safe_scan(&select) || is_safe_count(&select) => select,
         _ => {
             return Response::text(
                 "400 Bad Request",
-                "distributed queries require unordered SELECT columns FROM table with no LIMIT\n",
+                "distributed queries require unordered SELECT columns or COUNT FROM table with no LIMIT\n",
             );
         }
     };
+    let count_query = is_safe_count(&select);
     // Verify that only a named database table can be scanned.
     if !matches!(select.source, Some(Source::Table(_))) || cluster.peers().is_empty() {
         return Response::text(
@@ -174,7 +232,12 @@ pub fn handle(method: &str, body: &[u8], cluster: &Cluster, max_rows: usize) -> 
             }
         }
     }
-    match merge_tsv(&shards, max_rows.min(100_000)) {
+    let merged = if count_query {
+        sum_shard_counts(&shards)
+    } else {
+        merge_tsv(&shards, max_rows.min(100_000))
+    };
+    match merged {
         Ok(body) => Response {
             status: "200 OK",
             content_type: "text/tab-separated-values; charset=utf-8",
@@ -193,6 +256,12 @@ pub fn handle(method: &str, body: &[u8], cluster: &Cluster, max_rows: usize) -> 
         ),
         Err(MergeError::InvalidResponse) => {
             Response::text("502 Bad Gateway", "malformed shard TSV response\n")
+        }
+        Err(MergeError::InvalidCount) => {
+            Response::text("502 Bad Gateway", "malformed shard COUNT response\n")
+        }
+        Err(MergeError::CountOverflow) => {
+            Response::text("413 Payload Too Large", "distributed count overflow\n")
         }
     }
 }
@@ -256,6 +325,47 @@ mod tests {
         assert!(is_safe_scan(
             &parse_select("SELECT id FROM events WHERE id > 2").unwrap()
         ));
+    }
+
+    #[test]
+    fn sums_counts_and_nullable_column_counts_safely() {
+        assert!(is_safe_count(&parse_select("SELECT count(*) FROM events").unwrap()));
+        assert!(is_safe_count(
+            &parse_select("SELECT count(name) FROM events WHERE id > 10").unwrap()
+        ));
+        assert!(!is_safe_count(
+            &parse_select("SELECT count(DISTINCT name) FROM events").unwrap()
+        ));
+        assert_eq!(
+            sum_shard_counts(&[
+                shard(10, "count\n20\n"),
+                shard(10, "count\n0\n"),
+                shard(10, "count\n300\n"),
+            ])
+            .unwrap(),
+            b"count\n320\n"
+        );
+    }
+
+    #[test]
+    fn refuses_invalid_count_responses_and_overflow() {
+        assert_eq!(
+            sum_shard_counts(&[shard(10, "count\n2\n"), shard(10, "sum\n3\n")]),
+            Err(MergeError::SchemaMismatch)
+        );
+        for invalid in ["count\n-2\n", "count\nNaN\n", "count\n3\n4\n", "count\n3"] {
+            assert_eq!(
+                sum_shard_counts(&[shard(10, invalid)]),
+                Err(MergeError::InvalidCount)
+            );
+        }
+        assert_eq!(
+            sum_shard_counts(&[
+                shard(10, "count\n18446744073709551615\n"),
+                shard(10, "count\n1\n"),
+            ]),
+            Err(MergeError::CountOverflow)
+        );
     }
 
     #[test]

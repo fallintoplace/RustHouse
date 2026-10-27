@@ -105,3 +105,10 @@ rejects a shard that reaches its advertised result cap, mismatched headers,
 non-200 responses, and coordinator row/byte overflows instead of returning
 partial data. This is a snapshot-by-peer scan, **not** an atomic cross-shard
 snapshot, automatic partitioning, replication, or remote machine networking.
+
+Distributed `SELECT count(*) FROM events` and
+`SELECT count(name) FROM events WHERE ...` are also supported. Each shard
+computes its own count; the coordinator adds counts with checked UInt64
+arithmetic. Shards must hold **disjoint rows**, otherwise duplicated replicated
+rows are counted more than once. `COUNT(DISTINCT ...)` and grouped aggregates
+remain unsupported because summing their results would be incorrect.
