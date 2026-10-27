@@ -369,11 +369,17 @@ fn parse_round_to_multiple(parser: &mut Parser, depth: usize) -> Result<i64, Par
 fn parse_floor_to_multiple(parser: &mut Parser, depth: usize) -> Result<i64, ParseError> {
     require_token(parser, Token::LParen, "FLOOR_TO_MULTIPLE requires '('")?;
     let value = expression(parser, depth + 1)?;
-    require_token(parser, Token::Comma, "FLOOR_TO_MULTIPLE requires two arguments")?;
+    require_token(
+        parser,
+        Token::Comma,
+        "FLOOR_TO_MULTIPLE requires two arguments",
+    )?;
     let multiple = expression(parser, depth + 1)?;
     require_token(parser, Token::RParen, "FLOOR_TO_MULTIPLE requires ')'")?;
     if multiple <= 0 {
-        return Err(ParseError("FLOOR_TO_MULTIPLE requires a positive multiple".into()));
+        return Err(ParseError(
+            "FLOOR_TO_MULTIPLE requires a positive multiple".into(),
+        ));
     }
     let value = i128::from(value);
     let multiple = i128::from(multiple);
