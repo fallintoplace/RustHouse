@@ -44,18 +44,7 @@ pub fn verify_wide_part(path: impl AsRef<Path>) -> Result<PartVerification, Part
         validate_adaptive_stream(&data, &marks, metadata.rows, &mut layout)?;
         validate_wide_marks(&marks, CompressedBlockReader::open(&data)?)?;
 
-        let mut reader = CompressedBlockReader::open(&data)?;
-        while let Some(block) = reader.next_decoded() {
-            let block = block?;
-            report.blocks = report
-                .blocks
-                .checked_add(1)
-                .ok_or_else(|| invalid(&data, "block count overflows"))?;
-            report.decompressed_bytes = report
-                .decompressed_bytes
-                .checked_add(block.data.len() as u64)
-                .ok_or_else(|| invalid(&data, "decoded byte count overflows"))?;
-        }
+        account_decoded_blocks(&data, &mut report)?;
         report.marks = report
             .marks
             .checked_add(marks.marks.len())
@@ -63,6 +52,22 @@ pub fn verify_wide_part(path: impl AsRef<Path>) -> Result<PartVerification, Part
         report.streams += 1;
     }
     Ok(report)
+}
+
+fn account_decoded_blocks(data: &Path, report: &mut PartVerification) -> Result<(), PartError> {
+    let mut reader = CompressedBlockReader::open(data)?;
+    while let Some(block) = reader.next_decoded() {
+        let block = block?;
+        report.blocks = report
+            .blocks
+            .checked_add(1)
+            .ok_or_else(|| invalid(data, "block count overflows"))?;
+        report.decompressed_bytes = report
+            .decompressed_bytes
+            .checked_add(block.data.len() as u64)
+            .ok_or_else(|| invalid(data, "decoded byte count overflows"))?;
+    }
+    Ok(())
 }
 
 fn validate_adaptive_stream(
