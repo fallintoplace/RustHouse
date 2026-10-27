@@ -15,6 +15,7 @@ fn right_reads_bounded_suffixes_of_constant_strings() {
         ("SELECT right('abc', 0)", ""),
         ("SELECT RIGHT('abc', 9)", "abc"),
         ("SELECT RIGHT('', 2)", ""),
+        ("SELECT RIGHT('é😀Z', 2)", "😀Z"),
         ("SELECT RIGHT(TRIM(' a '), 1)", "a"),
         ("SELECT RIGHT('abc', LENGTH('ab'))", "bc"),
         ("SELECT RIGHT(CONCAT('ab', 'cd'), 2)", "cd"),
