@@ -569,11 +569,15 @@ pub fn execute_join<W: Write>(
             let left_index = left_names
                 .iter()
                 .position(|column| column == name)
-                .ok_or_else(|| invalid(format!("unknown JOIN column: {}.{name}", query.left_alias)))?;
+                .ok_or_else(|| {
+                    invalid(format!("unknown JOIN column: {}.{name}", query.left_alias))
+                })?;
             let right_index = right_names
                 .iter()
                 .position(|column| column == name)
-                .ok_or_else(|| invalid(format!("unknown JOIN column: {}.{name}", query.right_alias)))?;
+                .ok_or_else(|| {
+                    invalid(format!("unknown JOIN column: {}.{name}", query.right_alias))
+                })?;
             selected.push((
                 left_index,
                 format!("{}.{}", query.left_alias, name),
