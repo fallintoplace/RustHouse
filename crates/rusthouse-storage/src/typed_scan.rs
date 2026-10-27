@@ -2,13 +2,13 @@
 //! This reader is deliberately separate from the optimized numeric-only scan.
 use crate::granules::{read_mark_bytes_cached, read_numeric_granule_cached};
 use crate::numeric::numeric_storage_type;
+use crate::query_parts;
 use crate::scan_layout::ScanLayout;
 use crate::{
     CompressedBlockReader, DecodedBlock, NumericColumn, PartError, StringColumn, UuidValue,
     WideMark, inspect_part, read_legacy_strings, read_uuid_values, read_wide_marks,
     validate_wide_marks,
 };
-use crate::{inspect_query_source, query_parts};
 use std::fs::File;
 use std::io::{self, Read};
 use std::path::{Path, PathBuf};
@@ -357,7 +357,7 @@ pub struct TypedQueryReader {
 impl TypedQueryReader {
     pub fn open(path: &Path, columns: &[String]) -> Result<Self, PartError> {
         let parts = query_parts(path)?;
-        let metadata = inspect_query_source(path)?;
+        let metadata = crate::query_source::inspect_parts_metadata(path, &parts)?;
         for name in columns {
             if !metadata.columns.iter().any(|column| &column.name == name) {
                 return Err(PartError::InvalidScan(format!("unknown column: {name}")));
