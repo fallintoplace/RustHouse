@@ -57,6 +57,14 @@ fn valid_schema_contents(contents: &str) -> bool {
         })
 }
 
+fn discoverable_table(database: &Path, name: &str, schema: &Path) -> bool {
+    if !identifier(name) || !valid_schema(schema) {
+        return false;
+    }
+    let parts = database.join(format!("{name}.parts"));
+    fs::symlink_metadata(&parts).is_ok_and(|metadata| metadata.file_type().is_dir())
+}
+
 fn table_names(database: &Path) -> Result<Vec<String>, String> {
     let mut result = Vec::new();
     let entries = fs::read_dir(database)
@@ -73,11 +81,7 @@ fn table_names(database: &Path) -> Result<Vec<String>, String> {
         else {
             continue;
         };
-        if !identifier(name) || !valid_schema(&entry.path()) {
-            continue;
-        }
-        let parts = database.join(format!("{name}.parts"));
-        if !fs::symlink_metadata(&parts).is_ok_and(|metadata| metadata.file_type().is_dir()) {
+        if !discoverable_table(database, name, &entry.path()) {
             continue;
         }
         if result.len() == MAX_TABLES {
