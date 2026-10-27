@@ -153,6 +153,41 @@ fn parse_literal(data_type: &str, literal: &str) -> Result<Cell, ExecutionError>
     }
 }
 
+/// Decode a validated UUID literal once for binary comparisons during scans.
+fn uuid_literal_bytes(text: &str) -> Result<[u8; 16], ExecutionError> {
+    parse_literal("UUID", text)?;
+    let mut output = [0u8; 16];
+    let mut digits = text.bytes().filter(|byte| *byte != b'-');
+    for byte in &mut output {
+        let high = digits.next().expect("validated UUID").to_ascii_lowercase();
+        let low = digits.next().expect("validated UUID").to_ascii_lowercase();
+        let nibble = |value: u8| match value {
+            b'0'..=b'9' => value - b'0',
+            b'a'..=b'f' => value - b'a' + 10,
+            _ => unreachable!("validated UUID"),
+        };
+        *byte = (nibble(high) << 4) | nibble(low);
+    }
+    Ok(output)
+}
+
+fn matches_uuid_compare(
+    value: &[u8; 16],
+    target: &[u8; 16],
+    operator: Operator,
+) -> bool {
+    let ordering = value.cmp(target);
+    match operator {
+        Operator::Eq => ordering.is_eq(),
+        Operator::Ne => ordering.is_ne(),
+        Operator::Lt => ordering.is_lt(),
+        Operator::Le => ordering.is_le(),
+        Operator::Gt => ordering.is_gt(),
+        Operator::Ge => ordering.is_ge(),
+        _ => false,
+    }
+}
+
 fn parse_literals(data_type: &str, values: &[String]) -> Result<Vec<Cell>, ExecutionError> {
     values
         .iter()
@@ -325,8 +360,10 @@ fn like_matches_wildcards(value: &[u8], pattern: &[LikeToken], case_insensitive:
 
 enum Test {
     Compare(Operator, Cell),
+    UuidCompare(Operator, [u8; 16]),
     In(Vec<Cell>, bool),
     NotBetween(Cell, Cell),
+    UuidNotBetween([u8; 16], [u8; 16]),
     IsNull(bool),
     Like {
         pattern: LikePattern,
@@ -358,9 +395,17 @@ pub(super) fn compile(
             let test = match pred {
                 Predicate::Comparison {
                     operator, value, ..
+                } if base_type(kind) == "UUID" => {
+                    Test::UuidCompare(*operator, uuid_literal_bytes(value)?)
+                }
+                Predicate::Comparison {
+                    operator, value, ..
                 } => Test::Compare(*operator, parse_literal(kind, value)?),
                 Predicate::In { values, .. } => Test::In(parse_literals(kind, values)?, false),
                 Predicate::NotIn { values, .. } => Test::In(parse_literals(kind, values)?, true),
+                Predicate::NotBetween { lower, upper, .. } if base_type(kind) == "UUID" => {
+                    Test::UuidNotBetween(uuid_literal_bytes(lower)?, uuid_literal_bytes(upper)?)
+                }
                 Predicate::NotBetween { lower, upper, .. } => {
                     Test::NotBetween(parse_literal(kind, lower)?, parse_literal(kind, upper)?)
                 }
@@ -545,6 +590,12 @@ pub(super) fn passes(batch: &[TypedColumn], row: usize, branches: &[Vec<Conditio
                 Test::Compare(operator, target) => {
                     matches_comparison_at(column, row, target, *operator)
                 }
+                Test::UuidCompare(operator, target) => match column {
+                    TypedColumn::Uuid(values) => {
+                        matches_uuid_compare(values[row].as_bytes(), target, *operator)
+                    }
+                    _ => false,
+                },
                 Test::In(targets, negated) => {
                     matches_in_at(column, row, targets, *negated)
                 }
@@ -554,6 +605,13 @@ pub(super) fn passes(batch: &[TypedColumn], row: usize, branches: &[Vec<Conditio
                         && (!matches_comparison(&value, lower, Operator::Ge)
                             || !matches_comparison(&value, upper, Operator::Le))
                 }
+                Test::UuidNotBetween(lower, upper) => match column {
+                    TypedColumn::Uuid(values) => {
+                        let value = values[row].as_bytes();
+                        value < lower || value > upper
+                    }
+                    _ => false,
+                },
             }
         })
     })
