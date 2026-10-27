@@ -31,6 +31,8 @@ pub(super) fn is_function(name: &str) -> bool {
     }
     is_saturating(name)
         || name.eq_ignore_ascii_case("ABS")
+        || name.eq_ignore_ascii_case("BIT_PARITY")
+        || name.eq_ignore_ascii_case("BIT_MASK")
         || name.eq_ignore_ascii_case("BIT_WIDTH")
         || name.eq_ignore_ascii_case("ABS_DIFF")
         || name.eq_ignore_ascii_case("SIGN")
@@ -244,6 +246,31 @@ fn parse_bit_width(parser: &mut Parser, depth: usize) -> Result<i64, ParseError>
         "expected ')' after BIT_WIDTH argument",
     )?;
     Ok(i64::from(u64::BITS - value.unsigned_abs().leading_zeros()))
+}
+
+/// Parity of all 64 bits in the signed two's-complement representation.
+fn parse_bit_parity(parser: &mut Parser, depth: usize) -> Result<i64, ParseError> {
+    require_token(parser, Token::LParen, "BIT_PARITY requires '('")?;
+    let value = expression(parser, depth + 1)?;
+    require_token(parser, Token::RParen, "BIT_PARITY requires ')'")?;
+    Ok(i64::from(value.count_ones() & 1))
+}
+
+/// Set the lowest 0 to 64 bits in a signed Int64 bit pattern.
+fn parse_bit_mask(parser: &mut Parser, depth: usize) -> Result<i64, ParseError> {
+    require_token(parser, Token::LParen, "BIT_MASK requires '('")?;
+    let width = expression(parser, depth + 1)?;
+    require_token(parser, Token::RParen, "BIT_MASK requires ')'")?;
+    let width = u32::try_from(width)
+        .map_err(|_| ParseError("BIT_MASK width must be between 0 and 64".into()))?;
+    if width > 64 {
+        return Err(ParseError("BIT_MASK width must be between 0 and 64".into()));
+    }
+    Ok(if width == 64 {
+        -1
+    } else {
+        ((1_u64 << width) - 1) as i64
+    })
 }
 
 fn parse_hamming_distance(parser: &mut Parser, depth: usize) -> Result<i64, ParseError> {
@@ -765,6 +792,12 @@ fn factor(parser: &mut Parser, depth: usize) -> Result<i64, ParseError> {
     }
     if parser.keyword("POWER") || parser.keyword("POW") {
         return parse_power(parser, depth);
+    }
+    if parser.keyword("BIT_PARITY") {
+        return parse_bit_parity(parser, depth);
+    }
+    if parser.keyword("BIT_MASK") {
+        return parse_bit_mask(parser, depth);
     }
     if parser.keyword("BIT_WIDTH") {
         return parse_bit_width(parser, depth);
