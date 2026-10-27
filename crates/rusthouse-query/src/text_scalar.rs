@@ -153,7 +153,7 @@ fn parse_at_depth(parser: &mut Parser, depth: usize) -> Result<ConstantValue, Pa
             match (input, needle) {
                 (Some(input), Some(needle)) => {
                     let index = input
-                        .find(&needle)
+                        .find(needle.as_str())
                         .map(|byte_index| input[..byte_index].chars().count() + 1)
                         .unwrap_or(0);
                     ConstantValue::Integer(
