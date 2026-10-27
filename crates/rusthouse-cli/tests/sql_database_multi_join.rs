@@ -100,3 +100,37 @@ fn chained_inner_join_rejects_invalid_keys_without_writing_rows() {
     assert!(String::from_utf8_lossy(&unknown.stderr).contains("unknown JOIN qualifier"));
     fs::remove_dir_all(db).unwrap();
 }
+
+#[test]
+fn chained_left_joins_null_extend_each_unmatched_relation() {
+    let db = database();
+    for statement in [
+        "CREATE TABLE orders (id UInt64, customer_id Nullable(UInt64))",
+        "CREATE TABLE customers (id UInt64, region_id UInt64, name String)",
+        "CREATE TABLE regions (id UInt64, label String)",
+        "INSERT INTO orders VALUES (1, 10), (2, NULL), (3, 20)",
+        "INSERT INTO customers VALUES (10, 5, 'Ada'), (20, 99, 'Bob')",
+        "INSERT INTO regions VALUES (5, 'East')",
+    ] {
+        let result = sql(statement, &db, &[]);
+        assert!(result.status.success(), "{statement}: {result:?}");
+    }
+    let joined = sql(
+        "SELECT o.id, c.name, r.label FROM orders o LEFT JOIN customers c ON o.customer_id = c.id LEFT JOIN regions r ON c.region_id = r.id ORDER BY o.id LIMIT 10",
+        &db,
+        &[],
+    );
+    assert!(joined.status.success(), "{joined:?}");
+    assert_eq!(
+        joined.stdout,
+        b"o.id\tc.name\tr.label\n1\tAda\tEast\n2\t\\N\t\\N\n3\tBob\t\\N\n"
+    );
+    let missing = sql(
+        "SELECT o.id FROM orders o LEFT JOIN customers c ON o.customer_id = c.id LEFT JOIN regions r ON c.region_id = r.id WHERE r.label IS NULL ORDER BY o.id",
+        &db,
+        &[],
+    );
+    assert!(missing.status.success(), "{missing:?}");
+    assert_eq!(missing.stdout, b"o.id\n2\n3\n");
+    fs::remove_dir_all(db).unwrap();
+}
