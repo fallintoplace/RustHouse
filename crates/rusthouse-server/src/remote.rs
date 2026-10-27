@@ -1,5 +1,5 @@
-//! Bounded, loopback-only HTTP client for read-only RustHouse peers.
-//! This is not a general HTTP or authenticated network transport.
+//! Bounded HTTP client for explicitly configured RustHouse peers.
+//! Non-loopback transport is opt-in, plaintext, and unauthenticated.
 
 use crate::cluster::Peer;
 use crate::{MAX_HEADER_BYTES, MAX_QUERY_BYTES, MAX_RESPONSE_BYTES};
@@ -25,6 +25,19 @@ pub fn capabilities(peer: Peer) -> Result<PeerResponse, String> {
     request(peer, "GET", "/capabilities", b"")
 }
 
+/// Fetch a named table's schema without accepting arbitrary HTTP paths.
+pub fn schema(peer: Peer, table: &str) -> Result<PeerResponse, String> {
+    let mut bytes = table.bytes();
+    if !bytes
+        .next()
+        .is_some_and(|first| first.is_ascii_alphabetic() || first == b'_')
+        || !bytes.all(|byte| byte.is_ascii_alphanumeric() || byte == b'_')
+    {
+        return Err("unsupported peer table identifier".into());
+    }
+    request(peer, "GET", &format!("/schema?table={table}"), b"")
+}
+
 pub fn query(peer: Peer, sql: &str) -> Result<PeerResponse, String> {
     if sql.len() > MAX_QUERY_BYTES || sql.is_empty() {
         return Err("invalid SQL statement length".into());
@@ -32,7 +45,6 @@ pub fn query(peer: Peer, sql: &str) -> Result<PeerResponse, String> {
     request(peer, "POST", "/", sql.as_bytes())
 }
 
-/// Never follows redirects, negotiates compression, or connects to non-loopback addresses.
 /// A deadline on the entire response, not on each individual read.
 /// A peer that trickles one byte per read must not keep a coordinator thread alive.
 fn read_with_deadline(stream: &mut TcpStream, timeout: Duration) -> Result<Vec<u8>, String> {
@@ -73,6 +85,7 @@ fn read_with_deadline(stream: &mut TcpStream, timeout: Duration) -> Result<Vec<u
     Ok(raw)
 }
 
+/// Never follows redirects, negotiates compression, or resolves hostnames.
 fn request(peer: Peer, method: &str, path: &str, body: &[u8]) -> Result<PeerResponse, String> {
     let address = SocketAddr::V4(peer.address());
     let mut stream = TcpStream::connect_timeout(&address, CONNECT_TIMEOUT)
@@ -82,7 +95,8 @@ fn request(peer: Peer, method: &str, path: &str, body: &[u8]) -> Result<PeerResp
         .map_err(|error| error.to_string())?;
     write!(
         stream,
-        "{method} {path} HTTP/1.1\r\nHost: 127.0.0.1\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+        "{method} {path} HTTP/1.1\r\nHost: {}\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+        peer.address().ip(),
         body.len()
     )
     .map_err(|error| error.to_string())?;

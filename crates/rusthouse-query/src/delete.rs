@@ -1,5 +1,5 @@
 //! DELETE FROM named_table [WHERE ...] using the existing SELECT predicate grammar.
-use crate::{ParseError, Projection, Select, Source, parse_select};
+use crate::{ParseError, Projection, Select, Source, Token, parse_select_tokens, tokenize};
 
 fn keyword<'a>(input: &'a str, expected: &str) -> Option<&'a str> {
     let input = input.trim_start();
@@ -19,10 +19,12 @@ pub fn parse_delete(sql: &str) -> Result<Option<Select>, ParseError> {
     let Some(rest) = keyword(sql, "DELETE") else {
         return Ok(None);
     };
-    let rest =
-        keyword(rest, "FROM").ok_or_else(|| ParseError("DELETE requires FROM table".into()))?;
-    let query = format!("SELECT * FROM {rest}");
-    let select = parse_select(&query)?;
+    keyword(rest, "FROM").ok_or_else(|| ParseError("DELETE requires FROM table".into()))?;
+    // Work on the original tokens so a valid 4096-byte DELETE is not rejected
+    // just because the SELECT projection is two bytes longer.
+    let mut tokens = tokenize(sql)?;
+    tokens.splice(..1, [Token::Word("SELECT".into()), Token::Star]);
+    let select = parse_select_tokens(tokens)?;
     if !matches!(select.source, Some(Source::Table(_)))
         || select.projection != Projection::All
         || select.distinct
@@ -51,6 +53,17 @@ mod tests {
         assert_eq!(delete.or_predicates.len(), 1);
         assert!(parse_delete("SELECT * FROM events").unwrap().is_none());
         assert!(parse_delete("DELETE FROM events").unwrap().is_some());
+    }
+
+    #[test]
+    fn accepts_a_delete_at_the_statement_size_limit() {
+        let prefix = "DELETE FROM events";
+        let sql = format!("{prefix}{}", " ".repeat(4096 - prefix.len()));
+        assert_eq!(
+            parse_delete(&sql).unwrap().unwrap().source,
+            Some(Source::Table("events".into()))
+        );
+        assert!(parse_delete(&(sql + " ")).is_err());
     }
 
     #[test]
