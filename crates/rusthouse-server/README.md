@@ -62,3 +62,20 @@ server-side row cap as ordinary queries. This is not a physical or cost-based pl
 
 `GET /capabilities` returns read-only JSON with the server version, source mode,
 SQL and response byte limits, and effective row cap. Empty-body GET only.
+
+## Experimental distributed coordinator: explicit loopback peers
+
+The optional `--peer 127.0.0.1:<port>` flag registers up to 16 distinct,
+read-only peer servers. For example, run independently configured RustHouse
+servers on ports 8124 and 8125, then start a coordinator:
+
+```sh
+cargo run -p rusthouse-server -- --port 8123 --peer 127.0.0.1:8124 --peer 127.0.0.1:8125
+curl http://127.0.0.1:8123/cluster
+```
+
+`GET /cluster` lists the explicitly configured addresses. It does not check
+whether a peer is alive or whether schemas and datasets agree. Peer addresses
+must be IPv4 loopback, cannot include the coordinator's own port, and are never
+automatically discovered. This is an early step toward read-only distributed
+queries, **not** cross-host networking, replicated storage or distributed writes.
