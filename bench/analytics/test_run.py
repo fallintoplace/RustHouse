@@ -16,6 +16,18 @@ class AnalyticsRunnerTests(unittest.TestCase):
         self.assertEqual(len(queries), 43)
         self.assertEqual(queries[0], "SELECT COUNT(*) FROM hits")
 
+    def test_preflight_checks_expected_output(self):
+        calls = []
+
+        def execute(sql, timeout):
+            calls.append((sql, timeout))
+            return b"42\n"
+
+        runner.verify_input(execute, "SELECT COUNT(*) FROM sample", "42", 5)
+        self.assertEqual(calls, [("SELECT COUNT(*) FROM sample", 5)])
+        with self.assertRaisesRegex(ValueError, "preflight result differs"):
+            runner.verify_input(execute, "SELECT COUNT(*) FROM sample", "43", 5)
+
     def test_query_selection_preserves_order_and_checks_ranges(self):
         self.assertEqual(runner.select_indices("3,1-2,2", 43), [0, 1, 2])
         with self.assertRaises(ValueError):
