@@ -463,7 +463,7 @@ fn parse_select_tokens(tokens: Vec<Token>) -> Result<Select, ParseError> {
         Projection::MultipleAggregates(items)
     } else if matches!(parser.tokens.get(parser.index), Some(Token::Word(name)) if name.eq_ignore_ascii_case("LENGTH"))
         && parser.tokens.get(parser.index + 1) == Some(&Token::LParen)
-        && matches!(parser.tokens.get(parser.index + 2), Some(Token::Word(_)))
+        && matches!(parser.tokens.get(parser.index + 2), Some(Token::Word(name)) if !name.eq_ignore_ascii_case("NULL"))
         && parser.tokens.get(parser.index + 3) == Some(&Token::RParen)
     {
         parser.keyword("LENGTH");
