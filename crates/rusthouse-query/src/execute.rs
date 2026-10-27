@@ -1095,6 +1095,7 @@ fn execute_numbers<W: Write>(
 struct AggregateState {
     function: AggregateFunction,
     value: Option<Number>,
+    max_value: Option<Number>,
     mean: f64,
     squared_deviations: f64,
     count: u64,
@@ -1106,6 +1107,7 @@ impl AggregateState {
         Self {
             function,
             value: None,
+            max_value: None,
             mean: 0.0,
             squared_deviations: 0.0,
             count: 0,
@@ -1206,6 +1208,24 @@ impl AggregateState {
                 }
                 self.median_values.push(value);
             }
+            AggregateFunction::Range => {
+                let lower = self.value.map_or(value, |current| {
+                    if compare_numbers(value, current).is_lt() {
+                        value
+                    } else {
+                        current
+                    }
+                });
+                let upper = self.max_value.map_or(value, |current| {
+                    if compare_numbers(value, current).is_gt() {
+                        value
+                    } else {
+                        current
+                    }
+                });
+                self.value = Some(lower);
+                self.max_value = Some(upper);
+            }
             AggregateFunction::Min | AggregateFunction::Max => {
                 let replace = self.value.is_none_or(|current| {
                     let order = compare_numbers(value, current);
@@ -1246,6 +1266,16 @@ impl AggregateState {
             AggregateFunction::StddevSamp => (self.squared_deviations / (self.count - 1) as f64)
                 .sqrt()
                 .to_string(),
+            AggregateFunction::Range => match (self.value, self.max_value) {
+                (Some(Number::Unsigned(low)), Some(Number::Unsigned(high))) => {
+                    (high - low).to_string()
+                }
+                (Some(Number::Signed(low)), Some(Number::Signed(high))) => {
+                    high.abs_diff(low).to_string()
+                }
+                (Some(Number::Float(low)), Some(Number::Float(high))) => (high - low).to_string(),
+                _ => unreachable!("nonempty RANGE has both extrema"),
+            },
             AggregateFunction::Median => {
                 let mut values = self.median_values.clone();
                 values.sort_unstable_by(|left, right| compare_numbers(*left, *right));
