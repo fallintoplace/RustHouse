@@ -16,9 +16,9 @@ from schema import TABLES, create_sql, names
 
 
 def inspect_tsv(path, table):
-    with Path(path).open("r", encoding="utf-8", newline="") as stream:
-        header = stream.readline().rstrip("\n").rstrip("\r")
-        if header.split("\t") != names(table):
+    with Path(path).open("rb") as stream:
+        header = stream.readline().rstrip(b"\n").rstrip(b"\r")
+        if header != "\t".join(names(table)).encode("utf-8"):
             raise ValueError(f"{table}: header does not match expected dbgen columns")
         count = sum(1 for _ in stream)
     if count < 1:

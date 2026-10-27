@@ -1,0 +1,200 @@
+{
+  "available_columns": [
+    "UserID",
+    "AdvEngineID",
+    "ResolutionWidth"
+  ],
+  "query_columns": {
+    "1": [],
+    "2": [
+      "AdvEngineID"
+    ],
+    "3": [
+      "AdvEngineID",
+      "ResolutionWidth"
+    ],
+    "4": [
+      "UserID"
+    ],
+    "5": [
+      "UserID"
+    ],
+    "6": [
+      "SearchPhrase"
+    ],
+    "7": [
+      "EventDate"
+    ],
+    "8": [
+      "AdvEngineID"
+    ],
+    "9": [
+      "RegionID",
+      "UserID"
+    ],
+    "10": [
+      "RegionID",
+      "AdvEngineID",
+      "ResolutionWidth",
+      "UserID"
+    ],
+    "11": [
+      "MobilePhoneModel",
+      "UserID"
+    ],
+    "12": [
+      "MobilePhone",
+      "MobilePhoneModel",
+      "UserID"
+    ],
+    "13": [
+      "SearchPhrase"
+    ],
+    "14": [
+      "SearchPhrase",
+      "UserID"
+    ],
+    "15": [
+      "SearchEngineID",
+      "SearchPhrase"
+    ],
+    "16": [
+      "UserID"
+    ],
+    "17": [
+      "UserID",
+      "SearchPhrase"
+    ],
+    "18": [
+      "UserID",
+      "SearchPhrase"
+    ],
+    "19": [
+      "UserID",
+      "EventTime",
+      "SearchPhrase"
+    ],
+    "20": [
+      "UserID"
+    ],
+    "21": [
+      "URL"
+    ],
+    "22": [
+      "SearchPhrase",
+      "URL"
+    ],
+    "23": [
+      "SearchPhrase",
+      "URL",
+      "Title",
+      "UserID"
+    ],
+    "25": [
+      "SearchPhrase",
+      "EventTime"
+    ],
+    "26": [
+      "SearchPhrase"
+    ],
+    "27": [
+      "SearchPhrase",
+      "EventTime"
+    ],
+    "28": [
+      "CounterID",
+      "URL"
+    ],
+    "29": [
+      "Referer"
+    ],
+    "30": [
+      "ResolutionWidth"
+    ],
+    "31": [
+      "SearchEngineID",
+      "ClientIP",
+      "IsRefresh",
+      "ResolutionWidth",
+      "SearchPhrase"
+    ],
+    "32": [
+      "WatchID",
+      "ClientIP",
+      "IsRefresh",
+      "ResolutionWidth",
+      "SearchPhrase"
+    ],
+    "33": [
+      "WatchID",
+      "ClientIP",
+      "IsRefresh",
+      "ResolutionWidth"
+    ],
+    "34": [
+      "URL"
+    ],
+    "35": [
+      "URL"
+    ],
+    "36": [
+      "ClientIP"
+    ],
+    "37": [
+      "URL",
+      "CounterID",
+      "EventDate",
+      "DontCountHits",
+      "IsRefresh"
+    ],
+    "38": [
+      "Title",
+      "CounterID",
+      "EventDate",
+      "DontCountHits",
+      "IsRefresh"
+    ],
+    "39": [
+      "URL",
+      "CounterID",
+      "EventDate",
+      "IsRefresh",
+      "IsLink",
+      "IsDownload"
+    ],
+    "40": [
+      "TraficSourceID",
+      "SearchEngineID",
+      "AdvEngineID",
+      "Referer",
+      "URL",
+      "CounterID",
+      "EventDate",
+      "IsRefresh"
+    ],
+    "41": [
+      "URLHash",
+      "EventDate",
+      "CounterID",
+      "IsRefresh",
+      "TraficSourceID",
+      "RefererHash"
+    ],
+    "42": [
+      "WindowClientWidth",
+      "WindowClientHeight",
+      "CounterID",
+      "EventDate",
+      "IsRefresh",
+      "DontCountHits",
+      "URLHash"
+    ],
+    "43": [
+      "EventTime",
+      "CounterID",
+      "EventDate",
+      "IsRefresh",
+      "DontCountHits"
+    ]
+  }
+}
