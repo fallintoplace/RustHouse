@@ -141,11 +141,15 @@ fn eval_number(
             };
             let divisor = to_float(right);
             if divisor == 0.0 {
-                return Err(ExecutionError::Invalid("division by zero in aggregate expression".into()));
+                return Err(ExecutionError::Invalid(
+                    "division by zero in aggregate expression".into(),
+                ));
             }
             let quotient = to_float(left) / divisor;
             if !quotient.is_finite() {
-                return Err(ExecutionError::Invalid("non-finite aggregate division".into()));
+                return Err(ExecutionError::Invalid(
+                    "non-finite aggregate division".into(),
+                ));
             }
             Ok(Some(Number::Float(quotient)))
         }
