@@ -38,6 +38,9 @@ pub(crate) fn decode_tsv_field(field: &[u8]) -> io::Result<Vec<u8>> {
             b't' => output.push(b'\t'),
             b'n' => output.push(b'\n'),
             b'r' => output.push(b'\r'),
+            b'b' => output.push(8),
+            b'f' => output.push(12),
+            b'v' => output.push(11),
             b'0' => output.push(0),
             b'x' => {
                 output.push(decode_hex_byte(field, index + 1)?);
@@ -73,6 +76,11 @@ mod tests {
             decode_tsv_field(br"a\t\n\r\0\\\x41").unwrap(),
             b"a\t\n\r\0\\A"
         );
+    }
+
+    #[test]
+    fn decodes_additional_control_escapes() {
+        assert_eq!(decode_tsv_field(br"\b\f\v").unwrap(), b"\x08\x0c\x0b");
     }
 
     #[test]
