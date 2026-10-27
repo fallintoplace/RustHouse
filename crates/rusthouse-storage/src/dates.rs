@@ -55,9 +55,13 @@ fn from_days(days: i64) -> (i64, i64, i64) {
     (year, month, day)
 }
 
-pub fn parse_date(text: &str) -> Option<u16> {
+fn parse_calendar_day(text: &str) -> Option<i64> {
     let (year, month, day) = ymd(text)?;
-    u16::try_from(to_days(year, month, day)).ok()
+    Some(to_days(year, month, day))
+}
+
+pub fn parse_date(text: &str) -> Option<u16> {
+    u16::try_from(parse_calendar_day(text)?).ok()
 }
 
 pub fn parse_datetime(text: &str) -> Option<u32> {
@@ -73,14 +77,13 @@ pub fn parse_datetime(text: &str) -> Option<u32> {
     {
         return None;
     }
-    let (year, month, day) = ymd(&text[..10])?;
+    let days = u64::try_from(parse_calendar_day(&text[..10])?).ok()?;
     let hour = text[11..13].parse::<u64>().ok()?;
     let minute = text[14..16].parse::<u64>().ok()?;
     let second = text[17..19].parse::<u64>().ok()?;
     if hour > 23 || minute > 59 || second > 59 {
         return None;
     }
-    let days = u64::try_from(to_days(year, month, day)).ok()?;
     let seconds = days
         .checked_mul(86_400)?
         .checked_add(hour * 3_600 + minute * 60 + second)?;
