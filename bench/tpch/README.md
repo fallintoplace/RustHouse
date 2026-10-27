@@ -14,6 +14,8 @@ Example:
 Expected reference files are q01.tsv, q02.tsv, etc. The optional
 --expected-lineitem-rows flag checks input size before timing.
 Queries without references are labeled unverified rather than passed.
+The JSON coverage summary reports successful execution separately from
+byte-verified correctness. Unverified results never count as verified.
 Time includes per-query CLI startup and operating system cached reads.
 Measure load time, cold-cache behavior, and memory separately.
 

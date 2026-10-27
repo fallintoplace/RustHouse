@@ -40,3 +40,11 @@ fn upper_rejects_bad_arguments_and_from_clause() {
         assert!(parse_select(sql).is_err(), "{sql}");
     }
 }
+
+#[test]
+fn upper_folds_unicode_with_multichar_expansions() {
+    assert_eq!(
+        value("SELECT UPPER('straße élève')"),
+        ConstantValue::Text("STRASSE ÉLÈVE".into())
+    );
+}

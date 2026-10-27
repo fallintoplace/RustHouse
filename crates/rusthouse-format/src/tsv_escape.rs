@@ -33,29 +33,37 @@ fn decode_simple_escape(value: u8) -> Option<u8> {
     }
 }
 
+fn decode_escape(field: &[u8], index: &mut usize) -> io::Result<u8> {
+    *index += 1;
+    let escaped = *field
+        .get(*index)
+        .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidData, "incomplete TSV escape"))?;
+    if escaped == b'x' {
+        let decoded = decode_hex_byte(field, *index + 1)?;
+        *index += 3;
+        Ok(decoded)
+    } else {
+        let decoded = decode_simple_escape(escaped)
+            .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidData, "unknown TSV escape"))?;
+        *index += 1;
+        Ok(decoded)
+    }
+}
+
 pub fn decode_tsv_field(field: &[u8]) -> io::Result<Vec<u8>> {
-    let invalid = |message| io::Error::new(io::ErrorKind::InvalidData, message);
     let mut output = Vec::with_capacity(field.len());
     let mut index = 0;
+    let mut start = 0;
     while index < field.len() {
         if field[index] != b'\\' {
-            output.push(field[index]);
             index += 1;
             continue;
         }
-        index += 1;
-        let escaped = *field
-            .get(index)
-            .ok_or_else(|| invalid("incomplete TSV escape"))?;
-        if escaped == b'x' {
-            output.push(decode_hex_byte(field, index + 1)?);
-            index += 2;
-        } else {
-            output
-                .push(decode_simple_escape(escaped).ok_or_else(|| invalid("unknown TSV escape"))?);
-        }
-        index += 1;
+        output.extend_from_slice(&field[start..index]);
+        output.push(decode_escape(field, &mut index)?);
+        start = index;
     }
+    output.extend_from_slice(&field[start..]);
     Ok(output)
 }
 
@@ -87,6 +95,16 @@ mod tests {
     #[test]
     fn decodes_additional_control_escapes() {
         assert_eq!(decode_tsv_field(br"\b\f\v").unwrap(), b"\x08\x0c\x0b");
+    }
+
+    #[test]
+    fn copies_long_plain_spans_around_sparse_escapes() {
+        let input = [vec![b'a'; 16 * 1024], br"\t".to_vec(), vec![b'b'; 16 * 1024]].concat();
+        let decoded = decode_tsv_field(&input).unwrap();
+        assert_eq!(decoded.len(), 32 * 1024 + 1);
+        assert_eq!(decoded[16 * 1024], b'\t');
+        assert!(decoded[..16 * 1024].iter().all(|&byte| byte == b'a'));
+        assert!(decoded[16 * 1024 + 1..].iter().all(|&byte| byte == b'b'));
     }
 
     #[test]

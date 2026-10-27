@@ -94,14 +94,14 @@ fn parse_decimal_component(value: &str) -> Option<u8> {
 
 fn parse_sized_decimal(data_type: &str) -> Option<(u8, u8, &'static str)> {
     let (width, arguments) = data_type.strip_prefix("Decimal")?.split_once('(')?;
-    let (precision, storage) = match width {
-        "32" => (9, "Int32"),
-        "64" => (18, "Int64"),
-        "128" => (38, "Int128"),
+    let precision = match width {
+        "32" => 9,
+        "64" => 18,
+        "128" => 38,
         _ => return None,
     };
     let scale = parse_decimal_component(arguments.strip_suffix(')')?)?;
-    (scale <= precision).then_some((precision, scale, storage))
+    (scale <= precision).then_some((precision, scale, decimal_storage_type(precision)))
 }
 
 fn parse_general_decimal(inner: &str) -> Option<(u8, u8, &'static str)> {

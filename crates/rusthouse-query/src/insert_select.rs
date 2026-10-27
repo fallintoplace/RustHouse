@@ -18,30 +18,36 @@ fn parse_bounded_identifier(parser: &mut Parser) -> Result<String, ParseError> {
 }
 
 fn parse_columns(parser: &mut Parser) -> Result<Option<Vec<String>>, ParseError> {
-    let columns = if parser.take(Token::LParen) {
-        let mut result = Vec::new();
-        let mut seen = HashSet::new();
-        loop {
-            if result.len() >= 64 {
-                return Err(ParseError("INSERT supports at most 64 columns".into()));
-            }
-            let name = parse_bounded_identifier(parser)?;
-            if !seen.insert(name.clone()) {
-                return Err(ParseError(format!("duplicate INSERT column: {name}")));
-            }
-            result.push(name);
-            if !parser.take(Token::Comma) {
-                break;
-            }
+    if !parser.take(Token::LParen) {
+        return Ok(None);
+    }
+    let mut columns = Vec::new();
+    let mut seen = HashSet::new();
+    loop {
+        if columns.len() >= 64 {
+            return Err(ParseError("INSERT supports at most 64 columns".into()));
         }
-        if !parser.take(Token::RParen) {
-            return Err(ParseError("expected ')' after INSERT columns".into()));
+        let name = parse_bounded_identifier(parser)?;
+        if !seen.insert(name.clone()) {
+            return Err(ParseError(format!("duplicate INSERT column: {name}")));
         }
-        Some(result)
-    } else {
-        None
-    };
-    Ok(columns)
+        columns.push(name);
+        if !parser.take(Token::Comma) {
+            break;
+        }
+    }
+    if !parser.take(Token::RParen) {
+        return Err(ParseError("expected ')' after INSERT columns".into()));
+    }
+    Ok(Some(columns))
+}
+
+fn parse_select_suffix(parser: &mut Parser) -> Result<Option<Select>, ParseError> {
+    if !parser.keyword("SELECT") {
+        return Ok(None);
+    }
+    // The SELECT parser expects the keyword as its first token.
+    parse_select_tokens(parser.tokens[parser.index - 1..].to_vec()).map(Some)
 }
 
 pub fn parse_insert_select(sql: &str) -> Result<Option<InsertSelect>, ParseError> {
@@ -57,11 +63,9 @@ pub fn parse_insert_select(sql: &str) -> Result<Option<InsertSelect>, ParseError
     }
     let table = parse_bounded_identifier(&mut parser)?;
     let columns = parse_columns(&mut parser)?;
-    if !parser.keyword("SELECT") {
+    let Some(select) = parse_select_suffix(&mut parser)? else {
         return Ok(None);
-    }
-    parser.index -= 1;
-    let select = parse_select_tokens(parser.tokens[parser.index..].to_vec())?;
+    };
     Ok(Some(InsertSelect {
         table,
         columns,

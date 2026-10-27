@@ -95,26 +95,29 @@ fn write_cells<W: Write>(output: &mut W, fields: &[Cow<'_, str>], header: bool) 
     Ok(())
 }
 
+fn html_entity(ch: char) -> Option<&'static [u8]> {
+    match ch {
+        '&' => Some(b"&amp;"),
+        '<' => Some(b"&lt;"),
+        '>' => Some(b"&gt;"),
+        '"' => Some(b"&quot;"),
+        '\'' => Some(b"&#39;"),
+        _ => None,
+    }
+}
+
 fn write_cell<W: Write>(output: &mut W, field: &str) -> io::Result<()> {
     let mut start = 0;
     for (index, ch) in field.char_indices() {
-        let escape: Option<&[u8]> = match ch {
-            '&' => Some(b"&amp;"),
-            '<' => Some(b"&lt;"),
-            '>' => Some(b"&gt;"),
-            '"' => Some(b"&quot;"),
-            '\'' => Some(b"&#39;"),
-            ch if ch.is_control() => {
-                if start < index {
-                    output.write_all(&field.as_bytes()[start..index])?;
-                }
-                write!(output, "&#{};", ch as u32)?;
-                start = index + ch.len_utf8();
-                continue;
+        if ch.is_control() {
+            if start < index {
+                output.write_all(&field.as_bytes()[start..index])?;
             }
-            _ => None,
-        };
-        if let Some(escape) = escape {
+            write!(output, "&#{};", ch as u32)?;
+            start = index + ch.len_utf8();
+            continue;
+        }
+        if let Some(escape) = html_entity(ch) {
             if start < index {
                 output.write_all(&field.as_bytes()[start..index])?;
             }

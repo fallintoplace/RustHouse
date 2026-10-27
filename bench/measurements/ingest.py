@@ -2,13 +2,14 @@
 """Measure local table import throughput using deterministic temperature readings."""
 
 import argparse
-import json
+import sys
 import math
-import statistics
-import subprocess
 import tempfile
 import time
 from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+from common import cli_sql, emit_json, latency_summary
 
 
 def temperature_tenths(row):
@@ -33,40 +34,18 @@ def write_input(path, rows, stations, delimiter="\t"):
 
 
 def summarize(seconds):
-    ordered = sorted(seconds)
-    return {
-        "median_seconds": statistics.median(ordered),
-        "p90_seconds": ordered[math.ceil(len(ordered) * 0.9) - 1],
-        "min_seconds": ordered[0],
-        "max_seconds": ordered[-1],
-    }
+    return latency_summary(seconds)
 
 
 def sql(binary, database, statement, timeout):
-    completed = subprocess.run(
-        [
-            str(binary),
-            "sql",
-            statement,
-            "--database",
-            str(database),
-            "--format",
-            "tsv-no-header",
-        ],
-        capture_output=True,
-        text=True,
-        check=False,
-        timeout=timeout,
-    )
-    if completed.returncode:
-        raise RuntimeError(
-            f"SQL failed: {statement}: {completed.stderr[:2000]}"
-        )
-    return completed.stdout.strip()
+    return cli_sql(binary, database, statement, timeout).decode("utf-8").strip()
 
 
-def verify(binary, database, rows, minimum, maximum, total, timeout):
+def verify(binary, database, rows, stations, minimum, maximum, total, timeout):
     count = int(sql(binary, database, "SELECT count(*) FROM measurements", timeout))
+    distinct_stations = int(
+        sql(binary, database, "SELECT count(DISTINCT station) FROM measurements", timeout)
+    )
     actual_min = float(
         sql(binary, database, "SELECT min(temperature) FROM measurements", timeout)
     )
@@ -78,12 +57,14 @@ def verify(binary, database, rows, minimum, maximum, total, timeout):
     )
     if (
         count != rows
+        or distinct_stations != stations
         or not math.isclose(actual_min, minimum, abs_tol=1e-9)
         or not math.isclose(actual_max, maximum, abs_tol=1e-9)
         or not math.isclose(actual_sum, total, abs_tol=1e-6)
     ):
         raise RuntimeError(
-            f"import result mismatch: count={count}, min={actual_min}, max={actual_max}, sum={actual_sum}"
+            f"import result mismatch: count={count}, stations={distinct_stations}, "
+            f"min={actual_min}, max={actual_max}, sum={actual_sum}"
         )
 
 
@@ -118,7 +99,7 @@ def benchmark(binary, rows, stations, runs, warmups, timeout, format_name):
             start = time.perf_counter_ns()
             sql(binary, database, copy, timeout)
             elapsed = (time.perf_counter_ns() - start) / 1_000_000_000
-            verify(binary, database, rows, minimum, maximum, total, timeout)
+            verify(binary, database, rows, stations, minimum, maximum, total, timeout)
             if index >= warmups:
                 timings.append(elapsed)
     latency = summarize(timings)
@@ -156,10 +137,7 @@ def main(argv=None):
         args.timeout,
         args.format,
     )
-    rendered = json.dumps(result, indent=2) + "\n"
-    if args.output:
-        args.output.write_text(rendered, encoding="utf-8")
-    print(rendered, end="")
+    emit_json(result, args.output)
     return 0
 
 

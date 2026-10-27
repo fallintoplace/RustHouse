@@ -605,6 +605,26 @@ fn groups_numeric_aggregates_by_typed_keys() {
 }
 
 #[test]
+fn grouped_numeric_aggregates_respect_explicit_null_precedence() {
+    let part = part();
+    assert_eq!(
+        query(
+            "SELECT message, min(status), max(status) FROM part GROUP BY message ORDER BY message ASC NULLS LAST",
+            &part,
+        ),
+        "message\tmin(status)\tmax(status)\nhello\t200\t200\nworld\t500\t500\n\\N\t503\t503\n"
+    );
+    assert_eq!(
+        query(
+            "SELECT message, min(status), max(status) FROM part GROUP BY message ORDER BY message DESC NULLS FIRST",
+            &part,
+        ),
+        "message\tmin(status)\tmax(status)\n\\N\t503\t503\nworld\t500\t500\nhello\t200\t200\n"
+    );
+    fs::remove_dir_all(part).unwrap();
+}
+
+#[test]
 fn orders_nullable_columns_with_explicit_null_precedence() {
     let part = part();
     assert_eq!(
