@@ -8,8 +8,14 @@ fn scalar_floor_multiple_evaluates_signed_and_nested_constants() {
         ("SELECT FLOOR_TO_MULTIPLE(-15, 5)", -15),
         ("SELECT FLOOR_TO_MULTIPLE(0, 5)", 0),
         ("SELECT FLOOR_TO_MULTIPLE(3 * 7, 4)", 20),
-        ("SELECT FLOOR_TO_MULTIPLE(9223372036854775807, 2)", 9223372036854775806),
-        ("SELECT FLOOR_TO_MULTIPLE(-9223372036854775808, 2)", i64::MIN),
+        (
+            "SELECT FLOOR_TO_MULTIPLE(9223372036854775807, 2)",
+            9223372036854775806,
+        ),
+        (
+            "SELECT FLOOR_TO_MULTIPLE(-9223372036854775808, 2)",
+            i64::MIN,
+        ),
     ] {
         assert_eq!(
             parse_select(sql).unwrap().projection,
