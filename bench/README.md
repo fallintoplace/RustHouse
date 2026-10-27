@@ -39,19 +39,23 @@ when comparing results. Query execution benchmarks exclude SQL parsing
 and fixture generation; part scans include normal OS cache effects.
 These are not certified cross-engine benchmark results.
 
-## Existing end-to-end workload runners
+## End-to-end SQL workload runners
 
 ```sh
 cargo build -p rusthouse-cli --release --locked
+python3 -m bench workload latency -- --binary target/release/rusthouse --rows 65536 --runs 5 --warmups 2 --output bench/results/sql-latency.json
 python3 -m bench workload joins -- --binary target/release/rusthouse --runs 5
 python3 -m bench workload measurements -- --binary target/release/rusthouse --rows 100000
 python3 -m bench workload analytics -- --binary target/release/rusthouse --database /path/to/db
 python3 -m bench workload tpch -- --binary target/release/rusthouse --database /path/to/db --queries-dir /path/to/queries
 ```
 
-These commands forward arguments to the existing Python runners. They
-keep the original fixture, reference-checking and workload options.
-See each workload's README or `--help` for setup and options.
+These commands forward arguments to their Python runners. The new
+[20-query generated SQL latency workload](latency/README.md) needs no
+fixtures or database. It checks exact results on every run and reports
+median/p90 wall-clock CLI latency. Its JSON report is also collected by
+the SQL latency GitHub Actions workflow. Other workloads retain their
+fixture and reference-checking options. Consult their README or `--help`.
 Missing references or output mismatches are failures when reference
 verification is requested. Without references, successful SQL execution
-is explicitly marked `unverified`, not `passed`.
+in the other workloads is explicitly marked `unverified`, not `passed`.
