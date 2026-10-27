@@ -362,9 +362,10 @@ pub(super) fn execute<W: Write>(
         })
         .collect::<Result<Vec<_>, _>>()?;
     let mut reader = TypedQueryReader::open(part, &names)?;
+    let no_filters = query.predicates.is_empty() && query.or_predicates.is_empty();
     while let Some(batch) = reader.next_batch()? {
         for row in 0..batch[0].len() {
-            if !typed::passes(&batch, row, &conditions) {
+            if !no_filters && !typed::passes(&batch, row, &conditions) {
                 continue;
             }
             for (state, argument) in states.iter_mut().zip(&arguments) {
