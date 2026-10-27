@@ -8,7 +8,7 @@ use crate::{
     WideMark, inspect_part, read_legacy_strings, read_uuid_values, read_wide_marks,
     validate_wide_marks,
 };
-use crate::{inspect_query_source, query_parts};
+use crate::query_parts;
 use std::fs::File;
 use std::io::{self, Read};
 use std::path::{Path, PathBuf};
