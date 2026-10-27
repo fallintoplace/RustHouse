@@ -80,7 +80,7 @@ def summarize_times(timings):
     }
 
 
-def run_benchmark(queries, indices, runs, timeout, execute, reference_dir=None):
+def run_benchmark(queries, indices, runs, timeout, execute, reference_dir=None, warmups=0):
     results = []
     for index in indices:
         sql = queries[index]
@@ -88,15 +88,16 @@ def run_benchmark(queries, indices, runs, timeout, execute, reference_dir=None):
         timings = []
         status = "unverified" if expected_path is None else "passed"
         failure = None
-        for _ in range(runs):
-            start = time.perf_counter_ns()
+        for iteration in range(-warmups, runs):
+            start = time.perf_counter_ns() if iteration >= 0 else None
             try:
                 output = execute(sql, timeout)
             except (OSError, RuntimeError, subprocess.TimeoutExpired, urllib.error.URLError) as error:
                 status, failure = "error", str(error)[:2000]
                 break
-            elapsed = (time.perf_counter_ns() - start) / 1_000_000_000
-            timings.append(round(elapsed, 9))
+            if start is not None:
+                elapsed = (time.perf_counter_ns() - start) / 1_000_000_000
+                timings.append(round(elapsed, 9))
             if expected_path is not None:
                 if not expected_path.is_file():
                     status, failure = "missing_reference", str(expected_path)
@@ -123,14 +124,15 @@ def main(argv=None):
     parser.add_argument("--queries", type=Path, default=DEFAULT_QUERIES)
     parser.add_argument("--only", help="Query numbers, e.g. 1,3-5")
     parser.add_argument("--runs", type=int, default=3)
+    parser.add_argument("--warmups", type=int, default=1)
     parser.add_argument("--timeout", type=float, default=600)
     parser.add_argument("--reference-dir", type=Path, help="Exact q01.tsv ... q43.tsv expected outputs")
     parser.add_argument("--output", type=Path, help="JSON result file")
     args = parser.parse_args(argv)
     if args.binary and not args.database:
         parser.error("--database is required with --binary")
-    if args.runs < 1 or args.timeout <= 0:
-        parser.error("--runs and --timeout must be positive")
+    if args.runs < 1 or args.timeout <= 0 or args.warmups < 0:
+        parser.error("--runs and --timeout must be positive; --warmups must be nonnegative")
     queries = load_queries(args.queries)
     if args.queries.resolve() == DEFAULT_QUERIES.resolve() and len(queries) != 43:
         parser.error("pinned workload must contain exactly 43 queries")
@@ -146,10 +148,13 @@ def main(argv=None):
     else:
         execute = lambda sql, timeout: execute_http(args.url, sql, timeout)
         engine = "rusthouse-http"
-    results = run_benchmark(queries, indices, args.runs, args.timeout, execute, args.reference_dir)
+    results = run_benchmark(
+        queries, indices, args.runs, args.timeout, execute, args.reference_dir, args.warmups
+    )
     report = {
         "engine": engine,
         "runs": args.runs,
+        "warmups": args.warmups,
         "reference_checked": args.reference_dir is not None,
         "results": results,
     }

@@ -31,10 +31,7 @@ fn dates_and_timestamps_round_trip_and_filter_correctly() {
         b"d\tts\n2013-07-01\t2013-07-01 12:34:56\n2013-07-14\t2013-07-14 23:59:59\n"
     );
     assert_eq!(
-        query(
-            &dir,
-            "SELECT count(*) FROM events WHERE d >= '2013-07-14'"
-        ),
+        query(&dir, "SELECT count(*) FROM events WHERE d >= '2013-07-14'"),
         b"count\n1\n"
     );
     assert_eq!(

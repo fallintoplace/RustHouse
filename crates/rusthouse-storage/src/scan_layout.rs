@@ -29,6 +29,14 @@ fn validate_mark_position(name: &str, marks: &[WideMark], index: usize) -> Resul
     Ok(())
 }
 
+fn row_count_mismatch(name: &str) -> PartError {
+    PartError::InvalidScan(format!("mark row counts do not match count.txt for {name}"))
+}
+
+fn granule_boundary_mismatch(name: &str) -> PartError {
+    PartError::InvalidScan(format!("granule boundaries differ for {name}"))
+}
+
 fn validate_mark_rows(
     name: &str,
     marks: &[WideMark],
@@ -44,28 +52,20 @@ fn validate_mark_rows(
         let rows = mark
             .rows
             .ok_or_else(|| PartError::InvalidScan("adaptive wide marks are required".into()))?;
-        total_rows = total_rows.checked_add(rows).ok_or_else(|| {
-            PartError::InvalidScan(format!("mark row counts do not match count.txt for {name}"))
-        })?;
+        total_rows = total_rows.checked_add(rows).ok_or_else(|| row_count_mismatch(name))?;
         if let Some(reference) = reference {
             if reference.get(index) != Some(&rows) {
-                return Err(PartError::InvalidScan(format!(
-                    "granule boundaries differ for {name}"
-                )));
+                return Err(granule_boundary_mismatch(name));
             }
         } else if let Some(first) = first_row_counts.as_mut() {
             first.push(rows);
         }
     }
     if total_rows != expected_rows {
-        return Err(PartError::InvalidScan(format!(
-            "mark row counts do not match count.txt for {name}"
-        )));
+        return Err(row_count_mismatch(name));
     }
     if reference.is_some_and(|reference| reference.len() != marks.len()) {
-        return Err(PartError::InvalidScan(format!(
-            "granule boundaries differ for {name}"
-        )));
+        return Err(granule_boundary_mismatch(name));
     }
     Ok(first_row_counts)
 }
@@ -110,6 +110,18 @@ mod tests {
             decompressed_offset: 0,
             rows: Some(rows),
         }
+    }
+
+    #[test]
+    fn row_count_errors_include_the_column_name() {
+        let error = ScanLayout::default()
+            .validate("amount", &[mark(0, 3)], 2)
+            .unwrap_err();
+        assert!(matches!(
+            error,
+            PartError::InvalidScan(message)
+                if message == "mark row counts do not match count.txt for amount"
+        ));
     }
 
     #[test]

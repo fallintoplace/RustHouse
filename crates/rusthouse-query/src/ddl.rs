@@ -78,6 +78,15 @@ fn identifier(parser: &mut Parser) -> Result<String, ParseError> {
 fn data_type(parser: &mut Parser, nesting: usize) -> Result<String, ParseError> {
     let name = parser.word()?;
     let canonical = match name.to_ascii_uppercase().as_str() {
+        "TINYINT" => "Int8",
+        "SMALLINT" => "Int16",
+        "INTEGER" | "INT" => "Int32",
+        "BIGINT" => "Int64",
+        "TEXT" => "String",
+        "TIMESTAMP" => "DateTime",
+        "REAL" => "Float32",
+        "DOUBLE" => "Float64",
+        "BOOLEAN" => "Bool",
         "UINT8" => "UInt8",
         "UINT16" => "UInt16",
         "UINT32" => "UInt32",
@@ -362,6 +371,28 @@ mod tests {
     use super::*;
 
     #[test]
+    fn accepts_standard_sql_type_aliases() {
+        let parsed = parse_ddl(
+            "CREATE TABLE sample (a TINYINT, b SMALLINT, c INTEGER, d BIGINT, e TEXT, f TIMESTAMP, g REAL, h DOUBLE, i BOOLEAN)",
+        )
+        .unwrap();
+        let Some(Ddl::CreateTable { columns, .. }) = parsed else {
+            panic!("expected CREATE TABLE");
+        };
+        let types = columns
+            .iter()
+            .map(|column| column.data_type.as_str())
+            .collect::<Vec<_>>();
+        assert_eq!(
+            types,
+            [
+                "Int8", "Int16", "Int32", "Int64", "String", "DateTime", "Float32", "Float64",
+                "Bool"
+            ]
+        );
+    }
+
+    #[test]
     fn parses_show_tables_not_like_and_rejects_invalid_forms() {
         assert_eq!(
             parse_ddl(r"SHOW TABLES NOT LIKE 'logs\_%'").unwrap(),
@@ -388,13 +419,15 @@ mod tests {
 
     #[test]
     fn accepts_105_column_wide_table_schemas_and_rejects_129() {
-        let make_sql = |n: usize| format!(
-            "CREATE TABLE hits ({})",
-            (0..n)
-                .map(|i| format!("field{i} UInt64"))
-                .collect::<Vec<_>>()
-                .join(", ")
-        );
+        let make_sql = |n: usize| {
+            format!(
+                "CREATE TABLE hits ({})",
+                (0..n)
+                    .map(|i| format!("field{i} UInt64"))
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            )
+        };
         assert!(parse_ddl(&make_sql(105)).is_ok());
         assert!(parse_ddl(&make_sql(128)).is_ok());
         assert!(parse_ddl(&make_sql(129)).is_err());

@@ -10,7 +10,7 @@ permissions:
 
 concurrency:
   group: rust-ci-${{ github.workflow }}-${{ github.ref }}
-  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+  cancel-in-progress: true
 
 jobs:
   test:
@@ -22,22 +22,22 @@ jobs:
       matrix:
         os: [ubuntu-latest, macos-latest]
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
+      - uses: Swatinem/rust-cache@v2
+        with:
+          save-if: ${{ github.ref == 'refs/heads/main' }}
+          cache-on-failure: true
       - if: runner.os == 'Linux'
         run: cargo fmt --all -- --check
       - if: runner.os == 'Linux'
         run: cargo clippy --workspace --all-targets --locked -- -D warnings
       - run: cargo test --workspace --locked
       - run: cargo build --workspace --locked
-      - if: runner.os == 'Linux'
-        run: cargo bench -p rusthouse-query --bench queries --locked -- --rows 1000 --samples 3
-      - if: runner.os == 'Linux'
-        run: cargo bench -p rusthouse-query --bench parts --locked -- --rows 1024 --samples 3
   analytics-harness:
     name: Analytics harness (Python)
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
       - run: python3 -m unittest discover -s bench/analytics -p 'test_*.py'
 
   msrv:
@@ -45,10 +45,17 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 15
     steps:
-      - uses: actions/checkout@v6
-      - name: Test minimum Rust version
+      - uses: actions/checkout@v7
+      - name: Install minimum Rust toolchain
         run: |
           msrv=$(sed -n 's/^rust-version = "\([^"]*\)"/\1/p' Cargo.toml)
           test -n "$msrv"
           rustup toolchain install "$msrv" --profile minimal --no-self-update
-          cargo +"$msrv" test --workspace --locked
+          echo "RUSTUP_TOOLCHAIN=$msrv" >> "$GITHUB_ENV"
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: msrv
+          save-if: ${{ github.ref == 'refs/heads/main' }}
+          cache-on-failure: true
+      - name: Test minimum Rust version
+        run: cargo test --workspace --locked

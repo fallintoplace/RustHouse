@@ -2,22 +2,23 @@ use super::typed::{self, Cell};
 use super::{AggregateState, ExecutionError, Number};
 use crate::{AggregateItem, ScalarExpr, Select};
 use rusthouse_storage::{TypedColumn, TypedQueryReader, inspect_query_source};
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::io::Write;
 use std::path::Path;
 
 enum State {
     Count(u64),
+    Distinct(HashSet<typed::Key>),
     Numeric(AggregateState),
 }
 
-fn checked_binary(
-    left: Number,
-    right: Number,
-    subtract: bool,
-) -> Result<Number, ExecutionError> {
+fn checked_binary(left: Number, right: Number, subtract: bool) -> Result<Number, ExecutionError> {
     let op = |a: i128, b: i128| {
-        if subtract { a.checked_sub(b) } else { a.checked_add(b) }
+        if subtract {
+            a.checked_sub(b)
+        } else {
+            a.checked_add(b)
+        }
     };
     match (left, right) {
         (Number::Float(a), b) => {
@@ -37,7 +38,11 @@ fn checked_binary(
             Ok(Number::Float(if subtract { a - b } else { a + b }))
         }
         (Number::Unsigned(a), Number::Unsigned(b)) => {
-            let value = if subtract { a.checked_sub(b) } else { a.checked_add(b) };
+            let value = if subtract {
+                a.checked_sub(b)
+            } else {
+                a.checked_add(b)
+            };
             value.map(Number::Unsigned).ok_or_else(|| {
                 ExecutionError::Invalid("unsigned aggregate expression overflow".into())
             })
@@ -89,6 +94,25 @@ fn eval_number(
             checked_binary(left, right, matches!(expression, ScalarExpr::Subtract(..))).map(Some)
         }
     }
+}
+
+fn distinct_argument(
+    expression: &ScalarExpr,
+    batch: &[TypedColumn],
+    row: usize,
+    indices: &HashMap<String, usize>,
+) -> Result<Option<typed::Key>, ExecutionError> {
+    if let ScalarExpr::Column(name) = expression {
+        let index = indices
+            .get(name)
+            .ok_or_else(|| ExecutionError::Invalid(format!("unknown aggregate column: {name}")))?;
+        let value = typed::cell(&batch[*index], row);
+        return match value {
+            Cell::Null => Ok(None),
+            _ => Ok(Some(value.key())),
+        };
+    }
+    Ok(eval_number(expression, batch, row, indices)?.map(|value| Cell::Numeric(value).key()))
 }
 
 fn count_argument(
@@ -176,6 +200,7 @@ pub(super) fn execute<W: Write>(
         .iter()
         .map(|item| match item.function {
             Some(function) => State::Numeric(AggregateState::new(function)),
+            None if item.distinct => State::Distinct(HashSet::new()),
             None => State::Count(0),
         })
         .collect::<Vec<_>>();
@@ -189,9 +214,22 @@ pub(super) fn execute<W: Write>(
                 match state {
                     State::Count(value) => {
                         if count_argument(item.argument.as_ref(), &batch, row, &indices)? {
-                            *value = value.checked_add(1).ok_or_else(|| {
-                                ExecutionError::Invalid("COUNT overflow".into())
-                            })?;
+                            *value = value
+                                .checked_add(1)
+                                .ok_or_else(|| ExecutionError::Invalid("COUNT overflow".into()))?;
+                        }
+                    }
+                    State::Distinct(seen) => {
+                        let expression = item.argument.as_ref().ok_or_else(|| {
+                            ExecutionError::Invalid("distinct argument missing".into())
+                        })?;
+                        if let Some(key) = distinct_argument(expression, &batch, row, &indices)? {
+                            if seen.len() >= 100_000 && !seen.contains(&key) {
+                                return Err(ExecutionError::Invalid(
+                                    "COUNT(DISTINCT) supports at most 100000 values".into(),
+                                ));
+                            }
+                            seen.insert(key);
                         }
                     }
                     State::Numeric(state) => {
@@ -213,6 +251,7 @@ pub(super) fn execute<W: Write>(
             }
             match state {
                 State::Count(count) => write!(output, "{count}")?,
+                State::Distinct(seen) => write!(output, "{}", seen.len())?,
                 State::Numeric(state) => write!(output, "{}", state.render())?,
             }
         }

@@ -5,8 +5,12 @@ const MAX_JSON_ROW_BYTES: usize = 4 * 1024 * 1024;
 
 fn write_indent<W: Write>(output: &mut W, depth: usize) -> io::Result<()> {
     output.write_all(b"\n")?;
-    for _ in 0..=depth {
-        output.write_all(b"  ")?;
+    let spaces = [b' '; 64];
+    let mut remaining = (depth + 1) * 2;
+    while remaining > 0 {
+        let count = remaining.min(spaces.len());
+        output.write_all(&spaces[..count])?;
+        remaining -= count;
     }
     Ok(())
 }
@@ -201,6 +205,17 @@ impl<W: Write> Write for JsonArrayWriter<W> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn indents_small_and_deep_json_rows() {
+        for depth in [0usize, 1, 40] {
+            let mut output = Vec::new();
+            write_indent(&mut output, depth).unwrap();
+            assert_eq!(output[0], b'\n');
+            assert_eq!(output.len(), 1 + (depth + 1) * 2);
+            assert!(output[1..].iter().all(|&byte| byte == b' '));
+        }
+    }
 
     #[test]
     fn framing_handles_empty_compact_and_pretty_arrays() {
