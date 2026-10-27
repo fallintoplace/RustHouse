@@ -63,8 +63,7 @@ pub(super) fn execute<W: Write>(
         "{column}\t{}",
         query
             .alias
-            .as_deref()
-            .map(str::to_owned)
+            .clone()
             .unwrap_or_else(|| format!("countDistinct({value_column})"))
     )?;
     if query.limit == Some(0) {
