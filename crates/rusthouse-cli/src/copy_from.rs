@@ -27,7 +27,7 @@ fn push_field(
         return Err("CSV records support at most 64 columns".into());
     }
     let value = std::mem::take(field);
-    row.push(if !quoted && value.is_empty() {
+    row.push(if !quoted && (value.is_empty() || value == "\\N") {
         None
     } else {
         Some(value)
@@ -242,6 +242,15 @@ mod tests {
             parse_csv("\"hello\nworld\",42\n").unwrap()[0][0],
             Some("hello\nworld".into())
         );
+    }
+
+    #[test]
+    fn csv_import_distinguishes_null_sentinel_and_quoted_text() {
+        let rows = parse_csv("id,value\n1,\\N\n2,\"\\N\"\n3,\n4,\"\"\n").unwrap();
+        assert_eq!(rows[1], vec![Some("1".into()), None]);
+        assert_eq!(rows[2], vec![Some("2".into()), Some("\\N".into())]);
+        assert_eq!(rows[3], vec![Some("3".into()), None]);
+        assert_eq!(rows[4], vec![Some("4".into()), Some("".into())]);
     }
 
     #[test]
