@@ -188,13 +188,10 @@ fn shard_integer_kind(peer: Peer, table: &str, column: &str) -> Result<String, S
 /// Compare column names, types, and order, not row counts. Each shard
 /// independently reports its own row count and should differ on real clusters.
 fn schema_signature(response: &remote::PeerResponse) -> Result<Vec<u8>, String> {
-    if response.status != 200
-        || response.content_type != "application/json; charset=utf-8"
-    {
+    if response.status != 200 || response.content_type != "application/json; charset=utf-8" {
         return Err("peer schema request failed".into());
     }
-    let body = std::str::from_utf8(&response.body)
-        .map_err(|_| "peer schema is not UTF-8")?;
+    let body = std::str::from_utf8(&response.body).map_err(|_| "peer schema is not UTF-8")?;
     let body = body
         .strip_suffix("}\n")
         .ok_or("invalid peer schema response")?;
@@ -650,11 +647,11 @@ pub fn handle(method: &str, body: &[u8], cluster: &Cluster, max_rows: usize) -> 
     for result in results {
         match result {
             Ok((cap, body, kind, schema)) => {
-                if expected_schema.as_ref().is_some_and(|expected| expected != &schema) {
-                    return Response::text(
-                        "409 Conflict",
-                        "distributed shard schemas disagree\n",
-                    );
+                if expected_schema
+                    .as_ref()
+                    .is_some_and(|expected| expected != &schema)
+                {
+                    return Response::text("409 Conflict", "distributed shard schemas disagree\n");
                 }
                 if expected_schema.is_none() {
                     expected_schema = Some(schema);
@@ -846,13 +843,16 @@ mod tests {
         };
         let a = schema_signature(&response(
             b"{\"rows\":4,\"columns\":[{\"name\":\"id\",\"type\":\"UInt64\"}]}\n",
-        )).unwrap();
+        ))
+        .unwrap();
         let b = schema_signature(&response(
             b"{\"rows\":900,\"columns\":[{\"name\":\"id\",\"type\":\"UInt64\"}]}\n",
-        )).unwrap();
+        ))
+        .unwrap();
         let different = schema_signature(&response(
             b"{\"rows\":4,\"columns\":[{\"name\":\"id\",\"type\":\"String\"}]}\n",
-        )).unwrap();
+        ))
+        .unwrap();
         assert_eq!(a, b);
         assert_ne!(a, different);
         assert!(schema_signature(&response(b"bad")).is_err());
