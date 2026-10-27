@@ -60,7 +60,8 @@ pub(super) fn cell(column: &TypedColumn, row: usize) -> Cell {
 }
 
 fn is_typed(data_type: &str) -> bool {
-    data_type == "String" || data_type == "UUID" || data_type.starts_with("Nullable(")
+    matches!(data_type, "String" | "UUID" | "Date" | "DateTime")
+        || data_type.starts_with("Nullable(")
 }
 
 pub(super) fn requires_typed_scan(query: &Select, path: &Path) -> Result<bool, ExecutionError> {
@@ -105,6 +106,14 @@ fn parse_literal(data_type: &str, literal: &str) -> Result<Cell, ExecutionError>
     let kind = base_type(data_type);
     match kind {
         "String" => Ok(Cell::Text(literal.as_bytes().to_vec())),
+        "Date" => rusthouse_storage::parse_date(literal)
+            .or_else(|| literal.parse::<u16>().ok())
+            .map(|days| Cell::Numeric(Number::Unsigned(u128::from(days))))
+            .ok_or_else(|| ExecutionError::Invalid("invalid Date literal".into())),
+        "DateTime" => rusthouse_storage::parse_datetime(literal)
+            .or_else(|| literal.parse::<u32>().ok())
+            .map(|seconds| Cell::Numeric(Number::Unsigned(u128::from(seconds))))
+            .ok_or_else(|| ExecutionError::Invalid("invalid DateTime literal".into())),
         "UUID" => {
             let valid = literal.len() == 36
                 && literal.bytes().enumerate().all(|(index, byte)| {
@@ -487,12 +496,39 @@ pub(super) fn write_value<W: Write>(output: &mut W, value: &Cell) -> Result<(), 
     Ok(())
 }
 
-fn write_row<W: Write>(output: &mut W, cells: &[Cell]) -> Result<(), ExecutionError> {
+pub(super) fn write_typed_value<W: Write>(
+    output: &mut W,
+    value: &Cell,
+    data_type: &str,
+) -> Result<(), ExecutionError> {
+    match (base_type(data_type), value) {
+        ("Date", Cell::Numeric(Number::Unsigned(days))) => {
+            if let Ok(days) = u16::try_from(*days) {
+                return write!(output, "{}", rusthouse_storage::format_date(days))
+                    .map_err(ExecutionError::Io);
+            }
+        }
+        ("DateTime", Cell::Numeric(Number::Unsigned(seconds))) => {
+            if let Ok(seconds) = u32::try_from(*seconds) {
+                return write!(output, "{}", rusthouse_storage::format_datetime(seconds))
+                    .map_err(ExecutionError::Io);
+            }
+        }
+        _ => {}
+    }
+    write_value(output, value)
+}
+
+fn write_row<W: Write>(
+    output: &mut W,
+    cells: &[Cell],
+    data_types: &[&str],
+) -> Result<(), ExecutionError> {
     for (index, cell) in cells.iter().enumerate() {
         if index != 0 {
             output.write_all(b"\t")?;
         }
-        write_value(output, cell)?;
+        write_typed_value(output, cell, data_types[index])?;
     }
     output.write_all(b"\n")?;
     Ok(())
@@ -633,6 +669,10 @@ pub(super) fn execute_typed<W: Write>(
         .iter()
         .map(|col| (col.name.clone(), col.data_type.clone()))
         .collect();
+    let projection_types = projection
+        .iter()
+        .map(|name| types.get(name).map(String::as_str).unwrap_or(""))
+        .collect::<Vec<_>>();
     let first = compile(&query.predicates, &indices, &types)?;
     let mut conditions = vec![first];
     for branch in &query.or_predicates {
@@ -794,7 +834,7 @@ pub(super) fn execute_typed<W: Write>(
                 skipped += 1;
                 continue;
             }
-            write_row(output, &cells)?;
+            write_row(output, &cells, &projection_types)?;
             emitted += 1;
             if emitted == limit {
                 return Ok(());
@@ -837,7 +877,7 @@ pub(super) fn execute_typed<W: Write>(
             });
         }
         for (key, count) in grouped_rows.into_iter().skip(offset).take(limit) {
-            write_value(output, &key)?;
+            write_typed_value(output, &key, projection_types[0])?;
             writeln!(output, "\t{count}")?;
         }
         return Ok(());
@@ -856,7 +896,7 @@ pub(super) fn execute_typed<W: Write>(
     if query.order_by.is_some() {
         if top_capacity.is_some() {
             for entry in top.into_sorted_vec().into_iter().skip(offset).take(limit) {
-                write_row(output, &entry.row.values)?;
+                write_row(output, &entry.row.values, &projection_types)?;
             }
         } else {
             ordered.sort_by(|left, right| {
@@ -869,7 +909,7 @@ pub(super) fn execute_typed<W: Write>(
                 )
             });
             for row in ordered.into_iter().skip(offset).take(limit) {
-                write_row(output, &row.values)?;
+                write_row(output, &row.values, &projection_types)?;
             }
         }
     }
