@@ -28,6 +28,7 @@ pub(super) fn is_function(name: &str) -> bool {
         || name.eq_ignore_ascii_case("GCD")
         || name.eq_ignore_ascii_case("LCM")
         || name.eq_ignore_ascii_case("CLAMP")
+        || name.eq_ignore_ascii_case("ISQRT")
 }
 
 pub(super) fn parse(parser: &mut Parser) -> Result<i64, ParseError> {
@@ -248,6 +249,11 @@ fn factor(parser: &mut Parser, depth: usize) -> Result<i64, ParseError> {
             }
         } else if name.eq_ignore_ascii_case("ABS") {
             first.checked_abs().ok_or_else(overflow)?
+        } else if name.eq_ignore_ascii_case("ISQRT") {
+            if first < 0 {
+                return Err(ParseError("ISQRT requires a non-negative integer".into()));
+            }
+            first.isqrt()
         } else {
             first.signum()
         };
