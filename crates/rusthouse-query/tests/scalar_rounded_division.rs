@@ -14,8 +14,14 @@ fn rounded_division_handles_signs_and_exact_quotients() {
         ("SELECT CEIL_DIV(6, -3)", -2),
         ("SELECT FLOOR_DIV(-6, 3)", -2),
         ("SELECT CEIL_DIV(0, -3)", 0),
-        ("SELECT FLOOR_DIV(-9223372036854775808, 3)", -3074457345618258603),
-        ("SELECT CEIL_DIV(-9223372036854775808, 3)", -3074457345618258602),
+        (
+            "SELECT FLOOR_DIV(-9223372036854775808, 3)",
+            -3074457345618258603,
+        ),
+        (
+            "SELECT CEIL_DIV(-9223372036854775808, 3)",
+            -3074457345618258602,
+        ),
         ("SELECT CEIL_DIV(1 + 4, 2) * 3", 9),
     ] {
         assert_eq!(

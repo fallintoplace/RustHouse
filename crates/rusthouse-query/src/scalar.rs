@@ -206,7 +206,11 @@ fn parse_rounded_division(parser: &mut Parser, depth: usize) -> Result<i64, Pars
     let name = parser.word()?;
     require_token(parser, Token::LParen, "rounded division requires '('")?;
     let dividend = expression(parser, depth + 1)?;
-    require_token(parser, Token::Comma, "rounded division requires two arguments")?;
+    require_token(
+        parser,
+        Token::Comma,
+        "rounded division requires two arguments",
+    )?;
     let divisor = expression(parser, depth + 1)?;
     require_token(
         parser,
