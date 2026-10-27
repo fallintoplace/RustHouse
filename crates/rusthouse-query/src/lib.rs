@@ -28,6 +28,7 @@ use lexer::{Token, tokenize};
 pub enum AggregateFunction {
     Sum,
     Avg,
+    SumSquares,
     Min,
     Max,
     VarPop,
@@ -42,6 +43,7 @@ impl AggregateFunction {
         match self {
             Self::Sum => "sum",
             Self::Avg => "avg",
+            Self::SumSquares => "sumSquares",
             Self::Min => "min",
             Self::Max => "max",
             Self::VarPop => "varPop",
@@ -448,6 +450,7 @@ fn parse_select_tokens(tokens: Vec<Token>) -> Result<Select, ParseError> {
         let function = match name.to_ascii_uppercase().as_str() {
             "SUM" => AggregateFunction::Sum,
             "AVG" => AggregateFunction::Avg,
+            "SUMSQUARES" => AggregateFunction::SumSquares,
             "MIN" => AggregateFunction::Min,
             "MAX" => AggregateFunction::Max,
             "VARPOP" => AggregateFunction::VarPop,
@@ -541,6 +544,7 @@ fn parse_select_tokens(tokens: Vec<Token>) -> Result<Select, ParseError> {
                     Some(Token::Word(name)) => match name.to_ascii_uppercase().as_str() {
                         "SUM" => Some(AggregateFunction::Sum),
                         "AVG" => Some(AggregateFunction::Avg),
+                        "SUMSQUARES" => Some(AggregateFunction::SumSquares),
                         "MIN" => Some(AggregateFunction::Min),
                         "MAX" => Some(AggregateFunction::Max),
                         "VARPOP" => Some(AggregateFunction::VarPop),
