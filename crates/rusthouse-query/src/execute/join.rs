@@ -175,6 +175,7 @@ fn probe_inner<F>(
     right_rows: &[Vec<typed::Cell>],
     hash: &HashMap<Vec<typed::Key>, Vec<usize>>,
     materialize_rows: bool,
+    any: bool,
     mut emit: F,
 ) -> Result<usize, ExecutionError>
 where
@@ -196,7 +197,7 @@ where
                     } else {
                         Vec::new()
                     };
-                    for &right_index in right_indices {
+                    for &right_index in right_indices.iter().take(if any { 1 } else { usize::MAX }) {
                         if matches >= MAX_RESULT_ROWS {
                             return Err(invalid("JOIN produces more than 65536 rows"));
                         }
@@ -258,6 +259,7 @@ fn execute_streaming_inner<W: Write>(
         &right_rows,
         &hash,
         false,
+        query.any,
         |_, _| Ok(()),
     )?;
 
@@ -280,6 +282,7 @@ fn execute_streaming_inner<W: Write>(
         &right_rows,
         &hash,
         true,
+        query.any,
         |left, right| {
             if position >= query.offset && position < end {
                 for (index, (column, _, _)) in selected.iter().enumerate() {
@@ -432,7 +435,7 @@ pub fn execute_join<W: Write>(
         let mut matched = false;
         if let Some(key) = row_key(row, &left_keys) {
             if let Some(matches) = hash.get(&key) {
-                for &right_index in matches {
+                for &right_index in matches.iter().take(if query.any { 1 } else { usize::MAX }) {
                     matched = true;
                     matched_right[right_index] = true;
                     add_pair(&mut pairs, (Some(left_index), Some(right_index)))?;
