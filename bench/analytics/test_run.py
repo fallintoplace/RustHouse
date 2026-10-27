@@ -68,6 +68,20 @@ class AnalyticsRunnerTests(unittest.TestCase):
         self.assertEqual(len(results[0]["seconds"]), 3)
         self.assertEqual(results[0]["status"], "unverified")
 
+    def test_reference_failure_reports_exact_mismatch_and_missing_files(self):
+        with tempfile.TemporaryDirectory() as temp:
+            path = Path(temp) / "q01.tsv"
+            self.assertEqual(
+                runner.reference_failure(path, b"1\n"),
+                ("missing_reference", str(path)),
+            )
+            path.write_bytes(b"1\n")
+            self.assertIsNone(runner.reference_failure(path, b"1\n"))
+            self.assertEqual(
+                runner.reference_failure(path, b"2\n"),
+                ("mismatch", "query output differs from expected TSV"),
+            )
+
     def test_reference_mismatch_is_a_failure(self):
         with tempfile.TemporaryDirectory() as temp:
             root = Path(temp)

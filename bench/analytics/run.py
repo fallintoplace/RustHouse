@@ -66,6 +66,14 @@ def summarize_times(timings):
     return latency_summary(timings)
 
 
+def reference_failure(expected_path, output):
+    if not expected_path.is_file():
+        return "missing_reference", str(expected_path)
+    if output != expected_path.read_bytes():
+        return "mismatch", "query output differs from expected TSV"
+    return None
+
+
 def run_benchmark(queries, indices, runs, timeout, execute, reference_dir=None, warmups=0):
     results = []
     for index in indices:
@@ -82,11 +90,9 @@ def run_benchmark(queries, indices, runs, timeout, execute, reference_dir=None, 
                 status, failure = "error", str(error)[:2000]
                 break
             if expected_path is not None:
-                if not expected_path.is_file():
-                    status, failure = "missing_reference", str(expected_path)
-                    break
-                if output != expected_path.read_bytes():
-                    status, failure = "mismatch", "query output differs from expected TSV"
+                invalid = reference_failure(expected_path, output)
+                if invalid is not None:
+                    status, failure = invalid
                     break
             if start is not None:
                 elapsed = (time.perf_counter_ns() - start) / 1_000_000_000
