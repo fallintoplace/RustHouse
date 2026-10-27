@@ -9,7 +9,6 @@ pub(super) fn is_function(name: &str) -> bool {
         "LENGTH"
             | "CHAR_LENGTH"
             | "BTRIM"
-            | "COUNT_SUBSTRING"
             | "LOWER"
             | "UPPER"
             | "REVERSE"
@@ -21,6 +20,7 @@ pub(super) fn is_function(name: &str) -> bool {
             | "LPAD"
             | "REPLACE"
             | "STRPOS"
+            | "COUNT_SUBSTRING"
             | "LEFT"
             | "STARTS_WITH"
             | "RIGHT"
@@ -271,6 +271,24 @@ fn parse_at_depth(parser: &mut Parser, depth: usize) -> Result<ConstantValue, Pa
                 None => ConstantValue::Null,
             }
         }
+        "COUNT_SUBSTRING" => {
+            let input = text_arg(parser, depth + 1)?;
+            require(parser, Token::Comma, "COUNT_SUBSTRING requires a substring")?;
+            let needle = text_arg(parser, depth + 1)?;
+            require(parser, Token::RParen, "expected ')' after COUNT_SUBSTRING arguments")?;
+            match (input, needle) {
+                (Some(input), Some(needle)) => {
+                    if needle.is_empty() {
+                        return Err(ParseError("COUNT_SUBSTRING needle cannot be empty".into()));
+                    }
+                    ConstantValue::Integer(
+                        i64::try_from(input.matches(&needle).count())
+                            .map_err(|_| ParseError("COUNT_SUBSTRING count exceeds Int64".into()))?,
+                    )
+                }
+                _ => ConstantValue::Null,
+            }
+        }
         "STRPOS" => {
             let input = text_arg(parser, depth + 1)?;
             require(parser, Token::Comma, "STRPOS requires a substring")?;
@@ -458,24 +476,6 @@ fn parse_at_depth(parser: &mut Parser, depth: usize) -> Result<ConstantValue, Pa
                         }
                         ConstantValue::Text(value.repeat(count))
                     }
-                }
-                _ => ConstantValue::Null,
-            }
-        }
-        "COUNT_SUBSTRING" => {
-            let input = text_arg(parser, depth + 1)?;
-            require(parser, Token::Comma, "COUNT_SUBSTRING requires a substring")?;
-            let needle = text_arg(parser, depth + 1)?;
-            require(parser, Token::RParen, "expected ')' after COUNT_SUBSTRING arguments")?;
-            match (input, needle) {
-                (Some(input), Some(needle)) => {
-                    if needle.is_empty() {
-                        return Err(ParseError("COUNT_SUBSTRING needle cannot be empty".into()));
-                    }
-                    ConstantValue::Integer(
-                        i64::try_from(input.matches(&needle).count())
-                            .map_err(|_| ParseError("COUNT_SUBSTRING count exceeds Int64".into()))?,
-                    )
                 }
                 _ => ConstantValue::Null,
             }
