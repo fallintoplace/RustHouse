@@ -42,5 +42,8 @@ fn any_join_keeps_one_right_match_per_left_row() {
     let all = sql("SELECT e.id, t.label FROM employees e JOIN teams t ON e.team = t.id");
     assert!(all.status.success(), "{all:?}");
     assert_eq!(all.stdout, b"e.id\tt.label\n1\tfirst\n1\tsecond\n2\tonly\n");
+    let alternate = sql("SELECT e.id FROM employees e ANY JOIN teams t ON e.team = t.id");
+    assert!(alternate.status.success(), "{alternate:?}");
+    assert_eq!(alternate.stdout, b"e.id\n1\n2\n");
     fs::remove_dir_all(db).unwrap();
 }
