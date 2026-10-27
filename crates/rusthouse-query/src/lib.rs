@@ -26,31 +26,47 @@ use lexer::{Token, tokenize};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum AggregateFunction {
+    GroupBitOr,
+    GroupBitAnd,
+    AnyLast,
+    Any,
+    CountIf,
     Sum,
+    Product,
     Avg,
+    SumSquares,
     Min,
+    Range,
     Max,
+    Rms,
     VarPop,
     StddevPop,
     VarSamp,
     StddevSamp,
     Median,
-    GroupBitOr,
 }
 
 impl AggregateFunction {
     pub fn name(self) -> &'static str {
         match self {
+            Self::GroupBitOr => "groupBitOr",
+            Self::GroupBitAnd => "groupBitAnd",
+            Self::AnyLast => "anyLast",
+            Self::Any => "any",
+            Self::CountIf => "countIf",
             Self::Sum => "sum",
+            Self::Product => "product",
             Self::Avg => "avg",
+            Self::SumSquares => "sumSquares",
             Self::Min => "min",
+            Self::Range => "range",
             Self::Max => "max",
+            Self::Rms => "rms",
             Self::VarPop => "varPop",
             Self::StddevPop => "stddevPop",
             Self::VarSamp => "varSamp",
             Self::StddevSamp => "stddevSamp",
             Self::Median => "median",
-            Self::GroupBitOr => "groupBitOr",
         }
     }
 }
@@ -448,16 +464,24 @@ fn parse_select_tokens(tokens: Vec<Token>) -> Result<Select, ParseError> {
     {
         let name = parser.word()?;
         let function = match name.to_ascii_uppercase().as_str() {
+            "GROUPBITOR" => AggregateFunction::GroupBitOr,
+            "GROUPBITAND" => AggregateFunction::GroupBitAnd,
+            "ANYLAST" => AggregateFunction::AnyLast,
+            "ANY" => AggregateFunction::Any,
+            "COUNTIF" => AggregateFunction::CountIf,
             "SUM" => AggregateFunction::Sum,
+            "PRODUCT" => AggregateFunction::Product,
             "AVG" => AggregateFunction::Avg,
+            "SUMSQUARES" => AggregateFunction::SumSquares,
             "MIN" => AggregateFunction::Min,
+            "RANGE" => AggregateFunction::Range,
             "MAX" => AggregateFunction::Max,
+            "RMS" => AggregateFunction::Rms,
             "VARPOP" => AggregateFunction::VarPop,
             "STDDEVPOP" => AggregateFunction::StddevPop,
             "VARSAMP" => AggregateFunction::VarSamp,
             "STDDEVSAMP" => AggregateFunction::StddevSamp,
             "MEDIAN" => AggregateFunction::Median,
-            "GROUPBITOR" => AggregateFunction::GroupBitOr,
             _ => return Err(ParseError(format!("unsupported aggregate: {name}"))),
         };
         parser.take(Token::LParen);
@@ -542,16 +566,24 @@ fn parse_select_tokens(tokens: Vec<Token>) -> Result<Select, ParseError> {
             if columns.len() == 1 && parser.tokens.get(parser.index + 1) == Some(&Token::LParen) {
                 let function = match parser.tokens.get(parser.index) {
                     Some(Token::Word(name)) => match name.to_ascii_uppercase().as_str() {
+                        "GROUPBITOR" => Some(AggregateFunction::GroupBitOr),
+                        "GROUPBITAND" => Some(AggregateFunction::GroupBitAnd),
+                        "ANYLAST" => Some(AggregateFunction::AnyLast),
+                        "ANY" => Some(AggregateFunction::Any),
+                        "COUNTIF" => Some(AggregateFunction::CountIf),
                         "SUM" => Some(AggregateFunction::Sum),
+                        "PRODUCT" => Some(AggregateFunction::Product),
                         "AVG" => Some(AggregateFunction::Avg),
+                        "SUMSQUARES" => Some(AggregateFunction::SumSquares),
                         "MIN" => Some(AggregateFunction::Min),
+                        "RANGE" => Some(AggregateFunction::Range),
                         "MAX" => Some(AggregateFunction::Max),
+                        "RMS" => Some(AggregateFunction::Rms),
                         "VARPOP" => Some(AggregateFunction::VarPop),
                         "STDDEVPOP" => Some(AggregateFunction::StddevPop),
                         "VARSAMP" => Some(AggregateFunction::VarSamp),
                         "STDDEVSAMP" => Some(AggregateFunction::StddevSamp),
                         "MEDIAN" => Some(AggregateFunction::Median),
-                        "GROUPBITOR" => Some(AggregateFunction::GroupBitOr),
                         _ => None,
                     },
                     _ => None,

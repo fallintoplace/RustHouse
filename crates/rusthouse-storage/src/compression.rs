@@ -36,6 +36,7 @@ pub struct CompressedBlockReader<R: Read + Seek> {
     file_len: u64,
     offset: u64,
     done: bool,
+    encoded_scratch: Vec<u8>,
 }
 
 impl CompressedBlockReader<File> {
@@ -73,6 +74,7 @@ impl CompressedBlockReader<File> {
             file_len: metadata.len(),
             offset: 0,
             done: false,
+            encoded_scratch: Vec::new(),
         })
     }
 }
@@ -98,6 +100,7 @@ impl<R: Read + Seek> CompressedBlockReader<R> {
             file_len,
             offset: 0,
             done: false,
+            encoded_scratch: Vec::new(),
         })
     }
 
@@ -181,7 +184,16 @@ impl<R: Read + Seek> CompressedBlockReader<R> {
             return self.invalid_at(block.offset, "block exceeds the 64 MiB decode limit");
         }
 
-        let mut encoded = vec![0u8; block.compressed_size as usize];
+        // LZ4/ZSTD decode into separate output buffers. Reuse the encoded input
+        // allocation for later blocks, including across intervening NONE blocks.
+        // For NONE, return the allocation itself to avoid a copy of the payload.
+        let mut encoded = if block.method == 0x02 {
+            vec![0u8; block.compressed_size as usize]
+        } else {
+            let mut scratch = std::mem::take(&mut self.encoded_scratch);
+            scratch.resize(block.compressed_size as usize, 0);
+            scratch
+        };
         encoded[..HEADER_SIZE as usize].copy_from_slice(&header.prefix[CHECKSUM_SIZE as usize..]);
         if let Err(source) = self.reader.read_exact(&mut encoded[HEADER_SIZE as usize..]) {
             return self.io_error(source);
@@ -200,14 +212,18 @@ impl<R: Read + Seek> CompressedBlockReader<R> {
                 encoded.truncate(block.decompressed_size as usize);
                 encoded
             }
-            0x82 | 0x90 => match decode_codec_payload(
-                block.method,
-                &encoded[HEADER_SIZE as usize..],
-                block.decompressed_size as usize,
-            ) {
-                Ok(decoded) => decoded,
-                Err(reason) => return self.invalid_at(block.offset, reason),
-            },
+            0x82 | 0x90 => {
+                let decoded = decode_codec_payload(
+                    block.method,
+                    &encoded[HEADER_SIZE as usize..],
+                    block.decompressed_size as usize,
+                );
+                self.encoded_scratch = encoded;
+                match decoded {
+                    Ok(decoded) => decoded,
+                    Err(reason) => return self.invalid_at(block.offset, reason),
+                }
+            }
             _ => return self.invalid_at(block.offset, "unsupported compression method"),
         };
         Some(Ok(DecodedBlock { block, data }))
@@ -470,6 +486,40 @@ mod tests {
         let second = reader.next_decoded().unwrap().unwrap();
         assert_eq!(second.block.offset, second_offset);
         assert_eq!(second.data, b"plain");
+        assert!(reader.next_decoded().is_none());
+    }
+
+    #[test]
+    fn reuses_encoded_buffer_across_compressed_and_raw_blocks() {
+        let data = b"compressed column blocks share a scratch allocation ".repeat(64);
+        let compressed = lz4_flex::block::compress(&data);
+        let mut bytes = checked_block(0x82, &compressed, data.len() as u32);
+        bytes.extend(checked_block(0x02, b"raw", 3));
+        bytes.extend(checked_block(0x82, &compressed, data.len() as u32));
+        let mut reader = CompressedBlockReader::new(Cursor::new(bytes), "mixed.bin").unwrap();
+
+        assert_eq!(reader.next_decoded().unwrap().unwrap().data, data);
+        let address = reader.encoded_scratch.as_ptr();
+        assert!(reader.encoded_scratch.capacity() >= compressed.len() + HEADER_SIZE as usize);
+        assert_eq!(reader.next_decoded().unwrap().unwrap().data, b"raw");
+        assert_eq!(reader.encoded_scratch.as_ptr(), address);
+        assert_eq!(reader.next_decoded().unwrap().unwrap().data, data);
+        assert_eq!(reader.encoded_scratch.as_ptr(), address);
+        assert!(reader.next_decoded().is_none());
+    }
+
+    #[test]
+    fn reuses_encoded_buffer_for_zstd_frames() {
+        let data = b"Repeated ZSTD block bytes ".repeat(80);
+        let payload = zstd::bulk::compress(&data, 3).unwrap();
+        let mut bytes = checked_block(0x90, &payload, data.len() as u32);
+        bytes.extend(checked_block(0x90, &payload, data.len() as u32));
+        let mut reader = CompressedBlockReader::new(Cursor::new(bytes), "zstd.bin").unwrap();
+
+        assert_eq!(reader.next_decoded().unwrap().unwrap().data, data);
+        let address = reader.encoded_scratch.as_ptr();
+        assert_eq!(reader.next_decoded().unwrap().unwrap().data, data);
+        assert_eq!(reader.encoded_scratch.as_ptr(), address);
         assert!(reader.next_decoded().is_none());
     }
 

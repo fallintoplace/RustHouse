@@ -5,6 +5,7 @@ use crate::cluster::{Cluster, Peer};
 use crate::remote;
 use crate::{MAX_QUERY_BYTES, MAX_RESPONSE_BYTES, Response};
 use rusthouse_query::{Projection, Select, Source, parse_select};
+use std::collections::HashMap;
 
 #[derive(Debug, PartialEq, Eq)]
 enum MergeError {
@@ -13,6 +14,7 @@ enum MergeError {
     ShardRowLimit,
     CoordinatorLimit,
     InvalidCount,
+    InvalidGroupedCount,
     CountOverflow,
 }
 
@@ -34,6 +36,20 @@ fn is_safe_count(select: &Select) -> bool {
         select.projection,
         Projection::Count | Projection::CountColumn { .. }
     ) && matches!(select.source, Some(Source::Table(_)))
+        && !select.distinct
+        && select.rename.is_none()
+        && select.order_by.is_none()
+        && select.order_by_extra.is_empty()
+        && select.having.is_none()
+        && select.limit.is_none()
+        && select.offset.is_none()
+}
+
+/// GROUP BY counts can be reduced by key across disjoint read-only shards.
+/// A global HAVING, ORDER BY or LIMIT would require different planning.
+fn is_safe_grouped_count(select: &Select) -> bool {
+    matches!(select.source, Some(Source::Table(_)))
+        && matches!(select.projection, Projection::GroupedCount { .. })
         && !select.distinct
         && select.rename.is_none()
         && select.order_by.is_none()
@@ -177,6 +193,102 @@ fn sum_shard_counts(shards: &[(usize, Vec<u8>)]) -> Result<Vec<u8>, MergeError> 
     Ok(result)
 }
 
+/// Reduce grouped COUNT results by their canonical TSV-encoded key.
+/// Preserve first-seen key order, reject malformed rows, and only emit a
+/// complete bounded result. Shards may hold overlapping group *keys*, but
+/// the underlying source rows must be disjoint.
+fn merge_grouped_counts(
+    shards: &[(usize, Vec<u8>)],
+    max_rows: usize,
+) -> Result<Vec<u8>, MergeError> {
+    let mut expected_header: Option<&[u8]> = None;
+    let mut positions = HashMap::<Vec<u8>, usize>::new();
+    let mut groups = Vec::<(Vec<u8>, u64)>::new();
+    for (cap, body) in shards {
+        if !body.ends_with(b"\n") || *cap == 0 {
+            return Err(MergeError::InvalidGroupedCount);
+        }
+        let header_end = body
+            .iter()
+            .position(|&byte| byte == b'\n')
+            .ok_or(MergeError::InvalidGroupedCount)?;
+        let header = &body[..=header_end];
+        // The local GROUP BY executor writes one key column and count.
+        if header.len() <= b"\tcount\n".len()
+            || !header.ends_with(b"\tcount\n")
+            || header.iter().filter(|&&byte| byte == b'\t').count() != 1
+        {
+            return Err(MergeError::InvalidGroupedCount);
+        }
+        if let Some(expected) = expected_header {
+            if expected != header {
+                return Err(MergeError::SchemaMismatch);
+            }
+        } else {
+            expected_header = Some(header);
+        }
+        let mut shard_rows = 0usize;
+        let rows = &body[header_end + 1..];
+        if rows.is_empty() {
+            continue;
+        }
+        for row in rows[..rows.len() - 1].split(|&byte| byte == b'\n') {
+            if row.is_empty() {
+                return Err(MergeError::InvalidGroupedCount);
+            }
+            shard_rows = shard_rows
+                .checked_add(1)
+                .ok_or(MergeError::CoordinatorLimit)?;
+            if shard_rows >= *cap {
+                return Err(MergeError::ShardRowLimit);
+            }
+            let delimiter = row
+                .iter()
+                .position(|&byte| byte == b'\t')
+                .ok_or(MergeError::InvalidGroupedCount)?;
+            let key = &row[..delimiter];
+            let digits = &row[delimiter + 1..];
+            if digits.is_empty() || !digits.iter().all(u8::is_ascii_digit) {
+                return Err(MergeError::InvalidGroupedCount);
+            }
+            let count = std::str::from_utf8(digits)
+                .map_err(|_| MergeError::InvalidGroupedCount)?
+                .parse::<u64>()
+                .map_err(|_| MergeError::CountOverflow)?;
+            if let Some(&index) = positions.get(key) {
+                let previous = &mut groups[index].1;
+                *previous = previous
+                    .checked_add(count)
+                    .ok_or(MergeError::CountOverflow)?;
+            } else {
+                if groups.len() >= max_rows {
+                    return Err(MergeError::CoordinatorLimit);
+                }
+                positions.insert(key.to_vec(), groups.len());
+                groups.push((key.to_vec(), count));
+            }
+        }
+    }
+    let header = expected_header.ok_or(MergeError::InvalidGroupedCount)?;
+    let mut output = Vec::with_capacity(header.len());
+    output.extend_from_slice(header);
+    for (key, count) in groups {
+        let count = count.to_string();
+        if output
+            .len()
+            .checked_add(key.len() + count.len() + 2)
+            .is_none_or(|length| length > MAX_RESPONSE_BYTES)
+        {
+            return Err(MergeError::CoordinatorLimit);
+        }
+        output.extend_from_slice(&key);
+        output.push(b'\t');
+        output.extend_from_slice(count.as_bytes());
+        output.push(b'\n');
+    }
+    Ok(output)
+}
+
 pub fn handle(method: &str, body: &[u8], cluster: &Cluster, max_rows: usize) -> Response {
     if method != "POST" {
         return Response::text(
@@ -192,15 +304,22 @@ pub fn handle(method: &str, body: &[u8], cluster: &Cluster, max_rows: usize) -> 
         Err(_) => return Response::text("400 Bad Request", "SQL must be UTF-8\n"),
     };
     let select = match parse_select(sql) {
-        Ok(select) if is_safe_scan(&select) || is_safe_count(&select) => select,
+        Ok(select)
+            if is_safe_scan(&select)
+                || is_safe_count(&select)
+                || is_safe_grouped_count(&select) =>
+        {
+            select
+        }
         _ => {
             return Response::text(
                 "400 Bad Request",
-                "distributed queries require unordered SELECT columns or COUNT FROM table with no LIMIT\n",
+                "distributed queries require unordered SELECT, COUNT, or grouped COUNT without global clauses\n",
             );
         }
     };
     let count_query = is_safe_count(&select);
+    let grouped_count_query = is_safe_grouped_count(&select);
     // Verify that only a named database table can be scanned.
     if !matches!(select.source, Some(Source::Table(_))) || cluster.peers().is_empty() {
         return Response::text(
@@ -234,6 +353,8 @@ pub fn handle(method: &str, body: &[u8], cluster: &Cluster, max_rows: usize) -> 
     }
     let merged = if count_query {
         sum_shard_counts(&shards)
+    } else if grouped_count_query {
+        merge_grouped_counts(&shards, max_rows.min(100_000))
     } else {
         merge_tsv(&shards, max_rows.min(100_000))
     };
@@ -259,6 +380,9 @@ pub fn handle(method: &str, body: &[u8], cluster: &Cluster, max_rows: usize) -> 
         }
         Err(MergeError::InvalidCount) => {
             Response::text("502 Bad Gateway", "malformed shard COUNT response\n")
+        }
+        Err(MergeError::InvalidGroupedCount) => {
+            Response::text("502 Bad Gateway", "malformed shard GROUP BY response\n")
         }
         Err(MergeError::CountOverflow) => {
             Response::text("413 Payload Too Large", "distributed count overflow\n")
@@ -366,6 +490,85 @@ mod tests {
                 shard(10, "count\n18446744073709551615\n"),
                 shard(10, "count\n1\n"),
             ]),
+            Err(MergeError::CountOverflow)
+        );
+    }
+
+    #[test]
+    fn reduces_grouped_count_across_disjoint_shards() {
+        assert!(is_safe_grouped_count(
+            &parse_select("SELECT kind, count(*) FROM events GROUP BY kind").unwrap()
+        ));
+        assert!(is_safe_grouped_count(
+            &parse_select("SELECT kind, count(*) FROM events WHERE id >= 1 GROUP BY kind").unwrap()
+        ));
+        let shards = [
+            shard(10, "kind\tcount\nalpha\t2\nbeta\t3\n"),
+            shard(10, "kind\tcount\nbeta\t4\n\t1\n"),
+            shard(10, "kind\tcount\nalpha\t5\n"),
+        ];
+        assert_eq!(
+            merge_grouped_counts(&shards, 3).unwrap(),
+            b"kind\tcount\nalpha\t7\nbeta\t7\n\t1\n"
+        );
+        assert_eq!(
+            merge_grouped_counts(&[shard(10, "kind\tcount\n")], 10).unwrap(),
+            b"kind\tcount\n"
+        );
+    }
+
+    #[test]
+    fn rejects_unsafe_grouped_count_and_incomplete_shard_output() {
+        for sql in [
+            "SELECT kind, count(*) FROM events GROUP BY kind ORDER BY kind",
+            "SELECT kind, count(*) FROM events GROUP BY kind LIMIT 1",
+            "SELECT kind, count(*) FROM events GROUP BY kind HAVING count > 1",
+            "SELECT id, sum(value) FROM events GROUP BY id",
+            "SELECT kind, count(*) FROM numbers(10) GROUP BY kind",
+        ] {
+            assert!(
+                parse_select(sql).map_or(true, |select| !is_safe_grouped_count(&select)),
+                "{sql}"
+            );
+        }
+        assert_eq!(
+            merge_grouped_counts(&[shard(10, "kind\tcount\na\t2")], 10),
+            Err(MergeError::InvalidGroupedCount)
+        );
+        assert_eq!(
+            merge_grouped_counts(&[shard(10, "kind\tcount\na\t2\t3\n")], 10),
+            Err(MergeError::InvalidGroupedCount)
+        );
+        assert_eq!(
+            merge_grouped_counts(&[shard(10, "kind\tcount\na\t-1\n")], 10),
+            Err(MergeError::InvalidGroupedCount)
+        );
+        assert_eq!(
+            merge_grouped_counts(
+                &[
+                    shard(10, "kind\tcount\na\t1\n"),
+                    shard(10, "id\tcount\na\t2\n")
+                ],
+                10
+            ),
+            Err(MergeError::SchemaMismatch)
+        );
+        assert_eq!(
+            merge_grouped_counts(&[shard(1, "kind\tcount\na\t1\n")], 10),
+            Err(MergeError::ShardRowLimit)
+        );
+        assert_eq!(
+            merge_grouped_counts(&[shard(10, "kind\tcount\na\t1\nb\t2\n")], 1),
+            Err(MergeError::CoordinatorLimit)
+        );
+        assert_eq!(
+            merge_grouped_counts(
+                &[
+                    shard(10, "kind\tcount\na\t18446744073709551615\n"),
+                    shard(10, "kind\tcount\na\t1\n"),
+                ],
+                10
+            ),
             Err(MergeError::CountOverflow)
         );
     }
