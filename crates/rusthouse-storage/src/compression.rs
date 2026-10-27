@@ -65,7 +65,15 @@ impl CompressedBlockReader<File> {
                 source: io::Error::new(io::ErrorKind::InvalidInput, "expected a regular file"),
             });
         }
-        Self::new(file, path)
+        // File::open starts at offset zero. Reuse the validated metadata size
+        // instead of stat-ing and seeking the file a second time.
+        Ok(Self {
+            reader: file,
+            path: path.to_path_buf(),
+            file_len: metadata.len(),
+            offset: 0,
+            done: false,
+        })
     }
 }
 
@@ -296,6 +304,19 @@ mod tests {
         CompressedBlockReader::new(Cursor::new(bytes), "data.bin")
             .unwrap()
             .collect()
+    }
+
+    #[test]
+    fn file_open_decodes_blocks_from_the_start() {
+        let path = std::env::temp_dir().join(format!(
+            "rusthouse-compressed-open-{}.bin",
+            std::process::id()
+        ));
+        std::fs::write(&path, checked_block(0x02, b"hello", 5)).unwrap();
+        let mut reader = CompressedBlockReader::open(&path).unwrap();
+        assert_eq!(reader.next_decoded().unwrap().unwrap().data, b"hello");
+        assert!(reader.next_decoded().is_none());
+        std::fs::remove_file(path).unwrap();
     }
 
     #[cfg(unix)]
