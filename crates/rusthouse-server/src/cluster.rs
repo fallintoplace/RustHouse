@@ -126,12 +126,26 @@ mod tests {
 
     #[test]
     fn private_peers_need_explicit_opt_in() {
-        for address in ["10.4.0.1:8124", "172.16.0.1:8124", "192.168.1.2:8124", "100.101.102.103:8124"] {
+        for address in [
+            "10.4.0.1:8124",
+            "172.16.0.1:8124",
+            "192.168.1.2:8124",
+            "100.101.102.103:8124",
+        ] {
             assert!(Peer::parse(address).is_err());
             assert!(Peer::parse_with_private_network(address, true).is_ok());
         }
-        for address in ["8.8.8.8:8124", "0.0.0.0:8124", "127.0.0.2:8124", "[::1]:8124", "169.254.1.1:8124"] {
-            assert!(Peer::parse_with_private_network(address, true).is_err(), "{address}");
+        for address in [
+            "8.8.8.8:8124",
+            "0.0.0.0:8124",
+            "127.0.0.2:8124",
+            "[::1]:8124",
+            "169.254.1.1:8124",
+        ] {
+            assert!(
+                Peer::parse_with_private_network(address, true).is_err(),
+                "{address}"
+            );
         }
     }
 
