@@ -329,7 +329,11 @@ pub(super) fn append_parts_stream(
                 .map_err(|error| format!("cannot stage existing part: {error}"))?;
             for entry in fs::read_dir(source).map_err(|error| error.to_string())? {
                 let entry = entry.map_err(|error| error.to_string())?;
-                if !entry.file_type().map_err(|error| error.to_string())?.is_file() {
+                if !entry
+                    .file_type()
+                    .map_err(|error| error.to_string())?
+                    .is_file()
+                {
                     return Err("cannot hard-link a non-regular part entry".into());
                 }
                 fs::hard_link(entry.path(), destination.join(entry.file_name()))
