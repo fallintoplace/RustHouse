@@ -139,7 +139,11 @@ fn parse_extrema(parser: &mut Parser, depth: usize) -> Result<i64, ParseError> {
 fn parse_bit_width(parser: &mut Parser, depth: usize) -> Result<i64, ParseError> {
     require_token(parser, Token::LParen, "BIT_WIDTH requires '('")?;
     let value = expression(parser, depth + 1)?;
-    require_token(parser, Token::RParen, "expected ')' after BIT_WIDTH argument")?;
+    require_token(
+        parser,
+        Token::RParen,
+        "expected ')' after BIT_WIDTH argument",
+    )?;
     Ok(i64::from(u64::BITS - value.unsigned_abs().leading_zeros()))
 }
 
