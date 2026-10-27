@@ -86,6 +86,9 @@ mod tests {
 
         let mut writer = JsonSeqWriter::new(Vec::new());
         writer.write_all(b"name\nvalue\n").unwrap();
-        assert_eq!(writer.inner.into_inner().output, b"\x1e{\"name\":\"value\"}\n");
+        assert_eq!(
+            writer.inner.into_inner().output,
+            b"\x1e{\"name\":\"value\"}\n"
+        );
     }
 }

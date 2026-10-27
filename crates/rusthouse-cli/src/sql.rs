@@ -1,6 +1,6 @@
 use crate::{
-    csv, csv_no_header, html, json_array, json_compact_each_row, json_seq, jsonl, markdown, sql_values,
-    vertical,
+    csv, csv_no_header, html, json_array, json_compact_each_row, json_seq, jsonl, markdown,
+    sql_values, vertical,
 };
 use rusthouse_query::{
     Source, execute, explain_join, explain_select, parse_ddl, parse_delete, parse_insert,
