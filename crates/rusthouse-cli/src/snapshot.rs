@@ -1,12 +1,8 @@
-//! Summarize a frozen set of compatible active wide MergeTree parts.
 use crate::part_json::{json_string, print_columns_json};
 use rusthouse_storage::{PartError, PartMetadata, inspect_query_source, query_parts};
 use std::path::Path;
 
-/// Accept a single part or a frozen active-part directory and reject invalid layouts.
 pub(crate) fn inspect_and_print(path: &Path, json: bool) -> Result<(), PartError> {
-    // inspect_query_source validates that all active parts have identical schemas and
-    // checked row counts; query_parts also rejects overlaps and malformed part names.
     let metadata = inspect_query_source(path)?;
     let part_count = query_parts(path)?.len();
 

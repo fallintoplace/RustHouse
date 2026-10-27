@@ -11,7 +11,6 @@ fn write_indent<W: Write>(output: &mut W, depth: usize) -> io::Result<()> {
     Ok(())
 }
 
-/// Indent validated JSONL rows, keeping quotes and escaped syntax intact.
 fn write_pretty_row<W: Write>(output: &mut W, row: &[u8]) -> io::Result<()> {
     let mut quoted = false;
     let mut escaped = false;
@@ -76,7 +75,6 @@ fn array_suffix(empty: bool, pretty: bool) -> &'static [u8] {
     }
 }
 
-/// Convert a stream of JSONL objects to a valid JSON array without buffering all rows.
 struct JsonArraySink<W: Write> {
     output: W,
     row: Vec<u8>,
@@ -149,7 +147,6 @@ impl<W: Write> Write for JsonArraySink<W> {
     }
 }
 
-/// Use JsonlWriter's validated, escaped row format for a streaming JSON array.
 pub struct JsonArrayWriter<W: Write> {
     inner: JsonlWriter<JsonArraySink<W>>,
     incomplete_line: bool,
@@ -171,7 +168,6 @@ impl<W: Write> JsonArrayWriter<W> {
         }
     }
 
-    /// Finalization is explicit because JSON output needs a closing bracket.
     pub fn finish(mut self) -> io::Result<W> {
         if self.incomplete_line {
             return Err(io::Error::new(

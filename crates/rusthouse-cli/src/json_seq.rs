@@ -1,5 +1,3 @@
-//! RFC 7464 JSON text sequences built on the existing escaped JSONL writer.
-//! Every JSON object is preceded by an ASCII record separator (0x1E).
 use crate::jsonl::JsonlWriter;
 use std::io::{self, Write};
 

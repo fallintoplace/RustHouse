@@ -4,8 +4,6 @@ use std::io::{self, Write};
 
 const MAX_LINE_BYTES: usize = 1024 * 1024;
 
-/// Convert tab-separated numeric query output to one JSON object per row.
-/// Values are strings to preserve UInt128/Int128 precision. NULL becomes JSON null.
 pub struct JsonlWriter<W: Write> {
     output: W,
     headers: Option<Vec<Vec<u8>>>,
@@ -94,7 +92,6 @@ fn write_json_row<W: Write>(output: &mut W, headers: &[Vec<u8>], line: &[u8]) ->
     output.write_all(&row)
 }
 
-// Keep NULL marker handling in one place for every JSONL field.
 pub(super) fn write_json_value<W: Write>(output: &mut W, value: &[u8]) -> io::Result<()> {
     if value == b"\\N" {
         output.write_all(b"null")

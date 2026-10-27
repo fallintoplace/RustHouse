@@ -4,10 +4,6 @@ use std::io::{self, Write};
 
 const MAX_LINE_BYTES: usize = 1024 * 1024;
 
-/// Format tab-separated SQL output one row at a time for terminal inspection.
-///
-/// The first input line contains column headers and is not printed until a data
-/// row arrives. Header-only results produce no output.
 pub struct VerticalWriter<W: Write> {
     output: W,
     headers: Option<Vec<Vec<u8>>>,

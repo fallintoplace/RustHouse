@@ -4,7 +4,6 @@ use std::io::{self, Write};
 
 const MAX_LINE_BYTES: usize = 1024 * 1024;
 
-/// Turn the SQL executor's TSV rows into a streaming Markdown table.
 pub struct MarkdownWriter<W: Write> {
     output: W,
     line: Vec<u8>,

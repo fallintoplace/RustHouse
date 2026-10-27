@@ -51,7 +51,6 @@ fn inserts_recoverable_wide_parts_with_named_columns() {
     assert_eq!(result.stdout, b"id\tname\n1\tAlice\n2\tBob\n3\tCarol\n");
     let count = snapshot_sql("SELECT count(*) FROM part", &dir);
     assert_eq!(count.stdout, b"count\n3\n");
-    // A stale incomplete write in the database root cannot poison table scans.
     let abandoned = dir.join(".events.pending-abandoned");
     fs::create_dir(&abandoned).unwrap();
     fs::write(abandoned.join("count.txt"), b"900\n").unwrap();

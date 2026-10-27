@@ -85,8 +85,6 @@ fn read_sql_input(input: impl std::io::Read, source: &str, label: &str) -> Resul
         .map_err(|_| format!("{label} must be valid UTF-8"))
 }
 
-/// Split a bounded SQL script on semicolons outside quoted strings.
-/// Strip line comments; the single-statement SQL parser intentionally does not accept them.
 fn split_sql_script(input: &str) -> Result<Vec<String>, String> {
     let input = input.strip_prefix('\u{feff}').unwrap_or(input);
     let bytes = input.as_bytes();
@@ -493,8 +491,6 @@ pub(super) fn run_sql_args(mut args: impl Iterator<Item = OsString>) -> Result<(
     if let Some(cap) = max_rows {
         select.limit = Some(select.limit.map_or(cap, |limit| limit.min(cap)));
     }
-    // Hold a shared lock for the entire query, not just snapshot discovery.
-    // DROP and RENAME must not remove part directories beneath active readers.
     let _database_read_lock = match (database.as_deref(), select.source.as_ref()) {
         (Some(directory), Some(Source::Table(_))) if directory.is_dir() => {
             Some(crate::database::read_lock(directory)?)

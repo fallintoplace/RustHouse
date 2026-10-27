@@ -14,7 +14,6 @@ pub fn inspect_and_print_json(path: PathBuf) -> Result<(), PartError> {
     Ok(())
 }
 
-/// Write the shared JSON representation of a part's columns.
 pub(crate) fn print_columns_json(columns: &[rusthouse_storage::Column]) {
     for (index, column) in columns.iter().enumerate() {
         if index > 0 {

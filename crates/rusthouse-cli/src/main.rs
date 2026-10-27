@@ -205,7 +205,6 @@ fn inspect_primary_index_and_print(
         .map_err(|error| error.to_string())?;
     println!("Marks: {}", index.len());
     println!("Fields: {}", widths.len());
-    // Keep inspection output bounded even for large or adversarial indices.
     for mark in 0..index.len().min(16) {
         print!("Mark {mark}:");
         for field in 0..widths.len().min(8) {

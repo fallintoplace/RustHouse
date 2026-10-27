@@ -1,5 +1,3 @@
-//! JSONCompactEachRow-shaped output for the bounded SQL CLI.
-//! Values stay strings (or JSON null) to preserve 128-bit integer precision.
 use crate::jsonl::write_json_value;
 use std::io::{self, Write};
 
