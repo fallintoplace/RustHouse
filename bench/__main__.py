@@ -21,6 +21,7 @@ WORKLOADS = {
     "joins": "bench/joins/run.py",
     "latency": "bench/latency/run.py",
     "measurements": "bench/measurements/ingest.py",
+    "ssb": "bench/ssb/run.py",
     "tpch": "bench/tpch/run.py",
 }
 
