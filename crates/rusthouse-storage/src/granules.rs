@@ -125,7 +125,11 @@ pub(crate) fn read_numeric_granule_cached<R: Read + Seek>(
         .and_then(|block| {
             usize::try_from(mark.decompressed_offset)
                 .ok()
-                .and_then(|offset| offset.checked_add(byte_count).and_then(|end| block.data.get(offset..end)))
+                .and_then(|offset| {
+                    offset
+                        .checked_add(byte_count)
+                        .and_then(|end| block.data.get(offset..end))
+                })
         })
     {
         return read_numeric_column(&mut &bytes[..], data_type, rows)
