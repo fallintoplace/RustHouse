@@ -18,6 +18,9 @@ fn is_bitwise(name: &str) -> bool {
         "BITAND"
             | "BITOR"
             | "BITXOR"
+            | "BITNAND"
+            | "BITNOR"
+            | "BITXNOR"
             | "BITSHIFTLEFT"
             | "BITSHIFTRIGHT"
             | "BITROTATELEFT"
@@ -1075,6 +1078,9 @@ fn factor(parser: &mut Parser, depth: usize) -> Result<i64, ParseError> {
                 "BITAND" => first & second,
                 "BITOR" => first | second,
                 "BITXOR" => first ^ second,
+                "BITNAND" => !(first & second),
+                "BITNOR" => !(first | second),
+                "BITXNOR" => !(first ^ second),
                 "BITSHIFTLEFT" => checked_bit_shift(first, second, true)?,
                 "BITSHIFTRIGHT" => checked_bit_shift(first, second, false)?,
                 "BITROTATELEFT" => checked_bit_rotate(first, second, true)?,
