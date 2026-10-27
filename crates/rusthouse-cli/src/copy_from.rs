@@ -115,6 +115,9 @@ fn parse_csv(data: &str) -> Result<Vec<Vec<Option<String>>>, String> {
 
 fn parse_tsv(data: &str) -> Result<Vec<Vec<Option<String>>>, String> {
     let input = data.strip_prefix('\u{feff}').unwrap_or(data);
+    if input.ends_with('\r') {
+        return Err("TSV requires CRLF for carriage returns".into());
+    }
     let mut records = Vec::new();
     for line in input.split_terminator('\n') {
         if records.len() > MAX_RECORDS {
@@ -262,7 +265,7 @@ mod tests {
 
     #[test]
     fn invalid_tsv_escapes_are_rejected() {
-        for input in ["bad\\q\n", "bad\\\n", "a\\Nvalue\n", "a\rb\n"] {
+        for input in ["bad\\q\n", "bad\\\n", "a\\Nvalue\n", "a\rb\n", "a\r"] {
             assert!(parse_tsv(input).is_err(), "{input:?}");
         }
     }
