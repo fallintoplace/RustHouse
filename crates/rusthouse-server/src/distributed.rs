@@ -752,8 +752,8 @@ fn merge_grouped_counts(
     max_rows: usize,
 ) -> Result<Vec<u8>, MergeError> {
     let mut expected_header: Option<&[u8]> = None;
-    let mut positions = HashMap::<Vec<u8>, usize>::new();
-    let mut groups = Vec::<(Vec<u8>, u64)>::new();
+    let mut positions = HashMap::<&[u8], usize>::new();
+    let mut groups = Vec::<(&[u8], u64)>::new();
     for (cap, body) in shards {
         if !body.ends_with(b"\n") || *cap == 0 {
             return Err(MergeError::InvalidGroupedCount);
@@ -814,8 +814,8 @@ fn merge_grouped_counts(
                 if groups.len() >= max_rows {
                     return Err(MergeError::CoordinatorLimit);
                 }
-                positions.insert(key.to_vec(), groups.len());
-                groups.push((key.to_vec(), count));
+                positions.insert(key, groups.len());
+                groups.push((key, count));
             }
         }
     }
@@ -831,7 +831,7 @@ fn merge_grouped_counts(
         {
             return Err(MergeError::CoordinatorLimit);
         }
-        output.extend_from_slice(&key);
+        output.extend_from_slice(key);
         output.push(b'\t');
         output.extend_from_slice(count.as_bytes());
         output.push(b'\n');
