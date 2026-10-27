@@ -51,6 +51,11 @@ fn write_markdown_row<W: Write>(output: &mut W, line: &[u8], data_row: bool) -> 
         .split(|&byte| byte == b'\t')
         .map(|field| decode_markdown_field(field, data_row))
         .collect::<io::Result<Vec<_>>>()?;
+    for field in &fields {
+        std::str::from_utf8(field.as_ref()).map_err(|_| {
+            io::Error::new(io::ErrorKind::InvalidData, "Markdown field is not UTF-8")
+        })?;
+    }
     output.write_all(b"|")?;
     for field in fields {
         output.write_all(b" ")?;
@@ -206,6 +211,25 @@ mod tests {
         let before = writer.output.clone();
         assert!(writer.write_all(b"bad\\q\n").is_err());
         assert_eq!(writer.output, before);
+    }
+
+    #[test]
+    fn rejects_invalid_utf8_without_writing_partial_rows() {
+        let mut writer = MarkdownWriter::new(Vec::new());
+        assert_eq!(
+            writer.write_all(b"\xff\n").unwrap_err().kind(),
+            io::ErrorKind::InvalidData
+        );
+        assert!(writer.output.is_empty());
+
+        let mut writer = MarkdownWriter::new(Vec::new());
+        writer.write_all(b"label\n").unwrap();
+        let previous = writer.output.clone();
+        assert_eq!(
+            writer.write_all(b"\xff\n").unwrap_err().kind(),
+            io::ErrorKind::InvalidData
+        );
+        assert_eq!(writer.output, previous);
     }
 
     #[test]
