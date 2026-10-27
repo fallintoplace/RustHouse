@@ -145,10 +145,9 @@ mod tests {
                 Box::new(ScalarExpr::Integer(89)),
             )
         );
-        assert!(matches!(
-            parse_scalar_expression("ClientIP - 3").unwrap(),
-            ScalarExpr::Subtract(..)
-        ));
+        for sql in ["ClientIP - 3", "ClientIP-3", "ClientIP -3"] {
+            assert!(matches!(parse_scalar_expression(sql).unwrap(), ScalarExpr::Subtract(..)), "{sql}");
+        }
     }
 
     #[test]
