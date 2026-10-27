@@ -10,8 +10,8 @@ use std::path::Path;
 
 mod grouped_distinct;
 mod grouped_multi;
-mod grouped_numeric_multi;
 mod grouped_numeric_keys;
+mod grouped_numeric_multi;
 mod join;
 mod predicates;
 mod sort;
@@ -1020,7 +1020,7 @@ fn execute_numbers<W: Write>(
         query.projection,
         Projection::MultipleAggregates(_)
             | Projection::GroupedAggregates { .. }
-        | Projection::GroupedMultiAggregates { .. }
+            | Projection::GroupedMultiAggregates { .. }
             | Projection::GroupedDistinctCount { .. }
     ) {
         return Err(ExecutionError::Invalid(
