@@ -19,7 +19,7 @@ mod typed_aggregate;
 use predicates::{CompiledTest, compile_in_test};
 use predicates::{
     batch_matches, compile_numbers_predicates, compile_part_where, count_batch_matches,
-    number_matches, number_matches_all, parse_numeric,
+    count_monotonic_numbers, number_matches, number_matches_all, parse_numeric,
 };
 
 #[derive(Debug)]
@@ -984,14 +984,16 @@ fn execute_numbers<W: Write>(
             let count = if query.predicates.is_empty() && query.or_predicates.is_empty() {
                 rows
             } else {
-                let mut count = 0u64;
-                for index in 0..rows {
-                    let number = start + index * step;
-                    if number_matches_all(Number::Unsigned(u128::from(number)), &comparisons) {
-                        count += 1;
+                count_monotonic_numbers(&comparisons, start, rows, step).unwrap_or_else(|| {
+                    let mut count = 0u64;
+                    for index in 0..rows {
+                        let number = start + index * step;
+                        if number_matches_all(Number::Unsigned(u128::from(number)), &comparisons) {
+                            count += 1;
+                        }
                     }
-                }
-                count
+                    count
+                })
             };
             writeln!(output, "{count}")?;
         }
@@ -1010,14 +1012,16 @@ fn execute_numbers<W: Write>(
             let count = if query.predicates.is_empty() && query.or_predicates.is_empty() {
                 rows
             } else {
-                let mut matched = 0u64;
-                for index in 0..rows {
-                    let number = start + index * step;
-                    if number_matches_all(Number::Unsigned(u128::from(number)), &comparisons) {
-                        matched += 1;
+                count_monotonic_numbers(&comparisons, start, rows, step).unwrap_or_else(|| {
+                    let mut matched = 0u64;
+                    for index in 0..rows {
+                        let number = start + index * step;
+                        if number_matches_all(Number::Unsigned(u128::from(number)), &comparisons) {
+                            matched += 1;
+                        }
                     }
-                }
-                matched
+                    matched
+                })
             };
             writeln!(output, "{count}")?;
         }
@@ -1081,6 +1085,12 @@ fn execute_numbers<W: Write>(
                 writeln!(output, "{rows}")?;
             }
             return Ok(());
+        }
+        if sorting.is_none() && query.limit != Some(0) && query.offset.unwrap_or(0) == 0 {
+            if let Some(count) = count_monotonic_numbers(&comparisons, start, rows, step) {
+                writeln!(output, "{count}")?;
+                return Ok(());
+            }
         }
     } else {
         write_header(query, output, &projected.join("\t"))?;
