@@ -99,6 +99,40 @@ fn parse_join_kind(parser: &mut Parser) -> JoinType {
     kind
 }
 
+fn equality_group(
+    parser: &mut Parser,
+    keys: &mut Vec<(JoinColumn, JoinColumn)>,
+    depth: usize,
+) -> Result<(), ParseError> {
+    if depth >= 16 {
+        return Err(ParseError("JOIN ON has too many nested parentheses".into()));
+    }
+    loop {
+        if parser.take(Token::LParen) {
+            equality_group(parser, keys, depth + 1)?;
+            if !parser.take(Token::RParen) {
+                return Err(ParseError("JOIN ON requires closing ')'".into()));
+            }
+        } else {
+            if keys.len() == 8 {
+                return Err(ParseError("JOIN supports at most 8 equality keys".into()));
+            }
+            let first = qualified(parser)?;
+            if !parser.take(Token::Operator(super::Operator::Eq)) {
+                return Err(ParseError(
+                    "JOIN ON supports AND-connected equality keys".into(),
+                ));
+            }
+            let second = qualified(parser)?;
+            keys.push((first, second));
+        }
+        if !parser.keyword("AND") {
+            break;
+        }
+    }
+    Ok(())
+}
+
 fn bound(parser: &mut Parser, label: &str) -> Result<usize, ParseError> {
     let number = parser.number()?;
     if !number.bytes().all(|byte| byte.is_ascii_digit()) {
@@ -214,27 +248,8 @@ pub fn parse_join(sql: &str) -> Result<Option<JoinSelect>, ParseError> {
         }
         (keys, names)
     } else if parser.keyword("ON") {
-        let first = qualified(&mut parser)?;
-        if !parser.take(Token::Operator(super::Operator::Eq)) {
-            return Err(ParseError(
-                "JOIN ON currently supports only equality".into(),
-            ));
-        }
-        let second = qualified(&mut parser)?;
-        let mut keys = vec![(first, second)];
-        while parser.keyword("AND") {
-            if keys.len() >= 8 {
-                return Err(ParseError("JOIN supports at most 8 equality keys".into()));
-            }
-            let first = qualified(&mut parser)?;
-            if !parser.take(Token::Operator(super::Operator::Eq)) {
-                return Err(ParseError(
-                    "JOIN ON supports AND-connected equality keys".into(),
-                ));
-            }
-            let second = qualified(&mut parser)?;
-            keys.push((first, second));
-        }
+        let mut keys = Vec::new();
+        equality_group(&mut parser, &mut keys, 0)?;
         (keys, Vec::new())
     } else {
         return Err(ParseError("JOIN requires ON or USING".into()));
@@ -396,6 +411,32 @@ mod tests {
         assert!(
             parse_join("SELECT * FROM a JOIN b ON a.id = b.id AND a.user_id != b.user_id").is_err()
         );
+    }
+
+    #[test]
+    fn parses_parenthesized_join_equalities() {
+        for statement in [
+            "SELECT * FROM a JOIN b ON (a.id = b.id)",
+            "SELECT * FROM a JOIN b ON (a.id = b.id AND (a.k = b.k))",
+            "SELECT * FROM a JOIN b ON (a.id = b.id) AND (a.k = b.k)",
+        ] {
+            let parsed = parse_join(statement).unwrap().unwrap();
+            assert_eq!(parsed.keys.len(), statement.matches(" = ").count());
+        }
+        for statement in [
+            "SELECT * FROM a JOIN b ON (a.id = b.id",
+            "SELECT * FROM a JOIN b ON a.id = b.id)",
+            "SELECT * FROM a JOIN b ON (a.id = b.id OR a.k = b.k)",
+            "SELECT * FROM a JOIN b ON ()",
+        ] {
+            assert!(parse_join(statement).is_err(), "{statement}");
+        }
+        let deep = format!(
+            "SELECT * FROM a JOIN b ON {}a.id = b.id{}",
+            "(".repeat(17),
+            ")".repeat(17)
+        );
+        assert!(parse_join(&deep).is_err());
     }
 
     #[test]
