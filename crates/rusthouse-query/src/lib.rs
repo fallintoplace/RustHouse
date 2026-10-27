@@ -1387,10 +1387,6 @@ fn parse_select_tokens(tokens: Vec<Token>) -> Result<Select, ParseError> {
         }
         limit = Some(count);
     }
-    if offset.is_some() && limit.is_none() {
-        return Err(ParseError("OFFSET requires LIMIT or FETCH".into()));
-    }
-
     parser.take(Token::Semicolon);
     if parser.index != parser.tokens.len() {
         return Err(ParseError(
