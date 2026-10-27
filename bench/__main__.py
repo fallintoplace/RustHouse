@@ -18,6 +18,7 @@ PYTHON_SUITES = ("bench", "bench/analytics", "bench/clickbench", "bench/joins", 
 BENCHMARK_SUITES = ("queries", "parts-sorted", "parts-shuffled", "grouped")
 WORKLOADS = {
     "analytics": "bench/analytics/run.py",
+    "analytics-suite": "bench/analytics/suite_runner.py",
     "clickbench": "bench/clickbench/run.py",
     "joins": "bench/joins/run.py",
     "latency": "bench/latency/run.py",
