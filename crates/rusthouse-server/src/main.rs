@@ -1,4 +1,5 @@
 use rusthouse_server::cluster::{self, Cluster, Peer};
+use rusthouse_server::distributed;
 use rusthouse_server::health;
 use rusthouse_server::{
     Config, MAX_CONNECTIONS, MAX_HEADER_BYTES, MAX_QUERY_BYTES, Response, handle_request,
@@ -154,6 +155,9 @@ fn serve(mut stream: TcpStream, config: &Config, cluster: &Cluster) {
         }
         Ok((method, target, body)) if target == "/cluster/health" => {
             health::handle(&method, &body, cluster)
+        }
+        Ok((method, target, body)) if target == "/distributed" => {
+            distributed::handle(&method, &body, cluster, config.max_rows)
         }
         Ok((method, target, body)) => handle_request(&method, &target, &body, config),
         Err(response) => response,

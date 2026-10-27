@@ -84,3 +84,24 @@ queries, **not** cross-host networking, replicated storage or distributed writes
 endpoint in parallel. It returns the number of healthy peers and their addresses
 as JSON. An unavailable or invalid peer response makes the HTTP status 503.
 The check does not verify data freshness, schema compatibility or consistency.
+
+## Distributed unordered table reads (experimental)
+
+Start two read-only database servers with separately populated shard directories:
+
+```sh
+cargo run -p rusthouse-server -- --port 8124 --database ./shard-a --max-rows 100000
+cargo run -p rusthouse-server -- --port 8125 --database ./shard-b --max-rows 100000
+cargo run -p rusthouse-server -- --port 8123 --peer 127.0.0.1:8124 --peer 127.0.0.1:8125
+curl -X POST http://127.0.0.1:8123/distributed --data-binary 'SELECT id, name FROM events'
+```
+
+The coordinator executes an unordered, read-only table SELECT on each peer,
+then concatenates TSV rows in configured peer order with one shared header.
+It accepts column projections, `SELECT *`, and pushed-down WHERE clauses;
+rejects ORDER BY, LIMIT, OFFSET, DISTINCT, JOIN, and aggregates that require
+global semantics. Peers must expose the same table and column layout. It
+rejects a shard that reaches its advertised result cap, mismatched headers,
+non-200 responses, and coordinator row/byte overflows instead of returning
+partial data. This is a snapshot-by-peer scan, **not** an atomic cross-shard
+snapshot, automatic partitioning, replication, or remote machine networking.
