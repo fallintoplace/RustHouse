@@ -337,12 +337,10 @@ impl Parser {
             Some(Token::Word(kind)) if kind.eq_ignore_ascii_case("DATE")
         );
         if is_date || self.keyword("TIMESTAMP") {
-            let value = if is_date {
+            if is_date {
                 self.index += 1;
-                self.tokens.get(self.index)
-            } else {
-                self.tokens.get(self.index)
-            };
+            }
+            let value = self.tokens.get(self.index);
             let Some(Token::String(value)) = value else {
                 return Err(ParseError(
                     "DATE/TIMESTAMP requires a quoted literal".into(),
