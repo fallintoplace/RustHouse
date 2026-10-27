@@ -189,7 +189,7 @@ fn parse_at_depth(parser: &mut Parser, depth: usize) -> Result<ConstantValue, Pa
             require(parser, Token::RParen, "expected ')' after STARTS_WITH arguments")?;
             match (input, prefix) {
                 (Some(input), Some(prefix)) => {
-                    ConstantValue::Integer(if input.starts_with(&prefix) { 1 } else { 0 })
+                    ConstantValue::Integer(i64::from(input.starts_with(prefix.as_str())))
                 }
                 _ => ConstantValue::Null,
             }
