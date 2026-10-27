@@ -139,9 +139,17 @@ fn parse_extrema(parser: &mut Parser, depth: usize) -> Result<i64, ParseError> {
 fn parse_hamming_distance(parser: &mut Parser, depth: usize) -> Result<i64, ParseError> {
     require_token(parser, Token::LParen, "HAMMING_DISTANCE requires '('")?;
     let left = expression(parser, depth + 1)?;
-    require_token(parser, Token::Comma, "HAMMING_DISTANCE requires two arguments")?;
+    require_token(
+        parser,
+        Token::Comma,
+        "HAMMING_DISTANCE requires two arguments",
+    )?;
     let right = expression(parser, depth + 1)?;
-    require_token(parser, Token::RParen, "HAMMING_DISTANCE requires ')' after arguments")?;
+    require_token(
+        parser,
+        Token::RParen,
+        "HAMMING_DISTANCE requires ')' after arguments",
+    )?;
     Ok(i64::from((left ^ right).count_ones()))
 }
 
