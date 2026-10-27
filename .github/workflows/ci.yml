@@ -50,6 +50,14 @@ jobs:
           cache-on-failure: true
       - run: cargo test --workspace --locked
       - run: cargo build --workspace --locked
+      - name: Check SQL analytics against SQLite
+        if: matrix.os == 'ubuntu-latest'
+        run: |
+          for workload in bench/analytics/workloads/*.json; do
+            python3 -m bench workload analytics-suite -- \
+              --binary target/debug/rusthouse --workload "$workload" \
+              --rows 512 --runs 1 --warmups 0 --timeout 60 > /dev/null
+          done
 
   windows-smoke:
     name: Windows compile and CLI unit smoke
