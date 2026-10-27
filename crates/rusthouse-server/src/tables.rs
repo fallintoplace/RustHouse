@@ -1,5 +1,6 @@
 use super::{Config, LimitedWriter, Response, write_json_string};
 use rusthouse_storage::acquire_database_lock;
+use std::collections::HashSet;
 use std::fs;
 use std::io::{self, Read, Write};
 use std::path::Path;
@@ -48,13 +49,21 @@ fn valid_schema_contents(contents: &str) -> bool {
     if lines.next() != Some("rusthouse-schema-v1") {
         return false;
     }
-    let columns: Vec<_> = lines.collect();
-    !columns.is_empty()
-        && columns.len() <= 64
-        && columns.iter().all(|line| {
-            line.split_once('\t')
-                .is_some_and(|(name, data_type)| identifier(name) && !data_type.is_empty())
-        })
+    let mut names = HashSet::new();
+    let mut count = 0;
+    for line in lines {
+        count += 1;
+        if count > 64 {
+            return false;
+        }
+        let Some((name, data_type)) = line.split_once('\t') else {
+            return false;
+        };
+        if !identifier(name) || data_type.is_empty() || !names.insert(name) {
+            return false;
+        }
+    }
+    count > 0
 }
 
 fn discoverable_table(database: &Path, name: &str, schema: &Path) -> bool {
@@ -162,6 +171,9 @@ mod tests {
         assert!(!valid_schema_contents("rusthouse-schema-v1\nid\tUInt64"));
         assert!(!valid_schema_contents("wrong-version\nid\tUInt64\n"));
         assert!(!valid_schema_contents("rusthouse-schema-v1\nno-type\n"));
+        assert!(!valid_schema_contents(
+            "rusthouse-schema-v1\nid\tUInt64\nid\tString\n"
+        ));
     }
 
     #[test]
