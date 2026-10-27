@@ -218,7 +218,7 @@ fn shard_row_cap(peer: Peer) -> Result<usize, String> {
 
 /// Fetch a column type for distributed aggregate validation.
 /// Simple ASCII identifiers cannot inject JSON or an HTTP request target.
-fn shard_column_kind(peer: Peer, table: &str, column: &str) -> Result<String, String> {
+fn shard_column_kind(response: &remote::PeerResponse, column: &str) -> Result<String, String> {
     let mut bytes = column.bytes();
     if !bytes
         .next()
@@ -227,7 +227,6 @@ fn shard_column_kind(peer: Peer, table: &str, column: &str) -> Result<String, St
     {
         return Err("distributed aggregate requires a simple column identifier".into());
     }
-    let response = remote::schema(peer, table)?;
     if response.status != 200 || !response.content_type.starts_with("application/json") {
         return Err("peer schema lookup failed".into());
     }
@@ -246,8 +245,8 @@ fn shard_column_kind(peer: Peer, table: &str, column: &str) -> Result<String, St
     Ok(kind.to_owned())
 }
 
-fn shard_integer_kind(peer: Peer, table: &str, column: &str) -> Result<String, String> {
-    let kind = shard_column_kind(peer, table, column)?;
+fn shard_integer_kind(response: &remote::PeerResponse, column: &str) -> Result<String, String> {
+    let kind = shard_column_kind(response, column)?;
     if !integer_type(&kind) {
         return Err("distributed SUM only supports exact integer columns".into());
     }
@@ -298,19 +297,20 @@ fn read_shard(
     table: &str,
 ) -> Result<ShardResponse, String> {
     let cap = shard_row_cap(peer)?;
+    let schema_response = remote::schema(peer, table)?;
+    let schema = schema_signature(&schema_response)?;
     let kind = sum_schema
-        .map(|(table, column)| shard_integer_kind(peer, table, column))
+        .map(|(_, column)| shard_integer_kind(&schema_response, column))
         .transpose()?;
     let key_kind = group_schema
-        .map(|(table, column)| {
-            let kind = shard_column_kind(peer, table, column)?;
+        .map(|(_, column)| {
+            let kind = shard_column_kind(&schema_response, column)?;
             if !group_key_type(&kind) {
                 return Err("distributed GROUP BY SUM does not support this key type".to_owned());
             }
             Ok(kind)
         })
         .transpose()?;
-    let schema = schema_signature(&remote::schema(peer, table)?)?;
     let result = remote::query(peer, sql)?;
     if result.status != 200 {
         return Err(format!("peer returned HTTP {}", result.status));
@@ -1084,6 +1084,19 @@ pub fn handle(method: &str, body: &[u8], cluster: &Cluster, max_rows: usize) -> 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn extracts_column_types_from_one_validated_schema_response() {
+        let response = remote::PeerResponse {
+            status: 200,
+            content_type: "application/json; charset=utf-8".into(),
+            body: b"{\"rows\":12,\"columns\":[{\"name\":\"region\",\"type\":\"String\"},{\"name\":\"amount\",\"type\":\"Int64\"}]}\n".to_vec(),
+        };
+        assert!(schema_signature(&response).is_ok());
+        assert_eq!(shard_column_kind(&response, "region").unwrap(), "String");
+        assert_eq!(shard_integer_kind(&response, "amount").unwrap(), "Int64");
+        assert!(shard_integer_kind(&response, "region").is_err());
+    }
 
     fn shard(cap: usize, data: &str) -> (usize, Vec<u8>) {
         (cap, data.as_bytes().to_vec())
