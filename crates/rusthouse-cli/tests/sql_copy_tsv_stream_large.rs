@@ -62,6 +62,9 @@ fn tsv_copy_streams_files_larger_than_eight_mib_and_rolls_back_late_errors() {
     let rejected = sql(&statement, &db);
     assert!(!rejected.status.success());
     assert_eq!(fs::read(&pointer).unwrap(), before);
-    assert_eq!(sql("SELECT count(*) FROM events", &db).stdout, b"count\n60000\n");
+    assert_eq!(
+        sql("SELECT count(*) FROM events", &db).stdout,
+        b"count\n60000\n"
+    );
     fs::remove_dir_all(db).unwrap();
 }
