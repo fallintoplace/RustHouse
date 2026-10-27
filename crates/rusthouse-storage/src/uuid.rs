@@ -62,10 +62,7 @@ mod tests {
     #[test]
     fn canonical_group_lengths_are_explicit() {
         let value = UuidValue { bytes: [0xff; 16] };
-        assert_eq!(
-            value.to_string(),
-            "ffffffff-ffff-ffff-ffff-ffffffffffff"
-        );
+        assert_eq!(value.to_string(), "ffffffff-ffff-ffff-ffff-ffffffffffff");
     }
 
     #[test]
