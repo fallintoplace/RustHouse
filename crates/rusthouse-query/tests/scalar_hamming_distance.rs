@@ -14,10 +14,17 @@ fn hamming_distance_counts_differing_twos_complement_bits() {
         ("SELECT hamming_distance(-1, 0) AS result", "64"),
         ("SELECT HAMMING_DISTANCE(-1, -2) AS result", "1"),
         ("SELECT HAMMING_DISTANCE(0, 0) AS result", "0"),
-        ("SELECT HAMMING_DISTANCE(0, 9223372036854775807) AS result", "63"),
+        (
+            "SELECT HAMMING_DISTANCE(0, 9223372036854775807) AS result",
+            "63",
+        ),
         ("SELECT HAMMING_DISTANCE(3 + 2, 2 * 2) AS result", "1"),
     ] {
-        assert_eq!(evaluate(sql).unwrap(), format!("result\n{expected}\n"), "{sql}");
+        assert_eq!(
+            evaluate(sql).unwrap(),
+            format!("result\n{expected}\n"),
+            "{sql}"
+        );
     }
 }
 
