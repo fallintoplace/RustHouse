@@ -20,15 +20,19 @@ impl<W: Write> CsvWriter<W> {
         }
     }
 
-    fn push_field_byte(&mut self, byte: u8) -> io::Result<()> {
-        if self.field.len() >= MAX_FIELD_BYTES {
+    fn push_field_bytes(&mut self, bytes: &[u8]) -> io::Result<()> {
+        if bytes.len() > MAX_FIELD_BYTES - self.field.len() {
             return Err(io::Error::new(
                 io::ErrorKind::InvalidData,
                 "CSV field exceeds 1 MiB",
             ));
         }
-        self.field.push(byte);
+        self.field.extend_from_slice(bytes);
         Ok(())
+    }
+
+    fn push_field_byte(&mut self, byte: u8) -> io::Result<()> {
+        self.push_field_bytes(&[byte])
     }
 
     /// Returns true when an LF has completed a previous CRLF row boundary.
@@ -85,16 +89,34 @@ fn write_quoted_field<W: Write>(output: &mut W, field: &[u8]) -> io::Result<()> 
 
 impl<W: Write> Write for CsvWriter<W> {
     fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
-        for &byte in buf {
-            if self.consume_pending_cr(byte)? {
+        let mut index = 0;
+        while index < buf.len() {
+            if self.consume_pending_cr(buf[index])? {
+                index += 1;
                 continue;
             }
-
-            match byte {
-                b'\r' => self.pending_cr = true,
-                b'\t' => self.finish_field(b",")?,
-                b'\n' => self.finish_field(b"\r\n")?,
-                _ => self.push_field_byte(byte)?,
+            match buf[index] {
+                b'\r' => {
+                    self.pending_cr = true;
+                    index += 1;
+                }
+                b'\t' => {
+                    self.finish_field(b",")?;
+                    index += 1;
+                }
+                b'\n' => {
+                    self.finish_field(b"\r\n")?;
+                    index += 1;
+                }
+                _ => {
+                    let chunk = &buf[index..];
+                    let count = chunk
+                        .iter()
+                        .position(|byte| matches!(byte, b'\r' | b'\t' | b'\n'))
+                        .unwrap_or(chunk.len());
+                    self.push_field_bytes(&chunk[..count])?;
+                    index += count;
+                }
             }
         }
         Ok(buf.len())
@@ -150,6 +172,19 @@ mod tests {
         csv.write_all(b"ab\r").unwrap();
         csv.write_all(b"\tother\n").unwrap();
         assert_eq!(csv.output, b"\"ab\r\",other\r\n");
+    }
+
+    #[test]
+    fn copies_large_plain_fields_across_boundaries() {
+        let mut csv = CsvWriter::new(Vec::new());
+        let plain = vec![b'x'; 32 * 1024];
+        csv.write_all(&plain).unwrap();
+        csv.write_all(b"\tend\r").unwrap();
+        csv.write_all(b"\n").unwrap();
+
+        let mut expected = plain;
+        expected.extend_from_slice(b",end\r\n");
+        assert_eq!(csv.output, expected);
     }
 
     #[test]

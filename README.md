@@ -2,6 +2,8 @@
 
 **RustHouse is an experimental Rust SQL CLI and offline MergeTree inspector.** It queries generated numbers or frozen wide parts using a limited, read-only SELECT dialect. It also has a separate metadata-only schema catalog and a localhost HTTP server. **Not a production database.**
 
+The five-crate Cargo workspace separates storage, query execution, shared result formatting, the CLI, and the HTTP server. `rusthouse-format` contains output adapters used by both entry points.
+
 ## Quick start
 
 Requires **Rust 1.85+**. Run from the repository root:

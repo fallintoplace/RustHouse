@@ -53,12 +53,12 @@ pub(super) fn execute_typed_aggregate<W: Write>(
         conditions.push(typed::compile(branch, &indices, &types)?);
     }
     let projected_index = indices[column];
-    let mut reader = TypedQueryReader::open(part, &names)?;
     let header = format!("{}({column})", function.name());
     writeln!(output, "{}", query.alias.as_deref().unwrap_or(&header))?;
     if query.limit == Some(0) {
         return Ok(());
     }
+    let mut reader = TypedQueryReader::open(part, &names)?;
 
     let mut state = AggregateState::new(*function);
     while let Some(batch) = reader.next_batch()? {
@@ -142,11 +142,11 @@ pub(super) fn execute_grouped_aggregate<W: Write>(
     }
     let group_index = indices[column];
     let value_index = indices[value_column];
-    let mut reader = TypedQueryReader::open(part, &names)?;
     writeln!(output, "{column}\t{}({value_column})", function.name())?;
     if query.limit == Some(0) {
         return Ok(());
     }
+    let mut reader = TypedQueryReader::open(part, &names)?;
 
     let mut by_key = HashMap::<typed::Key, usize>::new();
     let mut groups = Vec::<(Cell, AggregateState)>::new();

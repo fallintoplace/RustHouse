@@ -8,6 +8,7 @@ mod insert_select;
 mod join;
 mod lexer;
 mod scalar;
+mod text_scalar;
 mod update;
 pub use copy::{CopyFormat, CopyFrom, parse_copy_from};
 pub use ddl::{ColumnDef, Ddl, parse_ddl};
@@ -462,7 +463,7 @@ fn parse_select_tokens(tokens: Vec<Token>) -> Result<Select, ParseError> {
             Projection::CountColumn { column }
         }
     } else if matches!(parser.tokens.get(parser.index + 1), Some(Token::LParen))
-        && !matches!(parser.tokens.get(parser.index), Some(Token::Word(word)) if scalar::is_function(word))
+        && !matches!(parser.tokens.get(parser.index), Some(Token::Word(word)) if scalar::is_function(word) || text_scalar::is_function(word))
     {
         let name = parser.word()?;
         let function = match name.to_ascii_uppercase().as_str() {
@@ -498,7 +499,7 @@ fn parse_select_tokens(tokens: Vec<Token>) -> Result<Select, ParseError> {
         Some(Token::Number(_) | Token::String(_) | Token::LParen | Token::Plus | Token::Minus)
     ) || matches!(
         parser.tokens.get(parser.index),
-        Some(Token::Word(word)) if word.eq_ignore_ascii_case("NULL") || scalar::is_function(word)
+        Some(Token::Word(word)) if word.eq_ignore_ascii_case("NULL") || scalar::is_function(word) || text_scalar::is_function(word)
     ) {
         let mut columns = Vec::new();
         loop {
@@ -511,6 +512,9 @@ fn parse_select_tokens(tokens: Vec<Token>) -> Result<Select, ParseError> {
                 }
                 Some(Token::Word(name)) if scalar::is_function(name) => {
                     ConstantValue::Integer(scalar::parse(&mut parser)?)
+                }
+                Some(Token::Word(name)) if text_scalar::is_function(name) => {
+                    text_scalar::parse(&mut parser)?
                 }
                 Some(Token::String(value)) => {
                     let value = value.clone();
