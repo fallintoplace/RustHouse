@@ -52,6 +52,15 @@ fn token_sql(token: &Token) -> String {
     }
 }
 
+fn append_tokens(query: &mut String, tokens: &[Token]) {
+    for (index, token) in tokens.iter().enumerate() {
+        if index > 0 {
+            query.push(' ');
+        }
+        query.push_str(&token_sql(token));
+    }
+}
+
 fn parse_assignments(parser: &mut Parser) -> Result<Vec<(String, Option<String>)>, ParseError> {
     let mut assignments = Vec::new();
     let mut seen = HashSet::new();
@@ -81,13 +90,7 @@ fn update_select_query(parser: &mut Parser, table: &str) -> Result<String, Parse
             return Err(ParseError("UPDATE WHERE requires a predicate".into()));
         }
         query.push_str(" WHERE ");
-        query.push_str(
-            &parser.tokens[parser.index..]
-                .iter()
-                .map(token_sql)
-                .collect::<Vec<_>>()
-                .join(" "),
-        );
+        append_tokens(&mut query, &parser.tokens[parser.index..]);
     } else {
         parser.take(Token::Semicolon);
         if parser.index != parser.tokens.len() {
@@ -139,6 +142,14 @@ pub fn parse_update(sql: &str) -> Result<Option<Update>, ParseError> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn renders_where_tokens_without_intermediate_strings() {
+        let tokens = tokenize("name = 'it''s' AND id != -2").unwrap();
+        let mut query = String::new();
+        append_tokens(&mut query, &tokens);
+        assert_eq!(query, "name = 'it''s' AND id != -2");
+    }
 
     #[test]
     fn parses_nullable_updates_and_filters() {
