@@ -34,6 +34,7 @@ pub enum AggregateFunction {
     StddevPop,
     VarSamp,
     StddevSamp,
+    GroupBitAnd,
     Median,
 }
 
@@ -48,6 +49,7 @@ impl AggregateFunction {
             Self::StddevPop => "stddevPop",
             Self::VarSamp => "varSamp",
             Self::StddevSamp => "stddevSamp",
+            Self::GroupBitAnd => "groupBitAnd",
             Self::Median => "median",
         }
     }
@@ -454,6 +456,7 @@ fn parse_select_tokens(tokens: Vec<Token>) -> Result<Select, ParseError> {
             "STDDEVPOP" => AggregateFunction::StddevPop,
             "VARSAMP" => AggregateFunction::VarSamp,
             "STDDEVSAMP" => AggregateFunction::StddevSamp,
+            "GROUPBITAND" => AggregateFunction::GroupBitAnd,
             "MEDIAN" => AggregateFunction::Median,
             _ => return Err(ParseError(format!("unsupported aggregate: {name}"))),
         };
@@ -547,6 +550,7 @@ fn parse_select_tokens(tokens: Vec<Token>) -> Result<Select, ParseError> {
                         "STDDEVPOP" => Some(AggregateFunction::StddevPop),
                         "VARSAMP" => Some(AggregateFunction::VarSamp),
                         "STDDEVSAMP" => Some(AggregateFunction::StddevSamp),
+                        "GROUPBITAND" => Some(AggregateFunction::GroupBitAnd),
                         "MEDIAN" => Some(AggregateFunction::Median),
                         _ => None,
                     },
