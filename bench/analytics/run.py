@@ -81,9 +81,6 @@ def run_benchmark(queries, indices, runs, timeout, execute, reference_dir=None, 
             except (OSError, RuntimeError, subprocess.TimeoutExpired, urllib.error.URLError) as error:
                 status, failure = "error", str(error)[:2000]
                 break
-            if start is not None:
-                elapsed = (time.perf_counter_ns() - start) / 1_000_000_000
-                timings.append(round(elapsed, 9))
             if expected_path is not None:
                 if not expected_path.is_file():
                     status, failure = "missing_reference", str(expected_path)
@@ -91,6 +88,9 @@ def run_benchmark(queries, indices, runs, timeout, execute, reference_dir=None, 
                 if output != expected_path.read_bytes():
                     status, failure = "mismatch", "query output differs from expected TSV"
                     break
+            if start is not None:
+                elapsed = (time.perf_counter_ns() - start) / 1_000_000_000
+                timings.append(round(elapsed, 9))
         results.append({
             "query": index + 1,
             "status": status,
