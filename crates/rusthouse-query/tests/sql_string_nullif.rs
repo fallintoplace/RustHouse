@@ -11,7 +11,10 @@ fn value(sql: &str) -> ConstantValue {
 fn nullif_evaluates_constant_strings() {
     assert_eq!(value("SELECT NULLIF('x', 'y')"), ConstantValue::Text("x".into()));
     assert_eq!(value("SELECT NULLIF('x', NULL)"), ConstantValue::Text("x".into()));
-    assert_eq!(value("SELECT CONCAT_WS(',', NULLIF('x','x'), 'z')"), ConstantValue::Text("z".into()));
+    assert_eq!(
+        value("SELECT CONCAT_WS(',', NULLIF('x','x'), 'z')"),
+        ConstantValue::Text("z".into())
+    );
     assert_eq!(value("SELECT NULLIF('x','x')"), ConstantValue::Null);
     assert_eq!(value("SELECT NULLIF(NULL, 'x')"), ConstantValue::Null);
     assert_eq!(value("SELECT NULLIF('', '')"), ConstantValue::Null);
