@@ -8,6 +8,7 @@ pub(super) fn is_function(name: &str) -> bool {
         name.to_ascii_uppercase().as_str(),
         "LENGTH"
             | "CHAR_LENGTH"
+            | "BTRIM"
             | "LOWER"
             | "UPPER"
             | "REVERSE"
@@ -285,6 +286,24 @@ fn parse_at_depth(parser: &mut Parser, depth: usize) -> Result<ConstantValue, Pa
                             .map_err(|_| ParseError("STRPOS result exceeds Int64".into()))?,
                     )
                 }
+                _ => ConstantValue::Null,
+            }
+        }
+        "BTRIM" => {
+            let input = text_arg(parser, depth + 1)?;
+            let characters = if parser.take(Token::Comma) {
+                Some(text_arg(parser, depth + 1)?)
+            } else {
+                None
+            };
+            require(parser, Token::RParen, "expected ')' after BTRIM arguments")?;
+            match (input, characters) {
+                (Some(input), None) => {
+                    ConstantValue::Text(input.trim_matches(' ').to_owned())
+                }
+                (Some(input), Some(Some(characters))) => ConstantValue::Text(
+                    input.trim_matches(|character| characters.contains(character)).to_owned(),
+                ),
                 _ => ConstantValue::Null,
             }
         }
