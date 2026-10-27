@@ -77,11 +77,15 @@ impl NumericPartReader {
             let marks_file = read_wide_marks(&marks_path)?;
             layout.validate(name, &marks_file.marks, metadata.rows)?;
             let data_path = part.join(format!("{name}.bin"));
-            crate::validate_wide_marks(&marks_file, CompressedBlockReader::open(&data_path)?)?;
+            let mut reader = CompressedBlockReader::open(&data_path)?;
+            crate::mark_validation::validate_wide_marks_reader(&marks_file, &mut reader)?;
+            // Mark validation leaves the reader at EOF. Rewind the verified
+            // file instead of reopening it for the actual granule scan.
+            reader.seek_to_block(0)?;
             streams.push(ColumnStream {
                 data_type: column.data_type.clone(),
                 marks: marks_file.marks,
-                reader: CompressedBlockReader::open(data_path)?,
+                reader,
                 cached: None,
             });
         }
