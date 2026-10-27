@@ -49,6 +49,8 @@ pub(super) fn is_function(name: &str) -> bool {
         || name.eq_ignore_ascii_case("LCM")
         || name.eq_ignore_ascii_case("FIBONACCI")
         || name.eq_ignore_ascii_case("IN_RANGE")
+        || name.eq_ignore_ascii_case("DIV_EUCLID")
+        || name.eq_ignore_ascii_case("REM_EUCLID")
         || name.eq_ignore_ascii_case("MUL_DIV")
         || name.eq_ignore_ascii_case("WIDTH_BUCKET")
         || name.eq_ignore_ascii_case("BIT_SET")
@@ -407,6 +409,25 @@ fn parse_in_range(parser: &mut Parser, depth: usize) -> Result<i64, ParseError> 
 }
 
 /// Multiply in Int128 before dividing, then require an Int64 result.
+/// Euclidean quotient and nonnegative remainder, including negative operands.
+fn parse_euclidean_division(
+    parser: &mut Parser,
+    depth: usize,
+    quotient: bool,
+) -> Result<i64, ParseError> {
+    require_token(parser, Token::LParen, "Euclidean division requires '('")?;
+    let left = expression(parser, depth + 1)?;
+    require_token(parser, Token::Comma, "Euclidean division needs two arguments")?;
+    let right = expression(parser, depth + 1)?;
+    require_token(parser, Token::RParen, "Euclidean division requires ')'")?;
+    let result = if quotient {
+        left.checked_div_euclid(right)
+    } else {
+        left.checked_rem_euclid(right)
+    };
+    result.ok_or_else(|| ParseError("Euclidean division by zero or overflow".into()))
+}
+
 fn parse_mul_div(parser: &mut Parser, depth: usize) -> Result<i64, ParseError> {
     require_token(parser, Token::LParen, "MUL_DIV requires '('")?;
     let left = expression(parser, depth + 1)?;
@@ -794,6 +815,12 @@ fn factor(parser: &mut Parser, depth: usize) -> Result<i64, ParseError> {
     }
     if parser.keyword("IN_RANGE") {
         return parse_in_range(parser, depth);
+    }
+    if parser.keyword("DIV_EUCLID") {
+        return parse_euclidean_division(parser, depth, true);
+    }
+    if parser.keyword("REM_EUCLID") {
+        return parse_euclidean_division(parser, depth, false);
     }
     if parser.keyword("MUL_DIV") {
         return parse_mul_div(parser, depth);
