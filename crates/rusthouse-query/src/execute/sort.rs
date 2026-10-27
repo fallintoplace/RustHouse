@@ -237,17 +237,29 @@ mod tests {
         let mut sorted = SortedRows::new(Some(2), false);
         sorted.set_extra_directions([true]);
         sorted
-            .push_with_extra(Number::Unsigned(1), vec![Number::Unsigned(5)], vec![Number::Unsigned(15)])
+            .push_with_extra(
+                Number::Unsigned(1),
+                vec![Number::Unsigned(5)],
+                vec![Number::Unsigned(15)],
+            )
             .unwrap();
         sorted
-            .push_with_extra(Number::Unsigned(1), vec![Number::Unsigned(3)], vec![Number::Unsigned(13)])
+            .push_with_extra(
+                Number::Unsigned(1),
+                vec![Number::Unsigned(3)],
+                vec![Number::Unsigned(13)],
+            )
             .unwrap();
 
         assert!(sorted.would_discard(Number::Unsigned(2), &[Number::Unsigned(8)]));
         assert!(sorted.would_discard(Number::Unsigned(1), &[Number::Unsigned(3)]));
         assert!(!sorted.would_discard(Number::Unsigned(1), &[Number::Unsigned(7)]));
         sorted
-            .push_with_extra(Number::Unsigned(1), vec![Number::Unsigned(7)], vec![Number::Unsigned(17)])
+            .push_with_extra(
+                Number::Unsigned(1),
+                vec![Number::Unsigned(7)],
+                vec![Number::Unsigned(17)],
+            )
             .unwrap();
         let mut output = Vec::new();
         sorted.write(&mut output).unwrap();
