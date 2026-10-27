@@ -56,6 +56,7 @@ pub(super) fn execute<W: Write>(
         return Ok(());
     }
 
+    let group_indices = columns.iter().map(|name| indices[name]).collect::<Vec<_>>();
     let mut reader = TypedQueryReader::open(part, &names)?;
     let mut groups: Vec<(Vec<Cell>, u64)> = Vec::new();
     let mut by_key: HashMap<Vec<Key>, usize> = HashMap::new();
@@ -64,9 +65,9 @@ pub(super) fn execute<W: Write>(
             if !typed::passes(&batch, row, &conditions) {
                 continue;
             }
-            let values: Vec<_> = columns
+            let values: Vec<_> = group_indices
                 .iter()
-                .map(|column| typed::cell(&batch[indices[column]], row))
+                .map(|&index| typed::cell(&batch[index], row))
                 .collect();
             let key: Vec<_> = values.iter().map(Cell::key).collect();
             match by_key.entry(key) {

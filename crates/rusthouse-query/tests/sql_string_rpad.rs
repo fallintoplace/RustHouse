@@ -16,6 +16,8 @@ fn rpad_pads_truncates_and_counts_unicode_chars() {
         ("SELECT RPAD('abcdef', 3, '.')", "abc"),
         ("SELECT RPAD('猫', 3, '🙂')", "猫🙂🙂"),
         ("SELECT RPAD('x', 0, '.')", ""),
+        ("SELECT RPAD('x', 3)", "x  "),
+        ("SELECT RPAD('é', 3)", "é  "),
         ("SELECT RPAD('abc', 3, '')", "abc"),
         ("SELECT RPAD(UPPER('ab'), 4, '-')", "AB--"),
     ] {
@@ -36,7 +38,6 @@ fn rpad_rejects_invalid_widths_padding_and_oversize_results() {
         "SELECT RPAD('x', -1, '.')",
         "SELECT RPAD('x', 2, '')",
         "SELECT RPAD('x', 1048577, '.')",
-        "SELECT RPAD('x', 2)",
         "SELECT RPAD(1, 2, '.')",
         "SELECT RPAD('x', 2, '.', '.')",
         "SELECT RPAD('x', 2, '.') FROM numbers(1)",
