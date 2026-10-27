@@ -9,6 +9,7 @@ pub(super) fn is_function(name: &str) -> bool {
         "LENGTH"
             | "CHAR_LENGTH"
             | "BTRIM"
+            | "REPLACE_FIRST"
             | "LOWER"
             | "UPPER"
             | "REVERSE"
@@ -456,6 +457,28 @@ fn parse_at_depth(parser: &mut Parser, depth: usize) -> Result<ConstantValue, Pa
                             return Err(ParseError("REPEAT result is too large".into()));
                         }
                         ConstantValue::Text(value.repeat(count))
+                    }
+                }
+                _ => ConstantValue::Null,
+            }
+        }
+        "REPLACE_FIRST" => {
+            let input = text_arg(parser, depth + 1)?;
+            require(parser, Token::Comma, "REPLACE_FIRST requires a search string")?;
+            let needle = text_arg(parser, depth + 1)?;
+            require(parser, Token::Comma, "REPLACE_FIRST requires a replacement")?;
+            let replacement = text_arg(parser, depth + 1)?;
+            require(parser, Token::RParen, "expected ')' after REPLACE_FIRST arguments")?;
+            match (input, needle, replacement) {
+                (Some(input), Some(needle), Some(replacement)) => {
+                    if needle.is_empty() || !input.contains(&needle) {
+                        ConstantValue::Text(input)
+                    } else {
+                        let length = input.len() - needle.len();
+                        if length.checked_add(replacement.len()).unwrap_or(usize::MAX) > MAX_TEXT_BYTES {
+                            return Err(ParseError("REPLACE_FIRST result is too large".into()));
+                        }
+                        ConstantValue::Text(input.replacen(&needle, &replacement, 1))
                     }
                 }
                 _ => ConstantValue::Null,
