@@ -64,9 +64,18 @@ fn respects_steps_and_unsigned_boundaries() {
 #[test]
 fn retains_rowwise_fallback_for_or_modulo_and_in() {
     for (sql, expected) in [
-        ("SELECT count(*) FROM numbers(10) WHERE number = 1 OR number = 3", "count\n2\n"),
-        ("SELECT count(*) FROM numbers(10) WHERE number % 3 = 1", "count\n3\n"),
-        ("SELECT count(*) FROM numbers(10) WHERE number IN (1, 2, 3)", "count\n3\n"),
+        (
+            "SELECT count(*) FROM numbers(10) WHERE number = 1 OR number = 3",
+            "count\n2\n",
+        ),
+        (
+            "SELECT count(*) FROM numbers(10) WHERE number % 3 = 1",
+            "count\n3\n",
+        ),
+        (
+            "SELECT count(*) FROM numbers(10) WHERE number IN (1, 2, 3)",
+            "count\n3\n",
+        ),
     ] {
         assert_eq!(result(sql), expected, "{sql}");
     }
