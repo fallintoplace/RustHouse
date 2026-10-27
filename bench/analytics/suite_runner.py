@@ -81,7 +81,7 @@ def make_fixture(directory, rows):
             oracle.executemany("INSERT INTO events VALUES (?,?,?,?,?,?,?,?,?)", batch)
     oracle.execute(SQLITE_ACCOUNTS_SCHEMA)
     with (directory / "accounts.tsv").open("w", encoding="utf-8", newline="\n") as stream:
-        stream.write("user_id\t tier\tcountry\n".replace("\t ", "\t"))
+        stream.write("user_id\ttier\tcountry\n")
         for account in range(ACCOUNTS_ROWS):
             tier = ("starter", "team", "enterprise")[account % 3]
             country = ("US", "DE", "PL", "VN")[account % 4]
