@@ -6,6 +6,29 @@ use std::collections::HashMap;
 use std::io::Write;
 use std::path::Path;
 
+fn checked_string_length(column: &TypedColumn, row: usize) -> Result<Option<usize>, ExecutionError> {
+    let missing = || ExecutionError::Invalid("missing LENGTH string value in batch".into());
+    match column {
+        TypedColumn::Text(values) => values
+            .get(row)
+            .map(|value| Some(value.len()))
+            .ok_or_else(missing),
+        TypedColumn::NullableText { values, nulls } => {
+            if *nulls.get(row).ok_or_else(missing)? != 0 {
+                Ok(None)
+            } else {
+                values
+                    .get(row)
+                    .map(|value| Some(value.len()))
+                    .ok_or_else(missing)
+            }
+        }
+        _ => Err(ExecutionError::Invalid(
+            "LENGTH read unexpected column type".into(),
+        )),
+    }
+}
+
 pub(super) fn execute<W: Write>(
     query: &Select,
     part: &Path,
@@ -13,15 +36,12 @@ pub(super) fn execute<W: Write>(
     output: &mut W,
 ) -> Result<(), ExecutionError> {
     let metadata = inspect_query_source(part)?;
-    let columns = metadata
+    let kind = metadata
         .columns
         .iter()
-        .map(|column| (column.name.as_str(), column.data_type.as_str()))
-        .collect::<HashMap<_, _>>();
-    let kind = columns
-        .get(column)
+        .find(|candidate| candidate.name == column)
         .ok_or_else(|| ExecutionError::Invalid(format!("unknown column: {column}")))?;
-    if !matches!(*kind, "String" | "Nullable(String)") {
+    if !matches!(kind.data_type.as_str(), "String" | "Nullable(String)") {
         return Err(ExecutionError::Invalid(
             "LENGTH requires a String column".into(),
         ));
@@ -52,14 +72,11 @@ pub(super) fn execute<W: Write>(
         conditions.push(typed::compile(branch, &indices, &types)?);
     }
 
-    writeln!(
-        output,
-        "{}",
-        query
-            .alias
-            .as_deref()
-            .unwrap_or(&format!("length({column})"))
-    )?;
+    if let Some(alias) = query.alias.as_deref() {
+        writeln!(output, "{alias}")?;
+    } else {
+        writeln!(output, "length({column})")?;
+    }
     if query.limit == Some(0) {
         return Ok(());
     }
@@ -70,7 +87,14 @@ pub(super) fn execute<W: Write>(
     let offset = query.offset.unwrap_or(0);
     let limit = query.limit.unwrap_or(usize::MAX);
     while let Some(batch) = reader.next_batch()? {
-        for row in 0..batch[0].len() {
+        let rows = batch
+            .first()
+            .ok_or_else(|| ExecutionError::Invalid("empty LENGTH input batch".into()))?
+            .len();
+        let values = batch
+            .get(indices[column])
+            .ok_or_else(|| ExecutionError::Invalid("missing LENGTH input column".into()))?;
+        for row in 0..rows {
             if !typed::passes(&batch, row, &conditions) {
                 continue;
             }
@@ -78,17 +102,9 @@ pub(super) fn execute<W: Write>(
                 skipped += 1;
                 continue;
             }
-            match &batch[indices[column]] {
-                TypedColumn::Text(values) => {
-                    writeln!(output, "{}", values.get(row).unwrap().len())?;
-                }
-                TypedColumn::NullableText { nulls, .. } if nulls[row] != 0 => {
-                    writeln!(output, "\\N")?;
-                }
-                TypedColumn::NullableText { values, .. } => {
-                    writeln!(output, "{}", values.get(row).unwrap().len())?;
-                }
-                _ => unreachable!("LENGTH requires a String column"),
+            match checked_string_length(values, row)? {
+                Some(length) => writeln!(output, "{length}")?,
+                None => writeln!(output, "\\N")?,
             }
             written += 1;
             if written == limit {
@@ -97,4 +113,35 @@ pub(super) fn execute<W: Write>(
         }
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use rusthouse_storage::read_legacy_strings;
+
+    #[test]
+    fn checks_nullable_and_empty_string_batches() {
+        let mut source = b"\x03abc\x00".as_slice();
+        let values = read_legacy_strings(&mut source, 2).unwrap();
+        let column = TypedColumn::Text(values);
+        assert_eq!(checked_string_length(&column, 0).unwrap(), Some(3));
+        assert_eq!(checked_string_length(&column, 1).unwrap(), Some(0));
+        assert!(checked_string_length(&column, 2).is_err());
+
+        let mut source = b"\x01x\x01y".as_slice();
+        let values = read_legacy_strings(&mut source, 2).unwrap();
+        let column = TypedColumn::NullableText {
+            values,
+            nulls: vec![0, 1],
+        };
+        assert_eq!(checked_string_length(&column, 0).unwrap(), Some(1));
+        assert_eq!(checked_string_length(&column, 1).unwrap(), None);
+        assert!(checked_string_length(&column, 2).is_err());
+    }
+
+    #[test]
+    fn rejects_unexpected_column_types() {
+        assert!(checked_string_length(&TypedColumn::Uuid(Vec::new()), 0).is_err());
+    }
 }
