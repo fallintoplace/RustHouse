@@ -176,6 +176,8 @@ fn drop_table(catalog: &Path, name: &str, if_exists: bool) -> Result<(), String>
         return Err(format!("not a regular schema file: {name}"));
     }
     fs::remove_file(&path).map_err(|error| format!("cannot drop table {name}: {error}"))?;
+    sync_catalog_dir(catalog)
+        .map_err(|error| format!("table {name} was dropped but durability is uncertain: {error}"))?;
     println!("Dropped table {name} (schema only)");
     Ok(())
 }
@@ -364,6 +366,9 @@ fn rename_table(catalog: &Path, from: &str, to: &str) -> Result<(), String> {
         let _ = fs::remove_file(&destination);
         return Err(format!("cannot finish renaming table {from}: {error}"));
     }
+    sync_catalog_dir(catalog).map_err(|error| {
+        format!("table {from} was renamed but durability is uncertain: {error}")
+    })?;
     println!("Renamed table {from} to {to} (schema only)");
     Ok(())
 }
