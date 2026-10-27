@@ -58,6 +58,7 @@ pub(super) fn is_function(name: &str) -> bool {
         || name.eq_ignore_ascii_case("TRAILING_ZEROS")
         || name.eq_ignore_ascii_case("DIGITAL_ROOT")
         || name.eq_ignore_ascii_case("POW10")
+        || name.eq_ignore_ascii_case("TRIANGULAR")
         || name.eq_ignore_ascii_case("CLAMP")
         || name.eq_ignore_ascii_case("CEIL_DIV")
         || name.eq_ignore_ascii_case("FLOOR_DIV")
@@ -511,6 +512,18 @@ fn parse_pow10(parser: &mut Parser, depth: usize) -> Result<i64, ParseError> {
     10_i64.checked_pow(exponent).ok_or_else(overflow)
 }
 
+/// Compute the triangular number with a wide intermediate product.
+fn parse_triangular(parser: &mut Parser, depth: usize) -> Result<i64, ParseError> {
+    require_token(parser, Token::LParen, "TRIANGULAR requires '('")?;
+    let value = expression(parser, depth + 1)?;
+    require_token(parser, Token::RParen, "TRIANGULAR requires ')'")?;
+    if value < 0 {
+        return Err(ParseError("TRIANGULAR requires a nonnegative value".into()));
+    }
+    let value = i128::from(value);
+    i64::try_from(value * (value + 1) / 2).map_err(|_| overflow())
+}
+
 fn gcd(mut left: u64, mut right: u64) -> u64 {
     while right != 0 {
         let remainder = left % right;
@@ -760,6 +773,9 @@ fn factor(parser: &mut Parser, depth: usize) -> Result<i64, ParseError> {
     }
     if parser.keyword("POW10") {
         return parse_pow10(parser, depth);
+    }
+    if parser.keyword("TRIANGULAR") {
+        return parse_triangular(parser, depth);
     }
     if matches!(parser.tokens.get(parser.index), Some(Token::Word(name)) if name.eq_ignore_ascii_case("GCD") || name.eq_ignore_ascii_case("LCM"))
     {
