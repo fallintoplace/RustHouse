@@ -204,7 +204,11 @@ fn parse_gcd_lcm(parser: &mut Parser, depth: usize) -> Result<i64, ParseError> {
 fn parse_reverse_digits(parser: &mut Parser, depth: usize) -> Result<i64, ParseError> {
     require_token(parser, Token::LParen, "REVERSE_DIGITS requires '('")?;
     let value = expression(parser, depth + 1)?;
-    require_token(parser, Token::RParen, "REVERSE_DIGITS requires ')' after argument")?;
+    require_token(
+        parser,
+        Token::RParen,
+        "REVERSE_DIGITS requires ')' after argument",
+    )?;
     let mut magnitude = value.unsigned_abs();
     let mut reversed = 0_i128;
     while magnitude > 0 {
