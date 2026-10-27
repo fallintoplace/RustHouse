@@ -33,6 +33,7 @@ pub(super) fn is_function(name: &str) -> bool {
             | "OVERLAY"
             | "SPLIT_PART"
             | "SUBSTRING_INDEX"
+            | "TO_INT64"
             | "TRIM"
             | "LTRIM"
             | "TRIM_WHITESPACE"
@@ -555,6 +556,18 @@ fn parse_at_depth(parser: &mut Parser, depth: usize) -> Result<ConstantValue, Pa
                         .map_err(|_| ParseError("HEX_DECODE result is not UTF-8".into()))?;
                     ConstantValue::Text(decoded)
                 }
+                None => ConstantValue::Null,
+            }
+        }
+        "TO_INT64" => {
+            let input = text_arg(parser, depth + 1)?;
+            require(parser, Token::RParen, "TO_INT64 requires one argument")?;
+            match input {
+                Some(value) => ConstantValue::Integer(
+                    value
+                        .parse::<i64>()
+                        .map_err(|_| ParseError("TO_INT64 requires an Int64 string".into()))?,
+                ),
                 None => ConstantValue::Null,
             }
         }
