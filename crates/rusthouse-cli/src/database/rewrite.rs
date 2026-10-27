@@ -12,7 +12,8 @@ use std::path::Path;
 const MAX_REWRITE_BYTES: usize = 16 * 1024 * 1024;
 const MAX_PART_BUFFER_BYTES: usize = 4 * 1024 * 1024;
 const MAX_REWRITE_PARTS: u64 = 10_000;
-const PART_ROWS: usize = 4096;
+// The writer accepts 32,768 rows. Rewrites also retain a 4 MiB value budget.
+const PART_ROWS: usize = 32_768;
 
 // Debug-only simulated publication errors allow integration tests to exercise
 // cleanup and recovery without relying on platform-dependent permissions.
@@ -508,8 +509,9 @@ pub(super) fn compact_table(database: &Path, table: &str) -> Result<(), String> 
     let mut scanned = 0u64;
     publish_snapshot_with(database, table, |staging| {
         let mut buffer = Vec::with_capacity(PART_ROWS);
+        let mut buffered_bytes = 0usize;
         let mut part_number = 0u64;
-        let mut flush = |rows: &mut Vec<Vec<Option<String>>>| -> Result<(), String> {
+        let mut flush = |rows: &mut Vec<Vec<Option<String>>>, bytes: &mut usize| -> Result<(), String> {
             if rows.is_empty() {
                 return Ok(());
             }
@@ -518,6 +520,7 @@ pub(super) fn compact_table(database: &Path, table: &str) -> Result<(), String> 
             write_wide_part(&part, &cols, rows).map_err(|error| error.to_string())?;
             verify_wide_part(&part).map_err(|error| error.to_string())?;
             rows.clear();
+            *bytes = 0;
             Ok(())
         };
         while let Some(batch) = reader.next_batch().map_err(|error| error.to_string())? {
@@ -530,17 +533,30 @@ pub(super) fn compact_table(database: &Path, table: &str) -> Result<(), String> 
                     .iter()
                     .map(|column| column_value(column, index))
                     .collect::<Result<Vec<_>, _>>()?;
+                let row_bytes = row.iter().flatten().try_fold(0usize, |total, value| {
+                    total
+                        .checked_add(value.len())
+                        .ok_or_else(|| "compaction row size overflow".to_string())
+                })?;
+                if !buffer.is_empty()
+                    && (buffer.len() >= PART_ROWS
+                        || buffered_bytes
+                            .checked_add(row_bytes)
+                            .is_none_or(|bytes| bytes > MAX_PART_BUFFER_BYTES))
+                {
+                    flush(&mut buffer, &mut buffered_bytes)?;
+                }
+                buffered_bytes = buffered_bytes
+                    .checked_add(row_bytes)
+                    .ok_or("compaction batch size overflow")?;
                 buffer.push(row);
                 scanned = scanned.checked_add(1).ok_or("table row count overflow")?;
-                if buffer.len() == PART_ROWS {
-                    flush(&mut buffer)?;
-                }
             }
         }
         if scanned != expected {
             return Err("database compaction read an inconsistent row count".into());
         }
-        flush(&mut buffer)?;
+        flush(&mut buffer, &mut buffered_bytes)?;
         if scanned == 0 {
             let part = staging.join("all_0_0_0");
             write_wide_part(&part, &cols, &[]).map_err(|error| error.to_string())?;

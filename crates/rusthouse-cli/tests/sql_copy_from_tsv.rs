@@ -86,6 +86,13 @@ fn bulk_tsv_copy_passes_50000_rows_and_keeps_snapshot_on_failure() {
     );
     let pointer = db.join("events.parts/.rusthouse-active");
     assert_eq!(fs::read_to_string(&pointer).unwrap(), "g1\n");
+    let first_generation = db.join("events.parts/.rusthouse-versions/g1");
+    let active_parts = fs::read_dir(&first_generation)
+        .unwrap()
+        .filter(|entry| entry.as_ref().unwrap().file_name().to_string_lossy().starts_with("all_"))
+        .count();
+    // One preexisting part plus two large imported parts for 50,000 rows.
+    assert_eq!(active_parts, 3);
 
     // An extra data row no longer hits the old 50,000-row COPY limit.
     tsv.push_str("50000\tbeyond-old-limit\n");
@@ -96,7 +103,7 @@ fn bulk_tsv_copy_passes_50000_rows_and_keeps_snapshot_on_failure() {
 
     // A bad value in a later part must not publish the earlier valid parts.
     let mut invalid = String::from("id\tname\n");
-    for id in 0..5000 {
+    for id in 0..33_000 {
         writeln!(&mut invalid, "{id}\tvalid").unwrap();
     }
     invalid.push_str("bad-id\tinvalid\n");
