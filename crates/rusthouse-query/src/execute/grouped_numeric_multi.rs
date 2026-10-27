@@ -58,6 +58,7 @@ pub(super) fn execute<W: Write>(
         return Ok(());
     }
 
+    let item_indices = items.iter().map(|(_, name)| indices[name]).collect::<Vec<_>>();
     let mut groups = Vec::<(Cell, Vec<AggregateState>)>::new();
     let mut by_key = HashMap::<typed::Key, usize>::new();
     let mut by_text = HashMap::<Vec<u8>, usize>::new();
@@ -96,8 +97,8 @@ pub(super) fn execute<W: Write>(
                     }
                 }
             };
-            for ((_, name), state) in items.iter().zip(groups[index].1.iter_mut()) {
-                match typed::cell(&batch[indices[name]], row) {
+            for (&column_index, state) in item_indices.iter().zip(groups[index].1.iter_mut()) {
+                match typed::cell(&batch[column_index], row) {
                     Cell::Numeric(value) => state.update(value)?,
                     Cell::Null => {}
                     Cell::Text(_) | Cell::Uuid(_) => {
@@ -109,8 +110,7 @@ pub(super) fn execute<W: Write>(
     }
     if let Some(order) = &query.order_by {
         groups.sort_by(|(left, _), (right, _)| {
-            let comparison = typed::cmp(left, right);
-            if order.descending { comparison.reverse() } else { comparison }
+            typed::compare_order_cells(left, right, order.descending, order.nulls_first)
         });
     }
     for (key, states) in groups.into_iter()

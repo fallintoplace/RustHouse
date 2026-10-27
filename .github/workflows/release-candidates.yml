@@ -1,0 +1,74 @@
+name: RustHouse release candidates
+
+on:
+  workflow_dispatch:
+  push:
+    tags:
+      - 'v[0-9]*'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: rusthouse-release-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  package:
+    name: Candidate bundle (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 45
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+    steps:
+      - uses: actions/checkout@v7
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: release-candidate
+          save-if: false
+      - name: Check formatting
+        run: cargo fmt --all -- --check
+      - name: Run core tests
+        run: cargo test --workspace --locked
+      - name: Build release binaries
+        run: cargo build --release --locked -p rusthouse-cli -p rusthouse-server
+      - name: Package and smoke-test binaries
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [[ "${GITHUB_REF_TYPE}" == "tag" ]]; then
+            version="${GITHUB_REF_NAME}"
+          else
+            version="rc-${GITHUB_SHA:0:12}"
+          fi
+          platform="${RUNNER_OS}-$(uname -m)"
+          archive="rusthouse-${version}-${platform}.tar.gz"
+          mkdir -p dist/bin
+          cp target/release/rusthouse dist/bin/
+          cp target/release/rusthouse-server dist/bin/
+          tar -czf "dist/${archive}" -C dist/bin rusthouse rusthouse-server
+          (cd dist && shasum -a 256 "${archive}" > "${archive}.sha256")
+          (cd dist && shasum -a 256 -c "${archive}.sha256")
+          unpacked="$(mktemp -d)"
+          trap 'rm -rf "${unpacked}"' EXIT
+          tar -xzf "dist/${archive}" -C "${unpacked}"
+          "${unpacked}/rusthouse" --help > /dev/null
+          "${unpacked}/rusthouse-server" --help > /dev/null
+          actual="$("${unpacked}/rusthouse" sql 'SELECT number FROM numbers(3) ORDER BY number' --format tsv-no-header)"
+          expected="$(printf '0\n1\n2')"
+          if [[ "${actual}" != "${expected}" ]]; then
+            printf 'Packaged CLI smoke test failed: %s\n' "${actual}" >&2
+            exit 1
+          fi
+          rm -rf dist/bin
+      - name: Upload candidate archive and checksum
+        uses: actions/upload-artifact@v4
+        with:
+          name: rusthouse-${{ matrix.os }}-${{ github.sha }}
+          path: |
+            dist/*.tar.gz
+            dist/*.sha256
+          if-no-files-found: error
+          retention-days: 30

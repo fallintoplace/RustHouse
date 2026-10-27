@@ -14,6 +14,16 @@ fn keyword<'a>(input: &'a str, expected: &str) -> Option<&'a str> {
     Some(rest.trim_start())
 }
 
+fn valid_delete_scope(select: &Select) -> bool {
+    matches!(select.source, Some(Source::Table(_)))
+        && select.projection == Projection::All
+        && !select.distinct
+        && select.order_by.is_none()
+        && select.limit.is_none()
+        && select.offset.is_none()
+        && select.having.is_none()
+}
+
 /// Supported only for persistent local tables. No ordering or LIMIT is accepted.
 pub fn parse_delete(sql: &str) -> Result<Option<Select>, ParseError> {
     let Some(rest) = keyword(sql, "DELETE") else {
@@ -25,14 +35,7 @@ pub fn parse_delete(sql: &str) -> Result<Option<Select>, ParseError> {
     let mut tokens = tokenize(sql)?;
     tokens.splice(..1, [Token::Word("SELECT".into()), Token::Star]);
     let select = parse_select_tokens(tokens)?;
-    if !matches!(select.source, Some(Source::Table(_)))
-        || select.projection != Projection::All
-        || select.distinct
-        || select.order_by.is_some()
-        || select.limit.is_some()
-        || select.offset.is_some()
-        || select.having.is_some()
-    {
+    if !valid_delete_scope(&select) {
         return Err(ParseError(
             "DELETE supports only FROM table [WHERE predicate]".into(),
         ));

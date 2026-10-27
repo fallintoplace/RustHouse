@@ -237,10 +237,15 @@ fn next_utf8_boundary(value: &[u8], index: usize) -> Option<usize> {
 }
 
 fn equal_like_bytes(left: &[u8], right: &[u8], case_insensitive: bool) -> bool {
-    if case_insensitive {
-        left.eq_ignore_ascii_case(right)
-    } else {
-        left == right
+    if !case_insensitive {
+        return left == right;
+    }
+    if left.is_ascii() && right.is_ascii() {
+        return left.eq_ignore_ascii_case(right);
+    }
+    match (std::str::from_utf8(left), std::str::from_utf8(right)) {
+        (Ok(left), Ok(right)) => left.to_lowercase() == right.to_lowercase(),
+        _ => left.eq_ignore_ascii_case(right),
     }
 }
 
@@ -1246,5 +1251,32 @@ mod typed_output_perf_tests {
         write_value(&mut output, &Cell::Text(vec![b'a'; 16 * 1024])).unwrap();
         assert_eq!(output.bytes, vec![b'a'; 16 * 1024]);
         assert_eq!(output.writes, 1);
+    }
+}
+
+#[cfg(test)]
+mod unicode_ilike_regressions {
+    use super::*;
+
+    #[test]
+    fn matches_non_ascii_letters_in_literal_and_simple_wildcard_patterns() {
+        for (pattern, text) in [
+            ("CAFÉ", "café"),
+            ("CAFÉ%", "café au lait"),
+            ("%CAFÉ", "un café"),
+            ("%CAFÉ%", "un café noir"),
+            ("İ", "i\u{307}"),
+        ] {
+            let compiled = compile_like(pattern).unwrap();
+            assert!(like_matches(text.as_bytes(), &compiled, true), "{pattern}");
+            assert!(!like_matches(text.as_bytes(), &compiled, false), "{pattern}");
+        }
+    }
+
+    #[test]
+    fn keeps_ascii_behavior_and_does_not_match_invalid_utf8() {
+        let pattern = compile_like("ABC%").unwrap();
+        assert!(like_matches(b"abcdef", &pattern, true));
+        assert!(!like_matches(&[0xff], &compile_like("É").unwrap(), true));
     }
 }

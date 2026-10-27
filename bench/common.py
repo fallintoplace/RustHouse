@@ -1,0 +1,50 @@
+"""Shared SQL invocation, timing statistics, and JSON output for workload runners."""
+
+import json
+import math
+import statistics
+import subprocess
+import sys
+from pathlib import Path
+
+
+def cli_sql(binary, database, statement, timeout):
+    """Execute SQL via the CLI and return exact output bytes for verification."""
+    completed = subprocess.run(
+        [
+            str(binary), "sql", statement, "--database", str(database),
+            "--format", "tsv-no-header",
+        ],
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        check=False,
+        timeout=timeout,
+    )
+    if completed.returncode:
+        error = completed.stderr.decode("utf-8", "replace")[:2000]
+        raise RuntimeError(f"exit {completed.returncode}: {error}")
+    return completed.stdout
+
+
+def latency_summary(seconds):
+    """Report a common nearest-rank p90 for wall-clock timings."""
+    if not seconds:
+        return None
+    if any(not math.isfinite(value) or value < 0 for value in seconds):
+        raise ValueError("timing samples must be finite and nonnegative")
+    ordered = sorted(seconds)
+    return {
+        "min_seconds": ordered[0],
+        "median_seconds": statistics.median(ordered),
+        "p90_seconds": ordered[math.ceil(0.9 * len(ordered)) - 1],
+        "max_seconds": ordered[-1],
+    }
+
+
+def emit_json(report, path=None):
+    """Write a report to stdout and, if requested, an identical JSON file."""
+    rendered = json.dumps(report, indent=2) + "\n"
+    if path is not None:
+        Path(path).write_text(rendered, encoding="utf-8")
+    sys.stdout.write(rendered)
+

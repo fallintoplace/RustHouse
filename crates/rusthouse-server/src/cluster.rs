@@ -78,6 +78,17 @@ impl Cluster {
     }
 }
 
+fn render_peer_addresses(peers: &[Peer]) -> String {
+    let mut addresses = String::new();
+    for (index, peer) in peers.iter().enumerate() {
+        if index != 0 {
+            addresses.push(',');
+        }
+        write!(&mut addresses, "\"{}\"", peer.address()).expect("writing to String cannot fail");
+    }
+    addresses
+}
+
 /// Membership describes peer addresses, not their health or consistency.
 pub fn handle(method: &str, body: &[u8], cluster: &Cluster) -> Response {
     if method != "GET" {
@@ -86,13 +97,7 @@ pub fn handle(method: &str, body: &[u8], cluster: &Cluster) -> Response {
     if !body.is_empty() {
         return Response::text("400 Bad Request", "GET must not contain a request body\n");
     }
-    let mut addresses = String::new();
-    for (index, peer) in cluster.peers().iter().enumerate() {
-        if index != 0 {
-            addresses.push(',');
-        }
-        write!(&mut addresses, "\"{}\"", peer.address()).expect("writing to String cannot fail");
-    }
+    let addresses = render_peer_addresses(cluster.peers());
     Response {
         status: "200 OK",
         content_type: "application/json; charset=utf-8",

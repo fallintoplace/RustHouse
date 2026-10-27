@@ -2,13 +2,14 @@
 """Measure local table import throughput using deterministic temperature readings."""
 
 import argparse
-import json
+import sys
 import math
-import statistics
-import subprocess
 import tempfile
 import time
 from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+from common import cli_sql, emit_json, latency_summary
 
 
 def temperature_tenths(row):
@@ -31,36 +32,11 @@ def write_input(path, rows, stations, delimiter="\t"):
 
 
 def summarize(seconds):
-    ordered = sorted(seconds)
-    return {
-        "median_seconds": statistics.median(ordered),
-        "p90_seconds": ordered[math.ceil(len(ordered) * 0.9) - 1],
-        "min_seconds": ordered[0],
-        "max_seconds": ordered[-1],
-    }
+    return latency_summary(seconds)
 
 
 def sql(binary, database, statement, timeout):
-    completed = subprocess.run(
-        [
-            str(binary),
-            "sql",
-            statement,
-            "--database",
-            str(database),
-            "--format",
-            "tsv-no-header",
-        ],
-        capture_output=True,
-        text=True,
-        check=False,
-        timeout=timeout,
-    )
-    if completed.returncode:
-        raise RuntimeError(
-            f"SQL failed: {statement}: {completed.stderr[:2000]}"
-        )
-    return completed.stdout.strip()
+    return cli_sql(binary, database, statement, timeout).decode("utf-8").strip()
 
 
 def verify(binary, database, rows, stations, minimum, maximum, timeout):
@@ -155,10 +131,7 @@ def main(argv=None):
         args.timeout,
         args.format,
     )
-    rendered = json.dumps(result, indent=2) + "\n"
-    if args.output:
-        args.output.write_text(rendered, encoding="utf-8")
-    print(rendered, end="")
+    emit_json(result, args.output)
     return 0
 
 
