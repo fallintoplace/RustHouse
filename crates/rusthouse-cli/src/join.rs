@@ -11,11 +11,7 @@ fn finish_join<T>(
     result: Result<(), rusthouse_query::ExecutionError>,
     finish: impl FnOnce() -> std::io::Result<T>,
 ) -> Result<(), rusthouse_query::ExecutionError> {
-    result.and_then(|()| {
-        finish()
-            .map(|_| ())
-            .map_err(rusthouse_query::ExecutionError::Io)
-    })
+    result.and_then(|()| finish().map(|_| ()).map_err(rusthouse_query::ExecutionError::Io))
 }
 
 fn execute_formatted_join(
@@ -50,9 +46,7 @@ fn execute_formatted_join(
         ),
         SqlOutputFormat::Html => {
             let mut writer = html::HtmlWriter::new(&mut output);
-            finish_join(execute_join(query, left, right, &mut writer), || {
-                writer.finish()
-            })
+            finish_join(execute_join(query, left, right, &mut writer), || writer.finish())
         }
         SqlOutputFormat::Vertical => execute_join(
             query,
@@ -62,9 +56,7 @@ fn execute_formatted_join(
         ),
         SqlOutputFormat::SqlValues => {
             let mut writer = sql_values::SqlValuesWriter::new(&mut output);
-            finish_join(execute_join(query, left, right, &mut writer), || {
-                writer.finish()
-            })
+            finish_join(execute_join(query, left, right, &mut writer), || writer.finish())
         }
         SqlOutputFormat::Jsonl => execute_join(
             query,
@@ -80,21 +72,15 @@ fn execute_formatted_join(
         ),
         SqlOutputFormat::Json => {
             let mut writer = json_array::JsonArrayWriter::new(&mut output);
-            finish_join(execute_join(query, left, right, &mut writer), || {
-                writer.finish()
-            })
+            finish_join(execute_join(query, left, right, &mut writer), || writer.finish())
         }
         SqlOutputFormat::JsonCompactEachRow => {
             let mut writer = json_compact_each_row::JsonCompactEachRowWriter::new(&mut output);
-            finish_join(execute_join(query, left, right, &mut writer), || {
-                writer.finish()
-            })
+            finish_join(execute_join(query, left, right, &mut writer), || writer.finish())
         }
         SqlOutputFormat::JsonPretty => {
             let mut writer = json_array::JsonArrayWriter::new_pretty(&mut output);
-            finish_join(execute_join(query, left, right, &mut writer), || {
-                writer.finish()
-            })
+            finish_join(execute_join(query, left, right, &mut writer), || writer.finish())
         }
     }
 }
