@@ -460,8 +460,24 @@ impl Parser {
                             .ok_or_else(|| ParseError("ORDER BY position is out of range".into()))?
                     }
                 }
-                Projection::GroupedAggregate { column, .. }
-                | Projection::GroupedAggregates { column, .. } => match position {
+                Projection::GroupedAggregate {
+                    column, function, ..
+                } => match position {
+                    1 => column.clone(),
+                    2 if matches!(
+                        function,
+                        AggregateFunction::Sum
+                            | AggregateFunction::Min
+                            | AggregateFunction::Max
+                            | AggregateFunction::Avg
+                    ) => "#aggregate".into(),
+                    _ => {
+                        return Err(ParseError(
+                            "ORDER BY aggregate output requires SUM, MIN, MAX or AVG".into(),
+                        ));
+                    }
+                },
+                Projection::GroupedAggregates { column, .. } => match position {
                     1 => column.clone(),
                     _ => {
                         return Err(ParseError(
@@ -1300,9 +1316,18 @@ fn parse_select_tokens(tokens: Vec<Token>) -> Result<Select, ParseError> {
             ));
         }
     }
-    if let Projection::GroupedAggregate { column, .. }
-    | Projection::GroupedAggregates { column, .. } = &projection
-    {
+    if let Projection::GroupedAggregate { column, .. } = &projection {
+        if order_by
+            .iter()
+            .chain(order_by_extra.iter())
+            .any(|order| &order.column != column && order.column != "#aggregate")
+        {
+            return Err(ParseError(
+                "grouped numeric ORDER BY must use the group key or aggregate".into(),
+            ));
+        }
+    }
+    if let Projection::GroupedAggregates { column, .. } = &projection {
         if order_by
             .iter()
             .chain(order_by_extra.iter())
