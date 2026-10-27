@@ -10,8 +10,8 @@ pub fn parse_columns(content: &str) -> Result<Vec<Column>, PartError> {
     let header = lines
         .next()
         .ok_or_else(|| invalid(2, "missing column-count header"))?;
-    let expected = parse_column_count(header)
-        .ok_or_else(|| invalid(2, "expected '<count> columns:'"))?;
+    let expected =
+        parse_column_count(header).ok_or_else(|| invalid(2, "expected '<count> columns:'"))?;
 
     let mut columns = Vec::new();
     let mut names = HashSet::new();
