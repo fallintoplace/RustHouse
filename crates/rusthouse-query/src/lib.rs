@@ -325,6 +325,21 @@ impl Parser {
     }
 
     fn literal(&mut self) -> Result<String, ParseError> {
+        // Typed SQL date/time literals have the same stored value as quoted
+        // literals, but are accepted explicitly by standard SQL workloads.
+        if matches!(
+            self.tokens.get(self.index),
+            Some(Token::Word(kind))
+                if kind.eq_ignore_ascii_case("DATE") || kind.eq_ignore_ascii_case("TIMESTAMP")
+        ) {
+            if let Some(Token::String(value)) = self.tokens.get(self.index + 1) {
+                self.index += 2;
+                return Ok(value.clone());
+            }
+            return Err(ParseError(
+                "DATE/TIMESTAMP requires a quoted literal".into(),
+            ));
+        }
         match self.tokens.get(self.index) {
             Some(Token::Number(value)) | Some(Token::String(value)) => {
                 self.index += 1;
