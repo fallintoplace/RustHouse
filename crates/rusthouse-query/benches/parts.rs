@@ -82,7 +82,7 @@ impl Fixture {
                 .iter()
                 .map(|value| vec![Some(value.to_string())])
                 .collect::<Vec<_>>();
-            let path = root.join(format!("all_{part}_{part}_0"));
+            let path = root.join(format!("all_{part:06}_{part:06}_0"));
             write_wide_part(&path, &columns, &values).unwrap();
         }
         Self { root, ids }
