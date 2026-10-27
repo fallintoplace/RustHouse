@@ -9,6 +9,7 @@ pub enum ScalarExpr {
     Add(Box<ScalarExpr>, Box<ScalarExpr>),
     Subtract(Box<ScalarExpr>, Box<ScalarExpr>),
     Multiply(Box<ScalarExpr>, Box<ScalarExpr>),
+    Divide(Box<ScalarExpr>, Box<ScalarExpr>),
 }
 
 impl ScalarExpr {
@@ -25,7 +26,10 @@ impl ScalarExpr {
                 }
             }
             Self::Integer(_) => {}
-            Self::Add(left, right) | Self::Subtract(left, right) | Self::Multiply(left, right) => {
+            Self::Add(left, right)
+            | Self::Subtract(left, right)
+            | Self::Multiply(left, right)
+            | Self::Divide(left, right) => {
                 left.referenced_columns(out);
                 right.referenced_columns(out);
             }
@@ -81,8 +85,14 @@ fn primary(parser: &mut Parser) -> Result<ScalarExpr, ParseError> {
 
 fn product(parser: &mut Parser) -> Result<ScalarExpr, ParseError> {
     let mut expr = primary(parser)?;
-    while parser.take(Token::Star) {
-        expr = ScalarExpr::Multiply(Box::new(expr), Box::new(primary(parser)?));
+    loop {
+        if parser.take(Token::Star) {
+            expr = ScalarExpr::Multiply(Box::new(expr), Box::new(primary(parser)?));
+        } else if parser.take(Token::Slash) {
+            expr = ScalarExpr::Divide(Box::new(expr), Box::new(primary(parser)?));
+        } else {
+            break;
+        }
     }
     Ok(expr)
 }
@@ -194,6 +204,21 @@ mod tests {
             )
         );
         assert!(parse_scalar_expression("-").is_err());
+    }
+
+    #[test]
+    fn parses_division_with_multiplication_precedence() {
+        assert_eq!(
+            parse_scalar_expression("total / count + 1").unwrap(),
+            ScalarExpr::Add(
+                Box::new(ScalarExpr::Divide(
+                    Box::new(ScalarExpr::Column("total".into())),
+                    Box::new(ScalarExpr::Column("count".into())),
+                )),
+                Box::new(ScalarExpr::Integer(1)),
+            )
+        );
+        assert!(parse_scalar_expression("total /").is_err());
     }
 
     #[test]

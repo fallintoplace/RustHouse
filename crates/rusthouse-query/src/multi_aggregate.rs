@@ -34,6 +34,9 @@ fn render_expr(expr: &ScalarExpr) -> String {
         ScalarExpr::Subtract(left, right) => {
             format!("{} - {}", render_expr(left), render_expr(right))
         }
+        ScalarExpr::Divide(left, right) => {
+            format!("({}) / ({})", render_expr(left), render_expr(right))
+        }
         ScalarExpr::Multiply(left, right) => {
             let operand = |value: &ScalarExpr| {
                 let rendered = render_expr(value);
