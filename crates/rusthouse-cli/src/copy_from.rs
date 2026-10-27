@@ -116,7 +116,10 @@ fn parse_csv(data: &str) -> Result<Vec<Vec<Option<String>>>, String> {
 }
 
 fn decode_tsv_cell(field: &str) -> Result<String, String> {
-    let mut decoded = Vec::new();
+    if !field.as_bytes().contains(&b'\\') {
+        return Ok(field.to_owned());
+    }
+    let mut decoded = Vec::with_capacity(field.len());
     let mut chars = field.chars();
     while let Some(ch) = chars.next() {
         if ch != '\\' {
@@ -365,6 +368,8 @@ mod tests {
     #[test]
     fn decodes_tsv_cells_without_row_state() {
         assert_eq!(decode_tsv_cell("plain").unwrap(), "plain");
+        assert_eq!(decode_tsv_cell("café-東京").unwrap(), "café-東京");
+        assert_eq!(decode_tsv_cell("").unwrap(), "");
         assert_eq!(decode_tsv_cell("caf\\xC3\\xA9\\t").unwrap(), "café\t");
         assert!(decode_tsv_cell("\\N").is_err());
     }
