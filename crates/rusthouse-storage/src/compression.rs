@@ -489,7 +489,6 @@ mod tests {
         assert!(reader.next_decoded().is_none());
     }
 
-
     #[test]
     fn reuses_encoded_buffer_across_compressed_and_raw_blocks() {
         let data = b"compressed column blocks share a scratch allocation ".repeat(64);
