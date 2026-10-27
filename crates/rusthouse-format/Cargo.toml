@@ -1,0 +1,7 @@
+[package]
+name = "rusthouse-format"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+description = "Shared SQL output formatting helpers for RustHouse"

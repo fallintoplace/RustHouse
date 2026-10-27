@@ -1,5 +1,11 @@
 [workspace]
-members = ["crates/rusthouse-cli", "crates/rusthouse-query", "crates/rusthouse-storage", "crates/rusthouse-server"]
+members = [
+    "crates/rusthouse-cli",
+    "crates/rusthouse-format",
+    "crates/rusthouse-query",
+    "crates/rusthouse-server",
+    "crates/rusthouse-storage",
+]
 resolver = "3"
 
 [workspace.package]

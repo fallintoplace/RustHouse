@@ -6,5 +6,6 @@ rust-version.workspace = true
 license.workspace = true
 
 [dependencies]
+rusthouse-format = { path = "../rusthouse-format" }
 rusthouse-query = { path = "../rusthouse-query" }
 rusthouse-storage = { path = "../rusthouse-storage" }
