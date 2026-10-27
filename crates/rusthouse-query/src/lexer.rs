@@ -50,7 +50,6 @@ fn scan_string(sql: &str, index: &mut usize) -> Result<Token, ParseError> {
     cursor += 1;
     let mut value = String::new();
     let mut start = cursor;
-    let mut closed = false;
     while cursor < bytes.len() {
         if bytes[cursor] == b'\\' && matches!(bytes.get(cursor + 1), Some(b'\'' | b'\\')) {
             value.push_str(&sql[start..cursor]);
@@ -64,19 +63,14 @@ fn scan_string(sql: &str, index: &mut usize) -> Result<Token, ParseError> {
                 cursor += 2;
                 start = cursor;
             } else {
-                cursor += 1;
-                closed = true;
-                break;
+                *index = cursor + 1;
+                return Ok(Token::String(value));
             }
         } else {
             cursor += 1;
         }
     }
-    if !closed {
-        return Err(ParseError("unterminated string literal".into()));
-    }
-    *index = cursor;
-    Ok(Token::String(value))
+    Err(ParseError("unterminated string literal".into()))
 }
 
 fn scan_word(sql: &str, index: &mut usize) -> Token {
@@ -256,6 +250,15 @@ mod tests {
                 Token::Word("t2".into()),
             ]
         );
+    }
+
+    #[test]
+    fn handles_empty_doubled_and_unterminated_string_literals() {
+        assert_eq!(
+            tokenize("'' 'it''s'").unwrap(),
+            vec![Token::String("".into()), Token::String("it's".into())]
+        );
+        assert!(tokenize("'unterminated").is_err());
     }
 
     #[test]
