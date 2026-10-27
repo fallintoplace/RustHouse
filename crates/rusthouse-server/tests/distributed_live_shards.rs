@@ -132,9 +132,7 @@ fn spawn(
         command.arg("--database").arg(database);
     }
     for &peer in peers {
-        command
-            .arg("--peer")
-            .arg(format!("127.0.0.1:{peer}"));
+        command.arg("--peer").arg(format!("127.0.0.1:{peer}"));
     }
     harness.children.push(command.spawn().unwrap());
     wait_ready(port);
@@ -145,7 +143,9 @@ fn live_shards_merge_scans_counts_and_groups_and_fail_closed_on_peer_loss() {
     let mut harness = Harness::default();
     let shard_a = database("kind", &[(1, "red"), (2, "blue")]);
     let shard_b = database("kind", &[(3, "blue"), (4, "red")]);
-    harness.directories.extend([shard_a.clone(), shard_b.clone()]);
+    harness
+        .directories
+        .extend([shard_a.clone(), shard_b.clone()]);
     let [a, b, coordinator] = ports();
     spawn(&mut harness, a, Some(&shard_a), &[], 100);
     spawn(&mut harness, b, Some(&shard_b), &[], 100);
