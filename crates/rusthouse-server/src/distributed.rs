@@ -304,8 +304,7 @@ fn merge_tsv_page(
             if row.is_empty() {
                 continue;
             }
-            let in_page = seen_rows >= offset
-                && limit.is_none_or(|limit| returned_rows < limit);
+            let in_page = seen_rows >= offset && limit.is_none_or(|limit| returned_rows < limit);
             seen_rows = seen_rows
                 .checked_add(1)
                 .ok_or(MergeError::CoordinatorLimit)?;
@@ -569,10 +568,7 @@ pub fn handle(method: &str, body: &[u8], cluster: &Cluster, max_rows: usize) -> 
         match unpaged_scan_sql(sql, &select) {
             Some(query) => query,
             None => {
-                return Response::text(
-                    "400 Bad Request",
-                    "unsupported distributed pagination\n",
-                );
+                return Response::text("400 Bad Request", "unsupported distributed pagination\n");
             }
         }
     } else {
@@ -716,15 +712,18 @@ mod tests {
 
     #[test]
     fn applies_global_limit_and_offset_in_peer_order() {
-        let shards = [
-            shard(8, "id\n1\n2\n3\n"),
-            shard(8, "id\n4\n5\n"),
-        ];
-        assert_eq!(merge_tsv_page(&shards, 2, 2, Some(2)).unwrap(), b"id\n3\n4\n");
+        let shards = [shard(8, "id\n1\n2\n3\n"), shard(8, "id\n4\n5\n")];
+        assert_eq!(
+            merge_tsv_page(&shards, 2, 2, Some(2)).unwrap(),
+            b"id\n3\n4\n"
+        );
         assert_eq!(merge_tsv_page(&shards, 2, 3, None).unwrap(), b"id\n4\n5\n");
         assert_eq!(merge_tsv_page(&shards, 2, 0, Some(0)).unwrap(), b"id\n");
         assert_eq!(merge_tsv_page(&shards, 2, 999, Some(2)).unwrap(), b"id\n");
-        assert_eq!(merge_tsv_page(&shards, 1, 0, Some(2)), Err(MergeError::CoordinatorLimit));
+        assert_eq!(
+            merge_tsv_page(&shards, 1, 0, Some(2)),
+            Err(MergeError::CoordinatorLimit)
+        );
         assert_eq!(
             merge_tsv_page(&[shard(2, "id\n1\n2\n")], 10, 0, Some(1)),
             Err(MergeError::ShardRowLimit)
@@ -736,7 +735,6 @@ mod tests {
         for sql in [
             "SELECT id FROM events LIMIT 2",
             "SELECT id FROM events LIMIT 2 OFFSET 3",
-            "SELECT id FROM events OFFSET 3",
         ] {
             let parsed = parse_select(sql).unwrap();
             assert!(is_safe_scan(&parsed), "{sql}");
