@@ -60,6 +60,7 @@ pub(super) fn is_function(name: &str) -> bool {
         || name.eq_ignore_ascii_case("POW10")
         || name.eq_ignore_ascii_case("TRIANGULAR")
         || name.eq_ignore_ascii_case("IS_PRIME")
+        || name.eq_ignore_ascii_case("BINOMIAL")
         || name.eq_ignore_ascii_case("CLAMP")
         || name.eq_ignore_ascii_case("CEIL_DIV")
         || name.eq_ignore_ascii_case("FLOOR_DIV")
@@ -556,6 +557,24 @@ fn parse_is_prime(parser: &mut Parser, depth: usize) -> Result<i64, ParseError> 
     Ok(1)
 }
 
+/// Compute n choose k exactly for n up to 66.
+fn parse_binomial(parser: &mut Parser, depth: usize) -> Result<i64, ParseError> {
+    require_token(parser, Token::LParen, "BINOMIAL requires '('")?;
+    let n = expression(parser, depth + 1)?;
+    require_token(parser, Token::Comma, "BINOMIAL requires two arguments")?;
+    let k = expression(parser, depth + 1)?;
+    require_token(parser, Token::RParen, "BINOMIAL requires ')'")?;
+    if !(0..=66).contains(&n) || k < 0 || k > n {
+        return Err(ParseError("BINOMIAL requires 0 <= k <= n <= 66".into()));
+    }
+    let k = k.min(n - k);
+    let mut result = 1_i128;
+    for index in 0..k {
+        result = result * i128::from(n - index) / i128::from(index + 1);
+    }
+    i64::try_from(result).map_err(|_| overflow())
+}
+
 fn gcd(mut left: u64, mut right: u64) -> u64 {
     while right != 0 {
         let remainder = left % right;
@@ -811,6 +830,9 @@ fn factor(parser: &mut Parser, depth: usize) -> Result<i64, ParseError> {
     }
     if parser.keyword("IS_PRIME") {
         return parse_is_prime(parser, depth);
+    }
+    if parser.keyword("BINOMIAL") {
+        return parse_binomial(parser, depth);
     }
     if matches!(parser.tokens.get(parser.index), Some(Token::Word(name)) if name.eq_ignore_ascii_case("GCD") || name.eq_ignore_ascii_case("LCM"))
     {
