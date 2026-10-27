@@ -5,6 +5,13 @@ pub fn validate_wide_marks<R: Read + Seek>(
     marks: &WideMarks,
     mut reader: CompressedBlockReader<R>,
 ) -> Result<(), PartError> {
+    validate_wide_marks_reader(marks, &mut reader)
+}
+
+pub(crate) fn validate_wide_marks_reader<R: Read + Seek>(
+    marks: &WideMarks,
+    reader: &mut CompressedBlockReader<R>,
+) -> Result<(), PartError> {
     if marks.marks.is_empty() {
         return Err(PartError::EmptyMarksFile(marks.path.clone()));
     }
