@@ -50,6 +50,14 @@ fn computes_multiple_aggregates_in_one_filtered_scan() {
         "min(amount)\tmax(amount)\tcount(tag)\n2\t4\t2\n"
     );
     assert_eq!(
+        run("SELECT count(DISTINCT tag), count(*), sum(width) FROM part"),
+        "count(DISTINCT tag)\tcount(*)\tsum(width)\n2\t3\t60\n"
+    );
+    assert_eq!(
+        run("SELECT count(DISTINCT amount + 1), count(*) FROM part WHERE tag = 'ok'"),
+        "count(DISTINCT amount + 1)\tcount(*)\n2\t2\n"
+    );
+    assert_eq!(
         run("SELECT sum(length(tag)), avg(length(tag)) FROM part WHERE amount > 2"),
         "sum(length(tag))\tavg(length(tag))\n4\t2\n"
     );

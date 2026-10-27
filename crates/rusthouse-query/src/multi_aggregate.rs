@@ -6,6 +6,7 @@ use crate::{AggregateFunction, ParseError, Parser, ScalarExpr};
 pub struct AggregateItem {
     pub function: Option<AggregateFunction>,
     pub argument: Option<ScalarExpr>,
+    pub distinct: bool,
     pub alias: Option<String>,
 }
 
@@ -16,7 +17,11 @@ impl AggregateItem {
         }
         let function = self.function.map_or("count", AggregateFunction::name);
         let argument = self.argument.as_ref().map_or("*".into(), render_expr);
-        format!("{function}({argument})")
+        if self.distinct {
+            format!("count(DISTINCT {argument})")
+        } else {
+            format!("{function}({argument})")
+        }
     }
 }
 
@@ -65,23 +70,22 @@ pub(crate) fn parse_multiple(
             return Ok(None);
         }
         parser.index += 2;
-        if parser.keyword("DISTINCT") {
-            if items.is_empty() {
-                parser.index = start;
-                return Ok(None);
-            }
-            return Err(ParseError(
-                "DISTINCT aggregate lists are unsupported".into(),
-            ));
+        let distinct = parser.keyword("DISTINCT");
+        if distinct && function.is_some() {
+            return Err(ParseError("DISTINCT is only supported for COUNT".into()));
         }
         let argument = if parser.take(Token::Star) || parser.take(Token::RParen) {
             if function.is_some() {
                 return Err(ParseError("numeric aggregate needs a column".into()));
             }
             if parser.tokens.get(parser.index - 1) == Some(&Token::RParen) {
+                if distinct {
+                    return Err(ParseError("COUNT(DISTINCT) requires a column".into()));
+                }
                 items.push(AggregateItem {
                     function,
                     argument: None,
+                    distinct,
                     alias: if parser.keyword("AS") {
                         Some(parser.word()?)
                     } else {
@@ -105,9 +109,13 @@ pub(crate) fn parse_multiple(
         } else {
             None
         };
+        if distinct && argument.is_none() {
+            return Err(ParseError("COUNT(DISTINCT) requires a column".into()));
+        }
         items.push(AggregateItem {
             function,
             argument,
+            distinct,
             alias,
         });
         if items.len() >= 128 && parser.tokens.get(parser.index) == Some(&Token::Comma) {
@@ -137,6 +145,20 @@ mod tests {
         assert_eq!(items.len(), 3);
         assert_eq!(items[0].header(), "sum(width + 1)");
         assert_eq!(items[1].header(), "count(*)");
+    }
+
+    #[test]
+    fn parses_distinct_counts_with_other_aggregates() {
+        let query =
+            parse_select("SELECT count(DISTINCT customer), count(*), sum(amount) FROM part")
+                .unwrap();
+        let Projection::MultipleAggregates(items) = query.projection else {
+            panic!("expected multiple aggregates");
+        };
+        assert!(items[0].distinct);
+        assert!(!items[1].distinct);
+        assert_eq!(items[0].header(), "count(DISTINCT customer)");
+        assert!(parse_select("SELECT sum(DISTINCT amount), count(*) FROM part").is_err());
     }
 
     #[test]
