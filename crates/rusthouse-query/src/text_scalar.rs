@@ -6,7 +6,7 @@ const MAX_TEXT_BYTES: usize = 1_048_576;
 pub(super) fn is_function(name: &str) -> bool {
     matches!(
         name.to_ascii_uppercase().as_str(),
-        "LENGTH" | "CHAR_LENGTH" | "LOWER" | "UPPER" | "CONCAT" | "SUBSTRING" | "TRIM" | "REPLACE" | "LEFT"
+        "LENGTH" | "CHAR_LENGTH" | "LOWER" | "UPPER" | "CONCAT" | "SUBSTRING" | "TRIM" | "REPLACE" | "LEFT" | "RIGHT"
     )
 }
 
@@ -167,6 +167,22 @@ fn parse_at_depth(parser: &mut Parser, depth: usize) -> Result<ConstantValue, Pa
                     }
                     let count = usize::try_from(count).unwrap_or(usize::MAX).min(value.len());
                     ConstantValue::Text(value[..count].to_owned())
+                }
+                _ => ConstantValue::Null,
+            }
+        }
+        "RIGHT" => {
+            let input = text_arg(parser, depth + 1)?;
+            require(parser, Token::Comma, "RIGHT requires a character count")?;
+            let count = integer_arg(parser, depth + 1)?;
+            require(parser, Token::RParen, "expected ')' after RIGHT arguments")?;
+            match (input, count) {
+                (Some(value), Some(count)) => {
+                    if count < 0 {
+                        return Err(ParseError("RIGHT count must be nonnegative".into()));
+                    }
+                    let count = usize::try_from(count).unwrap_or(usize::MAX).min(value.len());
+                    ConstantValue::Text(value[value.len() - count..].to_owned())
                 }
                 _ => ConstantValue::Null,
             }
