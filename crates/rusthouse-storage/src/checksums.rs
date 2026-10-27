@@ -103,7 +103,8 @@ pub fn read_checksums(path: impl AsRef<Path>) -> Result<PartChecksums, PartError
     if size > MAX_CHECKSUMS_BYTES {
         return Err(invalid(path, "checksums file exceeds 64 MiB"));
     }
-    let mut content = Vec::new();
+    // A checked metadata size is available, so reserve once for the input.
+    let mut content = Vec::with_capacity(size as usize);
     file.take(MAX_CHECKSUMS_BYTES + 1)
         .read_to_end(&mut content)
         .map_err(|source| PartError::Io {
@@ -175,7 +176,13 @@ fn decode_compressed_checksums(payload: &[u8], path: &Path) -> Result<Vec<u8>, P
         if block.data.len() > MAX_CHECKSUMS_BYTES as usize - decoded.len() {
             return Err(invalid(path, "decoded checksums exceed 64 MiB"));
         }
-        decoded.extend_from_slice(&block.data);
+        if decoded.is_empty() {
+            // A single compressed checksums block is common. Take ownership
+            // of its decoded allocation instead of copying its entire body.
+            decoded = block.data;
+        } else {
+            decoded.extend_from_slice(&block.data);
+        }
     }
     Ok(decoded)
 }
