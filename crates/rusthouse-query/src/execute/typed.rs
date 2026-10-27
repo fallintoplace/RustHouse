@@ -156,7 +156,25 @@ enum LikeToken {
     Byte(u8),
 }
 
-fn compile_like(pattern: &str) -> Result<Vec<LikeToken>, ExecutionError> {
+enum LikePattern {
+    Exact(Vec<u8>),
+    Prefix(Vec<u8>),
+    Suffix(Vec<u8>),
+    Contains(Vec<u8>),
+    Wildcard(Vec<LikeToken>),
+}
+
+fn literal_bytes(tokens: &[LikeToken]) -> Option<Vec<u8>> {
+    tokens
+        .iter()
+        .map(|token| match token {
+            LikeToken::Byte(byte) => Some(*byte),
+            LikeToken::Any | LikeToken::One => None,
+        })
+        .collect()
+}
+
+fn compile_like(pattern: &str) -> Result<LikePattern, ExecutionError> {
     let mut tokens = Vec::new();
     let mut bytes = pattern.bytes();
     while let Some(byte) = bytes.next() {
@@ -181,7 +199,28 @@ fn compile_like(pattern: &str) -> Result<Vec<LikeToken>, ExecutionError> {
             literal => tokens.push(LikeToken::Byte(literal)),
         }
     }
-    Ok(tokens)
+    if let Some(bytes) = literal_bytes(&tokens) {
+        return Ok(LikePattern::Exact(bytes));
+    }
+    if tokens.len() >= 2
+        && matches!(tokens.first(), Some(LikeToken::Any))
+        && matches!(tokens.last(), Some(LikeToken::Any))
+    {
+        if let Some(bytes) = literal_bytes(&tokens[1..tokens.len() - 1]) {
+            return Ok(LikePattern::Contains(bytes));
+        }
+    }
+    if matches!(tokens.last(), Some(LikeToken::Any)) {
+        if let Some(bytes) = literal_bytes(&tokens[..tokens.len() - 1]) {
+            return Ok(LikePattern::Prefix(bytes));
+        }
+    }
+    if matches!(tokens.first(), Some(LikeToken::Any)) {
+        if let Some(bytes) = literal_bytes(&tokens[1..]) {
+            return Ok(LikePattern::Suffix(bytes));
+        }
+    }
+    Ok(LikePattern::Wildcard(tokens))
 }
 
 fn next_utf8_boundary(value: &[u8], index: usize) -> Option<usize> {
@@ -197,7 +236,34 @@ fn next_utf8_boundary(value: &[u8], index: usize) -> Option<usize> {
     Some(end)
 }
 
-fn like_matches(value: &[u8], pattern: &[LikeToken], case_insensitive: bool) -> bool {
+fn equal_like_bytes(left: &[u8], right: &[u8], case_insensitive: bool) -> bool {
+    if case_insensitive {
+        left.eq_ignore_ascii_case(right)
+    } else {
+        left == right
+    }
+}
+
+fn like_matches(value: &[u8], pattern: &LikePattern, case_insensitive: bool) -> bool {
+    match pattern {
+        LikePattern::Exact(bytes) => equal_like_bytes(value, bytes, case_insensitive),
+        LikePattern::Prefix(bytes) => value
+            .get(..bytes.len())
+            .is_some_and(|prefix| equal_like_bytes(prefix, bytes, case_insensitive)),
+        LikePattern::Suffix(bytes) => value
+            .get(value.len().saturating_sub(bytes.len())..)
+            .is_some_and(|suffix| equal_like_bytes(suffix, bytes, case_insensitive)),
+        LikePattern::Contains(bytes) => {
+            bytes.is_empty()
+                || value
+                    .windows(bytes.len())
+                    .any(|part| equal_like_bytes(part, bytes, case_insensitive))
+        }
+        LikePattern::Wildcard(tokens) => like_matches_wildcards(value, tokens, case_insensitive),
+    }
+}
+
+fn like_matches_wildcards(value: &[u8], pattern: &[LikeToken], case_insensitive: bool) -> bool {
     let (mut row, mut pat) = (0, 0);
     let mut last_any = None;
     let mut restart = 0;
@@ -247,7 +313,7 @@ enum Test {
     NotBetween(Cell, Cell),
     IsNull(bool),
     Like {
-        pattern: Vec<LikeToken>,
+        pattern: LikePattern,
         case_insensitive: bool,
         negated: bool,
     },
@@ -1022,6 +1088,26 @@ mod like_tests {
             true
         ));
         assert!(!like_matches(b"foobarextra", &pattern, true));
+    }
+
+    #[test]
+    fn matches_simple_patterns_and_escaped_wildcards() {
+        for (value, pattern, expected) in [
+            (b"abc".as_slice(), "abc", true),
+            (b"abcd".as_slice(), "abc", false),
+            (b"abcd".as_slice(), "ab%", true),
+            (b"abcd".as_slice(), "%cd", true),
+            (b"abcd".as_slice(), "%bc%", true),
+            (b"abcd".as_slice(), "%zz%", false),
+            (b"abc".as_slice(), "%", true),
+            (b"abc".as_slice(), "ab\\%c", false),
+            (b"ab%c".as_slice(), "ab\\%c", true),
+        ] {
+            assert_eq!(matches(value, pattern), expected, "{pattern}");
+        }
+        let pattern = compile_like("%ABC%").unwrap();
+        assert!(like_matches(b"xxabcyy", &pattern, true));
+        assert!(!like_matches(b"xxabcyy", &pattern, false));
     }
 
     #[test]
