@@ -28,6 +28,7 @@ pub(super) fn is_function(name: &str) -> bool {
         || name.eq_ignore_ascii_case("GCD")
         || name.eq_ignore_ascii_case("LCM")
         || name.eq_ignore_ascii_case("CLAMP")
+        || name.eq_ignore_ascii_case("ROUND_TO_MULTIPLE")
 }
 
 pub(super) fn parse(parser: &mut Parser) -> Result<i64, ParseError> {
@@ -164,6 +165,35 @@ fn parse_clamp(parser: &mut Parser, depth: usize) -> Result<i64, ParseError> {
     Ok(value.clamp(lower, upper))
 }
 
+fn parse_round_to_multiple(parser: &mut Parser, depth: usize) -> Result<i64, ParseError> {
+    require_token(parser, Token::LParen, "ROUND_TO_MULTIPLE requires '('")?;
+    let value = expression(parser, depth + 1)?;
+    require_token(
+        parser,
+        Token::Comma,
+        "ROUND_TO_MULTIPLE requires two arguments",
+    )?;
+    let multiple = expression(parser, depth + 1)?;
+    require_token(
+        parser,
+        Token::RParen,
+        "expected ')' after ROUND_TO_MULTIPLE arguments",
+    )?;
+    if multiple <= 0 {
+        return Err(ParseError(
+            "ROUND_TO_MULTIPLE requires a positive multiple".into(),
+        ));
+    }
+    let step = i128::from(multiple);
+    let rounded_magnitude = ((i128::from(value).abs() + step / 2) / step) * step;
+    let rounded = if value < 0 {
+        -rounded_magnitude
+    } else {
+        rounded_magnitude
+    };
+    i64::try_from(rounded).map_err(|_| overflow())
+}
+
 fn gcd(mut left: u64, mut right: u64) -> u64 {
     while right != 0 {
         let remainder = left % right;
@@ -219,6 +249,9 @@ fn factor(parser: &mut Parser, depth: usize) -> Result<i64, ParseError> {
     }
     if parser.keyword("CLAMP") {
         return parse_clamp(parser, depth);
+    }
+    if parser.keyword("ROUND_TO_MULTIPLE") {
+        return parse_round_to_multiple(parser, depth);
     }
     if matches!(parser.tokens.get(parser.index), Some(Token::Word(name)) if name.eq_ignore_ascii_case("GCD") || name.eq_ignore_ascii_case("LCM"))
     {
