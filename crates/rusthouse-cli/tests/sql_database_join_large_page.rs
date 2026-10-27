@@ -35,7 +35,6 @@ fn pages_more_than_65536_joined_pairs_without_materializing_them() {
         }
     }
 
-    // Each of the 24,576 fact rows matches three dimension rows: 73,728 pairs.
     let page = sql(
         "SELECT f.id FROM facts f JOIN dimension d ON f.id = d.id LIMIT 2 OFFSET 65536",
         &db,
@@ -43,7 +42,6 @@ fn pages_more_than_65536_joined_pairs_without_materializing_them() {
     assert!(page.status.success(), "{page:?}");
     assert_eq!(page.stdout, b"f.id\n5461\n5461\n");
 
-    // Queries without a bounded page still reject excessive result cardinality.
     let unbounded = sql(
         "SELECT f.id FROM facts f JOIN dimension d ON f.id = d.id",
         &db,

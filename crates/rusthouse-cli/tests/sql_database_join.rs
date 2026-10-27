@@ -82,7 +82,6 @@ fn inner_join_builds_more_than_one_4096_row_part() {
     assert!(joined.status.success(), "{joined:?}");
     assert_eq!(joined.stdout, b"f.id\td.id\n17\t17\n5000\t5000\n");
 
-    // The materializing path now handles both sides beyond 4096 rows.
     let ordered = sql(
         "SELECT f.id FROM facts f JOIN dimensions d ON f.id = d.id ORDER BY d.id LIMIT 2",
         &db,

@@ -1,4 +1,3 @@
-//! Process-exit crash cases for local database publication.
 #![cfg(debug_assertions)]
 
 use std::fs;
@@ -59,13 +58,11 @@ fn snapshot_publication_survives_process_exit_at_each_boundary() {
             "{point}: {crashed:?}"
         );
 
-        // Restarting the CLI must see exactly one complete generation.
         assert_eq!(
             success(&dir, "SELECT id FROM events ORDER BY id").stdout,
             expected.as_bytes(),
             "{point}"
         );
-        // The exited writer must not block future commits.
         success(&dir, "INSERT INTO events VALUES (4)");
         assert_eq!(
             success(&dir, "SELECT id FROM events ORDER BY id").stdout,
