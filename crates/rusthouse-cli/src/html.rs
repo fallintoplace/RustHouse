@@ -35,19 +35,7 @@ impl<W: Write> HtmlWriter<W> {
             }
         }
 
-        let fields = text
-            .split('\t')
-            .map(|field| {
-                if header || field == "\\N" || !field.as_bytes().contains(&b'\\') {
-                    return Ok(Cow::Borrowed(field));
-                }
-                String::from_utf8(decode_tsv_field(field.as_bytes())?)
-                    .map(Cow::Owned)
-                    .map_err(|_| {
-                        io::Error::new(io::ErrorKind::InvalidData, "HTML field is not valid UTF-8")
-                    })
-            })
-            .collect::<io::Result<Vec<_>>>()?;
+        let fields = decode_html_fields(text, header)?;
 
         if header {
             self.output.write_all(b"<table>\n<thead><tr>")?;
@@ -76,6 +64,21 @@ impl<W: Write> HtmlWriter<W> {
         self.output.flush()?;
         Ok(self.output)
     }
+}
+
+fn decode_html_fields(line: &str, header: bool) -> io::Result<Vec<Cow<'_, str>>> {
+    line.split('\t')
+        .map(|field| {
+            if header || field == "\\N" || !field.as_bytes().contains(&b'\\') {
+                return Ok(Cow::Borrowed(field));
+            }
+            String::from_utf8(decode_tsv_field(field.as_bytes())?)
+                .map(Cow::Owned)
+                .map_err(|_| {
+                    io::Error::new(io::ErrorKind::InvalidData, "HTML field is not valid UTF-8")
+                })
+        })
+        .collect()
 }
 
 fn write_cells<W: Write>(output: &mut W, fields: &[Cow<'_, str>], header: bool) -> io::Result<()> {
@@ -151,6 +154,15 @@ impl<W: Write> Write for HtmlWriter<W> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn only_decodes_escaped_data_fields() {
+        let headers = decode_html_fields(r"name\label", true).unwrap();
+        assert!(matches!(&headers[0], Cow::Borrowed(_)));
+        let cells = decode_html_fields(r"raw\N\tdecoded\x20text", false).unwrap();
+        assert!(matches!(&cells[0], Cow::Borrowed(_)));
+        assert_eq!(cells[1].as_ref(), "decoded text");
+    }
 
     #[test]
     fn escapes_untrusted_cell_content_and_keeps_unicode() {
