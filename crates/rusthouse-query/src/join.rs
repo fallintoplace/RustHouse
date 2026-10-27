@@ -22,7 +22,7 @@ pub struct JoinSelect {
     pub left_alias: String,
     pub right_alias: String,
     pub kind: JoinType,
-    /// Select only the first matching right row for INNER and LEFT joins.
+    /// Select one right row per left row for INNER/LEFT, or one left row per right for RIGHT.
     pub any: bool,
     /// None projects every column from both tables.
     pub columns: Option<Vec<JoinColumn>>,
@@ -162,9 +162,9 @@ pub fn parse_join(sql: &str) -> Result<Option<JoinSelect>, ParseError> {
     let leading_any = parser.keyword("ANY");
     let kind = parse_join_kind(&mut parser);
     let any = parser.keyword("ANY") || leading_any;
-    if any && !matches!(kind, JoinType::Inner | JoinType::Left) {
+    if any && !matches!(kind, JoinType::Inner | JoinType::Left | JoinType::Right) {
         return Err(ParseError(
-            "ANY JOIN supports only INNER and LEFT joins".into(),
+            "ANY JOIN supports only INNER, LEFT and RIGHT joins".into(),
         ));
     }
     if !parser.keyword("JOIN") {
@@ -473,12 +473,19 @@ mod tests {
         ] {
             assert!(parse_join(statement).unwrap().unwrap().any, "{statement}");
         }
+        for statement in [
+            "SELECT * FROM a RIGHT ANY JOIN b ON a.id = b.id",
+            "SELECT * FROM a ANY RIGHT JOIN b ON a.id = b.id",
+        ] {
+            let query = parse_join(statement).unwrap().unwrap();
+            assert!(query.any);
+            assert_eq!(query.kind, JoinType::Right);
+        }
         let ordinary = parse_join("SELECT * FROM a JOIN b ON a.id = b.id")
             .unwrap()
             .unwrap();
         assert!(!ordinary.any);
         for statement in [
-            "SELECT * FROM a RIGHT ANY JOIN b ON a.id = b.id",
             "SELECT * FROM a ANY FULL JOIN b ON a.id = b.id",
         ] {
             assert!(parse_join(statement).is_err(), "{statement}");
