@@ -84,10 +84,7 @@ fn generated_rows_and_empty_inserts_use_existing_publish_path() {
         "INSERT INTO target (id) SELECT number FROM numbers(50000)",
         &db,
     );
-    assert_eq!(
-        ok("SELECT count(*) FROM target", &db),
-        "count\n50003\n"
-    );
+    assert_eq!(ok("SELECT count(*) FROM target", &db), "count\n50003\n");
     let pointer = db.join("target.parts/.rusthouse-active");
     assert_eq!(fs::read_to_string(&pointer).unwrap(), "g1\n");
 

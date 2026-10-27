@@ -80,7 +80,9 @@ fn decode_rows(data: &[u8]) -> Result<Vec<Vec<Option<String>>>, String> {
     let mut rows = Vec::new();
     for line in lines {
         if rows.len() >= MAX_INSERT_ROWS {
-            return Err(format!("INSERT SELECT supports at most {MAX_INSERT_ROWS} rows"));
+            return Err(format!(
+                "INSERT SELECT supports at most {MAX_INSERT_ROWS} rows"
+            ));
         }
         let fields = line
             .split('\t')
