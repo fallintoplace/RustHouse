@@ -9,7 +9,6 @@ pub(super) fn is_function(name: &str) -> bool {
         "LENGTH"
             | "CHAR_LENGTH"
             | "BTRIM"
-            | "HEX_DECODE"
             | "LOWER"
             | "UPPER"
             | "REVERSE"
@@ -19,6 +18,7 @@ pub(super) fn is_function(name: &str) -> bool {
             | "SPLIT_PART"
             | "TRIM"
             | "LPAD"
+            | "HEX_DECODE"
             | "REPLACE"
             | "STRPOS"
             | "LEFT"
@@ -226,6 +226,29 @@ fn parse_at_depth(parser: &mut Parser, depth: usize) -> Result<ConstantValue, Pa
                     ConstantValue::Text(value.chars().skip(start).take(count).collect())
                 }
                 _ => ConstantValue::Null,
+            }
+        }
+        "HEX_DECODE" => {
+            let input = text_arg(parser, depth + 1)?;
+            require(parser, Token::RParen, "HEX_DECODE requires one argument")?;
+            match input {
+                Some(value) => {
+                    if value.len() % 2 != 0 || !value.is_ascii() {
+                        return Err(ParseError("HEX_DECODE requires even-length ASCII hex".into()));
+                    }
+                    let mut bytes = Vec::with_capacity(value.len() / 2);
+                    for pair in value.as_bytes().chunks_exact(2) {
+                        let hex = std::str::from_utf8(pair)
+                            .map_err(|_| ParseError("invalid HEX_DECODE input".into()))?;
+                        let byte = u8::from_str_radix(hex, 16)
+                            .map_err(|_| ParseError("invalid HEX_DECODE input".into()))?;
+                        bytes.push(byte);
+                    }
+                    let decoded = String::from_utf8(bytes)
+                        .map_err(|_| ParseError("HEX_DECODE result is not UTF-8".into()))?;
+                    ConstantValue::Text(decoded)
+                }
+                None => ConstantValue::Null,
             }
         }
         "LPAD" => {
@@ -460,29 +483,6 @@ fn parse_at_depth(parser: &mut Parser, depth: usize) -> Result<ConstantValue, Pa
                     }
                 }
                 _ => ConstantValue::Null,
-            }
-        }
-        "HEX_DECODE" => {
-            let input = text_arg(parser, depth + 1)?;
-            require(parser, Token::RParen, "HEX_DECODE requires one argument")?;
-            match input {
-                Some(value) => {
-                    if value.len() % 2 != 0 || !value.is_ascii() {
-                        return Err(ParseError("HEX_DECODE requires even-length ASCII hex".into()));
-                    }
-                    let mut bytes = Vec::with_capacity(value.len() / 2);
-                    for pair in value.as_bytes().chunks_exact(2) {
-                        let hex = std::str::from_utf8(pair)
-                            .map_err(|_| ParseError("invalid HEX_DECODE input".into()))?;
-                        let byte = u8::from_str_radix(hex, 16)
-                            .map_err(|_| ParseError("invalid HEX_DECODE input".into()))?;
-                        bytes.push(byte);
-                    }
-                    let decoded = String::from_utf8(bytes)
-                        .map_err(|_| ParseError("HEX_DECODE result is not UTF-8".into()))?;
-                    ConstantValue::Text(decoded)
-                }
-                None => ConstantValue::Null,
             }
         }
         _ => return Err(ParseError(format!("unsupported string function: {name}"))),
