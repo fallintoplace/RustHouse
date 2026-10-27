@@ -4,14 +4,12 @@ use crate::fixed_width::read_fixed_width;
 use std::io::{self, Read};
 use std::net::{Ipv4Addr, Ipv6Addr};
 
-/// Decode ClickHouse IPv4's little-endian UInt32 physical representation.
 pub fn read_ipv4_values<R: Read>(reader: &mut R, rows: usize) -> io::Result<Vec<Ipv4Addr>> {
     read_fixed_width(reader, rows, "IPv4 batch exceeds 64 MiB", |bytes| {
         Ipv4Addr::from(u32::from_le_bytes(bytes))
     })
 }
 
-/// Decode ClickHouse IPv6's 16-byte network-order physical representation.
 pub fn read_ipv6_values<R: Read>(reader: &mut R, rows: usize) -> io::Result<Vec<Ipv6Addr>> {
     read_fixed_width(reader, rows, "IPv6 batch exceeds 64 MiB", Ipv6Addr::from)
 }

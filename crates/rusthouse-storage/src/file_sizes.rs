@@ -4,16 +4,12 @@ use std::fs;
 use std::io::{self, Read};
 use std::path::{Path, PathBuf};
 
-/// Counts manifest entries whose stored sizes match the actual local files.
-/// File hashes are not checked.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct FileSizeVerification {
     pub files: usize,
     pub total_bytes: u64,
 }
 
-/// Check that every file listed by checksums.txt exists with the expected size.
-/// Symlinks are not followed, including symlinks in nested paths.
 pub fn verify_part_file_sizes(part: impl AsRef<Path>) -> Result<FileSizeVerification, PartError> {
     let part = part.as_ref();
     let manifest = read_checksums(&validated_checksums_path(part)?)?;
@@ -32,12 +28,6 @@ pub fn verify_part_file_sizes(part: impl AsRef<Path>) -> Result<FileSizeVerifica
     })
 }
 
-/// Verify stored-byte CityHash128WithSeed checksums, in addition to file sizes.
-///
-/// This intentionally checks the stored hash only, not the optional
-/// uncompressed hash of compressed streams. It reads each listed file in
-/// bounded 2048-byte chunks, matching ClickHouse's HashingWriteBuffer.
-/// Run only on frozen parts while writers are stopped.
 pub fn verify_part_file_hashes(part: impl AsRef<Path>) -> Result<FileSizeVerification, PartError> {
     const BLOCK_BYTES: usize = 2048;
     let part = part.as_ref();
@@ -58,7 +48,6 @@ pub fn verify_part_file_hashes(part: impl AsRef<Path>) -> Result<FileSizeVerific
             hash = cityhash128_with_seed(&buffer[..length], hash);
             remaining -= length as u64;
         }
-        // Catch files extended after the size check, as well as changed data.
         if file
             .read(&mut buffer[..1])
             .map_err(|source| io_error(&path, source))?
@@ -91,7 +80,6 @@ fn validated_checksums_path(part: &Path) -> Result<PathBuf, PartError> {
     Ok(path)
 }
 
-/// Read metadata for the directory entry itself, never its symlink target.
 fn nofollow_metadata(path: &Path) -> Result<fs::Metadata, PartError> {
     fs::symlink_metadata(path).map_err(|source| io_error(path, source))
 }
@@ -299,7 +287,6 @@ mod tests {
                 total_bytes: 11
             }
         );
-        // Size validation is not a hash check.
         fs::write(dir.join("id.bin"), [9, 8, 7]).unwrap();
         assert!(verify_part_file_sizes(&dir).is_ok());
         fs::remove_dir_all(dir).unwrap();

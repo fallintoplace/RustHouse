@@ -30,8 +30,6 @@ pub(crate) fn read_mark_bytes_cached<R: Read + Seek>(
 
     let mut offset = usize::try_from(mark.decompressed_offset)
         .map_err(|_| invalid_mark(mark, "decompressed offset exceeds address space"))?;
-    // Adjacent adaptive marks often reference the same compressed block.
-    // Keep one verified decoded block per column stream and avoid re-decoding it.
     if let Some(bytes) = cached
         .as_ref()
         .filter(|block| block.block.offset == mark.compressed_offset)
@@ -120,8 +118,6 @@ pub(crate) fn read_numeric_granule_cached<R: Read + Seek>(
     if byte_count > MAX_GRANULE_BYTES {
         return Err(invalid_mark(mark, "granule exceeds the 64 MiB read limit"));
     }
-    // A verified cached block can be decoded directly. This avoids allocating
-    // and copying the bytes of every adaptive mark sharing a compressed block.
     if let Some(bytes) = cached
         .as_ref()
         .filter(|block| block.block.offset == mark.compressed_offset)
@@ -231,7 +227,6 @@ mod tests {
         );
         assert_eq!(reads.get(), read_count);
 
-        // An invalid offset must still fail, even if the block was cached.
         assert!(matches!(
             read_numeric_granule_cached(&mut reader, &mark(0, 32, Some(1)), "UInt64", &mut cache),
             Err(PartError::InvalidWideMark {

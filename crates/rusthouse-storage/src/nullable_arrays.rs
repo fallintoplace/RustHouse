@@ -7,7 +7,6 @@ use std::fmt;
 use std::io::{self, Read};
 use std::ops::Range;
 
-/// A batch of Array(Nullable(T)) values, where T is a supported numeric type.
 #[derive(Debug, PartialEq)]
 pub struct NullableNumericArrayColumn {
     offsets: ArrayOffsets,
@@ -80,7 +79,6 @@ fn validated_nullable_type(data_type: &str) -> Result<&str, NullableArrayReadErr
         .filter(|inner| !inner.is_empty())
         .ok_or_else(|| NullableArrayReadError::InvalidType(data_type.to_owned()))?;
 
-    // Validate before consuming any stream. The zero-row scalar read cannot read bytes.
     if read_numeric_column(&mut io::empty(), numeric_type, 0).is_err() {
         return Err(NullableArrayReadError::InvalidType(data_type.to_owned()));
     }
@@ -88,8 +86,6 @@ fn validated_nullable_type(data_type: &str) -> Result<&str, NullableArrayReadErr
     Ok(nullable_type)
 }
 
-/// Decode separate Array offsets, element null-map, and element value streams.
-/// All element slots, including null placeholders, consume a physical value.
 pub fn read_nullable_numeric_array_column<O: Read, N: Read, D: Read>(
     offsets: &mut O,
     nulls: &mut N,

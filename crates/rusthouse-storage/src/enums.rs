@@ -6,7 +6,6 @@ use std::io::Read;
 
 const MAX_BATCH_ROWS: usize = 1_000_000;
 
-/// Enum8 and Enum16 values use signed integer storage and a type-level label map.
 #[derive(Debug, PartialEq, Eq)]
 pub struct EnumColumn {
     codes: Vec<i16>,
@@ -68,8 +67,6 @@ impl Error for EnumReadError {
     }
 }
 
-/// Decode signed Enum values and resolve them to names declared in the type.
-/// Reject undefined codes instead of returning a wrong label.
 pub fn read_enum_column<R: Read>(
     reader: &mut R,
     data_type: &str,
@@ -176,8 +173,6 @@ fn parse_enum_code(inner: &str, bytes: &[u8], position: &mut usize) -> Option<i1
     inner[start..*position].parse::<i16>().ok()
 }
 
-/// Accept canonical explicit value declarations and common ClickHouse escapes.
-/// Implicit Enum numbering is not used for persisted columns.txt type names.
 fn parse_enum_type(data_type: &str) -> Option<(u8, BTreeMap<i16, String>)> {
     let (width, inner) = if let Some(inner) = data_type
         .strip_prefix("Enum8(")

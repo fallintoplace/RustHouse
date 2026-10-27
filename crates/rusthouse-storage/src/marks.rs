@@ -139,8 +139,6 @@ fn read_compressed_wide_marks<R: Read + Seek>(
             return Err(marks_too_large(path));
         }
         decoded_bytes += data.len();
-        // Include the partial record saved from the preceding decoded block.
-        // Reserving per block avoids repeated Vec growth on large mark files.
         let records = (fragment_len + data.len()) / record_size;
         marks
             .try_reserve(records)

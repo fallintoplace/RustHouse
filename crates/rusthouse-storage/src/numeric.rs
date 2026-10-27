@@ -144,8 +144,6 @@ pub fn read_numeric_column<R: Read>(
     match numeric_storage_type(data_type).unwrap_or(data_type) {
         "UInt8" => {
             check_batch_size(rows, 1)?;
-            // A byte-wide column already has its final in-memory representation.
-            // Read directly into the output instead of copying through 16 KiB chunks.
             let mut values = vec![0u8; rows];
             reader.read_exact(&mut values)?;
             Ok(NumericColumn::UInt8(values))

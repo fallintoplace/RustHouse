@@ -7,8 +7,6 @@ use std::fmt;
 use std::io::{self, Read};
 use std::ops::Range;
 
-/// Flattened Array(Array(T)) with two levels of offsets.
-/// Outer offsets address inner arrays; inner offsets address scalar elements.
 #[derive(Debug, PartialEq)]
 pub struct NestedNumericArrayColumn {
     outer: ArrayOffsets,
@@ -97,10 +95,6 @@ fn numeric_leaf_type(data_type: &str) -> Result<&str, NestedArrayReadError> {
     Ok(leaf_type)
 }
 
-/// Decode separate outer and inner offsets and one flattened numeric value stream.
-///
-/// Each offset stream has its own encoding and absolute position, allowing
-/// decoding consecutive granules without resetting cumulative offsets.
 pub fn read_nested_numeric_array_column<O: Read, I: Read, D: Read>(
     outer_stream: &mut O,
     inner_stream: &mut I,
@@ -110,7 +104,6 @@ pub fn read_nested_numeric_array_column<O: Read, I: Read, D: Read>(
     outer_encoding: ArrayOffsetsEncoding,
     inner_encoding: ArrayOffsetsEncoding,
 ) -> Result<NestedNumericArrayColumn, NestedArrayReadError> {
-    // Reject invalid leaf types before consuming either offset stream.
     let leaf_type = numeric_leaf_type(data_type)?;
     let outer = read_array_offsets(outer_stream, rows, outer_encoding)
         .map_err(NestedArrayReadError::OuterOffsets)?;
