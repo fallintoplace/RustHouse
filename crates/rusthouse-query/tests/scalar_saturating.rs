@@ -10,14 +10,30 @@ fn evaluate(sql: &str) -> Result<String, String> {
 #[test]
 fn saturating_math_clamps_on_signed_overflow() {
     for (sql, expected) in [
-        ("SELECT SATURATING_ADD(9223372036854775807, 1) AS result", "9223372036854775807"),
-        ("SELECT saturating_sub(-9223372036854775807, 2) AS result", "-9223372036854775808"),
-        ("SELECT SATURATING_MUL(9223372036854775807, 2) AS result", "9223372036854775807"),
-        ("SELECT SATURATING_MUL(-9223372036854775807, 2) AS result", "-9223372036854775808"),
+        (
+            "SELECT SATURATING_ADD(9223372036854775807, 1) AS result",
+            "9223372036854775807",
+        ),
+        (
+            "SELECT saturating_sub(-9223372036854775807, 2) AS result",
+            "-9223372036854775808",
+        ),
+        (
+            "SELECT SATURATING_MUL(9223372036854775807, 2) AS result",
+            "9223372036854775807",
+        ),
+        (
+            "SELECT SATURATING_MUL(-9223372036854775807, 2) AS result",
+            "-9223372036854775808",
+        ),
         ("SELECT SATURATING_ADD(3, -2) AS result", "1"),
         ("SELECT SATURATING_MUL(-4, -3) AS result", "12"),
     ] {
-        assert_eq!(evaluate(sql).unwrap(), format!("result\n{expected}\n"), "{sql}");
+        assert_eq!(
+            evaluate(sql).unwrap(),
+            format!("result\n{expected}\n"),
+            "{sql}"
+        );
     }
 }
 
