@@ -62,7 +62,7 @@ fn imports_tsv_with_clickhouse_nulls_and_escapes() {
 }
 
 #[test]
-fn bulk_tsv_copy_handles_50000_rows_and_keeps_snapshot_on_failure() {
+fn bulk_tsv_copy_passes_50000_rows_and_keeps_snapshot_on_failure() {
     use std::fmt::Write as _;
 
     let db = database();
@@ -87,11 +87,12 @@ fn bulk_tsv_copy_handles_50000_rows_and_keeps_snapshot_on_failure() {
     let pointer = db.join("events.parts/.rusthouse-active");
     assert_eq!(fs::read_to_string(&pointer).unwrap(), "g1\n");
 
-    // Reject an extra data row without publishing another generation.
-    tsv.push_str("50000\ttoo-many\n");
+    // An extra data row no longer hits the old 50,000-row COPY limit.
+    tsv.push_str("50000\tbeyond-old-limit\n");
     fs::write(&input, &tsv).unwrap();
-    assert!(!sql(&statement, &db).status.success());
-    assert_eq!(fs::read_to_string(&pointer).unwrap(), "g1\n");
+    ok(&statement, &db);
+    assert_eq!(fs::read_to_string(&pointer).unwrap(), "g2\n");
+    assert_eq!(ok("SELECT count(*) FROM events", &db), "count\n100002\n");
 
     // A bad value in a later part must not publish the earlier valid parts.
     let mut invalid = String::from("id\tname\n");
@@ -101,7 +102,7 @@ fn bulk_tsv_copy_handles_50000_rows_and_keeps_snapshot_on_failure() {
     invalid.push_str("bad-id\tinvalid\n");
     fs::write(&input, invalid).unwrap();
     assert!(!sql(&statement, &db).status.success());
-    assert_eq!(fs::read_to_string(&pointer).unwrap(), "g1\n");
-    assert_eq!(ok("SELECT count(*) FROM events", &db), "count\n50001\n");
+    assert_eq!(fs::read_to_string(&pointer).unwrap(), "g2\n");
+    assert_eq!(ok("SELECT count(*) FROM events", &db), "count\n100002\n");
     fs::remove_dir_all(db).unwrap();
 }
