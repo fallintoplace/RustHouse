@@ -66,7 +66,9 @@ pub use numeric::{NumericColumn, NumericReadError, read_numeric_column};
 pub use part_scan::NumericPartReader;
 pub use part_verify::{PartVerification, verify_wide_part};
 pub use part_write::{PartCompression, write_wide_part, write_wide_part_with_compression};
-pub use primary_index::{FixedPrimaryIndex, candidate_u64_mark_range, read_fixed_primary_index};
+pub use primary_index::{
+    FixedPrimaryIndex, candidate_i64_mark_range, candidate_u64_mark_range, read_fixed_primary_index,
+};
 pub use query_source::{
     NumericQueryReader, inspect_query_source, query_parts, resolve_active_snapshot,
 };
