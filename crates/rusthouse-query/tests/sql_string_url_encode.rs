@@ -19,7 +19,7 @@ fn url_encode_percent_encodes_utf8_bytes() {
 
 #[test]
 fn url_encode_limits_output_and_checks_arity() {
-    for sql in ["SELECT URL_ENCODE()", "SELECT URL_ENCODE('a', 'b')", "SELECT URL_ENCODE(SPACE(400000))"] {
+    for sql in ["SELECT URL_ENCODE()", "SELECT URL_ENCODE('a', 'b')", "SELECT URL_ENCODE(RPAD('', 400000, ' '))"] {
         assert!(parse_select(sql).is_err(), "{sql}");
     }
 }
