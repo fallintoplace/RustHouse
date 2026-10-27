@@ -20,6 +20,7 @@ class AnalyticsSuiteTests(unittest.TestCase):
             self.assertEqual(path.read_text().splitlines()[0].split("\t")[-1], "coupon")
             self.assertIn("\\N", path.read_text())
             self.assertEqual(oracle.execute("SELECT count(*) FROM events").fetchone(), (17,))
+            self.assertEqual(oracle.execute("SELECT count(*) FROM accounts").fetchone(), (997,))
             self.assertEqual(sqlite_reference(oracle, "SELECT COUNT(coupon) FROM events"), b"5\n")
             oracle.close()
 
@@ -64,13 +65,13 @@ class AnalyticsSuiteTests(unittest.TestCase):
             observed.append(sql)
             if sql.startswith("CREATE TABLE") or sql.startswith("COPY "):
                 return b""
-            return b"17\n"
+            return b"997\n" if sql == "SELECT count(*) FROM accounts" else b"17\n"
         report = run_suite("rusthouse", workload, rows=17, runs=2, warmups=1, execute=fake_execute)
         self.assertEqual(report["coverage"]["verified_queries"], 1)
         self.assertEqual(len(report["results"][0]["timings_seconds"]), 2)
         self.assertEqual(sum(sql == "SELECT COUNT(*) FROM events" for sql in observed), 3)
         with self.assertRaisesRegex(ValueError, "fixture row count"):
-            run_suite("rusthouse", workload, rows=17, execute=lambda _: b"wrong")
+            run_suite("rusthouse", workload, rows=17, execute=lambda sql: b"997\n" if sql == "SELECT count(*) FROM accounts" else b"wrong")
 
 
 if __name__ == "__main__":
