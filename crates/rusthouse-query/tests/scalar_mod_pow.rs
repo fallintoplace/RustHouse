@@ -16,7 +16,11 @@ fn mod_pow_uses_modular_integer_arithmetic() {
         ("SELECT MOD_POW(7, 3, 11) AS result", "2"),
         ("SELECT MOD_POW(3, 4, 7) AS result", "4"),
     ] {
-        assert_eq!(evaluate(sql).unwrap(), format!("result\n{expected}\n"), "{sql}");
+        assert_eq!(
+            evaluate(sql).unwrap(),
+            format!("result\n{expected}\n"),
+            "{sql}"
+        );
     }
 }
 
