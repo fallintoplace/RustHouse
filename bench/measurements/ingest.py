@@ -16,7 +16,7 @@ def temperature_tenths(row):
 
 
 def write_input(path, rows, stations, delimiter="\t"):
-    """Create an input file and return its numeric min and max oracle."""
+    """Create an input file and return its min, max, and sum oracle."""
     minimum = 10**9
     maximum = -(10**9)
     total = 0
