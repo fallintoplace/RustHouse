@@ -1209,6 +1209,19 @@ impl AggregateState {
             .checked_add(1)
             .ok_or_else(|| ExecutionError::Invalid("aggregate row count overflow".into()))?;
         match self.function {
+            AggregateFunction::GroupBitXor => {
+                let combined = match (self.value, value) {
+                    (None, value @ (Number::Unsigned(_) | Number::Signed(_))) => value,
+                    (Some(Number::Unsigned(a)), Number::Unsigned(b)) => Number::Unsigned(a ^ b),
+                    (Some(Number::Signed(a)), Number::Signed(b)) => Number::Signed(a ^ b),
+                    _ => {
+                        return Err(ExecutionError::Invalid(
+                            "groupBitXor requires integer values".into(),
+                        ));
+                    }
+                };
+                self.value = Some(combined);
+            }
             AggregateFunction::GroupBitOr => {
                 let combined = match (self.value, value) {
                     (None, value @ (Number::Unsigned(_) | Number::Signed(_))) => value,
