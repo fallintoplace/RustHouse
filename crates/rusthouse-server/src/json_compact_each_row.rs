@@ -119,7 +119,10 @@ mod tests {
         let mut writer = JsonCompactEachRowWriter::new(Vec::new());
         let input = format!("value\n{}", "42\n".repeat(1_000));
         writer.write_all(input.as_bytes()).unwrap();
-        assert_eq!(writer.finish().unwrap(), "[\"42\"]\n".repeat(1_000).as_bytes());
+        assert_eq!(
+            writer.finish().unwrap(),
+            "[\"42\"]\n".repeat(1_000).as_bytes()
+        );
     }
 
     #[test]
