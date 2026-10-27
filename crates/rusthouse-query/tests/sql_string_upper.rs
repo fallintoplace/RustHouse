@@ -11,10 +11,16 @@ fn value(sql: &str) -> ConstantValue {
 #[test]
 fn upper_folds_ascii_and_supports_nested_string_functions() {
     for (sql, expected) in [
-        ("SELECT UPPER('Hi there')", ConstantValue::Text("HI THERE".into())),
+        (
+            "SELECT UPPER('Hi there')",
+            ConstantValue::Text("HI THERE".into()),
+        ),
         ("SELECT upper('a''b')", ConstantValue::Text("A'B".into())),
         ("SELECT UPPER(NULL)", ConstantValue::Null),
-        ("SELECT UPPER(LOWER('MiXeD'))", ConstantValue::Text("MIXED".into())),
+        (
+            "SELECT UPPER(LOWER('MiXeD'))",
+            ConstantValue::Text("MIXED".into()),
+        ),
         ("SELECT LENGTH(UPPER('ab'))", ConstantValue::Integer(2)),
     ] {
         assert_eq!(value(sql), expected, "{sql}");
