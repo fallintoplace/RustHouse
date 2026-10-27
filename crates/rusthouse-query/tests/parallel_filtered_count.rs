@@ -17,14 +17,23 @@ impl Snapshot {
         ));
         fs::create_dir(&path).unwrap();
         let schema = [
-            Column { name: "id".into(), data_type: "UInt64".into() },
-            Column { name: "kind".into(), data_type: "String".into() },
+            Column {
+                name: "id".into(),
+                data_type: "UInt64".into(),
+            },
+            Column {
+                name: "kind".into(),
+                data_type: "String".into(),
+            },
         ];
         for part_number in 0..40usize {
             let rows = (0..64usize)
                 .map(|row| {
                     let id = part_number * 64 + row;
-                    vec![Some(id.to_string()), Some(if id % 4 == 0 { "hot" } else { "cold" }.into())]
+                    vec![
+                        Some(id.to_string()),
+                        Some(if id % 4 == 0 { "hot" } else { "cold" }.into()),
+                    ]
                 })
                 .collect::<Vec<_>>();
             write_wide_part(
@@ -52,10 +61,22 @@ impl Drop for Snapshot {
 fn filtered_count_is_correct_across_many_immutable_parts() {
     let source = Snapshot::new();
     for (sql, expected) in [
-        ("SELECT count(*) FROM part WHERE id >= 1000", "count\n1560\n"),
-        ("SELECT count(*) FROM part WHERE kind = 'hot'", "count\n640\n"),
-        ("SELECT count(*) FROM part WHERE id < 100 OR kind = 'hot'", "count\n715\n"),
-        ("SELECT count(*) AS hits FROM part WHERE id >= 2500", "hits\n60\n"),
+        (
+            "SELECT count(*) FROM part WHERE id >= 1000",
+            "count\n1560\n",
+        ),
+        (
+            "SELECT count(*) FROM part WHERE kind = 'hot'",
+            "count\n640\n",
+        ),
+        (
+            "SELECT count(*) FROM part WHERE id < 100 OR kind = 'hot'",
+            "count\n715\n",
+        ),
+        (
+            "SELECT count(*) AS hits FROM part WHERE id >= 2500",
+            "hits\n60\n",
+        ),
         ("SELECT count(*) FROM part WHERE id < 0", "count\n0\n"),
     ] {
         let query = parse_select(sql).unwrap();
@@ -71,10 +92,18 @@ fn limits_and_metadata_only_count_retain_existing_semantics() {
     for (sql, expected) in [
         ("SELECT count(*) FROM part", "count\n2560\n"),
         ("SELECT count(*) FROM part WHERE id >= 0 LIMIT 0", "count\n"),
-        ("SELECT count(*) FROM part WHERE id >= 0 OFFSET 1", "count\n"),
+        (
+            "SELECT count(*) FROM part WHERE id >= 0 LIMIT 1 OFFSET 1",
+            "count\n",
+        ),
     ] {
         let mut result = Vec::new();
-        execute(&parse_select(sql).unwrap(), Some(source.path()), &mut result).unwrap();
+        execute(
+            &parse_select(sql).unwrap(),
+            Some(source.path()),
+            &mut result,
+        )
+        .unwrap();
         assert_eq!(String::from_utf8(result).unwrap(), expected, "{sql}");
     }
 }

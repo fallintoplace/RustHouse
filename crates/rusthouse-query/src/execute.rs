@@ -233,14 +233,26 @@ fn parallel_filtered_count(query: &Select, source: &Path) -> Result<Option<u64>,
                         buffer.clear();
                         // A single-part source avoids re-entering this parallel path.
                         execute(query, Some(part), &mut buffer)?;
-                        let header_end = buffer.iter().position(|&byte| byte == b'\n').ok_or_else(|| {
-                            ExecutionError::Invalid("malformed part COUNT header".into())
-                        })?;
-                        let value = buffer.get(header_end + 1..).and_then(|tail| tail.strip_suffix(b"\n"))
-                            .filter(|digits| !digits.is_empty() && digits.iter().all(u8::is_ascii_digit))
-                            .ok_or_else(|| ExecutionError::Invalid("malformed part COUNT value".into()))?;
+                        let header_end =
+                            buffer
+                                .iter()
+                                .position(|&byte| byte == b'\n')
+                                .ok_or_else(|| {
+                                    ExecutionError::Invalid("malformed part COUNT header".into())
+                                })?;
+                        let value = buffer
+                            .get(header_end + 1..)
+                            .and_then(|tail| tail.strip_suffix(b"\n"))
+                            .filter(|digits| {
+                                !digits.is_empty() && digits.iter().all(u8::is_ascii_digit)
+                            })
+                            .ok_or_else(|| {
+                                ExecutionError::Invalid("malformed part COUNT value".into())
+                            })?;
                         let count = std::str::from_utf8(value)
-                            .map_err(|_| ExecutionError::Invalid("invalid part COUNT encoding".into()))?
+                            .map_err(|_| {
+                                ExecutionError::Invalid("invalid part COUNT encoding".into())
+                            })?
                             .parse::<u64>()
                             .map_err(|_| ExecutionError::Invalid("part COUNT overflow".into()))?;
                         sum = sum.checked_add(count).ok_or_else(|| {
@@ -253,12 +265,12 @@ fn parallel_filtered_count(query: &Select, source: &Path) -> Result<Option<u64>,
             .collect::<Vec<_>>();
         let mut total = 0u64;
         for handle in handles {
-            let partial = handle.join().map_err(|_| {
-                ExecutionError::Invalid("parallel COUNT worker panicked".into())
-            })??;
-            total = total.checked_add(partial).ok_or_else(|| {
-                ExecutionError::Invalid("parallel COUNT overflow".into())
-            })?;
+            let partial = handle
+                .join()
+                .map_err(|_| ExecutionError::Invalid("parallel COUNT worker panicked".into()))??;
+            total = total
+                .checked_add(partial)
+                .ok_or_else(|| ExecutionError::Invalid("parallel COUNT overflow".into()))?;
         }
         Ok(total)
     })?;
