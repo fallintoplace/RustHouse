@@ -58,6 +58,9 @@ fn read_metadata(path: &Path, max_bytes: u64) -> Result<String, PartError> {
     if !metadata.file_type().is_file() {
         return Err(invalid_metadata(path, "metadata must be a regular file"));
     }
+    if metadata.len() > max_bytes {
+        return Err(invalid_metadata(path, "metadata exceeds size limit"));
+    }
     let file = fs::File::open(path).map_err(|source| io_error(path, source))?;
     let mut bytes = Vec::new();
     file.take(max_bytes + 1)

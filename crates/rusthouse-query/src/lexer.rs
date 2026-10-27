@@ -18,14 +18,18 @@ pub(super) enum Token {
     Operator(Operator),
 }
 
+fn is_ascii_digit_at(bytes: &[u8], index: usize) -> bool {
+    matches!(bytes.get(index), Some(b'0'..=b'9'))
+}
+
 fn advance_ascii_digits(bytes: &[u8], index: &mut usize) {
-    while matches!(bytes.get(*index), Some(b'0'..=b'9')) {
+    while is_ascii_digit_at(bytes, *index) {
         *index += 1;
     }
 }
 
 fn require_digit(bytes: &[u8], index: usize, message: &'static str) -> Result<(), ParseError> {
-    if !matches!(bytes.get(index), Some(b'0'..=b'9')) {
+    if !is_ascii_digit_at(bytes, index) {
         return Err(ParseError(message.into()));
     }
     Ok(())
@@ -144,7 +148,7 @@ pub(super) fn tokenize(sql: &str) -> Result<Vec<Token>, ParseError> {
             b'-' if bytes.get(index + 1) == Some(&b'.') => {
                 return Err(ParseError("expected digits after '-'".into()));
             }
-            b'-' if !matches!(bytes.get(index + 1), Some(b'0'..=b'9')) => {
+            b'-' if !is_ascii_digit_at(bytes, index + 1) => {
                 index += 1;
                 Token::Minus
             }
@@ -168,6 +172,14 @@ pub(super) fn tokenize(sql: &str) -> Result<Vec<Token>, ParseError> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn digit_classification_handles_token_boundaries() {
+        assert!(is_ascii_digit_at(b"9a", 0));
+        assert!(!is_ascii_digit_at(b"9a", 1));
+        assert!(!is_ascii_digit_at(b"9a", 2));
+        assert!(!is_ascii_digit_at("é".as_bytes(), 0));
+    }
 
     #[test]
     fn rejects_non_ascii_and_oversized_statements() {

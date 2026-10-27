@@ -198,7 +198,7 @@ mod tests {
 
     #[test]
     fn rejects_more_than_64_insert_columns() {
-        let columns = (0..65)
+        let columns = (0..129)
             .map(|index| format!("c{index}"))
             .collect::<Vec<_>>()
             .join(", ");

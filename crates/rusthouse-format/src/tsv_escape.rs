@@ -19,6 +19,20 @@ fn decode_hex_byte(field: &[u8], index: usize) -> io::Result<u8> {
     Ok((high << 4) | low)
 }
 
+fn decode_simple_escape(value: u8) -> Option<u8> {
+    match value {
+        b'\\' => Some(b'\\'),
+        b't' => Some(b'\t'),
+        b'n' => Some(b'\n'),
+        b'r' => Some(b'\r'),
+        b'b' => Some(8),
+        b'f' => Some(12),
+        b'v' => Some(11),
+        b'0' => Some(0),
+        _ => None,
+    }
+}
+
 pub fn decode_tsv_field(field: &[u8]) -> io::Result<Vec<u8>> {
     let invalid = |message| io::Error::new(io::ErrorKind::InvalidData, message);
     let mut output = Vec::with_capacity(field.len());
@@ -33,20 +47,11 @@ pub fn decode_tsv_field(field: &[u8]) -> io::Result<Vec<u8>> {
         let escaped = *field
             .get(index)
             .ok_or_else(|| invalid("incomplete TSV escape"))?;
-        match escaped {
-            b'\\' => output.push(b'\\'),
-            b't' => output.push(b'\t'),
-            b'n' => output.push(b'\n'),
-            b'r' => output.push(b'\r'),
-            b'b' => output.push(8),
-            b'f' => output.push(12),
-            b'v' => output.push(11),
-            b'0' => output.push(0),
-            b'x' => {
-                output.push(decode_hex_byte(field, index + 1)?);
-                index += 2;
-            }
-            _ => return Err(invalid("unknown TSV escape")),
+        if escaped == b'x' {
+            output.push(decode_hex_byte(field, index + 1)?);
+            index += 2;
+        } else {
+            output.push(decode_simple_escape(escaped).ok_or_else(|| invalid("unknown TSV escape"))?);
         }
         index += 1;
     }

@@ -130,17 +130,22 @@ fn write_cell<W: Write>(output: &mut W, field: &str) -> io::Result<()> {
 
 impl<W: Write> Write for HtmlWriter<W> {
     fn write(&mut self, bytes: &[u8]) -> io::Result<usize> {
-        for &byte in bytes {
-            if byte == b'\n' {
-                self.finish_line()?;
+        for chunk in bytes.split_inclusive(|&byte| byte == b'\n') {
+            let complete = chunk.last() == Some(&b'\n');
+            let fragment = if complete {
+                &chunk[..chunk.len() - 1]
             } else {
-                if self.line.len() >= MAX_LINE_BYTES {
-                    return Err(io::Error::new(
-                        io::ErrorKind::InvalidData,
-                        "HTML row exceeds 1 MiB",
-                    ));
-                }
-                self.line.push(byte);
+                chunk
+            };
+            if fragment.len() > MAX_LINE_BYTES.saturating_sub(self.line.len()) {
+                return Err(io::Error::new(
+                    io::ErrorKind::InvalidData,
+                    "HTML row exceeds 1 MiB",
+                ));
+            }
+            self.line.extend_from_slice(fragment);
+            if complete {
+                self.finish_line()?;
             }
         }
         Ok(bytes.len())
@@ -154,6 +159,16 @@ impl<W: Write> Write for HtmlWriter<W> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn processes_many_rows_from_one_bulk_write() {
+        let mut writer = HtmlWriter::new(Vec::new());
+        let input = format!("value\n{}", "42\n".repeat(1_000));
+        writer.write_all(input.as_bytes()).unwrap();
+        let html = String::from_utf8(writer.finish().unwrap()).unwrap();
+        assert_eq!(html.matches("<tr>").count(), 1_001);
+        assert_eq!(html.matches("<td>42</td>").count(), 1_000);
+    }
 
     #[test]
     fn field_decoder_borrows_plain_headers_and_null_markers() {
