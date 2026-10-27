@@ -9,6 +9,7 @@ pub(super) fn is_function(name: &str) -> bool {
         "LENGTH"
             | "CHAR_LENGTH"
             | "BTRIM"
+            | "OVERLAY"
             | "LOWER"
             | "UPPER"
             | "REVERSE"
@@ -457,6 +458,54 @@ fn parse_at_depth(parser: &mut Parser, depth: usize) -> Result<ConstantValue, Pa
                         }
                         ConstantValue::Text(value.repeat(count))
                     }
+                }
+                _ => ConstantValue::Null,
+            }
+        }
+        "OVERLAY" => {
+            let input = text_arg(parser, depth + 1)?;
+            require(parser, Token::Comma, "OVERLAY requires replacement text")?;
+            let replacement = text_arg(parser, depth + 1)?;
+            require(parser, Token::Comma, "OVERLAY requires a start position")?;
+            let start = integer_arg(parser, depth + 1)?;
+            let length = if parser.take(Token::Comma) {
+                Some(integer_arg(parser, depth + 1)?)
+            } else {
+                None
+            };
+            require(parser, Token::RParen, "expected ')' after OVERLAY arguments")?;
+            match (input, replacement, start, length) {
+                (Some(input), Some(replacement), Some(start), length) => {
+                    if start < 1 {
+                        return Err(ParseError("OVERLAY positions are 1-based".into()));
+                    }
+                    let count = match length {
+                        None => replacement.chars().count(),
+                        Some(Some(value)) => usize::try_from(value)
+                            .map_err(|_| ParseError("OVERLAY length must be nonnegative".into()))?,
+                        Some(None) => return Ok(ConstantValue::Null),
+                    };
+                    let start = usize::try_from(start - 1).unwrap_or(usize::MAX);
+                    let start_byte = input.char_indices()
+                        .nth(start)
+                        .map(|(index, _)| index)
+                        .unwrap_or(input.len());
+                    let end_byte = input[start_byte..].char_indices()
+                        .nth(count)
+                        .map(|(index, _)| start_byte + index)
+                        .unwrap_or(input.len());
+                    let size = start_byte
+                        .checked_add(replacement.len())
+                        .and_then(|size| size.checked_add(input.len() - end_byte))
+                        .ok_or_else(|| ParseError("OVERLAY result is too large".into()))?;
+                    if size > MAX_TEXT_BYTES {
+                        return Err(ParseError("OVERLAY result is too large".into()));
+                    }
+                    let mut result = String::with_capacity(size);
+                    result.push_str(&input[..start_byte]);
+                    result.push_str(&replacement);
+                    result.push_str(&input[end_byte..]);
+                    ConstantValue::Text(result)
                 }
                 _ => ConstantValue::Null,
             }
