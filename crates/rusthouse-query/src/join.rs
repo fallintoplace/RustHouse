@@ -22,11 +22,15 @@ pub struct JoinSelect {
     pub left_alias: String,
     pub right_alias: String,
     pub kind: JoinType,
+    /// Select only the first matching right row for INNER and LEFT joins.
+    pub any: bool,
     /// None projects every column from both tables.
     pub columns: Option<Vec<JoinColumn>>,
     pub keys: Vec<(JoinColumn, JoinColumn)>,
     /// Shared-key names for JOIN USING; star output projects each key once.
     pub using_keys: Vec<String>,
+    /// Optional post-join IS [NOT] NULL filter (true means IS NOT NULL).
+    pub where_null: Option<(JoinColumn, bool)>,
     /// Ordered key, descending flag, and optional explicit NULL placement.
     pub order_by: Option<(JoinColumn, bool, Option<bool>)>,
     pub limit: Option<usize>,
@@ -67,7 +71,7 @@ fn alias(parser: &mut Parser, table: &str) -> Result<String, ParseError> {
         Some(Token::Word(word))
             if ![
                 "INNER", "LEFT", "RIGHT", "FULL", "CROSS", "OUTER", "JOIN", "ON", "USING", "WHERE",
-                "GROUP", "ORDER", "LIMIT", "OFFSET",
+                "GROUP", "ORDER", "LIMIT", "OFFSET", "ANY",
             ]
             .iter()
             .any(|keyword| word.eq_ignore_ascii_case(keyword)) =>
@@ -155,7 +159,14 @@ pub fn parse_join(sql: &str) -> Result<Option<JoinSelect>, ParseError> {
             "table identifiers cannot exceed 128 bytes".into(),
         ));
     }
+    let leading_any = parser.keyword("ANY");
     let kind = parse_join_kind(&mut parser);
+    let any = parser.keyword("ANY") || leading_any;
+    if any && !matches!(kind, JoinType::Inner | JoinType::Left) {
+        return Err(ParseError(
+            "ANY JOIN supports only INNER and LEFT joins".into(),
+        ));
+    }
     if !parser.keyword("JOIN") {
         return Err(ParseError("expected JOIN after join type".into()));
     }
@@ -228,6 +239,23 @@ pub fn parse_join(sql: &str) -> Result<Option<JoinSelect>, ParseError> {
     } else {
         return Err(ParseError("JOIN requires ON or USING".into()));
     };
+    let where_null = if parser.keyword("WHERE") {
+        let column = qualified(&mut parser)?;
+        if !parser.keyword("IS") {
+            return Err(ParseError(
+                "JOIN WHERE supports only qualified IS [NOT] NULL".into(),
+            ));
+        }
+        let not_null = parser.keyword("NOT");
+        if !parser.keyword("NULL") {
+            return Err(ParseError(
+                "JOIN WHERE supports only qualified IS [NOT] NULL".into(),
+            ));
+        }
+        Some((column, not_null))
+    } else {
+        None
+    };
     let order_by = if parser.keyword("ORDER") {
         if !parser.keyword("BY") {
             return Err(ParseError("ORDER requires BY".into()));
@@ -256,12 +284,19 @@ pub fn parse_join(sql: &str) -> Result<Option<JoinSelect>, ParseError> {
     } else {
         None
     };
-    let limit = if parser.keyword("LIMIT") {
-        Some(bound(&mut parser, "LIMIT")?)
+    let (limit, comma_offset) = if parser.keyword("LIMIT") {
+        let first = bound(&mut parser, "LIMIT")?;
+        if parser.take(Token::Comma) {
+            (Some(bound(&mut parser, "LIMIT")?), Some(first))
+        } else {
+            (Some(first), None)
+        }
     } else {
-        None
+        (None, None)
     };
-    let offset = if parser.keyword("OFFSET") {
+    let offset = if let Some(offset) = comma_offset {
+        offset
+    } else if parser.keyword("OFFSET") {
         if limit.is_none() {
             return Err(ParseError("OFFSET requires LIMIT".into()));
         }
@@ -281,9 +316,11 @@ pub fn parse_join(sql: &str) -> Result<Option<JoinSelect>, ParseError> {
         left_alias,
         right_alias,
         kind,
+        any,
         columns,
         keys,
         using_keys,
+        where_null,
         order_by,
         limit,
         offset,
@@ -303,11 +340,12 @@ pub fn explain_join(query: &JoinSelect) -> String {
         .collect::<Vec<_>>()
         .join(" AND ");
     format!(
-        "Source: table {} AS {}\nSource: table {} AS {}\nJoin: {:?} ON {}\nProject: {}\nLimit: {}",
+        "Source: table {} AS {}\nSource: table {} AS {}\nJoin: {}{:?} ON {}\nProject: {}\nLimit: {}",
         query.left,
         query.left_alias,
         query.right,
         query.right_alias,
+        if query.any { "Any " } else { "" },
         query.kind,
         conditions,
         query.columns.as_ref().map_or("*".to_owned(), |columns| {
@@ -407,6 +445,66 @@ mod tests {
             ["*", "label", "*"]
         );
         assert!(parse_join("SELECT id, r.* FROM lefts l JOIN rights r ON l.id = r.id").is_err());
+    }
+
+    #[test]
+    fn parses_clickhouse_style_join_limit_offset_count() {
+        let query = parse_join("SELECT * FROM l JOIN r ON l.id = r.id LIMIT 7, 3")
+            .unwrap()
+            .unwrap();
+        assert_eq!(query.offset, 7);
+        assert_eq!(query.limit, Some(3));
+        let query = parse_join("SELECT * FROM l JOIN r ON l.id = r.id LIMIT 3 OFFSET 7")
+            .unwrap()
+            .unwrap();
+        assert_eq!(query.offset, 7);
+        assert_eq!(query.limit, Some(3));
+        assert!(parse_join("SELECT * FROM l JOIN r ON l.id = r.id LIMIT 2, 3 OFFSET 1").is_err());
+        assert!(parse_join("SELECT * FROM l JOIN r ON l.id = r.id LIMIT 2, -1").is_err());
+    }
+
+    #[test]
+    fn parses_any_inner_and_left_join_strictness() {
+        for statement in [
+            "SELECT * FROM a ANY JOIN b ON a.id = b.id",
+            "SELECT * FROM a ANY INNER JOIN b ON a.id = b.id",
+            "SELECT * FROM a LEFT ANY JOIN b ON a.id = b.id",
+            "SELECT * FROM a ANY LEFT JOIN b ON a.id = b.id",
+        ] {
+            assert!(parse_join(statement).unwrap().unwrap().any, "{statement}");
+        }
+        let ordinary = parse_join("SELECT * FROM a JOIN b ON a.id = b.id")
+            .unwrap()
+            .unwrap();
+        assert!(!ordinary.any);
+        for statement in [
+            "SELECT * FROM a RIGHT ANY JOIN b ON a.id = b.id",
+            "SELECT * FROM a ANY FULL JOIN b ON a.id = b.id",
+        ] {
+            assert!(parse_join(statement).is_err(), "{statement}");
+        }
+    }
+
+    #[test]
+    fn parses_post_join_null_filters() {
+        let query = parse_join(
+            "SELECT l.id FROM lefts l LEFT JOIN rights r USING (id) WHERE r.id IS NULL ORDER BY l.id",
+        )
+        .unwrap()
+        .unwrap();
+        assert_eq!(query.where_null.unwrap().0.relation, "r");
+        let query = parse_join(
+            "SELECT l.id FROM lefts l JOIN rights r ON l.id = r.id WHERE l.id IS NOT NULL",
+        )
+        .unwrap()
+        .unwrap();
+        assert!(query.where_null.unwrap().1);
+        for sql in [
+            "SELECT * FROM l JOIN r ON l.id = r.id WHERE r.id = 1",
+            "SELECT * FROM l JOIN r ON l.id = r.id WHERE r.id IS UNKNOWN",
+        ] {
+            assert!(parse_join(sql).is_err(), "{sql}");
+        }
     }
 
     #[test]

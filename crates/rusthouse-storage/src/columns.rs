@@ -98,6 +98,18 @@ fn append_identifier_escape(
     Ok(())
 }
 
+fn finish_column(name: Vec<u8>, data_type: &str, line_number: usize) -> Result<Column, PartError> {
+    if name.is_empty() || data_type.is_empty() || data_type.trim() != data_type {
+        return Err(invalid(line_number, "empty column name or invalid type"));
+    }
+    let name = String::from_utf8(name)
+        .map_err(|_| invalid(line_number, "column name is not valid UTF-8"))?;
+    Ok(Column {
+        name,
+        data_type: data_type.to_owned(),
+    })
+}
+
 fn parse_column(line: &str, line_number: usize) -> Result<Column, PartError> {
     let mut chars = line
         .strip_prefix('`')
@@ -116,15 +128,7 @@ fn parse_column(line: &str, line_number: usize) -> Result<Column, PartError> {
                     .as_str()
                     .strip_prefix(' ')
                     .ok_or_else(|| invalid(line_number, "expected a space after column name"))?;
-                if name.is_empty() || data_type.is_empty() || data_type.trim() != data_type {
-                    return Err(invalid(line_number, "empty column name or invalid type"));
-                }
-                let name = String::from_utf8(name)
-                    .map_err(|_| invalid(line_number, "column name is not valid UTF-8"))?;
-                return Ok(Column {
-                    name,
-                    data_type: data_type.to_owned(),
-                });
+                return finish_column(name, data_type, line_number);
             }
             '\\' => append_identifier_escape(&mut chars, &mut name, line_number)?,
             _ => {

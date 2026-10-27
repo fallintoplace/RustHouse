@@ -20,6 +20,11 @@ fn append_literal(output: &mut Vec<u8>, field: &[u8]) -> io::Result<()> {
     };
     let value = std::str::from_utf8(&decoded)
         .map_err(|_| invalid("SQL VALUES output requires UTF-8 text"))?;
+    append_quoted_text(output, value);
+    Ok(())
+}
+
+fn append_quoted_text(output: &mut Vec<u8>, value: &str) {
     output.push(b'\'');
     let bytes = value.as_bytes();
     let mut start = 0;
@@ -36,7 +41,6 @@ fn append_literal(output: &mut Vec<u8>, field: &[u8]) -> io::Result<()> {
     }
     output.extend_from_slice(&bytes[start..]);
     output.push(b'\'');
-    Ok(())
 }
 
 fn encode_values_row(line: &[u8], columns: usize) -> io::Result<Vec<u8>> {
@@ -130,6 +134,13 @@ impl<W: Write> Write for SqlValuesWriter<W> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn quoted_text_escapes_apostrophes_and_backslashes() {
+        let mut bytes = Vec::new();
+        append_quoted_text(&mut bytes, "a'b\\c");
+        assert_eq!(bytes, b"'a''b\\\\c'");
+    }
 
     fn render(input: &[u8]) -> io::Result<String> {
         let mut output = Vec::new();

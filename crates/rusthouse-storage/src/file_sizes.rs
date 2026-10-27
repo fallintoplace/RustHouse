@@ -2,7 +2,7 @@ use crate::{PartError, read_checksums};
 use naive_cityhash::{U128, cityhash128_with_seed};
 use std::fs;
 use std::io::{self, Read};
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 /// Counts manifest entries whose stored sizes match the actual local files.
 /// File hashes are not checked.
@@ -16,15 +16,7 @@ pub struct FileSizeVerification {
 /// Symlinks are not followed, including symlinks in nested paths.
 pub fn verify_part_file_sizes(part: impl AsRef<Path>) -> Result<FileSizeVerification, PartError> {
     let part = part.as_ref();
-    verify_part_root(part)?;
-    let checksums_path = part.join("checksums.txt");
-    let metadata = nofollow_metadata(&checksums_path)?;
-    ensure_regular_file(
-        &metadata,
-        &checksums_path,
-        "checksums.txt is not a regular file",
-    )?;
-    let manifest = read_checksums(&checksums_path)?;
+    let manifest = read_checksums(&validated_checksums_path(part)?)?;
     let mut total_bytes = 0u64;
 
     for entry in &manifest.files {
@@ -49,15 +41,7 @@ pub fn verify_part_file_sizes(part: impl AsRef<Path>) -> Result<FileSizeVerifica
 pub fn verify_part_file_hashes(part: impl AsRef<Path>) -> Result<FileSizeVerification, PartError> {
     const BLOCK_BYTES: usize = 2048;
     let part = part.as_ref();
-    verify_part_root(part)?;
-    let checksums_path = part.join("checksums.txt");
-    let metadata = nofollow_metadata(&checksums_path)?;
-    ensure_regular_file(
-        &metadata,
-        &checksums_path,
-        "checksums.txt is not a regular file",
-    )?;
-    let manifest = read_checksums(&checksums_path)?;
+    let manifest = read_checksums(&validated_checksums_path(part)?)?;
     let mut total_bytes = 0u64;
 
     for entry in &manifest.files {
@@ -97,6 +81,14 @@ pub fn verify_part_file_hashes(part: impl AsRef<Path>) -> Result<FileSizeVerific
         files: manifest.files.len(),
         total_bytes,
     })
+}
+
+fn validated_checksums_path(part: &Path) -> Result<PathBuf, PartError> {
+    verify_part_root(part)?;
+    let path = part.join("checksums.txt");
+    let metadata = nofollow_metadata(&path)?;
+    ensure_regular_file(&metadata, &path, "checksums.txt is not a regular file")?;
+    Ok(path)
 }
 
 /// Read metadata for the directory entry itself, never its symlink target.
