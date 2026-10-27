@@ -109,8 +109,7 @@ pub(super) fn execute<W: Write>(
     }
     if let Some(order) = &query.order_by {
         groups.sort_by(|(left, _), (right, _)| {
-            let comparison = typed::cmp(left, right);
-            if order.descending { comparison.reverse() } else { comparison }
+            typed::compare_order_cells(left, right, order.descending, order.nulls_first)
         });
     }
     for (key, states) in groups.into_iter()
