@@ -1,0 +1,61 @@
+import tempfile
+import unittest
+from pathlib import Path
+
+from convert_dbgen import convert_directory, convert_table, convert_value
+from schema import TABLES
+
+
+def sample(table):
+    fields = []
+    for name, kind, scale in TABLES[table]:
+        if kind == "String":
+            fields.append("text")
+        elif kind == "Date":
+            fields.append("1994-05-06")
+        elif scale == 10000:
+            fields.append("0.06")
+        elif scale == 100:
+            fields.append("123.45")
+        else:
+            fields.append("1")
+    return "|".join(fields) + "|\n"
+
+
+class DbgenConversionTests(unittest.TestCase):
+    def test_all_column_types_and_trailing_pipe(self):
+        with tempfile.TemporaryDirectory() as root:
+            source = Path(root) / "lineitem.tbl"
+            target = Path(root) / "lineitem.tsv"
+            source.write_text(sample("lineitem"), encoding="utf-8")
+            self.assertEqual(convert_table(source, target, "lineitem"), 1)
+            lines = target.read_text().splitlines()
+            self.assertEqual(len(lines), 2)
+            cells = lines[1].split("\t")
+            self.assertEqual(len(cells), 16)
+            self.assertEqual(cells[4:8], ["12345", "12345", "600", "600"])
+            self.assertEqual(cells[10], "1994-05-06")
+
+    def test_rejects_precision_and_invalid_rows_without_publishing(self):
+        with self.assertRaisesRegex(ValueError, "precision"):
+            convert_value("0.00001", "Int64", 10000)
+        with self.assertRaisesRegex(ValueError, "range"):
+            convert_value("-1", "UInt64", 1)
+        with tempfile.TemporaryDirectory() as root:
+            path = Path(root)
+            (path / "region.tbl").write_text("1|bad|row\n")
+            with self.assertRaisesRegex(ValueError, "trailing pipe"):
+                convert_table(path / "region.tbl", path / "region.tsv", "region")
+            self.assertFalse((path / "region.tsv").exists())
+
+    def test_converts_selected_tables_only(self):
+        with tempfile.TemporaryDirectory() as root:
+            path = Path(root)
+            (path / "nation.tbl").write_text(sample("nation"))
+            counts = convert_directory(path, path / "converted", ["nation"])
+            self.assertEqual(counts, {"nation": 1})
+            self.assertTrue((path / "converted" / "nation.tsv").exists())
+
+
+if __name__ == "__main__":
+    unittest.main()
