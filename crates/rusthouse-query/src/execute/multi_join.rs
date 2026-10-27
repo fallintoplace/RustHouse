@@ -218,7 +218,8 @@ pub fn execute_multi_join<W: Write>(
                     for &match_index in matches {
                         matched = true;
                         matched_right[match_index] = true;
-                        let mut joined = Vec::with_capacity(left_width + right_relation.names.len());
+                        let mut joined =
+                            Vec::with_capacity(left_width + right_relation.names.len());
                         joined.extend_from_slice(row);
                         joined.extend_from_slice(&right_rows[match_index]);
                         push_row(&mut next, joined, &mut retained)?;
