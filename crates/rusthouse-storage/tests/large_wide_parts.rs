@@ -8,7 +8,7 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 static NEXT_TEST: AtomicUsize = AtomicUsize::new(0);
 
 #[test]
-fn writes_and_reads_a_32768_row_part() {
+fn writes_and_reads_a_65536_row_part() {
     let root = std::env::temp_dir().join(format!(
         "rusthouse-large-wide-part-{}-{}",
         std::process::id(),
@@ -19,15 +19,15 @@ fn writes_and_reads_a_32768_row_part() {
         name: "id".into(),
         data_type: "UInt64".into(),
     }];
-    let rows = (0..32_768u64)
+    let rows = (0..65_536u64)
         .map(|id| vec![Some(id.to_string())])
         .collect::<Vec<_>>();
     let part = root.join("all_1_1_0");
     write_wide_part(&part, &columns, &rows).unwrap();
     verify_wide_part(&part).unwrap();
-    assert_eq!(inspect_part(&part).unwrap().rows, 32_768);
+    assert_eq!(inspect_part(&part).unwrap().rows, 65_536);
     let marks = read_wide_marks(part.join("id.mrk2")).unwrap();
-    assert_eq!(marks.marks.len(), 32);
+    assert_eq!(marks.marks.len(), 64);
     assert!(marks.marks.iter().all(|mark| mark.rows == Some(1024)));
 
     let mut reader = NumericPartReader::open(&part, &["id".into()]).unwrap();
@@ -44,12 +44,12 @@ fn writes_and_reads_a_32768_row_part() {
             _ => panic!("expected UInt64 granule"),
         }
     }
-    assert_eq!(seen, 32_768);
+    assert_eq!(seen, 65_536);
     fs::remove_dir_all(root).unwrap();
 }
 
 #[test]
-fn rejects_more_than_32768_rows_before_creating_part() {
+fn rejects_more_than_65536_rows_before_creating_part() {
     let root = std::env::temp_dir().join(format!(
         "rusthouse-wide-part-limit-{}-{}",
         std::process::id(),
@@ -60,7 +60,7 @@ fn rejects_more_than_32768_rows_before_creating_part() {
         name: "id".into(),
         data_type: "UInt64".into(),
     }];
-    let rows = vec![vec![Some("1".to_string())]; 32_769];
+    let rows = vec![vec![Some("1".to_string())]; 65_537];
     let part = root.join("all_1_1_0");
     assert!(write_wide_part(&part, &columns, &rows).is_err());
     assert!(!part.exists());

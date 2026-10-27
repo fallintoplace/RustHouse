@@ -14,8 +14,8 @@ const MAX_PART_BUFFER_BYTES: usize = 4 * 1024 * 1024;
 const MAX_STREAMED_PART_BYTES: usize = 64 * 1024 * 1024;
 const MAX_STREAMED_COLUMN_BYTES: usize = 7 * 1024 * 1024;
 const MAX_REWRITE_PARTS: u64 = 16_384;
-// The writer accepts 32,768 rows. Rewrites also retain a 4 MiB value budget.
-const PART_ROWS: usize = 32_768;
+// The writer accepts 65,536 rows. Rewrites also retain a 4 MiB value budget.
+const PART_ROWS: usize = 65_536;
 
 // Debug-only simulated publication errors allow integration tests to exercise
 // cleanup and recovery without relying on platform-dependent permissions.

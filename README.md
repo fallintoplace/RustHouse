@@ -79,7 +79,7 @@ Use `UPDATE events SET message = 'fixed' WHERE id = 2` to replace literal values
 
 ## Reclaim active parts safely
 
-`OPTIMIZE TABLE events` rewrites a bounded local table into new immutable parts and switches its active snapshot with an atomic pointer replacement. Previous snapshots are retained for existing readers and recovery. OPTIMIZE batches up to 32,768 rows per verified immutable part (subject to a 4 MiB buffered-value budget), then atomically switches the active snapshot. UPDATE and DELETE also stream copy-on-write replacements, with at most 4,096 rows buffered per part and a 4 MiB normal batch-value budget. Use only for local experiments.
+`OPTIMIZE TABLE events` rewrites a bounded local table into new immutable parts and switches its active snapshot with an atomic pointer replacement. Previous snapshots are retained for existing readers and recovery. OPTIMIZE batches up to 65,536 rows per verified immutable part (subject to a 4 MiB buffered-value budget), then atomically switches the active snapshot. UPDATE and DELETE also stream copy-on-write replacements, with at most 4,096 rows buffered per part and a 4 MiB normal batch-value budget. Use only for local experiments.
 
 ```sh
 cargo run -p rusthouse-cli -- sql "OPTIMIZE TABLE events" --database ./mydb
