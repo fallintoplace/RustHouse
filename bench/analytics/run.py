@@ -65,6 +65,12 @@ def execute_http(endpoint, sql, timeout):
         raise RuntimeError("HTTP %d: %s" % (error.code, error.read(2000).decode("utf-8", "replace"))) from error
 
 
+def verify_input(execute, sql, expected, timeout):
+    output = execute(sql, timeout)
+    if output.strip() != expected.encode("utf-8").strip():
+        raise ValueError("preflight result differs from the expected output")
+
+
 def run_benchmark(queries, indices, runs, timeout, execute, reference_dir=None):
     results = []
     for index in indices:
@@ -104,10 +110,16 @@ def main(argv=None):
     parser.add_argument("--runs", type=int, default=3)
     parser.add_argument("--timeout", type=float, default=600)
     parser.add_argument("--reference-dir", type=Path, help="Exact q01.tsv ... q43.tsv expected outputs")
+    parser.add_argument("--preflight-sql", help="Optional query to validate the input data")
+    parser.add_argument("--preflight-expected", help="Expected UTF-8 output from --preflight-sql")
     parser.add_argument("--output", type=Path, help="JSON result file")
     args = parser.parse_args(argv)
     if args.binary and not args.database:
         parser.error("--database is required with --binary")
+    if (args.preflight_sql is None) != (args.preflight_expected is None):
+        parser.error("--preflight-sql and --preflight-expected must be used together")
+    if args.preflight_sql is not None and not args.preflight_sql.strip():
+        parser.error("--preflight-sql cannot be empty")
     if args.runs < 1 or args.timeout <= 0:
         parser.error("--runs and --timeout must be positive")
     queries = load_queries(args.queries)
@@ -125,6 +137,11 @@ def main(argv=None):
     else:
         execute = lambda sql, timeout: execute_http(args.url, sql, timeout)
         engine = "rusthouse-http"
+    if args.preflight_sql is not None:
+        try:
+            verify_input(execute, args.preflight_sql, args.preflight_expected, args.timeout)
+        except (OSError, RuntimeError, ValueError, subprocess.TimeoutExpired, urllib.error.URLError) as error:
+            parser.exit(1, "input validation failed: %s\n" % error)
     results = run_benchmark(queries, indices, args.runs, args.timeout, execute, args.reference_dir)
     report = {
         "engine": engine,
