@@ -41,7 +41,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        os: [ubuntu-latest, macos-latest, windows-latest]
+        os: [ubuntu-latest, macos-latest]
     steps:
       - uses: actions/checkout@v7
       - uses: Swatinem/rust-cache@v2
@@ -50,6 +50,25 @@ jobs:
           cache-on-failure: true
       - run: cargo test --workspace --locked
       - run: cargo build --workspace --locked
+
+  windows-smoke:
+    name: Windows compile and CLI unit smoke
+    runs-on: windows-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v7
+      - uses: Swatinem/rust-cache@v2
+        with:
+          save-if: ${{ github.ref == 'refs/heads/main' }}
+          cache-on-failure: true
+      # Full database integration tests require directory fsync, which is not available via std::fs on Windows.
+      - name: Check all targets compile
+        run: cargo check --workspace --all-targets --locked
+      - name: Run CLI unit tests
+        run: cargo test -p rusthouse-cli --bin rusthouse --locked
+      - name: Build workspace binaries
+        run: cargo build --workspace --locked
+
   analytics-harness:
     name: Analytics harness (Python)
     runs-on: ubuntu-latest
