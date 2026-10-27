@@ -167,9 +167,9 @@ fn add_pair(pairs: &mut Vec<Pair>, pair: Pair) -> Result<(), ExecutionError> {
     Ok(())
 }
 
-#[derive(Clone, Copy)]
 struct ProbeOptions {
     materialize_rows: bool,
+    stop_after: Option<usize>,
     null_filter: Option<(usize, bool)>,
 }
 
@@ -186,9 +186,12 @@ fn probe_inner<F>(
 where
     F: FnMut(&[typed::Cell], &[typed::Cell]) -> Result<(), ExecutionError>,
 {
+    if options.stop_after == Some(0) {
+        return Ok(0);
+    }
     let mut reader = TypedQueryReader::open(left_path, left_names)?;
     let mut matches = 0usize;
-    while let Some(batch) = reader.next_batch()? {
+    'scan: while let Some(batch) = reader.next_batch()? {
         for index in 0..batch[0].len() {
             if let Some(key) = batch_key(&batch, index, left_keys) {
                 if let Some(right_indices) = hash.get(&key) {
@@ -216,7 +219,10 @@ where
                                 continue;
                             }
                         }
-                        if matches >= MAX_RESULT_ROWS {
+                        if options.stop_after.is_some_and(|end| matches >= end) {
+                            break 'scan;
+                        }
+                        if options.stop_after.is_none() && matches >= MAX_RESULT_ROWS {
                             return Err(invalid("JOIN produces more than 65536 rows"));
                         }
                         emit(&left_row, &right_rows[right_index])?;
@@ -230,8 +236,8 @@ where
 }
 
 /// For unordered INNER joins, build only the small right side and stream the
-/// left side twice. The first pass validates the output bound before writing
-/// any rows, preserving the existing no-partial-result behavior on overflow.
+/// left side twice. A bounded page needs only its prefix; unbounded or
+/// oversized requests still validate the 65,536-result limit before output.
 struct InnerJoinColumns<'a> {
     left_names: &'a [String],
     right_names: &'a [String],
@@ -272,6 +278,13 @@ fn execute_streaming_inner<W: Write>(
             hash.entry(key).or_default().push(index);
         }
     }
+    // A LIMIT that fits the output budget can page through more than
+    // 65,536 matched pairs without retaining them all. Without such a LIMIT,
+    // continue to reject oversized results before emitting the header.
+    let stop_after = query
+        .limit
+        .filter(|&limit| limit <= MAX_RESULT_ROWS)
+        .and_then(|limit| query.offset.checked_add(limit));
     probe_inner(
         left_path,
         left_names,
@@ -280,6 +293,7 @@ fn execute_streaming_inner<W: Write>(
         &hash,
         ProbeOptions {
             materialize_rows: false,
+            stop_after,
             null_filter,
         },
         |_, _| Ok(()),
@@ -305,6 +319,7 @@ fn execute_streaming_inner<W: Write>(
         &hash,
         ProbeOptions {
             materialize_rows: true,
+            stop_after,
             null_filter,
         },
         |left, right| {
@@ -350,13 +365,25 @@ pub fn execute_join<W: Write>(
         .collect::<Vec<_>>();
     let width = left_names.len();
     let selected: Vec<(usize, String, Option<usize>)> = if let Some(columns) = &query.columns {
-        columns
-            .iter()
-            .map(|col| {
-                resolve(query, col, &left_names, &right_names)
-                    .map(|index| (index, format!("{}.{}", col.relation, col.name), None))
-            })
-            .collect::<Result<Vec<_>, _>>()?
+        let mut selected = Vec::new();
+        for col in columns {
+            if col.name == "*" {
+                let (start, names) = if col.relation == query.left_alias {
+                    (0, &left_names)
+                } else if col.relation == query.right_alias {
+                    (width, &right_names)
+                } else {
+                    return Err(invalid(format!("unknown JOIN qualifier: {}", col.relation)));
+                };
+                selected.extend(names.iter().enumerate().map(|(index, name)| {
+                    (start + index, format!("{}.{}", col.relation, name), None)
+                }));
+            } else {
+                let index = resolve(query, col, &left_names, &right_names)?;
+                selected.push((index, format!("{}.{}", col.relation, col.name), None));
+            }
+        }
+        selected
     } else {
         left_names
             .iter()

@@ -9,8 +9,9 @@ use std::fs::{self, OpenOptions};
 use std::io::Write;
 use std::path::Path;
 
-const MAX_REWRITE_ROWS: u64 = 25_000;
 const MAX_REWRITE_BYTES: usize = 16 * 1024 * 1024;
+const MAX_PART_BUFFER_BYTES: usize = 4 * 1024 * 1024;
+const MAX_REWRITE_PARTS: u64 = 10_000;
 const PART_ROWS: usize = 4096;
 
 // Debug-only simulated publication errors allow integration tests to exercise
@@ -74,61 +75,6 @@ fn column_value(column: &TypedColumn, row: usize) -> Result<Option<String>, Stri
         }
         TypedColumn::Uuid(_) => Err("writable tables do not support UUID columns".into()),
     }
-}
-
-fn read_rows(
-    source: &Path,
-    cols: &[Column],
-    mut transform: impl FnMut(&[TypedColumn], usize, &mut Vec<Option<String>>) -> Result<bool, String>,
-) -> Result<(StoredRows, usize), String> {
-    let metadata = inspect_query_source(source).map_err(|error| error.to_string())?;
-    if metadata.rows > MAX_REWRITE_ROWS {
-        return Err(format!(
-            "table rewrite supports at most {MAX_REWRITE_ROWS} rows"
-        ));
-    }
-    let names = cols
-        .iter()
-        .map(|column| column.name.clone())
-        .collect::<Vec<_>>();
-    let mut reader = TypedQueryReader::open(source, &names).map_err(|error| error.to_string())?;
-    let mut rows = Vec::new();
-    let mut scanned = 0usize;
-    let mut bytes = 0usize;
-    while let Some(batch) = reader.next_batch().map_err(|error| error.to_string())? {
-        let len = batch.first().map_or(0, TypedColumn::len);
-        if batch.len() != cols.len() || batch.iter().any(|column| column.len() != len) {
-            return Err("corrupt database scan batch".into());
-        }
-        for index in 0..len {
-            scanned += 1;
-            if scanned as u64 > MAX_REWRITE_ROWS {
-                return Err("database rewrite exceeds row limit".into());
-            }
-            let mut values = batch
-                .iter()
-                .map(|column| column_value(column, index))
-                .collect::<Result<Vec<_>, _>>()?;
-            if transform(&batch, index, &mut values)? {
-                if values.len() != cols.len() {
-                    return Err("row rewrite changed table width".into());
-                }
-                for value in values.iter().flatten() {
-                    bytes = bytes
-                        .checked_add(value.len())
-                        .ok_or("database rewrite exceeds memory limit")?;
-                    if bytes > MAX_REWRITE_BYTES {
-                        return Err("database rewrite exceeds 16 MiB of values".into());
-                    }
-                }
-                rows.push(values);
-            }
-        }
-    }
-    if scanned as u64 != metadata.rows {
-        return Err("database rewrite read an inconsistent row count".into());
-    }
-    Ok((rows, scanned))
 }
 
 fn sync_directory(path: &Path) -> Result<(), String> {
@@ -345,19 +291,200 @@ pub(super) fn append_parts(
     })
 }
 
-/// Rewrite a local table while preserving the previous active snapshot on failure.
+/// Append a stream of schema-ordered rows as one verified snapshot.
+/// An input or storage error leaves the previous active snapshot unchanged.
+pub(super) fn append_parts_stream(
+    database: &Path,
+    table: &str,
+    cols: &[Column],
+    existing: &[std::path::PathBuf],
+    mut next_row: impl FnMut() -> Result<Option<Vec<Option<String>>>, String>,
+) -> Result<usize, String> {
+    let mut last = 0u64;
+    for source in existing {
+        let name = source
+            .file_name()
+            .and_then(|name| name.to_str())
+            .ok_or("invalid stored part filename")?;
+        let (first, second) = name
+            .strip_prefix("all_")
+            .and_then(|name| name.strip_suffix("_0"))
+            .and_then(|name| name.split_once('_'))
+            .ok_or_else(|| format!("unexpected stored part name: {name}"))?;
+        let first = first.parse::<u64>().map_err(|_| "invalid part number")?;
+        let second = second.parse::<u64>().map_err(|_| "invalid part number")?;
+        if first != second {
+            return Err("non-local part block ranges cannot be appended".into());
+        }
+        last = last.max(first);
+    }
+
+    let mut count = 0usize;
+    publish_snapshot_with(database, table, |staging| {
+        for source in existing {
+            verify_wide_part(source).map_err(|error| error.to_string())?;
+            let name = source.file_name().ok_or("invalid stored part filename")?;
+            let destination = staging.join(name);
+            fs::create_dir(&destination)
+                .map_err(|error| format!("cannot stage existing part: {error}"))?;
+            for entry in fs::read_dir(source).map_err(|error| error.to_string())? {
+                let entry = entry.map_err(|error| error.to_string())?;
+                if !entry
+                    .file_type()
+                    .map_err(|error| error.to_string())?
+                    .is_file()
+                {
+                    return Err("cannot hard-link a non-regular part entry".into());
+                }
+                fs::hard_link(entry.path(), destination.join(entry.file_name()))
+                    .map_err(|error| format!("cannot stage immutable part file: {error}"))?;
+            }
+            sync_directory(&destination)?;
+        }
+        let mut buffer: StoredRows = Vec::with_capacity(PART_ROWS);
+        let mut buffered_bytes = 0usize;
+        let mut part_index = 0usize;
+        let mut flush = |rows: &mut StoredRows, bytes: &mut usize| -> Result<(), String> {
+            if rows.is_empty() {
+                return Ok(());
+            }
+            part_index = part_index.checked_add(1).ok_or("part index overflow")?;
+            if existing
+                .len()
+                .checked_add(part_index)
+                .is_none_or(|total| total > 10_000)
+            {
+                return Err("database table would exceed its 10000-part limit".into());
+            }
+            let number = last
+                .checked_add(u64::try_from(part_index).map_err(|_| "part index overflow")?)
+                .ok_or("part block number overflow")?;
+            let part = staging.join(format!("all_{number}_{number}_0"));
+            write_wide_part(&part, cols, rows).map_err(|error| error.to_string())?;
+            verify_wide_part(&part).map_err(|error| error.to_string())?;
+            rows.clear();
+            *bytes = 0;
+            Ok(())
+        };
+        while let Some(row) = next_row()? {
+            let row_bytes = row.iter().flatten().try_fold(0usize, |size, value| {
+                size.checked_add(value.len())
+                    .ok_or_else(|| "COPY record size overflow".to_string())
+            })?;
+            if !buffer.is_empty()
+                && (buffer.len() >= PART_ROWS
+                    || buffered_bytes
+                        .checked_add(row_bytes)
+                        .is_none_or(|size| size > MAX_PART_BUFFER_BYTES))
+            {
+                flush(&mut buffer, &mut buffered_bytes)?;
+            }
+            buffered_bytes = buffered_bytes
+                .checked_add(row_bytes)
+                .ok_or("COPY batch size overflow")?;
+            buffer.push(row);
+            count = count.checked_add(1).ok_or("COPY row count overflow")?;
+        }
+        flush(&mut buffer, &mut buffered_bytes)?;
+        Ok(())
+    })?;
+    Ok(count)
+}
+
+/// Rewrite a local table using bounded batches. Keep the previous active
+/// snapshot visible until every replacement part has been written and verified.
 pub(super) fn rewrite_rows(
     database: &Path,
     table: &str,
-    transform: impl FnMut(&[TypedColumn], usize, &mut Vec<Option<String>>) -> Result<bool, String>,
+    mut transform: impl FnMut(&[TypedColumn], usize, &mut Vec<Option<String>>) -> Result<bool, String>,
 ) -> Result<(usize, usize), String> {
     let _lock = lock(database)?;
     let cols = columns(database, table)?;
     let (source, _) = validated_parts(database, table, &cols)?;
-    let (rows, read) = read_rows(&source, &cols, transform)?;
-    let retained = rows.len();
-    publish_snapshot(database, table, &cols, &rows)?;
-    Ok((read, retained))
+    let expected = inspect_query_source(&source)
+        .map_err(|error| error.to_string())?
+        .rows;
+    let names = cols
+        .iter()
+        .map(|column| column.name.clone())
+        .collect::<Vec<_>>();
+    let mut reader = TypedQueryReader::open(&source, &names).map_err(|error| error.to_string())?;
+    let mut scanned = 0usize;
+    let mut retained = 0usize;
+    publish_snapshot_with(database, table, |staging| {
+        let mut buffer: StoredRows = Vec::with_capacity(PART_ROWS);
+        let mut buffered_bytes = 0usize;
+        let mut part_number = 0u64;
+        let mut flush = |rows: &mut StoredRows, bytes: &mut usize| -> Result<(), String> {
+            if rows.is_empty() {
+                return Ok(());
+            }
+            part_number = part_number.checked_add(1).ok_or("part number overflow")?;
+            if part_number > MAX_REWRITE_PARTS {
+                return Err("database table would exceed its 10000-part limit".into());
+            }
+            let part = staging.join(format!("all_{part_number}_{part_number}_0"));
+            write_wide_part(&part, &cols, rows).map_err(|error| error.to_string())?;
+            verify_wide_part(&part).map_err(|error| error.to_string())?;
+            rows.clear();
+            *bytes = 0;
+            Ok(())
+        };
+        while let Some(batch) = reader.next_batch().map_err(|error| error.to_string())? {
+            let length = batch.first().map_or(0, TypedColumn::len);
+            if batch.len() != cols.len() || batch.iter().any(|col| col.len() != length) {
+                return Err("corrupt database scan batch".into());
+            }
+            for index in 0..length {
+                scanned = scanned
+                    .checked_add(1)
+                    .ok_or("database row count overflow")?;
+                let mut values = batch
+                    .iter()
+                    .map(|col| column_value(col, index))
+                    .collect::<Result<Vec<_>, _>>()?;
+                if !transform(&batch, index, &mut values)? {
+                    continue;
+                }
+                if values.len() != cols.len() {
+                    return Err("row rewrite changed table width".into());
+                }
+                let row_bytes = values.iter().flatten().try_fold(0usize, |sum, value| {
+                    sum.checked_add(value.len())
+                        .ok_or_else(|| "database rewrite exceeds memory limit".to_string())
+                })?;
+                if row_bytes > MAX_REWRITE_BYTES {
+                    return Err("database rewrite exceeds 16 MiB in a single row".into());
+                }
+                if !buffer.is_empty()
+                    && (buffer.len() >= PART_ROWS
+                        || buffered_bytes
+                            .checked_add(row_bytes)
+                            .is_none_or(|size| size > MAX_PART_BUFFER_BYTES))
+                {
+                    flush(&mut buffer, &mut buffered_bytes)?;
+                }
+                buffered_bytes = buffered_bytes
+                    .checked_add(row_bytes)
+                    .ok_or("database rewrite exceeds memory limit")?;
+                buffer.push(values);
+                retained = retained
+                    .checked_add(1)
+                    .ok_or("database row count overflow")?;
+            }
+        }
+        if u64::try_from(scanned).ok() != Some(expected) {
+            return Err("database rewrite read an inconsistent row count".into());
+        }
+        flush(&mut buffer, &mut buffered_bytes)?;
+        if retained == 0 {
+            let part = staging.join("all_0_0_0");
+            write_wide_part(&part, &cols, &[]).map_err(|error| error.to_string())?;
+            verify_wide_part(&part).map_err(|error| error.to_string())?;
+        }
+        Ok(())
+    })?;
+    Ok((scanned, retained))
 }
 
 /// Stream immutable table rows into verified compacted parts. Keep only
