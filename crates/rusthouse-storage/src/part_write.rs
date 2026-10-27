@@ -49,8 +49,6 @@ fn supported(kind: &str) -> bool {
     matches!(
         base,
         "String"
-            | "Date"
-            | "DateTime"
             | "UInt8"
             | "UInt16"
             | "UInt32"
@@ -93,18 +91,6 @@ fn push_cell(kind: &str, value: Option<&str>, output: &mut Vec<u8>) -> Result<bo
         "String" => {
             push_varuint(value.len() as u64, output);
             output.extend_from_slice(value.as_bytes());
-        }
-        "Date" => {
-            let days = crate::parse_date(value)
-                .or_else(|| value.parse::<u16>().ok())
-                .ok_or_else(|| invalid(format!("invalid Date value: {value}")))?;
-            output.extend_from_slice(&days.to_le_bytes());
-        }
-        "DateTime" => {
-            let seconds = crate::parse_datetime(value)
-                .or_else(|| value.parse::<u32>().ok())
-                .ok_or_else(|| invalid(format!("invalid DateTime value: {value}")))?;
-            output.extend_from_slice(&seconds.to_le_bytes());
         }
         "UInt8" => numeric!(u8),
         "UInt16" => numeric!(u16),
@@ -416,7 +402,13 @@ mod tests {
             .collect::<Vec<_>>();
         let values = vec![Some("3".to_owned()); 105];
         write_wide_part(&root.join("wide"), &cols, &[values]).unwrap();
-        assert_eq!(crate::inspect_part(&root.join("wide")).unwrap().columns.len(), 105);
+        assert_eq!(
+            crate::inspect_part(&root.join("wide"))
+                .unwrap()
+                .columns
+                .len(),
+            105
+        );
         let too_wide = (0..129)
             .map(|i| Column {
                 name: format!("field{i}"),
