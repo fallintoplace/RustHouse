@@ -13,6 +13,7 @@ pub(super) fn is_function(name: &str) -> bool {
             | "UPPER"
             | "REVERSE"
             | "CONCAT"
+            | "COALESCE"
             | "CONCAT_WS"
             | "SUBSTRING"
             | "SPLIT_PART"
@@ -93,6 +94,25 @@ fn parse_at_depth(parser: &mut Parser, depth: usize) -> Result<ConstantValue, Pa
                 Some(value) => ConstantValue::Text(value.chars().rev().collect()),
                 None => ConstantValue::Null,
             }
+        }
+        "COALESCE" => {
+            let mut first = None;
+            let mut count = 0;
+            loop {
+                if count == 16 {
+                    return Err(ParseError("COALESCE supports at most 16 arguments".into()));
+                }
+                let value = text_arg(parser, depth + 1)?;
+                if first.is_none() {
+                    first = value;
+                }
+                count += 1;
+                if !parser.take(Token::Comma) {
+                    break;
+                }
+            }
+            require(parser, Token::RParen, "expected ')' after COALESCE arguments")?;
+            first.map_or(ConstantValue::Null, ConstantValue::Text)
         }
         "CONCAT_WS" => {
             let separator = text_arg(parser, depth + 1)?;
