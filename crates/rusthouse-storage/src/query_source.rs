@@ -162,7 +162,7 @@ pub fn inspect_query_source(path: &Path) -> Result<PartMetadata, PartError> {
     inspect_parts_metadata(path, &paths)
 }
 
-fn inspect_parts_metadata(path: &Path, paths: &[PathBuf]) -> Result<PartMetadata, PartError> {
+pub(crate) fn inspect_parts_metadata(path: &Path, paths: &[PathBuf]) -> Result<PartMetadata, PartError> {
     // Part metadata is immutable for an offline snapshot. For tables with many
     // parts, inspect independent files in parallel without spawning one thread
     // per part. Preserve input order so corruption reports stay deterministic.
