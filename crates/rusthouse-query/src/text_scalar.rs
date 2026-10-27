@@ -10,6 +10,7 @@ pub(super) fn is_function(name: &str) -> bool {
             | "CHAR_LENGTH"
             | "ASCII"
             | "UTF16_LENGTH"
+            | "CHR"
             | "BTRIM"
             | "RTRIM"
             | "LOWER"
@@ -131,6 +132,21 @@ fn parse_at_depth(parser: &mut Parser, depth: usize) -> Result<ConstantValue, Pa
                         return Err(ParseError("LOWER result is too large".into()));
                     }
                     ConstantValue::Text(result)
+                }
+                None => ConstantValue::Null,
+            }
+        }
+        "CHR" => {
+            let input = integer_arg(parser, depth + 1)?;
+            require(parser, Token::RParen, "CHR requires one argument")?;
+            match input {
+                Some(value) => {
+                    let character = u32::try_from(value)
+                        .ok()
+                        .filter(|code| *code != 0)
+                        .and_then(char::from_u32)
+                        .ok_or_else(|| ParseError("CHR requires a nonzero Unicode scalar".into()))?;
+                    ConstantValue::Text(character.to_string())
                 }
                 None => ConstantValue::Null,
             }
