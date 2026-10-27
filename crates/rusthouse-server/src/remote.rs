@@ -25,6 +25,19 @@ pub fn capabilities(peer: Peer) -> Result<PeerResponse, String> {
     request(peer, "GET", "/capabilities", b"")
 }
 
+/// Fetch a named table's schema without accepting arbitrary HTTP paths.
+pub fn schema(peer: Peer, table: &str) -> Result<PeerResponse, String> {
+    let mut bytes = table.bytes();
+    if !bytes
+        .next()
+        .is_some_and(|first| first.is_ascii_alphabetic() || first == b'_')
+        || !bytes.all(|byte| byte.is_ascii_alphanumeric() || byte == b'_')
+    {
+        return Err("unsupported peer table identifier".into());
+    }
+    request(peer, "GET", &format!("/schema?table={table}"), b"")
+}
+
 pub fn query(peer: Peer, sql: &str) -> Result<PeerResponse, String> {
     if sql.len() > MAX_QUERY_BYTES || sql.is_empty() {
         return Err("invalid SQL statement length".into());
