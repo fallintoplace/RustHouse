@@ -15,6 +15,7 @@ pub(super) fn is_function(name: &str) -> bool {
             | "SUBSTRING"
             | "TRIM"
             | "REPLACE"
+            | "STRPOS"
             | "LEFT"
             | "STARTS_WITH"
             | "RIGHT"
@@ -153,6 +154,25 @@ fn parse_at_depth(parser: &mut Parser, depth: usize) -> Result<ConstantValue, Pa
             match input {
                 Some(value) => ConstantValue::Text(value.trim_matches(' ').to_owned()),
                 None => ConstantValue::Null,
+            }
+        }
+        "STRPOS" => {
+            let input = text_arg(parser, depth + 1)?;
+            require(parser, Token::Comma, "STRPOS requires a substring")?;
+            let needle = text_arg(parser, depth + 1)?;
+            require(parser, Token::RParen, "expected ')' after STRPOS arguments")?;
+            match (input, needle) {
+                (Some(input), Some(needle)) => {
+                    let index = input
+                        .find(needle.as_str())
+                        .map(|byte_index| input[..byte_index].chars().count() + 1)
+                        .unwrap_or(0);
+                    ConstantValue::Integer(
+                        i64::try_from(index)
+                            .map_err(|_| ParseError("STRPOS result exceeds Int64".into()))?,
+                    )
+                }
+                _ => ConstantValue::Null,
             }
         }
         "REPLACE" => {
