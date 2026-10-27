@@ -11,7 +11,10 @@ fn round_to_multiple_handles_signed_values_and_ties_away_from_zero() {
         ("SELECT ROUND_TO_MULTIPLE(-15, 10)", -20),
         ("SELECT ROUND_TO_MULTIPLE(0, 7)", 0),
         ("SELECT ROUND_TO_MULTIPLE(9223372036854775807, 1)", i64::MAX),
-        ("SELECT ROUND_TO_MULTIPLE(-9223372036854775808, 2)", i64::MIN),
+        (
+            "SELECT ROUND_TO_MULTIPLE(-9223372036854775808, 2)",
+            i64::MIN,
+        ),
         ("SELECT ROUND_TO_MULTIPLE(21 + 3, POWER(2, 3))", 24),
     ] {
         assert_eq!(
