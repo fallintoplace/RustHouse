@@ -54,8 +54,9 @@ fn read_with_deadline(stream: &mut TcpStream, timeout: Duration) -> Result<Vec<u
         if available == 0 {
             return Err("peer response exceeds wire limit".into());
         }
+        let capacity = available.min(buffer.len());
         let size = stream
-            .read(&mut buffer[..available.min(buffer.len())])
+            .read(&mut buffer[..capacity])
             .map_err(|error| format!("cannot read peer response: {error}"))?;
         if size == 0 {
             break;
