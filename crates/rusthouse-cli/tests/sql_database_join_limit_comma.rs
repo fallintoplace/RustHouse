@@ -32,7 +32,8 @@ fn join_limit_accepts_clickhouse_offset_count_syntax() {
     assert!(comma.status.success(), "{comma:?}");
     assert_eq!(comma.stdout, b"l.id\tr.label\n1\tb\n2\ta\n");
 
-    let explicit = sql("SELECT l.id, r.label FROM lefts l JOIN rights r ON l.k = r.k LIMIT 2 OFFSET 1");
+    let explicit =
+        sql("SELECT l.id, r.label FROM lefts l JOIN rights r ON l.k = r.k LIMIT 2 OFFSET 1");
     assert!(explicit.status.success(), "{explicit:?}");
     assert_eq!(explicit.stdout, comma.stdout);
 
