@@ -176,7 +176,7 @@ mod tests {
 
     #[test]
     fn enforces_copy_column_limit() {
-        let columns = (0..65)
+        let columns = (0..129)
             .map(|index| format!("c{index}"))
             .collect::<Vec<_>>()
             .join(", ");

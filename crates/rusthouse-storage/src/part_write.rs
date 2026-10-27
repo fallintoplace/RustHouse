@@ -402,7 +402,13 @@ mod tests {
             .collect::<Vec<_>>();
         let values = vec![Some("3".to_owned()); 105];
         write_wide_part(&root.join("wide"), &cols, &[values]).unwrap();
-        assert_eq!(crate::inspect_part(&root.join("wide")).unwrap().columns.len(), 105);
+        assert_eq!(
+            crate::inspect_part(&root.join("wide"))
+                .unwrap()
+                .columns
+                .len(),
+            105
+        );
         let too_wide = (0..129)
             .map(|i| Column {
                 name: format!("field{i}"),
