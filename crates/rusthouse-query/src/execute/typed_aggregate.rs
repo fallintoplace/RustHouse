@@ -2,7 +2,7 @@
 use super::typed::{self, Cell};
 use super::{AggregateState, ExecutionError};
 use crate::{AggregateFunction, Projection, Select};
-use rusthouse_storage::{TypedQueryReader, inspect_query_source};
+use rusthouse_storage::{TypedColumn, TypedQueryReader, inspect_query_source};
 use std::collections::{HashMap, hash_map::Entry};
 use std::io::Write;
 use std::path::Path;
@@ -167,27 +167,49 @@ pub(super) fn execute_grouped_aggregate<W: Write>(
     let mut reader = TypedQueryReader::open(part, &names)?;
 
     let mut by_key = HashMap::<typed::Key, usize>::new();
+    // Keep String keys in an owned map and probe with borrowed bytes.
+    // Repeated station names no longer allocate a new key on every row.
+    let mut text_groups = HashMap::<Vec<u8>, usize>::new();
     let mut groups = Vec::<(Cell, AggregateState)>::new();
     while let Some(batch) = reader.next_batch()? {
         for row in 0..batch[0].len() {
             if !typed::passes(&batch, row, &conditions) {
                 continue;
             }
-            let key = typed::cell(&batch[group_index], row);
-            let value = typed::cell(&batch[value_index], row);
-            let group = match by_key.entry(key.key()) {
-                Entry::Occupied(entry) => *entry.get(),
-                Entry::Vacant(entry) => {
+            let group = if let TypedColumn::Text(strings) = &batch[group_index] {
+                let key = strings.get(row).ok_or_else(|| {
+                    ExecutionError::Invalid("invalid String row index".into())
+                })?;
+                if let Some(&existing) = text_groups.get(key) {
+                    existing
+                } else {
                     if groups.len() >= MAX_GROUPS {
                         return Err(ExecutionError::Invalid(
                             "GROUP BY supports at most 100000 groups".into(),
                         ));
                     }
-                    entry.insert(groups.len());
-                    groups.push((key, AggregateState::new(*function)));
-                    groups.len() - 1
+                    let index = groups.len();
+                    text_groups.insert(key.to_vec(), index);
+                    groups.push((Cell::Text(key.to_vec()), AggregateState::new(*function)));
+                    index
+                }
+            } else {
+                let key = typed::cell(&batch[group_index], row);
+                match by_key.entry(key.key()) {
+                    Entry::Occupied(entry) => *entry.get(),
+                    Entry::Vacant(entry) => {
+                        if groups.len() >= MAX_GROUPS {
+                            return Err(ExecutionError::Invalid(
+                                "GROUP BY supports at most 100000 groups".into(),
+                            ));
+                        }
+                        entry.insert(groups.len());
+                        groups.push((key, AggregateState::new(*function)));
+                        groups.len() - 1
+                    }
                 }
             };
+            let value = typed::cell(&batch[value_index], row);
             match value {
                 Cell::Numeric(value) => groups[group].1.update(value)?,
                 Cell::Null => {}
