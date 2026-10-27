@@ -156,3 +156,7 @@ cargo test -p rusthouse-cli --test sql_database_crash_points --locked
 This models sudden **process termination**, not power loss or a filesystem
 that violates flush guarantees. Ordinary tests do not set the fault-point
 environment variable.
+
+## License
+
+RustHouse is licensed under the [Apache License, Version 2.0](LICENSE).

@@ -3,6 +3,7 @@ name = "rusthouse-storage"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
+license.workspace = true
 description = "Read-only ClickHouse MergeTree part metadata inspection"
 
 [dependencies]
