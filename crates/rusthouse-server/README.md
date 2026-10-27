@@ -100,11 +100,13 @@ The coordinator executes an unordered, read-only table SELECT on each peer,
 then concatenates TSV rows in configured peer order with one shared header.
 It accepts column projections, `SELECT *`, and pushed-down WHERE clauses;
 rejects ORDER BY, DISTINCT, JOIN, and aggregates that require
-global semantics. Global LIMIT/OFFSET is supported for unordered scans. Peers must expose the same table and column layout. It
-rejects a shard that reaches its advertised result cap, mismatched headers,
+global semantics. Global LIMIT/OFFSET is supported for unordered scans. The coordinator compares the column names, types, and order from each
+peer's table schema before merging. Shards may contain different row counts.
+It rejects a shard that reaches its advertised result cap, mismatched headers,
 non-200 responses, and coordinator row/byte overflows instead of returning
 partial data. LIMIT/OFFSET is applied by the coordinator after validating full shard
-responses. Pagination does not bypass shard caps. This is a snapshot-by-peer scan, **not** an atomic cross-shard
+responses. Pagination does not bypass shard caps. Schema validation is not an atomic cross-shard transaction, so a concurrent
+schema change could still race. This is a snapshot-by-peer scan, **not** an atomic cross-shard
 snapshot, automatic partitioning, replication, or remote machine networking.
 
 Distributed grouped counts are supported when all shards contain disjoint rows:

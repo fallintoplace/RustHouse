@@ -185,15 +185,48 @@ fn shard_integer_kind(peer: Peer, table: &str, column: &str) -> Result<String, S
     Ok(kind.to_owned())
 }
 
+/// Compare column names, types, and order, not row counts. Each shard
+/// independently reports its own row count and should differ on real clusters.
+fn schema_signature(response: &remote::PeerResponse) -> Result<Vec<u8>, String> {
+    if response.status != 200
+        || response.content_type != "application/json; charset=utf-8"
+    {
+        return Err("peer schema request failed".into());
+    }
+    let body = std::str::from_utf8(&response.body)
+        .map_err(|_| "peer schema is not UTF-8")?;
+    let body = body
+        .strip_suffix("}\n")
+        .ok_or("invalid peer schema response")?;
+    let (rows, columns) = body
+        .split_once(",\"columns\":")
+        .ok_or("peer schema has no columns")?;
+    let count = rows
+        .strip_prefix("{\"rows\":")
+        .ok_or("peer schema has no row count")?;
+    if count.is_empty()
+        || !count.bytes().all(|b| b.is_ascii_digit())
+        || !columns.starts_with('[')
+        || !columns.ends_with(']')
+        || !columns.contains("\"name\":")
+        || !columns.contains("\"type\":")
+    {
+        return Err("invalid peer schema response".into());
+    }
+    Ok(columns.as_bytes().to_vec())
+}
+
 fn read_shard(
     peer: Peer,
     sql: &str,
     sum_schema: Option<(&str, &str)>,
-) -> Result<(usize, Vec<u8>, Option<String>), String> {
+    table: &str,
+) -> Result<(usize, Vec<u8>, Option<String>, Vec<u8>), String> {
     let cap = shard_row_cap(peer)?;
     let kind = sum_schema
         .map(|(table, column)| shard_integer_kind(peer, table, column))
         .transpose()?;
+    let schema = schema_signature(&remote::schema(peer, table)?)?;
     let result = remote::query(peer, sql)?;
     if result.status != 200 {
         return Err(format!("peer returned HTTP {}", result.status));
@@ -201,7 +234,7 @@ fn read_shard(
     if result.content_type != "text/tab-separated-values; charset=utf-8" {
         return Err("peer did not return TSV".into());
     }
-    Ok((cap, result.body, kind))
+    Ok((cap, result.body, kind, schema))
 }
 
 /// Merge only identical TSV headers and whole, newline-terminated rows.
@@ -591,12 +624,16 @@ pub fn handle(method: &str, body: &[u8], cluster: &Cluster, max_rows: usize) -> 
             "no distributed database peers configured\n",
         );
     }
+    let table = match &select.source {
+        Some(Source::Table(table)) => table.as_str(),
+        _ => unreachable!("validated named table"),
+    };
     let results = std::thread::scope(|scope| {
         let shard_query = shard_sql.as_str();
         let handles = cluster
             .peers()
             .iter()
-            .map(|&peer| scope.spawn(move || read_shard(peer, shard_query, sum_schema)))
+            .map(|&peer| scope.spawn(move || read_shard(peer, shard_query, sum_schema, table)))
             .collect::<Vec<_>>();
         handles
             .into_iter()
@@ -609,9 +646,19 @@ pub fn handle(method: &str, body: &[u8], cluster: &Cluster, max_rows: usize) -> 
     });
     let mut shards = Vec::with_capacity(results.len());
     let mut sum_type: Option<String> = None;
+    let mut expected_schema: Option<Vec<u8>> = None;
     for result in results {
         match result {
-            Ok((cap, body, kind)) => {
+            Ok((cap, body, kind, schema)) => {
+                if expected_schema.as_ref().is_some_and(|expected| expected != &schema) {
+                    return Response::text(
+                        "409 Conflict",
+                        "distributed shard schemas disagree\n",
+                    );
+                }
+                if expected_schema.is_none() {
+                    expected_schema = Some(schema);
+                }
                 if let Some(kind) = kind {
                     if sum_type
                         .as_deref()
@@ -788,6 +835,27 @@ mod tests {
         assert!(is_safe_scan(
             &parse_select("SELECT id FROM events WHERE id > 2").unwrap()
         ));
+    }
+
+    #[test]
+    fn compares_shard_column_types_independently_of_row_counts() {
+        let response = |body: &'static [u8]| remote::PeerResponse {
+            status: 200,
+            content_type: "application/json; charset=utf-8".into(),
+            body: body.to_vec(),
+        };
+        let a = schema_signature(&response(
+            b"{\"rows\":4,\"columns\":[{\"name\":\"id\",\"type\":\"UInt64\"}]}\n",
+        )).unwrap();
+        let b = schema_signature(&response(
+            b"{\"rows\":900,\"columns\":[{\"name\":\"id\",\"type\":\"UInt64\"}]}\n",
+        )).unwrap();
+        let different = schema_signature(&response(
+            b"{\"rows\":4,\"columns\":[{\"name\":\"id\",\"type\":\"String\"}]}\n",
+        )).unwrap();
+        assert_eq!(a, b);
+        assert_ne!(a, different);
+        assert!(schema_signature(&response(b"bad")).is_err());
     }
 
     #[test]
