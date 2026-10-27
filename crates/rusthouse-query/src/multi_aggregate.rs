@@ -136,7 +136,14 @@ pub(crate) fn parse_multiple(
             break;
         }
     }
-    if items.len() < 2 {
+    // Keep the simple one-column aggregate path, but retain computed arguments.
+    // The legacy single-aggregate parser only accepts a bare column name.
+    if items.len() == 1
+        && matches!(
+            items[0].argument,
+            None | Some(crate::ScalarExpr::Column(_))
+        )
+    {
         parser.index = start;
         return Ok(None);
     }
