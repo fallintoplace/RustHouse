@@ -849,12 +849,7 @@ fn execute_aggregate_numbers<W: Write>(
                     AggregateFunction::Sum => ((first + last) * u128::from(rows) / 2).to_string(),
                     AggregateFunction::Min => first.to_string(),
                     AggregateFunction::Max => last.to_string(),
-                    AggregateFunction::Avg
-                    | AggregateFunction::VarPop
-                    | AggregateFunction::StddevPop
-                    | AggregateFunction::VarSamp
-                    | AggregateFunction::StddevSamp
-                    | AggregateFunction::Median => unreachable!(),
+                    _ => unreachable!(),
                 }
             };
             writeln!(output, "{result}")?;
@@ -1173,6 +1168,9 @@ impl AggregateState {
                     ));
                 }
                 self.median_values.push(value);
+            }
+            AggregateFunction::AnyLast => {
+                self.value = Some(value);
             }
             AggregateFunction::Min | AggregateFunction::Max => {
                 let replace = self.value.is_none_or(|current| {
