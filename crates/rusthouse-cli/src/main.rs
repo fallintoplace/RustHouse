@@ -29,7 +29,7 @@ use std::ffi::OsString;
 use std::path::PathBuf;
 use std::process::ExitCode;
 
-const USAGE: &str = "Usage:\n  rusthouse inspect-part <path> [--json]\n  rusthouse inspect-snapshot <frozen-part-or-active-parts-directory> [--json]\n  rusthouse verify-part <path-to-wide-part>\n  rusthouse verify-file-sizes <path-to-part>\n  rusthouse inspect-checksums <path-to-checksums.txt> [--summary]\n  rusthouse inspect-marks <path-to-wide-marks>\n  rusthouse inspect-primary-index <primary.idx|primary.cidx> <field-width> [field-width ...]\n  rusthouse inspect-blocks <path-to-.bin>\n  rusthouse verify-blocks <path-to-.bin>\n  rusthouse validate-marks <path-to-wide-marks> <path-to-.bin>\n  rusthouse read-u64 <data.bin> <marks.mrk2> <mark-index>\n  rusthouse scan-u64 <path-to-UInt64-.bin>\n  rusthouse read-numeric <data.bin> <marks.mrk2> <mark-index> <type>\n  rusthouse sql <SQL> [--part <path-to-wide-part>] [--format tsv|tsv-no-header|csv|csv-no-header|jsonl|json|json-pretty|json-compact-each-row|json-seq|markdown|html|sql-values|vertical] [--output <path>] [--max-rows <n>] [--show-ast|--explain] [--time]\n  rusthouse sql --stdin [--part <path-to-wide-part>] [--format tsv|tsv-no-header|csv|csv-no-header|jsonl|json|json-pretty|json-compact-each-row|json-seq|markdown|html|sql-values|vertical] [--output <path>] [--max-rows <n>] [--show-ast|--explain] [--time]\n  rusthouse sql --file <path.sql> [--part <path-to-wide-part>] [--format tsv|tsv-no-header|csv|csv-no-header|jsonl|json|json-pretty|json-compact-each-row|json-seq|markdown|html|sql-values|vertical] [--output <path>] [--max-rows <n>] [--show-ast|--explain] [--time]\n  rusthouse sql <DDL> --catalog <directory> [--show-ast]\n  rusthouse sql <DDL|INSERT> --database <directory> [--show-ast]\n  rusthouse sql --script <path.sql> --database <directory>\n  rusthouse sql 'EXPLAIN SELECT ...' [--part <path>|--database <directory>]\n  rusthouse doctor --database <directory> [--full-hashes] [--all-generations]\n  rusthouse --help\n\nInspect local MergeTree metadata, marks, and compressed blocks.";
+const USAGE: &str = "Usage:\n  rusthouse inspect-part <path> [--json]\n  rusthouse inspect-snapshot <frozen-part-or-active-parts-directory> [--json]\n  rusthouse verify-part <path-to-wide-part>\n  rusthouse verify-file-sizes <path-to-part>\n  rusthouse inspect-checksums <path-to-checksums.txt> [--summary]\n  rusthouse inspect-marks <path-to-wide-marks>\n  rusthouse inspect-primary-index <primary.idx|primary.cidx> <field-width> [field-width ...]\n  rusthouse inspect-blocks <path-to-.bin>\n  rusthouse verify-blocks <path-to-.bin>\n  rusthouse validate-marks <path-to-wide-marks> <path-to-.bin>\n  rusthouse read-u64 <data.bin> <marks.mrk2> <mark-index>\n  rusthouse scan-u64 <path-to-UInt64-.bin>\n  rusthouse read-numeric <data.bin> <marks.mrk2> <mark-index> <type>\n  rusthouse sql <SQL> [--part <path-to-wide-part>] [--format tsv|tsv-no-header|csv|csv-no-header|jsonl|json|json-pretty|json-compact-each-row|json-seq|markdown|html|sql-values|vertical] [--output <path>] [--max-rows <n>] [--show-ast|--explain] [--time]\n  rusthouse sql --stdin [--part <path-to-wide-part>] [--format tsv|tsv-no-header|csv|csv-no-header|jsonl|json|json-pretty|json-compact-each-row|json-seq|markdown|html|sql-values|vertical] [--output <path>] [--max-rows <n>] [--show-ast|--explain] [--time]\n  rusthouse sql --file <path.sql> [--part <path-to-wide-part>] [--format tsv|tsv-no-header|csv|csv-no-header|jsonl|json|json-pretty|json-compact-each-row|json-seq|markdown|html|sql-values|vertical] [--output <path>] [--max-rows <n>] [--show-ast|--explain] [--time]\n  rusthouse sql <DDL> --catalog <directory> [--show-ast]\n  rusthouse sql <DDL|INSERT> --database <directory> [--show-ast]\n  rusthouse sql --script <path.sql> --database <directory>\n  rusthouse sql 'EXPLAIN SELECT ...' [--part <path>|--database <directory>]\n  rusthouse doctor --database <directory> [--full-hashes] [--all-generations]\n  rusthouse --version\n  rusthouse --help\n\nInspect local MergeTree metadata, marks, and compressed blocks.";
 
 fn main() -> ExitCode {
     let mut args = env::args_os().skip(1);
@@ -38,6 +38,14 @@ fn main() -> ExitCode {
         return ExitCode::from(2);
     };
 
+    if command == "--version" || command == "-V" {
+        if args.next().is_some() {
+            eprintln!("{USAGE}");
+            return ExitCode::from(2);
+        }
+        println!("rusthouse {}", env!("CARGO_PKG_VERSION"));
+        return ExitCode::SUCCESS;
+    }
     if command == "--help" || command == "-h" {
         println!("{USAGE}");
         return ExitCode::SUCCESS;

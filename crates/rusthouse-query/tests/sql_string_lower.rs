@@ -42,3 +42,12 @@ fn lower_rejects_non_strings_extra_arguments_and_table_scans() {
         assert!(parse_select(sql).is_err(), "{sql}");
     }
 }
+
+#[test]
+fn lower_folds_unicode_and_checks_expanded_result_size() {
+    assert_eq!(
+        value("SELECT LOWER('MÜNCHEN İ')"),
+        ConstantValue::Text("münchen i\u{307}".into())
+    );
+    assert!(parse_select("SELECT LOWER(REPEAT('İ', 500000))").is_err());
+}

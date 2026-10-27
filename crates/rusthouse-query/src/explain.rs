@@ -104,6 +104,18 @@ fn describe_sort(query: &Select) -> String {
         .join(", ")
 }
 
+fn describe_filter(query: &Select) -> Option<String> {
+    if query.predicates.is_empty() {
+        return None;
+    }
+    let count = query.predicates.len() + query.or_predicates.iter().map(Vec::len).sum::<usize>();
+    Some(format!(
+        "Filter: {} conditions across {} OR branches",
+        count,
+        query.or_predicates.len() + 1
+    ))
+}
+
 /// Summarize parsed logical operators without reading data or estimating costs.
 /// This is not a physical execution plan.
 pub fn explain_select(query: &Select) -> String {
@@ -113,14 +125,8 @@ pub fn explain_select(query: &Select) -> String {
         describe_source(query.source.as_ref())
     ));
 
-    if !query.predicates.is_empty() {
-        let count =
-            query.predicates.len() + query.or_predicates.iter().map(Vec::len).sum::<usize>();
-        steps.push(format!(
-            "Filter: {} conditions across {} OR branches",
-            count,
-            query.or_predicates.len() + 1
-        ));
+    if let Some(filter) = describe_filter(query) {
+        steps.push(filter);
     }
 
     steps.push(describe_projection(&query.projection));

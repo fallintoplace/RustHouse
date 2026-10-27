@@ -1,14 +1,14 @@
 #!/usr/bin/env python3
 """Run SQL compatibility and end-to-end latency checks against RustHouse."""
 import argparse
-import json
-import math
 import re
-import statistics
 import subprocess
 import sys
 import time
 from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+from common import cli_sql, emit_json, latency_summary
 
 QUERY_NAME = re.compile(r"q(\d{1,2})\.sql$", re.IGNORECASE)
 
@@ -19,6 +19,8 @@ def load_queries(directory):
         if match is None:
             continue
         number = int(match.group(1))
+        if number < 1:
+            raise ValueError(f"query IDs must be positive: {path}")
         sql = "\n".join(
             line for line in path.read_text(encoding="utf-8").splitlines()
             if not line.lstrip().startswith("--")
@@ -34,29 +36,11 @@ def load_queries(directory):
     return queries
 
 def invoke(binary, database, sql, timeout):
-    result = subprocess.run(
-        [str(binary), "sql", sql, "--database", str(database),
-         "--format", "tsv-no-header"],
-        stdout=subprocess.PIPE, stderr=subprocess.PIPE,
-        check=False, timeout=timeout,
-    )
-    if result.returncode:
-        raise RuntimeError(
-            f"exit {result.returncode}: "
-            + result.stderr.decode("utf-8", "replace")[:2000]
-        )
-    return result.stdout
+    return cli_sql(binary, database, sql, timeout)
+
 
 def summary(seconds):
-    if not seconds:
-        return None
-    values = sorted(seconds)
-    return {
-        "median_seconds": statistics.median(values),
-        "p90_seconds": values[math.ceil(0.9 * len(values)) - 1],
-        "min_seconds": values[0],
-        "max_seconds": values[-1],
-    }
+    return latency_summary(seconds)
 
 def benchmark_one(number, sql, execute, runs, warmups, reference=None):
     elapsed = []
@@ -98,6 +82,19 @@ def summarize_coverage(results):
     }
 
 
+def select_queries(queries, spec):
+    if not spec:
+        return queries
+    try:
+        selected = {int(fragment) for fragment in spec.split(",")}
+    except ValueError as exc:
+        raise ValueError("--only must contain comma-separated integer IDs") from exc
+    available = {number for number, _ in queries}
+    if not selected or not selected.issubset(available):
+        raise ValueError("--only contains an unavailable query ID")
+    return [(number, sql) for number, sql in queries if number in selected]
+
+
 def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--binary", type=Path, required=True)
@@ -119,15 +116,10 @@ def main(argv=None):
         queries = load_queries(args.queries_dir)
     except (OSError, ValueError) as exc:
         parser.error(str(exc))
-    if args.only:
-        try:
-            selected = {int(fragment) for fragment in args.only.split(",")}
-        except ValueError:
-            parser.error("--only must contain comma-separated integer IDs")
-        available = {number for number, _ in queries}
-        if not selected or not selected.issubset(available):
-            parser.error("--only contains an unavailable query ID")
-        queries = [(number, sql) for number, sql in queries if number in selected]
+    try:
+        queries = select_queries(queries, args.only)
+    except ValueError as exc:
+        parser.error(str(exc))
 
     execute = lambda sql: invoke(args.binary, args.database, sql, args.timeout)
     if args.expected_lineitem_rows is not None:
@@ -162,10 +154,7 @@ def main(argv=None):
         "coverage": summarize_coverage(results),
         "results": results,
     }
-    rendered = json.dumps(report, indent=2) + "\n"
-    if args.output:
-        args.output.write_text(rendered, encoding="utf-8")
-    sys.stdout.write(rendered)
+    emit_json(report, args.output)
     return int(any(result["status"] not in ("passed", "unverified") for result in results))
 
 if __name__ == "__main__":

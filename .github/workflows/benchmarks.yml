@@ -16,23 +16,18 @@ jobs:
   benchmark:
     name: Rust benchmarks (ubuntu-latest)
     runs-on: ubuntu-latest
-    timeout-minutes: 15
+    timeout-minutes: 25
     steps:
       - uses: actions/checkout@v7
       - uses: Swatinem/rust-cache@v2
         with:
           save-if: ${{ github.event_name == 'schedule' }}
-      - name: Query execution baseline
-        run: cargo bench -p rusthouse-query --bench queries --locked -- --rows 65536 --samples 7
-      - name: Sorted frozen-part scans
-        run: cargo bench -p rusthouse-query --bench parts --locked -- --rows 65536 --samples 7 --layout sorted --csv > sorted.csv
-      - name: Shuffled frozen-part scans
-        run: cargo bench -p rusthouse-query --bench parts --locked -- --rows 65536 --samples 7 --layout shuffled --csv > shuffled.csv
-      - name: Store scan measurements
+      - name: Run verified benchmark suites
+        run: python3 -m bench benchmark --rows 65536 --samples 7
+      - name: Store benchmark measurements
+        if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: rusthouse-part-scans-${{ github.run_id }}
-          path: |
-            sorted.csv
-            shuffled.csv
+          name: rusthouse-benchmarks-${{ github.run_id }}
+          path: bench/results/
           retention-days: 14

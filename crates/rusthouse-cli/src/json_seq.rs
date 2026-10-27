@@ -15,22 +15,27 @@ impl<W: Write> JsonSeqSink<W> {
             at_row_start: true,
         }
     }
+
+    fn write_fragment(&mut self, chunk: &[u8]) -> io::Result<()> {
+        if chunk.is_empty() {
+            return Ok(());
+        }
+        if self.at_row_start {
+            self.output.write_all(b"\x1e")?;
+            self.at_row_start = false;
+        }
+        self.output.write_all(chunk)?;
+        if chunk.ends_with(b"\n") {
+            self.at_row_start = true;
+        }
+        Ok(())
+    }
 }
 
 impl<W: Write> Write for JsonSeqSink<W> {
     fn write(&mut self, bytes: &[u8]) -> io::Result<usize> {
         for chunk in bytes.split_inclusive(|&byte| byte == b'\n') {
-            if chunk.is_empty() {
-                continue;
-            }
-            if self.at_row_start {
-                self.output.write_all(b"\x1e")?;
-                self.at_row_start = false;
-            }
-            self.output.write_all(chunk)?;
-            if chunk.ends_with(b"\n") {
-                self.at_row_start = true;
-            }
+            self.write_fragment(chunk)?;
         }
         Ok(bytes.len())
     }
