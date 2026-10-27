@@ -6,7 +6,7 @@ const MAX_TEXT_BYTES: usize = 1_048_576;
 pub(super) fn is_function(name: &str) -> bool {
     matches!(
         name.to_ascii_uppercase().as_str(),
-        "LENGTH" | "CHAR_LENGTH" | "LOWER" | "UPPER" | "CONCAT"
+        "LENGTH" | "CHAR_LENGTH" | "LOWER" | "UPPER" | "CONCAT" | "SUBSTRING"
     )
 }
 
@@ -84,6 +84,40 @@ fn parse_at_depth(parser: &mut Parser, depth: usize) -> Result<ConstantValue, Pa
                 ConstantValue::Text(result)
             }
         }
+        "SUBSTRING" => {
+            let input = text_arg(parser, depth + 1)?;
+            require(parser, Token::Comma, "SUBSTRING requires a start position")?;
+            let position = integer_arg(parser, depth + 1)?;
+            let length = if parser.take(Token::Comma) {
+                Some(integer_arg(parser, depth + 1)?)
+            } else {
+                None
+            };
+            require(parser, Token::RParen, "expected ')' after SUBSTRING arguments")?;
+            match (input, position, length) {
+                (Some(value), Some(position), length) => {
+                    if position < 1 {
+                        return Err(ParseError("SUBSTRING positions are 1-based".into()));
+                    }
+                    let start = usize::try_from(position - 1)
+                        .unwrap_or(usize::MAX)
+                        .min(value.len());
+                    let count = match length {
+                        None => value.len(),
+                        Some(Some(count)) if count >= 0 => {
+                            usize::try_from(count).unwrap_or(usize::MAX)
+                        }
+                        Some(Some(_)) => {
+                            return Err(ParseError("SUBSTRING length must be nonnegative".into()));
+                        }
+                        Some(None) => return Ok(ConstantValue::Null),
+                    };
+                    let end = start.saturating_add(count).min(value.len());
+                    ConstantValue::Text(value[start..end].to_owned())
+                }
+                _ => ConstantValue::Null,
+            }
+        }
         _ => return Err(ParseError(format!("unsupported string function: {name}"))),
     };
     Ok(value)
@@ -95,6 +129,21 @@ fn require(parser: &mut Parser, token: Token, message: &str) -> Result<(), Parse
     } else {
         Err(ParseError(message.into()))
     }
+}
+
+fn integer_arg(parser: &mut Parser, depth: usize) -> Result<Option<i64>, ParseError> {
+    if matches!(parser.tokens.get(parser.index), Some(Token::Word(word)) if word.eq_ignore_ascii_case("NULL")) {
+        parser.index += 1;
+        return Ok(None);
+    }
+    if matches!(parser.tokens.get(parser.index), Some(Token::Word(word)) if is_function(word)) {
+        return match parse_at_depth(parser, depth)? {
+            ConstantValue::Integer(value) => Ok(Some(value)),
+            ConstantValue::Null => Ok(None),
+            ConstantValue::Text(_) => Err(ParseError("expected an integer expression".into())),
+        };
+    }
+    Ok(Some(super::scalar::parse(parser)?))
 }
 
 fn text_arg(parser: &mut Parser, depth: usize) -> Result<Option<String>, ParseError> {
