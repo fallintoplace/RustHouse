@@ -49,6 +49,7 @@ pub(super) fn is_function(name: &str) -> bool {
             | "BASE64_ENCODE"
             | "ENDS_WITH"
             | "REPLACE_LAST"
+            | "STRIP_SUFFIX"
             | "REPEAT"
             | "BASE64_DECODE"
             | "RPAD"
@@ -967,6 +968,21 @@ fn parse_at_depth(parser: &mut Parser, depth: usize) -> Result<ConstantValue, Pa
                     ConstantValue::Text(result)
                 }
                 None => ConstantValue::Null,
+            }
+        }
+        "STRIP_SUFFIX" => {
+            let input = text_arg(parser, depth + 1)?;
+            require(parser, Token::Comma, "STRIP_SUFFIX requires a suffix")?;
+            let suffix = text_arg(parser, depth + 1)?;
+            require(parser, Token::RParen, "expected ')' after STRIP_SUFFIX arguments")?;
+            match (input, suffix) {
+                (Some(input), Some(suffix)) => ConstantValue::Text(
+                    input
+                        .strip_suffix(suffix.as_str())
+                        .unwrap_or(input.as_str())
+                        .to_owned(),
+                ),
+                _ => ConstantValue::Null,
             }
         }
         "RIGHT" => {
