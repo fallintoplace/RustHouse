@@ -6,10 +6,13 @@ fn length_counts_literal_bytes_and_propagates_null() {
         ("SELECT LENGTH('abc')", Projection::Literal(3)),
         ("SELECT char_length('')", Projection::Literal(0)),
         ("SELECT LENGTH('a''b')", Projection::Literal(3)),
-        ("SELECT LENGTH(NULL)", Projection::Constants(vec![rusthouse_query::Constant {
-            value: ConstantValue::Null,
-            alias: None,
-        }])),
+        (
+            "SELECT LENGTH(NULL)",
+            Projection::Constants(vec![rusthouse_query::Constant {
+                value: ConstantValue::Null,
+                alias: None,
+            }]),
+        ),
     ] {
         assert_eq!(parse_select(sql).unwrap().projection, expected, "{sql}");
     }
@@ -17,13 +20,23 @@ fn length_counts_literal_bytes_and_propagates_null() {
 
 #[test]
 fn length_supports_aliases_and_mixed_constant_columns() {
-    let query = parse_select("SELECT LENGTH('abc') AS n, 'ok' AS text, CHAR_LENGTH('x') AS m").unwrap();
+    let query =
+        parse_select("SELECT LENGTH('abc') AS n, 'ok' AS text, CHAR_LENGTH('x') AS m").unwrap();
     assert_eq!(
         query.projection,
         Projection::Constants(vec![
-            rusthouse_query::Constant { value: ConstantValue::Integer(3), alias: Some("n".into()) },
-            rusthouse_query::Constant { value: ConstantValue::Text("ok".into()), alias: Some("text".into()) },
-            rusthouse_query::Constant { value: ConstantValue::Integer(1), alias: Some("m".into()) },
+            rusthouse_query::Constant {
+                value: ConstantValue::Integer(3),
+                alias: Some("n".into())
+            },
+            rusthouse_query::Constant {
+                value: ConstantValue::Text("ok".into()),
+                alias: Some("text".into())
+            },
+            rusthouse_query::Constant {
+                value: ConstantValue::Integer(1),
+                alias: Some("m".into())
+            },
         ])
     );
     let mut result = Vec::new();
