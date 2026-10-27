@@ -817,6 +817,9 @@ pub(super) fn execute_typed<W: Write>(
     let mut count_distinct_keys = HashSet::<Key>::new();
     // Borrow decoded strings on duplicate probes. Own only new distinct values.
     let mut count_distinct_text = HashSet::<Vec<u8>>::new();
+    // UUIDs have a fixed-size identity. Hash their bytes rather than allocating
+    // a formatted String for each scanned row.
+    let mut count_distinct_uuids = HashSet::<[u8; 16]>::new();
     let mut group_indices = HashMap::<Key, usize>::new();
     // String group probes can borrow the decoded input instead of cloning it.
     let mut text_group_indices = HashMap::<Vec<u8>, usize>::new();
@@ -954,6 +957,15 @@ pub(super) fn execute_typed<W: Write>(
                             remember_distinct_text(&mut count_distinct_text, value)?;
                         }
                     }
+                    TypedColumn::Uuid(values) => {
+                        let key = *values[index].as_bytes();
+                        if count_distinct_uuids.len() >= MAX_BUFFERED_ROWS
+                            && !count_distinct_uuids.contains(&key)
+                        {
+                            return Err(ExecutionError::Invalid("too many distinct rows".into()));
+                        }
+                        count_distinct_uuids.insert(key);
+                    }
                     column => {
                         let value = cell(column, index);
                         if !matches!(&value, Cell::Null) {
@@ -1075,7 +1087,7 @@ pub(super) fn execute_typed<W: Write>(
             let result = if is_count || is_count_column {
                 count
             } else {
-                (count_distinct_keys.len() + count_distinct_text.len()) as u64
+                (count_distinct_keys.len() + count_distinct_text.len() + count_distinct_uuids.len()) as u64
             };
             writeln!(output, "{result}")?;
         }
