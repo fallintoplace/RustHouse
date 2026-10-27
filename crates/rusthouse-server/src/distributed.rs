@@ -401,15 +401,14 @@ fn merge_grouped_integer_sums(
         if *cap == 0 || !body.ends_with(b"\n") {
             return Err(MergeError::InvalidGroupedSum);
         }
-        if !body.starts_with(header.as_bytes()) {
-            if let Some(end) = body.iter().position(|&byte| byte == b'\n') {
-                if &body[..=end] != header.as_bytes() {
-                    return Err(MergeError::SchemaMismatch);
-                }
-            }
-            return Err(MergeError::InvalidGroupedSum);
+        let header_end = body
+            .iter()
+            .position(|&byte| byte == b'\n')
+            .ok_or(MergeError::InvalidGroupedSum)?;
+        if &body[..=header_end] != header.as_bytes() {
+            return Err(MergeError::SchemaMismatch);
         }
-        let rows = &body[header.len()..];
+        let rows = &body[header_end + 1..];
         if rows.is_empty() {
             continue;
         }
