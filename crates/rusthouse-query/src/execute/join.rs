@@ -347,13 +347,25 @@ pub fn execute_join<W: Write>(
         .collect::<Vec<_>>();
     let width = left_names.len();
     let selected: Vec<(usize, String, Option<usize>)> = if let Some(columns) = &query.columns {
-        columns
-            .iter()
-            .map(|col| {
-                resolve(query, col, &left_names, &right_names)
-                    .map(|index| (index, format!("{}.{}", col.relation, col.name), None))
-            })
-            .collect::<Result<Vec<_>, _>>()?
+        let mut selected = Vec::new();
+        for col in columns {
+            if col.name == "*" {
+                let (start, names) = if col.relation == query.left_alias {
+                    (0, &left_names)
+                } else if col.relation == query.right_alias {
+                    (width, &right_names)
+                } else {
+                    return Err(invalid(format!("unknown JOIN qualifier: {}", col.relation)));
+                };
+                selected.extend(names.iter().enumerate().map(|(index, name)| {
+                    (start + index, format!("{}.{}", col.relation, name), None)
+                }));
+            } else {
+                let index = resolve(query, col, &left_names, &right_names)?;
+                selected.push((index, format!("{}.{}", col.relation, col.name), None));
+            }
+        }
+        selected
     } else {
         left_names
             .iter()
