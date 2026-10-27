@@ -48,6 +48,7 @@ pub(super) fn is_function(name: &str) -> bool {
         || name.eq_ignore_ascii_case("BITTEST")
         || name.eq_ignore_ascii_case("ISQRT")
         || name.eq_ignore_ascii_case("FACTORIAL")
+        || name.eq_ignore_ascii_case("INTLOG2")
 }
 
 pub(super) fn parse(parser: &mut Parser) -> Result<i64, ParseError> {
@@ -424,6 +425,11 @@ fn factor(parser: &mut Parser, depth: usize) -> Result<i64, ParseError> {
             (1..=first)
                 .try_fold(1i64, |acc, value| acc.checked_mul(value))
                 .ok_or_else(overflow)?
+        } else if name.eq_ignore_ascii_case("INTLOG2") {
+            if first <= 0 {
+                return Err(ParseError("INTLOG2 requires a positive integer".into()));
+            }
+            i64::from(first.ilog2())
         } else {
             first.signum()
         };
