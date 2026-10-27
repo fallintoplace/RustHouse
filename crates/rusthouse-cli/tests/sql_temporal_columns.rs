@@ -44,3 +44,41 @@ fn dates_and_timestamps_round_trip_and_filter_correctly() {
     );
     std::fs::remove_dir_all(dir).unwrap();
 }
+
+#[test]
+fn q6_style_revenue_filters_use_folded_constants() {
+    let dir = std::env::temp_dir().join(format!(
+        "rusthouse-q6-interval-{}-{}",
+        std::process::id(),
+        NEXT.fetch_add(1, Ordering::Relaxed)
+    ));
+    query(
+        &dir,
+        "CREATE TABLE lineitem (l_shipdate Date, l_extendedprice Float64, l_discount Float64, l_quantity UInt64)",
+    );
+    query(
+        &dir,
+        "INSERT INTO lineitem VALUES \
+         ('1994-06-01', 100, 0.06, 10), \
+         ('1994-02-01', 100, 0.05, 10), \
+         ('1994-02-01', 100, 0.07, 10), \
+         ('1994-02-01', 100, 0.04, 10), \
+         ('1994-02-01', 100, 0.06, 30), \
+         ('1995-02-01', 100, 0.06, 10)",
+    );
+    let output = query(
+        &dir,
+        "SELECT SUM(l_extendedprice * l_discount) AS revenue \
+         FROM lineitem WHERE l_shipdate >= DATE '1994-01-01' \
+         AND l_shipdate < DATE '1994-01-01' + INTERVAL '1' YEAR \
+         AND l_discount BETWEEN 0.06 - 0.01 AND 0.06 + 0.01 \
+         AND l_quantity < 24",
+    );
+    let output = String::from_utf8(output).unwrap();
+    let mut lines = output.lines();
+    assert_eq!(lines.next(), Some("revenue"));
+    let revenue: f64 = lines.next().unwrap().parse().unwrap();
+    assert!((revenue - 18.0).abs() < 1e-9, "{output}");
+    assert_eq!(lines.next(), None);
+    std::fs::remove_dir_all(dir).unwrap();
+}
