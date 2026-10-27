@@ -80,7 +80,7 @@ class BenchmarkEntryPointTests(unittest.TestCase):
         )
 
     def test_python_tests_keep_running_after_a_failure(self):
-        with mock.patch.object(runner, "run_command", side_effect=[0, 1, 0, 0, 0]) as invoke:
+        with mock.patch.object(runner, "run_command", side_effect=[0, 1, 0, 0, 0, 0]) as invoke:
             self.assertEqual(runner.python_tests(), 1)
             self.assertEqual(invoke.call_count, len(runner.PYTHON_SUITES))
             self.assertTrue(all(call.args[1][0] == sys.executable for call in invoke.call_args_list))
