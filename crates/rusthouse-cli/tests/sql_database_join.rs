@@ -147,6 +147,30 @@ fn streams_large_inner_join_probe_without_buffering_left_table() {
 }
 
 #[test]
+fn streaming_inner_join_scans_more_than_100000_probe_rows() {
+    let db = database();
+    for statement in [
+        "CREATE TABLE events (id UInt64)",
+        "CREATE TABLE lookup (id UInt64)",
+        "INSERT INTO events SELECT number FROM numbers(40000)",
+        "INSERT INTO events SELECT number FROM numbers(40000, 40000)",
+        "INSERT INTO events SELECT number FROM numbers(80000, 40001)",
+        "INSERT INTO lookup VALUES (120000)",
+    ] {
+        let result = sql(statement, &db, &[]);
+        assert!(result.status.success(), "{statement}: {result:?}");
+    }
+    let joined = sql(
+        "SELECT e.id FROM events e INNER JOIN lookup l ON e.id = l.id LIMIT 1",
+        &db,
+        &[],
+    );
+    assert!(joined.status.success(), "{joined:?}");
+    assert_eq!(joined.stdout, b"e.id\n120000\n");
+    fs::remove_dir_all(db).unwrap();
+}
+
+#[test]
 fn ordered_join_accepts_16384_rows_but_rejects_one_more() {
     let db = database();
     for statement in [
