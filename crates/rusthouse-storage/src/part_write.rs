@@ -465,7 +465,6 @@ mod tests {
         fs::remove_dir_all(root).unwrap();
     }
 
-
     #[test]
     fn zstd_blocks_round_trip_and_tiny_blocks_stay_uncompressed() {
         use crate::CompressedBlockReader;
@@ -528,8 +527,10 @@ mod tests {
             let batch = scan.next_batch().unwrap().unwrap();
             assert_eq!(batch[0].len(), count);
             assert_eq!(batch[1].len(), count);
-            assert!(matches!(&batch[0], TypedColumn::Numeric(NumericColumn::UInt64(values))
-                if values.first() == Some(&first)));
+            assert!(
+                matches!(&batch[0], TypedColumn::Numeric(NumericColumn::UInt64(values))
+                if values.first() == Some(&first))
+            );
             assert!(matches!(&batch[1], TypedColumn::Text(values)
                 if (0..count).all(|index| values.get(index) == Some(message.as_bytes()))));
         }
