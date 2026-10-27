@@ -48,6 +48,16 @@ class DbgenConversionTests(unittest.TestCase):
                 convert_table(path / "region.tbl", path / "region.tsv", "region")
             self.assertFalse((path / "region.tsv").exists())
 
+    def test_rejects_invalid_utf8_without_publishing(self):
+        with tempfile.TemporaryDirectory() as root:
+            source = Path(root) / "region.tbl"
+            target = Path(root) / "region.tsv"
+            source.write_bytes(b"1|name|comment|\n" + b"2|bad\xff|comment|\n")
+            with self.assertRaisesRegex(ValueError, "row 2: invalid UTF-8"):
+                convert_table(source, target, "region")
+            self.assertFalse(target.exists())
+            self.assertFalse(target.with_name("region.tsv.tmp").exists())
+
     def test_converts_selected_tables_only(self):
         with tempfile.TemporaryDirectory() as root:
             path = Path(root)
