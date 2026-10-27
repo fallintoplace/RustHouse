@@ -14,6 +14,7 @@ pub(super) fn is_function(name: &str) -> bool {
             | "REVERSE"
             | "CONCAT"
             | "CONCAT_WS"
+            | "JSON_QUOTE"
             | "SUBSTRING"
             | "SPLIT_PART"
             | "TRIM"
@@ -432,6 +433,37 @@ fn parse_at_depth(parser: &mut Parser, depth: usize) -> Result<ConstantValue, Pa
                     ConstantValue::Text(result)
                 }
                 _ => ConstantValue::Null,
+            }
+        }
+        "JSON_QUOTE" => {
+            let input = text_arg(parser, depth + 1)?;
+            require(parser, Token::RParen, "JSON_QUOTE requires one argument")?;
+            match input {
+                Some(value) => {
+                    let mut result = String::with_capacity(value.len().saturating_add(2));
+                    result.push('"');
+                    for character in value.chars() {
+                        match character {
+                            '"' => result.push_str("\\\""),
+                            '\\' => result.push_str("\\\\"),
+                            '\n' => result.push_str("\\n"),
+                            '\r' => result.push_str("\\r"),
+                            '\t' => result.push_str("\\t"),
+                            '\u{0008}' => result.push_str("\\b"),
+                            '\u{000C}' => result.push_str("\\f"),
+                            character if character < '\u{0020}' => {
+                                result.push_str(&format!("\\u{:04x}", character as u32));
+                            }
+                            character => result.push(character),
+                        }
+                        if result.len() >= MAX_TEXT_BYTES {
+                            return Err(ParseError("JSON_QUOTE result is too large".into()));
+                        }
+                    }
+                    result.push('"');
+                    ConstantValue::Text(result)
+                }
+                None => ConstantValue::Null,
             }
         }
         "REPEAT" => {
