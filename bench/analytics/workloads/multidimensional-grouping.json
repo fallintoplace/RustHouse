@@ -1,0 +1,14 @@
+{
+  "name": "multidimensional-grouping",
+  "description": "Measure two-dimensional grouping over low-cardinality dimensions",
+  "queries": [
+    {
+      "name": "region-category",
+      "sql": "SELECT region, category, COUNT(*) FROM events GROUP BY region, category ORDER BY region, category LIMIT 100"
+    },
+    {
+      "name": "region-status",
+      "sql": "SELECT region, status, COUNT(*) FROM events GROUP BY region, status ORDER BY region, status LIMIT 100"
+    }
+  ]
+}
