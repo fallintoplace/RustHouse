@@ -168,7 +168,11 @@ fn parse_clamp(parser: &mut Parser, depth: usize) -> Result<i64, ParseError> {
 fn parse_digit_count(parser: &mut Parser, depth: usize) -> Result<i64, ParseError> {
     require_token(parser, Token::LParen, "DIGIT_COUNT requires '('")?;
     let value = expression(parser, depth + 1)?;
-    require_token(parser, Token::RParen, "expected ')' after DIGIT_COUNT argument")?;
+    require_token(
+        parser,
+        Token::RParen,
+        "expected ')' after DIGIT_COUNT argument",
+    )?;
     let magnitude = value.unsigned_abs();
     let digits = if magnitude == 0 {
         1
