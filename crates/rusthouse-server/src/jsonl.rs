@@ -1,6 +1,7 @@
 //! Convert bounded TSV query results into newline-delimited JSON objects.
 //! Numeric values remain strings to preserve Int128 and UInt128 precision.
-use super::{hex_digit, write_json_string};
+use super::write_json_string;
+use rusthouse_format::decode_tsv_field;
 use std::borrow::Cow;
 use std::collections::HashSet;
 use std::io::{self, Write};
@@ -12,44 +13,7 @@ fn invalid(message: &'static str) -> io::Error {
 }
 
 pub(super) fn decode_tsv_value(value: &[u8]) -> io::Result<String> {
-    let mut decoded = Vec::with_capacity(value.len());
-    let mut index = 0;
-    while index < value.len() {
-        if value[index] != b'\\' {
-            decoded.push(value[index]);
-            index += 1;
-            continue;
-        }
-        index += 1;
-        let escaped = *value
-            .get(index)
-            .ok_or_else(|| invalid("incomplete TSV escape"))?;
-        match escaped {
-            b'\\' => decoded.push(b'\\'),
-            b't' => decoded.push(b'\t'),
-            b'n' => decoded.push(b'\n'),
-            b'r' => decoded.push(b'\r'),
-            b'b' => decoded.push(8),
-            b'f' => decoded.push(12),
-            b'v' => decoded.push(11),
-            b'0' => decoded.push(0),
-            b'x' => {
-                let high = *value
-                    .get(index + 1)
-                    .ok_or_else(|| invalid("short TSV hex escape"))?;
-                let low = *value
-                    .get(index + 2)
-                    .ok_or_else(|| invalid("short TSV hex escape"))?;
-                let high = hex_digit(high).ok_or_else(|| invalid("invalid TSV hex escape"))?;
-                let low = hex_digit(low).ok_or_else(|| invalid("invalid TSV hex escape"))?;
-                decoded.push((high << 4) | low);
-                index += 2;
-            }
-            _ => return Err(invalid("unknown TSV escape")),
-        }
-        index += 1;
-    }
-    String::from_utf8(decoded).map_err(|_| invalid("JSONL field is not UTF-8"))
+    String::from_utf8(decode_tsv_field(value)?).map_err(|_| invalid("JSONL field is not UTF-8"))
 }
 
 fn parse_headers(line: &[u8]) -> io::Result<Vec<String>> {
@@ -256,6 +220,10 @@ mod tests {
         for invalid in [&b"bad\\q"[..], &b"bad\\xG0"[..], &b"bad\\x"[..]] {
             assert!(decode_tsv_value(invalid).is_err());
         }
+        assert_eq!(
+            decode_tsv_value(br"\xFF").unwrap_err().kind(),
+            io::ErrorKind::InvalidData
+        );
         assert_eq!(
             decode_tsv_value(b"quoted\\x22word").unwrap(),
             "quoted\"word"
