@@ -8,6 +8,7 @@ mod insert;
 mod insert_select;
 mod join;
 mod lexer;
+mod literal;
 mod multi_aggregate;
 mod scalar;
 mod text_scalar;
@@ -329,28 +330,81 @@ impl Parser {
     }
 
     fn literal(&mut self) -> Result<String, ParseError> {
-        // Typed SQL date/time literals have the same stored value as quoted
-        // literals, but are accepted explicitly by standard SQL workloads.
-        if matches!(
+        // Typed dates and timestamps use the same storage format as quoted
+        // literals. Support the DATE + INTERVAL 'N' YEAR form used by TPC-H Q6.
+        let is_date = matches!(
             self.tokens.get(self.index),
-            Some(Token::Word(kind))
-                if kind.eq_ignore_ascii_case("DATE") || kind.eq_ignore_ascii_case("TIMESTAMP")
-        ) {
-            if let Some(Token::String(value)) = self.tokens.get(self.index + 1) {
-                self.index += 2;
-                return Ok(value.clone());
-            }
-            return Err(ParseError(
-                "DATE/TIMESTAMP requires a quoted literal".into(),
-            ));
-        }
-        match self.tokens.get(self.index) {
-            Some(Token::Number(value)) | Some(Token::String(value)) => {
+            Some(Token::Word(kind)) if kind.eq_ignore_ascii_case("DATE")
+        );
+        if is_date || self.keyword("TIMESTAMP") {
+            if is_date {
                 self.index += 1;
-                Ok(value.clone())
             }
-            _ => Err(ParseError("expected a SQL literal".into())),
+            let value = self.tokens.get(self.index);
+            let Some(Token::String(value)) = value else {
+                return Err(ParseError(
+                    "DATE/TIMESTAMP requires a quoted literal".into(),
+                ));
+            };
+            let value = value.clone();
+            self.index += 1;
+            if is_date {
+                let subtract = if self.take(Token::Plus) {
+                    Some(false)
+                } else if self.take(Token::Minus) {
+                    Some(true)
+                } else {
+                    None
+                };
+                if let Some(subtract) = subtract {
+                    if !self.keyword("INTERVAL") {
+                        return Err(ParseError("DATE arithmetic requires INTERVAL".into()));
+                    }
+                    let years = match self.tokens.get(self.index) {
+                        Some(Token::Number(value) | Token::String(value)) => value
+                            .parse::<i64>()
+                            .map_err(|_| ParseError("invalid INTERVAL year count".into()))?,
+                        _ => return Err(ParseError("INTERVAL requires a year count".into())),
+                    };
+                    self.index += 1;
+                    if !self.keyword("YEAR") {
+                        return Err(ParseError("only INTERVAL YEAR is supported".into()));
+                    }
+                    let years = if subtract {
+                        years.checked_neg()
+                            .ok_or_else(|| ParseError("INTERVAL year count overflow".into()))?
+                    } else {
+                        years
+                    };
+                    return literal::add_date_years(&value, years);
+                }
+            }
+            return Ok(value);
         }
+        let is_number = matches!(self.tokens.get(self.index), Some(Token::Number(_)));
+        let value = match self.tokens.get(self.index) {
+            Some(Token::Number(value) | Token::String(value)) => value.clone(),
+            _ => return Err(ParseError("expected a SQL literal".into())),
+        };
+        self.index += 1;
+        if is_number {
+            let subtract = if self.take(Token::Plus) {
+                Some(false)
+            } else if self.take(Token::Minus) {
+                Some(true)
+            } else {
+                None
+            };
+            if let Some(subtract) = subtract {
+                let Some(Token::Number(right)) = self.tokens.get(self.index) else {
+                    return Err(ParseError("numeric arithmetic requires a literal".into()));
+                };
+                let result = literal::arithmetic(&value, right, subtract)?;
+                self.index += 1;
+                return Ok(result);
+            }
+        }
+        Ok(value)
     }
 
     fn number(&mut self) -> Result<String, ParseError> {
