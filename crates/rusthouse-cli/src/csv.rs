@@ -75,6 +75,13 @@ impl<W: Write> CsvWriter<W> {
     }
 }
 
+fn needs_csv_quotes(value: &[u8]) -> bool {
+    value == b"\\N"
+        || value
+            .iter()
+            .any(|byte| matches!(byte, b',' | b'"' | b'\t' | b'\r' | b'\n'))
+}
+
 fn write_csv_field<W: Write>(output: &mut W, field: &[u8]) -> io::Result<()> {
     if field == b"\\N" {
         return output.write_all(b"\\N");
@@ -85,11 +92,7 @@ fn write_csv_field<W: Write>(output: &mut W, field: &[u8]) -> io::Result<()> {
         Cow::Borrowed(field)
     };
     let value = decoded.as_ref();
-    let needs_quotes = value == b"\\N"
-        || value
-            .iter()
-            .any(|byte| matches!(byte, b',' | b'"' | b'\t' | b'\r' | b'\n'));
-    if !needs_quotes {
+    if !needs_csv_quotes(value) {
         return output.write_all(value);
     }
     write_quoted_field(output, value)
