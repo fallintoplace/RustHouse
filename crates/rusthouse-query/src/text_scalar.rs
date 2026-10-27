@@ -12,6 +12,7 @@ pub(super) fn is_function(name: &str) -> bool {
             | "BTRIM"
             | "RTRIM"
             | "LOWER"
+            | "HEX_ENCODE"
             | "UPPER"
             | "REVERSE"
             | "INITCAP"
@@ -75,6 +76,28 @@ fn parse_at_depth(parser: &mut Parser, depth: usize) -> Result<ConstantValue, Pa
                         i64::try_from(length)
                             .map_err(|_| ParseError("string length exceeds Int64".into()))?,
                     )
+                }
+                None => ConstantValue::Null,
+            }
+        }
+        "HEX_ENCODE" => {
+            let input = text_arg(parser, depth + 1)?;
+            require(parser, Token::RParen, "HEX_ENCODE requires one argument")?;
+            match input {
+                Some(value) => {
+                    let length = value.len()
+                        .checked_mul(2)
+                        .ok_or_else(|| ParseError("HEX_ENCODE result is too large".into()))?;
+                    if length > MAX_TEXT_BYTES {
+                        return Err(ParseError("HEX_ENCODE result is too large".into()));
+                    }
+                    const DIGITS: &[u8; 16] = b"0123456789ABCDEF";
+                    let mut output = String::with_capacity(length);
+                    for byte in value.bytes() {
+                        output.push(char::from(DIGITS[usize::from(byte >> 4)]));
+                        output.push(char::from(DIGITS[usize::from(byte & 15)]));
+                    }
+                    ConstantValue::Text(output)
                 }
                 None => ConstantValue::Null,
             }
