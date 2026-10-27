@@ -56,6 +56,7 @@ pub(super) fn is_function(name: &str) -> bool {
         || name.eq_ignore_ascii_case("BIT_TOGGLE")
         || name.eq_ignore_ascii_case("LEADING_ZEROS")
         || name.eq_ignore_ascii_case("TRAILING_ZEROS")
+        || name.eq_ignore_ascii_case("DIGITAL_ROOT")
         || name.eq_ignore_ascii_case("CLAMP")
         || name.eq_ignore_ascii_case("CEIL_DIV")
         || name.eq_ignore_ascii_case("FLOOR_DIV")
@@ -486,6 +487,19 @@ fn parse_bit_scans(parser: &mut Parser, depth: usize) -> Result<i64, ParseError>
     Ok(i64::from(result))
 }
 
+/// Decimal digital root of the unsigned magnitude; zero maps to zero.
+fn parse_digital_root(parser: &mut Parser, depth: usize) -> Result<i64, ParseError> {
+    require_token(parser, Token::LParen, "DIGITAL_ROOT requires '('")?;
+    let value = expression(parser, depth + 1)?;
+    require_token(parser, Token::RParen, "DIGITAL_ROOT requires ')'")?;
+    let magnitude = value.unsigned_abs();
+    if magnitude == 0 {
+        return Ok(0);
+    }
+    let root = 1 + (magnitude - 1) % 9;
+    i64::try_from(root).map_err(|_| overflow())
+}
+
 fn gcd(mut left: u64, mut right: u64) -> u64 {
     while right != 0 {
         let remainder = left % right;
@@ -729,6 +743,9 @@ fn factor(parser: &mut Parser, depth: usize) -> Result<i64, ParseError> {
         )
     ) {
         return parse_bit_scans(parser, depth);
+    }
+    if parser.keyword("DIGITAL_ROOT") {
+        return parse_digital_root(parser, depth);
     }
     if matches!(parser.tokens.get(parser.index), Some(Token::Word(name)) if name.eq_ignore_ascii_case("GCD") || name.eq_ignore_ascii_case("LCM"))
     {
