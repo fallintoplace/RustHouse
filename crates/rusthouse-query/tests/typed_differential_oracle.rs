@@ -74,7 +74,7 @@ fn seeded_typed_predicates_and_pagination_match_reference_rows() {
         seed = seed
             .wrapping_mul(6364136223846793005)
             .wrapping_add(1442695040888963407);
-        let department = (seed % 3) as u64;
+        let department = seed % 3;
         let cutoff = (seed >> 12) % (ROWS + 50);
         let limit = ((seed >> 29) % 25 + 1) as usize;
         let offset = ((seed >> 43) % 17) as usize;
