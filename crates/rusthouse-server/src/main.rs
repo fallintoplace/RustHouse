@@ -333,7 +333,9 @@ mod request_line_spacing_regressions {
         for target in ["/\0", "/\t", "/\u{7f}", "/café"] {
             let line = format!("GET {target} HTTP/1.1");
             assert_eq!(
-                parse_request_line(&line).err().map(|response| response.status),
+                parse_request_line(&line)
+                    .err()
+                    .map(|response| response.status),
                 Some("400 Bad Request")
             );
         }
