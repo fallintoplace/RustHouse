@@ -13,7 +13,7 @@ const MAX_REWRITE_BYTES: usize = 16 * 1024 * 1024;
 const MAX_PART_BUFFER_BYTES: usize = 4 * 1024 * 1024;
 const MAX_STREAMED_PART_BYTES: usize = 64 * 1024 * 1024;
 const MAX_STREAMED_COLUMN_BYTES: usize = 7 * 1024 * 1024;
-const MAX_REWRITE_PARTS: u64 = 10_000;
+const MAX_REWRITE_PARTS: u64 = 16_384;
 // The writer accepts 32,768 rows. Rewrites also retain a 4 MiB value budget.
 const PART_ROWS: usize = 32_768;
 
@@ -240,9 +240,9 @@ pub(super) fn append_parts(
     if existing
         .len()
         .checked_add(count)
-        .is_none_or(|parts| parts > 10_000)
+        .is_none_or(|parts| parts > 16_384)
     {
-        return Err("database table would exceed its 10000-part limit".into());
+        return Err("database table would exceed its 16384-part limit".into());
     }
     let mut last = 0u64;
     for part in existing {
@@ -359,9 +359,9 @@ pub(super) fn append_parts_stream(
             if existing
                 .len()
                 .checked_add(part_index)
-                .is_none_or(|total| total > 10_000)
+                .is_none_or(|total| total > 16_384)
             {
-                return Err("database table would exceed its 10000-part limit".into());
+                return Err("database table would exceed its 16384-part limit".into());
             }
             let number = last
                 .checked_add(u64::try_from(part_index).map_err(|_| "part index overflow")?)
@@ -454,7 +454,7 @@ pub(super) fn rewrite_rows(
             }
             part_number = part_number.checked_add(1).ok_or("part number overflow")?;
             if part_number > MAX_REWRITE_PARTS {
-                return Err("database table would exceed its 10000-part limit".into());
+                return Err("database table would exceed its 16384-part limit".into());
             }
             let part = staging.join(format!("all_{part_number}_{part_number}_0"));
             write_wide_part(&part, &cols, rows).map_err(|error| error.to_string())?;
