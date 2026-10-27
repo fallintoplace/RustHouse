@@ -65,6 +65,14 @@ fn computes_multiple_aggregates_in_one_filtered_scan() {
         run("SELECT sum(width * 2), avg((width + 2) * 2) FROM part"),
         "sum(width * 2)\tavg((width + 2) * 2)\n120\t44\n"
     );
+    assert_eq!(
+        run("SELECT sum(width + 1), sum(width - 2), avg(width + 3) FROM part"),
+        "sum(width + 1)\tsum(width - 2)\tavg(width + 3)\n63\t54\t23\n"
+    );
+    assert_eq!(
+        run("SELECT sum((width + 1) * 2), sum(1 + width) FROM part"),
+        "sum((width + 1) * 2)\tsum(1 + width)\n126\t63\n"
+    );
     // ClickBench-style wide projection: every expression reuses the same input column.
     let expressions = (0..90)
         .map(|offset| format!("sum(width + {offset})"))
