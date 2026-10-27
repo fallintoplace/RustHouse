@@ -1,4 +1,4 @@
-use super::jsonl::decode_tsv_value;
+use rusthouse_format::decode_tsv_field;
 use std::borrow::Cow;
 use std::io::{self, Write};
 
@@ -40,7 +40,11 @@ impl<W: Write> MarkdownWriter<W> {
 
 fn decode_markdown_field(field: &[u8], data_row: bool) -> io::Result<Cow<'_, [u8]>> {
     if data_row && field != b"\\N" && field.contains(&b'\\') {
-        decode_tsv_value(field).map(|text| Cow::Owned(text.into_bytes()))
+        let decoded = decode_tsv_field(field)?;
+        std::str::from_utf8(&decoded).map_err(|_| {
+            io::Error::new(io::ErrorKind::InvalidData, "Markdown field is not UTF-8")
+        })?;
+        Ok(Cow::Owned(decoded))
     } else {
         Ok(Cow::Borrowed(field))
     }
@@ -109,17 +113,22 @@ fn write_cell<W: Write>(output: &mut W, field: &[u8]) -> io::Result<()> {
 
 impl<W: Write> Write for MarkdownWriter<W> {
     fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
-        for &byte in buf {
-            if byte == b'\n' {
-                self.finish_line()?;
+        for chunk in buf.split_inclusive(|&byte| byte == b'\n') {
+            let complete = chunk.last() == Some(&b'\n');
+            let fragment = if complete {
+                &chunk[..chunk.len() - 1]
             } else {
-                if self.line.len() >= MAX_LINE_BYTES {
-                    return Err(io::Error::new(
-                        io::ErrorKind::InvalidData,
-                        "Markdown row exceeds 1 MiB",
-                    ));
-                }
-                self.line.push(byte);
+                chunk
+            };
+            if fragment.len() > MAX_LINE_BYTES.saturating_sub(self.line.len()) {
+                return Err(io::Error::new(
+                    io::ErrorKind::InvalidData,
+                    "Markdown row exceeds 1 MiB",
+                ));
+            }
+            self.line.extend_from_slice(fragment);
+            if complete {
+                self.finish_line()?;
             }
         }
         Ok(buf.len())
@@ -152,6 +161,15 @@ mod tests {
             decode_markdown_field(b"a\\tb", true).unwrap(),
             Cow::Owned(_)
         ));
+    }
+
+    #[test]
+    fn shared_decoder_validates_unicode_and_bad_bytes() {
+        assert_eq!(
+            decode_markdown_field(br"caf\xC3\xA9", true).unwrap().as_ref(),
+            "café".as_bytes()
+        );
+        assert!(decode_markdown_field(br"\xFF", true).is_err());
     }
 
     #[test]
@@ -230,6 +248,25 @@ mod tests {
             io::ErrorKind::InvalidData
         );
         assert_eq!(writer.output, previous);
+    }
+
+    #[test]
+    fn accepts_exact_row_limit_in_fragmented_writes() {
+        let row = vec![b'a'; MAX_LINE_BYTES];
+        let mut writer = MarkdownWriter::new(Vec::new());
+        writer.write_all(b"value\n").unwrap();
+        writer.write_all(&row[..MAX_LINE_BYTES / 2]).unwrap();
+        writer.write_all(&row[MAX_LINE_BYTES / 2..]).unwrap();
+        writer.write_all(b"\n").unwrap();
+        assert!(writer.output.ends_with(b" |\n"));
+
+        let mut writer = MarkdownWriter::new(Vec::new());
+        writer.write_all(b"value\n").unwrap();
+        writer.write_all(&row).unwrap();
+        assert_eq!(
+            writer.write_all(b"a").unwrap_err().kind(),
+            io::ErrorKind::InvalidData
+        );
     }
 
     #[test]
