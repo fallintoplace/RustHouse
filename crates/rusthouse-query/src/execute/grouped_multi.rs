@@ -1,5 +1,5 @@
-use super::typed::{self, Cell, Key};
 use super::ExecutionError;
+use super::typed::{self, Cell, Key};
 use crate::Select;
 use rusthouse_storage::{TypedQueryReader, inspect_query_source};
 use std::cmp::Ordering;
@@ -72,9 +72,9 @@ pub(super) fn execute<W: Write>(
             match by_key.entry(key) {
                 Entry::Occupied(entry) => {
                     let count = &mut groups[*entry.get()].1;
-                    *count = count.checked_add(1).ok_or_else(|| {
-                        ExecutionError::Invalid("group count overflow".into())
-                    })?;
+                    *count = count
+                        .checked_add(1)
+                        .ok_or_else(|| ExecutionError::Invalid("group count overflow".into()))?;
                 }
                 Entry::Vacant(entry) => {
                     if groups.len() >= MAX_GROUPS {
