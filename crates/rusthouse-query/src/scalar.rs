@@ -22,6 +22,7 @@ fn is_bitwise(name: &str) -> bool {
 pub(super) fn is_function(name: &str) -> bool {
     name.eq_ignore_ascii_case("ABS")
         || name.eq_ignore_ascii_case("SIGN")
+        || name.eq_ignore_ascii_case("DIGIT_COUNT")
         || is_extrema(name)
         || is_power(name)
         || is_bitwise(name)
@@ -164,6 +165,19 @@ fn parse_clamp(parser: &mut Parser, depth: usize) -> Result<i64, ParseError> {
     Ok(value.clamp(lower, upper))
 }
 
+fn parse_digit_count(parser: &mut Parser, depth: usize) -> Result<i64, ParseError> {
+    require_token(parser, Token::LParen, "DIGIT_COUNT requires '('")?;
+    let value = expression(parser, depth + 1)?;
+    require_token(parser, Token::RParen, "expected ')' after DIGIT_COUNT argument")?;
+    let magnitude = value.unsigned_abs();
+    let digits = if magnitude == 0 {
+        1
+    } else {
+        magnitude.ilog10() + 1
+    };
+    Ok(i64::from(digits))
+}
+
 fn gcd(mut left: u64, mut right: u64) -> u64 {
     while right != 0 {
         let remainder = left % right;
@@ -223,6 +237,9 @@ fn factor(parser: &mut Parser, depth: usize) -> Result<i64, ParseError> {
     if matches!(parser.tokens.get(parser.index), Some(Token::Word(name)) if name.eq_ignore_ascii_case("GCD") || name.eq_ignore_ascii_case("LCM"))
     {
         return parse_gcd_lcm(parser, depth);
+    }
+    if parser.keyword("DIGIT_COUNT") {
+        return parse_digit_count(parser, depth);
     }
     if matches!(parser.tokens.get(parser.index), Some(Token::Word(name)) if is_extrema(name)) {
         return parse_extrema(parser, depth);
