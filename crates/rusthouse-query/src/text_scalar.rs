@@ -8,6 +8,7 @@ pub(super) fn is_function(name: &str) -> bool {
         name.to_ascii_uppercase().as_str(),
         "LENGTH"
             | "CHAR_LENGTH"
+            | "BIT_LENGTH"
             | "BTRIM"
             | "LOWER"
             | "UPPER"
@@ -54,6 +55,21 @@ fn parse_at_depth(parser: &mut Parser, depth: usize) -> Result<ConstantValue, Pa
                         i64::try_from(length)
                             .map_err(|_| ParseError("string length exceeds Int64".into()))?,
                     )
+                }
+                None => ConstantValue::Null,
+            }
+        }
+        "BIT_LENGTH" => {
+            let input = text_arg(parser, depth + 1)?;
+            require(parser, Token::RParen, "BIT_LENGTH requires one argument")?;
+            match input {
+                Some(value) => {
+                    let bits = value
+                        .len()
+                        .checked_mul(8)
+                        .and_then(|length| i64::try_from(length).ok())
+                        .ok_or_else(|| ParseError("BIT_LENGTH result exceeds Int64".into()))?;
+                    ConstantValue::Integer(bits)
                 }
                 None => ConstantValue::Null,
             }
