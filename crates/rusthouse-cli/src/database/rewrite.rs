@@ -291,6 +291,102 @@ pub(super) fn append_parts(
     })
 }
 
+/// Append a stream of schema-ordered rows as one verified snapshot.
+/// An input or storage error leaves the previous active snapshot unchanged.
+pub(super) fn append_parts_stream(
+    database: &Path,
+    table: &str,
+    cols: &[Column],
+    existing: &[std::path::PathBuf],
+    mut next_row: impl FnMut() -> Result<Option<Vec<Option<String>>>, String>,
+) -> Result<usize, String> {
+    let mut last = 0u64;
+    for source in existing {
+        let name = source
+            .file_name()
+            .and_then(|name| name.to_str())
+            .ok_or("invalid stored part filename")?;
+        let (first, second) = name
+            .strip_prefix("all_")
+            .and_then(|name| name.strip_suffix("_0"))
+            .and_then(|name| name.split_once('_'))
+            .ok_or_else(|| format!("unexpected stored part name: {name}"))?;
+        let first = first.parse::<u64>().map_err(|_| "invalid part number")?;
+        let second = second.parse::<u64>().map_err(|_| "invalid part number")?;
+        if first != second {
+            return Err("non-local part block ranges cannot be appended".into());
+        }
+        last = last.max(first);
+    }
+
+    let mut count = 0usize;
+    publish_snapshot_with(database, table, |staging| {
+        for source in existing {
+            verify_wide_part(source).map_err(|error| error.to_string())?;
+            let name = source.file_name().ok_or("invalid stored part filename")?;
+            let destination = staging.join(name);
+            fs::create_dir(&destination)
+                .map_err(|error| format!("cannot stage existing part: {error}"))?;
+            for entry in fs::read_dir(source).map_err(|error| error.to_string())? {
+                let entry = entry.map_err(|error| error.to_string())?;
+                if !entry.file_type().map_err(|error| error.to_string())?.is_file() {
+                    return Err("cannot hard-link a non-regular part entry".into());
+                }
+                fs::hard_link(entry.path(), destination.join(entry.file_name()))
+                    .map_err(|error| format!("cannot stage immutable part file: {error}"))?;
+            }
+            sync_directory(&destination)?;
+        }
+        let mut buffer: StoredRows = Vec::with_capacity(PART_ROWS);
+        let mut buffered_bytes = 0usize;
+        let mut part_index = 0usize;
+        let mut flush = |rows: &mut StoredRows, bytes: &mut usize| -> Result<(), String> {
+            if rows.is_empty() {
+                return Ok(());
+            }
+            part_index = part_index.checked_add(1).ok_or("part index overflow")?;
+            if existing
+                .len()
+                .checked_add(part_index)
+                .is_none_or(|total| total > 10_000)
+            {
+                return Err("database table would exceed its 10000-part limit".into());
+            }
+            let number = last
+                .checked_add(u64::try_from(part_index).map_err(|_| "part index overflow")?)
+                .ok_or("part block number overflow")?;
+            let part = staging.join(format!("all_{number}_{number}_0"));
+            write_wide_part(&part, cols, rows).map_err(|error| error.to_string())?;
+            verify_wide_part(&part).map_err(|error| error.to_string())?;
+            rows.clear();
+            *bytes = 0;
+            Ok(())
+        };
+        while let Some(row) = next_row()? {
+            let row_bytes = row.iter().flatten().try_fold(0usize, |size, value| {
+                size.checked_add(value.len())
+                    .ok_or_else(|| "COPY record size overflow".to_string())
+            })?;
+            if !buffer.is_empty()
+                && (buffer.len() >= PART_ROWS
+                    || buffered_bytes
+                        .checked_add(row_bytes)
+                        .is_none_or(|size| size > MAX_PART_BUFFER_BYTES))
+            {
+                flush(&mut buffer, &mut buffered_bytes)?;
+            }
+            buffered_bytes = buffered_bytes
+                .checked_add(row_bytes)
+                .ok_or("COPY batch size overflow")?;
+            buffer.push(row);
+            count = count.checked_add(1).ok_or("COPY row count overflow")?;
+        }
+        flush(&mut buffer, &mut buffered_bytes)?;
+        Ok(())
+    })?;
+    Ok(count)
+}
+
 /// Rewrite a local table using bounded batches. Keep the previous active
 /// snapshot visible until every replacement part has been written and verified.
 pub(super) fn rewrite_rows(
