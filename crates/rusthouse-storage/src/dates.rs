@@ -1,5 +1,15 @@
 //! Strict UTC date and timestamp parsing for stored Date and DateTime columns.
 
+fn days_in_month(year: i64, month: i64) -> i64 {
+    let leap = year % 4 == 0 && (year % 100 != 0 || year % 400 == 0);
+    match month {
+        2 if leap => 29,
+        2 => 28,
+        4 | 6 | 9 | 11 => 30,
+        _ => 31,
+    }
+}
+
 fn ymd(text: &str) -> Option<(i64, i64, i64)> {
     let bytes = text.as_bytes();
     if bytes.len() != 10
@@ -18,14 +28,7 @@ fn ymd(text: &str) -> Option<(i64, i64, i64)> {
     if !(1..=12).contains(&month) {
         return None;
     }
-    let leap = year % 4 == 0 && (year % 100 != 0 || year % 400 == 0);
-    let days = match month {
-        2 if leap => 29,
-        2 => 28,
-        4 | 6 | 9 | 11 => 30,
-        _ => 31,
-    };
-    (day >= 1 && day <= days).then_some((year, month, day))
+    (day >= 1 && day <= days_in_month(year, month)).then_some((year, month, day))
 }
 
 fn to_days(year: i64, month: i64, day: i64) -> i64 {
@@ -102,6 +105,15 @@ pub fn format_datetime(seconds: u32) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn leap_centuries_use_gregorian_rules() {
+        assert_eq!(days_in_month(1900, 2), 28);
+        assert_eq!(days_in_month(2000, 2), 29);
+        assert_eq!(days_in_month(2024, 2), 29);
+        assert_eq!(days_in_month(2025, 2), 28);
+        assert_eq!(days_in_month(2025, 4), 30);
+    }
 
     #[test]
     fn dates_are_lossless_and_calendar_checked() {
