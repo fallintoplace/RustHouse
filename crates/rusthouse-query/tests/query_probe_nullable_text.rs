@@ -53,12 +53,7 @@ fn nullable_text_predicates_keep_case_escapes_and_null_semantics() {
             })
             .collect::<Vec<_>>();
         let part = index + 1;
-        write_wide_part(
-            &root.join(format!("all_{part}_{part}_0")),
-            &columns,
-            &rows,
-        )
-        .unwrap();
+        write_wide_part(&root.join(format!("all_{part}_{part}_0")), &columns, &rows).unwrap();
     }
     for (sql, expected) in [
         (
