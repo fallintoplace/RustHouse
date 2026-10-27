@@ -127,7 +127,11 @@ fn decode_url(value: &str) -> Result<String, &'static str> {
 
 fn write_json_string<W: Write>(writer: &mut W, value: &str) -> io::Result<()> {
     // UTF-8 bytes other than ASCII controls, quotes and backslashes are safe.
-    if !value.as_bytes().iter().any(|byte| *byte < 0x20 || *byte == b'\"' || *byte == b'\\') {
+    if !value
+        .as_bytes()
+        .iter()
+        .any(|byte| *byte < 0x20 || *byte == b'\"' || *byte == b'\\')
+    {
         writer.write_all(b"\"")?;
         writer.write_all(value.as_bytes())?;
         return writer.write_all(b"\"");
