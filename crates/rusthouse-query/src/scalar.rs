@@ -204,7 +204,11 @@ fn parse_gcd_lcm(parser: &mut Parser, depth: usize) -> Result<i64, ParseError> {
 fn parse_is_power_of_two(parser: &mut Parser, depth: usize) -> Result<i64, ParseError> {
     require_token(parser, Token::LParen, "IS_POWER_OF_TWO requires '('")?;
     let value = expression(parser, depth + 1)?;
-    require_token(parser, Token::RParen, "expected ')' after IS_POWER_OF_TWO argument")?;
+    require_token(
+        parser,
+        Token::RParen,
+        "expected ')' after IS_POWER_OF_TWO argument",
+    )?;
     Ok(if value > 0 && value.unsigned_abs().is_power_of_two() {
         1
     } else {
