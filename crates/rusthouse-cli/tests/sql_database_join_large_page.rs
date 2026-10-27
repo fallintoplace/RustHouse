@@ -20,7 +20,10 @@ fn pages_more_than_65536_joined_pairs_without_materializing_them() {
         std::process::id(),
         NEXT.fetch_add(1, Ordering::Relaxed)
     ));
-    for command in ["CREATE TABLE facts (id UInt64)", "CREATE TABLE dimension (id UInt64)"] {
+    for command in [
+        "CREATE TABLE facts (id UInt64)",
+        "CREATE TABLE dimension (id UInt64)",
+    ] {
         let result = sql(command, &db);
         assert!(result.status.success(), "{command}: {result:?}");
     }
@@ -41,7 +44,10 @@ fn pages_more_than_65536_joined_pairs_without_materializing_them() {
     assert_eq!(page.stdout, b"f.id\n5461\n5461\n");
 
     // Queries without a bounded page still reject excessive result cardinality.
-    let unbounded = sql("SELECT f.id FROM facts f JOIN dimension d ON f.id = d.id", &db);
+    let unbounded = sql(
+        "SELECT f.id FROM facts f JOIN dimension d ON f.id = d.id",
+        &db,
+    );
     assert!(!unbounded.status.success());
     assert!(unbounded.stdout.is_empty());
     assert!(String::from_utf8_lossy(&unbounded.stderr).contains("65536"));
