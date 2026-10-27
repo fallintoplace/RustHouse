@@ -20,6 +20,9 @@ fn is_bitwise(name: &str) -> bool {
 }
 
 pub(super) fn is_function(name: &str) -> bool {
+    if name.eq_ignore_ascii_case("DIGIT_SUM") {
+        return true;
+    }
     name.eq_ignore_ascii_case("ABS")
         || name.eq_ignore_ascii_case("SIGN")
         || is_extrema(name)
@@ -27,7 +30,6 @@ pub(super) fn is_function(name: &str) -> bool {
         || is_bitwise(name)
         || name.eq_ignore_ascii_case("GCD")
         || name.eq_ignore_ascii_case("LCM")
-        || name.eq_ignore_ascii_case("DIGIT_SUM")
         || name.eq_ignore_ascii_case("CLAMP")
 }
 
