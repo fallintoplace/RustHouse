@@ -798,14 +798,29 @@ fn execute_grouped_aggregate_numbers<W: Write>(
             }
         }
     }
-    if let Some(order) = &query.order_by {
-        groups.sort_by(|(left, _), (right, _)| {
-            let ordering = compare_numbers(*left, *right);
-            if order.descending {
-                ordering.reverse()
-            } else {
-                ordering
+    if query.order_by.is_some() {
+        groups.sort_by(|(left_key, left_state), (right_key, right_state)| {
+            for term in query.order_terms() {
+                let comparison = if term.column == "#aggregate" {
+                    typed::compare_order_cells(
+                        &left_state.sort_cell(),
+                        &right_state.sort_cell(),
+                        term.descending,
+                        term.nulls_first,
+                    )
+                } else {
+                    let ordering = compare_numbers(*left_key, *right_key);
+                    if term.descending {
+                        ordering.reverse()
+                    } else {
+                        ordering
+                    }
+                };
+                if comparison != Ordering::Equal {
+                    return comparison;
+                }
             }
+            Ordering::Equal
         });
     }
     for (key, state) in groups
@@ -1465,6 +1480,16 @@ impl AggregateState {
         }
         self.count = next_count;
         Ok(())
+    }
+
+    /// Exact numeric ORDER BY key for supported grouped aggregates.
+    fn sort_cell(&self) -> typed::Cell {
+        let value = match self.function {
+            AggregateFunction::Sum | AggregateFunction::Min | AggregateFunction::Max => self.value,
+            AggregateFunction::Avg if self.count > 0 => Some(Number::Float(self.mean)),
+            _ => None,
+        };
+        value.map_or(typed::Cell::Null, typed::Cell::Numeric)
     }
 
     fn render(&self) -> String {
