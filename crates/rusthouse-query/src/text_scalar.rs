@@ -22,6 +22,7 @@ pub(super) fn is_function(name: &str) -> bool {
             | "LTRIM"
             | "LPAD"
             | "REPLACE"
+            | "TRANSLATE"
             | "STRPOS"
             | "LEFT"
             | "STARTS_WITH"
@@ -367,6 +368,42 @@ fn parse_at_depth(parser: &mut Parser, depth: usize) -> Result<ConstantValue, Pa
                 (Some(input), Some(Some(characters))) => ConstantValue::Text(
                     input.trim_matches(|character| characters.contains(character)).to_owned(),
                 ),
+                _ => ConstantValue::Null,
+            }
+        }
+        "TRANSLATE" => {
+            let input = text_arg(parser, depth + 1)?;
+            require(parser, Token::Comma, "TRANSLATE requires source characters")?;
+            let from = text_arg(parser, depth + 1)?;
+            require(parser, Token::Comma, "TRANSLATE requires replacement characters")?;
+            let to = text_arg(parser, depth + 1)?;
+            require(parser, Token::RParen, "expected ')' after TRANSLATE arguments")?;
+            match (input, from, to) {
+                (Some(input), Some(from), Some(to)) => {
+                    let mut replacements = std::collections::HashMap::new();
+                    let mut to_chars = to.chars();
+                    for ch in from.chars() {
+                        let replacement = to_chars.next();
+                        replacements.entry(ch).or_insert(replacement);
+                    }
+                    let mut result = String::with_capacity(input.len());
+                    for ch in input.chars() {
+                        if let Some(replacement) = replacements.get(&ch) {
+                            if let Some(mapped) = replacement {
+                                if result.len() + mapped.len_utf8() > MAX_TEXT_BYTES {
+                                    return Err(ParseError("TRANSLATE result is too large".into()));
+                                }
+                                result.push(*mapped);
+                            }
+                        } else {
+                            if result.len() + ch.len_utf8() > MAX_TEXT_BYTES {
+                                return Err(ParseError("TRANSLATE result is too large".into()));
+                            }
+                            result.push(ch);
+                        }
+                    }
+                    ConstantValue::Text(result)
+                }
                 _ => ConstantValue::Null,
             }
         }
