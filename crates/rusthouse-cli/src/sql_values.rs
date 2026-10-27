@@ -66,6 +66,7 @@ pub struct SqlValuesWriter<W: Write> {
     columns: Option<usize>,
     line: Vec<u8>,
     rows: usize,
+    finished: bool,
 }
 
 impl<W: Write> SqlValuesWriter<W> {
@@ -75,6 +76,7 @@ impl<W: Write> SqlValuesWriter<W> {
             columns: None,
             line: Vec::new(),
             rows: 0,
+            finished: false,
         }
     }
 
@@ -101,18 +103,25 @@ impl<W: Write> SqlValuesWriter<W> {
     }
 
     pub fn finish(&mut self) -> io::Result<()> {
+        if self.finished {
+            return self.output.flush();
+        }
         if !self.line.is_empty() {
             return Err(invalid("SQL VALUES input has an unterminated line"));
         }
         if self.rows > 0 {
             self.output.write_all(b";\n")?;
         }
+        self.finished = true;
         self.output.flush()
     }
 }
 
 impl<W: Write> Write for SqlValuesWriter<W> {
     fn write(&mut self, bytes: &[u8]) -> io::Result<usize> {
+        if self.finished {
+            return Err(invalid("SQL VALUES output is already finished"));
+        }
         for &byte in bytes {
             if byte == b'\n' {
                 self.finish_line()?;
@@ -134,6 +143,19 @@ impl<W: Write> Write for SqlValuesWriter<W> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn repeated_finish_does_not_duplicate_sql_or_accept_more_rows() {
+        let mut writer = SqlValuesWriter::new(Vec::new());
+        writer.write_all(b"value\n1\n").unwrap();
+        writer.finish().unwrap();
+        writer.finish().unwrap();
+        assert_eq!(writer.output, b"VALUES ('1');\n");
+        assert_eq!(
+            writer.write_all(b"2\n").unwrap_err().kind(),
+            io::ErrorKind::InvalidData
+        );
+    }
 
     #[test]
     fn quoted_text_escapes_apostrophes_and_backslashes() {
