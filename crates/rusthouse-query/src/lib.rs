@@ -139,7 +139,9 @@ pub enum Projection {
         column: String,
     },
     MultipleAggregates(Vec<AggregateItem>),
-    StringLength { column: String },
+    StringLength {
+        column: String,
+    },
     All,
     Columns(Vec<String>),
 }
@@ -379,7 +381,7 @@ impl Parser {
                             .cloned()
                             .ok_or_else(|| ParseError("ORDER BY position is out of range".into()))?
                     }
-                },
+                }
                 Projection::GroupedAggregate { column, .. } => match position {
                     1 => column.clone(),
                     _ => {
@@ -401,8 +403,7 @@ impl Parser {
         if matches!(
             projection,
             Projection::GroupedCount { .. } | Projection::GroupedMultiCount { .. }
-        )
-            && column.eq_ignore_ascii_case("count")
+        ) && column.eq_ignore_ascii_case("count")
             && self.take(Token::LParen)
             && !self.take(Token::RParen)
             && !(self.take(Token::Star) && self.take(Token::RParen))
@@ -414,8 +415,7 @@ impl Parser {
         let column = if matches!(
             projection,
             Projection::GroupedCount { .. } | Projection::GroupedMultiCount { .. }
-        )
-            && column.eq_ignore_ascii_case("count")
+        ) && column.eq_ignore_ascii_case("count")
         {
             "count".to_string()
         } else {
@@ -1036,7 +1036,9 @@ fn parse_select_tokens(tokens: Vec<Token>) -> Result<Select, ParseError> {
             Projection::GroupedCount { .. }
             | Projection::GroupedMultiCount { .. }
             | Projection::GroupedAggregate { .. } => {
-                return Err(ParseError("GROUP BY must match selected grouping keys".into()));
+                return Err(ParseError(
+                    "GROUP BY must match selected grouping keys".into(),
+                ));
             }
             _ => {
                 return Err(ParseError(
@@ -1283,7 +1285,6 @@ mod group_by_position_tests {
         }
     }
 }
-
 
 #[cfg(test)]
 mod generated_numbers_boundary_regressions {
