@@ -15,6 +15,7 @@ mod typed;
 pub use join::execute_join;
 use sort::{MAX_SORTED_ROWS, SortedRows};
 mod typed_aggregate;
+mod string_length;
 mod multi_aggregate;
 #[cfg(test)]
 use predicates::{CompiledTest, compile_in_test};
@@ -345,6 +346,9 @@ fn execute_into<W: Write>(
         writeln!(output, "{count}")?;
         return Ok(());
     }
+    if let Projection::StringLength { column } = &query.projection {
+        return string_length::execute(query, part, column, output);
+    }
     if let Projection::MultipleAggregates(items) = &query.projection {
         return multi_aggregate::execute(query, part, items, output);
     }
@@ -396,6 +400,7 @@ fn execute_into<W: Write>(
         | Projection::GroupedCount { .. }
         | Projection::GroupedAggregate { .. }
         | Projection::MultipleAggregates(_)
+        | Projection::StringLength { .. }
         | Projection::Literal(_)
         | Projection::Constants(_) => unreachable!(),
     };
@@ -1069,6 +1074,7 @@ fn execute_numbers<W: Write>(
         | Projection::GroupedCount { .. }
         | Projection::GroupedAggregate { .. }
         | Projection::MultipleAggregates(_)
+        | Projection::StringLength { .. }
         | Projection::Literal(_)
         | Projection::Constants(_) => unreachable!(),
     };

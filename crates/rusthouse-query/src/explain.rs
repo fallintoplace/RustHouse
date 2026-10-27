@@ -56,6 +56,9 @@ fn describe_projection(projection: &Projection) -> String {
         Projection::Aggregate { function, column } => {
             format!("Aggregate: {}({column})", function.name())
         }
+        Projection::StringLength { column } => {
+            format!("Project: length({column})")
+        }
         Projection::MultipleAggregates(items) => {
             format!(
                 "Aggregate: {}",
