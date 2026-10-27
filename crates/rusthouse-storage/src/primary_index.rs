@@ -273,12 +273,18 @@ mod tests {
         for lower in -12..8 {
             for upper in lower..8 {
                 let candidate = candidate_i64_mark_range(
-                    &index, 0, Bound::Included(lower), Bound::Included(upper),
-                ).unwrap();
+                    &index,
+                    0,
+                    Bound::Included(lower),
+                    Bound::Included(upper),
+                )
+                .unwrap();
                 for (mark, granule) in rows.iter().enumerate() {
                     if granule.iter().any(|value| *value >= lower && *value <= upper) {
-                        assert!(candidate.contains(&mark),
-                            "query [{lower}, {upper}] skipped signed mark {mark}");
+                        assert!(
+                            candidate.contains(&mark),
+                            "query [{lower}, {upper}] skipped signed mark {mark}"
+                        );
                     }
                 }
             }
