@@ -133,34 +133,6 @@ fn count_column_excludes_nulls_after_typed_filters() {
 }
 
 #[test]
-fn distinct_uuid_counts_duplicate_binary_values_once() {
-    let part = part();
-    let mut raw = [0u8; 48];
-    raw[0] = 1;
-    raw[16] = 1;
-    raw[32] = 2;
-    stream(&part, "uid", &raw, 3);
-    for (sql, expected) in [
-        ("SELECT count(DISTINCT uid) FROM part", "countDistinct(uid)\n2\n"),
-        (
-            "SELECT count(DISTINCT uid) FROM part WHERE service = 'api'",
-            "countDistinct(uid)\n2\n",
-        ),
-        (
-            "SELECT count(DISTINCT uid) FROM part WHERE service = 'db'",
-            "countDistinct(uid)\n1\n",
-        ),
-        (
-            "SELECT count(DISTINCT uid) FROM part LIMIT 0",
-            "countDistinct(uid)\n",
-        ),
-    ] {
-        assert_eq!(query(sql, &part), expected, "{sql}");
-    }
-    fs::remove_dir_all(part).unwrap();
-}
-
-#[test]
 fn aggregates_numeric_values_after_text_filters() {
     let part = part();
     for (sql, expected) in [
@@ -582,6 +554,34 @@ fn groups_typed_columns_with_filters_having_and_pagination() {
         ),
         "service\tcount\ndb\t1\n"
     );
+    fs::remove_dir_all(part).unwrap();
+}
+
+#[test]
+fn distinct_uuid_counts_duplicate_binary_values_once() {
+    let part = part();
+    let mut raw = [0u8; 48];
+    raw[0] = 1;
+    raw[16] = 1;
+    raw[32] = 2;
+    stream(&part, "uid", &raw, 3);
+    for (sql, expected) in [
+        ("SELECT count(DISTINCT uid) FROM part", "countDistinct(uid)\n2\n"),
+        (
+            "SELECT count(DISTINCT uid) FROM part WHERE service = 'api'",
+            "countDistinct(uid)\n2\n",
+        ),
+        (
+            "SELECT count(DISTINCT uid) FROM part WHERE service = 'db'",
+            "countDistinct(uid)\n1\n",
+        ),
+        (
+            "SELECT count(DISTINCT uid) FROM part LIMIT 0",
+            "countDistinct(uid)\n",
+        ),
+    ] {
+        assert_eq!(query(sql, &part), expected, "{sql}");
+    }
     fs::remove_dir_all(part).unwrap();
 }
 
