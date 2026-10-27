@@ -1229,20 +1229,16 @@ impl AggregateState {
             AggregateFunction::StddevSamp => (self.squared_deviations / (self.count - 1) as f64)
                 .sqrt()
                 .to_string(),
-            AggregateFunction::Range => {
-                match (self.value, self.max_value) {
-                    (Some(Number::Unsigned(low)), Some(Number::Unsigned(high))) => {
-                        (high - low).to_string()
-                    }
-                    (Some(Number::Signed(low)), Some(Number::Signed(high))) => {
-                        high.abs_diff(low).to_string()
-                    }
-                    (Some(Number::Float(low)), Some(Number::Float(high))) => {
-                        (high - low).to_string()
-                    }
-                    _ => unreachable!("nonempty RANGE has both extrema"),
+            AggregateFunction::Range => match (self.value, self.max_value) {
+                (Some(Number::Unsigned(low)), Some(Number::Unsigned(high))) => {
+                    (high - low).to_string()
                 }
-            }
+                (Some(Number::Signed(low)), Some(Number::Signed(high))) => {
+                    high.abs_diff(low).to_string()
+                }
+                (Some(Number::Float(low)), Some(Number::Float(high))) => (high - low).to_string(),
+                _ => unreachable!("nonempty RANGE has both extrema"),
+            },
             AggregateFunction::Median => {
                 let mut values = self.median_values.clone();
                 values.sort_unstable_by(|left, right| compare_numbers(*left, *right));
