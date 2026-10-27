@@ -46,6 +46,7 @@ pub(super) fn is_function(name: &str) -> bool {
         || name.eq_ignore_ascii_case("BITCOUNT")
         || name.eq_ignore_ascii_case("BITNOT")
         || name.eq_ignore_ascii_case("BITTEST")
+        || name.eq_ignore_ascii_case("ISQRT")
 }
 
 pub(super) fn parse(parser: &mut Parser) -> Result<i64, ParseError> {
@@ -408,6 +409,11 @@ fn factor(parser: &mut Parser, depth: usize) -> Result<i64, ParseError> {
                 magnitude /= 10;
             }
             sum
+        } else if name.eq_ignore_ascii_case("ISQRT") {
+            if first < 0 {
+                return Err(ParseError("ISQRT requires a non-negative integer".into()));
+            }
+            first.isqrt()
         } else {
             first.signum()
         };
