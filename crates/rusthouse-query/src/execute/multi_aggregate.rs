@@ -83,6 +83,18 @@ fn eval_number(
             }
         }
         ScalarExpr::Integer(value) => Ok(Some(Number::Signed(i128::from(*value)))),
+        ScalarExpr::TextLength(name) => {
+            let index = indices.get(name).ok_or_else(|| {
+                ExecutionError::Invalid(format!("unknown aggregate column: {name}"))
+            })?;
+            match typed::cell(&batch[*index], row) {
+                Cell::Text(bytes) => Ok(Some(Number::Unsigned(bytes.len() as u128))),
+                Cell::Null => Ok(None),
+                _ => Err(ExecutionError::Invalid(
+                    "length requires a String column".into(),
+                )),
+            }
+        }
         ScalarExpr::Add(left, right) | ScalarExpr::Subtract(left, right) => {
             let Some(left) = eval_number(left, batch, row, indices)? else {
                 return Ok(None);
