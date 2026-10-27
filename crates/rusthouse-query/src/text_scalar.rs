@@ -9,9 +9,9 @@ pub(super) fn is_function(name: &str) -> bool {
         "LENGTH"
             | "CHAR_LENGTH"
             | "BTRIM"
-            | "URL_DECODE"
             | "LOWER"
             | "UPPER"
+            | "URL_DECODE"
             | "REVERSE"
             | "CONCAT"
             | "CONCAT_WS"
@@ -385,6 +385,40 @@ fn parse_at_depth(parser: &mut Parser, depth: usize) -> Result<ConstantValue, Pa
                 _ => ConstantValue::Null,
             }
         }
+        "URL_DECODE" => {
+            let input = text_arg(parser, depth + 1)?;
+            require(parser, Token::RParen, "URL_DECODE requires one argument")?;
+            match input {
+                Some(input) => {
+                    let source = input.as_bytes();
+                    let mut result = Vec::with_capacity(source.len());
+                    let mut index = 0;
+                    while index < source.len() {
+                        if source[index] == b'%' {
+                            if index + 2 >= source.len() {
+                                return Err(ParseError("URL_DECODE has incomplete escape".into()));
+                            }
+                            let high = char::from(source[index + 1]).to_digit(16);
+                            let low = char::from(source[index + 2]).to_digit(16);
+                            let byte = match (high, low) {
+                                (Some(high), Some(low)) => (high * 16 + low) as u8,
+                                _ => return Err(ParseError("URL_DECODE has invalid escape".into())),
+                            };
+                            result.push(byte);
+                            index += 3;
+                        } else {
+                            result.push(source[index]);
+                            index += 1;
+                        }
+                    }
+                    ConstantValue::Text(
+                        String::from_utf8(result)
+                            .map_err(|_| ParseError("URL_DECODE result is not UTF-8".into()))?,
+                    )
+                }
+                None => ConstantValue::Null,
+            }
+        }
         "RIGHT" => {
             let input = text_arg(parser, depth + 1)?;
             require(parser, Token::Comma, "RIGHT requires a character count")?;
@@ -460,40 +494,6 @@ fn parse_at_depth(parser: &mut Parser, depth: usize) -> Result<ConstantValue, Pa
                     }
                 }
                 _ => ConstantValue::Null,
-            }
-        }
-        "URL_DECODE" => {
-            let input = text_arg(parser, depth + 1)?;
-            require(parser, Token::RParen, "URL_DECODE requires one argument")?;
-            match input {
-                Some(input) => {
-                    let source = input.as_bytes();
-                    let mut result = Vec::with_capacity(source.len());
-                    let mut index = 0;
-                    while index < source.len() {
-                        if source[index] == b'%' {
-                            if index + 2 >= source.len() {
-                                return Err(ParseError("URL_DECODE has incomplete escape".into()));
-                            }
-                            let high = char::from(source[index + 1]).to_digit(16);
-                            let low = char::from(source[index + 2]).to_digit(16);
-                            let byte = match (high, low) {
-                                (Some(high), Some(low)) => (high * 16 + low) as u8,
-                                _ => return Err(ParseError("URL_DECODE has invalid escape".into())),
-                            };
-                            result.push(byte);
-                            index += 3;
-                        } else {
-                            result.push(source[index]);
-                            index += 1;
-                        }
-                    }
-                    ConstantValue::Text(
-                        String::from_utf8(result)
-                            .map_err(|_| ParseError("URL_DECODE result is not UTF-8".into()))?,
-                    )
-                }
-                None => ConstantValue::Null,
             }
         }
         _ => return Err(ParseError(format!("unsupported string function: {name}"))),
