@@ -19,7 +19,11 @@ fn abs_diff_uses_wide_intermediates_for_signed_arguments() {
         ),
         ("SELECT ABS_DIFF(-10, -20) AS result", "10"),
     ] {
-        assert_eq!(evaluate(sql).unwrap(), format!("result\n{expected}\n"), "{sql}");
+        assert_eq!(
+            evaluate(sql).unwrap(),
+            format!("result\n{expected}\n"),
+            "{sql}"
+        );
     }
 }
 
