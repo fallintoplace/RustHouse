@@ -97,6 +97,23 @@ fn inspect_staging(report: &mut Report, root: &Path, table: &str) {
     }
 }
 
+fn verify_active_part(report: &mut Report, table: &str, part: &Path, full_hashes: bool) {
+    if let Err(error) = verify_wide_part(part) {
+        report.error(table, format!("invalid part {}: {error}", part.display()));
+    }
+    let manifest_result = if full_hashes {
+        verify_part_file_hashes(part).map(|_| ())
+    } else {
+        verify_part_file_sizes(part).map(|_| ())
+    };
+    if let Err(error) = manifest_result {
+        report.error(
+            table,
+            format!("invalid part manifest {}: {error}", part.display()),
+        );
+    }
+}
+
 fn inspect_table(
     report: &mut Report,
     database: &Path,
@@ -177,20 +194,7 @@ fn inspect_table(
         }
     };
     for part in &active_parts {
-        if let Err(error) = verify_wide_part(part) {
-            report.error(name, format!("invalid part {}: {error}", part.display()));
-        }
-        let manifest_result = if full_hashes {
-            verify_part_file_hashes(part).map(|_| ())
-        } else {
-            verify_part_file_sizes(part).map(|_| ())
-        };
-        if let Err(error) = manifest_result {
-            report.error(
-                name,
-                format!("invalid part manifest {}: {error}", part.display()),
-            );
-        }
+        verify_active_part(report, name, part, full_hashes);
     }
     if report.errors == before {
         println!(
