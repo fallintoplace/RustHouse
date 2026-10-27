@@ -125,7 +125,6 @@ pub(crate) fn parse_multiple(
 
 #[cfg(test)]
 mod tests {
-    use super::*;
     use crate::{Projection, parse_select};
 
     #[test]
