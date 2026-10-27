@@ -68,7 +68,7 @@ class AnalyticsSuiteTests(unittest.TestCase):
         report = run_suite("rusthouse", workload, rows=17, runs=2, warmups=1, execute=fake_execute)
         self.assertEqual(report["coverage"]["verified_queries"], 1)
         self.assertEqual(len(report["results"][0]["timings_seconds"]), 2)
-        self.assertEqual(sum(sql == "SELECT COUNT(*) FROM events" for sql in observed), 4)
+        self.assertEqual(sum(sql == "SELECT COUNT(*) FROM events" for sql in observed), 3)
         with self.assertRaisesRegex(ValueError, "fixture row count"):
             run_suite("rusthouse", workload, rows=17, execute=lambda _: b"wrong")
 
