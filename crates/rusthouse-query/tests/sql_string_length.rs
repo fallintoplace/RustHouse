@@ -6,6 +6,10 @@ fn length_counts_literal_bytes_and_propagates_null() {
         ("SELECT LENGTH('abc')", Projection::Literal(3)),
         ("SELECT char_length('')", Projection::Literal(0)),
         ("SELECT LENGTH('a''b')", Projection::Literal(3)),
+        ("SELECT LENGTH('é')", Projection::Literal(2)),
+        ("SELECT CHAR_LENGTH('é')", Projection::Literal(1)),
+        ("SELECT LENGTH('😀')", Projection::Literal(4)),
+        ("SELECT CHAR_LENGTH('😀')", Projection::Literal(1)),
         (
             "SELECT LENGTH(NULL)",
             Projection::Constants(vec![rusthouse_query::Constant {
