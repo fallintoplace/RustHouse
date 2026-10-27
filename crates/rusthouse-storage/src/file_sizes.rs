@@ -1,4 +1,4 @@
-use crate::{PartError, read_checksums};
+use crate::{CompressedBlockReader, PartError, UncompressedChecksum, read_checksums};
 use naive_cityhash::{U128, cityhash128_with_seed};
 use std::fs;
 use std::io::{self, Read};
@@ -15,7 +15,7 @@ pub struct FileSizeVerification {
 /// Check that every file listed by checksums.txt exists with the expected size.
 /// Symlinks are not followed, including symlinks in nested paths.
 pub fn verify_part_file_sizes(part: impl AsRef<Path>) -> Result<FileSizeVerification, PartError> {
-    verify_part_files(part.as_ref(), false)
+    verify_part_files(part.as_ref(), false, false)
 }
 
 /// Verify stored-byte CityHash128WithSeed checksums, in addition to file sizes.
@@ -25,10 +25,22 @@ pub fn verify_part_file_sizes(part: impl AsRef<Path>) -> Result<FileSizeVerifica
 /// bounded 2048-byte chunks, matching ClickHouse's HashingWriteBuffer.
 /// Run only on frozen parts while writers are stopped.
 pub fn verify_part_file_hashes(part: impl AsRef<Path>) -> Result<FileSizeVerification, PartError> {
-    verify_part_files(part.as_ref(), true)
+    verify_part_files(part.as_ref(), true, false)
 }
 
-fn verify_part_files(part: &Path, full_hashes: bool) -> Result<FileSizeVerification, PartError> {
+/// Verify stored and decompressed CityHash128WithSeed hashes from checksums.txt.
+/// Compressed streams are decoded block by block using bounded memory.
+pub fn verify_part_file_hashes_full(
+    part: impl AsRef<Path>,
+) -> Result<FileSizeVerification, PartError> {
+    verify_part_files(part.as_ref(), true, true)
+}
+
+fn verify_part_files(
+    part: &Path,
+    full_hashes: bool,
+    verify_uncompressed: bool,
+) -> Result<FileSizeVerification, PartError> {
     let manifest = read_checksums(&validated_checksums_path(part)?)?;
     let mut total_bytes = 0u64;
 
@@ -36,6 +48,11 @@ fn verify_part_files(part: &Path, full_hashes: bool) -> Result<FileSizeVerificat
         verify_listed_file(part, &manifest.path, &entry.name, entry.size)?;
         if full_hashes {
             verify_stored_hash(&part.join(&entry.name), entry.size, entry.hash)?;
+        }
+        if verify_uncompressed {
+            if let Some(uncompressed) = &entry.uncompressed {
+                verify_uncompressed_hash(&part.join(&entry.name), uncompressed)?;
+            }
         }
         total_bytes = total_bytes
             .checked_add(entry.size)
@@ -83,6 +100,50 @@ fn verify_stored_hash(
 ) -> Result<(), PartError> {
     if hash_stored_file(path, expected_size)? != expected_hash {
         return Err(invalid(path, "stored file hash differs from checksums.txt"));
+    }
+    Ok(())
+}
+
+/// Hash the logical byte stream, not the individual compressed block boundaries.
+/// ClickHouse's HashingWriteBuffer uses a continuous 2048-byte chunk sequence.
+fn verify_uncompressed_hash(
+    path: &Path,
+    expected: &UncompressedChecksum,
+) -> Result<(), PartError> {
+    const BLOCK_BYTES: usize = 2048;
+    let mut reader = CompressedBlockReader::open(path)?;
+    let mut hash = U128::new(0, 0);
+    let mut chunk = [0u8; BLOCK_BYTES];
+    let mut filled = 0usize;
+    let mut total_bytes = 0u64;
+    while let Some(block) = reader.next_decoded() {
+        let data = block?.data;
+        total_bytes = total_bytes
+            .checked_add(data.len() as u64)
+            .ok_or_else(|| invalid(path, "uncompressed file size overflows u64"))?;
+        if total_bytes > expected.size {
+            return Err(invalid(path, "uncompressed file size differs from checksums.txt"));
+        }
+        let mut remaining = data.as_slice();
+        while !remaining.is_empty() {
+            let take = (BLOCK_BYTES - filled).min(remaining.len());
+            chunk[filled..filled + take].copy_from_slice(&remaining[..take]);
+            filled += take;
+            remaining = &remaining[take..];
+            if filled == BLOCK_BYTES {
+                hash = cityhash128_with_seed(&chunk, hash);
+                filled = 0;
+            }
+        }
+    }
+    if total_bytes != expected.size {
+        return Err(invalid(path, "uncompressed file size differs from checksums.txt"));
+    }
+    if filled > 0 {
+        hash = cityhash128_with_seed(&chunk[..filled], hash);
+    }
+    if u128::from(hash) != expected.hash {
+        return Err(invalid(path, "uncompressed file hash differs from checksums.txt"));
     }
     Ok(())
 }
@@ -249,6 +310,62 @@ mod tests {
             bytes.push(0);
         }
         bytes
+    }
+
+    #[test]
+    fn full_hash_check_verifies_decompressed_data_across_blocks() {
+        let dir = temp_dir();
+        let part = dir.join("all_1_1_0");
+        let rows = (0..5_000)
+            .map(|number| vec![Some((number % 251).to_string())])
+            .collect::<Vec<_>>();
+        crate::write_wide_part_with_compression(
+            &part,
+            &[crate::Column {
+                name: "id".into(),
+                data_type: "UInt8".into(),
+            }],
+            &rows,
+            crate::PartCompression::Zstd,
+        )
+        .unwrap();
+
+        assert_eq!(verify_part_file_hashes_full(&part).unwrap().files, 4);
+        let entry = read_checksums(part.join("checksums.txt"))
+            .unwrap()
+            .files
+            .into_iter()
+            .find(|entry| entry.name == "id.bin")
+            .unwrap();
+        let original = entry.uncompressed.unwrap();
+        let mut bad_size = original.clone();
+        bad_size.size += 1;
+        assert!(matches!(
+            verify_uncompressed_hash(&part.join("id.bin"), &bad_size),
+            Err(PartError::InvalidChecksums {
+                reason: "uncompressed file size differs from checksums.txt",
+                ..
+            })
+        ));
+
+        let manifest = part.join("checksums.txt");
+        let mut bytes = fs::read(&manifest).unwrap();
+        let needle = original.hash.to_le_bytes();
+        let pos = bytes
+            .windows(needle.len())
+            .rposition(|window| window == needle)
+            .unwrap();
+        bytes[pos] ^= 1;
+        fs::write(&manifest, bytes).unwrap();
+        assert!(verify_part_file_hashes(&part).is_ok());
+        assert!(matches!(
+            verify_part_file_hashes_full(&part),
+            Err(PartError::InvalidChecksums {
+                reason: "uncompressed file hash differs from checksums.txt",
+                ..
+            })
+        ));
+        fs::remove_dir_all(dir).unwrap();
     }
 
     #[test]
