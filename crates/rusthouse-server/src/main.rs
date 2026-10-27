@@ -1,3 +1,4 @@
+use rusthouse_server::cluster::{self, Cluster, Peer};
 use rusthouse_server::{
     Config, MAX_CONNECTIONS, MAX_HEADER_BYTES, MAX_QUERY_BYTES, Response, handle_request,
 };
@@ -9,7 +10,7 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::Duration;
 
 fn usage() -> &'static str {
-    "Usage: rusthouse-server [--port <1-65535>] [--part <frozen-part-or-snapshot> | --database <directory>] [--max-rows <n>]\n\
+    "Usage: rusthouse-server [--port <1-65535>] [--part <frozen-part-or-snapshot> | --database <directory>] [--max-rows <n>] [--peer 127.0.0.1:<port>]...\n\
      Listens on 127.0.0.1 only. Supports GET /ping, GET /?query=... and POST / with a raw SELECT body.\n"
 }
 
@@ -143,10 +144,13 @@ fn respond(stream: &mut TcpStream, response: Response) -> io::Result<()> {
     stream.write_all(&response.body)
 }
 
-fn serve(mut stream: TcpStream, config: &Config) {
+fn serve(mut stream: TcpStream, config: &Config, cluster: &Cluster) {
     let _ = stream.set_read_timeout(Some(Duration::from_secs(5)));
     let _ = stream.set_write_timeout(Some(Duration::from_secs(5)));
     let response = match read_request(&mut stream) {
+        Ok((method, target, body)) if target == "/cluster" => {
+            cluster::handle(&method, &body, cluster)
+        }
         Ok((method, target, body)) => handle_request(&method, &target, &body, config),
         Err(response) => response,
     };
@@ -159,6 +163,7 @@ fn main() -> io::Result<()> {
     let mut part = None;
     let mut database = None;
     let mut max_rows = 10_000usize;
+    let mut peers = Vec::new();
     while let Some(arg) = args.next() {
         match arg.as_str() {
             "--help" | "-h" => {
@@ -187,6 +192,13 @@ fn main() -> io::Result<()> {
                         .ok_or_else(|| io::Error::other("missing database path"))?,
                 ));
             }
+            "--peer" => {
+                let address = args
+                    .next()
+                    .ok_or_else(|| io::Error::other("missing peer"))?;
+                let peer = Peer::parse(&address).map_err(io::Error::other)?;
+                peers.push(peer);
+            }
             "--max-rows" => {
                 max_rows = args
                     .next()
@@ -207,6 +219,10 @@ fn main() -> io::Result<()> {
     }
     if part.is_some() && database.is_some() {
         return Err(io::Error::other("--part and --database cannot be combined"));
+    }
+    let cluster = Arc::new(Cluster::new(peers).map_err(io::Error::other)?);
+    if cluster.peers().iter().any(|peer| peer.port() == port) {
+        return Err(io::Error::other("server cannot be its own peer"));
     }
     let config = Arc::new(Config {
         part,
@@ -242,9 +258,10 @@ fn main() -> io::Result<()> {
             continue;
         }
         let config = Arc::clone(&config);
+        let cluster = Arc::clone(&cluster);
         let active = Arc::clone(&active);
         std::thread::spawn(move || {
-            serve(stream, &config);
+            serve(stream, &config, &cluster);
             active.fetch_sub(1, Ordering::AcqRel);
         });
     }
