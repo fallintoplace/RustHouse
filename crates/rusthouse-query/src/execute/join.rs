@@ -171,6 +171,7 @@ struct ProbeOptions {
     materialize_rows: bool,
     stop_after: Option<usize>,
     any: bool,
+    null_filter: Option<(usize, bool)>,
 }
 
 /// Scan the probe side without retaining its rows or joined result pairs.
@@ -207,6 +208,19 @@ where
                     };
                     for &right_index in right_indices.iter().take(if options.any { 1 } else { usize::MAX })
                     {
+                        if let Some((column, not_null)) = options.null_filter {
+                            let is_null = if column < left_names.len() {
+                                matches!(typed::cell(&batch[column], index), typed::Cell::Null)
+                            } else {
+                                matches!(
+                                    &right_rows[right_index][column - left_names.len()],
+                                    typed::Cell::Null
+                                )
+                            };
+                            if is_null == not_null {
+                                continue;
+                            }
+                        }
                         if options.stop_after.is_some_and(|end| matches >= end) {
                             break 'scan;
                         }
@@ -232,6 +246,7 @@ struct InnerJoinColumns<'a> {
     selected: &'a [(usize, String, Option<usize>)],
     left_keys: &'a [usize],
     right_keys: &'a [usize],
+    null_filter: Option<(usize, bool)>,
 }
 
 fn execute_streaming_inner<W: Write>(
@@ -247,6 +262,7 @@ fn execute_streaming_inner<W: Write>(
         selected,
         left_keys,
         right_keys,
+        null_filter,
     } = columns;
     // The probe side is scanned in batches and never retained. Keep the
     // hash-build and matched-output limits, not an artificial probe-row cap.
@@ -281,6 +297,7 @@ fn execute_streaming_inner<W: Write>(
             materialize_rows: false,
             stop_after,
             any: query.any,
+            null_filter,
         },
         |_, _| Ok(()),
     )?;
@@ -307,6 +324,7 @@ fn execute_streaming_inner<W: Write>(
             materialize_rows: true,
             stop_after,
             any: query.any,
+            null_filter,
         },
         |left, right| {
             if position >= query.offset && position < end {
@@ -350,6 +368,7 @@ where
     }
     let mut reader = TypedQueryReader::open(right_path, right_names)?;
     let mut matches = 0usize;
+    let left_width = left_rows.first().map_or(0, Vec::len);
     // Each retained left row can match only its first right row.
     let mut seen_left = options.any.then(|| vec![false; left_rows.len()]);
     'scan: while let Some(batch) = reader.next_batch()? {
@@ -365,19 +384,32 @@ where
                         Vec::new()
                     };
                     for &left_index in left_indices {
-                        if seen_left.as_ref().is_some_and(|seen| seen[left_index]) {
-                            continue;
-                        }
                         if options.stop_after.is_some_and(|end| matches >= end) {
                             break 'scan;
+                        }
+                        if let Some(seen) = seen_left.as_mut() {
+                            if seen[left_index] {
+                                continue;
+                            }
+                            seen[left_index] = true;
+                        }
+                        if let Some((column, not_null)) = options.null_filter {
+                            let is_null = if column < left_width {
+                                matches!(&left_rows[left_index][column], typed::Cell::Null)
+                            } else {
+                                matches!(
+                                    typed::cell(&batch[column - left_width], index),
+                                    typed::Cell::Null
+                                )
+                            };
+                            if is_null == not_null {
+                                continue;
+                            }
                         }
                         if options.stop_after.is_none() && matches >= MAX_RESULT_ROWS {
                             return Err(invalid("JOIN produces more than 65536 rows"));
                         }
                         emit(&left_rows[left_index], &right_row)?;
-                        if let Some(seen) = seen_left.as_mut() {
-                            seen[left_index] = true;
-                        }
                         matches += 1;
                     }
                 }
@@ -400,6 +432,7 @@ fn execute_streaming_right<W: Write>(
         selected,
         left_keys,
         right_keys,
+        null_filter,
     } = columns;
     let left_meta = inspect_query_source(left_path)?;
     let left_rows = read_rows(
@@ -430,6 +463,7 @@ fn execute_streaming_right<W: Write>(
             materialize_rows: false,
             stop_after,
             any: query.any,
+            null_filter,
         },
         |_, _| Ok(()),
     )?;
@@ -455,6 +489,7 @@ fn execute_streaming_right<W: Write>(
             materialize_rows: true,
             stop_after,
             any: query.any,
+            null_filter,
         },
         |left, right| {
             if position >= query.offset && position < end {
@@ -555,6 +590,13 @@ pub fn execute_join<W: Write>(
             resolve(query, column, &left_names, &right_names).map(|index| (index, *descending))
         })
         .transpose()?;
+    let null_filter = query
+        .where_null
+        .as_ref()
+        .map(|(column, not_null)| {
+            resolve(query, column, &left_names, &right_names).map(|index| (index, *not_null))
+        })
+        .transpose()?;
     let mut left_keys = Vec::new();
     let mut right_keys = Vec::new();
     for (first, second) in &query.keys {
@@ -592,6 +634,7 @@ pub fn execute_join<W: Write>(
                     selected: &selected,
                     left_keys: &left_keys,
                     right_keys: &right_keys,
+                    null_filter,
                 },
                 output,
             );
@@ -606,6 +649,7 @@ pub fn execute_join<W: Write>(
                 selected: &selected,
                 left_keys: &left_keys,
                 right_keys: &right_keys,
+                null_filter,
             },
             output,
         );
@@ -631,6 +675,13 @@ pub fn execute_join<W: Write>(
             hash.entry(key).or_default().push(index);
         }
     }
+    let keep = |pair: &Pair| {
+        null_filter.is_none_or(|(index, not_null)| {
+            let is_null = cell_at(&left_rows, &right_rows, pair, index, width)
+                .is_none_or(|cell| matches!(cell, typed::Cell::Null));
+            is_null != not_null
+        })
+    };
     let mut pairs: Vec<Pair> = Vec::new();
     let mut matched_right = vec![false; right_rows.len()];
     for (left_index, row) in left_rows.iter().enumerate() {
@@ -641,18 +692,27 @@ pub fn execute_join<W: Write>(
                 {
                     matched = true;
                     matched_right[right_index] = true;
-                    add_pair(&mut pairs, (Some(left_index), Some(right_index)))?;
+                    let pair = (Some(left_index), Some(right_index));
+                    if keep(&pair) {
+                        add_pair(&mut pairs, pair)?;
+                    }
                 }
             }
         }
         if !matched && matches!(query.kind, JoinType::Left | JoinType::Full) {
-            add_pair(&mut pairs, (Some(left_index), None))?;
+            let pair = (Some(left_index), None);
+            if keep(&pair) {
+                add_pair(&mut pairs, pair)?;
+            }
         }
     }
     if matches!(query.kind, JoinType::Right | JoinType::Full) {
         for (right_index, matched) in matched_right.into_iter().enumerate() {
             if !matched {
-                add_pair(&mut pairs, (None, Some(right_index)))?;
+                let pair = (None, Some(right_index));
+                if keep(&pair) {
+                    add_pair(&mut pairs, pair)?;
+                }
             }
         }
     }

@@ -29,6 +29,8 @@ pub struct JoinSelect {
     pub keys: Vec<(JoinColumn, JoinColumn)>,
     /// Shared-key names for JOIN USING; star output projects each key once.
     pub using_keys: Vec<String>,
+    /// Optional post-join IS [NOT] NULL filter (true means IS NOT NULL).
+    pub where_null: Option<(JoinColumn, bool)>,
     pub order_by: Option<(JoinColumn, bool)>,
     pub limit: Option<usize>,
     pub offset: usize,
@@ -236,6 +238,23 @@ pub fn parse_join(sql: &str) -> Result<Option<JoinSelect>, ParseError> {
     } else {
         return Err(ParseError("JOIN requires ON or USING".into()));
     };
+    let where_null = if parser.keyword("WHERE") {
+        let column = qualified(&mut parser)?;
+        if !parser.keyword("IS") {
+            return Err(ParseError(
+                "JOIN WHERE supports only qualified IS [NOT] NULL".into(),
+            ));
+        }
+        let not_null = parser.keyword("NOT");
+        if !parser.keyword("NULL") {
+            return Err(ParseError(
+                "JOIN WHERE supports only qualified IS [NOT] NULL".into(),
+            ));
+        }
+        Some((column, not_null))
+    } else {
+        None
+    };
     let order_by = if parser.keyword("ORDER") {
         if !parser.keyword("BY") {
             return Err(ParseError("ORDER requires BY".into()));
@@ -287,6 +306,7 @@ pub fn parse_join(sql: &str) -> Result<Option<JoinSelect>, ParseError> {
         columns,
         keys,
         using_keys,
+        where_null,
         order_by,
         limit,
         offset,
@@ -448,6 +468,28 @@ mod tests {
             "SELECT * FROM a ANY FULL JOIN b ON a.id = b.id",
         ] {
             assert!(parse_join(statement).is_err(), "{statement}");
+        }
+    }
+
+    #[test]
+    fn parses_post_join_null_filters() {
+        let query = parse_join(
+            "SELECT l.id FROM lefts l LEFT JOIN rights r USING (id) WHERE r.id IS NULL ORDER BY l.id",
+        )
+        .unwrap()
+        .unwrap();
+        assert_eq!(query.where_null.unwrap().0.relation, "r");
+        let query = parse_join(
+            "SELECT l.id FROM lefts l JOIN rights r ON l.id = r.id WHERE l.id IS NOT NULL",
+        )
+        .unwrap()
+        .unwrap();
+        assert!(query.where_null.unwrap().1);
+        for sql in [
+            "SELECT * FROM l JOIN r ON l.id = r.id WHERE r.id = 1",
+            "SELECT * FROM l JOIN r ON l.id = r.id WHERE r.id IS UNKNOWN",
+        ] {
+            assert!(parse_join(sql).is_err(), "{sql}");
         }
     }
 
