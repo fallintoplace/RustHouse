@@ -1,5 +1,3 @@
-//! Differential correctness checks against an independent Rust reference
-//! and the generated numbers() path. No ClickHouse server is required.
 use rusthouse_query::{execute, parse_select};
 use rusthouse_storage::{Column, write_wide_part};
 use std::fs;
@@ -84,7 +82,6 @@ fn null_and_empty_result_queries_agree_between_sources() {
     fs::remove_dir_all(root).unwrap();
 }
 
-/// Exercise multiple immutable parts instead of one small in-memory fixture.
 fn test_multi_parts(rows: u64) -> PathBuf {
     let root = std::env::temp_dir().join(format!(
         "rusthouse-query-multi-oracle-{}-{}",
@@ -113,7 +110,6 @@ fn test_multi_parts(rows: u64) -> PathBuf {
 
 #[test]
 fn multi_part_queries_match_independent_generated_source() {
-    // Cross the 1024-row granule and 4096-row part boundaries.
     let rows = 8201;
     let root = test_multi_parts(rows);
     let statements = [

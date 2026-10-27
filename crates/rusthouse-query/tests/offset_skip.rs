@@ -40,7 +40,6 @@ fn run(root: &Path, sql: &str) -> String {
 
 #[test]
 fn offset_crosses_granules_and_parts_without_dropping_partial_marks() {
-    // The first part has three adaptive marks (1024, 1024, 2).
     let first = (0..2050).collect::<Vec<u64>>();
     let second = (2050..2057).collect::<Vec<u64>>();
     let root = fixture(&[&first, &second]);
@@ -66,7 +65,6 @@ fn offset_crosses_granules_and_parts_without_dropping_partial_marks() {
         "id\n"
     );
 
-    // Filtering and sorting must not use physical scan offsets.
     assert_eq!(
         run(
             &root,
