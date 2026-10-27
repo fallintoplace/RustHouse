@@ -62,6 +62,23 @@ fn alias(parser: &mut Parser, table: &str) -> Result<String, ParseError> {
     }
 }
 
+fn parse_join_kind(parser: &mut Parser) -> JoinType {
+    let kind = if parser.keyword("LEFT") {
+        JoinType::Left
+    } else if parser.keyword("RIGHT") {
+        JoinType::Right
+    } else if parser.keyword("FULL") {
+        JoinType::Full
+    } else {
+        parser.keyword("INNER");
+        JoinType::Inner
+    };
+    if !matches!(kind, JoinType::Inner) {
+        parser.keyword("OUTER");
+    }
+    kind
+}
+
 fn bound(parser: &mut Parser, label: &str) -> Result<usize, ParseError> {
     let number = parser.number()?;
     if !number.bytes().all(|byte| byte.is_ascii_digit()) {
@@ -122,19 +139,7 @@ pub fn parse_join(sql: &str) -> Result<Option<JoinSelect>, ParseError> {
             "table identifiers cannot exceed 128 bytes".into(),
         ));
     }
-    let kind = if parser.keyword("LEFT") {
-        JoinType::Left
-    } else if parser.keyword("RIGHT") {
-        JoinType::Right
-    } else if parser.keyword("FULL") {
-        JoinType::Full
-    } else {
-        parser.keyword("INNER");
-        JoinType::Inner
-    };
-    if !matches!(kind, JoinType::Inner) {
-        parser.keyword("OUTER");
-    }
+    let kind = parse_join_kind(&mut parser);
     if !parser.keyword("JOIN") {
         return Err(ParseError("expected JOIN after join type".into()));
     }
