@@ -6,9 +6,9 @@ use std::io::Read;
 use std::path::Path;
 
 const MAX_COPY_BYTES: usize = 8 * 1024 * 1024;
-const MAX_RECORDS: usize = 4096; // TSV data rows
 const MAX_CSV_DATA_RECORDS: usize = 50_000;
 const MAX_CSV_RECORDS: usize = MAX_CSV_DATA_RECORDS + 1;
+const MAX_TSV_RECORDS: usize = MAX_CSV_RECORDS; // includes an optional header
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum State {
@@ -120,8 +120,8 @@ fn parse_tsv(data: &str) -> Result<Vec<Vec<Option<String>>>, String> {
     }
     let mut records = Vec::new();
     for line in input.split_terminator('\n') {
-        if records.len() > MAX_RECORDS {
-            return Err("TSV supports at most 4096 data rows".into());
+        if records.len() >= MAX_TSV_RECORDS {
+            return Err("TSV supports at most 50001 records including the header".into());
         }
         let line = line.strip_suffix('\r').unwrap_or(line);
         if line.contains('\r') {
@@ -217,7 +217,7 @@ pub(super) fn run(database: &Path, statement: &CopyFrom) -> Result<(), String> {
     }
     let max_data_records = match statement.format {
         CopyFormat::Csv => MAX_CSV_DATA_RECORDS,
-        CopyFormat::Tsv => MAX_RECORDS,
+        CopyFormat::Tsv => MAX_CSV_DATA_RECORDS,
     };
     if records.len() > max_data_records {
         return Err(format!(
