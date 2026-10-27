@@ -122,14 +122,19 @@ impl<W: Write> JsonlWriter<W> {
 
 impl<W: Write> Write for JsonlWriter<W> {
     fn write(&mut self, bytes: &[u8]) -> io::Result<usize> {
-        for &byte in bytes {
-            if byte == b'\n' {
-                self.finish_line()?;
+        for chunk in bytes.split_inclusive(|&byte| byte == b'\n') {
+            let complete = chunk.last() == Some(&b'\n');
+            let fragment = if complete {
+                &chunk[..chunk.len() - 1]
             } else {
-                if self.line.len() >= MAX_LINE_BYTES {
-                    return Err(invalid("JSONL row exceeds 1 MiB"));
-                }
-                self.line.push(byte);
+                chunk
+            };
+            if fragment.len() > MAX_LINE_BYTES.saturating_sub(self.line.len()) {
+                return Err(invalid("JSONL row exceeds 1 MiB"));
+            }
+            self.line.extend_from_slice(fragment);
+            if complete {
+                self.finish_line()?;
             }
         }
         Ok(bytes.len())
@@ -143,6 +148,25 @@ impl<W: Write> Write for JsonlWriter<W> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn batches_multiple_rows_and_fragmented_tail() {
+        let mut writer = JsonlWriter::new(Vec::new());
+        writer.write_all(b"col\none\ntw").unwrap();
+        writer.write_all(b"o\n").unwrap();
+        assert_eq!(writer.output, b"{\"col\":\"one\"}\n{\"col\":\"two\"}\n");
+    }
+
+    #[test]
+    fn accepts_exact_max_length_and_rejects_excess_row() {
+        let mut writer = JsonlWriter::new(Vec::new());
+        writer.write_all(b"col\n").unwrap();
+        let oversized = vec![b'x'; MAX_LINE_BYTES + 1];
+        assert_eq!(
+            writer.write_all(&oversized).unwrap_err().kind(),
+            io::ErrorKind::InvalidData
+        );
+    }
 
     #[test]
     fn jsonl_phases_validate_headers_before_writing_rows() {
