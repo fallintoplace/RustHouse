@@ -34,6 +34,7 @@ pub(super) fn is_function(name: &str) -> bool {
         || name.eq_ignore_ascii_case("BIT_WIDTH")
         || name.eq_ignore_ascii_case("SIGN")
         || name.eq_ignore_ascii_case("DIGIT_COUNT")
+        || name.eq_ignore_ascii_case("HAMMING_DISTANCE")
         || is_extrema(name)
         || name.eq_ignore_ascii_case("IS_POWER_OF_TWO")
         || is_power(name)
@@ -210,6 +211,23 @@ fn parse_bit_width(parser: &mut Parser, depth: usize) -> Result<i64, ParseError>
         "expected ')' after BIT_WIDTH argument",
     )?;
     Ok(i64::from(u64::BITS - value.unsigned_abs().leading_zeros()))
+}
+
+fn parse_hamming_distance(parser: &mut Parser, depth: usize) -> Result<i64, ParseError> {
+    require_token(parser, Token::LParen, "HAMMING_DISTANCE requires '('")?;
+    let left = expression(parser, depth + 1)?;
+    require_token(
+        parser,
+        Token::Comma,
+        "HAMMING_DISTANCE requires two arguments",
+    )?;
+    let right = expression(parser, depth + 1)?;
+    require_token(
+        parser,
+        Token::RParen,
+        "HAMMING_DISTANCE requires ')' after arguments",
+    )?;
+    Ok(i64::from((left ^ right).count_ones()))
 }
 
 fn checked_bit_shift(value: i64, amount: i64, left: bool) -> Result<i64, ParseError> {
@@ -434,6 +452,9 @@ fn factor(parser: &mut Parser, depth: usize) -> Result<i64, ParseError> {
     }
     if parser.keyword("NEXT_POWER_OF_TWO") {
         return parse_next_power_of_two(parser, depth);
+    }
+    if parser.keyword("HAMMING_DISTANCE") {
+        return parse_hamming_distance(parser, depth);
     }
     if parser.keyword("POWER") || parser.keyword("POW") {
         return parse_power(parser, depth);
