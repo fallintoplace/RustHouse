@@ -16,6 +16,7 @@ enum MergeError {
     InvalidCount,
     InvalidGroupedCount,
     InvalidSum,
+    InvalidExtremum,
     CountOverflow,
     SumOverflow,
 }
@@ -53,6 +54,23 @@ fn is_safe_sum(select: &Select) -> bool {
         select.projection,
         Projection::Aggregate {
             function: AggregateFunction::Sum,
+            ..
+        }
+    ) && matches!(select.source, Some(Source::Table(_)))
+        && !select.distinct
+        && select.rename.is_none()
+        && select.order_by.is_none()
+        && select.order_by_extra.is_empty()
+        && select.having.is_none()
+        && select.limit.is_none()
+        && select.offset.is_none()
+}
+
+fn is_safe_extremum(select: &Select) -> bool {
+    matches!(
+        select.projection,
+        Projection::Aggregate {
+            function: AggregateFunction::Min | AggregateFunction::Max,
             ..
         }
     ) && matches!(select.source, Some(Source::Table(_)))
@@ -134,7 +152,7 @@ fn shard_integer_kind(peer: Peer, table: &str, column: &str) -> Result<String, S
         .is_some_and(|first| first.is_ascii_alphabetic() || first == b'_')
         || !bytes.all(|byte| byte.is_ascii_alphanumeric() || byte == b'_')
     {
-        return Err("distributed SUM requires a simple column identifier".into());
+        return Err("distributed integer aggregate requires a simple column identifier".into());
     }
     let response = remote::schema(peer, table)?;
     if response.status != 200 || !response.content_type.starts_with("application/json") {
@@ -145,12 +163,12 @@ fn shard_integer_kind(peer: Peer, table: &str, column: &str) -> Result<String, S
     let needle = format!("\"name\":\"{column}\",\"type\":\"");
     let (_, tail) = contents
         .split_once(needle.as_str())
-        .ok_or("SUM column missing from peer schema")?;
+        .ok_or("aggregate column missing from peer schema")?;
     let (kind, trailing) = tail
         .split_once('"')
         .ok_or("invalid peer schema column type")?;
     if !trailing.starts_with('}') || !integer_type(kind) {
-        return Err("distributed SUM only supports exact integer columns".into());
+        return Err("distributed aggregate only supports exact integer columns".into());
     }
     Ok(kind.to_owned())
 }
@@ -343,6 +361,74 @@ fn merge_integer_sums(shards: &[(usize, Vec<u8>)], kind: &str) -> Result<Vec<u8>
 /// Preserve first-seen key order, reject malformed rows, and only emit a
 /// complete bounded result. Shards may hold overlapping group *keys*, but
 /// the underlying source rows must be disjoint.
+fn merge_integer_extrema(
+    shards: &[(usize, Vec<u8>)],
+    kind: &str,
+    function: AggregateFunction,
+) -> Result<Vec<u8>, MergeError> {
+    if !matches!(function, AggregateFunction::Min | AggregateFunction::Max) {
+        return Err(MergeError::InvalidExtremum);
+    }
+    let unsigned = kind
+        .strip_prefix("Nullable(")
+        .unwrap_or(kind)
+        .starts_with("UInt");
+    let mut expected_header: Option<&[u8]> = None;
+    let mut signed: Option<i128> = None;
+    let mut unsigned_value: Option<u128> = None;
+    for (_, body) in shards {
+        if !body.ends_with(b"\n") {
+            return Err(MergeError::InvalidExtremum);
+        }
+        let end = body
+            .iter()
+            .position(|&byte| byte == b'\n')
+            .ok_or(MergeError::InvalidExtremum)?;
+        let header = &body[..=end];
+        if header.len() <= 1 || body.len() <= end + 1 {
+            return Err(MergeError::InvalidExtremum);
+        }
+        if let Some(expected) = expected_header {
+            if expected != header {
+                return Err(MergeError::SchemaMismatch);
+            }
+        } else {
+            expected_header = Some(header);
+        }
+        let value = &body[end + 1..body.len() - 1];
+        if value == b"NULL" {
+            continue;
+        }
+        let number = std::str::from_utf8(value).map_err(|_| MergeError::InvalidExtremum)?;
+        if unsigned {
+            let parsed = number.parse::<u128>().map_err(|_| MergeError::InvalidExtremum)?;
+            unsigned_value = Some(unsigned_value.map_or(parsed, |prior| match function {
+                AggregateFunction::Min => prior.min(parsed),
+                AggregateFunction::Max => prior.max(parsed),
+                _ => unreachable!(),
+            }));
+        } else {
+            let parsed = number.parse::<i128>().map_err(|_| MergeError::InvalidExtremum)?;
+            signed = Some(signed.map_or(parsed, |prior| match function {
+                AggregateFunction::Min => prior.min(parsed),
+                AggregateFunction::Max => prior.max(parsed),
+                _ => unreachable!(),
+            }));
+        }
+    }
+    let header = expected_header.ok_or(MergeError::InvalidExtremum)?;
+    let rendered = if unsigned {
+        unsigned_value.map(|number| number.to_string())
+    } else {
+        signed.map(|number| number.to_string())
+    }
+    .unwrap_or_else(|| "NULL".to_owned());
+    let mut output = header.to_vec();
+    output.extend_from_slice(rendered.as_bytes());
+    output.push(b'\n');
+    Ok(output)
+}
+
 fn merge_grouped_counts(
     shards: &[(usize, Vec<u8>)],
     max_rows: usize,
@@ -454,25 +540,33 @@ pub fn handle(method: &str, body: &[u8], cluster: &Cluster, max_rows: usize) -> 
             if is_safe_scan(&select)
                 || is_safe_count(&select)
                 || is_safe_grouped_count(&select)
-                || is_safe_sum(&select) =>
+                || is_safe_sum(&select)
+                || is_safe_extremum(&select) =>
         {
             select
         }
         _ => {
             return Response::text(
                 "400 Bad Request",
-                "distributed queries require unordered SELECT, COUNT, integer SUM, or grouped COUNT without global clauses\n",
+                "distributed queries require unordered SELECT, COUNT, integer SUM, MIN, MAX, or grouped COUNT without global clauses\n",
             );
         }
     };
     let count_query = is_safe_count(&select);
     let grouped_count_query = is_safe_grouped_count(&select);
     let sum_query = is_safe_sum(&select);
+    let extrema_function = match &select.projection {
+        Projection::Aggregate {
+            function: function @ (AggregateFunction::Min | AggregateFunction::Max),
+            ..
+        } => Some(*function),
+        _ => None,
+    };
     let sum_schema = match (&select.source, &select.projection) {
         (
             Some(Source::Table(table)),
             Projection::Aggregate {
-                function: AggregateFunction::Sum,
+                function: AggregateFunction::Sum | AggregateFunction::Min | AggregateFunction::Max,
                 column,
             },
         ) => Some((table.as_str(), column.as_str())),
@@ -512,7 +606,7 @@ pub fn handle(method: &str, body: &[u8], cluster: &Cluster, max_rows: usize) -> 
                     {
                         return Response::text(
                             "409 Conflict",
-                            "distributed SUM shard column types disagree\n",
+                            "distributed integer aggregate shard column types disagree\n",
                         );
                     }
                     sum_type = Some(kind);
@@ -531,6 +625,12 @@ pub fn handle(method: &str, body: &[u8], cluster: &Cluster, max_rows: usize) -> 
             .as_deref()
             .map_or(Err(MergeError::InvalidSum), |kind| {
                 merge_integer_sums(&shards, kind)
+            })
+    } else if let Some(function) = extrema_function {
+        sum_type
+            .as_deref()
+            .map_or(Err(MergeError::InvalidExtremum), |kind| {
+                merge_integer_extrema(&shards, kind, function)
             })
     } else if grouped_count_query {
         merge_grouped_counts(&shards, max_rows.min(100_000))
@@ -565,6 +665,9 @@ pub fn handle(method: &str, body: &[u8], cluster: &Cluster, max_rows: usize) -> 
         }
         Err(MergeError::InvalidSum) => {
             Response::text("502 Bad Gateway", "malformed shard SUM response\n")
+        }
+        Err(MergeError::InvalidExtremum) => {
+            Response::text("502 Bad Gateway", "malformed shard MIN/MAX response\n")
         }
         Err(MergeError::SumOverflow) => {
             Response::text("413 Payload Too Large", "distributed SUM overflow\n")
@@ -755,6 +858,95 @@ mod tests {
                 10
             ),
             Err(MergeError::CountOverflow)
+        );
+    }
+
+    #[test]
+    fn allows_distributed_integer_min_and_max_only_without_global_clauses() {
+        for sql in [
+            "SELECT min(amount) FROM events WHERE id > 3",
+            "SELECT max(amount) FROM events",
+        ] {
+            assert!(is_safe_extremum(&parse_select(sql).unwrap()), "{sql}");
+        }
+        for sql in [
+            "SELECT max(amount) FROM events LIMIT 1",
+            "SELECT min(amount) FROM numbers(10)",
+            "SELECT min(amount) FROM events OFFSET 1",
+            "SELECT avg(amount) FROM events",
+        ] {
+            assert!(
+                parse_select(sql).map_or(true, |query| !is_safe_extremum(&query)),
+                "{sql}"
+            );
+        }
+    }
+
+    #[test]
+    fn reduces_signed_and_unsigned_extrema_with_null_shards() {
+        let shards = [
+            shard(10, "min(amount)\nNULL\n"),
+            shard(10, "min(amount)\n-9\n"),
+            shard(10, "min(amount)\n13\n"),
+        ];
+        assert_eq!(
+            merge_integer_extrema(&shards, "Nullable(Int64)", AggregateFunction::Min).unwrap(),
+            b"min(amount)\n-9\n"
+        );
+        let shards = [
+            shard(10, "max(amount)\n18446744073709551615\n"),
+            shard(10, "max(amount)\n2\n"),
+        ];
+        assert_eq!(
+            merge_integer_extrema(&shards, "UInt64", AggregateFunction::Max).unwrap(),
+            b"max(amount)\n18446744073709551615\n"
+        );
+        assert_eq!(
+            merge_integer_extrema(
+                &[shard(10, "min(amount)\nNULL\n")],
+                "Int64",
+                AggregateFunction::Min,
+            )
+            .unwrap(),
+            b"min(amount)\nNULL\n"
+        );
+    }
+
+    #[test]
+    fn rejects_incompatible_or_malformed_extrema() {
+        for bad in [
+            "min(amount)\n",
+            "min(amount)\n2.5\n",
+            "min(amount)\n2\n3\n",
+            "min(amount)\n2",
+        ] {
+            assert_eq!(
+                merge_integer_extrema(
+                    &[shard(10, bad)],
+                    "Int64",
+                    AggregateFunction::Min
+                ),
+                Err(MergeError::InvalidExtremum),
+            );
+        }
+        assert_eq!(
+            merge_integer_extrema(
+                &[
+                    shard(10, "min(amount)\n1\n"),
+                    shard(10, "min(other)\n2\n"),
+                ],
+                "Int64",
+                AggregateFunction::Min,
+            ),
+            Err(MergeError::SchemaMismatch)
+        );
+        assert_eq!(
+            merge_integer_extrema(
+                &[shard(10, "max(amount)\n-1\n")],
+                "UInt64",
+                AggregateFunction::Max,
+            ),
+            Err(MergeError::InvalidExtremum)
         );
     }
 
