@@ -16,6 +16,18 @@ class AnalyticsRunnerTests(unittest.TestCase):
         self.assertEqual(len(queries), 43)
         self.assertEqual(queries[0], "SELECT COUNT(*) FROM hits")
 
+    def test_preflight_checks_expected_output(self):
+        calls = []
+
+        def execute(sql, timeout):
+            calls.append((sql, timeout))
+            return b"42\n"
+
+        runner.verify_input(execute, "SELECT COUNT(*) FROM sample", "42", 5)
+        self.assertEqual(calls, [("SELECT COUNT(*) FROM sample", 5)])
+        with self.assertRaisesRegex(ValueError, "preflight result differs"):
+            runner.verify_input(execute, "SELECT COUNT(*) FROM sample", "43", 5)
+
     def test_query_selection_preserves_order_and_checks_ranges(self):
         self.assertEqual(runner.select_indices("3,1-2,2", 43), [0, 1, 2])
         with self.assertRaises(ValueError):
@@ -29,6 +41,26 @@ class AnalyticsRunnerTests(unittest.TestCase):
         results = runner.run_benchmark(["SELECT 1"], [0], 3, 1, lambda _sql, _timeout: b"1\n")
         self.assertEqual(results[0]["status"], "unverified")
         self.assertEqual(len(results[0]["seconds"]), 3)
+
+    def test_latency_summary_includes_nearest_rank_p90(self):
+        stats = runner.summarize_times([0.3, 0.1, 0.2])
+        self.assertEqual(stats["min_seconds"], 0.1)
+        self.assertEqual(stats["median_seconds"], 0.2)
+        self.assertEqual(stats["p90_seconds"], 0.3)
+        self.assertEqual(stats["max_seconds"], 0.3)
+        self.assertIsNone(runner.summarize_times([]))
+
+    def test_warmups_execute_without_affecting_timings(self):
+        calls = []
+
+        def execute(sql, _timeout):
+            calls.append(sql)
+            return b"1\\n"
+
+        results = runner.run_benchmark(["SELECT 1"], [0], 3, 1, execute, warmups=2)
+        self.assertEqual(len(calls), 5)
+        self.assertEqual(len(results[0]["seconds"]), 3)
+        self.assertEqual(results[0]["status"], "unverified")
 
     def test_reference_mismatch_is_a_failure(self):
         with tempfile.TemporaryDirectory() as temp:

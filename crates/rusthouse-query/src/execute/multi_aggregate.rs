@@ -2,12 +2,13 @@ use super::typed::{self, Cell};
 use super::{AggregateState, ExecutionError, Number};
 use crate::{AggregateItem, ScalarExpr, Select};
 use rusthouse_storage::{TypedColumn, TypedQueryReader, inspect_query_source};
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::io::Write;
 use std::path::Path;
 
 enum State {
     Count(u64),
+    Distinct(HashSet<typed::Key>),
     Numeric(AggregateState),
 }
 
@@ -114,6 +115,18 @@ fn eval_number(
             }
         }
         ScalarExpr::Integer(value) => Ok(Some(Number::Signed(i128::from(*value)))),
+        ScalarExpr::TextLength(name) => {
+            let index = indices.get(name).ok_or_else(|| {
+                ExecutionError::Invalid(format!("unknown aggregate column: {name}"))
+            })?;
+            match typed::cell(&batch[*index], row) {
+                Cell::Text(bytes) => Ok(Some(Number::Unsigned(bytes.len() as u128))),
+                Cell::Null => Ok(None),
+                _ => Err(ExecutionError::Invalid(
+                    "length requires a String column".into(),
+                )),
+            }
+        }
         ScalarExpr::Multiply(left, right) => {
             let Some(left) = eval_number(left, batch, row, indices)? else {
                 return Ok(None);
@@ -133,6 +146,25 @@ fn eval_number(
             checked_binary(left, right, matches!(expression, ScalarExpr::Subtract(..))).map(Some)
         }
     }
+}
+
+fn distinct_argument(
+    expression: &ScalarExpr,
+    batch: &[TypedColumn],
+    row: usize,
+    indices: &HashMap<String, usize>,
+) -> Result<Option<typed::Key>, ExecutionError> {
+    if let ScalarExpr::Column(name) = expression {
+        let index = indices
+            .get(name)
+            .ok_or_else(|| ExecutionError::Invalid(format!("unknown aggregate column: {name}")))?;
+        let value = typed::cell(&batch[*index], row);
+        return match value {
+            Cell::Null => Ok(None),
+            _ => Ok(Some(value.key())),
+        };
+    }
+    Ok(eval_number(expression, batch, row, indices)?.map(|value| Cell::Numeric(value).key()))
 }
 
 fn count_argument(
@@ -220,6 +252,7 @@ pub(super) fn execute<W: Write>(
         .iter()
         .map(|item| match item.function {
             Some(function) => State::Numeric(AggregateState::new(function)),
+            None if item.distinct => State::Distinct(HashSet::new()),
             None => State::Count(0),
         })
         .collect::<Vec<_>>();
@@ -236,6 +269,19 @@ pub(super) fn execute<W: Write>(
                             *value = value
                                 .checked_add(1)
                                 .ok_or_else(|| ExecutionError::Invalid("COUNT overflow".into()))?;
+                        }
+                    }
+                    State::Distinct(seen) => {
+                        let expression = item.argument.as_ref().ok_or_else(|| {
+                            ExecutionError::Invalid("distinct argument missing".into())
+                        })?;
+                        if let Some(key) = distinct_argument(expression, &batch, row, &indices)? {
+                            if seen.len() >= 100_000 && !seen.contains(&key) {
+                                return Err(ExecutionError::Invalid(
+                                    "COUNT(DISTINCT) supports at most 100000 values".into(),
+                                ));
+                            }
+                            seen.insert(key);
                         }
                     }
                     State::Numeric(state) => {
@@ -257,6 +303,7 @@ pub(super) fn execute<W: Write>(
             }
             match state {
                 State::Count(count) => write!(output, "{count}")?,
+                State::Distinct(seen) => write!(output, "{}", seen.len())?,
                 State::Numeric(state) => write!(output, "{}", state.render())?,
             }
         }
