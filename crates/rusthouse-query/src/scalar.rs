@@ -154,7 +154,11 @@ fn checked_bit_shift(value: i64, amount: i64, left: bool) -> Result<i64, ParseEr
 fn parse_bit_reverse(parser: &mut Parser, depth: usize) -> Result<i64, ParseError> {
     require_token(parser, Token::LParen, "BIT_REVERSE requires '('")?;
     let value = expression(parser, depth + 1)?;
-    require_token(parser, Token::RParen, "BIT_REVERSE requires ')' after argument")?;
+    require_token(
+        parser,
+        Token::RParen,
+        "BIT_REVERSE requires ')' after argument",
+    )?;
     Ok(value.reverse_bits())
 }
 
