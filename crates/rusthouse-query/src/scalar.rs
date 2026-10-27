@@ -181,7 +181,11 @@ fn parse_mod_pow(parser: &mut Parser, depth: usize) -> Result<i64, ParseError> {
     let exponent = expression(parser, depth + 1)?;
     require_token(parser, Token::Comma, "MOD_POW requires three arguments")?;
     let modulus = expression(parser, depth + 1)?;
-    require_token(parser, Token::RParen, "MOD_POW requires ')' after arguments")?;
+    require_token(
+        parser,
+        Token::RParen,
+        "MOD_POW requires ')' after arguments",
+    )?;
     if exponent < 0 || modulus <= 0 {
         return Err(ParseError(
             "MOD_POW exponent must be non-negative and modulus must be positive".into(),
