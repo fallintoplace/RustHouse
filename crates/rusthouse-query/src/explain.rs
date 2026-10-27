@@ -1,4 +1,4 @@
-use crate::{Projection, Select, Source};
+use crate::{AggregateItem, Projection, Select, Source};
 
 fn describe_source(source: Option<&Source>) -> String {
     match source {
@@ -55,6 +55,12 @@ fn describe_projection(projection: &Projection) -> String {
         ),
         Projection::Aggregate { function, column } => {
             format!("Aggregate: {}({column})", function.name())
+        }
+        Projection::MultipleAggregates(items) => {
+            format!(
+                "Aggregate: {}",
+                items.iter().map(AggregateItem::header).collect::<Vec<_>>().join(", ")
+            )
         }
     }
 }
