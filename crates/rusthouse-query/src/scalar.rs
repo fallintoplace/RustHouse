@@ -75,6 +75,7 @@ pub(super) fn is_function(name: &str) -> bool {
         || name.eq_ignore_ascii_case("ISQRT")
         || name.eq_ignore_ascii_case("FACTORIAL")
         || name.eq_ignore_ascii_case("INTLOG2")
+        || name.eq_ignore_ascii_case("FLOOR_TO_MULTIPLE")
         || name.eq_ignore_ascii_case("ROUND_TO_MULTIPLE")
         || name.eq_ignore_ascii_case("PMOD")
         || name.eq_ignore_ascii_case("TRAILING_ONES")
@@ -383,6 +384,27 @@ fn parse_round_to_multiple(parser: &mut Parser, depth: usize) -> Result<i64, Par
         rounded_magnitude
     };
     i64::try_from(rounded).map_err(|_| overflow())
+}
+
+/// Round down to the next multiple, including negative values.
+fn parse_floor_to_multiple(parser: &mut Parser, depth: usize) -> Result<i64, ParseError> {
+    require_token(parser, Token::LParen, "FLOOR_TO_MULTIPLE requires '('")?;
+    let value = expression(parser, depth + 1)?;
+    require_token(
+        parser,
+        Token::Comma,
+        "FLOOR_TO_MULTIPLE requires two arguments",
+    )?;
+    let multiple = expression(parser, depth + 1)?;
+    require_token(parser, Token::RParen, "FLOOR_TO_MULTIPLE requires ')'")?;
+    if multiple <= 0 {
+        return Err(ParseError(
+            "FLOOR_TO_MULTIPLE requires a positive multiple".into(),
+        ));
+    }
+    let value = i128::from(value);
+    let multiple = i128::from(multiple);
+    i64::try_from(value.div_euclid(multiple) * multiple).map_err(|_| overflow())
 }
 
 fn parse_bit_extract(parser: &mut Parser, depth: usize) -> Result<i64, ParseError> {
@@ -862,6 +884,9 @@ fn factor(parser: &mut Parser, depth: usize) -> Result<i64, ParseError> {
     }
     if parser.keyword("PMOD") {
         return parse_pmod(parser, depth);
+    }
+    if parser.keyword("FLOOR_TO_MULTIPLE") {
+        return parse_floor_to_multiple(parser, depth);
     }
     if parser.keyword("BIT_EXTRACT") {
         return parse_bit_extract(parser, depth);
