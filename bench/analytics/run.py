@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Run ClickBench SQL against the RustHouse CLI or HTTP server."""
+"""Run Analytics SQL against the RustHouse CLI or HTTP server."""
 import argparse
 import json
 import subprocess

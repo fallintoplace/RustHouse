@@ -5,12 +5,12 @@ from pathlib import Path
 
 
 ROOT = Path(__file__).resolve().parent
-SPEC = importlib.util.spec_from_file_location("clickbench_runner", ROOT / "run.py")
+SPEC = importlib.util.spec_from_file_location("analytics_runner", ROOT / "run.py")
 runner = importlib.util.module_from_spec(SPEC)
 SPEC.loader.exec_module(runner)
 
 
-class ClickBenchRunnerTests(unittest.TestCase):
+class AnalyticsRunnerTests(unittest.TestCase):
     def test_pinned_queries_are_all_present(self):
         queries = runner.load_queries(ROOT / "queries.sql")
         self.assertEqual(len(queries), 43)
