@@ -1,11 +1,12 @@
 use super::{ConstantValue, ParseError, Parser, Token};
 
 const MAX_DEPTH: usize = 16;
+const MAX_TEXT_BYTES: usize = 1_048_576;
 
 pub(super) fn is_function(name: &str) -> bool {
     matches!(
         name.to_ascii_uppercase().as_str(),
-        "LENGTH" | "CHAR_LENGTH" | "LOWER" | "UPPER"
+        "LENGTH" | "CHAR_LENGTH" | "LOWER" | "UPPER" | "CONCAT"
     )
 }
 
@@ -45,6 +46,42 @@ fn parse_at_depth(parser: &mut Parser, depth: usize) -> Result<ConstantValue, Pa
             match input {
                 Some(value) => ConstantValue::Text(value.to_ascii_uppercase()),
                 None => ConstantValue::Null,
+            }
+        }
+        "CONCAT" => {
+            let mut result = String::new();
+            let mut count = 0;
+            let mut is_null = false;
+            loop {
+                if count == 16 {
+                    return Err(ParseError("CONCAT supports at most 16 arguments".into()));
+                }
+                match text_arg(parser, depth + 1)? {
+                    Some(value) => {
+                        let total = result
+                            .len()
+                            .checked_add(value.len())
+                            .ok_or_else(|| ParseError("CONCAT result is too large".into()))?;
+                        if total > MAX_TEXT_BYTES {
+                            return Err(ParseError("CONCAT result is too large".into()));
+                        }
+                        result.push_str(&value);
+                    }
+                    None => is_null = true,
+                }
+                count += 1;
+                if !parser.take(Token::Comma) {
+                    break;
+                }
+            }
+            if count < 2 {
+                return Err(ParseError("CONCAT requires at least two arguments".into()));
+            }
+            require(parser, Token::RParen, "expected ')' after CONCAT arguments")?;
+            if is_null {
+                ConstantValue::Null
+            } else {
+                ConstantValue::Text(result)
             }
         }
         _ => return Err(ParseError(format!("unsupported string function: {name}"))),
