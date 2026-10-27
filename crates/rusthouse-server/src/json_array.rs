@@ -4,8 +4,12 @@ use std::io::{self, Write};
 
 fn write_indent<W: Write>(output: &mut W, depth: usize) -> io::Result<()> {
     output.write_all(b"\n")?;
-    for _ in 0..=depth {
-        output.write_all(b"  ")?;
+    let spaces = [b' '; 64];
+    let mut remaining = (depth + 1) * 2;
+    while remaining > 0 {
+        let count = remaining.min(spaces.len());
+        output.write_all(&spaces[..count])?;
+        remaining -= count;
     }
     Ok(())
 }
@@ -167,6 +171,17 @@ impl<W: Write> Write for JsonArraySink<W> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn emits_deep_indentation_across_fixed_chunks() {
+        for depth in [0usize, 1, 40] {
+            let mut output = Vec::new();
+            write_indent(&mut output, depth).unwrap();
+            assert_eq!(output[0], b'\n');
+            assert_eq!(output.len(), 1 + (depth + 1) * 2);
+            assert!(output[1..].iter().all(|&byte| byte == b' '));
+        }
+    }
 
     #[test]
     fn pretty_json_streams_fragmented_objects_and_handles_escaped_punctuation() {

@@ -1,4 +1,5 @@
 use crate::tsv_escape::decode_tsv_field;
+use rusthouse_format::write_quoted_csv_field as write_quoted_field;
 use std::borrow::Cow;
 use std::io::{self, Write};
 
@@ -74,17 +75,6 @@ fn write_csv_field<W: Write>(output: &mut W, field: &[u8]) -> io::Result<()> {
         return output.write_all(value);
     }
     write_quoted_field(output, value)
-}
-
-fn write_quoted_field<W: Write>(output: &mut W, field: &[u8]) -> io::Result<()> {
-    output.write_all(b"\"")?;
-    for (index, piece) in field.split(|byte| *byte == b'"').enumerate() {
-        if index != 0 {
-            output.write_all(b"\"\"")?;
-        }
-        output.write_all(piece)?;
-    }
-    output.write_all(b"\"")
 }
 
 impl<W: Write> Write for CsvWriter<W> {

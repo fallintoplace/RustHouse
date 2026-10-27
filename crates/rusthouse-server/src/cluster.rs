@@ -2,6 +2,7 @@
 //! Private network transport is opt-in and unauthenticated.
 
 use crate::Response;
+use std::fmt::Write as _;
 use std::net::{Ipv4Addr, SocketAddrV4};
 
 pub const MAX_PEERS: usize = 16;
@@ -85,12 +86,14 @@ pub fn handle(method: &str, body: &[u8], cluster: &Cluster) -> Response {
     if !body.is_empty() {
         return Response::text("400 Bad Request", "GET must not contain a request body\n");
     }
-    let addresses = cluster
-        .peers()
-        .iter()
-        .map(|peer| format!("\"{}\"", peer.address()))
-        .collect::<Vec<_>>()
-        .join(",");
+    let mut addresses = String::new();
+    for (index, peer) in cluster.peers().iter().enumerate() {
+        if index != 0 {
+            addresses.push(',');
+        }
+        write!(&mut addresses, "\"{}\"", peer.address())
+            .expect("writing to String cannot fail");
+    }
     Response {
         status: "200 OK",
         content_type: "application/json; charset=utf-8",
@@ -157,6 +160,19 @@ mod tests {
             .map(|port| Peer::parse(&format!("127.0.0.1:{port}")).unwrap())
             .collect();
         assert!(Cluster::new(peers).is_err());
+    }
+
+    #[test]
+    fn lists_multiple_peers_without_extra_separators() {
+        let cluster = Cluster::new(vec![
+            Peer::parse("127.0.0.1:8124").unwrap(),
+            Peer::parse("127.0.0.1:8125").unwrap(),
+        ])
+        .unwrap();
+        assert_eq!(
+            handle("GET", b"", &cluster).body,
+            b"{\"mode\":\"read-only\",\"peer_count\":2,\"peers\":[\"127.0.0.1:8124\",\"127.0.0.1:8125\"]}\n"
+        );
     }
 
     #[test]

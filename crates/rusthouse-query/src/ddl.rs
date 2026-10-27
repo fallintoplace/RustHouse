@@ -388,13 +388,15 @@ mod tests {
 
     #[test]
     fn accepts_105_column_wide_table_schemas_and_rejects_129() {
-        let make_sql = |n: usize| format!(
-            "CREATE TABLE hits ({})",
-            (0..n)
-                .map(|i| format!("field{i} UInt64"))
-                .collect::<Vec<_>>()
-                .join(", ")
-        );
+        let make_sql = |n: usize| {
+            format!(
+                "CREATE TABLE hits ({})",
+                (0..n)
+                    .map(|i| format!("field{i} UInt64"))
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            )
+        };
         assert!(parse_ddl(&make_sql(105)).is_ok());
         assert!(parse_ddl(&make_sql(128)).is_ok());
         assert!(parse_ddl(&make_sql(129)).is_err());

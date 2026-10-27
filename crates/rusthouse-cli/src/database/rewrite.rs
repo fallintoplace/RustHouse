@@ -379,14 +379,18 @@ pub(super) fn append_parts_stream(
                 return Err("COPY row width does not match table schema".into());
             }
             let estimate = |value: &Option<String>| {
-                value.as_ref().map_or(16, |value| value.len().saturating_add(16))
+                value
+                    .as_ref()
+                    .map_or(16, |value| value.len().saturating_add(16))
             };
             let row_bytes = row.iter().try_fold(0usize, |size, value| {
                 size.checked_add(estimate(value))
                     .ok_or_else(|| "COPY record size overflow".to_string())
             })?;
             if row_bytes > MAX_STREAMED_PART_BYTES
-                || row.iter().any(|value| estimate(value) > MAX_STREAMED_COLUMN_BYTES)
+                || row
+                    .iter()
+                    .any(|value| estimate(value) > MAX_STREAMED_COLUMN_BYTES)
             {
                 return Err("COPY row exceeds streaming part budget".into());
             }

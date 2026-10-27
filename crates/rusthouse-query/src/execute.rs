@@ -9,14 +9,15 @@ use std::io::{self, BufWriter, Write};
 use std::path::Path;
 
 mod join;
+mod grouped_multi;
 mod predicates;
 mod sort;
 mod typed;
 pub use join::execute_join;
 use sort::{MAX_SORTED_ROWS, SortedRows};
-mod typed_aggregate;
-mod string_length;
 mod multi_aggregate;
+mod string_length;
+mod typed_aggregate;
 #[cfg(test)]
 use predicates::{CompiledTest, compile_in_test};
 use predicates::{
@@ -346,6 +347,9 @@ fn execute_into<W: Write>(
         writeln!(output, "{count}")?;
         return Ok(());
     }
+    if let Projection::GroupedMultiCount { columns } = &query.projection {
+        return grouped_multi::execute(query, part, columns, output);
+    }
     if let Projection::StringLength { column } = &query.projection {
         return string_length::execute(query, part, column, output);
     }
@@ -398,6 +402,7 @@ fn execute_into<W: Write>(
         | Projection::CountColumn { .. }
         | Projection::CountDistinct { .. }
         | Projection::GroupedCount { .. }
+        | Projection::GroupedMultiCount { .. }
         | Projection::GroupedAggregate { .. }
         | Projection::MultipleAggregates(_)
         | Projection::StringLength { .. }
@@ -1072,6 +1077,7 @@ fn execute_numbers<W: Write>(
         | Projection::CountColumn { .. }
         | Projection::CountDistinct { .. }
         | Projection::GroupedCount { .. }
+        | Projection::GroupedMultiCount { .. }
         | Projection::GroupedAggregate { .. }
         | Projection::MultipleAggregates(_)
         | Projection::StringLength { .. }

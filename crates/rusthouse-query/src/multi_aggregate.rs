@@ -69,7 +69,9 @@ pub(crate) fn parse_multiple(
                 parser.index = start;
                 return Ok(None);
             }
-            return Err(ParseError("DISTINCT aggregate lists are unsupported".into()));
+            return Err(ParseError(
+                "DISTINCT aggregate lists are unsupported".into(),
+            ));
         }
         let argument = if parser.take(Token::Star) || parser.take(Token::RParen) {
             if function.is_some() {
@@ -123,13 +125,11 @@ pub(crate) fn parse_multiple(
 
 #[cfg(test)]
 mod tests {
-    use super::*;
     use crate::{Projection, parse_select};
 
     #[test]
     fn parses_mixed_aggregates_and_calculated_arguments() {
-        let query =
-            parse_select("SELECT SUM(width + 1), COUNT(*), AVG(width) FROM part").unwrap();
+        let query = parse_select("SELECT SUM(width + 1), COUNT(*), AVG(width) FROM part").unwrap();
         let Projection::MultipleAggregates(items) = query.projection else {
             panic!("expected multiple aggregates");
         };

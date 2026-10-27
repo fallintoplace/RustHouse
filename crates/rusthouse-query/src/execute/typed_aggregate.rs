@@ -154,6 +154,12 @@ pub(super) fn execute_grouped_aggregate<W: Write>(
     }
     let group_index = indices[column];
     let value_index = indices[value_column];
+    let group_type = metadata
+        .columns
+        .iter()
+        .find(|candidate| candidate.name == *column)
+        .map(|candidate| candidate.data_type.as_str())
+        .ok_or_else(|| ExecutionError::Invalid("unknown group column".into()))?;
     writeln!(output, "{column}\t{}({value_column})", function.name())?;
     if query.limit == Some(0) {
         return Ok(());
@@ -208,12 +214,6 @@ pub(super) fn execute_grouped_aggregate<W: Write>(
         .skip(query.offset.unwrap_or(0))
         .take(query.limit.unwrap_or(usize::MAX))
     {
-        let group_type = metadata
-            .columns
-            .iter()
-            .find(|candidate| candidate.name == *column)
-            .map(|candidate| candidate.data_type.as_str())
-            .ok_or_else(|| ExecutionError::Invalid("unknown group column".into()))?;
         typed::write_typed_value(output, &key, group_type)?;
         writeln!(output, "\t{}", state.render())?;
     }
