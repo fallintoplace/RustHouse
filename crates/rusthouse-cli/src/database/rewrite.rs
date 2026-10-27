@@ -511,18 +511,19 @@ pub(super) fn compact_table(database: &Path, table: &str) -> Result<(), String> 
         let mut buffer = Vec::with_capacity(PART_ROWS);
         let mut buffered_bytes = 0usize;
         let mut part_number = 0u64;
-        let mut flush = |rows: &mut Vec<Vec<Option<String>>>, bytes: &mut usize| -> Result<(), String> {
-            if rows.is_empty() {
-                return Ok(());
-            }
-            part_number = part_number.checked_add(1).ok_or("part number overflow")?;
-            let part = staging.join(format!("all_{part_number}_{part_number}_0"));
-            write_wide_part(&part, &cols, rows).map_err(|error| error.to_string())?;
-            verify_wide_part(&part).map_err(|error| error.to_string())?;
-            rows.clear();
-            *bytes = 0;
-            Ok(())
-        };
+        let mut flush =
+            |rows: &mut Vec<Vec<Option<String>>>, bytes: &mut usize| -> Result<(), String> {
+                if rows.is_empty() {
+                    return Ok(());
+                }
+                part_number = part_number.checked_add(1).ok_or("part number overflow")?;
+                let part = staging.join(format!("all_{part_number}_{part_number}_0"));
+                write_wide_part(&part, &cols, rows).map_err(|error| error.to_string())?;
+                verify_wide_part(&part).map_err(|error| error.to_string())?;
+                rows.clear();
+                *bytes = 0;
+                Ok(())
+            };
         while let Some(batch) = reader.next_batch().map_err(|error| error.to_string())? {
             let length = batch.first().map_or(0, TypedColumn::len);
             if batch.len() != cols.len() || batch.iter().any(|column| column.len() != length) {

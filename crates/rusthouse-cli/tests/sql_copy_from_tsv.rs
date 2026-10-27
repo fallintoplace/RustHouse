@@ -89,10 +89,18 @@ fn bulk_tsv_copy_passes_50000_rows_and_keeps_snapshot_on_failure() {
     let first_generation = db.join("events.parts/.rusthouse-versions/g1");
     let active_parts = fs::read_dir(&first_generation)
         .unwrap()
-        .filter(|entry| entry.as_ref().unwrap().file_name().to_string_lossy().starts_with("all_"))
+        .filter(|entry| {
+            entry
+                .as_ref()
+                .unwrap()
+                .file_name()
+                .to_string_lossy()
+                .starts_with("all_")
+        })
         .count();
-    // One preexisting part plus two large imported parts for 50,000 rows.
-    assert_eq!(active_parts, 3);
+    // The empty CREATE part and prior INSERT part stay in the snapshot.
+    // The bulk COPY adds two more parts for 50,000 rows.
+    assert_eq!(active_parts, 4);
 
     // An extra data row no longer hits the old 50,000-row COPY limit.
     tsv.push_str("50000\tbeyond-old-limit\n");
