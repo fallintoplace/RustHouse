@@ -82,14 +82,22 @@ fn inner_join_builds_more_than_one_4096_row_part() {
     assert!(joined.status.success(), "{joined:?}");
     assert_eq!(joined.stdout, b"f.id\td.id\n17\t17\n5000\t5000\n");
 
-    // Ordered and outer joins still use the smaller pair-materializing path.
+    // The materializing path now handles both sides beyond 4096 rows.
     let ordered = sql(
         "SELECT f.id FROM facts f JOIN dimensions d ON f.id = d.id ORDER BY d.id LIMIT 2",
         &db,
         &[],
     );
-    assert!(!ordered.status.success());
-    assert!(String::from_utf8_lossy(&ordered.stderr).contains("4096"));
+    assert!(ordered.status.success(), "{ordered:?}");
+    assert_eq!(ordered.stdout, b"f.id\n17\n5000\n");
+
+    let outer = sql(
+        "SELECT f.id, d.id FROM facts f FULL JOIN dimensions d ON f.id = d.id ORDER BY d.id LIMIT 3",
+        &db,
+        &[],
+    );
+    assert!(outer.status.success(), "{outer:?}");
+    assert_eq!(outer.stdout, b"f.id\td.id\n\\N\t0\n\\N\t1\n\\N\t2\n");
     fs::remove_dir_all(db).unwrap();
 }
 
@@ -135,5 +143,35 @@ fn streams_large_inner_join_probe_without_buffering_left_table() {
     );
     assert!(paged.status.success(), "{paged:?}");
     assert_eq!(paged.stdout, b"f.id\n5\n");
+    fs::remove_dir_all(db).unwrap();
+}
+
+#[test]
+fn ordered_join_accepts_16384_rows_but_rejects_one_more() {
+    let db = database();
+    for statement in [
+        "CREATE TABLE facts (id UInt64)",
+        "CREATE TABLE dimensions (id UInt64)",
+        "INSERT INTO dimensions VALUES (0)",
+        "INSERT INTO facts SELECT number FROM numbers(0, 4096)",
+        "INSERT INTO facts SELECT number FROM numbers(4096, 4096)",
+        "INSERT INTO facts SELECT number FROM numbers(8192, 4096)",
+        "INSERT INTO facts SELECT number FROM numbers(12288, 4096)",
+    ] {
+        let result = sql(statement, &db, &[]);
+        assert!(result.status.success(), "{statement}: {result:?}");
+    }
+    let query =
+        "SELECT f.id FROM facts f LEFT JOIN dimensions d ON f.id = d.id ORDER BY f.id LIMIT 2";
+    let accepted = sql(query, &db, &[]);
+    assert!(accepted.status.success(), "{accepted:?}");
+    assert_eq!(accepted.stdout, b"f.id\n0\n1\n");
+
+    let append = sql("INSERT INTO facts VALUES (16384)", &db, &[]);
+    assert!(append.status.success(), "{append:?}");
+    let rejected = sql(query, &db, &[]);
+    assert!(!rejected.status.success());
+    assert!(String::from_utf8_lossy(&rejected.stderr).contains("16384"));
+    assert!(rejected.stdout.is_empty());
     fs::remove_dir_all(db).unwrap();
 }
