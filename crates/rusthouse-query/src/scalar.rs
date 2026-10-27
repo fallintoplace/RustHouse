@@ -20,7 +20,8 @@ fn is_bitwise(name: &str) -> bool {
 }
 
 pub(super) fn is_function(name: &str) -> bool {
-    name.eq_ignore_ascii_case("ABS")
+    is_saturating(name)
+        || name.eq_ignore_ascii_case("ABS")
         || name.eq_ignore_ascii_case("SIGN")
         || is_extrema(name)
         || is_power(name)
@@ -89,6 +90,27 @@ fn require_token(parser: &mut Parser, token: Token, message: &str) -> Result<(),
     } else {
         Err(ParseError(message.into()))
     }
+}
+
+fn is_saturating(name: &str) -> bool {
+    matches!(
+        name.to_ascii_uppercase().as_str(),
+        "SATURATING_ADD" | "SATURATING_SUB" | "SATURATING_MUL"
+    )
+}
+
+fn parse_saturating(parser: &mut Parser, depth: usize, name: &str) -> Result<i64, ParseError> {
+    require_token(parser, Token::LParen, "saturating arithmetic requires '('")?;
+    let left = expression(parser, depth + 1)?;
+    require_token(parser, Token::Comma, "saturating arithmetic requires two arguments")?;
+    let right = expression(parser, depth + 1)?;
+    require_token(parser, Token::RParen, "expected ')' after saturating arguments")?;
+    Ok(match name.to_ascii_uppercase().as_str() {
+        "SATURATING_ADD" => left.saturating_add(right),
+        "SATURATING_SUB" => left.saturating_sub(right),
+        "SATURATING_MUL" => left.saturating_mul(right),
+        _ => unreachable!("only saturating functions reach this branch"),
+    })
 }
 
 fn parse_power(parser: &mut Parser, depth: usize) -> Result<i64, ParseError> {
@@ -205,6 +227,10 @@ fn factor(parser: &mut Parser, depth: usize) -> Result<i64, ParseError> {
         return Err(ParseError(
             "scalar expressions nest at most 16 levels".into(),
         ));
+    }
+    if matches!(parser.tokens.get(parser.index), Some(Token::Word(name)) if is_saturating(name)) {
+        let name = parser.word()?;
+        return parse_saturating(parser, depth, &name);
     }
     if parser.take(Token::Minus) {
         return factor(parser, depth + 1)?
