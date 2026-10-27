@@ -12,6 +12,15 @@ const MAX_PART_ROWS: usize = 4096;
 const GRANULE_ROWS: usize = 1024;
 const MAX_STREAM_BYTES: usize = 8 * 1024 * 1024;
 
+/// Compression for newly written wide parts. Tiny or incompressible blocks
+/// are still stored uncompressed to avoid making them larger.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub enum PartCompression {
+    #[default]
+    Lz4,
+    Zstd,
+}
+
 fn invalid(message: impl Into<String>) -> PartError {
     PartError::InvalidScan(message.into())
 }
@@ -184,12 +193,25 @@ fn encode_checksums(files: &[FileChecksum]) -> Vec<u8> {
     bytes
 }
 
-fn block(data: &[u8]) -> Result<Vec<u8>, PartError> {
+fn block(data: &[u8], compression: PartCompression) -> Result<Vec<u8>, PartError> {
     let length = u32::try_from(data.len()).map_err(|_| invalid("part column is too large"))?;
-    // Small and incompressible columns keep the lightweight uncompressed codec.
-    let compressed = (data.len() >= 128).then(|| lz4_flex::block::compress(data));
+    // Keep tiny and incompressible blocks in the ClickHouse NONE format.
+    let compressed = if data.len() >= 128 {
+        Some(match compression {
+            PartCompression::Lz4 => (0x82, lz4_flex::block::compress(data)),
+            PartCompression::Zstd => (
+                0x90,
+                zstd::bulk::compress(data, 3)
+                    .map_err(|error| invalid(format!("ZSTD compression failed: {error}")))?,
+            ),
+        })
+    } else {
+        None
+    };
     let (method, payload) = match compressed.as_ref() {
-        Some(bytes) if bytes.len().saturating_add(16) < data.len() => (0x82, bytes.as_slice()),
+        Some((method, bytes)) if bytes.len().saturating_add(16) < data.len() => {
+            (*method, bytes.as_slice())
+        }
         _ => (0x02, data),
     };
     let compressed_size =
@@ -242,6 +264,17 @@ pub fn write_wide_part(
     part: &Path,
     columns: &[Column],
     rows: &[Vec<Option<String>>],
+) -> Result<(), PartError> {
+    write_wide_part_with_compression(part, columns, rows, PartCompression::Lz4)
+}
+
+/// Write a wide part with an explicit compression codec. Existing callers
+/// continue to use LZ4 through `write_wide_part`.
+pub fn write_wide_part_with_compression(
+    part: &Path,
+    columns: &[Column],
+    rows: &[Vec<Option<String>>],
+    compression: PartCompression,
 ) -> Result<(), PartError> {
     if columns.is_empty() || columns.len() > 64 {
         return Err(invalid("part requires 1 to 64 columns"));
@@ -309,7 +342,7 @@ pub fn write_wide_part(
                 marks.extend_from_slice(&0u64.to_le_bytes());
                 let row_count = (rows.len() - index * GRANULE_ROWS).min(GRANULE_ROWS);
                 marks.extend_from_slice(&(row_count as u64).to_le_bytes());
-                encoded.extend_from_slice(&block(data)?);
+                encoded.extend_from_slice(&block(data, compression)?);
                 uncompressed.extend_from_slice(data);
             }
             write_tracked_file(
@@ -357,7 +390,7 @@ mod tests {
         use std::io::Cursor;
 
         for (data, codec) in [(vec![7u8; 4096], 0x82u8), (vec![1, 2, 3], 0x02)] {
-            let encoded = block(&data).unwrap();
+            let encoded = block(&data, PartCompression::Lz4).unwrap();
             let mut reader =
                 CompressedBlockReader::new(Cursor::new(encoded), "column.bin").unwrap();
             let decoded = reader.next_decoded().unwrap().unwrap();
@@ -374,7 +407,7 @@ mod tests {
             vec![0x55u8; 4096],
             (0..4096).map(|index| (index * 73 % 251) as u8).collect(),
         ] {
-            let block = block(&data).unwrap();
+            let block = block(&data, PartCompression::Lz4).unwrap();
             let checksum = u128::from(cityhash128(&block[16..])).to_le_bytes();
             assert_eq!(&block[..16], &checksum);
             let stored_size = u32::from_le_bytes(block[17..21].try_into().unwrap());
@@ -429,6 +462,79 @@ mod tests {
             matches!(&batch[2], TypedColumn::NullableNumeric { nulls, .. } if nulls == &vec![0,1])
         );
         assert!(reader.next_batch().unwrap().is_none());
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn zstd_blocks_round_trip_and_tiny_blocks_stay_uncompressed() {
+        use crate::CompressedBlockReader;
+        use std::io::Cursor;
+
+        let data = b"long repeated message for ZSTD part streams ".repeat(128);
+        let encoded = block(&data, PartCompression::Zstd).unwrap();
+        let mut reader = CompressedBlockReader::new(Cursor::new(encoded), "zstd.bin").unwrap();
+        let decoded = reader.next_decoded().unwrap().unwrap();
+        assert_eq!(decoded.block.method, 0x90);
+        assert_eq!(decoded.data, data);
+        assert!(reader.next_decoded().is_none());
+
+        let tiny = block(b"tiny", PartCompression::Zstd).unwrap();
+        let mut reader = CompressedBlockReader::new(Cursor::new(tiny), "tiny.bin").unwrap();
+        let decoded = reader.next_decoded().unwrap().unwrap();
+        assert_eq!(decoded.block.method, 0x02);
+        assert_eq!(decoded.data, b"tiny");
+    }
+
+    #[test]
+    fn writes_zstd_wide_parts_with_readable_marks_and_checksums() {
+        use crate::CompressedBlockReader;
+
+        let root = root();
+        let part = root.join("all_3_3_0");
+        let columns = vec![
+            Column {
+                name: "id".into(),
+                data_type: "UInt64".into(),
+            },
+            Column {
+                name: "message".into(),
+                data_type: "String".into(),
+            },
+        ];
+        let message = "ClickHouse-compatible compression keeps the same column values. ".repeat(4);
+        let rows = (0..2050u64)
+            .map(|id| vec![Some(id.to_string()), Some(message.clone())])
+            .collect::<Vec<_>>();
+
+        write_wide_part_with_compression(&part, &columns, &rows, PartCompression::Zstd).unwrap();
+        let mut blocks = CompressedBlockReader::open(part.join("message.bin")).unwrap();
+        for _ in 0..3 {
+            let decoded = blocks.next_decoded().unwrap().unwrap();
+            assert_eq!(decoded.block.method, 0x90);
+        }
+        assert!(blocks.next_decoded().is_none());
+
+        let marks = read_wide_marks(part.join("message.mrk2")).unwrap();
+        assert_eq!(
+            marks.marks.iter().map(|mark| mark.rows).collect::<Vec<_>>(),
+            vec![Some(1024), Some(1024), Some(2)]
+        );
+        assert!(marks.marks[0].compressed_offset < marks.marks[1].compressed_offset);
+        verify_wide_part(&part).unwrap();
+
+        let mut scan = TypedPartReader::open(&part, &["id".into(), "message".into()]).unwrap();
+        for (first, count) in [(0u64, 1024usize), (1024, 1024), (2048, 2)] {
+            let batch = scan.next_batch().unwrap().unwrap();
+            assert_eq!(batch[0].len(), count);
+            assert_eq!(batch[1].len(), count);
+            assert!(
+                matches!(&batch[0], TypedColumn::Numeric(NumericColumn::UInt64(values))
+                if values.first() == Some(&first))
+            );
+            assert!(matches!(&batch[1], TypedColumn::Text(values)
+                if (0..count).all(|index| values.get(index) == Some(message.as_bytes()))));
+        }
+        assert!(scan.next_batch().unwrap().is_none());
         fs::remove_dir_all(root).unwrap();
     }
 
