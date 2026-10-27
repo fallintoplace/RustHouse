@@ -17,7 +17,11 @@ fn trailing_ones_counts_signed_bit_patterns() {
         ("SELECT TRAILING_ONES(-1) AS result", "64"),
         ("SELECT TRAILING_ONES(-2) AS result", "0"),
     ] {
-        assert_eq!(evaluate(sql).unwrap(), format!("result\n{expected}\n"), "{sql}");
+        assert_eq!(
+            evaluate(sql).unwrap(),
+            format!("result\n{expected}\n"),
+            "{sql}"
+        );
     }
 }
 
