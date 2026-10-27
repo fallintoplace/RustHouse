@@ -22,6 +22,7 @@ pub(super) fn is_function(name: &str) -> bool {
             | "STRPOS"
             | "LEFT"
             | "STARTS_WITH"
+            | "CONTAINS"
             | "RIGHT"
             | "ENDS_WITH"
             | "REPEAT"
@@ -340,6 +341,18 @@ fn parse_at_depth(parser: &mut Parser, depth: usize) -> Result<ConstantValue, Pa
                         }
                         ConstantValue::Text(input.replace(&needle, &replacement))
                     }
+                }
+                _ => ConstantValue::Null,
+            }
+        }
+        "CONTAINS" => {
+            let input = text_arg(parser, depth + 1)?;
+            require(parser, Token::Comma, "CONTAINS requires a substring")?;
+            let needle = text_arg(parser, depth + 1)?;
+            require(parser, Token::RParen, "expected ')' after CONTAINS arguments")?;
+            match (input, needle) {
+                (Some(input), Some(needle)) => {
+                    ConstantValue::Integer(i64::from(input.contains(needle.as_str())))
                 }
                 _ => ConstantValue::Null,
             }
