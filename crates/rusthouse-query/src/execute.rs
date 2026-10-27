@@ -8,8 +8,8 @@ use std::fmt;
 use std::io::{self, BufWriter, Write};
 use std::path::Path;
 
-mod join;
 mod grouped_multi;
+mod join;
 mod predicates;
 mod sort;
 mod typed;
@@ -653,7 +653,11 @@ impl GroupedCounts {
                     compare_numbers(*left_key, *right_key)
                 });
         }
-        writeln!(output, "{column}\t{}", query.alias.as_deref().unwrap_or("count"))?;
+        writeln!(
+            output,
+            "{column}\t{}",
+            query.alias.as_deref().unwrap_or("count")
+        )?;
         for (value, count) in self
             .rows
             .into_iter()
