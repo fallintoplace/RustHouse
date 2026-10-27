@@ -127,6 +127,28 @@ fn eval_number(
                 )),
             }
         }
+        ScalarExpr::Divide(left, right) => {
+            let Some(left) = eval_number(left, batch, row, indices)? else {
+                return Ok(None);
+            };
+            let Some(right) = eval_number(right, batch, row, indices)? else {
+                return Ok(None);
+            };
+            let to_float = |value: Number| match value {
+                Number::Unsigned(number) => number as f64,
+                Number::Signed(number) => number as f64,
+                Number::Float(number) => number,
+            };
+            let divisor = to_float(right);
+            if divisor == 0.0 {
+                return Err(ExecutionError::Invalid("division by zero in aggregate expression".into()));
+            }
+            let quotient = to_float(left) / divisor;
+            if !quotient.is_finite() {
+                return Err(ExecutionError::Invalid("non-finite aggregate division".into()));
+            }
+            Ok(Some(Number::Float(quotient)))
+        }
         ScalarExpr::Multiply(left, right) => {
             let Some(left) = eval_number(left, batch, row, indices)? else {
                 return Ok(None);
