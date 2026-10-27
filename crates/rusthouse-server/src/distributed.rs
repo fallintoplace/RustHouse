@@ -357,10 +357,6 @@ fn merge_integer_sums(shards: &[(usize, Vec<u8>)], kind: &str) -> Result<Vec<u8>
     Ok(output)
 }
 
-/// Reduce grouped COUNT results by their canonical TSV-encoded key.
-/// Preserve first-seen key order, reject malformed rows, and only emit a
-/// complete bounded result. Shards may hold overlapping group *keys*, but
-/// the underlying source rows must be disjoint.
 fn merge_integer_extrema(
     shards: &[(usize, Vec<u8>)],
     kind: &str,
@@ -433,6 +429,10 @@ fn merge_integer_extrema(
     Ok(output)
 }
 
+/// Reduce grouped COUNT results by their canonical TSV-encoded key.
+/// Preserve first-seen key order, reject malformed rows, and only emit a
+/// complete bounded result. Shards may hold overlapping group *keys*, but
+/// the underlying source rows must be disjoint.
 fn merge_grouped_counts(
     shards: &[(usize, Vec<u8>)],
     max_rows: usize,
