@@ -290,10 +290,8 @@ mod tests {
 
     #[test]
     fn finds_unpublished_entries_in_both_staging_directories() {
-        let root = std::env::temp_dir().join(format!(
-            "rusthouse-doctor-staging-{}",
-            std::process::id()
-        ));
+        let root =
+            std::env::temp_dir().join(format!("rusthouse-doctor-staging-{}", std::process::id()));
         fs::create_dir_all(root.join(".rusthouse-versions")).unwrap();
         fs::write(root.join(".rusthouse-active.tmp-1"), b"").unwrap();
         fs::write(root.join(".rusthouse-versions/.pending-1"), b"").unwrap();
