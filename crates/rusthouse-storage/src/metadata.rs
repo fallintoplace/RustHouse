@@ -72,7 +72,8 @@ fn read_metadata(path: &Path, max_bytes: u64) -> Result<String, PartError> {
 
 fn parse_count(content: &str) -> Result<u64, PartError> {
     content
-        .strip_suffix('\n')
+        .strip_suffix("\r\n")
+        .or_else(|| content.strip_suffix('\n'))
         .unwrap_or(content)
         .parse()
         .map_err(|_| PartError::InvalidCount(content.to_owned()))
@@ -140,6 +141,7 @@ mod tests {
     fn accepts_plain_and_newline_terminated_counts() {
         assert_eq!(parse_count("42").unwrap(), 42);
         assert_eq!(parse_count("42\n").unwrap(), 42);
+        assert_eq!(parse_count("42\r\n").unwrap(), 42);
         assert_eq!(parse_count("18446744073709551615\n").unwrap(), u64::MAX);
     }
 
@@ -202,6 +204,8 @@ mod tests {
             " 42\n",
             "42 \n",
             "42\n\n",
+            "42\r\n\n",
+            "42\r",
             "-1\n",
             "18446744073709551616\n",
         ] {
