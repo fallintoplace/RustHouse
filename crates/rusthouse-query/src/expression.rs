@@ -19,9 +19,7 @@ impl ScalarExpr {
                 }
             }
             Self::Integer(_) => {}
-            Self::Add(left, right)
-            | Self::Subtract(left, right)
-            | Self::Multiply(left, right) => {
+            Self::Add(left, right) | Self::Subtract(left, right) | Self::Multiply(left, right) => {
                 left.referenced_columns(out);
                 right.referenced_columns(out);
             }
