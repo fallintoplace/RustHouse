@@ -312,7 +312,7 @@ pub(super) fn cmp(left: &Cell, right: &Cell) -> Ordering {
     }
 }
 
-fn compare_order_cells(
+pub(super) fn compare_order_cells(
     left: &Cell,
     right: &Cell,
     descending: bool,

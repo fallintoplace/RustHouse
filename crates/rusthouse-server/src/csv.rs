@@ -56,8 +56,12 @@ fn write_csv_field<W: Write>(output: &mut W, field: &[u8]) -> io::Result<()> {
     if !needs_quotes {
         return output.write_all(value.as_bytes());
     }
+    write_quoted_field(output, value.as_bytes())
+}
+
+fn write_quoted_field<W: Write>(output: &mut W, value: &[u8]) -> io::Result<()> {
     output.write_all(b"\"")?;
-    let mut segments = value.as_bytes().split(|&byte| byte == b'"');
+    let mut segments = value.split(|&byte| byte == b'"');
     if let Some(first) = segments.next() {
         output.write_all(first)?;
     }
@@ -94,6 +98,13 @@ impl<W: Write> Write for CsvWriter<W> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn doubles_adjacent_quotes_in_quoted_csv_fields() {
+        let mut output = Vec::new();
+        write_quoted_field(&mut output, b"a\"\"b").unwrap();
+        assert_eq!(output, b"\"a\"\"\"\"b\"");
+    }
 
     #[test]
     fn decodes_escaped_rows_and_quotes_csv_special_characters() {

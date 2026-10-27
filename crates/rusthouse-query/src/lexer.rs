@@ -24,21 +24,24 @@ fn advance_ascii_digits(bytes: &[u8], index: &mut usize) {
     }
 }
 
+fn require_digit(bytes: &[u8], index: usize, message: &'static str) -> Result<(), ParseError> {
+    if !matches!(bytes.get(index), Some(b'0'..=b'9')) {
+        return Err(ParseError(message.into()));
+    }
+    Ok(())
+}
+
 fn scan_number(sql: &str, index: &mut usize) -> Result<Token, ParseError> {
     let bytes = sql.as_bytes();
     let start = *index;
     if bytes[*index] == b'-' {
         *index += 1;
-        if !matches!(bytes.get(*index), Some(b'0'..=b'9')) {
-            return Err(ParseError("expected digits after '-'".into()));
-        }
+        require_digit(bytes, *index, "expected digits after '-'")?;
     }
     advance_ascii_digits(bytes, index);
     if bytes.get(*index) == Some(&b'.') {
         *index += 1;
-        if !matches!(bytes.get(*index), Some(b'0'..=b'9')) {
-            return Err(ParseError("expected digits after decimal point".into()));
-        }
+        require_digit(bytes, *index, "expected digits after decimal point")?;
         advance_ascii_digits(bytes, index);
     }
     Ok(Token::Number(sql[start..*index].into()))
