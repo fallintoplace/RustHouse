@@ -50,6 +50,7 @@ pub(super) fn is_function(name: &str) -> bool {
         || name.eq_ignore_ascii_case("REVERSE_DIGITS")
         || name.eq_ignore_ascii_case("LCM")
         || name.eq_ignore_ascii_case("FIBONACCI")
+        || name.eq_ignore_ascii_case("IS_DIVISIBLE")
         || name.eq_ignore_ascii_case("IN_RANGE")
         || name.eq_ignore_ascii_case("DIV_EUCLID")
         || name.eq_ignore_ascii_case("REM_EUCLID")
@@ -515,6 +516,19 @@ fn parse_mul_div(parser: &mut Parser, depth: usize) -> Result<i64, ParseError> {
 }
 
 /// Equal-width histogram buckets for a signed range [lower, upper).
+/// Return one if the signed divisor divides the dividend exactly.
+fn parse_is_divisible(parser: &mut Parser, depth: usize) -> Result<i64, ParseError> {
+    require_token(parser, Token::LParen, "IS_DIVISIBLE requires '('")?;
+    let dividend = expression(parser, depth + 1)?;
+    require_token(parser, Token::Comma, "IS_DIVISIBLE requires two arguments")?;
+    let divisor = expression(parser, depth + 1)?;
+    require_token(parser, Token::RParen, "IS_DIVISIBLE requires ')'")?;
+    if divisor == 0 {
+        return Err(ParseError("IS_DIVISIBLE divisor cannot be zero".into()));
+    }
+    Ok(i64::from(i128::from(dividend) % i128::from(divisor) == 0))
+}
+
 fn parse_width_bucket(parser: &mut Parser, depth: usize) -> Result<i64, ParseError> {
     require_token(parser, Token::LParen, "WIDTH_BUCKET requires '('")?;
     let value = expression(parser, depth + 1)?;
@@ -919,6 +933,9 @@ fn factor(parser: &mut Parser, depth: usize) -> Result<i64, ParseError> {
     }
     if parser.keyword("BIT_EXTRACT") {
         return parse_bit_extract(parser, depth);
+    }
+    if parser.keyword("IS_DIVISIBLE") {
+        return parse_is_divisible(parser, depth);
     }
     if parser.keyword("IN_RANGE") {
         return parse_in_range(parser, depth);
