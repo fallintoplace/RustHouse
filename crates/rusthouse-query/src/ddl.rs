@@ -387,7 +387,7 @@ mod tests {
     }
 
     #[test]
-    fn accepts_105_column_clickbench_schemas_and_rejects_129() {
+    fn accepts_105_column_wide_table_schemas_and_rejects_129() {
         let make_sql = |n: usize| format!(
             "CREATE TABLE hits ({})",
             (0..n)
