@@ -1,0 +1,39 @@
+name: SQL latency samples
+
+on:
+  pull_request:
+    paths:
+      - 'bench/latency/**'
+      - 'bench/__main__.py'
+      - 'bench/test_suite.py'
+      - '.github/workflows/sql-latency.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  generated-queries:
+    name: Verified generated SQL latency (ubuntu-latest)
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v7
+      - uses: Swatinem/rust-cache@v2
+        with:
+          save-if: false
+      - name: Build release CLI
+        run: cargo build --release --locked -p rusthouse-cli
+      - name: Measure 20 verified SQL queries
+        run: |
+          python3 -m bench workload latency -- \
+            --binary target/release/rusthouse \
+            --rows 65536 --runs 5 --warmups 2 \
+            --output bench/results/sql-latency.json
+      - name: Upload latency report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: rusthouse-sql-latency
+          path: bench/results/sql-latency.json
+          retention-days: 14
