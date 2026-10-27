@@ -31,7 +31,9 @@ fn accepts_typed_timestamp_literals_and_rejects_unquoted_values() {
         "SELECT count(*) FROM events WHERE created_at >= TIMESTAMP '2020-01-01 00:00:00'",
     )
     .unwrap();
-    assert!(matches!(&query.predicates[0], Predicate::Comparison { value, .. } if value == "2020-01-01 00:00:00"));
+    assert!(
+        matches!(&query.predicates[0], Predicate::Comparison { value, .. } if value == "2020-01-01 00:00:00")
+    );
     assert!(parse_select("SELECT count(*) FROM events WHERE created_at >= DATE 20200101").is_err());
     assert!(parse_select("SELECT count(*) FROM events WHERE created_at >= TIMESTAMP").is_err());
 }
