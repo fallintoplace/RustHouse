@@ -28,6 +28,17 @@ fn render_expr(expr: &ScalarExpr) -> String {
         ScalarExpr::Subtract(left, right) => {
             format!("{} - {}", render_expr(left), render_expr(right))
         }
+        ScalarExpr::Multiply(left, right) => {
+            let operand = |value: &ScalarExpr| {
+                let rendered = render_expr(value);
+                if matches!(value, ScalarExpr::Add(..) | ScalarExpr::Subtract(..)) {
+                    format!("({rendered})")
+                } else {
+                    rendered
+                }
+            };
+            format!("{} * {}", operand(left), operand(right))
+        }
     }
 }
 
