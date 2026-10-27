@@ -1,4 +1,5 @@
 use super::{Config, LimitedWriter, Response, write_json_string};
+use rusthouse_query::{Ddl, parse_ddl};
 use rusthouse_storage::acquire_database_lock;
 use std::collections::HashSet;
 use std::fs;
@@ -59,7 +60,11 @@ fn valid_schema_contents(contents: &str) -> bool {
         let Some((name, data_type)) = line.split_once('\t') else {
             return false;
         };
-        if !identifier(name) || data_type.is_empty() || !names.insert(name) {
+        let ddl = format!("CREATE TABLE _check ({name} {data_type})");
+        if !identifier(name)
+            || !names.insert(name)
+            || !matches!(parse_ddl(&ddl), Ok(Some(Ddl::CreateTable { .. })))
+        {
             return false;
         }
     }
@@ -184,6 +189,12 @@ mod tests {
         assert!(!valid_schema_contents("rusthouse-schema-v1\nid\tUInt64"));
         assert!(!valid_schema_contents("wrong-version\nid\tUInt64\n"));
         assert!(!valid_schema_contents("rusthouse-schema-v1\nno-type\n"));
+        assert!(!valid_schema_contents(
+            "rusthouse-schema-v1\nid\tUnknownType\n"
+        ));
+        assert!(!valid_schema_contents(
+            "rusthouse-schema-v1\nid\tUInt64 junk\n"
+        ));
         assert!(!valid_schema_contents(
             "rusthouse-schema-v1\nid\tUInt64\nid\tString\n"
         ));
