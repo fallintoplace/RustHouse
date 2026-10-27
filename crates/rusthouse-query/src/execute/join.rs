@@ -278,7 +278,7 @@ fn execute_streaming_inner<W: Write>(
         MAX_STREAM_BUILD_ROWS,
         MAX_STREAM_BUILD_BYTES,
     )?;
-    let mut hash: HashMap<Vec<typed::Key>, Vec<usize>> = HashMap::new();
+    let mut hash: HashMap<Vec<typed::Key>, Vec<usize>> = HashMap::with_capacity(right_rows.len());
     for (index, row) in right_rows.iter().enumerate() {
         if let Some(key) = row_key(row, right_keys) {
             hash.entry(key).or_default().push(index);
@@ -446,7 +446,7 @@ fn execute_streaming_right<W: Write>(
         MAX_STREAM_BUILD_ROWS,
         MAX_STREAM_BUILD_BYTES,
     )?;
-    let mut hash: HashMap<Vec<typed::Key>, Vec<usize>> = HashMap::new();
+    let mut hash: HashMap<Vec<typed::Key>, Vec<usize>> = HashMap::with_capacity(left_rows.len());
     for (index, row) in left_rows.iter().enumerate() {
         if let Some(key) = row_key(row, left_keys) {
             hash.entry(key).or_default().push(index);
@@ -674,7 +674,7 @@ pub fn execute_join<W: Write>(
         MAX_INPUT_ROWS,
         MAX_STREAM_BUILD_BYTES,
     )?;
-    let mut hash: HashMap<Vec<typed::Key>, Vec<usize>> = HashMap::new();
+    let mut hash: HashMap<Vec<typed::Key>, Vec<usize>> = HashMap::with_capacity(right_rows.len());
     for (index, row) in right_rows.iter().enumerate() {
         if let Some(key) = row_key(row, &right_keys) {
             hash.entry(key).or_default().push(index);
