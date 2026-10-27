@@ -3,6 +3,7 @@
 use crate::Response;
 use crate::cluster::Cluster;
 use crate::remote;
+use std::fmt::Write as _;
 
 pub fn handle(method: &str, body: &[u8], cluster: &Cluster) -> Response {
     if method != "GET" {
@@ -31,13 +32,18 @@ pub fn handle(method: &str, body: &[u8], cluster: &Cluster) -> Response {
             .collect()
     });
     let count = healthy.iter().filter(|&&alive| alive).count();
-    let details = cluster
-        .peers()
-        .iter()
-        .zip(&healthy)
-        .map(|(peer, &alive)| format!("{{\"address\":\"{}\",\"healthy\":{alive}}}", peer.address()))
-        .collect::<Vec<_>>()
-        .join(",");
+    let mut details = String::new();
+    for (index, (peer, &alive)) in cluster.peers().iter().zip(&healthy).enumerate() {
+        if index != 0 {
+            details.push(',');
+        }
+        write!(
+            &mut details,
+            "{{\"address\":\"{}\",\"healthy\":{alive}}}",
+            peer.address()
+        )
+        .expect("writing to String cannot fail");
+    }
     let status = if count == healthy.len() {
         "200 OK"
     } else {
@@ -60,6 +66,14 @@ mod tests {
     use crate::cluster::Peer;
     use std::io::{BufRead, BufReader, Write};
     use std::net::TcpListener;
+
+    #[test]
+    fn reports_empty_cluster_without_peer_allocations() {
+        let cluster = Cluster::new(Vec::new()).unwrap();
+        let response = handle("GET", b"", &cluster);
+        assert_eq!(response.status, "200 OK");
+        assert_eq!(response.body, b"{\"total\":0,\"healthy\":0,\"peers\":[]}\n");
+    }
 
     #[test]
     fn reports_healthy_peer_and_rejects_post() {
