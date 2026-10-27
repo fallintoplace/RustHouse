@@ -249,7 +249,9 @@ fn factor(parser: &mut Parser, depth: usize) -> Result<i64, ParseError> {
             }
         } else if name.eq_ignore_ascii_case("FIBONACCI") {
             if !(0..=92).contains(&first) {
-                return Err(ParseError("FIBONACCI index must be between 0 and 92".into()));
+                return Err(ParseError(
+                    "FIBONACCI index must be between 0 and 92".into(),
+                ));
             }
             let (mut current, mut next) = (0_u128, 1_u128);
             for _ in 0..first {
