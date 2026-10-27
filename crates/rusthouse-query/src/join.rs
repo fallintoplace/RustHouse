@@ -27,7 +27,8 @@ pub struct JoinSelect {
     pub keys: Vec<(JoinColumn, JoinColumn)>,
     /// Shared-key names for JOIN USING; star output projects each key once.
     pub using_keys: Vec<String>,
-    pub order_by: Option<(JoinColumn, bool)>,
+    /// Ordered key, descending flag, and optional explicit NULL placement.
+    pub order_by: Option<(JoinColumn, bool, Option<bool>)>,
     pub limit: Option<usize>,
     pub offset: usize,
 }
@@ -223,7 +224,18 @@ pub fn parse_join(sql: &str) -> Result<Option<JoinSelect>, ParseError> {
             parser.keyword("ASC");
             false
         };
-        Some((key, descending))
+        let nulls_first = if parser.keyword("NULLS") {
+            if parser.keyword("FIRST") {
+                Some(true)
+            } else if parser.keyword("LAST") {
+                Some(false)
+            } else {
+                return Err(ParseError("JOIN ORDER BY NULLS requires FIRST or LAST".into()));
+            }
+        } else {
+            None
+        };
+        Some((key, descending, nulls_first))
     } else {
         None
     };
@@ -360,6 +372,25 @@ mod tests {
                 .join(", ")
         );
         assert!(parse_join(&too_many).is_err());
+    }
+
+    #[test]
+    fn parses_explicit_join_null_sort_order() {
+        for (suffix, expected) in [
+            ("NULLS FIRST", Some(true)),
+            ("DESC NULLS LAST", Some(false)),
+            ("ASC", None),
+        ] {
+            let statement = format!(
+                "SELECT * FROM l LEFT JOIN r ON l.id = r.id ORDER BY r.id {suffix}"
+            );
+            let query = parse_join(&statement).unwrap().unwrap();
+            assert_eq!(query.order_by.unwrap().2, expected);
+        }
+        assert!(
+            parse_join("SELECT * FROM l JOIN r ON l.id = r.id ORDER BY l.id NULLS MIDDLE")
+                .is_err()
+        );
     }
 
     #[test]
