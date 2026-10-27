@@ -153,9 +153,7 @@ class ClickBenchRunnerTests(unittest.TestCase):
             self.assertEqual(report["query_file_count"], 2)
             self.assertFalse(report["complete_official_query_list"])
             self.assertEqual(report["results"][0]["query"], 2)
-            self.assertEqual(report["coverage"]["unverified_queries"]
-                             if "unverified_queries" in report["coverage"] else
-                             report["coverage"]["executed_queries"], 1)
+            self.assertEqual(report["coverage"]["executed_queries"], 1)
 
 
 if __name__ == "__main__":
