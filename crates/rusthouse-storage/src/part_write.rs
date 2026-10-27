@@ -417,7 +417,7 @@ mod tests {
         let values = vec![Some("3".to_owned()); 105];
         write_wide_part(&root.join("wide"), &cols, &[values]).unwrap();
         assert_eq!(
-            crate::inspect_part(&root.join("wide"))
+            crate::inspect_part(root.join("wide"))
                 .unwrap()
                 .columns
                 .len(),
