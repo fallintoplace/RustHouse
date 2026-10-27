@@ -194,6 +194,89 @@ pub fn execute<W: Write>(
     Ok(())
 }
 
+/// Evaluate filtered COUNT independently on immutable parts, then reduce the
+/// partial counts. Skip small snapshots where thread startup costs dominate.
+/// An unfiltered COUNT already has a cheaper metadata-only path.
+fn parallel_filtered_count(query: &Select, source: &Path) -> Result<Option<u64>, ExecutionError> {
+    if !matches!(query.projection, Projection::Count)
+        || (query.predicates.is_empty() && query.or_predicates.is_empty())
+        || query.limit.is_some()
+        || query.offset.is_some()
+        || query.distinct
+        || query.order_by.is_some()
+        || !query.order_by_extra.is_empty()
+        || query.having.is_some()
+    {
+        return Ok(None);
+    }
+    let parts = rusthouse_storage::query_parts(source)?;
+    const MIN_PARALLEL_PARTS: usize = 32;
+    const MAX_WORKERS: usize = 4;
+    let workers = std::thread::available_parallelism()
+        .map_or(1, |parallelism| parallelism.get())
+        .min(MAX_WORKERS);
+    if parts.len() < MIN_PARALLEL_PARTS || workers < 2 {
+        return Ok(None);
+    }
+    // Validate all part schemas before executing any partial count. A mismatched
+    // or incomplete snapshot must never produce a plausible partial answer.
+    inspect_query_source(source)?;
+    let chunk_size = parts.len().div_ceil(workers);
+    let total = std::thread::scope(|scope| -> Result<u64, ExecutionError> {
+        let handles = parts
+            .chunks(chunk_size)
+            .map(|chunk| {
+                scope.spawn(move || -> Result<u64, ExecutionError> {
+                    let mut sum = 0u64;
+                    let mut buffer = Vec::new();
+                    for part in chunk {
+                        buffer.clear();
+                        // A single-part source avoids re-entering this parallel path.
+                        execute(query, Some(part), &mut buffer)?;
+                        let header_end =
+                            buffer
+                                .iter()
+                                .position(|&byte| byte == b'\n')
+                                .ok_or_else(|| {
+                                    ExecutionError::Invalid("malformed part COUNT header".into())
+                                })?;
+                        let value = buffer
+                            .get(header_end + 1..)
+                            .and_then(|tail| tail.strip_suffix(b"\n"))
+                            .filter(|digits| {
+                                !digits.is_empty() && digits.iter().all(u8::is_ascii_digit)
+                            })
+                            .ok_or_else(|| {
+                                ExecutionError::Invalid("malformed part COUNT value".into())
+                            })?;
+                        let count = std::str::from_utf8(value)
+                            .map_err(|_| {
+                                ExecutionError::Invalid("invalid part COUNT encoding".into())
+                            })?
+                            .parse::<u64>()
+                            .map_err(|_| ExecutionError::Invalid("part COUNT overflow".into()))?;
+                        sum = sum.checked_add(count).ok_or_else(|| {
+                            ExecutionError::Invalid("parallel COUNT overflow".into())
+                        })?;
+                    }
+                    Ok(sum)
+                })
+            })
+            .collect::<Vec<_>>();
+        let mut total = 0u64;
+        for handle in handles {
+            let partial = handle
+                .join()
+                .map_err(|_| ExecutionError::Invalid("parallel COUNT worker panicked".into()))??;
+            total = total
+                .checked_add(partial)
+                .ok_or_else(|| ExecutionError::Invalid("parallel COUNT overflow".into()))?;
+        }
+        Ok(total)
+    })?;
+    Ok(Some(total))
+}
+
 fn execute_into<W: Write>(
     query: &Select,
     part: Option<&Path>,
@@ -256,6 +339,11 @@ fn execute_into<W: Write>(
     let part = part.ok_or_else(|| {
         ExecutionError::Invalid("pass --part <directory> for table queries".into())
     })?;
+    if let Some(count) = parallel_filtered_count(query, part)? {
+        write_header(query, output, "count")?;
+        writeln!(output, "{count}")?;
+        return Ok(());
+    }
     if matches!(query.projection, Projection::GroupedAggregate { .. }) {
         return typed_aggregate::execute_grouped_aggregate(query, part, output);
     }
@@ -1095,6 +1183,7 @@ fn execute_numbers<W: Write>(
 struct AggregateState {
     function: AggregateFunction,
     value: Option<Number>,
+    max_value: Option<Number>,
     mean: f64,
     squared_deviations: f64,
     count: u64,
@@ -1106,6 +1195,7 @@ impl AggregateState {
         Self {
             function,
             value: None,
+            max_value: None,
             mean: 0.0,
             squared_deviations: 0.0,
             count: 0,
@@ -1119,7 +1209,57 @@ impl AggregateState {
             .checked_add(1)
             .ok_or_else(|| ExecutionError::Invalid("aggregate row count overflow".into()))?;
         match self.function {
-            AggregateFunction::Sum => {
+            AggregateFunction::GroupBitAnd => {
+                let combined = match (self.value, value) {
+                    (None, value @ (Number::Unsigned(_) | Number::Signed(_))) => value,
+                    (Some(Number::Unsigned(a)), Number::Unsigned(b)) => Number::Unsigned(a & b),
+                    (Some(Number::Signed(a)), Number::Signed(b)) => Number::Signed(a & b),
+                    _ => {
+                        return Err(ExecutionError::Invalid(
+                            "groupBitAnd requires integer values".into(),
+                        ));
+                    }
+                };
+                self.value = Some(combined);
+            }
+            AggregateFunction::AnyLast => {
+                self.value = Some(value);
+            }
+            AggregateFunction::Any => {
+                if self.value.is_none() {
+                    self.value = Some(value);
+                }
+            }
+            AggregateFunction::CountIf => {
+                let truthy = match value {
+                    Number::Unsigned(n) => n != 0,
+                    Number::Signed(n) => n != 0,
+                    Number::Float(n) => n != 0.0,
+                };
+                if truthy {
+                    let current = match self.value {
+                        Some(Number::Unsigned(n)) => n,
+                        _ => 0,
+                    };
+                    self.value = Some(Number::Unsigned(current + 1));
+                }
+            }
+            AggregateFunction::Sum | AggregateFunction::SumSquares => {
+                let value = if self.function == AggregateFunction::SumSquares {
+                    match value {
+                        Number::Unsigned(n) => {
+                            Number::Unsigned(n.checked_mul(n).ok_or_else(|| {
+                                ExecutionError::Invalid("unsigned SUMSQUARES overflow".into())
+                            })?)
+                        }
+                        Number::Signed(n) => Number::Signed(n.checked_mul(n).ok_or_else(|| {
+                            ExecutionError::Invalid("signed SUMSQUARES overflow".into())
+                        })?),
+                        Number::Float(n) => Number::Float(n * n),
+                    }
+                } else {
+                    value
+                };
                 let sum = match (self.value, value) {
                     (None, value) => value,
                     (Some(Number::Unsigned(a)), Number::Unsigned(b)) => {
@@ -1138,18 +1278,27 @@ impl AggregateState {
                 };
                 self.value = Some(sum);
             }
-            AggregateFunction::GroupBitAnd => {
-                let combined = match (self.value, value) {
-                    (None, value @ (Number::Unsigned(_) | Number::Signed(_))) => value,
-                    (Some(Number::Unsigned(a)), Number::Unsigned(b)) => Number::Unsigned(a & b),
-                    (Some(Number::Signed(a)), Number::Signed(b)) => Number::Signed(a & b),
+            AggregateFunction::Product => {
+                let product = match (self.value, value) {
+                    (None, value) => value,
+                    (Some(Number::Unsigned(a)), Number::Unsigned(b)) => {
+                        Number::Unsigned(a.checked_mul(b).ok_or_else(|| {
+                            ExecutionError::Invalid("unsigned PRODUCT overflow".into())
+                        })?)
+                    }
+                    (Some(Number::Signed(a)), Number::Signed(b)) => {
+                        Number::Signed(a.checked_mul(b).ok_or_else(|| {
+                            ExecutionError::Invalid("signed PRODUCT overflow".into())
+                        })?)
+                    }
+                    (Some(Number::Float(a)), Number::Float(b)) => Number::Float(a * b),
                     _ => {
                         return Err(ExecutionError::Invalid(
-                            "groupBitAnd requires integer values".into(),
+                            "incompatible types in PRODUCT".into(),
                         ));
                     }
                 };
-                self.value = Some(combined);
+                self.value = Some(product);
             }
             AggregateFunction::Avg
             | AggregateFunction::VarPop
@@ -1174,6 +1323,16 @@ impl AggregateState {
                     self.squared_deviations += difference * (numeric - self.mean);
                 }
             }
+            AggregateFunction::Rms => {
+                let numeric = match value {
+                    Number::Unsigned(n) => n as f64,
+                    Number::Signed(n) => n as f64,
+                    Number::Float(n) => n,
+                };
+                let total = next_count as f64;
+                let old_weight = (self.count as f64 / total).sqrt();
+                self.mean = (self.mean * old_weight).hypot(numeric / total.sqrt());
+            }
             AggregateFunction::Median => {
                 if self.median_values.len() >= MAX_MEDIAN_ROWS {
                     return Err(ExecutionError::Invalid(
@@ -1181,6 +1340,24 @@ impl AggregateState {
                     ));
                 }
                 self.median_values.push(value);
+            }
+            AggregateFunction::Range => {
+                let lower = self.value.map_or(value, |current| {
+                    if compare_numbers(value, current).is_lt() {
+                        value
+                    } else {
+                        current
+                    }
+                });
+                let upper = self.max_value.map_or(value, |current| {
+                    if compare_numbers(value, current).is_gt() {
+                        value
+                    } else {
+                        current
+                    }
+                });
+                self.value = Some(lower);
+                self.max_value = Some(upper);
             }
             AggregateFunction::Min | AggregateFunction::Max => {
                 let replace = self.value.is_none_or(|current| {
@@ -1201,6 +1378,11 @@ impl AggregateState {
     }
 
     fn render(&self) -> String {
+        if self.function == AggregateFunction::CountIf {
+            return self
+                .value
+                .map_or_else(|| "0".into(), |count| count.to_string());
+        }
         if self.count == 0
             || (self.count == 1
                 && matches!(
@@ -1212,6 +1394,7 @@ impl AggregateState {
         }
         match self.function {
             AggregateFunction::Avg => self.mean.to_string(),
+            AggregateFunction::Rms => self.mean.to_string(),
             AggregateFunction::VarPop => (self.squared_deviations / self.count as f64).to_string(),
             AggregateFunction::StddevPop => (self.squared_deviations / self.count as f64)
                 .sqrt()
@@ -1222,6 +1405,16 @@ impl AggregateState {
             AggregateFunction::StddevSamp => (self.squared_deviations / (self.count - 1) as f64)
                 .sqrt()
                 .to_string(),
+            AggregateFunction::Range => match (self.value, self.max_value) {
+                (Some(Number::Unsigned(low)), Some(Number::Unsigned(high))) => {
+                    (high - low).to_string()
+                }
+                (Some(Number::Signed(low)), Some(Number::Signed(high))) => {
+                    high.abs_diff(low).to_string()
+                }
+                (Some(Number::Float(low)), Some(Number::Float(high))) => (high - low).to_string(),
+                _ => unreachable!("nonempty RANGE has both extrema"),
+            },
             AggregateFunction::Median => {
                 let mut values = self.median_values.clone();
                 values.sort_unstable_by(|left, right| compare_numbers(*left, *right));
