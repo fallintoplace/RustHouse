@@ -50,6 +50,7 @@ pub(super) fn is_function(name: &str) -> bool {
         || name.eq_ignore_ascii_case("FIBONACCI")
         || name.eq_ignore_ascii_case("IN_RANGE")
         || name.eq_ignore_ascii_case("MUL_DIV")
+        || name.eq_ignore_ascii_case("WIDTH_BUCKET")
         || name.eq_ignore_ascii_case("CLAMP")
         || name.eq_ignore_ascii_case("CEIL_DIV")
         || name.eq_ignore_ascii_case("FLOOR_DIV")
@@ -411,6 +412,37 @@ fn parse_mul_div(parser: &mut Parser, depth: usize) -> Result<i64, ParseError> {
     i64::try_from(quotient).map_err(|_| overflow())
 }
 
+/// Equal-width histogram buckets for a signed range [lower, upper).
+fn parse_width_bucket(parser: &mut Parser, depth: usize) -> Result<i64, ParseError> {
+    require_token(parser, Token::LParen, "WIDTH_BUCKET requires '('")?;
+    let value = expression(parser, depth + 1)?;
+    require_token(parser, Token::Comma, "WIDTH_BUCKET requires four arguments")?;
+    let lower = expression(parser, depth + 1)?;
+    require_token(parser, Token::Comma, "WIDTH_BUCKET requires four arguments")?;
+    let upper = expression(parser, depth + 1)?;
+    require_token(parser, Token::Comma, "WIDTH_BUCKET requires four arguments")?;
+    let count = expression(parser, depth + 1)?;
+    require_token(parser, Token::RParen, "WIDTH_BUCKET requires ')'")?;
+    if lower >= upper {
+        return Err(ParseError("WIDTH_BUCKET requires min < max".into()));
+    }
+    if !(1..=1_000_000).contains(&count) {
+        return Err(ParseError(
+            "WIDTH_BUCKET bucket count must be between 1 and 1000000".into(),
+        ));
+    }
+    if value < lower {
+        return Ok(0);
+    }
+    if value >= upper {
+        return Ok(count + 1);
+    }
+    let span = i128::from(upper) - i128::from(lower);
+    let offset = i128::from(value) - i128::from(lower);
+    let bucket = offset * i128::from(count) / span + 1;
+    i64::try_from(bucket).map_err(|_| overflow())
+}
+
 fn gcd(mut left: u64, mut right: u64) -> u64 {
     while right != 0 {
         let remainder = left % right;
@@ -633,6 +665,9 @@ fn factor(parser: &mut Parser, depth: usize) -> Result<i64, ParseError> {
     }
     if parser.keyword("MUL_DIV") {
         return parse_mul_div(parser, depth);
+    }
+    if parser.keyword("WIDTH_BUCKET") {
+        return parse_width_bucket(parser, depth);
     }
     if matches!(parser.tokens.get(parser.index), Some(Token::Word(name)) if name.eq_ignore_ascii_case("GCD") || name.eq_ignore_ascii_case("LCM"))
     {
