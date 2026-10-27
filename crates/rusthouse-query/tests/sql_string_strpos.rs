@@ -16,7 +16,7 @@ fn handles_literals_unicode_nulls_and_nested_calls() {
         ("SELECT STRPOS('ééa', 'a')", 3),
         ("SELECT STRPOS('abc', 'z')", 0),
         ("SELECT STRPOS('abc', '')", 1),
-        ("SELECT STRPOS(REVERSE('abc'), 'b')", 2),
+        ("SELECT STRPOS(REPEAT('ab', 2), 'b')", 2),
     ] {
         assert_eq!(value(sql), ConstantValue::Integer(expected), "{sql}");
     }
