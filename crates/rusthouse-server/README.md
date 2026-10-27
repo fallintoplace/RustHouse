@@ -106,6 +106,17 @@ non-200 responses, and coordinator row/byte overflows instead of returning
 partial data. This is a snapshot-by-peer scan, **not** an atomic cross-shard
 snapshot, automatic partitioning, replication, or remote machine networking.
 
+Distributed grouped counts are supported when all shards contain disjoint rows:
+
+```sql
+SELECT category, count(*) FROM events WHERE id >= 10 GROUP BY category
+```
+
+The coordinator merges counts for keys shared across shards. Grouped queries
+must not include ORDER BY, LIMIT, OFFSET, HAVING or DISTINCT. The result is
+bounded by the coordinator's row/byte limits, and a capped shard is rejected
+rather than returning incomplete counts. Shard key types must agree.
+
 Distributed `SELECT count(*) FROM events` and
 `SELECT count(name) FROM events WHERE ...` are also supported. Each shard
 computes its own count; the coordinator adds counts with checked UInt64

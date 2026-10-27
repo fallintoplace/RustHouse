@@ -163,6 +163,7 @@ fn optimize_streams_tables_larger_than_mutation_rewrite_limit() {
         .map(|entry| entry.unwrap().file_name())
         .filter(|name| name.to_string_lossy().starts_with("all_"))
         .count();
-    assert_eq!(active_parts, 8);
+    // 31,500 rows now fit in one large compacted part instead of eight.
+    assert_eq!(active_parts, 1);
     fs::remove_dir_all(db).unwrap();
 }

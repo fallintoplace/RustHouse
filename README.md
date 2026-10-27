@@ -63,7 +63,7 @@ cargo run -p rusthouse-cli -- sql "INSERT INTO generated (id) SELECT number FROM
 cargo run -p rusthouse-cli -- sql "COPY events FROM '/path/to/events.csv' WITH (FORMAT CSV, HEADER TRUE)" --database ./mydb
 ```
 
-COPY FROM CSV imports local UTF-8 CSV with quoted commas, quotes, and newlines. With `HEADER TRUE`, CSV headers map fields to named table columns. Without a header, CSV fields follow table column order. Unquoted empty fields become NULL; quoted empty fields remain empty strings. CSV imports are limited to 50,000 data rows and 8 MiB. Imports above 4,096 rows publish multiple verified parts by atomically switching the active snapshot. Existing immutable parts are preserved. TSV imports stream UTF-8 records instead of buffering the entire file. They support imports larger than 50,000 rows and 8 MiB of total input, with a per-record 8 MiB bound, a bounded part buffer, and the existing 10,000-part limit. CSV and TSV bulk inserts both publish verified parts atomically.
+COPY FROM CSV imports local UTF-8 CSV with quoted commas, quotes, and newlines. With `HEADER TRUE`, CSV headers map fields to named table columns. Without a header, CSV fields follow table column order. Unquoted empty fields become NULL; quoted empty fields remain empty strings. CSV imports are limited to 50,000 data rows and 8 MiB. Large imports publish verified parts by atomically switching the active snapshot. Existing immutable parts are preserved. TSV imports stream UTF-8 records instead of buffering the entire file. They support imports larger than 50,000 rows and 8 MiB of total input, with a per-record 8 MiB bound, a bounded part buffer, and the existing 10,000-part limit. CSV and TSV bulk inserts both publish verified parts atomically.
 
 INSERT ... SELECT reads up to 50,000 rows (8 MiB of TSV output) from another table or a supported generated source and publishes the rows in one or more parts atomically. It supports named target columns and the same type checks as INSERT VALUES. A SELECT that yields no rows is a no-op. The source read and append hold a single exclusive database lock, preventing concurrent table changes during the statement. This is **not** a cross-statement transaction.
 
@@ -77,7 +77,7 @@ Use `UPDATE events SET message = 'fixed' WHERE id = 2` to replace literal values
 
 ## Reclaim active parts safely
 
-`OPTIMIZE TABLE events` rewrites a bounded local table into new immutable parts and switches its active snapshot with an atomic pointer replacement. Previous snapshots are retained for existing readers and recovery. OPTIMIZE streams rows in batches of at most 4,096 to verified immutable parts, then atomically switches the active snapshot. UPDATE and DELETE also stream copy-on-write replacements, with at most 4,096 rows buffered per part and a 4 MiB normal batch-value budget. Use only for local experiments.
+`OPTIMIZE TABLE events` rewrites a bounded local table into new immutable parts and switches its active snapshot with an atomic pointer replacement. Previous snapshots are retained for existing readers and recovery. OPTIMIZE batches up to 32,768 rows per verified immutable part (subject to a 4 MiB buffered-value budget), then atomically switches the active snapshot. UPDATE and DELETE also stream copy-on-write replacements, with at most 4,096 rows buffered per part and a 4 MiB normal batch-value budget. Use only for local experiments.
 
 ```sh
 cargo run -p rusthouse-cli -- sql "OPTIMIZE TABLE events" --database ./mydb
