@@ -1119,7 +1119,22 @@ impl AggregateState {
             .checked_add(1)
             .ok_or_else(|| ExecutionError::Invalid("aggregate row count overflow".into()))?;
         match self.function {
-            AggregateFunction::Sum => {
+            AggregateFunction::Sum | AggregateFunction::SumSquares => {
+                let value = if self.function == AggregateFunction::SumSquares {
+                    match value {
+                        Number::Unsigned(n) => {
+                            Number::Unsigned(n.checked_mul(n).ok_or_else(|| {
+                                ExecutionError::Invalid("unsigned SUMSQUARES overflow".into())
+                            })?)
+                        }
+                        Number::Signed(n) => Number::Signed(n.checked_mul(n).ok_or_else(|| {
+                            ExecutionError::Invalid("signed SUMSQUARES overflow".into())
+                        })?),
+                        Number::Float(n) => Number::Float(n * n),
+                    }
+                } else {
+                    value
+                };
                 let sum = match (self.value, value) {
                     (None, value) => value,
                     (Some(Number::Unsigned(a)), Number::Unsigned(b)) => {
