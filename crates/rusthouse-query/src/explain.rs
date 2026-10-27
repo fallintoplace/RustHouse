@@ -137,8 +137,16 @@ pub fn explain_select(query: &Select) -> String {
         steps.push(format!("Alias: {alias}"));
     }
     if let Some(having) = &query.having {
+        let aggregate = match &query.projection {
+            Projection::GroupedAggregate {
+                function,
+                value_column,
+                ..
+            } => format!("{}({value_column})", function.name()),
+            _ => "count(*)".into(),
+        };
         steps.push(format!(
-            "Having: count(*) {:?} {}",
+            "Having: {aggregate} {:?} {}",
             having.operator, having.value
         ));
     }
