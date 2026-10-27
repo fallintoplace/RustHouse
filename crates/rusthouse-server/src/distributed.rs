@@ -63,6 +63,23 @@ fn is_safe_sum(select: &Select) -> bool {
         && select.offset.is_none()
 }
 
+fn is_safe_count_if(select: &Select) -> bool {
+    matches!(
+        select.projection,
+        Projection::Aggregate {
+            function: AggregateFunction::CountIf,
+            ..
+        }
+    ) && matches!(select.source, Some(Source::Table(_)))
+        && !select.distinct
+        && select.rename.is_none()
+        && select.order_by.is_none()
+        && select.order_by_extra.is_empty()
+        && select.having.is_none()
+        && select.limit.is_none()
+        && select.offset.is_none()
+}
+
 fn integer_type(kind: &str) -> bool {
     let base = kind
         .strip_prefix("Nullable(")
@@ -591,6 +608,7 @@ pub fn handle(method: &str, body: &[u8], cluster: &Cluster, max_rows: usize) -> 
         Ok(select)
             if is_safe_scan(&select)
                 || is_safe_count(&select)
+                || is_safe_count_if(&select)
                 || is_safe_grouped_count(&select)
                 || is_safe_sum(&select) =>
         {
@@ -599,11 +617,11 @@ pub fn handle(method: &str, body: &[u8], cluster: &Cluster, max_rows: usize) -> 
         _ => {
             return Response::text(
                 "400 Bad Request",
-                "distributed queries require unordered SELECT, COUNT, integer SUM, or grouped COUNT without global clauses\n",
+                "distributed queries require unordered SELECT, COUNT, COUNTIF, integer SUM, or grouped COUNT without global clauses\n",
             );
         }
     };
-    let count_query = is_safe_count(&select);
+    let count_query = is_safe_count(&select) || is_safe_count_if(&select);
     let grouped_count_query = is_safe_grouped_count(&select);
     let sum_query = is_safe_sum(&select);
     let shard_sql = if is_safe_scan(&select) {
@@ -894,6 +912,40 @@ mod tests {
             ])
             .unwrap(),
             b"count\n320\n"
+        );
+    }
+
+    #[test]
+    fn reduces_count_if_for_disjoint_shards() {
+        assert!(is_safe_count_if(
+            &parse_select("SELECT countIf(flag) FROM events WHERE id > 0").unwrap()
+        ));
+        for sql in [
+            "SELECT countIf(flag) FROM events LIMIT 1",
+            "SELECT countIf(flag) FROM numbers(10)",
+            "SELECT countIf(flag) FROM events OFFSET 1",
+            "SELECT sum(flag) FROM events",
+        ] {
+            assert!(
+                parse_select(sql).map_or(true, |query| !is_safe_count_if(&query)),
+                "{sql}"
+            );
+        }
+        assert_eq!(
+            sum_shard_counts(&[
+                shard(1, "countIf(flag)\n2\n"),
+                shard(1, "countIf(flag)\n0\n"),
+                shard(1, "countIf(flag)\n3\n"),
+            ])
+            .unwrap(),
+            b"countIf(flag)\n5\n"
+        );
+        assert_eq!(
+            sum_shard_counts(&[
+                shard(1, "countIf(flag)\n1\n"),
+                shard(1, "countIf(other)\n2\n"),
+            ]),
+            Err(MergeError::SchemaMismatch)
         );
     }
 
