@@ -1,13 +1,13 @@
 #!/usr/bin/env python3
 """Bench a full-probe, two-table equi-join with verified output cardinality."""
 import argparse
-import json
-import math
-import statistics
-import subprocess
+import sys
 import tempfile
 import time
 from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+from common import cli_sql, emit_json, latency_summary
 
 QUERY = "SELECT f.id, d.label FROM facts f JOIN dimensions d ON f.id = d.id"
 
@@ -32,18 +32,7 @@ def write_fixture(directory, probe_rows, build_rows):
     return expected_labels
 
 def execute(binary, database, sql, timeout):
-    result = subprocess.run(
-        [str(binary), "sql", sql, "--database", str(database),
-         "--format", "tsv-no-header"],
-        stdout=subprocess.PIPE, stderr=subprocess.PIPE,
-        timeout=timeout, check=False,
-    )
-    if result.returncode:
-        raise RuntimeError(
-            f"exit {result.returncode}: "
-            + result.stderr.decode("utf-8", "replace")[:1000]
-        )
-    return result.stdout
+    return cli_sql(binary, database, sql, timeout)
 
 def verify_result(output, expected_labels):
     lines = output.splitlines()
@@ -100,8 +89,8 @@ def main(argv=None):
             if start is not None:
                 elapsed.append(time.perf_counter() - start)
             verify_result(output, expected)
-    times = sorted(elapsed)
-    median = statistics.median(times)
+    latency = latency_summary(elapsed)
+    median = latency["median_seconds"]
     report = {
         "engine": "rusthouse-cli",
         "timing_scope": "end-to-end CLI join including output encoding",
@@ -110,14 +99,11 @@ def main(argv=None):
         "expected_matches": len(expected),
         "runs": args.runs, "warmups": args.warmups,
         "median_seconds": median,
-        "p90_seconds": times[math.ceil(0.9 * len(times)) - 1],
+        "p90_seconds": latency["p90_seconds"],
         "logical_probe_rows_per_second": args.probe_rows / median,
         "samples_seconds": elapsed,
     }
-    rendered = json.dumps(report, indent=2) + "\n"
-    if args.output:
-        args.output.write_text(rendered, encoding="utf-8")
-    print(rendered, end="")
+    emit_json(report, args.output)
     return 0
 
 if __name__ == "__main__":
