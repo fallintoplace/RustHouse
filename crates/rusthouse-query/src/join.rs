@@ -455,9 +455,18 @@ pub fn explain_join(query: &JoinSelect) -> String {
                 })
                 .collect::<Vec<_>>()
                 .join(" AND ");
+            let predicate = if step.using_keys.is_empty() {
+                format!("ON {conditions}")
+            } else {
+                format!("USING ({})", step.using_keys.join(", "))
+            };
             format!(
-                "\nSource: table {} AS {}\nJoin: {:?} ON {}",
-                step.table, step.alias, step.kind, conditions
+                "\nSource: table {} AS {}\nJoin: {}{:?} {}",
+                step.table,
+                step.alias,
+                if step.any { "Any " } else { "" },
+                step.kind,
+                predicate
             )
         })
         .collect::<String>();
