@@ -121,6 +121,33 @@ impl SortedRows {
         self.push_with_extra(key, Vec::new(), values)
     }
 
+    /// A later candidate tied with the worst row loses the stable tie-break.
+    /// Only bounded heaps can prune: unbounded scans must still enforce
+    /// the maximum unsorted-input row count in push_with_extra.
+    pub(super) fn would_discard(&self, key: Number, extra_keys: &[Number]) -> bool {
+        if self.requested > MAX_SORTED_ROWS || self.rows.len() < self.requested {
+            return false;
+        }
+        let Some(worst) = self.rows.peek() else {
+            return false;
+        };
+        let primary = compare_with_direction(key, worst.key, self.descending);
+        if primary != Ordering::Equal {
+            return primary == Ordering::Greater;
+        }
+        for ((left, right), descending) in extra_keys
+            .iter()
+            .zip(&worst.extra_keys)
+            .zip(self.extra_descending.iter())
+        {
+            let comparison = compare_with_direction(*left, *right, *descending);
+            if comparison != Ordering::Equal {
+                return comparison == Ordering::Greater;
+            }
+        }
+        true
+    }
+
     pub(super) fn push_with_extra(
         &mut self,
         key: Number,
@@ -203,6 +230,31 @@ mod tests {
         let mut output = Vec::new();
         descending.write(&mut output).unwrap();
         assert_eq!(output, b"9\n9\n");
+    }
+
+    #[test]
+    fn bounded_topk_can_discard_losing_keys_and_later_ties() {
+        let mut sorted = SortedRows::new(Some(2), false);
+        sorted.set_extra_directions([true]);
+        sorted
+            .push_with_extra(Number::Unsigned(1), vec![Number::Unsigned(5)], vec![Number::Unsigned(15)])
+            .unwrap();
+        sorted
+            .push_with_extra(Number::Unsigned(1), vec![Number::Unsigned(3)], vec![Number::Unsigned(13)])
+            .unwrap();
+
+        assert!(sorted.would_discard(Number::Unsigned(2), &[Number::Unsigned(8)]));
+        assert!(sorted.would_discard(Number::Unsigned(1), &[Number::Unsigned(3)]));
+        assert!(!sorted.would_discard(Number::Unsigned(1), &[Number::Unsigned(7)]));
+        sorted
+            .push_with_extra(Number::Unsigned(1), vec![Number::Unsigned(7)], vec![Number::Unsigned(17)])
+            .unwrap();
+        let mut output = Vec::new();
+        sorted.write(&mut output).unwrap();
+        assert_eq!(output, b"17\n15\n");
+
+        let unlimited = SortedRows::new(None, false);
+        assert!(!unlimited.would_discard(Number::Unsigned(1), &[]));
     }
 
     #[test]
