@@ -32,6 +32,14 @@ fn invalid_metadata(path: &Path, reason: &'static str) -> PartError {
 
 pub fn inspect_part(path: impl AsRef<Path>) -> Result<PartMetadata, PartError> {
     let path = path.as_ref();
+    match fs::symlink_metadata(path) {
+        Ok(metadata) if !metadata.file_type().is_dir() => {
+            return Err(invalid_metadata(path, "part path must be a real directory"));
+        }
+        Ok(_) => {}
+        Err(source) if source.kind() == io::ErrorKind::NotFound => {}
+        Err(source) => return Err(io_error(path, source)),
+    }
     let rows = parse_count(&read_metadata(&path.join("count.txt"), MAX_COUNT_BYTES)?)?;
     let columns = parse_columns(&read_metadata(
         &path.join("columns.txt"),
@@ -73,6 +81,26 @@ fn parse_count(content: &str) -> Result<u64, PartError> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[cfg(unix)]
+    #[test]
+    fn refuses_symlinked_part_root() {
+        use std::os::unix::fs::symlink;
+
+        let root = std::env::temp_dir().join(format!(
+            "rusthouse-metadata-part-root-{}",
+            std::process::id()
+        ));
+        let link = root.with_extension("link");
+        fs::create_dir(&root).unwrap();
+        symlink(&root, &link).unwrap();
+        assert!(matches!(
+            inspect_part(&link),
+            Err(PartError::Io { source, .. }) if source.kind() == io::ErrorKind::InvalidData
+        ));
+        fs::remove_file(link).unwrap();
+        fs::remove_dir(root).unwrap();
+    }
 
     #[cfg(unix)]
     #[test]

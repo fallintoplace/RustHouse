@@ -1,5 +1,6 @@
 use super::{Config, LimitedWriter, Response, write_json_string};
 use rusthouse_storage::acquire_database_lock;
+use std::collections::HashSet;
 use std::fs;
 use std::io::{self, Read, Write};
 use std::path::Path;
@@ -48,13 +49,21 @@ fn valid_schema_contents(contents: &str) -> bool {
     if lines.next() != Some("rusthouse-schema-v1") {
         return false;
     }
-    let columns: Vec<_> = lines.collect();
-    !columns.is_empty()
-        && columns.len() <= 64
-        && columns.iter().all(|line| {
-            line.split_once('\t')
-                .is_some_and(|(name, data_type)| identifier(name) && !data_type.is_empty())
-        })
+    let mut names = HashSet::new();
+    let mut count = 0;
+    for line in lines {
+        count += 1;
+        if count > 64 {
+            return false;
+        }
+        let Some((name, data_type)) = line.split_once('\t') else {
+            return false;
+        };
+        if !identifier(name) || data_type.is_empty() || !names.insert(name) {
+            return false;
+        }
+    }
+    count > 0
 }
 
 fn discoverable_table(database: &Path, name: &str, schema: &Path) -> bool {
@@ -93,6 +102,17 @@ fn table_names(database: &Path) -> Result<Vec<String>, String> {
     Ok(result)
 }
 
+fn write_table_listing<W: Write>(output: &mut W, names: &[String]) -> io::Result<()> {
+    output.write_all(b"{\"tables\":[")?;
+    for (index, name) in names.iter().enumerate() {
+        if index > 0 {
+            output.write_all(b",")?;
+        }
+        write_json_string(output, name)?;
+    }
+    output.write_all(b"]}\n")
+}
+
 pub(super) fn handle(method: &str, body: &[u8], config: &Config) -> Response {
     if method != "GET" {
         return Response::text("405 Method Not Allowed", "tables endpoint requires GET\n");
@@ -118,16 +138,7 @@ pub(super) fn handle(method: &str, body: &[u8], config: &Config) -> Response {
         Err(error) => return Response::text("400 Bad Request", &format!("{error}\n")),
     };
     let mut output = LimitedWriter::new();
-    let write = (|| -> io::Result<()> {
-        output.write_all(b"{\"tables\":[")?;
-        for (index, name) in names.iter().enumerate() {
-            if index > 0 {
-                output.write_all(b",")?;
-            }
-            write_json_string(&mut output, name)?;
-        }
-        output.write_all(b"]}\n")
-    })();
+    let write = write_table_listing(&mut output, &names);
     match write {
         Ok(()) => Response {
             status: "200 OK",
@@ -156,12 +167,26 @@ mod tests {
     }
 
     #[test]
+    fn serializes_empty_and_escaped_table_lists() {
+        let mut output = Vec::new();
+        write_table_listing(&mut output, &[]).unwrap();
+        assert_eq!(output, b"{\"tables\":[]}\n");
+
+        output.clear();
+        write_table_listing(&mut output, &["a\"b".into(), "c".into()]).unwrap();
+        assert_eq!(output, b"{\"tables\":[\"a\\\"b\",\"c\"]}\n");
+    }
+
+    #[test]
     fn validates_schema_contents_independently_of_catalog_io() {
         assert!(valid_schema_contents("rusthouse-schema-v1\nid\tUInt64\n"));
         assert!(!valid_schema_contents("rusthouse-schema-v1\n"));
         assert!(!valid_schema_contents("rusthouse-schema-v1\nid\tUInt64"));
         assert!(!valid_schema_contents("wrong-version\nid\tUInt64\n"));
         assert!(!valid_schema_contents("rusthouse-schema-v1\nno-type\n"));
+        assert!(!valid_schema_contents(
+            "rusthouse-schema-v1\nid\tUInt64\nid\tString\n"
+        ));
     }
 
     #[test]

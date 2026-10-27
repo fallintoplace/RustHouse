@@ -1,55 +1,8 @@
+use crate::tsv_escape::decode_tsv_field;
 use std::borrow::Cow;
 use std::io::{self, Write};
 
 const MAX_LINE_BYTES: usize = 1024 * 1024;
-
-fn hex_digit(value: u8) -> Option<u8> {
-    match value {
-        b'0'..=b'9' => Some(value - b'0'),
-        b'a'..=b'f' => Some(value - b'a' + 10),
-        b'A'..=b'F' => Some(value - b'A' + 10),
-        _ => None,
-    }
-}
-
-fn decode_tsv_field(field: &[u8]) -> io::Result<Vec<u8>> {
-    let invalid = |message| io::Error::new(io::ErrorKind::InvalidData, message);
-    let mut output = Vec::with_capacity(field.len());
-    let mut index = 0;
-    while index < field.len() {
-        if field[index] != b'\\' {
-            output.push(field[index]);
-            index += 1;
-            continue;
-        }
-        index += 1;
-        let escaped = *field
-            .get(index)
-            .ok_or_else(|| invalid("incomplete TSV escape"))?;
-        match escaped {
-            b'\\' => output.push(b'\\'),
-            b't' => output.push(b'\t'),
-            b'n' => output.push(b'\n'),
-            b'r' => output.push(b'\r'),
-            b'0' => output.push(0),
-            b'x' => {
-                let high = *field
-                    .get(index + 1)
-                    .ok_or_else(|| invalid("short TSV hex escape"))?;
-                let low = *field
-                    .get(index + 2)
-                    .ok_or_else(|| invalid("short TSV hex escape"))?;
-                let high = hex_digit(high).ok_or_else(|| invalid("invalid TSV hex escape"))?;
-                let low = hex_digit(low).ok_or_else(|| invalid("invalid TSV hex escape"))?;
-                output.push((high << 4) | low);
-                index += 2;
-            }
-            _ => return Err(invalid("unknown TSV escape")),
-        }
-        index += 1;
-    }
-    Ok(output)
-}
 
 /// Format tab-separated SQL output one row at a time for terminal inspection.
 ///
@@ -194,6 +147,13 @@ mod tests {
         assert!(matches!(&fields[1], Cow::Owned(_)));
         assert!(matches!(&fields[2], Cow::Borrowed(_)));
         assert_eq!(fields[1].as_ref(), b"one\ttwo");
+    }
+
+    #[test]
+    fn decodes_hex_escapes_with_shared_decoder() {
+        let mut writer = VerticalWriter::new(Vec::new());
+        writer.write_all(b"value\nhello\\x20world\n").unwrap();
+        assert_eq!(writer.output, b"Row 1:\n  value: hello world\n\n");
     }
 
     #[test]

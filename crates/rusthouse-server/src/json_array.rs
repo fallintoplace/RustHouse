@@ -2,19 +2,108 @@
 use super::MAX_RESPONSE_BYTES;
 use std::io::{self, Write};
 
+fn write_indent<W: Write>(output: &mut W, depth: usize) -> io::Result<()> {
+    output.write_all(b"\n")?;
+    for _ in 0..=depth {
+        output.write_all(b"  ")?;
+    }
+    Ok(())
+}
+
+/// Pretty-print validated JSONL objects without parsing user string contents.
+fn write_pretty_row<W: Write>(output: &mut W, row: &[u8]) -> io::Result<()> {
+    let mut quoted = false;
+    let mut escaped = false;
+    let mut depth = 0usize;
+    let mut start = 0usize;
+    for (index, &byte) in row.iter().enumerate() {
+        if quoted {
+            if escaped {
+                escaped = false;
+            } else if byte == b'\\' {
+                escaped = true;
+            } else if byte == b'"' {
+                quoted = false;
+            }
+            continue;
+        }
+        match byte {
+            b'"' => quoted = true,
+            b'{' | b'[' => {
+                output.write_all(&row[start..=index])?;
+                depth += 1;
+                write_indent(output, depth)?;
+                start = index + 1;
+            }
+            b'}' | b']' => {
+                output.write_all(&row[start..index])?;
+                depth = depth.saturating_sub(1);
+                write_indent(output, depth)?;
+                output.write_all(&row[index..=index])?;
+                start = index + 1;
+            }
+            b',' => {
+                output.write_all(&row[start..=index])?;
+                write_indent(output, depth)?;
+                start = index + 1;
+            }
+            b':' => {
+                output.write_all(&row[start..=index])?;
+                output.write_all(b" ")?;
+                start = index + 1;
+            }
+            _ => {}
+        }
+    }
+    output.write_all(&row[start..])
+}
+
 pub(super) struct JsonArraySink<W: Write> {
     output: W,
     row: Vec<u8>,
     first: bool,
+    pretty: bool,
 }
 
 impl<W: Write> JsonArraySink<W> {
     pub(super) fn new(output: W) -> Self {
+        Self::with_style(output, false)
+    }
+
+    pub(super) fn new_pretty(output: W) -> Self {
+        Self::with_style(output, true)
+    }
+
+    fn with_style(output: W, pretty: bool) -> Self {
         Self {
             output,
             row: Vec::new(),
             first: true,
+            pretty,
         }
+    }
+
+    fn write_row_prefix(&mut self) -> io::Result<()> {
+        let prefix: &[u8] = match (self.first, self.pretty) {
+            (true, true) => b"[\n  ",
+            (true, false) => b"[",
+            (false, true) => b",\n  ",
+            (false, false) => b",",
+        };
+        self.output.write_all(prefix)?;
+        self.first = false;
+        Ok(())
+    }
+
+    fn append_row_fragment(&mut self, fragment: &[u8]) -> io::Result<()> {
+        if fragment.len() > MAX_RESPONSE_BYTES.saturating_sub(self.row.len()) {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                "JSON array row exceeds 8 MiB",
+            ));
+        }
+        self.row.extend_from_slice(fragment);
+        Ok(())
     }
 
     fn finish_row(&mut self) -> io::Result<()> {
@@ -24,13 +113,12 @@ impl<W: Write> JsonArraySink<W> {
                 "expected a complete JSON object",
             ));
         }
-        if self.first {
-            self.output.write_all(b"[")?;
-            self.first = false;
+        self.write_row_prefix()?;
+        if self.pretty {
+            write_pretty_row(&mut self.output, &self.row)?;
         } else {
-            self.output.write_all(b",")?;
+            self.output.write_all(&self.row)?;
         }
-        self.output.write_all(&self.row)?;
         self.row.clear();
         Ok(())
     }
@@ -44,6 +132,8 @@ impl<W: Write> JsonArraySink<W> {
         }
         if self.first {
             self.output.write_all(b"[]\n")?;
+        } else if self.pretty {
+            self.output.write_all(b"\n]\n")?;
         } else {
             self.output.write_all(b"]\n")?;
         }
@@ -61,13 +151,7 @@ impl<W: Write> Write for JsonArraySink<W> {
             } else {
                 chunk
             };
-            if fragment.len() > MAX_RESPONSE_BYTES.saturating_sub(self.row.len()) {
-                return Err(io::Error::new(
-                    io::ErrorKind::InvalidData,
-                    "JSON array row exceeds 8 MiB",
-                ));
-            }
-            self.row.extend_from_slice(fragment);
+            self.append_row_fragment(fragment)?;
             if complete {
                 self.finish_row()?;
             }
@@ -83,6 +167,22 @@ impl<W: Write> Write for JsonArraySink<W> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn pretty_json_streams_fragmented_objects_and_handles_escaped_punctuation() {
+        let mut sink = JsonArraySink::new_pretty(Vec::new());
+        sink.write_all(br#"{"text":"a,{}\\\"b"}"#).unwrap();
+        sink.write_all(b"\n").unwrap();
+        sink.write_all(b"{\"x\":null}\n").unwrap();
+        let result = String::from_utf8(sink.finish().unwrap()).unwrap();
+        assert!(result.starts_with("[\n  {\n    \"text\": "));
+        assert!(result.contains(r#"a,{}\\\"b"#));
+        assert!(result.contains(",\n  {\n    \"x\": null\n  }\n]\n"));
+        assert_eq!(
+            JsonArraySink::new_pretty(Vec::new()).finish().unwrap(),
+            b"[]\n"
+        );
+    }
 
     #[test]
     fn supports_fragmented_json_objects_without_exposing_partial_rows() {

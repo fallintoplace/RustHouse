@@ -82,7 +82,7 @@ fn write_json_row<W: Write>(output: &mut W, headers: &[Vec<u8>], line: &[u8]) ->
 
 // Keep NULL marker handling in one place for every JSONL field.
 pub(super) fn write_json_value<W: Write>(output: &mut W, value: &[u8]) -> io::Result<()> {
-    if value == b"NULL" || value == b"\\N" {
+    if value == b"\\N" {
         output.write_all(b"null")
     } else {
         if value.contains(&b'\\') {
@@ -185,7 +185,7 @@ mod tests {
             writer
                 .write_all(b"name\tamount\n\"a\"\t340282366920938463463374607431768211455\n")
                 .unwrap();
-            writer.write_all(b"missing\tNULL\n").unwrap();
+            writer.write_all(b"missing\t\\N\n").unwrap();
             writer.flush().unwrap();
         }
         assert_eq!(
@@ -252,7 +252,17 @@ mod tests {
             }
             write_json_value(&mut output, value).unwrap();
         }
-        assert_eq!(output, b"null,null,\"null\",\"NULLABLE\"");
+        assert_eq!(output, b"\"NULL\",null,\"null\",\"NULLABLE\"");
+    }
+
+    #[test]
+    fn keeps_literal_null_text_distinct_from_typed_nulls() {
+        let mut writer = JsonlWriter::new(Vec::new());
+        writer.write_all(b"value\nNULL\n\\N\n").unwrap();
+        assert_eq!(
+            writer.into_inner(),
+            b"{\"value\":\"NULL\"}\n{\"value\":null}\n"
+        );
     }
 
     #[test]

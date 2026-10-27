@@ -259,6 +259,7 @@ pub(super) fn apply_ddl(database: &Path, ddl: &Ddl) -> Result<(), String> {
     match ddl {
         Ddl::ShowTables
         | Ddl::ShowTablesLike { .. }
+        | Ddl::ShowTablesNotLike { .. }
         | Ddl::ShowCreateTable { .. }
         | Ddl::DescribeTable { .. } => {
             // Do not create a new database just to list empty tables.
@@ -369,48 +370,51 @@ pub(super) fn insert(database: &Path, insert: &Insert) -> Result<(), String> {
     with_write_lock(database, || insert_locked(database, insert))
 }
 
-/// COPY-only bulk insertion. Validate all rows before staging a new generation.
+/// Bulk insertion. Validate all rows before staging a new generation.
 /// Existing immutable parts are hard-linked and all new parts become active
 /// together when the snapshot pointer is replaced.
 pub(super) fn insert_many(database: &Path, insert: &Insert) -> Result<(), String> {
-    with_write_lock(database, || {
-        let cols = columns(database, &insert.table)?;
-        let (_, parts) = validated_parts(database, &insert.table, &cols)?;
-        let indices: Vec<usize> = match &insert.columns {
-            Some(names) => names
-                .iter()
-                .map(|name| {
-                    cols.iter()
-                        .position(|column| column.name == *name)
-                        .ok_or_else(|| format!("unknown INSERT column: {name}"))
-                })
-                .collect::<Result<Vec<_>, _>>()?,
-            None => (0..cols.len()).collect(),
-        };
-        let mut rows = Vec::with_capacity(insert.rows.len());
-        for source in &insert.rows {
-            if source.len() != indices.len() {
-                return Err("INSERT row width does not match table schema".into());
-            }
-            let mut values = vec![None; cols.len()];
-            for (value, &index) in source.iter().zip(&indices) {
-                values[index] = value.clone();
-            }
-            for (column, value) in cols.iter().zip(&values) {
-                if value.is_none() && !column.data_type.starts_with("Nullable(") {
-                    return Err(format!("missing or NULL value for {}", column.name));
-                }
-            }
-            rows.push(values);
+    with_write_lock(database, || insert_many_locked(database, insert))
+}
+
+/// The caller must already own the exclusive database write lock.
+pub(super) fn insert_many_locked(database: &Path, insert: &Insert) -> Result<(), String> {
+    let cols = columns(database, &insert.table)?;
+    let (_, parts) = validated_parts(database, &insert.table, &cols)?;
+    let indices: Vec<usize> = match &insert.columns {
+        Some(names) => names
+            .iter()
+            .map(|name| {
+                cols.iter()
+                    .position(|column| column.name == *name)
+                    .ok_or_else(|| format!("unknown INSERT column: {name}"))
+            })
+            .collect::<Result<Vec<_>, _>>()?,
+        None => (0..cols.len()).collect(),
+    };
+    let mut rows = Vec::with_capacity(insert.rows.len());
+    for source in &insert.rows {
+        if source.len() != indices.len() {
+            return Err("INSERT row width does not match table schema".into());
         }
-        if rows.is_empty() {
-            println!("Inserted 0 rows into {}", insert.table);
-            return Ok(());
+        let mut values = vec![None; cols.len()];
+        for (value, &index) in source.iter().zip(&indices) {
+            values[index] = value.clone();
         }
-        rewrite::append_parts(database, &insert.table, &cols, &parts, &rows)?;
-        println!("Inserted {} rows into {}", rows.len(), insert.table);
-        Ok(())
-    })
+        for (column, value) in cols.iter().zip(&values) {
+            if value.is_none() && !column.data_type.starts_with("Nullable(") {
+                return Err(format!("missing or NULL value for {}", column.name));
+            }
+        }
+        rows.push(values);
+    }
+    if rows.is_empty() {
+        println!("Inserted 0 rows into {}", insert.table);
+        return Ok(());
+    }
+    rewrite::append_parts(database, &insert.table, &cols, &parts, &rows)?;
+    println!("Inserted {} rows into {}", rows.len(), insert.table);
+    Ok(())
 }
 
 /// The caller must already own the exclusive database write lock.

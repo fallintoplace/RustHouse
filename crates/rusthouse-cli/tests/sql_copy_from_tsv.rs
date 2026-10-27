@@ -60,3 +60,48 @@ fn imports_tsv_with_clickhouse_nulls_and_escapes() {
     assert_eq!(ok("SELECT count(*) FROM events", &db), "count\n2\n");
     fs::remove_dir_all(db).unwrap();
 }
+
+#[test]
+fn bulk_tsv_copy_handles_50000_rows_and_keeps_snapshot_on_failure() {
+    use std::fmt::Write as _;
+
+    let db = database();
+    ok("CREATE TABLE events (id UInt64, name String)", &db);
+    ok("INSERT INTO events VALUES (90000, 'existing')", &db);
+    let input = db.join("bulk.tsv");
+    let mut tsv = String::from("id\tname\n");
+    for id in 0..50_000 {
+        writeln!(&mut tsv, "{id}\titem-{id}").unwrap();
+    }
+    fs::write(&input, &tsv).unwrap();
+    let statement = format!(
+        "COPY events FROM '{}' WITH (FORMAT TSV, HEADER TRUE)",
+        input.display()
+    );
+    ok(&statement, &db);
+    assert_eq!(ok("SELECT count(*) FROM events", &db), "count\n50001\n");
+    assert_eq!(
+        ok("SELECT name FROM events WHERE id = 49999", &db),
+        "name\nitem-49999\n"
+    );
+    let pointer = db.join("events.parts/.rusthouse-active");
+    assert_eq!(fs::read_to_string(&pointer).unwrap(), "g1\n");
+
+    // Reject an extra data row without publishing another generation.
+    tsv.push_str("50000\ttoo-many\n");
+    fs::write(&input, &tsv).unwrap();
+    assert!(!sql(&statement, &db).status.success());
+    assert_eq!(fs::read_to_string(&pointer).unwrap(), "g1\n");
+
+    // A bad value in a later part must not publish the earlier valid parts.
+    let mut invalid = String::from("id\tname\n");
+    for id in 0..5000 {
+        writeln!(&mut invalid, "{id}\tvalid").unwrap();
+    }
+    invalid.push_str("bad-id\tinvalid\n");
+    fs::write(&input, invalid).unwrap();
+    assert!(!sql(&statement, &db).status.success());
+    assert_eq!(fs::read_to_string(&pointer).unwrap(), "g1\n");
+    assert_eq!(ok("SELECT count(*) FROM events", &db), "count\n50001\n");
+    fs::remove_dir_all(db).unwrap();
+}

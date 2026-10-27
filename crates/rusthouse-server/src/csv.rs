@@ -52,7 +52,7 @@ fn write_csv_field<W: Write>(output: &mut W, field: &[u8]) -> io::Result<()> {
     let needs_quotes = value == "\\N"
         || value
             .bytes()
-            .any(|byte| matches!(byte, b',' | b'"' | b'\n' | b'\r'));
+            .any(|byte| matches!(byte, b',' | b'"' | b'\t' | b'\n' | b'\r'));
     if !needs_quotes {
         return output.write_all(value.as_bytes());
     }
@@ -123,6 +123,13 @@ mod tests {
 
         let mut csv = CsvWriter::new(Vec::new());
         assert!(csv.write_all(b"column\ninvalid\\q\n").is_err());
+    }
+
+    #[test]
+    fn quotes_decoded_tabs_as_one_csv_field() {
+        let mut writer = CsvWriter::new(Vec::new());
+        writer.write_all(b"value\nleft\\tright\n").unwrap();
+        assert_eq!(writer.output, b"value\r\n\"left\tright\"\r\n");
     }
 
     #[test]

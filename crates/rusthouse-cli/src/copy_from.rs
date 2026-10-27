@@ -6,9 +6,9 @@ use std::io::Read;
 use std::path::Path;
 
 const MAX_COPY_BYTES: usize = 8 * 1024 * 1024;
-const MAX_RECORDS: usize = 4096; // TSV data rows
 const MAX_CSV_DATA_RECORDS: usize = 50_000;
 const MAX_CSV_RECORDS: usize = MAX_CSV_DATA_RECORDS + 1;
+const MAX_TSV_RECORDS: usize = MAX_CSV_RECORDS; // includes an optional header
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum State {
@@ -27,7 +27,7 @@ fn push_field(
         return Err("CSV records support at most 64 columns".into());
     }
     let value = std::mem::take(field);
-    row.push(if !quoted && value.is_empty() {
+    row.push(if !quoted && (value.is_empty() || value == "\\N") {
         None
     } else {
         Some(value)
@@ -113,12 +113,52 @@ fn parse_csv(data: &str) -> Result<Vec<Vec<Option<String>>>, String> {
     Ok(records)
 }
 
+fn decode_tsv_cell(field: &str) -> Result<String, String> {
+    let mut decoded = Vec::new();
+    let mut chars = field.chars();
+    while let Some(ch) = chars.next() {
+        if ch != '\\' {
+            let mut bytes = [0; 4];
+            decoded.extend_from_slice(ch.encode_utf8(&mut bytes).as_bytes());
+            continue;
+        }
+        let escaped = chars.next().ok_or("TSV ends with an incomplete escape")?;
+        match escaped {
+            't' => decoded.push(b'\t'),
+            'n' => decoded.push(b'\n'),
+            'r' => decoded.push(b'\r'),
+            '0' => decoded.push(0),
+            'b' => decoded.push(8),
+            'f' => decoded.push(12),
+            'v' => decoded.push(11),
+            '\\' => decoded.push(b'\\'),
+            'x' => {
+                let high = chars
+                    .next()
+                    .and_then(|digit| digit.to_digit(16))
+                    .ok_or("invalid TSV hex escape")?;
+                let low = chars
+                    .next()
+                    .and_then(|digit| digit.to_digit(16))
+                    .ok_or("invalid TSV hex escape")?;
+                decoded.push(((high << 4) | low) as u8);
+            }
+            'N' => return Err("TSV NULL marker must occupy the whole field".into()),
+            _ => return Err(format!("unsupported TSV escape: \\{escaped}")),
+        }
+    }
+    String::from_utf8(decoded).map_err(|_| "invalid UTF-8 in TSV field".into())
+}
+
 fn parse_tsv(data: &str) -> Result<Vec<Vec<Option<String>>>, String> {
     let input = data.strip_prefix('\u{feff}').unwrap_or(data);
+    if input.ends_with('\r') {
+        return Err("TSV requires CRLF for carriage returns".into());
+    }
     let mut records = Vec::new();
     for line in input.split_terminator('\n') {
-        if records.len() > MAX_RECORDS {
-            return Err("TSV supports at most 4096 data rows".into());
+        if records.len() >= MAX_TSV_RECORDS {
+            return Err("TSV supports at most 50001 records including the header".into());
         }
         let line = line.strip_suffix('\r').unwrap_or(line);
         if line.contains('\r') {
@@ -133,28 +173,7 @@ fn parse_tsv(data: &str) -> Result<Vec<Vec<Option<String>>>, String> {
                 row.push(None);
                 continue;
             }
-            let mut decoded = String::new();
-            let mut chars = field.chars();
-            while let Some(ch) = chars.next() {
-                if ch != '\\' {
-                    decoded.push(ch);
-                    continue;
-                }
-                let escaped = chars.next().ok_or("TSV ends with an incomplete escape")?;
-                decoded.push(match escaped {
-                    't' => '\t',
-                    'n' => '\n',
-                    'r' => '\r',
-                    '0' => '\0',
-                    'b' => '\u{8}',
-                    'f' => '\u{c}',
-                    'v' => '\u{b}',
-                    '\\' => '\\',
-                    'N' => return Err("TSV NULL marker must occupy the whole field".into()),
-                    _ => return Err(format!("unsupported TSV escape: \\{escaped}")),
-                });
-            }
-            row.push(Some(decoded));
+            row.push(Some(decode_tsv_cell(field)?));
         }
         records.push(row);
     }
@@ -200,7 +219,7 @@ pub(super) fn run(database: &Path, statement: &CopyFrom) -> Result<(), String> {
     }
     let max_data_records = match statement.format {
         CopyFormat::Csv => MAX_CSV_DATA_RECORDS,
-        CopyFormat::Tsv => MAX_RECORDS,
+        CopyFormat::Tsv => MAX_CSV_DATA_RECORDS,
     };
     if records.len() > max_data_records {
         return Err(format!(
@@ -245,6 +264,15 @@ mod tests {
     }
 
     #[test]
+    fn csv_import_distinguishes_null_sentinel_and_quoted_text() {
+        let rows = parse_csv("id,value\n1,\\N\n2,\"\\N\"\n3,\n4,\"\"\n").unwrap();
+        assert_eq!(rows[1], vec![Some("1".into()), None]);
+        assert_eq!(rows[2], vec![Some("2".into()), Some("\\N".into())]);
+        assert_eq!(rows[3], vec![Some("3".into()), None]);
+        assert_eq!(rows[4], vec![Some("4".into()), Some("".into())]);
+    }
+
+    #[test]
     fn tsv_decodes_nulls_and_escaped_fields() {
         assert_eq!(
             parse_tsv("id\tname\tnote\r\n1\tAda\\tLovelace\t\\N\r\n2\tGrace\\nHopper\t\n").unwrap(),
@@ -261,8 +289,24 @@ mod tests {
     }
 
     #[test]
+    fn decodes_tsv_cells_without_row_state() {
+        assert_eq!(decode_tsv_cell("plain").unwrap(), "plain");
+        assert_eq!(decode_tsv_cell("caf\\xC3\\xA9\\t").unwrap(), "café\t");
+        assert!(decode_tsv_cell("\\N").is_err());
+    }
+
+    #[test]
+    fn imports_hex_escaped_tsv_bytes_and_validates_utf8() {
+        let rows = parse_tsv("value\ncaf\\xC3\\xA9\\x01\n").unwrap();
+        assert_eq!(rows[1][0], Some("café\u{1}".into()));
+        for invalid in ["\\xG1\n", "\\x1\n", "\\xFF\n"] {
+            assert!(parse_tsv(invalid).is_err(), "{invalid:?}");
+        }
+    }
+
+    #[test]
     fn invalid_tsv_escapes_are_rejected() {
-        for input in ["bad\\q\n", "bad\\\n", "a\\Nvalue\n", "a\rb\n"] {
+        for input in ["bad\\q\n", "bad\\\n", "a\\Nvalue\n", "a\rb\n", "a\r"] {
             assert!(parse_tsv(input).is_err(), "{input:?}");
         }
     }

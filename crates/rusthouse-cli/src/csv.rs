@@ -1,4 +1,5 @@
 use crate::tsv_escape::decode_tsv_field;
+use std::borrow::Cow;
 use std::io::{self, Write};
 
 const MAX_FIELD_BYTES: usize = 1024 * 1024;
@@ -55,12 +56,12 @@ fn write_csv_field<W: Write>(output: &mut W, field: &[u8]) -> io::Result<()> {
     if field == b"\\N" {
         return output.write_all(b"\\N");
     }
-    let decoded = if field.contains(&b'\\') {
-        Some(decode_tsv_field(field)?)
+    let decoded: Cow<'_, [u8]> = if field.contains(&b'\\') {
+        Cow::Owned(decode_tsv_field(field)?)
     } else {
-        None
+        Cow::Borrowed(field)
     };
-    let value = decoded.as_deref().unwrap_or(field);
+    let value = decoded.as_ref();
     let needs_quotes = value == b"\\N"
         || value
             .iter()
@@ -73,12 +74,10 @@ fn write_csv_field<W: Write>(output: &mut W, field: &[u8]) -> io::Result<()> {
 
 fn write_quoted_field<W: Write>(output: &mut W, field: &[u8]) -> io::Result<()> {
     output.write_all(b"\"")?;
-    let mut pieces = field.split(|byte| *byte == b'"');
-    if let Some(first) = pieces.next() {
-        output.write_all(first)?;
-    }
-    for piece in pieces {
-        output.write_all(b"\"\"")?;
+    for (index, piece) in field.split(|byte| *byte == b'"').enumerate() {
+        if index != 0 {
+            output.write_all(b"\"\"")?;
+        }
         output.write_all(piece)?;
     }
     output.write_all(b"\"")
@@ -109,6 +108,13 @@ impl<W: Write> Write for CsvWriter<W> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn doubles_adjacent_quotes_as_one_csv_field() {
+        let mut output = Vec::new();
+        write_quoted_field(&mut output, b"\"\"").unwrap();
+        assert_eq!(output, vec![b'"'; 6]);
+    }
 
     #[test]
     fn converts_split_rows_and_escapes_fields() {

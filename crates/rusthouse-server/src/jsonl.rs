@@ -1,6 +1,7 @@
 //! Convert bounded TSV query results into newline-delimited JSON objects.
 //! Numeric values remain strings to preserve Int128 and UInt128 precision.
 use super::{hex_digit, write_json_string};
+use std::borrow::Cow;
 use std::collections::HashSet;
 use std::io::{self, Write};
 
@@ -61,6 +62,16 @@ fn parse_headers(line: &[u8]) -> io::Result<Vec<String>> {
     Ok(headers)
 }
 
+fn decoded_row_field(field: &[u8]) -> io::Result<Cow<'_, str>> {
+    if field.contains(&b'\\') {
+        decode_tsv_value(field).map(Cow::Owned)
+    } else {
+        std::str::from_utf8(field)
+            .map(Cow::Borrowed)
+            .map_err(|_| invalid("JSONL field is not UTF-8"))
+    }
+}
+
 fn write_json_row<W: Write>(output: &mut W, headers: &[String], line: &[u8]) -> io::Result<()> {
     if 1 + line.iter().filter(|byte| **byte == b'\t').count() != headers.len() {
         return Err(invalid("JSONL row does not match header column count"));
@@ -79,14 +90,8 @@ fn write_json_row<W: Write>(output: &mut W, headers: &[String], line: &[u8]) -> 
         if field == b"\\N" {
             output.write_all(b"null")?;
         } else {
-            if field.contains(&b'\\') {
-                let text = decode_tsv_value(field)?;
-                write_json_string(output, &text)?;
-            } else {
-                let text =
-                    std::str::from_utf8(field).map_err(|_| invalid("JSONL field is not UTF-8"))?;
-                write_json_string(output, text)?;
-            }
+            let text = decoded_row_field(field)?;
+            write_json_string(output, &text)?;
         }
     }
     output.write_all(b"}\n")
@@ -148,6 +153,15 @@ impl<W: Write> Write for JsonlWriter<W> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn borrows_plain_fields_and_decodes_only_escaped_fields() {
+        let plain = decoded_row_field("café".as_bytes()).unwrap();
+        assert!(matches!(plain, Cow::Borrowed("café")));
+        let escaped = decoded_row_field(br"caf\xC3\xA9").unwrap();
+        assert!(matches!(escaped, Cow::Owned(ref value) if value == "café"));
+        assert!(decoded_row_field(b"\\q").is_err());
+    }
 
     #[test]
     fn batches_multiple_rows_and_fragmented_tail() {
