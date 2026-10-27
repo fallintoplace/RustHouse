@@ -1,0 +1,17 @@
+{
+  "name": "baseline-scans",
+  "queries": [
+    {
+      "name": "rows",
+      "sql": "SELECT COUNT(*) FROM events"
+    },
+    {
+      "name": "paid-count",
+      "sql": "SELECT COUNT(*) FROM events WHERE status = 'paid'"
+    },
+    {
+      "name": "gross-amount",
+      "sql": "SELECT SUM(amount) FROM events"
+    }
+  ]
+}

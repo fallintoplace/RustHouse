@@ -22,23 +22,29 @@ Q6 = (
 )
 
 
-def expected_revenue(path):
+def expected_revenue_details(path):
     total = 0
+    matched = 0
     with Path(path).open("r", encoding="utf-8", newline="") as stream:
         for row in csv.DictReader(stream, delimiter="\t"):
             if ("1994-01-01" <= row["l_shipdate"] < "1995-01-01"
                     and 500 <= int(row["l_discount"]) <= 700
                     and int(row["l_quantity"]) < 2400):
                 total += int(row["l_extendedprice"]) * int(row["l_discount"])
-    return total
+                matched += 1
+    return total, matched
+
+
+def expected_revenue(path):
+    return expected_revenue_details(path)[0]
 
 
 def run_q6(binary, database, lineitem, runs=5, warmups=1, timeout=120, execute=None):
     if runs < 1 or warmups < 0 or timeout <= 0:
         raise ValueError("invalid runs, warmups, or timeout")
-    expected = expected_revenue(lineitem)
-    # If no rows qualify SUM returns NULL; test it exactly, not a zero.
-    reference = (str(expected).encode("ascii") if expected else b"NULL") + b"\n"
+    expected, matched = expected_revenue_details(lineitem)
+    # SQL SUM returns NULL for empty inputs, not nonempty zero sums.
+    reference = (str(expected).encode("ascii") if matched else b"NULL") + b"\n"
     if execute is None:
         execute = lambda sql: cli_sql(binary, database, sql, timeout)
     result = benchmark_one(6, Q6, execute, runs, warmups, reference)
@@ -47,6 +53,7 @@ def run_q6(binary, database, lineitem, runs=5, warmups=1, timeout=120, execute=N
         "official_tpch_score": False,
         "revenue_units": "currency millionths",
         "expected_revenue_integer": expected,
+        "matched_rows": matched,
         "coverage": summarize_coverage([result]),
         "results": [result],
     }
