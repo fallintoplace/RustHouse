@@ -72,9 +72,7 @@ fn decode_html_field(field: &str, header: bool) -> io::Result<Cow<'_, str>> {
     }
     String::from_utf8(decode_tsv_field(field.as_bytes())?)
         .map(Cow::Owned)
-        .map_err(|_| {
-            io::Error::new(io::ErrorKind::InvalidData, "HTML field is not valid UTF-8")
-        })
+        .map_err(|_| io::Error::new(io::ErrorKind::InvalidData, "HTML field is not valid UTF-8"))
 }
 
 fn decode_html_fields(line: &str, header: bool) -> io::Result<Vec<Cow<'_, str>>> {
@@ -159,10 +157,22 @@ mod tests {
 
     #[test]
     fn field_decoder_borrows_plain_headers_and_null_markers() {
-        assert!(matches!(decode_html_field("plain", false).unwrap(), Cow::Borrowed(_)));
-        assert!(matches!(decode_html_field("\\N", false).unwrap(), Cow::Borrowed(_)));
-        assert!(matches!(decode_html_field("a\\tb", true).unwrap(), Cow::Borrowed(_)));
-        assert!(matches!(decode_html_field("a\\tb", false).unwrap(), Cow::Owned(_)));
+        assert!(matches!(
+            decode_html_field("plain", false).unwrap(),
+            Cow::Borrowed(_)
+        ));
+        assert!(matches!(
+            decode_html_field("\\N", false).unwrap(),
+            Cow::Borrowed(_)
+        ));
+        assert!(matches!(
+            decode_html_field("a\\tb", true).unwrap(),
+            Cow::Borrowed(_)
+        ));
+        assert!(matches!(
+            decode_html_field("a\\tb", false).unwrap(),
+            Cow::Owned(_)
+        ));
     }
 
     #[test]
