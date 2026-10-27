@@ -46,9 +46,15 @@ jobs:
     timeout-minutes: 15
     steps:
       - uses: actions/checkout@v6
-      - name: Test minimum Rust version
+      - name: Install minimum Rust toolchain
         run: |
           msrv=$(sed -n 's/^rust-version = "\([^"]*\)"/\1/p' Cargo.toml)
           test -n "$msrv"
           rustup toolchain install "$msrv" --profile minimal --no-self-update
-          cargo +"$msrv" test --workspace --locked
+          echo "RUSTUP_TOOLCHAIN=$msrv" >> "$GITHUB_ENV"
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: msrv
+          save-if: ${{ github.ref == 'refs/heads/main' }}
+      - name: Test minimum Rust version
+        run: cargo test --workspace --locked
