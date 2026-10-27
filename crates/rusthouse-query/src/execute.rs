@@ -376,6 +376,16 @@ fn execute_into<W: Write>(
                 if !batch_matches(&batch, row, &comparisons) {
                     continue;
                 }
+                let key = number_at(&batch[index], row);
+                let extra_keys = extra_sort_indices
+                    .iter()
+                    .map(|&index| number_at(&batch[index], row))
+                    .collect::<Vec<_>>();
+                // DISTINCT must still see every row, even if it would lose
+                // the Top-K heap comparison.
+                if !query.distinct && sorted.would_discard(key, &extra_keys) {
+                    continue;
+                }
                 let values: Vec<Number> = projected_indices
                     .iter()
                     .map(|projected_index| number_at(&batch[*projected_index], row))
@@ -385,11 +395,7 @@ fn execute_into<W: Write>(
                         continue;
                     }
                 }
-                let extra_keys = extra_sort_indices
-                    .iter()
-                    .map(|&index| number_at(&batch[index], row))
-                    .collect();
-                sorted.push_with_extra(number_at(&batch[index], row), extra_keys, values)?;
+                sorted.push_with_extra(key, extra_keys, values)?;
             }
         }
         return sorted.write(output);
