@@ -39,6 +39,17 @@ class RunnerTests(unittest.TestCase):
         self.assertEqual(mismatched["status"], "mismatch")
         self.assertEqual(mismatched["timings_seconds"], [])
 
+    def test_failed_late_iteration_discards_partial_samples(self):
+        calls = 0
+        def flaky(_):
+            nonlocal calls
+            calls += 1
+            return b"good\\n" if calls == 1 else b"bad\\n"
+        result = benchmark_one(6, "SELECT 1", flaky, 3, 0, b"good\\n")
+        self.assertEqual(result["status"], "mismatch")
+        self.assertEqual(result["timings_seconds"], [])
+        self.assertIsNone(result["latency"])
+
     def test_error_and_timeout(self):
         def broken(_):
             raise RuntimeError("unsupported statement")
