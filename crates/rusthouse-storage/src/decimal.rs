@@ -85,6 +85,13 @@ fn decimal_storage_type(precision: u8) -> &'static str {
     }
 }
 
+fn parse_decimal_component(value: &str) -> Option<u8> {
+    if value.is_empty() || !value.bytes().all(|byte| byte.is_ascii_digit()) {
+        return None;
+    }
+    value.parse::<u8>().ok()
+}
+
 fn parse_sized_decimal(data_type: &str) -> Option<(u8, u8, &'static str)> {
     let (width, arguments) = data_type.strip_prefix("Decimal")?.split_once('(')?;
     let (precision, storage) = match width {
@@ -93,7 +100,7 @@ fn parse_sized_decimal(data_type: &str) -> Option<(u8, u8, &'static str)> {
         "128" => (38, "Int128"),
         _ => return None,
     };
-    let scale = arguments.strip_suffix(')')?.parse::<u8>().ok()?;
+    let scale = parse_decimal_component(arguments.strip_suffix(')')?)?;
     (scale <= precision).then_some((precision, scale, storage))
 }
 
@@ -102,8 +109,8 @@ fn parse_general_decimal(inner: &str) -> Option<(u8, u8, &'static str)> {
         Some((precision, scale)) => (precision.trim(), scale.trim()),
         None => (inner.trim(), "0"),
     };
-    let precision = precision.parse::<u8>().ok()?;
-    let scale = scale.parse::<u8>().ok()?;
+    let precision = parse_decimal_component(precision)?;
+    let scale = parse_decimal_component(scale)?;
     if precision == 0 || precision > 38 || scale > precision {
         return None;
     }
@@ -220,6 +227,10 @@ mod tests {
         for data_type in [
             "Decimal32",
             "Decimal32(-1)",
+            "Decimal32(+1)",
+            "Decimal64(+4)",
+            "Decimal(+9, 1)",
+            "Decimal(9, +1)",
             "Decimal32(10)",
             "Decimal64(19)",
             "Decimal128(39)",
