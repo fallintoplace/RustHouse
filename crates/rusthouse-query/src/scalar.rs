@@ -69,6 +69,7 @@ pub(super) fn is_function(name: &str) -> bool {
         || name.eq_ignore_ascii_case("BITTEST")
         || name.eq_ignore_ascii_case("ISQRT")
         || name.eq_ignore_ascii_case("FACTORIAL")
+        || name.eq_ignore_ascii_case("INTLOG")
         || name.eq_ignore_ascii_case("INTLOG2")
         || name.eq_ignore_ascii_case("ROUND_TO_MULTIPLE")
         || name.eq_ignore_ascii_case("PMOD")
@@ -515,6 +516,25 @@ fn parse_pow10(parser: &mut Parser, depth: usize) -> Result<i64, ParseError> {
 }
 
 /// Compute the triangular number with a wide intermediate product.
+/// Integer floor(log_base(value)), without floating-point precision loss.
+fn parse_intlog(parser: &mut Parser, depth: usize) -> Result<i64, ParseError> {
+    require_token(parser, Token::LParen, "INTLOG requires '('")?;
+    let value = expression(parser, depth + 1)?;
+    require_token(parser, Token::Comma, "INTLOG requires two arguments")?;
+    let base = expression(parser, depth + 1)?;
+    require_token(parser, Token::RParen, "INTLOG requires ')'")?;
+    if value <= 0 || base < 2 {
+        return Err(ParseError("INTLOG requires value > 0 and base >= 2".into()));
+    }
+    let mut current = value;
+    let mut exponent = 0_i64;
+    while current >= base {
+        current /= base;
+        exponent += 1;
+    }
+    Ok(exponent)
+}
+
 fn parse_triangular(parser: &mut Parser, depth: usize) -> Result<i64, ParseError> {
     require_token(parser, Token::LParen, "TRIANGULAR requires '('")?;
     let value = expression(parser, depth + 1)?;
@@ -837,6 +857,9 @@ fn factor(parser: &mut Parser, depth: usize) -> Result<i64, ParseError> {
     if matches!(parser.tokens.get(parser.index), Some(Token::Word(name)) if name.eq_ignore_ascii_case("GCD") || name.eq_ignore_ascii_case("LCM"))
     {
         return parse_gcd_lcm(parser, depth);
+    }
+    if parser.keyword("INTLOG") {
+        return parse_intlog(parser, depth);
     }
     if parser.keyword("DIGIT_COUNT") {
         return parse_digit_count(parser, depth);
