@@ -13,6 +13,9 @@ pub enum Ddl {
     ShowTablesLike {
         pattern: String,
     },
+    ShowTablesNotLike {
+        pattern: String,
+    },
     ShowCreateTable {
         name: String,
     },
@@ -179,7 +182,11 @@ pub fn parse_ddl(sql: &str) -> Result<Option<Ddl>, ParseError> {
     }
     if parser.keyword("SHOW") {
         let statement = if parser.keyword("TABLES") {
-            if parser.keyword("LIKE") {
+            let negated = parser.keyword("NOT");
+            if negated && !parser.keyword("LIKE") {
+                return Err(ParseError("SHOW TABLES NOT requires LIKE".into()));
+            }
+            if negated || parser.keyword("LIKE") {
                 let pattern = match parser.tokens.get(parser.index) {
                     Some(Token::String(pattern)) => pattern.clone(),
                     _ => {
@@ -194,7 +201,11 @@ pub fn parse_ddl(sql: &str) -> Result<Option<Ddl>, ParseError> {
                     ));
                 }
                 parser.index += 1;
-                Ddl::ShowTablesLike { pattern }
+                if negated {
+                    Ddl::ShowTablesNotLike { pattern }
+                } else {
+                    Ddl::ShowTablesLike { pattern }
+                }
             } else {
                 Ddl::ShowTables
             }
@@ -349,6 +360,31 @@ pub fn parse_ddl(sql: &str) -> Result<Option<Ddl>, ParseError> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn parses_show_tables_not_like_and_rejects_invalid_forms() {
+        assert_eq!(
+            parse_ddl(r"SHOW TABLES NOT LIKE 'logs\_%'").unwrap(),
+            Some(Ddl::ShowTablesNotLike {
+                pattern: r"logs\_%".into(),
+            })
+        );
+        assert_eq!(
+            parse_ddl("show tables not like '%'").unwrap(),
+            Some(Ddl::ShowTablesNotLike {
+                pattern: "%".into(),
+            })
+        );
+        for sql in [
+            "SHOW TABLES NOT",
+            "SHOW TABLES NOT 'x'",
+            "SHOW TABLES NOT LIKE",
+            "SHOW TABLES NOT LIKE 2",
+            "SHOW TABLES NOT LIKE '%' extra",
+        ] {
+            assert!(parse_ddl(sql).is_err(), "{sql}");
+        }
+    }
 
     #[test]
     fn parses_show_tables_like_patterns() {

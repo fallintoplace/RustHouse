@@ -19,8 +19,9 @@ fn sync_catalog_dir(catalog: &Path) -> Result<(), String> {
 
 pub(super) fn apply(catalog: &Path, ddl: &Ddl) -> Result<(), String> {
     match ddl {
-        Ddl::ShowTables => show_tables(catalog, None),
-        Ddl::ShowTablesLike { pattern } => show_tables(catalog, Some(pattern)),
+        Ddl::ShowTables => show_tables(catalog, None, false),
+        Ddl::ShowTablesLike { pattern } => show_tables(catalog, Some(pattern), false),
+        Ddl::ShowTablesNotLike { pattern } => show_tables(catalog, Some(pattern), true),
         Ddl::ShowCreateTable { name } => show_create_table(catalog, name),
         Ddl::DescribeTable { name } => describe_table(catalog, name),
         Ddl::CreateTable {
@@ -108,7 +109,7 @@ fn table_matches_like(name: &str, pattern: &str) -> bool {
     states[name.len()]
 }
 
-fn show_tables(catalog: &Path, pattern: Option<&str>) -> Result<(), String> {
+fn show_tables(catalog: &Path, pattern: Option<&str>, negated: bool) -> Result<(), String> {
     let entries = match fs::read_dir(catalog) {
         Ok(entries) => entries,
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
@@ -147,7 +148,7 @@ fn show_tables(catalog: &Path, pattern: Option<&str>) -> Result<(), String> {
         {
             continue;
         }
-        if pattern.is_none_or(|pattern| table_matches_like(name, pattern)) {
+        if pattern.is_none_or(|pattern| table_matches_like(name, pattern) != negated) {
             names.push(name.to_owned());
         }
     }
