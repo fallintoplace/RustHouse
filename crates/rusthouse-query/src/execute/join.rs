@@ -167,6 +167,12 @@ fn add_pair(pairs: &mut Vec<Pair>, pair: Pair) -> Result<(), ExecutionError> {
     Ok(())
 }
 
+#[derive(Clone, Copy)]
+struct ProbeOptions {
+    materialize_rows: bool,
+    null_filter: Option<(usize, bool)>,
+}
+
 /// Scan the probe side without retaining its rows or joined result pairs.
 fn probe_inner<F>(
     left_path: &Path,
@@ -174,8 +180,7 @@ fn probe_inner<F>(
     left_keys: &[usize],
     right_rows: &[Vec<typed::Cell>],
     hash: &HashMap<Vec<typed::Key>, Vec<usize>>,
-    materialize_rows: bool,
-    null_filter: Option<(usize, bool)>,
+    options: ProbeOptions,
     mut emit: F,
 ) -> Result<usize, ExecutionError>
 where
@@ -189,7 +194,7 @@ where
                 if let Some(right_indices) = hash.get(&key) {
                     // The preflight pass only counts matches. In the output pass,
                     // build the left projection once per matching row.
-                    let left_row = if materialize_rows {
+                    let left_row = if options.materialize_rows {
                         batch
                             .iter()
                             .map(|column| typed::cell(column, index))
@@ -198,7 +203,7 @@ where
                         Vec::new()
                     };
                     for &right_index in right_indices {
-                        if let Some((column, not_null)) = null_filter {
+                        if let Some((column, not_null)) = options.null_filter {
                             let is_null = if column < left_names.len() {
                                 matches!(typed::cell(&batch[column], index), typed::Cell::Null)
                             } else {
@@ -273,8 +278,10 @@ fn execute_streaming_inner<W: Write>(
         left_keys,
         &right_rows,
         &hash,
-        false,
-        null_filter,
+        ProbeOptions {
+            materialize_rows: false,
+            null_filter,
+        },
         |_, _| Ok(()),
     )?;
 
@@ -296,8 +303,10 @@ fn execute_streaming_inner<W: Write>(
         left_keys,
         &right_rows,
         &hash,
-        true,
-        null_filter,
+        ProbeOptions {
+            materialize_rows: true,
+            null_filter,
+        },
         |left, right| {
             if position >= query.offset && position < end {
                 for (index, (column, _, _)) in selected.iter().enumerate() {
