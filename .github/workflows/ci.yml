@@ -56,5 +56,6 @@ jobs:
         with:
           key: msrv
           save-if: ${{ github.ref == 'refs/heads/main' }}
+          cache-on-failure: true
       - name: Test minimum Rust version
         run: cargo test --workspace --locked
