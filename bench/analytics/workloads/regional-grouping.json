@@ -1,0 +1,14 @@
+{
+  "name": "regional-grouping",
+  "description": "Measure grouped event counts and filtered regional segmentation",
+  "queries": [
+    {
+      "name": "region-counts",
+      "sql": "SELECT region, COUNT(*) FROM events GROUP BY region ORDER BY region"
+    },
+    {
+      "name": "paid-region-counts",
+      "sql": "SELECT region, COUNT(*) FROM events WHERE status = 'paid' GROUP BY region ORDER BY region"
+    }
+  ]
+}
