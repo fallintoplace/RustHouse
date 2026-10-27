@@ -173,9 +173,7 @@ fn parse_binomial(parser: &mut Parser, depth: usize) -> Result<i64, ParseError> 
     let k = expression(parser, depth + 1)?;
     require_token(parser, Token::RParen, "BINOMIAL requires ')'")?;
     if !(0..=66).contains(&n) || k < 0 || k > n {
-        return Err(ParseError(
-            "BINOMIAL requires 0 <= k <= n <= 66".into(),
-        ));
+        return Err(ParseError("BINOMIAL requires 0 <= k <= n <= 66".into()));
     }
     let k = k.min(n - k);
     let mut result = 1_i128;
