@@ -7,6 +7,7 @@ pub enum ScalarExpr {
     Integer(i64),
     Add(Box<ScalarExpr>, Box<ScalarExpr>),
     Subtract(Box<ScalarExpr>, Box<ScalarExpr>),
+    Multiply(Box<ScalarExpr>, Box<ScalarExpr>),
 }
 
 impl ScalarExpr {
@@ -18,7 +19,9 @@ impl ScalarExpr {
                 }
             }
             Self::Integer(_) => {}
-            Self::Add(left, right) | Self::Subtract(left, right) => {
+            Self::Add(left, right)
+            | Self::Subtract(left, right)
+            | Self::Multiply(left, right) => {
                 left.referenced_columns(out);
                 right.referenced_columns(out);
             }
@@ -50,8 +53,16 @@ fn primary(parser: &mut Parser) -> Result<ScalarExpr, ParseError> {
     }
 }
 
-pub(crate) fn parse_expression_tokens(parser: &mut Parser) -> Result<ScalarExpr, ParseError> {
+fn product(parser: &mut Parser) -> Result<ScalarExpr, ParseError> {
     let mut expr = primary(parser)?;
+    while parser.take(Token::Star) {
+        expr = ScalarExpr::Multiply(Box::new(expr), Box::new(primary(parser)?));
+    }
+    Ok(expr)
+}
+
+pub(crate) fn parse_expression_tokens(parser: &mut Parser) -> Result<ScalarExpr, ParseError> {
+    let mut expr = product(parser)?;
     loop {
         let addition = if parser.take(Token::Plus) {
             true
@@ -60,7 +71,7 @@ pub(crate) fn parse_expression_tokens(parser: &mut Parser) -> Result<ScalarExpr,
         } else {
             break;
         };
-        let right = primary(parser)?;
+        let right = product(parser)?;
         expr = if addition {
             ScalarExpr::Add(Box::new(expr), Box::new(right))
         } else {
@@ -110,6 +121,24 @@ mod tests {
         let mut columns = Vec::new();
         expr.referenced_columns(&mut columns);
         assert_eq!(columns, ["width"]);
+    }
+
+    #[test]
+    fn multiplication_precedes_addition() {
+        assert_eq!(
+            parse_scalar_expression("width + 2 * 3").unwrap(),
+            ScalarExpr::Add(
+                Box::new(ScalarExpr::Column("width".into())),
+                Box::new(ScalarExpr::Multiply(
+                    Box::new(ScalarExpr::Integer(2)),
+                    Box::new(ScalarExpr::Integer(3)),
+                )),
+            )
+        );
+        assert!(matches!(
+            parse_scalar_expression("(width + 2) * 3").unwrap(),
+            ScalarExpr::Multiply(..)
+        ));
     }
 
     #[test]
