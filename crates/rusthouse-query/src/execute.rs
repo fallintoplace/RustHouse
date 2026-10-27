@@ -8,6 +8,7 @@ use std::fmt;
 use std::io::{self, BufWriter, Write};
 use std::path::Path;
 
+mod grouped_distinct;
 mod grouped_multi;
 mod grouped_numeric_multi;
 mod join;
@@ -351,6 +352,13 @@ fn execute_into<W: Write>(
     if let Projection::GroupedMultiCount { columns } = &query.projection {
         return grouped_multi::execute(query, part, columns, output);
     }
+    if let Projection::GroupedDistinctCount {
+        column,
+        value_column,
+    } = &query.projection
+    {
+        return grouped_distinct::execute(query, part, column, value_column, output);
+    }
     if let Projection::StringLength { column } = &query.projection {
         return string_length::execute(query, part, column, output);
     }
@@ -406,6 +414,7 @@ fn execute_into<W: Write>(
         | Projection::CountColumn { .. }
         | Projection::CountDistinct { .. }
         | Projection::GroupedCount { .. }
+        | Projection::GroupedDistinctCount { .. }
         | Projection::GroupedMultiCount { .. }
         | Projection::GroupedAggregate { .. }
         | Projection::GroupedAggregates { .. }
@@ -1004,7 +1013,9 @@ fn execute_numbers<W: Write>(
     }
     if matches!(
         query.projection,
-        Projection::MultipleAggregates(_) | Projection::GroupedAggregates { .. }
+        Projection::MultipleAggregates(_)
+            | Projection::GroupedAggregates { .. }
+            | Projection::GroupedDistinctCount { .. }
     ) {
         return Err(ExecutionError::Invalid(
             "multiple aggregates require a stored table".into(),
@@ -1089,6 +1100,7 @@ fn execute_numbers<W: Write>(
         | Projection::CountColumn { .. }
         | Projection::CountDistinct { .. }
         | Projection::GroupedCount { .. }
+        | Projection::GroupedDistinctCount { .. }
         | Projection::GroupedMultiCount { .. }
         | Projection::GroupedAggregate { .. }
         | Projection::GroupedAggregates { .. }
