@@ -326,6 +326,8 @@ fn like_matches_wildcards(value: &[u8], pattern: &[LikeToken], case_insensitive:
 enum Test {
     Compare(Operator, Cell),
     In(Vec<Cell>, bool),
+    TextInSet(HashSet<Vec<u8>>, bool),
+    NumericInSet(HashSet<NumberKey>, bool),
     NotBetween(Cell, Cell),
     IsNull(bool),
     Like {
@@ -338,6 +340,31 @@ enum Test {
 pub(super) struct Condition {
     index: usize,
     test: Test,
+}
+
+const HASHED_TYPED_IN_MIN_VALUES: usize = 16;
+
+fn compile_in(kind: &str, values: &[String], negated: bool) -> Result<Test, ExecutionError> {
+    let targets = parse_literals(kind, values)?;
+    if targets.len() < HASHED_TYPED_IN_MIN_VALUES || base_type(kind) == "UUID" {
+        return Ok(Test::In(targets, negated));
+    }
+    if base_type(kind) == "String" {
+        return Ok(Test::TextInSet(
+            targets.into_iter().filter_map(|cell| match cell {
+                Cell::Text(value) => Some(value),
+                _ => None,
+            }).collect(),
+            negated,
+        ));
+    }
+    Ok(Test::NumericInSet(
+        targets.into_iter().filter_map(|cell| match cell {
+            Cell::Numeric(value) => Some(NumberKey::from(value)),
+            _ => None,
+        }).collect(),
+        negated,
+    ))
 }
 
 pub(super) fn compile(
@@ -359,8 +386,8 @@ pub(super) fn compile(
                 Predicate::Comparison {
                     operator, value, ..
                 } => Test::Compare(*operator, parse_literal(kind, value)?),
-                Predicate::In { values, .. } => Test::In(parse_literals(kind, values)?, false),
-                Predicate::NotIn { values, .. } => Test::In(parse_literals(kind, values)?, true),
+                Predicate::In { values, .. } => compile_in(kind, values, false)?,
+                Predicate::NotIn { values, .. } => compile_in(kind, values, true)?,
                 Predicate::NotBetween { lower, upper, .. } => {
                     Test::NotBetween(parse_literal(kind, lower)?, parse_literal(kind, upper)?)
                 }
@@ -547,6 +574,26 @@ pub(super) fn passes(batch: &[TypedColumn], row: usize, branches: &[Vec<Conditio
                 }
                 Test::In(targets, negated) => {
                     matches_in_at(column, row, targets, *negated)
+                }
+                Test::TextInSet(targets, negated) => {
+                    let value = match column {
+                        TypedColumn::Text(values) => values.get(row),
+                        TypedColumn::NullableText { values, nulls } if nulls[row] == 0 => {
+                            values.get(row)
+                        }
+                        _ => None,
+                    };
+                    value.is_some_and(|bytes| targets.contains(bytes) != *negated)
+                }
+                Test::NumericInSet(targets, negated) => {
+                    match cell(column, row) {
+                        Cell::Numeric(value) => {
+                            let found = !matches!(value, Number::Float(n) if n.is_nan())
+                                && targets.contains(&NumberKey::from(value));
+                            found != *negated
+                        }
+                        _ => false,
+                    }
                 }
                 Test::NotBetween(lower, upper) => {
                     let value = cell(column, row);
@@ -1215,6 +1262,42 @@ mod like_tests {
         assert!(!matches_in_at(&column, 1, &targets, true));
         assert!(!matches_in_at(&column, 2, &targets, false));
         assert!(matches_in_at(&column, 2, &targets, true));
+    }
+
+    #[test]
+    fn hashes_long_in_lists_without_changing_nullable_semantics() {
+        use super::{compile_in, Test};
+        let words = (0..32).map(|i| format!("word{i}")).collect::<Vec<_>>();
+        let text_test = compile_in("String", &words, false).unwrap();
+        assert!(matches!(text_test, Test::TextInSet(_, false)));
+        let not_text_test = compile_in("String", &words, true).unwrap();
+        let mut input: &[u8] = b"\x05word7\x05other\x05word0";
+        let strings = read_legacy_strings(&mut input, 3).unwrap();
+        let col = TypedColumn::NullableText {
+            values: strings,
+            nulls: vec![0, 0, 1],
+        };
+        let batch = vec![col];
+        let positive = vec![vec![Condition { index: 0, test: text_test }]];
+        let negative = vec![vec![Condition { index: 0, test: not_text_test }]];
+        assert!(passes(&batch, 0, &positive));
+        assert!(!passes(&batch, 1, &positive));
+        assert!(!passes(&batch, 2, &positive));
+        assert!(!passes(&batch, 0, &negative));
+        assert!(passes(&batch, 1, &negative));
+        assert!(!passes(&batch, 2, &negative));
+
+        let numbers = (0..32).map(|i| i.to_string()).collect::<Vec<_>>();
+        let in_test = compile_in("UInt64", &numbers, false).unwrap();
+        assert!(matches!(in_test, Test::NumericInSet(_, false)));
+        let numeric = vec![TypedColumn::NullableNumeric {
+            values: NumericColumn::UInt64(vec![7, 33, 0]),
+            nulls: vec![0, 0, 1],
+        }];
+        let branch = vec![vec![Condition { index: 0, test: in_test }]];
+        assert!(passes(&numeric, 0, &branch));
+        assert!(!passes(&numeric, 1, &branch));
+        assert!(!passes(&numeric, 2, &branch));
     }
 
     #[test]
