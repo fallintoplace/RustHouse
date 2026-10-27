@@ -23,6 +23,7 @@ pub(super) fn is_function(name: &str) -> bool {
             | "RIGHT"
             | "ENDS_WITH"
             | "REPEAT"
+            | "RPAD"
     )
 }
 
@@ -325,6 +326,39 @@ fn parse_at_depth(parser: &mut Parser, depth: usize) -> Result<ConstantValue, Pa
                     let count = usize::try_from(count).unwrap_or(usize::MAX);
                     let skip = value.chars().count().saturating_sub(count);
                     ConstantValue::Text(value.chars().skip(skip).collect())
+                }
+                _ => ConstantValue::Null,
+            }
+        }
+        "RPAD" => {
+            let input = text_arg(parser, depth + 1)?;
+            require(parser, Token::Comma, "RPAD requires a width")?;
+            let width = integer_arg(parser, depth + 1)?;
+            require(parser, Token::Comma, "RPAD requires padding text")?;
+            let padding = text_arg(parser, depth + 1)?;
+            require(parser, Token::RParen, "expected ')' after RPAD arguments")?;
+            match (input, width, padding) {
+                (Some(input), Some(width), Some(padding)) => {
+                    let width = usize::try_from(width)
+                        .map_err(|_| ParseError("RPAD width must be nonnegative".into()))?;
+                    if width > MAX_TEXT_BYTES {
+                        return Err(ParseError("RPAD result is too large".into()));
+                    }
+                    let mut result: String = input.chars().take(width).collect();
+                    if result.len() > MAX_TEXT_BYTES {
+                        return Err(ParseError("RPAD result is too large".into()));
+                    }
+                    let missing = width - result.chars().count();
+                    if missing > 0 && padding.is_empty() {
+                        return Err(ParseError("RPAD padding cannot be empty".into()));
+                    }
+                    for character in padding.chars().cycle().take(missing) {
+                        if result.len() + character.len_utf8() > MAX_TEXT_BYTES {
+                            return Err(ParseError("RPAD result is too large".into()));
+                        }
+                        result.push(character);
+                    }
+                    ConstantValue::Text(result)
                 }
                 _ => ConstantValue::Null,
             }
