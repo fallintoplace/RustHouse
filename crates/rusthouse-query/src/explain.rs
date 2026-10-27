@@ -59,7 +59,11 @@ fn describe_projection(projection: &Projection) -> String {
         Projection::MultipleAggregates(items) => {
             format!(
                 "Aggregate: {}",
-                items.iter().map(AggregateItem::header).collect::<Vec<_>>().join(", ")
+                items
+                    .iter()
+                    .map(AggregateItem::header)
+                    .collect::<Vec<_>>()
+                    .join(", ")
             )
         }
     }
