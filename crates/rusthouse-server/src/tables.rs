@@ -102,6 +102,17 @@ fn table_names(database: &Path) -> Result<Vec<String>, String> {
     Ok(result)
 }
 
+fn write_table_listing<W: Write>(output: &mut W, names: &[String]) -> io::Result<()> {
+    output.write_all(b"{\"tables\":[")?;
+    for (index, name) in names.iter().enumerate() {
+        if index > 0 {
+            output.write_all(b",")?;
+        }
+        write_json_string(output, name)?;
+    }
+    output.write_all(b"]}\n")
+}
+
 pub(super) fn handle(method: &str, body: &[u8], config: &Config) -> Response {
     if method != "GET" {
         return Response::text("405 Method Not Allowed", "tables endpoint requires GET\n");
@@ -127,16 +138,7 @@ pub(super) fn handle(method: &str, body: &[u8], config: &Config) -> Response {
         Err(error) => return Response::text("400 Bad Request", &format!("{error}\n")),
     };
     let mut output = LimitedWriter::new();
-    let write = (|| -> io::Result<()> {
-        output.write_all(b"{\"tables\":[")?;
-        for (index, name) in names.iter().enumerate() {
-            if index > 0 {
-                output.write_all(b",")?;
-            }
-            write_json_string(&mut output, name)?;
-        }
-        output.write_all(b"]}\n")
-    })();
+    let write = write_table_listing(&mut output, &names);
     match write {
         Ok(()) => Response {
             status: "200 OK",
@@ -162,6 +164,17 @@ mod tests {
         ));
         fs::create_dir_all(&db).unwrap();
         db
+    }
+
+    #[test]
+    fn serializes_empty_and_escaped_table_lists() {
+        let mut output = Vec::new();
+        write_table_listing(&mut output, &[]).unwrap();
+        assert_eq!(output, b"{\"tables\":[]}\n");
+
+        output.clear();
+        write_table_listing(&mut output, &["a\"b".into(), "c".into()]).unwrap();
+        assert_eq!(output, b"{\"tables\":[\"a\\\"b\",\"c\"]}\n");
     }
 
     #[test]
