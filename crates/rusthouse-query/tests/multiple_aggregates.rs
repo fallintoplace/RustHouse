@@ -65,5 +65,19 @@ fn computes_multiple_aggregates_in_one_filtered_scan() {
         run("SELECT sum(width * 2), avg((width + 2) * 2) FROM part"),
         "sum(width * 2)\tavg((width + 2) * 2)\n120\t44\n"
     );
+    // ClickBench-style wide projection: every expression reuses the same input column.
+    let expressions = (0..90)
+        .map(|offset| format!("sum(width + {offset})"))
+        .collect::<Vec<_>>();
+    let expected = (0..90)
+        .map(|offset| (60 + 3 * offset).to_string())
+        .collect::<Vec<_>>()
+        .join("\t");
+    let query = format!("SELECT {} FROM part", expressions.join(", "));
+    assert_eq!(
+        run(&query),
+        format!("{}\n{expected}\n", expressions.join("\t"))
+    );
+
     fs::remove_dir_all(part).unwrap();
 }
