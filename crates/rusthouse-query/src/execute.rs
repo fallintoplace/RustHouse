@@ -849,12 +849,7 @@ fn execute_aggregate_numbers<W: Write>(
                     AggregateFunction::Sum => ((first + last) * u128::from(rows) / 2).to_string(),
                     AggregateFunction::Min => first.to_string(),
                     AggregateFunction::Max => last.to_string(),
-                    AggregateFunction::Avg
-                    | AggregateFunction::VarPop
-                    | AggregateFunction::StddevPop
-                    | AggregateFunction::VarSamp
-                    | AggregateFunction::StddevSamp
-                    | AggregateFunction::Median => unreachable!(),
+                    _ => unreachable!(),
                 }
             };
             writeln!(output, "{result}")?;
@@ -1166,6 +1161,20 @@ impl AggregateState {
                     self.squared_deviations += difference * (numeric - self.mean);
                 }
             }
+            AggregateFunction::CountIf => {
+                let truthy = match value {
+                    Number::Unsigned(n) => n != 0,
+                    Number::Signed(n) => n != 0,
+                    Number::Float(n) => n != 0.0,
+                };
+                if truthy {
+                    let current = match self.value {
+                        Some(Number::Unsigned(n)) => n,
+                        _ => 0,
+                    };
+                    self.value = Some(Number::Unsigned(current + 1));
+                }
+            }
             AggregateFunction::Median => {
                 if self.median_values.len() >= MAX_MEDIAN_ROWS {
                     return Err(ExecutionError::Invalid(
@@ -1193,6 +1202,9 @@ impl AggregateState {
     }
 
     fn render(&self) -> String {
+        if self.function == AggregateFunction::CountIf {
+            return self.value.map_or_else(|| "0".into(), |count| count.to_string());
+        }
         if self.count == 0
             || (self.count == 1
                 && matches!(
