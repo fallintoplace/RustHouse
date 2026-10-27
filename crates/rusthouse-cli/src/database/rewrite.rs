@@ -308,37 +308,37 @@ pub(super) fn rewrite_rows(
         .iter()
         .map(|column| column.name.clone())
         .collect::<Vec<_>>();
-    let mut reader =
-        TypedQueryReader::open(&source, &names).map_err(|error| error.to_string())?;
+    let mut reader = TypedQueryReader::open(&source, &names).map_err(|error| error.to_string())?;
     let mut scanned = 0usize;
     let mut retained = 0usize;
     publish_snapshot_with(database, table, |staging| {
         let mut buffer: StoredRows = Vec::with_capacity(PART_ROWS);
         let mut buffered_bytes = 0usize;
         let mut part_number = 0u64;
-        let mut flush =
-            |rows: &mut StoredRows, bytes: &mut usize| -> Result<(), String> {
-                if rows.is_empty() {
-                    return Ok(());
-                }
-                part_number = part_number.checked_add(1).ok_or("part number overflow")?;
-                if part_number > MAX_REWRITE_PARTS {
-                    return Err("database table would exceed its 10000-part limit".into());
-                }
-                let part = staging.join(format!("all_{part_number}_{part_number}_0"));
-                write_wide_part(&part, &cols, rows).map_err(|error| error.to_string())?;
-                verify_wide_part(&part).map_err(|error| error.to_string())?;
-                rows.clear();
-                *bytes = 0;
-                Ok(())
-            };
+        let mut flush = |rows: &mut StoredRows, bytes: &mut usize| -> Result<(), String> {
+            if rows.is_empty() {
+                return Ok(());
+            }
+            part_number = part_number.checked_add(1).ok_or("part number overflow")?;
+            if part_number > MAX_REWRITE_PARTS {
+                return Err("database table would exceed its 10000-part limit".into());
+            }
+            let part = staging.join(format!("all_{part_number}_{part_number}_0"));
+            write_wide_part(&part, &cols, rows).map_err(|error| error.to_string())?;
+            verify_wide_part(&part).map_err(|error| error.to_string())?;
+            rows.clear();
+            *bytes = 0;
+            Ok(())
+        };
         while let Some(batch) = reader.next_batch().map_err(|error| error.to_string())? {
             let length = batch.first().map_or(0, TypedColumn::len);
             if batch.len() != cols.len() || batch.iter().any(|col| col.len() != length) {
                 return Err("corrupt database scan batch".into());
             }
             for index in 0..length {
-                scanned = scanned.checked_add(1).ok_or("database row count overflow")?;
+                scanned = scanned
+                    .checked_add(1)
+                    .ok_or("database row count overflow")?;
                 let mut values = batch
                     .iter()
                     .map(|col| column_value(col, index))
@@ -368,7 +368,9 @@ pub(super) fn rewrite_rows(
                     .checked_add(row_bytes)
                     .ok_or("database rewrite exceeds memory limit")?;
                 buffer.push(values);
-                retained = retained.checked_add(1).ok_or("database row count overflow")?;
+                retained = retained
+                    .checked_add(1)
+                    .ok_or("database row count overflow")?;
             }
         }
         if u64::try_from(scanned).ok() != Some(expected) {
