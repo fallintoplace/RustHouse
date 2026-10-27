@@ -209,7 +209,10 @@ fn aggregates_typed_filters_across_frozen_parts() {
 fn typed_offset_skips_filtered_rows_without_changing_distinct_semantics() {
     let part = part();
     assert_eq!(
-        query("SELECT message FROM part WHERE service = 'api' LIMIT 1 OFFSET 1", &part),
+        query(
+            "SELECT message FROM part WHERE service = 'api' LIMIT 1 OFFSET 1",
+            &part
+        ),
         "message\nworld\n"
     );
     assert_eq!(
