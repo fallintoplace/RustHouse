@@ -18,7 +18,6 @@ pub(crate) fn inspect_and_print(path: &Path, json: bool) -> Result<(), PartError
     Ok(())
 }
 
-
 fn print_snapshot_json(path: &Path, part_count: usize, metadata: &PartMetadata) {
     print!(
         "{{\"path\":{},\"parts\":{},\"rows\":{},\"columns\":[",
