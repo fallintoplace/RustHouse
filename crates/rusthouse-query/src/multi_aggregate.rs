@@ -88,34 +88,20 @@ pub(crate) fn parse_multiple(
         if distinct && function.is_some() {
             return Err(ParseError("DISTINCT is only supported for COUNT".into()));
         }
-        let argument = if parser.take(Token::Star) || parser.take(Token::RParen) {
-            if function.is_some() {
-                return Err(ParseError("numeric aggregate needs a column".into()));
-            }
-            if parser.tokens.get(parser.index - 1) == Some(&Token::RParen) {
-                if distinct {
-                    return Err(ParseError("COUNT(DISTINCT) requires a column".into()));
-                }
-                items.push(AggregateItem {
-                    function,
-                    argument: None,
-                    distinct,
-                    alias: if parser.keyword("AS") {
-                        Some(parser.word()?)
-                    } else {
-                        None
-                    },
-                });
-                if parser.take(Token::Comma) {
-                    continue;
-                }
-                break;
-            }
-            None
+        let (argument, already_closed) = if parser.take(Token::Star) {
+            (None, false)
+        } else if parser.take(Token::RParen) {
+            (None, true)
         } else {
-            Some(parse_expression_tokens(parser)?)
+            (Some(parse_expression_tokens(parser)?), false)
         };
-        if !parser.take(Token::RParen) {
+        if function.is_some() && argument.is_none() {
+            return Err(ParseError("numeric aggregate needs a column".into()));
+        }
+        if already_closed && distinct {
+            return Err(ParseError("COUNT(DISTINCT) requires a column".into()));
+        }
+        if !already_closed && !parser.take(Token::RParen) {
             return Err(ParseError("expected ')' after aggregate argument".into()));
         }
         let alias = if parser.keyword("AS") {
@@ -132,7 +118,10 @@ pub(crate) fn parse_multiple(
             distinct,
             alias,
         });
-        if items.len() >= 128 && parser.tokens.get(parser.index) == Some(&Token::Comma) {
+        if !already_closed
+            && items.len() >= 128
+            && parser.tokens.get(parser.index) == Some(&Token::Comma)
+        {
             return Err(ParseError("SELECT supports at most 128 aggregates".into()));
         }
         if !parser.take(Token::Comma) {
@@ -167,6 +156,18 @@ mod tests {
         assert_eq!(items.len(), 3);
         assert_eq!(items[0].header(), "sum(width + 1)");
         assert_eq!(items[1].header(), "count(*)");
+    }
+
+    #[test]
+    fn parses_empty_and_star_counts_with_shared_argument_path() {
+        let query = parse_select("SELECT count(), count(*), sum(width) FROM part").unwrap();
+        let Projection::MultipleAggregates(items) = query.projection else {
+            panic!("expected multiple aggregates");
+        };
+        assert_eq!(items.len(), 3);
+        assert_eq!(items[0].header(), "count(*)");
+        assert_eq!(items[1].header(), "count(*)");
+        assert_eq!(items[2].header(), "sum(width)");
     }
 
     #[test]
