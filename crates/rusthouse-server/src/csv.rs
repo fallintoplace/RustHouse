@@ -1,6 +1,7 @@
 //! Convert bounded SQL TSV results into RFC 4180-style CSV on the HTTP interface.
 //! Decode TSV escapes before quoting values. NULL is represented as unquoted \\N.
 use super::jsonl::decode_tsv_value;
+use rusthouse_format::write_quoted_csv_field as write_quoted_field;
 use std::io::{self, Write};
 
 const MAX_LINE_BYTES: usize = 1024 * 1024;
@@ -58,19 +59,6 @@ fn write_csv_field<W: Write>(output: &mut W, field: &[u8]) -> io::Result<()> {
         return output.write_all(value.as_bytes());
     }
     write_quoted_field(output, value.as_bytes())
-}
-
-fn write_quoted_field<W: Write>(output: &mut W, value: &[u8]) -> io::Result<()> {
-    output.write_all(b"\"")?;
-    let mut segments = value.split(|&byte| byte == b'"');
-    if let Some(first) = segments.next() {
-        output.write_all(first)?;
-    }
-    for segment in segments {
-        output.write_all(b"\"\"")?;
-        output.write_all(segment)?;
-    }
-    output.write_all(b"\"")
 }
 
 impl<W: Write> Write for CsvWriter<W> {
