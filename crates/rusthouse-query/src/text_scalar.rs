@@ -132,7 +132,10 @@ fn require(parser: &mut Parser, token: Token, message: &str) -> Result<(), Parse
 }
 
 fn integer_arg(parser: &mut Parser, depth: usize) -> Result<Option<i64>, ParseError> {
-    if matches!(parser.tokens.get(parser.index), Some(Token::Word(word)) if word.eq_ignore_ascii_case("NULL")) {
+    if matches!(
+        parser.tokens.get(parser.index),
+        Some(Token::Word(word)) if word.eq_ignore_ascii_case("NULL")
+    ) {
         parser.index += 1;
         return Ok(None);
     }
