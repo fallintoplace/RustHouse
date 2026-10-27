@@ -138,7 +138,13 @@ mod tests {
         let input = format!("value\n{}", "42\n".repeat(1_000));
         writer.write_all(input.as_bytes()).unwrap();
         assert_eq!(writer.rows, 1_000);
-        assert_eq!(String::from_utf8(writer.output).unwrap().matches("Row ").count(), 1_000);
+        assert_eq!(
+            String::from_utf8(writer.output)
+                .unwrap()
+                .matches("Row ")
+                .count(),
+            1_000
+        );
     }
 
     #[test]
