@@ -104,7 +104,7 @@ pub(super) fn execute<W: Write>(
             };
 
             let value = typed::cell(&batch[value_index], row);
-            if matches!(value, Cell::Null) {
+            if matches!(&value, Cell::Null) {
                 continue;
             }
             let key = value.key();
