@@ -26,6 +26,7 @@ use lexer::{Token, tokenize};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum AggregateFunction {
+    CountIf,
     Sum,
     Product,
     Avg,
@@ -44,6 +45,7 @@ pub enum AggregateFunction {
 impl AggregateFunction {
     pub fn name(self) -> &'static str {
         match self {
+            Self::CountIf => "countIf",
             Self::Sum => "sum",
             Self::Product => "product",
             Self::Avg => "avg",
@@ -454,6 +456,7 @@ fn parse_select_tokens(tokens: Vec<Token>) -> Result<Select, ParseError> {
     {
         let name = parser.word()?;
         let function = match name.to_ascii_uppercase().as_str() {
+            "COUNTIF" => AggregateFunction::CountIf,
             "SUM" => AggregateFunction::Sum,
             "PRODUCT" => AggregateFunction::Product,
             "AVG" => AggregateFunction::Avg,
@@ -551,6 +554,7 @@ fn parse_select_tokens(tokens: Vec<Token>) -> Result<Select, ParseError> {
             if columns.len() == 1 && parser.tokens.get(parser.index + 1) == Some(&Token::LParen) {
                 let function = match parser.tokens.get(parser.index) {
                     Some(Token::Word(name)) => match name.to_ascii_uppercase().as_str() {
+                        "COUNTIF" => Some(AggregateFunction::CountIf),
                         "SUM" => Some(AggregateFunction::Sum),
                         "PRODUCT" => Some(AggregateFunction::Product),
                         "AVG" => Some(AggregateFunction::Avg),

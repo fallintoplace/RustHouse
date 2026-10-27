@@ -1209,6 +1209,20 @@ impl AggregateState {
             .checked_add(1)
             .ok_or_else(|| ExecutionError::Invalid("aggregate row count overflow".into()))?;
         match self.function {
+            AggregateFunction::CountIf => {
+                let truthy = match value {
+                    Number::Unsigned(n) => n != 0,
+                    Number::Signed(n) => n != 0,
+                    Number::Float(n) => n != 0.0,
+                };
+                if truthy {
+                    let current = match self.value {
+                        Some(Number::Unsigned(n)) => n,
+                        _ => 0,
+                    };
+                    self.value = Some(Number::Unsigned(current + 1));
+                }
+            }
             AggregateFunction::Sum | AggregateFunction::SumSquares => {
                 let value = if self.function == AggregateFunction::SumSquares {
                     match value {
@@ -1343,6 +1357,11 @@ impl AggregateState {
     }
 
     fn render(&self) -> String {
+        if self.function == AggregateFunction::CountIf {
+            return self
+                .value
+                .map_or_else(|| "0".into(), |count| count.to_string());
+        }
         if self.count == 0
             || (self.count == 1
                 && matches!(
