@@ -59,6 +59,7 @@ pub(super) fn is_function(name: &str) -> bool {
         || name.eq_ignore_ascii_case("INTLOG2")
         || name.eq_ignore_ascii_case("ROUND_TO_MULTIPLE")
         || name.eq_ignore_ascii_case("PMOD")
+        || name.eq_ignore_ascii_case("TRAILING_ONES")
 }
 
 pub(super) fn parse(parser: &mut Parser) -> Result<i64, ParseError> {
@@ -673,7 +674,10 @@ fn factor(parser: &mut Parser, depth: usize) -> Result<i64, ParseError> {
             }
             i64::from(first.ilog2())
         } else {
-            first.signum()
+            match name.to_ascii_uppercase().as_str() {
+                "TRAILING_ONES" => i64::from(first.trailing_ones()),
+                _ => first.signum(),
+            }
         };
         if !parser.take(Token::RParen) {
             return Err(ParseError("expected ')' after scalar function".into()));
