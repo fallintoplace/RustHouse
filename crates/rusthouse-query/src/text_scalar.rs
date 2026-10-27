@@ -3,7 +3,10 @@ use super::{ConstantValue, ParseError, Parser, Token};
 const MAX_DEPTH: usize = 16;
 
 pub(super) fn is_function(name: &str) -> bool {
-    matches!(name.to_ascii_uppercase().as_str(), "LENGTH" | "CHAR_LENGTH" | "LOWER")
+    matches!(
+        name.to_ascii_uppercase().as_str(),
+        "LENGTH" | "CHAR_LENGTH" | "LOWER"
+    )
 }
 
 pub(super) fn parse(parser: &mut Parser) -> Result<ConstantValue, ParseError> {
