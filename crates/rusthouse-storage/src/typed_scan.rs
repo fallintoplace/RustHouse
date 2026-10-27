@@ -95,11 +95,22 @@ impl<'a> MarkStream<'a> {
         let offset = usize::try_from(mark.decompressed_offset).map_err(|_| {
             PartError::InvalidScan("String mark offset exceeds address space".into())
         })?;
-        stream.reader.seek_to_block(mark.compressed_offset)?;
-        let block = stream
-            .reader
-            .next_decoded()
-            .ok_or_else(|| PartError::InvalidScan("String stream ends at mark".into()))??;
+        // Adjacent String marks can point into the same compressed block.
+        // Reuse its verified decoded bytes instead of decompressing them again.
+        let block = match stream
+            .cached
+            .take()
+            .filter(|block| block.block.offset == mark.compressed_offset)
+        {
+            Some(block) => block,
+            None => {
+                stream.reader.seek_to_block(mark.compressed_offset)?;
+                stream
+                    .reader
+                    .next_decoded()
+                    .ok_or_else(|| PartError::InvalidScan("String stream ends at mark".into()))??
+            }
+        };
         if offset >= block.data.len() {
             return Err(PartError::InvalidScan(
                 "String mark offset exceeds block".into(),
@@ -135,6 +146,13 @@ impl Read for MarkStream<'_> {
             };
             self.offset = 0;
         }
+    }
+}
+
+impl Drop for MarkStream<'_> {
+    fn drop(&mut self) {
+        // Preserve the last decoded block for the following adaptive mark.
+        self.stream.cached = self.block.take();
     }
 }
 
@@ -388,6 +406,68 @@ mod tests {
             assert!(!StorageKind::from_data_type(kind).unwrap().needs_null_map());
         }
         assert!(StorageKind::from_data_type("Nullable(UUID)").is_err());
+    }
+
+    #[test]
+    fn adjacent_string_marks_reuse_one_decoded_block() {
+        use ch_cityhash102::cityhash128;
+        use std::sync::atomic::{AtomicUsize, Ordering};
+
+        static NEXT: AtomicUsize = AtomicUsize::new(0);
+        let path = std::env::temp_dir().join(format!(
+            "rusthouse-typed-string-cache-{}-{}.bin",
+            std::process::id(),
+            NEXT.fetch_add(1, Ordering::Relaxed)
+        ));
+        let data = b"\x03abc\x03def";
+        let mut encoded = vec![0x02];
+        encoded.extend_from_slice(&(9u32 + data.len() as u32).to_le_bytes());
+        encoded.extend_from_slice(&(data.len() as u32).to_le_bytes());
+        encoded.extend_from_slice(data);
+        let mut checked = u128::from(cityhash128(&encoded)).to_le_bytes().to_vec();
+        checked.extend_from_slice(&encoded);
+        std::fs::write(&path, checked).unwrap();
+
+        let mut stream = Stream {
+            marks: vec![
+                WideMark {
+                    compressed_offset: 0,
+                    decompressed_offset: 0,
+                    rows: Some(1),
+                },
+                WideMark {
+                    compressed_offset: 0,
+                    decompressed_offset: 4,
+                    rows: Some(1),
+                },
+            ],
+            reader: CompressedBlockReader::open(&path).unwrap(),
+            cached: None,
+        };
+        {
+            let mut first = MarkStream::open(&mut stream, 0).unwrap();
+            let values = read_legacy_strings(&mut first, 1).unwrap();
+            assert_eq!(values.get(0), Some(b"abc".as_slice()));
+        }
+        assert!(
+            stream
+                .cached
+                .as_ref()
+                .is_some_and(|block| block.block.offset == 0)
+        );
+        {
+            let mut second = MarkStream::open(&mut stream, 1).unwrap();
+            let values = read_legacy_strings(&mut second, 1).unwrap();
+            assert_eq!(values.get(0), Some(b"def".as_slice()));
+        }
+        assert!(
+            stream
+                .cached
+                .as_ref()
+                .is_some_and(|block| block.block.offset == 0)
+        );
+        drop(stream);
+        std::fs::remove_file(path).unwrap();
     }
 
     #[test]
