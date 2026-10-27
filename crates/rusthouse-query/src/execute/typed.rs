@@ -467,6 +467,34 @@ fn matches_comparison_at(
     }
 }
 
+// IN and NOT IN probe String bytes directly rather than cloning every row.
+fn matches_in_at(column: &TypedColumn, row: usize, targets: &[Cell], negated: bool) -> bool {
+    if matches!(
+        column,
+        TypedColumn::Text(_) | TypedColumn::NullableText { .. }
+    ) {
+        let text = match column {
+            TypedColumn::Text(values) => values.get(row),
+            TypedColumn::NullableText { values, nulls } if nulls[row] == 0 => values.get(row),
+            _ => None,
+        };
+        return text.is_some_and(|text| {
+            targets
+                .iter()
+                .any(|target| matches!(target, Cell::Text(value) if text == value))
+                != negated
+        });
+    }
+    let value = cell(column, row);
+    if matches!(value, Cell::Null) {
+        return false;
+    }
+    targets
+        .iter()
+        .any(|target| matches_comparison(&value, target, Operator::Eq))
+        != negated
+}
+
 pub(super) fn passes(batch: &[TypedColumn], row: usize, branches: &[Vec<Condition>]) -> bool {
     branches.iter().any(|branch| {
         branch.iter().all(|condition| {
@@ -502,14 +530,7 @@ pub(super) fn passes(batch: &[TypedColumn], row: usize, branches: &[Vec<Conditio
                     matches_comparison_at(column, row, target, *operator)
                 }
                 Test::In(targets, negated) => {
-                    let value = cell(column, row);
-                    if matches!(value, Cell::Null) {
-                        return false;
-                    }
-                    let present = targets
-                        .iter()
-                        .any(|target| matches_comparison(&value, target, Operator::Eq));
-                    present != *negated
+                    matches_in_at(column, row, targets, *negated)
                 }
                 Test::NotBetween(lower, upper) => {
                     let value = cell(column, row);
@@ -1076,6 +1097,29 @@ mod like_tests {
             &Cell::Null,
             Operator::Eq
         ));
+    }
+
+    #[test]
+    fn probes_string_in_lists_without_copying_and_preserves_null_semantics() {
+        use super::{Cell, matches_in_at};
+
+        let mut input: &[u8] = b"\x03api\x02db\x03web";
+        let values = read_legacy_strings(&mut input, 3).unwrap();
+        let column = TypedColumn::NullableText {
+            values,
+            nulls: vec![0, 1, 0],
+        };
+        let targets = vec![
+            Cell::Text(b"api".to_vec()),
+            Cell::Text(b"worker".to_vec()),
+            Cell::Null,
+        ];
+        assert!(matches_in_at(&column, 0, &targets, false));
+        assert!(!matches_in_at(&column, 0, &targets, true));
+        assert!(!matches_in_at(&column, 1, &targets, false));
+        assert!(!matches_in_at(&column, 1, &targets, true));
+        assert!(!matches_in_at(&column, 2, &targets, false));
+        assert!(matches_in_at(&column, 2, &targets, true));
     }
 
     #[test]
