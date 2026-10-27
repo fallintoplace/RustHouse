@@ -57,6 +57,7 @@ pub(super) fn is_function(name: &str) -> bool {
         || name.eq_ignore_ascii_case("LEADING_ZEROS")
         || name.eq_ignore_ascii_case("TRAILING_ZEROS")
         || name.eq_ignore_ascii_case("DIGITAL_ROOT")
+        || name.eq_ignore_ascii_case("POW10")
         || name.eq_ignore_ascii_case("CLAMP")
         || name.eq_ignore_ascii_case("CEIL_DIV")
         || name.eq_ignore_ascii_case("FLOOR_DIV")
@@ -500,6 +501,16 @@ fn parse_digital_root(parser: &mut Parser, depth: usize) -> Result<i64, ParseErr
     i64::try_from(root).map_err(|_| overflow())
 }
 
+/// Checked signed Int64 power of ten for nonnegative integer exponents.
+fn parse_pow10(parser: &mut Parser, depth: usize) -> Result<i64, ParseError> {
+    require_token(parser, Token::LParen, "POW10 requires '('")?;
+    let exponent = expression(parser, depth + 1)?;
+    require_token(parser, Token::RParen, "POW10 requires ')'")?;
+    let exponent = u32::try_from(exponent)
+        .map_err(|_| ParseError("POW10 exponent must be non-negative and fit UInt32".into()))?;
+    10_i64.checked_pow(exponent).ok_or_else(overflow)
+}
+
 fn gcd(mut left: u64, mut right: u64) -> u64 {
     while right != 0 {
         let remainder = left % right;
@@ -746,6 +757,9 @@ fn factor(parser: &mut Parser, depth: usize) -> Result<i64, ParseError> {
     }
     if parser.keyword("DIGITAL_ROOT") {
         return parse_digital_root(parser, depth);
+    }
+    if parser.keyword("POW10") {
+        return parse_pow10(parser, depth);
     }
     if matches!(parser.tokens.get(parser.index), Some(Token::Word(name)) if name.eq_ignore_ascii_case("GCD") || name.eq_ignore_ascii_case("LCM"))
     {
