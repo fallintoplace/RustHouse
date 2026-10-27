@@ -124,7 +124,7 @@ fn type_error_in_second_part_does_not_publish_any_insert_select_rows() {
     ok("CREATE TABLE target (id UInt16)", &db);
     // 61440..65535 fits UInt16; subsequent rows exceed its range.
     let result = sql(
-        "INSERT INTO target SELECT number FROM numbers(5000, 61440)",
+        "INSERT INTO target SELECT number FROM numbers(61440, 5000)",
         &db,
     );
     assert!(!result.status.success(), "{result:?}");
