@@ -16,6 +16,7 @@ pub(super) fn is_function(name: &str) -> bool {
             | "TRIM"
             | "REPLACE"
             | "LEFT"
+            | "STARTS_WITH"
             | "RIGHT"
             | "REPEAT"
     )
@@ -186,6 +187,18 @@ fn parse_at_depth(parser: &mut Parser, depth: usize) -> Result<ConstantValue, Pa
                         }
                         ConstantValue::Text(input.replace(&needle, &replacement))
                     }
+                }
+                _ => ConstantValue::Null,
+            }
+        }
+        "STARTS_WITH" => {
+            let input = text_arg(parser, depth + 1)?;
+            require(parser, Token::Comma, "STARTS_WITH requires a prefix")?;
+            let prefix = text_arg(parser, depth + 1)?;
+            require(parser, Token::RParen, "expected ')' after STARTS_WITH arguments")?;
+            match (input, prefix) {
+                (Some(input), Some(prefix)) => {
+                    ConstantValue::Integer(i64::from(input.starts_with(prefix.as_str())))
                 }
                 _ => ConstantValue::Null,
             }
