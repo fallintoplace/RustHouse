@@ -200,7 +200,7 @@ mod tests {
         let mut writer = JsonArrayWriter::new(Vec::new());
         writer.write_all(b"number\tname\n12\t").unwrap();
         writer.flush().unwrap();
-        writer.write_all(b"\"x\"\n13\tNULL\n").unwrap();
+        writer.write_all(b"\"x\"\n13\t\\N\n").unwrap();
         let output = writer.finish().unwrap();
         assert_eq!(
             String::from_utf8(output).unwrap(),
