@@ -11,6 +11,7 @@ use std::path::Path;
 mod grouped_distinct;
 mod grouped_multi;
 mod grouped_numeric_multi;
+mod grouped_numeric_keys;
 mod join;
 mod predicates;
 mod sort;
@@ -371,6 +372,9 @@ fn execute_into<W: Write>(
     if let Projection::GroupedAggregates { column, items } = &query.projection {
         return grouped_numeric_multi::execute(query, part, column, items, output);
     }
+    if let Projection::GroupedMultiAggregates { columns, items } = &query.projection {
+        return grouped_numeric_keys::execute(query, part, columns, items, output);
+    }
     if typed::requires_typed_scan(query, part)? {
         if matches!(query.projection, Projection::Aggregate { .. }) {
             return typed_aggregate::execute_typed_aggregate(query, part, output);
@@ -418,6 +422,7 @@ fn execute_into<W: Write>(
         | Projection::GroupedMultiCount { .. }
         | Projection::GroupedAggregate { .. }
         | Projection::GroupedAggregates { .. }
+        | Projection::GroupedMultiAggregates { .. }
         | Projection::MultipleAggregates(_)
         | Projection::StringLength { .. }
         | Projection::Literal(_)
@@ -1015,6 +1020,7 @@ fn execute_numbers<W: Write>(
         query.projection,
         Projection::MultipleAggregates(_)
             | Projection::GroupedAggregates { .. }
+            | Projection::GroupedMultiAggregates { .. }
             | Projection::GroupedDistinctCount { .. }
     ) {
         return Err(ExecutionError::Invalid(
@@ -1104,6 +1110,7 @@ fn execute_numbers<W: Write>(
         | Projection::GroupedMultiCount { .. }
         | Projection::GroupedAggregate { .. }
         | Projection::GroupedAggregates { .. }
+        | Projection::GroupedMultiAggregates { .. }
         | Projection::MultipleAggregates(_)
         | Projection::StringLength { .. }
         | Projection::Literal(_)
