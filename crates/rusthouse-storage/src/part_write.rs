@@ -194,15 +194,16 @@ fn block(data: &[u8]) -> Result<Vec<u8>, PartError> {
     };
     let compressed_size =
         u32::try_from(payload.len()).map_err(|_| invalid("part column is too large"))?;
-    let mut encoded = Vec::with_capacity(9 + payload.len());
-    encoded.push(method);
-    encoded.extend_from_slice(&(compressed_size + 9).to_le_bytes());
-    encoded.extend_from_slice(&length.to_le_bytes());
-    encoded.extend_from_slice(payload);
-    let checksum = u128::from(cityhash128(&encoded)).to_le_bytes();
-    let mut result = Vec::with_capacity(16 + encoded.len());
-    result.extend_from_slice(&checksum);
-    result.extend_from_slice(&encoded);
+    // Reserve the checksum prefix and write the checked header and payload
+    // directly into the final buffer, avoiding a second allocation and copy.
+    let mut result = Vec::with_capacity(16 + 9 + payload.len());
+    result.resize(16, 0);
+    result.push(method);
+    result.extend_from_slice(&(compressed_size + 9).to_le_bytes());
+    result.extend_from_slice(&length.to_le_bytes());
+    result.extend_from_slice(payload);
+    let checksum = u128::from(cityhash128(&result[16..])).to_le_bytes();
+    result[..16].copy_from_slice(&checksum);
     Ok(result)
 }
 
@@ -358,6 +359,23 @@ mod tests {
             assert_eq!(decoded.block.method, codec);
             assert_eq!(decoded.data, data);
             assert!(reader.next_decoded().is_none());
+        }
+    }
+
+    #[test]
+    fn block_checksum_covers_the_exact_encoded_payload() {
+        for data in [
+            vec![1u8, 2, 3, 4],
+            vec![0x55u8; 4096],
+            (0..4096).map(|index| (index * 73 % 251) as u8).collect(),
+        ] {
+            let block = block(&data).unwrap();
+            let checksum = u128::from(cityhash128(&block[16..])).to_le_bytes();
+            assert_eq!(&block[..16], &checksum);
+            let stored_size = u32::from_le_bytes(block[17..21].try_into().unwrap());
+            assert_eq!(stored_size as usize, block.len() - 16);
+            let uncompressed_size = u32::from_le_bytes(block[21..25].try_into().unwrap());
+            assert_eq!(uncompressed_size as usize, data.len());
         }
     }
 
