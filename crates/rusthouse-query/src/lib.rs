@@ -1201,8 +1201,7 @@ fn parse_select_tokens(tokens: Vec<Token>) -> Result<Select, ParseError> {
         }
         match &projection {
             Projection::GroupedMultiCount { columns } if columns == &group_columns => {}
-            Projection::GroupedMultiAggregates { columns, .. }
-                if columns == &group_columns => {}
+            Projection::GroupedMultiAggregates { columns, .. } if columns == &group_columns => {}
             Projection::GroupedCount { column }
             | Projection::GroupedDistinctCount { column, .. }
             | Projection::GroupedAggregate { column, .. }
