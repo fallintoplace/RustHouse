@@ -1146,11 +1146,11 @@ impl AggregateState {
                             ExecutionError::Invalid("unsigned PRODUCT overflow".into())
                         })?)
                     }
-                    (Some(Number::Signed(a)), Number::Signed(b)) => Number::Signed(
-                        a.checked_mul(b).ok_or_else(|| {
+                    (Some(Number::Signed(a)), Number::Signed(b)) => {
+                        Number::Signed(a.checked_mul(b).ok_or_else(|| {
                             ExecutionError::Invalid("signed PRODUCT overflow".into())
-                        })?,
-                    ),
+                        })?)
+                    }
                     (Some(Number::Float(a)), Number::Float(b)) => Number::Float(a * b),
                     _ => {
                         return Err(ExecutionError::Invalid(
