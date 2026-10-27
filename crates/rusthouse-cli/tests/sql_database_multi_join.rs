@@ -196,3 +196,29 @@ fn chained_any_joins_select_only_one_matching_row_at_each_step() {
     );
     fs::remove_dir_all(db).unwrap();
 }
+
+#[test]
+fn chained_four_table_inner_join_can_reference_any_prior_alias() {
+    let db = database();
+    for statement in [
+        "CREATE TABLE facts (id UInt64, account UInt64, region UInt64)",
+        "CREATE TABLE accounts (id UInt64, name String)",
+        "CREATE TABLE regions (id UInt64, code UInt64)",
+        "CREATE TABLE labels (code UInt64, label String)",
+        "INSERT INTO facts VALUES (1, 10, 2), (2, 20, 3)",
+        "INSERT INTO accounts VALUES (10, 'Ada'), (20, 'Bob')",
+        "INSERT INTO regions VALUES (2, 7)",
+        "INSERT INTO labels VALUES (7, 'East')",
+    ] {
+        let result = sql(statement, &db, &[]);
+        assert!(result.status.success(), "{statement}: {result:?}");
+    }
+    let joined = sql(
+        "SELECT f.id, l.label FROM facts f JOIN accounts a ON f.account = a.id JOIN regions r ON f.region = r.id JOIN labels l ON r.code = l.code ORDER BY f.id",
+        &db,
+        &[],
+    );
+    assert!(joined.status.success(), "{joined:?}");
+    assert_eq!(joined.stdout, b"f.id\tl.label\n1\tEast\n");
+    fs::remove_dir_all(db).unwrap();
+}
