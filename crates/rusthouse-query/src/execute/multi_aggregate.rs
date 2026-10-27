@@ -63,6 +63,35 @@ fn checked_binary(left: Number, right: Number, subtract: bool) -> Result<Number,
     }
 }
 
+fn checked_multiply(left: Number, right: Number) -> Result<Number, ExecutionError> {
+    let as_float = |number: Number| match number {
+        Number::Float(value) => value,
+        Number::Signed(value) => value as f64,
+        Number::Unsigned(value) => value as f64,
+    };
+    match (left, right) {
+        (Number::Float(_), _) | (_, Number::Float(_)) => {
+            Ok(Number::Float(as_float(left) * as_float(right)))
+        }
+        (Number::Unsigned(a), Number::Unsigned(b)) => a
+            .checked_mul(b)
+            .map(Number::Unsigned)
+            .ok_or_else(|| ExecutionError::Invalid("unsigned aggregate expression overflow".into())),
+        (a, b) => {
+            let signed = |number: Number| match number {
+                Number::Signed(value) => Ok(value),
+                Number::Unsigned(value) => i128::try_from(value)
+                    .map_err(|_| ExecutionError::Invalid("aggregate expression exceeds Int128".into())),
+                Number::Float(_) => unreachable!(),
+            };
+            signed(a)?
+                .checked_mul(signed(b)?)
+                .map(Number::Signed)
+                .ok_or_else(|| ExecutionError::Invalid("aggregate expression overflow".into()))
+        }
+    }
+}
+
 fn eval_number(
     expression: &ScalarExpr,
     batch: &[TypedColumn],
@@ -83,6 +112,15 @@ fn eval_number(
             }
         }
         ScalarExpr::Integer(value) => Ok(Some(Number::Signed(i128::from(*value)))),
+        ScalarExpr::Multiply(left, right) => {
+            let Some(left) = eval_number(left, batch, row, indices)? else {
+                return Ok(None);
+            };
+            let Some(right) = eval_number(right, batch, row, indices)? else {
+                return Ok(None);
+            };
+            checked_multiply(left, right).map(Some)
+        }
         ScalarExpr::Add(left, right) | ScalarExpr::Subtract(left, right) => {
             let Some(left) = eval_number(left, batch, row, indices)? else {
                 return Ok(None);
