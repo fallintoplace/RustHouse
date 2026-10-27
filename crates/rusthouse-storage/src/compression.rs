@@ -66,8 +66,6 @@ impl CompressedBlockReader<File> {
                 source: io::Error::new(io::ErrorKind::InvalidInput, "expected a regular file"),
             });
         }
-        // File::open starts at offset zero. Reuse the validated metadata size
-        // instead of stat-ing and seeking the file a second time.
         Ok(Self {
             reader: file,
             path: path.to_path_buf(),
@@ -184,9 +182,6 @@ impl<R: Read + Seek> CompressedBlockReader<R> {
             return self.invalid_at(block.offset, "block exceeds the 64 MiB decode limit");
         }
 
-        // LZ4/ZSTD decode into separate output buffers. Reuse the encoded input
-        // allocation for later blocks, including across intervening NONE blocks.
-        // For NONE, return the allocation itself to avoid a copy of the payload.
         let mut encoded = if block.method == 0x02 {
             vec![0u8; block.compressed_size as usize]
         } else {

@@ -3,8 +3,6 @@ use std::error::Error;
 use std::fmt;
 use std::io::Read;
 
-/// Decimal values are stored as signed integers scaled by 10^scale.
-/// No floating-point conversion is performed.
 #[derive(Debug, PartialEq)]
 pub struct DecimalColumn {
     precision: u8,
@@ -58,8 +56,6 @@ impl Error for DecimalReadError {
     }
 }
 
-/// Read the physical values of Decimal32, Decimal64, Decimal128, or Decimal(P, S).
-/// Decimal256 is intentionally unsupported until 256-bit decoding is available.
 pub fn read_decimal_column<R: Read>(
     reader: &mut R,
     data_type: &str,

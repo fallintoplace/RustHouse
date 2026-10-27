@@ -29,14 +29,12 @@ pub struct PartChecksums {
     pub files: Vec<FileChecksum>,
 }
 
-/// Byte totals declared by the manifest; no disk files or hashes are checked.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ChecksumSizeSummary {
     pub files: usize,
     pub stored_bytes: u64,
     pub compressed_files: usize,
     pub compressed_stored_bytes: u64,
-    /// Original bytes reported for compressed entries only, not all files.
     pub compressed_original_bytes: u64,
 }
 
@@ -509,7 +507,6 @@ mod tests {
             Err(PartError::Io { source, .. })
                 if source.kind() == io::ErrorKind::InvalidInput
         ));
-        // Directories must also be refused before File::open is attempted.
         assert!(matches!(
             read_checksums(&root),
             Err(PartError::Io { source, .. })

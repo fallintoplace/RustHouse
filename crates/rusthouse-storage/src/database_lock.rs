@@ -1,5 +1,3 @@
-//! Shared local database lock protocol for CLI and HTTP reads.
-//! Keep the lock inode in place: unlinking it could admit a second writer.
 use std::fs::{self, OpenOptions};
 use std::path::Path;
 #[cfg(not(unix))]
@@ -30,14 +28,12 @@ mod advisory {
     }
 }
 
-/// Hold this guard until a query finishes consuming its active snapshot.
 pub struct DatabaseLock {
     _file: fs::File,
     #[cfg(not(unix))]
     path: PathBuf,
 }
 
-// The non-Unix fallback retains the existing create-new lock-file behavior.
 #[cfg(not(unix))]
 impl Drop for DatabaseLock {
     fn drop(&mut self) {
@@ -66,8 +62,6 @@ fn validate_lock_identity(path: &Path, file: &fs::File) -> Result<(), String> {
     Ok(())
 }
 
-/// Exclusive for writes, shared for reads. Unix locks are released after crashes.
-/// A read never creates the database directory; both modes use the same inode.
 pub fn acquire_database_lock(database: &Path, exclusive: bool) -> Result<DatabaseLock, String> {
     if exclusive {
         fs::create_dir_all(database)

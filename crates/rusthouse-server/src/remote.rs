@@ -1,6 +1,3 @@
-//! Bounded, loopback-only HTTP client for read-only RustHouse peers.
-//! This is not a general HTTP or authenticated network transport.
-
 use crate::cluster::Peer;
 use crate::{MAX_HEADER_BYTES, MAX_QUERY_BYTES, MAX_RESPONSE_BYTES};
 use std::io::{Read, Write};
@@ -25,7 +22,6 @@ pub fn capabilities(peer: Peer) -> Result<PeerResponse, String> {
     request(peer, "GET", "/capabilities", b"")
 }
 
-/// Fetch a named table's schema without accepting arbitrary HTTP paths.
 pub fn schema(peer: Peer, table: &str) -> Result<PeerResponse, String> {
     let mut bytes = table.bytes();
     if !bytes
@@ -45,7 +41,6 @@ pub fn query(peer: Peer, sql: &str) -> Result<PeerResponse, String> {
     request(peer, "POST", "/", sql.as_bytes())
 }
 
-/// Never follows redirects, negotiates compression, or connects to non-loopback addresses.
 fn request(peer: Peer, method: &str, path: &str, body: &[u8]) -> Result<PeerResponse, String> {
     let address = SocketAddr::V4(peer.address());
     let mut stream = TcpStream::connect_timeout(&address, CONNECT_TIMEOUT)
@@ -63,7 +58,6 @@ fn request(peer: Peer, method: &str, path: &str, body: &[u8]) -> Result<PeerResp
     )
     .map_err(|error| error.to_string())?;
     stream.write_all(body).map_err(|error| error.to_string())?;
-    // Include one extra byte so oversized replies cannot look like complete responses.
     let max_wire = MAX_HEADER_BYTES + MAX_RESPONSE_BYTES + 1;
     let mut raw = Vec::new();
     stream
