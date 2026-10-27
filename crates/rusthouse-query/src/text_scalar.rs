@@ -6,7 +6,7 @@ const MAX_TEXT_BYTES: usize = 1_048_576;
 pub(super) fn is_function(name: &str) -> bool {
     matches!(
         name.to_ascii_uppercase().as_str(),
-        "LENGTH" | "CHAR_LENGTH" | "LOWER" | "UPPER" | "CONCAT" | "SUBSTRING"
+        "LENGTH" | "CHAR_LENGTH" | "LOWER" | "UPPER" | "CONCAT" | "SUBSTRING" | "TRIM"
     )
 }
 
@@ -116,6 +116,14 @@ fn parse_at_depth(parser: &mut Parser, depth: usize) -> Result<ConstantValue, Pa
                     ConstantValue::Text(value[start..end].to_owned())
                 }
                 _ => ConstantValue::Null,
+            }
+        }
+        "TRIM" => {
+            let input = text_arg(parser, depth + 1)?;
+            require(parser, Token::RParen, "TRIM requires one argument")?;
+            match input {
+                Some(value) => ConstantValue::Text(value.trim_matches(' ').to_owned()),
+                None => ConstantValue::Null,
             }
         }
         _ => return Err(ParseError(format!("unsupported string function: {name}"))),
