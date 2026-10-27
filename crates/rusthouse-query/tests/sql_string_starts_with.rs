@@ -15,7 +15,7 @@ fn handles_literals_unicode_nulls_and_nested_calls() {
         ("SELECT starts_with('alpha', 'beta')", 0),
         ("SELECT STARTS_WITH('éclair', 'é')", 1),
         ("SELECT STARTS_WITH('', '')", 1),
-        ("SELECT STARTS_WITH(REVERSE('abc'), 'c')", 1),
+        ("SELECT STARTS_WITH(UPPER('abc'), 'A')", 1),
     ] {
         assert_eq!(value(sql), ConstantValue::Integer(expected), "{sql}");
     }
