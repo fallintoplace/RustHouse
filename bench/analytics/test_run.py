@@ -70,7 +70,8 @@ class AnalyticsRunnerTests(unittest.TestCase):
                 ["SELECT 1"], [0], 3, 1, lambda _sql, _timeout: b"actual\n", root
             )
             self.assertEqual(results[0]["status"], "mismatch")
-            self.assertEqual(len(results[0]["seconds"]), 1)
+            self.assertEqual(results[0]["seconds"], [])
+            self.assertIsNone(results[0]["latency"])
 
     def test_missing_reference_is_a_failure(self):
         with tempfile.TemporaryDirectory() as temp:
