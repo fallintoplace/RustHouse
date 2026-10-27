@@ -9,7 +9,7 @@ use std::io::{self, Write};
 use std::path::Path;
 
 // Larger parts reduce open-file and metadata overhead for bulk imports and OPTIMIZE.
-const MAX_PART_ROWS: usize = 32_768;
+const MAX_PART_ROWS: usize = 65_536;
 const GRANULE_ROWS: usize = 1024;
 const MAX_STREAM_BYTES: usize = 8 * 1024 * 1024;
 
@@ -295,7 +295,7 @@ pub fn write_wide_part_with_compression(
         return Err(invalid("part requires 1 to 128 columns"));
     }
     if rows.len() > MAX_PART_ROWS {
-        return Err(invalid("a wide part supports at most 32768 rows"));
+        return Err(invalid("a wide part supports at most 65536 rows"));
     }
     validate_part_columns(columns)?;
     let mut streams = Vec::new();
