@@ -1209,6 +1209,11 @@ impl AggregateState {
             .checked_add(1)
             .ok_or_else(|| ExecutionError::Invalid("aggregate row count overflow".into()))?;
         match self.function {
+            AggregateFunction::Any => {
+                if self.value.is_none() {
+                    self.value = Some(value);
+                }
+            }
             AggregateFunction::CountIf => {
                 let truthy = match value {
                     Number::Unsigned(n) => n != 0,
