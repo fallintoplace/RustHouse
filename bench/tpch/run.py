@@ -19,6 +19,8 @@ def load_queries(directory):
         if match is None:
             continue
         number = int(match.group(1))
+        if number < 1:
+            raise ValueError(f"query IDs must be positive: {path}")
         sql = "\n".join(
             line for line in path.read_text(encoding="utf-8").splitlines()
             if not line.lstrip().startswith("--")
