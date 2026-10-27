@@ -956,7 +956,7 @@ pub(super) fn execute_typed<W: Write>(
                     }
                     column => {
                         let value = cell(column, index);
-                        if !matches!(value, Cell::Null) {
+                        if !matches!(&value, Cell::Null) {
                             let key = value.key();
                             if count_distinct_keys.len() >= MAX_BUFFERED_ROWS
                                 && !count_distinct_keys.contains(&key)
