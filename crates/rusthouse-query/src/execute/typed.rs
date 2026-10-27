@@ -549,10 +549,14 @@ pub(super) fn passes(batch: &[TypedColumn], row: usize, branches: &[Vec<Conditio
                     matches_in_at(column, row, targets, *negated)
                 }
                 Test::NotBetween(lower, upper) => {
-                    let value = cell(column, row);
-                    !matches!(value, Cell::Null)
-                        && (!matches_comparison(&value, lower, Operator::Ge)
-                            || !matches_comparison(&value, upper, Operator::Le))
+                    let is_null = match column {
+                        TypedColumn::NullableNumeric { nulls, .. }
+                        | TypedColumn::NullableText { nulls, .. } => nulls[row] != 0,
+                        _ => false,
+                    };
+                    !is_null
+                        && (!matches_comparison_at(column, row, lower, Operator::Ge)
+                            || !matches_comparison_at(column, row, upper, Operator::Le))
                 }
             }
         })
@@ -1192,6 +1196,43 @@ mod like_tests {
             &Cell::Null,
             Operator::Eq
         ));
+    }
+
+    #[test]
+    fn not_between_preserves_nullable_string_and_numeric_semantics() {
+        use super::Cell;
+
+        let mut encoded: &[u8] = b"\x03aaa\x03mmm\x03zzz";
+        let values = read_legacy_strings(&mut encoded, 3).unwrap();
+        let text = TypedColumn::NullableText {
+            values,
+            nulls: vec![0, 1, 0],
+        };
+        let number = TypedColumn::NullableNumeric {
+            values: NumericColumn::UInt64(vec![2, 10, 99]),
+            nulls: vec![0, 0, 1],
+        };
+        let rows = vec![text, number];
+        let outside_text = vec![vec![Condition {
+            index: 0,
+            test: Test::NotBetween(
+                Cell::Text(b"bbb".to_vec()),
+                Cell::Text(b"yyy".to_vec()),
+            ),
+        }]];
+        assert!(passes(&rows, 0, &outside_text));
+        assert!(!passes(&rows, 1, &outside_text));
+        assert!(passes(&rows, 2, &outside_text));
+        let outside_numbers = vec![vec![Condition {
+            index: 1,
+            test: Test::NotBetween(
+                Cell::Numeric(super::super::Number::Unsigned(2)),
+                Cell::Numeric(super::super::Number::Unsigned(10)),
+            ),
+        }]];
+        assert!(!passes(&rows, 0, &outside_numbers));
+        assert!(!passes(&rows, 1, &outside_numbers));
+        assert!(!passes(&rows, 2, &outside_numbers));
     }
 
     #[test]
