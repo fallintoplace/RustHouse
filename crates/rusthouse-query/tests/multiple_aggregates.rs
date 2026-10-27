@@ -61,5 +61,9 @@ fn computes_multiple_aggregates_in_one_filtered_scan() {
         run("SELECT sum(length(tag)), avg(length(tag)) FROM part WHERE amount > 2"),
         "sum(length(tag))\tavg(length(tag))\n4\t2\n"
     );
+    assert_eq!(
+        run("SELECT sum(width * 2), avg((width + 2) * 2) FROM part"),
+        "sum(width * 2)\tavg((width + 2) * 2)\n120\t44\n"
+    );
     fs::remove_dir_all(part).unwrap();
 }
