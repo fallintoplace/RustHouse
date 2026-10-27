@@ -136,7 +136,7 @@ fn shard_integer_kind(peer: Peer, table: &str, column: &str) -> Result<String, S
         .map_err(|_| "peer schema response is not UTF-8")?;
     let needle = format!("\"name\":\"{column}\",\"type\":\"");
     let (_, tail) = contents
-        .split_once(&needle)
+        .split_once(needle.as_str())
         .ok_or("SUM column missing from peer schema")?;
     let (kind, trailing) = tail
         .split_once('"')
