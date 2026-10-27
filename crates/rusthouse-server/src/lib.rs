@@ -96,6 +96,12 @@ fn hex_digit(value: u8) -> Option<u8> {
 
 fn decode_url(value: &str) -> Result<String, &'static str> {
     let bytes = value.as_bytes();
+    if !bytes.contains(&b'%') && !bytes.contains(&b'+') {
+        if bytes.len() > MAX_QUERY_BYTES {
+            return Err("SQL statement exceeds 4096 bytes");
+        }
+        return Ok(value.to_owned());
+    }
     let mut decoded = Vec::with_capacity(bytes.len());
     let mut index = 0;
     while index < bytes.len() {
@@ -120,6 +126,12 @@ fn decode_url(value: &str) -> Result<String, &'static str> {
 }
 
 fn write_json_string<W: Write>(writer: &mut W, value: &str) -> io::Result<()> {
+    // UTF-8 bytes other than ASCII controls, quotes and backslashes are safe.
+    if !value.as_bytes().iter().any(|byte| *byte < 0x20 || *byte == b'\"' || *byte == b'\\') {
+        writer.write_all(b"\"")?;
+        writer.write_all(value.as_bytes())?;
+        return writer.write_all(b"\"");
+    }
     writer.write_all(b"\"")?;
     let mut start = 0;
     for (index, ch) in value.char_indices() {
