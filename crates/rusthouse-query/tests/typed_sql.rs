@@ -626,6 +626,43 @@ fn groups_numeric_aggregates_by_typed_keys() {
 }
 
 #[test]
+fn multi_key_grouped_numeric_aggregates_are_fused_and_checked() {
+    let part = part();
+    for (sql, expected) in [
+        (
+            "SELECT service, uid, sum(status), avg(status) FROM part GROUP BY service, uid ORDER BY service",
+            "service\tuid\tsum(status)\tavg(status)\napi\t00000000-0000-0000-0000-000000000000\t700\t350\ndb\t00000000-0000-0000-0000-000000000000\t503\t503\n",
+        ),
+        (
+            "SELECT service, attempt, sum(status), max(status) FROM part GROUP BY service, attempt ORDER BY service, attempt",
+            "service\tattempt\tsum(status)\tmax(status)\napi\t1\t200\t200\napi\t3\t500\t500\ndb\t\\N\t503\t503\n",
+        ),
+        (
+            "SELECT service, uid, sum(attempt), min(status) FROM part WHERE status >= 500 GROUP BY service, uid ORDER BY service LIMIT 1 OFFSET 1",
+            "service\tuid\tsum(attempt)\tmin(status)\ndb\t00000000-0000-0000-0000-000000000000\tNULL\t503\n",
+        ),
+        (
+            "SELECT service, uid, sum(status) FROM part GROUP BY service, uid LIMIT 0",
+            "service\tuid\tsum(status)\n",
+        ),
+    ] {
+        assert_eq!(query(sql, &part), expected, "{sql}");
+    }
+    for sql in [
+        "SELECT service, uid, sum(status) FROM part",
+        "SELECT service, uid, sum(status) FROM part GROUP BY uid, service",
+        "SELECT service, uid, sum(status) FROM part GROUP BY service, uid ORDER BY sum",
+    ] {
+        assert!(parse_select(sql).is_err(), "{sql}");
+    }
+    let nonnumeric = parse_select(
+        "SELECT service, uid, sum(message) FROM part GROUP BY service, uid",
+    ).unwrap();
+    assert!(execute(&nonnumeric, Some(&part), &mut Vec::new()).is_err());
+    fs::remove_dir_all(part).unwrap();
+}
+
+#[test]
 fn grouped_numeric_aggregates_respect_explicit_null_precedence() {
     let part = part();
     assert_eq!(
