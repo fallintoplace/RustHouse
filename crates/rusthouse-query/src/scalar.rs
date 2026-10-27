@@ -105,15 +105,6 @@ fn expression(parser: &mut Parser, depth: usize) -> Result<i64, ParseError> {
             value = value
                 .checked_sub(term(parser, depth)?)
                 .ok_or_else(overflow)?;
-        } else if matches!(
-            parser.tokens.get(parser.index),
-            Some(Token::Number(number)) if number.starts_with('-')
-        ) {
-            // The shared lexer represents "-2" as one signed literal.
-            // In scalar expressions this is also a subtraction shorthand.
-            value = value
-                .checked_add(term(parser, depth)?)
-                .ok_or_else(overflow)?;
         } else {
             break;
         }
