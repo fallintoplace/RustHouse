@@ -205,11 +205,7 @@ impl<R: Read + Seek> CompressedBlockReader<R> {
         Some(Ok(DecodedBlock { block, data }))
     }
 
-    fn invalid_at<T>(
-        &mut self,
-        offset: u64,
-        reason: &'static str,
-    ) -> Option<Result<T, PartError>> {
+    fn invalid_at<T>(&mut self, offset: u64, reason: &'static str) -> Option<Result<T, PartError>> {
         self.done = true;
         Some(Err(PartError::InvalidCompressedBlock {
             path: self.path.clone(),
