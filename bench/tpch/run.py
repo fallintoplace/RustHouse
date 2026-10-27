@@ -98,6 +98,19 @@ def summarize_coverage(results):
     }
 
 
+def select_queries(queries, spec):
+    if not spec:
+        return queries
+    try:
+        selected = {int(fragment) for fragment in spec.split(",")}
+    except ValueError as exc:
+        raise ValueError("--only must contain comma-separated integer IDs") from exc
+    available = {number for number, _ in queries}
+    if not selected or not selected.issubset(available):
+        raise ValueError("--only contains an unavailable query ID")
+    return [(number, sql) for number, sql in queries if number in selected]
+
+
 def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--binary", type=Path, required=True)
@@ -119,15 +132,10 @@ def main(argv=None):
         queries = load_queries(args.queries_dir)
     except (OSError, ValueError) as exc:
         parser.error(str(exc))
-    if args.only:
-        try:
-            selected = {int(fragment) for fragment in args.only.split(",")}
-        except ValueError:
-            parser.error("--only must contain comma-separated integer IDs")
-        available = {number for number, _ in queries}
-        if not selected or not selected.issubset(available):
-            parser.error("--only contains an unavailable query ID")
-        queries = [(number, sql) for number, sql in queries if number in selected]
+    try:
+        queries = select_queries(queries, args.only)
+    except ValueError as exc:
+        parser.error(str(exc))
 
     execute = lambda sql: invoke(args.binary, args.database, sql, args.timeout)
     if args.expected_lineitem_rows is not None:
