@@ -235,7 +235,9 @@ fn run_tsv(database: &Path, statement: &CopyFrom) -> Result<(), String> {
     };
     let mut columns = statement.columns.clone();
     if statement.header {
-        let headings = input.next_record()?.ok_or("COPY file is missing its header")?;
+        let headings = input
+            .next_record()?
+            .ok_or("COPY file is missing its header")?;
         let names = headings
             .into_iter()
             .map(|value| value.ok_or("COPY header cannot contain empty columns"))
