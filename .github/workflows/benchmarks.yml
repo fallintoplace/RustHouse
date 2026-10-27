@@ -22,5 +22,17 @@ jobs:
       - uses: Swatinem/rust-cache@v2
         with:
           save-if: ${{ github.event_name == 'schedule' }}
-      - run: cargo bench -p rusthouse-query --bench queries --locked -- --rows 1000 --samples 3
-      - run: cargo bench -p rusthouse-query --bench parts --locked -- --rows 1024 --samples 3
+      - name: Query execution baseline
+        run: cargo bench -p rusthouse-query --bench queries --locked -- --rows 65536 --samples 7
+      - name: Sorted frozen-part scans
+        run: cargo bench -p rusthouse-query --bench parts --locked -- --rows 65536 --samples 7 --layout sorted --csv > sorted.csv
+      - name: Shuffled frozen-part scans
+        run: cargo bench -p rusthouse-query --bench parts --locked -- --rows 65536 --samples 7 --layout shuffled --csv > shuffled.csv
+      - name: Store scan measurements
+        uses: actions/upload-artifact@v4
+        with:
+          name: rusthouse-part-scans-${{ github.run_id }}
+          path: |
+            sorted.csv
+            shuffled.csv
+          retention-days: 14
