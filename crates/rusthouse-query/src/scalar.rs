@@ -32,6 +32,7 @@ pub(super) fn is_function(name: &str) -> bool {
     is_saturating(name)
         || name.eq_ignore_ascii_case("ABS")
         || name.eq_ignore_ascii_case("BIT_WIDTH")
+        || name.eq_ignore_ascii_case("ABS_DIFF")
         || name.eq_ignore_ascii_case("SIGN")
         || name.eq_ignore_ascii_case("DIGIT_COUNT")
         || name.eq_ignore_ascii_case("HAMMING_DISTANCE")
@@ -170,6 +171,20 @@ fn parse_pmod(parser: &mut Parser, depth: usize) -> Result<i64, ParseError> {
         return Err(ParseError("PMOD divisor must be positive".into()));
     }
     Ok(value.rem_euclid(divisor))
+}
+
+fn parse_abs_diff(parser: &mut Parser, depth: usize) -> Result<i64, ParseError> {
+    require_token(parser, Token::LParen, "ABS_DIFF requires '('")?;
+    let left = expression(parser, depth + 1)?;
+    require_token(parser, Token::Comma, "ABS_DIFF requires two arguments")?;
+    let right = expression(parser, depth + 1)?;
+    require_token(
+        parser,
+        Token::RParen,
+        "ABS_DIFF requires ')' after arguments",
+    )?;
+    let difference = (i128::from(left) - i128::from(right)).abs();
+    i64::try_from(difference).map_err(|_| overflow())
 }
 
 fn parse_extrema(parser: &mut Parser, depth: usize) -> Result<i64, ParseError> {
@@ -516,6 +531,9 @@ fn factor(parser: &mut Parser, depth: usize) -> Result<i64, ParseError> {
         return factor(parser, depth + 1)?
             .checked_neg()
             .ok_or_else(overflow);
+    }
+    if parser.keyword("ABS_DIFF") {
+        return parse_abs_diff(parser, depth);
     }
     if parser.take(Token::Plus) {
         return factor(parser, depth + 1);
