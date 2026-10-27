@@ -586,8 +586,9 @@ pub fn execute_join<W: Write>(
     let order = query
         .order_by
         .as_ref()
-        .map(|(column, descending)| {
-            resolve(query, column, &left_names, &right_names).map(|index| (index, *descending))
+        .map(|(column, descending, nulls_first)| {
+            resolve(query, column, &left_names, &right_names)
+                .map(|index| (index, *descending, *nulls_first))
         })
         .transpose()?;
     let null_filter = query
@@ -716,17 +717,12 @@ pub fn execute_join<W: Write>(
             }
         }
     }
-    if let Some((index, descending)) = order {
+    if let Some((index, descending, nulls_first)) = order {
         let null = typed::Cell::Null;
         pairs.sort_by(|first, second| {
             let a = cell_at(&left_rows, &right_rows, first, index, width).unwrap_or(&null);
             let b = cell_at(&left_rows, &right_rows, second, index, width).unwrap_or(&null);
-            let comparison = typed::cmp(a, b);
-            if descending {
-                comparison.reverse()
-            } else {
-                comparison
-            }
+            typed::compare_order_cells(a, b, descending, nulls_first)
         });
     }
     let header = selected
