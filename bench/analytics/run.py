@@ -69,7 +69,7 @@ def execute_http(endpoint, sql, timeout):
 
 def verify_input(execute, sql, expected, timeout):
     output = execute(sql, timeout)
-    if output.strip() != expected.encode("utf-8").strip():
+    if output.rstrip(b"\r\n") != expected.encode("utf-8").rstrip(b"\r\n"):
         raise ValueError("preflight result differs from the expected output")
 
 
