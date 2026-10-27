@@ -3,7 +3,7 @@ use super::{ConstantValue, ParseError, Parser, Token};
 const MAX_DEPTH: usize = 16;
 
 pub(super) fn is_function(name: &str) -> bool {
-    matches!(name.to_ascii_uppercase().as_str(), "LENGTH" | "CHAR_LENGTH")
+    matches!(name.to_ascii_uppercase().as_str(), "LENGTH" | "CHAR_LENGTH" | "LOWER")
 }
 
 pub(super) fn parse(parser: &mut Parser) -> Result<ConstantValue, ParseError> {
@@ -25,6 +25,14 @@ fn parse_at_depth(parser: &mut Parser, depth: usize) -> Result<ConstantValue, Pa
                     i64::try_from(value.len())
                         .map_err(|_| ParseError("string length exceeds Int64".into()))?,
                 ),
+                None => ConstantValue::Null,
+            }
+        }
+        "LOWER" => {
+            let input = text_arg(parser, depth + 1)?;
+            require(parser, Token::RParen, "LOWER requires one argument")?;
+            match input {
+                Some(value) => ConstantValue::Text(value.to_ascii_lowercase()),
                 None => ConstantValue::Null,
             }
         }
