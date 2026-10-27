@@ -76,20 +76,22 @@ fn write_json_row<W: Write>(output: &mut W, headers: &[Vec<u8>], line: &[u8]) ->
         ));
     }
 
-    output.write_all(b"{")?;
+    let mut row = Vec::with_capacity(line.len() + headers.len() * 8 + 3);
+    row.write_all(b"{")?;
     for (index, (header, value)) in headers
         .iter()
         .zip(line.split(|byte| *byte == b'\t'))
         .enumerate()
     {
         if index > 0 {
-            output.write_all(b",")?;
+            row.write_all(b",")?;
         }
-        write_json_string(output, header)?;
-        output.write_all(b":")?;
-        write_json_value(output, value)?;
+        write_json_string(&mut row, header)?;
+        row.write_all(b":")?;
+        write_json_value(&mut row, value)?;
     }
-    output.write_all(b"}\n")
+    row.write_all(b"}\n")?;
+    output.write_all(&row)
 }
 
 // Keep NULL marker handling in one place for every JSONL field.
@@ -247,6 +249,18 @@ mod tests {
             String::from_utf8(writer.output).unwrap(),
             "{\"name\":\"abc\",\"amount\":\"12\"}\n"
         );
+    }
+
+    #[test]
+    fn invalid_late_field_does_not_write_partial_json() {
+        let mut writer = JsonlWriter::new(Vec::new());
+        writer.write_all(b"left\tright\n1\t2\n").unwrap();
+        let good = writer.output.clone();
+        assert_eq!(
+            writer.write_all(b"ok\tbad\\q\n").unwrap_err().kind(),
+            io::ErrorKind::InvalidData
+        );
+        assert_eq!(writer.output, good);
     }
 
     #[test]
