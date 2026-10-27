@@ -206,7 +206,10 @@ where
                     } else {
                         Vec::new()
                     };
-                    for &right_index in right_indices.iter().take(if options.any { 1 } else { usize::MAX })
+                    for &right_index in
+                        right_indices
+                            .iter()
+                            .take(if options.any { 1 } else { usize::MAX })
                     {
                         if let Some((column, not_null)) = options.null_filter {
                             let is_null = if column < left_names.len() {
@@ -689,8 +692,7 @@ pub fn execute_join<W: Write>(
         let mut matched = false;
         if let Some(key) = row_key(row, &left_keys) {
             if let Some(matches) = hash.get(&key) {
-                for &right_index in matches.iter().take(if query.any { 1 } else { usize::MAX })
-                {
+                for &right_index in matches.iter().take(if query.any { 1 } else { usize::MAX }) {
                     matched = true;
                     matched_right[right_index] = true;
                     let pair = (Some(left_index), Some(right_index));

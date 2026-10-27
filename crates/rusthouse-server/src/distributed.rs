@@ -329,7 +329,9 @@ mod tests {
 
     #[test]
     fn sums_counts_and_nullable_column_counts_safely() {
-        assert!(is_safe_count(&parse_select("SELECT count(*) FROM events").unwrap()));
+        assert!(is_safe_count(
+            &parse_select("SELECT count(*) FROM events").unwrap()
+        ));
         assert!(is_safe_count(
             &parse_select("SELECT count(name) FROM events WHERE id > 10").unwrap()
         ));

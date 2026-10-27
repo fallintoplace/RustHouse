@@ -131,10 +131,22 @@ mod tests {
 
     #[test]
     fn field_decoder_borrows_plain_and_null_fields() {
-        assert!(matches!(decode_markdown_field(b"plain", true).unwrap(), Cow::Borrowed(_)));
-        assert!(matches!(decode_markdown_field(b"\\N", true).unwrap(), Cow::Borrowed(_)));
-        assert!(matches!(decode_markdown_field(b"a\\tb", false).unwrap(), Cow::Borrowed(_)));
-        assert!(matches!(decode_markdown_field(b"a\\tb", true).unwrap(), Cow::Owned(_)));
+        assert!(matches!(
+            decode_markdown_field(b"plain", true).unwrap(),
+            Cow::Borrowed(_)
+        ));
+        assert!(matches!(
+            decode_markdown_field(b"\\N", true).unwrap(),
+            Cow::Borrowed(_)
+        ));
+        assert!(matches!(
+            decode_markdown_field(b"a\\tb", false).unwrap(),
+            Cow::Borrowed(_)
+        ));
+        assert!(matches!(
+            decode_markdown_field(b"a\\tb", true).unwrap(),
+            Cow::Owned(_)
+        ));
     }
 
     #[test]

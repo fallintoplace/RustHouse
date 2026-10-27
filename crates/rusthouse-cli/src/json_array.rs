@@ -95,7 +95,8 @@ impl<W: Write> JsonArraySink<W> {
     }
 
     fn finish_row(&mut self) -> io::Result<()> {
-        self.output.write_all(array_prefix(self.first, self.pretty))?;
+        self.output
+            .write_all(array_prefix(self.first, self.pretty))?;
         if self.pretty {
             write_pretty_row(&mut self.output, &self.row)?;
         } else {
@@ -113,7 +114,8 @@ impl<W: Write> JsonArraySink<W> {
                 "incomplete JSON row",
             ));
         }
-        self.output.write_all(array_suffix(self.first, self.pretty))?;
+        self.output
+            .write_all(array_suffix(self.first, self.pretty))?;
         self.output.flush()?;
         Ok(self.output)
     }
