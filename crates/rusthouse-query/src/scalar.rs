@@ -27,6 +27,7 @@ pub(super) fn is_function(name: &str) -> bool {
         || is_bitwise(name)
         || name.eq_ignore_ascii_case("GCD")
         || name.eq_ignore_ascii_case("LCM")
+        || name.eq_ignore_ascii_case("TRIANGULAR")
         || name.eq_ignore_ascii_case("CLAMP")
 }
 
@@ -164,6 +165,18 @@ fn parse_clamp(parser: &mut Parser, depth: usize) -> Result<i64, ParseError> {
     Ok(value.clamp(lower, upper))
 }
 
+/// Compute the triangular number with a wide intermediate product.
+fn parse_triangular(parser: &mut Parser, depth: usize) -> Result<i64, ParseError> {
+    require_token(parser, Token::LParen, "TRIANGULAR requires '('")?;
+    let value = expression(parser, depth + 1)?;
+    require_token(parser, Token::RParen, "TRIANGULAR requires ')'")?;
+    if value < 0 {
+        return Err(ParseError("TRIANGULAR requires a nonnegative value".into()));
+    }
+    let value = i128::from(value);
+    i64::try_from(value * (value + 1) / 2).map_err(|_| overflow())
+}
+
 fn gcd(mut left: u64, mut right: u64) -> u64 {
     while right != 0 {
         let remainder = left % right;
@@ -219,6 +232,9 @@ fn factor(parser: &mut Parser, depth: usize) -> Result<i64, ParseError> {
     }
     if parser.keyword("CLAMP") {
         return parse_clamp(parser, depth);
+    }
+    if parser.keyword("TRIANGULAR") {
+        return parse_triangular(parser, depth);
     }
     if matches!(parser.tokens.get(parser.index), Some(Token::Word(name)) if name.eq_ignore_ascii_case("GCD") || name.eq_ignore_ascii_case("LCM"))
     {
