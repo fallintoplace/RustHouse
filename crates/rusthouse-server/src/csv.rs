@@ -29,16 +29,17 @@ impl<W: Write> CsvWriter<W> {
                     "CSV row has a different column count",
                 ));
             }
-        } else {
-            self.columns = Some(field_count);
         }
+        let mut encoded = Vec::with_capacity(self.line.len() + 2);
         for (index, field) in self.line.split(|byte| *byte == b'\t').enumerate() {
             if index != 0 {
-                self.output.write_all(b",")?;
+                encoded.write_all(b",")?;
             }
-            write_csv_field(&mut self.output, field)?;
+            write_csv_field(&mut encoded, field)?;
         }
-        self.output.write_all(b"\r\n")?;
+        encoded.write_all(b"\r\n")?;
+        self.output.write_all(&encoded)?;
+        self.columns = Some(field_count);
         self.line.clear();
         Ok(())
     }
@@ -175,6 +176,23 @@ mod tests {
         write_csv_field(&mut output, &field).unwrap();
         assert_eq!(output.calls, 1);
         assert_eq!(output.bytes, field);
+    }
+
+    #[test]
+    fn invalid_late_field_does_not_write_partial_csv_row() {
+        let mut writer = CsvWriter::new(Vec::new());
+        writer.write_all(b"first\tsecond\n").unwrap();
+        let good = writer.output.clone();
+        assert_eq!(
+            writer.write_all(b"ok\tbad\\q\n").unwrap_err().kind(),
+            io::ErrorKind::InvalidData
+        );
+        assert_eq!(writer.output, good);
+
+        let mut writer = CsvWriter::new(Vec::new());
+        assert!(writer.write_all(b"bad\\q\n").is_err());
+        assert!(writer.output.is_empty());
+        assert_eq!(writer.columns, None);
     }
 
     #[test]
