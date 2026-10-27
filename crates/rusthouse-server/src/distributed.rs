@@ -383,10 +383,6 @@ fn merge_integer_sums(shards: &[(usize, Vec<u8>)], kind: &str) -> Result<Vec<u8>
     Ok(output)
 }
 
-/// Reduce grouped COUNT results by their canonical TSV-encoded key.
-/// Preserve first-seen key order, reject malformed rows, and only emit a
-/// complete bounded result. Shards may hold overlapping group *keys*, but
-/// the underlying source rows must be disjoint.
 fn merge_grouped_integer_sums(
     shards: &[(usize, Vec<u8>)],
     max_rows: usize,
@@ -452,14 +448,26 @@ fn merge_grouped_integer_sums(
             };
             if let Some(number) = partial {
                 if unsigned {
-                    let number = number.parse::<u128>().map_err(|_| MergeError::InvalidGroupedSum)?;
+                    let number = number
+                        .parse::<u128>()
+                        .map_err(|_| MergeError::InvalidGroupedSum)?;
                     groups[index].2 = Some(
-                        groups[index].2.unwrap_or(0).checked_add(number).ok_or(MergeError::SumOverflow)?
+                        groups[index]
+                            .2
+                            .unwrap_or(0)
+                            .checked_add(number)
+                            .ok_or(MergeError::SumOverflow)?,
                     );
                 } else {
-                    let number = number.parse::<i128>().map_err(|_| MergeError::InvalidGroupedSum)?;
+                    let number = number
+                        .parse::<i128>()
+                        .map_err(|_| MergeError::InvalidGroupedSum)?;
                     groups[index].1 = Some(
-                        groups[index].1.unwrap_or(0).checked_add(number).ok_or(MergeError::SumOverflow)?
+                        groups[index]
+                            .1
+                            .unwrap_or(0)
+                            .checked_add(number)
+                            .ok_or(MergeError::SumOverflow)?,
                     );
                 }
             }
@@ -489,6 +497,10 @@ fn merge_grouped_integer_sums(
     Ok(output)
 }
 
+/// Reduce grouped COUNT results by their canonical TSV-encoded key.
+/// Preserve first-seen key order, reject malformed rows, and only emit a
+/// complete bounded result. Shards may hold overlapping group *keys*, but
+/// the underlying source rows must be disjoint.
 fn merge_grouped_counts(
     shards: &[(usize, Vec<u8>)],
     max_rows: usize,
@@ -951,7 +963,8 @@ mod tests {
     #[test]
     fn accepts_grouped_integer_sum_without_global_clauses() {
         assert!(is_safe_grouped_sum(
-            &parse_select("SELECT region, sum(amount) FROM events WHERE id > 0 GROUP BY region").unwrap()
+            &parse_select("SELECT region, sum(amount) FROM events WHERE id > 0 GROUP BY region")
+                .unwrap()
         ));
         for sql in [
             "SELECT region, sum(amount) FROM events GROUP BY region LIMIT 1",
@@ -984,16 +997,26 @@ mod tests {
         assert_eq!(
             merge_grouped_integer_sums(
                 &[shard(10, "id\tsum(amount)\n1\tNULL\n")],
-                1, "UInt64", "id", "amount"
-            ).unwrap(),
+                1,
+                "UInt64",
+                "id",
+                "amount"
+            )
+            .unwrap(),
             b"id\tsum(amount)\n1\tNULL\n"
         );
         assert_eq!(
             merge_grouped_integer_sums(
-                &[shard(10, "id\tsum(amount)\n1\t18446744073709551615\n"),
-                  shard(10, "id\tsum(amount)\n1\t2\n")],
-                1, "UInt64", "id", "amount"
-            ).unwrap(),
+                &[
+                    shard(10, "id\tsum(amount)\n1\t18446744073709551615\n"),
+                    shard(10, "id\tsum(amount)\n1\t2\n")
+                ],
+                1,
+                "UInt64",
+                "id",
+                "amount"
+            )
+            .unwrap(),
             b"id\tsum(amount)\n1\t18446744073709551617\n"
         );
     }
@@ -1007,38 +1030,53 @@ mod tests {
             "region\tsum(amount)\na\t\n",
         ] {
             assert_eq!(
-                merge_grouped_integer_sums(
-                    &[shard(10, bad)], 10, "Int64", "region", "amount"
-                ),
+                merge_grouped_integer_sums(&[shard(10, bad)], 10, "Int64", "region", "amount"),
                 Err(MergeError::InvalidGroupedSum)
             );
         }
         assert_eq!(
             merge_grouped_integer_sums(
                 &[shard(1, "region\tsum(amount)\na\t1\n")],
-                10, "Int64", "region", "amount"
+                10,
+                "Int64",
+                "region",
+                "amount"
             ),
             Err(MergeError::ShardRowLimit)
         );
         assert_eq!(
             merge_grouped_integer_sums(
                 &[shard(10, "region\tsum(amount)\na\t1\nb\t2\n")],
-                1, "Int64", "region", "amount"
+                1,
+                "Int64",
+                "region",
+                "amount"
             ),
             Err(MergeError::CoordinatorLimit)
         );
         assert_eq!(
             merge_grouped_integer_sums(
                 &[shard(10, "other\tsum(amount)\na\t1\n")],
-                10, "Int64", "region", "amount"
+                10,
+                "Int64",
+                "region",
+                "amount"
             ),
             Err(MergeError::SchemaMismatch)
         );
         assert_eq!(
             merge_grouped_integer_sums(
-                &[shard(10, "region\tsum(amount)\na\t170141183460469231731687303715884105727\n"),
-                  shard(10, "region\tsum(amount)\na\t1\n")],
-                10, "Int128", "region", "amount"
+                &[
+                    shard(
+                        10,
+                        "region\tsum(amount)\na\t170141183460469231731687303715884105727\n"
+                    ),
+                    shard(10, "region\tsum(amount)\na\t1\n")
+                ],
+                10,
+                "Int128",
+                "region",
+                "amount"
             ),
             Err(MergeError::SumOverflow)
         );
