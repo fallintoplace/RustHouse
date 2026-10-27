@@ -9,6 +9,7 @@ pub(super) fn is_function(name: &str) -> bool {
         "LENGTH"
             | "CHAR_LENGTH"
             | "BTRIM"
+            | "CHR"
             | "LOWER"
             | "UPPER"
             | "REVERSE"
@@ -459,6 +460,21 @@ fn parse_at_depth(parser: &mut Parser, depth: usize) -> Result<ConstantValue, Pa
                     }
                 }
                 _ => ConstantValue::Null,
+            }
+        }
+        "CHR" => {
+            let input = integer_arg(parser, depth + 1)?;
+            require(parser, Token::RParen, "CHR requires one argument")?;
+            match input {
+                Some(value) => {
+                    let character = u32::try_from(value)
+                        .ok()
+                        .filter(|code| *code != 0)
+                        .and_then(char::from_u32)
+                        .ok_or_else(|| ParseError("CHR requires a nonzero Unicode scalar".into()))?;
+                    ConstantValue::Text(character.to_string())
+                }
+                None => ConstantValue::Null,
             }
         }
         _ => return Err(ParseError(format!("unsupported string function: {name}"))),
