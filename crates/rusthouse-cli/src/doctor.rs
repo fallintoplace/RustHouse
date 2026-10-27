@@ -306,9 +306,7 @@ mod tests {
 
     #[test]
     fn doctor_parser_accepts_only_explicit_hash_flag() {
-        let parse = |args: &[&str]| {
-            parse_doctor_directory(args.iter().map(OsString::from))
-        };
+        let parse = |args: &[&str]| parse_doctor_directory(args.iter().map(OsString::from));
         assert_eq!(
             parse(&["--database", "db"]).unwrap(),
             (OsString::from("db"), false)
