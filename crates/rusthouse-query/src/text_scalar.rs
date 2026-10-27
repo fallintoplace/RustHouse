@@ -24,6 +24,7 @@ pub(super) fn is_function(name: &str) -> bool {
             | "STARTS_WITH"
             | "RIGHT"
             | "ENDS_WITH"
+            | "STRIP_SUFFIX"
             | "REPEAT"
             | "RPAD"
     )
@@ -381,6 +382,21 @@ fn parse_at_depth(parser: &mut Parser, depth: usize) -> Result<ConstantValue, Pa
                 (Some(input), Some(suffix)) => {
                     ConstantValue::Integer(i64::from(input.ends_with(suffix.as_str())))
                 }
+                _ => ConstantValue::Null,
+            }
+        }
+        "STRIP_SUFFIX" => {
+            let input = text_arg(parser, depth + 1)?;
+            require(parser, Token::Comma, "STRIP_SUFFIX requires a suffix")?;
+            let suffix = text_arg(parser, depth + 1)?;
+            require(parser, Token::RParen, "expected ')' after STRIP_SUFFIX arguments")?;
+            match (input, suffix) {
+                (Some(input), Some(suffix)) => ConstantValue::Text(
+                    input
+                        .strip_suffix(suffix.as_str())
+                        .unwrap_or(input.as_str())
+                        .to_owned(),
+                ),
                 _ => ConstantValue::Null,
             }
         }
