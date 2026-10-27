@@ -167,6 +167,12 @@ fn add_pair(pairs: &mut Vec<Pair>, pair: Pair) -> Result<(), ExecutionError> {
     Ok(())
 }
 
+#[derive(Clone, Copy)]
+struct ProbeOptions {
+    materialize_rows: bool,
+    any: bool,
+}
+
 /// Scan the probe side without retaining its rows or joined result pairs.
 fn probe_inner<F>(
     left_path: &Path,
@@ -174,8 +180,7 @@ fn probe_inner<F>(
     left_keys: &[usize],
     right_rows: &[Vec<typed::Cell>],
     hash: &HashMap<Vec<typed::Key>, Vec<usize>>,
-    materialize_rows: bool,
-    any: bool,
+    options: ProbeOptions,
     mut emit: F,
 ) -> Result<usize, ExecutionError>
 where
@@ -189,7 +194,7 @@ where
                 if let Some(right_indices) = hash.get(&key) {
                     // The preflight pass only counts matches. In the output pass,
                     // build the left projection once per matching row.
-                    let left_row = if materialize_rows {
+                    let left_row = if options.materialize_rows {
                         batch
                             .iter()
                             .map(|column| typed::cell(column, index))
@@ -197,7 +202,7 @@ where
                     } else {
                         Vec::new()
                     };
-                    for &right_index in right_indices.iter().take(if any { 1 } else { usize::MAX })
+                    for &right_index in right_indices.iter().take(if options.any { 1 } else { usize::MAX })
                     {
                         if matches >= MAX_RESULT_ROWS {
                             return Err(invalid("JOIN produces more than 65536 rows"));
@@ -259,8 +264,10 @@ fn execute_streaming_inner<W: Write>(
         left_keys,
         &right_rows,
         &hash,
-        false,
-        query.any,
+        ProbeOptions {
+            materialize_rows: false,
+            any: query.any,
+        },
         |_, _| Ok(()),
     )?;
 
@@ -282,8 +289,10 @@ fn execute_streaming_inner<W: Write>(
         left_keys,
         &right_rows,
         &hash,
-        true,
-        query.any,
+        ProbeOptions {
+            materialize_rows: true,
+            any: query.any,
+        },
         |left, right| {
             if position >= query.offset && position < end {
                 for (index, (column, _, _)) in selected.iter().enumerate() {
