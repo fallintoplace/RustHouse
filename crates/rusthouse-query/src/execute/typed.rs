@@ -618,7 +618,6 @@ pub(super) fn execute_typed<W: Write>(
         .iter()
         .map(|name| *indices.get(name).unwrap())
         .collect::<Vec<_>>();
-    let mut scan = TypedQueryReader::open(part, &names)?;
     let header = match &query.projection {
         Projection::Count => "count".to_string(),
         Projection::CountColumn { column } => format!("count({column})"),
@@ -630,6 +629,7 @@ pub(super) fn execute_typed<W: Write>(
     if query.limit == Some(0) {
         return Ok(());
     }
+    let mut scan = TypedQueryReader::open(part, &names)?;
     let is_count = matches!(query.projection, Projection::Count);
     let is_count_column = matches!(query.projection, Projection::CountColumn { .. });
     let is_count_distinct = matches!(query.projection, Projection::CountDistinct { .. });
