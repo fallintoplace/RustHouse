@@ -3,7 +3,7 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from run import benchmark_one, load_queries, select_queries, summary, summarize_coverage
+from run import benchmark_one, load_queries, official_22_coverage, select_queries, summary, summarize_coverage
 
 class RunnerTests(unittest.TestCase):
     def test_query_discovery_is_numeric(self):
@@ -38,6 +38,15 @@ class RunnerTests(unittest.TestCase):
         mismatched = benchmark_one(6, "SELECT 1", lambda _: b"2\n", 3, 1, b"1\n")
         self.assertEqual(mismatched["status"], "mismatch")
         self.assertEqual(mismatched["timings_seconds"], [])
+
+    def test_official_22_denominator_is_not_selected_query_count(self):
+        few = official_22_coverage([(1, "SELECT 1"), (6, "SELECT 6")])
+        self.assertEqual(few["available_queries"], 2)
+        self.assertEqual(len(few["missing_query_ids"]), 20)
+        self.assertEqual(few["coverage_percent"], 9.09)
+        complete = official_22_coverage([(i, "SELECT 1") for i in range(1, 23)])
+        self.assertEqual(complete["coverage_percent"], 100.0)
+        self.assertEqual(complete["unexpected_query_ids"], [])
 
     def test_error_and_timeout(self):
         def broken(_):

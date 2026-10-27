@@ -82,6 +82,17 @@ def summarize_coverage(results):
     }
 
 
+def official_22_coverage(queries):
+    present = {number for number, _ in queries}
+    expected = set(range(1, 23))
+    return {
+        "available_queries": len(present & expected),
+        "missing_query_ids": sorted(expected - present),
+        "unexpected_query_ids": sorted(present - expected),
+        "coverage_percent": round(100 * len(present & expected) / 22, 2),
+    }
+
+
 def select_queries(queries, spec):
     if not spec:
         return queries
@@ -102,6 +113,8 @@ def main(argv=None):
     parser.add_argument("--queries-dir", type=Path, required=True)
     parser.add_argument("--reference-dir", type=Path)
     parser.add_argument("--only", help="Comma-separated query IDs, e.g. 1,6,12")
+    parser.add_argument("--require-22", action="store_true",
+                        help="Reject query directories missing any of the 22 official IDs")
     parser.add_argument("--runs", type=int, default=5)
     parser.add_argument("--warmups", type=int, default=1)
     parser.add_argument("--timeout", type=float, default=120)
@@ -117,6 +130,10 @@ def main(argv=None):
     except (OSError, ValueError) as exc:
         parser.error(str(exc))
     try:
+        official_coverage = official_22_coverage(queries)
+        if args.require_22 and (official_coverage["missing_query_ids"]
+                                or official_coverage["unexpected_query_ids"]):
+            parser.error("query directory must contain exactly q01.sql to q22.sql")
         queries = select_queries(queries, args.only)
     except ValueError as exc:
         parser.error(str(exc))
@@ -152,6 +169,7 @@ def main(argv=None):
         "runs": args.runs, "warmups": args.warmups,
         "reference_checked": args.reference_dir is not None,
         "coverage": summarize_coverage(results),
+        "official_22_coverage": official_coverage,
         "results": results,
     }
     emit_json(report, args.output)
