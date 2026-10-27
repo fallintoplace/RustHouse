@@ -193,7 +193,9 @@ fn main() -> io::Result<()> {
                 ));
             }
             "--peer" => {
-                let address = args.next().ok_or_else(|| io::Error::other("missing peer"))?;
+                let address = args
+                    .next()
+                    .ok_or_else(|| io::Error::other("missing peer"))?;
                 let peer = Peer::parse(&address).map_err(io::Error::other)?;
                 peers.push(peer);
             }
