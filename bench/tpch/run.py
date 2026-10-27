@@ -83,12 +83,23 @@ def summarize_coverage(results):
 
 
 def select_queries(queries, spec):
-    if not spec:
+    if spec is None:
         return queries
+    selected = set()
     try:
-        selected = {int(fragment) for fragment in spec.split(",")}
+        for fragment in spec.split(","):
+            parts = fragment.strip().split("-")
+            if not 1 <= len(parts) <= 2 or not all(
+                part.isascii() and part.isdecimal() for part in parts
+            ):
+                raise ValueError("invalid query ID or range")
+            first = int(parts[0])
+            last = int(parts[-1])
+            if first < 1 or last < first or last > 99:
+                raise ValueError("query IDs must be in increasing order within 1..99")
+            selected.update(range(first, last + 1))
     except ValueError as exc:
-        raise ValueError("--only must contain comma-separated integer IDs") from exc
+        raise ValueError("--only must contain query IDs or ranges such as 1,6,10-12") from exc
     available = {number for number, _ in queries}
     if not selected or not selected.issubset(available):
         raise ValueError("--only contains an unavailable query ID")

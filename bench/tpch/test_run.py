@@ -39,6 +39,17 @@ class RunnerTests(unittest.TestCase):
         self.assertEqual(mismatched["status"], "mismatch")
         self.assertEqual(mismatched["timings_seconds"], [])
 
+    def test_select_query_ranges_and_reject_gaps(self):
+        queries = [(number, f"SELECT {number}") for number in range(1, 23)]
+        result = select_queries(queries, " 1, 6, 10-12 ")
+        self.assertEqual([number for number, _ in result], [1, 6, 10, 11, 12])
+        for spec in ("", "1-", "5-3", "1,,2", "1-200", "-1"):
+            with self.subTest(spec=spec):
+                with self.assertRaises(ValueError):
+                    select_queries(queries, spec)
+        with self.assertRaisesRegex(ValueError, "unavailable"):
+            select_queries([(1, "SELECT 1")], "1-2")
+
     def test_error_and_timeout(self):
         def broken(_):
             raise RuntimeError("unsupported statement")
