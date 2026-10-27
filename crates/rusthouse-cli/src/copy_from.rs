@@ -133,28 +133,42 @@ fn parse_tsv(data: &str) -> Result<Vec<Vec<Option<String>>>, String> {
                 row.push(None);
                 continue;
             }
-            let mut decoded = String::new();
+            let mut decoded = Vec::new();
             let mut chars = field.chars();
             while let Some(ch) = chars.next() {
                 if ch != '\\' {
-                    decoded.push(ch);
+                    let mut bytes = [0; 4];
+                    decoded.extend_from_slice(ch.encode_utf8(&mut bytes).as_bytes());
                     continue;
                 }
                 let escaped = chars.next().ok_or("TSV ends with an incomplete escape")?;
-                decoded.push(match escaped {
-                    't' => '\t',
-                    'n' => '\n',
-                    'r' => '\r',
-                    '0' => '\0',
-                    'b' => '\u{8}',
-                    'f' => '\u{c}',
-                    'v' => '\u{b}',
-                    '\\' => '\\',
+                match escaped {
+                    't' => decoded.push(b'\t'),
+                    'n' => decoded.push(b'\n'),
+                    'r' => decoded.push(b'\r'),
+                    '0' => decoded.push(0),
+                    'b' => decoded.push(8),
+                    'f' => decoded.push(12),
+                    'v' => decoded.push(11),
+                    '\\' => decoded.push(b'\\'),
+                    'x' => {
+                        let high = chars
+                            .next()
+                            .and_then(|digit| digit.to_digit(16))
+                            .ok_or("invalid TSV hex escape")?;
+                        let low = chars
+                            .next()
+                            .and_then(|digit| digit.to_digit(16))
+                            .ok_or("invalid TSV hex escape")?;
+                        decoded.push(((high << 4) | low) as u8);
+                    }
                     'N' => return Err("TSV NULL marker must occupy the whole field".into()),
                     _ => return Err(format!("unsupported TSV escape: \\{escaped}")),
-                });
+                }
             }
-            row.push(Some(decoded));
+            row.push(Some(
+                String::from_utf8(decoded).map_err(|_| "invalid UTF-8 in TSV field")?,
+            ));
         }
         records.push(row);
     }
@@ -258,6 +272,15 @@ mod tests {
                 ],
             ]
         );
+    }
+
+    #[test]
+    fn imports_hex_escaped_tsv_bytes_and_validates_utf8() {
+        let rows = parse_tsv("value\ncaf\\xC3\\xA9\\x01\n").unwrap();
+        assert_eq!(rows[1][0], Some("café\u{1}".into()));
+        for invalid in ["\\xG1\n", "\\x1\n", "\\xFF\n"] {
+            assert!(parse_tsv(invalid).is_err(), "{invalid:?}");
+        }
     }
 
     #[test]
