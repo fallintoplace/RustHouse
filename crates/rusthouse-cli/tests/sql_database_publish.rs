@@ -32,7 +32,6 @@ fn only_published_part_directories_are_visible_to_select() {
     );
     let parts = db.join("items.parts");
 
-    // Emulate an interrupted INSERT from the previous staging layout.
     let orphan = parts.join(".pending-interrupted");
     fs::create_dir(&orphan).unwrap();
     fs::write(orphan.join("count.txt"), "2\n").unwrap();

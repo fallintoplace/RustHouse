@@ -155,16 +155,12 @@ fn interrupted_rename_preserves_a_readable_table_at_each_stage() {
             .success()
     );
 
-    // Simulate the state after publishing the destination schema but before
-    // the part directory has moved. The original table is still usable.
     fs::hard_link(db.join("source.schema"), db.join("destination.schema")).unwrap();
     assert_eq!(
         sql("SELECT id FROM source ORDER BY id", &db).stdout,
         b"id\n9\n10\n"
     );
 
-    // Simulate a crash after the part directory has moved but before the old
-    // schema is removed. The destination is now a complete, readable table.
     fs::rename(db.join("source.parts"), db.join("destination.parts")).unwrap();
     assert_eq!(
         sql("SELECT id FROM destination ORDER BY id", &db).stdout,
