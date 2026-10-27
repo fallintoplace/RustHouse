@@ -40,6 +40,7 @@ pub(super) fn is_function(name: &str) -> bool {
             | "STRPOS"
             | "COUNT_SUBSTRING"
             | "NULLIF"
+            | "LAST_INDEX_OF"
             | "LEFT"
             | "REPLACE_FIRST"
             | "STARTS_WITH"
@@ -681,6 +682,25 @@ fn parse_at_depth(parser: &mut Parser, depth: usize) -> Result<ConstantValue, Pa
                 (Some(input), Some(Some(characters))) => ConstantValue::Text(
                     input.trim_end_matches(|ch| characters.contains(ch)).to_owned(),
                 ),
+                _ => ConstantValue::Null,
+            }
+        }
+        "LAST_INDEX_OF" => {
+            let input = text_arg(parser, depth + 1)?;
+            require(parser, Token::Comma, "LAST_INDEX_OF requires a substring")?;
+            let needle = text_arg(parser, depth + 1)?;
+            require(parser, Token::RParen, "expected ')' after LAST_INDEX_OF arguments")?;
+            match (input, needle) {
+                (Some(input), Some(needle)) => {
+                    let index = input
+                        .rfind(needle.as_str())
+                        .map(|byte_index| input[..byte_index].chars().count() + 1)
+                        .unwrap_or(0);
+                    ConstantValue::Integer(
+                        i64::try_from(index)
+                            .map_err(|_| ParseError("LAST_INDEX_OF exceeds Int64".into()))?,
+                    )
+                }
                 _ => ConstantValue::Null,
             }
         }
