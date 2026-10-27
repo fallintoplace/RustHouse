@@ -1,0 +1,18 @@
+{
+  "name": "predicate-selectivity",
+  "description": "Measure equality, inequality and conjunctive predicate selectivity",
+  "queries": [
+    {
+      "name": "paid-events",
+      "sql": "SELECT COUNT(*) FROM events WHERE status = 'paid'"
+    },
+    {
+      "name": "european-events",
+      "sql": "SELECT COUNT(*) FROM events WHERE region = 'EU'"
+    },
+    {
+      "name": "nonfailed-europe",
+      "sql": "SELECT COUNT(*) FROM events WHERE region = 'EU' AND status != 'failed'"
+    }
+  ]
+}
