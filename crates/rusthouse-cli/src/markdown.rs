@@ -1,3 +1,5 @@
+use crate::tsv_escape::decode_tsv_field;
+use std::borrow::Cow;
 use std::io::{self, Write};
 
 const MAX_LINE_BYTES: usize = 1024 * 1024;
@@ -26,7 +28,7 @@ impl<W: Write> MarkdownWriter<W> {
                 "Markdown row does not match header column count",
             ));
         }
-        write_markdown_row(&mut self.output, &self.line)?;
+        write_markdown_row(&mut self.output, &self.line, self.columns.is_some())?;
         if self.columns.is_none() {
             write_header_separator(&mut self.output, width)?;
             self.columns = Some(width);
@@ -36,11 +38,21 @@ impl<W: Write> MarkdownWriter<W> {
     }
 }
 
-fn write_markdown_row<W: Write>(output: &mut W, line: &[u8]) -> io::Result<()> {
+fn write_markdown_row<W: Write>(output: &mut W, line: &[u8], data_row: bool) -> io::Result<()> {
+    let fields = line
+        .split(|&byte| byte == b'\t')
+        .map(|field| {
+            if data_row && field != b"\\N" && field.contains(&b'\\') {
+                decode_tsv_field(field).map(Cow::Owned)
+            } else {
+                Ok(Cow::Borrowed(field))
+            }
+        })
+        .collect::<io::Result<Vec<_>>>()?;
     output.write_all(b"|")?;
-    for field in line.split(|&byte| byte == b'\t') {
+    for field in fields {
         output.write_all(b" ")?;
-        write_cell(output, field)?;
+        write_cell(output, field.as_ref())?;
         output.write_all(b" |")?;
     }
     output.write_all(b"\n")
@@ -118,7 +130,7 @@ mod tests {
     #[test]
     fn row_renderer_keeps_cell_escaping_independent_of_writer_state() {
         let mut output = Vec::new();
-        write_markdown_row(&mut output, b"first|col\t<a>&b").unwrap();
+        write_markdown_row(&mut output, b"first|col\t<a>&b", false).unwrap();
         assert_eq!(output, b"| first\\|col | &lt;a&gt;&amp;b |\n");
     }
 
@@ -127,7 +139,7 @@ mod tests {
         let mut writer = MarkdownWriter::new(Vec::new());
         writer.write_all(b"a|b\tpath\nx").unwrap();
         writer.flush().unwrap();
-        writer.write_all(b"y\tz\\q\n").unwrap();
+        writer.write_all(b"y\tz\\\\q\n").unwrap();
         assert_eq!(
             writer.output,
             b"| a\\|b | path |\n| --- | --- |\n| xy | z\\\\q |\n"
@@ -154,6 +166,24 @@ mod tests {
             writer.output,
             b"| name | value |\n| --- | --- |\n| ESC&#27; | NUL&#0;DEL&#127; |\n"
         );
+    }
+
+    #[test]
+    fn decodes_tsv_escapes_without_corrupting_markdown_cells() {
+        let mut writer = MarkdownWriter::new(Vec::new());
+        writer
+            .write_all(b"value\none\\ttwo\\nthree\\\\tail\n")
+            .unwrap();
+        assert_eq!(
+            writer.output,
+            b"| value |\n| --- |\n| one&#9;two&#10;three\\\\tail |\n"
+        );
+
+        let mut writer = MarkdownWriter::new(Vec::new());
+        writer.write_all(b"col\n").unwrap();
+        let before = writer.output.clone();
+        assert!(writer.write_all(b"bad\\q\n").is_err());
+        assert_eq!(writer.output, before);
     }
 
     #[test]
