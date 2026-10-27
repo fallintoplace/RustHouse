@@ -191,6 +191,12 @@ pub enum Predicate {
         column: String,
         negated: bool,
     },
+    /// SQL NULL-safe equality / inequality against a non-NULL literal.
+    DistinctFrom {
+        column: String,
+        value: String,
+        negated: bool,
+    },
     Like {
         column: String,
         pattern: String,
@@ -207,6 +213,7 @@ impl Predicate {
             | Self::NotIn { column, .. }
             | Self::NotBetween { column, .. }
             | Self::IsNull { column, .. }
+            | Self::DistinctFrom { column, .. }
             | Self::Like { column, .. } => column,
         }
     }
@@ -999,13 +1006,26 @@ fn parse_select_tokens(tokens: Vec<Token>) -> Result<Select, ParseError> {
                     return Err(ParseError("unexpected NOT before IS".into()));
                 }
                 let negated = parser.keyword("NOT") ^ prefix_not;
-                if !parser.keyword("NULL") {
-                    return Err(ParseError("expected NULL after IS".into()));
-                }
-                branches
-                    .last_mut()
-                    .unwrap()
-                    .push(Predicate::IsNull { column, negated });
+                let predicate = if parser.keyword("DISTINCT") {
+                    if !parser.keyword("FROM") {
+                        return Err(ParseError("IS DISTINCT requires FROM".into()));
+                    }
+                    if parser.keyword("NULL") {
+                        // x IS DISTINCT FROM NULL is x IS NOT NULL.
+                        Predicate::IsNull { column, negated: !negated }
+                    } else {
+                        Predicate::DistinctFrom {
+                            column,
+                            value: parser.literal()?,
+                            negated,
+                        }
+                    }
+                } else if parser.keyword("NULL") {
+                    Predicate::IsNull { column, negated }
+                } else {
+                    return Err(ParseError("expected NULL or DISTINCT FROM after IS".into()));
+                };
+                branches.last_mut().unwrap().push(predicate);
                 total_conditions += 1;
             } else if let Some(case_insensitive) = parser.like_keyword() {
                 let pattern = match parser.tokens.get(parser.index) {
