@@ -1,4 +1,3 @@
-//! DELETE FROM named_table [WHERE ...] using the existing SELECT predicate grammar.
 use crate::{ParseError, Projection, Select, Source, parse_select};
 
 fn keyword<'a>(input: &'a str, expected: &str) -> Option<&'a str> {
@@ -14,7 +13,6 @@ fn keyword<'a>(input: &'a str, expected: &str) -> Option<&'a str> {
     Some(rest.trim_start())
 }
 
-/// Supported only for persistent local tables. No ordering or LIMIT is accepted.
 pub fn parse_delete(sql: &str) -> Result<Option<Select>, ParseError> {
     let Some(rest) = keyword(sql, "DELETE") else {
         return Ok(None);

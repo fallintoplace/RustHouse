@@ -1,4 +1,3 @@
-//! In-memory, bounded equi-join over validated immutable typed snapshots.
 use super::{ExecutionError, Number, typed};
 use crate::{JoinColumn, JoinSelect, JoinType};
 use rusthouse_storage::{TypedColumn, TypedQueryReader, inspect_query_source};
@@ -6,11 +5,8 @@ use std::collections::HashMap;
 use std::io::Write;
 use std::path::Path;
 
-// Ordered and outer joins retain both inputs, bounded by row count and bytes.
 const MAX_INPUT_ROWS: u64 = 16_384;
 const MAX_RESULT_ROWS: usize = 65_536;
-// Unordered INNER joins can build a larger hash side than sorted/outer joins.
-// Bound retained cells as well as row count to protect against wide String rows.
 const MAX_STREAM_BUILD_ROWS: u64 = 32_768;
 const MAX_STREAM_BUILD_BYTES: usize = 32 * 1024 * 1024;
 
@@ -71,7 +67,6 @@ fn read_rows(
         return Err(invalid("JOIN requires nonempty table schemas"));
     }
     let mut reader = TypedQueryReader::open(path, names)?;
-    // expected_rows is already bounded by row_limit, so reserve once for the build.
     let mut rows = Vec::with_capacity(expected_rows as usize);
     let mut retained_bytes = 0usize;
     while let Some(batch) = reader.next_batch()? {
@@ -83,9 +78,6 @@ fn read_rows(
                 .iter()
                 .map(|column| typed::cell(column, row_index))
                 .collect();
-            // Include row/Cell storage and variable-width payload. The hash
-            // table adds overhead, so this is a conservative input budget,
-            // not a guarantee about total process RSS.
             let row_bytes = cells
                 .len()
                 .checked_mul(std::mem::size_of::<typed::Cell>())
@@ -130,8 +122,6 @@ fn row_key(row: &[typed::Cell], indices: &[usize]) -> Option<Vec<typed::Key>> {
     Some(result)
 }
 
-// Build the probe key directly from its batch columns so misses never
-// materialize the full row, which may contain wide String payloads.
 fn batch_key(batch: &[TypedColumn], row: usize, indices: &[usize]) -> Option<Vec<typed::Key>> {
     let mut result = Vec::with_capacity(indices.len());
     for &index in indices {
@@ -175,7 +165,6 @@ struct ProbeOptions {
     null_filter: Option<(usize, bool)>,
 }
 
-/// Scan the probe side without retaining its rows or joined result pairs.
 fn probe_inner<F>(
     left_path: &Path,
     left_names: &[String],
@@ -197,8 +186,6 @@ where
         for index in 0..batch[0].len() {
             if let Some(key) = batch_key(&batch, index, left_keys) {
                 if let Some(right_indices) = hash.get(&key) {
-                    // The preflight pass only counts matches. In the output pass,
-                    // build the left projection once per matching row.
                     let left_row = if options.materialize_rows {
                         batch
                             .iter()
@@ -241,9 +228,6 @@ where
     Ok(matches)
 }
 
-/// For unordered INNER joins, build only the small right side and stream the
-/// left side twice. A bounded page needs only its prefix; unbounded or
-/// oversized requests still validate the 65,536-result limit before output.
 struct InnerJoinColumns<'a> {
     left_names: &'a [String],
     right_names: &'a [String],
@@ -268,8 +252,6 @@ fn execute_streaming_inner<W: Write>(
         right_keys,
         null_filter,
     } = columns;
-    // The probe side is scanned in batches and never retained. Keep the
-    // hash-build and matched-output limits, not an artificial probe-row cap.
     let right_meta = inspect_query_source(right_path)?;
     let right_rows = read_rows(
         right_path,
@@ -284,9 +266,6 @@ fn execute_streaming_inner<W: Write>(
             hash.entry(key).or_default().push(index);
         }
     }
-    // A LIMIT that fits the output budget can page through more than
-    // 65,536 matched pairs without retaining them all. Without such a LIMIT,
-    // continue to reject oversized results before emitting the header.
     let stop_after = query
         .limit
         .filter(|&limit| limit <= MAX_RESULT_ROWS)
@@ -352,9 +331,6 @@ fn execute_streaming_inner<W: Write>(
     Ok(())
 }
 
-/// Stream the right input when it is too large to retain, hashing only the
-/// smaller left input. SELECT columns still follow their original left/right
-/// bindings; only the unordered probe traversal changes.
 fn probe_right<F>(
     right_path: &Path,
     right_names: &[String],
@@ -373,7 +349,6 @@ where
     let mut reader = TypedQueryReader::open(right_path, right_names)?;
     let mut matches = 0usize;
     let left_width = left_rows.first().map_or(0, Vec::len);
-    // Each retained left row can match only its first right row.
     let mut seen_left = options.any.then(|| vec![false; left_rows.len()]);
     'scan: while let Some(batch) = reader.next_batch()? {
         for index in 0..batch[0].len() {
@@ -456,7 +431,6 @@ fn execute_streaming_right<W: Write>(
         .limit
         .filter(|&limit| limit <= MAX_RESULT_ROWS)
         .and_then(|limit| query.offset.checked_add(limit));
-    // Validate cardinality before sending a header or output rows.
     probe_right(
         right_path,
         right_names,
@@ -517,7 +491,6 @@ fn execute_streaming_right<W: Write>(
     Ok(())
 }
 
-/// Evaluate a two-table JOIN using typed values, not serialized TSV.
 pub fn execute_join<W: Write>(
     query: &JoinSelect,
     left_path: &Path,
@@ -562,8 +535,6 @@ pub fn execute_join<W: Write>(
             .iter()
             .enumerate()
             .map(|(index, name)| {
-                // A USING key appears once in SELECT *. For unmatched right
-                // rows, its value comes from the right side.
                 let fallback = if query.using_keys.contains(name) {
                     right_names
                         .iter()
@@ -626,8 +597,6 @@ pub fn execute_join<W: Write>(
     }
 
     if query.kind == JoinType::Inner && order.is_none() {
-        // A very large right table can be the streamed side if the left fits
-        // the same bounded hash-build budget.
         if right_meta.rows > MAX_STREAM_BUILD_ROWS && left_meta.rows <= MAX_STREAM_BUILD_ROWS {
             return execute_streaming_right(
                 query,

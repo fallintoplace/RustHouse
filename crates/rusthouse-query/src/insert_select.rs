@@ -1,4 +1,3 @@
-//! Bounded INSERT INTO table [(columns)] SELECT ... parser.
 use super::{ParseError, Parser, Select, Token, parse_select_tokens, tokenize};
 use std::collections::HashSet;
 

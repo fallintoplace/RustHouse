@@ -105,7 +105,6 @@ fn remember_distinct(
     values: &[Number],
 ) -> Result<bool, ExecutionError> {
     let key = values.iter().copied().map(NumberKey::from).collect();
-    // At capacity, duplicates are still valid but new unique rows are not.
     if seen.len() >= MAX_DISTINCT_ROWS {
         if seen.contains(&key) {
             return Ok(false);
@@ -152,7 +151,6 @@ fn write_header<W: Write>(
     Ok(())
 }
 
-/// Reuse the typed SELECT predicate semantics for bounded local mutations.
 pub struct RowPredicate {
     branches: Vec<Vec<typed::Condition>>,
 }
@@ -194,9 +192,6 @@ pub fn execute<W: Write>(
     Ok(())
 }
 
-/// Evaluate filtered COUNT independently on immutable parts, then reduce the
-/// partial counts. Skip small snapshots where thread startup costs dominate.
-/// An unfiltered COUNT already has a cheaper metadata-only path.
 fn parallel_filtered_count(query: &Select, source: &Path) -> Result<Option<u64>, ExecutionError> {
     if !matches!(query.projection, Projection::Count)
         || (query.predicates.is_empty() && query.or_predicates.is_empty())
@@ -218,8 +213,6 @@ fn parallel_filtered_count(query: &Select, source: &Path) -> Result<Option<u64>,
     if parts.len() < MIN_PARALLEL_PARTS || workers < 2 {
         return Ok(None);
     }
-    // Validate all part schemas before executing any partial count. A mismatched
-    // or incomplete snapshot must never produce a plausible partial answer.
     inspect_query_source(source)?;
     let chunk_size = parts.len().div_ceil(workers);
     let total = std::thread::scope(|scope| -> Result<u64, ExecutionError> {
@@ -231,7 +224,6 @@ fn parallel_filtered_count(query: &Select, source: &Path) -> Result<Option<u64>,
                     let mut buffer = Vec::new();
                     for part in chunk {
                         buffer.clear();
-                        // A single-part source avoids re-entering this parallel path.
                         execute(query, Some(part), &mut buffer)?;
                         let header_end =
                             buffer
@@ -469,8 +461,6 @@ fn execute_into<W: Write>(
                     .iter()
                     .map(|&index| number_at(&batch[index], row))
                     .collect::<Vec<_>>();
-                // DISTINCT must still see every row, even if it would lose
-                // the Top-K heap comparison.
                 if !query.distinct && sorted.would_discard(key, &extra_keys) {
                     continue;
                 }
@@ -502,8 +492,6 @@ fn execute_into<W: Write>(
     let limit = query.limit.unwrap_or(usize::MAX);
     let mut emitted = 0usize;
     let offset = query.offset.unwrap_or(0);
-    // OFFSET on an unsorted, unfiltered projection can bypass entire stored
-    // granules. WHERE, DISTINCT, aggregate and ORDER BY must still scan rows.
     let mut skipped = if !is_count
         && !query.distinct
         && query.predicates.is_empty()
@@ -578,7 +566,6 @@ struct GroupedCounts {
 
 impl GroupedCounts {
     fn push(&mut self, value: Number) -> Result<(), ExecutionError> {
-        // Entry avoids hashing a new key twice (lookup followed by insert).
         match self.by_key.entry(NumberKey::from(value)) {
             Entry::Occupied(entry) => {
                 let count = &mut self.rows[*entry.get()].1;
@@ -924,8 +911,6 @@ fn execute_aggregate_numbers<W: Write>(
     if query.limit == Some(0) {
         return Ok(());
     }
-    // For an unfiltered arithmetic progression, these aggregates are exact
-    // without visiting every row. Keep AVG iterative to preserve its rounding.
     if query.predicates.is_empty()
         && query.or_predicates.is_empty()
         && matches!(
@@ -1014,7 +999,6 @@ fn execute_numbers<W: Write>(
         let comparisons = compile_numbers_predicates(query)?;
         write_header(query, output, "countDistinct(number)")?;
         if query.limit != Some(0) && query.offset.unwrap_or(0) == 0 {
-            // Generated numbers are unique, so unfiltered COUNT(DISTINCT) is their row count.
             let count = if query.predicates.is_empty() && query.or_predicates.is_empty() {
                 rows
             } else {
@@ -1105,8 +1089,6 @@ fn execute_numbers<W: Write>(
         return Ok(());
     }
 
-    // numbers() is already sorted and its values are unique. A filter-free
-    // ORDER BY can page the generated range directly rather than filling a heap.
     let unfiltered_sort = if query.predicates.is_empty() && query.or_predicates.is_empty() {
         sorting.as_ref()
     } else {
@@ -1146,7 +1128,6 @@ fn execute_numbers<W: Write>(
     let mut emitted = 0usize;
     let offset = query.offset.unwrap_or(0);
     let limit = query.limit.unwrap_or(usize::MAX);
-    // Generated rows are unique and ordered. A filter-free scan can start at OFFSET.
     let fast_skip = if !is_count
         && sorting.is_none()
         && query.predicates.is_empty()
@@ -1361,7 +1342,6 @@ impl AggregateState {
                         | AggregateFunction::VarSamp
                         | AggregateFunction::StddevSamp
                 ) {
-                    // Welford's algorithm avoids subtracting large squared sums.
                     self.squared_deviations += difference * (numeric - self.mean);
                 }
             }
@@ -1464,8 +1444,6 @@ impl AggregateState {
                 if values.len() & 1 == 1 {
                     values[middle].to_string()
                 } else {
-                    // Even-length interpolation uses Float64, as AVG already does.
-                    // Divide before adding to avoid overflow for very large values.
                     let as_f64 = |number: Number| match number {
                         Number::Unsigned(value) => value as f64,
                         Number::Signed(value) => value as f64,

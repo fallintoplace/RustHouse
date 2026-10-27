@@ -1,5 +1,3 @@
-//! Bounded typed SELECT path for String, UUID and Nullable wide-part columns.
-//! Keep the numeric-only executor unchanged for its optimized fast paths.
 use super::{ExecutionError, Number, NumberKey, compare_numbers, number_at};
 use crate::{Operator, Predicate, Projection, Select};
 use rusthouse_storage::{TypedColumn, TypedQueryReader, inspect_query_source};
@@ -369,7 +367,6 @@ pub(super) fn passes(batch: &[TypedColumn], row: usize, branches: &[Vec<Conditio
         branch.iter().all(|condition| {
             let column = &batch[condition.index];
             match &condition.test {
-                // Filtering should not copy String payloads just to check their null map.
                 Test::IsNull(negated) => {
                     let is_null = match column {
                         TypedColumn::NullableNumeric { nulls, .. }
@@ -378,7 +375,6 @@ pub(super) fn passes(batch: &[TypedColumn], row: usize, branches: &[Vec<Conditio
                     };
                     is_null != *negated
                 }
-                // LIKE examines bytes in place. Nulls never match, even for NOT LIKE.
                 Test::Like {
                     pattern,
                     case_insensitive,
@@ -475,8 +471,6 @@ struct Row {
     sort_keys: Vec<Cell>,
 }
 
-// Keep the worst retained row at the root of the heap.
-// Original arrival order breaks ties, matching stable ORDER BY.
 struct TopRow {
     row: Row,
     ordinal: usize,
@@ -645,7 +639,6 @@ pub(super) fn execute_typed<W: Write>(
     let mut skipped = 0usize;
     let offset = query.offset.unwrap_or(0);
     let limit = query.limit.unwrap_or(usize::MAX);
-    // ORDER BY supports at most eight keys, allowing a compact direction mask.
     let mut descending_mask = 0u8;
     let mut nulls_first_mask = 0u8;
     let mut nulls_last_mask = 0u8;
@@ -702,8 +695,6 @@ pub(super) fn execute_typed<W: Write>(
                 }
                 continue;
             }
-            // In an ordinary unsorted scan, OFFSET can discard the row before
-            // cloning String or UUID projection values.
             if !is_count_distinct && !query.distinct && sort_indices.is_empty() && skipped < offset
             {
                 skipped += 1;

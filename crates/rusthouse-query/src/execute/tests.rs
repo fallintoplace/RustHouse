@@ -1064,7 +1064,6 @@ fn unfiltered_number_offsets_skip_directly_to_the_first_result() {
         .unwrap(),
         "number\n18446744073709551614\n"
     );
-    // Filtered, disjunctive, and sorted queries apply OFFSET to matched rows.
     assert_eq!(
         run(
             "SELECT number FROM numbers(7, 4) WHERE number >= 8 LIMIT 2 OFFSET 1",
@@ -1081,7 +1080,6 @@ fn unfiltered_number_offsets_skip_directly_to_the_first_result() {
         .unwrap(),
         "number\n1\n2\n"
     );
-    // The OR compiler always builds one branch, even for an empty WHERE.
     assert_eq!(
         run("SELECT count(*) FROM numbers(1000000)", None).unwrap(),
         "count\n1000000\n"

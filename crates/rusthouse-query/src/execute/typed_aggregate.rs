@@ -1,4 +1,3 @@
-//! Numeric aggregates over typed wide parts, including text filters and nullable values.
 use super::typed::{self, Cell};
 use super::{AggregateState, ExecutionError};
 use crate::{Projection, Select};
@@ -85,7 +84,6 @@ pub(super) fn execute_typed_aggregate<W: Write>(
 
 const MAX_GROUPS: usize = 100_000;
 
-/// Group filtered rows by a typed key and evaluate a numeric aggregate on each group.
 pub(super) fn execute_grouped_aggregate<W: Write>(
     query: &Select,
     part: &Path,

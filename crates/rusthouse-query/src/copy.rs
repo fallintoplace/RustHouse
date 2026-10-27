@@ -1,4 +1,3 @@
-//! Restricted COPY FROM CSV for local persistent tables.
 use super::{ParseError, Parser, Token, tokenize};
 use std::collections::HashSet;
 

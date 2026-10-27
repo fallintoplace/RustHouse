@@ -80,8 +80,6 @@ fn describe_sort(query: &Select) -> String {
         .join(", ")
 }
 
-/// Summarize parsed logical operators without reading data or estimating costs.
-/// This is not a physical execution plan.
 pub fn explain_select(query: &Select) -> String {
     let mut steps = Vec::new();
     steps.push(format!(

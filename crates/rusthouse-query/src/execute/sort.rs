@@ -1,6 +1,3 @@
-//! Bounded ORDER BY heap with shared sort-direction metadata.
-//! Rows use Arc<[bool]> so multi-key comparisons never allocate a new
-//! directions vector for every retained row.
 use super::{ExecutionError, Number, compare_numbers};
 use std::cmp::Ordering;
 use std::collections::BinaryHeap;
@@ -121,9 +118,6 @@ impl SortedRows {
         self.push_with_extra(key, Vec::new(), values)
     }
 
-    /// A later candidate tied with the worst row loses the stable tie-break.
-    /// Only bounded heaps can prune: unbounded scans must still enforce
-    /// the maximum unsorted-input row count in push_with_extra.
     pub(super) fn would_discard(&self, key: Number, extra_keys: &[Number]) -> bool {
         if self.requested > MAX_SORTED_ROWS || self.rows.len() < self.requested {
             return false;
@@ -176,7 +170,6 @@ impl SortedRows {
         if self.rows.len() < retained {
             self.rows.push(row);
         } else if self.rows.peek().is_some_and(|worst| row < *worst) {
-            // Check before peek_mut: dropping PeekMut sifts even on rejected rows.
             *self.rows.peek_mut().unwrap() = row;
         }
         Ok(())

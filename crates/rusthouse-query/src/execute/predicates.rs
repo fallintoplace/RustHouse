@@ -3,7 +3,6 @@ use crate::{Operator, Predicate, Select};
 use rusthouse_storage::NumericColumn;
 use std::collections::HashSet;
 
-// Short IN lists are cheap to scan; long lists benefit from constant-time lookups.
 const HASHED_IN_MIN_VALUES: usize = 16;
 
 pub(super) enum CompiledTest {
@@ -53,7 +52,6 @@ impl CompiledTest {
                     || !number_matches(value, *upper, Operator::Le)
             }
             Self::InSet { targets, negated } => {
-                // Float NaN does not compare equal to any IN-list value.
                 let contains = !matches!(value, Number::Float(number) if number.is_nan())
                     && targets.contains(&NumberKey::from(value));
                 contains != *negated
@@ -150,8 +148,6 @@ pub(super) fn batch_matches(
     })
 }
 
-/// Count a numeric batch without constructing a Number for every row when
-/// a single simple comparison can use the underlying typed column directly.
 pub(super) fn count_batch_matches(
     batch: &[NumericColumn],
     branches: &[Vec<CompiledPredicate>],
@@ -214,7 +210,6 @@ pub(super) fn count_batch_matches(
             }
         }
     }
-    // Compound OR/AND, IN and modulo retain the original semantics.
     (0..batch.first().map_or(0, NumericColumn::len))
         .filter(|&row| batch_matches(batch, row, branches))
         .count()
@@ -245,9 +240,6 @@ pub(super) fn compile_numbers_predicates(
     })
 }
 
-/// Count a single AND branch over an increasing generated UInt64 sequence
-/// without visiting its rows. Unsupported OR, IN and modulo predicates keep
-/// the normal row-wise executor. Arithmetic uses u128 at UInt64 boundaries.
 pub(super) fn count_monotonic_numbers(
     branches: &[Vec<CompiledPredicate>],
     start: u64,

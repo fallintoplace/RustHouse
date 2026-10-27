@@ -1,4 +1,3 @@
-//! Deliberately narrow INSERT ... VALUES parser for local writable tables.
 use super::{ParseError, Parser, Token, tokenize};
 use std::collections::HashSet;
 
@@ -56,8 +55,6 @@ fn parse_insert_columns(parser: &mut Parser) -> Result<Option<Vec<String>>, Pars
     Ok(Some(result))
 }
 
-/// Recognize INSERT INTO table [(column, ...)] VALUES (...), (...).
-/// Only literal rows are accepted, with no expressions or implicit casts.
 pub fn parse_insert(sql: &str) -> Result<Option<Insert>, ParseError> {
     let mut parser = Parser {
         tokens: tokenize(sql)?,
@@ -71,8 +68,6 @@ pub fn parse_insert(sql: &str) -> Result<Option<Insert>, ParseError> {
     }
     let table = identifier(&mut parser)?;
     let columns = parse_insert_columns(&mut parser)?;
-    // DEFAULT VALUES inserts one row with no explicit column values.
-    // The database writer validates that every omitted column is nullable.
     if parser.keyword("DEFAULT") {
         if columns.is_some() {
             return Err(ParseError("DEFAULT VALUES cannot use a column list".into()));

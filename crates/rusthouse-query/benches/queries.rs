@@ -13,7 +13,6 @@ fn options() -> (u64, usize) {
     let mut args = std::env::args().skip(1);
     while let Some(arg) = args.next() {
         match arg.as_str() {
-            // Cargo passes this to custom bench targets with harness = false.
             "--bench" => {}
             "--rows" => {
                 rows = args
@@ -50,7 +49,6 @@ fn options() -> (u64, usize) {
 }
 
 fn measure(name: &str, sql: &str, expected: &str, rows: u64, samples: usize) {
-    // Parse once so the measurement isolates query execution.
     let query = parse_select(sql).expect("benchmark SQL must parse");
     let mut output = Vec::new();
 
@@ -66,7 +64,6 @@ fn measure(name: &str, sql: &str, expected: &str, rows: u64, samples: usize) {
 
     let mut timings = Vec::with_capacity(samples);
     for _ in 0..samples {
-        // Reuse the output allocation but do not time its clearing or assertions.
         output.clear();
         let start = Instant::now();
         execute(black_box(&query), None, &mut output).expect("benchmark must execute");

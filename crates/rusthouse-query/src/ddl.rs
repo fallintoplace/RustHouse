@@ -166,7 +166,6 @@ fn parse_column_definitions(parser: &mut Parser) -> Result<Vec<ColumnDef>, Parse
     Ok(columns)
 }
 
-/// Recognize only supported schema-only DDL. SELECT is parsed by the existing parser.
 pub fn parse_ddl(sql: &str) -> Result<Option<Ddl>, ParseError> {
     let mut parser = Parser {
         tokens: tokenize(sql)?,
