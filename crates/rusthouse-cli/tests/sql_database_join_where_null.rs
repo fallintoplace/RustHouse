@@ -47,5 +47,8 @@ fn join_filters_null_extended_rows_and_streamed_matches() {
     let missing = sql("SELECT l.id FROM lefts l JOIN rights r ON l.k = r.k WHERE r.id IS NULL");
     assert!(missing.status.success(), "{missing:?}");
     assert_eq!(missing.stdout, b"l.id\n");
+    let invalid = sql("SELECT l.id FROM lefts l JOIN rights r ON l.k = r.k WHERE x.k IS NULL");
+    assert!(!invalid.status.success());
+    assert!(String::from_utf8_lossy(&invalid.stderr).contains("unknown JOIN qualifier"));
     fs::remove_dir_all(db).unwrap();
 }
