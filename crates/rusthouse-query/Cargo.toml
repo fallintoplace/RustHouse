@@ -14,6 +14,10 @@ harness = false
 name = "parts"
 harness = false
 
+[[bench]]
+name = "grouped"
+harness = false
+
 [dependencies]
 rusthouse-storage = { path = "../rusthouse-storage" }
 
