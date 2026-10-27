@@ -154,10 +154,7 @@ mod tests {
         let mut writer = JsonlWriter::new(Vec::new());
         writer.write_all(b"col\none\ntw").unwrap();
         writer.write_all(b"o\n").unwrap();
-        assert_eq!(
-            writer.output,
-            b"{\"col\":\"one\"}\n{\"col\":\"two\"}\n"
-        );
+        assert_eq!(writer.output, b"{\"col\":\"one\"}\n{\"col\":\"two\"}\n");
     }
 
     #[test]
