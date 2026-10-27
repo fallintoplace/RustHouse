@@ -191,7 +191,7 @@ fn parse_tsv(data: &str) -> Result<Vec<Vec<Option<String>>>, String> {
 }
 
 struct TsvRecords {
-    reader: BufReader<File>,
+    reader: BufReader<Box<dyn Read>>,
     buffer: Vec<u8>,
     first: bool,
 }
@@ -229,10 +229,16 @@ impl TsvRecords {
 }
 
 fn run_tsv(database: &Path, statement: &CopyFrom) -> Result<(), String> {
-    let file = File::open(&statement.path)
-        .map_err(|error| format!("cannot open COPY file {}: {error}", statement.path))?;
+    let reader: Box<dyn Read> = if statement.path == "-" {
+        Box::new(std::io::stdin())
+    } else {
+        Box::new(
+            File::open(&statement.path)
+                .map_err(|error| format!("cannot open COPY file {}: {error}", statement.path))?,
+        )
+    };
     let mut input = TsvRecords {
-        reader: BufReader::new(file),
+        reader: BufReader::new(reader),
         buffer: Vec::new(),
         first: true,
     };
@@ -263,6 +269,9 @@ fn run_tsv(database: &Path, statement: &CopyFrom) -> Result<(), String> {
 pub(super) fn run(database: &Path, statement: &CopyFrom) -> Result<(), String> {
     if statement.format == CopyFormat::Tsv {
         return run_tsv(database, statement);
+    }
+    if statement.path == "-" {
+        return Err("COPY FROM '-' requires TSV format".into());
     }
     let mut data = Vec::new();
     File::open(&statement.path)
