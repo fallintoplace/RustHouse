@@ -45,6 +45,21 @@ fn qualified(parser: &mut Parser) -> Result<JoinColumn, ParseError> {
     Ok(JoinColumn { relation, name })
 }
 
+fn projected(parser: &mut Parser) -> Result<JoinColumn, ParseError> {
+    let relation = parser.word()?;
+    if !parser.take(Token::Dot) {
+        return Err(ParseError(
+            "JOIN columns must be qualified (alias.column)".into(),
+        ));
+    }
+    let name = if parser.take(Token::Star) {
+        "*".to_owned()
+    } else {
+        parser.word()?
+    };
+    Ok(JoinColumn { relation, name })
+}
+
 fn alias(parser: &mut Parser, table: &str) -> Result<String, ParseError> {
     if parser.keyword("AS") {
         return parser.word();
@@ -124,7 +139,7 @@ pub fn parse_join(sql: &str) -> Result<Option<JoinSelect>, ParseError> {
                     "JOIN supports at most 64 projected columns".into(),
                 ));
             }
-            columns.push(qualified(&mut parser)?);
+            columns.push(projected(&mut parser)?);
             if !parser.take(Token::Comma) {
                 break;
             }
@@ -371,6 +386,24 @@ mod tests {
                 .join(", ")
         );
         assert!(parse_join(&too_many).is_err());
+    }
+
+    #[test]
+    fn parses_qualified_wildcard_projections() {
+        let query =
+            parse_join("SELECT l.*, r.label, r.* FROM lefts l JOIN rights r ON l.id = r.id")
+                .unwrap()
+                .unwrap();
+        assert_eq!(
+            query
+                .columns
+                .unwrap()
+                .iter()
+                .map(|c| c.name.as_str())
+                .collect::<Vec<_>>(),
+            ["*", "label", "*"]
+        );
+        assert!(parse_join("SELECT id, r.* FROM lefts l JOIN rights r ON l.id = r.id").is_err());
     }
 
     #[test]
