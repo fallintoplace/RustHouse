@@ -27,6 +27,7 @@ pub(super) fn is_function(name: &str) -> bool {
         || is_bitwise(name)
         || name.eq_ignore_ascii_case("GCD")
         || name.eq_ignore_ascii_case("LCM")
+        || name.eq_ignore_ascii_case("FIBONACCI")
         || name.eq_ignore_ascii_case("CLAMP")
 }
 
@@ -246,6 +247,15 @@ fn factor(parser: &mut Parser, depth: usize) -> Result<i64, ParseError> {
                 "BITSHIFTRIGHT" => checked_bit_shift(first, second, false)?,
                 _ => unreachable!("only supported bitwise functions reach this branch"),
             }
+        } else if name.eq_ignore_ascii_case("FIBONACCI") {
+            if !(0..=92).contains(&first) {
+                return Err(ParseError("FIBONACCI index must be between 0 and 92".into()));
+            }
+            let (mut current, mut next) = (0_u128, 1_u128);
+            for _ in 0..first {
+                (current, next) = (next, current + next);
+            }
+            i64::try_from(current).map_err(|_| overflow())?
         } else if name.eq_ignore_ascii_case("ABS") {
             first.checked_abs().ok_or_else(overflow)?
         } else {
