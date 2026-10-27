@@ -12,15 +12,9 @@ fn peer_is_healthy(peer: Peer) -> bool {
     )
 }
 
-pub fn handle(method: &str, body: &[u8], cluster: &Cluster) -> Response {
-    if method != "GET" {
-        return Response::text("405 Method Not Allowed", "health endpoint requires GET\n");
-    }
-    if !body.is_empty() {
-        return Response::text("400 Bad Request", "GET must not contain a request body\n");
-    }
+fn probe_peer_health(cluster: &Cluster) -> Vec<bool> {
     // Probe each peer in parallel, bounded by the 16-peer registration limit.
-    let healthy: Vec<bool> = std::thread::scope(|scope| {
+    std::thread::scope(|scope| {
         let handles = cluster
             .peers()
             .iter()
@@ -30,7 +24,17 @@ pub fn handle(method: &str, body: &[u8], cluster: &Cluster) -> Response {
             .into_iter()
             .map(|handle| handle.join().unwrap_or(false))
             .collect()
-    });
+    })
+}
+
+pub fn handle(method: &str, body: &[u8], cluster: &Cluster) -> Response {
+    if method != "GET" {
+        return Response::text("405 Method Not Allowed", "health endpoint requires GET\n");
+    }
+    if !body.is_empty() {
+        return Response::text("400 Bad Request", "GET must not contain a request body\n");
+    }
+    let healthy = probe_peer_health(cluster);
     let count = healthy.iter().filter(|&&alive| alive).count();
     let mut details = String::new();
     for (index, (peer, &alive)) in cluster.peers().iter().zip(&healthy).enumerate() {
