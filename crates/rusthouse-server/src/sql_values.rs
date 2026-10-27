@@ -34,6 +34,9 @@ fn decode_field(field: &[u8]) -> io::Result<Vec<u8>> {
             b't' => b'\t',
             b'n' => b'\n',
             b'r' => b'\r',
+            b'b' => 8,
+            b'f' => 12,
+            b'v' => 11,
             b'0' => 0,
             b'x' => {
                 let high = field
@@ -187,6 +190,11 @@ mod tests {
             writer.finish()?;
         }
         String::from_utf8(output).map_err(|_| invalid("invalid output UTF-8"))
+    }
+
+    #[test]
+    fn decodes_additional_tsv_control_escapes() {
+        assert_eq!(decode_field(br"\b\f\v").unwrap(), b"\x08\x0c\x0b");
     }
 
     #[test]
