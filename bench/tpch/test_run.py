@@ -39,6 +39,11 @@ class RunnerTests(unittest.TestCase):
         self.assertEqual(mismatched["status"], "mismatch")
         self.assertEqual(mismatched["timings_seconds"], [])
 
+    def test_unverified_results_are_not_counted_as_correct(self):
+        result = benchmark_one(6, "SELECT 6", lambda _: b"6\\n", 2, 0)
+        self.assertEqual(result["status"], "unverified")
+        self.assertEqual(summarize_coverage([result])["verified_queries"], 0)
+
     def test_error_and_timeout(self):
         def broken(_):
             raise RuntimeError("unsupported statement")

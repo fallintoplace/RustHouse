@@ -101,6 +101,8 @@ def main(argv=None):
     parser.add_argument("--database", type=Path, required=True)
     parser.add_argument("--queries-dir", type=Path, required=True)
     parser.add_argument("--reference-dir", type=Path)
+    parser.add_argument("--require-verified", action="store_true",
+                        help="Require golden output for every measured query")
     parser.add_argument("--only", help="Comma-separated query IDs, e.g. 1,6,12")
     parser.add_argument("--runs", type=int, default=5)
     parser.add_argument("--warmups", type=int, default=1)
@@ -108,6 +110,8 @@ def main(argv=None):
     parser.add_argument("--expected-lineitem-rows", type=int)
     parser.add_argument("--output", type=Path)
     args = parser.parse_args(argv)
+    if args.require_verified and args.reference_dir is None:
+        parser.error("--require-verified needs --reference-dir")
     if args.runs < 1 or args.warmups < 0 or args.timeout <= 0:
         parser.error("runs and timeout must be positive; warmups cannot be negative")
     if args.expected_lineitem_rows is not None and args.expected_lineitem_rows < 0:
@@ -155,6 +159,8 @@ def main(argv=None):
         "results": results,
     }
     emit_json(report, args.output)
+    if args.require_verified:
+        return int(any(result["status"] != "passed" for result in results))
     return int(any(result["status"] not in ("passed", "unverified") for result in results))
 
 if __name__ == "__main__":
