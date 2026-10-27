@@ -51,7 +51,8 @@ pub fn decode_tsv_field(field: &[u8]) -> io::Result<Vec<u8>> {
             output.push(decode_hex_byte(field, index + 1)?);
             index += 2;
         } else {
-            output.push(decode_simple_escape(escaped).ok_or_else(|| invalid("unknown TSV escape"))?);
+            output
+                .push(decode_simple_escape(escaped).ok_or_else(|| invalid("unknown TSV escape"))?);
         }
         index += 1;
     }

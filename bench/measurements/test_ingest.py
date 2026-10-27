@@ -1,0 +1,49 @@
+import importlib.util
+import math
+import tempfile
+import unittest
+from pathlib import Path
+
+HERE = Path(__file__).resolve().parent
+SPEC = importlib.util.spec_from_file_location("ingest_runner", HERE / "ingest.py")
+runner = importlib.util.module_from_spec(SPEC)
+SPEC.loader.exec_module(runner)
+
+
+class IngestBenchmarkTests(unittest.TestCase):
+    def test_data_is_reproducible_and_oracle_is_independent(self):
+        with tempfile.TemporaryDirectory() as temp:
+            a = Path(temp) / "first.tsv"
+            b = Path(temp) / "second.tsv"
+            expected = runner.write_input(a, 1000, 17)
+            self.assertEqual(expected, runner.write_input(b, 1000, 17))
+            self.assertEqual(a.read_bytes(), b.read_bytes())
+            rows = [
+                line.split("\t") for line in a.read_text().splitlines()
+            ]
+            self.assertEqual(len(rows), 1000)
+            self.assertEqual(len({station for station, _ in rows}), 17)
+            temperatures = [float(value) for _, value in rows]
+            self.assertTrue(math.isclose(min(temperatures), expected[0]))
+            self.assertTrue(math.isclose(max(temperatures), expected[1]))
+
+    def test_semicolon_input_uses_the_same_oracle(self):
+        with tempfile.TemporaryDirectory() as temp:
+            path = Path(temp) / "readings.ssv"
+            runner.write_input(path, 5, 2, ";")
+            self.assertEqual(path.read_text().splitlines()[0].count(";"), 1)
+
+    def test_reports_nearest_rank_p90(self):
+        result = runner.summarize([0.3, 0.1, 0.2])
+        self.assertEqual(result["median_seconds"], 0.2)
+        self.assertEqual(result["p90_seconds"], 0.3)
+
+    def test_rejects_invalid_scale_without_running_binary(self):
+        with self.assertRaises(ValueError):
+            runner.benchmark(Path("/missing"), 2, 3, 3, 1, 1, "TSV")
+        with self.assertRaises(ValueError):
+            runner.benchmark(Path("/missing"), 3, 1, 0, 1, 1, "TSV")
+
+
+if __name__ == "__main__":
+    unittest.main()

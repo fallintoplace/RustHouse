@@ -8,9 +8,9 @@ use std::fmt;
 use std::io::{self, BufWriter, Write};
 use std::path::Path;
 
-mod join;
 mod grouped_multi;
 mod grouped_numeric_multi;
+mod join;
 mod predicates;
 mod sort;
 mod typed;

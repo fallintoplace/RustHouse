@@ -143,7 +143,9 @@ pub enum Projection {
         column: String,
     },
     MultipleAggregates(Vec<AggregateItem>),
-    StringLength { column: String },
+    StringLength {
+        column: String,
+    },
     All,
     Columns(Vec<String>),
 }
@@ -327,6 +329,21 @@ impl Parser {
     }
 
     fn literal(&mut self) -> Result<String, ParseError> {
+        // Typed SQL date/time literals have the same stored value as quoted
+        // literals, but are accepted explicitly by standard SQL workloads.
+        if matches!(
+            self.tokens.get(self.index),
+            Some(Token::Word(kind))
+                if kind.eq_ignore_ascii_case("DATE") || kind.eq_ignore_ascii_case("TIMESTAMP")
+        ) {
+            if let Some(Token::String(value)) = self.tokens.get(self.index + 1) {
+                self.index += 2;
+                return Ok(value.clone());
+            }
+            return Err(ParseError(
+                "DATE/TIMESTAMP requires a quoted literal".into(),
+            ));
+        }
         match self.tokens.get(self.index) {
             Some(Token::Number(value)) | Some(Token::String(value)) => {
                 self.index += 1;
@@ -383,7 +400,7 @@ impl Parser {
                             .cloned()
                             .ok_or_else(|| ParseError("ORDER BY position is out of range".into()))?
                     }
-                },
+                }
                 Projection::GroupedAggregate { column, .. }
                 | Projection::GroupedAggregates { column, .. } => match position {
                     1 => column.clone(),
@@ -406,8 +423,7 @@ impl Parser {
         if matches!(
             projection,
             Projection::GroupedCount { .. } | Projection::GroupedMultiCount { .. }
-        )
-            && column.eq_ignore_ascii_case("count")
+        ) && column.eq_ignore_ascii_case("count")
             && self.take(Token::LParen)
             && !self.take(Token::RParen)
             && !(self.take(Token::Star) && self.take(Token::RParen))
@@ -419,8 +435,7 @@ impl Parser {
         let column = if matches!(
             projection,
             Projection::GroupedCount { .. } | Projection::GroupedMultiCount { .. }
-        )
-            && column.eq_ignore_ascii_case("count")
+        ) && column.eq_ignore_ascii_case("count")
         {
             "count".to_string()
         } else {
@@ -936,11 +951,13 @@ fn parse_select_tokens(tokens: Vec<Token>) -> Result<Select, ParseError> {
                 });
                 total_conditions += 1;
             } else if parser.keyword("BETWEEN") {
-                let lower = parser.number()?;
+                // BETWEEN is type-checked by the executor, so allow dates and
+                // strings as well as numbers in the lower and upper bounds.
+                let lower = parser.literal()?;
                 if !parser.keyword("AND") {
                     return Err(ParseError("BETWEEN requires AND".into()));
                 }
-                let upper = parser.number()?;
+                let upper = parser.literal()?;
                 if negate_in {
                     branches.last_mut().unwrap().push(Predicate::NotBetween {
                         column,
@@ -1334,7 +1351,6 @@ mod group_by_position_tests {
         }
     }
 }
-
 
 #[cfg(test)]
 mod generated_numbers_boundary_regressions {

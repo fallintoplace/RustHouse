@@ -52,7 +52,9 @@ fn validate_mark_rows(
         let rows = mark
             .rows
             .ok_or_else(|| PartError::InvalidScan("adaptive wide marks are required".into()))?;
-        total_rows = total_rows.checked_add(rows).ok_or_else(|| row_count_mismatch(name))?;
+        total_rows = total_rows
+            .checked_add(rows)
+            .ok_or_else(|| row_count_mismatch(name))?;
         if let Some(reference) = reference {
             if reference.get(index) != Some(&rows) {
                 return Err(granule_boundary_mismatch(name));

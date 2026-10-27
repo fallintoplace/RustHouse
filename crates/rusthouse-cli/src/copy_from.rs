@@ -155,12 +155,12 @@ fn decode_tsv_cell(field: &str) -> Result<String, String> {
     String::from_utf8(decoded).map_err(|_| "invalid UTF-8 in TSV field".into())
 }
 
-fn parse_tsv_record(line: &str) -> Result<Vec<Option<String>>, String> {
+fn parse_delimited_record(line: &str, delimiter: char) -> Result<Vec<Option<String>>, String> {
     if line.contains('\r') {
         return Err("TSV requires CRLF for carriage returns".into());
     }
     let mut row = Vec::new();
-    for field in line.split('\t') {
+    for field in line.split(delimiter) {
         if row.len() >= 128 {
             return Err("TSV records support at most 128 columns".into());
         }
@@ -171,6 +171,11 @@ fn parse_tsv_record(line: &str) -> Result<Vec<Option<String>>, String> {
         }
     }
     Ok(row)
+}
+
+#[cfg(test)]
+fn parse_tsv_record(line: &str) -> Result<Vec<Option<String>>, String> {
+    parse_delimited_record(line, '\t')
 }
 
 #[cfg(test)]
@@ -194,6 +199,7 @@ struct TsvRecords {
     reader: BufReader<Box<dyn Read>>,
     buffer: Vec<u8>,
     first: bool,
+    delimiter: char,
 }
 
 impl TsvRecords {
@@ -224,7 +230,7 @@ impl TsvRecords {
         } else {
             line
         };
-        Ok(Some(parse_tsv_record(line)?))
+        Ok(Some(parse_delimited_record(line, self.delimiter)?))
     }
 }
 
@@ -241,6 +247,11 @@ fn run_tsv(database: &Path, statement: &CopyFrom) -> Result<(), String> {
         reader: BufReader::new(reader),
         buffer: Vec::new(),
         first: true,
+        delimiter: if statement.format == CopyFormat::Ssv {
+            ';'
+        } else {
+            '\t'
+        },
     };
     let mut columns = statement.columns.clone();
     if statement.header {
@@ -267,7 +278,7 @@ fn run_tsv(database: &Path, statement: &CopyFrom) -> Result<(), String> {
 }
 
 pub(super) fn run(database: &Path, statement: &CopyFrom) -> Result<(), String> {
-    if statement.format == CopyFormat::Tsv {
+    if matches!(statement.format, CopyFormat::Tsv | CopyFormat::Ssv) {
         return run_tsv(database, statement);
     }
     if statement.path == "-" {
