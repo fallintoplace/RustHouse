@@ -9,6 +9,7 @@ pub(super) fn is_function(name: &str) -> bool {
         "LENGTH"
             | "CHAR_LENGTH"
             | "BTRIM"
+            | "BASE64_DECODE"
             | "LOWER"
             | "UPPER"
             | "REVERSE"
@@ -459,6 +460,71 @@ fn parse_at_depth(parser: &mut Parser, depth: usize) -> Result<ConstantValue, Pa
                     }
                 }
                 _ => ConstantValue::Null,
+            }
+        }
+        "BASE64_DECODE" => {
+            let input = text_arg(parser, depth + 1)?;
+            require(parser, Token::RParen, "BASE64_DECODE requires one argument")?;
+            match input {
+                Some(value) => {
+                    fn digit(value: u8) -> Option<u8> {
+                        match value {
+                            b'A'..=b'Z' => Some(value - b'A'),
+                            b'a'..=b'z' => Some(value - b'a' + 26),
+                            b'0'..=b'9' => Some(value - b'0' + 52),
+                            b'+' => Some(62),
+                            b'/' => Some(63),
+                            _ => None,
+                        }
+                    }
+                    if value.len() % 4 != 0 {
+                        return Err(ParseError("BASE64_DECODE requires four-byte groups".into()));
+                    }
+                    let source = value.as_bytes();
+                    let mut bytes = Vec::with_capacity(source.len() / 4 * 3);
+                    for (index, group) in source.chunks_exact(4).enumerate() {
+                        let last = index + 1 == source.len() / 4;
+                        let a = digit(group[0])
+                            .ok_or_else(|| ParseError("invalid BASE64_DECODE character".into()))?;
+                        let b = digit(group[1])
+                            .ok_or_else(|| ParseError("invalid BASE64_DECODE character".into()))?;
+                        let (c, d, width) = if group[2] == b'=' {
+                            if group[3] != b'=' || !last || b & 15 != 0 {
+                                return Err(ParseError("invalid BASE64_DECODE padding".into()));
+                            }
+                            (0, 0, 1)
+                        } else if group[3] == b'=' {
+                            let c = digit(group[2])
+                                .ok_or_else(|| ParseError("invalid BASE64_DECODE character".into()))?;
+                            if !last || c & 3 != 0 {
+                                return Err(ParseError("invalid BASE64_DECODE padding".into()));
+                            }
+                            (c, 0, 2)
+                        } else {
+                            let c = digit(group[2])
+                                .ok_or_else(|| ParseError("invalid BASE64_DECODE character".into()))?;
+                            let d = digit(group[3])
+                                .ok_or_else(|| ParseError("invalid BASE64_DECODE character".into()))?;
+                            (c, d, 3)
+                        };
+                        let bits = (u32::from(a) << 18)
+                            | (u32::from(b) << 12)
+                            | (u32::from(c) << 6)
+                            | u32::from(d);
+                        bytes.push((bits >> 16) as u8);
+                        if width > 1 {
+                            bytes.push((bits >> 8) as u8);
+                        }
+                        if width > 2 {
+                            bytes.push(bits as u8);
+                        }
+                    }
+                    ConstantValue::Text(
+                        String::from_utf8(bytes)
+                            .map_err(|_| ParseError("BASE64_DECODE result is not UTF-8".into()))?,
+                    )
+                }
+                None => ConstantValue::Null,
             }
         }
         _ => return Err(ParseError(format!("unsupported string function: {name}"))),
