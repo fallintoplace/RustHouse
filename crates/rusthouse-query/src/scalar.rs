@@ -27,6 +27,7 @@ pub(super) fn is_function(name: &str) -> bool {
         || is_bitwise(name)
         || name.eq_ignore_ascii_case("GCD")
         || name.eq_ignore_ascii_case("LCM")
+        || name.eq_ignore_ascii_case("DIGIT_SUM")
         || name.eq_ignore_ascii_case("CLAMP")
 }
 
@@ -248,6 +249,14 @@ fn factor(parser: &mut Parser, depth: usize) -> Result<i64, ParseError> {
             }
         } else if name.eq_ignore_ascii_case("ABS") {
             first.checked_abs().ok_or_else(overflow)?
+        } else if name.eq_ignore_ascii_case("DIGIT_SUM") {
+            let mut magnitude = first.unsigned_abs();
+            let mut sum = 0_i64;
+            while magnitude > 0 {
+                sum += (magnitude % 10) as i64;
+                magnitude /= 10;
+            }
+            sum
         } else {
             first.signum()
         };
