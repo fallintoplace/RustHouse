@@ -176,8 +176,9 @@ fn drop_table(catalog: &Path, name: &str, if_exists: bool) -> Result<(), String>
         return Err(format!("not a regular schema file: {name}"));
     }
     fs::remove_file(&path).map_err(|error| format!("cannot drop table {name}: {error}"))?;
-    sync_catalog_dir(catalog)
-        .map_err(|error| format!("table {name} was dropped but durability is uncertain: {error}"))?;
+    sync_catalog_dir(catalog).map_err(|error| {
+        format!("table {name} was dropped but durability is uncertain: {error}")
+    })?;
     println!("Dropped table {name} (schema only)");
     Ok(())
 }
