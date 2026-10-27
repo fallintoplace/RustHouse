@@ -1209,6 +1209,9 @@ impl AggregateState {
             .checked_add(1)
             .ok_or_else(|| ExecutionError::Invalid("aggregate row count overflow".into()))?;
         match self.function {
+            AggregateFunction::AnyLast => {
+                self.value = Some(value);
+            }
             AggregateFunction::Any => {
                 if self.value.is_none() {
                     self.value = Some(value);
