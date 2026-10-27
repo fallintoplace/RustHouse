@@ -9,7 +9,14 @@ fn stdin_sql(bytes: &[u8], args: &[&str]) -> Output {
         .stderr(Stdio::piped())
         .spawn()
         .unwrap();
-    child.stdin.take().unwrap().write_all(bytes).unwrap();
+    if let Err(error) = child.stdin.take().unwrap().write_all(bytes) {
+        // Invalid CLI arguments may make the child close stdin before we finish writing.
+        assert_eq!(
+            error.kind(),
+            std::io::ErrorKind::BrokenPipe,
+            "unexpected stdin write error: {error}"
+        );
+    }
     child.wait_with_output().unwrap()
 }
 
