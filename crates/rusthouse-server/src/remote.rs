@@ -116,6 +116,9 @@ fn parse_response(raw: &[u8]) -> Result<PeerResponse, String> {
             if content_type.is_some() {
                 return Err("duplicate peer Content-Type".into());
             }
+            if value.is_empty() {
+                return Err("empty peer Content-Type".into());
+            }
             content_type = Some(value.to_owned());
         } else if name.eq_ignore_ascii_case("transfer-encoding")
             || name.eq_ignore_ascii_case("content-encoding")
@@ -186,6 +189,15 @@ mod tests {
         ] {
             assert!(parse_response(reply).is_err());
         }
+    }
+
+    #[test]
+    fn rejects_empty_content_type_from_peers() {
+        let response = b"HTTP/1.1 200 OK\r\nContent-Length: 2\r\nContent-Type: \t\r\n\r\nOk";
+        assert_eq!(
+            parse_response(response).unwrap_err(),
+            "empty peer Content-Type"
+        );
     }
 
     #[test]
