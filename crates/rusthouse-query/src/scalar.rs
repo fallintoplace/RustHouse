@@ -54,6 +54,8 @@ pub(super) fn is_function(name: &str) -> bool {
         || name.eq_ignore_ascii_case("BIT_SET")
         || name.eq_ignore_ascii_case("BIT_CLEAR")
         || name.eq_ignore_ascii_case("BIT_TOGGLE")
+        || name.eq_ignore_ascii_case("LEADING_ZEROS")
+        || name.eq_ignore_ascii_case("TRAILING_ZEROS")
         || name.eq_ignore_ascii_case("CLAMP")
         || name.eq_ignore_ascii_case("CEIL_DIV")
         || name.eq_ignore_ascii_case("FLOOR_DIV")
@@ -470,6 +472,20 @@ fn parse_bit_update(parser: &mut Parser, depth: usize) -> Result<i64, ParseError
     Ok(result as i64)
 }
 
+/// Count zero bits on the left or right of an Int64 bit pattern.
+fn parse_bit_scans(parser: &mut Parser, depth: usize) -> Result<i64, ParseError> {
+    let name = parser.word()?;
+    require_token(parser, Token::LParen, "bit scan requires '('")?;
+    let value = expression(parser, depth + 1)?;
+    require_token(parser, Token::RParen, "bit scan requires ')'")?;
+    let result = if name.eq_ignore_ascii_case("LEADING_ZEROS") {
+        value.leading_zeros()
+    } else {
+        value.trailing_zeros()
+    };
+    Ok(i64::from(result))
+}
+
 fn gcd(mut left: u64, mut right: u64) -> u64 {
     while right != 0 {
         let remainder = left % right;
@@ -704,6 +720,15 @@ fn factor(parser: &mut Parser, depth: usize) -> Result<i64, ParseError> {
         )
     ) {
         return parse_bit_update(parser, depth);
+    }
+    if matches!(
+        parser.tokens.get(parser.index),
+        Some(Token::Word(name)) if matches!(
+            name.to_ascii_uppercase().as_str(),
+            "LEADING_ZEROS" | "TRAILING_ZEROS"
+        )
+    ) {
+        return parse_bit_scans(parser, depth);
     }
     if matches!(parser.tokens.get(parser.index), Some(Token::Word(name)) if name.eq_ignore_ascii_case("GCD") || name.eq_ignore_ascii_case("LCM"))
     {
