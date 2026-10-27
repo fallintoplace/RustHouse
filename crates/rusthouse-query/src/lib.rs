@@ -139,6 +139,7 @@ pub enum Projection {
         column: String,
     },
     MultipleAggregates(Vec<AggregateItem>),
+    StringLength { column: String },
     All,
     Columns(Vec<String>),
 }
@@ -460,6 +461,16 @@ fn parse_select_tokens(tokens: Vec<Token>) -> Result<Select, ParseError> {
     let multiple = multi_aggregate::parse_multiple(&mut parser)?;
     let projection = if let Some(items) = multiple {
         Projection::MultipleAggregates(items)
+    } else if matches!(parser.tokens.get(parser.index), Some(Token::Word(name)) if name.eq_ignore_ascii_case("LENGTH"))
+        && parser.tokens.get(parser.index + 1) == Some(&Token::LParen)
+        && matches!(parser.tokens.get(parser.index + 2), Some(Token::Word(name)) if !name.eq_ignore_ascii_case("NULL"))
+        && parser.tokens.get(parser.index + 3) == Some(&Token::RParen)
+    {
+        parser.keyword("LENGTH");
+        parser.take(Token::LParen);
+        let column = parser.word()?;
+        parser.take(Token::RParen);
+        Projection::StringLength { column }
     } else if parser.take(Token::Star) {
         Projection::All
     } else if matches!(parser.tokens.get(parser.index + 1), Some(Token::LParen))
@@ -684,6 +695,7 @@ fn parse_select_tokens(tokens: Vec<Token>) -> Result<Select, ParseError> {
                 | Projection::CountColumn { .. }
                 | Projection::CountDistinct { .. }
                 | Projection::Aggregate { .. }
+                | Projection::StringLength { .. }
         ) || matches!(&projection, Projection::Columns(columns) if columns.len() == 1);
         if !single_result {
             return Err(ParseError("AS supports only a single result column".into()));
@@ -1070,6 +1082,7 @@ fn parse_select_tokens(tokens: Vec<Token>) -> Result<Select, ParseError> {
                 | Projection::CountDistinct { .. }
                 | Projection::Aggregate { .. }
                 | Projection::MultipleAggregates(_)
+                | Projection::StringLength { .. }
                 | Projection::Literal(_)
         )
     {
