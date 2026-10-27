@@ -176,14 +176,18 @@ fn probe_inner<F>(
     right_rows: &[Vec<typed::Cell>],
     hash: &HashMap<Vec<typed::Key>, Vec<usize>>,
     materialize_rows: bool,
+    stop_after: Option<usize>,
     mut emit: F,
 ) -> Result<usize, ExecutionError>
 where
     F: FnMut(&[typed::Cell], &[typed::Cell]) -> Result<(), ExecutionError>,
 {
+    if stop_after == Some(0) {
+        return Ok(0);
+    }
     let mut reader = TypedQueryReader::open(left_path, left_names)?;
     let mut matches = 0usize;
-    while let Some(batch) = reader.next_batch()? {
+    'scan: while let Some(batch) = reader.next_batch()? {
         for index in 0..batch[0].len() {
             if let Some(key) = batch_key(&batch, index, left_keys) {
                 if let Some(right_indices) = hash.get(&key) {
@@ -198,7 +202,10 @@ where
                         Vec::new()
                     };
                     for &right_index in right_indices {
-                        if matches >= MAX_RESULT_ROWS {
+                        if stop_after.is_some_and(|end| matches >= end) {
+                            break 'scan;
+                        }
+                        if stop_after.is_none() && matches >= MAX_RESULT_ROWS {
                             return Err(invalid("JOIN produces more than 65536 rows"));
                         }
                         emit(&left_row, &right_rows[right_index])?;
@@ -212,8 +219,8 @@ where
 }
 
 /// For unordered INNER joins, build only the small right side and stream the
-/// left side twice. The first pass validates the output bound before writing
-/// any rows, preserving the existing no-partial-result behavior on overflow.
+/// left side twice. A bounded page needs only its prefix; unbounded or
+/// oversized requests still validate the 65,536-result limit before output.
 struct InnerJoinColumns<'a> {
     left_names: &'a [String],
     right_names: &'a [String],
@@ -256,6 +263,13 @@ fn execute_streaming_inner<W: Write>(
             hash.entry(key).or_default().push(index);
         }
     }
+    // A LIMIT that fits the output budget can page through more than
+    // 65,536 matched pairs without retaining them all. Without such a LIMIT,
+    // continue to reject oversized results before emitting the header.
+    let stop_after = query
+        .limit
+        .filter(|&limit| limit <= MAX_RESULT_ROWS)
+        .and_then(|limit| query.offset.checked_add(limit));
     probe_inner(
         left_path,
         left_names,
@@ -263,6 +277,7 @@ fn execute_streaming_inner<W: Write>(
         &right_rows,
         &hash,
         false,
+        stop_after,
         |_, _| Ok(()),
     )?;
 
@@ -285,6 +300,7 @@ fn execute_streaming_inner<W: Write>(
         &right_rows,
         &hash,
         true,
+        stop_after,
         |left, right| {
             if position >= query.offset && position < end {
                 for (index, (column, _, _)) in selected.iter().enumerate() {
