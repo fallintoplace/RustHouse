@@ -950,10 +950,20 @@ mod like_tests {
         };
         let target = Cell::Text(b"api".to_vec());
         assert!(matches_comparison_at(&column, 0, &target, Operator::Eq));
-        assert!(matches_comparison_at(&column, 0, &Cell::Text(b"app".to_vec()), Operator::Lt));
+        assert!(matches_comparison_at(
+            &column,
+            0,
+            &Cell::Text(b"app".to_vec()),
+            Operator::Lt
+        ));
         assert!(!matches_comparison_at(&column, 0, &target, Operator::Ne));
         assert!(!matches_comparison_at(&column, 1, &target, Operator::Ne));
-        assert!(!matches_comparison_at(&column, 0, &Cell::Null, Operator::Eq));
+        assert!(!matches_comparison_at(
+            &column,
+            0,
+            &Cell::Null,
+            Operator::Eq
+        ));
     }
 
     #[test]
