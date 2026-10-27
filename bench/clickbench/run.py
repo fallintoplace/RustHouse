@@ -248,6 +248,8 @@ def main(argv=None):
         "coverage": coverage(results),
         "results": results,
     }
+    if options.output is not None:
+        options.output.parent.mkdir(parents=True, exist_ok=True)
     emit_json(report, options.output)
     return int(
         not any(result["status"] in SUCCESS for result in results)
