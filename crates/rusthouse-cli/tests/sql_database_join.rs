@@ -153,10 +153,10 @@ fn ordered_join_accepts_16384_rows_but_rejects_one_more() {
         "CREATE TABLE facts (id UInt64)",
         "CREATE TABLE dimensions (id UInt64)",
         "INSERT INTO dimensions VALUES (0)",
-        "INSERT INTO facts SELECT number FROM numbers(4096)",
+        "INSERT INTO facts SELECT number FROM numbers(0, 4096)",
         "INSERT INTO facts SELECT number FROM numbers(4096, 4096)",
-        "INSERT INTO facts SELECT number FROM numbers(4096, 8192)",
-        "INSERT INTO facts SELECT number FROM numbers(4096, 12288)",
+        "INSERT INTO facts SELECT number FROM numbers(8192, 4096)",
+        "INSERT INTO facts SELECT number FROM numbers(12288, 4096)",
     ] {
         let result = sql(statement, &db, &[]);
         assert!(result.status.success(), "{statement}: {result:?}");
