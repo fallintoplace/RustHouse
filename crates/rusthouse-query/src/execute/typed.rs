@@ -48,6 +48,15 @@ impl Cell {
     }
 }
 
+/// Test the null bitmap without converting a value or allocating String/UUID cells.
+pub(super) fn is_null_at(column: &TypedColumn, row: usize) -> bool {
+    match column {
+        TypedColumn::NullableNumeric { nulls, .. }
+        | TypedColumn::NullableText { nulls, .. } => nulls[row] != 0,
+        _ => false,
+    }
+}
+
 pub(super) fn cell(column: &TypedColumn, row: usize) -> Cell {
     match column {
         TypedColumn::Numeric(values) => Cell::Numeric(number_at(values, row)),
@@ -518,12 +527,7 @@ pub(super) fn passes(batch: &[TypedColumn], row: usize, branches: &[Vec<Conditio
             match &condition.test {
                 // Filtering should not copy String payloads just to check their null map.
                 Test::IsNull(negated) => {
-                    let is_null = match column {
-                        TypedColumn::NullableNumeric { nulls, .. }
-                        | TypedColumn::NullableText { nulls, .. } => nulls[row] != 0,
-                        _ => false,
-                    };
-                    is_null != *negated
+                    is_null_at(column, row) != *negated
                 }
                 // LIKE examines bytes in place. Nulls never match, even for NOT LIKE.
                 Test::Like {
@@ -857,7 +861,7 @@ pub(super) fn execute_typed<W: Write>(
                 continue;
             }
             if is_count || is_count_column {
-                if is_count || !matches!(cell(&batch[projection_indices[0]], index), Cell::Null) {
+                if is_count || !is_null_at(&batch[projection_indices[0]], index) {
                     count = count
                         .checked_add(1)
                         .ok_or_else(|| ExecutionError::Invalid("count overflow".into()))?;
