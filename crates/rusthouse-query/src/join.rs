@@ -281,13 +281,9 @@ pub fn parse_join(sql: &str) -> Result<Option<JoinSelect>, ParseError> {
         {
             return Err(ParseError("joined tables require distinct aliases".into()));
         }
-        if !matches!(step_kind, JoinType::Inner | JoinType::Left)
-            || !matches!(kind, JoinType::Inner | JoinType::Left)
-            || step_any
-            || any
-        {
+        if step_any || any {
             return Err(ParseError(
-                "chained JOIN currently supports only INNER and LEFT JOIN".into(),
+                "chained ANY JOIN is not supported yet".into(),
             ));
         }
         if parser.keyword("USING") {
@@ -479,6 +475,23 @@ mod tests {
     use super::*;
 
     #[test]
+    fn parses_chained_right_and_full_joins() {
+        let query = parse_join(
+            "SELECT o.id, r.id FROM orders o JOIN customers c ON o.id = c.id RIGHT JOIN regions r ON c.id = r.id",
+        )
+        .unwrap()
+        .unwrap();
+        assert_eq!(query.steps[0].kind, JoinType::Right);
+        let query = parse_join(
+            "SELECT * FROM orders o FULL JOIN customers c ON o.id = c.id FULL OUTER JOIN regions r ON c.id = r.id",
+        )
+        .unwrap()
+        .unwrap();
+        assert_eq!(query.kind, JoinType::Full);
+        assert_eq!(query.steps[0].kind, JoinType::Full);
+    }
+
+    #[test]
     fn parses_chained_left_joins() {
         let query = parse_join(
             "SELECT o.id, r.label FROM orders o LEFT JOIN customers c ON o.customer_id = c.id LEFT OUTER JOIN regions r ON c.region_id = r.id",
@@ -506,7 +519,7 @@ mod tests {
         )
         .is_err());
         assert!(parse_join(
-            "SELECT * FROM a x JOIN b y ON x.id = y.id FULL JOIN c z ON y.id = z.id"
+            "SELECT * FROM a x JOIN b y ON x.id = y.id ANY JOIN c z ON y.id = z.id"
         )
         .is_err());
     }
