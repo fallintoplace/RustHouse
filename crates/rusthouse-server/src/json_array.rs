@@ -83,6 +83,29 @@ impl<W: Write> JsonArraySink<W> {
         }
     }
 
+    fn write_row_prefix(&mut self) -> io::Result<()> {
+        let prefix: &[u8] = match (self.first, self.pretty) {
+            (true, true) => b"[\n  ",
+            (true, false) => b"[",
+            (false, true) => b",\n  ",
+            (false, false) => b",",
+        };
+        self.output.write_all(prefix)?;
+        self.first = false;
+        Ok(())
+    }
+
+    fn append_row_fragment(&mut self, fragment: &[u8]) -> io::Result<()> {
+        if fragment.len() > MAX_RESPONSE_BYTES.saturating_sub(self.row.len()) {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                "JSON array row exceeds 8 MiB",
+            ));
+        }
+        self.row.extend_from_slice(fragment);
+        Ok(())
+    }
+
     fn finish_row(&mut self) -> io::Result<()> {
         if !self.row.starts_with(b"{") || !self.row.ends_with(b"}") {
             return Err(io::Error::new(
@@ -90,14 +113,7 @@ impl<W: Write> JsonArraySink<W> {
                 "expected a complete JSON object",
             ));
         }
-        if self.first {
-            self.output
-                .write_all(if self.pretty { b"[\n  " } else { b"[" })?;
-            self.first = false;
-        } else {
-            self.output
-                .write_all(if self.pretty { b",\n  " } else { b"," })?;
-        }
+        self.write_row_prefix()?;
         if self.pretty {
             write_pretty_row(&mut self.output, &self.row)?;
         } else {
@@ -135,13 +151,7 @@ impl<W: Write> Write for JsonArraySink<W> {
             } else {
                 chunk
             };
-            if fragment.len() > MAX_RESPONSE_BYTES.saturating_sub(self.row.len()) {
-                return Err(io::Error::new(
-                    io::ErrorKind::InvalidData,
-                    "JSON array row exceeds 8 MiB",
-                ));
-            }
-            self.row.extend_from_slice(fragment);
+            self.append_row_fragment(fragment)?;
             if complete {
                 self.finish_row()?;
             }
