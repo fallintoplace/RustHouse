@@ -20,7 +20,10 @@ fn trim_removes_only_surrounding_spaces() {
         assert_eq!(value(sql), ConstantValue::Text(expected.into()), "{sql}");
     }
     assert_eq!(value("SELECT TRIM(NULL)"), ConstantValue::Null);
-    assert_eq!(value("SELECT LENGTH(TRIM(' a '))"), ConstantValue::Integer(1));
+    assert_eq!(
+        value("SELECT LENGTH(TRIM(' a '))"),
+        ConstantValue::Integer(1)
+    );
 }
 
 #[test]

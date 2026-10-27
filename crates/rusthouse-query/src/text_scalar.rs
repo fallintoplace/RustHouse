@@ -148,9 +148,17 @@ fn parse_at_depth(parser: &mut Parser, depth: usize) -> Result<ConstantValue, Pa
             let input = text_arg(parser, depth + 1)?;
             require(parser, Token::Comma, "REPLACE requires a search string")?;
             let needle = text_arg(parser, depth + 1)?;
-            require(parser, Token::Comma, "REPLACE requires a replacement string")?;
+            require(
+                parser,
+                Token::Comma,
+                "REPLACE requires a replacement string",
+            )?;
             let replacement = text_arg(parser, depth + 1)?;
-            require(parser, Token::RParen, "expected ')' after REPLACE arguments")?;
+            require(
+                parser,
+                Token::RParen,
+                "expected ')' after REPLACE arguments",
+            )?;
             match (input, needle, replacement) {
                 (Some(input), Some(needle), Some(replacement)) => {
                     if needle.is_empty() {
