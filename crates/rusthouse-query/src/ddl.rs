@@ -147,8 +147,8 @@ fn parse_column_definitions(parser: &mut Parser) -> Result<Vec<ColumnDef>, Parse
     let mut columns = Vec::new();
     let mut names = HashSet::new();
     loop {
-        if columns.len() == 64 {
-            return Err(ParseError("DDL supports at most 64 columns".into()));
+        if columns.len() == 128 {
+            return Err(ParseError("DDL supports at most 128 columns".into()));
         }
         let column_name = identifier(parser)?;
         if !names.insert(column_name.clone()) {
@@ -384,6 +384,20 @@ mod tests {
         ] {
             assert!(parse_ddl(sql).is_err(), "{sql}");
         }
+    }
+
+    #[test]
+    fn accepts_105_column_clickbench_schemas_and_rejects_129() {
+        let make_sql = |n: usize| format!(
+            "CREATE TABLE hits ({})",
+            (0..n)
+                .map(|i| format!("field{i} UInt64"))
+                .collect::<Vec<_>>()
+                .join(", ")
+        );
+        assert!(parse_ddl(&make_sql(105)).is_ok());
+        assert!(parse_ddl(&make_sql(128)).is_ok());
+        assert!(parse_ddl(&make_sql(129)).is_err());
     }
 
     #[test]

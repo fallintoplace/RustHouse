@@ -38,8 +38,8 @@ fn parse_insert_columns(parser: &mut Parser) -> Result<Option<Vec<String>>, Pars
     let mut result = Vec::new();
     let mut seen = HashSet::new();
     loop {
-        if result.len() >= 64 {
-            return Err(ParseError("INSERT supports at most 64 columns".into()));
+        if result.len() >= 128 {
+            return Err(ParseError("INSERT supports at most 128 columns".into()));
         }
         let column = identifier(parser)?;
         if !seen.insert(column.clone()) {
@@ -105,9 +105,9 @@ pub fn parse_insert(sql: &str) -> Result<Option<Insert>, ParseError> {
         }
         let mut row = Vec::new();
         loop {
-            if row.len() >= 64 {
+            if row.len() >= 128 {
                 return Err(ParseError(
-                    "INSERT supports at most 64 values per row".into(),
+                    "INSERT supports at most 128 values per row".into(),
                 ));
             }
             row.push(value(&mut parser)?);

@@ -215,7 +215,7 @@ pub(super) fn read_schema(catalog: &Path, name: &str) -> Result<Vec<ColumnDef>, 
             .split_once('\t')
             .ok_or_else(|| format!("corrupt schema for table {name}"))?;
         let sql = format!("CREATE TABLE _check ({column_name} {data_type})");
-        if columns.len() == 64
+        if columns.len() == 128
             || !matches!(parse_ddl(&sql), Ok(Some(Ddl::CreateTable { .. })))
             || columns
                 .iter()
@@ -287,8 +287,8 @@ fn add_column(
         }
         return Err(format!("column already exists: {}", column.name));
     }
-    if columns.len() >= 64 {
-        return Err("DDL supports at most 64 columns".into());
+    if columns.len() >= 128 {
+        return Err("DDL supports at most 128 columns".into());
     }
     columns.push(column.clone());
     replace_schema(catalog, table, &columns)?;

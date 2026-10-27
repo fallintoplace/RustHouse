@@ -25,8 +25,8 @@ fn push_field(
     field: &mut String,
     quoted: bool,
 ) -> Result<(), String> {
-    if row.len() >= 64 {
-        return Err("CSV records support at most 64 columns".into());
+    if row.len() >= 128 {
+        return Err("CSV records support at most 128 columns".into());
     }
     let value = std::mem::take(field);
     row.push(if !quoted && (value.is_empty() || value == "\\N") {
@@ -161,8 +161,8 @@ fn parse_tsv_record(line: &str) -> Result<Vec<Option<String>>, String> {
     }
     let mut row = Vec::new();
     for field in line.split('\t') {
-        if row.len() >= 64 {
-            return Err("TSV records support at most 64 columns".into());
+        if row.len() >= 128 {
+            return Err("TSV records support at most 128 columns".into());
         }
         if field == "\\N" {
             row.push(None);
@@ -324,6 +324,16 @@ pub(super) fn run(database: &Path, statement: &CopyFrom) -> Result<(), String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn supports_105_column_records_and_rejects_129() {
+        let tsv = vec!["123"; 105].join("\t");
+        assert_eq!(parse_tsv_record(&tsv).unwrap().len(), 105);
+        let csv = vec!["123"; 105].join(",");
+        assert_eq!(parse_csv(&csv).unwrap()[0].len(), 105);
+        assert!(parse_tsv_record(&vec!["1"; 129].join("\t")).is_err());
+        assert!(parse_csv(&vec!["1"; 129].join(",")).is_err());
+    }
 
     #[test]
     fn csv_parser_distinguishes_null_and_quoted_empty() {
