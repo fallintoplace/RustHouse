@@ -9,6 +9,7 @@ pub(super) fn is_function(name: &str) -> bool {
         "LENGTH"
             | "CHAR_LENGTH"
             | "ASCII"
+            | "UTF16_LENGTH"
             | "BTRIM"
             | "RTRIM"
             | "LOWER"
@@ -104,6 +105,18 @@ fn parse_at_depth(parser: &mut Parser, depth: usize) -> Result<ConstantValue, Pa
                         output.push(char::from(DIGITS[usize::from(byte & 15)]));
                     }
                     ConstantValue::Text(output)
+                }
+                None => ConstantValue::Null,
+            }
+        }
+        "UTF16_LENGTH" => {
+            let input = text_arg(parser, depth + 1)?;
+            require(parser, Token::RParen, "UTF16_LENGTH requires one argument")?;
+            match input {
+                Some(value) => {
+                    let length = i64::try_from(value.encode_utf16().count())
+                        .map_err(|_| ParseError("UTF16_LENGTH result exceeds Int64".into()))?;
+                    ConstantValue::Integer(length)
                 }
                 None => ConstantValue::Null,
             }
