@@ -140,6 +140,24 @@ fn next_array_offset(
     Ok(next)
 }
 
+fn append_array_offset(
+    encoding: ArrayOffsetsEncoding,
+    base: u64,
+    absolute: &mut u64,
+    encoded: u64,
+    row: usize,
+    offsets: &mut Vec<usize>,
+) -> Result<(), ArrayReadError> {
+    let next = next_array_offset(encoding, *absolute, encoded, row)?;
+    let elements = next - base;
+    if elements > MAX_BATCH_ELEMENTS {
+        return Err(ArrayReadError::TooManyElements(elements));
+    }
+    offsets.push(elements as usize);
+    *absolute = next;
+    Ok(())
+}
+
 pub fn read_array_offsets<O: Read>(
     offset_stream: &mut O,
     rows: usize,
@@ -167,14 +185,7 @@ pub fn read_array_offsets<O: Read>(
 
         for bytes in buffer[..count * 8].chunks_exact(8) {
             let encoded = u64::from_le_bytes(bytes.try_into().unwrap());
-            let next = next_array_offset(encoding, absolute, encoded, row)?;
-
-            let elements = next - base;
-            if elements > MAX_BATCH_ELEMENTS {
-                return Err(ArrayReadError::TooManyElements(elements));
-            }
-            offsets.push(elements as usize);
-            absolute = next;
+            append_array_offset(encoding, base, &mut absolute, encoded, row, &mut offsets)?;
             row += 1;
         }
     }
