@@ -203,7 +203,7 @@ fn read_shard(
         .map(|(table, column)| {
             let kind = shard_column_kind(peer, table, column)?;
             if !group_key_type(&kind) {
-                return Err("distributed GROUP BY SUM does not support this key type".into());
+                return Err("distributed GROUP BY SUM does not support this key type".to_owned());
             }
             Ok(kind)
         })
