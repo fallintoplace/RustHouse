@@ -389,8 +389,7 @@ pub fn execute_join<W: Write>(
         .where_null
         .as_ref()
         .map(|(column, not_null)| {
-            resolve(query, column, &left_names, &right_names)
-                .map(|index| (index, *not_null))
+            resolve(query, column, &left_names, &right_names).map(|index| (index, *not_null))
         })
         .transpose()?;
     let mut left_keys = Vec::new();
