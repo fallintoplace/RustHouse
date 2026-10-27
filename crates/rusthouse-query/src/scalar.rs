@@ -24,6 +24,7 @@ pub(super) fn is_function(name: &str) -> bool {
         || name.eq_ignore_ascii_case("SIGN")
         || is_extrema(name)
         || is_power(name)
+        || name.eq_ignore_ascii_case("NEXT_POWER_OF_TWO")
         || is_bitwise(name)
         || name.eq_ignore_ascii_case("GCD")
         || name.eq_ignore_ascii_case("LCM")
@@ -214,6 +215,9 @@ fn factor(parser: &mut Parser, depth: usize) -> Result<i64, ParseError> {
     if parser.take(Token::Plus) {
         return factor(parser, depth + 1);
     }
+    if parser.keyword("NEXT_POWER_OF_TWO") {
+        return parse_next_power_of_two(parser, depth);
+    }
     if parser.keyword("POWER") || parser.keyword("POW") {
         return parse_power(parser, depth);
     }
@@ -267,6 +271,16 @@ fn factor(parser: &mut Parser, depth: usize) -> Result<i64, ParseError> {
         .number()?
         .parse::<i64>()
         .map_err(|_| ParseError("SELECT literals must be signed 64-bit integers".into()))
+}
+
+fn parse_next_power_of_two(parser: &mut Parser, depth: usize) -> Result<i64, ParseError> {
+    require_token(parser, Token::LParen, "NEXT_POWER_OF_TWO requires '('")?;
+    let value = expression(parser, depth + 1)?;
+    require_token(parser, Token::RParen, "expected ')' after NEXT_POWER_OF_TWO argument")?;
+    let nonnegative = u64::try_from(value)
+        .map_err(|_| ParseError("NEXT_POWER_OF_TWO requires nonnegative input".into()))?;
+    i64::try_from(nonnegative.checked_next_power_of_two().ok_or_else(overflow)?)
+        .map_err(|_| overflow())
 }
 
 fn overflow() -> ParseError {
