@@ -52,6 +52,11 @@ fn decode_markdown_fields(line: &[u8], data_row: bool) -> io::Result<Vec<Cow<'_,
 
 fn write_markdown_row<W: Write>(output: &mut W, line: &[u8], data_row: bool) -> io::Result<()> {
     let fields = decode_markdown_fields(line, data_row)?;
+    for field in &fields {
+        std::str::from_utf8(field.as_ref()).map_err(|_| {
+            io::Error::new(io::ErrorKind::InvalidData, "Markdown field is not UTF-8")
+        })?;
+    }
     output.write_all(b"|")?;
     for field in fields {
         output.write_all(b" ")?;
@@ -129,6 +134,19 @@ impl<W: Write> Write for MarkdownWriter<W> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn rejects_invalid_utf8_before_emitting_a_markdown_row() {
+        let mut writer = MarkdownWriter::new(Vec::new());
+        assert!(writer.write_all(b"\xff\n").is_err());
+        assert!(writer.output.is_empty());
+
+        let mut writer = MarkdownWriter::new(Vec::new());
+        writer.write_all(b"name\n").unwrap();
+        let before = writer.output.clone();
+        assert!(writer.write_all(b"bad\\xFF\n").is_err());
+        assert_eq!(writer.output, before);
+    }
 
     #[test]
     fn decodes_only_data_fields_with_escapes() {
