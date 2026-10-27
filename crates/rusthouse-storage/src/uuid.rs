@@ -24,15 +24,19 @@ impl UuidValue {
 
 impl fmt::Display for UuidValue {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        for (start, end) in [(0, 4), (4, 6), (6, 8), (8, 10), (10, 16)] {
-            if start != 0 {
-                f.write_str("-")?;
+        const HEX: &[u8; 16] = b"0123456789abcdef";
+        let mut text = [0u8; 36];
+        let mut offset = 0;
+        for (index, &byte) in self.bytes.iter().enumerate() {
+            if matches!(index, 4 | 6 | 8 | 10) {
+                text[offset] = b'-';
+                offset += 1;
             }
-            for byte in &self.bytes[start..end] {
-                write!(f, "{byte:02x}")?;
-            }
+            text[offset] = HEX[usize::from(byte >> 4)];
+            text[offset + 1] = HEX[usize::from(byte & 0x0f)];
+            offset += 2;
         }
-        Ok(())
+        f.write_str(std::str::from_utf8(&text).expect("UUID formatting produces ASCII"))
     }
 }
 
@@ -58,6 +62,29 @@ mod tests {
         0xe7, 0x11, 0xb3, 0x5c, 0x04, 0xc4, 0xf0, 0x61, 0xa0, 0xdb, 0xd3, 0x6a, 0x00, 0xa6, 0x7b,
         0x90,
     ];
+
+    #[test]
+    fn formats_with_one_string_write() {
+        struct Sink {
+            calls: usize,
+            output: String,
+        }
+        impl fmt::Write for Sink {
+            fn write_str(&mut self, text: &str) -> fmt::Result {
+                self.calls += 1;
+                self.output.push_str(text);
+                Ok(())
+            }
+        }
+        let value = UuidValue::from_disk_bytes(EXAMPLE);
+        let mut sink = Sink {
+            calls: 0,
+            output: String::new(),
+        };
+        fmt::write(&mut sink, format_args!("{value}")).unwrap();
+        assert_eq!(sink.calls, 1);
+        assert_eq!(sink.output, "61f0c404-5cb3-11e7-907b-a6006ad3dba0");
+    }
 
     #[test]
     fn canonical_group_lengths_are_explicit() {
