@@ -206,6 +206,24 @@ fn aggregates_typed_filters_across_frozen_parts() {
 }
 
 #[test]
+fn typed_offset_skips_filtered_rows_without_changing_distinct_semantics() {
+    let part = part();
+    assert_eq!(
+        query("SELECT message FROM part WHERE service = 'api' LIMIT 1 OFFSET 1", &part),
+        "message\nworld\n"
+    );
+    assert_eq!(
+        query("SELECT service FROM part LIMIT 1 OFFSET 2", &part),
+        "service\napi\n"
+    );
+    assert_eq!(
+        query("SELECT DISTINCT service FROM part LIMIT 1 OFFSET 1", &part),
+        "service\ndb\n"
+    );
+    fs::remove_dir_all(part).unwrap();
+}
+
+#[test]
 fn typed_topk_keeps_stable_ties_and_respects_offsets() {
     let part = part();
     assert_eq!(
