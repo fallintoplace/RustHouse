@@ -138,7 +138,15 @@ fn step_keys(
         left_keys.push(left);
         right_keys.push(right - left_width);
     }
-    for (first, second) in &step.keys {
+    for (first, second) in step
+        .keys
+        .iter()
+        .take(if step.using_keys.is_empty() {
+            usize::MAX
+        } else {
+            0
+        })
+    {
         let first_index = column_index(relations, first)?;
         let second_index = column_index(relations, second)?;
         let (left, right) = if first_index < left_width && second_index >= left_width {
@@ -163,7 +171,7 @@ fn step_keys(
     Ok((left_keys, right_keys))
 }
 
-/// Execute a chain of three or more INNER joins. No output is written before
+/// Execute a chain of three or more bounded joins. No output is written before
 /// all input validation, row-limit checks, and final ordering have succeeded.
 pub fn execute_multi_join<W: Write>(
     query: &JoinSelect,
