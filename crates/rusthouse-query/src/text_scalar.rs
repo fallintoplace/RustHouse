@@ -8,6 +8,7 @@ pub(super) fn is_function(name: &str) -> bool {
         name.to_ascii_uppercase().as_str(),
         "LENGTH"
             | "CHAR_LENGTH"
+            | "ASCII"
             | "BTRIM"
             | "RTRIM"
             | "LOWER"
@@ -44,6 +45,16 @@ fn parse_at_depth(parser: &mut Parser, depth: usize) -> Result<ConstantValue, Pa
     let name = parser.word()?.to_ascii_uppercase();
     require(parser, Token::LParen, "string function requires '('")?;
     let value = match name.as_str() {
+        "ASCII" => {
+            let input = text_arg(parser, depth + 1)?;
+            require(parser, Token::RParen, "ASCII requires one argument")?;
+            match input {
+                Some(value) => ConstantValue::Integer(
+                    value.chars().next().map(|ch| i64::from(ch as u32)).unwrap_or(0),
+                ),
+                None => ConstantValue::Null,
+            }
+        }
         "LENGTH" | "CHAR_LENGTH" => {
             let input = text_arg(parser, depth + 1)?;
             require(parser, Token::RParen, "LENGTH requires one argument")?;
