@@ -10,7 +10,7 @@ Example:
       --probe-rows 65536 --build-rows 8192 --runs 5 --warmups 2
 
 The runner creates temporary tables, imports TSV, and verifies every
-query result by checking the complete set of matching IDs.
+query result by checking matching IDs and their dimension labels.
 Only SQL invocation latency is timed; fixture creation and loading are not.
 The measured time includes process startup and output formatting.
 This is not a standard TPC-H query and it does not establish cross-engine speed.

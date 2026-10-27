@@ -17,7 +17,10 @@ def write_fixture(directory, probe_rows, build_rows):
     directory = Path(directory)
     directory.mkdir(parents=True, exist_ok=True)
     step = max(1, probe_rows // build_rows)
-    expected_ids = {n * step for n in range(build_rows) if n * step < probe_rows}
+    expected_labels = {
+        n * step: f"group-{n % 10}"
+        for n in range(build_rows) if n * step < probe_rows
+    }
     with (directory / "facts.tsv").open("w", encoding="utf-8") as facts:
         facts.write("id\tamount\n")
         for index in range(probe_rows):
@@ -26,7 +29,7 @@ def write_fixture(directory, probe_rows, build_rows):
         dimensions.write("id\tlabel\n")
         for index in range(build_rows):
             dimensions.write(f"{index * step}\tgroup-{index % 10}\n")
-    return expected_ids
+    return expected_labels
 
 def execute(binary, database, sql, timeout):
     result = subprocess.run(
@@ -42,11 +45,11 @@ def execute(binary, database, sql, timeout):
         )
     return result.stdout
 
-def verify_result(output, expected_ids):
+def verify_result(output, expected_labels):
     lines = output.splitlines()
-    if len(lines) != len(expected_ids):
+    if len(lines) != len(expected_labels):
         raise ValueError(
-            f"expected {len(expected_ids)} join rows, received {len(lines)}"
+            f"expected {len(expected_labels)} join rows, received {len(lines)}"
         )
     ids = set()
     for row in lines:
@@ -56,8 +59,10 @@ def verify_result(output, expected_ids):
         identifier = int(columns[0])
         if identifier in ids:
             raise ValueError(f"duplicate join key: {identifier}")
+        if expected_labels.get(identifier) != columns[1]:
+            raise ValueError(f"incorrect join label for key {identifier}")
         ids.add(identifier)
-    if ids != expected_ids:
+    if ids != expected_labels.keys():
         raise ValueError("join result IDs differ from expected matches")
 
 def main(argv=None):
