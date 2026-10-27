@@ -22,14 +22,15 @@ mod vertical;
 use rusthouse_storage::{
     CompressedBlockReader, NumericColumn, UInt64ColumnReader, inspect_part, read_checksums,
     read_fixed_primary_index, read_numeric_granule, read_u64_granule, read_wide_marks,
-    validate_wide_marks, verify_part_file_sizes, verify_wide_part,
+    validate_wide_marks, verify_part_file_hashes, verify_part_file_hashes_full,
+    verify_part_file_sizes, verify_wide_part,
 };
 use std::env;
 use std::ffi::OsString;
 use std::path::PathBuf;
 use std::process::ExitCode;
 
-const USAGE: &str = "Usage:\n  rusthouse inspect-part <path> [--json]\n  rusthouse inspect-snapshot <frozen-part-or-active-parts-directory> [--json]\n  rusthouse verify-part <path-to-wide-part>\n  rusthouse verify-file-sizes <path-to-part>\n  rusthouse inspect-checksums <path-to-checksums.txt> [--summary]\n  rusthouse inspect-marks <path-to-wide-marks>\n  rusthouse inspect-primary-index <primary.idx|primary.cidx> <field-width> [field-width ...]\n  rusthouse inspect-blocks <path-to-.bin>\n  rusthouse verify-blocks <path-to-.bin>\n  rusthouse validate-marks <path-to-wide-marks> <path-to-.bin>\n  rusthouse read-u64 <data.bin> <marks.mrk2> <mark-index>\n  rusthouse scan-u64 <path-to-UInt64-.bin>\n  rusthouse read-numeric <data.bin> <marks.mrk2> <mark-index> <type>\n  rusthouse sql <SQL> [--part <path-to-wide-part>] [--format tsv|tsv-no-header|csv|csv-no-header|jsonl|json|json-pretty|json-compact-each-row|json-seq|markdown|html|sql-values|vertical] [--output <path>] [--max-rows <n>] [--show-ast|--explain] [--time]\n  rusthouse sql --stdin [--part <path-to-wide-part>] [--format tsv|tsv-no-header|csv|csv-no-header|jsonl|json|json-pretty|json-compact-each-row|json-seq|markdown|html|sql-values|vertical] [--output <path>] [--max-rows <n>] [--show-ast|--explain] [--time]\n  rusthouse sql --file <path.sql> [--part <path-to-wide-part>] [--format tsv|tsv-no-header|csv|csv-no-header|jsonl|json|json-pretty|json-compact-each-row|json-seq|markdown|html|sql-values|vertical] [--output <path>] [--max-rows <n>] [--show-ast|--explain] [--time]\n  rusthouse sql <DDL> --catalog <directory> [--show-ast]\n  rusthouse sql <DDL|INSERT> --database <directory> [--show-ast]\n  rusthouse sql --script <path.sql> --database <directory>\n  rusthouse sql 'EXPLAIN SELECT ...' [--part <path>|--database <directory>]\n  rusthouse doctor --database <directory> [--full-hashes] [--all-generations]\n  rusthouse --version\n  rusthouse --help\n\nInspect local MergeTree metadata, marks, and compressed blocks.";
+const USAGE: &str = "Usage:\n  rusthouse inspect-part <path> [--json]\n  rusthouse inspect-snapshot <frozen-part-or-active-parts-directory> [--json]\n  rusthouse verify-part <path-to-wide-part>\n  rusthouse verify-file-sizes <path-to-part> [--hashes|--full-hashes]\n  rusthouse inspect-checksums <path-to-checksums.txt> [--summary]\n  rusthouse inspect-marks <path-to-wide-marks>\n  rusthouse inspect-primary-index <primary.idx|primary.cidx> <field-width> [field-width ...]\n  rusthouse inspect-blocks <path-to-.bin>\n  rusthouse verify-blocks <path-to-.bin>\n  rusthouse validate-marks <path-to-wide-marks> <path-to-.bin>\n  rusthouse read-u64 <data.bin> <marks.mrk2> <mark-index>\n  rusthouse scan-u64 <path-to-UInt64-.bin>\n  rusthouse read-numeric <data.bin> <marks.mrk2> <mark-index> <type>\n  rusthouse sql <SQL> [--part <path-to-wide-part>] [--format tsv|tsv-no-header|csv|csv-no-header|jsonl|json|json-pretty|json-compact-each-row|json-seq|markdown|html|sql-values|vertical] [--output <path>] [--max-rows <n>] [--show-ast|--explain] [--time]\n  rusthouse sql --stdin [--part <path-to-wide-part>] [--format tsv|tsv-no-header|csv|csv-no-header|jsonl|json|json-pretty|json-compact-each-row|json-seq|markdown|html|sql-values|vertical] [--output <path>] [--max-rows <n>] [--show-ast|--explain] [--time]\n  rusthouse sql --file <path.sql> [--part <path-to-wide-part>] [--format tsv|tsv-no-header|csv|csv-no-header|jsonl|json|json-pretty|json-compact-each-row|json-seq|markdown|html|sql-values|vertical] [--output <path>] [--max-rows <n>] [--show-ast|--explain] [--time]\n  rusthouse sql <DDL> --catalog <directory> [--show-ast]\n  rusthouse sql <DDL|INSERT> --database <directory> [--show-ast]\n  rusthouse sql --script <path.sql> --database <directory>\n  rusthouse sql 'EXPLAIN SELECT ...' [--part <path>|--database <directory>]\n  rusthouse doctor --database <directory> [--full-hashes] [--all-generations]\n  rusthouse --version\n  rusthouse --help\n\nInspect local MergeTree metadata, marks, and compressed blocks.";
 
 fn main() -> ExitCode {
     let mut args = env::args_os().skip(1);
@@ -159,6 +160,21 @@ fn main() -> ExitCode {
                 eprintln!("{USAGE}");
                 return ExitCode::from(2);
             }
+        } else if command == "verify-file-sizes" {
+            let (Some(path), option, None) = (args.next(), args.next(), args.next()) else {
+                eprintln!("{USAGE}");
+                return ExitCode::from(2);
+            };
+            let mode = match option.as_deref() {
+                None => 0,
+                Some(value) if value == "--hashes" => 1,
+                Some(value) if value == "--full-hashes" => 2,
+                _ => {
+                    eprintln!("{USAGE}");
+                    return ExitCode::from(2);
+                }
+            };
+            verify_file_sizes_and_print(path, mode)
         } else {
             let (Some(path), None) = (args.next(), args.next()) else {
                 eprintln!("{USAGE}");
@@ -166,8 +182,6 @@ fn main() -> ExitCode {
             };
             if command == "verify-part" {
                 verify_part_and_print(path)
-            } else if command == "verify-file-sizes" {
-                verify_file_sizes_and_print(path)
             } else if command == "inspect-marks" {
                 inspect_marks_and_print(path)
             } else if command == "inspect-blocks" {
@@ -260,10 +274,22 @@ fn verify_part_and_print(path: OsString) -> Result<(), rusthouse_storage::PartEr
     Ok(())
 }
 
-fn verify_file_sizes_and_print(path: OsString) -> Result<(), rusthouse_storage::PartError> {
-    let report = verify_part_file_sizes(PathBuf::from(path))?;
+fn verify_file_sizes_and_print(path: OsString, mode: u8) -> Result<(), rusthouse_storage::PartError> {
+    let path = PathBuf::from(path);
+    let (report, status) = match mode {
+        0 => (verify_part_file_sizes(&path)?, "file hashes not verified"),
+        1 => (
+            verify_part_file_hashes(&path)?,
+            "stored hashes verified; uncompressed hashes not verified",
+        ),
+        2 => (
+            verify_part_file_hashes_full(&path)?,
+            "stored and uncompressed hashes verified",
+        ),
+        _ => unreachable!(),
+    };
     println!(
-        "Verified {} file sizes, {} total bytes (file hashes not verified)",
+        "Verified {} file sizes, {} total bytes ({status})",
         report.files, report.total_bytes
     );
     Ok(())
