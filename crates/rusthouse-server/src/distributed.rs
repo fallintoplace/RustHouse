@@ -168,7 +168,7 @@ fn shard_column_kind(peer: Peer, table: &str, column: &str) -> Result<String, St
     }
     let contents =
         std::str::from_utf8(&response.body).map_err(|_| "peer schema response is not UTF-8")?;
-    let needle = format!("\\"name\\":\\"{column}\\",\\"type\\":\\"");
+    let needle = format!("\"name\":\"{column}\",\"type\":\"");
     let (_, tail) = contents
         .split_once(needle.as_str())
         .ok_or("aggregate column missing from peer schema")?;
