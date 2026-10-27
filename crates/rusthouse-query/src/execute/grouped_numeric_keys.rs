@@ -70,8 +70,14 @@ pub(super) fn execute<W: Write>(
         return Ok(());
     }
 
-    let group_indices = columns.iter().map(|column| indices[column]).collect::<Vec<_>>();
-    let item_indices = items.iter().map(|(_, column)| indices[column]).collect::<Vec<_>>();
+    let group_indices = columns
+        .iter()
+        .map(|column| indices[column])
+        .collect::<Vec<_>>();
+    let item_indices = items
+        .iter()
+        .map(|(_, column)| indices[column])
+        .collect::<Vec<_>>();
     let mut groups: Vec<(Vec<Cell>, Vec<AggregateState>)> = Vec::new();
     let mut by_key: HashMap<Vec<Key>, usize> = HashMap::new();
     let mut reader = TypedQueryReader::open(part, &names)?;
