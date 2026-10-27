@@ -38,6 +38,7 @@ fn parse_request_line(line: &str) -> Result<(&str, &str), Response> {
     if words.len() != 3
         || words.iter().any(|word| word.is_empty())
         || !matches!(words[2], "HTTP/1.1" | "HTTP/1.0")
+        || !words[1].bytes().all(|byte| byte.is_ascii_graphic())
     {
         return Err(Response::text(
             "400 Bad Request",
@@ -325,6 +326,18 @@ mod request_line_spacing_regressions {
             parse_request_line("POST / HTTP/1.0"),
             Ok(("POST", "/"))
         ));
+    }
+
+    #[test]
+    fn rejects_control_and_non_ascii_target_bytes() {
+        for target in ["/\0", "/\t", "/\u{7f}", "/café"] {
+            let line = format!("GET {target} HTTP/1.1");
+            assert_eq!(
+                parse_request_line(&line).err().map(|response| response.status),
+                Some("400 Bad Request")
+            );
+        }
+        assert!(parse_request_line("GET /?query=SELECT+1 HTTP/1.1").is_ok());
     }
 
     #[test]
