@@ -11,6 +11,7 @@ use std::fs;
 use std::path::Path;
 
 const MAX_ROOT_ENTRIES: usize = 20_000;
+const MAX_SNAPSHOT_GENERATIONS: usize = 16_384;
 
 #[derive(Default)]
 struct Report {
@@ -114,6 +115,112 @@ fn verify_active_part(report: &mut Report, table: &str, part: &Path, full_hashes
     }
 }
 
+/// Inspect retained immutable generations without modifying snapshots or the lock file.
+/// Old generations can predate schema changes, so verify internal consistency
+/// rather than comparing their columns with the current catalog schema.
+fn inspect_saved_generations(
+    report: &mut Report,
+    root: &Path,
+    table: &str,
+    active: &Path,
+    full_hashes: bool,
+) {
+    let versions = root.join(".rusthouse-versions");
+    let kind = match fs::symlink_metadata(&versions) {
+        Ok(kind) => kind,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return,
+        Err(error) => {
+            report.error(table, format!("cannot inspect saved generations: {error}"));
+            return;
+        }
+    };
+    if !kind.file_type().is_dir() {
+        report.error(table, "saved generations path must be a real directory");
+        return;
+    }
+    let entries = match fs::read_dir(&versions) {
+        Ok(entries) => entries,
+        Err(error) => {
+            report.error(table, format!("cannot list saved generations: {error}"));
+            return;
+        }
+    };
+    let mut generations = Vec::new();
+    for (index, entry) in entries.enumerate() {
+        if index >= MAX_SNAPSHOT_GENERATIONS {
+            report.error(table, "saved generation audit exceeds 16384 entries");
+            return;
+        }
+        let entry = match entry {
+            Ok(entry) => entry,
+            Err(error) => {
+                report.error(table, format!("cannot read saved generation entry: {error}"));
+                continue;
+            }
+        };
+        let name = entry.file_name();
+        let Some(label) = name.to_str() else {
+            report.error(table, "non-UTF-8 saved generation entry");
+            continue;
+        };
+        if label.starts_with(".pending-") {
+            continue;
+        }
+        if !label.starts_with('g')
+            || label.len() < 2
+            || !label.as_bytes()[1..].iter().all(u8::is_ascii_digit)
+        {
+            report.warning(table, format!("unexpected saved generation entry: {label}"));
+            continue;
+        }
+        let path = entry.path();
+        if path != active {
+            generations.push((label.to_owned(), path));
+        }
+    }
+    generations.sort_by(|left, right| left.0.cmp(&right.0));
+    for (label, path) in generations {
+        let name = format!("{table}@{label}");
+        let kind = match fs::symlink_metadata(&path) {
+            Ok(kind) => kind,
+            Err(error) => {
+                report.error(&name, format!("cannot inspect saved snapshot: {error}"));
+                continue;
+            }
+        };
+        if !kind.file_type().is_dir() {
+            report.error(&name, "saved snapshot must be a real directory");
+            continue;
+        }
+        let metadata = match inspect_query_source(&path) {
+            Ok(metadata) => metadata,
+            Err(error) => {
+                report.error(&name, format!("invalid saved snapshot: {error}"));
+                continue;
+            }
+        };
+        let parts = match query_parts(&path) {
+            Ok(parts) => parts,
+            Err(error) => {
+                report.error(&name, format!("cannot list saved snapshot parts: {error}"));
+                continue;
+            }
+        };
+        let previous_errors = report.errors;
+        for part in &parts {
+            verify_active_part(report, &name, part, full_hashes);
+        }
+        if report.errors == previous_errors {
+            println!(
+                "OK {name}: {} rows, {} saved parts, {} columns",
+                metadata.rows,
+                parts.len(),
+                metadata.columns.len()
+            );
+        }
+    }
+}
+
 fn inspect_table(
     report: &mut Report,
     database: &Path,
@@ -121,6 +228,7 @@ fn inspect_table(
     schema: bool,
     parts: bool,
     full_hashes: bool,
+    all_generations: bool,
 ) {
     report.checked_tables += 1;
     if !schema {
@@ -196,6 +304,9 @@ fn inspect_table(
     for part in &active_parts {
         verify_active_part(report, name, part, full_hashes);
     }
+    if all_generations {
+        inspect_saved_generations(report, &root, name, &active, full_hashes);
+    }
     if report.errors == before {
         println!(
             "OK {name}: {} rows, {} active parts, {} columns",
@@ -238,29 +349,33 @@ fn record_catalog_entry(
 
 fn parse_doctor_directory(
     mut args: impl Iterator<Item = OsString>,
-) -> Result<(OsString, bool), String> {
-    const USAGE: &str = "usage: rusthouse doctor --database <directory> [--full-hashes]";
+) -> Result<(OsString, bool, bool), String> {
+    const USAGE: &str =
+        "usage: rusthouse doctor --database <directory> [--full-hashes] [--all-generations]";
     let (Some(flag), Some(directory)) = (args.next(), args.next()) else {
         return Err(USAGE.into());
     };
     if flag != "--database" {
         return Err(USAGE.into());
     }
-    let full_hashes = match args.next() {
-        None => false,
-        Some(option) if option == "--full-hashes" => true,
-        _ => return Err(USAGE.into()),
-    };
-    if args.next().is_some() {
-        return Err(USAGE.into());
+    let mut full_hashes = false;
+    let mut all_generations = false;
+    for option in args {
+        if option == "--full-hashes" && !full_hashes {
+            full_hashes = true;
+        } else if option == "--all-generations" && !all_generations {
+            all_generations = true;
+        } else {
+            return Err(USAGE.into());
+        }
     }
-    Ok((directory, full_hashes))
+    Ok((directory, full_hashes, all_generations))
 }
 
 /// Print a deterministic diagnostic report without altering on-disk data.
 /// Does not acquire a lock because doing so could create the lock inode.
 pub(super) fn run(args: impl Iterator<Item = OsString>) -> Result<(), String> {
-    let (directory, full_hashes) = parse_doctor_directory(args)?;
+    let (directory, full_hashes, all_generations) = parse_doctor_directory(args)?;
     let database = Path::new(&directory);
     let kind = fs::symlink_metadata(database)
         .map_err(|error| format!("cannot inspect database {}: {error}", database.display()))?;
@@ -293,6 +408,7 @@ pub(super) fn run(args: impl Iterator<Item = OsString>) -> Result<(), String> {
             schemas.contains(&name),
             parts.contains(&name),
             full_hashes,
+            all_generations,
         );
     }
     println!(
@@ -326,13 +442,18 @@ mod tests {
         let parse = |args: &[&str]| parse_doctor_directory(args.iter().map(OsString::from));
         assert_eq!(
             parse(&["--database", "db"]).unwrap(),
-            (OsString::from("db"), false)
+            (OsString::from("db"), false, false)
         );
         assert_eq!(
             parse(&["--database", "db", "--full-hashes"]).unwrap(),
-            (OsString::from("db"), true)
+            (OsString::from("db"), true, false)
+        );
+        assert_eq!(
+            parse(&["--database", "db", "--all-generations", "--full-hashes"]).unwrap(),
+            (OsString::from("db"), true, true)
         );
         assert!(parse(&["--database", "db", "--full-hashes", "extra"]).is_err());
+        assert!(parse(&["--database", "db", "--all-generations", "--all-generations"]).is_err());
         assert!(parse(&["--database", "db", "--typo"]).is_err());
     }
 
