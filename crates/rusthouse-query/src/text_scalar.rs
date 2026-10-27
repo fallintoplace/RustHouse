@@ -44,6 +44,7 @@ pub(super) fn is_function(name: &str) -> bool {
             | "REPLACE_FIRST"
             | "STARTS_WITH"
             | "CONTAINS"
+            | "STRIP_PREFIX"
             | "RIGHT"
             | "BASE64_ENCODE"
             | "ENDS_WITH"
@@ -816,6 +817,21 @@ fn parse_at_depth(parser: &mut Parser, depth: usize) -> Result<ConstantValue, Pa
                         ConstantValue::Text(input.replacen(&needle, &replacement, 1))
                     }
                 }
+                _ => ConstantValue::Null,
+            }
+        }
+        "STRIP_PREFIX" => {
+            let input = text_arg(parser, depth + 1)?;
+            require(parser, Token::Comma, "STRIP_PREFIX requires a prefix")?;
+            let prefix = text_arg(parser, depth + 1)?;
+            require(parser, Token::RParen, "expected ')' after STRIP_PREFIX arguments")?;
+            match (input, prefix) {
+                (Some(input), Some(prefix)) => ConstantValue::Text(
+                    input
+                        .strip_prefix(prefix.as_str())
+                        .unwrap_or(input.as_str())
+                        .to_owned(),
+                ),
                 _ => ConstantValue::Null,
             }
         }
