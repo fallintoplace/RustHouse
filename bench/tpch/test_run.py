@@ -15,6 +15,13 @@ class RunnerTests(unittest.TestCase):
                 load_queries(directory), [(2, "SELECT 2"), (10, "SELECT 10")]
             )
 
+    def test_rejects_zero_query_ids(self):
+        for filename in ("q0.sql", "q00.sql"):
+            with tempfile.TemporaryDirectory() as root:
+                (Path(root) / filename).write_text("SELECT 0;\n")
+                with self.assertRaisesRegex(ValueError, "query IDs must be positive"):
+                    load_queries(Path(root))
+
     def test_query_selection_uses_loaded_ids(self):
         queries = [(2, "SELECT 2"), (10, "SELECT 10")]
         self.assertEqual(select_queries(queries, "10"), [(10, "SELECT 10")])

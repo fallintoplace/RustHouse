@@ -190,6 +190,7 @@ fn decode_compressed_checksums(payload: &[u8], path: &Path) -> Result<Vec<u8>, P
 fn valid_name(name: &str) -> bool {
     !name.is_empty()
         && !name.contains('\\')
+        && !name.contains(':')
         && !name.bytes().any(|byte| byte.is_ascii_control())
         && name
             .split('/')
@@ -426,6 +427,8 @@ mod tests {
             "dir/./file",
             "dir/../file",
             "dir\\file",
+            "C:/outside.bin",
+            "C:outside.bin",
             "bad\0name",
             "line\nbreak",
             "tab\tname",

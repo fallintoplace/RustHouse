@@ -27,17 +27,9 @@ fn probe_peer_health(cluster: &Cluster) -> Vec<bool> {
     })
 }
 
-pub fn handle(method: &str, body: &[u8], cluster: &Cluster) -> Response {
-    if method != "GET" {
-        return Response::text("405 Method Not Allowed", "health endpoint requires GET\n");
-    }
-    if !body.is_empty() {
-        return Response::text("400 Bad Request", "GET must not contain a request body\n");
-    }
-    let healthy = probe_peer_health(cluster);
-    let count = healthy.iter().filter(|&&alive| alive).count();
+fn render_peer_health(cluster: &Cluster, healthy: &[bool]) -> String {
     let mut details = String::new();
-    for (index, (peer, &alive)) in cluster.peers().iter().zip(&healthy).enumerate() {
+    for (index, (peer, &alive)) in cluster.peers().iter().zip(healthy).enumerate() {
         if index != 0 {
             details.push(',');
         }
@@ -48,6 +40,19 @@ pub fn handle(method: &str, body: &[u8], cluster: &Cluster) -> Response {
         )
         .expect("writing to String cannot fail");
     }
+    details
+}
+
+pub fn handle(method: &str, body: &[u8], cluster: &Cluster) -> Response {
+    if method != "GET" {
+        return Response::text("405 Method Not Allowed", "health endpoint requires GET\n");
+    }
+    if !body.is_empty() {
+        return Response::text("400 Bad Request", "GET must not contain a request body\n");
+    }
+    let healthy = probe_peer_health(cluster);
+    let count = healthy.iter().filter(|&&alive| alive).count();
+    let details = render_peer_health(cluster, &healthy);
     let status = if count == healthy.len() {
         "200 OK"
     } else {

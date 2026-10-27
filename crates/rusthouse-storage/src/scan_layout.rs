@@ -37,6 +37,18 @@ fn granule_boundary_mismatch(name: &str) -> PartError {
     PartError::InvalidScan(format!("granule boundaries differ for {name}"))
 }
 
+fn validate_granule_boundary(
+    name: &str,
+    reference: &[u64],
+    index: usize,
+    rows: u64,
+) -> Result<(), PartError> {
+    if reference.get(index) != Some(&rows) {
+        return Err(granule_boundary_mismatch(name));
+    }
+    Ok(())
+}
+
 fn validate_mark_rows(
     name: &str,
     marks: &[WideMark],
@@ -56,9 +68,7 @@ fn validate_mark_rows(
             .checked_add(rows)
             .ok_or_else(|| row_count_mismatch(name))?;
         if let Some(reference) = reference {
-            if reference.get(index) != Some(&rows) {
-                return Err(granule_boundary_mismatch(name));
-            }
+            validate_granule_boundary(name, reference, index, rows)?;
         } else if let Some(first) = first_row_counts.as_mut() {
             first.push(rows);
         }

@@ -7,8 +7,8 @@ use crate::scan_layout::ScanLayout;
 use crate::{
     CompressedBlockReader, DecodedBlock, NumericColumn, PartError, StringColumn, UuidValue,
     WideMark, inspect_part, read_legacy_strings, read_uuid_values, read_wide_marks,
-    validate_wide_marks,
 };
+use crate::mark_validation::validate_wide_marks_reader;
 use std::fs::File;
 use std::io::{self, Read};
 use std::path::{Path, PathBuf};
@@ -64,10 +64,12 @@ impl Stream {
         };
         let marks = read_wide_marks(&mark_path)?;
         let data_path = path.join(format!("{name}.bin"));
-        validate_wide_marks(&marks, CompressedBlockReader::open(&data_path)?)?;
+        let mut reader = CompressedBlockReader::open(&data_path)?;
+        validate_wide_marks_reader(&marks, &mut reader)?;
+        reader.seek_to_block(0)?;
         Ok(Self {
             marks: marks.marks,
-            reader: CompressedBlockReader::open(data_path)?,
+            reader,
             cached: None,
         })
     }

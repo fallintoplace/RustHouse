@@ -197,16 +197,8 @@ where
         for index in 0..batch[0].len() {
             if let Some(key) = batch_key(&batch, index, left_keys) {
                 if let Some(right_indices) = hash.get(&key) {
-                    // The preflight pass only counts matches. In the output pass,
-                    // build the left projection once per matching row.
-                    let left_row = if options.materialize_rows {
-                        batch
-                            .iter()
-                            .map(|column| typed::cell(column, index))
-                            .collect::<Vec<_>>()
-                    } else {
-                        Vec::new()
-                    };
+                    // Materialize only after a row survives the join filter.
+                    let mut left_row: Option<Vec<typed::Cell>> = None;
                     for &right_index in
                         right_indices
                             .iter()
@@ -231,7 +223,19 @@ where
                         if options.stop_after.is_none() && matches >= MAX_RESULT_ROWS {
                             return Err(invalid("JOIN produces more than 65536 rows"));
                         }
-                        emit(&left_row, &right_rows[right_index])?;
+                        let projection = if options.materialize_rows {
+                            left_row
+                                .get_or_insert_with(|| {
+                                    batch
+                                        .iter()
+                                        .map(|column| typed::cell(column, index))
+                                        .collect()
+                                })
+                                .as_slice()
+                        } else {
+                            &[]
+                        };
+                        emit(projection, &right_rows[right_index])?;
                         matches += 1;
                     }
                 }

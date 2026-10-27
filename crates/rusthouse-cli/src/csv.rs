@@ -10,6 +10,8 @@ pub struct CsvWriter<W: Write> {
     output: W,
     field: Vec<u8>,
     pending_cr: bool,
+    columns: Option<usize>,
+    fields_in_row: usize,
 }
 
 impl<W: Write> CsvWriter<W> {
@@ -18,6 +20,8 @@ impl<W: Write> CsvWriter<W> {
             output,
             field: Vec::new(),
             pending_cr: false,
+            columns: None,
+            fields_in_row: 0,
         }
     }
 
@@ -43,11 +47,25 @@ impl<W: Write> CsvWriter<W> {
         }
         self.pending_cr = false;
         if byte == b'\n' {
-            self.finish_field(b"\r\n")?;
+            self.finish_row()?;
             return Ok(true);
         }
         self.push_field_byte(b'\r')?;
         Ok(false)
+    }
+
+    fn finish_row(&mut self) -> io::Result<()> {
+        let width = self.fields_in_row + 1;
+        if self.columns.is_some_and(|columns| columns != width) {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                "CSV row does not match header column count",
+            ));
+        }
+        self.finish_field(b"\r\n")?;
+        self.columns = Some(width);
+        self.fields_in_row = 0;
+        Ok(())
     }
 
     fn finish_field(&mut self, separator: &[u8]) -> io::Result<()> {
@@ -55,6 +73,13 @@ impl<W: Write> CsvWriter<W> {
         self.field.clear();
         self.output.write_all(separator)
     }
+}
+
+fn needs_csv_quotes(value: &[u8]) -> bool {
+    value == b"\\N"
+        || value
+            .iter()
+            .any(|byte| matches!(byte, b',' | b'"' | b'\t' | b'\r' | b'\n'))
 }
 
 fn write_csv_field<W: Write>(output: &mut W, field: &[u8]) -> io::Result<()> {
@@ -67,11 +92,7 @@ fn write_csv_field<W: Write>(output: &mut W, field: &[u8]) -> io::Result<()> {
         Cow::Borrowed(field)
     };
     let value = decoded.as_ref();
-    let needs_quotes = value == b"\\N"
-        || value
-            .iter()
-            .any(|byte| matches!(byte, b',' | b'"' | b'\t' | b'\r' | b'\n'));
-    if !needs_quotes {
+    if !needs_csv_quotes(value) {
         return output.write_all(value);
     }
     write_quoted_field(output, value)
@@ -92,10 +113,11 @@ impl<W: Write> Write for CsvWriter<W> {
                 }
                 b'\t' => {
                     self.finish_field(b",")?;
+                    self.fields_in_row += 1;
                     index += 1;
                 }
                 b'\n' => {
-                    self.finish_field(b"\r\n")?;
+                    self.finish_row()?;
                     index += 1;
                 }
                 _ => {
@@ -162,6 +184,22 @@ mod tests {
         csv.write_all(b"ab\r").unwrap();
         csv.write_all(b"\tother\n").unwrap();
         assert_eq!(csv.output, b"\"ab\r\",other\r\n");
+    }
+
+    #[test]
+    fn rejects_csv_rows_with_missing_or_extra_fields() {
+        let mut missing = CsvWriter::new(Vec::new());
+        missing.write_all(b"id\tname\n1\n").unwrap_err();
+        assert_eq!(missing.output, b"id,name\r\n");
+
+        let mut extra = CsvWriter::new(Vec::new());
+        extra.write_all(b"id\tname\n1\tAlice\twrong\n").unwrap_err();
+        assert_eq!(extra.columns, Some(2));
+
+        let mut split = CsvWriter::new(Vec::new());
+        split.write_all(b"id\tname\r").unwrap();
+        split.write_all(b"\n1\tAlice\r\n").unwrap();
+        assert_eq!(split.output, b"id,name\r\n1,Alice\r\n");
     }
 
     #[test]
