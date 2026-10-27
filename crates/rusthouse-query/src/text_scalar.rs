@@ -12,6 +12,7 @@ pub(super) fn is_function(name: &str) -> bool {
             | "LOWER"
             | "UPPER"
             | "REVERSE"
+            | "INITCAP"
             | "CONCAT"
             | "CONCAT_WS"
             | "SUBSTRING"
@@ -80,6 +81,30 @@ fn parse_at_depth(parser: &mut Parser, depth: usize) -> Result<ConstantValue, Pa
                     let result = value.to_uppercase();
                     if result.len() > MAX_TEXT_BYTES {
                         return Err(ParseError("UPPER result is too large".into()));
+                    }
+                    ConstantValue::Text(result)
+                }
+                None => ConstantValue::Null,
+            }
+        }
+        "INITCAP" => {
+            let input = text_arg(parser, depth + 1)?;
+            require(parser, Token::RParen, "INITCAP requires one argument")?;
+            match input {
+                Some(value) => {
+                    let mut result = String::with_capacity(value.len());
+                    let mut word_start = true;
+                    for ch in value.chars() {
+                        let transformed = if word_start {
+                            ch.to_uppercase().to_string()
+                        } else {
+                            ch.to_lowercase().to_string()
+                        };
+                        if result.len() + transformed.len() > MAX_TEXT_BYTES {
+                            return Err(ParseError("INITCAP result is too large".into()));
+                        }
+                        result.push_str(&transformed);
+                        word_start = !ch.is_alphanumeric();
                     }
                     ConstantValue::Text(result)
                 }
