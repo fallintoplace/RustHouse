@@ -71,6 +71,20 @@ fn update_select_tokens(parser: &mut Parser, table: &str) -> Result<Vec<Token>, 
     Ok(tokens)
 }
 
+fn validate_update_scope(select: &Select) -> Result<(), ParseError> {
+    if !matches!(select.source, Some(Source::Table(_)))
+        || select.limit.is_some()
+        || select.offset.is_some()
+        || select.order_by.is_some()
+        || select.having.is_some()
+    {
+        return Err(ParseError(
+            "UPDATE supports only table SET assignments [WHERE predicate]".into(),
+        ));
+    }
+    Ok(())
+}
+
 /// Rewrite predicates using the SELECT parser to keep NULL, LIKE and OR semantics shared.
 pub fn parse_update(sql: &str) -> Result<Option<Update>, ParseError> {
     let mut parser = Parser {
@@ -91,16 +105,7 @@ pub fn parse_update(sql: &str) -> Result<Option<Update>, ParseError> {
 
     let tokens = update_select_tokens(&mut parser, &table)?;
     let select = parse_select_tokens(tokens)?;
-    if !matches!(select.source, Some(Source::Table(_)))
-        || select.limit.is_some()
-        || select.offset.is_some()
-        || select.order_by.is_some()
-        || select.having.is_some()
-    {
-        return Err(ParseError(
-            "UPDATE supports only table SET assignments [WHERE predicate]".into(),
-        ));
-    }
+    validate_update_scope(&select)?;
     Ok(Some(Update {
         table,
         assignments,
