@@ -281,9 +281,13 @@ pub fn parse_join(sql: &str) -> Result<Option<JoinSelect>, ParseError> {
         {
             return Err(ParseError("joined tables require distinct aliases".into()));
         }
-        if step_kind != JoinType::Inner || step_any || kind != JoinType::Inner || any {
+        if !matches!(step_kind, JoinType::Inner | JoinType::Left)
+            || !matches!(kind, JoinType::Inner | JoinType::Left)
+            || step_any
+            || any
+        {
             return Err(ParseError(
-                "chained JOIN currently supports only INNER JOIN".into(),
+                "chained JOIN currently supports only INNER and LEFT JOIN".into(),
             ));
         }
         if parser.keyword("USING") {
@@ -475,6 +479,18 @@ mod tests {
     use super::*;
 
     #[test]
+    fn parses_chained_left_joins() {
+        let query = parse_join(
+            "SELECT o.id, r.label FROM orders o LEFT JOIN customers c ON o.customer_id = c.id LEFT OUTER JOIN regions r ON c.region_id = r.id",
+        )
+        .unwrap()
+        .unwrap();
+        assert_eq!(query.kind, JoinType::Left);
+        assert_eq!(query.steps[0].kind, JoinType::Left);
+        assert_eq!(query.steps[0].keys[0].0.relation, "c");
+    }
+
+    #[test]
     fn parses_three_table_inner_joins() {
         let query = parse_join(
             "SELECT o.id, c.name, r.label FROM orders o JOIN customers c ON o.customer_id = c.id JOIN regions r ON c.region_id = r.id ORDER BY o.id LIMIT 5",
@@ -490,7 +506,7 @@ mod tests {
         )
         .is_err());
         assert!(parse_join(
-            "SELECT * FROM a x JOIN b y ON x.id = y.id LEFT JOIN c z ON y.id = z.id"
+            "SELECT * FROM a x JOIN b y ON x.id = y.id FULL JOIN c z ON y.id = z.id"
         )
         .is_err());
     }
