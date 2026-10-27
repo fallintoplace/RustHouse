@@ -113,6 +113,8 @@ cargo run -p rusthouse-server -- --port 8123 --peer 127.0.0.1:8124 --peer 127.0.
 curl -X POST http://127.0.0.1:8123/distributed --data-binary 'SELECT id, name FROM events'
 ```
 
+Peer requests use a bounded connect timeout and a total response-read deadline.
+Slow trickling peers cannot indefinitely hold a coordinator thread.
 The coordinator executes an unordered, read-only table SELECT on each peer,
 then concatenates TSV rows in configured peer order with one shared header.
 It accepts column projections, `SELECT *`, and pushed-down WHERE clauses;
