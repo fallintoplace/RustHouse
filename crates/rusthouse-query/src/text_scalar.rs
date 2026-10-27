@@ -25,10 +25,17 @@ fn parse_at_depth(parser: &mut Parser, depth: usize) -> Result<ConstantValue, Pa
             let input = text_arg(parser, depth + 1)?;
             require(parser, Token::RParen, "LENGTH requires one argument")?;
             match input {
-                Some(value) => ConstantValue::Integer(
-                    i64::try_from(value.len())
-                        .map_err(|_| ParseError("string length exceeds Int64".into()))?,
-                ),
+                Some(value) => {
+                    let length = if name == "CHAR_LENGTH" {
+                        value.chars().count()
+                    } else {
+                        value.len()
+                    };
+                    ConstantValue::Integer(
+                        i64::try_from(length)
+                            .map_err(|_| ParseError("string length exceeds Int64".into()))?,
+                    )
+                }
                 None => ConstantValue::Null,
             }
         }
