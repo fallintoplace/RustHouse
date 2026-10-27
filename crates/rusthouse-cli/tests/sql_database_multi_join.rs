@@ -134,3 +134,38 @@ fn chained_left_joins_null_extend_each_unmatched_relation() {
     assert_eq!(missing.stdout, b"o.id\n2\n3\n");
     fs::remove_dir_all(db).unwrap();
 }
+
+#[test]
+fn chained_right_and_full_joins_preserve_unmatched_right_rows() {
+    let db = database();
+    for statement in [
+        "CREATE TABLE orders (id UInt64, customer_id UInt64)",
+        "CREATE TABLE customers (id UInt64, region_id UInt64)",
+        "CREATE TABLE regions (id UInt64, label String)",
+        "INSERT INTO orders VALUES (1, 10), (2, 20)",
+        "INSERT INTO customers VALUES (10, 1), (20, 2)",
+        "INSERT INTO regions VALUES (1, 'West'), (3, 'East')",
+    ] {
+        let result = sql(statement, &db, &[]);
+        assert!(result.status.success(), "{statement}: {result:?}");
+    }
+    let right = sql(
+        "SELECT o.id, c.id, r.label FROM orders o JOIN customers c ON o.customer_id = c.id RIGHT JOIN regions r ON c.region_id = r.id ORDER BY r.id",
+        &db,
+        &[],
+    );
+    assert!(right.status.success(), "{right:?}");
+    assert_eq!(right.stdout, b"o.id\tc.id\tr.label\n1\t10\tWest\n\\N\t\\N\tEast\n");
+
+    let full = sql(
+        "SELECT o.id, c.id, r.label FROM orders o JOIN customers c ON o.customer_id = c.id FULL JOIN regions r ON c.region_id = r.id ORDER BY r.id ASC NULLS LAST",
+        &db,
+        &[],
+    );
+    assert!(full.status.success(), "{full:?}");
+    assert_eq!(
+        full.stdout,
+        b"o.id\tc.id\tr.label\n1\t10\tWest\n\\N\t\\N\tEast\n2\t20\t\\N\n"
+    );
+    fs::remove_dir_all(db).unwrap();
+}
