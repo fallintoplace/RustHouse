@@ -629,6 +629,17 @@ pub fn execute_join<W: Write>(
         right_keys.push(right_index);
     }
 
+    // LIMIT 0 needs the validated output schema, but not either input scan.
+    if query.limit == Some(0) {
+        let header = selected
+            .iter()
+            .map(|(_, name, _)| name.as_str())
+            .collect::<Vec<_>>()
+            .join("\t");
+        writeln!(output, "{header}")?;
+        return Ok(());
+    }
+
     if query.kind == JoinType::Inner && order.is_none() {
         // A very large right table can be the streamed side if the left fits
         // the same bounded hash-build budget.
