@@ -1,0 +1,33 @@
+import unittest
+from decimal import Decimal
+
+from numeric_oracle import compare_tsv, numeric_equal, parse_tolerance
+
+
+class NumericOracleTests(unittest.TestCase):
+    def test_decimal_precision_and_tolerance(self):
+        self.assertTrue(numeric_equal(b"1.00", b"1.0"))
+        self.assertTrue(numeric_equal(b"1e-9", b"0.000000001"))
+        self.assertTrue(numeric_equal(b"999999999999999999999999.00",
+                                      b"999999999999999999999999"))
+        self.assertFalse(numeric_equal(b"1.1", b"1.2"))
+        self.assertTrue(numeric_equal(b"1.1", b"1.2", Decimal("0.1")))
+
+    def test_text_and_structure_stay_strict(self):
+        self.assertTrue(compare_tsv(b"1.00\tEUROPE\n", b"1\tEUROPE\n"))
+        self.assertFalse(compare_tsv(b"1\tEUROPE\n", b"1\tASIA\n"))
+        self.assertFalse(compare_tsv(b"2\n1\n", b"1\n2\n"))
+        self.assertFalse(compare_tsv(b"1\t2\n", b"1\n"))
+        self.assertFalse(compare_tsv(b"1", b"1\n"))
+        self.assertFalse(compare_tsv(b"NULL\n", b"0\n"))
+
+    def test_rejects_nan_infinity_and_bad_tolerances(self):
+        self.assertFalse(numeric_equal(b"NaN", b"nan"))
+        self.assertFalse(numeric_equal(b"Infinity", b"1"))
+        for value in ("NaN", "Infinity", "-1", "abc"):
+            with self.assertRaises(ValueError):
+                parse_tolerance(value)
+
+
+if __name__ == "__main__":
+    unittest.main()
