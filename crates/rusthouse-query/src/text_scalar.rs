@@ -22,6 +22,7 @@ pub(super) fn is_function(name: &str) -> bool {
             | "STRPOS"
             | "LEFT"
             | "STARTS_WITH"
+            | "STRIP_PREFIX"
             | "RIGHT"
             | "ENDS_WITH"
             | "REPEAT"
@@ -353,6 +354,21 @@ fn parse_at_depth(parser: &mut Parser, depth: usize) -> Result<ConstantValue, Pa
                 (Some(input), Some(prefix)) => {
                     ConstantValue::Integer(i64::from(input.starts_with(prefix.as_str())))
                 }
+                _ => ConstantValue::Null,
+            }
+        }
+        "STRIP_PREFIX" => {
+            let input = text_arg(parser, depth + 1)?;
+            require(parser, Token::Comma, "STRIP_PREFIX requires a prefix")?;
+            let prefix = text_arg(parser, depth + 1)?;
+            require(parser, Token::RParen, "expected ')' after STRIP_PREFIX arguments")?;
+            match (input, prefix) {
+                (Some(input), Some(prefix)) => ConstantValue::Text(
+                    input
+                        .strip_prefix(prefix.as_str())
+                        .unwrap_or(input.as_str())
+                        .to_owned(),
+                ),
                 _ => ConstantValue::Null,
             }
         }
