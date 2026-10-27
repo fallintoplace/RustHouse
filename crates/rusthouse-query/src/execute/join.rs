@@ -167,6 +167,11 @@ fn add_pair(pairs: &mut Vec<Pair>, pair: Pair) -> Result<(), ExecutionError> {
     Ok(())
 }
 
+struct ProbeOptions {
+    materialize_rows: bool,
+    stop_after: Option<usize>,
+}
+
 /// Scan the probe side without retaining its rows or joined result pairs.
 fn probe_inner<F>(
     left_path: &Path,
@@ -174,14 +179,13 @@ fn probe_inner<F>(
     left_keys: &[usize],
     right_rows: &[Vec<typed::Cell>],
     hash: &HashMap<Vec<typed::Key>, Vec<usize>>,
-    materialize_rows: bool,
-    stop_after: Option<usize>,
+    options: ProbeOptions,
     mut emit: F,
 ) -> Result<usize, ExecutionError>
 where
     F: FnMut(&[typed::Cell], &[typed::Cell]) -> Result<(), ExecutionError>,
 {
-    if stop_after == Some(0) {
+    if options.stop_after == Some(0) {
         return Ok(0);
     }
     let mut reader = TypedQueryReader::open(left_path, left_names)?;
@@ -192,7 +196,7 @@ where
                 if let Some(right_indices) = hash.get(&key) {
                     // The preflight pass only counts matches. In the output pass,
                     // build the left projection once per matching row.
-                    let left_row = if materialize_rows {
+                    let left_row = if options.materialize_rows {
                         batch
                             .iter()
                             .map(|column| typed::cell(column, index))
@@ -201,10 +205,10 @@ where
                         Vec::new()
                     };
                     for &right_index in right_indices {
-                        if stop_after.is_some_and(|end| matches >= end) {
+                        if options.stop_after.is_some_and(|end| matches >= end) {
                             break 'scan;
                         }
-                        if stop_after.is_none() && matches >= MAX_RESULT_ROWS {
+                        if options.stop_after.is_none() && matches >= MAX_RESULT_ROWS {
                             return Err(invalid("JOIN produces more than 65536 rows"));
                         }
                         emit(&left_row, &right_rows[right_index])?;
@@ -271,8 +275,10 @@ fn execute_streaming_inner<W: Write>(
         left_keys,
         &right_rows,
         &hash,
-        false,
-        stop_after,
+        ProbeOptions {
+            materialize_rows: false,
+            stop_after,
+        },
         |_, _| Ok(()),
     )?;
 
@@ -294,8 +300,10 @@ fn execute_streaming_inner<W: Write>(
         left_keys,
         &right_rows,
         &hash,
-        true,
-        stop_after,
+        ProbeOptions {
+            materialize_rows: true,
+            stop_after,
+        },
         |left, right| {
             if position >= query.offset && position < end {
                 for (index, (column, _, _)) in selected.iter().enumerate() {
