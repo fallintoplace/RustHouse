@@ -30,6 +30,11 @@ fn invalid_metadata(path: &Path, reason: &'static str) -> PartError {
     io_error(path, io::Error::new(io::ErrorKind::InvalidData, reason))
 }
 
+fn validate_part_directory(path: &Path) -> Result<(), PartError> {
+    validate_part_directory(path)?;
+    Ok(())
+}
+
 pub fn inspect_part(path: impl AsRef<Path>) -> Result<PartMetadata, PartError> {
     let path = path.as_ref();
     match fs::symlink_metadata(path) {
