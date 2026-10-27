@@ -170,6 +170,7 @@ fn add_pair(pairs: &mut Vec<Pair>, pair: Pair) -> Result<(), ExecutionError> {
 struct ProbeOptions {
     materialize_rows: bool,
     stop_after: Option<usize>,
+    any: bool,
     null_filter: Option<(usize, bool)>,
 }
 
@@ -205,7 +206,8 @@ where
                     } else {
                         Vec::new()
                     };
-                    for &right_index in right_indices {
+                    for &right_index in right_indices.iter().take(if options.any { 1 } else { usize::MAX })
+                    {
                         if let Some((column, not_null)) = options.null_filter {
                             let is_null = if column < left_names.len() {
                                 matches!(typed::cell(&batch[column], index), typed::Cell::Null)
@@ -294,6 +296,7 @@ fn execute_streaming_inner<W: Write>(
         ProbeOptions {
             materialize_rows: false,
             stop_after,
+            any: query.any,
             null_filter,
         },
         |_, _| Ok(()),
@@ -320,6 +323,7 @@ fn execute_streaming_inner<W: Write>(
         ProbeOptions {
             materialize_rows: true,
             stop_after,
+            any: query.any,
             null_filter,
         },
         |left, right| {
@@ -334,6 +338,171 @@ fn execute_streaming_inner<W: Write>(
                         &right[*column - left_width]
                     };
                     typed::write_value(output, cell)?;
+                }
+                output.write_all(b"\n")?;
+            }
+            position += 1;
+            Ok(())
+        },
+    )?;
+    Ok(())
+}
+
+/// Stream the right input when it is too large to retain, hashing only the
+/// smaller left input. SELECT columns still follow their original left/right
+/// bindings; only the unordered probe traversal changes.
+fn probe_right<F>(
+    right_path: &Path,
+    right_names: &[String],
+    right_keys: &[usize],
+    left_rows: &[Vec<typed::Cell>],
+    hash: &HashMap<Vec<typed::Key>, Vec<usize>>,
+    options: ProbeOptions,
+    mut emit: F,
+) -> Result<(), ExecutionError>
+where
+    F: FnMut(&[typed::Cell], &[typed::Cell]) -> Result<(), ExecutionError>,
+{
+    if options.stop_after == Some(0) {
+        return Ok(());
+    }
+    let mut reader = TypedQueryReader::open(right_path, right_names)?;
+    let mut matches = 0usize;
+    let left_width = left_rows.first().map_or(0, Vec::len);
+    // Each retained left row can match only its first right row.
+    let mut seen_left = options.any.then(|| vec![false; left_rows.len()]);
+    'scan: while let Some(batch) = reader.next_batch()? {
+        for index in 0..batch[0].len() {
+            if let Some(key) = batch_key(&batch, index, right_keys) {
+                if let Some(left_indices) = hash.get(&key) {
+                    let right_row = if options.materialize_rows {
+                        batch
+                            .iter()
+                            .map(|column| typed::cell(column, index))
+                            .collect::<Vec<_>>()
+                    } else {
+                        Vec::new()
+                    };
+                    for &left_index in left_indices {
+                        if options.stop_after.is_some_and(|end| matches >= end) {
+                            break 'scan;
+                        }
+                        if let Some(seen) = seen_left.as_mut() {
+                            if seen[left_index] {
+                                continue;
+                            }
+                            seen[left_index] = true;
+                        }
+                        if let Some((column, not_null)) = options.null_filter {
+                            let is_null = if column < left_width {
+                                matches!(&left_rows[left_index][column], typed::Cell::Null)
+                            } else {
+                                matches!(
+                                    typed::cell(&batch[column - left_width], index),
+                                    typed::Cell::Null
+                                )
+                            };
+                            if is_null == not_null {
+                                continue;
+                            }
+                        }
+                        if options.stop_after.is_none() && matches >= MAX_RESULT_ROWS {
+                            return Err(invalid("JOIN produces more than 65536 rows"));
+                        }
+                        emit(&left_rows[left_index], &right_row)?;
+                        matches += 1;
+                    }
+                }
+            }
+        }
+    }
+    Ok(())
+}
+
+fn execute_streaming_right<W: Write>(
+    query: &JoinSelect,
+    left_path: &Path,
+    right_path: &Path,
+    columns: InnerJoinColumns<'_>,
+    output: &mut W,
+) -> Result<(), ExecutionError> {
+    let InnerJoinColumns {
+        left_names,
+        right_names,
+        selected,
+        left_keys,
+        right_keys,
+        null_filter,
+    } = columns;
+    let left_meta = inspect_query_source(left_path)?;
+    let left_rows = read_rows(
+        left_path,
+        left_names,
+        left_meta.rows,
+        MAX_STREAM_BUILD_ROWS,
+        MAX_STREAM_BUILD_BYTES,
+    )?;
+    let mut hash: HashMap<Vec<typed::Key>, Vec<usize>> = HashMap::new();
+    for (index, row) in left_rows.iter().enumerate() {
+        if let Some(key) = row_key(row, left_keys) {
+            hash.entry(key).or_default().push(index);
+        }
+    }
+    let stop_after = query
+        .limit
+        .filter(|&limit| limit <= MAX_RESULT_ROWS)
+        .and_then(|limit| query.offset.checked_add(limit));
+    // Validate cardinality before sending a header or output rows.
+    probe_right(
+        right_path,
+        right_names,
+        right_keys,
+        &left_rows,
+        &hash,
+        ProbeOptions {
+            materialize_rows: false,
+            stop_after,
+            any: query.any,
+            null_filter,
+        },
+        |_, _| Ok(()),
+    )?;
+    let header = selected
+        .iter()
+        .map(|(_, name, _)| name.as_str())
+        .collect::<Vec<_>>()
+        .join("\t");
+    writeln!(output, "{header}")?;
+
+    let left_width = left_names.len();
+    let end = query
+        .offset
+        .saturating_add(query.limit.unwrap_or(usize::MAX));
+    let mut position = 0usize;
+    probe_right(
+        right_path,
+        right_names,
+        right_keys,
+        &left_rows,
+        &hash,
+        ProbeOptions {
+            materialize_rows: true,
+            stop_after,
+            any: query.any,
+            null_filter,
+        },
+        |left, right| {
+            if position >= query.offset && position < end {
+                for (index, (column, _, _)) in selected.iter().enumerate() {
+                    if index != 0 {
+                        output.write_all(b"\t")?;
+                    }
+                    let value = if *column < left_width {
+                        &left[*column]
+                    } else {
+                        &right[*column - left_width]
+                    };
+                    typed::write_value(output, value)?;
                 }
                 output.write_all(b"\n")?;
             }
@@ -452,6 +621,24 @@ pub fn execute_join<W: Write>(
     }
 
     if query.kind == JoinType::Inner && order.is_none() {
+        // A very large right table can be the streamed side if the left fits
+        // the same bounded hash-build budget.
+        if right_meta.rows > MAX_STREAM_BUILD_ROWS && left_meta.rows <= MAX_STREAM_BUILD_ROWS {
+            return execute_streaming_right(
+                query,
+                left_path,
+                right_path,
+                InnerJoinColumns {
+                    left_names: &left_names,
+                    right_names: &right_names,
+                    selected: &selected,
+                    left_keys: &left_keys,
+                    right_keys: &right_keys,
+                    null_filter,
+                },
+                output,
+            );
+        }
         return execute_streaming_inner(
             query,
             left_path,
@@ -488,7 +675,6 @@ pub fn execute_join<W: Write>(
             hash.entry(key).or_default().push(index);
         }
     }
-    let mut pairs: Vec<Pair> = Vec::new();
     let keep = |pair: &Pair| {
         null_filter.is_none_or(|(index, not_null)| {
             let is_null = cell_at(&left_rows, &right_rows, pair, index, width)
@@ -496,12 +682,14 @@ pub fn execute_join<W: Write>(
             is_null != not_null
         })
     };
+    let mut pairs: Vec<Pair> = Vec::new();
     let mut matched_right = vec![false; right_rows.len()];
     for (left_index, row) in left_rows.iter().enumerate() {
         let mut matched = false;
         if let Some(key) = row_key(row, &left_keys) {
             if let Some(matches) = hash.get(&key) {
-                for &right_index in matches {
+                for &right_index in matches.iter().take(if query.any { 1 } else { usize::MAX })
+                {
                     matched = true;
                     matched_right[right_index] = true;
                     let pair = (Some(left_index), Some(right_index));
