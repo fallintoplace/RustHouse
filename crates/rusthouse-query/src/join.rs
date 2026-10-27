@@ -379,12 +379,19 @@ mod tests {
 
     #[test]
     fn parses_qualified_wildcard_projections() {
-        let query = parse_join(
-            "SELECT l.*, r.label, r.* FROM lefts l JOIN rights r ON l.id = r.id",
-        )
-        .unwrap()
-        .unwrap();
-        assert_eq!(query.columns.unwrap().iter().map(|c| c.name.as_str()).collect::<Vec<_>>(), ["*", "label", "*"]);
+        let query =
+            parse_join("SELECT l.*, r.label, r.* FROM lefts l JOIN rights r ON l.id = r.id")
+                .unwrap()
+                .unwrap();
+        assert_eq!(
+            query
+                .columns
+                .unwrap()
+                .iter()
+                .map(|c| c.name.as_str())
+                .collect::<Vec<_>>(),
+            ["*", "label", "*"]
+        );
         assert!(parse_join("SELECT id, r.* FROM lefts l JOIN rights r ON l.id = r.id").is_err());
     }
 
