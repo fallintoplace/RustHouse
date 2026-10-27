@@ -708,8 +708,7 @@ pub(super) fn execute_typed<W: Write>(
                     if top.len() < capacity {
                         top.push(next);
                     } else if top.peek().is_some_and(|worst| next < *worst) {
-                        top.pop();
-                        top.push(next);
+                        *top.peek_mut().unwrap() = next;
                     }
                 } else {
                     if ordered.len() >= MAX_BUFFERED_ROWS {
