@@ -23,6 +23,7 @@ pub(super) fn is_function(name: &str) -> bool {
     name.eq_ignore_ascii_case("ABS")
         || name.eq_ignore_ascii_case("SIGN")
         || is_extrema(name)
+        || name.eq_ignore_ascii_case("IS_POWER_OF_TWO")
         || is_power(name)
         || is_bitwise(name)
         || name.eq_ignore_ascii_case("GCD")
@@ -200,6 +201,17 @@ fn parse_gcd_lcm(parser: &mut Parser, depth: usize) -> Result<i64, ParseError> {
     i64::try_from(result).map_err(|_| overflow())
 }
 
+fn parse_is_power_of_two(parser: &mut Parser, depth: usize) -> Result<i64, ParseError> {
+    require_token(parser, Token::LParen, "IS_POWER_OF_TWO requires '('")?;
+    let value = expression(parser, depth + 1)?;
+    require_token(parser, Token::RParen, "expected ')' after IS_POWER_OF_TWO argument")?;
+    Ok(if value > 0 && value.unsigned_abs().is_power_of_two() {
+        1
+    } else {
+        0
+    })
+}
+
 fn factor(parser: &mut Parser, depth: usize) -> Result<i64, ParseError> {
     if depth >= MAX_DEPTH {
         return Err(ParseError(
@@ -226,6 +238,9 @@ fn factor(parser: &mut Parser, depth: usize) -> Result<i64, ParseError> {
     }
     if matches!(parser.tokens.get(parser.index), Some(Token::Word(name)) if is_extrema(name)) {
         return parse_extrema(parser, depth);
+    }
+    if parser.keyword("IS_POWER_OF_TWO") {
+        return parse_is_power_of_two(parser, depth);
     }
     if matches!(parser.tokens.get(parser.index), Some(Token::Word(name)) if is_function(name)) {
         let name = parser.word()?;
