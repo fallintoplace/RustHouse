@@ -1,0 +1,18 @@
+{
+  "name": "nullable-coupon-counts",
+  "description": "COUNT(column) and nullable coupon predicates",
+  "queries": [
+    {
+      "name": "coupon-count",
+      "sql": "SELECT COUNT(coupon) FROM events"
+    },
+    {
+      "name": "null-coupon-count",
+      "sql": "SELECT COUNT(*) FROM events WHERE coupon IS NULL"
+    },
+    {
+      "name": "non-null-coupon-count",
+      "sql": "SELECT COUNT(*) FROM events WHERE coupon IS NOT NULL"
+    }
+  ]
+}

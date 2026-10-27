@@ -23,6 +23,19 @@ class Q6OracleTests(unittest.TestCase):
             self.assertEqual(report["coverage"]["verified_correct_percent"], 100.0)
             self.assertIn("l_quantity < 2400", Q6)
 
+    def test_zero_revenue_from_qualifying_row_is_not_null(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "lineitem.tsv"
+            path.write_text(
+                "l_shipdate\tl_discount\tl_quantity\tl_extendedprice\n"
+                "1994-01-01\t500\t1000\t0\n"
+            )
+            report = run_q6(Path("fake"), Path("db"), path, runs=1, warmups=0,
+                            execute=lambda _: b"0\n")
+            self.assertEqual(report["expected_revenue_integer"], 0)
+            self.assertEqual(report["matched_rows"], 1)
+            self.assertEqual(report["results"][0]["status"], "passed")
+
     def test_does_not_count_mismatch_as_pass(self):
         with tempfile.TemporaryDirectory() as directory:
             path = Path(directory) / "lineitem.tsv"
