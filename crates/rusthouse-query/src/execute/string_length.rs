@@ -76,8 +76,10 @@ pub(super) fn execute<W: Write>(
                 continue;
             }
             match &batch[indices[column]] {
-                TypedColumn::Text(values) => writeln!(output, "{}", values.get(row).unwrap().len())?,
-                TypedColumn::NullableText { values, nulls } if nulls[row] != 0 => {
+                TypedColumn::Text(values) => {
+                    writeln!(output, "{}", values.get(row).unwrap().len())?;
+                }
+                TypedColumn::NullableText { nulls, .. } if nulls[row] != 0 => {
                     writeln!(output, "\\N")?;
                 }
                 TypedColumn::NullableText { values, .. } => {
