@@ -695,6 +695,8 @@ fn parse_select_tokens(tokens: Vec<Token>) -> Result<Select, ParseError> {
                 | Projection::CountColumn { .. }
                 | Projection::CountDistinct { .. }
                 | Projection::Aggregate { .. }
+                | Projection::GroupedCount { .. }
+                | Projection::GroupedMultiCount { .. }
                 | Projection::StringLength { .. }
         ) || matches!(&projection, Projection::Columns(columns) if columns.len() == 1);
         if !single_result {
@@ -1058,12 +1060,20 @@ fn parse_select_tokens(tokens: Vec<Token>) -> Result<Select, ParseError> {
         ) {
             return Err(ParseError("HAVING requires GROUP BY with COUNT(*)".into()));
         }
-        if !parser.keyword("COUNT") || !parser.take(Token::LParen) {
-            return Err(ParseError("HAVING requires COUNT(*)".into()));
-        }
-        if !parser.take(Token::RParen) && !(parser.take(Token::Star) && parser.take(Token::RParen))
-        {
-            return Err(ParseError("HAVING requires COUNT() or COUNT(*)".into()));
+        let using_alias = alias.as_ref().is_some_and(|value| {
+            matches!(parser.tokens.get(parser.index), Some(Token::Word(word)) if word == value)
+        });
+        if using_alias {
+            parser.index += 1;
+        } else {
+            if !parser.keyword("COUNT") || !parser.take(Token::LParen) {
+                return Err(ParseError("HAVING requires COUNT(*)".into()));
+            }
+            if !parser.take(Token::RParen)
+                && !(parser.take(Token::Star) && parser.take(Token::RParen))
+            {
+                return Err(ParseError("HAVING requires COUNT() or COUNT(*)".into()));
+            }
         }
         let operator = parser.operator()?;
         let value = parser
@@ -1076,7 +1086,7 @@ fn parse_select_tokens(tokens: Vec<Token>) -> Result<Select, ParseError> {
     };
 
     let mut order_by_extra = Vec::new();
-    let order_by = if parser.keyword("ORDER") {
+    let mut order_by = if parser.keyword("ORDER") {
         if !parser.keyword("BY") {
             return Err(ParseError("expected BY after ORDER".into()));
         }
@@ -1091,6 +1101,18 @@ fn parse_select_tokens(tokens: Vec<Token>) -> Result<Select, ParseError> {
     } else {
         None
     };
+    if matches!(
+        projection,
+        Projection::GroupedCount { .. } | Projection::GroupedMultiCount { .. }
+    ) {
+        if let Some(count_alias) = alias.as_deref() {
+            for term in order_by.iter_mut().chain(order_by_extra.iter_mut()) {
+                if term.column == count_alias {
+                    term.column = "count".into();
+                }
+            }
+        }
+    }
     if order_by.is_some()
         && matches!(
             projection,

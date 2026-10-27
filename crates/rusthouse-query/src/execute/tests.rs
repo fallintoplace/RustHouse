@@ -815,6 +815,18 @@ fn groups_numeric_rows_after_filtering_before_pagination() {
 }
 
 #[test]
+fn grouped_count_aliases_work_with_ordering_and_having() {
+    assert_eq!(
+        run(
+            "SELECT number, count(*) AS c FROM numbers(4) GROUP BY number HAVING c >= 1 ORDER BY c DESC, number LIMIT 2",
+            None,
+        )
+        .unwrap(),
+        "number\tc\n0\t1\n1\t1\n"
+    );
+}
+
+#[test]
 fn grouped_having_filters_after_counting_before_limit() {
     let query = crate::parse_select(
         "SELECT number, count(*) FROM numbers(10) GROUP BY number HAVING count(*) >= 2 ORDER BY number LIMIT 1",
