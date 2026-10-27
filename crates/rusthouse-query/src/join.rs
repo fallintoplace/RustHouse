@@ -371,18 +371,14 @@ mod tests {
 
     #[test]
     fn parses_clickhouse_style_join_limit_offset_count() {
-        let query = parse_join(
-            "SELECT * FROM l JOIN r ON l.id = r.id LIMIT 7, 3",
-        )
-        .unwrap()
-        .unwrap();
+        let query = parse_join("SELECT * FROM l JOIN r ON l.id = r.id LIMIT 7, 3")
+            .unwrap()
+            .unwrap();
         assert_eq!(query.offset, 7);
         assert_eq!(query.limit, Some(3));
-        let query = parse_join(
-            "SELECT * FROM l JOIN r ON l.id = r.id LIMIT 3 OFFSET 7",
-        )
-        .unwrap()
-        .unwrap();
+        let query = parse_join("SELECT * FROM l JOIN r ON l.id = r.id LIMIT 3 OFFSET 7")
+            .unwrap()
+            .unwrap();
         assert_eq!(query.offset, 7);
         assert_eq!(query.limit, Some(3));
         assert!(parse_join("SELECT * FROM l JOIN r ON l.id = r.id LIMIT 2, 3 OFFSET 1").is_err());
