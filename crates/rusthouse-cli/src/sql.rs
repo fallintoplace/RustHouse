@@ -1,5 +1,5 @@
 use crate::{
-    csv, csv_no_header, html, json_array, json_compact_each_row, jsonl, markdown, sql_values,
+    csv, csv_no_header, html, json_array, json_compact_each_row, json_seq, jsonl, markdown, sql_values,
     vertical,
 };
 use rusthouse_query::{
@@ -23,6 +23,7 @@ pub(super) enum SqlOutputFormat {
     Json,
     JsonPretty,
     JsonCompactEachRow,
+    JsonSeq,
     Markdown,
     Html,
     SqlValues,
@@ -40,12 +41,13 @@ impl SqlOutputFormat {
             Some("json") => Ok(Self::Json),
             Some("json-pretty") => Ok(Self::JsonPretty),
             Some("json-compact-each-row") => Ok(Self::JsonCompactEachRow),
+            Some("json-seq") => Ok(Self::JsonSeq),
             Some("markdown") => Ok(Self::Markdown),
             Some("html") => Ok(Self::Html),
             Some("sql-values") => Ok(Self::SqlValues),
             Some("vertical") => Ok(Self::Vertical),
             _ => Err(
-                "--format must be tsv, tsv-no-header, csv, csv-no-header, jsonl, json, json-pretty, json-compact-each-row, markdown, html, sql-values, or vertical"
+                "--format must be tsv, tsv-no-header, csv, csv-no-header, jsonl, json, json-pretty, json-compact-each-row, json-seq, markdown, html, sql-values, or vertical"
                     .into(),
             ),
         }
@@ -561,6 +563,11 @@ pub(super) fn run_sql_args(mut args: impl Iterator<Item = OsString>) -> Result<(
             &select,
             part.as_deref(),
             &mut jsonl::JsonlWriter::new(&mut output),
+        ),
+        SqlOutputFormat::JsonSeq => execute(
+            &select,
+            part.as_deref(),
+            &mut json_seq::JsonSeqWriter::new(&mut output),
         ),
         SqlOutputFormat::Json => {
             let mut writer = json_array::JsonArrayWriter::new(&mut output);

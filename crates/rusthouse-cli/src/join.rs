@@ -1,7 +1,7 @@
 //! Execute a bounded two-table JOIN using the existing SQL output adapters.
 use crate::sql::SqlOutputFormat;
 use crate::{
-    csv, csv_no_header, html, json_array, json_compact_each_row, jsonl, markdown, sql_values,
+    csv, csv_no_header, html, json_array, json_compact_each_row, json_seq, jsonl, markdown, sql_values,
     vertical,
 };
 use rusthouse_query::{JoinSelect, execute_join};
@@ -62,6 +62,12 @@ fn execute_formatted_join(
             left,
             right,
             &mut jsonl::JsonlWriter::new(&mut output),
+        ),
+        SqlOutputFormat::JsonSeq => execute_join(
+            query,
+            left,
+            right,
+            &mut json_seq::JsonSeqWriter::new(&mut output),
         ),
         SqlOutputFormat::Json => {
             let mut writer = json_array::JsonArrayWriter::new(&mut output);
