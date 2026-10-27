@@ -25,12 +25,18 @@ SQLITE_SCHEMA = (
     "status TEXT, coupon TEXT)"
 )
 COLUMNS = ("event_id", "user_id", "region", "category", "amount", "quantity", "event_date", "status", "coupon")
+ACCOUNTS_SCHEMA = "CREATE TABLE accounts (user_id UInt64, tier String, country String)"
+SQLITE_ACCOUNTS_SCHEMA = "CREATE TABLE accounts (user_id INTEGER, tier TEXT, country TEXT)"
+ACCOUNTS_ROWS = 997
 
 
 def load_workload(path):
     data = json.loads(Path(path).read_text(encoding="utf-8"))
     if not isinstance(data, dict) or not isinstance(data.get("name"), str) or not data["name"].strip():
         raise ValueError("workload must have a nonempty name")
+    max_rows = data.get("max_rows", 200_000)
+    if type(max_rows) is not int or not 1 <= max_rows <= 200_000:
+        raise ValueError("max_rows must be in 1..200000")
     cases = data.get("queries")
     if not isinstance(cases, list) or not 1 <= len(cases) <= 16:
         raise ValueError("workload requires 1..16 queries")
@@ -73,6 +79,14 @@ def make_fixture(directory, rows):
             for row in batch:
                 stream.write("\t".join(r"\N" if value is None else str(value) for value in row) + "\n")
             oracle.executemany("INSERT INTO events VALUES (?,?,?,?,?,?,?,?,?)", batch)
+    oracle.execute(SQLITE_ACCOUNTS_SCHEMA)
+    with (directory / "accounts.tsv").open("w", encoding="utf-8", newline="\n") as stream:
+        stream.write("user_id\t tier\tcountry\n".replace("\t ", "\t"))
+        for account in range(ACCOUNTS_ROWS):
+            tier = ("starter", "team", "enterprise")[account % 3]
+            country = ("US", "DE", "PL", "VN")[account % 4]
+            stream.write(f"{account}\t{tier}\t{country}\n")
+            oracle.execute("INSERT INTO accounts VALUES (?,?,?)", (account, tier, country))
     return path, oracle
 
 
@@ -117,6 +131,8 @@ def benchmark_one(number, case, expected, execute, runs, warmups):
 
 
 def run_suite(binary, workload, rows=10_000, runs=3, warmups=1, timeout=120, execute=None):
+    if rows > workload.get("max_rows", 200_000):
+        raise ValueError(f"workload accepts at most {workload['max_rows']} rows")
     if runs < 1 or warmups < 0 or timeout <= 0:
         raise ValueError("runs and timeout must be positive; warmups must be nonnegative")
     with tempfile.TemporaryDirectory(prefix="rusthouse-analytics-") as directory:
@@ -132,6 +148,12 @@ def run_suite(binary, workload, rows=10_000, runs=3, warmups=1, timeout=120, exe
         execute(SCHEMA)
         escaped = source.resolve().as_posix().replace("'", "''")
         execute(f"COPY events FROM '{escaped}' WITH (FORMAT TSV, HEADER TRUE)")
+        execute(ACCOUNTS_SCHEMA)
+        accounts = (root / "accounts.tsv").resolve().as_posix().replace("'", "''")
+        execute(f"COPY accounts FROM '{accounts}' WITH (FORMAT TSV, HEADER TRUE)")
+        account_count = execute("SELECT count(*) FROM accounts")
+        if account_count.strip() != str(ACCOUNTS_ROWS).encode("ascii"):
+            raise ValueError(f"accounts fixture: expected {ACCOUNTS_ROWS}, received {account_count!r}")
         imported = execute("SELECT count(*) FROM events")
         if imported.strip() != str(rows).encode("ascii"):
             raise ValueError(f"fixture row count: expected {rows}, received {imported!r}")
