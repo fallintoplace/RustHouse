@@ -10,9 +10,9 @@ fn hex_digit(value: u8) -> Option<u8> {
 }
 
 fn decode_hex_byte(field: &[u8], index: usize) -> io::Result<u8> {
-    let digits = field.get(index..index + 2).ok_or_else(|| {
-        io::Error::new(io::ErrorKind::InvalidData, "short TSV hex escape")
-    })?;
+    let digits = field
+        .get(index..index + 2)
+        .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidData, "short TSV hex escape"))?;
     let invalid = || io::Error::new(io::ErrorKind::InvalidData, "invalid TSV hex escape");
     let high = hex_digit(digits[0]).ok_or_else(invalid)?;
     let low = hex_digit(digits[1]).ok_or_else(invalid)?;
