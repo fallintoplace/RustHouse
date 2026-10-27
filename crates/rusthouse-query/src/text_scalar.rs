@@ -9,6 +9,7 @@ pub(super) fn is_function(name: &str) -> bool {
         "LENGTH"
             | "CHAR_LENGTH"
             | "BTRIM"
+            | "SUBSTRING_INDEX"
             | "LOWER"
             | "UPPER"
             | "REVERSE"
@@ -456,6 +457,38 @@ fn parse_at_depth(parser: &mut Parser, depth: usize) -> Result<ConstantValue, Pa
                             return Err(ParseError("REPEAT result is too large".into()));
                         }
                         ConstantValue::Text(value.repeat(count))
+                    }
+                }
+                _ => ConstantValue::Null,
+            }
+        }
+        "SUBSTRING_INDEX" => {
+            let input = text_arg(parser, depth + 1)?;
+            require(parser, Token::Comma, "SUBSTRING_INDEX requires a delimiter")?;
+            let delimiter = text_arg(parser, depth + 1)?;
+            require(parser, Token::Comma, "SUBSTRING_INDEX requires a field count")?;
+            let count = integer_arg(parser, depth + 1)?;
+            require(parser, Token::RParen, "expected ')' after SUBSTRING_INDEX arguments")?;
+            match (input, delimiter, count) {
+                (Some(input), Some(delimiter), Some(count)) => {
+                    if delimiter.is_empty() || count == 0 {
+                        ConstantValue::Text(String::new())
+                    } else {
+                        let field = usize::try_from(count.unsigned_abs())
+                            .unwrap_or(usize::MAX)
+                            .saturating_sub(1);
+                        let result = if count > 0 {
+                            input.match_indices(delimiter.as_str())
+                                .nth(field)
+                                .map(|(index, _)| &input[..index])
+                                .unwrap_or(&input)
+                        } else {
+                            input.rmatch_indices(delimiter.as_str())
+                                .nth(field)
+                                .map(|(index, _)| &input[index + delimiter.len()..])
+                                .unwrap_or(&input)
+                        };
+                        ConstantValue::Text(result.to_owned())
                     }
                 }
                 _ => ConstantValue::Null,
