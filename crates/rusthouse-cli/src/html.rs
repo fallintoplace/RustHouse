@@ -159,7 +159,7 @@ mod tests {
     fn only_decodes_escaped_data_fields() {
         let headers = decode_html_fields(r"name\label", true).unwrap();
         assert!(matches!(&headers[0], Cow::Borrowed(_)));
-        let cells = decode_html_fields("raw\\N\tdecoded\\x20text", false).unwrap();
+        let cells = decode_html_fields("\\N\tdecoded\\x20text", false).unwrap();
         assert!(matches!(&cells[0], Cow::Borrowed(_)));
         assert_eq!(cells[1].as_ref(), "decoded text");
     }
