@@ -126,6 +126,9 @@ pub enum Projection {
     GroupedCount {
         column: String,
     },
+    GroupedMultiCount {
+        columns: Vec<String>,
+    },
     GroupedAggregate {
         column: String,
         function: AggregateFunction,
@@ -365,6 +368,17 @@ impl Parser {
                     2 => "count".into(),
                     _ => return Err(ParseError("ORDER BY position is out of range".into())),
                 },
+                Projection::GroupedMultiCount { columns } => {
+                    if position == columns.len() + 1 {
+                        "count".into()
+                    } else {
+                        position
+                            .checked_sub(1)
+                            .and_then(|index| columns.get(index))
+                            .cloned()
+                            .ok_or_else(|| ParseError("ORDER BY position is out of range".into()))?
+                    }
+                },
                 Projection::GroupedAggregate { column, .. } => match position {
                     1 => column.clone(),
                     _ => {
@@ -383,7 +397,10 @@ impl Parser {
         } else {
             self.word()?
         };
-        if matches!(projection, Projection::GroupedCount { .. })
+        if matches!(
+            projection,
+            Projection::GroupedCount { .. } | Projection::GroupedMultiCount { .. }
+        )
             && column.eq_ignore_ascii_case("count")
             && self.take(Token::LParen)
             && !self.take(Token::RParen)
@@ -393,7 +410,10 @@ impl Parser {
                 "expected COUNT() or COUNT(*) in ORDER BY".into(),
             ));
         }
-        let column = if matches!(projection, Projection::GroupedCount { .. })
+        let column = if matches!(
+            projection,
+            Projection::GroupedCount { .. } | Projection::GroupedMultiCount { .. }
+        )
             && column.eq_ignore_ascii_case("count")
         {
             "count".to_string()
@@ -562,8 +582,7 @@ fn parse_select_tokens(tokens: Vec<Token>) -> Result<Select, ParseError> {
         let mut grouped_count = false;
         let mut grouped_aggregate = None;
         while parser.take(Token::Comma) {
-            if columns.len() == 1
-                && matches!(parser.tokens.get(parser.index), Some(Token::Word(word)) if word.eq_ignore_ascii_case("COUNT"))
+            if matches!(parser.tokens.get(parser.index), Some(Token::Word(word)) if word.eq_ignore_ascii_case("COUNT"))
                 && parser.tokens.get(parser.index + 1) == Some(&Token::LParen)
             {
                 parser.keyword("COUNT");
@@ -618,8 +637,15 @@ fn parse_select_tokens(tokens: Vec<Token>) -> Result<Select, ParseError> {
             columns.push(parser.word()?);
         }
         if grouped_count {
-            Projection::GroupedCount {
-                column: columns.remove(0),
+            if columns.len() > 8 {
+                return Err(ParseError("GROUP BY supports at most 8 keys".into()));
+            }
+            if columns.len() == 1 {
+                Projection::GroupedCount {
+                    column: columns.remove(0),
+                }
+            } else {
+                Projection::GroupedMultiCount { columns }
             }
         } else if let Some((function, value_column)) = grouped_aggregate {
             Projection::GroupedAggregate {
@@ -965,12 +991,21 @@ fn parse_select_tokens(tokens: Vec<Token>) -> Result<Select, ParseError> {
         if !parser.keyword("BY") {
             return Err(ParseError("expected BY after GROUP".into()));
         }
-        let group_column = parser.word()?;
+        let mut group_columns = vec![parser.word()?];
+        while parser.take(Token::Comma) {
+            if group_columns.len() >= 8 {
+                return Err(ParseError("GROUP BY supports at most 8 keys".into()));
+            }
+            group_columns.push(parser.word()?);
+        }
         match &projection {
+            Projection::GroupedMultiCount { columns } if columns == &group_columns => {}
             Projection::GroupedCount { column } | Projection::GroupedAggregate { column, .. }
-                if column == &group_column => {}
-            Projection::GroupedCount { .. } | Projection::GroupedAggregate { .. } => {
-                return Err(ParseError("GROUP BY must match the selected key".into()));
+                if group_columns.len() == 1 && column == &group_columns[0] => {}
+            Projection::GroupedCount { .. }
+            | Projection::GroupedMultiCount { .. }
+            | Projection::GroupedAggregate { .. } => {
+                return Err(ParseError("GROUP BY must match selected grouping keys".into()));
             }
             _ => {
                 return Err(ParseError(
@@ -980,13 +1015,18 @@ fn parse_select_tokens(tokens: Vec<Token>) -> Result<Select, ParseError> {
         }
     } else if matches!(
         projection,
-        Projection::GroupedCount { .. } | Projection::GroupedAggregate { .. }
+        Projection::GroupedCount { .. }
+            | Projection::GroupedMultiCount { .. }
+            | Projection::GroupedAggregate { .. }
     ) {
         return Err(ParseError("grouped aggregates require GROUP BY".into()));
     }
 
     let having = if parser.keyword("HAVING") {
-        if !matches!(projection, Projection::GroupedCount { .. }) {
+        if !matches!(
+            projection,
+            Projection::GroupedCount { .. } | Projection::GroupedMultiCount { .. }
+        ) {
             return Err(ParseError("HAVING requires GROUP BY with COUNT(*)".into()));
         }
         if !parser.keyword("COUNT") || !parser.take(Token::LParen) {
@@ -1043,6 +1083,17 @@ fn parse_select_tokens(tokens: Vec<Token>) -> Result<Select, ParseError> {
             .any(|order| &order.column != column && order.column != "count")
         {
             return Err(ParseError("grouped ORDER BY must use the group key".into()));
+        }
+    }
+    if let Projection::GroupedMultiCount { columns } = &projection {
+        if order_by
+            .iter()
+            .chain(order_by_extra.iter())
+            .any(|order| !columns.contains(&order.column) && order.column != "count")
+        {
+            return Err(ParseError(
+                "grouped ORDER BY must use the group keys or count".into(),
+            ));
         }
     }
     if let Projection::GroupedAggregate { column, .. } = &projection {
