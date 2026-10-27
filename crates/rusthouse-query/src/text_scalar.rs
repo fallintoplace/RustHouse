@@ -15,6 +15,7 @@ pub(super) fn is_function(name: &str) -> bool {
             | "TRIM"
             | "REPLACE"
             | "LEFT"
+            | "RIGHT"
     )
 }
 
@@ -183,6 +184,23 @@ fn parse_at_depth(parser: &mut Parser, depth: usize) -> Result<ConstantValue, Pa
                     }
                     let count = usize::try_from(count).unwrap_or(usize::MAX);
                     ConstantValue::Text(value.chars().take(count).collect())
+                }
+                _ => ConstantValue::Null,
+            }
+        }
+        "RIGHT" => {
+            let input = text_arg(parser, depth + 1)?;
+            require(parser, Token::Comma, "RIGHT requires a character count")?;
+            let count = integer_arg(parser, depth + 1)?;
+            require(parser, Token::RParen, "expected ')' after RIGHT arguments")?;
+            match (input, count) {
+                (Some(value), Some(count)) => {
+                    if count < 0 {
+                        return Err(ParseError("RIGHT count must be nonnegative".into()));
+                    }
+                    let count = usize::try_from(count).unwrap_or(usize::MAX);
+                    let skip = value.chars().count().saturating_sub(count);
+                    ConstantValue::Text(value.chars().skip(skip).collect())
                 }
                 _ => ConstantValue::Null,
             }
