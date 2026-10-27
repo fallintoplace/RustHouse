@@ -62,6 +62,7 @@ pub(super) fn is_function(name: &str) -> bool {
         || name.eq_ignore_ascii_case("IS_PRIME")
         || name.eq_ignore_ascii_case("BINOMIAL")
         || name.eq_ignore_ascii_case("CLAMP")
+        || name.eq_ignore_ascii_case("ROUND_DIV")
         || name.eq_ignore_ascii_case("CEIL_DIV")
         || name.eq_ignore_ascii_case("FLOOR_DIV")
         || name.eq_ignore_ascii_case("BITCOUNT")
@@ -679,6 +680,27 @@ fn parse_rounded_division(parser: &mut Parser, depth: usize) -> Result<i64, Pars
     i64::try_from(result).map_err(|_| overflow())
 }
 
+/// Round a signed quotient to nearest, with ties away from zero.
+fn parse_round_div(parser: &mut Parser, depth: usize) -> Result<i64, ParseError> {
+    require_token(parser, Token::LParen, "ROUND_DIV requires '('")?;
+    let dividend = expression(parser, depth + 1)?;
+    require_token(parser, Token::Comma, "ROUND_DIV requires two arguments")?;
+    let divisor = expression(parser, depth + 1)?;
+    require_token(parser, Token::RParen, "ROUND_DIV requires ')'")?;
+    if divisor == 0 {
+        return Err(ParseError("ROUND_DIV divisor cannot be zero".into()));
+    }
+    let dividend = i128::from(dividend);
+    let divisor = i128::from(divisor);
+    let rounded = (dividend.abs() + divisor.abs() / 2) / divisor.abs();
+    let signed = if (dividend < 0) != (divisor < 0) {
+        -rounded
+    } else {
+        rounded
+    };
+    i64::try_from(signed).map_err(|_| overflow())
+}
+
 fn parse_bit_introspection(parser: &mut Parser, depth: usize) -> Result<i64, ParseError> {
     let name = parser.word()?;
     require_token(parser, Token::LParen, "bit function requires '('")?;
@@ -782,6 +804,9 @@ fn factor(parser: &mut Parser, depth: usize) -> Result<i64, ParseError> {
     if matches!(parser.tokens.get(parser.index), Some(Token::Word(name)) if name.eq_ignore_ascii_case("BITCOUNT") || name.eq_ignore_ascii_case("BITNOT") || name.eq_ignore_ascii_case("BITTEST"))
     {
         return parse_bit_introspection(parser, depth);
+    }
+    if parser.keyword("ROUND_DIV") {
+        return parse_round_div(parser, depth);
     }
     if parser.keyword("ROUND_TO_MULTIPLE") {
         return parse_round_to_multiple(parser, depth);
