@@ -211,7 +211,9 @@ mod tests {
         for depth in [0usize, 1, 40] {
             let mut output = Vec::new();
             write_indent(&mut output, depth).unwrap();
-            assert_eq!(output, [b"\n".as_slice(), vec![b' '; (depth + 1) * 2].as_slice()].concat());
+            assert_eq!(output[0], b'\n');
+            assert_eq!(output.len(), 1 + (depth + 1) * 2);
+            assert!(output[1..].iter().all(|&byte| byte == b' '));
         }
     }
 
