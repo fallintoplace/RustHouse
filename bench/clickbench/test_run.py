@@ -150,7 +150,7 @@ class ClickBenchRunnerTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
             (root / "queries.sql").write_text("SELECT 1;\nSELECT 2;\n")
-            output = root / "report.json"
+            output = root / "nested" / "report.json"
             with mock.patch("run.cli_sql", return_value=b"2\n") as invoked:
                 result = main([
                     "--binary", str(root / "rusthouse"),
