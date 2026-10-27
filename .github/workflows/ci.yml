@@ -39,6 +39,7 @@ jobs:
     steps:
       - uses: actions/checkout@v7
       - run: python3 -m unittest discover -s bench/analytics -p 'test_*.py'
+      - run: python3 -m unittest discover -s bench/measurements -p 'test_*.py'
 
   msrv:
     name: Rust MSRV (ubuntu-latest)
