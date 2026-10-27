@@ -690,10 +690,16 @@ pub(super) fn execute_typed<W: Write>(
         Projection::Count => "count".to_string(),
         Projection::CountColumn { column } => format!("count({column})"),
         Projection::CountDistinct { column } => format!("countDistinct({column})"),
-        Projection::GroupedCount { column } => format!("{column}\tcount"),
+        Projection::GroupedCount { column } => {
+            format!("{column}\t{}", query.alias.as_deref().unwrap_or("count"))
+        },
         _ => projection.join("\t"),
     };
-    super::write_header(query, output, &header)?;
+    if matches!(query.projection, Projection::GroupedCount { .. }) {
+        writeln!(output, "{header}")?;
+    } else {
+        super::write_header(query, output, &header)?;
+    }
     if query.limit == Some(0) {
         return Ok(());
     }
