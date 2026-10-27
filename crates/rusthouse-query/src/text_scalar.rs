@@ -9,6 +9,7 @@ pub(super) fn is_function(name: &str) -> bool {
         "LENGTH"
             | "CHAR_LENGTH"
             | "BTRIM"
+            | "ASCII"
             | "LOWER"
             | "UPPER"
             | "REVERSE"
@@ -459,6 +460,16 @@ fn parse_at_depth(parser: &mut Parser, depth: usize) -> Result<ConstantValue, Pa
                     }
                 }
                 _ => ConstantValue::Null,
+            }
+        }
+        "ASCII" => {
+            let input = text_arg(parser, depth + 1)?;
+            require(parser, Token::RParen, "ASCII requires one argument")?;
+            match input {
+                Some(value) => ConstantValue::Integer(
+                    value.chars().next().map(|ch| i64::from(ch as u32)).unwrap_or(0),
+                ),
+                None => ConstantValue::Null,
             }
         }
         _ => return Err(ParseError(format!("unsupported string function: {name}"))),
