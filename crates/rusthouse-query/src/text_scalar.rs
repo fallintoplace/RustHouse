@@ -12,6 +12,7 @@ pub(super) fn is_function(name: &str) -> bool {
             | "UTF16_LENGTH"
             | "CHR"
             | "BIT_LENGTH"
+            | "IS_INT64"
             | "BTRIM"
             | "RTRIM"
             | "COLLAPSE_WHITESPACE"
@@ -231,6 +232,14 @@ fn parse_at_depth(parser: &mut Parser, depth: usize) -> Result<ConstantValue, Pa
             require(parser, Token::RParen, "IS_EMPTY requires one argument")?;
             match input {
                 Some(value) => ConstantValue::Integer(i64::from(value.is_empty())),
+                None => ConstantValue::Null,
+            }
+        }
+        "IS_INT64" => {
+            let input = text_arg(parser, depth + 1)?;
+            require(parser, Token::RParen, "IS_INT64 requires one argument")?;
+            match input {
+                Some(value) => ConstantValue::Integer(i64::from(value.parse::<i64>().is_ok())),
                 None => ConstantValue::Null,
             }
         }
