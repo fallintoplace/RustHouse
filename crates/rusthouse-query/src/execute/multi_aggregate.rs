@@ -100,6 +100,12 @@ enum BoundExpr {
     Column(usize),
     TextLength(usize),
     Integer(i64),
+    // Fast path for the affine expression family in ClickBench Q30.
+    AffineColumn {
+        index: usize,
+        constant: i64,
+        subtract: bool,
+    },
     Add(Box<Self>, Box<Self>),
     Subtract(Box<Self>, Box<Self>),
     Multiply(Box<Self>, Box<Self>),
@@ -120,14 +126,38 @@ impl BoundExpr {
             ScalarExpr::Column(name) => Self::Column(index(name)?),
             ScalarExpr::TextLength(name) => Self::TextLength(index(name)?),
             ScalarExpr::Integer(number) => Self::Integer(*number),
-            ScalarExpr::Add(left, right) => Self::Add(
-                Box::new(Self::bind(left, indices)?),
-                Box::new(Self::bind(right, indices)?),
-            ),
-            ScalarExpr::Subtract(left, right) => Self::Subtract(
-                Box::new(Self::bind(left, indices)?),
-                Box::new(Self::bind(right, indices)?),
-            ),
+            ScalarExpr::Add(left, right) => {
+                if let (ScalarExpr::Column(name), ScalarExpr::Integer(constant)) =
+                    (left.as_ref(), right.as_ref())
+                {
+                    Self::AffineColumn {
+                        index: index(name)?,
+                        constant: *constant,
+                        subtract: false,
+                    }
+                } else {
+                    Self::Add(
+                        Box::new(Self::bind(left, indices)?),
+                        Box::new(Self::bind(right, indices)?),
+                    )
+                }
+            }
+            ScalarExpr::Subtract(left, right) => {
+                if let (ScalarExpr::Column(name), ScalarExpr::Integer(constant)) =
+                    (left.as_ref(), right.as_ref())
+                {
+                    Self::AffineColumn {
+                        index: index(name)?,
+                        constant: *constant,
+                        subtract: true,
+                    }
+                } else {
+                    Self::Subtract(
+                        Box::new(Self::bind(left, indices)?),
+                        Box::new(Self::bind(right, indices)?),
+                    )
+                }
+            }
             ScalarExpr::Multiply(left, right) => Self::Multiply(
                 Box::new(Self::bind(left, indices)?),
                 Box::new(Self::bind(right, indices)?),
@@ -154,6 +184,22 @@ fn eval_number(
             )),
         },
         BoundExpr::Integer(value) => Ok(Some(Number::Signed(i128::from(*value)))),
+        BoundExpr::AffineColumn {
+            index,
+            constant,
+            subtract,
+        } => match typed::cell(&batch[*index], row) {
+            Cell::Numeric(value) => checked_binary(
+                value,
+                Number::Signed(i128::from(*constant)),
+                *subtract,
+            )
+            .map(Some),
+            Cell::Null => Ok(None),
+            _ => Err(ExecutionError::Invalid(
+                "aggregate expression requires numeric columns".into(),
+            )),
+        },
         BoundExpr::TextLength(index) => match typed::cell(&batch[*index], row) {
             Cell::Text(bytes) => Ok(Some(Number::Unsigned(bytes.len() as u128))),
             Cell::Null => Ok(None),
@@ -369,4 +415,42 @@ pub(super) fn execute<W: Write>(
         output.write_all(b"\n")?;
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod affine_tests {
+    use super::*;
+
+    #[test]
+    fn binds_column_arithmetic_without_recursive_dispatch() {
+        let indices = HashMap::from([("width".to_owned(), 0_usize)]);
+        let column = || ScalarExpr::Column("width".into());
+        let literal = || ScalarExpr::Integer(3);
+        let add = ScalarExpr::Add(Box::new(column()), Box::new(literal()));
+        let sub = ScalarExpr::Subtract(Box::new(column()), Box::new(literal()));
+
+        assert!(matches!(
+            BoundExpr::bind(&add, &indices).unwrap(),
+            BoundExpr::AffineColumn {
+                index: 0,
+                constant: 3,
+                subtract: false,
+            }
+        ));
+        assert!(matches!(
+            BoundExpr::bind(&sub, &indices).unwrap(),
+            BoundExpr::AffineColumn {
+                index: 0,
+                constant: 3,
+                subtract: true,
+            }
+        ));
+
+        // Reversed addition must keep the generic path until it is proven safe.
+        let reversed = ScalarExpr::Add(Box::new(literal()), Box::new(column()));
+        assert!(matches!(
+            BoundExpr::bind(&reversed, &indices).unwrap(),
+            BoundExpr::Add(_, _)
+        ));
+    }
 }

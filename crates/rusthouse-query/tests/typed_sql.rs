@@ -364,6 +364,27 @@ fn counts_and_filters_nullable_text() {
         query("SELECT count(DISTINCT attempt) FROM part", &part),
         "countDistinct(attempt)\n2\n"
     );
+    // COUNT(DISTINCT) must not count NULLs or repeated text values.
+    assert_eq!(
+        query("SELECT count(DISTINCT uid) FROM part", &part),
+        "countDistinct(uid)\n1\n"
+    );
+    assert_eq!(
+        query("SELECT count(DISTINCT message) FROM part WHERE message IS NULL", &part),
+        "countDistinct(message)\n0\n"
+    );
+    assert_eq!(
+        query("SELECT count(DISTINCT service) FROM part WHERE status > 200", &part),
+        "countDistinct(service)\n2\n"
+    );
+    assert_eq!(
+        query("SELECT count(DISTINCT status) FROM part WHERE service = 'api'", &part),
+        "countDistinct(status)\n2\n"
+    );
+    assert_eq!(
+        query("SELECT count(DISTINCT service) FROM part LIMIT 0", &part),
+        "countDistinct(service)\n"
+    );
     assert_eq!(
         query("SELECT DISTINCT service FROM part ORDER BY service", &part),
         "service\napi\ndb\n"
