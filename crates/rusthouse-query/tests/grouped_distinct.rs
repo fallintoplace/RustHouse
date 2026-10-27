@@ -58,7 +58,7 @@ fn groups_distinct_values_and_ignores_nulls() {
     assert_eq!(run(q9), "RegionID\tu\n1\t3\n2\t1\n3\t0\n");
     let parsed = parse_select(q9).unwrap();
     assert!(matches!(
-        parsed.projection,
+        &parsed.projection,
         Projection::GroupedDistinctCount { .. }
     ));
     assert!(explain_select(&parsed).contains("count(DISTINCT UserID)"));
