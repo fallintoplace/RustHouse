@@ -213,12 +213,19 @@ fn schema_signature(response: &remote::PeerResponse) -> Result<Vec<u8>, String> 
     Ok(columns.as_bytes().to_vec())
 }
 
+struct ShardResponse {
+    cap: usize,
+    body: Vec<u8>,
+    kind: Option<String>,
+    schema: Vec<u8>,
+}
+
 fn read_shard(
     peer: Peer,
     sql: &str,
     sum_schema: Option<(&str, &str)>,
     table: &str,
-) -> Result<(usize, Vec<u8>, Option<String>, Vec<u8>), String> {
+) -> Result<ShardResponse, String> {
     let cap = shard_row_cap(peer)?;
     let kind = sum_schema
         .map(|(table, column)| shard_integer_kind(peer, table, column))
@@ -231,7 +238,12 @@ fn read_shard(
     if result.content_type != "text/tab-separated-values; charset=utf-8" {
         return Err("peer did not return TSV".into());
     }
-    Ok((cap, result.body, kind, schema))
+    Ok(ShardResponse {
+        cap,
+        body: result.body,
+        kind,
+        schema,
+    })
 }
 
 /// Merge only identical TSV headers and whole, newline-terminated rows.
@@ -646,7 +658,12 @@ pub fn handle(method: &str, body: &[u8], cluster: &Cluster, max_rows: usize) -> 
     let mut expected_schema: Option<Vec<u8>> = None;
     for result in results {
         match result {
-            Ok((cap, body, kind, schema)) => {
+            Ok(ShardResponse {
+                cap,
+                body,
+                kind,
+                schema,
+            }) => {
                 if expected_schema
                     .as_ref()
                     .is_some_and(|expected| expected != &schema)
