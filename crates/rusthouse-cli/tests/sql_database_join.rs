@@ -167,11 +167,7 @@ fn ordered_join_accepts_16384_rows_but_rejects_one_more() {
     assert!(accepted.status.success(), "{accepted:?}");
     assert_eq!(accepted.stdout, b"f.id\n0\n1\n");
 
-    let append = sql(
-        "INSERT INTO facts VALUES (16384)",
-        &db,
-        &[],
-    );
+    let append = sql("INSERT INTO facts VALUES (16384)", &db, &[]);
     assert!(append.status.success(), "{append:?}");
     let rejected = sql(query, &db, &[]);
     assert!(!rejected.status.success());
