@@ -35,6 +35,17 @@ impl ScalarExpr {
 
 fn primary(parser: &mut Parser) -> Result<ScalarExpr, ParseError> {
     match parser.tokens.get(parser.index) {
+        Some(Token::Plus) => {
+            parser.index += 1;
+            primary(parser)
+        }
+        Some(Token::Minus) => {
+            parser.index += 1;
+            Ok(ScalarExpr::Subtract(
+                Box::new(ScalarExpr::Integer(0)),
+                Box::new(primary(parser)?),
+            ))
+        }
         Some(Token::Word(name))
             if name.eq_ignore_ascii_case("length")
                 && parser.tokens.get(parser.index + 1) == Some(&Token::LParen) =>
@@ -164,6 +175,25 @@ mod tests {
             parse_scalar_expression("(width + 2) * 3").unwrap(),
             ScalarExpr::Multiply(..)
         ));
+    }
+
+    #[test]
+    fn parses_unary_signs_on_columns_and_parentheses() {
+        assert_eq!(
+            parse_scalar_expression("-amount").unwrap(),
+            ScalarExpr::Subtract(
+                Box::new(ScalarExpr::Integer(0)),
+                Box::new(ScalarExpr::Column("amount".into())),
+            )
+        );
+        assert_eq!(
+            parse_scalar_expression("+(amount * 2)").unwrap(),
+            ScalarExpr::Multiply(
+                Box::new(ScalarExpr::Column("amount".into())),
+                Box::new(ScalarExpr::Integer(2)),
+            )
+        );
+        assert!(parse_scalar_expression("-").is_err());
     }
 
     #[test]
