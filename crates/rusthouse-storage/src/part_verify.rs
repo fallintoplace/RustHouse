@@ -21,15 +21,7 @@ pub fn verify_wide_part(path: impl AsRef<Path>) -> Result<PartVerification, Part
     let metadata = inspect_part(path)?;
     let (data_files, mut mark_files) = collect_wide_file_pairs(path)?;
 
-    if metadata.rows > 0 && data_files.is_empty() {
-        return Err(invalid(path, "nonempty part has no wide data streams"));
-    }
-    if mark_files.keys().any(|data| !data_files.contains(data)) {
-        return Err(invalid(path, "mark file has no matching data stream"));
-    }
-    if data_files.iter().any(|data| !mark_files.contains_key(data)) {
-        return Err(invalid(path, "data stream has no matching marks"));
-    }
+    validate_stream_pairs(path, metadata.rows, &data_files, &mark_files)?;
 
     let mut report = PartVerification {
         streams: 0,
@@ -52,6 +44,24 @@ pub fn verify_wide_part(path: impl AsRef<Path>) -> Result<PartVerification, Part
         report.streams += 1;
     }
     Ok(report)
+}
+
+fn validate_stream_pairs(
+    path: &Path,
+    rows: u64,
+    data_files: &BTreeSet<PathBuf>,
+    mark_files: &BTreeMap<PathBuf, PathBuf>,
+) -> Result<(), PartError> {
+    if rows > 0 && data_files.is_empty() {
+        return Err(invalid(path, "nonempty part has no wide data streams"));
+    }
+    if mark_files.keys().any(|data| !data_files.contains(data)) {
+        return Err(invalid(path, "mark file has no matching data stream"));
+    }
+    if data_files.iter().any(|data| !mark_files.contains_key(data)) {
+        return Err(invalid(path, "data stream has no matching marks"));
+    }
+    Ok(())
 }
 
 fn account_decoded_blocks(data: &Path, report: &mut PartVerification) -> Result<(), PartError> {
