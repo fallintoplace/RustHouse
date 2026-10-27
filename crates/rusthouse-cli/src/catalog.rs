@@ -176,6 +176,9 @@ fn drop_table(catalog: &Path, name: &str, if_exists: bool) -> Result<(), String>
         return Err(format!("not a regular schema file: {name}"));
     }
     fs::remove_file(&path).map_err(|error| format!("cannot drop table {name}: {error}"))?;
+    sync_catalog_dir(catalog).map_err(|error| {
+        format!("table {name} was dropped but durability is uncertain: {error}")
+    })?;
     println!("Dropped table {name} (schema only)");
     Ok(())
 }
@@ -212,7 +215,7 @@ pub(super) fn read_schema(catalog: &Path, name: &str) -> Result<Vec<ColumnDef>, 
             .split_once('\t')
             .ok_or_else(|| format!("corrupt schema for table {name}"))?;
         let sql = format!("CREATE TABLE _check ({column_name} {data_type})");
-        if columns.len() == 64
+        if columns.len() == 128
             || !matches!(parse_ddl(&sql), Ok(Some(Ddl::CreateTable { .. })))
             || columns
                 .iter()
@@ -284,8 +287,8 @@ fn add_column(
         }
         return Err(format!("column already exists: {}", column.name));
     }
-    if columns.len() >= 64 {
-        return Err("DDL supports at most 64 columns".into());
+    if columns.len() >= 128 {
+        return Err("DDL supports at most 128 columns".into());
     }
     columns.push(column.clone());
     replace_schema(catalog, table, &columns)?;
@@ -364,6 +367,9 @@ fn rename_table(catalog: &Path, from: &str, to: &str) -> Result<(), String> {
         let _ = fs::remove_file(&destination);
         return Err(format!("cannot finish renaming table {from}: {error}"));
     }
+    sync_catalog_dir(catalog).map_err(|error| {
+        format!("table {from} was renamed but durability is uncertain: {error}")
+    })?;
     println!("Renamed table {from} to {to} (schema only)");
     Ok(())
 }

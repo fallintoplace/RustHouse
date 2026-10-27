@@ -68,3 +68,41 @@ fn tsv_copy_streams_files_larger_than_eight_mib_and_rolls_back_late_errors() {
     );
     fs::remove_dir_all(db).unwrap();
 }
+
+#[test]
+fn tsv_copy_groups_medium_rows_into_fewer_verified_parts() {
+    let db = std::env::temp_dir().join(format!(
+        "rusthouse-medium-tsv-{}-{}",
+        std::process::id(),
+        NEXT.fetch_add(1, Ordering::Relaxed)
+    ));
+    fs::create_dir_all(&db).unwrap();
+    let created = sql("CREATE TABLE events (a String, b String, c String, d String)", &db);
+    assert!(created.status.success(), "{created:?}");
+    let input = db.join("medium.tsv");
+    let value = "q".repeat(512);
+    {
+        let mut writer = BufWriter::new(File::create(&input).unwrap());
+        for _ in 0..4000 {
+            writeln!(writer, "{value}\t{value}\t{value}\t{value}").unwrap();
+        }
+        writer.flush().unwrap();
+    }
+    let copied = sql(
+        &format!("COPY events FROM '{}' WITH (FORMAT TSV)", input.display()),
+        &db,
+    );
+    assert!(copied.status.success(), "{copied:?}");
+    assert_eq!(sql("SELECT count(*) FROM events", &db).stdout, b"count\n4000\n");
+    let parts = db.join("events.parts");
+    let generation = fs::read_to_string(parts.join(".rusthouse-active")).unwrap();
+    let active = parts.join(".rusthouse-versions").join(generation.trim());
+    let count = fs::read_dir(active)
+        .unwrap()
+        .filter(|entry| {
+            entry.as_ref().unwrap().file_name().to_string_lossy().starts_with("all_")
+        })
+        .count();
+    assert!(count <= 2, "expected one new data part, got {count} total parts");
+    fs::remove_dir_all(db).unwrap();
+}

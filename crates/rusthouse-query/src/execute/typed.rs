@@ -60,7 +60,8 @@ pub(super) fn cell(column: &TypedColumn, row: usize) -> Cell {
 }
 
 fn is_typed(data_type: &str) -> bool {
-    data_type == "String" || data_type == "UUID" || data_type.starts_with("Nullable(")
+    matches!(data_type, "String" | "UUID" | "Date" | "DateTime")
+        || data_type.starts_with("Nullable(")
 }
 
 pub(super) fn requires_typed_scan(query: &Select, path: &Path) -> Result<bool, ExecutionError> {
@@ -105,6 +106,14 @@ fn parse_literal(data_type: &str, literal: &str) -> Result<Cell, ExecutionError>
     let kind = base_type(data_type);
     match kind {
         "String" => Ok(Cell::Text(literal.as_bytes().to_vec())),
+        "Date" => rusthouse_storage::parse_date(literal)
+            .or_else(|| literal.parse::<u16>().ok())
+            .map(|days| Cell::Numeric(Number::Unsigned(u128::from(days))))
+            .ok_or_else(|| ExecutionError::Invalid("invalid Date literal".into())),
+        "DateTime" => rusthouse_storage::parse_datetime(literal)
+            .or_else(|| literal.parse::<u32>().ok())
+            .map(|seconds| Cell::Numeric(Number::Unsigned(u128::from(seconds))))
+            .ok_or_else(|| ExecutionError::Invalid("invalid DateTime literal".into())),
         "UUID" => {
             let valid = literal.len() == 36
                 && literal.bytes().enumerate().all(|(index, byte)| {
@@ -364,6 +373,34 @@ fn matches_comparison(value: &Cell, target: &Cell, operator: Operator) -> bool {
     }
 }
 
+// Avoid cloning String bytes for ordinary equality/range comparisons.
+fn matches_comparison_at(
+    column: &TypedColumn,
+    row: usize,
+    target: &Cell,
+    operator: Operator,
+) -> bool {
+    let text = match column {
+        TypedColumn::Text(values) => values.get(row),
+        TypedColumn::NullableText { values, nulls } if nulls[row] == 0 => values.get(row),
+        TypedColumn::NullableText { .. } => return false,
+        _ => return matches_comparison(&cell(column, row), target, operator),
+    };
+    let (Some(text), Cell::Text(target)) = (text, target) else {
+        return false;
+    };
+    let order = text.cmp(target.as_slice());
+    match operator {
+        Operator::Eq => order.is_eq(),
+        Operator::Ne => order.is_ne(),
+        Operator::Lt => order.is_lt(),
+        Operator::Le => order.is_le(),
+        Operator::Gt => order.is_gt(),
+        Operator::Ge => order.is_ge(),
+        _ => false,
+    }
+}
+
 pub(super) fn passes(batch: &[TypedColumn], row: usize, branches: &[Vec<Condition>]) -> bool {
     branches.iter().any(|branch| {
         branch.iter().all(|condition| {
@@ -396,7 +433,7 @@ pub(super) fn passes(batch: &[TypedColumn], row: usize, branches: &[Vec<Conditio
                     })
                 }
                 Test::Compare(operator, target) => {
-                    matches_comparison(&cell(column, row), target, *operator)
+                    matches_comparison_at(column, row, target, *operator)
                 }
                 Test::In(targets, negated) => {
                     let value = cell(column, row);
@@ -459,12 +496,39 @@ pub(super) fn write_value<W: Write>(output: &mut W, value: &Cell) -> Result<(), 
     Ok(())
 }
 
-fn write_row<W: Write>(output: &mut W, cells: &[Cell]) -> Result<(), ExecutionError> {
+pub(super) fn write_typed_value<W: Write>(
+    output: &mut W,
+    value: &Cell,
+    data_type: &str,
+) -> Result<(), ExecutionError> {
+    match (base_type(data_type), value) {
+        ("Date", Cell::Numeric(Number::Unsigned(days))) => {
+            if let Ok(days) = u16::try_from(*days) {
+                return write!(output, "{}", rusthouse_storage::format_date(days))
+                    .map_err(ExecutionError::Io);
+            }
+        }
+        ("DateTime", Cell::Numeric(Number::Unsigned(seconds))) => {
+            if let Ok(seconds) = u32::try_from(*seconds) {
+                return write!(output, "{}", rusthouse_storage::format_datetime(seconds))
+                    .map_err(ExecutionError::Io);
+            }
+        }
+        _ => {}
+    }
+    write_value(output, value)
+}
+
+fn write_row<W: Write>(
+    output: &mut W,
+    cells: &[Cell],
+    data_types: &[&str],
+) -> Result<(), ExecutionError> {
     for (index, cell) in cells.iter().enumerate() {
         if index != 0 {
             output.write_all(b"\t")?;
         }
-        write_value(output, cell)?;
+        write_typed_value(output, cell, data_types[index])?;
     }
     output.write_all(b"\n")?;
     Ok(())
@@ -605,6 +669,10 @@ pub(super) fn execute_typed<W: Write>(
         .iter()
         .map(|col| (col.name.clone(), col.data_type.clone()))
         .collect();
+    let projection_types = projection
+        .iter()
+        .map(|name| types.get(name).map(String::as_str).unwrap_or(""))
+        .collect::<Vec<_>>();
     let first = compile(&query.predicates, &indices, &types)?;
     let mut conditions = vec![first];
     for branch in &query.or_predicates {
@@ -618,7 +686,6 @@ pub(super) fn execute_typed<W: Write>(
         .iter()
         .map(|name| *indices.get(name).unwrap())
         .collect::<Vec<_>>();
-    let mut scan = TypedQueryReader::open(part, &names)?;
     let header = match &query.projection {
         Projection::Count => "count".to_string(),
         Projection::CountColumn { column } => format!("count({column})"),
@@ -630,6 +697,7 @@ pub(super) fn execute_typed<W: Write>(
     if query.limit == Some(0) {
         return Ok(());
     }
+    let mut scan = TypedQueryReader::open(part, &names)?;
     let is_count = matches!(query.projection, Projection::Count);
     let is_count_column = matches!(query.projection, Projection::CountColumn { .. });
     let is_count_distinct = matches!(query.projection, Projection::CountDistinct { .. });
@@ -766,7 +834,7 @@ pub(super) fn execute_typed<W: Write>(
                 skipped += 1;
                 continue;
             }
-            write_row(output, &cells)?;
+            write_row(output, &cells, &projection_types)?;
             emitted += 1;
             if emitted == limit {
                 return Ok(());
@@ -809,7 +877,7 @@ pub(super) fn execute_typed<W: Write>(
             });
         }
         for (key, count) in grouped_rows.into_iter().skip(offset).take(limit) {
-            write_value(output, &key)?;
+            write_typed_value(output, &key, projection_types[0])?;
             writeln!(output, "\t{count}")?;
         }
         return Ok(());
@@ -828,7 +896,7 @@ pub(super) fn execute_typed<W: Write>(
     if query.order_by.is_some() {
         if top_capacity.is_some() {
             for entry in top.into_sorted_vec().into_iter().skip(offset).take(limit) {
-                write_row(output, &entry.row.values)?;
+                write_row(output, &entry.row.values, &projection_types)?;
             }
         } else {
             ordered.sort_by(|left, right| {
@@ -841,7 +909,7 @@ pub(super) fn execute_typed<W: Write>(
                 )
             });
             for row in ordered.into_iter().skip(offset).take(limit) {
-                write_row(output, &row.values)?;
+                write_row(output, &row.values, &projection_types)?;
             }
         }
     }
@@ -907,6 +975,35 @@ mod like_tests {
         }]];
         assert!(passes(&batch, 0, &not_null));
         assert!(!passes(&batch, 1, &not_null));
+    }
+
+    #[test]
+    fn compares_text_columns_without_copying_values() {
+        use super::{Cell, matches_comparison_at};
+        use crate::Operator;
+
+        let mut encoded: &[u8] = b"\x03api\x02db";
+        let values = read_legacy_strings(&mut encoded, 2).unwrap();
+        let column = TypedColumn::NullableText {
+            values,
+            nulls: vec![0, 1],
+        };
+        let target = Cell::Text(b"api".to_vec());
+        assert!(matches_comparison_at(&column, 0, &target, Operator::Eq));
+        assert!(matches_comparison_at(
+            &column,
+            0,
+            &Cell::Text(b"app".to_vec()),
+            Operator::Lt
+        ));
+        assert!(!matches_comparison_at(&column, 0, &target, Operator::Ne));
+        assert!(!matches_comparison_at(&column, 1, &target, Operator::Ne));
+        assert!(!matches_comparison_at(
+            &column,
+            0,
+            &Cell::Null,
+            Operator::Eq
+        ));
     }
 
     #[test]

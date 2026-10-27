@@ -211,7 +211,7 @@ fn database_part(database: &Path, table: &str) -> Result<PathBuf, String> {
                 .ok_or_else(|| format!("invalid database column in {table}"))
         })
         .collect::<Result<_, _>>()?;
-    if expected.is_empty() || expected.len() > 64 {
+    if expected.is_empty() || expected.len() > 128 {
         return Err(format!("invalid database columns for {table}"));
     }
     let parts = database.join(format!("{table}.parts"));
