@@ -14,11 +14,12 @@ import time
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
-PYTHON_SUITES = ("bench", "bench/analytics", "bench/joins", "bench/measurements", "bench/tpch")
+PYTHON_SUITES = ("bench", "bench/analytics", "bench/joins", "bench/latency", "bench/measurements", "bench/tpch")
 BENCHMARK_SUITES = ("queries", "parts-sorted", "parts-shuffled", "grouped")
 WORKLOADS = {
     "analytics": "bench/analytics/run.py",
     "joins": "bench/joins/run.py",
+    "latency": "bench/latency/run.py",
     "measurements": "bench/measurements/ingest.py",
     "tpch": "bench/tpch/run.py",
 }

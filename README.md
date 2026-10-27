@@ -100,6 +100,15 @@ cargo run -p rusthouse-cli -- sql "SHOW TABLES" --catalog ./catalog
 
 ## Benchmarks
 
+Measure the wall-clock time of 20 verified SQL queries with no external fixture:
+
+```sh
+cargo build --release --locked -p rusthouse-cli
+python3 -m bench workload latency -- --binary target/release/rusthouse --rows 65536 --runs 5 --warmups 2 --output bench/results/sql-latency.json
+```
+
+See the [SQL latency workload](bench/latency/README.md) for timings, correctness checks, and scope.
+
 Run all four deterministic Rust benchmark variants with the [central runner](bench/README.md):
 
 ```sh
