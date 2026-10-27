@@ -41,19 +41,11 @@ fn grouped_nullable_aggregates_match_independent_multi_part_totals() {
         let rows = batch
             .iter()
             .map(|(grp, value)| {
-                vec![
-                    Some((*grp).to_owned()),
-                    value.map(|number| number.to_string()),
-                ]
+                vec![Some((*grp).to_owned()), value.map(|number| number.to_string())]
             })
             .collect::<Vec<_>>();
         let part = index + 1;
-        write_wide_part(
-            &root.join(format!("all_{part}_{part}_0")),
-            &columns,
-            &rows,
-        )
-        .unwrap();
+        write_wide_part(&root.join(format!("all_{part}_{part}_0")), &columns, &rows).unwrap();
     }
     for (sql, expected) in [
         (
