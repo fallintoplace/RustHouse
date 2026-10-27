@@ -898,6 +898,31 @@ pub(super) fn execute_typed<W: Write>(
                 skipped += 1;
                 continue;
             }
+            // For non-DISTINCT top-k scans, sort keys determine whether a row
+            // can enter the heap before we clone projected text or UUID values.
+            let mut candidate_sort_keys = None;
+            if !query.distinct
+                && !is_count_distinct
+                && !sort_indices.is_empty()
+                && top_capacity.is_some_and(|capacity| capacity > 0 && top.len() >= capacity)
+            {
+                let keys = sort_indices
+                    .iter()
+                    .map(|&sort_index| cell(&batch[sort_index], index))
+                    .collect::<Vec<_>>();
+                if top.peek().is_some_and(|worst| {
+                    compare_sort_keys(
+                        &keys,
+                        &worst.row.sort_keys,
+                        descending_mask,
+                        nulls_first_mask,
+                        nulls_last_mask,
+                    ) != Ordering::Less
+                }) {
+                    continue;
+                }
+                candidate_sort_keys = Some(keys);
+            }
             let cells = projection_indices
                 .iter()
                 .map(|&idx| cell(&batch[idx], index))
@@ -920,10 +945,12 @@ pub(super) fn execute_typed<W: Write>(
             if !sort_indices.is_empty() {
                 let row = Row {
                     values: cells,
-                    sort_keys: sort_indices
-                        .iter()
-                        .map(|&sort_index| cell(&batch[sort_index], index))
-                        .collect(),
+                    sort_keys: candidate_sort_keys.unwrap_or_else(|| {
+                        sort_indices
+                            .iter()
+                            .map(|&sort_index| cell(&batch[sort_index], index))
+                            .collect()
+                    }),
                 };
                 if let Some(capacity) = top_capacity {
                     let next = TopRow {
@@ -1278,5 +1305,40 @@ mod unicode_ilike_regressions {
         let pattern = compile_like("ABC%").unwrap();
         assert!(like_matches(b"abcdef", &pattern, true));
         assert!(!like_matches(&[0xff], &compile_like("É").unwrap(), true));
+    }
+}
+
+#[cfg(test)]
+mod topk_tests {
+    use crate::{execute, parse_select};
+    use rusthouse_storage::{Column, write_wide_part};
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
+    static NEXT: AtomicUsize = AtomicUsize::new(0);
+
+    #[test]
+    fn bounded_sort_keeps_earlier_ties_and_skips_losing_rows() {
+        let path = std::env::temp_dir().join(format!(
+            "rusthouse-typed-topk-prune-{}-{}",
+            std::process::id(),
+            NEXT.fetch_add(1, Ordering::Relaxed)
+        ));
+        let columns = [
+            Column { name: "note".into(), data_type: "String".into() },
+            Column { name: "rank".into(), data_type: "UInt64".into() },
+        ];
+        let mut rows = vec![
+            vec![Some("first".into()), Some("1".into())],
+            vec![Some("second".into()), Some("1".into())],
+        ];
+        rows.extend((0..300).map(|index| {
+            vec![Some(format!("loser-{index}")), Some("99".into())]
+        }));
+        write_wide_part(&path, &columns, &rows).unwrap();
+        let query = parse_select("SELECT note FROM part ORDER BY rank LIMIT 2").unwrap();
+        let mut output = Vec::new();
+        execute(&query, Some(&path), &mut output).unwrap();
+        assert_eq!(output, b"note\nfirst\nsecond\n");
+        std::fs::remove_dir_all(path).unwrap();
     }
 }
