@@ -178,9 +178,7 @@ fn wrap_null_map(values: TypedColumn, nulls: Option<Vec<u8>>) -> Result<TypedCol
         (TypedColumn::Numeric(values), Some(nulls)) => {
             Ok(TypedColumn::NullableNumeric { values, nulls })
         }
-        (TypedColumn::Text(values), Some(nulls)) => {
-            Ok(TypedColumn::NullableText { values, nulls })
-        }
+        (TypedColumn::Text(values), Some(nulls)) => Ok(TypedColumn::NullableText { values, nulls }),
         (other, None) => Ok(other),
         _ => Err(PartError::InvalidScan("unsupported null map".into())),
     }
