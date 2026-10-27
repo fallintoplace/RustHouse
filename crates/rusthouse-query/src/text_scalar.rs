@@ -9,6 +9,7 @@ pub(super) fn is_function(name: &str) -> bool {
         "LENGTH"
             | "CHAR_LENGTH"
             | "BTRIM"
+            | "REPLACE_LAST"
             | "LOWER"
             | "UPPER"
             | "REVERSE"
@@ -456,6 +457,36 @@ fn parse_at_depth(parser: &mut Parser, depth: usize) -> Result<ConstantValue, Pa
                             return Err(ParseError("REPEAT result is too large".into()));
                         }
                         ConstantValue::Text(value.repeat(count))
+                    }
+                }
+                _ => ConstantValue::Null,
+            }
+        }
+        "REPLACE_LAST" => {
+            let input = text_arg(parser, depth + 1)?;
+            require(parser, Token::Comma, "REPLACE_LAST requires a search string")?;
+            let needle = text_arg(parser, depth + 1)?;
+            require(parser, Token::Comma, "REPLACE_LAST requires a replacement")?;
+            let replacement = text_arg(parser, depth + 1)?;
+            require(parser, Token::RParen, "expected ')' after REPLACE_LAST arguments")?;
+            match (input, needle, replacement) {
+                (Some(input), Some(needle), Some(replacement)) => {
+                    if needle.is_empty() {
+                        ConstantValue::Text(input)
+                    } else if let Some(index) = input.rfind(&needle) {
+                        let length = (input.len() - needle.len())
+                            .checked_add(replacement.len())
+                            .ok_or_else(|| ParseError("REPLACE_LAST result is too large".into()))?;
+                        if length > MAX_TEXT_BYTES {
+                            return Err(ParseError("REPLACE_LAST result is too large".into()));
+                        }
+                        let mut result = String::with_capacity(length);
+                        result.push_str(&input[..index]);
+                        result.push_str(&replacement);
+                        result.push_str(&input[index + needle.len()..]);
+                        ConstantValue::Text(result)
+                    } else {
+                        ConstantValue::Text(input)
                     }
                 }
                 _ => ConstantValue::Null,
