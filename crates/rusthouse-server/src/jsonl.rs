@@ -82,25 +82,27 @@ fn write_json_row<W: Write>(output: &mut W, headers: &[String], line: &[u8]) -> 
     if 1 + line.iter().filter(|byte| **byte == b'\t').count() != headers.len() {
         return Err(invalid("JSONL row does not match header column count"));
     }
-    output.write_all(b"{")?;
+    let mut row = Vec::with_capacity(line.len() + headers.len() * 8 + 3);
+    row.write_all(b"{")?;
     for (index, (header, field)) in headers
         .iter()
         .zip(line.split(|byte| *byte == b'\t'))
         .enumerate()
     {
         if index != 0 {
-            output.write_all(b",")?;
+            row.write_all(b",")?;
         }
-        write_json_string(output, header)?;
-        output.write_all(b":")?;
+        write_json_string(&mut row, header)?;
+        row.write_all(b":")?;
         if field == b"\\N" {
-            output.write_all(b"null")?;
+            row.write_all(b"null")?;
         } else {
             let text = decoded_row_field(field)?;
-            write_json_string(output, &text)?;
+            write_json_string(&mut row, &text)?;
         }
     }
-    output.write_all(b"}\n")
+    row.write_all(b"}\n")?;
+    output.write_all(&row)
 }
 
 pub struct JsonlWriter<W: Write> {
@@ -247,6 +249,18 @@ mod tests {
             decode_tsv_value(b"quoted\\x22word").unwrap(),
             "quoted\"word"
         );
+    }
+
+    #[test]
+    fn invalid_late_field_does_not_emit_partial_json() {
+        let mut writer = JsonlWriter::new(Vec::new());
+        writer.write_all(b"left\tright\n1\t2\n").unwrap();
+        let good = writer.output.clone();
+        assert_eq!(
+            writer.write_all(b"ok\tbad\\q\n").unwrap_err().kind(),
+            io::ErrorKind::InvalidData
+        );
+        assert_eq!(writer.output, good);
     }
 
     #[test]
