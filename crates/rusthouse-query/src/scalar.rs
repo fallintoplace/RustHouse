@@ -276,11 +276,19 @@ fn factor(parser: &mut Parser, depth: usize) -> Result<i64, ParseError> {
 fn parse_next_power_of_two(parser: &mut Parser, depth: usize) -> Result<i64, ParseError> {
     require_token(parser, Token::LParen, "NEXT_POWER_OF_TWO requires '('")?;
     let value = expression(parser, depth + 1)?;
-    require_token(parser, Token::RParen, "expected ')' after NEXT_POWER_OF_TWO argument")?;
+    require_token(
+        parser,
+        Token::RParen,
+        "expected ')' after NEXT_POWER_OF_TWO argument",
+    )?;
     let nonnegative = u64::try_from(value)
         .map_err(|_| ParseError("NEXT_POWER_OF_TWO requires nonnegative input".into()))?;
-    i64::try_from(nonnegative.checked_next_power_of_two().ok_or_else(overflow)?)
-        .map_err(|_| overflow())
+    i64::try_from(
+        nonnegative
+            .checked_next_power_of_two()
+            .ok_or_else(overflow)?,
+    )
+    .map_err(|_| overflow())
 }
 
 fn overflow() -> ParseError {
