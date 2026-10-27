@@ -66,18 +66,20 @@ impl<W: Write> HtmlWriter<W> {
     }
 }
 
+fn decode_html_field(field: &str, header: bool) -> io::Result<Cow<'_, str>> {
+    if header || field == "\\N" || !field.as_bytes().contains(&b'\\') {
+        return Ok(Cow::Borrowed(field));
+    }
+    String::from_utf8(decode_tsv_field(field.as_bytes())?)
+        .map(Cow::Owned)
+        .map_err(|_| {
+            io::Error::new(io::ErrorKind::InvalidData, "HTML field is not valid UTF-8")
+        })
+}
+
 fn decode_html_fields(line: &str, header: bool) -> io::Result<Vec<Cow<'_, str>>> {
     line.split('\t')
-        .map(|field| {
-            if header || field == "\\N" || !field.as_bytes().contains(&b'\\') {
-                return Ok(Cow::Borrowed(field));
-            }
-            String::from_utf8(decode_tsv_field(field.as_bytes())?)
-                .map(Cow::Owned)
-                .map_err(|_| {
-                    io::Error::new(io::ErrorKind::InvalidData, "HTML field is not valid UTF-8")
-                })
-        })
+        .map(|field| decode_html_field(field, header))
         .collect()
 }
 
@@ -154,6 +156,14 @@ impl<W: Write> Write for HtmlWriter<W> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn field_decoder_borrows_plain_headers_and_null_markers() {
+        assert!(matches!(decode_html_field("plain", false).unwrap(), Cow::Borrowed(_)));
+        assert!(matches!(decode_html_field("\\N", false).unwrap(), Cow::Borrowed(_)));
+        assert!(matches!(decode_html_field("a\\tb", true).unwrap(), Cow::Borrowed(_)));
+        assert!(matches!(decode_html_field("a\\tb", false).unwrap(), Cow::Owned(_)));
+    }
 
     #[test]
     fn only_decodes_escaped_data_fields() {
