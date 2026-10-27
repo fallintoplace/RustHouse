@@ -6,7 +6,7 @@ const MAX_TEXT_BYTES: usize = 1_048_576;
 pub(super) fn is_function(name: &str) -> bool {
     matches!(
         name.to_ascii_uppercase().as_str(),
-        "LENGTH" | "CHAR_LENGTH" | "LOWER" | "UPPER" | "CONCAT" | "SUBSTRING" | "TRIM" | "REPLACE" | "LEFT" | "RIGHT"
+        "LENGTH" | "CHAR_LENGTH" | "LOWER" | "UPPER" | "CONCAT" | "SUBSTRING" | "TRIM" | "REPLACE" | "LEFT" | "RIGHT" | "REPEAT"
     )
 }
 
@@ -183,6 +183,33 @@ fn parse_at_depth(parser: &mut Parser, depth: usize) -> Result<ConstantValue, Pa
                     }
                     let count = usize::try_from(count).unwrap_or(usize::MAX).min(value.len());
                     ConstantValue::Text(value[value.len() - count..].to_owned())
+                }
+                _ => ConstantValue::Null,
+            }
+        }
+        "REPEAT" => {
+            let input = text_arg(parser, depth + 1)?;
+            require(parser, Token::Comma, "REPEAT requires a count")?;
+            let count = integer_arg(parser, depth + 1)?;
+            require(parser, Token::RParen, "expected ')' after REPEAT arguments")?;
+            match (input, count) {
+                (Some(value), Some(count)) => {
+                    if count < 0 {
+                        return Err(ParseError("REPEAT count must be nonnegative".into()));
+                    }
+                    if value.is_empty() {
+                        ConstantValue::Text(String::new())
+                    } else {
+                        let count = usize::try_from(count).unwrap_or(usize::MAX);
+                        let length = value
+                            .len()
+                            .checked_mul(count)
+                            .ok_or_else(|| ParseError("REPEAT result is too large".into()))?;
+                        if length > MAX_TEXT_BYTES {
+                            return Err(ParseError("REPEAT result is too large".into()));
+                        }
+                        ConstantValue::Text(value.repeat(count))
+                    }
                 }
                 _ => ConstantValue::Null,
             }
