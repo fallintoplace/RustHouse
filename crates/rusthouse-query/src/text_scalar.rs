@@ -120,11 +120,9 @@ fn parse_at_depth(parser: &mut Parser, depth: usize) -> Result<ConstantValue, Pa
                     if position < 1 {
                         return Err(ParseError("SUBSTRING positions are 1-based".into()));
                     }
-                    let start = usize::try_from(position - 1)
-                        .unwrap_or(usize::MAX)
-                        .min(value.len());
+                    let start = usize::try_from(position - 1).unwrap_or(usize::MAX);
                     let count = match length {
-                        None => value.len(),
+                        None => usize::MAX,
                         Some(Some(count)) if count >= 0 => {
                             usize::try_from(count).unwrap_or(usize::MAX)
                         }
@@ -133,8 +131,7 @@ fn parse_at_depth(parser: &mut Parser, depth: usize) -> Result<ConstantValue, Pa
                         }
                         Some(None) => return Ok(ConstantValue::Null),
                     };
-                    let end = start.saturating_add(count).min(value.len());
-                    ConstantValue::Text(value[start..end].to_owned())
+                    ConstantValue::Text(value.chars().skip(start).take(count).collect())
                 }
                 _ => ConstantValue::Null,
             }
