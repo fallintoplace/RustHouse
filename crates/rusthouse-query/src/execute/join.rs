@@ -593,12 +593,12 @@ pub fn execute_join<W: Write>(
     };
     let order = query
         .order_by
-        .as_ref()
+        .iter()
         .map(|(column, descending, nulls_first)| {
             resolve(query, column, &left_names, &right_names)
                 .map(|index| (index, *descending, *nulls_first))
         })
-        .transpose()?;
+        .collect::<Result<Vec<_>, _>>()?;
     let null_filter = query
         .where_null
         .as_ref()
@@ -629,7 +629,7 @@ pub fn execute_join<W: Write>(
         right_keys.push(right_index);
     }
 
-    if query.kind == JoinType::Inner && order.is_none() {
+    if query.kind == JoinType::Inner && order.is_empty() {
         // A very large right table can be the streamed side if the left fits
         // the same bounded hash-build budget.
         if right_meta.rows > MAX_STREAM_BUILD_ROWS && left_meta.rows <= MAX_STREAM_BUILD_ROWS {
@@ -724,12 +724,18 @@ pub fn execute_join<W: Write>(
             }
         }
     }
-    if let Some((index, descending, nulls_first)) = order {
+    if !order.is_empty() {
         let null = typed::Cell::Null;
         pairs.sort_by(|first, second| {
-            let a = cell_at(&left_rows, &right_rows, first, index, width).unwrap_or(&null);
-            let b = cell_at(&left_rows, &right_rows, second, index, width).unwrap_or(&null);
-            typed::compare_order_cells(a, b, descending, nulls_first)
+            for &(index, descending, nulls_first) in &order {
+                let a = cell_at(&left_rows, &right_rows, first, index, width).unwrap_or(&null);
+                let b = cell_at(&left_rows, &right_rows, second, index, width).unwrap_or(&null);
+                let comparison = typed::compare_order_cells(a, b, descending, nulls_first);
+                if comparison != std::cmp::Ordering::Equal {
+                    return comparison;
+                }
+            }
+            std::cmp::Ordering::Equal
         });
     }
     let header = selected
