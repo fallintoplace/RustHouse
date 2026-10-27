@@ -222,6 +222,9 @@ pub(super) fn execute_grouped_aggregate<W: Write>(
             }
         }
     }
+    if let Some(having) = &query.having {
+        groups.retain(|(_, state)| state.passes_having(having));
+    }
     if let Some(order) = &query.order_by {
         groups.sort_by(|(left, _), (right, _)| {
             let comparison = typed::cmp(left, right);
