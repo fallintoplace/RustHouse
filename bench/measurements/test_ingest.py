@@ -1,9 +1,9 @@
 import importlib.util
 import math
-from unittest import mock
 import tempfile
 import unittest
 from pathlib import Path
+from unittest import mock
 
 HERE = Path(__file__).resolve().parent
 SPEC = importlib.util.spec_from_file_location("ingest_runner", HERE / "ingest.py")
