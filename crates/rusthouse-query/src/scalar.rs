@@ -42,6 +42,7 @@ pub(super) fn is_function(name: &str) -> bool {
         || name.eq_ignore_ascii_case("NEXT_POWER_OF_TWO")
         || name.eq_ignore_ascii_case("BIT_EXTRACT")
         || is_bitwise(name)
+        || name.eq_ignore_ascii_case("MOD_POW")
         || name.eq_ignore_ascii_case("GCD")
         || name.eq_ignore_ascii_case("LCM")
         || name.eq_ignore_ascii_case("FIBONACCI")
@@ -367,6 +368,37 @@ fn gcd(mut left: u64, mut right: u64) -> u64 {
     left
 }
 
+fn parse_mod_pow(parser: &mut Parser, depth: usize) -> Result<i64, ParseError> {
+    require_token(parser, Token::LParen, "MOD_POW requires '('")?;
+    let base = expression(parser, depth + 1)?;
+    require_token(parser, Token::Comma, "MOD_POW requires three arguments")?;
+    let exponent = expression(parser, depth + 1)?;
+    require_token(parser, Token::Comma, "MOD_POW requires three arguments")?;
+    let modulus = expression(parser, depth + 1)?;
+    require_token(
+        parser,
+        Token::RParen,
+        "MOD_POW requires ')' after arguments",
+    )?;
+    if exponent < 0 || modulus <= 0 {
+        return Err(ParseError(
+            "MOD_POW exponent must be non-negative and modulus must be positive".into(),
+        ));
+    }
+    let mut factor = base.rem_euclid(modulus) as u128;
+    let modulus = modulus as u128;
+    let mut power = exponent as u64;
+    let mut result = 1_u128 % modulus;
+    while power > 0 {
+        if power & 1 != 0 {
+            result = (result * factor) % modulus;
+        }
+        factor = (factor * factor) % modulus;
+        power >>= 1;
+    }
+    i64::try_from(result).map_err(|_| overflow())
+}
+
 fn parse_gcd_lcm(parser: &mut Parser, depth: usize) -> Result<i64, ParseError> {
     let name = parser.word()?;
     if !parser.take(Token::LParen) {
@@ -529,6 +561,9 @@ fn factor(parser: &mut Parser, depth: usize) -> Result<i64, ParseError> {
     }
     if parser.keyword("DIGIT_COUNT") {
         return parse_digit_count(parser, depth);
+    }
+    if parser.keyword("MOD_POW") {
+        return parse_mod_pow(parser, depth);
     }
     if matches!(parser.tokens.get(parser.index), Some(Token::Word(name)) if is_extrema(name)) {
         return parse_extrema(parser, depth);
