@@ -79,12 +79,26 @@ fn generated_rows_and_empty_inserts_use_existing_publish_path() {
     );
     ok("INSERT INTO target (id) SELECT number FROM numbers(0)", &db);
     assert_eq!(ok("SELECT count(*) FROM target", &db), "count\n3\n");
+    // Bulk INSERT SELECT publishes 13 new parts in one active snapshot.
+    ok(
+        "INSERT INTO target (id) SELECT number FROM numbers(50000)",
+        &db,
+    );
+    assert_eq!(
+        ok("SELECT count(*) FROM target", &db),
+        "count\n50003\n"
+    );
+    let pointer = db.join("target.parts/.rusthouse-active");
+    assert_eq!(fs::read_to_string(&pointer).unwrap(), "g1\n");
+
+    // The extra row must be rejected, not silently truncated or published.
     let too_many = sql(
-        "INSERT INTO target (id) SELECT number FROM numbers(4097)",
+        "INSERT INTO target (id) SELECT number FROM numbers(50001)",
         &db,
     );
     assert!(!too_many.status.success());
-    assert_eq!(ok("SELECT count(*) FROM target", &db), "count\n3\n");
+    assert_eq!(fs::read_to_string(&pointer).unwrap(), "g1\n");
+    assert_eq!(ok("SELECT count(*) FROM target", &db), "count\n50003\n");
     fs::remove_dir_all(db).unwrap();
 }
 
@@ -104,5 +118,19 @@ fn inserting_from_the_same_table_reads_only_preexisting_rows() {
     let result = sql("INSERT INTO events SELECT id FROM missing", &db);
     assert!(!result.status.success());
     assert_eq!(ok("SELECT count(*) FROM events", &db), "count\n4\n");
+    fs::remove_dir_all(db).unwrap();
+}
+
+#[test]
+fn type_error_in_second_part_does_not_publish_any_insert_select_rows() {
+    let db = database();
+    ok("CREATE TABLE target (id UInt16)", &db);
+    // 61440..65535 fits UInt16; subsequent rows exceed its range.
+    let result = sql(
+        "INSERT INTO target SELECT number FROM numbers(5000, 61440)",
+        &db,
+    );
+    assert!(!result.status.success(), "{result:?}");
+    assert_eq!(ok("SELECT count(*) FROM target", &db), "count\n0\n");
     fs::remove_dir_all(db).unwrap();
 }

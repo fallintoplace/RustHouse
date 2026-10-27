@@ -4,7 +4,8 @@ use rusthouse_query::{Insert, InsertSelect, Source, execute};
 use std::io::{self, Write};
 use std::path::Path;
 
-const MAX_INSERT_ROWS: usize = 4096;
+const MAX_INSERT_ROWS: usize = 50_000;
+const MAX_SINGLE_PART_ROWS: usize = 4096;
 const MAX_RESULT_BYTES: usize = 8 * 1024 * 1024;
 
 #[derive(Default)]
@@ -79,7 +80,7 @@ fn decode_rows(data: &[u8]) -> Result<Vec<Vec<Option<String>>>, String> {
     let mut rows = Vec::new();
     for line in lines {
         if rows.len() >= MAX_INSERT_ROWS {
-            return Err("INSERT SELECT supports at most 4096 rows".into());
+            return Err(format!("INSERT SELECT supports at most {MAX_INSERT_ROWS} rows"));
         }
         let fields = line
             .split('\t')
@@ -109,14 +110,16 @@ pub(super) fn run(database: &Path, statement: &InsertSelect) -> Result<(), Strin
         let mut output = BoundedOutput::default();
         execute(&query, part.as_deref(), &mut output).map_err(|error| error.to_string())?;
         let rows = decode_rows(&output.0)?;
-        crate::database::insert_locked(
-            database,
-            &Insert {
-                table: statement.table.clone(),
-                columns: statement.columns.clone(),
-                rows,
-            },
-        )
+        let insert = Insert {
+            table: statement.table.clone(),
+            columns: statement.columns.clone(),
+            rows,
+        };
+        if insert.rows.len() > MAX_SINGLE_PART_ROWS {
+            crate::database::insert_many_locked(database, &insert)
+        } else {
+            crate::database::insert_locked(database, &insert)
+        }
     })
 }
 
