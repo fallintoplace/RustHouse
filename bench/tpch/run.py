@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """Run SQL compatibility and end-to-end latency checks against RustHouse."""
 import argparse
+from collections import Counter
 import re
 import subprocess
 import sys
@@ -42,7 +43,17 @@ def invoke(binary, database, sql, timeout):
 def summary(seconds):
     return latency_summary(seconds)
 
-def benchmark_one(number, sql, execute, runs, warmups, reference=None):
+def compare_reference(actual, reference, mode="exact"):
+    if mode == "exact":
+        return actual == reference
+    if mode == "unordered":
+        return Counter(actual.splitlines(keepends=True)) == Counter(
+            reference.splitlines(keepends=True)
+        )
+    raise ValueError(f"unknown reference comparison mode: {mode}")
+
+
+def benchmark_one(number, sql, execute, runs, warmups, reference=None, comparison="exact"):
     elapsed = []
     status = "unverified" if reference is None else "passed"
     error = None
@@ -56,7 +67,7 @@ def benchmark_one(number, sql, execute, runs, warmups, reference=None):
         except (OSError, RuntimeError, ValueError) as exc:
             status, error = "error", str(exc)
             break
-        if reference is not None and output != reference:
+        if reference is not None and not compare_reference(output, reference, comparison):
             status, error = "mismatch", "output differs from reference bytes"
             break
         if started is not None:
@@ -101,6 +112,8 @@ def main(argv=None):
     parser.add_argument("--database", type=Path, required=True)
     parser.add_argument("--queries-dir", type=Path, required=True)
     parser.add_argument("--reference-dir", type=Path)
+    parser.add_argument("--comparison", choices=("exact", "unordered"), default="exact",
+                        help="Compare row order exactly or as a multiset")
     parser.add_argument("--only", help="Comma-separated query IDs, e.g. 1,6,12")
     parser.add_argument("--runs", type=int, default=5)
     parser.add_argument("--warmups", type=int, default=1)
@@ -144,13 +157,15 @@ def main(argv=None):
                 continue
             reference = path.read_bytes()
         results.append(benchmark_one(
-            number, sql, execute, args.runs, args.warmups, reference
+            number, sql, execute, args.runs, args.warmups, reference,
+            comparison=args.comparison,
         ))
     report = {
         "engine": "rusthouse-cli",
         "timing_scope": "end-to-end CLI invocation, excluding query load and preflight",
         "runs": args.runs, "warmups": args.warmups,
         "reference_checked": args.reference_dir is not None,
+        "comparison": args.comparison,
         "coverage": summarize_coverage(results),
         "results": results,
     }

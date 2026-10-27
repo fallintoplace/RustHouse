@@ -3,7 +3,7 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from run import benchmark_one, load_queries, select_queries, summary, summarize_coverage
+from run import benchmark_one, compare_reference, load_queries, select_queries, summary, summarize_coverage
 
 class RunnerTests(unittest.TestCase):
     def test_query_discovery_is_numeric(self):
@@ -38,6 +38,15 @@ class RunnerTests(unittest.TestCase):
         mismatched = benchmark_one(6, "SELECT 1", lambda _: b"2\n", 3, 1, b"1\n")
         self.assertEqual(mismatched["status"], "mismatch")
         self.assertEqual(mismatched["timings_seconds"], [])
+
+    def test_unordered_rows_preserve_duplicate_counts(self):
+        expected = b"1\n2\n2\n"
+        self.assertFalse(compare_reference(b"2\n1\n2\n", expected))
+        self.assertTrue(compare_reference(b"2\n1\n2\n", expected, "unordered"))
+        self.assertFalse(compare_reference(b"2\n1\n1\n", expected, "unordered"))
+        result = benchmark_one(1, "SELECT id", lambda _: b"2\n1\n2\n",
+                               2, 0, expected, comparison="unordered")
+        self.assertEqual(result["status"], "passed")
 
     def test_error_and_timeout(self):
         def broken(_):
