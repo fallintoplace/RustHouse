@@ -1,5 +1,3 @@
-//! Bounded copy-on-write snapshots for local SQL tables.
-//! The active pointer is atomically replaced only after all new parts are verified.
 use super::{NEXT_STAGE, columns, crash_if_requested, data_path, lock, validated_parts};
 use rusthouse_storage::{
     Column, NumericColumn, TypedColumn, TypedQueryReader, inspect_query_source, verify_wide_part,
@@ -12,11 +10,8 @@ use std::path::Path;
 const MAX_REWRITE_BYTES: usize = 16 * 1024 * 1024;
 const MAX_PART_BUFFER_BYTES: usize = 4 * 1024 * 1024;
 const MAX_REWRITE_PARTS: u64 = 10_000;
-// The writer accepts 32,768 rows. Rewrites also retain a 4 MiB value budget.
 const PART_ROWS: usize = 32_768;
 
-// Debug-only simulated publication errors allow integration tests to exercise
-// cleanup and recovery without relying on platform-dependent permissions.
 #[cfg(debug_assertions)]
 fn fail_publication_at(point: &str) -> Result<(), String> {
     if std::env::var("RUSTHOUSE_DEBUG_FAIL_AT").is_ok_and(|value| value == point) {
@@ -101,9 +96,6 @@ fn generations_dir(database: &Path, table: &str) -> Result<std::path::PathBuf, S
     }
 }
 
-/// Publish a verified immutable generation and atomically swap its pointer.
-/// The staging writer may stream parts without holding the whole table in memory.
-/// Caller must hold the database write lock and validate the existing table.
 fn publish_snapshot_with(
     database: &Path,
     table: &str,
@@ -155,8 +147,6 @@ fn publish_snapshot_with(
             .map_err(|error| format!("cannot publish database generation: {error}"))
     });
     if let Err(error) = published {
-        // No generation has become active. Keep the old snapshot readable
-        // and do not accumulate failed multi-part staging directories.
         let _ = fs::remove_dir_all(&staging);
         return Err(error);
     }
@@ -190,8 +180,6 @@ fn publish_snapshot_with(
             .map_err(|error| format!("cannot activate database snapshot: {error}"))
     });
     if let Err(error) = activated {
-        // The pointer still names the previously committed generation.
-        // A newer orphaned generation is retained for offline recovery.
         let _ = fs::remove_file(&pending);
         return Err(error);
     }
@@ -200,8 +188,6 @@ fn publish_snapshot_with(
     Ok(())
 }
 
-/// Publish a bounded in-memory rewrite for UPDATE, DELETE, and TRUNCATE.
-/// The staging and pointer protocol is shared with streaming compaction.
 pub(super) fn publish_snapshot(
     database: &Path,
     table: &str,
@@ -225,8 +211,6 @@ pub(super) fn publish_snapshot(
     })
 }
 
-/// Append multiple new parts as one snapshot generation. Reuse immutable
-/// existing part files through checked hard links, never partial live renames.
 pub(super) fn append_parts(
     database: &Path,
     table: &str,
@@ -292,8 +276,6 @@ pub(super) fn append_parts(
     })
 }
 
-/// Append a stream of schema-ordered rows as one verified snapshot.
-/// An input or storage error leaves the previous active snapshot unchanged.
 pub(super) fn append_parts_stream(
     database: &Path,
     table: &str,
@@ -392,8 +374,6 @@ pub(super) fn append_parts_stream(
     Ok(count)
 }
 
-/// Rewrite a local table using bounded batches. Keep the previous active
-/// snapshot visible until every replacement part has been written and verified.
 pub(super) fn rewrite_rows(
     database: &Path,
     table: &str,
@@ -488,8 +468,6 @@ pub(super) fn rewrite_rows(
     Ok((scanned, retained))
 }
 
-/// Stream immutable table rows into verified compacted parts. Keep only
-/// PART_ROWS decoded rows in memory, independent of the full table size.
 pub(super) fn compact_table(database: &Path, table: &str) -> Result<(), String> {
     let _lock = lock(database)?;
     let cols = columns(database, table)?;

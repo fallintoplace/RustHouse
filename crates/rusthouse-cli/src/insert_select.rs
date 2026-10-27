@@ -1,5 +1,3 @@
-//! INSERT ... SELECT reuses the query executor and the validated INSERT publisher.
-//! Result decoding is bounded and keeps RustHouse's escaped TSV NULL semantics.
 use rusthouse_query::{Insert, InsertSelect, Source, execute};
 use std::io::{self, Write};
 use std::path::Path;
@@ -94,12 +92,8 @@ fn decode_rows(data: &[u8]) -> Result<Vec<Vec<Option<String>>>, String> {
 }
 
 pub(super) fn run(database: &Path, statement: &InsertSelect) -> Result<(), String> {
-    // Keep source resolution, SELECT execution and final append under one
-    // database write lock so concurrent RENAME/DROP cannot invalidate the
-    // input, and self-INSERT observes a consistent pre-insert snapshot.
     crate::database::with_write_lock(database, || {
         let mut query = statement.select.clone();
-        // Read one extra row to reject truncation rather than silently losing rows.
         let cap = MAX_INSERT_ROWS + 1;
         query.limit = Some(query.limit.map_or(cap, |limit| limit.min(cap)));
         let part = if let Some(Source::Table(table)) = query.source.as_ref() {

@@ -1,4 +1,3 @@
-//! Convert the SQL executor's TSV stream into a bounded, escaped HTML table.
 use crate::tsv_escape::decode_tsv_field;
 use std::borrow::Cow;
 use std::io::{self, Write};

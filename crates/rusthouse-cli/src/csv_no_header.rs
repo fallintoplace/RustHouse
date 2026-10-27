@@ -1,6 +1,5 @@
 use std::io::{self, Write};
 
-/// Drop exactly the first converted CSV record, which is the numeric SQL header.
 pub struct WithoutHeader<W: Write> {
     output: W,
     skipping_header: bool,

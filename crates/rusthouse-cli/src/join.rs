@@ -1,4 +1,3 @@
-//! Execute a bounded two-table JOIN using the existing SQL output adapters.
 use crate::sql::SqlOutputFormat;
 use crate::{
     csv, csv_no_header, html, json_array, json_compact_each_row, json_seq, jsonl, markdown,
@@ -106,7 +105,6 @@ pub(super) fn run(
     output_path: Option<PathBuf>,
     time: bool,
 ) -> Result<(), String> {
-    // Protect both immutable snapshots against concurrent DROP and RENAME.
     let _lock = if database.is_dir() {
         Some(crate::database::read_lock(database)?)
     } else {

@@ -1,5 +1,3 @@
-//! Non-destructive offline verification for local databases.
-//! Run with writers stopped. No lock file or other database metadata is created.
 use crate::catalog;
 use rusthouse_storage::{
     Column, inspect_query_source, query_parts, resolve_active_snapshot, verify_part_file_hashes,
@@ -253,8 +251,6 @@ fn parse_doctor_directory(
     Ok((directory, full_hashes))
 }
 
-/// Print a deterministic diagnostic report without altering on-disk data.
-/// Does not acquire a lock because doing so could create the lock inode.
 pub(super) fn run(args: impl Iterator<Item = OsString>) -> Result<(), String> {
     let (directory, full_hashes) = parse_doctor_directory(args)?;
     let database = Path::new(&directory);

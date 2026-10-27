@@ -4,7 +4,6 @@ use std::io::{self, Write};
 
 const MAX_FIELD_BYTES: usize = 1024 * 1024;
 
-/// Convert RustHouse's numeric tab-separated output into RFC 4180-style CSV.
 pub struct CsvWriter<W: Write> {
     output: W,
     field: Vec<u8>,
@@ -31,7 +30,6 @@ impl<W: Write> CsvWriter<W> {
         Ok(())
     }
 
-    /// Returns true when an LF has completed a previous CRLF row boundary.
     fn consume_pending_cr(&mut self, byte: u8) -> io::Result<bool> {
         if !self.pending_cr {
             return Ok(false);

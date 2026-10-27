@@ -1,4 +1,3 @@
-//! Bounded CSV loader and streaming TSV loader for COPY FROM local files.
 use rusthouse_query::{CopyFormat, CopyFrom, Insert};
 use std::collections::HashSet;
 use std::fs::File;
@@ -9,7 +8,7 @@ const MAX_COPY_BYTES: usize = 8 * 1024 * 1024;
 const MAX_CSV_DATA_RECORDS: usize = 50_000;
 const MAX_CSV_RECORDS: usize = MAX_CSV_DATA_RECORDS + 1;
 #[cfg(test)]
-const MAX_TSV_RECORDS: usize = MAX_CSV_RECORDS; // legacy in-memory parser tests
+const MAX_TSV_RECORDS: usize = MAX_CSV_RECORDS;
 const MAX_TSV_RECORD_BYTES: usize = 8 * 1024 * 1024;
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -199,7 +198,6 @@ struct TsvRecords {
 impl TsvRecords {
     fn next_record(&mut self) -> Result<Option<Vec<Option<String>>>, String> {
         self.buffer.clear();
-        // Bound a single record even when the file itself is many gigabytes.
         let size = self
             .reader
             .by_ref()
@@ -304,7 +302,6 @@ pub(super) fn run(database: &Path, statement: &CopyFrom) -> Result<(), String> {
         ));
     }
     if records.is_empty() {
-        // Empty imports should not create needless immutable parts.
         crate::database::select_source(database, &statement.table)?;
         println!("Inserted 0 rows into {}", statement.table);
         return Ok(());

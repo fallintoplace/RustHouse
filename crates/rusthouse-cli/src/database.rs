@@ -1,5 +1,3 @@
-//! Single-writer local database mode.
-//! Tables use existing .schema metadata and immutable, atomically published wide parts.
 use crate::catalog;
 mod rewrite;
 use rusthouse_query::{Ddl, Insert, RowPredicate, Select, Source, Update};
@@ -13,7 +11,6 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 
 static NEXT_STAGE: AtomicUsize = AtomicUsize::new(0);
 
-// Debug-only subprocess fault points for commit boundary tests.
 #[cfg(debug_assertions)]
 pub(super) fn crash_if_requested(point: &str) {
     if std::env::var("RUSTHOUSE_DEBUG_CRASH_AT").is_ok_and(|value| value == point) {
@@ -72,7 +69,6 @@ fn active_source(database: &Path, name: &str) -> Result<PathBuf, String> {
     resolve_active_snapshot(&data_path(database, name)).map_err(|error| error.to_string())
 }
 
-/// Resolve a named SQL table to its immutable on-disk parts.
 pub(super) fn select_source(database: &Path, table: &str) -> Result<PathBuf, String> {
     let cols = columns(database, table)?;
     let (path, _) = validated_parts(database, table, &cols)?;
@@ -114,7 +110,6 @@ fn drop_table(database: &Path, name: &str, if_exists: bool) -> Result<(), String
     let cols = columns(database, name)?;
     validated_parts(database, name, &cols)?;
 
-    // Hide the schema first. Interrupted DROP cannot attach old data to a new table.
     let tombstone = database.join(format!(
         ".{name}.drop-{}-{}.schema",
         std::process::id(),
@@ -147,7 +142,6 @@ fn rename_table(database: &Path, from: &str, to: &str) -> Result<(), String> {
     let _lock = lock(database)?;
     let cols = columns(database, from)?;
     validated_parts(database, from, &cols)?;
-    // Move the complete table root, including its snapshot pointer and all generations.
     let source_parts = data_path(database, from);
     let source_schema = database.join(format!("{from}.schema"));
     let destination_schema = database.join(format!("{to}.schema"));
@@ -156,11 +150,6 @@ fn rename_table(database: &Path, from: &str, to: &str) -> Result<(), String> {
         return Err(format!("table already exists or has orphaned data: {to}"));
     }
 
-    // Both the schema and parts have to move, so RENAME is not a single
-    // filesystem operation. Link the destination schema *before* moving the
-    // parts: before the move the source remains readable, and afterwards the
-    // destination is readable. A crash can leave an extra schema alias, but
-    // never a window where neither name has both schema and data.
     fs::hard_link(&source_schema, &destination_schema)
         .map_err(|error| format!("cannot stage destination schema {to}: {error}"))?;
     if let Err(error) = sync_database_directory(database) {
@@ -183,7 +172,6 @@ fn rename_table(database: &Path, from: &str, to: &str) -> Result<(), String> {
         }
         return Err(format!("cannot move table data from {from}: {error}"));
     }
-    // Do not remove the old schema until the new name is durably discoverable.
     sync_database_directory(database)
         .map_err(|error| format!("table data moved to {to}, but old schema remains: {error}"))?;
     fs::remove_file(&source_schema)
@@ -194,7 +182,6 @@ fn rename_table(database: &Path, from: &str, to: &str) -> Result<(), String> {
     Ok(())
 }
 
-/// Publish a new empty snapshot without temporarily removing the active table.
 fn truncate_table(database: &Path, name: &str) -> Result<(), String> {
     let _lock = lock(database)?;
     let cols = columns(database, name)?;
@@ -236,9 +223,6 @@ fn create_table_locked(
     };
     let result = (|| -> Result<(), String> {
         write_wide_part(&parts.join("all_0_0_0"), &cols, &[]).map_err(|error| error.to_string())?;
-        // Persist the parts directory and its parent before the schema name
-        // becomes visible. A published schema must not point at missing data
-        // after a crash.
         fs::File::open(&parts)
             .and_then(|directory| directory.sync_all())
             .map_err(|error| format!("cannot sync new table parts: {error}"))?;
@@ -248,8 +232,6 @@ fn create_table_locked(
         catalog::apply(database, &ddl)
     })();
     if result.is_err() && matches!(existing_path(&schema), Ok(false)) {
-        // A schema may have been published before its final sync failed.
-        // Never remove its data in that case.
         let _ = fs::remove_dir_all(&parts);
     }
     result
@@ -262,7 +244,6 @@ pub(super) fn apply_ddl(database: &Path, ddl: &Ddl) -> Result<(), String> {
         | Ddl::ShowTablesNotLike { .. }
         | Ddl::ShowCreateTable { .. }
         | Ddl::DescribeTable { .. } => {
-            // Do not create a new database just to list empty tables.
             if database.is_dir() {
                 let _read_lock = read_lock(database)?;
                 catalog::apply(database, ddl)
@@ -334,7 +315,6 @@ pub(super) fn update(database: &Path, update: &Update) -> Result<(), String> {
     Ok(())
 }
 
-/// Delete matching rows by switching a complete immutable snapshot.
 pub(super) fn delete(database: &Path, select: &Select) -> Result<(), String> {
     let Some(Source::Table(name)) = select.source.as_ref() else {
         return Err("DELETE requires a stored database table".into());
@@ -357,7 +337,6 @@ pub(super) fn delete(database: &Path, select: &Select) -> Result<(), String> {
     Ok(())
 }
 
-/// Run a bounded statement while holding the database's exclusive lock.
 pub(super) fn with_write_lock<T>(
     database: &Path,
     operation: impl FnOnce() -> Result<T, String>,
@@ -370,7 +349,6 @@ pub(super) fn insert(database: &Path, insert: &Insert) -> Result<(), String> {
     with_write_lock(database, || insert_locked(database, insert))
 }
 
-/// Validate and append an input stream with one atomic snapshot publication.
 pub(super) fn insert_stream(
     database: &Path,
     table: &str,
@@ -391,7 +369,6 @@ pub(super) fn insert_stream(
                 .collect::<Result<Vec<_>, _>>()?,
             None => (0..cols.len()).collect::<Vec<_>>(),
         };
-        // Empty imports should not create a new generation.
         let mut first = next_row()?;
         if first.is_none() {
             println!("Inserted 0 rows into {table}");
@@ -424,14 +401,10 @@ pub(super) fn insert_stream(
     })
 }
 
-/// Bulk insertion. Validate all rows before staging a new generation.
-/// Existing immutable parts are hard-linked and all new parts become active
-/// together when the snapshot pointer is replaced.
 pub(super) fn insert_many(database: &Path, insert: &Insert) -> Result<(), String> {
     with_write_lock(database, || insert_many_locked(database, insert))
 }
 
-/// The caller must already own the exclusive database write lock.
 pub(super) fn insert_many_locked(database: &Path, insert: &Insert) -> Result<(), String> {
     let cols = columns(database, &insert.table)?;
     let (_, parts) = validated_parts(database, &insert.table, &cols)?;
@@ -471,7 +444,6 @@ pub(super) fn insert_many_locked(database: &Path, insert: &Insert) -> Result<(),
     Ok(())
 }
 
-/// The caller must already own the exclusive database write lock.
 pub(super) fn insert_locked(database: &Path, insert: &Insert) -> Result<(), String> {
     let cols = columns(database, &insert.table)?;
     let (parts_dir, parts) = validated_parts(database, &insert.table, &cols)?;
@@ -538,7 +510,6 @@ pub(super) fn insert_locked(database: &Path, insert: &Insert) -> Result<(), Stri
     if existing_path(&destination)? {
         return Err("destination part already exists".into());
     }
-    // An interrupted write must not become visible as an active part.
     let staging = database.join(format!(
         ".{}.pending-{}-{}",
         insert.table,

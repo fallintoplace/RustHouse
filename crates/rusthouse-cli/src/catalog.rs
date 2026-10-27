@@ -76,8 +76,6 @@ fn describe_table(catalog: &Path, name: &str) -> Result<(), String> {
     Ok(())
 }
 
-/// Match SQL LIKE over validated ASCII table names. % matches any number of
-/// bytes, _ matches one byte, and backslash escapes either wildcard.
 fn table_matches_like(name: &str, pattern: &str) -> bool {
     let name = name.as_bytes();
     let mut states = vec![false; name.len() + 1];
@@ -190,7 +188,6 @@ pub(super) fn read_schema(catalog: &Path, name: &str) -> Result<Vec<ColumnDef>, 
     if metadata.len() > MAX_SCHEMA_BYTES {
         return Err(format!("schema is too large for table {name}"));
     }
-    // Limit reads even if a schema grows between metadata inspection and open.
     let mut bytes = Vec::new();
     fs::File::open(&path)
         .map_err(|error| format!("cannot read table {name}: {error}"))?
@@ -266,7 +263,6 @@ fn replace_schema(catalog: &Path, name: &str, columns: &[ColumnDef]) -> Result<(
         let _ = fs::remove_file(&temp);
         return Err(format!("cannot update schema for {name}: {error}"));
     }
-    // The replacement is visible now; sync its directory entry for durability.
     sync_catalog_dir(catalog)?;
     Ok(())
 }
@@ -347,12 +343,9 @@ fn rename_table(catalog: &Path, from: &str, to: &str) -> Result<(), String> {
     if from == to {
         return Err("source and destination table names must differ".into());
     }
-    // Validate the source before moving it. Only versioned catalog files may be renamed.
     read_schema(catalog, from)?;
     let source = schema_path(catalog, from);
     let destination = schema_path(catalog, to);
-    // Hard-link creation fails if the destination exists, unlike rename on Unix.
-    // Source removal comes second, so failures cannot silently overwrite a table.
     match fs::hard_link(&source, &destination) {
         Ok(()) => {}
         Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {
@@ -382,9 +375,6 @@ fn create_table(
         std::process::id(),
         NEXT_TEMP.fetch_add(1, Ordering::Relaxed)
     ));
-    // Never expose an incomplete schema at its public table name. Write and
-    // sync the staging file first, then link it without replacing an existing
-    // table (CREATE IF NOT EXISTS must still validate existing schemas).
     let staged = (|| -> Result<(), std::io::Error> {
         let mut file = OpenOptions::new()
             .write(true)
@@ -411,8 +401,6 @@ fn create_table(
         }
     }
 
-    // After hard_link succeeds the schema may already be observable. On a
-    // sync failure, leave the complete public file in place for recovery.
     sync_catalog_dir(catalog).map_err(|error| {
         format!("schema for {name} was published but durability is uncertain: {error}")
     })?;
