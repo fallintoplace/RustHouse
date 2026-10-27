@@ -32,6 +32,8 @@ pub(super) fn is_function(name: &str) -> bool {
     is_saturating(name)
         || name.eq_ignore_ascii_case("ABS")
         || name.eq_ignore_ascii_case("BIT_WIDTH")
+        || name.eq_ignore_ascii_case("DIV")
+        || name.eq_ignore_ascii_case("MOD")
         || name.eq_ignore_ascii_case("ABS_DIFF")
         || name.eq_ignore_ascii_case("SIGN")
         || name.eq_ignore_ascii_case("DIGIT_COUNT")
@@ -174,6 +176,22 @@ fn parse_power(parser: &mut Parser, depth: usize) -> Result<i64, ParseError> {
     let exponent = u32::try_from(exponent)
         .map_err(|_| ParseError("POWER exponent must be non-negative and fit UInt32".into()))?;
     base.checked_pow(exponent).ok_or_else(overflow)
+}
+
+/// SQL-style truncating integer division and remainder.
+fn parse_div_mod(parser: &mut Parser, depth: usize, divide: bool) -> Result<i64, ParseError> {
+    require_token(parser, Token::LParen, "DIV/MOD requires '('")?;
+    let left = expression(parser, depth + 1)?;
+    require_token(parser, Token::Comma, "DIV/MOD requires two arguments")?;
+    let right = expression(parser, depth + 1)?;
+    require_token(parser, Token::RParen, "DIV/MOD requires ')'")?;
+    if divide {
+        left.checked_div(right)
+            .ok_or_else(|| ParseError("DIV divisor is zero or result overflows Int64".into()))
+    } else {
+        left.checked_rem(right)
+            .ok_or_else(|| ParseError("MOD divisor is zero or result overflows Int64".into()))
+    }
 }
 
 fn parse_pmod(parser: &mut Parser, depth: usize) -> Result<i64, ParseError> {
@@ -750,6 +768,12 @@ fn factor(parser: &mut Parser, depth: usize) -> Result<i64, ParseError> {
         return factor(parser, depth + 1)?
             .checked_neg()
             .ok_or_else(overflow);
+    }
+    if parser.keyword("DIV") {
+        return parse_div_mod(parser, depth, true);
+    }
+    if parser.keyword("MOD") {
+        return parse_div_mod(parser, depth, false);
     }
     if parser.keyword("ABS_DIFF") {
         return parse_abs_diff(parser, depth);
