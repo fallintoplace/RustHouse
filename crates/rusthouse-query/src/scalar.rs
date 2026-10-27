@@ -24,6 +24,7 @@ pub(super) fn is_function(name: &str) -> bool {
         || name.eq_ignore_ascii_case("SIGN")
         || is_extrema(name)
         || is_power(name)
+        || name.eq_ignore_ascii_case("BIT_EXTRACT")
         || is_bitwise(name)
         || name.eq_ignore_ascii_case("GCD")
         || name.eq_ignore_ascii_case("LCM")
@@ -164,6 +165,25 @@ fn parse_clamp(parser: &mut Parser, depth: usize) -> Result<i64, ParseError> {
     Ok(value.clamp(lower, upper))
 }
 
+fn parse_bit_extract(parser: &mut Parser, depth: usize) -> Result<i64, ParseError> {
+    require_token(parser, Token::LParen, "BIT_EXTRACT requires '('")?;
+    let value = expression(parser, depth + 1)?;
+    require_token(parser, Token::Comma, "BIT_EXTRACT requires three arguments")?;
+    let offset = expression(parser, depth + 1)?;
+    require_token(parser, Token::Comma, "BIT_EXTRACT requires three arguments")?;
+    let width = expression(parser, depth + 1)?;
+    require_token(parser, Token::RParen, "BIT_EXTRACT requires ')' after arguments")?;
+    let offset = u32::try_from(offset)
+        .map_err(|_| ParseError("BIT_EXTRACT offset must be between 0 and 63".into()))?;
+    let width = u32::try_from(width)
+        .map_err(|_| ParseError("BIT_EXTRACT width must be between 1 and 63".into()))?;
+    if offset >= 64 || width == 0 || width > 63 || offset + width > 64 {
+        return Err(ParseError("BIT_EXTRACT field must fit within 64 bits".into()));
+    }
+    let mask = (1_u64 << width) - 1;
+    Ok((((value as u64) >> offset) & mask) as i64)
+}
+
 fn gcd(mut left: u64, mut right: u64) -> u64 {
     while right != 0 {
         let remainder = left % right;
@@ -219,6 +239,9 @@ fn factor(parser: &mut Parser, depth: usize) -> Result<i64, ParseError> {
     }
     if parser.keyword("CLAMP") {
         return parse_clamp(parser, depth);
+    }
+    if parser.keyword("BIT_EXTRACT") {
+        return parse_bit_extract(parser, depth);
     }
     if matches!(parser.tokens.get(parser.index), Some(Token::Word(name)) if name.eq_ignore_ascii_case("GCD") || name.eq_ignore_ascii_case("LCM"))
     {
