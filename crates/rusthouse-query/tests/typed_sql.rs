@@ -133,6 +133,20 @@ fn count_column_excludes_nulls_after_typed_filters() {
 }
 
 #[test]
+fn fused_count_columns_respects_string_uuid_and_nullable_null_maps() {
+    let part = part();
+    assert_eq!(
+        query("SELECT count(service), count(message), count(uid), count(attempt) FROM part", &part),
+        "count(service)\tcount(message)\tcount(uid)\tcount(attempt)\n3\t2\t3\t2\n"
+    );
+    assert_eq!(
+        query("SELECT count(service), count(message), count(uid), count(attempt) FROM part WHERE service = 'api'", &part),
+        "count(service)\tcount(message)\tcount(uid)\tcount(attempt)\n2\t2\t2\t2\n"
+    );
+    fs::remove_dir_all(part).unwrap();
+}
+
+#[test]
 fn aggregates_numeric_values_after_text_filters() {
     let part = part();
     for (sql, expected) in [
