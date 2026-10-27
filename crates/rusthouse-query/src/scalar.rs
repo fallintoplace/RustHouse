@@ -28,6 +28,7 @@ pub(super) fn is_function(name: &str) -> bool {
         || name.eq_ignore_ascii_case("GCD")
         || name.eq_ignore_ascii_case("LCM")
         || name.eq_ignore_ascii_case("CLAMP")
+        || name.eq_ignore_ascii_case("TRAILING_ONES")
 }
 
 pub(super) fn parse(parser: &mut Parser) -> Result<i64, ParseError> {
@@ -249,7 +250,10 @@ fn factor(parser: &mut Parser, depth: usize) -> Result<i64, ParseError> {
         } else if name.eq_ignore_ascii_case("ABS") {
             first.checked_abs().ok_or_else(overflow)?
         } else {
-            first.signum()
+            match name.to_ascii_uppercase().as_str() {
+                "TRAILING_ONES" => i64::from(first.trailing_ones()),
+                _ => first.signum(),
+            }
         };
         if !parser.take(Token::RParen) {
             return Err(ParseError("expected ')' after scalar function".into()));
