@@ -59,6 +59,7 @@ pub(super) fn is_function(name: &str) -> bool {
         || name.eq_ignore_ascii_case("DIGITAL_ROOT")
         || name.eq_ignore_ascii_case("POW10")
         || name.eq_ignore_ascii_case("TRIANGULAR")
+        || name.eq_ignore_ascii_case("IS_PRIME")
         || name.eq_ignore_ascii_case("CLAMP")
         || name.eq_ignore_ascii_case("CEIL_DIV")
         || name.eq_ignore_ascii_case("FLOOR_DIV")
@@ -524,6 +525,37 @@ fn parse_triangular(parser: &mut Parser, depth: usize) -> Result<i64, ParseError
     i64::try_from(value * (value + 1) / 2).map_err(|_| overflow())
 }
 
+/// Test primality with bounded 6k +/- 1 trial division.
+fn parse_is_prime(parser: &mut Parser, depth: usize) -> Result<i64, ParseError> {
+    require_token(parser, Token::LParen, "IS_PRIME requires '('")?;
+    let value = expression(parser, depth + 1)?;
+    require_token(parser, Token::RParen, "IS_PRIME requires ')'")?;
+    if value < 2 {
+        return Ok(0);
+    }
+    if value > 1_000_000_000_000 {
+        return Err(ParseError(
+            "IS_PRIME supports values up to 1000000000000".into(),
+        ));
+    }
+    let value = u64::try_from(value)
+        .map_err(|_| ParseError("IS_PRIME requires a nonnegative integer".into()))?;
+    if value % 2 == 0 {
+        return Ok(i64::from(value == 2));
+    }
+    if value % 3 == 0 {
+        return Ok(i64::from(value == 3));
+    }
+    let mut divisor = 5_u64;
+    while divisor <= value / divisor {
+        if value % divisor == 0 || value % (divisor + 2) == 0 {
+            return Ok(0);
+        }
+        divisor += 6;
+    }
+    Ok(1)
+}
+
 fn gcd(mut left: u64, mut right: u64) -> u64 {
     while right != 0 {
         let remainder = left % right;
@@ -776,6 +808,9 @@ fn factor(parser: &mut Parser, depth: usize) -> Result<i64, ParseError> {
     }
     if parser.keyword("TRIANGULAR") {
         return parse_triangular(parser, depth);
+    }
+    if parser.keyword("IS_PRIME") {
+        return parse_is_prime(parser, depth);
     }
     if matches!(parser.tokens.get(parser.index), Some(Token::Word(name)) if name.eq_ignore_ascii_case("GCD") || name.eq_ignore_ascii_case("LCM"))
     {
