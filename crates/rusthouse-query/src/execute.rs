@@ -9,6 +9,7 @@ use std::io::{self, BufWriter, Write};
 use std::path::Path;
 
 mod join;
+mod grouped_multi;
 mod predicates;
 mod sort;
 mod typed;
@@ -345,6 +346,9 @@ fn execute_into<W: Write>(
         writeln!(output, "{count}")?;
         return Ok(());
     }
+    if let Projection::GroupedMultiCount { columns } = &query.projection {
+        return grouped_multi::execute(query, part, columns, output);
+    }
     if let Projection::MultipleAggregates(items) = &query.projection {
         return multi_aggregate::execute(query, part, items, output);
     }
@@ -394,6 +398,7 @@ fn execute_into<W: Write>(
         | Projection::CountColumn { .. }
         | Projection::CountDistinct { .. }
         | Projection::GroupedCount { .. }
+        | Projection::GroupedMultiCount { .. }
         | Projection::GroupedAggregate { .. }
         | Projection::MultipleAggregates(_)
         | Projection::Literal(_)
@@ -1067,6 +1072,7 @@ fn execute_numbers<W: Write>(
         | Projection::CountColumn { .. }
         | Projection::CountDistinct { .. }
         | Projection::GroupedCount { .. }
+        | Projection::GroupedMultiCount { .. }
         | Projection::GroupedAggregate { .. }
         | Projection::MultipleAggregates(_)
         | Projection::Literal(_)
