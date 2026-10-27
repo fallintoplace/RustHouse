@@ -91,8 +91,7 @@ pub fn handle(method: &str, body: &[u8], cluster: &Cluster) -> Response {
         if index != 0 {
             addresses.push(',');
         }
-        write!(&mut addresses, "\"{}\"", peer.address())
-            .expect("writing to String cannot fail");
+        write!(&mut addresses, "\"{}\"", peer.address()).expect("writing to String cannot fail");
     }
     Response {
         status: "200 OK",

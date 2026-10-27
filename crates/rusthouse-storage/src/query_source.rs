@@ -7,7 +7,7 @@ use std::fs;
 use std::io;
 use std::path::{Path, PathBuf};
 
-const MAX_TABLE_PARTS: usize = 10_000;
+const MAX_TABLE_PARTS: usize = 16_384;
 
 fn io_error(path: &Path, source: io::Error) -> PartError {
     PartError::Io {
@@ -150,7 +150,7 @@ pub fn query_parts(path: &Path) -> Result<Vec<PathBuf>, PartError> {
         parts.push(child);
         if parts.len() > MAX_TABLE_PARTS {
             return Err(PartError::InvalidScan(
-                "table snapshot contains over 10000 parts".into(),
+                "table snapshot contains over 16384 parts".into(),
             ));
         }
     }

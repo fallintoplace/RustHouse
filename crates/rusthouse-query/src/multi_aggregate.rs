@@ -139,7 +139,15 @@ pub(crate) fn parse_multiple(
             break;
         }
     }
-    if items.len() < 2 {
+    // Preserve the single-column parser, including rejection of COUNT(1).
+    // Only a calculation referencing an input column needs this executor.
+    let is_computed = items.len() == 1
+        && items[0].argument.as_ref().is_some_and(|argument| {
+            let mut columns = Vec::new();
+            argument.referenced_columns(&mut columns);
+            !columns.is_empty() && !matches!(argument, crate::ScalarExpr::Column(_))
+        });
+    if items.len() < 2 && !is_computed {
         parser.index = start;
         return Ok(None);
     }

@@ -45,8 +45,6 @@ fn counts_utf8_bytes_and_respects_nulls_filters_and_limits() {
         run("SELECT LENGTH(label) FROM part LIMIT 0"),
         "length(label)\n"
     );
-    assert!(
-        parse_select("SELECT LENGTH(label) FROM part ORDER BY enabled").is_err()
-    );
+    assert!(parse_select("SELECT LENGTH(label) FROM part ORDER BY enabled").is_err());
     fs::remove_dir_all(root).unwrap();
 }

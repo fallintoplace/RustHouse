@@ -467,6 +467,34 @@ fn matches_comparison_at(
     }
 }
 
+// IN and NOT IN probe String bytes directly rather than cloning every row.
+fn matches_in_at(column: &TypedColumn, row: usize, targets: &[Cell], negated: bool) -> bool {
+    if matches!(
+        column,
+        TypedColumn::Text(_) | TypedColumn::NullableText { .. }
+    ) {
+        let text = match column {
+            TypedColumn::Text(values) => values.get(row),
+            TypedColumn::NullableText { values, nulls } if nulls[row] == 0 => values.get(row),
+            _ => None,
+        };
+        return text.is_some_and(|text| {
+            targets
+                .iter()
+                .any(|target| matches!(target, Cell::Text(value) if text == value))
+                != negated
+        });
+    }
+    let value = cell(column, row);
+    if matches!(value, Cell::Null) {
+        return false;
+    }
+    targets
+        .iter()
+        .any(|target| matches_comparison(&value, target, Operator::Eq))
+        != negated
+}
+
 pub(super) fn passes(batch: &[TypedColumn], row: usize, branches: &[Vec<Condition>]) -> bool {
     branches.iter().any(|branch| {
         branch.iter().all(|condition| {
@@ -502,14 +530,7 @@ pub(super) fn passes(batch: &[TypedColumn], row: usize, branches: &[Vec<Conditio
                     matches_comparison_at(column, row, target, *operator)
                 }
                 Test::In(targets, negated) => {
-                    let value = cell(column, row);
-                    if matches!(value, Cell::Null) {
-                        return false;
-                    }
-                    let present = targets
-                        .iter()
-                        .any(|target| matches_comparison(&value, target, Operator::Eq));
-                    present != *negated
+                    matches_in_at(column, row, targets, *negated)
                 }
                 Test::NotBetween(lower, upper) => {
                     let value = cell(column, row);
@@ -777,6 +798,8 @@ pub(super) fn execute_typed<W: Write>(
     let mut count = 0u64;
     let mut distinct = HashSet::<Vec<Key>>::new();
     let mut group_indices = HashMap::<Key, usize>::new();
+    // String group probes can borrow the decoded input instead of cloning it.
+    let mut text_group_indices = HashMap::<Vec<u8>, usize>::new();
     let mut grouped_rows = Vec::<(Cell, u64)>::new();
     let mut ordered = Vec::<Row>::new();
     let mut top = BinaryHeap::<TopRow>::new();
@@ -822,6 +845,27 @@ pub(super) fn execute_typed<W: Write>(
                 continue;
             }
             if is_grouped {
+                if let TypedColumn::Text(strings) = &batch[projection_indices[0]] {
+                    let key = strings.get(index).ok_or_else(|| {
+                        ExecutionError::Invalid("invalid String row index".into())
+                    })?;
+                    if let Some(&group) = text_group_indices.get(key) {
+                        let count = &mut grouped_rows[group].1;
+                        *count = count.checked_add(1).ok_or_else(|| {
+                            ExecutionError::Invalid("group count overflow".into())
+                        })?;
+                    } else {
+                        if grouped_rows.len() >= MAX_BUFFERED_ROWS {
+                            return Err(ExecutionError::Invalid(
+                                "GROUP BY supports at most 100000 groups".into(),
+                            ));
+                        }
+                        let group = grouped_rows.len();
+                        text_group_indices.insert(key.to_vec(), group);
+                        grouped_rows.push((Cell::Text(key.to_vec()), 1));
+                    }
+                    continue;
+                }
                 let value = cell(&batch[projection_indices[0]], index);
                 match group_indices.entry(value.key()) {
                     Entry::Occupied(entry) => {
@@ -1076,6 +1120,29 @@ mod like_tests {
             &Cell::Null,
             Operator::Eq
         ));
+    }
+
+    #[test]
+    fn probes_string_in_lists_without_copying_and_preserves_null_semantics() {
+        use super::{Cell, matches_in_at};
+
+        let mut input: &[u8] = b"\x03api\x02db\x03web";
+        let values = read_legacy_strings(&mut input, 3).unwrap();
+        let column = TypedColumn::NullableText {
+            values,
+            nulls: vec![0, 1, 0],
+        };
+        let targets = vec![
+            Cell::Text(b"api".to_vec()),
+            Cell::Text(b"worker".to_vec()),
+            Cell::Null,
+        ];
+        assert!(matches_in_at(&column, 0, &targets, false));
+        assert!(!matches_in_at(&column, 0, &targets, true));
+        assert!(!matches_in_at(&column, 1, &targets, false));
+        assert!(!matches_in_at(&column, 1, &targets, true));
+        assert!(!matches_in_at(&column, 2, &targets, false));
+        assert!(matches_in_at(&column, 2, &targets, true));
     }
 
     #[test]

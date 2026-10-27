@@ -506,8 +506,8 @@ pub(super) fn insert_locked(database: &Path, insert: &Insert) -> Result<(), Stri
         }
         rows.push(values);
     }
-    if parts.len() >= 10_000 {
-        return Err("database table has reached its 10000-part limit".into());
+    if parts.len() >= 16_384 {
+        return Err("database table has reached its 16384-part limit".into());
     }
     let mut last = 0u64;
     for part in parts {

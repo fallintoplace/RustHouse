@@ -39,6 +39,15 @@ jobs:
     steps:
       - uses: actions/checkout@v7
       - run: python3 -m unittest discover -s bench/analytics -p 'test_*.py'
+      - run: python3 -m unittest discover -s bench/measurements -p 'test_*.py'
+      - name: Run analytical workload tests
+        run: |
+          if test -d bench/tpch; then
+            python3 -m unittest discover -s bench/tpch -p 'test_*.py'
+          fi
+          if test -d bench/joins; then
+            python3 -m unittest discover -s bench/joins -p 'test_*.py'
+          fi
 
   msrv:
     name: Rust MSRV (ubuntu-latest)
