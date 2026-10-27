@@ -102,7 +102,11 @@ fn parse_at_depth(parser: &mut Parser, depth: usize) -> Result<ConstantValue, Pa
             } else {
                 None
             };
-            require(parser, Token::RParen, "expected ')' after SUBSTRING arguments")?;
+            require(
+                parser,
+                Token::RParen,
+                "expected ')' after SUBSTRING arguments",
+            )?;
             match (input, position, length) {
                 (Some(value), Some(position), length) => {
                     if position < 1 {
