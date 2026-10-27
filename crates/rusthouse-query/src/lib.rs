@@ -908,11 +908,13 @@ fn parse_select_tokens(tokens: Vec<Token>) -> Result<Select, ParseError> {
                 });
                 total_conditions += 1;
             } else if parser.keyword("BETWEEN") {
-                let lower = parser.number()?;
+                // BETWEEN is type-checked by the executor, so allow dates and
+                // strings as well as numbers in the lower and upper bounds.
+                let lower = parser.literal()?;
                 if !parser.keyword("AND") {
                     return Err(ParseError("BETWEEN requires AND".into()));
                 }
-                let upper = parser.number()?;
+                let upper = parser.literal()?;
                 if negate_in {
                     branches.last_mut().unwrap().push(Predicate::NotBetween {
                         column,
