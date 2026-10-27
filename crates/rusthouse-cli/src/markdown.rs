@@ -38,9 +38,8 @@ impl<W: Write> MarkdownWriter<W> {
     }
 }
 
-fn write_markdown_row<W: Write>(output: &mut W, line: &[u8], data_row: bool) -> io::Result<()> {
-    let fields = line
-        .split(|&byte| byte == b'\t')
+fn decode_markdown_fields(line: &[u8], data_row: bool) -> io::Result<Vec<Cow<'_, [u8]>>> {
+    line.split(|&byte| byte == b'\t')
         .map(|field| {
             if data_row && field != b"\\N" && field.contains(&b'\\') {
                 decode_tsv_field(field).map(Cow::Owned)
@@ -48,7 +47,11 @@ fn write_markdown_row<W: Write>(output: &mut W, line: &[u8], data_row: bool) -> 
                 Ok(Cow::Borrowed(field))
             }
         })
-        .collect::<io::Result<Vec<_>>>()?;
+        .collect()
+}
+
+fn write_markdown_row<W: Write>(output: &mut W, line: &[u8], data_row: bool) -> io::Result<()> {
+    let fields = decode_markdown_fields(line, data_row)?;
     output.write_all(b"|")?;
     for field in fields {
         output.write_all(b" ")?;
@@ -126,6 +129,15 @@ impl<W: Write> Write for MarkdownWriter<W> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn decodes_only_data_fields_with_escapes() {
+        let headers = decode_markdown_fields(br"header\q", false).unwrap();
+        assert!(matches!(&headers[0], Cow::Borrowed(_)));
+        let cells = decode_markdown_fields(b"plain\twith\\x41", true).unwrap();
+        assert!(matches!(&cells[0], Cow::Borrowed(_)));
+        assert_eq!(cells[1].as_ref(), b"withA");
+    }
 
     #[test]
     fn row_renderer_keeps_cell_escaping_independent_of_writer_state() {
