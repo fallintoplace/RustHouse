@@ -1,37 +1,56 @@
-//! Explicit localhost peer membership for an experimental read-only coordinator.
-//! No network discovery, DNS, remote hosts or implicit local data sharding.
+//! Explicit IPv4 peer membership for an experimental read-only coordinator.
+//! Private network transport is opt-in and unauthenticated.
 
 use crate::Response;
 use std::net::{Ipv4Addr, SocketAddrV4};
 
 pub const MAX_PEERS: usize = 16;
 
+/// Accept only the private IPv4 ranges used by LANs and overlay networks.
+pub fn is_private_address(address: Ipv4Addr) -> bool {
+    match address.octets() {
+        [10, ..] => true,
+        [172, second, ..] if (16..=31).contains(&second) => true,
+        [192, 168, ..] => true,
+        [100, second, ..] if (64..=127).contains(&second) => true,
+        _ => false,
+    }
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Peer {
-    port: u16,
+    address: SocketAddrV4,
 }
 
 impl Peer {
     pub fn parse(address: &str) -> Result<Self, &'static str> {
-        let port = address
-            .strip_prefix("127.0.0.1:")
-            .ok_or("peers must use 127.0.0.1:<port>")?;
-        if port.is_empty() || !port.bytes().all(|b| b.is_ascii_digit()) {
-            return Err("invalid peer port");
-        }
-        let port = port.parse::<u16>().map_err(|_| "invalid peer port")?;
-        if port == 0 {
+        Self::parse_with_private_network(address, false)
+    }
+
+    pub fn parse_with_private_network(
+        address: &str,
+        allow_private_network: bool,
+    ) -> Result<Self, &'static str> {
+        let address: SocketAddrV4 = address
+            .parse()
+            .map_err(|_| "peers must use a numeric IPv4 address and port")?;
+        if address.port() == 0 {
             return Err("peer port must be nonzero");
         }
-        Ok(Self { port })
+        if *address.ip() != Ipv4Addr::LOCALHOST
+            && (!allow_private_network || !is_private_address(*address.ip()))
+        {
+            return Err("remote peers require --allow-private-network and private IPv4");
+        }
+        Ok(Self { address })
     }
 
     pub fn port(self) -> u16 {
-        self.port
+        self.address.port()
     }
 
     pub fn address(self) -> SocketAddrV4 {
-        SocketAddrV4::new(Ipv4Addr::LOCALHOST, self.port)
+        self.address
     }
 }
 
@@ -106,11 +125,22 @@ mod tests {
     }
 
     #[test]
+    fn private_peers_need_explicit_opt_in() {
+        for address in ["10.4.0.1:8124", "172.16.0.1:8124", "192.168.1.2:8124", "100.101.102.103:8124"] {
+            assert!(Peer::parse(address).is_err());
+            assert!(Peer::parse_with_private_network(address, true).is_ok());
+        }
+        for address in ["8.8.8.8:8124", "0.0.0.0:8124", "127.0.0.2:8124", "[::1]:8124", "169.254.1.1:8124"] {
+            assert!(Peer::parse_with_private_network(address, true).is_err(), "{address}");
+        }
+    }
+
+    #[test]
     fn rejects_duplicates_and_excessive_membership() {
         let peer = Peer::parse("127.0.0.1:8124").unwrap();
         assert!(Cluster::new(vec![peer, peer]).is_err());
         let peers = (1..=MAX_PEERS + 1)
-            .map(|port| Peer { port: port as u16 })
+            .map(|port| Peer::parse(&format!("127.0.0.1:{port}")).unwrap())
             .collect();
         assert!(Cluster::new(peers).is_err());
     }
