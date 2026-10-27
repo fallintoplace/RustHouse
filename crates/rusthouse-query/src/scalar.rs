@@ -21,6 +21,7 @@ fn is_bitwise(name: &str) -> bool {
 
 pub(super) fn is_function(name: &str) -> bool {
     name.eq_ignore_ascii_case("ABS")
+        || name.eq_ignore_ascii_case("BIT_WIDTH")
         || name.eq_ignore_ascii_case("SIGN")
         || is_extrema(name)
         || is_power(name)
@@ -135,6 +136,13 @@ fn parse_extrema(parser: &mut Parser, depth: usize) -> Result<i64, ParseError> {
     Ok(value)
 }
 
+fn parse_bit_width(parser: &mut Parser, depth: usize) -> Result<i64, ParseError> {
+    require_token(parser, Token::LParen, "BIT_WIDTH requires '('")?;
+    let value = expression(parser, depth + 1)?;
+    require_token(parser, Token::RParen, "expected ')' after BIT_WIDTH argument")?;
+    Ok(i64::from(u64::BITS - value.unsigned_abs().leading_zeros()))
+}
+
 fn checked_bit_shift(value: i64, amount: i64, left: bool) -> Result<i64, ParseError> {
     let shift = u32::try_from(amount)
         .map_err(|_| ParseError("bit shift count must be between 0 and 63".into()))?;
@@ -216,6 +224,9 @@ fn factor(parser: &mut Parser, depth: usize) -> Result<i64, ParseError> {
     }
     if parser.keyword("POWER") || parser.keyword("POW") {
         return parse_power(parser, depth);
+    }
+    if parser.keyword("BIT_WIDTH") {
+        return parse_bit_width(parser, depth);
     }
     if parser.keyword("CLAMP") {
         return parse_clamp(parser, depth);
