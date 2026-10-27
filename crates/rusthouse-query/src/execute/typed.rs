@@ -367,21 +367,39 @@ fn matches_comparison(value: &Cell, target: &Cell, operator: Operator) -> bool {
 pub(super) fn passes(batch: &[TypedColumn], row: usize, branches: &[Vec<Condition>]) -> bool {
     branches.iter().any(|branch| {
         branch.iter().all(|condition| {
-            let value = cell(&batch[condition.index], row);
+            let column = &batch[condition.index];
             match &condition.test {
-                Test::IsNull(negated) => matches!(value, Cell::Null) != *negated,
+                // Filtering should not copy String payloads just to check their null map.
+                Test::IsNull(negated) => {
+                    let is_null = match column {
+                        TypedColumn::NullableNumeric { nulls, .. }
+                        | TypedColumn::NullableText { nulls, .. } => nulls[row] != 0,
+                        _ => false,
+                    };
+                    is_null != *negated
+                }
+                // LIKE examines bytes in place. Nulls never match, even for NOT LIKE.
                 Test::Like {
                     pattern,
                     case_insensitive,
                     negated,
-                } => match &value {
-                    Cell::Text(bytes) => {
+                } => {
+                    let value = match column {
+                        TypedColumn::Text(values) => values.get(row),
+                        TypedColumn::NullableText { values, nulls } if nulls[row] == 0 => {
+                            values.get(row)
+                        }
+                        _ => None,
+                    };
+                    value.is_some_and(|bytes| {
                         like_matches(bytes, pattern, *case_insensitive) != *negated
-                    }
-                    _ => false,
-                },
-                Test::Compare(operator, target) => matches_comparison(&value, target, *operator),
+                    })
+                }
+                Test::Compare(operator, target) => {
+                    matches_comparison(&cell(column, row), target, *operator)
+                }
                 Test::In(targets, negated) => {
+                    let value = cell(column, row);
                     if matches!(value, Cell::Null) {
                         return false;
                     }
@@ -391,6 +409,7 @@ pub(super) fn passes(batch: &[TypedColumn], row: usize, branches: &[Vec<Conditio
                     present != *negated
                 }
                 Test::NotBetween(lower, upper) => {
+                    let value = cell(column, row);
                     !matches!(value, Cell::Null)
                         && (!matches_comparison(&value, lower, Operator::Ge)
                             || !matches_comparison(&value, upper, Operator::Le))
@@ -808,11 +827,63 @@ pub(super) fn execute_typed<W: Write>(
 
 #[cfg(test)]
 mod like_tests {
-    use super::{compile_like, like_matches};
+    use super::{Condition, Test, compile_like, like_matches, passes};
+    use rusthouse_storage::{NumericColumn, TypedColumn, read_legacy_strings};
 
     fn matches(text: &[u8], pattern: &str) -> bool {
         let compiled = compile_like(pattern).unwrap();
         like_matches(text, &compiled, false)
+    }
+
+    #[test]
+    fn filters_borrowed_strings_and_nullable_rows() {
+        let mut encoded: &[u8] = b"\x03foo\x03BAR\x03baz";
+        let values = read_legacy_strings(&mut encoded, 3).unwrap();
+        let batch = vec![
+            TypedColumn::NullableText {
+                values,
+                nulls: vec![0, 1, 0],
+            },
+            TypedColumn::NullableNumeric {
+                values: NumericColumn::UInt64(vec![2, 3, 4]),
+                nulls: vec![0, 1, 0],
+            },
+        ];
+        let like = vec![vec![Condition {
+            index: 0,
+            test: Test::Like {
+                pattern: compile_like("F%").unwrap(),
+                case_insensitive: true,
+                negated: false,
+            },
+        }]];
+        assert!(passes(&batch, 0, &like));
+        assert!(!passes(&batch, 1, &like));
+        assert!(!passes(&batch, 2, &like));
+
+        let not_like = vec![vec![Condition {
+            index: 0,
+            test: Test::Like {
+                pattern: compile_like("F%").unwrap(),
+                case_insensitive: true,
+                negated: true,
+            },
+        }]];
+        assert!(!passes(&batch, 1, &not_like));
+        assert!(passes(&batch, 2, &not_like));
+
+        let null = vec![vec![Condition {
+            index: 1,
+            test: Test::IsNull(false),
+        }]];
+        assert!(!passes(&batch, 0, &null));
+        assert!(passes(&batch, 1, &null));
+        let not_null = vec![vec![Condition {
+            index: 0,
+            test: Test::IsNull(true),
+        }]];
+        assert!(passes(&batch, 0, &not_null));
+        assert!(!passes(&batch, 1, &not_null));
     }
 
     #[test]
