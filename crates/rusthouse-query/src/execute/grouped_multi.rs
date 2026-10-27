@@ -98,6 +98,7 @@ pub(super) fn execute<W: Write>(
             )
         });
     }
+    let mut bounded_order = None;
     if query.order_by.is_some() {
         let sort_terms = query
             .order_terms()
@@ -111,7 +112,8 @@ pub(super) fn execute<W: Write>(
                 (index, order.descending, order.nulls_first)
             })
             .collect::<Vec<_>>();
-        groups.sort_by(|(left_keys, left_count), (right_keys, right_count)| {
+        let compare = |(left_keys, left_count): &(Vec<Cell>, u64),
+                       (right_keys, right_count): &(Vec<Cell>, u64)| {
             for &(index, descending, nulls_first) in &sort_terms {
                 let cmp = if let Some(index) = index {
                     typed::compare_order_cells(
@@ -133,13 +135,24 @@ pub(super) fn execute<W: Write>(
                 }
             }
             Ordering::Equal
-        });
+        };
+        let end = query.limit
+            .and_then(|limit| query.offset.unwrap_or(0).checked_add(limit));
+        if let Some(end) = end.filter(|&end| end < groups.len()) {
+            let mut indices = (0..groups.len()).collect::<Vec<_>>();
+            // The original index preserves stable sort behavior on ties.
+            let compare_index = |left: &usize, right: &usize| {
+                compare(&groups[*left], &groups[*right]).then_with(|| left.cmp(right))
+            };
+            indices.select_nth_unstable_by(end, &compare_index);
+            indices.truncate(end);
+            indices.sort_unstable_by(compare_index);
+            bounded_order = Some(indices);
+        } else {
+            groups.sort_by(compare);
+        }
     }
-    for (keys, count) in groups
-        .into_iter()
-        .skip(query.offset.unwrap_or(0))
-        .take(query.limit.unwrap_or(usize::MAX))
-    {
+    let write_group = |keys: &[Cell], count: u64, output: &mut W| -> Result<(), ExecutionError> {
         for (index, value) in keys.iter().enumerate() {
             if index != 0 {
                 output.write_all(b"\t")?;
@@ -147,6 +160,20 @@ pub(super) fn execute<W: Write>(
             typed::write_typed_value(output, value, &types[&columns[index]])?;
         }
         writeln!(output, "\t{count}")?;
+        Ok(())
+    };
+    if let Some(indices) = bounded_order {
+        for index in indices.into_iter().skip(query.offset.unwrap_or(0)) {
+            write_group(&groups[index].0, groups[index].1, output)?;
+        }
+    } else {
+        for (keys, count) in groups
+            .into_iter()
+            .skip(query.offset.unwrap_or(0))
+            .take(query.limit.unwrap_or(usize::MAX))
+        {
+            write_group(&keys, count, output)?;
+        }
     }
     Ok(())
 }
