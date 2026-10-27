@@ -28,6 +28,9 @@ pub(super) fn is_function(name: &str) -> bool {
         || name.eq_ignore_ascii_case("GCD")
         || name.eq_ignore_ascii_case("LCM")
         || name.eq_ignore_ascii_case("CLAMP")
+        || name.eq_ignore_ascii_case("BITCOUNT")
+        || name.eq_ignore_ascii_case("BITNOT")
+        || name.eq_ignore_ascii_case("BITTEST")
 }
 
 pub(super) fn parse(parser: &mut Parser) -> Result<i64, ParseError> {
@@ -200,6 +203,30 @@ fn parse_gcd_lcm(parser: &mut Parser, depth: usize) -> Result<i64, ParseError> {
     i64::try_from(result).map_err(|_| overflow())
 }
 
+fn parse_bit_introspection(parser: &mut Parser, depth: usize) -> Result<i64, ParseError> {
+    let name = parser.word()?;
+    require_token(parser, Token::LParen, "bit function requires '('")?;
+    let value = expression(parser, depth + 1)?;
+    let result = if name.eq_ignore_ascii_case("BITCOUNT") {
+        i64::from(value.count_ones())
+    } else if name.eq_ignore_ascii_case("BITNOT") {
+        !value
+    } else {
+        require_token(parser, Token::Comma, "BITTEST requires two arguments")?;
+        let index = expression(parser, depth + 1)?;
+        let bit = u32::try_from(index)
+            .map_err(|_| ParseError("BITTEST position must be between 0 and 63".into()))?;
+        if bit >= i64::BITS {
+            return Err(ParseError(
+                "BITTEST position must be between 0 and 63".into(),
+            ));
+        }
+        i64::from(((value as u64 >> bit) & 1) as u8)
+    };
+    require_token(parser, Token::RParen, "expected ')' after bit function")?;
+    Ok(result)
+}
+
 fn factor(parser: &mut Parser, depth: usize) -> Result<i64, ParseError> {
     if depth >= MAX_DEPTH {
         return Err(ParseError(
@@ -219,6 +246,10 @@ fn factor(parser: &mut Parser, depth: usize) -> Result<i64, ParseError> {
     }
     if parser.keyword("CLAMP") {
         return parse_clamp(parser, depth);
+    }
+    if matches!(parser.tokens.get(parser.index), Some(Token::Word(name)) if name.eq_ignore_ascii_case("BITCOUNT") || name.eq_ignore_ascii_case("BITNOT") || name.eq_ignore_ascii_case("BITTEST"))
+    {
+        return parse_bit_introspection(parser, depth);
     }
     if matches!(parser.tokens.get(parser.index), Some(Token::Word(name)) if name.eq_ignore_ascii_case("GCD") || name.eq_ignore_ascii_case("LCM"))
     {
