@@ -113,6 +113,43 @@ fn parse_csv(data: &str) -> Result<Vec<Vec<Option<String>>>, String> {
     Ok(records)
 }
 
+fn decode_tsv_cell(field: &str) -> Result<String, String> {
+    let mut decoded = Vec::new();
+    let mut chars = field.chars();
+    while let Some(ch) = chars.next() {
+        if ch != '\\' {
+            let mut bytes = [0; 4];
+            decoded.extend_from_slice(ch.encode_utf8(&mut bytes).as_bytes());
+            continue;
+        }
+        let escaped = chars.next().ok_or("TSV ends with an incomplete escape")?;
+        match escaped {
+            't' => decoded.push(b'\t'),
+            'n' => decoded.push(b'\n'),
+            'r' => decoded.push(b'\r'),
+            '0' => decoded.push(0),
+            'b' => decoded.push(8),
+            'f' => decoded.push(12),
+            'v' => decoded.push(11),
+            '\\' => decoded.push(b'\\'),
+            'x' => {
+                let high = chars
+                    .next()
+                    .and_then(|digit| digit.to_digit(16))
+                    .ok_or("invalid TSV hex escape")?;
+                let low = chars
+                    .next()
+                    .and_then(|digit| digit.to_digit(16))
+                    .ok_or("invalid TSV hex escape")?;
+                decoded.push(((high << 4) | low) as u8);
+            }
+            'N' => return Err("TSV NULL marker must occupy the whole field".into()),
+            _ => return Err(format!("unsupported TSV escape: \\{escaped}")),
+        }
+    }
+    String::from_utf8(decoded).map_err(|_| "invalid UTF-8 in TSV field".into())
+}
+
 fn parse_tsv(data: &str) -> Result<Vec<Vec<Option<String>>>, String> {
     let input = data.strip_prefix('\u{feff}').unwrap_or(data);
     if input.ends_with('\r') {
@@ -136,42 +173,7 @@ fn parse_tsv(data: &str) -> Result<Vec<Vec<Option<String>>>, String> {
                 row.push(None);
                 continue;
             }
-            let mut decoded = Vec::new();
-            let mut chars = field.chars();
-            while let Some(ch) = chars.next() {
-                if ch != '\\' {
-                    let mut bytes = [0; 4];
-                    decoded.extend_from_slice(ch.encode_utf8(&mut bytes).as_bytes());
-                    continue;
-                }
-                let escaped = chars.next().ok_or("TSV ends with an incomplete escape")?;
-                match escaped {
-                    't' => decoded.push(b'\t'),
-                    'n' => decoded.push(b'\n'),
-                    'r' => decoded.push(b'\r'),
-                    '0' => decoded.push(0),
-                    'b' => decoded.push(8),
-                    'f' => decoded.push(12),
-                    'v' => decoded.push(11),
-                    '\\' => decoded.push(b'\\'),
-                    'x' => {
-                        let high = chars
-                            .next()
-                            .and_then(|digit| digit.to_digit(16))
-                            .ok_or("invalid TSV hex escape")?;
-                        let low = chars
-                            .next()
-                            .and_then(|digit| digit.to_digit(16))
-                            .ok_or("invalid TSV hex escape")?;
-                        decoded.push(((high << 4) | low) as u8);
-                    }
-                    'N' => return Err("TSV NULL marker must occupy the whole field".into()),
-                    _ => return Err(format!("unsupported TSV escape: \\{escaped}")),
-                }
-            }
-            row.push(Some(
-                String::from_utf8(decoded).map_err(|_| "invalid UTF-8 in TSV field")?,
-            ));
+            row.push(Some(decode_tsv_cell(field)?));
         }
         records.push(row);
     }
@@ -284,6 +286,13 @@ mod tests {
                 ],
             ]
         );
+    }
+
+    #[test]
+    fn decodes_tsv_cells_without_row_state() {
+        assert_eq!(decode_tsv_cell("plain").unwrap(), "plain");
+        assert_eq!(decode_tsv_cell("caf\\xC3\\xA9\\t").unwrap(), "café\t");
+        assert!(decode_tsv_cell("\\N").is_err());
     }
 
     #[test]
