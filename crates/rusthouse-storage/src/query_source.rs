@@ -16,6 +16,12 @@ fn io_error(path: &Path, source: io::Error) -> PartError {
     }
 }
 
+fn valid_generation_label(label: &str) -> bool {
+    label.starts_with('g')
+        && label.len() >= 2
+        && label.as_bytes()[1..].iter().all(u8::is_ascii_digit)
+}
+
 /// Resolve the immutable active generation of a local table.
 /// Legacy tables without a pointer use their original parts directory.
 pub fn resolve_active_snapshot(root: &Path) -> Result<PathBuf, PartError> {
@@ -34,10 +40,7 @@ pub fn resolve_active_snapshot(root: &Path) -> Result<PathBuf, PartError> {
     let label = label
         .strip_suffix('\n')
         .ok_or_else(|| PartError::InvalidScan("invalid snapshot pointer format".into()))?;
-    if !label.starts_with('g')
-        || label.len() < 2
-        || !label.as_bytes()[1..].iter().all(u8::is_ascii_digit)
-    {
+    if !valid_generation_label(label) {
         return Err(PartError::InvalidScan(
             "invalid database snapshot generation".into(),
         ));
