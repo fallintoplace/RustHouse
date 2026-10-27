@@ -116,7 +116,7 @@ pub fn read_checksums(path: impl AsRef<Path>) -> Result<PartChecksums, PartError
     parse_checksums(&content, path)
 }
 
-fn parse_checksums(content: &[u8], path: &Path) -> Result<PartChecksums, PartError> {
+fn parse_checksum_header<'a>(content: &'a [u8], path: &Path) -> Result<(u8, &'a [u8]), PartError> {
     let header = content
         .strip_prefix(HEADER)
         .ok_or_else(|| invalid(path, "missing format header"))?;
@@ -129,7 +129,11 @@ fn parse_checksums(content: &[u8], path: &Path) -> Result<PartChecksums, PartErr
         b"4" => 4,
         _ => return Err(invalid(path, "unsupported checksums format version")),
     };
-    let payload = &header[end + 1..];
+    Ok((version, &header[end + 1..]))
+}
+
+fn parse_checksums(content: &[u8], path: &Path) -> Result<PartChecksums, PartError> {
+    let (version, payload) = parse_checksum_header(content, path)?;
     let decoded = if version == 4 {
         Some(decode_compressed_checksums(payload, path)?)
     } else {

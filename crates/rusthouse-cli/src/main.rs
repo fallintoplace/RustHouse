@@ -15,6 +15,7 @@ mod part_json;
 mod snapshot;
 mod sql;
 mod sql_values;
+mod tsv_escape;
 mod vertical;
 
 use rusthouse_storage::{

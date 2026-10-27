@@ -1,7 +1,7 @@
 //! In-memory, bounded equi-join over validated immutable typed snapshots.
 use super::{ExecutionError, Number, typed};
 use crate::{JoinColumn, JoinSelect, JoinType};
-use rusthouse_storage::{TypedQueryReader, inspect_query_source};
+use rusthouse_storage::{TypedColumn, TypedQueryReader, inspect_query_source};
 use std::collections::HashMap;
 use std::io::Write;
 use std::path::Path;
@@ -129,6 +129,22 @@ fn row_key(row: &[typed::Cell], indices: &[usize]) -> Option<Vec<typed::Key>> {
     Some(result)
 }
 
+// Build the probe key directly from its batch columns so misses never
+// materialize the full row, which may contain wide String payloads.
+fn batch_key(batch: &[TypedColumn], row: usize, indices: &[usize]) -> Option<Vec<typed::Key>> {
+    let mut result = Vec::with_capacity(indices.len());
+    for &index in indices {
+        let value = typed::cell(&batch[index], row);
+        if matches!(value, typed::Cell::Null)
+            || matches!(value, typed::Cell::Numeric(Number::Float(number)) if number.is_nan())
+        {
+            return None;
+        }
+        result.push(value.key());
+    }
+    Some(result)
+}
+
 fn cell_at<'a>(
     left_rows: &'a [Vec<typed::Cell>],
     right_rows: &'a [Vec<typed::Cell>],
@@ -158,6 +174,7 @@ fn probe_inner<F>(
     left_keys: &[usize],
     right_rows: &[Vec<typed::Cell>],
     hash: &HashMap<Vec<typed::Key>, Vec<usize>>,
+    materialize_rows: bool,
     mut emit: F,
 ) -> Result<usize, ExecutionError>
 where
@@ -167,12 +184,18 @@ where
     let mut matches = 0usize;
     while let Some(batch) = reader.next_batch()? {
         for index in 0..batch[0].len() {
-            let left_row = batch
-                .iter()
-                .map(|column| typed::cell(column, index))
-                .collect::<Vec<_>>();
-            if let Some(key) = row_key(&left_row, left_keys) {
+            if let Some(key) = batch_key(&batch, index, left_keys) {
                 if let Some(right_indices) = hash.get(&key) {
+                    // The preflight pass only counts matches. In the output pass,
+                    // build the left projection once per matching row.
+                    let left_row = if materialize_rows {
+                        batch
+                            .iter()
+                            .map(|column| typed::cell(column, index))
+                            .collect::<Vec<_>>()
+                    } else {
+                        Vec::new()
+                    };
                     for &right_index in right_indices {
                         if matches >= MAX_RESULT_ROWS {
                             return Err(invalid("JOIN produces more than 65536 rows"));
@@ -238,6 +261,7 @@ fn execute_streaming_inner<W: Write>(
         left_keys,
         &right_rows,
         &hash,
+        false,
         |_, _| Ok(()),
     )?;
 
@@ -259,6 +283,7 @@ fn execute_streaming_inner<W: Write>(
         left_keys,
         &right_rows,
         &hash,
+        true,
         |left, right| {
             if position >= query.offset && position < end {
                 for (index, (column, _, _)) in selected.iter().enumerate() {
@@ -468,4 +493,31 @@ pub fn execute_join<W: Write>(
         output.write_all(b"\n")?;
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use rusthouse_storage::NumericColumn;
+
+    #[test]
+    fn probe_keys_match_materialized_keys_and_skip_invalid_values() {
+        let batch = vec![
+            TypedColumn::NullableNumeric {
+                values: NumericColumn::UInt64(vec![7, 8, 9]),
+                nulls: vec![0, 0, 1],
+            },
+            TypedColumn::Numeric(NumericColumn::Float64(vec![2.0, f64::NAN, 4.0])),
+        ];
+        for row in 0..3 {
+            let materialized = batch
+                .iter()
+                .map(|column| typed::cell(column, row))
+                .collect::<Vec<_>>();
+            assert!(batch_key(&batch, row, &[0, 1]) == row_key(&materialized, &[0, 1]));
+        }
+        assert!(batch_key(&batch, 0, &[0, 1]).is_some());
+        assert!(batch_key(&batch, 1, &[0, 1]).is_none());
+        assert!(batch_key(&batch, 2, &[0, 1]).is_none());
+    }
 }

@@ -207,15 +207,20 @@ fn record_catalog_entry(
     }
 }
 
-/// Print a deterministic diagnostic report without altering on-disk data.
-/// Does not acquire a lock because doing so could create the lock inode.
-pub(super) fn run(mut args: impl Iterator<Item = OsString>) -> Result<(), String> {
+fn parse_doctor_directory(mut args: impl Iterator<Item = OsString>) -> Result<OsString, String> {
     let (Some(flag), Some(directory), None) = (args.next(), args.next(), args.next()) else {
         return Err("usage: rusthouse doctor --database <directory>".into());
     };
     if flag != "--database" {
         return Err("usage: rusthouse doctor --database <directory>".into());
     }
+    Ok(directory)
+}
+
+/// Print a deterministic diagnostic report without altering on-disk data.
+/// Does not acquire a lock because doing so could create the lock inode.
+pub(super) fn run(args: impl Iterator<Item = OsString>) -> Result<(), String> {
+    let directory = parse_doctor_directory(args)?;
     let database = Path::new(&directory);
     let kind = fs::symlink_metadata(database)
         .map_err(|error| format!("cannot inspect database {}: {error}", database.display()))?;

@@ -10,11 +10,8 @@ pub fn parse_columns(content: &str) -> Result<Vec<Column>, PartError> {
     let header = lines
         .next()
         .ok_or_else(|| invalid(2, "missing column-count header"))?;
-    let expected = header
-        .strip_suffix(" columns:")
-        .filter(|value| !value.is_empty() && value.bytes().all(|b| b.is_ascii_digit()))
-        .and_then(|value| value.parse::<usize>().ok())
-        .ok_or_else(|| invalid(2, "expected '<count> columns:'"))?;
+    let expected =
+        parse_column_count(header).ok_or_else(|| invalid(2, "expected '<count> columns:'"))?;
 
     let mut columns = Vec::new();
     let mut names = HashSet::new();
@@ -39,8 +36,25 @@ pub fn parse_columns(content: &str) -> Result<Vec<Column>, PartError> {
     Ok(columns)
 }
 
+fn parse_column_count(header: &str) -> Option<usize> {
+    header
+        .strip_suffix(" columns:")
+        .filter(|value| !value.is_empty() && value.bytes().all(|b| b.is_ascii_digit()))
+        .and_then(|value| value.parse::<usize>().ok())
+}
+
 fn invalid(line: usize, message: &'static str) -> PartError {
     PartError::InvalidColumns { line, message }
+}
+
+fn hex_identifier_digit(
+    chars: &mut std::str::Chars<'_>,
+    line_number: usize,
+) -> Result<u32, PartError> {
+    chars
+        .next()
+        .and_then(|digit| digit.to_digit(16))
+        .ok_or_else(|| invalid(line_number, "invalid hex identifier escape"))
 }
 
 fn append_identifier_escape(
@@ -53,14 +67,8 @@ fn append_identifier_escape(
         .ok_or_else(|| invalid(line_number, "trailing identifier escape"))?;
     let decoded = match escaped {
         'x' => {
-            let high = chars
-                .next()
-                .and_then(|digit| digit.to_digit(16))
-                .ok_or_else(|| invalid(line_number, "invalid hex identifier escape"))?;
-            let low = chars
-                .next()
-                .and_then(|digit| digit.to_digit(16))
-                .ok_or_else(|| invalid(line_number, "invalid hex identifier escape"))?;
+            let high = hex_identifier_digit(chars, line_number)?;
+            let low = hex_identifier_digit(chars, line_number)?;
             (high * 16 + low) as u8
         }
         'N' => return Ok(()),
