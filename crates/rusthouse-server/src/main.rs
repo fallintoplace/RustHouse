@@ -5,15 +5,15 @@ use rusthouse_server::{
     Config, MAX_CONNECTIONS, MAX_HEADER_BYTES, MAX_QUERY_BYTES, Response, handle_request,
 };
 use std::io::{self, BufReader, Read, Write};
-use std::net::{TcpListener, TcpStream};
+use std::net::{Ipv4Addr, TcpListener, TcpStream};
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::Duration;
 
 fn usage() -> &'static str {
-    "Usage: rusthouse-server [--port <1-65535>] [--part <frozen-part-or-snapshot> | --database <directory>] [--max-rows <n>] [--peer 127.0.0.1:<port>]...\n\
-     Listens on 127.0.0.1 only. Supports GET /ping, GET /?query=... and POST / with a raw SELECT body.\n"
+    "Usage: rusthouse-server [--port <1-65535>] [--part <frozen-part-or-snapshot> | --database <directory>] [--max-rows <n>] [--peer IPv4:<port>]... [--bind <IPv4>] [--allow-private-network]\n\
+     Listens on 127.0.0.1 by default. Private networking requires opt-in. No TLS or authentication.\n"
 }
 
 fn parse_header(line: &str) -> Result<(&str, &str), Response> {
@@ -173,6 +173,8 @@ fn main() -> io::Result<()> {
     let mut database = None;
     let mut max_rows = 10_000usize;
     let mut peers = Vec::new();
+    let mut bind = Ipv4Addr::LOCALHOST;
+    let mut allow_private_network = false;
     while let Some(arg) = args.next() {
         match arg.as_str() {
             "--help" | "-h" => {
@@ -202,12 +204,19 @@ fn main() -> io::Result<()> {
                 ));
             }
             "--peer" => {
-                let address = args
-                    .next()
-                    .ok_or_else(|| io::Error::other("missing peer"))?;
-                let peer = Peer::parse(&address).map_err(io::Error::other)?;
-                peers.push(peer);
+                peers.push(
+                    args.next()
+                        .ok_or_else(|| io::Error::other("missing peer"))?,
+                );
             }
+            "--bind" => {
+                bind = args
+                    .next()
+                    .ok_or_else(|| io::Error::other("missing bind IPv4 address"))?
+                    .parse::<Ipv4Addr>()
+                    .map_err(|_| io::Error::other("bind address must be numeric IPv4"))?;
+            }
+            "--allow-private-network" => allow_private_network = true,
             "--max-rows" => {
                 max_rows = args
                     .next()
@@ -229,8 +238,25 @@ fn main() -> io::Result<()> {
     if part.is_some() && database.is_some() {
         return Err(io::Error::other("--part and --database cannot be combined"));
     }
+    if bind != Ipv4Addr::LOCALHOST && (!allow_private_network || !cluster::is_private_address(bind))
+    {
+        return Err(io::Error::other(
+            "non-loopback bind requires --allow-private-network and a private IPv4 address",
+        ));
+    }
+    let peers: Vec<Peer> = peers
+        .iter()
+        .map(|address| {
+            Peer::parse_with_private_network(address, allow_private_network)
+                .map_err(io::Error::other)
+        })
+        .collect::<io::Result<_>>()?;
     let cluster = Arc::new(Cluster::new(peers).map_err(io::Error::other)?);
-    if cluster.peers().iter().any(|peer| peer.port() == port) {
+    if cluster
+        .peers()
+        .iter()
+        .any(|peer| *peer.address().ip() == bind && peer.port() == port)
+    {
         return Err(io::Error::other("server cannot be its own peer"));
     }
     let config = Arc::new(Config {
@@ -238,8 +264,8 @@ fn main() -> io::Result<()> {
         database,
         max_rows,
     });
-    let listener = TcpListener::bind(("127.0.0.1", port))?;
-    eprintln!("RustHouse read-only HTTP listening on http://127.0.0.1:{port}");
+    let listener = TcpListener::bind((bind, port))?;
+    eprintln!("RustHouse read-only HTTP listening on http://{bind}:{port}");
     let active = Arc::new(AtomicUsize::new(0));
     for accepted in listener.incoming() {
         let stream = accepted?;

@@ -145,7 +145,8 @@ fn read_raw(path: &Path) -> Result<Vec<u8>, PartError> {
     if size > MAX_INDEX_BYTES as u64 {
         return Err(invalid(path, "index exceeds the 256 MiB limit"));
     }
-    let mut data = Vec::new();
+    // The checked file size is known. Avoid repeated growth for large raw indexes.
+    let mut data = Vec::with_capacity(size as usize);
     file.take(MAX_INDEX_BYTES as u64 + 1)
         .read_to_end(&mut data)
         .map_err(|source| io_error(path, source))?;

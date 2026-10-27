@@ -35,7 +35,7 @@ and uses the existing 8 MiB response bound plus a 1 MiB per-row bound.
 Inputs are limited to 4096-byte statements and 8192-byte HTTP headers.
 Responses are capped at 8 MiB, concurrent requests at 16, and result rows
 at 10000 by default (up to 100000 with --max-rows).
-Only loopback is supported. There is no TLS, remote access, authentication,
+Loopback is the default. Explicit private IPv4 access is opt-in. There is no TLS or authentication,
 or full wire-protocol compatibility.
 
 For non-generated SQL, use an immutable wide MergeTree part or snapshot. To query
@@ -65,7 +65,7 @@ SQL and response byte limits, and effective row cap. Empty-body GET only.
 
 ## Experimental distributed coordinator: explicit loopback peers
 
-The optional `--peer 127.0.0.1:<port>` flag registers up to 16 distinct,
+The optional `--peer IPv4:<port>` flag registers up to 16 distinct,
 read-only peer servers. For example, run independently configured RustHouse
 servers on ports 8124 and 8125, then start a coordinator:
 
@@ -75,10 +75,27 @@ curl http://127.0.0.1:8123/cluster
 ```
 
 `GET /cluster` lists the explicitly configured addresses. It does not check
-whether a peer is alive or whether schemas and datasets agree. Peer addresses
-must be IPv4 loopback, cannot include the coordinator's own port, and are never
-automatically discovered. This is an early step toward read-only distributed
-queries, **not** cross-host networking, replicated storage or distributed writes.
+whether a peer is alive or whether schemas and datasets agree. Peer addresses default to IPv4 loopback and are never automatically discovered.
+Remote peers and listeners require explicit `--allow-private-network`; only
+RFC 1918 or 100.64.0.0/10 overlay IPv4 addresses are accepted. No public IPs,
+DNS names, or wildcard listeners are allowed.
+
+For cross-host queries, use a trusted encrypted overlay with restrictive ACLs,
+such as Tailscale, and bind each shard to its overlay IPv4 address:
+
+```sh
+# Run on shard A
+rusthouse-server --database ./shard-a --bind 100.101.0.1 --port 8124 --allow-private-network
+# Run on shard B
+rusthouse-server --database ./shard-b --bind 100.101.0.2 --port 8124 --allow-private-network
+# Run the coordinator
+rusthouse-server --port 8123 --peer 100.101.0.1:8124 --peer 100.101.0.2:8124 --allow-private-network
+```
+
+**Security:** The built-in peer protocol is plaintext HTTP without authentication.
+Do not expose it to the public Internet or an untrusted LAN. The overlay must
+provide encryption and access control. This adds read-only cross-host queries,
+not replication, failover, distributed writes, or atomic multi-shard snapshots.
 
 `GET /cluster/health` checks every configured peer's read-only `/ping`
 endpoint in parallel. It returns the number of healthy peers and their addresses
@@ -96,14 +113,19 @@ cargo run -p rusthouse-server -- --port 8123 --peer 127.0.0.1:8124 --peer 127.0.
 curl -X POST http://127.0.0.1:8123/distributed --data-binary 'SELECT id, name FROM events'
 ```
 
+Peer requests use a bounded connect timeout and a total response-read deadline.
+Slow trickling peers cannot indefinitely hold a coordinator thread.
 The coordinator executes an unordered, read-only table SELECT on each peer,
 then concatenates TSV rows in configured peer order with one shared header.
 It accepts column projections, `SELECT *`, and pushed-down WHERE clauses;
-rejects ORDER BY, LIMIT, OFFSET, DISTINCT, JOIN, and aggregates that require
-global semantics. Peers must expose the same table and column layout. It
-rejects a shard that reaches its advertised result cap, mismatched headers,
+rejects ORDER BY, DISTINCT, JOIN, and aggregates that require
+global semantics. Global LIMIT/OFFSET is supported for unordered scans. The coordinator compares the column names, types, and order from each
+peer's table schema before merging. Shards may contain different row counts.
+It rejects a shard that reaches its advertised result cap, mismatched headers,
 non-200 responses, and coordinator row/byte overflows instead of returning
-partial data. This is a snapshot-by-peer scan, **not** an atomic cross-shard
+partial data. LIMIT/OFFSET is applied by the coordinator after validating full shard
+responses. Pagination does not bypass shard caps. Schema validation is not an atomic cross-shard transaction, so a concurrent
+schema change could still race. This is a snapshot-by-peer scan, **not** an atomic cross-shard
 snapshot, automatic partitioning, replication, or remote machine networking.
 
 Distributed grouped counts are supported when all shards contain disjoint rows:

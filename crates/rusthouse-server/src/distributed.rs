@@ -1,5 +1,5 @@
 //! Experimental read-only scatter/gather SELECT against distinct local shards.
-//! Only unordered row projections are safe to concatenate without global planning.
+//! Unordered row projections and global pagination preserve configured peer order.
 
 use crate::cluster::{Cluster, Peer};
 use crate::remote;
@@ -29,8 +29,6 @@ fn is_safe_scan(select: &Select) -> bool {
         && select.order_by.is_none()
         && select.order_by_extra.is_empty()
         && select.having.is_none()
-        && select.limit.is_none()
-        && select.offset.is_none()
 }
 
 /// Counts can be summed across disjoint shards, but DISTINCT counts cannot.
@@ -54,6 +52,23 @@ fn is_safe_sum(select: &Select) -> bool {
         select.projection,
         Projection::Aggregate {
             function: AggregateFunction::Sum,
+            ..
+        }
+    ) && matches!(select.source, Some(Source::Table(_)))
+        && !select.distinct
+        && select.rename.is_none()
+        && select.order_by.is_none()
+        && select.order_by_extra.is_empty()
+        && select.having.is_none()
+        && select.limit.is_none()
+        && select.offset.is_none()
+}
+
+fn is_safe_count_if(select: &Select) -> bool {
+    matches!(
+        select.projection,
+        Projection::Aggregate {
+            function: AggregateFunction::CountIf,
             ..
         }
     ) && matches!(select.source, Some(Source::Table(_)))
@@ -117,6 +132,38 @@ fn is_safe_grouped_count(select: &Select) -> bool {
         && select.offset.is_none()
 }
 
+/// Remove pagination before sending a scan to shards. Sending the original
+/// LIMIT/OFFSET would drop rows on each shard and produce incorrect results.
+/// Accept only a prefix that reparses to the exact unpaged query AST.
+fn unpaged_scan_sql(sql: &str, select: &Select) -> Option<String> {
+    if select.limit.is_none() && select.offset.is_none() {
+        return Some(sql.to_owned());
+    }
+    let mut expected = select.clone();
+    expected.limit = None;
+    expected.offset = None;
+    for (index, _) in sql.char_indices() {
+        let suffix = &sql[index..];
+        let keyword = ["LIMIT", "OFFSET"].iter().any(|keyword| {
+            suffix
+                .get(..keyword.len())
+                .is_some_and(|prefix| prefix.eq_ignore_ascii_case(keyword))
+                && suffix
+                    .as_bytes()
+                    .get(keyword.len())
+                    .is_some_and(u8::is_ascii_whitespace)
+        });
+        if !keyword || (index > 0 && !sql.as_bytes()[index - 1].is_ascii_whitespace()) {
+            continue;
+        }
+        let candidate = sql[..index].trim_end();
+        if parse_select(candidate).is_ok_and(|parsed| parsed == expected) {
+            return Some(candidate.to_owned());
+        }
+    }
+    None
+}
+
 fn shard_row_cap(peer: Peer) -> Result<usize, String> {
     let response = remote::capabilities(peer)?;
     if response.status != 200 || !response.content_type.starts_with("application/json") {
@@ -173,15 +220,52 @@ fn shard_integer_kind(peer: Peer, table: &str, column: &str) -> Result<String, S
     Ok(kind.to_owned())
 }
 
+/// Compare column names, types, and order, not row counts. Each shard
+/// independently reports its own row count and should differ on real clusters.
+fn schema_signature(response: &remote::PeerResponse) -> Result<Vec<u8>, String> {
+    if response.status != 200 || response.content_type != "application/json; charset=utf-8" {
+        return Err("peer schema request failed".into());
+    }
+    let body = std::str::from_utf8(&response.body).map_err(|_| "peer schema is not UTF-8")?;
+    let body = body
+        .strip_suffix("}\n")
+        .ok_or("invalid peer schema response")?;
+    let (rows, columns) = body
+        .split_once(",\"columns\":")
+        .ok_or("peer schema has no columns")?;
+    let count = rows
+        .strip_prefix("{\"rows\":")
+        .ok_or("peer schema has no row count")?;
+    if count.is_empty()
+        || !count.bytes().all(|b| b.is_ascii_digit())
+        || !columns.starts_with('[')
+        || !columns.ends_with(']')
+        || !columns.contains("\"name\":")
+        || !columns.contains("\"type\":")
+    {
+        return Err("invalid peer schema response".into());
+    }
+    Ok(columns.as_bytes().to_vec())
+}
+
+struct ShardResponse {
+    cap: usize,
+    body: Vec<u8>,
+    kind: Option<String>,
+    schema: Vec<u8>,
+}
+
 fn read_shard(
     peer: Peer,
     sql: &str,
     sum_schema: Option<(&str, &str)>,
-) -> Result<(usize, Vec<u8>, Option<String>), String> {
+    table: &str,
+) -> Result<ShardResponse, String> {
     let cap = shard_row_cap(peer)?;
     let kind = sum_schema
         .map(|(table, column)| shard_integer_kind(peer, table, column))
         .transpose()?;
+    let schema = schema_signature(&remote::schema(peer, table)?)?;
     let result = remote::query(peer, sql)?;
     if result.status != 200 {
         return Err(format!("peer returned HTTP {}", result.status));
@@ -189,7 +273,12 @@ fn read_shard(
     if result.content_type != "text/tab-separated-values; charset=utf-8" {
         return Err("peer did not return TSV".into());
     }
-    Ok((cap, result.body, kind))
+    Ok(ShardResponse {
+        cap,
+        body: result.body,
+        kind,
+        schema,
+    })
 }
 
 /// Merge only identical TSV headers and whole, newline-terminated rows.
@@ -247,6 +336,72 @@ fn merge_tsv(shards: &[(usize, Vec<u8>)], max_rows: usize) -> Result<Vec<u8>, Me
     let mut output = Vec::with_capacity(total_bytes);
     for bytes in chunks {
         output.extend_from_slice(bytes);
+    }
+    Ok(output)
+}
+
+/// Apply LIMIT/OFFSET only after validating every shard's full result and
+/// advertised cap. Rows are paged in stable configured-peer order.
+fn merge_tsv_page(
+    shards: &[(usize, Vec<u8>)],
+    max_rows: usize,
+    offset: usize,
+    limit: Option<usize>,
+) -> Result<Vec<u8>, MergeError> {
+    let mut output = Vec::new();
+    let mut header: Option<&[u8]> = None;
+    let mut seen_rows = 0usize;
+    let mut returned_rows = 0usize;
+    for (cap, body) in shards {
+        if !body.ends_with(b"\n") {
+            return Err(MergeError::InvalidResponse);
+        }
+        let header_end = body
+            .iter()
+            .position(|&b| b == b'\n')
+            .ok_or(MergeError::InvalidResponse)?;
+        let shard_header = &body[..=header_end];
+        if shard_header.len() <= 1 {
+            return Err(MergeError::InvalidResponse);
+        }
+        if let Some(expected) = header {
+            if expected != shard_header {
+                return Err(MergeError::SchemaMismatch);
+            }
+        } else {
+            header = Some(shard_header);
+            output.extend_from_slice(shard_header);
+        }
+        let rows = &body[header_end + 1..];
+        let shard_rows = rows.iter().filter(|&&b| b == b'\n').count();
+        if *cap == 0 || shard_rows >= *cap {
+            return Err(MergeError::ShardRowLimit);
+        }
+        for row in rows.split_inclusive(|&b| b == b'\n') {
+            if row.is_empty() {
+                continue;
+            }
+            let in_page = seen_rows >= offset && limit.is_none_or(|limit| returned_rows < limit);
+            seen_rows = seen_rows
+                .checked_add(1)
+                .ok_or(MergeError::CoordinatorLimit)?;
+            if !in_page {
+                continue;
+            }
+            if returned_rows >= max_rows
+                || output
+                    .len()
+                    .checked_add(row.len())
+                    .is_none_or(|n| n > MAX_RESPONSE_BYTES)
+            {
+                return Err(MergeError::CoordinatorLimit);
+            }
+            output.extend_from_slice(row);
+            returned_rows += 1;
+        }
+    }
+    if header.is_none() {
+        return Err(MergeError::InvalidResponse);
     }
     Ok(output)
 }
@@ -543,6 +698,7 @@ pub fn handle(method: &str, body: &[u8], cluster: &Cluster, max_rows: usize) -> 
         Ok(select)
             if is_safe_scan(&select)
                 || is_safe_count(&select)
+                || is_safe_count_if(&select)
                 || is_safe_grouped_count(&select)
                 || is_safe_sum(&select)
                 || is_safe_extremum(&select) =>
@@ -552,13 +708,23 @@ pub fn handle(method: &str, body: &[u8], cluster: &Cluster, max_rows: usize) -> 
         _ => {
             return Response::text(
                 "400 Bad Request",
-                "distributed queries require unordered SELECT, COUNT, integer SUM, MIN, MAX, or grouped COUNT without global clauses\n",
+                "distributed queries require unordered SELECT, COUNT, COUNTIF, integer SUM, MIN, MAX, or grouped COUNT without global clauses\n",
             );
         }
     };
-    let count_query = is_safe_count(&select);
+    let count_query = is_safe_count(&select) || is_safe_count_if(&select);
     let grouped_count_query = is_safe_grouped_count(&select);
     let sum_query = is_safe_sum(&select);
+    let shard_sql = if is_safe_scan(&select) {
+        match unpaged_scan_sql(sql, &select) {
+            Some(query) => query,
+            None => {
+                return Response::text("400 Bad Request", "unsupported distributed pagination\n");
+            }
+        }
+    } else {
+        sql.to_owned()
+    };
     let extrema_function = match &select.projection {
         Projection::Aggregate {
             function: function @ (AggregateFunction::Min | AggregateFunction::Max),
@@ -583,11 +749,16 @@ pub fn handle(method: &str, body: &[u8], cluster: &Cluster, max_rows: usize) -> 
             "no distributed database peers configured\n",
         );
     }
+    let table = match &select.source {
+        Some(Source::Table(table)) => table.as_str(),
+        _ => unreachable!("validated named table"),
+    };
     let results = std::thread::scope(|scope| {
+        let shard_query = shard_sql.as_str();
         let handles = cluster
             .peers()
             .iter()
-            .map(|&peer| scope.spawn(move || read_shard(peer, sql, sum_schema)))
+            .map(|&peer| scope.spawn(move || read_shard(peer, shard_query, sum_schema, table)))
             .collect::<Vec<_>>();
         handles
             .into_iter()
@@ -600,9 +771,24 @@ pub fn handle(method: &str, body: &[u8], cluster: &Cluster, max_rows: usize) -> 
     });
     let mut shards = Vec::with_capacity(results.len());
     let mut sum_type: Option<String> = None;
+    let mut expected_schema: Option<Vec<u8>> = None;
     for result in results {
         match result {
-            Ok((cap, body, kind)) => {
+            Ok(ShardResponse {
+                cap,
+                body,
+                kind,
+                schema,
+            }) => {
+                if expected_schema
+                    .as_ref()
+                    .is_some_and(|expected| expected != &schema)
+                {
+                    return Response::text("409 Conflict", "distributed shard schemas disagree\n");
+                }
+                if expected_schema.is_none() {
+                    expected_schema = Some(schema);
+                }
                 if let Some(kind) = kind {
                     if sum_type
                         .as_deref()
@@ -638,6 +824,13 @@ pub fn handle(method: &str, body: &[u8], cluster: &Cluster, max_rows: usize) -> 
             })
     } else if grouped_count_query {
         merge_grouped_counts(&shards, max_rows.min(100_000))
+    } else if select.limit.is_some() || select.offset.is_some() {
+        merge_tsv_page(
+            &shards,
+            max_rows.min(100_000),
+            select.offset.unwrap_or(0),
+            select.limit,
+        )
     } else {
         merge_tsv(&shards, max_rows.min(100_000))
     };
@@ -704,6 +897,48 @@ mod tests {
     }
 
     #[test]
+    fn applies_global_limit_and_offset_in_peer_order() {
+        let shards = [shard(8, "id\n1\n2\n3\n"), shard(8, "id\n4\n5\n")];
+        assert_eq!(
+            merge_tsv_page(&shards, 2, 2, Some(2)).unwrap(),
+            b"id\n3\n4\n"
+        );
+        assert_eq!(merge_tsv_page(&shards, 2, 3, None).unwrap(), b"id\n4\n5\n");
+        assert_eq!(merge_tsv_page(&shards, 2, 0, Some(0)).unwrap(), b"id\n");
+        assert_eq!(merge_tsv_page(&shards, 2, 999, Some(2)).unwrap(), b"id\n");
+        assert_eq!(
+            merge_tsv_page(&shards, 1, 0, Some(2)),
+            Err(MergeError::CoordinatorLimit)
+        );
+        assert_eq!(
+            merge_tsv_page(&[shard(2, "id\n1\n2\n")], 10, 0, Some(1)),
+            Err(MergeError::ShardRowLimit)
+        );
+    }
+
+    #[test]
+    fn strips_only_validated_global_pagination_from_shard_sql() {
+        for sql in [
+            "SELECT id FROM events LIMIT 2",
+            "SELECT id FROM events LIMIT 2 OFFSET 3",
+        ] {
+            let parsed = parse_select(sql).unwrap();
+            assert!(is_safe_scan(&parsed), "{sql}");
+            assert_eq!(
+                unpaged_scan_sql(sql, &parsed),
+                Some("SELECT id FROM events".to_string()),
+                "{sql}"
+            );
+        }
+        let sql = "SELECT name FROM events WHERE name = 'LIMIT 2' LIMIT 1";
+        let parsed = parse_select(sql).unwrap();
+        assert_eq!(
+            unpaged_scan_sql(sql, &parsed),
+            Some("SELECT name FROM events WHERE name = 'LIMIT 2'".into())
+        );
+    }
+
+    #[test]
     fn refuses_incomplete_or_incompatible_shard_outputs() {
         assert_eq!(
             merge_tsv(&[shard(10, "id\n1\n"), shard(10, "name\n2\n")], 5),
@@ -728,10 +963,8 @@ mod tests {
         for sql in [
             "SELECT count(*) FROM events",
             "SELECT id FROM events ORDER BY id",
-            "SELECT id FROM events LIMIT 10",
             "SELECT DISTINCT id FROM events",
             "SELECT number FROM numbers(10)",
-            "SELECT id FROM events OFFSET 1",
         ] {
             assert!(
                 parse_select(sql).map_or(true, |select| !is_safe_scan(&select)),
@@ -741,6 +974,30 @@ mod tests {
         assert!(is_safe_scan(
             &parse_select("SELECT id FROM events WHERE id > 2").unwrap()
         ));
+    }
+
+    #[test]
+    fn compares_shard_column_types_independently_of_row_counts() {
+        let response = |body: &'static [u8]| remote::PeerResponse {
+            status: 200,
+            content_type: "application/json; charset=utf-8".into(),
+            body: body.to_vec(),
+        };
+        let a = schema_signature(&response(
+            b"{\"rows\":4,\"columns\":[{\"name\":\"id\",\"type\":\"UInt64\"}]}\n",
+        ))
+        .unwrap();
+        let b = schema_signature(&response(
+            b"{\"rows\":900,\"columns\":[{\"name\":\"id\",\"type\":\"UInt64\"}]}\n",
+        ))
+        .unwrap();
+        let different = schema_signature(&response(
+            b"{\"rows\":4,\"columns\":[{\"name\":\"id\",\"type\":\"String\"}]}\n",
+        ))
+        .unwrap();
+        assert_eq!(a, b);
+        assert_ne!(a, different);
+        assert!(schema_signature(&response(b"bad")).is_err());
     }
 
     #[test]
@@ -762,6 +1019,40 @@ mod tests {
             ])
             .unwrap(),
             b"count\n320\n"
+        );
+    }
+
+    #[test]
+    fn reduces_count_if_for_disjoint_shards() {
+        assert!(is_safe_count_if(
+            &parse_select("SELECT countIf(flag) FROM events WHERE id > 0").unwrap()
+        ));
+        for sql in [
+            "SELECT countIf(flag) FROM events LIMIT 1",
+            "SELECT countIf(flag) FROM numbers(10)",
+            "SELECT countIf(flag) FROM events OFFSET 1",
+            "SELECT sum(flag) FROM events",
+        ] {
+            assert!(
+                parse_select(sql).map_or(true, |query| !is_safe_count_if(&query)),
+                "{sql}"
+            );
+        }
+        assert_eq!(
+            sum_shard_counts(&[
+                shard(1, "countIf(flag)\n2\n"),
+                shard(1, "countIf(flag)\n0\n"),
+                shard(1, "countIf(flag)\n3\n"),
+            ])
+            .unwrap(),
+            b"countIf(flag)\n5\n"
+        );
+        assert_eq!(
+            sum_shard_counts(&[
+                shard(1, "countIf(flag)\n1\n"),
+                shard(1, "countIf(other)\n2\n"),
+            ]),
+            Err(MergeError::SchemaMismatch)
         );
     }
 

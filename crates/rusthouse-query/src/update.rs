@@ -1,5 +1,5 @@
 //! Bounded UPDATE table SET column = literal [WHERE ...] parser.
-use crate::{Operator, ParseError, Parser, Select, Source, Token, parse_select, tokenize};
+use crate::{Operator, ParseError, Parser, Select, Source, Token, parse_select_tokens, tokenize};
 use std::collections::HashSet;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -25,42 +25,6 @@ fn value(parser: &mut Parser) -> Result<Option<String>, ParseError> {
     }
 }
 
-fn token_sql(token: &Token) -> String {
-    match token {
-        Token::Word(value) | Token::Number(value) => value.clone(),
-        Token::String(value) => format!("'{}'", value.replace('\\', "\\\\").replace('\'', "''")),
-        Token::Star => "*".into(),
-        Token::Slash => "/".into(),
-        Token::Percent => "%".into(),
-        Token::Plus => "+".into(),
-        Token::Minus => "-".into(),
-        Token::Comma => ",".into(),
-        Token::Dot => ".".into(),
-        Token::LParen => "(".into(),
-        Token::RParen => ")".into(),
-        Token::Semicolon => ";".into(),
-        Token::Operator(op) => match op {
-            Operator::Eq => "=",
-            Operator::Ne => "!=",
-            Operator::Lt => "<",
-            Operator::Le => "<=",
-            Operator::Gt => ">",
-            Operator::Ge => ">=",
-            Operator::Modulo(_) | Operator::ModuloNe(_) => "%",
-        }
-        .into(),
-    }
-}
-
-fn append_tokens(query: &mut String, tokens: &[Token]) {
-    for (index, token) in tokens.iter().enumerate() {
-        if index > 0 {
-            query.push(' ');
-        }
-        query.push_str(&token_sql(token));
-    }
-}
-
 fn parse_assignments(parser: &mut Parser) -> Result<Vec<(String, Option<String>)>, ParseError> {
     let mut assignments = Vec::new();
     let mut seen = HashSet::new();
@@ -83,14 +47,19 @@ fn parse_assignments(parser: &mut Parser) -> Result<Vec<(String, Option<String>)
     Ok(assignments)
 }
 
-fn update_select_query(parser: &mut Parser, table: &str) -> Result<String, ParseError> {
-    let mut query = format!("SELECT * FROM {table}");
+fn update_select_tokens(parser: &mut Parser, table: &str) -> Result<Vec<Token>, ParseError> {
+    let mut tokens = vec![
+        Token::Word("SELECT".into()),
+        Token::Star,
+        Token::Word("FROM".into()),
+        Token::Word(table.into()),
+    ];
     if parser.keyword("WHERE") {
         if parser.index == parser.tokens.len() {
             return Err(ParseError("UPDATE WHERE requires a predicate".into()));
         }
-        query.push_str(" WHERE ");
-        append_tokens(&mut query, &parser.tokens[parser.index..]);
+        tokens.push(Token::Word("WHERE".into()));
+        tokens.extend_from_slice(&parser.tokens[parser.index..]);
     } else {
         parser.take(Token::Semicolon);
         if parser.index != parser.tokens.len() {
@@ -99,7 +68,7 @@ fn update_select_query(parser: &mut Parser, table: &str) -> Result<String, Parse
             ));
         }
     }
-    Ok(query)
+    Ok(tokens)
 }
 
 /// Rewrite predicates using the SELECT parser to keep NULL, LIKE and OR semantics shared.
@@ -120,8 +89,8 @@ pub fn parse_update(sql: &str) -> Result<Option<Update>, ParseError> {
     }
     let assignments = parse_assignments(&mut parser)?;
 
-    let query = update_select_query(&mut parser, &table)?;
-    let select = parse_select(&query)?;
+    let tokens = update_select_tokens(&mut parser, &table)?;
+    let select = parse_select_tokens(tokens)?;
     if !matches!(select.source, Some(Source::Table(_)))
         || select.limit.is_some()
         || select.offset.is_some()
@@ -144,11 +113,20 @@ mod tests {
     use super::*;
 
     #[test]
-    fn renders_where_tokens_without_intermediate_strings() {
-        let tokens = tokenize("name = 'it''s' AND id != -2").unwrap();
-        let mut query = String::new();
-        append_tokens(&mut query, &tokens);
-        assert_eq!(query, "name = 'it''s' AND id != -2");
+    fn reuses_where_tokens_with_escaped_literals() {
+        let sql = r"UPDATE events SET id = 1 WHERE name = 'it''s\\back' AND id != -2";
+        let mut parser = Parser {
+            tokens: tokenize(sql).unwrap(),
+            index: 0,
+        };
+        assert!(parser.keyword("UPDATE"));
+        assert_eq!(parser.word().unwrap(), "events");
+        assert!(parser.keyword("SET"));
+        parse_assignments(&mut parser).unwrap();
+        let selected = update_select_tokens(&mut parser, "events").unwrap();
+        assert!(selected.contains(&Token::String("it's\\back".into())));
+        let update = parse_update(sql).unwrap().unwrap();
+        assert_eq!(update.select.predicates.len(), 2);
     }
 
     #[test]
