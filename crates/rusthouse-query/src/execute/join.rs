@@ -170,6 +170,7 @@ fn add_pair(pairs: &mut Vec<Pair>, pair: Pair) -> Result<(), ExecutionError> {
 struct ProbeOptions {
     materialize_rows: bool,
     stop_after: Option<usize>,
+    any: bool,
 }
 
 /// Scan the probe side without retaining its rows or joined result pairs.
@@ -204,7 +205,8 @@ where
                     } else {
                         Vec::new()
                     };
-                    for &right_index in right_indices {
+                    for &right_index in right_indices.iter().take(if options.any { 1 } else { usize::MAX })
+                    {
                         if options.stop_after.is_some_and(|end| matches >= end) {
                             break 'scan;
                         }
@@ -278,6 +280,7 @@ fn execute_streaming_inner<W: Write>(
         ProbeOptions {
             materialize_rows: false,
             stop_after,
+            any: query.any,
         },
         |_, _| Ok(()),
     )?;
@@ -303,6 +306,7 @@ fn execute_streaming_inner<W: Write>(
         ProbeOptions {
             materialize_rows: true,
             stop_after,
+            any: query.any,
         },
         |left, right| {
             if position >= query.offset && position < end {
@@ -346,6 +350,8 @@ where
     }
     let mut reader = TypedQueryReader::open(right_path, right_names)?;
     let mut matches = 0usize;
+    // Each retained left row can match only its first right row.
+    let mut seen_left = options.any.then(|| vec![false; left_rows.len()]);
     'scan: while let Some(batch) = reader.next_batch()? {
         for index in 0..batch[0].len() {
             if let Some(key) = batch_key(&batch, index, right_keys) {
@@ -359,6 +365,9 @@ where
                         Vec::new()
                     };
                     for &left_index in left_indices {
+                        if seen_left.as_ref().is_some_and(|seen| seen[left_index]) {
+                            continue;
+                        }
                         if options.stop_after.is_some_and(|end| matches >= end) {
                             break 'scan;
                         }
@@ -366,6 +375,9 @@ where
                             return Err(invalid("JOIN produces more than 65536 rows"));
                         }
                         emit(&left_rows[left_index], &right_row)?;
+                        if let Some(seen) = seen_left.as_mut() {
+                            seen[left_index] = true;
+                        }
                         matches += 1;
                     }
                 }
@@ -417,6 +429,7 @@ fn execute_streaming_right<W: Write>(
         ProbeOptions {
             materialize_rows: false,
             stop_after,
+            any: query.any,
         },
         |_, _| Ok(()),
     )?;
@@ -441,6 +454,7 @@ fn execute_streaming_right<W: Write>(
         ProbeOptions {
             materialize_rows: true,
             stop_after,
+            any: query.any,
         },
         |left, right| {
             if position >= query.offset && position < end {
@@ -623,7 +637,8 @@ pub fn execute_join<W: Write>(
         let mut matched = false;
         if let Some(key) = row_key(row, &left_keys) {
             if let Some(matches) = hash.get(&key) {
-                for &right_index in matches {
+                for &right_index in matches.iter().take(if query.any { 1 } else { usize::MAX })
+                {
                     matched = true;
                     matched_right[right_index] = true;
                     add_pair(&mut pairs, (Some(left_index), Some(right_index)))?;

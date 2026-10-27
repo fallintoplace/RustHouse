@@ -22,6 +22,8 @@ pub struct JoinSelect {
     pub left_alias: String,
     pub right_alias: String,
     pub kind: JoinType,
+    /// Select only the first matching right row for INNER and LEFT joins.
+    pub any: bool,
     /// None projects every column from both tables.
     pub columns: Option<Vec<JoinColumn>>,
     pub keys: Vec<(JoinColumn, JoinColumn)>,
@@ -66,7 +68,7 @@ fn alias(parser: &mut Parser, table: &str) -> Result<String, ParseError> {
         Some(Token::Word(word))
             if ![
                 "INNER", "LEFT", "RIGHT", "FULL", "CROSS", "OUTER", "JOIN", "ON", "USING", "WHERE",
-                "GROUP", "ORDER", "LIMIT", "OFFSET",
+                "GROUP", "ORDER", "LIMIT", "OFFSET", "ANY",
             ]
             .iter()
             .any(|keyword| word.eq_ignore_ascii_case(keyword)) =>
@@ -154,7 +156,14 @@ pub fn parse_join(sql: &str) -> Result<Option<JoinSelect>, ParseError> {
             "table identifiers cannot exceed 128 bytes".into(),
         ));
     }
+    let leading_any = parser.keyword("ANY");
     let kind = parse_join_kind(&mut parser);
+    let any = parser.keyword("ANY") || leading_any;
+    if any && !matches!(kind, JoinType::Inner | JoinType::Left) {
+        return Err(ParseError(
+            "ANY JOIN supports only INNER and LEFT joins".into(),
+        ));
+    }
     if !parser.keyword("JOIN") {
         return Err(ParseError("expected JOIN after join type".into()));
     }
@@ -274,6 +283,7 @@ pub fn parse_join(sql: &str) -> Result<Option<JoinSelect>, ParseError> {
         left_alias,
         right_alias,
         kind,
+        any,
         columns,
         keys,
         using_keys,
@@ -296,11 +306,12 @@ pub fn explain_join(query: &JoinSelect) -> String {
         .collect::<Vec<_>>()
         .join(" AND ");
     format!(
-        "Source: table {} AS {}\nSource: table {} AS {}\nJoin: {:?} ON {}\nProject: {}\nLimit: {}",
+        "Source: table {} AS {}\nSource: table {} AS {}\nJoin: {}{:?} ON {}\nProject: {}\nLimit: {}",
         query.left,
         query.left_alias,
         query.right,
         query.right_alias,
+        if query.any { "Any " } else { "" },
         query.kind,
         conditions,
         query.columns.as_ref().map_or("*".to_owned(), |columns| {
@@ -416,6 +427,28 @@ mod tests {
         assert_eq!(query.limit, Some(3));
         assert!(parse_join("SELECT * FROM l JOIN r ON l.id = r.id LIMIT 2, 3 OFFSET 1").is_err());
         assert!(parse_join("SELECT * FROM l JOIN r ON l.id = r.id LIMIT 2, -1").is_err());
+    }
+
+    #[test]
+    fn parses_any_inner_and_left_join_strictness() {
+        for statement in [
+            "SELECT * FROM a ANY JOIN b ON a.id = b.id",
+            "SELECT * FROM a ANY INNER JOIN b ON a.id = b.id",
+            "SELECT * FROM a LEFT ANY JOIN b ON a.id = b.id",
+            "SELECT * FROM a ANY LEFT JOIN b ON a.id = b.id",
+        ] {
+            assert!(parse_join(statement).unwrap().unwrap().any, "{statement}");
+        }
+        let ordinary = parse_join("SELECT * FROM a JOIN b ON a.id = b.id")
+            .unwrap()
+            .unwrap();
+        assert!(!ordinary.any);
+        for statement in [
+            "SELECT * FROM a RIGHT ANY JOIN b ON a.id = b.id",
+            "SELECT * FROM a ANY FULL JOIN b ON a.id = b.id",
+        ] {
+            assert!(parse_join(statement).is_err(), "{statement}");
+        }
     }
 
     #[test]
