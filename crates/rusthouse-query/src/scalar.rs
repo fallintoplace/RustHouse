@@ -27,6 +27,8 @@ pub(super) fn is_function(name: &str) -> bool {
         || is_bitwise(name)
         || name.eq_ignore_ascii_case("GCD")
         || name.eq_ignore_ascii_case("LCM")
+        || name.eq_ignore_ascii_case("LEADING_ZEROS")
+        || name.eq_ignore_ascii_case("TRAILING_ZEROS")
         || name.eq_ignore_ascii_case("CLAMP")
 }
 
@@ -164,6 +166,20 @@ fn parse_clamp(parser: &mut Parser, depth: usize) -> Result<i64, ParseError> {
     Ok(value.clamp(lower, upper))
 }
 
+/// Count zero bits on the left or right of an Int64 bit pattern.
+fn parse_bit_scans(parser: &mut Parser, depth: usize) -> Result<i64, ParseError> {
+    let name = parser.word()?;
+    require_token(parser, Token::LParen, "bit scan requires '('")?;
+    let value = expression(parser, depth + 1)?;
+    require_token(parser, Token::RParen, "bit scan requires ')'")?;
+    let result = if name.eq_ignore_ascii_case("LEADING_ZEROS") {
+        value.leading_zeros()
+    } else {
+        value.trailing_zeros()
+    };
+    Ok(i64::from(result))
+}
+
 fn gcd(mut left: u64, mut right: u64) -> u64 {
     while right != 0 {
         let remainder = left % right;
@@ -219,6 +235,15 @@ fn factor(parser: &mut Parser, depth: usize) -> Result<i64, ParseError> {
     }
     if parser.keyword("CLAMP") {
         return parse_clamp(parser, depth);
+    }
+    if matches!(
+        parser.tokens.get(parser.index),
+        Some(Token::Word(name)) if matches!(
+            name.to_ascii_uppercase().as_str(),
+            "LEADING_ZEROS" | "TRAILING_ZEROS"
+        )
+    ) {
+        return parse_bit_scans(parser, depth);
     }
     if matches!(parser.tokens.get(parser.index), Some(Token::Word(name)) if name.eq_ignore_ascii_case("GCD") || name.eq_ignore_ascii_case("LCM"))
     {
