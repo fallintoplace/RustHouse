@@ -357,7 +357,7 @@ pub struct TypedQueryReader {
 impl TypedQueryReader {
     pub fn open(path: &Path, columns: &[String]) -> Result<Self, PartError> {
         let parts = query_parts(path)?;
-        let metadata = inspect_query_source(path)?;
+        let metadata = crate::query_source::inspect_parts_metadata(path, &parts)?;
         for name in columns {
             if !metadata.columns.iter().any(|column| &column.name == name) {
                 return Err(PartError::InvalidScan(format!("unknown column: {name}")));
