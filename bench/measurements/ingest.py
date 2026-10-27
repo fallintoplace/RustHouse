@@ -63,19 +63,26 @@ def sql(binary, database, statement, timeout):
     return completed.stdout.strip()
 
 
-def verify(binary, database, rows, minimum, maximum, timeout):
+def verify(binary, database, rows, stations, minimum, maximum, timeout):
     count = int(sql(binary, database, "SELECT count(*) FROM measurements", timeout))
+    distinct_stations = int(
+        sql(binary, database, "SELECT count(DISTINCT station) FROM measurements", timeout)
+    )
     actual_min = float(
         sql(binary, database, "SELECT min(temperature) FROM measurements", timeout)
     )
     actual_max = float(
         sql(binary, database, "SELECT max(temperature) FROM measurements", timeout)
     )
-    if count != rows or not math.isclose(actual_min, minimum, abs_tol=1e-9) or not math.isclose(
-        actual_max, maximum, abs_tol=1e-9
+    if (
+        count != rows
+        or distinct_stations != stations
+        or not math.isclose(actual_min, minimum, abs_tol=1e-9)
+        or not math.isclose(actual_max, maximum, abs_tol=1e-9)
     ):
         raise RuntimeError(
-            f"import result mismatch: count={count}, min={actual_min}, max={actual_max}"
+            f"import result mismatch: count={count}, stations={distinct_stations}, "
+            f"min={actual_min}, max={actual_max}"
         )
 
 
@@ -110,7 +117,7 @@ def benchmark(binary, rows, stations, runs, warmups, timeout, format_name):
             start = time.perf_counter_ns()
             sql(binary, database, copy, timeout)
             elapsed = (time.perf_counter_ns() - start) / 1_000_000_000
-            verify(binary, database, rows, minimum, maximum, timeout)
+            verify(binary, database, rows, stations, minimum, maximum, timeout)
             if index >= warmups:
                 timings.append(elapsed)
     latency = summarize(timings)
