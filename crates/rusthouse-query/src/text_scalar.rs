@@ -37,6 +37,7 @@ pub(super) fn is_function(name: &str) -> bool {
             | "TRIM"
             | "LTRIM"
             | "TRIM_WHITESPACE"
+            | "TRY_TO_INT64"
             | "LPAD"
             | "HEX_DECODE"
             | "REPLACE"
@@ -1086,6 +1087,16 @@ fn parse_at_depth(parser: &mut Parser, depth: usize) -> Result<ConstantValue, Pa
                     }
                     ConstantValue::Text(" ".repeat(width))
                 }
+                None => ConstantValue::Null,
+            }
+        }
+        "TRY_TO_INT64" => {
+            let input = text_arg(parser, depth + 1)?;
+            require(parser, Token::RParen, "TRY_TO_INT64 requires one argument")?;
+            match input {
+                Some(value) => value
+                    .parse::<i64>()
+                    .map_or(ConstantValue::Null, ConstantValue::Integer),
                 None => ConstantValue::Null,
             }
         }
