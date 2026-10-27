@@ -22,6 +22,7 @@ fn is_bitwise(name: &str) -> bool {
 pub(super) fn is_function(name: &str) -> bool {
     name.eq_ignore_ascii_case("ABS")
         || name.eq_ignore_ascii_case("SIGN")
+        || name.eq_ignore_ascii_case("HAMMING_DISTANCE")
         || is_extrema(name)
         || is_power(name)
         || is_bitwise(name)
@@ -135,6 +136,15 @@ fn parse_extrema(parser: &mut Parser, depth: usize) -> Result<i64, ParseError> {
     Ok(value)
 }
 
+fn parse_hamming_distance(parser: &mut Parser, depth: usize) -> Result<i64, ParseError> {
+    require_token(parser, Token::LParen, "HAMMING_DISTANCE requires '('")?;
+    let left = expression(parser, depth + 1)?;
+    require_token(parser, Token::Comma, "HAMMING_DISTANCE requires two arguments")?;
+    let right = expression(parser, depth + 1)?;
+    require_token(parser, Token::RParen, "HAMMING_DISTANCE requires ')' after arguments")?;
+    Ok(i64::from((left ^ right).count_ones()))
+}
+
 fn checked_bit_shift(value: i64, amount: i64, left: bool) -> Result<i64, ParseError> {
     let shift = u32::try_from(amount)
         .map_err(|_| ParseError("bit shift count must be between 0 and 63".into()))?;
@@ -213,6 +223,9 @@ fn factor(parser: &mut Parser, depth: usize) -> Result<i64, ParseError> {
     }
     if parser.take(Token::Plus) {
         return factor(parser, depth + 1);
+    }
+    if parser.keyword("HAMMING_DISTANCE") {
+        return parse_hamming_distance(parser, depth);
     }
     if parser.keyword("POWER") || parser.keyword("POW") {
         return parse_power(parser, depth);
