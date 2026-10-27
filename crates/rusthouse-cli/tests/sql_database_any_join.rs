@@ -28,11 +28,14 @@ fn any_join_keeps_one_right_match_per_left_row() {
         assert!(result.status.success(), "{statement}: {result:?}");
     }
 
-    let inner = sql("SELECT e.id, t.label FROM employees e ANY INNER JOIN teams t ON e.team = t.id");
+    let inner =
+        sql("SELECT e.id, t.label FROM employees e ANY INNER JOIN teams t ON e.team = t.id");
     assert!(inner.status.success(), "{inner:?}");
     assert_eq!(inner.stdout, b"e.id\tt.label\n1\tfirst\n2\tonly\n");
 
-    let left = sql("SELECT e.id, t.label FROM employees e LEFT ANY JOIN teams t ON e.team = t.id ORDER BY e.id LIMIT 10");
+    let left = sql(
+        "SELECT e.id, t.label FROM employees e LEFT ANY JOIN teams t ON e.team = t.id ORDER BY e.id LIMIT 10",
+    );
     assert!(left.status.success(), "{left:?}");
     assert_eq!(left.stdout, b"e.id\tt.label\n1\tfirst\n2\tonly\n3\t\\N\n");
 
