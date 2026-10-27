@@ -16,7 +16,11 @@ fn digit_sum_supports_zero_negative_values_and_minimum_int64() {
         ("SELECT DIGIT_SUM(-9223372036854775807 - 1) AS result", "89"),
         ("SELECT DIGIT_SUM(12 + 34) AS result", "10"),
     ] {
-        assert_eq!(evaluate(sql).unwrap(), format!("result\n{expected}\n"), "{sql}");
+        assert_eq!(
+            evaluate(sql).unwrap(),
+            format!("result\n{expected}\n"),
+            "{sql}"
+        );
     }
 }
 
