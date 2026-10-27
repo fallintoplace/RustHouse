@@ -98,11 +98,7 @@ fn append_identifier_escape(
     Ok(())
 }
 
-fn finish_column(
-    name: Vec<u8>,
-    data_type: &str,
-    line_number: usize,
-) -> Result<Column, PartError> {
+fn finish_column(name: Vec<u8>, data_type: &str, line_number: usize) -> Result<Column, PartError> {
     if name.is_empty() || data_type.is_empty() || data_type.trim() != data_type {
         return Err(invalid(line_number, "empty column name or invalid type"));
     }
