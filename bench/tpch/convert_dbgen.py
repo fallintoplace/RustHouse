@@ -52,12 +52,16 @@ def convert_table(source, target, table):
     temp = target.with_name(target.name + ".tmp")
     rows = 0
     try:
-        with source.open("r", encoding="utf-8", newline="") as reader, \
+        with source.open("rb") as reader, \
                 temp.open("w", encoding="utf-8", newline="\n") as writer:
             writer.write("\t".join(names(table)) + "\n")
-            for number, line in enumerate(reader, 1):
-                if len(line.encode("utf-8")) > MAX_LINE:
+            for number, raw_line in enumerate(reader, 1):
+                if len(raw_line) > MAX_LINE:
                     raise ValueError(f"{table} row {number}: exceeds 8 MiB")
+                try:
+                    line = raw_line.decode("utf-8")
+                except UnicodeDecodeError as error:
+                    raise ValueError(f"{table} row {number}: invalid UTF-8") from error
                 fields = line.rstrip("\n").rstrip("\r").split("|")
                 if len(fields) != len(TABLES[table]) + 1 or fields[-1] != "":
                     raise ValueError(f"{table} row {number}: wrong field count or missing trailing pipe")
