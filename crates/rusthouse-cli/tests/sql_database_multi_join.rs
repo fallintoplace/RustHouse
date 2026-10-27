@@ -196,3 +196,46 @@ fn chained_any_joins_select_only_one_matching_row_at_each_step() {
     );
     fs::remove_dir_all(db).unwrap();
 }
+
+#[test]
+fn chained_using_joins_coalesce_star_keys_for_full_outer_rows() {
+    let db = database();
+    for statement in [
+        "CREATE TABLE orders (id UInt64, customer_id UInt64)",
+        "CREATE TABLE customers (id UInt64, region_id UInt64, name String)",
+        "CREATE TABLE regions (region_id UInt64, label String)",
+        "INSERT INTO orders VALUES (1, 10), (2, 20)",
+        "INSERT INTO customers VALUES (10, 1, 'Ada'), (20, 2, 'Bob')",
+        "INSERT INTO regions VALUES (1, 'West'), (3, 'East')",
+    ] {
+        let result = sql(statement, &db, &[]);
+        assert!(result.status.success(), "{statement}: {result:?}");
+    }
+    let result = sql(
+        "SELECT * FROM orders o JOIN customers c ON o.customer_id = c.id FULL JOIN regions r USING (region_id) ORDER BY r.region_id ASC NULLS LAST",
+        &db,
+        &[],
+    );
+    assert!(result.status.success(), "{result:?}");
+    assert_eq!(
+        result.stdout,
+        b"o.id\to.customer_id\tc.id\tc.region_id\tc.name\tr.label\n1\t10\t10\t1\tAda\tWest\n\\N\t\\N\t\\N\t3\t\\N\tEast\n2\t20\t20\t2\tBob\t\\N\n"
+    );
+    let plan = sql(
+        "SELECT * FROM orders o JOIN customers c ON o.customer_id = c.id JOIN regions r USING (region_id)",
+        &db,
+        &["--explain"],
+    );
+    assert!(plan.status.success(), "{plan:?}");
+    assert!(String::from_utf8_lossy(&plan.stdout).contains("USING (region_id)"));
+
+    let ambiguous = sql(
+        "SELECT * FROM orders o JOIN customers c ON o.id = c.id JOIN regions r USING (id)",
+        &db,
+        &[],
+    );
+    assert!(!ambiguous.status.success());
+    assert!(ambiguous.stdout.is_empty());
+    assert!(String::from_utf8_lossy(&ambiguous.stderr).contains("ambiguous JOIN USING"));
+    fs::remove_dir_all(db).unwrap();
+}
