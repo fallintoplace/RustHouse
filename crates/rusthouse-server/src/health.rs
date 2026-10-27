@@ -1,8 +1,15 @@
 //! On-demand health probes for explicitly configured loopback peers.
 
 use crate::Response;
-use crate::cluster::Cluster;
+use crate::cluster::{Cluster, Peer};
 use crate::remote;
+
+fn peer_is_healthy(peer: Peer) -> bool {
+    matches!(
+        remote::ping(peer),
+        Ok(reply) if reply.status == 200 && reply.body == b"Ok.\n"
+    )
+}
 
 pub fn handle(method: &str, body: &[u8], cluster: &Cluster) -> Response {
     if method != "GET" {
@@ -16,14 +23,7 @@ pub fn handle(method: &str, body: &[u8], cluster: &Cluster) -> Response {
         let handles = cluster
             .peers()
             .iter()
-            .map(|&peer| {
-                scope.spawn(move || {
-                    matches!(
-                        remote::ping(peer),
-                        Ok(reply) if reply.status == 200 && reply.body == b"Ok.\n"
-                    )
-                })
-            })
+            .map(|&peer| scope.spawn(move || peer_is_healthy(peer)))
             .collect::<Vec<_>>();
         handles
             .into_iter()
