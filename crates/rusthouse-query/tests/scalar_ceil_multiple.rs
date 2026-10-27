@@ -9,7 +9,10 @@ fn scalar_ceil_multiple_supports_signed_and_composed_constants() {
         ("SELECT CEIL_TO_MULTIPLE(0, 5)", 0),
         ("SELECT CEIL_TO_MULTIPLE(2 + 7, 4)", 12),
         ("SELECT CEIL_TO_MULTIPLE(-9223372036854775808, 2)", i64::MIN),
-        ("SELECT CEIL_TO_MULTIPLE(-9223372036854775808, 3)", -9223372036854775806),
+        (
+            "SELECT CEIL_TO_MULTIPLE(-9223372036854775808, 3)",
+            -9223372036854775806,
+        ),
     ] {
         assert_eq!(
             parse_select(sql).unwrap().projection,
