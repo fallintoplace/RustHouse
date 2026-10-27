@@ -175,6 +175,7 @@ fn probe_inner<F>(
     right_rows: &[Vec<typed::Cell>],
     hash: &HashMap<Vec<typed::Key>, Vec<usize>>,
     materialize_rows: bool,
+    null_filter: Option<(usize, bool)>,
     mut emit: F,
 ) -> Result<usize, ExecutionError>
 where
@@ -197,6 +198,19 @@ where
                         Vec::new()
                     };
                     for &right_index in right_indices {
+                        if let Some((column, not_null)) = null_filter {
+                            let is_null = if column < left_names.len() {
+                                matches!(typed::cell(&batch[column], index), typed::Cell::Null)
+                            } else {
+                                matches!(
+                                    &right_rows[right_index][column - left_names.len()],
+                                    typed::Cell::Null
+                                )
+                            };
+                            if is_null == not_null {
+                                continue;
+                            }
+                        }
                         if matches >= MAX_RESULT_ROWS {
                             return Err(invalid("JOIN produces more than 65536 rows"));
                         }
@@ -219,6 +233,7 @@ struct InnerJoinColumns<'a> {
     selected: &'a [(usize, String, Option<usize>)],
     left_keys: &'a [usize],
     right_keys: &'a [usize],
+    null_filter: Option<(usize, bool)>,
 }
 
 fn execute_streaming_inner<W: Write>(
@@ -234,6 +249,7 @@ fn execute_streaming_inner<W: Write>(
         selected,
         left_keys,
         right_keys,
+        null_filter,
     } = columns;
     // The probe side is scanned in batches and never retained. Keep the
     // hash-build and matched-output limits, not an artificial probe-row cap.
@@ -258,6 +274,7 @@ fn execute_streaming_inner<W: Write>(
         &right_rows,
         &hash,
         false,
+        null_filter,
         |_, _| Ok(()),
     )?;
 
@@ -280,6 +297,7 @@ fn execute_streaming_inner<W: Write>(
         &right_rows,
         &hash,
         true,
+        null_filter,
         |left, right| {
             if position >= query.offset && position < end {
                 for (index, (column, _, _)) in selected.iter().enumerate() {
@@ -367,6 +385,14 @@ pub fn execute_join<W: Write>(
             resolve(query, column, &left_names, &right_names).map(|index| (index, *descending))
         })
         .transpose()?;
+    let null_filter = query
+        .where_null
+        .as_ref()
+        .map(|(column, not_null)| {
+            resolve(query, column, &left_names, &right_names)
+                .map(|index| (index, *not_null))
+        })
+        .transpose()?;
     let mut left_keys = Vec::new();
     let mut right_keys = Vec::new();
     for (first, second) in &query.keys {
@@ -401,6 +427,7 @@ pub fn execute_join<W: Write>(
                 selected: &selected,
                 left_keys: &left_keys,
                 right_keys: &right_keys,
+                null_filter,
             },
             output,
         );
@@ -427,6 +454,13 @@ pub fn execute_join<W: Write>(
         }
     }
     let mut pairs: Vec<Pair> = Vec::new();
+    let keep = |pair: &Pair| {
+        null_filter.is_none_or(|(index, not_null)| {
+            let is_null = cell_at(&left_rows, &right_rows, pair, index, width)
+                .is_none_or(|cell| matches!(cell, typed::Cell::Null));
+            is_null != not_null
+        })
+    };
     let mut matched_right = vec![false; right_rows.len()];
     for (left_index, row) in left_rows.iter().enumerate() {
         let mut matched = false;
@@ -435,18 +469,27 @@ pub fn execute_join<W: Write>(
                 for &right_index in matches {
                     matched = true;
                     matched_right[right_index] = true;
-                    add_pair(&mut pairs, (Some(left_index), Some(right_index)))?;
+                    let pair = (Some(left_index), Some(right_index));
+                    if keep(&pair) {
+                        add_pair(&mut pairs, pair)?;
+                    }
                 }
             }
         }
         if !matched && matches!(query.kind, JoinType::Left | JoinType::Full) {
-            add_pair(&mut pairs, (Some(left_index), None))?;
+            let pair = (Some(left_index), None);
+            if keep(&pair) {
+                add_pair(&mut pairs, pair)?;
+            }
         }
     }
     if matches!(query.kind, JoinType::Right | JoinType::Full) {
         for (right_index, matched) in matched_right.into_iter().enumerate() {
             if !matched {
-                add_pair(&mut pairs, (None, Some(right_index)))?;
+                let pair = (None, Some(right_index));
+                if keep(&pair) {
+                    add_pair(&mut pairs, pair)?;
+                }
             }
         }
     }
