@@ -13,8 +13,7 @@ fn invalid(message: &'static str) -> io::Error {
 }
 
 pub(super) fn decode_tsv_value(value: &[u8]) -> io::Result<String> {
-    String::from_utf8(decode_tsv_field(value)?)
-        .map_err(|_| invalid("JSONL field is not UTF-8"))
+    String::from_utf8(decode_tsv_field(value)?).map_err(|_| invalid("JSONL field is not UTF-8"))
 }
 
 fn parse_headers(line: &[u8]) -> io::Result<Vec<String>> {
