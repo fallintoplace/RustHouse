@@ -197,7 +197,8 @@ where
                     } else {
                         Vec::new()
                     };
-                    for &right_index in right_indices.iter().take(if any { 1 } else { usize::MAX }) {
+                    for &right_index in right_indices.iter().take(if any { 1 } else { usize::MAX })
+                    {
                         if matches >= MAX_RESULT_ROWS {
                             return Err(invalid("JOIN produces more than 65536 rows"));
                         }
