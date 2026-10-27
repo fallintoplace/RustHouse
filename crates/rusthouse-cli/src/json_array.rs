@@ -3,6 +3,14 @@ use std::io::{self, Write};
 
 const MAX_JSON_ROW_BYTES: usize = 4 * 1024 * 1024;
 
+fn write_indent<W: Write>(output: &mut W, depth: usize) -> io::Result<()> {
+    output.write_all(b"\n")?;
+    for _ in 0..=depth {
+        output.write_all(b"  ")?;
+    }
+    Ok(())
+}
+
 /// Indent validated JSONL rows, keeping quotes and escaped syntax intact.
 fn write_pretty_row<W: Write>(output: &mut W, row: &[u8]) -> io::Result<()> {
     let mut quoted = false;
@@ -25,28 +33,19 @@ fn write_pretty_row<W: Write>(output: &mut W, row: &[u8]) -> io::Result<()> {
             b'{' | b'[' => {
                 output.write_all(&row[start..=index])?;
                 depth += 1;
-                output.write_all(b"\n")?;
-                for _ in 0..=depth {
-                    output.write_all(b"  ")?;
-                }
+                write_indent(output, depth)?;
                 start = index + 1;
             }
             b'}' | b']' => {
                 output.write_all(&row[start..index])?;
                 depth = depth.saturating_sub(1);
-                output.write_all(b"\n")?;
-                for _ in 0..=depth {
-                    output.write_all(b"  ")?;
-                }
+                write_indent(output, depth)?;
                 output.write_all(&row[index..=index])?;
                 start = index + 1;
             }
             b',' => {
                 output.write_all(&row[start..=index])?;
-                output.write_all(b"\n")?;
-                for _ in 0..=depth {
-                    output.write_all(b"  ")?;
-                }
+                write_indent(output, depth)?;
                 start = index + 1;
             }
             b':' => {

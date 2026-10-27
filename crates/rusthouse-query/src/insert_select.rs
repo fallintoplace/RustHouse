@@ -39,6 +39,14 @@ fn parse_columns(parser: &mut Parser) -> Result<Option<Vec<String>>, ParseError>
     Ok(columns)
 }
 
+fn parse_insert_table(parser: &mut Parser) -> Result<String, ParseError> {
+    let table = parser.word()?;
+    if table.len() > 128 {
+        return Err(ParseError("identifiers cannot exceed 128 bytes".into()));
+    }
+    Ok(table)
+}
+
 pub fn parse_insert_select(sql: &str) -> Result<Option<InsertSelect>, ParseError> {
     let mut parser = Parser {
         tokens: tokenize(sql)?,
@@ -50,10 +58,7 @@ pub fn parse_insert_select(sql: &str) -> Result<Option<InsertSelect>, ParseError
     if !parser.keyword("INTO") {
         return Err(ParseError("expected INTO after INSERT".into()));
     }
-    let table = parser.word()?;
-    if table.len() > 128 {
-        return Err(ParseError("identifiers cannot exceed 128 bytes".into()));
-    }
+    let table = parse_insert_table(&mut parser)?;
     let columns = parse_columns(&mut parser)?;
     if !parser.keyword("SELECT") {
         return Ok(None);

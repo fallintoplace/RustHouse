@@ -38,6 +38,11 @@ impl FixedPrimaryIndex {
 /// the first matching mark may still contain matching rows, so include it.
 /// This is an index-planning primitive, not a substitute for row predicates.
 /// Returns None for an unsupported field or an invalid/unsorted index.
+fn u64_mark_key(index: &FixedPrimaryIndex, mark: usize, field: usize) -> Option<u64> {
+    let bytes: [u8; 8] = index.field(mark, field)?.try_into().ok()?;
+    Some(u64::from_le_bytes(bytes))
+}
+
 pub fn candidate_u64_mark_range(
     index: &FixedPrimaryIndex,
     field: usize,
@@ -48,8 +53,7 @@ pub fn candidate_u64_mark_range(
     // Keep the same conservative safety check without materializing every key.
     let mut previous = None;
     for mark in 0..len {
-        let bytes: [u8; 8] = index.field(mark, field)?.try_into().ok()?;
-        let key = u64::from_le_bytes(bytes);
+        let key = u64_mark_key(index, mark, field)?;
         if previous.is_some_and(|last| last > key) {
             return None;
         }
@@ -57,10 +61,7 @@ pub fn candidate_u64_mark_range(
     }
 
     // The complete index layout and ordering have been validated above.
-    let key_at = |mark| {
-        let bytes: [u8; 8] = index.field(mark, field).unwrap().try_into().unwrap();
-        u64::from_le_bytes(bytes)
-    };
+    let key_at = |mark| u64_mark_key(index, mark, field).unwrap();
     let partition_point = |target: u64, inclusive: bool| {
         let mut low = 0;
         let mut high = len;

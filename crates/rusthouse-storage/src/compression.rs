@@ -65,7 +65,15 @@ impl CompressedBlockReader<File> {
                 source: io::Error::new(io::ErrorKind::InvalidInput, "expected a regular file"),
             });
         }
-        Self::new(file, path)
+        // File::open starts at offset zero. Reuse the validated metadata size
+        // instead of stat-ing and seeking the file a second time.
+        Ok(Self {
+            reader: file,
+            path: path.to_path_buf(),
+            file_len: metadata.len(),
+            offset: 0,
+            done: false,
+        })
     }
 }
 
@@ -170,7 +178,7 @@ impl<R: Read + Seek> CompressedBlockReader<R> {
         if block.compressed_size > MAX_DECODE_BLOCK_SIZE
             || block.decompressed_size > MAX_DECODE_BLOCK_SIZE
         {
-            return self.decoded_error(block.offset, "block exceeds the 64 MiB decode limit");
+            return self.invalid_at(block.offset, "block exceeds the 64 MiB decode limit");
         }
 
         let mut encoded = vec![0u8; block.compressed_size as usize];
@@ -180,13 +188,13 @@ impl<R: Read + Seek> CompressedBlockReader<R> {
         }
         let checksum = u128::from(cityhash128(&encoded)).to_le_bytes();
         if header.prefix[..CHECKSUM_SIZE as usize] != checksum {
-            return self.decoded_error(block.offset, "checksum mismatch");
+            return self.invalid_at(block.offset, "checksum mismatch");
         }
 
         let data = match block.method {
             0x02 => {
                 if encoded.len() - HEADER_SIZE as usize != block.decompressed_size as usize {
-                    return self.decoded_error(block.offset, "uncompressed size mismatch");
+                    return self.invalid_at(block.offset, "uncompressed size mismatch");
                 }
                 encoded.copy_within(HEADER_SIZE as usize.., 0);
                 encoded.truncate(block.decompressed_size as usize);
@@ -198,18 +206,14 @@ impl<R: Read + Seek> CompressedBlockReader<R> {
                 block.decompressed_size as usize,
             ) {
                 Ok(decoded) => decoded,
-                Err(reason) => return self.decoded_error(block.offset, reason),
+                Err(reason) => return self.invalid_at(block.offset, reason),
             },
-            _ => return self.decoded_error(block.offset, "unsupported compression method"),
+            _ => return self.invalid_at(block.offset, "unsupported compression method"),
         };
         Some(Ok(DecodedBlock { block, data }))
     }
 
-    fn decoded_error(
-        &mut self,
-        offset: u64,
-        reason: &'static str,
-    ) -> Option<Result<DecodedBlock, PartError>> {
+    fn invalid_at<T>(&mut self, offset: u64, reason: &'static str) -> Option<Result<T, PartError>> {
         self.done = true;
         Some(Err(PartError::InvalidCompressedBlock {
             path: self.path.clone(),
@@ -219,12 +223,7 @@ impl<R: Read + Seek> CompressedBlockReader<R> {
     }
 
     fn invalid<T>(&mut self, reason: &'static str) -> Option<Result<T, PartError>> {
-        self.done = true;
-        Some(Err(PartError::InvalidCompressedBlock {
-            path: self.path.clone(),
-            offset: self.offset,
-            reason,
-        }))
+        self.invalid_at(self.offset, reason)
     }
 
     fn io_error<T>(&mut self, source: io::Error) -> Option<Result<T, PartError>> {
@@ -296,6 +295,19 @@ mod tests {
         CompressedBlockReader::new(Cursor::new(bytes), "data.bin")
             .unwrap()
             .collect()
+    }
+
+    #[test]
+    fn file_open_decodes_blocks_from_the_start() {
+        let path = std::env::temp_dir().join(format!(
+            "rusthouse-compressed-open-{}.bin",
+            std::process::id()
+        ));
+        std::fs::write(&path, checked_block(0x02, b"hello", 5)).unwrap();
+        let mut reader = CompressedBlockReader::open(&path).unwrap();
+        assert_eq!(reader.next_decoded().unwrap().unwrap().data, b"hello");
+        assert!(reader.next_decoded().is_none());
+        std::fs::remove_file(path).unwrap();
     }
 
     #[cfg(unix)]
