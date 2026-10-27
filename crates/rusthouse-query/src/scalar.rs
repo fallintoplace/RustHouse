@@ -48,6 +48,19 @@ pub(super) fn is_function(name: &str) -> bool {
         || name.eq_ignore_ascii_case("REVERSE_DIGITS")
         || name.eq_ignore_ascii_case("LCM")
         || name.eq_ignore_ascii_case("FIBONACCI")
+        || name.eq_ignore_ascii_case("IN_RANGE")
+        || name.eq_ignore_ascii_case("MUL_DIV")
+        || name.eq_ignore_ascii_case("WIDTH_BUCKET")
+        || name.eq_ignore_ascii_case("BIT_SET")
+        || name.eq_ignore_ascii_case("BIT_CLEAR")
+        || name.eq_ignore_ascii_case("BIT_TOGGLE")
+        || name.eq_ignore_ascii_case("LEADING_ZEROS")
+        || name.eq_ignore_ascii_case("TRAILING_ZEROS")
+        || name.eq_ignore_ascii_case("DIGITAL_ROOT")
+        || name.eq_ignore_ascii_case("POW10")
+        || name.eq_ignore_ascii_case("TRIANGULAR")
+        || name.eq_ignore_ascii_case("IS_PRIME")
+        || name.eq_ignore_ascii_case("BINOMIAL")
         || name.eq_ignore_ascii_case("CLAMP")
         || name.eq_ignore_ascii_case("CEIL_DIV")
         || name.eq_ignore_ascii_case("FLOOR_DIV")
@@ -59,6 +72,7 @@ pub(super) fn is_function(name: &str) -> bool {
         || name.eq_ignore_ascii_case("INTLOG2")
         || name.eq_ignore_ascii_case("ROUND_TO_MULTIPLE")
         || name.eq_ignore_ascii_case("PMOD")
+        || name.eq_ignore_ascii_case("TRAILING_ONES")
 }
 
 pub(super) fn parse(parser: &mut Parser) -> Result<i64, ParseError> {
@@ -375,6 +389,192 @@ fn parse_bit_extract(parser: &mut Parser, depth: usize) -> Result<i64, ParseErro
     Ok((((value as u64) >> offset) & mask) as i64)
 }
 
+/// Return one when a signed integer is between inclusive bounds.
+fn parse_in_range(parser: &mut Parser, depth: usize) -> Result<i64, ParseError> {
+    require_token(parser, Token::LParen, "IN_RANGE requires '('")?;
+    let value = expression(parser, depth + 1)?;
+    require_token(parser, Token::Comma, "IN_RANGE requires three arguments")?;
+    let lower = expression(parser, depth + 1)?;
+    require_token(parser, Token::Comma, "IN_RANGE requires three arguments")?;
+    let upper = expression(parser, depth + 1)?;
+    require_token(parser, Token::RParen, "IN_RANGE requires ')'")?;
+    if lower > upper {
+        return Err(ParseError(
+            "IN_RANGE lower bound exceeds upper bound".into(),
+        ));
+    }
+    Ok(i64::from((lower..=upper).contains(&value)))
+}
+
+/// Multiply in Int128 before dividing, then require an Int64 result.
+fn parse_mul_div(parser: &mut Parser, depth: usize) -> Result<i64, ParseError> {
+    require_token(parser, Token::LParen, "MUL_DIV requires '('")?;
+    let left = expression(parser, depth + 1)?;
+    require_token(parser, Token::Comma, "MUL_DIV requires three arguments")?;
+    let right = expression(parser, depth + 1)?;
+    require_token(parser, Token::Comma, "MUL_DIV requires three arguments")?;
+    let divisor = expression(parser, depth + 1)?;
+    require_token(parser, Token::RParen, "MUL_DIV requires ')'")?;
+    let numerator = i128::from(left) * i128::from(right);
+    let quotient = numerator
+        .checked_div(i128::from(divisor))
+        .ok_or_else(|| ParseError("MUL_DIV divisor cannot be zero".into()))?;
+    i64::try_from(quotient).map_err(|_| overflow())
+}
+
+/// Equal-width histogram buckets for a signed range [lower, upper).
+fn parse_width_bucket(parser: &mut Parser, depth: usize) -> Result<i64, ParseError> {
+    require_token(parser, Token::LParen, "WIDTH_BUCKET requires '('")?;
+    let value = expression(parser, depth + 1)?;
+    require_token(parser, Token::Comma, "WIDTH_BUCKET requires four arguments")?;
+    let lower = expression(parser, depth + 1)?;
+    require_token(parser, Token::Comma, "WIDTH_BUCKET requires four arguments")?;
+    let upper = expression(parser, depth + 1)?;
+    require_token(parser, Token::Comma, "WIDTH_BUCKET requires four arguments")?;
+    let count = expression(parser, depth + 1)?;
+    require_token(parser, Token::RParen, "WIDTH_BUCKET requires ')'")?;
+    if lower >= upper {
+        return Err(ParseError("WIDTH_BUCKET requires min < max".into()));
+    }
+    if !(1..=1_000_000).contains(&count) {
+        return Err(ParseError(
+            "WIDTH_BUCKET bucket count must be between 1 and 1000000".into(),
+        ));
+    }
+    if value < lower {
+        return Ok(0);
+    }
+    if value >= upper {
+        return Ok(count + 1);
+    }
+    let span = i128::from(upper) - i128::from(lower);
+    let offset = i128::from(value) - i128::from(lower);
+    let bucket = offset * i128::from(count) / span + 1;
+    i64::try_from(bucket).map_err(|_| overflow())
+}
+
+/// Modify a single bit in the signed 64-bit two's-complement representation.
+fn parse_bit_update(parser: &mut Parser, depth: usize) -> Result<i64, ParseError> {
+    let name = parser.word()?;
+    require_token(parser, Token::LParen, "bit update requires '('")?;
+    let value = expression(parser, depth + 1)?;
+    require_token(parser, Token::Comma, "bit update requires two arguments")?;
+    let index = expression(parser, depth + 1)?;
+    require_token(parser, Token::RParen, "bit update requires ')'")?;
+    let index = u32::try_from(index)
+        .map_err(|_| ParseError("bit index must be between 0 and 63".into()))?;
+    if index >= i64::BITS {
+        return Err(ParseError("bit index must be between 0 and 63".into()));
+    }
+    let mask = 1_u64 << index;
+    let bits = value as u64;
+    let result = match name.to_ascii_uppercase().as_str() {
+        "BIT_SET" => bits | mask,
+        "BIT_CLEAR" => bits & !mask,
+        "BIT_TOGGLE" => bits ^ mask,
+        _ => unreachable!("only bit-update functions reach this parser"),
+    };
+    Ok(result as i64)
+}
+
+/// Count zero bits on the left or right of an Int64 bit pattern.
+fn parse_bit_scans(parser: &mut Parser, depth: usize) -> Result<i64, ParseError> {
+    let name = parser.word()?;
+    require_token(parser, Token::LParen, "bit scan requires '('")?;
+    let value = expression(parser, depth + 1)?;
+    require_token(parser, Token::RParen, "bit scan requires ')'")?;
+    let result = if name.eq_ignore_ascii_case("LEADING_ZEROS") {
+        value.leading_zeros()
+    } else {
+        value.trailing_zeros()
+    };
+    Ok(i64::from(result))
+}
+
+/// Decimal digital root of the unsigned magnitude; zero maps to zero.
+fn parse_digital_root(parser: &mut Parser, depth: usize) -> Result<i64, ParseError> {
+    require_token(parser, Token::LParen, "DIGITAL_ROOT requires '('")?;
+    let value = expression(parser, depth + 1)?;
+    require_token(parser, Token::RParen, "DIGITAL_ROOT requires ')'")?;
+    let magnitude = value.unsigned_abs();
+    if magnitude == 0 {
+        return Ok(0);
+    }
+    let root = 1 + (magnitude - 1) % 9;
+    i64::try_from(root).map_err(|_| overflow())
+}
+
+/// Checked signed Int64 power of ten for nonnegative integer exponents.
+fn parse_pow10(parser: &mut Parser, depth: usize) -> Result<i64, ParseError> {
+    require_token(parser, Token::LParen, "POW10 requires '('")?;
+    let exponent = expression(parser, depth + 1)?;
+    require_token(parser, Token::RParen, "POW10 requires ')'")?;
+    let exponent = u32::try_from(exponent)
+        .map_err(|_| ParseError("POW10 exponent must be non-negative and fit UInt32".into()))?;
+    10_i64.checked_pow(exponent).ok_or_else(overflow)
+}
+
+/// Compute the triangular number with a wide intermediate product.
+fn parse_triangular(parser: &mut Parser, depth: usize) -> Result<i64, ParseError> {
+    require_token(parser, Token::LParen, "TRIANGULAR requires '('")?;
+    let value = expression(parser, depth + 1)?;
+    require_token(parser, Token::RParen, "TRIANGULAR requires ')'")?;
+    if value < 0 {
+        return Err(ParseError("TRIANGULAR requires a nonnegative value".into()));
+    }
+    let value = i128::from(value);
+    i64::try_from(value * (value + 1) / 2).map_err(|_| overflow())
+}
+
+/// Test primality with bounded 6k +/- 1 trial division.
+fn parse_is_prime(parser: &mut Parser, depth: usize) -> Result<i64, ParseError> {
+    require_token(parser, Token::LParen, "IS_PRIME requires '('")?;
+    let value = expression(parser, depth + 1)?;
+    require_token(parser, Token::RParen, "IS_PRIME requires ')'")?;
+    if value < 2 {
+        return Ok(0);
+    }
+    if value > 1_000_000_000_000 {
+        return Err(ParseError(
+            "IS_PRIME supports values up to 1000000000000".into(),
+        ));
+    }
+    let value = u64::try_from(value)
+        .map_err(|_| ParseError("IS_PRIME requires a nonnegative integer".into()))?;
+    if value % 2 == 0 {
+        return Ok(i64::from(value == 2));
+    }
+    if value % 3 == 0 {
+        return Ok(i64::from(value == 3));
+    }
+    let mut divisor = 5_u64;
+    while divisor <= value / divisor {
+        if value % divisor == 0 || value % (divisor + 2) == 0 {
+            return Ok(0);
+        }
+        divisor += 6;
+    }
+    Ok(1)
+}
+
+/// Compute n choose k exactly for n up to 66.
+fn parse_binomial(parser: &mut Parser, depth: usize) -> Result<i64, ParseError> {
+    require_token(parser, Token::LParen, "BINOMIAL requires '('")?;
+    let n = expression(parser, depth + 1)?;
+    require_token(parser, Token::Comma, "BINOMIAL requires two arguments")?;
+    let k = expression(parser, depth + 1)?;
+    require_token(parser, Token::RParen, "BINOMIAL requires ')'")?;
+    if !(0..=66).contains(&n) || k < 0 || k > n {
+        return Err(ParseError("BINOMIAL requires 0 <= k <= n <= 66".into()));
+    }
+    let k = k.min(n - k);
+    let mut result = 1_i128;
+    for index in 0..k {
+        result = result * i128::from(n - index) / i128::from(index + 1);
+    }
+    i64::try_from(result).map_err(|_| overflow())
+}
+
 fn gcd(mut left: u64, mut right: u64) -> u64 {
     while right != 0 {
         let remainder = left % right;
@@ -592,6 +792,48 @@ fn factor(parser: &mut Parser, depth: usize) -> Result<i64, ParseError> {
     if parser.keyword("BIT_EXTRACT") {
         return parse_bit_extract(parser, depth);
     }
+    if parser.keyword("IN_RANGE") {
+        return parse_in_range(parser, depth);
+    }
+    if parser.keyword("MUL_DIV") {
+        return parse_mul_div(parser, depth);
+    }
+    if parser.keyword("WIDTH_BUCKET") {
+        return parse_width_bucket(parser, depth);
+    }
+    if matches!(
+        parser.tokens.get(parser.index),
+        Some(Token::Word(name)) if matches!(
+            name.to_ascii_uppercase().as_str(),
+            "BIT_SET" | "BIT_CLEAR" | "BIT_TOGGLE"
+        )
+    ) {
+        return parse_bit_update(parser, depth);
+    }
+    if matches!(
+        parser.tokens.get(parser.index),
+        Some(Token::Word(name)) if matches!(
+            name.to_ascii_uppercase().as_str(),
+            "LEADING_ZEROS" | "TRAILING_ZEROS"
+        )
+    ) {
+        return parse_bit_scans(parser, depth);
+    }
+    if parser.keyword("DIGITAL_ROOT") {
+        return parse_digital_root(parser, depth);
+    }
+    if parser.keyword("POW10") {
+        return parse_pow10(parser, depth);
+    }
+    if parser.keyword("TRIANGULAR") {
+        return parse_triangular(parser, depth);
+    }
+    if parser.keyword("IS_PRIME") {
+        return parse_is_prime(parser, depth);
+    }
+    if parser.keyword("BINOMIAL") {
+        return parse_binomial(parser, depth);
+    }
     if matches!(parser.tokens.get(parser.index), Some(Token::Word(name)) if name.eq_ignore_ascii_case("GCD") || name.eq_ignore_ascii_case("LCM"))
     {
         return parse_gcd_lcm(parser, depth);
@@ -673,7 +915,10 @@ fn factor(parser: &mut Parser, depth: usize) -> Result<i64, ParseError> {
             }
             i64::from(first.ilog2())
         } else {
-            first.signum()
+            match name.to_ascii_uppercase().as_str() {
+                "TRAILING_ONES" => i64::from(first.trailing_ones()),
+                _ => first.signum(),
+            }
         };
         if !parser.take(Token::RParen) {
             return Err(ParseError("expected ')' after scalar function".into()));
