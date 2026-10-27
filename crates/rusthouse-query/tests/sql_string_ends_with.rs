@@ -15,7 +15,7 @@ fn handles_literals_unicode_nulls_and_nested_calls() {
         ("SELECT ends_with('alphabet', 'alpha')", 0),
         ("SELECT ENDS_WITH('cake🍰', '🍰')", 1),
         ("SELECT ENDS_WITH('abc', '')", 1),
-        ("SELECT ENDS_WITH(REVERSE('abc'), 'a')", 1),
+        ("SELECT ENDS_WITH(UPPER('abc'), 'C')", 1),
     ] {
         assert_eq!(value(sql), ConstantValue::Integer(expected), "{sql}");
     }
