@@ -1,5 +1,6 @@
 import importlib.util
 import math
+from unittest import mock
 import tempfile
 import unittest
 from pathlib import Path
@@ -32,6 +33,23 @@ class IngestBenchmarkTests(unittest.TestCase):
             path = Path(temp) / "readings.ssv"
             runner.write_input(path, 5, 2, ";")
             self.assertEqual(path.read_text().splitlines()[0].count(";"), 1)
+
+    def test_verifier_rejects_collapsed_station_values(self):
+        answers = {
+            "SELECT count(*) FROM measurements": "3",
+            "SELECT count(DISTINCT station) FROM measurements": "2",
+            "SELECT min(temperature) FROM measurements": "-1.0",
+            "SELECT max(temperature) FROM measurements": "2.0",
+        }
+
+        def fake_sql(_binary, _database, statement, _timeout):
+            return answers[statement]
+
+        with mock.patch.object(runner, "sql", side_effect=fake_sql):
+            runner.verify(Path("binary"), Path("db"), 3, 2, -1.0, 2.0, 5)
+            answers["SELECT count(DISTINCT station) FROM measurements"] = "1"
+            with self.assertRaisesRegex(RuntimeError, "stations=1"):
+                runner.verify(Path("binary"), Path("db"), 3, 2, -1.0, 2.0, 5)
 
     def test_reports_nearest_rank_p90(self):
         result = runner.summarize([0.3, 0.1, 0.2])
