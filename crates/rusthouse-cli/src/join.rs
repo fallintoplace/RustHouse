@@ -99,6 +99,20 @@ fn execute_formatted_join(
     }
 }
 
+fn open_output(path: Option<&Path>) -> Result<Box<dyn std::io::Write>, String> {
+    let output: Box<dyn std::io::Write> = match path {
+        Some(path) => Box::new(
+            std::fs::OpenOptions::new()
+                .write(true)
+                .create_new(true)
+                .open(path)
+                .map_err(|error| format!("cannot create {}: {error}", path.display()))?,
+        ),
+        None => Box::new(std::io::stdout()),
+    };
+    Ok(output)
+}
+
 pub(super) fn run(
     database: &Path,
     query: &JoinSelect,
@@ -114,16 +128,7 @@ pub(super) fn run(
     };
     let left = crate::database::select_source(database, &query.left)?;
     let right = crate::database::select_source(database, &query.right)?;
-    let mut output: Box<dyn std::io::Write> = match &output_path {
-        Some(path) => Box::new(
-            std::fs::OpenOptions::new()
-                .write(true)
-                .create_new(true)
-                .open(path)
-                .map_err(|error| format!("cannot create {}: {error}", path.display()))?,
-        ),
-        None => Box::new(std::io::stdout()),
-    };
+    let mut output = open_output(output_path.as_deref())?;
     let start = std::time::Instant::now();
     let result = execute_formatted_join(query, &left, &right, format, output.as_mut());
     if time {
@@ -136,4 +141,27 @@ pub(super) fn run(
         }
     }
     result.map_err(|error| error.to_string())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn output_creation_does_not_overwrite_existing_files() {
+        let path = std::env::temp_dir().join(format!(
+            "rusthouse-join-output-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        std::fs::write(&path, b"existing").unwrap();
+
+        assert!(open_output(Some(&path)).is_err());
+        assert_eq!(std::fs::read(&path).unwrap(), b"existing");
+
+        std::fs::remove_file(path).unwrap();
+    }
 }
