@@ -9,12 +9,12 @@ pub(super) fn is_function(name: &str) -> bool {
         "LENGTH"
             | "CHAR_LENGTH"
             | "BTRIM"
-            | "URL_ENCODE"
             | "LOWER"
             | "UPPER"
             | "REVERSE"
             | "CONCAT"
             | "CONCAT_WS"
+            | "URL_ENCODE"
             | "SUBSTRING"
             | "SPLIT_PART"
             | "TRIM"
@@ -92,6 +92,38 @@ fn parse_at_depth(parser: &mut Parser, depth: usize) -> Result<ConstantValue, Pa
             require(parser, Token::RParen, "REVERSE requires one argument")?;
             match input {
                 Some(value) => ConstantValue::Text(value.chars().rev().collect()),
+                None => ConstantValue::Null,
+            }
+        }
+        "URL_ENCODE" => {
+            let input = text_arg(parser, depth + 1)?;
+            require(parser, Token::RParen, "URL_ENCODE requires one argument")?;
+            match input {
+                Some(input) => {
+                    fn unreserved(byte: u8) -> bool {
+                        byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'.' | b'_' | b'~')
+                    }
+                    let mut length = 0usize;
+                    for byte in input.bytes() {
+                        length = length.checked_add(if unreserved(byte) { 1 } else { 3 })
+                            .ok_or_else(|| ParseError("URL_ENCODE result is too large".into()))?;
+                        if length > MAX_TEXT_BYTES {
+                            return Err(ParseError("URL_ENCODE result is too large".into()));
+                        }
+                    }
+                    const DIGITS: &[u8; 16] = b"0123456789ABCDEF";
+                    let mut result = String::with_capacity(length);
+                    for byte in input.bytes() {
+                        if unreserved(byte) {
+                            result.push(char::from(byte));
+                        } else {
+                            result.push('%');
+                            result.push(char::from(DIGITS[usize::from(byte >> 4)]));
+                            result.push(char::from(DIGITS[usize::from(byte & 15)]));
+                        }
+                    }
+                    ConstantValue::Text(result)
+                }
                 None => ConstantValue::Null,
             }
         }
@@ -460,38 +492,6 @@ fn parse_at_depth(parser: &mut Parser, depth: usize) -> Result<ConstantValue, Pa
                     }
                 }
                 _ => ConstantValue::Null,
-            }
-        }
-        "URL_ENCODE" => {
-            let input = text_arg(parser, depth + 1)?;
-            require(parser, Token::RParen, "URL_ENCODE requires one argument")?;
-            match input {
-                Some(input) => {
-                    fn unreserved(byte: u8) -> bool {
-                        byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'.' | b'_' | b'~')
-                    }
-                    let mut length = 0usize;
-                    for byte in input.bytes() {
-                        length = length.checked_add(if unreserved(byte) { 1 } else { 3 })
-                            .ok_or_else(|| ParseError("URL_ENCODE result is too large".into()))?;
-                        if length > MAX_TEXT_BYTES {
-                            return Err(ParseError("URL_ENCODE result is too large".into()));
-                        }
-                    }
-                    const DIGITS: &[u8; 16] = b"0123456789ABCDEF";
-                    let mut result = String::with_capacity(length);
-                    for byte in input.bytes() {
-                        if unreserved(byte) {
-                            result.push(char::from(byte));
-                        } else {
-                            result.push('%');
-                            result.push(char::from(DIGITS[usize::from(byte >> 4)]));
-                            result.push(char::from(DIGITS[usize::from(byte & 15)]));
-                        }
-                    }
-                    ConstantValue::Text(result)
-                }
-                None => ConstantValue::Null,
             }
         }
         _ => return Err(ParseError(format!("unsupported string function: {name}"))),
