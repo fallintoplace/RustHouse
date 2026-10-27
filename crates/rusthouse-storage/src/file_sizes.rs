@@ -1,6 +1,7 @@
 use crate::{PartError, read_checksums};
+use naive_cityhash::{U128, cityhash128_with_seed};
 use std::fs;
-use std::io;
+use std::io::{self, Read};
 use std::path::Path;
 
 /// Counts manifest entries whose stored sizes match the actual local files.
@@ -28,6 +29,65 @@ pub fn verify_part_file_sizes(part: impl AsRef<Path>) -> Result<FileSizeVerifica
 
     for entry in &manifest.files {
         verify_listed_file(part, &manifest.path, &entry.name, entry.size)?;
+        total_bytes = total_bytes
+            .checked_add(entry.size)
+            .ok_or_else(|| invalid(&manifest.path, "file sizes overflow u64"))?;
+    }
+
+    Ok(FileSizeVerification {
+        files: manifest.files.len(),
+        total_bytes,
+    })
+}
+
+/// Verify stored-byte CityHash128WithSeed checksums, in addition to file sizes.
+///
+/// This intentionally checks the stored hash only, not the optional
+/// uncompressed hash of compressed streams. It reads each listed file in
+/// bounded 2048-byte chunks, matching ClickHouse's HashingWriteBuffer.
+/// Run only on frozen parts while writers are stopped.
+pub fn verify_part_file_hashes(part: impl AsRef<Path>) -> Result<FileSizeVerification, PartError> {
+    const BLOCK_BYTES: usize = 2048;
+    let part = part.as_ref();
+    verify_part_root(part)?;
+    let checksums_path = part.join("checksums.txt");
+    let metadata = nofollow_metadata(&checksums_path)?;
+    ensure_regular_file(
+        &metadata,
+        &checksums_path,
+        "checksums.txt is not a regular file",
+    )?;
+    let manifest = read_checksums(&checksums_path)?;
+    let mut total_bytes = 0u64;
+
+    for entry in &manifest.files {
+        verify_listed_file(part, &manifest.path, &entry.name, entry.size)?;
+        let path = part.join(&entry.name);
+        let mut file = fs::File::open(&path).map_err(|source| io_error(&path, source))?;
+        let mut hash = U128::new(0, 0);
+        let mut remaining = entry.size;
+        let mut buffer = [0u8; BLOCK_BYTES];
+        while remaining > 0 {
+            let length = remaining.min(BLOCK_BYTES as u64) as usize;
+            file.read_exact(&mut buffer[..length])
+                .map_err(|source| io_error(&path, source))?;
+            hash = cityhash128_with_seed(&buffer[..length], hash);
+            remaining -= length as u64;
+        }
+        // Catch files extended after the size check, as well as changed data.
+        if file
+            .read(&mut buffer[..1])
+            .map_err(|source| io_error(&path, source))?
+            != 0
+        {
+            return Err(invalid(&path, "file changed during hash verification"));
+        }
+        if u128::from(hash) != entry.hash {
+            return Err(invalid(
+                &path,
+                "stored file hash differs from checksums.txt",
+            ));
+        }
         total_bytes = total_bytes
             .checked_add(entry.size)
             .ok_or_else(|| invalid(&manifest.path, "file sizes overflow u64"))?;
@@ -173,6 +233,42 @@ mod tests {
             bytes.push(0);
         }
         bytes
+    }
+
+    #[test]
+    fn full_hash_check_detects_same_size_metadata_corruption() {
+        let dir = temp_dir();
+        let part = dir.join("all_1_1_0");
+        let rows = (0..4096)
+            .map(|number| vec![Some(number.to_string())])
+            .collect::<Vec<_>>();
+        crate::write_wide_part(
+            &part,
+            &[crate::Column {
+                name: "id".into(),
+                data_type: "UInt64".into(),
+            }],
+            &rows,
+        )
+        .unwrap();
+        let verified = verify_part_file_hashes(&part).unwrap();
+        assert_eq!(verified.files, 4);
+        assert!(verified.total_bytes > 2048);
+
+        let path = part.join("columns.txt");
+        let mut content = fs::read(&path).unwrap();
+        let offset = content.windows(4).position(|part| part == b"`id`").unwrap() + 1;
+        content[offset] = b'x';
+        fs::write(&path, content).unwrap();
+        assert!(verify_part_file_sizes(&part).is_ok());
+        assert!(matches!(
+            verify_part_file_hashes(&part),
+            Err(PartError::InvalidChecksums {
+                reason: "stored file hash differs from checksums.txt",
+                ..
+            })
+        ));
+        fs::remove_dir_all(dir).unwrap();
     }
 
     #[test]

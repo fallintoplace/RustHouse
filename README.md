@@ -128,6 +128,7 @@ Stop writers and the HTTP server before running the offline diagnostic command:
 
 ```sh
 rusthouse doctor --database ./mydb
+rusthouse doctor --database ./mydb --full-hashes
 ```
 
 It checks catalog schemas against active parts, validates stream checksums,
@@ -137,8 +138,13 @@ table name. Errors produce a nonzero exit code. The command does not delete,
 repair, or create database files, including the lock file.
 
 Run it only with writers stopped: doctor does not take a database lock.
-It does **not** verify checksums.txt file hashes, older inactive generations,
-or power-loss durability. Preserve damaged files before manual recovery.
+By default, doctor checks block checksums and manifest file sizes only.
+With `--full-hashes`, it also reads every active manifest-listed file and
+verifies its **stored-byte** CityHash128WithSeed checksum. This can detect
+same-size corruption in metadata, marks, and compressed streams, but may take
+significant time and disk I/O on large snapshots. Uncompressed manifest hashes,
+older inactive generations, and power-loss durability are not verified.
+Preserve damaged files before manual recovery.
 
 ## Debug-only storage crash testing
 

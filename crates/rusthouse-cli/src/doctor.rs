@@ -2,8 +2,8 @@
 //! Run with writers stopped. No lock file or other database metadata is created.
 use crate::catalog;
 use rusthouse_storage::{
-    Column, inspect_query_source, query_parts, resolve_active_snapshot, verify_part_file_sizes,
-    verify_wide_part,
+    Column, inspect_query_source, query_parts, resolve_active_snapshot, verify_part_file_hashes,
+    verify_part_file_sizes, verify_wide_part,
 };
 use std::collections::BTreeSet;
 use std::ffi::OsString;
@@ -84,7 +84,14 @@ fn inspect_staging(report: &mut Report, root: &Path, table: &str) {
     }
 }
 
-fn inspect_table(report: &mut Report, database: &Path, name: &str, schema: bool, parts: bool) {
+fn inspect_table(
+    report: &mut Report,
+    database: &Path,
+    name: &str,
+    schema: bool,
+    parts: bool,
+    full_hashes: bool,
+) {
     report.checked_tables += 1;
     if !schema {
         report.error(
@@ -160,7 +167,12 @@ fn inspect_table(report: &mut Report, database: &Path, name: &str, schema: bool,
         if let Err(error) = verify_wide_part(part) {
             report.error(name, format!("invalid part {}: {error}", part.display()));
         }
-        if let Err(error) = verify_part_file_sizes(part) {
+        let manifest_result = if full_hashes {
+            verify_part_file_hashes(part).map(|_| ())
+        } else {
+            verify_part_file_sizes(part).map(|_| ())
+        };
+        if let Err(error) = manifest_result {
             report.error(
                 name,
                 format!("invalid part manifest {}: {error}", part.display()),
@@ -207,20 +219,31 @@ fn record_catalog_entry(
     }
 }
 
-fn parse_doctor_directory(mut args: impl Iterator<Item = OsString>) -> Result<OsString, String> {
-    let (Some(flag), Some(directory), None) = (args.next(), args.next(), args.next()) else {
-        return Err("usage: rusthouse doctor --database <directory>".into());
+fn parse_doctor_directory(
+    mut args: impl Iterator<Item = OsString>,
+) -> Result<(OsString, bool), String> {
+    const USAGE: &str = "usage: rusthouse doctor --database <directory> [--full-hashes]";
+    let (Some(flag), Some(directory)) = (args.next(), args.next()) else {
+        return Err(USAGE.into());
     };
     if flag != "--database" {
-        return Err("usage: rusthouse doctor --database <directory>".into());
+        return Err(USAGE.into());
     }
-    Ok(directory)
+    let full_hashes = match args.next() {
+        None => false,
+        Some(option) if option == "--full-hashes" => true,
+        _ => return Err(USAGE.into()),
+    };
+    if args.next().is_some() {
+        return Err(USAGE.into());
+    }
+    Ok((directory, full_hashes))
 }
 
 /// Print a deterministic diagnostic report without altering on-disk data.
 /// Does not acquire a lock because doing so could create the lock inode.
 pub(super) fn run(args: impl Iterator<Item = OsString>) -> Result<(), String> {
-    let directory = parse_doctor_directory(args)?;
+    let (directory, full_hashes) = parse_doctor_directory(args)?;
     let database = Path::new(&directory);
     let kind = fs::symlink_metadata(database)
         .map_err(|error| format!("cannot inspect database {}: {error}", database.display()))?;
@@ -252,15 +275,21 @@ pub(super) fn run(args: impl Iterator<Item = OsString>) -> Result<(), String> {
             &name,
             schemas.contains(&name),
             parts.contains(&name),
+            full_hashes,
         );
     }
     println!(
         "Summary: {} table(s), {} warning(s), {} error(s)",
         report.checked_tables, report.warnings, report.errors
     );
-    println!(
-        "Validation includes block checksums and manifest file sizes, not full manifest file hashes."
-    );
+    if full_hashes {
+        println!("Validation includes stored file hashes, block checksums, and manifest sizes.");
+        println!("Uncompressed manifest hashes and power-loss durability are not verified.");
+    } else {
+        println!(
+            "Validation includes block checksums and manifest file sizes, not stored file hashes."
+        );
+    }
     if report.errors > 0 {
         Err(format!(
             "doctor found {} error(s); no files were changed",
@@ -274,6 +303,23 @@ pub(super) fn run(args: impl Iterator<Item = OsString>) -> Result<(), String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn doctor_parser_accepts_only_explicit_hash_flag() {
+        let parse = |args: &[&str]| {
+            parse_doctor_directory(args.iter().map(OsString::from))
+        };
+        assert_eq!(
+            parse(&["--database", "db"]).unwrap(),
+            (OsString::from("db"), false)
+        );
+        assert_eq!(
+            parse(&["--database", "db", "--full-hashes"]).unwrap(),
+            (OsString::from("db"), true)
+        );
+        assert!(parse(&["--database", "db", "--full-hashes", "extra"]).is_err());
+        assert!(parse(&["--database", "db", "--typo"]).is_err());
+    }
 
     #[test]
     fn catalog_classifier_keeps_valid_tables_and_reports_staging_entries() {
