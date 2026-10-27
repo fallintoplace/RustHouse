@@ -417,7 +417,11 @@ fn parse_euclidean_division(
 ) -> Result<i64, ParseError> {
     require_token(parser, Token::LParen, "Euclidean division requires '('")?;
     let left = expression(parser, depth + 1)?;
-    require_token(parser, Token::Comma, "Euclidean division needs two arguments")?;
+    require_token(
+        parser,
+        Token::Comma,
+        "Euclidean division needs two arguments",
+    )?;
     let right = expression(parser, depth + 1)?;
     require_token(parser, Token::RParen, "Euclidean division requires ')'")?;
     let result = if quotient {
