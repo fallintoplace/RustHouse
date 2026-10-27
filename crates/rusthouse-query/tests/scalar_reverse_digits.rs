@@ -19,7 +19,11 @@ fn reverse_digits_preserves_sign_and_drops_trailing_zeros() {
             "-9223372036854775808",
         ),
     ] {
-        assert_eq!(evaluate(sql).unwrap(), format!("result\n{expected}\n"), "{sql}");
+        assert_eq!(
+            evaluate(sql).unwrap(),
+            format!("result\n{expected}\n"),
+            "{sql}"
+        );
     }
 }
 
