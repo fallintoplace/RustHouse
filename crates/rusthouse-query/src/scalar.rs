@@ -28,6 +28,7 @@ pub(super) fn is_function(name: &str) -> bool {
         || name.eq_ignore_ascii_case("GCD")
         || name.eq_ignore_ascii_case("LCM")
         || name.eq_ignore_ascii_case("CLAMP")
+        || name.eq_ignore_ascii_case("FACTORIAL")
 }
 
 pub(super) fn parse(parser: &mut Parser) -> Result<i64, ParseError> {
@@ -248,6 +249,15 @@ fn factor(parser: &mut Parser, depth: usize) -> Result<i64, ParseError> {
             }
         } else if name.eq_ignore_ascii_case("ABS") {
             first.checked_abs().ok_or_else(overflow)?
+        } else if name.eq_ignore_ascii_case("FACTORIAL") {
+            if !(0..=20).contains(&first) {
+                return Err(ParseError(
+                    "FACTORIAL argument must be between 0 and 20".into(),
+                ));
+            }
+            (1..=first)
+                .try_fold(1i64, |acc, value| acc.checked_mul(value))
+                .ok_or_else(overflow)?
         } else {
             first.signum()
         };
