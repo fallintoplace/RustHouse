@@ -6,7 +6,8 @@ use std::collections::HashMap;
 use std::io::Write;
 use std::path::Path;
 
-const MAX_INPUT_ROWS: u64 = 4096;
+// Ordered and outer joins retain both inputs, bounded by row count and bytes.
+const MAX_INPUT_ROWS: u64 = 16_384;
 const MAX_RESULT_ROWS: usize = 65_536;
 const MAX_STREAM_LEFT_ROWS: u64 = 100_000;
 // Unordered INNER joins can build a larger hash side than sorted/outer joins.
