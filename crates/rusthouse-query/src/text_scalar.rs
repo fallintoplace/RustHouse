@@ -11,6 +11,7 @@ pub(super) fn is_function(name: &str) -> bool {
             | "LOWER"
             | "UPPER"
             | "CONCAT"
+            | "CONCAT_WS"
             | "SUBSTRING"
             | "TRIM"
             | "REPLACE"
@@ -63,6 +64,45 @@ fn parse_at_depth(parser: &mut Parser, depth: usize) -> Result<ConstantValue, Pa
             match input {
                 Some(value) => ConstantValue::Text(value.to_ascii_uppercase()),
                 None => ConstantValue::Null,
+            }
+        }
+        "CONCAT_WS" => {
+            let separator = text_arg(parser, depth + 1)?;
+            require(parser, Token::Comma, "CONCAT_WS requires at least one value")?;
+            let mut result = String::new();
+            let mut written = false;
+            let mut count = 0;
+            loop {
+                if count == 16 {
+                    return Err(ParseError("CONCAT_WS supports at most 16 values".into()));
+                }
+                let value = text_arg(parser, depth + 1)?;
+                if let (Some(separator), Some(value)) = (separator.as_ref(), value) {
+                    let separator_len = if written { separator.len() } else { 0 };
+                    let total = result
+                        .len()
+                        .checked_add(separator_len)
+                        .and_then(|size| size.checked_add(value.len()))
+                        .ok_or_else(|| ParseError("CONCAT_WS result is too large".into()))?;
+                    if total > MAX_TEXT_BYTES {
+                        return Err(ParseError("CONCAT_WS result is too large".into()));
+                    }
+                    if written {
+                        result.push_str(separator);
+                    }
+                    result.push_str(&value);
+                    written = true;
+                }
+                count += 1;
+                if !parser.take(Token::Comma) {
+                    break;
+                }
+            }
+            require(parser, Token::RParen, "expected ')' after CONCAT_WS arguments")?;
+            if separator.is_some() {
+                ConstantValue::Text(result)
+            } else {
+                ConstantValue::Null
             }
         }
         "CONCAT" => {
