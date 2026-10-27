@@ -55,6 +55,18 @@ class ClickBenchRunnerTests(unittest.TestCase):
             self.assertEqual(preflight(4, projection), ("unknown_requirements", []))
             self.assertEqual(preflight(4, None), (None, []))
 
+    def test_bundled_projection_selects_exact_nine_smoke_queries(self):
+        manifest = load_projection(Path(__file__).with_name("three-column-projection.json"))
+        runnable = [number for number in range(1, 44)
+                    if preflight(number, manifest)[0] is None]
+        missing = [number for number in range(1, 44)
+                   if preflight(number, manifest)[0] == "skipped_missing_columns"]
+        unknown = [number for number in range(1, 44)
+                   if preflight(number, manifest)[0] == "unknown_requirements"]
+        self.assertEqual(runnable, [1, 2, 3, 4, 5, 8, 16, 20, 30])
+        self.assertEqual(len(missing), 33)
+        self.assertEqual(unknown, [24])
+
     def test_bad_manifest_is_rejected(self):
         with tempfile.TemporaryDirectory() as directory:
             path = Path(directory) / "projection.json"
