@@ -26,6 +26,7 @@ pub(super) fn is_function(name: &str) -> bool {
         || is_power(name)
         || is_bitwise(name)
         || name.eq_ignore_ascii_case("GCD")
+        || name.eq_ignore_ascii_case("REVERSE_DIGITS")
         || name.eq_ignore_ascii_case("LCM")
         || name.eq_ignore_ascii_case("CLAMP")
 }
@@ -200,6 +201,20 @@ fn parse_gcd_lcm(parser: &mut Parser, depth: usize) -> Result<i64, ParseError> {
     i64::try_from(result).map_err(|_| overflow())
 }
 
+fn parse_reverse_digits(parser: &mut Parser, depth: usize) -> Result<i64, ParseError> {
+    require_token(parser, Token::LParen, "REVERSE_DIGITS requires '('")?;
+    let value = expression(parser, depth + 1)?;
+    require_token(parser, Token::RParen, "REVERSE_DIGITS requires ')' after argument")?;
+    let mut magnitude = value.unsigned_abs();
+    let mut reversed = 0_i128;
+    while magnitude > 0 {
+        reversed = reversed * 10 + i128::from(magnitude % 10);
+        magnitude /= 10;
+    }
+    let signed = if value < 0 { -reversed } else { reversed };
+    i64::try_from(signed).map_err(|_| overflow())
+}
+
 fn factor(parser: &mut Parser, depth: usize) -> Result<i64, ParseError> {
     if depth >= MAX_DEPTH {
         return Err(ParseError(
@@ -226,6 +241,9 @@ fn factor(parser: &mut Parser, depth: usize) -> Result<i64, ParseError> {
     }
     if matches!(parser.tokens.get(parser.index), Some(Token::Word(name)) if is_extrema(name)) {
         return parse_extrema(parser, depth);
+    }
+    if parser.keyword("REVERSE_DIGITS") {
+        return parse_reverse_digits(parser, depth);
     }
     if matches!(parser.tokens.get(parser.index), Some(Token::Word(name)) if is_function(name)) {
         let name = parser.word()?;
