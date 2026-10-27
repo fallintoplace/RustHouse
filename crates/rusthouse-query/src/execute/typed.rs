@@ -10,6 +10,17 @@ use std::path::Path;
 
 const MAX_BUFFERED_ROWS: usize = 100_000;
 
+fn remember_distinct_text(seen: &mut HashSet<Vec<u8>>, value: &[u8]) -> Result<(), ExecutionError> {
+    if seen.contains(value) {
+        return Ok(());
+    }
+    if seen.len() >= MAX_BUFFERED_ROWS {
+        return Err(ExecutionError::Invalid("too many distinct rows".into()));
+    }
+    seen.insert(value.to_vec());
+    Ok(())
+}
+
 #[derive(Clone)]
 pub(super) enum Cell {
     Numeric(Number),
@@ -933,28 +944,14 @@ pub(super) fn execute_typed<W: Write>(
                         let value = strings.get(index).ok_or_else(|| {
                             ExecutionError::Invalid("invalid String row index".into())
                         })?;
-                        if count_distinct_text.len() >= MAX_BUFFERED_ROWS
-                            && !count_distinct_text.contains(value)
-                        {
-                            return Err(ExecutionError::Invalid("too many distinct rows".into()));
-                        }
-                        if !count_distinct_text.contains(value) {
-                            count_distinct_text.insert(value.to_vec());
-                        }
+                        remember_distinct_text(&mut count_distinct_text, value)?;
                     }
                     TypedColumn::NullableText { values, nulls } => {
                         if nulls[index] == 0 {
                             let value = values.get(index).ok_or_else(|| {
                                 ExecutionError::Invalid("invalid String row index".into())
                             })?;
-                            if count_distinct_text.len() >= MAX_BUFFERED_ROWS
-                                && !count_distinct_text.contains(value)
-                            {
-                                return Err(ExecutionError::Invalid("too many distinct rows".into()));
-                            }
-                            if !count_distinct_text.contains(value) {
-                                count_distinct_text.insert(value.to_vec());
-                            }
+                            remember_distinct_text(&mut count_distinct_text, value)?;
                         }
                     }
                     column => {
