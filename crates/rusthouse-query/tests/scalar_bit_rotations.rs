@@ -10,10 +10,7 @@ fn bit_rotations_preserve_wrapping_signed_bit_patterns() {
         ("SELECT bitRotateLeft(-9223372036854775808, 1)", 1),
         ("SELECT bitRotateRight(-1, 12)", -1),
         ("SELECT bitRotateLeft(7, 0)", 7),
-        (
-            "SELECT bitRotateRight(bitRotateLeft(123456, 7), 7)",
-            123456,
-        ),
+        ("SELECT bitRotateRight(bitRotateLeft(123456, 7), 7)", 123456),
     ] {
         assert_eq!(
             parse_select(sql).unwrap().projection,
