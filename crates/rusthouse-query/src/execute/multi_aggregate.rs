@@ -103,17 +103,16 @@ fn distinct_argument(
     indices: &HashMap<String, usize>,
 ) -> Result<Option<typed::Key>, ExecutionError> {
     if let ScalarExpr::Column(name) = expression {
-        let index = indices.get(name).ok_or_else(|| {
-            ExecutionError::Invalid(format!("unknown aggregate column: {name}"))
-        })?;
+        let index = indices
+            .get(name)
+            .ok_or_else(|| ExecutionError::Invalid(format!("unknown aggregate column: {name}")))?;
         let value = typed::cell(&batch[*index], row);
         return match value {
             Cell::Null => Ok(None),
             _ => Ok(Some(value.key())),
         };
     }
-    Ok(eval_number(expression, batch, row, indices)?
-        .map(|value| Cell::Numeric(value).key()))
+    Ok(eval_number(expression, batch, row, indices)?.map(|value| Cell::Numeric(value).key()))
 }
 
 fn count_argument(
