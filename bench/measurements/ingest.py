@@ -17,18 +17,20 @@ def temperature_tenths(row):
 
 
 def write_input(path, rows, stations, delimiter="\t"):
-    """Create an input file and return its numeric min and max oracle."""
+    """Create an input file and return its min, max, and sum oracle."""
     minimum = 10**9
     maximum = -(10**9)
+    total = 0
     with path.open("w", encoding="utf-8", newline="\n") as output:
         for row in range(rows):
             value = temperature_tenths(row)
             minimum = min(minimum, value)
             maximum = max(maximum, value)
+            total += value
             output.write(
                 f"station-{row % stations:05}{delimiter}{value / 10:.1f}\n"
             )
-    return minimum / 10, maximum / 10
+    return minimum / 10, maximum / 10, total / 10
 
 
 def summarize(seconds):
@@ -39,7 +41,7 @@ def sql(binary, database, statement, timeout):
     return cli_sql(binary, database, statement, timeout).decode("utf-8").strip()
 
 
-def verify(binary, database, rows, stations, minimum, maximum, timeout):
+def verify(binary, database, rows, stations, minimum, maximum, total, timeout):
     count = int(sql(binary, database, "SELECT count(*) FROM measurements", timeout))
     distinct_stations = int(
         sql(binary, database, "SELECT count(DISTINCT station) FROM measurements", timeout)
@@ -50,15 +52,19 @@ def verify(binary, database, rows, stations, minimum, maximum, timeout):
     actual_max = float(
         sql(binary, database, "SELECT max(temperature) FROM measurements", timeout)
     )
+    actual_sum = float(
+        sql(binary, database, "SELECT sum(temperature) FROM measurements", timeout)
+    )
     if (
         count != rows
         or distinct_stations != stations
         or not math.isclose(actual_min, minimum, abs_tol=1e-9)
         or not math.isclose(actual_max, maximum, abs_tol=1e-9)
+        or not math.isclose(actual_sum, total, abs_tol=1e-6)
     ):
         raise RuntimeError(
             f"import result mismatch: count={count}, stations={distinct_stations}, "
-            f"min={actual_min}, max={actual_max}"
+            f"min={actual_min}, max={actual_max}, sum={actual_sum}"
         )
 
 
@@ -74,7 +80,7 @@ def benchmark(binary, rows, stations, runs, warmups, timeout, format_name):
         root = Path(directory)
         source = root / "measurements.txt"
         delimiter = ";" if format_name == "SSV" else "\t"
-        minimum, maximum = write_input(source, rows, stations, delimiter)
+        minimum, maximum, total = write_input(source, rows, stations, delimiter)
         size = source.stat().st_size
         timings = []
         for index in range(warmups + runs):
@@ -93,7 +99,7 @@ def benchmark(binary, rows, stations, runs, warmups, timeout, format_name):
             start = time.perf_counter_ns()
             sql(binary, database, copy, timeout)
             elapsed = (time.perf_counter_ns() - start) / 1_000_000_000
-            verify(binary, database, rows, stations, minimum, maximum, timeout)
+            verify(binary, database, rows, stations, minimum, maximum, total, timeout)
             if index >= warmups:
                 timings.append(elapsed)
     latency = summarize(timings)
