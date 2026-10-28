@@ -88,6 +88,7 @@ pub(super) fn is_function(name: &str) -> bool {
         || name.eq_ignore_ascii_case("ROUND_TO_MULTIPLE")
         || name.eq_ignore_ascii_case("PMOD")
         || name.eq_ignore_ascii_case("TRAILING_ONES")
+        || name.eq_ignore_ascii_case("TOUINT8")
 }
 
 pub(super) fn parse(parser: &mut Parser) -> Result<i64, ParseError> {
@@ -1142,6 +1143,7 @@ fn factor(parser: &mut Parser, depth: usize) -> Result<i64, ParseError> {
         } else {
             match name.to_ascii_uppercase().as_str() {
                 "TRAILING_ONES" => i64::from(first.trailing_ones()),
+                "TOUINT8" => first as u8 as i64,
                 _ => first.signum(),
             }
         };
