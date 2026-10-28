@@ -175,7 +175,7 @@ pub(super) fn execute<W: Write>(
                             distinct: HashSet::new(),
                             distinct_text: HashSet::new(),
                             distinct_uuids: HashSet::new(),
-                        byte_distinct: byte_values.then_some([0u64; 4]),
+                            byte_distinct: byte_values.then_some([0u64; 4]),
                         });
                         id
                     }
