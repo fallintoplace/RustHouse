@@ -100,7 +100,7 @@ pub(super) fn integer_type(kind: &str) -> bool {
 }
 
 pub(super) fn is_safe_grouped_count(select: &Select) -> bool {
-    matches!(select.projection, Projection::GroupedCount { .. })
+    matches!(select.projection, Projection::GroupedCount { .. } | Projection::GroupedMultiCount { .. })
         && matches!(select.source, Some(Source::Table(_)))
         && !select.distinct
         && select.rename.is_none()
