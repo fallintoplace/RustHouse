@@ -60,8 +60,12 @@ pub(super) fn compile_like(pattern: &str) -> Result<LikePattern, ExecutionError>
 }
 
 pub(super) fn next_utf8_boundary(value: &[u8], index: usize) -> Option<usize> {
-    let width = match *value.get(index)? {
-        0x00..=0x7f => 1,
+    let first = *value.get(index)?;
+    // ASCII bytes are already valid one-byte codepoints.
+    if first.is_ascii() {
+        return Some(index + 1);
+    }
+    let width = match first {
         0xc2..=0xdf => 2,
         0xe0..=0xef => 3,
         0xf0..=0xf4 => 4,
@@ -200,6 +204,15 @@ pub(super) fn like_matches_wildcards(value: &[u8], pattern: &[LikeToken], case_i
 #[cfg(test)]
 mod perf_tests {
     use super::*;
+
+    #[test]
+    fn ascii_wildcard_steps_skip_unicode_validation() {
+        assert_eq!(next_utf8_boundary(b"ascii", 0), Some(1));
+        assert_eq!(next_utf8_boundary(b"ascii", 4), Some(5));
+        assert_eq!(next_utf8_boundary(b"ascii", 5), None);
+        assert_eq!(next_utf8_boundary("é".as_bytes(), 0), Some(2));
+        assert_eq!(next_utf8_boundary(b"\xff", 0), None);
+    }
 
     #[test]
     fn ascii_contains_preserves_case_sensitivity() {

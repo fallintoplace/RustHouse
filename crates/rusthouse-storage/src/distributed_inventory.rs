@@ -35,13 +35,7 @@ pub fn inventory_snapshot(
         for entry in fs::read_dir(&part).map_err(|error| io_error(&part, error))? {
             let entry = entry.map_err(|error| io_error(&part, error))?;
             let path = entry.path();
-            let kind = entry.file_type().map_err(|error| io_error(&path, error))?;
-            if !kind.is_file() {
-                return Err(PartError::InvalidScan(format!(
-                    "replication inventory requires regular files: {}",
-                    path.display()
-                )));
-            }
+            // A single no-follow stat checks both file type and byte length.
             let metadata = fs::symlink_metadata(&path)
                 .map_err(|error| io_error(&path, error))?;
             if !metadata.file_type().is_file() {
