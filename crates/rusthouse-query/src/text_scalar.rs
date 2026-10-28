@@ -40,6 +40,7 @@ pub(super) fn is_function(name: &str) -> bool {
             | "ISVALIDJSON"
             | "JSONHAS"
             | "JSONEXTRACTSTRING"
+            | "JSONEXTRACTINT"
             | "JSONEXTRACTRAW"
             | "SUBSTRING"
             | "HASSUBSEQUENCECASEINSENSITIVE"
@@ -1844,6 +1845,24 @@ fn parse_at_depth(parser: &mut Parser, depth: usize) -> Result<ConstantValue, Pa
                             found.map(|value| value.raw()).unwrap_or("").to_owned(),
                         ),
                     }
+                }
+                _ => ConstantValue::Null,
+            }
+        }
+        "JSONEXTRACTINT" => {
+            let input = text_arg(parser, depth + 1)?;
+            require(parser, Token::Comma, "JSONExtractInt requires a path")?;
+            let path = text_arg(parser, depth + 1)?;
+            require(parser, Token::RParen, "JSONExtractInt requires two arguments")?;
+            match (input, path) {
+                (Some(input), Some(path)) => {
+                    let json = crate::json::parse_json(&input)
+                        .map_err(|error| ParseError(format!("invalid JSON: {error}")))?;
+                    let value = json
+                        .at_path(&path)
+                        .and_then(|value| value.raw().parse::<i64>().ok())
+                        .unwrap_or(0);
+                    ConstantValue::Integer(value)
                 }
                 _ => ConstantValue::Null,
             }
