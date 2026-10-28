@@ -138,6 +138,32 @@ pub(super) fn count_batch_matches(
                 };
             }
             if let CompiledTest::Comparison { operator, target } = &predicate.test {
+                if let Operator::Modulo(modulus) | Operator::ModuloNe(modulus) = *operator {
+                    let negated = matches!(operator, Operator::ModuloNe(_));
+                    if modulus != 0 {
+                        macro_rules! modulo_count {
+                            ($values:expr, $target:expr, $wide:ty) => {{
+                                let divisor = <$wide>::from(modulus);
+                                return $values.iter().filter(|&&value| {
+                                    ((<$wide>::from(value) % divisor) == $target) != negated
+                                }).count();
+                            }};
+                        }
+                        match (&batch[predicate.index], *target) {
+                            (NumericColumn::UInt8(v), Number::Unsigned(t)) => modulo_count!(v, t, u128),
+                            (NumericColumn::UInt16(v), Number::Unsigned(t)) => modulo_count!(v, t, u128),
+                            (NumericColumn::UInt32(v), Number::Unsigned(t)) => modulo_count!(v, t, u128),
+                            (NumericColumn::UInt64(v), Number::Unsigned(t)) => modulo_count!(v, t, u128),
+                            (NumericColumn::UInt128(v), Number::Unsigned(t)) => modulo_count!(v, t, u128),
+                            (NumericColumn::Int8(v), Number::Signed(t)) => modulo_count!(v, t, i128),
+                            (NumericColumn::Int16(v), Number::Signed(t)) => modulo_count!(v, t, i128),
+                            (NumericColumn::Int32(v), Number::Signed(t)) => modulo_count!(v, t, i128),
+                            (NumericColumn::Int64(v), Number::Signed(t)) => modulo_count!(v, t, i128),
+                            (NumericColumn::Int128(v), Number::Signed(t)) => modulo_count!(v, t, i128),
+                            _ => {}
+                        }
+                    }
+                }
                 if !matches!(operator, Operator::Modulo(_) | Operator::ModuloNe(_)) {
                     macro_rules! count_direct {
                         ($values:expr, $target:expr, $operator:expr, $wide:ty) => {
@@ -680,6 +706,36 @@ mod tests {
         let included = compile_in_test(values, false);
         assert!(included.matches(Number::Float(0.0)));
         assert!(!included.matches(Number::Float(f64::NAN)));
+    }
+}
+
+#[cfg(test)]
+mod stored_modulo_count_tests {
+    use super::*;
+
+    #[test]
+    fn matches_signed_and_unsigned_modulo_counts() {
+        let unsigned = vec![NumericColumn::UInt64((0..10_000).collect())];
+        let signed = vec![NumericColumn::Int64((-5_000..5_000).collect())];
+        for (batch, target, modulus) in [
+            (&unsigned, Number::Unsigned(2), 7u64),
+            (&signed, Number::Signed(-2), 7u64),
+        ] {
+            for negated in [false, true] {
+                let branches = vec![vec![CompiledPredicate {
+                    index: 0,
+                    test: CompiledTest::Comparison {
+                        operator: if negated { Operator::ModuloNe(modulus) }
+                                  else { Operator::Modulo(modulus) },
+                        target,
+                    },
+                }]];
+                let expected = (0..batch[0].len())
+                    .filter(|&row| batch_matches(batch, row, &branches))
+                    .count();
+                assert_eq!(count_batch_matches(batch, &branches), expected);
+            }
+        }
     }
 }
 
