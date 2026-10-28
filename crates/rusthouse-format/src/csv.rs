@@ -199,11 +199,16 @@ mod quote_batching_tests {
             self.bytes.extend_from_slice(data);
             Ok(data.len())
         }
-        fn flush(&mut self) -> io::Result<()> { Ok(()) }
+        fn flush(&mut self) -> io::Result<()> {
+            Ok(())
+        }
     }
     #[test]
     fn quote_heavy_large_field_uses_bounded_writes() {
-        let mut writer = Counted { writes: 0, bytes: Vec::new() };
+        let mut writer = Counted {
+            writes: 0,
+            bytes: Vec::new(),
+        };
         let input = vec![b'"'; 10_000];
         write_quoted_csv_field(&mut writer, &input).unwrap();
         assert_eq!(writer.bytes.len(), 20_002);
@@ -220,7 +225,9 @@ mod quote_batching_tests {
         let mut expected = vec![b'"'];
         for &byte in &input {
             expected.push(byte);
-            if byte == b'"' { expected.push(b'"'); }
+            if byte == b'"' {
+                expected.push(b'"');
+            }
         }
         expected.push(b'"');
         assert_eq!(output, expected);
