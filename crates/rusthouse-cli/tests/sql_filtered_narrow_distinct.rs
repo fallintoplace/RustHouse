@@ -22,7 +22,10 @@ fn filtered_narrow_distinct_retains_exact_bitmap_semantics() {
         assert!(output.status.success(), "{query}: {output:?}");
     }
     for (query, expected) in [
-        ("SELECT count(DISTINCT signed_key) FROM events WHERE flag = 1", 3),
+        (
+            "SELECT count(DISTINCT signed_key) FROM events WHERE flag = 1",
+            3,
+        ),
         ("SELECT count(DISTINCT key) FROM events WHERE flag = 0", 2),
         ("SELECT count(DISTINCT key) FROM events WHERE flag = 2", 0),
         ("SELECT count(DISTINCT key) FROM events", 3),
@@ -30,7 +33,11 @@ fn filtered_narrow_distinct_retains_exact_bitmap_semantics() {
         let output = sql(query, &db);
         assert!(output.status.success(), "{query}: {output:?}");
         let actual = String::from_utf8(output.stdout).unwrap();
-        assert_eq!(actual.lines().last().unwrap().parse::<u64>().unwrap(), expected, "{query}");
+        assert_eq!(
+            actual.lines().last().unwrap().parse::<u64>().unwrap(),
+            expected,
+            "{query}"
+        );
     }
     fs::remove_dir_all(db).unwrap();
 }

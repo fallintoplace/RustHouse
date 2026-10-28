@@ -46,16 +46,16 @@ fn orders_grouped_sum_and_avg_by_result_value() {
         &db,
     );
     assert!(averages.status.success(), "{averages:?}");
-    assert_eq!(
-        averages.stdout,
-        b"category\tavg(amount)\nEU\t15\nAU\t12\n"
-    );
+    assert_eq!(averages.stdout, b"category\tavg(amount)\nEU\t15\nAU\t12\n");
     fs::remove_dir_all(db).unwrap();
 }
 
 #[test]
 fn orders_generated_grouped_values_by_sum() {
-    let db = std::env::temp_dir().join(format!("rusthouse-order-metrics-generated-{}", std::process::id()));
+    let db = std::env::temp_dir().join(format!(
+        "rusthouse-order-metrics-generated-{}",
+        std::process::id()
+    ));
     let result = sql(
         "SELECT number, sum(number) FROM numbers(5) GROUP BY number ORDER BY 2 DESC LIMIT 2",
         &db,
