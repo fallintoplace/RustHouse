@@ -137,6 +137,11 @@ pub enum Projection {
         column: String,
         bins: usize,
     },
+    GroupedHistogram {
+        column: String,
+        value_column: String,
+        bins: usize,
+    },
     GroupedCount {
         column: String,
     },
@@ -491,6 +496,10 @@ impl Parser {
                     2 => "count".into(),
                     _ => return Err(ParseError("ORDER BY position is out of range".into())),
                 },
+                Projection::GroupedHistogram { column, .. } => match position {
+                    1 => column.clone(),
+                    _ => return Err(ParseError("grouped histogram ORDER BY needs GROUP BY key".into())),
+                },
                 Projection::GroupedMultiCount { columns }
                 | Projection::GroupedMultiDistinctCount { columns, .. } => {
                     if position == columns.len() + 1 {
@@ -805,9 +814,30 @@ fn parse_select_tokens(tokens: Vec<Token>) -> Result<Select, ParseError> {
         let mut columns = vec![parser.word()?];
         let mut grouped_count = false;
         let mut grouped_distinct = None;
+        let mut grouped_histogram = None;
         let mut grouped_aggregate = None;
         let mut grouped_aggregates = None;
         while parser.take(Token::Comma) {
+            if matches!(parser.tokens.get(parser.index), Some(Token::Word(word)) if word.eq_ignore_ascii_case("HISTOGRAM"))
+                && parser.tokens.get(parser.index + 1) == Some(&Token::LParen)
+            {
+                parser.keyword("HISTOGRAM");
+                parser.take(Token::LParen);
+                let bins = parser.number()?.parse::<usize>()
+                    .map_err(|_| ParseError("histogram bin count must be an integer".into()))?;
+                if !(1..=256).contains(&bins) {
+                    return Err(ParseError("grouped histogram supports 1 to 256 bins".into()));
+                }
+                if !parser.take(Token::RParen) || !parser.take(Token::LParen) {
+                    return Err(ParseError("grouped histogram requires histogram(bins)(column)".into()));
+                }
+                let value_column = parser.word()?;
+                if !parser.take(Token::RParen) {
+                    return Err(ParseError("expected ')' after grouped histogram".into()));
+                }
+                grouped_histogram = Some((value_column, bins));
+                break;
+            }
             if matches!(parser.tokens.get(parser.index), Some(Token::Word(word)) if word.eq_ignore_ascii_case("COUNT"))
                 && parser.tokens.get(parser.index + 1) == Some(&Token::LParen)
                 && !matches!(
@@ -989,6 +1019,15 @@ fn parse_select_tokens(tokens: Vec<Token>) -> Result<Select, ParseError> {
                 }
             } else {
                 Projection::GroupedMultiDistinctCount { columns, value_column }
+            }
+        } else if let Some((value_column, bins)) = grouped_histogram {
+            if columns.len() != 1 {
+                return Err(ParseError("grouped histogram supports one GROUP BY dimension".into()));
+            }
+            Projection::GroupedHistogram {
+                column: columns.remove(0),
+                value_column,
+                bins,
             }
         } else if let Some((function, value_column)) = grouped_aggregate {
             Projection::GroupedAggregate {
@@ -1384,6 +1423,7 @@ fn parse_select_tokens(tokens: Vec<Token>) -> Result<Select, ParseError> {
             match &projection {
                 Projection::GroupedCount { column }
                 | Projection::GroupedDistinctCount { column, .. }
+                | Projection::GroupedHistogram { column, .. }
                 | Projection::GroupedAggregate { column, .. }
                 | Projection::GroupedAggregates { column, .. }
                     if position == 1 =>
@@ -1415,11 +1455,13 @@ fn parse_select_tokens(tokens: Vec<Token>) -> Result<Select, ParseError> {
                 if columns == &group_columns => {}
             Projection::GroupedCount { column }
             | Projection::GroupedDistinctCount { column, .. }
+            | Projection::GroupedHistogram { column, .. }
             | Projection::GroupedAggregate { column, .. }
             | Projection::GroupedAggregates { column, .. }
                 if group_columns.len() == 1 && column == &group_columns[0] => {}
             Projection::GroupedCount { .. }
             | Projection::GroupedDistinctCount { .. }
+            | Projection::GroupedHistogram { .. }
             | Projection::GroupedMultiDistinctCount { .. }
             | Projection::GroupedMultiCount { .. }
             | Projection::GroupedAggregate { .. }
@@ -1439,6 +1481,7 @@ fn parse_select_tokens(tokens: Vec<Token>) -> Result<Select, ParseError> {
         projection,
         Projection::GroupedCount { .. }
             | Projection::GroupedDistinctCount { .. }
+            | Projection::GroupedHistogram { .. }
             | Projection::GroupedMultiDistinctCount { .. }
             | Projection::GroupedMultiCount { .. }
             | Projection::GroupedAggregate { .. }
@@ -1556,6 +1599,7 @@ fn parse_select_tokens(tokens: Vec<Token>) -> Result<Select, ParseError> {
         projection,
         Projection::GroupedCount { .. }
             | Projection::GroupedDistinctCount { .. }
+            | Projection::GroupedHistogram { .. }
             | Projection::GroupedMultiDistinctCount { .. }
             | Projection::GroupedMultiCount { .. }
     ) {
@@ -1593,6 +1637,15 @@ fn parse_select_tokens(tokens: Vec<Token>) -> Result<Select, ParseError> {
             .any(|order| &order.column != column && order.column != "count")
         {
             return Err(ParseError("grouped ORDER BY must use the group key".into()));
+        }
+    }
+    if let Projection::GroupedHistogram { column, .. } = &projection {
+        if order_by
+            .iter()
+            .chain(order_by_extra.iter())
+            .any(|term| &term.column != column)
+        {
+            return Err(ParseError("grouped histogram ORDER BY requires the group key".into()));
         }
     }
     if let Projection::GroupedMultiCount { columns }
