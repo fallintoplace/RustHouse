@@ -74,6 +74,13 @@ pub fn replicas_for(
         .iter()
         .map(|node| (score_with_seed(seed, node), node.as_str()))
         .collect();
+    if replicas < ranked.len() {
+        // Partition the ranking when only a prefix is requested.
+        ranked.select_nth_unstable_by(replicas, |left, right| {
+            right.0.cmp(&left.0).then_with(|| left.1.cmp(right.1))
+        });
+        ranked.truncate(replicas);
+    }
     ranked.sort_unstable_by(|left, right| {
         right.0.cmp(&left.0).then_with(|| left.1.cmp(right.1))
     });
@@ -241,6 +248,17 @@ mod tests {
             let shard = format!("weighted_{index}");
             let first = weighted_replicas_for(&shard, &weighted, 1).unwrap();
             let all = weighted_replicas_for(&shard, &weighted, weighted.len()).unwrap();
+            assert_eq!(first[0], all[0]);
+        }
+    }
+
+    #[test]
+    fn one_pass_primary_matches_full_rendezvous_ranking() {
+        let nodes = (0..64).map(|index| format!("node_{index}")).collect::<Vec<_>>();
+        for index in 0..64 {
+            let shard = format!("shard_{index}");
+            let first = replicas_for(&shard, &nodes, 1).unwrap();
+            let all = replicas_for(&shard, &nodes, nodes.len()).unwrap();
             assert_eq!(first[0], all[0]);
         }
     }
