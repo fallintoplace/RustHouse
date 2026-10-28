@@ -10,16 +10,16 @@ fn checked_string_length(column: &TypedColumn, row: usize) -> Result<Option<usiz
     let missing = || ExecutionError::Invalid("missing LENGTH string value in batch".into());
     match column {
         TypedColumn::Text(values) => values
-            .get(row)
-            .map(|value| Some(value.len()))
+            .byte_length(row)
+            .map(Some)
             .ok_or_else(missing),
         TypedColumn::NullableText { values, nulls } => {
             if *nulls.get(row).ok_or_else(missing)? != 0 {
                 Ok(None)
             } else {
                 values
-                    .get(row)
-                    .map(|value| Some(value.len()))
+                    .byte_length(row)
+                    .map(Some)
                     .ok_or_else(missing)
             }
         }
@@ -86,12 +86,21 @@ pub(super) fn execute<W: Write>(
         return Ok(());
     }
 
-    let mut reader = TypedQueryReader::open(part, &names)?;
+    let mut reader = TypedQueryReader::open_with_metadata(part, &names, &metadata)?;
     let mut skipped = 0usize;
     let mut written = 0usize;
     let offset = query.offset.unwrap_or(0);
     let limit = query.limit.unwrap_or(usize::MAX);
     let no_filters = query.predicates.is_empty() && query.or_predicates.is_empty();
+    // Reuse typed mark skipping: LENGTH only needs rows after OFFSET when
+    // neither filtering, sorting nor deduplication changes row positions.
+    if no_filters
+        && query.order_by.is_none()
+        && query.order_by_extra.is_empty()
+        && !query.distinct
+    {
+        skipped = reader.skip_prefix_rows(offset)?;
+    }
     while let Some(batch) = reader.next_batch()? {
         let rows = batch
             .first()

@@ -127,4 +127,24 @@ mod tests {
         assert!(QuorumPolicy::new(0, 0, 0).is_err());
         assert!(QuorumPolicy::new(17, 9, 9).is_err());
     }
+    #[test]
+    fn all_accepted_quorum_policies_intersect() {
+        for replicas in 1..=16 {
+            for reads in 1..=replicas {
+                for writes in 1..=replicas {
+                    let policy = QuorumPolicy::new(replicas, reads, writes);
+                    let safe = reads + writes > replicas && writes > replicas / 2;
+                    assert_eq!(policy.is_ok(), safe, "{replicas}:{reads}:{writes}");
+                    if let Ok(policy) = policy {
+                        assert!(!policy.can_read(reads - 1));
+                        assert!(policy.can_read(reads));
+                        assert!(!policy.can_write(writes - 1));
+                        assert!(policy.can_write(writes));
+                        assert!(!policy.can_write(replicas + 1));
+                    }
+                }
+            }
+        }
+    }
+
 }

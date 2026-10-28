@@ -86,10 +86,14 @@ fn read_metadata(path: &Path, max_bytes: u64) -> Result<String, PartError> {
 }
 
 fn parse_count(content: &str) -> Result<u64, PartError> {
-    content
+    let digits = content
         .strip_suffix("\r\n")
         .or_else(|| content.strip_suffix('\n'))
-        .unwrap_or(content)
+        .unwrap_or(content);
+    if digits.is_empty() || !digits.bytes().all(|byte| byte.is_ascii_digit()) {
+        return Err(PartError::InvalidCount(content.to_owned()));
+    }
+    digits
         .parse()
         .map_err(|_| PartError::InvalidCount(content.to_owned()))
 }
@@ -222,6 +226,8 @@ mod tests {
             "42\r\n\n",
             "42\r",
             "-1\n",
+            "+42\n",
+            "+0",
             "18446744073709551616\n",
         ] {
             assert!(
