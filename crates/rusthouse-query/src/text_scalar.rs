@@ -12,6 +12,7 @@ pub(super) fn is_function(name: &str) -> bool {
             | "OCTET_LENGTH"
             | "ASCII"
             | "UTF16_LENGTH"
+            | "TOMONTHNUMSINCEEPOCH"
             | "HASSUBSEQUENCE"
             | "CHR"
             | "STRINGBYTESUNIQ"
@@ -265,6 +266,23 @@ fn parse_at_depth(parser: &mut Parser, depth: usize) -> Result<ConstantValue, Pa
                         output.push(char::from(DIGITS[usize::from(byte & 15)]));
                     }
                     ConstantValue::Text(output)
+                }
+                None => ConstantValue::Null,
+            }
+        }
+        "TOMONTHNUMSINCEEPOCH" => {
+            let input = text_arg(parser, depth + 1)?;
+            require(parser, Token::RParen, "toMonthNumSinceEpoch requires one argument")?;
+            match input {
+                Some(value) => {
+                    if rusthouse_storage::parse_date(&value).is_none() {
+                        return Err(ParseError("invalid Date argument".into()));
+                    }
+                    let year = value[..4].parse::<i64>()
+                        .map_err(|_| ParseError("invalid Date year".into()))?;
+                    let month = value[5..7].parse::<i64>()
+                        .map_err(|_| ParseError("invalid Date month".into()))?;
+                    ConstantValue::Integer((year - 1970) * 12 + month - 1)
                 }
                 None => ConstantValue::Null,
             }
