@@ -500,6 +500,67 @@ pub(super) fn execute_count_column_part<W: Write>(
     Ok(())
 }
 
+
+/// Merge exact distinct-value bitmaps from disjoint physical part scans.
+/// Unlike a hash set, memory is bounded by the 16-bit value domain and
+/// independent of the number of input rows.
+fn parallel_exact_narrow_distinct(
+    part: &Path,
+    scan_columns: &[String],
+    comparisons: &[Vec<super::predicates::CompiledPredicate>],
+    no_filters: bool,
+    domain: usize,
+) -> Result<Option<u64>, ExecutionError> {
+    let parts = rusthouse_storage::query_parts(part)?;
+    let workers = std::thread::available_parallelism()
+        .map_or(1, |parallelism| parallelism.get())
+        .min(4);
+    if workers < 2 || parts.len() < 16 {
+        return Ok(None);
+    }
+    let chunk_size = parts.len().div_ceil(workers);
+    let chunks = std::thread::scope(|scope| {
+        let handles = parts.chunks(chunk_size).map(|paths| {
+            scope.spawn(move || -> Result<Vec<u64>, ExecutionError> {
+                let mut bits = vec![0u64; domain / 64];
+                for path in paths {
+                    let mut reader = rusthouse_storage::NumericPartReader::open(path, scan_columns)?;
+                    while let Some(batch) = reader.next_batch()? {
+                        for row in 0..batch[0].len() {
+                            if !no_filters && !batch_matches(&batch, row, comparisons) {
+                                continue;
+                            }
+                            let slot = match &batch[0] {
+                                NumericColumn::UInt8(values) => usize::from(values[row]),
+                                NumericColumn::Int8(values) => usize::from(values[row] as u8),
+                                NumericColumn::UInt16(values) => usize::from(values[row]),
+                                NumericColumn::Int16(values) => usize::from(values[row] as u16),
+                                _ => return Err(ExecutionError::Invalid(
+                                    "unexpected narrow distinct column".into(),
+                                )),
+                            };
+                            bits[slot / 64] |= 1u64 << (slot % 64);
+                        }
+                    }
+                }
+                Ok(bits)
+            })
+        }).collect::<Vec<_>>();
+        handles.into_iter().map(|handle| handle.join().unwrap_or_else(|_| {
+            Err(ExecutionError::Invalid("distinct worker panicked".into()))
+        })).collect::<Vec<_>>()
+    });
+    let mut bits = vec![0u64; domain / 64];
+    for chunk in chunks {
+        for (dest, value) in bits.iter_mut().zip(chunk?) {
+            *dest |= value;
+        }
+    }
+    Ok(Some(
+        bits.iter().map(|word| u64::from(word.count_ones())).sum(),
+    ))
+}
+
 pub(super) fn execute_count_distinct_part<W: Write>(
     query: &Select,
     part: &Path,
@@ -537,6 +598,14 @@ pub(super) fn execute_count_distinct_part<W: Write>(
         });
     if query.order_by.is_none() && query.order_by_extra.is_empty() {
         if let Some(domain) = domain {
+            if let Some(count) = parallel_exact_narrow_distinct(
+                part, &scan_columns, &comparisons, no_filters, domain,
+            )? {
+                if query.offset.unwrap_or(0) == 0 {
+                    writeln!(output, "{count}")?;
+                }
+                return Ok(());
+            }
             let mut bits = vec![0u64; domain / 64];
             while let Some(batch) = reader.next_batch()? {
                 // Narrow values remain in their native array. Apply WHERE
