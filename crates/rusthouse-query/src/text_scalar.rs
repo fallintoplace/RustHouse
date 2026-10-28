@@ -60,6 +60,7 @@ pub(super) fn is_function(name: &str) -> bool {
             | "STRIP_SUFFIX"
             | "REPEAT"
             | "BASE64_DECODE"
+            | "APPENDTRAILINGCHARIFABSENT"
             | "RPAD"
             | "SPACE"
     )
@@ -1108,6 +1109,29 @@ fn parse_at_depth(parser: &mut Parser, depth: usize) -> Result<ConstantValue, Pa
                     .parse::<i64>()
                     .map_or(ConstantValue::Null, ConstantValue::Integer),
                 None => ConstantValue::Null,
+            }
+        }
+        "APPENDTRAILINGCHARIFABSENT" => {
+            let input = text_arg(parser, depth + 1)?;
+            require(parser, Token::Comma, "appendTrailingCharIfAbsent requires a character")?;
+            let ending = text_arg(parser, depth + 1)?;
+            require(parser, Token::RParen, "expected ')' after appendTrailingCharIfAbsent")?;
+            match (input, ending) {
+                (Some(mut input), Some(ending)) => {
+                    if ending.chars().count() != 1 {
+                        return Err(ParseError(
+                            "appendTrailingCharIfAbsent requires exactly one character".into(),
+                        ));
+                    }
+                    if !input.is_empty() && !input.ends_with(&ending) {
+                        if input.len().checked_add(ending.len()).unwrap_or(usize::MAX) > MAX_TEXT_BYTES {
+                            return Err(ParseError("appendTrailingCharIfAbsent result is too large".into()));
+                        }
+                        input.push_str(&ending);
+                    }
+                    ConstantValue::Text(input)
+                }
+                _ => ConstantValue::Null,
             }
         }
         "RPAD" => {
