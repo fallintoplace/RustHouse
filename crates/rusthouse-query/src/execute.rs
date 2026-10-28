@@ -6,6 +6,51 @@ mod dynamic_part_tests {
     use super::*;
 
     #[test]
+    fn countif_numeric_batch_preserves_nan_truthiness() {
+        assert_eq!(count_nonzero_batch(&NumericColumn::Float64(vec![
+            0.0, -0.0, 2.0, -1.5, f64::NAN
+        ])), 3);
+        assert_eq!(count_nonzero_batch(&NumericColumn::Int64(vec![
+            0, -1, 8, 0, -10
+        ])), 3);
+    }
+
+    #[test]
+    fn parallel_countif_handles_many_immutable_parts_and_filters() {
+        use rusthouse_storage::{Column, write_wide_part};
+        use std::fs;
+        static NEXT: AtomicUsize = AtomicUsize::new(0);
+        let root = std::env::temp_dir().join(format!(
+            "rusthouse-countif-parallel-{}-{}",
+            std::process::id(), NEXT.fetch_add(1, AtomicOrdering::Relaxed)
+        ));
+        fs::create_dir(&root).unwrap();
+        let columns = vec![
+            Column { name: "id".into(), data_type: "UInt64".into() },
+            Column { name: "flag".into(), data_type: "Int64".into() },
+        ];
+        for part in 0..40 {
+            let path = root.join(format!("all_{part}_{part}_0"));
+            write_wide_part(&path, &columns, &[
+                vec![Some((part * 2).to_string()), Some("0".into())],
+                vec![Some((part * 2 + 1).to_string()), Some("-1".into())],
+            ]).unwrap();
+        }
+        let query = crate::parse_select(
+            "SELECT countIf(flag) FROM part WHERE id >= 30"
+        ).unwrap();
+        let expected = 25;
+        let result = parallel_count_if(&query, &root).unwrap();
+        if std::thread::available_parallelism().map_or(1, |p| p.get()) >= 2 {
+            assert_eq!(result, Some(expected));
+        }
+        let mut output = Vec::new();
+        execute(&query, Some(&root), &mut output).unwrap();
+        assert_eq!(output, b"countIf(flag)\n25\n");
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
     fn workers_claim_every_part_once_even_for_uneven_shares() {
         let cursor = AtomicUsize::new(0);
         let mut indices = std::thread::scope(|scope| {
@@ -887,6 +932,155 @@ fn parallel_integer_sum(
     Ok(Some(sum))
 }
 
+/// Count nonzero native numeric values directly from a decoded column.
+fn count_nonzero_batch(column: &NumericColumn) -> u64 {
+    macro_rules! count {
+        ($values:expr) => {
+            $values.iter().filter(|&&value| value != 0 as _).count() as u64
+        };
+    }
+    match column {
+        NumericColumn::UInt8(values) => count!(values),
+        NumericColumn::UInt16(values) => count!(values),
+        NumericColumn::UInt32(values) => count!(values),
+        NumericColumn::UInt64(values) => count!(values),
+        NumericColumn::UInt128(values) => count!(values),
+        NumericColumn::Int8(values) => count!(values),
+        NumericColumn::Int16(values) => count!(values),
+        NumericColumn::Int32(values) => count!(values),
+        NumericColumn::Int64(values) => count!(values),
+        NumericColumn::Int128(values) => count!(values),
+        NumericColumn::Float32(values) => count!(values),
+        NumericColumn::Float64(values) => count!(values),
+    }
+}
+
+fn parallel_count_if(query: &Select, source: &Path) -> Result<Option<u64>, ExecutionError> {
+    let Projection::Aggregate { function: AggregateFunction::CountIf, column } = &query.projection
+    else { return Ok(None); };
+    if query.distinct || query.limit.is_some() || query.offset.is_some()
+        || query.order_by.is_some() || !query.order_by_extra.is_empty()
+        || query.having.is_some()
+    {
+        return Ok(None);
+    }
+    let parts = rusthouse_storage::query_parts(source)?;
+    let workers = std::thread::available_parallelism()
+        .map_or(1, |parallelism| parallelism.get()).min(4);
+    if workers < 2 || (parts.len() < 32 && parts.len() != 1) {
+        return Ok(None);
+    }
+    let metadata = inspect_query_source(source)?;
+    let supported = |name: &str| -> Result<bool, ExecutionError> {
+        let found = metadata.columns.iter().find(|c| c.name == name)
+            .ok_or_else(|| ExecutionError::Invalid(format!("unknown column: {name}")))?;
+        Ok(matches!(found.data_type.as_str(),
+            "Int8" | "Int16" | "Int32" | "Int64" | "Int128"
+            | "UInt8" | "UInt16" | "UInt32" | "UInt64" | "UInt128"
+            | "Float32" | "Float64"))
+    };
+    if !supported(column)? {
+        return Ok(None);
+    }
+    for predicate in query.predicates.iter().chain(query.or_predicates.iter().flatten()) {
+        if !supported(predicate.column())? { return Ok(None); }
+    }
+    let mut columns = vec![column.clone()];
+    let branches = compile_part_where(query, &mut columns, |name, literal| {
+        let kind = metadata.columns.iter().find(|c| c.name == name)
+            .ok_or_else(|| ExecutionError::Invalid(format!("unknown WHERE column: {name}")))?;
+        parse_numeric(&kind.data_type, literal)
+    })?;
+    let no_filters = query.predicates.is_empty() && query.or_predicates.is_empty();
+    let scan = |reader: &mut rusthouse_storage::NumericPartReader,
+                limit: Option<usize>| -> Result<u64, ExecutionError> {
+        let mut total = 0u64;
+        let mut batches = 0usize;
+        loop {
+            if limit.is_some_and(|limit| batches >= limit) { break; }
+            let Some(batch) = reader.next_batch()? else { break; };
+            let matches = if no_filters {
+                count_nonzero_batch(&batch[0])
+            } else {
+                let mut count = 0u64;
+                for row in 0..batch[0].len() {
+                    if batch_matches(&batch, row, &branches) {
+                        let truthy = match number_at(&batch[0], row) {
+                            Number::Signed(value) => value != 0,
+                            Number::Unsigned(value) => value != 0,
+                            Number::Float(value) => value != 0.0,
+                        };
+                        count += u64::from(truthy);
+                    }
+                }
+                count
+            };
+            total = total.checked_add(matches)
+                .ok_or_else(|| ExecutionError::Invalid("COUNTIF overflow".into()))?;
+            batches += 1;
+        }
+        Ok(total)
+    };
+    let total = if parts.len() == 1 {
+        let part = &parts[0];
+        let reference = rusthouse_storage::NumericPartReader::open(part, &columns)?;
+        let marks = reference.mark_count();
+        if marks < 64 { return Ok(None); }
+        let chunk = marks.div_ceil(workers);
+        std::thread::scope(|scope| -> Result<u64, ExecutionError> {
+            let handles = (0..marks).step_by(chunk).map(|start| {
+                let columns = &columns;
+                let scan = &scan;
+                scope.spawn(move || {
+                    let mut reader = rusthouse_storage::NumericPartReader::open(part, columns)?;
+                    reader.seek_to_mark(start)?;
+                    scan(&mut reader, Some((marks - start).min(chunk)))
+                })
+            }).collect::<Vec<_>>();
+            let mut total = 0u64;
+            for handle in handles {
+                let partial = handle.join().map_err(|_| {
+                    ExecutionError::Invalid("COUNTIF worker panicked".into())
+                })??;
+                total = total.checked_add(partial)
+                    .ok_or_else(|| ExecutionError::Invalid("COUNTIF overflow".into()))?;
+            }
+            Ok(total)
+        })?
+    } else {
+        let next = AtomicUsize::new(0);
+        std::thread::scope(|scope| -> Result<u64, ExecutionError> {
+            let handles = (0..workers).map(|_| {
+                let scan = &scan;
+                let columns = &columns;
+                let parts = &parts;
+                let next = &next;
+                scope.spawn(move || -> Result<u64, ExecutionError> {
+                    let mut total = 0u64;
+                    while let Some(index) = next_part_index(next, parts.len()) {
+                        let mut reader =
+                            rusthouse_storage::NumericPartReader::open(&parts[index], columns)?;
+                        let partial = scan(&mut reader, None)?;
+                        total = total.checked_add(partial)
+                            .ok_or_else(|| ExecutionError::Invalid("COUNTIF overflow".into()))?;
+                    }
+                    Ok(total)
+                })
+            }).collect::<Vec<_>>();
+            let mut total = 0u64;
+            for handle in handles {
+                let partial = handle.join().map_err(|_| {
+                    ExecutionError::Invalid("COUNTIF worker panicked".into())
+                })??;
+                total = total.checked_add(partial)
+                    .ok_or_else(|| ExecutionError::Invalid("COUNTIF overflow".into()))?;
+            }
+            Ok(total)
+        })?
+    };
+    Ok(Some(total))
+}
+
 fn execute_into<W: Write>(
     query: &Select,
     part: Option<&Path>,
@@ -949,6 +1143,14 @@ fn execute_into<W: Write>(
     let part = part.ok_or_else(|| {
         ExecutionError::Invalid("pass --part <directory> for table queries".into())
     })?;
+    if let Some(count) = parallel_count_if(query, part)? {
+        let Projection::Aggregate { column, .. } = &query.projection else {
+            unreachable!("parallel_count_if requires COUNTIF projection")
+        };
+        write_header(query, output, &format!("countIf({column})"))?;
+        writeln!(output, "{count}")?;
+        return Ok(());
+    }
     if let Some(count) = parallel_filtered_count(query, part)? {
         write_header(query, output, "count")?;
         writeln!(output, "{count}")?;
