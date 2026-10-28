@@ -97,6 +97,19 @@ class ClickBenchRunnerTests(unittest.TestCase):
         self.assertEqual(wrong["status"], "mismatch")
         self.assertFalse(wrong["timings_seconds"])
 
+    def test_late_reference_mismatch_discards_all_timings(self):
+        calls = 0
+
+        def changing(_sql):
+            nonlocal calls
+            calls += 1
+            return b"ok\n" if calls == 1 else b"wrong\n"
+
+        result = benchmark_one(1, "SELECT 1", changing, 3, 0, b"ok\n")
+        self.assertEqual(result["status"], "mismatch")
+        self.assertEqual(result["timings_seconds"], [])
+        self.assertIsNone(result["latency"])
+
     def test_errors_are_separate_from_missing_columns(self):
         def parse_error(_):
             raise RuntimeError("SQL parse error: unexpected JOIN")
