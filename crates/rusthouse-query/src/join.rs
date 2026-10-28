@@ -239,11 +239,11 @@ pub fn parse_join(sql: &str) -> Result<Option<JoinSelect>, ParseError> {
         {
             return Err(ParseError("joined tables require distinct aliases".into()));
         }
-        if (step_any && !matches!(step_kind, JoinType::Inner | JoinType::Left))
-            || (any && !matches!(kind, JoinType::Inner | JoinType::Left))
+        if (step_any && !matches!(step_kind, JoinType::Inner | JoinType::Left | JoinType::Right))
+            || (any && !matches!(kind, JoinType::Inner | JoinType::Left | JoinType::Right))
         {
             return Err(ParseError(
-                "chained ANY JOIN supports only INNER and LEFT joins".into(),
+                "chained ANY JOIN supports only INNER, LEFT and RIGHT joins".into(),
             ));
         }
         let (step_keys, step_using) = if parser.keyword("USING") {
@@ -281,6 +281,18 @@ pub fn parse_join(sql: &str) -> Result<Option<JoinSelect>, ParseError> {
                     ));
                 }
                 let second = qualified(&mut parser)?;
+                for column in [&first, &second] {
+                    if column.relation != left_alias
+                        && column.relation != right_alias
+                        && column.relation != alias
+                        && !steps.iter().any(|step| step.alias == column.relation)
+                    {
+                        return Err(ParseError(format!(
+                            "unknown JOIN qualifier: {}",
+                            column.relation
+                        )));
+                    }
+                }
                 keys.push((first, second));
                 if !parser.keyword("AND") {
                     break;
@@ -427,7 +439,7 @@ pub fn explain_join(query: &JoinSelect) -> String {
         .collect::<Vec<_>>()
         .join(" AND ");
     let mut plan = format!(
-        "Source: table {} AS {}\nSource: table {} AS {}\nJoin: {}{:?} ON {}\nProject: {}\nLimit: {}",
+        "Source: table {} AS {}\nSource: table {} AS {}\nJoin: {}{:?} ON {}",
         query.left,
         query.left_alias,
         query.right,
@@ -435,16 +447,6 @@ pub fn explain_join(query: &JoinSelect) -> String {
         if query.any { "Any " } else { "" },
         query.kind,
         conditions,
-        query.columns.as_ref().map_or("*".to_owned(), |columns| {
-            columns
-                .iter()
-                .map(|col| format!("{}.{}", col.relation, col.name))
-                .collect::<Vec<_>>()
-                .join(", ")
-        }),
-        query
-            .limit
-            .map_or("unbounded".to_owned(), |n| n.to_string())
     );
     for step in &query.steps {
         let conditions = step.keys.iter()
@@ -460,6 +462,19 @@ pub fn explain_join(query: &JoinSelect) -> String {
             step.table, step.alias, if step.any { "Any " } else { "" }, step.kind, predicate
         ));
     }
+    plan.push_str(&format!(
+        "\nProject: {}\nLimit: {}",
+        query.columns.as_ref().map_or("*".to_owned(), |columns| {
+            columns
+                .iter()
+                .map(|col| format!("{}.{}", col.relation, col.name))
+                .collect::<Vec<_>>()
+                .join(", ")
+        }),
+        query
+            .limit
+            .map_or("unbounded".to_owned(), |n| n.to_string())
+    ));
     if !query.using_keys.is_empty() {
         plan.push_str(&format!("\nUsing: {}", query.using_keys.join(", ")));
     }
@@ -502,6 +517,34 @@ pub fn explain_join(query: &JoinSelect) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn chained_join_rejects_unknown_on_qualifiers_at_parse_time() {
+        for statement in [
+            "SELECT * FROM a x JOIN b y ON x.id = y.id JOIN c z ON missing.id = z.id",
+            "SELECT * FROM a x JOIN b y ON x.id = y.id JOIN c z ON z.id = missing.id",
+        ] {
+            assert!(parse_join(statement).is_err(), "{statement}");
+        }
+        assert!(parse_join(
+            "SELECT * FROM a x JOIN b y ON x.id = y.id JOIN c z ON x.id = z.id",
+        )
+        .is_ok());
+    }
+
+    #[test]
+    fn explain_lists_chained_sources_before_project_and_limit() {
+        let query = parse_join(
+            "SELECT x.id FROM a x JOIN b y ON x.id = y.id JOIN c z ON y.id = z.id LIMIT 3",
+        )
+        .unwrap()
+        .unwrap();
+        let plan = explain_join(&query);
+        let step = plan.find("Source: table c AS z").unwrap();
+        let project = plan.find("Project: x.id").unwrap();
+        let limit = plan.find("Limit: 3").unwrap();
+        assert!(step < project && project < limit, "{plan}");
+    }
 
     #[test]
     fn chained_joins_accept_explicit_all_strictness() {
@@ -634,7 +677,7 @@ mod tests {
         assert_eq!(query.steps[0].keys[0].0.relation, "c");
         assert_eq!(query.order_by[0].0.relation, "o");
         assert!(parse_join("SELECT * FROM a x JOIN b y ON x.id = y.id JOIN c x ON y.id = x.id").is_err());
-        assert!(parse_join("SELECT * FROM a x JOIN b y ON x.id = y.id RIGHT ANY JOIN c z ON y.id = z.id").is_err());
+        assert!(parse_join("SELECT * FROM a x JOIN b y ON x.id = y.id RIGHT ANY JOIN c z ON y.id = z.id").is_ok());
     }
 
     #[test]
