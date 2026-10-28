@@ -41,6 +41,7 @@ pub struct JoinStep {
 pub enum JoinAggregate {
     CountStar,
     Sum(JoinColumn),
+    GroupCount(JoinColumn),
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -107,7 +108,22 @@ pub fn parse_join(sql: &str) -> Result<Option<JoinSelect>, ParseError> {
         }
         Some(JoinAggregate::Sum(column))
     } else {
-        None
+        let saved = parser.index;
+        let grouped = if let Ok(column) = qualified(&mut parser) {
+            if parser.take(Token::Comma) && parser.keyword("COUNT")
+                && parser.take(Token::LParen)
+                && parser.take(Token::Star)
+                && parser.take(Token::RParen)
+            {
+                Some(JoinAggregate::GroupCount(column))
+            } else {
+                None
+            }
+        } else {
+            None
+        };
+        if grouped.is_none() { parser.index = saved; }
+        grouped
     };
     let columns = if aggregate.is_some() || parser.take(Token::Star) {
         None
@@ -391,6 +407,24 @@ pub fn parse_join(sql: &str) -> Result<Option<JoinSelect>, ParseError> {
     } else {
         None
     };
+    let group_by = if parser.keyword("GROUP") {
+        if !parser.keyword("BY") {
+            return Err(ParseError("JOIN GROUP requires BY".into()));
+        }
+        Some(qualified(&mut parser)?)
+    } else {
+        None
+    };
+    match &aggregate {
+        Some(JoinAggregate::GroupCount(column)) if group_by.as_ref() == Some(column) => {},
+        Some(JoinAggregate::GroupCount(_)) => {
+            return Err(ParseError("JOIN grouped COUNT requires matching GROUP BY key".into()));
+        }
+        _ if group_by.is_some() => {
+            return Err(ParseError("JOIN GROUP BY requires a grouped aggregate".into()));
+        }
+        _ => {},
+    }
     let order_by = if parser.keyword("ORDER") {
         if !parser.keyword("BY") {
             return Err(ParseError("ORDER requires BY".into()));
@@ -577,6 +611,9 @@ pub fn explain_join(query: &JoinSelect) -> String {
             match aggregate {
                 JoinAggregate::CountStar => "count(*)".to_owned(),
                 JoinAggregate::Sum(col) => format!("sum({}.{})", col.relation, col.name),
+                JoinAggregate::GroupCount(col) => {
+                    format!("{}.{}, count(*)", col.relation, col.name)
+                },
             }
         } else { query.columns.as_ref().map_or("*".to_owned(), |columns| {
             columns
