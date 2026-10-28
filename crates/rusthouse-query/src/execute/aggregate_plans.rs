@@ -471,6 +471,57 @@ pub(super) fn execute_aggregate_part<W: Write>(
     if query.limit == Some(0) {
         return Ok(());
     }
+    // A native array can compute its local minimum or maximum in one
+    // contiguous pass. Only compare one candidate per granule as Number.
+    let unfiltered = query.predicates.is_empty() && query.or_predicates.is_empty();
+    let native_integer = metadata.columns.iter().any(|candidate| {
+        candidate.name == column && matches!(candidate.data_type.as_str(),
+            "UInt8" | "UInt16" | "UInt32" | "UInt64" | "UInt128"
+            | "Int8" | "Int16" | "Int32" | "Int64" | "Int128")
+    });
+    if matches!(function, AggregateFunction::Min | AggregateFunction::Max)
+        && unfiltered && native_integer
+    {
+        let mut extremum: Option<Number> = None;
+        macro_rules! candidate {
+            ($values:expr, $kind:ident, $wide:ty) => {{
+                let next = if function == AggregateFunction::Min {
+                    $values.iter().min()
+                } else {
+                    $values.iter().max()
+                };
+                if let Some(value) = next {
+                    let value = Number::$kind(<$wide>::from(*value));
+                    let replace = extremum.is_none_or(|previous| {
+                        let ordering = compare_numbers(value, previous);
+                        if function == AggregateFunction::Min { ordering.is_lt() }
+                        else { ordering.is_gt() }
+                    });
+                    if replace { extremum = Some(value); }
+                }
+            }};
+        }
+        while let Some(batch) = reader.next_batch()? {
+            match &batch[0] {
+                NumericColumn::UInt8(values) => candidate!(values, Unsigned, u128),
+                NumericColumn::UInt16(values) => candidate!(values, Unsigned, u128),
+                NumericColumn::UInt32(values) => candidate!(values, Unsigned, u128),
+                NumericColumn::UInt64(values) => candidate!(values, Unsigned, u128),
+                NumericColumn::UInt128(values) => candidate!(values, Unsigned, u128),
+                NumericColumn::Int8(values) => candidate!(values, Signed, i128),
+                NumericColumn::Int16(values) => candidate!(values, Signed, i128),
+                NumericColumn::Int32(values) => candidate!(values, Signed, i128),
+                NumericColumn::Int64(values) => candidate!(values, Signed, i128),
+                NumericColumn::Int128(values) => candidate!(values, Signed, i128),
+                _ => return Err(ExecutionError::Invalid("unexpected integer extremum column".into())),
+            }
+        }
+        if query.offset.unwrap_or(0) == 0 {
+            if let Some(value) = extremum { writeln!(output, "{value}")?; }
+            else { writeln!(output, "NULL")?; }
+        }
+        return Ok(());
+    }
     let mut state = AggregateState::new(function);
     let no_filters = query.predicates.is_empty() && query.or_predicates.is_empty();
     while let Some(batch) = reader.next_batch()? {
