@@ -18,6 +18,14 @@ class JoinWorkloadTests(unittest.TestCase):
             self.assertEqual(len(dimensions), 6)
             verify_result(b"0\tgroup-0\n4\tgroup-1\n8\tgroup-2\n12\tgroup-3\n16\tgroup-4\n", expected)
 
+    def test_disjoint_fixture_produces_no_join_matches(self):
+        with tempfile.TemporaryDirectory() as directory:
+            expected = write_fixture(directory, 20, 5, disjoint=True)
+            self.assertEqual(expected, {})
+            dimensions = (Path(directory) / "dimensions.tsv").read_text().splitlines()
+            self.assertEqual(dimensions[1], "20\tgroup-0")
+            verify_result(b"", expected)
+
     def test_invalid_or_duplicate_rows_are_rejected(self):
         expected = {0: "group-0", 4: "group-1"}
         with self.assertRaises(ValueError):
