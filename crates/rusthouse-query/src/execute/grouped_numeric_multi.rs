@@ -79,9 +79,7 @@ pub(super) fn execute<W: Write>(
         .map(|(_, name)| indices[name])
         .collect::<Vec<_>>();
     let mut groups = Vec::<(Cell, Vec<AggregateState>)>::new();
-    // Two hundred and fifty-six fixed slots replace per-row hashing for
-    // non-nullable 8-bit grouping dimensions.
-    // Direct slot lookup avoids repeated hashing on compact grouping columns.
+    // Direct slots avoid repeated hashing on compact grouping columns.
     let mut dense_slots = match group_type.as_str() {
         "UInt8" | "Int8" => Some(vec![usize::MAX; 256]),
         "UInt16" | "Int16" => Some(vec![usize::MAX; 65_536]),
@@ -101,9 +99,13 @@ pub(super) fn execute<W: Write>(
             let index = if let Some(slots) = dense_slots.as_mut() {
                 let key = match &batch[group_index] {
                     TypedColumn::Numeric(NumericColumn::UInt8(values)) => usize::from(values[row]),
-                    TypedColumn::Numeric(NumericColumn::Int8(values)) => usize::from(values[row] as u8),
+                    TypedColumn::Numeric(NumericColumn::Int8(values)) => {
+                        usize::from(values[row] as u8)
+                    }
                     TypedColumn::Numeric(NumericColumn::UInt16(values)) => usize::from(values[row]),
-                    TypedColumn::Numeric(NumericColumn::Int16(values)) => usize::from(values[row] as u16),
+                    TypedColumn::Numeric(NumericColumn::Int16(values)) => {
+                        usize::from(values[row] as u16)
+                    }
                     _ => {
                         return Err(ExecutionError::Invalid(
                             "unexpected dense GROUP BY type".into(),
