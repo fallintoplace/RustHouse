@@ -111,6 +111,16 @@ pub(super) fn like_matches(value: &[u8], pattern: &LikePattern, case_insensitive
     match pattern {
         LikePattern::Exact(bytes) => equal_like_bytes(value, bytes, case_insensitive),
         LikePattern::Prefix(bytes) => {
+            // Most matching prefixes differ only in ASCII case. Test the
+            // short prefix before inspecting or folding the full UTF-8 row.
+            if case_insensitive
+                && bytes.is_ascii()
+                && value
+                    .get(..bytes.len())
+                    .is_some_and(|prefix| prefix.eq_ignore_ascii_case(bytes))
+            {
+                return true;
+            }
             if case_insensitive && value.starts_with(bytes) {
                 return true;
             }
@@ -126,6 +136,16 @@ pub(super) fn like_matches(value: &[u8], pattern: &LikePattern, case_insensitive
                 .is_some_and(|prefix| equal_like_bytes(prefix, bytes, case_insensitive))
         }
         LikePattern::Suffix(bytes) => {
+            // Do not Unicode-fold or inspect an entire long string when its
+            // trailing ASCII bytes already satisfy the LIKE suffix.
+            if case_insensitive
+                && bytes.is_ascii()
+                && value
+                    .get(value.len().saturating_sub(bytes.len())..)
+                    .is_some_and(|suffix| suffix.eq_ignore_ascii_case(bytes))
+            {
+                return true;
+            }
             if case_insensitive && value.ends_with(bytes) {
                 return true;
             }
@@ -144,6 +164,13 @@ pub(super) fn like_matches(value: &[u8], pattern: &LikePattern, case_insensitive
             // '%' matches every non-null String. Do not Unicode-fold every row.
             if bytes.is_empty() {
                 return true;
+            }
+            // ILIKE '%x%' on ASCII text is a byte scan. Avoid the
+            // overlapping-window comparator for each candidate byte.
+            if case_insensitive && bytes.len() == 1 && bytes[0].is_ascii() && value.is_ascii() {
+                return value
+                    .iter()
+                    .any(|byte| byte.eq_ignore_ascii_case(&bytes[0]));
             }
             if case_insensitive {
                 if let Some(matches) =
@@ -165,6 +192,12 @@ pub(super) fn like_matches(value: &[u8], pattern: &LikePattern, case_insensitive
                 } else {
                     value.windows(bytes.len()).any(|part| part == bytes)
                 }
+            } else if bytes.len() == 1 && value.is_ascii() && bytes[0].is_ascii() {
+                // The frequent ILIKE '%x%' case needs only a byte scan,
+                // not a one-byte slice and comparison at every position.
+                value
+                    .iter()
+                    .any(|byte| byte.eq_ignore_ascii_case(&bytes[0]))
             } else if value.is_ascii() && bytes.is_ascii() {
                 value
                     .windows(bytes.len())
@@ -265,6 +298,20 @@ mod perf_tests {
     }
 
     #[test]
+    fn ascii_prefix_suffix_accept_case_changes_without_losing_unicode_expansions() {
+        let prefix = compile_like("hello%").unwrap();
+        let suffix = compile_like("%world").unwrap();
+        let long_prefix = format!("HELLO{}", "x".repeat(4096));
+        let long_suffix = format!("{}WORLD", "x".repeat(4096));
+        assert!(like_matches(long_prefix.as_bytes(), &prefix, true));
+        assert!(like_matches(long_suffix.as_bytes(), &suffix, true));
+        assert!(!like_matches(long_prefix.as_bytes(), &prefix, false));
+        assert!(!like_matches(long_suffix.as_bytes(), &suffix, false));
+        // A Unicode lowercase mapping can expand to two codepoints.
+        assert!(like_matches("İstanbul".as_bytes(), &compile_like("i%").unwrap(), true));
+    }
+
+    #[test]
     fn ascii_contains_preserves_case_sensitivity() {
         let pattern = compile_like("%Needle%").unwrap();
         assert!(like_matches(b"hayNEEDLEstack", &pattern, true));
@@ -326,6 +373,21 @@ mod perf_tests {
     }
 
     #[test]
+    fn ascii_case_insensitive_single_byte_contains_scans_long_rows() {
+        let pattern = compile_like("%x%").unwrap();
+        let mut value = vec![b'a'; 16384];
+        value.push(b'X');
+        assert!(like_matches(&value, &pattern, true));
+        assert!(!like_matches(&value, &pattern, false));
+        assert!(!like_matches(&value[..16384], &pattern, true));
+        assert!(like_matches(b"x", &pattern, true));
+        assert!(!like_matches(b"", &pattern, true));
+        // Non-ASCII still follows Unicode case-folding logic.
+        let accent = compile_like("%é%").unwrap();
+        assert!(like_matches("CAFÉ".as_bytes(), &accent, true));
+    }
+
+    #[test]
     fn identical_unicode_like_bytes_need_no_folding() {
         assert!(equal_like_bytes("café".as_bytes(), "café".as_bytes(), true));
         assert!(equal_like_bytes(
@@ -352,5 +414,22 @@ mod perf_tests {
         assert!(!like_matches(b"short", &pattern, false));
         let escaped = compile_like(r"left\%right").unwrap();
         assert!(like_matches(b"left%right", &escaped, false));
+    }
+}
+
+#[cfg(test)]
+mod single_byte_contains_tests {
+    use super::*;
+
+    #[test]
+    fn case_insensitive_ascii_contains_matches_exact_character_presence() {
+        let pattern = compile_like("%A%").unwrap();
+        for (value, expected) in [
+            ("alphabet", true), ("CAT", true), ("bbb", false),
+            ("", false), ("a", true), ("zzAzz", true),
+        ] {
+            assert_eq!(like_matches(value.as_bytes(), &pattern, true), expected, "{value}");
+        }
+        assert!(!like_matches(b"zzAzz", &pattern, false));
     }
 }

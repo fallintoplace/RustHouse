@@ -53,6 +53,22 @@ impl StringColumn {
         Ok(column)
     }
 
+
+    /// Construct a bounded column for incremental row appends.
+    pub(crate) fn builder(rows: usize) -> Result<Self, StringReadError> {
+        checked_rows(rows)?;
+        Ok(Self::new(rows))
+    }
+
+    /// Append a decoded row directly to the final contiguous data buffer.
+    pub(crate) fn push_row(&mut self, row: &[u8]) -> Result<(), StringReadError> {
+        checked_rows(self.len() + 1)?;
+        let end = checked_end(self.data.len(), row.len() as u64)?;
+        self.data.extend_from_slice(row);
+        self.offsets.push(end);
+        Ok(())
+    }
+
     pub fn get(&self, row: usize) -> Option<&[u8]> {
         let begin = *self.offsets.get(row)?;
         let end = *self.offsets.get(row.checked_add(1)?)?;
@@ -423,5 +439,22 @@ mod tests {
 
         let legacy = read_legacy_strings(&mut io::empty(), 0).unwrap();
         assert!(legacy.is_empty());
+    }
+}
+
+#[cfg(test)]
+mod incremental_row_builder_tests {
+    use super::*;
+
+    #[test]
+    fn appending_rows_preserves_empty_entries_and_offsets() {
+        let mut column = StringColumn::builder(3).unwrap();
+        column.push_row(b"hello").unwrap();
+        column.push_row(b"").unwrap();
+        column.push_row(b"world").unwrap();
+        assert_eq!(column.offsets(), &[0, 5, 5, 10]);
+        assert_eq!(column.get(0), Some(&b"hello"[..]));
+        assert_eq!(column.get(1), Some(&b""[..]));
+        assert_eq!(column.get(2), Some(&b"world"[..]));
     }
 }

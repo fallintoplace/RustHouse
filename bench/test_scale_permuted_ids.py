@@ -18,6 +18,13 @@ class PermutedFixturesTests(unittest.TestCase):
         emit(second, 19, seed=42, batch_rows=10)
         self.assertEqual(first.getvalue(), second.getvalue())
 
+    def test_inlined_permutation_matches_checked_function(self):
+        output = io.StringIO()
+        rows, seed = 10017, MASK - 9
+        emit(output, rows, seed=seed, batch_rows=137)
+        expected = "".join(f"{permuted(i, seed)}\n" for i in range(rows))
+        self.assertEqual(output.getvalue(), expected)
+
     def test_rejects_domain_overflow(self):
         with self.assertRaisesRegex(ValueError, "UInt64"):
             permuted(MASK + 1)

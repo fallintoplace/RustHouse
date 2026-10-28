@@ -72,3 +72,52 @@ mod tests {
         assert!(retention_candidates(&[3, 1, 3], 1, 1).is_err());
     }
 }
+
+/// Plan retention while protecting snapshots pinned by readers, replicas or backups.
+/// This only lists candidates; it never deletes generation files.
+pub fn retention_candidates_with_pins(
+    generations: &[u64],
+    active: u64,
+    keep_latest: usize,
+    pinned: &[u64],
+) -> Result<Vec<u64>, &'static str> {
+    if pinned.len() > 16_384 {
+        return Err("too many pinned generations");
+    }
+    let candidates = retention_candidates(generations, active, keep_latest)?;
+    let known = validated_generations(generations, active)?;
+    let mut pins = std::collections::HashSet::with_capacity(pinned.len());
+    for &generation in pinned {
+        if !pins.insert(generation) || known.binary_search(&generation).is_err() {
+            return Err("duplicate or unknown pinned generation");
+        }
+    }
+    Ok(candidates
+        .into_iter()
+        .filter(|generation| !pins.contains(generation))
+        .collect())
+}
+
+#[cfg(test)]
+mod pinned_retention_tests {
+    use super::*;
+
+    #[test]
+    fn preserves_backup_pins_and_active_generation() {
+        assert_eq!(
+            retention_candidates_with_pins(&[1, 2, 3, 4, 5], 5, 2, &[1, 3]).unwrap(),
+            vec![2]
+        );
+        assert_eq!(
+            retention_candidates_with_pins(&[1, 2, 3], 1, 1, &[2]).unwrap(),
+            Vec::<u64>::new()
+        );
+    }
+
+    #[test]
+    fn rejects_stale_and_duplicate_pins() {
+        assert!(retention_candidates_with_pins(&[1, 2, 3], 3, 1, &[4]).is_err());
+        assert!(retention_candidates_with_pins(&[1, 2, 3], 3, 1, &[1, 1]).is_err());
+        assert!(retention_candidates_with_pins(&[1, 1], 1, 1, &[]).is_err());
+    }
+}

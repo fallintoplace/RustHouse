@@ -148,13 +148,54 @@ pub(super) fn count_batch_matches(
                             .count();
                     }};
                 }
+                // Eight-bit domains contain only 256 values. Resolve the
+                // hashed membership once per possible byte, then count rows
+                // with a cache-friendly array lookup instead of hashing
+                // each input element.
                 match &batch[predicate.index] {
-                    NumericColumn::UInt8(v) => count_hashed_in!(v, Unsigned, u128),
+                    NumericColumn::UInt8(values) => {
+                        if values.len() < 512 {
+                            return values
+                                .iter()
+                                .filter(|&&value| {
+                                    targets.contains(&NumberKey::Unsigned(u128::from(value)))
+                                        != *negated
+                                })
+                                .count();
+                        }
+                        let mut matches = [false; 256];
+                        for (byte, result) in matches.iter_mut().enumerate() {
+                            *result = targets.contains(&NumberKey::Unsigned(byte as u128));
+                        }
+                        return values
+                            .iter()
+                            .filter(|&&value| matches[usize::from(value)] != *negated)
+                            .count();
+                    }
+                    NumericColumn::Int8(values) => {
+                        if values.len() < 512 {
+                            return values
+                                .iter()
+                                .filter(|&&value| {
+                                    targets.contains(&NumberKey::Signed(i128::from(value)))
+                                        != *negated
+                                })
+                                .count();
+                        }
+                        let mut matches = [false; 256];
+                        for (byte, result) in matches.iter_mut().enumerate() {
+                            *result = targets.contains(&NumberKey::Signed(i128::from(byte as i8)));
+                        }
+                        return values
+                            .iter()
+                            .filter(|&&value| matches[value as u8 as usize] != *negated)
+                            .count();
+                    }
                     NumericColumn::UInt16(v) => count_hashed_in!(v, Unsigned, u128),
                     NumericColumn::UInt32(v) => count_hashed_in!(v, Unsigned, u128),
                     NumericColumn::UInt64(v) => count_hashed_in!(v, Unsigned, u128),
                     NumericColumn::UInt128(v) => count_hashed_in!(v, Unsigned, u128),
-                    NumericColumn::Int8(v) => count_hashed_in!(v, Signed, i128),
+
                     NumericColumn::Int16(v) => count_hashed_in!(v, Signed, i128),
                     NumericColumn::Int32(v) => count_hashed_in!(v, Signed, i128),
                     NumericColumn::Int64(v) => count_hashed_in!(v, Signed, i128),
@@ -1508,5 +1549,36 @@ mod generated_modulo_count_tests {
         assert_eq!(count(10, 20, 7, 7, false), 0);
         assert_eq!(count(10, 20, 7, 7, true), 20);
         assert_eq!(count(0, 0, 7, 0, false), 0);
+    }
+}
+
+#[cfg(test)]
+mod byte_in_dense_lookup_tests {
+    use super::*;
+
+    #[test]
+    fn dense_in_matches_the_general_predicate_for_positive_and_negative_bytes() {
+        for negated in [false, true] {
+            for signed in [false, true] {
+                let targets = if signed {
+                    (-20i128..=20).map(NumberKey::Signed).collect()
+                } else {
+                    (50u128..=80).map(NumberKey::Unsigned).collect()
+                };
+                let test = CompiledTest::InSet { targets, negated };
+                let batch = if signed {
+                    vec![NumericColumn::Int8(
+                        (-128i16..=127).map(|i| i as i8).collect::<Vec<_>>().repeat(4)
+                    )]
+                } else {
+                    vec![NumericColumn::UInt8((0..=255).collect::<Vec<u8>>().repeat(4))]
+                };
+                let expected = (0..batch[0].len())
+                    .filter(|&row| test.matches(super::super::number_at(&batch[0], row)))
+                    .count();
+                let predicate = CompiledPredicate { index: 0, test };
+                assert_eq!(count_batch_matches(&batch, &[vec![predicate]]), expected);
+            }
+        }
     }
 }

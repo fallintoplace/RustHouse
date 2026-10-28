@@ -284,3 +284,67 @@ mod tests {
         }
     }
 }
+
+/// Place replicas across distinct failure zones before reusing any zone.
+/// This is deterministic placement only; it does not establish consensus.
+pub fn zone_aware_replicas_for(
+    shard: &str,
+    members: &[crate::distributed_membership::Member],
+    replicas: usize,
+) -> Result<Vec<String>, &'static str> {
+    crate::distributed_membership::format_membership(members)?;
+    if replicas == 0 || replicas > members.len() {
+        return Err("invalid zone-aware replica count");
+    }
+    let nodes = members
+        .iter()
+        .map(|member| (member.node.as_str(), member.weight))
+        .collect::<Vec<_>>();
+    let ranked = weighted_replicas_for(shard, &nodes, members.len())?;
+    let mut zones = HashSet::new();
+    let mut selected = Vec::with_capacity(replicas);
+    for node in &ranked {
+        let zone = members
+            .iter()
+            .find(|member| member.node == *node)
+            .expect("ranked node belongs to validated membership")
+            .zone
+            .as_str();
+        if zones.insert(zone) {
+            selected.push(node.clone());
+            if selected.len() == replicas {
+                return Ok(selected);
+            }
+        }
+    }
+    for node in ranked {
+        if !selected.contains(&node) {
+            selected.push(node);
+            if selected.len() == replicas {
+                break;
+            }
+        }
+    }
+    Ok(selected)
+}
+
+#[cfg(test)]
+mod zone_aware_tests {
+    use super::*;
+    use crate::distributed_membership::parse_membership;
+
+    #[test]
+    fn places_two_replicas_in_different_zones() {
+        let members = parse_membership("a east 7\nb east 3\nc west 1\n").unwrap();
+        for index in 0..32 {
+            let shard = format!("shard_{index}");
+            let selected = zone_aware_replicas_for(&shard, &members, 2).unwrap();
+            assert_eq!(selected.len(), 2);
+            assert!(selected.contains(&"c".to_owned()));
+            let reversed = members.iter().rev().cloned().collect::<Vec<_>>();
+            assert_eq!(selected, zone_aware_replicas_for(&shard, &reversed, 2).unwrap());
+        }
+        assert_eq!(zone_aware_replicas_for("s", &members, 3).unwrap().len(), 3);
+        assert!(zone_aware_replicas_for("s", &members, 4).is_err());
+    }
+}
