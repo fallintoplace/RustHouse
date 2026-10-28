@@ -11,7 +11,7 @@ use super::join::{
     read_rows,
 };
 
-const MAX_CHAIN_BYTES: usize = 64 * 1024 * 1024;
+const MAX_CHAIN_BYTES: usize = crate::join::MAX_JOIN_CHAIN_BYTES;
 const MAX_CHAIN_COLUMNS: usize = 128;
 
 fn invalid(message: impl Into<String>) -> ExecutionError {

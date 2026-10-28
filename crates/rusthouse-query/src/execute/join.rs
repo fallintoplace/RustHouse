@@ -12,12 +12,12 @@ use std::io::Write;
 use std::path::Path;
 
 // Ordered and outer joins retain both inputs, bounded by row count and bytes.
-pub(super) const MAX_INPUT_ROWS: u64 = 32_768;
-pub(super) const MAX_RESULT_ROWS: usize = 131_072;
+pub(super) const MAX_INPUT_ROWS: u64 = crate::join::MAX_BUFFERED_JOIN_ROWS;
+pub(super) const MAX_RESULT_ROWS: usize = crate::join::MAX_JOIN_RESULT_ROWS;
 // Unordered INNER joins can build a larger hash side than sorted/outer joins.
 // Bound retained cells as well as row count to protect against wide String rows.
-const MAX_STREAM_BUILD_ROWS: u64 = 65_536;
-pub(super) const MAX_STREAM_BUILD_BYTES: usize = 32 * 1024 * 1024;
+const MAX_STREAM_BUILD_ROWS: u64 = crate::join::MAX_STREAM_JOIN_BUILD_ROWS;
+pub(super) const MAX_STREAM_BUILD_BYTES: usize = crate::join::MAX_JOIN_BUILD_BYTES;
 
 type Pair = (Option<usize>, Option<usize>);
 

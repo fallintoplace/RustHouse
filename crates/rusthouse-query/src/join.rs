@@ -2,6 +2,13 @@
 
 mod syntax;
 
+// Keep explained execution bounds and the executor's actual limits in sync.
+pub(crate) const MAX_BUFFERED_JOIN_ROWS: u64 = 32_768;
+pub(crate) const MAX_STREAM_JOIN_BUILD_ROWS: u64 = 65_536;
+pub(crate) const MAX_JOIN_RESULT_ROWS: usize = 131_072;
+pub(crate) const MAX_JOIN_BUILD_BYTES: usize = 32 * 1024 * 1024;
+pub(crate) const MAX_JOIN_CHAIN_BYTES: usize = 64 * 1024 * 1024;
+
 use self::syntax::*;
 
 use super::{ParseError, Parser, Token, tokenize};
@@ -579,12 +586,49 @@ pub fn explain_join(query: &JoinSelect) -> String {
     if query.offset > 0 {
         plan.push_str(&format!("\nOffset: {}", query.offset));
     }
+    if query.steps.is_empty() {
+        plan.push_str(&format!(
+            "\nExecution bounds: buffered input <= {} rows/side; streaming INNER build <= {} rows; result <= {} rows; build budget {} MiB",
+            MAX_BUFFERED_JOIN_ROWS,
+            MAX_STREAM_JOIN_BUILD_ROWS,
+            MAX_JOIN_RESULT_ROWS,
+            MAX_JOIN_BUILD_BYTES / (1024 * 1024)
+        ));
+    } else {
+        plan.push_str(&format!(
+            "\nExecution bounds: chained intermediate <= {} rows and {} MiB; individual joins retain input limits",
+            MAX_JOIN_RESULT_ROWS,
+            MAX_JOIN_CHAIN_BYTES / (1024 * 1024)
+        ));
+    }
     plan
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn explain_uses_the_same_resource_limits_as_join_execution() {
+        let query = parse_join("SELECT * FROM a x JOIN b y ON x.id = y.id")
+            .unwrap()
+            .unwrap();
+        let plan = explain_join(&query);
+        assert!(plan.contains("buffered input <= 32768 rows/side"), "{plan}");
+        assert!(plan.contains("streaming INNER build <= 65536 rows"), "{plan}");
+        assert!(plan.contains("build budget 32 MiB"), "{plan}");
+
+        let chained = parse_join(
+            "SELECT * FROM a x JOIN b y ON x.id = y.id JOIN c z ON y.id = z.id",
+        )
+        .unwrap()
+        .unwrap();
+        let chain_plan = explain_join(&chained);
+        assert!(
+            chain_plan.contains("chained intermediate <= 131072 rows and 64 MiB"),
+            "{chain_plan}"
+        );
+    }
 
     #[test]
     fn chained_join_accepts_nested_on_equalities() {
