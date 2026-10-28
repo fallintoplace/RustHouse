@@ -305,6 +305,71 @@ fn parallel_numeric_filtered_count(
     Ok(Some(count))
 }
 
+/// A large single immutable part can use all CPU workers too. Divide its
+/// validated adaptive granules into disjoint ranges; each worker owns reader
+/// state and decompresses only its assigned marks.
+fn parallel_single_part_filtered_count(
+    query: &Select,
+    part: &Path,
+    metadata: &rusthouse_storage::PartMetadata,
+    workers: usize,
+) -> Result<Option<u64>, ExecutionError> {
+    for predicate in query.predicates.iter().chain(query.or_predicates.iter().flatten()) {
+        let selected = metadata.columns.iter().find(|candidate| candidate.name == predicate.column())
+            .ok_or_else(|| ExecutionError::Invalid(format!("unknown WHERE column: {}", predicate.column())))?;
+        if !matches!(selected.data_type.as_str(),
+            "UInt8" | "UInt16" | "UInt32" | "UInt64" | "UInt128"
+            | "Int8" | "Int16" | "Int32" | "Int64" | "Int128"
+            | "Float32" | "Float64")
+        {
+            return Ok(None);
+        }
+    }
+    let mut columns = Vec::new();
+    let branches = compile_part_where(query, &mut columns, |name, text| {
+        let selected = metadata.columns.iter().find(|candidate| candidate.name == name)
+            .ok_or_else(|| ExecutionError::Invalid(format!("unknown WHERE column: {name}")))?;
+        parse_numeric(&selected.data_type, text)
+    })?;
+    if columns.is_empty() { return Ok(None); }
+
+    let reference = rusthouse_storage::NumericPartReader::open(part, &columns)?;
+    let marks = reference.mark_count();
+    // A few marks are faster on the serial path. Avoid extra decompression
+    // readers unless there is enough work to amortize startup.
+    const MIN_PARALLEL_MARKS: usize = 64;
+    if marks < MIN_PARALLEL_MARKS || workers < 2 { return Ok(None); }
+    let chunk = marks.div_ceil(workers);
+    let count = std::thread::scope(|scope| -> Result<u64, ExecutionError> {
+        let handles = (0..marks).step_by(chunk).map(|begin| {
+            let end = (begin + chunk).min(marks);
+            let columns = &columns;
+            let branches = &branches;
+            scope.spawn(move || -> Result<u64, ExecutionError> {
+                let mut reader = rusthouse_storage::NumericPartReader::open(part, columns)?;
+                reader.seek_to_mark(begin)?;
+                let mut subtotal = 0u64;
+                for _ in begin..end {
+                    if let Some(batch) = reader.next_batch()? {
+                        subtotal = subtotal.checked_add(count_batch_matches(&batch, branches) as u64)
+                            .ok_or_else(|| ExecutionError::Invalid("parallel COUNT overflow".into()))?;
+                    }
+                }
+                Ok(subtotal)
+            })
+        }).collect::<Vec<_>>();
+        let mut total = 0u64;
+        for handle in handles {
+            let subtotal = handle.join()
+                .map_err(|_| ExecutionError::Invalid("parallel COUNT worker panicked".into()))??;
+            total = total.checked_add(subtotal)
+                .ok_or_else(|| ExecutionError::Invalid("parallel COUNT overflow".into()))?;
+        }
+        Ok(total)
+    })?;
+    Ok(Some(count))
+}
+
 fn parallel_filtered_count(query: &Select, source: &Path) -> Result<Option<u64>, ExecutionError> {
     if !matches!(query.projection, Projection::Count)
         || (query.predicates.is_empty() && query.or_predicates.is_empty())
@@ -323,9 +388,16 @@ fn parallel_filtered_count(query: &Select, source: &Path) -> Result<Option<u64>,
     let workers = std::thread::available_parallelism()
         .map_or(1, |parallelism| parallelism.get())
         .min(MAX_WORKERS);
-    if parts.len() < MIN_PARALLEL_PARTS || workers < 2 {
-        return Ok(None);
+    if workers < 2 { return Ok(None); }
+    if parts.len() == 1 {
+        let metadata = inspect_query_source(source)?;
+        if let Some(count) = parallel_single_part_filtered_count(
+            query, &parts[0], &metadata, workers,
+        )? {
+            return Ok(Some(count));
+        }
     }
+    if parts.len() < MIN_PARALLEL_PARTS { return Ok(None); }
     // Validate all part schemas before executing any partial count. A mismatched
     // or incomplete snapshot must never produce a plausible partial answer.
     let metadata = inspect_query_source(source)?;
