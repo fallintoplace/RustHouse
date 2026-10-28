@@ -42,6 +42,7 @@ pub(super) fn is_function(name: &str) -> bool {
             | "JSONEXTRACTSTRING"
             | "JSONEXTRACTRAW"
             | "SUBSTRING"
+            | "SUBSTRINGUTF8"
             | "HASSUBSEQUENCECASEINSENSITIVE"
             | "OVERLAY"
             | "QUERYSTRING"
@@ -1905,6 +1906,42 @@ fn parse_at_depth(parser: &mut Parser, depth: usize) -> Result<ConstantValue, Pa
                             return Err(ParseError("REPEAT result is too large".into()));
                         }
                         ConstantValue::Text(value.repeat(count))
+                    }
+                }
+                _ => ConstantValue::Null,
+            }
+        }
+        "SUBSTRINGUTF8" => {
+            let input = text_arg(parser, depth + 1)?;
+            require(parser, Token::Comma, "substringUTF8 requires an offset")?;
+            let offset = integer_arg(parser, depth + 1)?;
+            let length = if parser.take(Token::Comma) {
+                Some(integer_arg(parser, depth + 1)?)
+            } else {
+                None
+            };
+            require(parser, Token::RParen, "expected ')' after substringUTF8")?;
+            match (input, offset, length) {
+                (Some(input), Some(offset), length) => {
+                    let count = match length {
+                        None => usize::MAX,
+                        Some(Some(length)) => usize::try_from(length).map_err(|_| {
+                            ParseError("substringUTF8 length must be nonnegative".into())
+                        })?,
+                        Some(None) => return Ok(ConstantValue::Null),
+                    };
+                    if offset == 0 {
+                        ConstantValue::Text(String::new())
+                    } else {
+                        let size = input.chars().count();
+                        let start = if offset > 0 {
+                            usize::try_from(offset - 1).unwrap_or(usize::MAX)
+                        } else {
+                            size.saturating_sub(
+                                usize::try_from(offset.unsigned_abs()).unwrap_or(usize::MAX),
+                            )
+                        };
+                        ConstantValue::Text(input.chars().skip(start).take(count).collect())
                     }
                 }
                 _ => ConstantValue::Null,
