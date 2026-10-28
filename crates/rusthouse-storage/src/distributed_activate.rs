@@ -144,5 +144,4 @@ mod tests {
         assert_eq!(resolve_active_snapshot(&root).unwrap(), generation);
         fs::remove_dir_all(root).unwrap();
     }
-
 }
