@@ -202,7 +202,10 @@ fn parse_at_depth(parser: &mut Parser, depth: usize) -> Result<ConstantValue, Pa
             let input = text_arg(parser, depth + 1)?;
             require(parser, Token::RParen, "isIPv6String requires one argument")?;
             match input {
-                Some(value) => ConstantValue::Integer(i64::from(value.parse::<std::net::Ipv6Addr>().is_ok())),
+                Some(value) => {
+                    let is_ipv6 = value.parse::<std::net::Ipv6Addr>().is_ok();
+                    ConstantValue::Integer(i64::from(is_ipv6))
+                }
                 None => ConstantValue::Null,
             }
         }
