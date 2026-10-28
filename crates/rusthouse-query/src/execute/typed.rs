@@ -268,6 +268,7 @@ enum Test {
     UuidNotBetween([u8; 16], [u8; 16]),
     IsNull(bool),
     DistinctFrom(Cell, bool),
+    UuidDistinctFrom([u8; 16], bool),
     Like {
         pattern: LikePattern,
         case_insensitive: bool,
@@ -387,6 +388,9 @@ pub(super) fn compile(
                     Test::NotBetween(parse_literal(kind, lower)?, parse_literal(kind, upper)?)
                 }
                 Predicate::IsNull { negated, .. } => Test::IsNull(*negated),
+                Predicate::DistinctFrom { value, negated, .. } if base_type(kind) == "UUID" => {
+                    Test::UuidDistinctFrom(uuid_literal_bytes(value)?, *negated)
+                }
                 Predicate::DistinctFrom { value, negated, .. } => {
                     Test::DistinctFrom(parse_literal(kind, value)?, *negated)
                 }
@@ -570,6 +574,12 @@ pub(super) fn passes(batch: &[TypedColumn], row: usize, branches: &[Vec<Conditio
                 Test::UuidCompare(operator, target) => match column {
                     TypedColumn::Uuid(values) => {
                         matches_uuid_compare(values[row].as_bytes(), target, *operator)
+                    }
+                    _ => false,
+                },
+                Test::UuidDistinctFrom(target, negated) => match column {
+                    TypedColumn::Uuid(values) => {
+                        (values[row].as_bytes() == target) == *negated
                     }
                     _ => false,
                 },
