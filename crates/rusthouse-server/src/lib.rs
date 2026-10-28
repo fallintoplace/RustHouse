@@ -747,7 +747,7 @@ mod tests {
         let body = String::from_utf8(default.body).unwrap();
         assert!(body.contains("\"source\":\"generated\""));
         assert!(body.contains("\"read_only\":true"));
-        assert!(body.contains("\"max_query_bytes\":4096"));
+        assert!(body.contains("\"max_query_bytes\":65536"));
         assert!(body.contains("\"max_rows\":3"));
         assert!(!body.contains("/tmp/"));
 
