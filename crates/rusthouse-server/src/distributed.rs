@@ -2,8 +2,10 @@
 //! Unordered row projections and global pagination preserve configured peer order.
 
 mod query_policy;
+mod sorted_merge;
 
 use self::query_policy::*;
+use self::sorted_merge::*;
 
 use crate::cluster::{Cluster, Peer};
 use crate::remote;
@@ -21,6 +23,7 @@ enum MergeError {
     InvalidDistinctCount,
     InvalidGroupedCount,
     InvalidGroupedSum,
+    InvalidSortedScan,
     InvalidSum,
     InvalidExtremum,
     CountOverflow,
@@ -172,13 +175,22 @@ fn read_shard(
     sum_schema: Option<(&str, &str)>,
     group_schema: Option<(&str, &str)>,
     table: &str,
+    sorted_prefix_cap: Option<usize>,
 ) -> Result<ShardResponse, String> {
     let cap = shard_row_cap(peer)?;
+    if sorted_prefix_cap.is_some_and(|prefix| prefix >= cap) {
+        return Err("peer row cap must exceed distributed top-K prefix".into());
+    }
     let schema_response = remote::schema(peer, table)?;
     let schema = schema_signature(&schema_response)?;
     let kind = sum_schema
         .map(|(_, column)| shard_integer_kind(&schema_response, column))
         .transpose()?;
+    if sorted_prefix_cap.is_some()
+        && kind.as_deref().is_some_and(|kind| kind.starts_with("Nullable("))
+    {
+        return Err("distributed top-K requires non-nullable integer keys".into());
+    }
     let key_kind = group_schema
         .map(|(_, column)| {
             let kind = shard_column_kind(&schema_response, column)?;
@@ -779,6 +791,7 @@ pub fn handle(method: &str, body: &[u8], cluster: &Cluster, max_rows: usize) -> 
             if is_safe_scan(&select)
                 || is_safe_count(&select)
                 || is_safe_count_distinct(&select)
+                || is_safe_sorted_scan(&select)
                 || is_safe_count_if(&select)
                 || is_safe_grouped_count(&select)
                 || is_safe_grouped_sum(&select)
@@ -790,10 +803,14 @@ pub fn handle(method: &str, body: &[u8], cluster: &Cluster, max_rows: usize) -> 
         _ => {
             return Response::text(
                 "400 Bad Request",
-                "distributed queries require unordered SELECT, COUNT, COUNT(DISTINCT), COUNTIF, integer SUM, MIN, MAX, grouped COUNT, or grouped integer SUM without global clauses\n",
+                "distributed queries require unordered SELECT, bounded integer top-K SELECT, COUNT, COUNT(DISTINCT), COUNTIF, integer SUM, MIN, MAX, or grouped aggregates\n",
             );
         }
     };
+    let sorted_query = is_safe_sorted_scan(&select);
+    let sorted_prefix = sorted_query.then(|| {
+        select.offset.unwrap_or(0) + select.limit.unwrap_or(0)
+    });
     let count_query = is_safe_count(&select) || is_safe_count_if(&select);
     let distinct_count_column = match &select.projection {
         Projection::CountDistinct { column } => Some(column.as_str()),
@@ -802,7 +819,12 @@ pub fn handle(method: &str, body: &[u8], cluster: &Cluster, max_rows: usize) -> 
     let grouped_count_query = is_safe_grouped_count(&select);
     let grouped_sum_query = is_safe_grouped_sum(&select);
     let sum_query = is_safe_sum(&select);
-    let shard_sql = if is_safe_scan(&select) {
+    let shard_sql = if sorted_query {
+        match sorted_scan_sql(sql, &select) {
+            Some(query) => query,
+            None => return Response::text("400 Bad Request", "unsupported distributed sort\n"),
+        }
+    } else if is_safe_scan(&select) {
         match unpaged_scan_sql(sql, &select) {
             Some(query) => query,
             None => {
@@ -852,6 +874,9 @@ pub fn handle(method: &str, body: &[u8], cluster: &Cluster, max_rows: usize) -> 
                 ..
             },
         ) => Some((table.as_str(), value_column.as_str())),
+        (Some(Source::Table(table)), Projection::Columns(columns)) if sorted_query => {
+            columns.first().map(|column| (table.as_str(), column.as_str()))
+        }
         _ => None,
     };
     let group_schema = match (&select.source, &select.projection) {
@@ -882,7 +907,9 @@ pub fn handle(method: &str, body: &[u8], cluster: &Cluster, max_rows: usize) -> 
             .peers()
             .iter()
             .map(|&peer| {
-                scope.spawn(move || read_shard(peer, shard_query, sum_schema, group_schema, table))
+                scope.spawn(move || {
+                    read_shard(peer, shard_query, sum_schema, group_schema, table, sorted_prefix)
+                })
             })
             .collect::<Vec<_>>();
         handles
@@ -981,6 +1008,22 @@ pub fn handle(method: &str, body: &[u8], cluster: &Cluster, max_rows: usize) -> 
         } else {
             merge_grouped_counts(&shards, limit)
         }
+    } else if sorted_query {
+        let order = select.order_by.as_ref().expect("validated bounded sort");
+        let Projection::Columns(columns) = &select.projection else {
+            unreachable!("validated single-column bounded sort");
+        };
+        sum_type.as_deref().map_or(Err(MergeError::InvalidSortedScan), |kind| {
+            merge_sorted_integer_page(
+                &shards,
+                &columns[0],
+                kind,
+                order.descending,
+                select.offset.unwrap_or(0),
+                select.limit.unwrap_or(0),
+                max_rows.min(250_000),
+            )
+        })
     } else if select.limit.is_some() || select.offset.is_some() {
         merge_tsv_page(
             &shards,
@@ -1022,6 +1065,9 @@ pub fn handle(method: &str, body: &[u8], cluster: &Cluster, max_rows: usize) -> 
         }
         Err(MergeError::InvalidGroupedSum) => {
             Response::text("502 Bad Gateway", "malformed shard grouped SUM response\n")
+        }
+        Err(MergeError::InvalidSortedScan) => {
+            Response::text("502 Bad Gateway", "malformed shard sorted integer response\n")
         }
         Err(MergeError::InvalidSum) => {
             Response::text("502 Bad Gateway", "malformed shard SUM response\n")
