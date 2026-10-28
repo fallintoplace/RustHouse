@@ -15,6 +15,7 @@ def inspect_table(path, table):
     expected = "\t".join(names(table)).encode("utf-8")
     digest = hashlib.sha256()
     rows = 0
+    expected_columns = len(TABLES[table])
     with path.open("rb") as source:
         header = source.readline()
         if header.rstrip(b"\r\n") != expected:
@@ -23,6 +24,8 @@ def inspect_table(path, table):
         for record in source:
             if record in (b"\n", b"\r\n", b""):
                 raise ValueError(f"{table}: blank record")
+            if not record.endswith(b"\n") or record.count(b"\t") != expected_columns - 1:
+                raise ValueError(f"{table}: malformed or truncated TSV record")
             digest.update(record)
             rows += 1
     if rows == 0:
