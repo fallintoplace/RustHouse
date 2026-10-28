@@ -16,6 +16,7 @@ pub(super) fn is_function(name: &str) -> bool {
             | "CHR"
             | "STRINGBYTESUNIQ"
             | "BIT_LENGTH"
+            | "TOUNIXTIMESTAMP64MICRO"
             | "IS_INT64"
             | "BTRIM"
             | "TRIMBOTH"
@@ -295,6 +296,55 @@ fn parse_at_depth(parser: &mut Parser, depth: usize) -> Result<ConstantValue, Pa
                         seen[usize::from(byte)] = true;
                     }
                     ConstantValue::Integer(seen.iter().filter(|&&present| present).count() as i64)
+                }
+                None => ConstantValue::Null,
+            }
+        }
+        "TOUNIXTIMESTAMP64MICRO" => {
+            let input = text_arg(parser, depth + 1)?;
+            require(
+                parser,
+                Token::RParen,
+                "toUnixTimestamp64Micro requires one argument",
+            )?;
+            match input {
+                Some(input) => {
+                    let (whole, fraction) = input.split_once('.').unwrap_or((&input, ""));
+                    if fraction.len() > 9
+                        || !fraction.bytes().all(|byte| byte.is_ascii_digit())
+                    {
+                        return Err(ParseError("invalid fractional UTC timestamp".into()));
+                    }
+                    let seconds = rusthouse_storage::parse_datetime(whole)
+                        .or_else(|| {
+                            rusthouse_storage::parse_date(whole).and_then(|days| {
+                                u32::from(days).checked_mul(86_400)
+                            })
+                        })
+                        .ok_or_else(|| {
+                            ParseError("toUnixTimestamp64Micro requires a valid UTC timestamp".into())
+                        })?;
+                    let fraction_ns = if fraction.is_empty() {
+                        0_u64
+                    } else {
+                        let digits = u32::try_from(fraction.len()).map_err(|_| {
+                            ParseError("timestamp fraction has too many digits".into())
+                        })?;
+                        fraction.parse::<u64>()
+                            .map_err(|_| ParseError("invalid timestamp fraction".into()))?
+                            * 10_u64.pow(9 - digits)
+                    };
+                    let ticks = i64::from(seconds)
+                        .checked_mul(10_i64.pow(6))
+                        .and_then(|value| {
+                            value.checked_add(
+                                i64::try_from(fraction_ns / 10_u64.pow(3)).ok()?,
+                            )
+                        })
+                        .ok_or_else(|| {
+                            ParseError("toUnixTimestamp64Micro timestamp overflows Int64".into())
+                        })?;
+                    ConstantValue::Integer(ticks)
                 }
                 None => ConstantValue::Null,
             }
