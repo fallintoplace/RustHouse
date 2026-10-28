@@ -9,6 +9,7 @@ mod enums;
 mod file_sizes;
 mod fixed_strings;
 mod fixed_width;
+pub mod distributed_atomic_copy;
 mod granules;
 mod ip;
 mod mark_validation;
