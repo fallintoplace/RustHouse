@@ -190,8 +190,11 @@ impl SortedRows {
         };
         if self.rows.len() < retained {
             self.rows.push(row);
-        } else if self.rows.peek().is_some_and(|worst| row < *worst) {
-            // Check before peek_mut: dropping PeekMut sifts even on rejected rows.
+        } else if self.requested <= MAX_SORTED_ROWS
+            || self.rows.peek().is_some_and(|worst| row < *worst)
+        {
+            // would_discard already checked bounded candidates. Unbounded
+            // scans still require the comparison before replacement.
             *self.rows.peek_mut().unwrap() = row;
         }
         Ok(())
