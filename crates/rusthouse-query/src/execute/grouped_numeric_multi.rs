@@ -9,6 +9,26 @@ use std::path::Path;
 
 const MAX_GROUPS: usize = 200_000;
 
+fn filter_enabled(column: &TypedColumn, row: usize) -> Result<bool, ExecutionError> {
+    let number = match column {
+        TypedColumn::Numeric(values) => Some(super::number_at(values, row)),
+        TypedColumn::NullableNumeric { values, nulls } if nulls[row] == 0 => {
+            Some(super::number_at(values, row))
+        }
+        TypedColumn::NullableNumeric { .. } => None,
+        _ => return Err(ExecutionError::Invalid(
+            "conditional metric filter must be numeric".into(),
+        )),
+    };
+    Ok(match number {
+        Some(Number::Unsigned(value)) => value != 0,
+        Some(Number::Signed(value)) => value != 0,
+        Some(Number::Float(value)) => value != 0.0,
+        None => false,
+    })
+}
+
+
 const MAX_GROUP_STATE_BYTES: usize = 64 * 1024 * 1024;
 
 fn reserve_group(
@@ -261,13 +281,7 @@ pub(super) fn execute<W: Write>(
                 .enumerate()
             {
                 if let Some(&filter_index) = filter_indices.get(metric).and_then(Option::as_ref) {
-                    let enabled = match typed::cell(&batch[filter_index], row) {
-                        Cell::Numeric(Number::Unsigned(value)) => value != 0,
-                        Cell::Numeric(Number::Signed(value)) => value != 0,
-                        Cell::Numeric(Number::Float(value)) => value != 0.0,
-                        Cell::Null => false,
-                        _ => return Err(ExecutionError::Invalid("conditional metric filter must be numeric".into())),
-                    };
+                    let enabled = filter_enabled(&batch[filter_index], row)?;
                     if !enabled {continue;}
                 }
                 if *function == AggregateFunction::Count {
@@ -383,5 +397,28 @@ mod group_state_budget_tests {
         assert!(reserve_group(&mut used, usize::MAX, 0).is_err());
         assert_eq!(used, first * 2);
         assert!(reserve_group(&mut used, 1, MAX_GROUP_STATE_BYTES).is_err());
+    }
+}
+
+#[cfg(test)]
+mod borrowed_metric_filter_tests {
+    use super::*;
+    #[test]
+    fn handles_all_numeric_filter_types_without_materializing_cells() {
+        let unsigned = TypedColumn::Numeric(NumericColumn::UInt8(vec![0, 1]));
+        assert!(!filter_enabled(&unsigned, 0).unwrap());
+        assert!(filter_enabled(&unsigned, 1).unwrap());
+        let signed = TypedColumn::Numeric(NumericColumn::Int64(vec![-4, 0]));
+        assert!(filter_enabled(&signed, 0).unwrap());
+        assert!(!filter_enabled(&signed, 1).unwrap());
+        let nullable = TypedColumn::NullableNumeric {
+            values: NumericColumn::UInt64(vec![99, 0]),
+            nulls: vec![1, 0],
+        };
+        assert!(!filter_enabled(&nullable, 0).unwrap());
+        assert!(!filter_enabled(&nullable, 1).unwrap());
+        let floats = TypedColumn::Numeric(NumericColumn::Float64(vec![0.0, 2.5]));
+        assert!(!filter_enabled(&floats, 0).unwrap());
+        assert!(filter_enabled(&floats, 1).unwrap());
     }
 }
