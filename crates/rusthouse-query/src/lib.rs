@@ -137,6 +137,12 @@ pub enum Projection {
         column: String,
         probability_ppm: u32,
     },
+    /// Bounded per-group percentile for low-cardinality OLAP dimensions.
+    GroupedQuantile {
+        column: String,
+        value_column: String,
+        probability_ppm: u32,
+    },
     GroupedCount {
         column: String,
     },
@@ -491,6 +497,11 @@ impl Parser {
                     2 => "count".into(),
                     _ => return Err(ParseError("ORDER BY position is out of range".into())),
                 },
+                Projection::GroupedQuantile { column, .. } => match position {
+                    1 => column.clone(),
+                    2 => "#quantile".into(),
+                    _ => return Err(ParseError("ORDER BY position is out of range".into())),
+                },
                 Projection::GroupedMultiCount { columns }
                 | Projection::GroupedMultiDistinctCount { columns, .. } => {
                     if position == columns.len() + 1 {
@@ -808,9 +819,30 @@ fn parse_select_tokens(tokens: Vec<Token>) -> Result<Select, ParseError> {
         let mut columns = vec![parser.word()?];
         let mut grouped_count = false;
         let mut grouped_distinct = None;
+        let mut grouped_quantile = None;
         let mut grouped_aggregate = None;
         let mut grouped_aggregates = None;
         while parser.take(Token::Comma) {
+            if matches!(parser.tokens.get(parser.index), Some(Token::Word(word)) if word.eq_ignore_ascii_case("QUANTILE"))
+                && parser.tokens.get(parser.index + 1) == Some(&Token::LParen)
+            {
+                parser.keyword("QUANTILE");
+                parser.take(Token::LParen);
+                let probability = parser.number()?.parse::<f64>()
+                    .map_err(|_| ParseError("quantile probability must be numeric".into()))?;
+                if !probability.is_finite() || !(0.0..=1.0).contains(&probability) {
+                    return Err(ParseError("quantile probability must be between 0 and 1".into()));
+                }
+                if !parser.take(Token::RParen) || !parser.take(Token::LParen) {
+                    return Err(ParseError("grouped quantile requires quantile(p)(column)".into()));
+                }
+                let value_column = parser.word()?;
+                if !parser.take(Token::RParen) {
+                    return Err(ParseError("expected ')' after grouped quantile".into()));
+                }
+                grouped_quantile = Some((value_column, (probability * 1_000_000.0).round() as u32));
+                break;
+            }
             if matches!(parser.tokens.get(parser.index), Some(Token::Word(word)) if word.eq_ignore_ascii_case("COUNT"))
                 && parser.tokens.get(parser.index + 1) == Some(&Token::LParen)
                 && !matches!(
@@ -992,6 +1024,15 @@ fn parse_select_tokens(tokens: Vec<Token>) -> Result<Select, ParseError> {
                 }
             } else {
                 Projection::GroupedMultiDistinctCount { columns, value_column }
+            }
+        } else if let Some((value_column, probability_ppm)) = grouped_quantile {
+            if columns.len() != 1 {
+                return Err(ParseError("grouped quantile requires one GROUP BY dimension".into()));
+            }
+            Projection::GroupedQuantile {
+                column: columns.remove(0),
+                value_column,
+                probability_ppm,
             }
         } else if let Some((function, value_column)) = grouped_aggregate {
             Projection::GroupedAggregate {
@@ -1387,6 +1428,7 @@ fn parse_select_tokens(tokens: Vec<Token>) -> Result<Select, ParseError> {
             match &projection {
                 Projection::GroupedCount { column }
                 | Projection::GroupedDistinctCount { column, .. }
+                | Projection::GroupedQuantile { column, .. }
                 | Projection::GroupedAggregate { column, .. }
                 | Projection::GroupedAggregates { column, .. }
                     if position == 1 =>
@@ -1418,11 +1460,13 @@ fn parse_select_tokens(tokens: Vec<Token>) -> Result<Select, ParseError> {
                 if columns == &group_columns => {}
             Projection::GroupedCount { column }
             | Projection::GroupedDistinctCount { column, .. }
+            | Projection::GroupedQuantile { column, .. }
             | Projection::GroupedAggregate { column, .. }
             | Projection::GroupedAggregates { column, .. }
                 if group_columns.len() == 1 && column == &group_columns[0] => {}
             Projection::GroupedCount { .. }
             | Projection::GroupedDistinctCount { .. }
+            | Projection::GroupedQuantile { .. }
             | Projection::GroupedMultiDistinctCount { .. }
             | Projection::GroupedMultiCount { .. }
             | Projection::GroupedAggregate { .. }
@@ -1442,6 +1486,7 @@ fn parse_select_tokens(tokens: Vec<Token>) -> Result<Select, ParseError> {
         projection,
         Projection::GroupedCount { .. }
             | Projection::GroupedDistinctCount { .. }
+            | Projection::GroupedQuantile { .. }
             | Projection::GroupedMultiDistinctCount { .. }
             | Projection::GroupedMultiCount { .. }
             | Projection::GroupedAggregate { .. }
@@ -1514,6 +1559,18 @@ fn parse_select_tokens(tokens: Vec<Token>) -> Result<Select, ParseError> {
                     "HAVING must match the selected aggregate".into(),
                 ));
             }
+        } else if let Projection::GroupedQuantile { value_column, probability_ppm, .. } = &projection {
+            if !parser.keyword("QUANTILE") || !parser.take(Token::LParen) {
+                return Err(ParseError("HAVING must match selected quantile(p)(column)".into()));
+            }
+            let p = parser.number()?.parse::<f64>()
+                .map_err(|_| ParseError("invalid HAVING quantile probability".into()))?;
+            if !p.is_finite() || (p * 1_000_000.0).round() as u32 != *probability_ppm
+                || !parser.take(Token::RParen) || !parser.take(Token::LParen)
+                || parser.word()? != *value_column || !parser.take(Token::RParen)
+            {
+                return Err(ParseError("HAVING quantile must match SELECT".into()));
+            }
         } else if let Projection::GroupedDistinctCount { value_column, .. }
         | Projection::GroupedMultiDistinctCount { value_column, .. } = &projection {
             if !parser.keyword("COUNT")
@@ -1559,6 +1616,7 @@ fn parse_select_tokens(tokens: Vec<Token>) -> Result<Select, ParseError> {
         projection,
         Projection::GroupedCount { .. }
             | Projection::GroupedDistinctCount { .. }
+            | Projection::GroupedQuantile { .. }
             | Projection::GroupedMultiDistinctCount { .. }
             | Projection::GroupedMultiCount { .. }
     ) {
@@ -1596,6 +1654,15 @@ fn parse_select_tokens(tokens: Vec<Token>) -> Result<Select, ParseError> {
             .any(|order| &order.column != column && order.column != "count")
         {
             return Err(ParseError("grouped ORDER BY must use the group key".into()));
+        }
+    }
+    if let Projection::GroupedQuantile { column, .. } = &projection {
+        if order_by
+            .iter()
+            .chain(order_by_extra.iter())
+            .any(|term| &term.column != column && term.column != "#quantile")
+        {
+            return Err(ParseError("grouped quantile ORDER BY needs group key or quantile".into()));
         }
     }
     if let Projection::GroupedMultiCount { columns }
