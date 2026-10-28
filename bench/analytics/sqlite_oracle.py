@@ -32,7 +32,12 @@ def cell_equal(actual, expected, rel_tol=1e-12, abs_tol=1e-12):
 def parse_rows(output):
     if not isinstance(output, bytes):
         raise TypeError("RustHouse output must be TSV bytes")
-    return [row.split("\t") for row in output.decode("utf-8").splitlines()]
+    decoded = output.decode("utf-8")
+    if not decoded:
+        return []
+    if decoded.endswith("\n"):
+        decoded = decoded[:-1]
+    return [row.removesuffix("\r").split("\t") for row in decoded.split("\n")]
 
 
 def row_equal(actual, expected):

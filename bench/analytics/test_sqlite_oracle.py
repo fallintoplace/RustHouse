@@ -25,6 +25,13 @@ class SqliteOracleTests(unittest.TestCase):
         assert_matches(b"B\t2\nA\t1\n", [("A", 1), ("B", 2)], unordered=True)
         self.assertEqual(parse_rows(b""), [])
 
+    def test_unicode_line_separators_stay_inside_tsv_fields(self):
+        text = "first\u2028second\t7\n"
+        self.assertEqual(parse_rows(text.encode("utf-8")),
+                         [["first\u2028second", "7"]])
+        self.assertEqual(parse_rows(b"a\t1\r\nb\t2\r\n"),
+                         [["a", "1"], ["b", "2"]])
+
     def test_sqlite_query(self):
         with tempfile.TemporaryDirectory() as root:
             path = Path(root) / "db.sqlite"
