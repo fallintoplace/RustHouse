@@ -207,7 +207,7 @@ fn update_group_numeric(
 const MAX_GROUPS: usize = 100_000;
 
 
-/// Exact integer SUM, MIN and MAX over parallel physical parts. Keep the group key
+/// Associative integer extrema/SUM and weighted AVG over parallel physical parts.
 /// and an empty aggregate state for keys whose measures are entirely NULL.
 fn parallel_grouped_integer_aggregate(
     part: &Path,
@@ -275,8 +275,19 @@ fn parallel_grouped_integer_aggregate(
         for (key, partial) in chunk? {
             let key_id = key.key();
             if let Some(&index) = by_key.get(&key_id) {
-                if let Some(value) = partial.value {
-                    groups[index].1.update(value)?;
+                let total = &mut groups[index].1;
+                if function == AggregateFunction::Avg {
+                    if partial.count > 0 {
+                        let count = total.count.checked_add(partial.count)
+                            .ok_or_else(|| ExecutionError::Invalid(
+                                "aggregate row count overflow".into(),
+                            ))?;
+                        let fraction = partial.count as f64 / count as f64;
+                        total.mean += (partial.mean - total.mean) * fraction;
+                        total.count = count;
+                    }
+                } else if let Some(value) = partial.value {
+                    total.update(value)?;
                 }
             } else {
                 if groups.len() >= MAX_GROUPS {
@@ -369,10 +380,17 @@ pub(super) fn execute_grouped_aggregate<W: Write>(
             | "Int8" | "Int16" | "Int32" | "Int64" | "Int128"
     );
     let group_is_narrow = matches!(group_type, "UInt8" | "Int8" | "UInt16" | "Int16");
-    let partial = if matches!(
+    let numeric_avg = *function == AggregateFunction::Avg && matches!(
+        typed::base_type(value_kind),
+        "UInt8" | "UInt16" | "UInt32" | "UInt64" | "UInt128"
+            | "Int8" | "Int16" | "Int32" | "Int64" | "Int128"
+            | "Float32" | "Float64"
+    );
+    let parallel_associative = matches!(
         function,
         AggregateFunction::Sum | AggregateFunction::Min | AggregateFunction::Max
-    ) && exact_integer && group_is_narrow {
+    ) && exact_integer;
+    let partial = if group_is_narrow && (parallel_associative || numeric_avg) {
         parallel_grouped_integer_aggregate(
             part, *function, &names, group_index, value_index, &conditions, no_filters,
         )?
