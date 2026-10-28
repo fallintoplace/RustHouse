@@ -53,22 +53,25 @@ pub fn inspect_part(path: impl AsRef<Path>) -> Result<PartMetadata, PartError> {
     })
 }
 
+fn ensure_metadata_size(path: &Path, size: u64, max_bytes: u64) -> Result<(), PartError> {
+    if size > max_bytes {
+        return Err(invalid_metadata(path, "metadata exceeds size limit"));
+    }
+    Ok(())
+}
+
 fn read_bounded_file(path: &Path, max_bytes: u64) -> Result<Vec<u8>, PartError> {
     let metadata = fs::symlink_metadata(path).map_err(|source| io_error(path, source))?;
     if !metadata.file_type().is_file() {
         return Err(invalid_metadata(path, "metadata must be a regular file"));
     }
-    if metadata.len() > max_bytes {
-        return Err(invalid_metadata(path, "metadata exceeds size limit"));
-    }
+    ensure_metadata_size(path, metadata.len(), max_bytes)?;
     let file = fs::File::open(path).map_err(|source| io_error(path, source))?;
     let mut bytes = Vec::new();
     file.take(max_bytes + 1)
         .read_to_end(&mut bytes)
         .map_err(|source| io_error(path, source))?;
-    if bytes.len() as u64 > max_bytes {
-        return Err(invalid_metadata(path, "metadata exceeds size limit"));
-    }
+    ensure_metadata_size(path, bytes.len() as u64, max_bytes)?;
     Ok(bytes)
 }
 
