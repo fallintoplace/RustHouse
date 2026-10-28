@@ -232,4 +232,19 @@ mod tests {
         }
         assert!(tokenize(&" ".repeat(4096)).is_ok());
     }
+    #[test]
+    fn preserves_utf8_strings_around_escaped_delimiters() {
+        assert_eq!(
+            tokenize(r"SELECT 'café''s', '東京\_b', '🙂'").unwrap(),
+            vec![
+                Token::Word("SELECT".into()),
+                Token::String("café's".into()),
+                Token::Comma,
+                Token::String(r"東京\_b".into()),
+                Token::Comma,
+                Token::String("🙂".into()),
+            ]
+        );
+    }
+
 }
