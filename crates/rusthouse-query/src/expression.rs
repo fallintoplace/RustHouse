@@ -3,7 +3,7 @@ mod parser;
 use self::parser::*;
 
 use crate::lexer::{Token, tokenize};
-use crate::{ParseError, Parser};
+use crate::{Operator, ParseError, Parser};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ScalarExpr {
@@ -14,6 +14,7 @@ pub enum ScalarExpr {
     Subtract(Box<ScalarExpr>, Box<ScalarExpr>),
     Multiply(Box<ScalarExpr>, Box<ScalarExpr>),
     Divide(Box<ScalarExpr>, Box<ScalarExpr>),
+    Compare(Box<ScalarExpr>, Operator, Box<ScalarExpr>),
 }
 
 impl ScalarExpr {
@@ -28,7 +29,8 @@ impl ScalarExpr {
             Self::Add(left, right)
             | Self::Subtract(left, right)
             | Self::Multiply(left, right)
-            | Self::Divide(left, right) => {
+            | Self::Divide(left, right)
+            | Self::Compare(left, _, right) => {
                 left.referenced_columns(out);
                 right.referenced_columns(out);
             }
@@ -36,7 +38,7 @@ impl ScalarExpr {
     }
 }
 
-pub(crate) fn parse_expression_tokens(parser: &mut Parser) -> Result<ScalarExpr, ParseError> {
+fn parse_arithmetic_tokens(parser: &mut Parser) -> Result<ScalarExpr, ParseError> {
     let mut expr = product(parser)?;
     loop {
         let addition = if parser.take(Token::Plus) {
@@ -54,6 +56,23 @@ pub(crate) fn parse_expression_tokens(parser: &mut Parser) -> Result<ScalarExpr,
         };
     }
     Ok(expr)
+}
+
+/// Comparison has lower precedence than addition and multiplication.
+pub(crate) fn parse_expression_tokens(parser: &mut Parser) -> Result<ScalarExpr, ParseError> {
+    let left = parse_arithmetic_tokens(parser)?;
+    if let Some(Token::Operator(operator)) = parser.tokens.get(parser.index) {
+        let operator = *operator;
+        if !matches!(operator, Operator::Eq | Operator::Ne | Operator::Lt
+            | Operator::Le | Operator::Gt | Operator::Ge) {
+            return Err(ParseError("invalid operator in numeric expression".into()));
+        }
+        parser.index += 1;
+        let right = parse_arithmetic_tokens(parser)?;
+        Ok(ScalarExpr::Compare(Box::new(left), operator, Box::new(right)))
+    } else {
+        Ok(left)
+    }
 }
 
 pub fn parse_scalar_expression(sql: &str) -> Result<ScalarExpr, ParseError> {
@@ -167,6 +186,17 @@ mod tests {
             )
         );
         assert!(parse_scalar_expression("total /").is_err());
+    }
+
+    #[test]
+    fn comparison_precedence_and_nullable_column_references() {
+        let expr = parse_scalar_expression("amount + 2 > threshold * 3").unwrap();
+        let mut columns = Vec::new();
+        expr.referenced_columns(&mut columns);
+        assert_eq!(columns, ["amount", "threshold"]);
+        assert!(matches!(expr, ScalarExpr::Compare(..)));
+        assert!(parse_scalar_expression("amount >").is_err());
+        assert!(parse_scalar_expression("amount > 1 > 2").is_err());
     }
 
     #[test]

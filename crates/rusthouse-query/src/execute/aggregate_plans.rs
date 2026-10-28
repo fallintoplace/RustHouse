@@ -1,5 +1,125 @@
 use super::*;
 
+struct DenseGroupChunk {
+    counts: Vec<u64>,
+    order: Vec<u16>,
+}
+
+/// Parallelize low-cardinality GROUP BY over many immutable parts. Each worker
+/// keeps fixed-size counters rather than one hash entry per input row.
+/// Merge chunks in part order to retain stable first-seen output order.
+fn parallel_dense_grouped_count(
+    part: &Path,
+    column: &str,
+    kind: &str,
+) -> Result<Option<GroupedCounts>, ExecutionError> {
+    let parts = rusthouse_storage::query_parts(part)?;
+    let workers = std::thread::available_parallelism()
+        .map_or(1, |count| count.get())
+        .min(4);
+    if workers < 2 || parts.len() < 16 {
+        return Ok(None);
+    }
+    let slots = if matches!(kind, "Int8" | "UInt8") {
+        256
+    } else {
+        65_536
+    };
+    let names = [column.to_owned()];
+    let chunk_size = parts.len().div_ceil(workers);
+    let chunks = std::thread::scope(|scope| {
+        let names = &names;
+        let handles = parts
+            .chunks(chunk_size)
+            .map(|paths| {
+                scope.spawn(move || -> Result<DenseGroupChunk, ExecutionError> {
+                    let mut counts = vec![0u64; slots];
+                    let mut order = Vec::new();
+                    for path in paths {
+                        let mut reader = rusthouse_storage::NumericPartReader::open(path, &names)?;
+                        while let Some(batch) = reader.next_batch()? {
+                            match &batch[0] {
+                                NumericColumn::UInt8(values) => {
+                                    for &value in values {
+                                        let slot = usize::from(value);
+                                        if counts[slot] == 0 {
+                                            order.push(value.into());
+                                        }
+                                        counts[slot] = counts[slot].checked_add(1)
+                                            .ok_or_else(|| ExecutionError::Invalid("group count overflow".into()))?;
+                                    }
+                                }
+                                NumericColumn::Int8(values) => {
+                                    for &value in values {
+                                        let slot = usize::from(value as u8);
+                                        if counts[slot] == 0 {
+                                            order.push(slot as u16);
+                                        }
+                                        counts[slot] = counts[slot].checked_add(1)
+                                            .ok_or_else(|| ExecutionError::Invalid("group count overflow".into()))?;
+                                    }
+                                }
+                                NumericColumn::UInt16(values) => {
+                                    for &value in values {
+                                        let slot = usize::from(value);
+                                        if counts[slot] == 0 {
+                                            order.push(value);
+                                        }
+                                        counts[slot] = counts[slot].checked_add(1)
+                                            .ok_or_else(|| ExecutionError::Invalid("group count overflow".into()))?;
+                                    }
+                                }
+                                NumericColumn::Int16(values) => {
+                                    for &value in values {
+                                        let slot = usize::from(value as u16);
+                                        if counts[slot] == 0 {
+                                            order.push(slot as u16);
+                                        }
+                                        counts[slot] = counts[slot].checked_add(1)
+                                            .ok_or_else(|| ExecutionError::Invalid("group count overflow".into()))?;
+                                    }
+                                }
+                                _ => return Err(ExecutionError::Invalid("unexpected grouped key type".into())),
+                            }
+                        }
+                    }
+                    Ok(DenseGroupChunk { counts, order })
+                })
+            })
+            .collect::<Vec<_>>();
+        handles
+            .into_iter()
+            .map(|handle| handle.join().unwrap_or_else(|_| {
+                Err(ExecutionError::Invalid("grouped scan worker panicked".into()))
+            }))
+            .collect::<Vec<_>>()
+    });
+    let mut counts = vec![0u64; slots];
+    let mut order = Vec::new();
+    for chunk in chunks {
+        let chunk = chunk?;
+        for key in chunk.order {
+            let slot = usize::from(key);
+            if counts[slot] == 0 {
+                order.push(key);
+            }
+            counts[slot] = counts[slot].checked_add(chunk.counts[slot])
+                .ok_or_else(|| ExecutionError::Invalid("group count overflow".into()))?;
+        }
+    }
+    let mut groups = GroupedCounts::default();
+    for key in order {
+        let value = match kind {
+            "Int8" => Number::Signed(i128::from(key as u8 as i8)),
+            "Int16" => Number::Signed(i128::from(key as i16)),
+            _ => Number::Unsigned(u128::from(key)),
+        };
+        groups.rows.push((value, counts[usize::from(key)]));
+    }
+    Ok(Some(groups))
+}
+
+
 pub(super) fn execute_grouped_part<W: Write>(
     query: &Select,
     part: &Path,
@@ -24,6 +144,67 @@ pub(super) fn execute_grouped_part<W: Write>(
         return groups.write(query, column, output);
     }
     let no_filters = query.predicates.is_empty() && query.or_predicates.is_empty();
+    // High-cardinality 64-bit GROUP BY with ORDER BY key is exact even when
+    // the distinct group set cannot fit in memory. Sorted spill runs avoid
+    // the fixed 200k-group HashMap ceiling and preserve ORDER BY semantics.
+    let kind = metadata.columns.iter().find(|c| c.name == column)
+        .map(|c| c.data_type.as_str());
+    let ordering = query.order_by.as_ref().filter(|order|
+        order.column == column && query.order_by_extra.is_empty());
+    if let (Some(kind @ ("UInt64" | "Int64")), Some(order)) = (kind, ordering) {
+        let signed = kind == "Int64";
+        let mut sorter = ExternalGroupCount64::new(signed, order.descending);
+        while let Some(batch) = reader.next_batch()? {
+            for row in 0..batch[0].len() {
+                if !no_filters && !batch_matches(&batch, row, &comparisons) { continue; }
+                let value = match &batch[0] {
+                    NumericColumn::UInt64(values) => values[row],
+                    NumericColumn::Int64(values) => values[row] as u64,
+                    _ => return Err(ExecutionError::Invalid(
+                        "unexpected external GROUP BY key type".into())),
+                };
+                sorter.insert(value)?;
+            }
+        }
+        writeln!(output, "{column}\t{}",
+            query.alias.as_deref().unwrap_or("count"))?;
+        let mut seen = 0usize;
+        let mut emitted = 0usize;
+        let offset = query.offset.unwrap_or(0);
+        let limit = query.limit.unwrap_or(usize::MAX);
+        sorter.finish_until(|key, count| {
+            if let Some(having) = &query.having {
+                if !number_matches(
+                    Number::Unsigned(u128::from(count)),
+                    Number::Unsigned(u128::from(having.value)),
+                    having.operator,
+                ) { return Ok(true); }
+            }
+            if seen >= offset && emitted < limit {
+                if signed {
+                    writeln!(output, "{}\t{count}", key as i64)?;
+                } else {
+                    writeln!(output, "{key}\t{count}")?;
+                }
+                emitted += 1;
+            }
+            seen = seen.checked_add(1)
+                .ok_or_else(|| ExecutionError::Invalid("GROUP BY row count overflow".into()))?;
+            Ok(emitted < limit)
+        })?;
+        return Ok(());
+    }
+    if no_filters {
+        if let Some(kind) = metadata.columns.iter()
+            .find(|candidate| candidate.name == column)
+            .map(|candidate| candidate.data_type.as_str())
+            .filter(|kind| matches!(*kind, "UInt8" | "Int8" | "UInt16" | "Int16"))
+        {
+            if let Some(groups) = parallel_dense_grouped_count(part, column, kind)? {
+                return groups.write(query, column, output);
+            }
+        }
+    }
     // A single-byte group key has only 256 possible values. Accumulate in a
     // dense array, retaining the first-seen key order for unordered queries.
     let narrow = metadata
@@ -567,6 +748,35 @@ pub(super) fn execute_count_distinct_part<W: Write>(
             return Ok(());
         }
     }
+    // Exact chunked bitmaps handle millions of 32-bit dimension IDs without
+    // maintaining a large boxed HashSet per observed value.
+    if query.order_by.is_none() && query.order_by_extra.is_empty()
+        && metadata.columns.iter().any(|candidate| {
+            candidate.name == column &&
+                matches!(candidate.data_type.as_str(), "UInt32" | "Int32")
+        })
+    {
+        let mut distinct = BitmapDistinct32::new();
+        while let Some(batch) = reader.next_batch()? {
+            for row in 0..batch[0].len() {
+                if !no_filters && !batch_matches(&batch, row, &comparisons) {
+                    continue;
+                }
+                let key = match &batch[0] {
+                    NumericColumn::UInt32(values) => values[row],
+                    NumericColumn::Int32(values) => values[row] as u32,
+                    _ => return Err(ExecutionError::Invalid(
+                        "unexpected 32-bit COUNT(DISTINCT) column type".into()
+                    )),
+                };
+                distinct.insert(key)?;
+            }
+        }
+        if query.offset.unwrap_or(0) == 0 {
+            writeln!(output, "{}", distinct.len())?;
+        }
+        return Ok(());
+    }
     let mut seen = HashSet::new();
     while let Some(batch) = reader.next_batch()? {
         for row in 0..batch[0].len() {
@@ -590,6 +800,20 @@ pub(super) fn execute_count_distinct_part<W: Write>(
     if query.offset.unwrap_or(0) == 0 {
         writeln!(output, "{}", seen.len())?;
     }
+    Ok(())
+}
+
+/// Update population/sample moments directly from a native numeric slot.
+/// Matches AggregateState's Welford update order but skips Number dispatch.
+fn update_native_moment(state: &mut AggregateState, numeric: f64) -> Result<(), ExecutionError> {
+    let next_count = state.count.checked_add(1)
+        .ok_or_else(|| ExecutionError::Invalid("aggregate row count overflow".into()))?;
+    let difference = numeric - state.mean;
+    state.mean += difference / next_count as f64;
+    if state.function != AggregateFunction::Avg {
+        state.squared_deviations += difference * (numeric - state.mean);
+    }
+    state.count = next_count;
     Ok(())
 }
 
@@ -618,6 +842,25 @@ pub(super) fn execute_aggregate_part<W: Write>(
         return Ok(());
     }
     let no_filters = query.predicates.is_empty() && query.or_predicates.is_empty();
+    // Exact radix selection needs only 256 counters per byte and a bounded
+    // number of repeated immutable scans, not a full materialized row array.
+    if function == AggregateFunction::Median {
+        if let Some(kind) = metadata.columns.iter().find(|candidate| candidate.name == column) {
+            if super::radix_median::supports_type(&kind.data_type) {
+                let median = if no_filters {
+                    super::radix_median::median(part, column, &metadata)?
+                } else {
+                    super::radix_median::median_filtered(
+                        part, column, &metadata, &scan_columns, &comparisons,
+                    )?
+                };
+                if query.offset.unwrap_or(0) == 0 {
+                    writeln!(output, "{}", median.unwrap_or_else(|| "NULL".into()))?;
+                }
+                return Ok(());
+            }
+        }
+    }
     // For plain integer SUM without WHERE, operate on contiguous typed arrays
     // and avoid AggregateState dispatch and Number conversion on every row.
     let native_integer = metadata.columns.iter().any(|candidate| {
@@ -757,6 +1000,46 @@ pub(super) fn execute_aggregate_part<W: Write>(
             } else {
                 writeln!(output, "NULL")?;
             }
+        }
+        return Ok(());
+    }
+    // AVG, variance and standard deviation on a billion non-nullable numeric
+    // rows still require stable Welford arithmetic, but not an enum dispatch
+    // or number conversion per row. Keep the exact update order.
+    if no_filters && matches!(
+        function,
+        AggregateFunction::Avg
+            | AggregateFunction::VarPop
+            | AggregateFunction::VarSamp
+            | AggregateFunction::StddevPop
+            | AggregateFunction::StddevSamp
+    ) {
+        let mut state = AggregateState::new(function);
+        macro_rules! fold_moments {
+            ($values:expr) => {
+                for &value in $values {
+                    update_native_moment(&mut state, value as f64)?;
+                }
+            };
+        }
+        while let Some(batch) = reader.next_batch()? {
+            match &batch[0] {
+                NumericColumn::UInt8(values) => fold_moments!(values),
+                NumericColumn::UInt16(values) => fold_moments!(values),
+                NumericColumn::UInt32(values) => fold_moments!(values),
+                NumericColumn::UInt64(values) => fold_moments!(values),
+                NumericColumn::UInt128(values) => fold_moments!(values),
+                NumericColumn::Int8(values) => fold_moments!(values),
+                NumericColumn::Int16(values) => fold_moments!(values),
+                NumericColumn::Int32(values) => fold_moments!(values),
+                NumericColumn::Int64(values) => fold_moments!(values),
+                NumericColumn::Int128(values) => fold_moments!(values),
+                NumericColumn::Float32(values) => fold_moments!(values),
+                NumericColumn::Float64(values) => fold_moments!(values),
+            }
+        }
+        if query.offset.unwrap_or(0) == 0 {
+            writeln!(output, "{}", state.render())?;
         }
         return Ok(());
     }
@@ -933,4 +1216,42 @@ pub(super) fn execute_aggregate_numbers<W: Write>(
         writeln!(output, "{}", state.render())?;
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod native_moment_tests {
+    use super::*;
+
+    #[test]
+    fn native_welford_matches_generic_aggregates_for_large_signed_values() {
+        let inputs = [
+            Number::Signed(-91),
+            Number::Unsigned(u128::from(u64::MAX)),
+            Number::Float(1.75),
+            Number::Float(-2.5),
+            Number::Unsigned(7),
+        ];
+        for function in [
+            AggregateFunction::Avg,
+            AggregateFunction::VarPop,
+            AggregateFunction::VarSamp,
+            AggregateFunction::StddevPop,
+            AggregateFunction::StddevSamp,
+        ] {
+            let mut native = AggregateState::new(function);
+            let mut baseline = AggregateState::new(function);
+            for value in inputs {
+                let numeric = match value {
+                    Number::Signed(v) => v as f64,
+                    Number::Unsigned(v) => v as f64,
+                    Number::Float(v) => v,
+                };
+                update_native_moment(&mut native, numeric).unwrap();
+                baseline.update(value).unwrap();
+            }
+            assert_eq!(native.mean.to_bits(), baseline.mean.to_bits());
+            assert_eq!(native.squared_deviations.to_bits(), baseline.squared_deviations.to_bits());
+            assert_eq!(native.render(), baseline.render());
+        }
+    }
 }

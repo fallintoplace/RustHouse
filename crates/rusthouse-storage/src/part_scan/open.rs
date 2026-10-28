@@ -16,12 +16,9 @@ pub(super) fn open_numeric_stream(
     part: &Path,
     name: &str,
     data_type: &str,
-    rows: u64,
-    layout: &mut ScanLayout,
 ) -> Result<ColumnStream, PartError> {
     let marks_path = numeric_marks_path(part, name)?;
     let marks_file = read_wide_marks(&marks_path)?;
-    layout.validate(name, &marks_file.marks, rows)?;
     let data_path = part.join(format!("{name}.bin"));
     let mut reader = CompressedBlockReader::open(&data_path)?;
     crate::mark_validation::validate_wide_marks_reader(&marks_file, &mut reader)?;
