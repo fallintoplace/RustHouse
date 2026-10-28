@@ -916,10 +916,14 @@ pub(super) fn execute_typed<W: Write>(
                 continue;
             }
             if is_grouped {
-                if let TypedColumn::Text(strings) = &batch[projection_indices[0]] {
-                    let key = strings.get(index).ok_or_else(|| {
-                        ExecutionError::Invalid("invalid String row index".into())
-                    })?;
+                let text_key = match &batch[projection_indices[0]] {
+                    TypedColumn::Text(strings) => strings.get(index),
+                    TypedColumn::NullableText { values, nulls } if nulls[index] == 0 => {
+                        values.get(index)
+                    }
+                    _ => None,
+                };
+                if let Some(key) = text_key {
                     if let Some(&group) = text_group_indices.get(key) {
                         let count = &mut grouped_rows[group].1;
                         *count = count.checked_add(1).ok_or_else(|| {
@@ -1504,5 +1508,40 @@ mod topk_tests {
         execute(&query, Some(&path), &mut output).unwrap();
         assert_eq!(output, b"note\nfirst\nsecond\n");
         std::fs::remove_dir_all(path).unwrap();
+    }
+}
+
+#[cfg(test)]
+mod nullable_string_group_tests {
+    use crate::{execute, parse_select};
+    use rusthouse_storage::{Column, write_wide_part};
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
+    static NEXT: AtomicUsize = AtomicUsize::new(0);
+
+    #[test]
+    fn groups_nullable_text_with_borrowed_non_null_keys() {
+        let part = std::env::temp_dir().join(format!(
+            "rusthouse-null-text-group-{}-{}",
+            std::process::id(),
+            NEXT.fetch_add(1, Ordering::Relaxed)
+        ));
+        let columns = [Column {
+            name: "category".into(),
+            data_type: "Nullable(String)".into(),
+        }];
+        let rows = [
+            vec![Some("x".into())],
+            vec![None],
+            vec![Some("x".into())],
+            vec![Some("y".into())],
+            vec![None],
+        ];
+        write_wide_part(&part, &columns, &rows).unwrap();
+        let query = parse_select("SELECT category, count(*) FROM part GROUP BY category").unwrap();
+        let mut output = Vec::new();
+        execute(&query, Some(&part), &mut output).unwrap();
+        assert_eq!(output, b"category\tcount\nx\t2\n\\N\t2\ny\t1\n");
+        std::fs::remove_dir_all(part).unwrap();
     }
 }
