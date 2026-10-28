@@ -810,14 +810,15 @@ fn execute_streaming_ordered_inner<W: Write>(
 
 
 
-fn execute_streaming_inner_group_count<W: Write>(
+fn execute_streaming_inner_grouped<W: Write>(
     query: &JoinSelect,
     left_path: &Path,
     right_path: &Path,
     columns: InnerJoinColumns<'_>,
     left_count: u64,
     right_count: u64,
-    key_index: usize,
+    group_index: usize,
+    value_index: Option<usize>,
     header: &str,
     output: &mut W,
 ) -> Result<(), ExecutionError> {
@@ -826,27 +827,27 @@ fn execute_streaming_inner_group_count<W: Write>(
     let InnerJoinColumns {
         left_names, right_names, left_keys, right_keys, null_filter, ..
     } = columns;
+    let function = if value_index.is_some() {
+        AggregateFunction::Sum
+    } else {
+        AggregateFunction::Count
+    };
     if query.limit == Some(0) {
-        writeln!(output, "{header}\tcount")?;
+        writeln!(output, "{header}")?;
         return Ok(());
     }
-    let mut groups = Vec::<(typed::Cell, u64)>::new();
+    let mut groups = Vec::<(typed::Cell, AggregateState)>::new();
     let mut lookup = HashMap::<typed::Key, usize>::new();
     let mut retained_bytes = 0usize;
     let width = left_names.len();
     let mut accept = |left: &[typed::Cell], right: &[typed::Cell]| {
-        let key = if key_index < width {
-            &left[key_index]
-        } else {
-            &right[key_index - width]
+        let at = |index: usize| {
+            if index < width { &left[index] } else { &right[index - width] }
         };
+        let key = at(group_index);
         let entry_key = key.key();
-        match lookup.entry(entry_key) {
-            Entry::Occupied(entry) => {
-                let count = &mut groups[*entry.get()].1;
-                *count = count.checked_add(1)
-                    .ok_or_else(|| invalid("JOIN GROUP BY count overflow"))?;
-            }
+        let group = match lookup.entry(entry_key) {
+            Entry::Occupied(entry) => *entry.get(),
             Entry::Vacant(entry) => {
                 if groups.len() >= MAX_GROUPS {
                     return Err(invalid("JOIN GROUP BY supports at most 200000 groups"));
@@ -858,18 +859,31 @@ fn execute_streaming_inner_group_count<W: Write>(
                 };
                 retained_bytes = retained_bytes
                     .checked_add(std::mem::size_of::<typed::Key>()
-                        + std::mem::size_of::<(typed::Cell, u64)>() + variable * 2)
+                        + std::mem::size_of::<(typed::Cell, AggregateState)>()
+                        + variable * 2)
                     .ok_or_else(|| invalid("JOIN GROUP BY memory overflow"))?;
                 if retained_bytes > MAX_GROUP_BYTES {
                     return Err(invalid("JOIN GROUP BY exceeds retained group memory budget"));
                 }
                 entry.insert(groups.len());
-                groups.push((key.clone(), 1));
+                groups.push((key.clone(), AggregateState::new(function)));
+                groups.len() - 1
             }
+        };
+        if let Some(index) = value_index {
+            match at(index) {
+                typed::Cell::Numeric(number) => groups[group].1.update(*number)?,
+                typed::Cell::Null => {},
+                _ => return Err(invalid("JOIN grouped SUM requires integer values")),
+            }
+        } else {
+            groups[group].1.increment_count()?;
         }
         Ok(())
     };
     if left_count != 0 && right_count != 0 {
+        let needs_left = group_index < width || value_index.is_some_and(|i| i < width);
+        let needs_right = group_index >= width || value_index.is_some_and(|i| i >= width);
         if right_count <= MAX_STREAM_BUILD_ROWS &&
             (right_count <= left_count || left_count > MAX_STREAM_BUILD_ROWS) {
             let right_rows = read_rows(
@@ -891,7 +905,7 @@ fn execute_streaming_inner_group_count<W: Write>(
             probe_inner(
                 left_path, left_names, left_keys, &right_rows, &hash,
                 ProbeOptions {
-                    materialize_rows: key_index < width,
+                    materialize_rows: needs_left,
                     materialize_after: 0, stop_after: Some(usize::MAX),
                     any: query.any, null_filter,
                 }, &mut accept
@@ -912,18 +926,18 @@ fn execute_streaming_inner_group_count<W: Write>(
             probe_right(
                 right_path, right_names, right_keys, &left_rows, &hash,
                 ProbeOptions {
-                    materialize_rows: key_index >= width,
+                    materialize_rows: needs_right,
                     materialize_after: 0, stop_after: Some(usize::MAX),
                     any: query.any, null_filter,
                 }, &mut accept
             )?;
         }
     }
-    writeln!(output, "{header}\tcount")?;
-    for (key, count) in groups.into_iter()
+    writeln!(output, "{header}")?;
+    for (key, state) in groups.into_iter()
         .skip(query.offset).take(query.limit.unwrap_or(usize::MAX)) {
         typed::write_value(output, &key)?;
-        writeln!(output, "\t{count}")?;
+        writeln!(output, "\t{}", state.render())?;
     }
     Ok(())
 }
@@ -1237,9 +1251,31 @@ pub fn execute_join<W: Write>(
             JoinAggregate::GroupCount(column) => {
                 let index = resolve(query, column, &left_names, &right_names)?;
                 let header = format!("{}.{}", column.relation, column.name);
-                execute_streaming_inner_group_count(
+                execute_streaming_inner_grouped(
                     query, left_path, right_path, columns,
-                    left_meta.rows, right_meta.rows, index, &header, output
+                    left_meta.rows, right_meta.rows, index, None, &format!("{header}\tcount"), output
+                )
+            }
+            JoinAggregate::GroupSum { group, value } => {
+                let key = resolve(query, group, &left_names, &right_names)?;
+                let metric = resolve(query, value, &left_names, &right_names)?;
+                let data_type = if metric < width {
+                    &left_meta.columns[metric].data_type
+                } else {
+                    &right_meta.columns[metric - width].data_type
+                };
+                if !matches!(base_type(data_type),
+                    "UInt8" | "UInt16" | "UInt32" | "UInt64" | "UInt128" |
+                    "Int8" | "Int16" | "Int32" | "Int64" | "Int128") {
+                    return Err(invalid("JOIN grouped SUM requires an exact integer column"));
+                }
+                let header = format!(
+                    "{}.{}\tsum({}.{})",
+                    group.relation, group.name, value.relation, value.name
+                );
+                execute_streaming_inner_grouped(
+                    query, left_path, right_path, columns,
+                    left_meta.rows, right_meta.rows, key, Some(metric), &header, output
                 )
             }
         };
