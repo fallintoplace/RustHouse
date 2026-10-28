@@ -28,7 +28,8 @@ def verify_file(path, start, rows):
 
 
 def verify(manifest_path):
-    manifest = json.loads(Path(manifest_path).read_text(encoding="utf-8"))
+    manifest_path = Path(manifest_path).resolve()
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
     if manifest.get("schema_version") != 1:
         raise ValueError("unsupported shard manifest version")
     start = require_uint(manifest.get("start"), "start", zero=True)
@@ -49,7 +50,10 @@ def verify(manifest_path):
         expected_hash = shard.get("sha256")
         if not isinstance(path, str) or not path:
             raise ValueError("shard path is missing")
-        canonical = str(Path(path).resolve())
+        shard_file = Path(path)
+        if not shard_file.is_absolute():
+            shard_file = manifest_path.parent / shard_file
+        canonical = str(shard_file.resolve())
         if canonical in seen_paths:
             raise ValueError("duplicate shard path")
         seen_paths.add(canonical)
@@ -57,7 +61,7 @@ def verify(manifest_path):
             raise ValueError("gap, overlap or unexpected shard row count")
         if not isinstance(expected_hash, str) or len(expected_hash) != 64:
             raise ValueError("missing or invalid shard SHA-256")
-        actual = verify_file(path, position, count)
+        actual = verify_file(shard_file, position, count)
         if actual != expected_hash.lower():
             raise ValueError(f"{path}: SHA-256 mismatch")
         position += count
