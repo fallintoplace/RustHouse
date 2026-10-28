@@ -63,6 +63,7 @@ pub(super) fn is_function(name: &str) -> bool {
             | "POSITIONCASEINSENSITIVE"
             | "STRPOS"
             | "COUNT_SUBSTRING"
+            | "COUNTSUBSTRINGS"
             | "EXTRACTURLPARAMETER"
             | "NULLIF"
             | "LAST_INDEX_OF"
@@ -969,7 +970,7 @@ fn parse_at_depth(parser: &mut Parser, depth: usize) -> Result<ConstantValue, Pa
                 _ => ConstantValue::Null,
             }
         }
-        "COUNT_SUBSTRING" => {
+        "COUNT_SUBSTRING" | "COUNTSUBSTRINGS" => {
             let input = text_arg(parser, depth + 1)?;
             require(parser, Token::Comma, "COUNT_SUBSTRING requires a substring")?;
             let needle = text_arg(parser, depth + 1)?;
