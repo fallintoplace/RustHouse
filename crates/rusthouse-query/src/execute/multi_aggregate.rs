@@ -376,6 +376,14 @@ pub(super) fn execute<W: Write>(
     if query.limit == Some(0) {
         return Ok(());
     }
+    if query.predicates.is_empty() && query.or_predicates.is_empty() {
+        if let Some(results) = generated_series_metrics(start, rows, step, items) {
+            if query.offset.unwrap_or(0) == 0 {
+                writeln!(output, "{}", results?.join("\t"))?;
+            }
+            return Ok(());
+        }
+    }
     let mut states = items
         .iter()
         .map(|item| match item.function {
@@ -448,6 +456,54 @@ pub(super) fn execute<W: Write>(
         output.write_all(b"\n")?;
     }
     Ok(())
+}
+
+/// Compute exact arithmetic-series metrics in O(number of aggregates) instead
+/// of iterating a billion generated rows. Predicated or DISTINCT inputs keep the
+/// existing streaming path.
+fn generated_series_metrics(
+    start: u64,
+    rows: u64,
+    step: u64,
+    items: &[AggregateItem],
+) -> Option<Result<Vec<String>, ExecutionError>> {
+    if !items.iter().all(|item| {
+        !item.distinct
+            && item.argument.as_ref().is_none_or(|expression| {
+                matches!(expression, ScalarExpr::Column(name) if name == "number")
+            })
+            && matches!(item.function, None | Some(crate::AggregateFunction::Count
+                | crate::AggregateFunction::Sum | crate::AggregateFunction::Min
+                | crate::AggregateFunction::Max | crate::AggregateFunction::Avg))
+    }) {
+        return None;
+    }
+    let first = u128::from(start);
+    let n = u128::from(rows);
+    let last = if n == 0 {
+        first
+    } else {
+        first + (n - 1) * u128::from(step)
+    };
+    let sum = if n & 1 == 0 {
+        (n / 2) * (first + last)
+    } else {
+        n * ((first + last) / 2)
+    };
+    let results = items.iter().map(|item| {
+        Ok(match item.function {
+            None | Some(crate::AggregateFunction::Count) => rows.to_string(),
+            Some(crate::AggregateFunction::Sum) if n > 0 => sum.to_string(),
+            Some(crate::AggregateFunction::Min) if n > 0 => first.to_string(),
+            Some(crate::AggregateFunction::Max) if n > 0 => last.to_string(),
+            Some(crate::AggregateFunction::Avg) if n > 0 =>
+                ((first as f64 + last as f64) / 2.0).to_string(),
+            Some(crate::AggregateFunction::Sum | crate::AggregateFunction::Min
+                | crate::AggregateFunction::Max | crate::AggregateFunction::Avg) => "NULL".into(),
+            _ => unreachable!("fast path excludes other aggregate functions"),
+        })
+    }).collect::<Result<Vec<_>, ExecutionError>>();
+    Some(results)
 }
 
 /// Evaluate bounded generated-number aggregate projections without a stored part.
