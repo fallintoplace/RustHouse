@@ -351,7 +351,7 @@ pub(super) fn execute_grouped_aggregate<W: Write>(
             };
             if *function == AggregateFunction::Count {
                 if !typed::is_null_at(&batch[value_index], row) {
-                    groups[group].1.update(Number::Unsigned(1))?;
+                    groups[group].1.increment_count()?;
                 }
                 continue;
             }
