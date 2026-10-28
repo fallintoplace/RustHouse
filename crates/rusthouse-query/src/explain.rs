@@ -48,6 +48,9 @@ fn describe_projection(projection: &Projection) -> String {
         Projection::GroupedApproxDistinct { column, value_column } => {
             format!("Aggregate: GROUP BY {column}, uniq({value_column}) [bounded HyperLogLog]")
         }
+        Projection::GroupedMultiApproxDistinct { columns, value_column } => {
+            format!("Aggregate: GROUP BY {}, uniq({value_column}) [bounded HyperLogLog]", columns.join(", "))
+        }
         Projection::GroupedCount { column } => {
             format!("Aggregate: GROUP BY {column}, count(*)")
         }
