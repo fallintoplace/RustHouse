@@ -38,6 +38,7 @@ impl SqlOutputFormat {
     fn from_arg(value: Option<OsString>) -> Result<Self, String> {
         match value.and_then(|value| value.into_string().ok()).as_deref() {
             Some("tsv") => Ok(Self::Tsv),
+            Some("TabSeparatedWithNames") => Ok(Self::Tsv),
             Some("tsv-no-header") => Ok(Self::TsvNoHeader),
             Some("csv") => Ok(Self::Csv),
             Some("csv-no-header") => Ok(Self::CsvNoHeader),
