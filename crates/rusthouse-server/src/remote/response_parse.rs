@@ -76,9 +76,16 @@ fn parse_required_headers<'a>(
     Ok((length, content_type))
 }
 
+struct ResponseHead {
+    body_start: usize,
+    status: u16,
+    content_type: String,
+    body_length: usize,
+}
+
 /// Parse a complete HTTP response head without waiting for the peer to close
 /// its connection. The advertised body length is untrusted and remains bounded.
-fn response_head(raw: &[u8]) -> Result<Option<(usize, u16, String, usize)>, String> {
+fn response_head(raw: &[u8]) -> Result<Option<ResponseHead>, String> {
     let Some(head_end) = raw.windows(4).position(|bytes| bytes == b"\r\n\r\n") else {
         if raw.len() >= MAX_HEADER_BYTES {
             return Err("peer headers exceed 8 KiB".into());
@@ -95,25 +102,33 @@ fn response_head(raw: &[u8]) -> Result<Option<(usize, u16, String, usize)>, Stri
     if length > MAX_RESPONSE_BYTES {
         return Err("peer response size mismatch or exceeds 8 MiB".into());
     }
-    Ok(Some((head_end + 4, status, content_type, length)))
+    Ok(Some(ResponseHead {
+        body_start: head_end + 4,
+        status,
+        content_type,
+        body_length: length,
+    }))
 }
 
 /// Total valid wire bytes needed for a complete content-length response.
 pub(super) fn expected_wire_length(raw: &[u8]) -> Result<Option<usize>, String> {
-    response_head(raw)?.map(|(start, _, _, length)| {
-        start.checked_add(length).ok_or("peer response size overflow".into())
-    }).transpose()
+    response_head(raw)?
+        .map(|head| {
+            head.body_start
+                .checked_add(head.body_length)
+                .ok_or("peer response size overflow".into())
+        })
+        .transpose()
 }
 
 pub(super) fn parse_response(raw: &[u8]) -> Result<PeerResponse, String> {
-    let (body_start, status, content_type, length) = response_head(raw)?
-        .ok_or("peer response has no header terminator")?;
-    if raw.len() != body_start + length {
+    let head = response_head(raw)?.ok_or("peer response has no header terminator")?;
+    if raw.len() != head.body_start + head.body_length {
         return Err("peer response size mismatch or exceeds 8 MiB".into());
     }
     Ok(PeerResponse {
-        status,
-        content_type,
-        body: raw[body_start..].to_vec(),
+        status: head.status,
+        content_type: head.content_type,
+        body: raw[head.body_start..].to_vec(),
     })
 }

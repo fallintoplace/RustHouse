@@ -1,7 +1,7 @@
 # Required integration gate
 
 RustHouse has one aggregate `Rust CI / Integration gate` check. It only succeeds
-when formatting, Clippy, all Linux/macOS Rust matrix jobs, Windows smoke,
+when formatting, Clippy, rustdoc, all Linux/macOS Rust matrix jobs, Windows smoke,
 all Python harness matrix jobs, and minimum-Rust-version tests succeed.
 
 **Repository administrator setup (not handled by the workflow):**

@@ -30,10 +30,28 @@ fn full_using_composite_coalesce() {
             .unwrap()
             .as_nanos()
     ));
-    successful(&db, "CREATE TABLE lefts (region UInt64, id UInt64, title String)");
-    successful(&db, "CREATE TABLE rights (region UInt64, id UInt64, label String)");
-    successful(&db, "INSERT INTO lefts VALUES (10, 1, 'L'), (20, 2, 'Left')");
-    successful(&db, "INSERT INTO rights VALUES (10, 1, 'Match'), (30, 3, 'Right')");
-    assert_eq!(successful(&db, "SELECT * FROM lefts l FULL JOIN rights r USING (id, region) ORDER BY l.id ASC NULLS LAST, r.id ASC NULLS LAST"), b"l.id\tl.region\tl.title\tr.label\n1\t10\tL\tMatch\n2\t20\tLeft\t\\N\n3\t30\t\\N\tRight\n");
+    successful(
+        &db,
+        "CREATE TABLE lefts (region UInt64, id UInt64, title String)",
+    );
+    successful(
+        &db,
+        "CREATE TABLE rights (region UInt64, id UInt64, label String)",
+    );
+    successful(
+        &db,
+        "INSERT INTO lefts VALUES (10, 1, 'L'), (20, 2, 'Left')",
+    );
+    successful(
+        &db,
+        "INSERT INTO rights VALUES (10, 1, 'Match'), (30, 3, 'Right')",
+    );
+    assert_eq!(
+        successful(
+            &db,
+            "SELECT * FROM lefts l FULL JOIN rights r USING (id, region) ORDER BY l.id ASC NULLS LAST, r.id ASC NULLS LAST"
+        ),
+        b"l.id\tl.region\tl.title\tr.label\n1\t10\tL\tMatch\n2\t20\tLeft\t\\N\n3\t30\t\\N\tRight\n"
+    );
     fs::remove_dir_all(db).unwrap();
 }

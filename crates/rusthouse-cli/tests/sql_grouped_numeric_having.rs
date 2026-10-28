@@ -40,7 +40,11 @@ fn filters_grouped_numeric_results_after_aggregation() {
     ] {
         let result = sql(query, &db);
         assert!(result.status.success(), "{query}: {result:?}");
-        assert_eq!(String::from_utf8(result.stdout).unwrap(), expected, "{query}");
+        assert_eq!(
+            String::from_utf8(result.stdout).unwrap(),
+            expected,
+            "{query}"
+        );
     }
 
     let generated = sql(
@@ -48,10 +52,7 @@ fn filters_grouped_numeric_results_after_aggregation() {
         &db,
     );
     assert!(generated.status.success(), "{generated:?}");
-    assert_eq!(
-        generated.stdout,
-        b"number\tsum(number)\n3\t3\n4\t4\n"
-    );
+    assert_eq!(generated.stdout, b"number\tsum(number)\n3\t3\n4\t4\n");
     fs::remove_dir_all(db).unwrap();
 }
 
@@ -70,7 +71,10 @@ fn rejects_having_an_unselected_aggregate() {
 
 #[test]
 fn groups_nullable_strings_with_repeated_metrics() {
-    let db = std::env::temp_dir().join(format!("rusthouse-nullable-group-multi-{}", std::process::id()));
+    let db = std::env::temp_dir().join(format!(
+        "rusthouse-nullable-group-multi-{}",
+        std::process::id()
+    ));
     for query in [
         "CREATE TABLE sales (category Nullable(String), amount UInt64)",
         "INSERT INTO sales VALUES ('books', 4), ('books', 6), ('games', 5), (NULL, 1)",

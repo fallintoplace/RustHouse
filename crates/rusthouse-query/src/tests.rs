@@ -325,7 +325,6 @@ fn parses_like_predicates_and_rejects_nontext_patterns() {
         assert!(parse_select(invalid).is_err(), "{invalid}");
     }
 }
-
 #[test]
 fn parses_ilike_and_rejects_malformed_patterns() {
     let select = parse_select(
@@ -1106,8 +1105,9 @@ fn allows_grouped_numeric_ordering_by_aggregate_position() {
         assert_eq!(query.order_by.unwrap().column, "#aggregate");
     }
     let query = parse_select(
-        "SELECT category, sum(amount) FROM part GROUP BY category ORDER BY 2 DESC, category ASC"
-    ).unwrap();
+        "SELECT category, sum(amount) FROM part GROUP BY category ORDER BY 2 DESC, category ASC",
+    )
+    .unwrap();
     assert_eq!(query.order_by_extra.len(), 1);
     for invalid in [
         "SELECT category, median(amount) FROM part GROUP BY category ORDER BY 2",
@@ -1116,4 +1116,3 @@ fn allows_grouped_numeric_ordering_by_aggregate_position() {
         assert!(parse_select(invalid).is_err(), "{invalid}");
     }
 }
-

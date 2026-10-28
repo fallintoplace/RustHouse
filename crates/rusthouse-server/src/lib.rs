@@ -25,10 +25,10 @@ use json_compact_each_row::JsonCompactEachRowWriter;
 use jsonl::JsonlWriter;
 use markdown::MarkdownWriter;
 use rusthouse_query::{Source, execute, explain_select, parse_select};
-use rusthouse_storage::{inspect_query_source, resolve_active_snapshot};
+use rusthouse_storage::{inspect_query_source, resolve_database_table};
 use sql_values::SqlValuesWriter;
 use std::fs;
-use std::io::{self, Read, Write};
+use std::io::{self, Write};
 use std::path::{Path, PathBuf};
 
 pub const MAX_QUERY_BYTES: usize = 64 * 1024;
@@ -95,73 +95,6 @@ impl Write for LimitedWriter {
     }
 }
 
-/// Resolve only catalog-visible, on-disk tables. Never expose orphaned
-/// data directories or symlinks that the local database would not accept.
-fn database_part(database: &Path, table: &str) -> Result<PathBuf, String> {
-    let mut chars = table.bytes();
-    if table.len() > 128
-        || !matches!(chars.next(), Some(b'a'..=b'z' | b'A'..=b'Z' | b'_'))
-        || !chars.all(|byte| byte.is_ascii_alphanumeric() || byte == b'_')
-    {
-        return Err("invalid database table name".into());
-    }
-    let schema = database.join(format!("{table}.schema"));
-    let schema_metadata = fs::symlink_metadata(&schema)
-        .map_err(|error| format!("cannot read database table {table}: {error}"))?;
-    if !schema_metadata.file_type().is_file() || schema_metadata.len() > 32 * 1024 {
-        return Err(format!("invalid database schema for {table}"));
-    }
-    let mut content = Vec::new();
-    fs::File::open(&schema)
-        .map_err(|error| format!("cannot read database table {table}: {error}"))?
-        .take(32 * 1024 + 1)
-        .read_to_end(&mut content)
-        .map_err(|error| format!("cannot read database table {table}: {error}"))?;
-    if content.len() > 32 * 1024 {
-        return Err(format!("database schema exceeds size limit for {table}"));
-    }
-    let content = String::from_utf8(content)
-        .map_err(|_| format!("invalid UTF-8 in database schema for {table}"))?;
-    if !content.ends_with('\n') {
-        return Err(format!("invalid database schema for {table}"));
-    }
-    let mut lines = content.lines();
-    if lines.next() != Some("rusthouse-schema-v1") {
-        return Err(format!("invalid database schema version for {table}"));
-    }
-    let expected: Vec<(&str, &str)> = lines
-        .map(|line| {
-            line.split_once('\t')
-                .ok_or_else(|| format!("invalid database column in {table}"))
-        })
-        .collect::<Result<_, _>>()?;
-    if expected.is_empty() || expected.len() > 128 {
-        return Err(format!("invalid database columns for {table}"));
-    }
-    let parts = database.join(format!("{table}.parts"));
-    if !fs::symlink_metadata(&parts)
-        .map_err(|error| format!("cannot inspect data for {table}: {error}"))?
-        .file_type()
-        .is_dir()
-    {
-        return Err(format!(
-            "database parts are not a real directory for {table}"
-        ));
-    }
-    let active = resolve_active_snapshot(&parts).map_err(|error| error.to_string())?;
-    let stored = inspect_query_source(&active).map_err(|error| error.to_string())?;
-    if stored.columns.len() != expected.len()
-        || !stored
-            .columns
-            .iter()
-            .zip(expected)
-            .all(|(stored, (name, kind))| stored.name == name && stored.data_type == kind)
-    {
-        return Err(format!("schema and stored data disagree for {table}"));
-    }
-    Ok(active)
-}
-
 fn schema_response(config: &Config, table: Option<&str>) -> Response {
     if config.part.is_some() && config.database.is_some() {
         return Response::text("400 Bad Request", "choose --part or --database, not both\n");
@@ -181,7 +114,7 @@ fn schema_response(config: &Config, table: Option<&str>) -> Response {
     };
     let part = if let Some(table) = table {
         let database = config.database.as_deref().expect("checked --database");
-        match database_part(database, table) {
+        match resolve_database_table(database, table) {
             Ok(part) => part,
             Err(error) => return Response::text("400 Bad Request", &format!("{error}\n")),
         }
@@ -428,7 +361,7 @@ pub fn handle_request(method: &str, target: &str, body: &[u8], config: &Config) 
     if let (Some(database), Some(Source::Table(table))) =
         (config.database.as_deref(), select.source.as_ref())
     {
-        part = match database_part(database, table) {
+        part = match resolve_database_table(database, table) {
             Ok(path) => Some(path),
             Err(error) => return Response::text("400 Bad Request", &format!("{error}\n")),
         };
@@ -741,12 +674,16 @@ mod tests {
 
     #[test]
     fn can_return_more_than_one_hundred_thousand_rows() {
-        let config = Config { max_rows: 100_001, ..config() };
-        let response = handle_request(
-            "POST", "/", b"SELECT number FROM numbers(100001)", &config
-        );
+        let config = Config {
+            max_rows: 100_001,
+            ..config()
+        };
+        let response = handle_request("POST", "/", b"SELECT number FROM numbers(100001)", &config);
         assert_eq!(response.status, "200 OK");
-        assert_eq!(response.body.iter().filter(|&&byte| byte == b'\n').count(), 100_002);
+        assert_eq!(
+            response.body.iter().filter(|&&byte| byte == b'\n').count(),
+            100_002
+        );
     }
 
     #[test]

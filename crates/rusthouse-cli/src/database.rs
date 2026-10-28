@@ -74,9 +74,7 @@ fn active_source(database: &Path, name: &str) -> Result<PathBuf, String> {
 
 /// Resolve a named SQL table to its immutable on-disk parts.
 pub(super) fn select_source(database: &Path, table: &str) -> Result<PathBuf, String> {
-    let cols = columns(database, table)?;
-    let (path, _) = validated_parts(database, table, &cols)?;
-    Ok(path)
+    rusthouse_storage::resolve_database_table(database, table)
 }
 
 fn existing_path(path: &Path) -> Result<bool, String> {

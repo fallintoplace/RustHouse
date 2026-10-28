@@ -63,13 +63,19 @@ jobs:
         with:
           save-if: ${{ github.ref == 'refs/heads/main' }}
           cache-on-failure: true
-      - run: cargo test --workspace --locked
+      - run: cargo test --workspace --locked --no-fail-fast
       - run: cargo build --workspace --locked
       - name: Verify 20 generated SQL queries
         run: |
           python3 -m bench workload latency -- \
             --binary target/debug/rusthouse \
             --rows 512 --runs 1 --warmups 0
+      - name: Verify CLI and HTTP query parity
+        if: matrix.os == 'ubuntu-latest'
+        run: |
+          python3 -m bench.interop.cli_http_parity \
+            --binary target/debug/rusthouse \
+            --server target/debug/rusthouse-server
       - name: Verify analytics baseline against SQLite
         if: matrix.os == 'ubuntu-latest'
         run: |
@@ -146,12 +152,12 @@ jobs:
           save-if: ${{ github.ref == 'refs/heads/main' }}
           cache-on-failure: true
       - name: Test minimum Rust version
-        run: cargo test --workspace --locked
+        run: cargo test --workspace --locked --no-fail-fast
 
   integration-gate:
     name: Integration gate
     if: ${{ always() }}
-    needs: [format, lint, test, windows-smoke, analytics-harness, msrv]
+    needs: [format, lint, rustdoc, test, windows-smoke, analytics-harness, msrv]
     runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:
@@ -159,13 +165,14 @@ jobs:
         env:
           FORMAT: ${{ needs.format.result }}
           LINT: ${{ needs.lint.result }}
+          RUSTDOC: ${{ needs.rustdoc.result }}
           TEST: ${{ needs.test.result }}
           WINDOWS: ${{ needs.windows-smoke.result }}
           ANALYTICS: ${{ needs.analytics-harness.result }}
           MSRV: ${{ needs.msrv.result }}
         shell: bash
         run: |
-          for result in "$FORMAT" "$LINT" "$TEST" "$WINDOWS" "$ANALYTICS" "$MSRV"; do
+          for result in "$FORMAT" "$LINT" "$RUSTDOC" "$TEST" "$WINDOWS" "$ANALYTICS" "$MSRV"; do
             if [ "$result" != "success" ]; then
               echo "::error::Integration gate blocked: required job concluded $result"
               exit 1

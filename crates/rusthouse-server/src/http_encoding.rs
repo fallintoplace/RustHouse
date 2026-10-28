@@ -9,6 +9,15 @@ pub(super) fn hex_digit(value: u8) -> Option<u8> {
     }
 }
 
+fn decode_percent_triplet(bytes: &[u8], index: usize) -> Result<u8, &'static str> {
+    let digits = bytes
+        .get(index + 1..index + 3)
+        .ok_or("invalid percent encoding")?;
+    let high = hex_digit(digits[0]).ok_or("invalid percent encoding")?;
+    let low = hex_digit(digits[1]).ok_or("invalid percent encoding")?;
+    Ok((high << 4) | low)
+}
+
 pub(super) fn decode_url(value: &str) -> Result<String, &'static str> {
     let bytes = value.as_bytes();
     if bytes.len() > MAX_QUERY_BYTES * 3 {
@@ -25,12 +34,7 @@ pub(super) fn decode_url(value: &str) -> Result<String, &'static str> {
     while index < bytes.len() {
         let ch = bytes[index];
         if ch == b'%' {
-            if index + 2 >= bytes.len() {
-                return Err("invalid percent encoding");
-            }
-            let hi = hex_digit(bytes[index + 1]).ok_or("invalid percent encoding")?;
-            let lo = hex_digit(bytes[index + 2]).ok_or("invalid percent encoding")?;
-            decoded.push((hi << 4) | lo);
+            decoded.push(decode_percent_triplet(bytes, index)?);
             index += 3;
         } else {
             decoded.push(if ch == b'+' { b' ' } else { ch });

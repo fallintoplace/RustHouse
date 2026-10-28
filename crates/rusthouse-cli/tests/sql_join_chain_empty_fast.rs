@@ -12,13 +12,18 @@ fn sql(statement: &str, database: &Path) -> Output {
 
 #[test]
 fn join_chain_empty_fast() {
-    let database = std::env::temp_dir().join(format!("rusthouse-join_chain_empty_fast-{}", std::process::id()));
-    for statement in ["CREATE TABLE a (id UInt64)",
+    let database = std::env::temp_dir().join(format!(
+        "rusthouse-join_chain_empty_fast-{}",
+        std::process::id()
+    ));
+    for statement in [
+        "CREATE TABLE a (id UInt64)",
         "CREATE TABLE b (id UInt64)",
         "CREATE TABLE c (id UInt64)",
         "INSERT INTO a VALUES (1)",
         "INSERT INTO b VALUES (2)",
-        "INSERT INTO c VALUES (3)"] {
+        "INSERT INTO c VALUES (3)",
+    ] {
         let result = sql(statement, &database);
         assert!(result.status.success(), "{statement}: {result:?}");
     }

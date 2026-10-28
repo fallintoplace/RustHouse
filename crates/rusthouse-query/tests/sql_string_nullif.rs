@@ -9,8 +9,14 @@ fn value(sql: &str) -> ConstantValue {
 
 #[test]
 fn nullif_evaluates_constant_strings() {
-    assert_eq!(value("SELECT NULLIF('x', 'y')"), ConstantValue::Text("x".into()));
-    assert_eq!(value("SELECT NULLIF('x', NULL)"), ConstantValue::Text("x".into()));
+    assert_eq!(
+        value("SELECT NULLIF('x', 'y')"),
+        ConstantValue::Text("x".into())
+    );
+    assert_eq!(
+        value("SELECT NULLIF('x', NULL)"),
+        ConstantValue::Text("x".into())
+    );
     assert_eq!(
         value("SELECT CONCAT_WS(',', NULLIF('x','x'), 'z')"),
         ConstantValue::Text("z".into())

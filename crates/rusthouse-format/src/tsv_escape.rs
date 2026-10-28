@@ -1,5 +1,9 @@
 use std::io;
 
+fn invalid_escape(message: &'static str) -> io::Error {
+    io::Error::new(io::ErrorKind::InvalidData, message)
+}
+
 fn hex_digit(value: u8) -> Option<u8> {
     match value {
         b'0'..=b'9' => Some(value - b'0'),
@@ -12,8 +16,8 @@ fn hex_digit(value: u8) -> Option<u8> {
 fn decode_hex_byte(field: &[u8], index: usize) -> io::Result<u8> {
     let digits = field
         .get(index..index + 2)
-        .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidData, "short TSV hex escape"))?;
-    let invalid = || io::Error::new(io::ErrorKind::InvalidData, "invalid TSV hex escape");
+        .ok_or_else(|| invalid_escape("short TSV hex escape"))?;
+    let invalid = || invalid_escape("invalid TSV hex escape");
     let high = hex_digit(digits[0]).ok_or_else(invalid)?;
     let low = hex_digit(digits[1]).ok_or_else(invalid)?;
     Ok((high << 4) | low)
@@ -37,14 +41,14 @@ fn decode_escape(field: &[u8], index: &mut usize) -> io::Result<u8> {
     *index += 1;
     let escaped = *field
         .get(*index)
-        .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidData, "incomplete TSV escape"))?;
+        .ok_or_else(|| invalid_escape("incomplete TSV escape"))?;
     if escaped == b'x' {
         let decoded = decode_hex_byte(field, *index + 1)?;
         *index += 3;
         Ok(decoded)
     } else {
         let decoded = decode_simple_escape(escaped)
-            .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidData, "unknown TSV escape"))?;
+            .ok_or_else(|| invalid_escape("unknown TSV escape"))?;
         *index += 1;
         Ok(decoded)
     }
@@ -102,7 +106,12 @@ mod tests {
 
     #[test]
     fn copies_long_plain_spans_around_sparse_escapes() {
-        let input = [vec![b'a'; 16 * 1024], br"\t".to_vec(), vec![b'b'; 16 * 1024]].concat();
+        let input = [
+            vec![b'a'; 16 * 1024],
+            br"\t".to_vec(),
+            vec![b'b'; 16 * 1024],
+        ]
+        .concat();
         let decoded = decode_tsv_field(&input).unwrap();
         assert_eq!(decoded.len(), 32 * 1024 + 1);
         assert_eq!(decoded[16 * 1024], b'\t');
@@ -132,5 +141,4 @@ mod tests {
         assert_eq!(decoded[0], b'z');
         assert_eq!(*decoded.last().unwrap(), b'y');
     }
-
 }

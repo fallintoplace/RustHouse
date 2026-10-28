@@ -9,16 +9,19 @@ permissions:
   contents: read
 
 concurrency:
-  group: rust-bench-${{ github.ref }}
-  cancel-in-progress: true
+  group: rust-bench-${{ github.event_name }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'workflow_dispatch' }}
 
 jobs:
   benchmark:
-    name: Rust benchmarks (ubuntu-latest)
-    runs-on: ubuntu-latest
+    name: Rust benchmarks (ubuntu-24.04)
+    runs-on: ubuntu-24.04
     timeout-minutes: 25
     steps:
       - uses: actions/checkout@v7
+      - uses: actions/setup-python@v7
+        with:
+          python-version: '3.12'
       - uses: Swatinem/rust-cache@v2
         with:
           save-if: ${{ github.event_name == 'schedule' }}
@@ -32,6 +35,6 @@ jobs:
         if: always()
         uses: actions/upload-artifact@v7
         with:
-          name: rusthouse-benchmarks-${{ github.run_id }}
+          name: rusthouse-benchmarks-${{ github.run_id }}-${{ github.run_attempt }}
           path: bench/results/
           retention-days: 14

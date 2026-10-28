@@ -10,11 +10,22 @@ fn value(sql: &str) -> ConstantValue {
 #[test]
 fn removes_fragments_without_touching_queries() {
     for (sql, expected) in [
-        ("SELECT cutFragment('http://example.com/p?a=1#top')", "http://example.com/p?a=1"),
-        ("SELECT cutFragment('http://example.com/p#')", "http://example.com/p"),
-        ("SELECT cutFragment('http://example.com/p?a=1')", "http://example.com/p?a=1"),
+        (
+            "SELECT cutFragment('http://example.com/p?a=1#top')",
+            "http://example.com/p?a=1",
+        ),
+        (
+            "SELECT cutFragment('http://example.com/p#')",
+            "http://example.com/p",
+        ),
+        (
+            "SELECT cutFragment('http://example.com/p?a=1')",
+            "http://example.com/p?a=1",
+        ),
         ("SELECT cutFragment('')", ""),
-    ] { assert_eq!(value(sql), ConstantValue::Text(expected.into()), "{sql}"); }
+    ] {
+        assert_eq!(value(sql), ConstantValue::Text(expected.into()), "{sql}");
+    }
     assert_eq!(value("SELECT cutFragment(NULL)"), ConstantValue::Null);
 }
 #[test]
@@ -23,5 +34,7 @@ fn rejects_invalid_fragment_arguments() {
         "SELECT cutFragment()",
         "SELECT cutFragment(1)",
         "SELECT cutFragment('a', 'b')",
-    ] { assert!(parse_select(sql).is_err(), "{sql}"); }
+    ] {
+        assert!(parse_select(sql).is_err(), "{sql}");
+    }
 }

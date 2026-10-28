@@ -34,23 +34,27 @@ impl Capacity {
 
     /// Convert reserved bytes into committed usage.
     pub fn commit(self, bytes: u64) -> Result<Self, &'static str> {
-        if bytes > self.reserved {
-            return Err("cannot commit unreserved bytes");
-        }
+        let reserved = self
+            .reserved
+            .checked_sub(bytes)
+            .ok_or("cannot commit unreserved bytes")?;
         self.available()?;
         Ok(Self {
-            used: self.used.checked_add(bytes).ok_or("replica usage overflow")?,
-            reserved: self.reserved - bytes,
+            used: self
+                .used
+                .checked_add(bytes)
+                .ok_or("replica usage overflow")?,
+            reserved,
             ..self
         })
     }
 
     pub fn release(self, bytes: u64) -> Result<Self, &'static str> {
-        if bytes > self.reserved {
-            return Err("cannot release unreserved bytes");
-        }
         Ok(Self {
-            reserved: self.reserved - bytes,
+            reserved: self
+                .reserved
+                .checked_sub(bytes)
+                .ok_or("cannot release unreserved bytes")?,
             ..self
         })
     }
@@ -62,7 +66,11 @@ mod tests {
 
     #[test]
     fn reservation_lifecycle_preserves_total_capacity() {
-        let initial = Capacity { total: 100, used: 30, reserved: 0 };
+        let initial = Capacity {
+            total: 100,
+            used: 30,
+            reserved: 0,
+        };
         let reserved = initial.reserve(50).unwrap();
         assert_eq!(reserved.available().unwrap(), 20);
         let committed = reserved.commit(20).unwrap();
@@ -84,17 +92,33 @@ mod tests {
 
     #[test]
     fn rejects_overcommit_and_underflow() {
-        let cap = Capacity { total: 10, used: 9, reserved: 1 };
+        let cap = Capacity {
+            total: 10,
+            used: 9,
+            reserved: 1,
+        };
         assert!(cap.reserve(1).is_err());
         assert!(cap.commit(2).is_err());
-        assert!(Capacity { total: 1, used: u64::MAX, reserved: 2 }.available().is_err());
+        assert!(
+            Capacity {
+                total: 1,
+                used: u64::MAX,
+                reserved: 2
+            }
+            .available()
+            .is_err()
+        );
     }
     #[test]
     fn small_capacity_states_preserve_accounting_invariants() {
         for total in 0..=12u64 {
             for used in 0..=total {
                 for reserved in 0..=total - used {
-                    let state = Capacity { total, used, reserved };
+                    let state = Capacity {
+                        total,
+                        used,
+                        reserved,
+                    };
                     let available = state.available().unwrap();
                     assert_eq!(used + reserved + available, total);
                     let held = state.reserve(available).unwrap();
@@ -108,5 +132,4 @@ mod tests {
             }
         }
     }
-
 }
