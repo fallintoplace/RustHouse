@@ -18,25 +18,26 @@ def write_facts(path, probe_rows):
             facts.write(f"{index}\t{index % 100}\n")
 
 
-def write_dimensions(path, build_rows, step):
+def write_dimensions(path, build_rows, step, start=0):
     with path.open("w", encoding="utf-8") as dimensions:
         dimensions.write("id\tlabel\n")
         for index in range(build_rows):
-            dimensions.write(f"{index * step}\tgroup-{index % 10}\n")
+            dimensions.write(f"{start + index * step}\tgroup-{index % 10}\n")
 
 
-def write_fixture(directory, probe_rows, build_rows):
+def write_fixture(directory, probe_rows, build_rows, disjoint=False):
     if probe_rows < 1 or not 1 <= build_rows <= 32768:
         raise ValueError("probe rows must be positive; build rows must be in 1..32768")
     directory = Path(directory)
     directory.mkdir(parents=True, exist_ok=True)
     step = max(1, probe_rows // build_rows)
+    start = probe_rows if disjoint else 0
     expected_labels = {
-        n * step: f"group-{n % 10}"
-        for n in range(build_rows) if n * step < probe_rows
+        start + n * step: f"group-{n % 10}"
+        for n in range(build_rows) if start + n * step < probe_rows
     }
     write_facts(directory / "facts.tsv", probe_rows)
-    write_dimensions(directory / "dimensions.tsv", build_rows, step)
+    write_dimensions(directory / "dimensions.tsv", build_rows, step, start=start)
     return expected_labels
 
 def execute(binary, database, sql, timeout):
@@ -67,6 +68,7 @@ def main(argv=None):
     parser.add_argument("--binary", type=Path, required=True)
     parser.add_argument("--probe-rows", type=int, default=65536)
     parser.add_argument("--build-rows", type=int, default=8192)
+    parser.add_argument("--disjoint", action="store_true", help="use nonmatching dimension keys")
     parser.add_argument("--runs", type=int, default=5)
     parser.add_argument("--warmups", type=int, default=2)
     parser.add_argument("--timeout", type=float, default=120)
@@ -77,7 +79,7 @@ def main(argv=None):
     with tempfile.TemporaryDirectory(prefix="rusthouse-join-bench-") as root:
         root = Path(root)
         try:
-            expected = write_fixture(root, args.probe_rows, args.build_rows)
+            expected = write_fixture(root, args.probe_rows, args.build_rows, disjoint=args.disjoint)
         except ValueError as exc:
             parser.error(str(exc))
         database = root / "db"
@@ -104,6 +106,7 @@ def main(argv=None):
         "timing_scope": "end-to-end CLI join including output encoding",
         "probe_rows": args.probe_rows,
         "build_rows": args.build_rows,
+        "disjoint": args.disjoint,
         "expected_matches": len(expected),
         "runs": args.runs, "warmups": args.warmups,
         "median_seconds": median,
