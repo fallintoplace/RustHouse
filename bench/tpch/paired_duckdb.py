@@ -64,10 +64,13 @@ def benchmark_pair(sql, reference, execute, runs=5, warmups=2, comparison="exact
             samples[engine].append(checked(engine))
 
     medians = {name: statistics.median(times) for name, times in samples.items()}
+    ratio = medians["duckdb"] / medians["rusthouse"]
+    if not math.isfinite(ratio) or ratio <= 0:
+        raise ValueError("paired speed ratio is not finite and positive")
     return {
         "rusthouse_median_seconds": medians["rusthouse"],
         "duckdb_median_seconds": medians["duckdb"],
-        "duckdb_over_rusthouse": medians["duckdb"] / medians["rusthouse"],
+        "duckdb_over_rusthouse": ratio,
         "rusthouse_samples_seconds": samples["rusthouse"],
         "duckdb_samples_seconds": samples["duckdb"],
     }
