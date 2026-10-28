@@ -7,6 +7,7 @@ pub(super) fn is_function(name: &str) -> bool {
     matches!(
         name.to_ascii_uppercase().as_str(),
         "LENGTH"
+            | "TOLASTDAYOFMONTH"
             | "LENGTHUTF8"
             | "CHAR_LENGTH"
             | "OCTET_LENGTH"
@@ -1950,6 +1951,28 @@ fn parse_at_depth(parser: &mut Parser, depth: usize) -> Result<ConstantValue, Pa
                         return Err(ParseError("lowerUTF8 result is too large".into()));
                     }
                     ConstantValue::Text(result)
+                }
+                None => ConstantValue::Null,
+            }
+        }
+        "TOLASTDAYOFMONTH" => {
+            let input = text_arg(parser, depth + 1)?;
+            require(parser, Token::RParen, "toLastDayOfMonth requires one argument")?;
+            match input {
+                Some(value) => {
+                    if rusthouse_storage::parse_date(&value).is_none() {
+                        return Err(ParseError("invalid Date argument".into()));
+                    }
+                    let year = value[..4].parse::<i64>().unwrap();
+                    let month = value[5..7].parse::<u32>().unwrap();
+                    let leap = year % 4 == 0 && (year % 100 != 0 || year % 400 == 0);
+                    let last = match month {
+                        2 if leap => 29,
+                        2 => 28,
+                        4 | 6 | 9 | 11 => 30,
+                        _ => 31,
+                    };
+                    ConstantValue::Text(format!("{}-{last:02}", &value[..7]))
                 }
                 None => ConstantValue::Null,
             }
