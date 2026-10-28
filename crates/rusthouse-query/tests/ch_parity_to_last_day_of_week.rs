@@ -10,9 +10,9 @@ fn value(sql: &str) -> ConstantValue {
 #[test]
 fn matches_bounded_clickhouse_calendar_behavior() {
     for (sql, expected) in [
-        ("SELECT toLastDayOfWeek('2023-04-21')", ConstantValue::Text('2023-04-22'.into())),
-        ("SELECT toLastDayOfWeek('2023-04-21', 1)", ConstantValue::Text('2023-04-23'.into())),
-        ("SELECT toLastDayOfWeek('2023-04-23', 1)", ConstantValue::Text('2023-04-23'.into())),
+        ("SELECT toLastDayOfWeek('2023-04-21')", ConstantValue::Text("2023-04-22".into())),
+        ("SELECT toLastDayOfWeek('2023-04-21', 1)", ConstantValue::Text("2023-04-23".into())),
+        ("SELECT toLastDayOfWeek('2023-04-23', 1)", ConstantValue::Text("2023-04-23".into())),
     ] {
         assert_eq!(value(sql), expected, "{sql}");
     }
