@@ -2,8 +2,7 @@
 """Compare verified, cold CLI SQL latency on equivalent RustHouse and ClickHouse data.
 
 RustHouse starts a fresh CLI process while ClickHouse uses a native server client.
-The paired ABBA schedule
-reduces order bias. A missing or mismatching reference invalidates the query.
+The paired ABBA schedule reduces order bias. A missing or mismatching reference invalidates the query.
 The measurements include CLI startup, client transport and server cache effects.
 This is not an official TPC-H benchmark or a fair in-process throughput test.
 """
