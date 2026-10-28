@@ -34,6 +34,12 @@ impl<W: Write> CsvWriter<W> {
             }
         }
         self.encoded.clear();
+        self.encoded.reserve(
+            self.line
+                .len()
+                .saturating_add(field_count.saturating_mul(2))
+                .saturating_add(2),
+        );
         for (index, field) in self.line.split(|byte| *byte == b'\t').enumerate() {
             if index != 0 {
                 self.encoded.write_all(b",")?;
@@ -238,4 +244,13 @@ mod literal_null_marker_regressions {
         assert_eq!(writer.columns, Some(256));
         assert!(writer.write_all(b"one\tcolumn\n").is_err());
     }
+    #[test]
+    fn wide_plain_csv_rows_reuse_reserved_output_capacity() {
+        let large = "x".repeat(4096);
+        let mut writer = CsvWriter::new(Vec::new());
+        writer.write_all(format!("value\n{large}\n").as_bytes()).unwrap();
+        assert_eq!(writer.output, format!("value\r\n{large}\r\n").as_bytes());
+        assert!(writer.encoded.capacity() >= large.len() + 4);
+    }
+
 }
