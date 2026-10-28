@@ -33,7 +33,7 @@ def coverage(binary, database, query_dir, reference_dir=None, runs=3, warmups=1,
                             "timings_seconds": [], "latency": None, "error": str(path)})
             continue
         sql = clean_sql(path)
-        if not sql or len(sql.encode("utf-8")) > 4096:
+        if not sql or len(sql.encode("utf-8")) > 64 * 1024:
             results.append({"query": number, "status": "unsupported_query",
                             "timings_seconds": [], "latency": None,
                             "error": "empty query or exceeds SQL statement limit"})
