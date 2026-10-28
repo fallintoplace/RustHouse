@@ -193,6 +193,9 @@ pub fn parse_join(sql: &str) -> Result<Option<JoinSelect>, ParseError> {
                 unique.push((first, second));
             }
         }
+        if unique.len() > 8 {
+            return Err(ParseError("JOIN supports at most 8 equality keys".into()));
+        }
         (unique, Vec::new())
     } else {
         return Err(ParseError("JOIN requires ON or USING".into()));
@@ -598,6 +601,22 @@ mod tests {
     }
 
     #[test]
+    fn repeated_on_predicates_do_not_exhaust_unique_key_limit() {
+        let repeated = (0..12)
+            .map(|i| if i % 2 == 0 { "a.id = b.id" } else { "b.id = a.id" })
+            .collect::<Vec<_>>()
+            .join(" AND ");
+        let query = parse_join(&format!("SELECT * FROM l a JOIN r b ON {repeated}"))
+            .unwrap().unwrap();
+        assert_eq!(query.keys.len(), 1);
+        let distinct = (0..9)
+            .map(|i| format!("a.k{i} = b.k{i}"))
+            .collect::<Vec<_>>()
+            .join(" AND ");
+        assert!(parse_join(&format!("SELECT * FROM l a JOIN r b ON {distinct}")).is_err());
+    }
+
+    #[test]
     fn rejects_unknown_filter_and_sort_qualifiers_during_parse() {
         for statement in [
             "SELECT * FROM l a JOIN r b ON a.id = b.id WHERE c.id IS NULL",
@@ -635,7 +654,10 @@ mod tests {
         assert_eq!(query.keys[1].0.relation, "b");
         let excess = format!(
             "SELECT * FROM a JOIN b ON {}",
-            ["a.id = b.id"; 9].join(" AND ")
+            (0..9)
+                .map(|index| format!("a.k{index} = b.k{index}"))
+                .collect::<Vec<_>>()
+                .join(" AND ")
         );
         assert!(parse_join(&excess).is_err());
         assert!(
