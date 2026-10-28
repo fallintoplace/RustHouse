@@ -10,9 +10,78 @@ use std::collections::{HashMap, HashSet};
 use std::io::Write;
 use std::path::Path;
 
+const MAX_DISTINCT_VALUES: usize = 100_000;
+
+#[derive(Default)]
+struct DistinctValues {
+    other: HashSet<typed::Key>,
+    text: HashSet<Vec<u8>>,
+    uuids: HashSet<[u8; 16]>,
+}
+
+impl DistinctValues {
+    fn len(&self) -> usize {
+        self.other.len() + self.text.len() + self.uuids.len()
+    }
+
+    fn insert_key(&mut self, key: typed::Key) -> Result<(), ExecutionError> {
+        if self.len() >= MAX_DISTINCT_VALUES && !self.other.contains(&key) {
+            return Err(ExecutionError::Invalid(
+                "COUNT(DISTINCT) supports at most 100000 values".into(),
+            ));
+        }
+        self.other.insert(key);
+        Ok(())
+    }
+
+    fn insert_text(&mut self, value: &[u8]) -> Result<(), ExecutionError> {
+        // Avoid allocating for duplicate String keys across millions of rows.
+        if self.text.contains(value) {
+            return Ok(());
+        }
+        if self.len() >= MAX_DISTINCT_VALUES {
+            return Err(ExecutionError::Invalid(
+                "COUNT(DISTINCT) supports at most 100000 values".into(),
+            ));
+        }
+        self.text.insert(value.to_vec());
+        Ok(())
+    }
+
+    fn insert_uuid(&mut self, value: [u8; 16]) -> Result<(), ExecutionError> {
+        if self.len() >= MAX_DISTINCT_VALUES && !self.uuids.contains(&value) {
+            return Err(ExecutionError::Invalid(
+                "COUNT(DISTINCT) supports at most 100000 values".into(),
+            ));
+        }
+        self.uuids.insert(value);
+        Ok(())
+    }
+
+    fn insert_column(&mut self, column: &TypedColumn, row: usize) -> Result<bool, ExecutionError> {
+        match column {
+            TypedColumn::Text(values) => {
+                if let Some(value) = values.get(row) {
+                    self.insert_text(value)?;
+                }
+            }
+            TypedColumn::NullableText { values, nulls } => {
+                if nulls[row] == 0 {
+                    if let Some(value) = values.get(row) {
+                        self.insert_text(value)?;
+                    }
+                }
+            }
+            TypedColumn::Uuid(values) => self.insert_uuid(*values[row].as_bytes())?,
+            _ => return Ok(false),
+        }
+        Ok(true)
+    }
+}
+
 enum State {
     Count(u64),
-    Distinct(HashSet<typed::Key>),
+    Distinct(DistinctValues),
     Numeric(AggregateState),
 }
 
@@ -311,7 +380,7 @@ pub(super) fn execute<W: Write>(
         .iter()
         .map(|item| match item.function {
             Some(function) => State::Numeric(AggregateState::new(function)),
-            None if item.distinct => State::Distinct(HashSet::new()),
+            None if item.distinct => State::Distinct(DistinctValues::default()),
             None => State::Count(0),
         })
         .collect::<Vec<_>>();
@@ -344,13 +413,13 @@ pub(super) fn execute<W: Write>(
                         let expression = argument.as_ref().ok_or_else(|| {
                             ExecutionError::Invalid("distinct argument missing".into())
                         })?;
-                        if let Some(key) = distinct_argument(expression, &batch, row)? {
-                            if seen.len() >= 100_000 && !seen.contains(&key) {
-                                return Err(ExecutionError::Invalid(
-                                    "COUNT(DISTINCT) supports at most 100000 values".into(),
-                                ));
+                        if let BoundExpr::Column(index) = expression {
+                            if seen.insert_column(&batch[*index], row)? {
+                                continue;
                             }
-                            seen.insert(key);
+                        }
+                        if let Some(key) = distinct_argument(expression, &batch, row)? {
+                            seen.insert_key(key)?;
                         }
                     }
                     State::Numeric(state) => {
@@ -420,7 +489,7 @@ pub(super) fn execute_numbers<W: Write>(
         .iter()
         .map(|item| match item.function {
             Some(function) => State::Numeric(AggregateState::new(function)),
-            None if item.distinct => State::Distinct(HashSet::new()),
+            None if item.distinct => State::Distinct(DistinctValues::default()),
             None => State::Count(0),
         })
         .collect::<Vec<_>>();
@@ -437,13 +506,7 @@ pub(super) fn execute_numbers<W: Write>(
                         .ok_or_else(|| ExecutionError::Invalid("COUNT overflow".into()))?;
                 }
                 State::Distinct(seen) => {
-                    let key = typed::Key::Numeric(NumberKey::from(value));
-                    if seen.len() >= 100_000 && !seen.contains(&key) {
-                        return Err(ExecutionError::Invalid(
-                            "COUNT(DISTINCT) supports at most 100000 values".into(),
-                        ));
-                    }
-                    seen.insert(key);
+                    seen.insert_key(typed::Key::Numeric(NumberKey::from(value)))?;
                 }
                 State::Numeric(state) => state.update(value)?,
             }
@@ -507,6 +570,26 @@ mod affine_tests {
 mod distinct_key_tests {
     use super::*;
     use rusthouse_storage::read_legacy_strings;
+
+    #[test]
+    fn distinct_state_uses_borrowed_text_and_fixed_width_uuid_keys() {
+        let mut input = b"\x03abc\x03abc\x03xyz".as_slice();
+        let values = read_legacy_strings(&mut input, 3).unwrap();
+        let column = TypedColumn::Text(values);
+        let mut distinct = DistinctValues::default();
+        for row in 0..3 {
+            assert!(distinct.insert_column(&column, row).unwrap());
+        }
+        assert_eq!(distinct.len(), 2);
+        assert!(distinct.other.is_empty());
+        assert_eq!(distinct.text.len(), 2);
+
+        let nullable = TypedColumn::NullableNumeric {
+            values: rusthouse_storage::NumericColumn::UInt64(vec![1]),
+            nulls: vec![1],
+        };
+        assert!(!distinct.insert_column(&nullable, 0).unwrap());
+    }
 
     #[test]
     fn distinct_argument_preserves_nullable_string_values() {
