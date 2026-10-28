@@ -224,7 +224,7 @@ fn parses_generated_numbers_and_rejects_invalid_counts() {
         "SELECT number FROM numbers()",
         "SELECT number FROM numbers(-1)",
         "SELECT number FROM numbers(1.5)",
-        "SELECT number FROM numbers(1000001)",
+        "SELECT number FROM numbers(10000001)",
         "SELECT number FROM numbers(18446744073709551616)",
         "SELECT number FROM numbers(3",
         "SELECT number FROM numbers",
