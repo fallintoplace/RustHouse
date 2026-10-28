@@ -109,7 +109,12 @@ pub(super) fn is_safe_grouped_count(select: &Select) -> bool {
             Projection::GroupedCount { column } => {
                 select.order_terms().all(|term| term.column == "count" || term.column == *column)
             }
-            _ => select.order_terms().all(|term| term.column == "count"),
+            Projection::GroupedMultiCount { columns } => {
+                select.order_terms().all(|term| {
+                    term.column == "count" || columns.contains(&term.column)
+                })
+            }
+            _ => false,
         }
 }
 

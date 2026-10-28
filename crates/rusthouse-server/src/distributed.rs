@@ -165,6 +165,7 @@ struct ShardResponse {
     key_kind: Option<String>,
     schema: Vec<u8>,
     multi_kinds: Option<Vec<String>>,
+    group_sort_kinds: Option<Vec<String>>,
 }
 
 fn read_shard(
@@ -173,6 +174,7 @@ fn read_shard(
     sum_schema: Option<(&str, &str)>,
     group_schema: Option<(&str, &str)>,
     multi_schema: Option<&[(AggregateFunction, String)]>,
+    group_sort_columns: Option<&[String]>,
     table: &str,
 ) -> Result<ShardResponse, String> {
     let cap = shard_row_cap(peer)?;
@@ -199,6 +201,15 @@ fn read_shard(
             }
         }).collect::<Result<Vec<_>, _>>()
     }).transpose()?;
+    let group_sort_kinds = group_sort_columns.map(|columns| {
+        columns.iter().map(|column| {
+            let kind = shard_column_kind(&schema_response, column)?;
+            if !group_key_type(&kind) {
+                return Err("unsupported distributed grouping order key type".to_owned());
+            }
+            Ok(kind)
+        }).collect::<Result<Vec<_>, _>>()
+    }).transpose()?;
     let result = remote::query(peer, sql)?;
     if result.status != 200 {
         return Err(format!("peer returned HTTP {}", result.status));
@@ -213,6 +224,7 @@ fn read_shard(
         key_kind,
         schema,
         multi_kinds,
+        group_sort_kinds,
     })
 }
 
@@ -1314,6 +1326,16 @@ fn merge_grouped_counts_typed(
     global: Option<&Select>,
     key_kind: Option<&str>,
 ) -> Result<Vec<u8>, MergeError> {
+    merge_grouped_counts_multi_typed(shards, max_rows, global, key_kind, None)
+}
+
+fn merge_grouped_counts_multi_typed(
+    shards: &[(usize, Vec<u8>)],
+    max_rows: usize,
+    global: Option<&Select>,
+    key_kind: Option<&str>,
+    group_kinds: Option<&[String]>,
+) -> Result<Vec<u8>, MergeError> {
     let group_width = match global.map(|query| &query.projection) {
         Some(Projection::GroupedMultiCount { columns }) => columns.len(),
         _ => 1,
@@ -1411,21 +1433,44 @@ fn merge_grouped_counts_typed(
                     std::cmp::Ordering::Equal
                 });
             } else {
-                if group_width != 1 {
-                    return Err(MergeError::InvalidGroupedCount);
-                }
-                let kind = key_kind.ok_or(MergeError::InvalidGroupedCount)?;
+                let kinds = if group_width == 1 {
+                    vec![key_kind.ok_or(MergeError::InvalidGroupedCount)?]
+                } else {
+                    let kinds = group_kinds.ok_or(MergeError::InvalidGroupedCount)?;
+                    if kinds.len() != group_width {
+                        return Err(MergeError::InvalidGroupedCount);
+                    }
+                    kinds.iter().map(String::as_str).collect::<Vec<_>>()
+                };
+                let columns = match &select.projection {
+                    Projection::GroupedCount { column } => vec![column.clone()],
+                    Projection::GroupedMultiCount { columns } => columns.clone(),
+                    _ => return Err(MergeError::InvalidGroupedCount),
+                };
                 let mut indices = groups.iter().enumerate()
                     .map(|(index, (key, _))| {
-                        parse_group_sort_key(key, kind).map(|parsed| (index, parsed))
+                        let fields = key.split(|&byte| byte == b'\t').collect::<Vec<_>>();
+                        if fields.len() != kinds.len() {
+                            return Err(MergeError::InvalidGroupedCount);
+                        }
+                        let parsed = fields.into_iter().zip(kinds.iter())
+                            .map(|(field, kind)| parse_group_sort_key(field, kind))
+                            .collect::<Result<Vec<_>, _>>()?;
+                        Ok((index, parsed))
                     })
-                    .collect::<Result<Vec<_>, _>>()?;
-                indices.sort_by(|(a, a_key), (b, b_key)| {
+                    .collect::<Result<Vec<_>, MergeError>>()?;
+                indices.sort_by(|(a, a_keys), (b, b_keys)| {
                     for order in &terms {
                         let cmp = if order.column == "count" {
                             groups[*a].1.cmp(&groups[*b].1)
                         } else {
-                            compare_group_sort_keys(a_key, b_key, order.descending, order.nulls_first)
+                            let position = columns.iter()
+                                .position(|column| *column == order.column)
+                                .expect("verified group dimension");
+                            compare_group_sort_keys(
+                                &a_keys[position], &b_keys[position],
+                                order.descending, order.nulls_first,
+                            )
                         };
                         let cmp = if order.column == "count" && order.descending {
                             cmp.reverse()
@@ -1595,6 +1640,12 @@ pub fn handle(method: &str, body: &[u8], cluster: &Cluster, max_rows: usize) -> 
             Some(items.as_slice()),
         _ => None,
     };
+    let group_sort_columns = match &select.projection {
+        Projection::GroupedMultiCount { columns } if grouped_count_query
+            && select.order_terms().any(|term| term.column != "count") =>
+            Some(columns.as_slice()),
+        _ => None,
+    };
     let group_schema = match (&select.source, &select.projection) {
         (
             Some(Source::Table(table)),
@@ -1633,7 +1684,10 @@ pub fn handle(method: &str, body: &[u8], cluster: &Cluster, max_rows: usize) -> 
             .peers()
             .iter()
             .map(|&peer| {
-                scope.spawn(move || read_shard(peer, shard_query, sum_schema, group_schema, multi_schema, table))
+                scope.spawn(move || read_shard(
+                    peer, shard_query, sum_schema, group_schema, multi_schema,
+                    group_sort_columns, table,
+                ))
             })
             .collect::<Vec<_>>();
         handles
@@ -1649,6 +1703,7 @@ pub fn handle(method: &str, body: &[u8], cluster: &Cluster, max_rows: usize) -> 
     let mut sum_type: Option<String> = None;
     let mut group_key_kind: Option<String> = None;
     let mut multi_kinds: Option<Vec<String>> = None;
+    let mut group_sort_kinds: Option<Vec<String>> = None;
     let mut expected_schema: Option<Vec<u8>> = None;
     for result in results {
         match result {
@@ -1659,6 +1714,7 @@ pub fn handle(method: &str, body: &[u8], cluster: &Cluster, max_rows: usize) -> 
                 key_kind,
                 schema,
                 multi_kinds: shard_multi_kinds,
+                group_sort_kinds: shard_sort_kinds,
             }) => {
                 if expected_schema
                     .as_ref()
@@ -1701,6 +1757,14 @@ pub fn handle(method: &str, body: &[u8], cluster: &Cluster, max_rows: usize) -> 
                         );
                     }
                     multi_kinds = Some(kinds);
+                }
+                if let Some(kinds) = shard_sort_kinds {
+                    if group_sort_kinds.as_ref().is_some_and(|prior| prior != &kinds) {
+                        return Response::text(
+                            "409 Conflict", "distributed GROUP BY sort key types disagree\n",
+                        );
+                    }
+                    group_sort_kinds = Some(kinds);
                 }
                 shards.push((cap, body));
             }
@@ -1800,7 +1864,10 @@ pub fn handle(method: &str, body: &[u8], cluster: &Cluster, max_rows: usize) -> 
             || select.limit.is_some()
             || select.offset.is_some()
         {
-            merge_grouped_counts_typed(&shards, limit, Some(&select), group_key_kind.as_deref())
+            merge_grouped_counts_multi_typed(
+                &shards, limit, Some(&select), group_key_kind.as_deref(),
+                group_sort_kinds.as_deref(),
+            )
         } else {
             merge_grouped_counts(&shards, limit)
         }
@@ -2247,6 +2314,27 @@ mod tests {
             merge_grouped_distinct_pairs_typed(&shards, 2, "customer", "product",
                 &count_first, Some("UInt64")).unwrap(),
             b"customer\tcountDistinct(product)\n1\t2\n10\t2\n"
+        );
+    }
+
+    #[test]
+    fn distributed_multikey_count_orders_numeric_and_text_dimensions() {
+        let sql = "SELECT region, category, count(*) FROM sales GROUP BY region, category ORDER BY region ASC, category DESC LIMIT 3";
+        let query = parse_select(sql).unwrap();
+        assert!(is_safe_grouped_count(&query));
+        let shards = [
+            shard(10, "region\tcategory\tcount\n10\ta\t4\n2\ta\t2\n"),
+            shard(10, "region\tcategory\tcount\n2\tb\t1\n10\ta\t3\n"),
+        ];
+        assert_eq!(
+            merge_grouped_counts_multi_typed(&shards, 3, Some(&query), None,
+                Some(&["UInt64".into(), "String".into()])).unwrap(),
+            b"region\tcategory\tcount\n2\tb\t1\n2\ta\t2\n10\ta\t7\n"
+        );
+        assert_eq!(
+            merge_grouped_counts_multi_typed(&shards, 3, Some(&query), None,
+                Some(&["String".into()])),
+            Err(MergeError::InvalidGroupedCount)
         );
     }
     #[test]
