@@ -77,6 +77,29 @@ pub(super) fn execute_typed_aggregate<W: Write>(
     let mut reader = TypedQueryReader::open_with_metadata(part, &names, &metadata)?;
     let no_filters = query.predicates.is_empty() && query.or_predicates.is_empty();
 
+    if *function == AggregateFunction::Median {
+        if let Some(mut histogram) = super::NarrowMedian::new(&selected.data_type) {
+            while let Some(batch) = reader.next_batch()? {
+                for row in 0..batch[0].len() {
+                    if !no_filters && !typed::passes(&batch, row, &conditions) {
+                        continue;
+                    }
+                    match &batch[projected_index] {
+                        TypedColumn::Numeric(values) => histogram.insert(values, row)?,
+                        TypedColumn::NullableNumeric { values, nulls } if nulls[row] == 0 => {
+                            histogram.insert(values, row)?
+                        }
+                        TypedColumn::NullableNumeric { .. } => {}
+                        _ => return Err(ExecutionError::Invalid("narrow median expects numeric values".into())),
+                    }
+                }
+            }
+            if query.offset.unwrap_or(0) == 0 {
+                writeln!(output, "{}", histogram.render())?;
+            }
+            return Ok(());
+        }
+    }
     let mut state = AggregateState::new(*function);
     let mut ordered_value: Option<Cell> = None;
     // Only stringify the winning UUID, not every scanned UUID row.
