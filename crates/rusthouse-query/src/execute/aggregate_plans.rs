@@ -28,10 +28,11 @@ fn parallel_dense_grouped_count(
     let names = [column.to_owned()];
     let chunk_size = parts.len().div_ceil(workers);
     let chunks = std::thread::scope(|scope| {
+        let names = &names;
         let handles = parts
             .chunks(chunk_size)
             .map(|paths| {
-                scope.spawn(|| -> Result<DenseGroupChunk, ExecutionError> {
+                scope.spawn(move || -> Result<DenseGroupChunk, ExecutionError> {
                     let mut counts = vec![0u64; slots];
                     let mut order = Vec::new();
                     for path in paths {
