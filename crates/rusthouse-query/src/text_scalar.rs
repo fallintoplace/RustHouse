@@ -85,6 +85,7 @@ pub(super) fn is_function(name: &str) -> bool {
             | "BASE64_DECODE"
             | "APPENDTRAILINGCHARIFABSENT"
             | "RPAD"
+            | "SUBSTRINGUTF8"
             | "SPACE"
     )
 }
@@ -1906,6 +1907,35 @@ fn parse_at_depth(parser: &mut Parser, depth: usize) -> Result<ConstantValue, Pa
                         }
                         ConstantValue::Text(value.repeat(count))
                     }
+                }
+                _ => ConstantValue::Null,
+            }
+        }
+        "SUBSTRINGUTF8" => {
+            let input = text_arg(parser, depth + 1)?;
+            require(parser, Token::Comma, "substringUTF8 requires an offset")?;
+            let position = integer_arg(parser, depth + 1)?;
+            let length = if parser.take(Token::Comma) {
+                integer_arg(parser, depth + 1)?
+            } else {
+                Some(i64::MAX)
+            };
+            require(parser, Token::RParen, "expected ')' after substringUTF8")?;
+            match (input, position, length) {
+                (Some(value), Some(position), Some(length)) => {
+                    if length < 0 {
+                        return Err(ParseError("substringUTF8 length must be nonnegative".into()));
+                    }
+                    let total = value.chars().count();
+                    let start = if position < 0 {
+                        total.saturating_sub(
+                            usize::try_from(position.unsigned_abs()).unwrap_or(usize::MAX),
+                        )
+                    } else {
+                        usize::try_from(position.saturating_sub(1)).unwrap_or(usize::MAX)
+                    };
+                    let count = usize::try_from(length).unwrap_or(usize::MAX);
+                    ConstantValue::Text(value.chars().skip(start).take(count).collect())
                 }
                 _ => ConstantValue::Null,
             }
