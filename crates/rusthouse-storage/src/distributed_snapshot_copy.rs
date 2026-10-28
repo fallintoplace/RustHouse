@@ -203,3 +203,64 @@ mod tests {
         fs::remove_dir_all(root).unwrap();
     }
 }
+
+/// Check a frozen snapshot and report exact copy requirements without writing files.
+pub fn preview_frozen_snapshot(
+    source: &Path,
+    max_parts: usize,
+    max_files: usize,
+    max_bytes: u64,
+) -> Result<SnapshotCopy, PartError> {
+    let active = resolve_active_snapshot(source)?;
+    let parts = query_parts(&active)?;
+    if parts.len() > max_parts || max_parts > 16_384 {
+        return Err(PartError::InvalidScan("snapshot preview exceeds part limit".into()));
+    }
+    inspect_query_source(&active)?;
+    let files = crate::distributed_inventory::inventory_snapshot(source, max_files, max_bytes)?;
+    let bytes = files.iter().try_fold(0u64, |total, file| {
+        total.checked_add(file.bytes)
+            .ok_or_else(|| PartError::InvalidScan("snapshot preview byte overflow".into()))
+    })?;
+    for part in &parts {
+        verify_part_file_hashes(part)?;
+        verify_wide_part(part)?;
+    }
+    Ok(SnapshotCopy {
+        parts: parts.len(),
+        files: files.len(),
+        bytes,
+    })
+}
+
+#[cfg(test)]
+mod snapshot_preflight_tests {
+    use super::*;
+    use crate::{Column, write_wide_part};
+
+    #[test]
+    fn predicts_copy_requirements_without_publishing_destination() {
+        let root = std::env::temp_dir().join(format!(
+            "rusthouse-snapshot-preview-{}", std::process::id()
+        ));
+        let _ = fs::remove_dir_all(&root);
+        let source = root.join("source");
+        let destination = root.join("destination");
+        fs::create_dir_all(&source).unwrap();
+        write_wide_part(
+            &source.join("all_0_0_0"),
+            &[Column { name: "id".into(), data_type: "UInt64".into() }],
+            &[vec![Some("7".into())]],
+        ).unwrap();
+        let preview = preview_frozen_snapshot(&source, 1, 32, 1_000_000).unwrap();
+        assert_eq!(preview.parts, 1);
+        assert!(preview.files > 0);
+        assert!(!destination.exists());
+        assert_eq!(
+            copy_frozen_snapshot(&source, &destination, 1, 1_000_000).unwrap(),
+            preview
+        );
+        assert!(preview_frozen_snapshot(&source, 0, 32, 1_000_000).is_err());
+        fs::remove_dir_all(root).unwrap();
+    }
+}

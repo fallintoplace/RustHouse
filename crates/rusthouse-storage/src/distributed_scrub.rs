@@ -102,3 +102,46 @@ mod tests {
         fs::remove_dir_all(root).unwrap();
     }
 }
+
+/// Verify one frozen wide part without scanning unrelated snapshot parts.
+/// The caller must stop writers and provide a trusted local part path.
+pub fn scrub_part(part: &Path) -> Result<ScrubReport, PartError> {
+    let physical = verify_wide_part(part)?;
+    let hashes = verify_part_file_hashes(part)?;
+    let mut report = ScrubReport {
+        parts: 0,
+        checked_files: 0,
+        checked_bytes: 0,
+        blocks: 0,
+    };
+    report.record_part(hashes.files, hashes.total_bytes, physical.blocks)?;
+    Ok(report)
+}
+
+#[cfg(test)]
+mod targeted_scrub_tests {
+    use super::*;
+    use crate::{Column, write_wide_part};
+    use std::fs;
+
+    #[test]
+    fn verifies_one_part_and_rejects_corruption() {
+        let root = std::env::temp_dir().join(format!(
+            "rusthouse-targeted-scrub-{}", std::process::id()
+        ));
+        let _ = fs::remove_dir_all(&root);
+        fs::create_dir_all(&root).unwrap();
+        let part = root.join("all_0_0_0");
+        write_wide_part(
+            &part,
+            &[Column { name: "id".into(), data_type: "UInt64".into() }],
+            &[vec![Some("8".into())]],
+        ).unwrap();
+        let report = scrub_part(&part).unwrap();
+        assert_eq!(report.parts, 1);
+        assert!(report.checked_files > 0);
+        fs::write(part.join("count.txt"), "999\n").unwrap();
+        assert!(scrub_part(&part).is_err());
+        fs::remove_dir_all(root).unwrap();
+    }
+}

@@ -64,3 +64,34 @@ mod tests {
         }
     }
 }
+
+/// Return no scheduled retry when it cannot fit within the remaining deadline.
+pub fn retry_delay_with_deadline(
+    attempt: u32,
+    base_ms: u64,
+    max_ms: u64,
+    seed: u64,
+    remaining: Duration,
+) -> Result<Option<Duration>, &'static str> {
+    let delay = retry_delay(attempt, base_ms, max_ms, seed)?;
+    Ok((delay <= remaining).then_some(delay))
+}
+
+#[cfg(test)]
+mod retry_deadline_tests {
+    use super::*;
+
+    #[test]
+    fn skips_retries_that_outlive_the_budget() {
+        let delay = retry_delay(3, 100, 1_000, 7).unwrap();
+        assert_eq!(
+            retry_delay_with_deadline(3, 100, 1_000, 7, delay).unwrap(),
+            Some(delay)
+        );
+        assert_eq!(
+            retry_delay_with_deadline(3, 100, 1_000, 7, Duration::ZERO).unwrap(),
+            None
+        );
+        assert!(retry_delay_with_deadline(33, 100, 1_000, 7, delay).is_err());
+    }
+}

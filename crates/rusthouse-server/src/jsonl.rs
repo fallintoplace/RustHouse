@@ -47,7 +47,7 @@ fn decoded_row_field(field: &[u8]) -> io::Result<Cow<'_, str>> {
 
 fn write_json_row_into<W: Write>(
     output: &mut W,
-    headers: &[String],
+    headers: &[Vec<u8>],
     line: &[u8],
     row: &mut Vec<u8>,
 ) -> io::Result<()> {
@@ -62,7 +62,7 @@ fn write_json_row_into<W: Write>(
         if index != 0 {
             row.write_all(b",")?;
         }
-        write_json_string(&mut *row, header)?;
+        row.write_all(header)?;
         row.write_all(b":")?;
         if field == b"\\N" {
             row.write_all(b"null")?;
@@ -80,12 +80,20 @@ fn write_json_row_into<W: Write>(
 
 #[cfg(test)]
 fn write_json_row<W: Write>(output: &mut W, headers: &[String], line: &[u8]) -> io::Result<()> {
-    write_json_row_into(output, headers, line, &mut Vec::new())
+    let escaped = headers
+        .iter()
+        .map(|header| {
+            let mut key = Vec::new();
+            write_json_string(&mut key, header)?;
+            Ok(key)
+        })
+        .collect::<io::Result<Vec<_>>>()?;
+    write_json_row_into(output, &escaped, line, &mut Vec::new())
 }
 
 pub struct JsonlWriter<W: Write> {
     output: W,
-    headers: Option<Vec<String>>,
+    headers: Option<Vec<Vec<u8>>>,
     line: Vec<u8>,
     encoded: Vec<u8>,
 }
@@ -109,7 +117,16 @@ impl<W: Write> JsonlWriter<W> {
         }
         let headers = parse_headers(&self.line);
         self.line.clear();
-        self.headers = Some(headers?);
+        self.headers = Some(
+            headers?
+                .into_iter()
+                .map(|header| {
+                    let mut encoded = Vec::with_capacity(header.len() + 2);
+                    write_json_string(&mut encoded, &header)?;
+                    Ok(encoded)
+                })
+                .collect::<io::Result<Vec<_>>>()?,
+        );
         Ok(())
     }
 }
@@ -318,4 +335,16 @@ mod tests {
         let mut invalid = Vec::new();
         assert!(write_json_row(&mut invalid, &["value".to_owned()], &[0xff]).is_err());
     }
+
+    #[test]
+    fn writer_reuses_escaped_json_keys_over_multiple_rows() {
+        let mut writer = JsonlWriter::new(Vec::new());
+        writer.write_all(b"name\"x\tvalue\n").unwrap();
+        writer.write_all(b"alpha\t1\nbeta\t2\n").unwrap();
+        assert_eq!(
+            writer.output,
+            b"{\"name\\\"x\":\"alpha\",\"value\":\"1\"}\n{\"name\\\"x\":\"beta\",\"value\":\"2\"}\n"
+        );
+    }
+
 }
