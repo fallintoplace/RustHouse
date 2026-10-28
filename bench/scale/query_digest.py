@@ -6,6 +6,7 @@ query finishes; ensure enough temporary disk space for the selected max rows.
 import argparse
 import hashlib
 import json
+import math
 import re
 import subprocess
 import tempfile
@@ -18,8 +19,10 @@ def query_digest(binary, part, sql, *, expected_sha256=None,
                  timeout=600, run=None):
     if not 1 <= max_rows <= 250_000:
         raise ValueError("max_rows must be in 1..250000")
-    if max_output_bytes < 1 or timeout <= 0:
-        raise ValueError("output limit and timeout must be positive")
+    if (type(max_output_bytes) is not int or max_output_bytes < 1
+            or type(timeout) not in (int, float) or not math.isfinite(timeout)
+            or timeout <= 0):
+        raise ValueError("output limit and timeout must be positive and finite")
     if expected_sha256 is not None and not re.fullmatch(r"[0-9a-f]{64}", expected_sha256):
         raise ValueError("expected_sha256 must be lowercase SHA256 hex")
     execute = run or subprocess.run
