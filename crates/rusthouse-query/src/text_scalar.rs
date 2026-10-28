@@ -16,6 +16,7 @@ pub(super) fn is_function(name: &str) -> bool {
             | "IS_INT64"
             | "BTRIM"
             | "RTRIM"
+            | "CUTQUERYSTRING"
             | "COLLAPSE_WHITESPACE"
             | "LOWER"
             | "HEX_ENCODE"
@@ -100,6 +101,27 @@ fn parse_at_depth(parser: &mut Parser, depth: usize) -> Result<ConstantValue, Pa
                         i64::try_from(length)
                             .map_err(|_| ParseError("string length exceeds Int64".into()))?,
                     )
+                }
+                None => ConstantValue::Null,
+            }
+        }
+        "CUTQUERYSTRING" => {
+            let input = text_arg(parser, depth + 1)?;
+            require(parser, Token::RParen, "cutQueryString requires one argument")?;
+            match input {
+                Some(input) => {
+                    let (before_fragment, fragment) = match input.split_once('#') {
+                        Some((head, tail)) => (head, Some(tail)),
+                        None => (input.as_str(), None),
+                    };
+                    let prefix = before_fragment.split_once('?')
+                        .map_or(before_fragment, |(head, _)| head);
+                    let mut output = prefix.to_owned();
+                    if let Some(fragment) = fragment {
+                        output.push('#');
+                        output.push_str(fragment);
+                    }
+                    ConstantValue::Text(output)
                 }
                 None => ConstantValue::Null,
             }
