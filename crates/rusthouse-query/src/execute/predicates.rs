@@ -207,6 +207,12 @@ pub(super) fn count_monotonic_numbers(
     if step == 0 {
         return None;
     }
+    if let [predicate] = conjunction {
+        if let CompiledTest::Always(value) = &predicate.test {
+            return Some(if *value { rows } else { 0 });
+        }
+    }
+
     let start = u128::from(start);
     let step = u128::from(step);
     let mut lower = 0u128;
@@ -442,5 +448,23 @@ mod tests {
         let included = compile_in_test(values, false);
         assert!(included.matches(Number::Float(0.0)));
         assert!(!included.matches(Number::Float(f64::NAN)));
+    }
+}
+
+#[cfg(test)]
+mod generated_constant_count_tests {
+    use super::*;
+
+    #[test]
+    fn constant_predicates_do_not_iterate_billions_of_rows() {
+        for (value, expected) in [(true, 1_000_000_000), (false, 0)] {
+            assert_eq!(
+                count_monotonic_numbers(&[vec![CompiledPredicate {
+                    index: 0,
+                    test: CompiledTest::Always(value),
+                }]], 0, 1_000_000_000, 1),
+                Some(expected),
+            );
+        }
     }
 }
