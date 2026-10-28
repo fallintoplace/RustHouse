@@ -7,7 +7,7 @@ use self::like::*;
 
 use super::{ExecutionError, Number, NumberKey, compare_numbers, number_at};
 use crate::{Operator, Predicate, Projection, Select};
-use rusthouse_storage::{TypedColumn, TypedQueryReader, inspect_query_source};
+use rusthouse_storage::{NumericColumn, TypedColumn, TypedQueryReader, inspect_query_source};
 use std::cmp::Ordering;
 use std::collections::{BinaryHeap, HashMap, HashSet, hash_map::Entry};
 use std::io::Write;
@@ -965,6 +965,17 @@ pub(super) fn execute_typed<W: Write>(
     let mut distinct_probe = Vec::<Key>::new();
     // COUNT(DISTINCT column) has one key; avoid a Vec allocation per row.
     let mut count_distinct_keys = HashSet::<Key>::new();
+    // A nullable 16-bit domain fits into 8 KiB, independent of scan length.
+    let mut count_distinct_sixteen = if is_count_distinct
+        && matches!(
+            projection_types.first().copied(),
+            Some("UInt16" | "Int16" | "Nullable(UInt16)" | "Nullable(Int16)")
+        )
+    {
+        Some(vec![0u64; 1024])
+    } else {
+        None
+    };
     // Borrow decoded strings on duplicate probes. Own only new distinct values.
     let mut count_distinct_text = HashSet::<Vec<u8>>::new();
     // UUIDs have a fixed-size identity. Hash their bytes rather than allocating
@@ -1129,6 +1140,32 @@ pub(super) fn execute_typed<W: Write>(
                 candidate_sort_keys = Some(keys);
             }
             if is_count_distinct {
+                if let Some(bitmap) = count_distinct_sixteen.as_mut() {
+                    let column = &batch[projection_indices[0]];
+                    if is_null_at(column, index) {
+                        continue;
+                    }
+                    let key = match column {
+                        TypedColumn::Numeric(NumericColumn::UInt16(values))
+                        | TypedColumn::NullableNumeric {
+                            values: NumericColumn::UInt16(values),
+                            ..
+                        } => values[index],
+                        TypedColumn::Numeric(NumericColumn::Int16(values))
+                        | TypedColumn::NullableNumeric {
+                            values: NumericColumn::Int16(values),
+                            ..
+                        } => values[index] as u16,
+                        _ => {
+                            return Err(ExecutionError::Invalid(
+                                "unexpected 16-bit DISTINCT column type".into(),
+                            ));
+                        }
+                    };
+                    let index = usize::from(key);
+                    bitmap[index / 64] |= 1u64 << (index % 64);
+                    continue;
+                }
                 match &batch[projection_indices[0]] {
                     TypedColumn::Text(strings) => {
                         let value = strings.get(index).ok_or_else(|| {
@@ -1309,8 +1346,12 @@ pub(super) fn execute_typed<W: Write>(
             let result = if is_count || is_count_column {
                 count
             } else {
-                (count_distinct_keys.len() + count_distinct_text.len() + count_distinct_uuids.len())
-                    as u64
+                (count_distinct_keys.len()
+                    + count_distinct_text.len()
+                    + count_distinct_uuids.len()
+                    + count_distinct_sixteen.as_ref().map_or(0, |bitmap| {
+                        bitmap.iter().map(|bits| bits.count_ones() as usize).sum::<usize>()
+                    })) as u64
             };
             writeln!(output, "{result}")?;
         }
