@@ -234,7 +234,11 @@ pub(super) fn execute_grouped_aggregate<W: Write>(
     let mut text_groups = HashMap::<Vec<u8>, usize>::new();
     let mut groups = Vec::<(Cell, AggregateState)>::new();
     // Non-nullable byte keys can be indexed directly rather than hashed.
-    let mut dense_slots = matches!(group_type, "UInt8" | "Int8").then(|| vec![usize::MAX; 256]);
+    let mut dense_slots = match group_type {
+        "UInt8" | "Int8" => Some(vec![usize::MAX; 256]),
+        "UInt16" | "Int16" => Some(vec![usize::MAX; 65_536]),
+        _ => None,
+    };
     let no_filters = query.predicates.is_empty() && query.or_predicates.is_empty();
     while let Some(batch) = reader.next_batch()? {
         for row in 0..batch[0].len() {
@@ -242,16 +246,22 @@ pub(super) fn execute_grouped_aggregate<W: Write>(
                 continue;
             }
             let group = if let Some(slots) = dense_slots.as_mut() {
-                let byte = match &batch[group_index] {
-                    TypedColumn::Numeric(NumericColumn::UInt8(values)) => values[row],
-                    TypedColumn::Numeric(NumericColumn::Int8(values)) => values[row] as u8,
+                let key = match &batch[group_index] {
+                    TypedColumn::Numeric(NumericColumn::UInt8(values)) => usize::from(values[row]),
+                    TypedColumn::Numeric(NumericColumn::Int8(values)) => {
+                        usize::from(values[row] as u8)
+                    }
+                    TypedColumn::Numeric(NumericColumn::UInt16(values)) => usize::from(values[row]),
+                    TypedColumn::Numeric(NumericColumn::Int16(values)) => {
+                        usize::from(values[row] as u16)
+                    }
                     _ => {
                         return Err(ExecutionError::Invalid(
-                            "unexpected byte GROUP BY column".into(),
+                            "unexpected dense GROUP BY column".into(),
                         ));
                     }
                 };
-                let group = &mut slots[usize::from(byte)];
+                let group = &mut slots[key];
                 if *group != usize::MAX {
                     *group
                 } else {
