@@ -20,6 +20,7 @@ enum MergeError {
     InvalidCount,
     InvalidDistinctCount,
     InvalidGroupedCount,
+    InvalidMedian,
     InvalidGroupedSum,
     InvalidSum,
     InvalidExtremum,
@@ -760,6 +761,60 @@ fn merge_grouped_counts_query(
     Ok(output)
 }
 
+/// Weighted rank-select over globally reduced 8/16-bit GROUP BY counts.
+fn merge_narrow_median(
+    shards: &[(usize, Vec<u8>)], kind: &str, column: &str,
+) -> Result<Vec<u8>, MergeError> {
+    let kind = kind.strip_prefix("Nullable(").and_then(|s| s.strip_suffix(')')).unwrap_or(kind);
+    let (min, max) = match kind {
+        "Int8" => (i64::from(i8::MIN), i64::from(i8::MAX)),
+        "UInt8" => (0, i64::from(u8::MAX)),
+        "Int16" => (i64::from(i16::MIN), i64::from(i16::MAX)),
+        "UInt16" => (0, i64::from(u16::MAX)),
+        _ => return Err(MergeError::InvalidMedian),
+    };
+    let grouped = merge_grouped_counts_query(shards, 65_536, None)?;
+    let mut counts = Vec::<(i64, u64)>::new();
+    let mut total = 0u128;
+    for row in grouped.split(|&byte| byte == b'\n').skip(1) {
+        if row.is_empty() { continue; }
+        let sep = row.iter().position(|&b| b == b'\t')
+            .ok_or(MergeError::InvalidMedian)?;
+        let key = &row[..sep];
+        if key == b"\\N" || key == b"NULL" { continue; }
+        let key = std::str::from_utf8(key).map_err(|_| MergeError::InvalidMedian)?
+            .parse::<i64>().map_err(|_| MergeError::InvalidMedian)?;
+        if !(min..=max).contains(&key) { return Err(MergeError::InvalidMedian); }
+        let count = std::str::from_utf8(&row[sep + 1..])
+            .map_err(|_| MergeError::InvalidMedian)?
+            .parse::<u64>().map_err(|_| MergeError::InvalidMedian)?;
+        total = total.checked_add(u128::from(count)).ok_or(MergeError::CountOverflow)?;
+        counts.push((key, count));
+    }
+    let value = if total == 0 {
+        "NULL".to_owned()
+    } else {
+        counts.sort_unstable_by_key(|&(key, _)| key);
+        let lower_rank = (total - 1) / 2;
+        let upper_rank = total / 2;
+        let mut seen = 0u128;
+        let mut lower = None;
+        let mut upper = None;
+        for (key, count) in counts {
+            let end = seen + u128::from(count);
+            if lower.is_none() && lower_rank < end { lower = Some(key); }
+            if upper_rank < end { upper = Some(key); break; }
+            seen = end;
+        }
+        let (Some(lower), Some(upper)) = (lower, upper) else {
+            return Err(MergeError::InvalidMedian);
+        };
+        if total % 2 == 1 { upper.to_string() }
+        else { (lower as f64 / 2.0 + upper as f64 / 2.0).to_string() }
+    };
+    Ok(format!("median({column})\n{value}\n").into_bytes())
+}
+
 pub fn handle(method: &str, body: &[u8], cluster: &Cluster, max_rows: usize) -> Response {
     if method != "POST" {
         return Response::text(
@@ -780,6 +835,7 @@ pub fn handle(method: &str, body: &[u8], cluster: &Cluster, max_rows: usize) -> 
                 || is_safe_count(&select)
                 || is_safe_count_distinct(&select)
                 || is_safe_count_if(&select)
+                || is_safe_narrow_median(&select)
                 || is_safe_grouped_count(&select)
                 || is_safe_grouped_sum(&select)
                 || is_safe_sum(&select)
@@ -799,6 +855,7 @@ pub fn handle(method: &str, body: &[u8], cluster: &Cluster, max_rows: usize) -> 
         Projection::CountDistinct { column } => Some(column.as_str()),
         _ => None,
     };
+    let median_query = is_safe_narrow_median(&select);
     let grouped_count_query = is_safe_grouped_count(&select);
     let grouped_sum_query = is_safe_grouped_sum(&select);
     let sum_query = is_safe_sum(&select);
@@ -808,6 +865,11 @@ pub fn handle(method: &str, body: &[u8], cluster: &Cluster, max_rows: usize) -> 
             None => {
                 return Response::text("400 Bad Request", "unsupported distributed pagination\n");
             }
+        }
+    } else if median_query {
+        match median_shard_sql(sql, &select) {
+            Some(query) => query,
+            None => return Response::text("400 Bad Request", "unsupported distributed median rewrite\n"),
         }
     } else if grouped_count_query {
         match grouped_count_shard_sql(sql, &select) {
@@ -840,7 +902,7 @@ pub fn handle(method: &str, body: &[u8], cluster: &Cluster, max_rows: usize) -> 
         (
             Some(Source::Table(table)),
             Projection::Aggregate {
-                function: AggregateFunction::Sum | AggregateFunction::Min | AggregateFunction::Max,
+                function: AggregateFunction::Sum | AggregateFunction::Min | AggregateFunction::Max | AggregateFunction::Median,
                 column,
             },
         ) => Some((table.as_str(), column.as_str())),
@@ -951,6 +1013,12 @@ pub fn handle(method: &str, body: &[u8], cluster: &Cluster, max_rows: usize) -> 
         sum_shard_counts(&shards)
     } else if let Some(column) = distinct_count_column {
         merge_distinct_counts(&shards, column)
+    } else if median_query {
+        match (&select.projection, sum_type.as_deref()) {
+            (Projection::Aggregate { column, .. }, Some(kind)) =>
+                merge_narrow_median(&shards, kind, column),
+            _ => Err(MergeError::InvalidMedian),
+        }
     } else if sum_query {
         sum_type
             .as_deref()
@@ -1017,6 +1085,9 @@ pub fn handle(method: &str, body: &[u8], cluster: &Cluster, max_rows: usize) -> 
         Err(MergeError::InvalidDistinctCount) => {
             Response::text("502 Bad Gateway", "malformed shard DISTINCT response\n")
         }
+        Err(MergeError::InvalidMedian) => {
+            Response::text("502 Bad Gateway", "invalid narrow distributed median\n")
+        }
         Err(MergeError::InvalidGroupedCount) => {
             Response::text("502 Bad Gateway", "malformed shard GROUP BY response\n")
         }
@@ -1041,6 +1112,28 @@ pub fn handle(method: &str, body: &[u8], cluster: &Cluster, max_rows: usize) -> 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn distributed_median_uses_weighted_global_rows() {
+        let shards = vec![
+            shard(10, "x\tcount\n-2\t2\n10\t1\n"),
+            shard(10, "x\tcount\n-2\t1\n20\t2\n"),
+        ];
+        assert_eq!(merge_narrow_median(&shards, "Int16", "x").unwrap(),
+            b"median(x)\n4\n");
+        assert_eq!(merge_narrow_median(&[shard(10, "x\tcount\n")],
+                "UInt8", "x").unwrap(), b"median(x)\nNULL\n");
+        assert_eq!(merge_narrow_median(&shards, "UInt64", "x"),
+            Err(MergeError::InvalidMedian));
+    }
+
+    #[test]
+    fn median_rewriter_preserves_filtered_table_queries() {
+        let sql = "SELECT median(x) FROM events WHERE flag = 1";
+        let select = parse_select(sql).unwrap();
+        assert_eq!(median_shard_sql(sql, &select).unwrap(),
+            "SELECT x, count(*) FROM events WHERE flag = 1 GROUP BY x");
+    }
 
     #[test]
     fn extracts_column_types_from_one_validated_schema_response() {
