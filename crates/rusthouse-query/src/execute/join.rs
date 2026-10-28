@@ -382,6 +382,15 @@ fn execute_streaming_right<W: Write>(
             hash.entry(key).or_default().push(index);
         }
     }
+    if hash.is_empty() {
+        let header = selected
+            .iter()
+            .map(|(_, name, _)| name.as_str())
+            .collect::<Vec<_>>()
+            .join("\t");
+        writeln!(output, "{header}")?;
+        return Ok(());
+    }
     let stop_after = query
         .limit
         .filter(|&limit| limit <= MAX_RESULT_ROWS)
