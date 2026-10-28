@@ -1,0 +1,189 @@
+"""Compare RustHouse analytical SQL directly against ClickHouse on identical data.
+
+Needs a local clickhouse-client and a running server. Database names are random;
+only the per-run test database is created and dropped. No production tables are
+modified. Results, not just execution success, determine parity.
+"""
+import argparse
+import json
+import re
+import subprocess
+import tempfile
+import time
+import uuid
+from pathlib import Path
+
+from bench.analytics.sqlite_oracle import assert_matches, parse_rows
+from bench.analytics.suite_runner import (
+    ACCOUNTS_ROWS, ACCOUNTS_SCHEMA, COLUMNS, SCHEMA, fact_row,
+    load_workload, make_fixture,
+)
+from bench.common import cli_sql, emit_json
+
+INTEGER = re.compile(r"^-?(?:0|[1-9][0-9]*)$")
+FLOAT = re.compile(r"^-?(?:(?:[0-9]+\.[0-9]*)|(?:\.[0-9]+)|(?:[0-9]+[eE][+-]?[0-9]+))(?:[eE][+-]?[0-9]+)?$")
+
+
+def reference_value(value):
+    """Keep large integers exact; tolerate only genuine floating result values."""
+    if value == r"\N":
+        return None
+    if INTEGER.fullmatch(value):
+        return int(value)
+    if FLOAT.fullmatch(value):
+        return float(value)
+    return value
+
+
+def assert_clickhouse_parity(rusthouse_output, clickhouse_output, unordered=False):
+    """Check every cell, NULL and row multiplicity against a ClickHouse TSV result."""
+    expected = [
+        tuple(reference_value(cell) for cell in row)
+        for row in parse_rows(clickhouse_output)
+    ]
+    assert_matches(rusthouse_output, expected, unordered=unordered)
+    return len(expected)
+
+
+def cli_clickhouse(client, host, port, query, timeout, database=None, data=None):
+    command = [str(client), "--host", host, "--port", str(port), "--query", query]
+    if database:
+        command.extend(["--database", database])
+    result = subprocess.run(
+        command, input=data, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+        timeout=timeout, check=False,
+    )
+    if result.returncode:
+        raise RuntimeError(
+            f"ClickHouse exit {result.returncode}: "
+            + result.stderr.decode("utf-8", "replace")[:1000]
+        )
+    if len(result.stdout) > 4_000_000:
+        raise ValueError("ClickHouse result exceeds 4 MB comparison limit")
+    return result.stdout
+
+
+def fixture_json(directory, rows):
+    """Reuse the exact deterministic rows loaded into RustHouse, including NULLs."""
+    directory = Path(directory)
+    path = directory / "events.jsonl"
+    with path.open("w", encoding="utf-8") as stream:
+        for index in range(rows):
+            stream.write(json.dumps(dict(zip(COLUMNS, fact_row(index)))) + "\n")
+    accounts_path = directory / "accounts.jsonl"
+    with (directory / "accounts.tsv").open(encoding="utf-8") as src, accounts_path.open(
+        "w", encoding="utf-8"
+    ) as dst:
+        next(src)
+        for line in src:
+            user_id, tier, country = line.rstrip("\n").split("\t")
+            dst.write(json.dumps({
+                "user_id": int(user_id), "tier": tier, "country": country
+            }) + "\n")
+    return path, accounts_path
+
+
+def clickhouse_create_table(schema):
+    """The benchmark's declared RustHouse types are native ClickHouse types."""
+    if not schema.startswith("CREATE TABLE "):
+        raise ValueError("unsupported fixture schema")
+    return schema + " ENGINE = Memory"
+
+
+def run_parity(binary, client, workload, rows=10_000, timeout=120,
+               host="localhost", port=9000):
+    if not 1 <= rows <= min(200_000, workload.get("max_rows", 200_000)):
+        raise ValueError("fixture rows exceed workload range")
+    if timeout <= 0 or not 1 <= port <= 65535:
+        raise ValueError("invalid ClickHouse timeout or port")
+    db_name = "rusthouse_analytics_" + uuid.uuid4().hex[:16]
+    results = []
+    created = False
+    with tempfile.TemporaryDirectory(prefix="rusthouse-ch-parity-") as temp:
+        root = Path(temp)
+        source, sqlite = make_fixture(root, rows)
+        sqlite.close()
+        event_json, account_json = fixture_json(root, rows)
+        database = root / "rusthouse-db"
+        rust = lambda sql: cli_sql(binary, database, sql, timeout)
+        ch = lambda sql, data=None, database_name=None: cli_clickhouse(
+            client, host, port, sql, timeout, database_name, data
+        )
+        try:
+            ch(f"CREATE DATABASE {db_name}")
+            created = True
+            ch(clickhouse_create_table(SCHEMA), database_name=db_name)
+            ch(clickhouse_create_table(ACCOUNTS_SCHEMA), database_name=db_name)
+            ch("INSERT INTO events FORMAT JSONEachRow",
+               event_json.read_bytes(), db_name)
+            ch("INSERT INTO accounts FORMAT JSONEachRow",
+               account_json.read_bytes(), db_name)
+            rust(SCHEMA)
+            rust(ACCOUNTS_SCHEMA)
+            escaped = source.resolve().as_posix().replace("'", "''")
+            rust(f"COPY events FROM '{escaped}' WITH (FORMAT TSV, HEADER TRUE)")
+            accounts = (root / "accounts.tsv").resolve().as_posix().replace("'", "''")
+            rust(f"COPY accounts FROM '{accounts}' WITH (FORMAT TSV, HEADER TRUE)")
+            for name, expected in (("events", rows), ("accounts", ACCOUNTS_ROWS)):
+                for engine, run in (("clickhouse", lambda query: ch(query, database_name=db_name)),
+                                    ("rusthouse", rust)):
+                    actual = run(f"SELECT count(*) FROM {name}").strip()
+                    if actual != str(expected).encode():
+                        raise ValueError(f"{engine} fixture {name} count mismatch: {actual!r}")
+            for case in workload["queries"]:
+                started = time.perf_counter_ns()
+                try:
+                    query = case["sql"]
+                    clickhouse = ch(query + " FORMAT TabSeparated", database_name=db_name)
+                    clickhouse_ms = (time.perf_counter_ns() - started) / 1e6
+                    started = time.perf_counter_ns()
+                    rusthouse = rust(query)
+                    rusthouse_ms = (time.perf_counter_ns() - started) / 1e6
+                    count = assert_clickhouse_parity(
+                        rusthouse, clickhouse, unordered=case.get("unordered", False)
+                    )
+                    results.append({
+                        "name": case["name"], "status": "passed", "rows": count,
+                        "rusthouse_ms": rusthouse_ms, "clickhouse_ms": clickhouse_ms,
+                    })
+                except (OSError, ValueError, RuntimeError, subprocess.TimeoutExpired) as error:
+                    results.append({
+                        "name": case["name"], "status": "failed",
+                        "error": str(error)[:1000],
+                    })
+        finally:
+            if created:
+                ch(f"DROP DATABASE IF EXISTS {db_name} SYNC")
+    verified = sum(item["status"] == "passed" for item in results)
+    return {
+        "suite": workload["name"], "engines": ["rusthouse", "clickhouse"],
+        "rows": rows, "official_benchmark": False,
+        "fixture": "deterministic identical JSONEachRow and TSV data",
+        "coverage": {
+            "total_queries": len(results), "verified_queries": verified,
+            "failed_queries": len(results) - verified,
+        },
+        "results": results,
+    }
+
+
+def main(argv=None):
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--binary", required=True, type=Path)
+    parser.add_argument("--client", default="clickhouse-client", type=Path)
+    parser.add_argument("--host", default="localhost")
+    parser.add_argument("--port", type=int, default=9000)
+    parser.add_argument("--workload", required=True, type=Path)
+    parser.add_argument("--rows", type=int, default=10_000)
+    parser.add_argument("--timeout", type=float, default=120)
+    parser.add_argument("--output", type=Path)
+    args = parser.parse_args(argv)
+    workload = load_workload(args.workload)
+    report = run_parity(args.binary, args.client, workload, args.rows,
+                        args.timeout, args.host, args.port)
+    emit_json(report, args.output)
+    return int(report["coverage"]["failed_queries"] != 0)
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

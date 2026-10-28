@@ -41,16 +41,62 @@ pub fn scrub_snapshot(root: &Path, max_parts: usize) -> Result<ScrubReport, Part
             "replica scrub exceeds part limit".into(),
         ));
     }
+    const PARALLEL_THRESHOLD: usize = 16;
+    const MAX_SCRUB_WORKERS: usize = 4;
+    let workers = std::thread::available_parallelism()
+        .map_or(1, |parallelism| parallelism.get())
+        .min(MAX_SCRUB_WORKERS);
     let mut report = ScrubReport {
         parts: 0,
         checked_files: 0,
         checked_bytes: 0,
         blocks: 0,
     };
-    for part in parts {
-        let physical = verify_wide_part(&part)?;
-        let hashes = verify_part_file_hashes(&part)?;
-        report.record_part(hashes.files, hashes.total_bytes, physical.blocks)?;
+    if parts.len() < PARALLEL_THRESHOLD || workers == 1 {
+        for part in &parts {
+            let checked = scrub_part(part)?;
+            report.record_part(checked.checked_files, checked.checked_bytes, checked.blocks)?;
+        }
+        return Ok(report);
+    }
+
+    // Scrub independent frozen parts concurrently. Dynamic work claiming
+    // balances uneven part sizes, with deterministic first-error reporting.
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    let cursor = AtomicUsize::new(0);
+    let mut slots: Vec<Option<Result<ScrubReport, PartError>>> =
+        (0..parts.len()).map(|_| None).collect();
+    std::thread::scope(|scope| -> Result<(), PartError> {
+        let handles = (0..workers)
+            .map(|_| {
+                let cursor = &cursor;
+                let parts = &parts;
+                scope.spawn(move || {
+                    let mut completed = Vec::new();
+                    loop {
+                        let index = cursor.fetch_add(1, Ordering::Relaxed);
+                        if index >= parts.len() {
+                            break;
+                        }
+                        completed.push((index, scrub_part(&parts[index])));
+                    }
+                    completed
+                })
+            })
+            .collect::<Vec<_>>();
+        for handle in handles {
+            let completed = handle.join().map_err(|_| {
+                PartError::InvalidScan("snapshot scrub worker panicked".into())
+            })?;
+            for (index, result) in completed {
+                slots[index] = Some(result);
+            }
+        }
+        Ok(())
+    })?;
+    for slot in slots {
+        let checked = slot.expect("each part was claimed exactly once")?;
+        report.record_part(checked.checked_files, checked.checked_bytes, checked.blocks)?;
     }
     Ok(report)
 }
@@ -60,6 +106,30 @@ mod tests {
     use super::*;
     use crate::{Column, write_wide_part};
     use std::fs;
+
+    #[test]
+    fn scrubs_large_multi_part_snapshot_without_losing_report_counts() {
+        let root = std::env::temp_dir().join(format!(
+            "rusthouse-parallel-scrub-{}", std::process::id()
+        ));
+        let _ = fs::remove_dir_all(&root);
+        fs::create_dir(&root).unwrap();
+        for index in 0..20 {
+            let part = root.join(format!("all_{index}_{index}_0"));
+            write_wide_part(
+                &part,
+                &[Column { name: "id".into(), data_type: "UInt64".into() }],
+                &[vec![Some(index.to_string())]],
+            ).unwrap();
+        }
+        let report = scrub_snapshot(&root, 20).unwrap();
+        assert_eq!(report.parts, 20);
+        assert!(report.checked_files >= 20);
+        assert!(report.checked_bytes > 0);
+        fs::write(root.join("all_19_19_0/count.txt"), "999999\n").unwrap();
+        assert!(scrub_snapshot(&root, 20).is_err());
+        fs::remove_dir_all(root).unwrap();
+    }
 
     #[test]
     fn verifies_newly_written_frozen_parts() {
