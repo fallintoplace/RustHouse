@@ -12,11 +12,11 @@ use std::collections::HashMap;
 use std::io::Write;
 use std::path::Path;
 
-const CAPACITY: usize = 8192;
+pub(super) const CAPACITY: usize = 8192;
 const SEED: u64 = 0x7265736572766f69;
 
 #[derive(Default)]
-struct Reservoir {
+pub(super) struct Reservoir {
     seen: u64,
     values: Vec<Number>,
 }
@@ -30,7 +30,7 @@ impl Reservoir {
         x ^ (x >> 31)
     }
 
-    fn observe(&mut self, value: Number) -> Result<(), ExecutionError> {
+    pub(super) fn observe(&mut self, value: Number) -> Result<(), ExecutionError> {
         self.seen = self
             .seen
             .checked_add(1)
@@ -48,7 +48,7 @@ impl Reservoir {
         Ok(())
     }
 
-    fn quantile(&mut self, probability_ppm: u32) -> Option<Number> {
+    pub(super) fn quantile(&mut self, probability_ppm: u32) -> Option<Number> {
         if self.values.is_empty() {
             return None;
         }
