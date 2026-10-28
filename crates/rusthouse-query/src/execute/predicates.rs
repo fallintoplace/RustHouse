@@ -189,6 +189,20 @@ pub(super) fn count_batch_matches(
         .count()
 }
 
+fn order_numeric_conditions(conditions: &mut [CompiledPredicate]) {
+    conditions.sort_by_key(|condition| match &condition.test {
+        CompiledTest::Always(false) => 0,
+        CompiledTest::Comparison { operator: Operator::Modulo(_) | Operator::ModuloNe(_), .. } => 4,
+        CompiledTest::Comparison { .. }
+        | CompiledTest::DistinctFrom { .. }
+        | CompiledTest::NotBetween { .. } => 1,
+        CompiledTest::InSet { .. } => 2,
+        CompiledTest::In(values) | CompiledTest::NotIn(values) if values.len() <= 4 => 2,
+        CompiledTest::In(_) | CompiledTest::NotIn(_) => 3,
+        CompiledTest::Always(true) => 5,
+    });
+}
+
 pub(super) fn compile_part_where(
     query: &Select,
     scan_columns: &mut Vec<String>,
@@ -196,7 +210,11 @@ pub(super) fn compile_part_where(
 ) -> Result<Vec<Vec<CompiledPredicate>>, ExecutionError> {
     std::iter::once(query.predicates.as_slice())
         .chain(query.or_predicates.iter().map(Vec::as_slice))
-        .map(|predicates| compile_part_predicates(predicates, scan_columns, &mut convert))
+        .map(|predicates| {
+            let mut compiled = compile_part_predicates(predicates, scan_columns, &mut convert)?;
+            order_numeric_conditions(&mut compiled);
+            Ok(compiled)
+        })
         .collect()
 }
 
@@ -450,6 +468,18 @@ pub(super) fn number_matches(value: Number, target: Number, operator: Operator) 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn compiles_fast_numeric_predicates_ahead_of_modulo() {
+        let query = crate::parse_select(
+            "SELECT number FROM numbers(100) WHERE number % 10 = 0 AND number < 50",
+        ).unwrap();
+        let branches = compile_numbers_predicates(&query).unwrap();
+        assert_eq!(branches.len(), 1);
+        assert!(matches!(&branches[0][0].test, CompiledTest::Comparison { operator: Operator::Lt, .. }));
+        assert!(number_matches_all(Number::Unsigned(40), &branches));
+        assert!(!number_matches_all(Number::Unsigned(60), &branches));
+    }
 
     #[test]
     fn compiles_or_branches_using_the_same_numeric_conversion() {
