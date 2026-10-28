@@ -64,22 +64,26 @@ fn describe_projection(projection: &Projection) -> String {
             "Aggregate: GROUP BY {column}, {}({value_column})",
             function.name()
         ),
-        Projection::GroupedAggregates { column, items, .. } => format!(
+        Projection::GroupedAggregates { column, items, filters, .. } => format!(
             "Aggregate: GROUP BY {column}, {}",
-            join_labels(
-                items
-                    .iter()
-                    .map(|(function, value)| format!("{}({value})", function.name()))
-            )
+            join_labels(items.iter().enumerate().map(|(index, (function, value))| {
+                if let Some(filter) = filters[index].as_deref() {
+                    format!("{}If({value}, {filter})", function.name())
+                } else {
+                    format!("{}({value})", function.name())
+                }
+            }))
         ),
-        Projection::GroupedMultiAggregates { columns, items, .. } => format!(
+        Projection::GroupedMultiAggregates { columns, items, filters, .. } => format!(
             "Aggregate: GROUP BY {}, {}",
             columns.join(", "),
-            join_labels(
-                items
-                    .iter()
-                    .map(|(function, value)| format!("{}({value})", function.name()))
-            )
+            join_labels(items.iter().enumerate().map(|(index, (function, value))| {
+                if let Some(filter) = filters[index].as_deref() {
+                    format!("{}If({value}, {filter})", function.name())
+                } else {
+                    format!("{}({value})", function.name())
+                }
+            }))
         ),
         Projection::Aggregate { function, column } => {
             format!("Aggregate: {}({column})", function.name())
