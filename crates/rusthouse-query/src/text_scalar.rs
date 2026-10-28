@@ -58,6 +58,7 @@ pub(super) fn is_function(name: &str) -> bool {
             | "COUNTSUBSTRINGSCASEINSENSITIVE"
             | "HEX_DECODE"
             | "REPLACE"
+            | "REPLACEALL"
             | "PROTOCOL"
             | "TRANSLATE"
             | "POSITIONCASEINSENSITIVE"
@@ -1238,7 +1239,7 @@ fn parse_at_depth(parser: &mut Parser, depth: usize) -> Result<ConstantValue, Pa
                 None => ConstantValue::Null,
             }
         }
-        "REPLACE" => {
+        "REPLACE" | "REPLACEALL" => {
             let input = text_arg(parser, depth + 1)?;
             require(parser, Token::Comma, "REPLACE requires a search string")?;
             let needle = text_arg(parser, depth + 1)?;
