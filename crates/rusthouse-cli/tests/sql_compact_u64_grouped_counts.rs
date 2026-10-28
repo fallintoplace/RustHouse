@@ -3,9 +3,8 @@ use std::process::Command;
 
 #[test]
 fn compact_sixty_four_bit_group_counts_preserve_key_boundaries() {
-    let db = std::env::temp_dir().join(format!(
-        "rusthouse-compact-u64-count-{}", std::process::id()
-    ));
+    let db =
+        std::env::temp_dir().join(format!("rusthouse-compact-u64-count-{}", std::process::id()));
     let sql = |statement: &str| {
         Command::new(env!("CARGO_BIN_EXE_rusthouse"))
             .args(["sql", statement, "--database"])
@@ -33,7 +32,11 @@ fn compact_sixty_four_bit_group_counts_preserve_key_boundaries() {
     ] {
         let result = sql(statement);
         assert!(result.status.success(), "{statement}: {result:?}");
-        assert_eq!(String::from_utf8(result.stdout).unwrap(), expected, "{statement}");
+        assert_eq!(
+            String::from_utf8(result.stdout).unwrap(),
+            expected,
+            "{statement}"
+        );
     }
     fs::remove_dir_all(db).unwrap();
 }
