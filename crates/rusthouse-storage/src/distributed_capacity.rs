@@ -34,26 +34,27 @@ impl Capacity {
 
     /// Convert reserved bytes into committed usage.
     pub fn commit(self, bytes: u64) -> Result<Self, &'static str> {
-        if bytes > self.reserved {
-            return Err("cannot commit unreserved bytes");
-        }
+        let reserved = self
+            .reserved
+            .checked_sub(bytes)
+            .ok_or("cannot commit unreserved bytes")?;
         self.available()?;
         Ok(Self {
             used: self
                 .used
                 .checked_add(bytes)
                 .ok_or("replica usage overflow")?,
-            reserved: self.reserved - bytes,
+            reserved,
             ..self
         })
     }
 
     pub fn release(self, bytes: u64) -> Result<Self, &'static str> {
-        if bytes > self.reserved {
-            return Err("cannot release unreserved bytes");
-        }
         Ok(Self {
-            reserved: self.reserved - bytes,
+            reserved: self
+                .reserved
+                .checked_sub(bytes)
+                .ok_or("cannot release unreserved bytes")?,
             ..self
         })
     }
