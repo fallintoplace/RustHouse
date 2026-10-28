@@ -134,17 +134,25 @@ mod tests {
 
     #[test]
     fn medium_json_string_uses_single_write() {
-        struct Count { calls: usize, bytes: Vec<u8> }
+        struct Count {
+            calls: usize,
+            bytes: Vec<u8>,
+        }
         impl Write for Count {
             fn write(&mut self, bytes: &[u8]) -> io::Result<usize> {
                 self.calls += 1;
                 self.bytes.extend_from_slice(bytes);
                 Ok(bytes.len())
             }
-            fn flush(&mut self) -> io::Result<()> { Ok(()) }
+            fn flush(&mut self) -> io::Result<()> {
+                Ok(())
+            }
         }
         let value = "é".repeat(100);
-        let mut sink = Count { calls: 0, bytes: Vec::new() };
+        let mut sink = Count {
+            calls: 0,
+            bytes: Vec::new(),
+        };
         write_json_string(&mut sink, &value).unwrap();
         assert_eq!(sink.calls, 1);
         assert_eq!(sink.bytes, format!("\"{value}\"").as_bytes());
