@@ -67,6 +67,7 @@ pub(super) fn is_function(name: &str) -> bool {
             | "LEFTPADUTF8"
             | "COUNTSUBSTRINGSCASEINSENSITIVE"
             | "HEX_DECODE"
+            | "TODATE"
             | "REPLACE"
             | "REPLACEALL"
             | "PROTOCOL"
@@ -867,6 +868,20 @@ fn parse_at_depth(parser: &mut Parser, depth: usize) -> Result<ConstantValue, Pa
                     ConstantValue::Text(value.chars().skip(start).take(count).collect())
                 }
                 _ => ConstantValue::Null,
+            }
+        }
+        "TODATE" => {
+            let input = text_arg(parser, depth + 1)?;
+            require(parser, Token::RParen, "toDate requires one argument")?;
+            match input {
+                Some(value) => {
+                    let days = rusthouse_storage::parse_date(&value)
+                        .or_else(|| rusthouse_storage::parse_datetime(&value)
+                            .and_then(|seconds| u16::try_from(seconds / 86_400).ok()))
+                        .ok_or_else(|| ParseError("toDate requires a valid UTC date".into()))?;
+                    ConstantValue::Text(rusthouse_storage::format_date(days))
+                }
+                None => ConstantValue::Null,
             }
         }
         "HEX_DECODE" => {
