@@ -15,18 +15,9 @@ fn clickhouse_compatibility_cases() {
             "SELECT domain('https://www.example.com:8123/path')",
             ConstantValue::Text("www.example.com".into()),
         ),
-        (
-            "SELECT domain('example.org/x')",
-            ConstantValue::Text("example.org".into()),
-        ),
-        (
-            "SELECT domain('http://u:p@host.net/a')",
-            ConstantValue::Text("host.net".into()),
-        ),
-        (
-            "SELECT domain(NULL)",
-            ConstantValue::Null,
-        ),
+        ("SELECT domain('example.org/x')", ConstantValue::Text("example.org".into())),
+        ("SELECT domain('http://u:p@host.net/a')", ConstantValue::Text("host.net".into())),
+        ("SELECT domain(NULL)", ConstantValue::Null),
     ] {
         assert_eq!(value(sql), expected, "{sql}");
     }
