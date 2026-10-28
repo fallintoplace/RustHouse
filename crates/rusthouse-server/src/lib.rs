@@ -171,6 +171,7 @@ impl QueryFormat {
         Ok(match value {
             "tsv" => Self::Tsv,
             "tsv-no-header" => Self::TsvNoHeader,
+            "TSV" => Self::TsvNoHeader,
             "csv" => Self::Csv,
             "csv-no-header" => Self::CsvNoHeader,
             "jsonl" => Self::Jsonl,
