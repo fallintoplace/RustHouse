@@ -86,7 +86,7 @@ mod tests {
             generation: 1,
             healthy: false,
         };
-        assert!(rank_read_replicas(&[one.clone()]).is_err());
+        assert!(rank_read_replicas(std::slice::from_ref(&one)).is_err());
         assert!(rank_read_replicas(&[one.clone(), one]).is_err());
     }
     #[test]

@@ -118,7 +118,7 @@ mod tests {
             }
             let restored = ResumeMap::decode(&progress.encode()).unwrap();
             assert_eq!(restored, progress);
-            assert_eq!(restored.remaining().len(), chunks - (chunks + 2) / 3);
+            assert_eq!(restored.remaining().len(), chunks - chunks.div_ceil(3));
             assert_eq!(restored.complete(), chunks == 0 || chunks == 1);
             for index in 0..chunks {
                 progress.mark_complete(index).unwrap();

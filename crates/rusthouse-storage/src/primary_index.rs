@@ -373,7 +373,7 @@ mod tests {
                     (Bound::Included(31), Bound::Included(55)),
                 ]
             ),
-            Some(vec![0..5])
+            Some(Vec::from([0..5]))
         );
         let signed = FixedPrimaryIndex {
             data: [-20i64, -10, 0, 10, 20]

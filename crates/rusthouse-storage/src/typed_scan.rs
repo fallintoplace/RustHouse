@@ -338,25 +338,27 @@ fn read_string_key_map(
     let count = offsets.element_count();
     let keys = read_legacy_strings(&mut MarkStream::open(keys_stream, mark)?, count)
         .map_err(|error| PartError::InvalidScan(error.to_string()))?;
-    let text_values;
-    let numeric_values;
-    if value_type == "String" {
-        text_values = Some(
-            read_legacy_strings(&mut MarkStream::open(values_stream, mark)?, count)
-                .map_err(|error| PartError::InvalidScan(error.to_string()))?,
-        );
-        numeric_values = None;
+    let (text_values, numeric_values) = if value_type == "String" {
+        (
+            Some(
+                read_legacy_strings(&mut MarkStream::open(values_stream, mark)?, count)
+                    .map_err(|error| PartError::InvalidScan(error.to_string()))?,
+            ),
+            None,
+        )
     } else {
-        text_values = None;
-        numeric_values = Some(
-            read_numeric_column(
-                &mut MarkStream::open(values_stream, mark)?,
-                value_type,
-                count,
-            )
-            .map_err(|error| PartError::InvalidScan(error.to_string()))?,
-        );
-    }
+        (
+            None,
+            Some(
+                read_numeric_column(
+                    &mut MarkStream::open(values_stream, mark)?,
+                    value_type,
+                    count,
+                )
+                .map_err(|error| PartError::InvalidScan(error.to_string()))?,
+            ),
+        )
+    };
     let mut encoded = Vec::new();
     for row in 0..rows {
         let range = offsets

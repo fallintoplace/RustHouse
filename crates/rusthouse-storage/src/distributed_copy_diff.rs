@@ -42,9 +42,7 @@ fn valid_key(key: &str) -> bool {
     !segment_start
 }
 
-fn index<'a>(
-    objects: &'a [ObjectMetadata],
-) -> Result<HashMap<&'a str, &'a ObjectMetadata>, &'static str> {
+fn index(objects: &[ObjectMetadata]) -> Result<HashMap<&str, &ObjectMetadata>, &'static str> {
     if objects.len() > 65_536 {
         return Err("replica inventory too large");
     }
@@ -132,7 +130,7 @@ mod tests {
             crc32c: 0,
         };
         assert_eq!(
-            plan_replica_copies(&[valid.clone()], &[]).unwrap(),
+            plan_replica_copies(std::slice::from_ref(&valid), &[]).unwrap(),
             vec![valid]
         );
     }

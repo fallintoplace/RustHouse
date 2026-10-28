@@ -76,13 +76,13 @@ pub(super) fn candidate_mark_ranges<T: Ord + Copy>(
     if intervals.iter().any(|(lower, upper)| {
         matches!(lower, Bound::Unbounded) && matches!(upper, Bound::Unbounded)
     }) {
-        return Some(if len == 0 { Vec::new() } else { vec![0..len] });
+        return Some(if len == 0 { Vec::new() } else { Vec::from([0..len]) });
     }
     if !monotonic_mark_keys(len, &key_at) {
         return None;
     }
     if let [(lower, upper)] = intervals {
-        let range = candidate_mark_range_sorted(len, &key_at, lower.clone(), upper.clone());
+        let range = candidate_mark_range_sorted(len, &key_at, *lower, *upper);
         return Some(if range.is_empty() {
             Vec::new()
         } else {
@@ -92,7 +92,7 @@ pub(super) fn candidate_mark_ranges<T: Ord + Copy>(
     let mut ranges: Vec<_> = intervals
         .iter()
         .map(|(lower, upper)| {
-            candidate_mark_range_sorted(len, &key_at, lower.clone(), upper.clone())
+            candidate_mark_range_sorted(len, &key_at, *lower, *upper)
         })
         .filter(|range| !range.is_empty())
         .collect();
@@ -143,6 +143,6 @@ mod unbounded_range_tests {
             |_| panic!("full-range OR must not inspect mark keys"),
             &intervals,
         );
-        assert_eq!(merged, Some(vec![0..17]));
+        assert_eq!(merged, Some(Vec::from([0..17])));
     }
 }
