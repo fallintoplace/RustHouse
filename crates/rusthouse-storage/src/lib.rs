@@ -13,6 +13,7 @@ mod granules;
 mod ip;
 mod mark_validation;
 mod marks;
+pub mod distributed_activate;
 mod metadata;
 mod nested_arrays;
 mod nullable;
