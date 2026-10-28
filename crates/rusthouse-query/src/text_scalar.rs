@@ -53,6 +53,7 @@ pub(super) fn is_function(name: &str) -> bool {
             | "LTRIM"
             | "BASENAME"
             | "TRIM_WHITESPACE"
+            | "TRIMBOTH"
             | "TRY_TO_INT64"
             | "LPAD"
             | "COUNTSUBSTRINGSCASEINSENSITIVE"
@@ -914,6 +915,24 @@ fn parse_at_depth(parser: &mut Parser, depth: usize) -> Result<ConstantValue, Pa
             match input {
                 Some(value) => ConstantValue::Text(value.trim().to_owned()),
                 None => ConstantValue::Null,
+            }
+        }
+        "TRIMBOTH" => {
+            let input = text_arg(parser, depth + 1)?;
+            let trim_characters = if parser.take(Token::Comma) {
+                Some(text_arg(parser, depth + 1)?)
+            } else {
+                None
+            };
+            require(parser, Token::RParen, "expected ')' after trimBoth")?;
+            match (input, trim_characters) {
+                (Some(value), None) => ConstantValue::Text(
+                    value.trim_matches(|ch: char| ch.is_ascii_whitespace()).to_owned(),
+                ),
+                (Some(value), Some(Some(chars))) => ConstantValue::Text(
+                    value.trim_matches(|ch: char| chars.contains(ch)).to_owned(),
+                ),
+                _ => ConstantValue::Null,
             }
         }
         "TRIM" => {
