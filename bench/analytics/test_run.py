@@ -2,6 +2,7 @@ import importlib.util
 import tempfile
 import unittest
 from pathlib import Path
+from unittest import mock
 
 
 ROOT = Path(__file__).resolve().parent
@@ -98,6 +99,23 @@ class AnalyticsRunnerTests(unittest.TestCase):
             self.assertEqual(results[0]["status"], "mismatch")
             self.assertEqual(results[0]["seconds"], [])
             self.assertIsNone(results[0]["latency"])
+
+    def test_reference_comparison_cost_does_not_inflate_elapsed_time(self):
+        clock = [1_000_000_000]
+        def execute(_sql, _timeout):
+            clock[0] += 50_000_000
+            return b"ok\n"
+        def verify(_path, _output):
+            clock[0] += 5_000_000_000
+            return None
+        with tempfile.TemporaryDirectory() as temp:
+            with mock.patch.object(runner.time, "perf_counter_ns", side_effect=lambda: clock[0]), \
+                 mock.patch.object(runner, "reference_failure", side_effect=verify):
+                item = runner.run_benchmark(
+                    ["SELECT 1"], [0], 1, 1, execute, Path(temp)
+                )[0]
+        self.assertEqual(item["status"], "passed")
+        self.assertEqual(item["seconds"], [0.05])
 
     def test_late_reference_failure_discards_partial_latency(self):
         with tempfile.TemporaryDirectory() as temp:
