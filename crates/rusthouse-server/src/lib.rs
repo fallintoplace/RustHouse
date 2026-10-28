@@ -300,7 +300,7 @@ fn capabilities_response(config: &Config) -> Response {
     let body = format!(
         "{{\"name\":\"RustHouse\",\"version\":\"{}\",\"source\":\"{source}\",\"read_only\":true,\"max_query_bytes\":{MAX_QUERY_BYTES},\"max_response_bytes\":{MAX_RESPONSE_BYTES},\"max_rows\":{}}}\n",
         env!("CARGO_PKG_VERSION"),
-        config.max_rows.min(100_000),
+        config.max_rows.min(250_000),
     );
     Response {
         status: "200 OK",
@@ -399,7 +399,7 @@ pub fn handle_request(method: &str, target: &str, body: &[u8], config: &Config) 
         Ok(query) => query,
         Err(error) => return Response::text("400 Bad Request", &format!("{error}\n")),
     };
-    let cap = config.max_rows.min(100_000);
+    let cap = config.max_rows.min(250_000);
     select.limit = Some(select.limit.map_or(cap, |limit| limit.min(cap)));
     if path == "/explain" {
         return Response::text(
@@ -740,6 +740,16 @@ mod tests {
     }
 
     #[test]
+    fn can_return_more_than_one_hundred_thousand_rows() {
+        let config = Config { max_rows: 100_001, ..config() };
+        let response = handle_request(
+            "POST", "/", b"SELECT number FROM numbers(100001)", &config
+        );
+        assert_eq!(response.status, "200 OK");
+        assert_eq!(response.body.iter().filter(|&&byte| byte == b'\n').count(), 100_002);
+    }
+
+    #[test]
     fn advertises_capabilities_without_opening_source_files() {
         let default = handle_request("GET", "/capabilities", b"", &config());
         assert_eq!(default.status, "200 OK");
@@ -754,12 +764,12 @@ mod tests {
         let part = Config {
             part: Some(PathBuf::from("/does/not/exist")),
             database: None,
-            max_rows: 200_000,
+            max_rows: 300_000,
         };
         let body = handle_request("GET", "/capabilities", b"", &part).body;
         let body = String::from_utf8(body).unwrap();
         assert!(body.contains("\"source\":\"part\""));
-        assert!(body.contains("\"max_rows\":100000"));
+        assert!(body.contains("\"max_rows\":250000"));
 
         for (method, target, body, expected) in [
             (
