@@ -11,6 +11,7 @@ pub(super) fn is_function(name: &str) -> bool {
             | "CHAR_LENGTH"
             | "OCTET_LENGTH"
             | "ASCII"
+            | "IPV4STRINGTONUM"
             | "UTF16_LENGTH"
             | "HASSUBSEQUENCE"
             | "CHR"
@@ -116,6 +117,18 @@ fn parse_at_depth(parser: &mut Parser, depth: usize) -> Result<ConstantValue, Pa
                     i64::try_from(value.chars().count())
                         .map_err(|_| ParseError("lengthUTF8 result exceeds Int64".into()))?,
                 ),
+                None => ConstantValue::Null,
+            }
+        }
+        "IPV4STRINGTONUM" => {
+            let input = text_arg(parser, depth + 1)?;
+            require(parser, Token::RParen, "IPv4StringToNum requires one argument")?;
+            match input {
+                Some(input) => {
+                    let address = input.parse::<std::net::Ipv4Addr>()
+                        .map_err(|_| ParseError("IPv4StringToNum requires a valid IPv4 address".into()))?;
+                    ConstantValue::Integer(i64::from(u32::from(address)))
+                }
                 None => ConstantValue::Null,
             }
         }
