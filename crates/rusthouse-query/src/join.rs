@@ -438,15 +438,20 @@ pub fn explain_join(query: &JoinSelect) -> String {
         })
         .collect::<Vec<_>>()
         .join(" AND ");
+    let predicate = if query.using_keys.is_empty() {
+        format!("ON {conditions}")
+    } else {
+        format!("USING ({})", query.using_keys.join(", "))
+    };
     let mut plan = format!(
-        "Source: table {} AS {}\nSource: table {} AS {}\nJoin: {}{:?} ON {}",
+        "Source: table {} AS {}\nSource: table {} AS {}\nJoin: {}{:?} {}",
         query.left,
         query.left_alias,
         query.right,
         query.right_alias,
         if query.any { "Any " } else { "" },
         query.kind,
-        conditions,
+        predicate,
     );
     for step in &query.steps {
         let conditions = step.keys.iter()
@@ -517,6 +522,16 @@ pub fn explain_join(query: &JoinSelect) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn explain_shows_the_original_using_predicate() {
+        let query = parse_join("SELECT * FROM a x FULL JOIN b y USING (id, tenant)")
+            .unwrap()
+            .unwrap();
+        let plan = explain_join(&query);
+        assert!(plan.contains("Join: Full USING (id, tenant)"), "{plan}");
+        assert!(!plan.contains("Join: Full ON"), "{plan}");
+    }
 
     #[test]
     fn chained_join_rejects_unknown_on_qualifiers_at_parse_time() {
