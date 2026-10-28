@@ -545,3 +545,25 @@ pub(super) fn multikey_weighted_avg_shard_sql(
     }
     None
 }
+
+/// COUNT(column) ignores NULL, unlike COUNT(*). The integer partial counts
+/// remain exactly additive across disjoint shard partitions.
+pub(super) fn is_safe_grouped_nonnull_count(select: &Select) -> bool {
+    matches!(
+        select.projection,
+        Projection::GroupedAggregate {
+            function: AggregateFunction::Count,
+            ..
+        }
+    ) && matches!(select.source, Some(Source::Table(_)))
+        && !select.distinct
+        && select.alias.is_none()
+        && select.rename.is_none()
+        && match &select.projection {
+            Projection::GroupedAggregate { column, .. } =>
+                select.order_terms().all(|term| {
+                    term.column == "#aggregate" || term.column == *column
+                }),
+            _ => false,
+        }
+}
