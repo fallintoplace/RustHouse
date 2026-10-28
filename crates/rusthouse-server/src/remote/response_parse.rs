@@ -100,14 +100,18 @@ fn response_head(raw: &[u8]) -> Result<Option<(usize, u16, String, usize)>, Stri
 
 /// Total valid wire bytes needed for a complete content-length response.
 pub(super) fn expected_wire_length(raw: &[u8]) -> Result<Option<usize>, String> {
-    response_head(raw)?.map(|(start, _, _, length)| {
-        start.checked_add(length).ok_or("peer response size overflow".into())
-    }).transpose()
+    response_head(raw)?
+        .map(|(start, _, _, length)| {
+            start
+                .checked_add(length)
+                .ok_or("peer response size overflow".into())
+        })
+        .transpose()
 }
 
 pub(super) fn parse_response(raw: &[u8]) -> Result<PeerResponse, String> {
-    let (body_start, status, content_type, length) = response_head(raw)?
-        .ok_or("peer response has no header terminator")?;
+    let (body_start, status, content_type, length) =
+        response_head(raw)?.ok_or("peer response has no header terminator")?;
     if raw.len() != body_start + length {
         return Err("peer response size mismatch or exceeds 8 MiB".into());
     }

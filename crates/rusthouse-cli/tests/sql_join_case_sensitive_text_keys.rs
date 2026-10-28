@@ -32,8 +32,20 @@ fn case_sensitive_text_keys() {
     ));
     successful(&db, "CREATE TABLE accounts (id UInt64, email String)");
     successful(&db, "CREATE TABLE emails (email String, code String)");
-    successful(&db, "INSERT INTO accounts VALUES (1, 'abc'), (2, 'Abc'), (3, 'abc')");
-    successful(&db, "INSERT INTO emails VALUES ('abc', 'lower'), ('Abc', 'upper')");
-    assert_eq!(successful(&db, "SELECT a.id, e.code FROM accounts a JOIN emails e ON a.email = e.email ORDER BY a.id"), b"a.id\te.code\n1\tlower\n2\tupper\n3\tlower\n");
+    successful(
+        &db,
+        "INSERT INTO accounts VALUES (1, 'abc'), (2, 'Abc'), (3, 'abc')",
+    );
+    successful(
+        &db,
+        "INSERT INTO emails VALUES ('abc', 'lower'), ('Abc', 'upper')",
+    );
+    assert_eq!(
+        successful(
+            &db,
+            "SELECT a.id, e.code FROM accounts a JOIN emails e ON a.email = e.email ORDER BY a.id"
+        ),
+        b"a.id\te.code\n1\tlower\n2\tupper\n3\tlower\n"
+    );
     fs::remove_dir_all(db).unwrap();
 }

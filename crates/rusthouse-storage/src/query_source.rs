@@ -420,7 +420,6 @@ mod tests {
             Err(PartError::InvalidScan(_))
         ));
 
-
         let changed = root.join("all_40_40_0");
         fs::remove_dir_all(&changed).unwrap();
         write_wide_part(

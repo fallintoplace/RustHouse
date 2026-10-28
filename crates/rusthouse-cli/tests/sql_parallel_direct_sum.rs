@@ -26,12 +26,22 @@ fn parallel_integer_sum_uses_filtered_numeric_parts() {
     }
     for (query, expected) in [
         ("SELECT sum(value) FROM facts", "sum(value)\n992\n"),
-        ("SELECT sum(value) FROM facts WHERE flag = 1", "sum(value)\n1488\n"),
-        ("SELECT sum(value) FROM facts WHERE flag = 0", "sum(value)\n-496\n"),
+        (
+            "SELECT sum(value) FROM facts WHERE flag = 1",
+            "sum(value)\n1488\n",
+        ),
+        (
+            "SELECT sum(value) FROM facts WHERE flag = 0",
+            "sum(value)\n-496\n",
+        ),
     ] {
         let result = sql(query, &db);
         assert!(result.status.success(), "{query}: {result:?}");
-        assert_eq!(String::from_utf8(result.stdout).unwrap(), expected, "{query}");
+        assert_eq!(
+            String::from_utf8(result.stdout).unwrap(),
+            expected,
+            "{query}"
+        );
     }
     fs::remove_dir_all(db).unwrap();
 }

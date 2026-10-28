@@ -20,9 +20,11 @@ pub(crate) fn read_fixed_width<R: Read, T, const WIDTH: usize>(
         let count = (rows - result.len()).min(buffer.len() / WIDTH);
         let size = count * WIDTH;
         reader.read_exact(&mut buffer[..size])?;
-        result.extend(buffer[..size].chunks_exact(WIDTH).map(|chunk| {
-            decode(chunk.try_into().expect("fixed-width chunk size"))
-        }));
+        result.extend(
+            buffer[..size]
+                .chunks_exact(WIDTH)
+                .map(|chunk| decode(chunk.try_into().expect("fixed-width chunk size"))),
+        );
     }
     Ok(result)
 }
@@ -61,19 +63,11 @@ mod tests {
 
     #[test]
     fn refuses_invalid_element_widths_without_panicking() {
-        let zero = read_fixed_width::<_, u8, 0>(
-            &mut io::empty(),
-            1,
-            "invalid element width",
-            |_| 0,
-        );
+        let zero =
+            read_fixed_width::<_, u8, 0>(&mut io::empty(), 1, "invalid element width", |_| 0);
         assert_eq!(zero.unwrap_err().kind(), io::ErrorKind::InvalidInput);
-        let oversized = read_fixed_width::<_, u8, 16385>(
-            &mut io::empty(),
-            1,
-            "invalid element width",
-            |_| 0,
-        );
+        let oversized =
+            read_fixed_width::<_, u8, 16385>(&mut io::empty(), 1, "invalid element width", |_| 0);
         assert_eq!(oversized.unwrap_err().kind(), io::ErrorKind::InvalidInput);
     }
 }

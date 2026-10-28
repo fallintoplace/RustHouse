@@ -46,6 +46,18 @@ pub(super) fn compile_predicate_test(
     })
 }
 
+fn scan_column_index(scan_columns: &mut Vec<String>, column: &str) -> usize {
+    if let Some(index) = scan_columns
+        .iter()
+        .position(|candidate| candidate.as_str() == column)
+    {
+        index
+    } else {
+        scan_columns.push(column.to_owned());
+        scan_columns.len() - 1
+    }
+}
+
 pub(super) fn compile_part_predicates(
     predicates: &[Predicate],
     scan_columns: &mut Vec<String>,
@@ -55,15 +67,7 @@ pub(super) fn compile_part_predicates(
     for predicate in predicates {
         let column = predicate.column();
         let test = compile_predicate_test(predicate, column, &mut convert)?;
-        let index = if let Some(index) = scan_columns
-            .iter()
-            .position(|candidate| candidate.as_str() == column)
-        {
-            index
-        } else {
-            scan_columns.push(column.to_owned());
-            scan_columns.len() - 1
-        };
+        let index = scan_column_index(scan_columns, column);
         compiled.push(CompiledPredicate { index, test });
     }
     Ok(compiled)

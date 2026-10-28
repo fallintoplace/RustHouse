@@ -9,10 +9,22 @@ fn value(sql: &str) -> ConstantValue {
 
 #[test]
 fn coalesce_evaluates_constant_strings() {
-    assert_eq!(value("SELECT COALESCE(NULL, 'backup')"), ConstantValue::Text("backup".into()));
-    assert_eq!(value("SELECT coalesce('first', 'second')"), ConstantValue::Text("first".into()));
-    assert_eq!(value("SELECT COALESCE(NULL, NULL, 'ok')"), ConstantValue::Text("ok".into()));
-    assert_eq!(value("SELECT CONCAT(COALESCE(NULL, 'a'), 'b')"), ConstantValue::Text("ab".into()));
+    assert_eq!(
+        value("SELECT COALESCE(NULL, 'backup')"),
+        ConstantValue::Text("backup".into())
+    );
+    assert_eq!(
+        value("SELECT coalesce('first', 'second')"),
+        ConstantValue::Text("first".into())
+    );
+    assert_eq!(
+        value("SELECT COALESCE(NULL, NULL, 'ok')"),
+        ConstantValue::Text("ok".into())
+    );
+    assert_eq!(
+        value("SELECT CONCAT(COALESCE(NULL, 'a'), 'b')"),
+        ConstantValue::Text("ab".into())
+    );
     assert_eq!(value("SELECT COALESCE(NULL, NULL)"), ConstantValue::Null);
 }
 

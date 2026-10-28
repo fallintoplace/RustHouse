@@ -35,30 +35,49 @@ fn main() {
             "--sql" => query_sql = args.next(),
             "--expected-file" => expected_file = args.next().map(PathBuf::from),
             "--max-median-seconds" => {
-                max_median_seconds = Some(args.next().unwrap_or_default().parse()
-                    .expect("--max-median-seconds must be a positive number"));
+                max_median_seconds = Some(
+                    args.next()
+                        .unwrap_or_default()
+                        .parse()
+                        .expect("--max-median-seconds must be a positive number"),
+                );
             }
             "--expected-count" => {
-                expected_count = Some(args.next().unwrap_or_default().parse()
-                    .expect("--expected-count must be a UInt64"));
+                expected_count = Some(
+                    args.next()
+                        .unwrap_or_default()
+                        .parse()
+                        .expect("--expected-count must be a UInt64"),
+                );
             }
             "--min-rows" => {
-                min_rows = args.next().unwrap_or_default().parse()
+                min_rows = args
+                    .next()
+                    .unwrap_or_default()
+                    .parse()
                     .expect("--min-rows must be a UInt64");
             }
             "--samples" => {
-                samples = args.next().unwrap_or_default().parse()
+                samples = args
+                    .next()
+                    .unwrap_or_default()
+                    .parse()
                     .expect("--samples must be a positive odd integer");
             }
             "--warmups" => {
-                warmups = args.next().unwrap_or_default().parse()
+                warmups = args
+                    .next()
+                    .unwrap_or_default()
+                    .parse()
                     .expect("--warmups must be a nonnegative integer");
             }
             "--help" | "-h" => usage(),
             _ => usage(),
         }
     }
-    let Some(part) = part else { usage(); };
+    let Some(part) = part else {
+        usage();
+    };
     let (sql, expected) = match (query_sql, expected_file, filter, expected_count) {
         (Some(sql), Some(file), None, None) => (
             sql,
@@ -71,9 +90,15 @@ fn main() {
         _ => usage(),
     };
     if let Some(limit) = max_median_seconds {
-        assert!(limit.is_finite() && limit > 0.0, "--max-median-seconds must be positive and finite");
+        assert!(
+            limit.is_finite() && limit > 0.0,
+            "--max-median-seconds must be positive and finite"
+        );
     }
-    assert!(samples > 0 && samples % 2 == 1, "samples must be a positive odd number");
+    assert!(
+        samples > 0 && samples % 2 == 1,
+        "samples must be a positive odd number"
+    );
     let parts = query_parts(&part).expect("source must be a frozen wide-part snapshot");
     let metadata = inspect_query_source(&part).expect("invalid part metadata");
     assert!(
@@ -86,16 +111,14 @@ fn main() {
     let mut output = Vec::new();
     for _ in 0..warmups {
         output.clear();
-        execute(black_box(&query), Some(&part), &mut output)
-            .expect("benchmark warmup failed");
+        execute(black_box(&query), Some(&part), &mut output).expect("benchmark warmup failed");
         assert_eq!(output, expected, "warmup differs from supplied oracle");
     }
     let mut times = Vec::with_capacity(samples);
     for _ in 0..samples {
         output.clear();
         let start = Instant::now();
-        execute(black_box(&query), Some(&part), &mut output)
-            .expect("benchmark query failed");
+        execute(black_box(&query), Some(&part), &mut output).expect("benchmark query failed");
         times.push(start.elapsed());
         black_box(&output);
         assert_eq!(output, expected, "query differs from supplied oracle");
@@ -111,10 +134,16 @@ fn main() {
     println!("Expected output bytes: {}", expected.len());
     println!("Warm-cache median: {:.3} ms", p50 * 1_000.0);
     println!("Warm-cache p90: {:.3} ms", p90 * 1_000.0);
-    println!("Logical input throughput: {:.2} million rows/s", logical_rows_per_s / 1e6);
+    println!(
+        "Logical input throughput: {:.2} million rows/s",
+        logical_rows_per_s / 1e6
+    );
     println!("This measures warm-cache single-query latency on real parts.");
     if let Some(limit) = max_median_seconds {
-        assert!(p50 <= limit, "median {p50:.3}s exceeds the {limit:.3}s target");
+        assert!(
+            p50 <= limit,
+            "median {p50:.3}s exceeds the {limit:.3}s target"
+        );
         println!("Median target met: <= {limit:.3}s");
     }
     println!("Logical throughput is NOT physical disk throughput or bytes read.");
