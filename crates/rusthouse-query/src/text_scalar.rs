@@ -110,6 +110,7 @@ pub(super) fn is_function(name: &str) -> bool {
             | "NULLIF"
             | "IFNULL"
             | "LAST_INDEX_OF"
+            | "DATEADD"
             | "PATH"
             | "LEFT"
             | "LEFTUTF8"
@@ -980,6 +981,37 @@ fn parse_at_depth(parser: &mut Parser, depth: usize) -> Result<ConstantValue, Pa
                     ConstantValue::Text(query.to_owned())
                 }
                 None => ConstantValue::Null,
+            }
+        }
+        "DATEADD" => {
+            let unit = text_arg(parser, depth + 1)?;
+            require(parser, Token::Comma, "dateAdd requires an offset")?;
+            let amount = integer_arg(parser, depth + 1)?;
+            require(parser, Token::Comma, "dateAdd requires a timestamp")?;
+            let input = text_arg(parser, depth + 1)?;
+            require(parser, Token::RParen, "dateAdd requires three arguments")?;
+            match (unit, amount, input) {
+                (Some(unit), Some(amount), Some(input)) => {
+                    let step: i64 = match unit.to_ascii_lowercase().as_str() {
+                        "second" | "seconds" => 1,
+                        "minute" | "minutes" => 60,
+                        "hour" | "hours" => 3_600,
+                        "day" | "days" => 86_400,
+                        "week" | "weeks" => 604_800,
+                        _ => return Err(ParseError("unsupported dateAdd unit".into())),
+                    };
+                    let seconds = rusthouse_storage::parse_datetime(&input)
+                        .ok_or_else(|| ParseError("invalid UTC DateTime argument".into()))?;
+                    let offset = amount
+                        .checked_mul(step)
+                        .ok_or_else(|| ParseError("dateAdd offset overflow".into()))?;
+                    let shifted = i64::from(seconds)
+                        .checked_add(offset)
+                        .and_then(|value| u32::try_from(value).ok())
+                        .ok_or_else(|| ParseError("dateAdd result outside UTC DateTime range".into()))?;
+                    ConstantValue::Text(rusthouse_storage::format_datetime(shifted))
+                }
+                _ => ConstantValue::Null,
             }
         }
         "SUBSTRING_INDEX" | "SUBSTRINGINDEXUTF8" => {
