@@ -13,6 +13,10 @@ use std::path::Path;
 enum State {
     Count(u64),
     Distinct(HashSet<typed::Key>),
+    DistinctNumeric {
+        seen: HashSet<typed::Key>,
+        aggregate: AggregateState,
+    },
     Numeric(AggregateState),
 }
 
@@ -310,6 +314,10 @@ pub(super) fn execute<W: Write>(
     let mut states = items
         .iter()
         .map(|item| match item.function {
+            Some(function) if item.distinct => State::DistinctNumeric {
+                seen: HashSet::new(),
+                aggregate: AggregateState::new(function),
+            },
             Some(function) => State::Numeric(AggregateState::new(function)),
             None if item.distinct => State::Distinct(HashSet::new()),
             None => State::Count(0),
@@ -353,6 +361,24 @@ pub(super) fn execute<W: Write>(
                             seen.insert(key);
                         }
                     }
+                    State::DistinctNumeric { seen, aggregate } => {
+                        let expression = argument.as_ref().ok_or_else(|| {
+                            ExecutionError::Invalid("distinct aggregate argument missing".into())
+                        })?;
+                        let Some(value) = eval_number(expression, &batch, row)? else {
+                            continue;
+                        };
+                        let key = typed::Key::Numeric(NumberKey::from(value));
+                        if !seen.contains(&key) {
+                            if seen.len() >= 100_000 {
+                                return Err(ExecutionError::Invalid(
+                                    "numeric DISTINCT supports at most 100000 values".into(),
+                                ));
+                            }
+                            seen.insert(key);
+                            aggregate.update(value)?;
+                        }
+                    }
                     State::Numeric(state) => {
                         let expression = argument.as_ref().ok_or_else(|| {
                             ExecutionError::Invalid("aggregate argument missing".into())
@@ -373,6 +399,7 @@ pub(super) fn execute<W: Write>(
             match state {
                 State::Count(count) => write!(output, "{count}")?,
                 State::Distinct(seen) => write!(output, "{}", seen.len())?,
+                State::DistinctNumeric { aggregate, .. } => write!(output, "{}", aggregate.render())?,
                 State::Numeric(state) => write!(output, "{}", state.render())?,
             }
         }
@@ -444,6 +471,18 @@ pub(super) fn execute_numbers<W: Write>(
                         ));
                     }
                     seen.insert(key);
+                }
+                State::DistinctNumeric { seen, aggregate } => {
+                    let key = typed::Key::Numeric(NumberKey::from(value));
+                    if !seen.contains(&key) {
+                        if seen.len() >= 100_000 {
+                            return Err(ExecutionError::Invalid(
+                                "numeric DISTINCT supports at most 100000 values".into(),
+                            ));
+                        }
+                        seen.insert(key);
+                        aggregate.update(value)?;
+                    }
                 }
                 State::Numeric(state) => state.update(value)?,
             }

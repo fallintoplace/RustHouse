@@ -18,7 +18,7 @@ impl AggregateItem {
         let function = self.function.map_or("count", AggregateFunction::name);
         let argument = self.argument.as_ref().map_or("*".into(), render_expr);
         if self.distinct {
-            format!("count(DISTINCT {argument})")
+            format!("{function}(DISTINCT {argument})")
         } else {
             format!("{function}({argument})")
         }
@@ -93,8 +93,11 @@ pub(crate) fn parse_multiple(
         }
         parser.index += 2;
         let distinct = parser.keyword("DISTINCT");
-        if distinct && function.is_some() {
-            return Err(ParseError("DISTINCT is only supported for COUNT".into()));
+        if distinct
+            && !matches!(function, None | Some(AggregateFunction::Sum | AggregateFunction::Avg
+                | AggregateFunction::Min | AggregateFunction::Max))
+        {
+            return Err(ParseError("DISTINCT supports COUNT, SUM, AVG, MIN and MAX".into()));
         }
         let (argument, already_closed) = if parser.take(Token::Star) {
             (None, false)
@@ -144,7 +147,7 @@ pub(crate) fn parse_multiple(
             argument.referenced_columns(&mut columns);
             !columns.is_empty() && !matches!(argument, crate::ScalarExpr::Column(_))
         });
-    if items.len() < 2 && !is_computed {
+    if items.len() < 2 && !is_computed && !items[0].distinct {
         parser.index = start;
         return Ok(None);
     }
