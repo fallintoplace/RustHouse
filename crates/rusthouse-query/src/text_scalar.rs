@@ -4,7 +4,7 @@ const MAX_DEPTH: usize = 16;
 const MAX_TEXT_BYTES: usize = 1_048_576;
 
 pub(super) fn is_function(name: &str) -> bool {
-    matches!(
+    super::date_scalar::is_function(name) || matches!(
         name.to_ascii_uppercase().as_str(),
         "LENGTH"
             | "TOYEAR"
@@ -160,6 +160,9 @@ fn parse_at_depth(parser: &mut Parser, depth: usize) -> Result<ConstantValue, Pa
     }
     let name = parser.word()?.to_ascii_uppercase();
     require(parser, Token::LParen, "string function requires '('")?;
+    if super::date_scalar::is_function(&name) {
+        return super::date_scalar::parse_after_open(parser, &name, depth);
+    }
     let value = match name.as_str() {
 
         "LENGTHUTF8" => {
@@ -2704,7 +2707,7 @@ fn require(parser: &mut Parser, token: Token, message: &str) -> Result<(), Parse
     }
 }
 
-fn integer_arg(parser: &mut Parser, depth: usize) -> Result<Option<i64>, ParseError> {
+pub(super) fn integer_arg(parser: &mut Parser, depth: usize) -> Result<Option<i64>, ParseError> {
     if matches!(
         parser.tokens.get(parser.index),
         Some(Token::Word(word)) if word.eq_ignore_ascii_case("NULL")
@@ -2722,7 +2725,7 @@ fn integer_arg(parser: &mut Parser, depth: usize) -> Result<Option<i64>, ParseEr
     Ok(Some(super::scalar::parse(parser)?))
 }
 
-fn text_arg(parser: &mut Parser, depth: usize) -> Result<Option<String>, ParseError> {
+pub(super) fn text_arg(parser: &mut Parser, depth: usize) -> Result<Option<String>, ParseError> {
     match parser.tokens.get(parser.index) {
         Some(Token::String(value)) => {
             let result = value.clone();

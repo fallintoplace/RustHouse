@@ -1,6 +1,7 @@
 mod copy;
 mod ddl;
 mod delete;
+mod date_scalar;
 mod execute;
 mod explain;
 mod expression;
