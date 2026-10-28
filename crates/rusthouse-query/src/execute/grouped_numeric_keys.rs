@@ -247,13 +247,18 @@ pub(super) fn execute<W: Write>(
         }
     }
 
+    // Resolve output schema once before serializing many grouped rows.
+    let output_types = columns
+        .iter()
+        .map(|column| types[column].as_str())
+        .collect::<Vec<_>>();
     let write_group =
         |keys: &[Cell], states: &[AggregateState], output: &mut W| -> Result<(), ExecutionError> {
             for (index, key) in keys.iter().enumerate() {
                 if index != 0 {
                     output.write_all(b"\t")?;
                 }
-                typed::write_typed_value(output, key, &types[&columns[index]])?;
+                typed::write_typed_value(output, key, output_types[index])?;
             }
             for state in states {
                 write!(output, "\t{}", state.render())?;
