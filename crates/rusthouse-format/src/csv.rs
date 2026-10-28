@@ -5,6 +5,11 @@ pub fn write_quoted_csv_field<W: Write>(output: &mut W, field: &[u8]) -> io::Res
     if field.is_empty() {
         return output.write_all(b"\"\"");
     }
+    if !field.contains(&b'"') {
+        output.write_all(b"\"")?;
+        output.write_all(field)?;
+        return output.write_all(b"\"");
+    }
     output.write_all(b"\"")?;
     let mut segments = field.split(|&byte| byte == b'"');
     output.write_all(segments.next().unwrap_or_default())?;
