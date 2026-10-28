@@ -812,6 +812,216 @@ fn execute_streaming_ordered_inner<W: Write>(
 
 
 
+
+struct JoinedDistinctGroup {
+    keys: Vec<typed::Cell>,
+    numeric: HashSet<typed::Key>,
+    strings: HashSet<Vec<u8>>,
+    uuids: HashSet<String>,
+    bytes: [u64; 4],
+    state: AggregateState,
+}
+
+fn execute_streaming_inner_group_distinct<W: Write>(
+    query: &JoinSelect,
+    left_path: &Path,
+    right_path: &Path,
+    columns: InnerJoinColumns<'_>,
+    left_count: u64,
+    right_count: u64,
+    indices: &[usize],
+    value_index: usize,
+    data_type: &str,
+    header: &str,
+    output: &mut W,
+) -> Result<(), ExecutionError> {
+    const MAX_GROUPS: usize = 200_000;
+    const MAX_PAIRS: usize = 500_000;
+    const MAX_BYTES: usize = 96 * 1024 * 1024;
+    let InnerJoinColumns {
+        left_names, right_names, left_keys, right_keys, null_filter, ..
+    } = columns;
+    if query.limit == Some(0) {
+        writeln!(output, "{header}")?;
+        return Ok(());
+    }
+    let byte_domain = matches!(base_type(data_type), "UInt8" | "Int8");
+    let mut groups = Vec::<JoinedDistinctGroup>::new();
+    let mut lookup = HashMap::<Vec<typed::Key>, usize>::new();
+    let mut total_pairs = 0usize;
+    let mut used_bytes = 0usize;
+    let width = left_names.len();
+    let mut accept = |left: &[typed::Cell], right: &[typed::Cell]| {
+        let at = |index: usize| {
+            if index < width { &left[index] } else { &right[index - width] }
+        };
+        let probe = indices.iter().map(|&index| at(index).key()).collect::<Vec<_>>();
+        let group = match lookup.entry(probe) {
+            Entry::Occupied(entry) => *entry.get(),
+            Entry::Vacant(entry) => {
+                if groups.len() >= MAX_GROUPS {
+                    return Err(invalid("joined DISTINCT exceeds 200000 groups"));
+                }
+                let keys = indices.iter().map(|&index| at(index).clone()).collect::<Vec<_>>();
+                let bytes = std::mem::size_of::<JoinedDistinctGroup>()
+                    .checked_add(indices.len() * std::mem::size_of::<typed::Key>())
+                    .and_then(|total| indices.iter().try_fold(total, |size, &index| {
+                        let dynamic = match at(index) {
+                            typed::Cell::Text(text) => text.len() * 2,
+                            typed::Cell::Uuid(value) => value.len() * 2,
+                            _ => 0
+                        };
+                        size.checked_add(dynamic)
+                    }))
+                    .ok_or_else(|| invalid("joined DISTINCT group memory overflow"))?;
+                used_bytes = used_bytes.checked_add(bytes)
+                    .ok_or_else(|| invalid("joined DISTINCT group memory overflow"))?;
+                if used_bytes > MAX_BYTES {
+                    return Err(invalid("joined DISTINCT exceeds memory budget"));
+                }
+                entry.insert(groups.len());
+                groups.push(JoinedDistinctGroup {
+                    keys,
+                    numeric: HashSet::new(),
+                    strings: HashSet::new(),
+                    uuids: HashSet::new(),
+                    bytes: [0; 4],
+                    state: AggregateState::new(AggregateFunction::Count)
+                });
+                groups.len() - 1
+            }
+        };
+        let value = at(value_index);
+        let fresh = match value {
+            typed::Cell::Null => false,
+            typed::Cell::Numeric(number) if byte_domain => {
+                let raw = match number {
+                    Number::Signed(value) => *value as u8,
+                    Number::Unsigned(value) => *value as u8,
+                    Number::Float(_) => return Err(invalid("invalid JOIN DISTINCT byte domain")),
+                };
+                let word = usize::from(raw) / 64;
+                let mask = 1u64 << (usize::from(raw) % 64);
+                let old = groups[group].bytes[word];
+                groups[group].bytes[word] |= mask;
+                old & mask == 0
+            }
+            typed::Cell::Text(text) => {
+                if groups[group].strings.contains(text.as_slice()) { false }
+                else {
+                    used_bytes = used_bytes.checked_add(text.len())
+                        .ok_or_else(|| invalid("joined DISTINCT memory overflow"))?;
+                    groups[group].strings.insert(text.to_vec())
+                }
+            }
+            typed::Cell::Uuid(value) => {
+                if groups[group].uuids.contains(value.as_str()) { false }
+                else {
+                    used_bytes = used_bytes.checked_add(value.len())
+                        .ok_or_else(|| invalid("joined DISTINCT memory overflow"))?;
+                    groups[group].uuids.insert(value.clone())
+                }
+            }
+            _ => groups[group].numeric.insert(value.key()),
+        };
+        if fresh {
+            total_pairs = total_pairs.checked_add(1)
+                .ok_or_else(|| invalid("joined DISTINCT pair count overflow"))?;
+            used_bytes = used_bytes.checked_add(std::mem::size_of::<typed::Key>())
+                .ok_or_else(|| invalid("joined DISTINCT memory overflow"))?;
+            if total_pairs > MAX_PAIRS || used_bytes > MAX_BYTES {
+                return Err(invalid("joined DISTINCT exceeds pair or memory budget"));
+            }
+            groups[group].state.increment_count()?;
+        }
+        Ok(())
+    };
+    if left_count != 0 && right_count != 0 {
+        let needs_left = indices.iter().any(|&i| i < width) || value_index < width;
+        let needs_right = indices.iter().any(|&i| i >= width) || value_index >= width;
+        if right_count <= MAX_STREAM_BUILD_ROWS &&
+            (right_count <= left_count || left_count > MAX_STREAM_BUILD_ROWS) {
+            let right_rows = read_rows(right_path, right_names, right_count,
+                MAX_STREAM_BUILD_ROWS, MAX_STREAM_BUILD_BYTES)?;
+            let mut hash = HashMap::<Vec<typed::Key>, Bucket>::with_capacity(right_rows.len());
+            for (index, row) in right_rows.iter().enumerate() {
+                if let Some(key) = row_key(row, right_keys) {
+                    if query.any { hash.entry(key).or_insert(Bucket::One(index)); }
+                    else {
+                        hash.entry(key).and_modify(|bucket| bucket.push(index))
+                            .or_insert(Bucket::One(index));
+                    }
+                }
+            }
+            probe_inner(left_path, left_names, left_keys, &right_rows, &hash,
+                ProbeOptions {
+                    materialize_rows: needs_left,
+                    materialize_after: 0, stop_after: Some(usize::MAX),
+                    any: query.any, null_filter,
+                }, &mut accept)?;
+        } else {
+            let left_rows = read_rows(left_path, left_names, left_count,
+                MAX_STREAM_BUILD_ROWS, MAX_STREAM_BUILD_BYTES)?;
+            let mut hash = HashMap::<Vec<typed::Key>, Bucket>::with_capacity(left_rows.len());
+            for (index, row) in left_rows.iter().enumerate() {
+                if let Some(key) = row_key(row, left_keys) {
+                    hash.entry(key).and_modify(|bucket| bucket.push(index))
+                        .or_insert(Bucket::One(index));
+                }
+            }
+            probe_right(right_path, right_names, right_keys, &left_rows, &hash,
+                ProbeOptions {
+                    materialize_rows: needs_right,
+                    materialize_after: 0, stop_after: Some(usize::MAX),
+                    any: query.any, null_filter,
+                }, &mut accept)?;
+        }
+    }
+    if let Some(having) = &query.group_having {
+        groups.retain(|group| group.state.passes_having(having));
+    }
+    let mut bounded_order = None;
+    if let Some((descending, nulls_first)) = query.group_order_by {
+        let compare = |left: &JoinedDistinctGroup, right: &JoinedDistinctGroup| {
+            typed::compare_order_cells(
+                &left.state.sort_cell(), &right.state.sort_cell(), descending, nulls_first
+            )
+        };
+        let end = query.limit.and_then(|limit| query.offset.checked_add(limit));
+        if let Some(end) = end.filter(|&end| end < groups.len()) {
+            let mut positions = (0..groups.len()).collect::<Vec<_>>();
+            let cmp = |left: &usize, right: &usize| {
+                compare(&groups[*left], &groups[*right]).then_with(|| left.cmp(right))
+            };
+            positions.select_nth_unstable_by(end, &cmp);
+            positions.truncate(end);
+            positions.sort_unstable_by(cmp);
+            bounded_order = Some(positions);
+        } else { groups.sort_by(compare); }
+    }
+    writeln!(output, "{header}")?;
+    let write_group = |group: &JoinedDistinctGroup, output: &mut W|
+        -> Result<(), ExecutionError> {
+        for (i, key) in group.keys.iter().enumerate() {
+            if i != 0 { output.write_all(b"\t")?; }
+            typed::write_value(output, key)?;
+        }
+        writeln!(output, "\t{}", group.state.render())?;
+        Ok(())
+    };
+    if let Some(indices) = bounded_order {
+        for index in indices.into_iter().skip(query.offset) {
+            write_group(&groups[index], output)?;
+        }
+    } else {
+        for group in groups.iter().skip(query.offset)
+            .take(query.limit.unwrap_or(usize::MAX)) {
+            write_group(group, output)?;
+        }
+    }
+    Ok(())
+}
+
 fn execute_streaming_inner_count_distinct<W: Write>(
     query: &JoinSelect,
     left_path: &Path,
@@ -1607,6 +1817,26 @@ pub fn execute_join<W: Write>(
                 execute_streaming_inner_sum(
                     query, left_path, right_path, columns,
                     left_meta.rows, right_meta.rows, metric, &header, output
+                )
+            }
+            JoinAggregate::GroupDistinct { keys, value } => {
+                let indices = keys.iter().map(|column|
+                    resolve(query, column, &left_names, &right_names)
+                ).collect::<Result<Vec<_>, _>>()?;
+                let metric = resolve(query, value, &left_names, &right_names)?;
+                let data_type = if metric < width {
+                    &left_meta.columns[metric].data_type
+                } else {
+                    &right_meta.columns[metric - width].data_type
+                };
+                let header = keys.iter().map(|key|
+                    format!("{}.{}", key.relation, key.name)
+                ).collect::<Vec<_>>().join("\t") +
+                    &format!("\tcount(DISTINCT {}.{})", value.relation, value.name);
+                execute_streaming_inner_group_distinct(
+                    query, left_path, right_path, columns,
+                    left_meta.rows, right_meta.rows,
+                    &indices, metric, data_type, &header, output
                 )
             }
             JoinAggregate::GroupMultiCount(keys) => {
