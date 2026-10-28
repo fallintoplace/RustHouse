@@ -282,6 +282,14 @@ fn quoted_map_text(output: &mut String, bytes: &[u8]) -> Result<(), PartError> {
     let text = std::str::from_utf8(bytes)
         .map_err(|_| PartError::InvalidScan("Map String contains invalid UTF-8".into()))?;
     output.push('"');
+    if text
+        .bytes()
+        .all(|byte| byte >= b' ' && byte != b'"' && byte != b'\\')
+    {
+        output.push_str(text);
+        output.push('"');
+        return Ok(());
+    }
     for ch in text.chars() {
         match ch {
             '"' => output.push_str("\\\""),
@@ -949,6 +957,20 @@ mod tests {
         ));
         fs::remove_dir_all(root).unwrap();
     }
+
+    #[test]
+    fn map_text_plain_utf8_fast_path_keeps_exact_json_escaping() {
+        let mut output = String::new();
+        quoted_map_text(&mut output, "café 東京".as_bytes()).unwrap();
+        assert_eq!(output, "\"café 東京\"");
+        output.clear();
+        quoted_map_text(&mut output, b"quote\\\" and \\t tab").unwrap();
+        assert_eq!(output, "\"quote\\\\\\\" and \\\\t tab\"");
+        output.clear();
+        quoted_map_text(&mut output, b"").unwrap();
+        assert_eq!(output, "\"\"");
+    }
+
 }
 
 #[cfg(test)]
