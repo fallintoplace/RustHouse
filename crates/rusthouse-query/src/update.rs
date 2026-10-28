@@ -32,7 +32,7 @@ fn parse_assignments(parser: &mut Parser) -> Result<Vec<(String, Option<String>)
         if assignments.len() >= 64 {
             return Err(ParseError("UPDATE supports at most 64 columns".into()));
         }
-        let column = parser.word()?;
+        let column = parser.bounded_word()?;
         if !seen.insert(column.clone()) {
             return Err(ParseError(format!("duplicate UPDATE column: {column}")));
         }
@@ -180,4 +180,16 @@ mod tests {
             assert!(parse_update(statement).is_err(), "{statement}");
         }
     }
+    #[test]
+    fn restricts_update_column_identifiers_to_128_bytes() {
+        let accepted = "a".repeat(128);
+        let rejected = "a".repeat(129);
+        assert!(
+            parse_update(&format!("UPDATE events SET {accepted} = 1")).is_ok()
+        );
+        assert!(
+            parse_update(&format!("UPDATE events SET {rejected} = 1")).is_err()
+        );
+    }
+
 }
