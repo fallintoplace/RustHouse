@@ -29,14 +29,14 @@ fn executes_sql_from_a_file() {
 
 #[test]
 fn rejects_oversized_and_non_utf8_sql_files() {
-    let too_large = sql_file(&vec![b' '; 4097]);
+    let too_large = sql_file(&vec![b' '; 65537]);
     let result = Command::new(env!("CARGO_BIN_EXE_rusthouse"))
         .args(["sql", "--file"])
         .arg(&too_large)
         .output()
         .unwrap();
     assert!(!result.status.success());
-    assert!(String::from_utf8_lossy(&result.stderr).contains("4096-byte"));
+    assert!(String::from_utf8_lossy(&result.stderr).contains("65536-byte"));
     fs::remove_file(too_large).unwrap();
 
     let invalid = sql_file(&[0xff]);
