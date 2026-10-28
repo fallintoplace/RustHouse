@@ -24,6 +24,43 @@ pub(super) fn execute_grouped_part<W: Write>(
         return groups.write(query, column, output);
     }
     let no_filters = query.predicates.is_empty() && query.or_predicates.is_empty();
+    // A single-byte group key has only 256 possible values. Accumulate in a
+    // dense array, retaining the first-seen key order for unordered queries.
+    let narrow = metadata.columns.iter().find(|candidate| candidate.name == column)
+        .map(|candidate| candidate.data_type.as_str());
+    if matches!(narrow, Some("UInt8" | "Int8")) {
+        let mut counts = [0u64; 256];
+        let mut visited = [false; 256];
+        let mut insertion_order = Vec::new();
+        while let Some(batch) = reader.next_batch()? {
+            for row in 0..batch[0].len() {
+                if !no_filters && !batch_matches(&batch, row, &comparisons) {
+                    continue;
+                }
+                let byte = match &batch[0] {
+                    NumericColumn::UInt8(values) => values[row],
+                    NumericColumn::Int8(values) => values[row] as u8,
+                    _ => return Err(ExecutionError::Invalid("unexpected byte-width GROUP BY type".into())),
+                };
+                if !visited[byte as usize] {
+                    visited[byte as usize] = true;
+                    insertion_order.push(byte);
+                }
+                counts[byte as usize] = counts[byte as usize].checked_add(1)
+                    .ok_or_else(|| ExecutionError::Invalid("group count overflow".into()))?;
+            }
+        }
+        for byte in insertion_order {
+            let value = if matches!(narrow, Some("Int8")) {
+                Number::Signed(i128::from(byte as i8))
+            } else {
+                Number::Unsigned(u128::from(byte))
+            };
+            groups.by_key.insert(NumberKey::from(value), groups.rows.len());
+            groups.rows.push((value, counts[byte as usize]));
+        }
+        return groups.write(query, column, output);
+    }
     while let Some(batch) = reader.next_batch()? {
         for row in 0..batch[0].len() {
             if no_filters || batch_matches(&batch, row, &comparisons) {
