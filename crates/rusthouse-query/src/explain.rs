@@ -108,7 +108,18 @@ fn describe_sort_term(column: &str, descending: bool, nulls_first: Option<bool>)
 fn describe_sort(query: &Select) -> String {
     query
         .order_terms()
-        .map(|order| describe_sort_term(&order.column, order.descending, order.nulls_first))
+        .map(|order| {
+            let label = if order.column == "#aggregate" {
+                if let Projection::GroupedAggregate { function, value_column, .. } = &query.projection {
+                    format!("{}({value_column})", function.name())
+                } else {
+                    order.column.clone()
+                }
+            } else {
+                order.column.clone()
+            };
+            describe_sort_term(&label, order.descending, order.nulls_first)
+        })
         .collect::<Vec<_>>()
         .join(", ")
 }

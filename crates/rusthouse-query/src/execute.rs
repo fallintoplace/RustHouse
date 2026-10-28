@@ -1360,6 +1360,16 @@ impl AggregateState {
         number_matches(value, threshold, having.operator)
     }
 
+    /// Exact numeric ORDER BY key for supported grouped aggregates.
+    fn sort_cell(&self) -> typed::Cell {
+        let value = match self.function {
+            AggregateFunction::Sum | AggregateFunction::Min | AggregateFunction::Max => self.value,
+            AggregateFunction::Avg if self.count > 0 => Some(Number::Float(self.mean)),
+            _ => None,
+        };
+        value.map_or(typed::Cell::Null, typed::Cell::Numeric)
+    }
+
     fn render(&self) -> String {
         if self.function == AggregateFunction::CountIf {
             return self

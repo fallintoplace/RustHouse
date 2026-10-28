@@ -250,14 +250,24 @@ pub(super) fn execute_grouped_aggregate<W: Write>(
     if let Some(having) = &query.having {
         groups.retain(|(_, state)| state.passes_having(having));
     }
-    if let Some(order) = &query.order_by {
-        groups.sort_by(|(left, _), (right, _)| {
-            let comparison = typed::cmp(left, right);
-            if order.descending {
-                comparison.reverse()
-            } else {
-                comparison
+    if query.order_by.is_some() {
+        groups.sort_by(|(left_key, left_state), (right_key, right_state)| {
+            for term in query.order_terms() {
+                let comparison = if term.column == "#aggregate" {
+                    typed::compare_order_cells(
+                        &left_state.sort_cell(),
+                        &right_state.sort_cell(),
+                        term.descending,
+                        term.nulls_first,
+                    )
+                } else {
+                    typed::compare_order_cells(
+                        left_key, right_key, term.descending, term.nulls_first
+                    )
+                };
+                if comparison != std::cmp::Ordering::Equal { return comparison; }
             }
+            std::cmp::Ordering::Equal
         });
     }
     for (key, state) in groups
