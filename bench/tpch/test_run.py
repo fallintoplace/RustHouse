@@ -2,6 +2,7 @@ import subprocess
 import tempfile
 import unittest
 from pathlib import Path
+from unittest import mock
 
 from run import benchmark_one, compare_reference, load_queries, official_22_coverage, query_fingerprint, select_queries, summary, summarize_coverage
 
@@ -45,6 +46,20 @@ class RunnerTests(unittest.TestCase):
         mismatched = benchmark_one(6, "SELECT 1", lambda _: b"2\n", 3, 1, b"1\n")
         self.assertEqual(mismatched["status"], "mismatch")
         self.assertEqual(mismatched["timings_seconds"], [])
+
+    def test_verification_time_does_not_inflate_tpch_latency(self):
+        clock = [20.0]
+        def execute(_sql):
+            clock[0] += 0.04
+            return b"ok\n"
+        def validate(_actual, _reference, _mode):
+            clock[0] += 8.0
+            return True
+        with mock.patch("run.time.perf_counter", side_effect=lambda: clock[0]), \
+             mock.patch("run.compare_reference", side_effect=validate):
+            item = benchmark_one(6, "SELECT 1", execute, 1, 0, b"ok\\n")
+        self.assertEqual(item["status"], "passed")
+        self.assertAlmostEqual(item["timings_seconds"][0], 0.04, places=6)
 
     def test_unverified_results_are_not_counted_as_correct(self):
         result = benchmark_one(6, "SELECT 6", lambda _: b"6\\n", 2, 0)
