@@ -83,6 +83,28 @@ pub(super) struct CompiledPredicate {
     test: CompiledTest,
 }
 
+
+/** Evaluate a predicate tree that only depends on non-nullable column
+ * properties. A known-true OR branch dominates unknown branches, while
+ * false branches can be ignored. Unknown predicates require the normal scan. */
+pub(super) fn constant_predicate_result(branches: &[Vec<CompiledPredicate>]) -> Option<bool> {
+    let mut unknown_branch = false;
+    for branch in branches {
+        let mut unknown = false;
+        let mut impossible = false;
+        for predicate in branch {
+            match predicate.test {
+                CompiledTest::Always(false) => { impossible = true; break; }
+                CompiledTest::Always(true) => {}
+                _ => unknown = true,
+            }
+        }
+        if !impossible && !unknown { return Some(true); }
+        if !impossible && unknown { unknown_branch = true; }
+    }
+    if unknown_branch { None } else { Some(false) }
+}
+
 pub(super) fn batch_matches(
     batch: &[NumericColumn],
     row: usize,

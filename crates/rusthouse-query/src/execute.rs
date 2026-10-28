@@ -642,6 +642,24 @@ fn execute_into<W: Write>(
             })?;
         parse_numeric(&column.data_type, literal)
     })?;
+    // A constant predicate on non-nullable numeric columns can be resolved
+    // from validated part row counts without decoding any compressed blocks.
+    // Check every referenced column first to retain unknown-column errors.
+    if matches!(query.projection, Projection::Count)
+        && !query.distinct
+        && query.order_by.is_none()
+        && query.order_by_extra.is_empty()
+        && query.having.is_none()
+        && scan_columns.iter().all(|name| metadata.columns.iter().any(|column| &column.name == name))
+    {
+        if let Some(matches_all) = constant_predicate_result(&comparisons) {
+            write_header(query, output, "count")?;
+            if query.limit != Some(0) && query.offset.unwrap_or(0) == 0 {
+                writeln!(output, "{}", if matches_all { metadata.rows } else { 0 })?;
+            }
+            return Ok(());
+        }
+    }
     let sort_index = query.order_by.as_ref().map(|order| {
         let column_name = query.order_source_column(&order.column);
         if let Some(index) = scan_columns.iter().position(|column| column == column_name) {
