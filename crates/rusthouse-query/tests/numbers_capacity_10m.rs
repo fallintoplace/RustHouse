@@ -42,10 +42,20 @@ fn billion_row_virtual_count_requires_arithmetic_fast_path() {
         execute(&parse_select(sql).unwrap(), None, &mut output).unwrap();
         assert_eq!(output, expected.as_bytes(), "{sql}");
     }
+    for (sql, expected) in [
+        ("SELECT number FROM numbers(1000000000) LIMIT 1", "number\n0\n"),
+        (
+            "SELECT sum(number) FROM numbers(1000000000)",
+            "sum(number)\n499999999500000000\n",
+        ),
+    ] {
+        let mut output = Vec::new();
+        execute(&parse_select(sql).unwrap(), None, &mut output).unwrap();
+        assert_eq!(output, expected.as_bytes(), "{sql}");
+    }
     for sql in [
-        "SELECT number FROM numbers(1000000000) LIMIT 1",
+        "SELECT number FROM numbers(1000000000)",
         "SELECT count(*) FROM numbers(1000000000) WHERE number % 7 = 0 AND number > 10",
-        "SELECT sum(number) FROM numbers(1000000000)",
     ] {
         let mut output = Vec::new();
         assert!(
