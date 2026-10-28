@@ -158,7 +158,7 @@ pub fn read_sized_strings<S: Read, D: Read>(
     checked_rows(rows)?;
     let mut values = StringColumn::new(rows);
     // Read size entries in bounded chunks without consuming bytes from the next batch.
-    let mut buffer = [0u8; SIZE_ENTRY_BYTES * 1024];
+    let mut buffer = [0u8; SIZE_ENTRY_BYTES * 8192];
     let mut decoded_rows = 0;
     while decoded_rows < rows {
         let batch_rows = (rows - decoded_rows).min(buffer.len() / SIZE_ENTRY_BYTES);
@@ -235,6 +235,25 @@ mod tests {
         assert_eq!(strings.byte_length(2), Some(1));
         assert_eq!(strings.byte_length(3), None);
         assert_eq!(strings.byte_length(usize::MAX), None);
+    }
+
+    #[test]
+    fn sized_string_offsets_use_one_read_for_8192_rows() {
+        struct Counting<'a> {
+            bytes: &'a [u8],
+            reads: usize,
+        }
+        impl Read for Counting<'_> {
+            fn read(&mut self, out: &mut [u8]) -> io::Result<usize> {
+                self.reads += 1;
+                self.bytes.read(out)
+            }
+        }
+        let sizes = vec![0u8; 8192 * SIZE_ENTRY_BYTES];
+        let mut source = Counting { bytes: &sizes, reads: 0 };
+        let strings = read_sized_strings(&mut source, &mut io::empty(), 8192).unwrap();
+        assert_eq!(strings.len(), 8192);
+        assert_eq!(source.reads, 1);
     }
 
     #[test]
