@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """Bench a full-probe, two-table equi-join with verified output cardinality."""
 import argparse
+import math
 import sys
 import tempfile
 import time
@@ -44,7 +45,9 @@ def execute(binary, database, sql, timeout):
     return cli_sql(binary, database, sql, timeout)
 
 def verify_result(output, expected_labels):
-    lines = output.splitlines()
+    if output and not output.endswith(b"\n"):
+        raise ValueError("join output is missing its final newline")
+    lines = output.split(b"\n")[:-1] if output else []
     if len(lines) != len(expected_labels):
         raise ValueError(
             f"expected {len(expected_labels)} join rows, received {len(lines)}"
@@ -54,7 +57,10 @@ def verify_result(output, expected_labels):
         columns = row.decode("utf-8").split("\t")
         if len(columns) != 2:
             raise ValueError(f"unexpected join row: {row!r}")
-        identifier = int(columns[0])
+        identifier_text = columns[0]
+        identifier = int(identifier_text)
+        if identifier_text != str(identifier):
+            raise ValueError(f"noncanonical join key: {identifier_text!r}")
         if identifier in ids:
             raise ValueError(f"duplicate join key: {identifier}")
         if expected_labels.get(identifier) != columns[1]:
@@ -62,6 +68,12 @@ def verify_result(output, expected_labels):
         ids.add(identifier)
     if ids != expected_labels.keys():
         raise ValueError("join result IDs differ from expected matches")
+
+def logical_probe_throughput(probe_rows, median_seconds):
+    if not math.isfinite(median_seconds) or median_seconds <= 0:
+        raise ValueError("median JOIN latency must be positive and finite")
+    return probe_rows / median_seconds
+
 
 def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__)
@@ -74,7 +86,12 @@ def main(argv=None):
     parser.add_argument("--timeout", type=float, default=120)
     parser.add_argument("--output", type=Path)
     args = parser.parse_args(argv)
-    if args.runs < 1 or args.warmups < 0 or args.timeout <= 0:
+    if (
+        args.runs < 1
+        or args.warmups < 0
+        or not math.isfinite(args.timeout)
+        or args.timeout <= 0
+    ):
         parser.error("invalid run count, warmups, or timeout")
     with tempfile.TemporaryDirectory(prefix="rusthouse-join-bench-") as root:
         root = Path(root)
@@ -111,7 +128,7 @@ def main(argv=None):
         "runs": args.runs, "warmups": args.warmups,
         "median_seconds": median,
         "p90_seconds": latency["p90_seconds"],
-        "logical_probe_rows_per_second": args.probe_rows / median,
+        "logical_probe_rows_per_second": logical_probe_throughput(args.probe_rows, median),
         "samples_seconds": elapsed,
     }
     emit_json(report, args.output)
