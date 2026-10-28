@@ -31,7 +31,7 @@ mod typed_aggregate;
 use predicates::{CompiledTest, compile_in_test};
 use predicates::{
     batch_matches, compile_numbers_predicates, compile_part_where, count_batch_matches,
-    count_monotonic_numbers, number_matches, number_matches_all, parse_numeric,
+    count_monotonic_numbers, excluded_generated_positions, number_matches, number_matches_all, parse_numeric,
 };
 
 #[derive(Debug)]
