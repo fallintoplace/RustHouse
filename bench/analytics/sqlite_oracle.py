@@ -5,6 +5,7 @@ Only SQLite floating results receive relative/absolute tolerance.
 """
 import math
 import sqlite3
+from contextlib import closing
 
 
 def cell_equal(actual, expected, rel_tol=1e-12, abs_tol=1e-12):
@@ -69,5 +70,5 @@ def assert_matches(output, expected_rows, unordered=False):
 
 
 def sqlite_query(path, sql):
-    with sqlite3.connect(path) as connection:
+    with closing(sqlite3.connect(path)) as connection:
         return connection.execute(sql).fetchall()

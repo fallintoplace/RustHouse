@@ -98,12 +98,20 @@ jobs:
           }
 
   analytics-harness:
-    name: Analytics harness (Python)
-    runs-on: ubuntu-latest
+    name: Analytics harness (${{ matrix.os }}, Python 3.12)
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 10
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
     steps:
       - uses: actions/checkout@v7
+      - uses: actions/setup-python@v7
+        with:
+          python-version: '3.12'
       - name: Test all Python workload harnesses
-        run: python3 -m bench python-tests
+        run: python -m bench python-tests
 
   msrv:
     name: Rust MSRV (ubuntu-latest)

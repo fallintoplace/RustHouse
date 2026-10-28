@@ -1,4 +1,5 @@
 import sqlite3
+from contextlib import closing
 import tempfile
 import unittest
 from pathlib import Path
@@ -11,7 +12,7 @@ class SQLiteGoldenTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as root:
             base = Path(root)
             database = base / "data.sqlite"
-            with sqlite3.connect(database) as connection:
+            with closing(sqlite3.connect(database)) as connection, connection:
                 connection.execute("CREATE TABLE demo (id INTEGER, title TEXT)")
                 connection.execute("INSERT INTO demo VALUES (1, ?)", ("A\\B",))
                 connection.execute("INSERT INTO demo VALUES (2, NULL)")
@@ -32,7 +33,7 @@ class SQLiteGoldenTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as root:
             base = Path(root)
             database = base / "db.sqlite"
-            with sqlite3.connect(database):
+            with closing(sqlite3.connect(database)) as connection, connection:
                 pass
             query_dir = base / "queries"
             query_dir.mkdir()

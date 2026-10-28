@@ -16,7 +16,7 @@ class InputProfileTests(unittest.TestCase):
             values.update(l_shipdate="1994-05-12", l_discount="600",
                           l_quantity="2300", l_extendedprice="1200")
             text = "\t".join(header) + "\n" + "\t".join(values[h] for h in header) + "\n"
-            path.write_text(text)
+            path.write_bytes(text.encode("utf-8"))
             result = profile_table(path, "lineitem")
             self.assertEqual(result["rows"], 1)
             self.assertEqual(result["q6_predicate_matches"], 1)

@@ -1,4 +1,5 @@
 import sqlite3
+from contextlib import closing
 import tempfile
 import unittest
 from pathlib import Path
@@ -20,7 +21,7 @@ class SQLiteLoadTests(unittest.TestCase):
             result = load_database(directory, output, ["region"], batch_size=1)
             self.assertFalse(result["official_tpch_score"])
             self.assertEqual(result["tables"][0]["rows"], 2)
-            with sqlite3.connect(output) as connection:
+            with closing(sqlite3.connect(output)) as connection:
                 self.assertEqual(connection.execute(
                     "SELECT COUNT(*) FROM region").fetchone()[0], 2)
                 self.assertEqual(connection.execute(
