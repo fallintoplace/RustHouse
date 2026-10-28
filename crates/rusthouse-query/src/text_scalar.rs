@@ -10,6 +10,7 @@ pub(super) fn is_function(name: &str) -> bool {
             | "LENGTHUTF8"
             | "CHAR_LENGTH"
             | "OCTET_LENGTH"
+            | "TOINT32ORNULL"
             | "ASCII"
             | "UTF16_LENGTH"
             | "HASSUBSEQUENCE"
@@ -127,6 +128,16 @@ fn parse_at_depth(parser: &mut Parser, depth: usize) -> Result<ConstantValue, Pa
                     i64::try_from(value.chars().count())
                         .map_err(|_| ParseError("lengthUTF8 result exceeds Int64".into()))?,
                 ),
+                None => ConstantValue::Null,
+            }
+        }
+        "TOINT32ORNULL" => {
+            let input = text_arg(parser, depth + 1)?;
+            require(parser, Token::RParen, "toInt32OrNull requires one argument")?;
+            match input {
+                Some(text) => text.parse::<i64>()
+                    .ok()
+                    .map_or(ConstantValue::Null, |number| ConstantValue::Integer(number as i32 as i64)),
                 None => ConstantValue::Null,
             }
         }
