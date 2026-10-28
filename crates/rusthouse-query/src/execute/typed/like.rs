@@ -111,6 +111,16 @@ pub(super) fn like_matches(value: &[u8], pattern: &LikePattern, case_insensitive
     match pattern {
         LikePattern::Exact(bytes) => equal_like_bytes(value, bytes, case_insensitive),
         LikePattern::Prefix(bytes) => {
+            // Most matching prefixes differ only in ASCII case. Test the
+            // short prefix before inspecting or folding the full UTF-8 row.
+            if case_insensitive
+                && bytes.is_ascii()
+                && value
+                    .get(..bytes.len())
+                    .is_some_and(|prefix| prefix.eq_ignore_ascii_case(bytes))
+            {
+                return true;
+            }
             if case_insensitive && value.starts_with(bytes) {
                 return true;
             }
@@ -126,6 +136,16 @@ pub(super) fn like_matches(value: &[u8], pattern: &LikePattern, case_insensitive
                 .is_some_and(|prefix| equal_like_bytes(prefix, bytes, case_insensitive))
         }
         LikePattern::Suffix(bytes) => {
+            // Do not Unicode-fold or inspect an entire long string when its
+            // trailing ASCII bytes already satisfy the LIKE suffix.
+            if case_insensitive
+                && bytes.is_ascii()
+                && value
+                    .get(value.len().saturating_sub(bytes.len())..)
+                    .is_some_and(|suffix| suffix.eq_ignore_ascii_case(bytes))
+            {
+                return true;
+            }
             if case_insensitive && value.ends_with(bytes) {
                 return true;
             }
@@ -262,6 +282,20 @@ mod perf_tests {
 
         let accented = compile_like("%f\u{e9}%").unwrap();
         assert!(like_matches("caf\u{e9}".as_bytes(), &accented, false));
+    }
+
+    #[test]
+    fn ascii_prefix_suffix_accept_case_changes_without_losing_unicode_expansions() {
+        let prefix = compile_like("hello%").unwrap();
+        let suffix = compile_like("%world").unwrap();
+        let long_prefix = format!("HELLO{}", "x".repeat(4096));
+        let long_suffix = format!("{}WORLD", "x".repeat(4096));
+        assert!(like_matches(long_prefix.as_bytes(), &prefix, true));
+        assert!(like_matches(long_suffix.as_bytes(), &suffix, true));
+        assert!(!like_matches(long_prefix.as_bytes(), &prefix, false));
+        assert!(!like_matches(long_suffix.as_bytes(), &suffix, false));
+        // A Unicode lowercase mapping can expand to two codepoints.
+        assert!(like_matches("İstanbul".as_bytes(), &compile_like("i%").unwrap(), true));
     }
 
     #[test]
