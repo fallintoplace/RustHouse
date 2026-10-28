@@ -139,16 +139,6 @@ pub fn parse_join(sql: &str) -> Result<Option<JoinSelect>, ParseError> {
     if left_alias == right_alias {
         return Err(ParseError("joined tables require distinct aliases".into()));
     }
-    if let Some(columns) = &columns {
-        for column in columns {
-            if column.relation != left_alias && column.relation != right_alias {
-                return Err(ParseError(format!(
-                    "unknown JOIN qualifier: {}",
-                    column.relation
-                )));
-            }
-        }
-    }
     let (keys, using_keys) = if parser.keyword("USING") {
         if !parser.take(Token::LParen) {
             return Err(ParseError("JOIN USING requires '('".into()));
@@ -357,6 +347,16 @@ pub fn parse_join(sql: &str) -> Result<Option<JoinSelect>, ParseError> {
         relation == left_alias || relation == right_alias
             || steps.iter().any(|step| step.alias == relation)
     };
+    if let Some(columns) = &columns {
+        for column in columns {
+            if !known_qualifier(&column.relation) {
+                return Err(ParseError(format!(
+                    "unknown JOIN qualifier: {}",
+                    column.relation
+                )));
+            }
+        }
+    }
     if let Some((column, _)) = &where_null {
         if !known_qualifier(&column.relation) {
             return Err(ParseError(format!("unknown JOIN qualifier: {}", column.relation)));
@@ -587,6 +587,17 @@ mod tests {
         assert_eq!(query.kind, JoinType::Left);
         assert_eq!(query.steps[0].kind, JoinType::Left);
         assert_eq!(query.steps[0].keys[0].0.relation, "c");
+    }
+
+    #[test]
+    fn validates_projected_aliases_after_parsing_join_chain() {
+        let valid = "SELECT r.label FROM orders o JOIN customers c ON o.customer_id = c.id JOIN regions r ON c.region_id = r.id";
+        assert_eq!(
+            parse_join(valid).unwrap().unwrap().columns.unwrap()[0].relation,
+            "r"
+        );
+        let invalid = "SELECT z.label FROM orders o JOIN customers c ON o.customer_id = c.id JOIN regions r ON c.region_id = r.id";
+        assert!(parse_join(invalid).is_err());
     }
 
     #[test]
