@@ -163,6 +163,32 @@ fn chained_right_and_full_joins_preserve_unmatched_right_rows() {
 }
 
 #[test]
+fn chained_any_joins_select_only_one_matching_row_at_each_step() {
+    let db = database();
+    for statement in [
+        "CREATE TABLE orders (id UInt64, customer_id UInt64)",
+        "CREATE TABLE customers (id UInt64, region_id UInt64)",
+        "CREATE TABLE regions (id UInt64, label String)",
+        "INSERT INTO orders VALUES (1, 10), (2, 20)",
+        "INSERT INTO customers VALUES (10, 1), (10, 2)",
+        "INSERT INTO regions VALUES (1, 'One'), (1, 'Uno'), (2, 'Two')",
+    ] {
+        let result = sql(statement, &db, &[]);
+        assert!(result.status.success(), "{statement}: {result:?}");
+    }
+    let result = sql(
+        "SELECT o.id, c.region_id, r.label FROM orders o LEFT ANY JOIN customers c ON o.customer_id = c.id LEFT ANY JOIN regions r ON c.region_id = r.id ORDER BY o.id",
+        &db, &[],
+    );
+    assert!(result.status.success(), "{result:?}");
+    assert_eq!(
+        result.stdout,
+        b"o.id\tc.region_id\tr.label\n1\t1\tOne\n2\t\\N\t\\N\n"
+    );
+    fs::remove_dir_all(db).unwrap();
+}
+
+#[test]
 fn chained_four_table_inner_join_can_reference_any_prior_alias() {
     let db = database();
     for statement in [
