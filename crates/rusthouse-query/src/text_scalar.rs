@@ -61,6 +61,7 @@ pub(super) fn is_function(name: &str) -> bool {
             | "PROTOCOL"
             | "TRANSLATE"
             | "POSITIONCASEINSENSITIVE"
+            | "POSITIONCASEINSENSITIVEUTF8"
             | "STRPOS"
             | "COUNT_SUBSTRING"
             | "EXTRACTURLPARAMETER"
@@ -1906,6 +1907,48 @@ fn parse_at_depth(parser: &mut Parser, depth: usize) -> Result<ConstantValue, Pa
                         }
                         ConstantValue::Text(value.repeat(count))
                     }
+                }
+                _ => ConstantValue::Null,
+            }
+        }
+        "POSITIONCASEINSENSITIVEUTF8" => {
+            let input = text_arg(parser, depth + 1)?;
+            require(parser, Token::Comma, "positionCaseInsensitiveUTF8 requires a needle")?;
+            let needle = text_arg(parser, depth + 1)?;
+            let start = if parser.take(Token::Comma) {
+                integer_arg(parser, depth + 1)?
+            } else {
+                Some(1)
+            };
+            require(parser, Token::RParen, "expected ')' after positionCaseInsensitiveUTF8")?;
+            match (input, needle, start) {
+                (Some(input), Some(needle), Some(start)) => {
+                    if start < 0 {
+                        return Err(ParseError(
+                            "positionCaseInsensitiveUTF8 start must be nonnegative".into(),
+                        ));
+                    }
+                    let offset = usize::try_from(start.max(1) - 1).unwrap_or(usize::MAX);
+                    let folded_needle = needle.to_lowercase();
+                    let mut folded = String::new();
+                    let mut boundaries = Vec::new();
+                    for ch in input.chars() {
+                        boundaries.push(folded.len());
+                        folded.extend(ch.to_lowercase());
+                        if folded.len() > MAX_TEXT_BYTES {
+                            return Err(ParseError("Unicode search input is too large".into()));
+                        }
+                    }
+                    let found = if folded_needle.is_empty() {
+                        (offset <= boundaries.len()).then_some(offset + 1)
+                    } else {
+                        boundaries.iter().enumerate().skip(offset).find_map(|(i, &at)| {
+                            folded[at..].starts_with(&folded_needle).then_some(i + 1)
+                        })
+                    };
+                    ConstantValue::Integer(i64::try_from(found.unwrap_or(0)).map_err(|_| {
+                        ParseError("positionCaseInsensitiveUTF8 result exceeds Int64".into())
+                    })?)
                 }
                 _ => ConstantValue::Null,
             }
