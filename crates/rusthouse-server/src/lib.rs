@@ -170,6 +170,7 @@ impl QueryFormat {
     fn parse(value: &str) -> Result<Self, &'static str> {
         Ok(match value {
             "tsv" => Self::Tsv,
+            "TabSeparatedWithNames" => Self::Tsv,
             "tsv-no-header" => Self::TsvNoHeader,
             "TabSeparated" => Self::TsvNoHeader,
             "csv" => Self::Csv,
