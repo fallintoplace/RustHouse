@@ -16,11 +16,17 @@ struct Group {
     distinct: HashSet<Key>,
     distinct_text: HashSet<Vec<u8>>,
     distinct_uuids: HashSet<[u8; 16]>,
+    byte_distinct: Option<[u64; 4]>,
 }
 
 impl Group {
     fn distinct_len(&self) -> usize {
-        self.distinct.len() + self.distinct_text.len() + self.distinct_uuids.len()
+        self.distinct.len()
+            + self.distinct_text.len()
+            + self.distinct_uuids.len()
+            + self.byte_distinct.as_ref().map_or(0, |bits| {
+                bits.iter().map(|word| word.count_ones() as usize).sum()
+            })
     }
 }
 
@@ -91,6 +97,10 @@ pub(super) fn execute<W: Write>(
         Some("UInt8" | "Int8")
     )
     .then(|| [usize::MAX; 256]);
+    let byte_values = matches!(
+        types.get(value_column).map(String::as_str),
+        Some("UInt8" | "Int8" | "Nullable(UInt8)" | "Nullable(Int8)")
+    );
     let mut total_pairs = 0usize;
     let mut reader = TypedQueryReader::open_with_metadata(part, &names, &metadata)?;
     let no_filters = query.predicates.is_empty() && query.or_predicates.is_empty();
@@ -124,6 +134,7 @@ pub(super) fn execute<W: Write>(
                         distinct: HashSet::new(),
                         distinct_text: HashSet::new(),
                         distinct_uuids: HashSet::new(),
+                        byte_distinct: byte_values.then_some([0u64; 4]),
                     });
                 }
                 *slot
@@ -143,6 +154,7 @@ pub(super) fn execute<W: Write>(
                         distinct: HashSet::new(),
                         distinct_text: HashSet::new(),
                         distinct_uuids: HashSet::new(),
+                        byte_distinct: byte_values.then_some([0u64; 4]),
                     });
                     id
                 }
@@ -163,11 +175,46 @@ pub(super) fn execute<W: Write>(
                             distinct: HashSet::new(),
                             distinct_text: HashSet::new(),
                             distinct_uuids: HashSet::new(),
+                            byte_distinct: byte_values.then_some([0u64; 4]),
                         });
                         id
                     }
                 }
             };
+
+            if let Some(bitmap) = groups[id].byte_distinct.as_mut() {
+                let byte = match &batch[value_index] {
+                    TypedColumn::Numeric(NumericColumn::UInt8(values)) => Some(values[row]),
+                    TypedColumn::Numeric(NumericColumn::Int8(values)) => Some(values[row] as u8),
+                    TypedColumn::NullableNumeric {
+                        values: NumericColumn::UInt8(values),
+                        nulls,
+                    } => (nulls[row] == 0).then_some(values[row]),
+                    TypedColumn::NullableNumeric {
+                        values: NumericColumn::Int8(values),
+                        nulls,
+                    } => (nulls[row] == 0).then_some(values[row] as u8),
+                    _ => {
+                        return Err(ExecutionError::Invalid(
+                            "unexpected byte-width COUNT(DISTINCT) column".into(),
+                        ));
+                    }
+                };
+                if let Some(byte) = byte {
+                    let word = &mut bitmap[usize::from(byte) / 64];
+                    let mask = 1u64 << (byte % 64);
+                    if *word & mask == 0 {
+                        if total_pairs >= MAX_GROUP_VALUE_PAIRS {
+                            return Err(ExecutionError::Invalid(
+                                "grouped COUNT(DISTINCT) supports at most 200000 distinct pairs".into(),
+                            ));
+                        }
+                        *word |= mask;
+                        total_pairs += 1;
+                    }
+                }
+                continue;
+            }
 
             // UUIDs are fixed-width values; avoid formatting every row to
             // a 36-byte String before hashing the distinct key.

@@ -163,3 +163,32 @@ fn dense_byte_grouped_distinct_keeps_first_seen_signed_keys() {
     assert_eq!(output, b"segment\tcountDistinct(tag)\n-1\t2\n3\t1\n");
     fs::remove_dir_all(root).unwrap();
 }
+
+#[test]
+fn grouped_distinct_byte_values_use_exact_bitmap_and_skip_nulls() {
+    let root = std::env::temp_dir().join(format!(
+        "rusthouse-byte-values-distinct-{}-{}",
+        std::process::id(),
+        NEXT.fetch_add(1, Ordering::Relaxed),
+    ));
+    let columns = [
+        Column { name: "region".into(), data_type: "UInt16".into() },
+        Column { name: "event_code".into(), data_type: "Nullable(Int8)".into() },
+    ];
+    let rows = [
+        vec![Some("2".into()), Some("-1".into())],
+        vec![Some("1".into()), Some("7".into())],
+        vec![Some("1".into()), Some("7".into())],
+        vec![Some("1".into()), Some("-128".into())],
+        vec![Some("2".into()), None],
+        vec![Some("2".into()), Some("-1".into())],
+    ];
+    write_wide_part(&root, &columns, &rows).unwrap();
+    let query = parse_select(
+        "SELECT region, COUNT(DISTINCT event_code) FROM part GROUP BY region ORDER BY region"
+    ).unwrap();
+    let mut output = Vec::new();
+    execute(&query, Some(&root), &mut output).unwrap();
+    assert_eq!(output, b"region\tcountDistinct(event_code)\n1\t2\n2\t1\n");
+    fs::remove_dir_all(root).unwrap();
+}
