@@ -295,7 +295,7 @@ fn quoted_map_text(output: &mut String, bytes: &[u8]) -> Result<(), PartError> {
                 output.push_str("\\u00");
                 output.push(char::from(HEX[usize::from(byte >> 4)]));
                 output.push(char::from(HEX[usize::from(byte & 0x0f)]));
-            },
+            }
             ch => output.push(ch),
         }
     }
