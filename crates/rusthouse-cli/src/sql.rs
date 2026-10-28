@@ -20,6 +20,7 @@ const MAX_SCRIPT_STATEMENTS: usize = 512;
 #[derive(Clone, Copy)]
 pub(super) enum SqlOutputFormat {
     Tsv,
+    Null,
     TsvNoHeader,
     Csv,
     CsvNoHeader,
@@ -38,6 +39,7 @@ impl SqlOutputFormat {
     fn from_arg(value: Option<OsString>) -> Result<Self, String> {
         match value.and_then(|value| value.into_string().ok()).as_deref() {
             Some("tsv") => Ok(Self::Tsv),
+            Some("null" | "Null") => Ok(Self::Null),
             Some("TabSeparatedWithNames") => Ok(Self::Tsv),
             Some("tsv-no-header") => Ok(Self::TsvNoHeader),
             Some("TabSeparated") => Ok(Self::TsvNoHeader),
@@ -407,6 +409,7 @@ pub(super) fn run_sql_args(mut args: impl Iterator<Item = OsString>) -> Result<(
     };
     let start = std::time::Instant::now();
     let result = match format.unwrap_or(SqlOutputFormat::Tsv) {
+        SqlOutputFormat::Null => execute(&select, part.as_deref(), &mut std::io::sink()),
         SqlOutputFormat::Tsv => execute(&select, part.as_deref(), &mut output),
         SqlOutputFormat::TsvNoHeader => execute(
             &select,
@@ -643,5 +646,33 @@ mod utf8_bom_regressions {
             split_sql_script("SELECT '\u{feff}value';").unwrap(),
             vec!["SELECT '\u{feff}value'"]
         );
+    }
+}
+
+#[cfg(test)]
+mod clickhouse_null_output_format_tests {
+    use super::*;
+    #[test]
+    fn null_format_executes_without_writing_rows() {
+        for name in ["Null", "null"] {
+            assert!(SqlOutputFormat::from_arg(Some(name.into())).is_ok());
+        }
+        let path = std::env::temp_dir().join(format!(
+            "rusthouse-null-output-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        run_sql_args([
+            OsString::from("SELECT 42"),
+            OsString::from("--format"),
+            OsString::from("Null"),
+            OsString::from("--output"),
+            path.as_os_str().to_owned(),
+        ].into_iter()).unwrap();
+        assert!(std::fs::read(&path).unwrap().is_empty());
+        std::fs::remove_file(path).unwrap();
     }
 }
