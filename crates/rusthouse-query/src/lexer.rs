@@ -240,9 +240,10 @@ mod tests {
     #[test]
     fn accepts_leading_dot_decimals_and_preserves_subtraction() {
         assert_eq!(
-            tokenize(".5 -.25 2-.75").unwrap(),
+            tokenize(".5, -.25 2-.75").unwrap(),
             vec![
                 Token::Number(".5".into()),
+                Token::Comma,
                 Token::Number("-.25".into()),
                 Token::Number("2".into()),
                 Token::Minus,
