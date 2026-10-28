@@ -11,6 +11,7 @@ pub(super) fn is_function(name: &str) -> bool {
             | "CHAR_LENGTH"
             | "OCTET_LENGTH"
             | "ASCII"
+            | "CRC32"
             | "UTF16_LENGTH"
             | "HASSUBSEQUENCE"
             | "CHR"
@@ -127,6 +128,24 @@ fn parse_at_depth(parser: &mut Parser, depth: usize) -> Result<ConstantValue, Pa
                     i64::try_from(value.chars().count())
                         .map_err(|_| ParseError("lengthUTF8 result exceeds Int64".into()))?,
                 ),
+                None => ConstantValue::Null,
+            }
+        }
+        "CRC32" => {
+            let input = text_arg(parser, depth + 1)?;
+            require(parser, Token::RParen, "CRC32 requires one string")?;
+            match input {
+                Some(input) => {
+                    let mut crc = u32::MAX;
+                    for byte in input.bytes() {
+                        crc ^= u32::from(byte);
+                        for _ in 0..8 {
+                            let mask = 0u32.wrapping_sub(crc & 1);
+                            crc = (crc >> 1) ^ (0xedb8_8320 & mask);
+                        }
+                    }
+                    ConstantValue::Integer(i64::from(!crc))
+                }
                 None => ConstantValue::Null,
             }
         }
@@ -2004,5 +2023,40 @@ fn text_arg(parser: &mut Parser, depth: usize) -> Result<Option<String>, ParseEr
         _ => Err(ParseError(
             "expected a string literal or string function".into(),
         )),
+    }
+}
+
+#[cfg(test)]
+mod clickhouse_crc32_tests {
+    use crate::{ConstantValue, Projection, parse_select};
+
+    fn value(sql: &str) -> ConstantValue {
+        match parse_select(sql).unwrap().projection {
+            Projection::Constants(columns) if columns.len() == 1 => columns[0].value.clone(),
+            Projection::Literal(number) => ConstantValue::Integer(number),
+            other => panic!("unexpected projection: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn handles_values_and_null() {
+        for (sql, expected) in [
+            ("SELECT CRC32('ClickHouse')", ConstantValue::Integer(1538217360)),
+            ("SELECT CRC32('')", ConstantValue::Integer(0)),
+            ("SELECT CRC32(NULL)", ConstantValue::Null),
+        ] {
+            assert_eq!(value(sql), expected, "{sql}");
+        }
+    }
+
+    #[test]
+    fn rejects_bad_calls() {
+        for sql in [
+            "SELECT CRC32()",
+            "SELECT CRC32(1)",
+            "SELECT CRC32('a','b')",
+        ] {
+            assert!(parse_select(sql).is_err(), "{sql}");
+        }
     }
 }
