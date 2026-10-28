@@ -7,6 +7,7 @@ pub(super) fn is_function(name: &str) -> bool {
     matches!(
         name.to_ascii_uppercase().as_str(),
         "LENGTH"
+            | "SUBSTRINGINDEXUTF8"
             | "CHAR_LENGTH"
             | "OCTET_LENGTH"
             | "ASCII"
@@ -100,6 +101,34 @@ fn parse_at_depth(parser: &mut Parser, depth: usize) -> Result<ConstantValue, Pa
     let name = parser.word()?.to_ascii_uppercase();
     require(parser, Token::LParen, "string function requires '('")?;
     let value = match name.as_str() {
+
+        "SUBSTRINGINDEXUTF8" => {
+            let input = text_arg(parser, depth + 1)?;
+            require(parser, Token::Comma, "substringIndexUTF8 requires a delimiter")?;
+            let delimiter = text_arg(parser, depth + 1)?;
+            require(parser, Token::Comma, "substringIndexUTF8 requires a count")?;
+            let count = integer_arg(parser, depth + 1)?;
+            require(parser, Token::RParen, "substringIndexUTF8 requires three arguments")?;
+            match (input, delimiter, count) {
+                (Some(input), Some(delimiter), Some(count)) => {
+                    if count == 0 || delimiter.is_empty() {
+                        ConstantValue::Text(String::new())
+                    } else {
+                        let nth = usize::try_from(count.unsigned_abs())
+                            .unwrap_or(usize::MAX).saturating_sub(1);
+                        let value = if count > 0 {
+                            input.match_indices(delimiter.as_str()).nth(nth)
+                                .map(|(index, _)| &input[..index]).unwrap_or(&input)
+                        } else {
+                            input.rmatch_indices(delimiter.as_str()).nth(nth)
+                                .map(|(index, _)| &input[index + delimiter.len()..]).unwrap_or(&input)
+                        };
+                        ConstantValue::Text(value.to_owned())
+                    }
+                }
+                _ => ConstantValue::Null,
+            }
+        }
         "ASCII" => {
             let input = text_arg(parser, depth + 1)?;
             require(parser, Token::RParen, "ASCII requires one argument")?;
