@@ -16,6 +16,7 @@ mod marks;
 mod metadata;
 mod nested_arrays;
 mod nullable;
+pub mod distributed_lineage;
 mod nullable_arrays;
 mod numeric;
 mod part_scan;
