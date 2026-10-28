@@ -86,6 +86,7 @@ pub(super) fn is_function(name: &str) -> bool {
             | "STRIP_PREFIX"
             | "RIGHT"
             | "BASE64_ENCODE"
+            | "BASE64ENCODE"
             | "HASTOKENCASEINSENSITIVE"
             | "ENDS_WITH"
             | "ENDSWITH"
@@ -1541,7 +1542,7 @@ fn parse_at_depth(parser: &mut Parser, depth: usize) -> Result<ConstantValue, Pa
                 None => ConstantValue::Null,
             }
         }
-        "BASE64_ENCODE" => {
+        "BASE64_ENCODE" | "BASE64ENCODE" => {
             let input = text_arg(parser, depth + 1)?;
             require(parser, Token::RParen, "BASE64_ENCODE requires one argument")?;
             match input {
