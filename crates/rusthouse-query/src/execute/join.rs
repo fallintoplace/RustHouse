@@ -12,20 +12,24 @@ use std::io::Write;
 use std::path::Path;
 
 // Ordered and outer joins retain both inputs, bounded by row count and bytes.
-const MAX_INPUT_ROWS: u64 = 16_384;
-const MAX_RESULT_ROWS: usize = 65_536;
+pub(super) const MAX_INPUT_ROWS: u64 = 16_384;
+pub(super) const MAX_RESULT_ROWS: usize = 65_536;
 // Unordered INNER joins can build a larger hash side than sorted/outer joins.
 // Bound retained cells as well as row count to protect against wide String rows.
 const MAX_STREAM_BUILD_ROWS: u64 = 32_768;
-const MAX_STREAM_BUILD_BYTES: usize = 32 * 1024 * 1024;
+pub(super) const MAX_STREAM_BUILD_BYTES: usize = 32 * 1024 * 1024;
 
 type Pair = (Option<usize>, Option<usize>);
+
+pub(super) fn multi_join_row_key(row: &[typed::Cell], indices: &[usize]) -> Option<Vec<typed::Key>> {
+    row_key(row, indices)
+}
 
 fn invalid(message: impl Into<String>) -> ExecutionError {
     ExecutionError::Invalid(message.into())
 }
 
-fn read_rows(
+pub(super) fn read_rows(
     path: &Path,
     names: &[String],
     expected_rows: u64,
