@@ -9,6 +9,7 @@ pub mod distributed_chunk_plan;
 mod database_lock;
 pub mod distributed_rendezvous;
 mod dates;
+pub mod distributed_quorum;
 mod decimal;
 mod enums;
 mod file_sizes;
