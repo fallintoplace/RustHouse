@@ -48,8 +48,10 @@ pub(super) fn read_rows(
         return Err(invalid("JOIN requires nonempty table schemas"));
     }
     let mut reader = TypedQueryReader::open(path, names)?;
-    // expected_rows is already bounded by row_limit, so reserve once for the build.
-    let mut rows = Vec::with_capacity(expected_rows as usize);
+    // Byte-budget validation, not the uncompressed row-count estimate,
+    // should determine retained capacity. Avoid eagerly allocating hundreds
+    // of thousands of row slots for wide tables that will fail the byte cap.
+    let mut rows = Vec::with_capacity(expected_rows.min(4096) as usize);
     let mut retained_bytes = 0usize;
     while let Some(batch) = reader.next_batch()? {
         for row_index in 0..batch[0].len() {
