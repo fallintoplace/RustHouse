@@ -16,12 +16,12 @@ mod update;
 pub use copy::{CopyFormat, CopyFrom, parse_copy_from};
 pub use ddl::{ColumnDef, Ddl, parse_ddl};
 pub use delete::parse_delete;
-pub use execute::{ExecutionError, RowPredicate, execute, execute_join};
+pub use execute::{ExecutionError, RowPredicate, execute, execute_join, execute_multi_join};
 pub use explain::explain_select;
 pub use expression::{ScalarExpr, parse_scalar_expression};
 pub use insert::{Insert, parse_insert};
 pub use insert_select::{InsertSelect, parse_insert_select};
-pub use join::{JoinColumn, JoinSelect, JoinType, explain_join, parse_join};
+pub use join::{JoinColumn, JoinSelect, JoinStep, JoinType, explain_join, parse_join};
 pub use multi_aggregate::AggregateItem;
 pub use update::{Update, parse_update};
 
@@ -484,8 +484,20 @@ impl Parser {
                     .and_then(|index| columns.get(index))
                     .cloned()
                     .ok_or_else(|| ParseError("ORDER BY position is out of range".into()))?,
-                Projection::GroupedAggregate { column, .. }
-                | Projection::GroupedAggregates { column, .. } => match position {
+                Projection::GroupedAggregate { column, function, .. } => match position {
+                    1 => column.clone(),
+                    2 if matches!(
+                        function,
+                        AggregateFunction::Sum | AggregateFunction::Min
+                            | AggregateFunction::Max | AggregateFunction::Avg
+                    ) => "#aggregate".into(),
+                    _ => {
+                        return Err(ParseError(
+                            "ORDER BY aggregate output requires SUM, MIN, MAX or AVG".into(),
+                        ));
+                    }
+                },
+                Projection::GroupedAggregates { column, .. } => match position {
                     1 => column.clone(),
                     _ => {
                         return Err(ParseError(
@@ -1299,6 +1311,17 @@ fn parse_select_tokens(tokens: Vec<Token>) -> Result<Select, ParseError> {
                     "HAVING must match the selected aggregate".into(),
                 ));
             }
+        } else if let Projection::GroupedDistinctCount { value_column, .. } = &projection {
+            if !parser.keyword("COUNT")
+                || !parser.take(Token::LParen)
+                || !parser.keyword("DISTINCT")
+                || parser.word()? != *value_column
+                || !parser.take(Token::RParen)
+            {
+                return Err(ParseError(
+                    "HAVING must match the selected COUNT(DISTINCT column)".into(),
+                ));
+            }
         } else {
             return Err(ParseError("HAVING requires a grouped aggregate".into()));
         }
@@ -1379,9 +1402,18 @@ fn parse_select_tokens(tokens: Vec<Token>) -> Result<Select, ParseError> {
             ));
         }
     }
-    if let Projection::GroupedAggregate { column, .. }
-    | Projection::GroupedAggregates { column, .. } = &projection
-    {
+    if let Projection::GroupedAggregate { column, .. } = &projection {
+        if order_by
+            .iter()
+            .chain(order_by_extra.iter())
+            .any(|order| &order.column != column && order.column != "#aggregate")
+        {
+            return Err(ParseError(
+                "grouped numeric ORDER BY must use the group key or aggregate".into(),
+            ));
+        }
+    }
+    if let Projection::GroupedAggregates { column, .. } = &projection {
         if order_by
             .iter()
             .chain(order_by_extra.iter())

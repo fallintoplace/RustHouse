@@ -1,4 +1,5 @@
 import sqlite3
+from contextlib import closing
 import tempfile
 import unittest
 from pathlib import Path
@@ -13,7 +14,7 @@ class ClickBenchFixtureTests(unittest.TestCase):
             path = Path(root)
             self.assertEqual(len((path / "hits.tsv").read_text().splitlines()), 301)
             self.assertEqual(len(FIELDS), 7)
-            with sqlite3.connect(path / "hits.sqlite") as db:
+            with closing(sqlite3.connect(path / "hits.sqlite")) as db:
                 self.assertEqual(db.execute("SELECT COUNT(*) FROM hits").fetchone()[0], 300)
                 self.assertGreater(db.execute("SELECT COUNT(DISTINCT UserID) FROM hits").fetchone()[0], 0)
             self.assertIn("COPY hits", (path / "copy.sql").read_text())

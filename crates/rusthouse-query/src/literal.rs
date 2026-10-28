@@ -74,6 +74,13 @@ mod tests {
     }
 
     #[test]
+    fn folds_minimum_int128_without_positive_magnitude_overflow() {
+        let minimum = "-170141183460469231731687303715884105728";
+        assert_eq!(arithmetic(minimum, "0", false).unwrap(), minimum);
+        assert!(arithmetic(minimum, "1", true).is_err());
+    }
+
+    #[test]
     fn shifts_calendar_years_and_handles_leap_day() {
         assert_eq!(add_date_years("1994-01-01", 1).unwrap(), "1995-01-01");
         assert_eq!(add_date_years("2000-02-29", 1).unwrap(), "2001-02-28");

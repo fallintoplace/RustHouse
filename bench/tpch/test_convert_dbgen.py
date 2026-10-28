@@ -58,6 +58,12 @@ class DbgenConversionTests(unittest.TestCase):
             self.assertFalse(target.exists())
             self.assertFalse(target.with_name("region.tsv.tmp").exists())
 
+    def test_rejects_empty_and_duplicate_table_selection(self):
+        for selected in ([], ["region", "region"]):
+            with self.subTest(selected=selected):
+                with self.assertRaisesRegex(ValueError, "unique"):
+                    convert_directory(Path("missing"), Path("output"), selected)
+
     def test_converts_selected_tables_only(self):
         with tempfile.TemporaryDirectory() as root:
             path = Path(root)

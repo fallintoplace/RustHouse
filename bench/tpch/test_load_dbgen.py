@@ -37,6 +37,16 @@ class DbgenLoadTests(unittest.TestCase):
                             execute=lambda sql: called.append(sql))
             self.assertEqual(called, [])
 
+    def test_preflight_rejects_malformed_records(self):
+        with tempfile.TemporaryDirectory() as root:
+            path = Path(root) / "region.tsv"
+            header = "\t".join(names("region")).encode("utf-8") + b"\n"
+            for row in (b"1\tEUROPE\n", b"\n", b"1\tEUROPE\tcomment", b"1\tEUROPE\tcomment\textra\n"):
+                with self.subTest(row=row):
+                    path.write_bytes(header + row)
+                    with self.assertRaisesRegex(ValueError, "malformed"):
+                        inspect_tsv(path, "region")
+
     def test_preflight_counts_binary_records_with_crlf(self):
         with tempfile.TemporaryDirectory() as root:
             path = Path(root) / "region.tsv"

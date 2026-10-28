@@ -1,6 +1,10 @@
 //! Bounded HTTP client for explicitly configured RustHouse peers.
 //! Non-loopback transport is opt-in, plaintext, and unauthenticated.
 
+mod response_parse;
+
+use self::response_parse::*;
+
 use crate::cluster::Peer;
 use crate::{MAX_HEADER_BYTES, MAX_QUERY_BYTES, MAX_RESPONSE_BYTES};
 use std::io::{Read, Write};
@@ -81,6 +85,13 @@ fn read_with_deadline(stream: &mut TcpStream, timeout: Duration) -> Result<Vec<u
             break;
         }
         raw.extend_from_slice(&buffer[..size]);
+        if let Some(expected) = expected_wire_length(&raw)? {
+            // Content-Length is authoritative for this restricted peer protocol.
+            // Never block waiting for EOF on a valid, complete response.
+            if raw.len() >= expected {
+                break;
+            }
+        }
     }
     Ok(raw)
 }
@@ -103,96 +114,6 @@ fn request(peer: Peer, method: &str, path: &str, body: &[u8]) -> Result<PeerResp
     stream.write_all(body).map_err(|error| error.to_string())?;
     let raw = read_with_deadline(&mut stream, IO_TIMEOUT)?;
     parse_response(&raw)
-}
-
-fn parse_http_status(status_line: &str) -> Result<u16, String> {
-    let mut words = status_line.splitn(3, ' ');
-    let version = words.next().ok_or("invalid peer HTTP status")?;
-    let code = words.next().ok_or("invalid peer HTTP status")?;
-    let reason = words.next().ok_or("invalid peer HTTP status")?;
-    if !matches!(version, "HTTP/1.1" | "HTTP/1.0")
-        || code.len() != 3
-        || !code.bytes().all(|byte| byte.is_ascii_digit())
-        || reason.bytes().any(|byte| byte.is_ascii_control())
-    {
-        return Err("invalid peer HTTP status".into());
-    }
-    let status = code
-        .parse::<u16>()
-        .map_err(|_| "invalid peer HTTP status")?;
-    if !(200..=599).contains(&status) {
-        return Err("unsupported peer HTTP status".into());
-    }
-    Ok(status)
-}
-
-fn parse_peer_header(line: &str) -> Result<(&str, &str), String> {
-    let (name, value) = line.split_once(':').ok_or("invalid peer header")?;
-    if name.is_empty()
-        || !name
-            .bytes()
-            .all(|byte| byte.is_ascii_alphanumeric() || byte == b'-')
-        || value
-            .bytes()
-            .any(|byte| byte.is_ascii_control() && byte != b'\t')
-    {
-        return Err("invalid peer header".into());
-    }
-    Ok((name, value.trim()))
-}
-
-fn parse_content_length(value: &str) -> Result<usize, String> {
-    if value.is_empty() || !value.bytes().all(|byte| byte.is_ascii_digit()) {
-        return Err("invalid peer Content-Length".into());
-    }
-    value
-        .parse::<usize>()
-        .map_err(|_| "invalid peer Content-Length".into())
-}
-
-fn parse_response(raw: &[u8]) -> Result<PeerResponse, String> {
-    let head_end = raw
-        .windows(4)
-        .position(|bytes| bytes == b"\r\n\r\n")
-        .ok_or("peer response has no header terminator")?;
-    if head_end + 4 > MAX_HEADER_BYTES {
-        return Err("peer headers exceed 8 KiB".into());
-    }
-    let head = std::str::from_utf8(&raw[..head_end]).map_err(|_| "peer headers are not UTF-8")?;
-    let mut lines = head.split("\r\n");
-    let status = parse_http_status(lines.next().ok_or("missing peer status")?)?;
-    let mut length = None;
-    let mut content_type = None;
-    for line in lines {
-        let (name, value) = parse_peer_header(line)?;
-        if name.eq_ignore_ascii_case("content-length") {
-            if length.is_some() {
-                return Err("invalid peer Content-Length".into());
-            }
-            length = Some(parse_content_length(value)?);
-        } else if name.eq_ignore_ascii_case("content-type") {
-            if content_type.is_some() {
-                return Err("duplicate peer Content-Type".into());
-            }
-            if value.is_empty() {
-                return Err("empty peer Content-Type".into());
-            }
-            content_type = Some(value.to_owned());
-        } else if name.eq_ignore_ascii_case("transfer-encoding")
-            || name.eq_ignore_ascii_case("content-encoding")
-        {
-            return Err("unsupported peer transfer encoding".into());
-        }
-    }
-    let length = length.ok_or("missing peer Content-Length")?;
-    if length > MAX_RESPONSE_BYTES || raw.len() - head_end - 4 != length {
-        return Err("peer response size mismatch or exceeds 8 MiB".into());
-    }
-    Ok(PeerResponse {
-        status,
-        content_type: content_type.ok_or("missing peer Content-Type")?,
-        body: raw[head_end + 4..].to_vec(),
-    })
 }
 
 #[cfg(test)]
@@ -235,6 +156,36 @@ mod tests {
         assert_eq!(result.status, 200);
         assert_eq!(result.body, b"1\n1\n");
         server.join().unwrap();
+    }
+
+    #[test]
+    fn complete_content_length_does_not_wait_for_peer_disconnect() {
+        use std::sync::mpsc;
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let address = listener.local_addr().unwrap();
+        let (release, keep_open) = mpsc::channel::<()>();
+        let server = std::thread::spawn(move || {
+            let (mut stream, _) = listener.accept().unwrap();
+            stream.write_all(
+                b"HTTP/1.1 200 OK\r\nContent-Length: 2\r\nContent-Type: text/plain\r\n\r\nOK"
+            ).unwrap();
+            // The client must finish before the server closes the connection.
+            keep_open.recv_timeout(Duration::from_secs(3)).unwrap();
+        });
+        let mut stream = TcpStream::connect(address).unwrap();
+        let bytes = read_with_deadline(&mut stream, Duration::from_secs(2)).unwrap();
+        assert_eq!(parse_response(&bytes).unwrap().body, b"OK");
+        release.send(()).unwrap();
+        server.join().unwrap();
+    }
+
+    #[test]
+    fn completed_response_still_rejects_invalid_size_and_duplicate_headers() {
+        let missing = b"HTTP/1.1 200 OK\r\nContent-Length: 3\r\nContent-Type: text/plain\r\n\r\nOK";
+        assert_eq!(expected_wire_length(missing).unwrap(), Some(missing.len() + 1));
+        assert!(parse_response(missing).is_err());
+        let duplicate = b"HTTP/1.1 200 OK\r\nContent-Length: 2\r\nContent-Length: 2\r\nContent-Type: text/plain\r\n\r\nOK";
+        assert!(expected_wire_length(duplicate).is_err());
     }
 
     #[test]

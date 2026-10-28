@@ -23,9 +23,10 @@ pub(super) fn execute_grouped_part<W: Write>(
     if query.limit == Some(0) {
         return groups.write(query, column, output);
     }
+    let no_filters = query.predicates.is_empty() && query.or_predicates.is_empty();
     while let Some(batch) = reader.next_batch()? {
         for row in 0..batch[0].len() {
-            if batch_matches(&batch, row, &comparisons) {
+            if no_filters || batch_matches(&batch, row, &comparisons) {
                 groups.push(number_at(&batch[0], row))?;
             }
         }
@@ -112,14 +113,23 @@ pub(super) fn execute_grouped_aggregate_numbers<W: Write>(
     if let Some(having) = &query.having {
         groups.retain(|(_, state)| state.passes_having(having));
     }
-    if let Some(order) = &query.order_by {
-        groups.sort_by(|(left, _), (right, _)| {
-            let ordering = compare_numbers(*left, *right);
-            if order.descending {
-                ordering.reverse()
-            } else {
-                ordering
+    if query.order_by.is_some() {
+        groups.sort_by(|(left_key, left_state), (right_key, right_state)| {
+            for term in query.order_terms() {
+                let comparison = if term.column == "#aggregate" {
+                    typed::compare_order_cells(
+                        &left_state.sort_cell(),
+                        &right_state.sort_cell(),
+                        term.descending,
+                        term.nulls_first,
+                    )
+                } else {
+                    let ordering = compare_numbers(*left_key, *right_key);
+                    if term.descending { ordering.reverse() } else { ordering }
+                };
+                if comparison != Ordering::Equal { return comparison; }
             }
+            Ordering::Equal
         });
     }
     for (key, state) in groups
@@ -154,7 +164,14 @@ pub(super) fn execute_count_column_part<W: Write>(
         return Ok(());
     }
     let mut count = 0u64;
+    let no_filters = query.predicates.is_empty() && query.or_predicates.is_empty();
     while let Some(batch) = reader.next_batch()? {
+        if no_filters {
+            count = count
+                .checked_add(batch[0].len() as u64)
+                .ok_or_else(|| ExecutionError::Invalid("count overflow".into()))?;
+            continue;
+        }
         for row in 0..batch[0].len() {
             if batch_matches(&batch, row, &comparisons) {
                 count = count
@@ -193,9 +210,10 @@ pub(super) fn execute_count_distinct_part<W: Write>(
         return Ok(());
     }
     let mut seen = HashSet::new();
+    let no_filters = query.predicates.is_empty() && query.or_predicates.is_empty();
     while let Some(batch) = reader.next_batch()? {
         for row in 0..batch[0].len() {
-            if !batch_matches(&batch, row, &comparisons) {
+            if !no_filters && !batch_matches(&batch, row, &comparisons) {
                 continue;
             }
             let key = NumberKey::from(number_at(&batch[0], row));
@@ -238,9 +256,10 @@ pub(super) fn execute_aggregate_part<W: Write>(
         return Ok(());
     }
     let mut state = AggregateState::new(function);
+    let no_filters = query.predicates.is_empty() && query.or_predicates.is_empty();
     while let Some(batch) = reader.next_batch()? {
         for row in 0..batch[0].len() {
-            if !batch_matches(&batch, row, &comparisons) {
+            if !no_filters && !batch_matches(&batch, row, &comparisons) {
                 continue;
             }
             state.update(number_at(&batch[0], row))?;

@@ -12,20 +12,24 @@ use std::io::Write;
 use std::path::Path;
 
 // Ordered and outer joins retain both inputs, bounded by row count and bytes.
-const MAX_INPUT_ROWS: u64 = 16_384;
-const MAX_RESULT_ROWS: usize = 65_536;
+pub(super) const MAX_INPUT_ROWS: u64 = 16_384;
+pub(super) const MAX_RESULT_ROWS: usize = 65_536;
 // Unordered INNER joins can build a larger hash side than sorted/outer joins.
 // Bound retained cells as well as row count to protect against wide String rows.
 const MAX_STREAM_BUILD_ROWS: u64 = 32_768;
-const MAX_STREAM_BUILD_BYTES: usize = 32 * 1024 * 1024;
+pub(super) const MAX_STREAM_BUILD_BYTES: usize = 32 * 1024 * 1024;
 
 type Pair = (Option<usize>, Option<usize>);
+
+pub(super) fn multi_join_row_key(row: &[typed::Cell], indices: &[usize]) -> Option<Vec<typed::Key>> {
+    row_key(row, indices)
+}
 
 fn invalid(message: impl Into<String>) -> ExecutionError {
     ExecutionError::Invalid(message.into())
 }
 
-fn read_rows(
+pub(super) fn read_rows(
     path: &Path,
     names: &[String],
     expected_rows: u64,
@@ -90,6 +94,7 @@ fn read_rows(
 // materialize the full row, which may contain wide String payloads.
 struct ProbeOptions {
     materialize_rows: bool,
+    materialize_after: usize,
     stop_after: Option<usize>,
     any: bool,
     null_filter: Option<(usize, bool)>,
@@ -144,7 +149,9 @@ where
                         if options.stop_after.is_none() && matches >= MAX_RESULT_ROWS {
                             return Err(invalid("JOIN produces more than 65536 rows"));
                         }
-                        let projection = if options.materialize_rows {
+                        let projection = if options.materialize_rows
+                            && matches >= options.materialize_after
+                        {
                             left_row
                                 .get_or_insert_with(|| {
                                     batch
@@ -209,6 +216,15 @@ fn execute_streaming_inner<W: Write>(
             hash.entry(key).or_default().push(index);
         }
     }
+    if hash.is_empty() {
+        let header = selected
+            .iter()
+            .map(|(_, name, _)| name.as_str())
+            .collect::<Vec<_>>()
+            .join("\t");
+        writeln!(output, "{header}")?;
+        return Ok(());
+    }
     // A LIMIT that fits the output budget can page through more than
     // 65,536 matched pairs without retaining them all. Without such a LIMIT,
     // continue to reject oversized results before emitting the header.
@@ -216,7 +232,7 @@ fn execute_streaming_inner<W: Write>(
         .limit
         .filter(|&limit| limit <= MAX_RESULT_ROWS)
         .and_then(|limit| query.offset.checked_add(limit));
-    probe_inner(
+    let preflight_matches = probe_inner(
         left_path,
         left_names,
         left_keys,
@@ -224,6 +240,7 @@ fn execute_streaming_inner<W: Write>(
         &hash,
         ProbeOptions {
             materialize_rows: false,
+            materialize_after: 0,
             stop_after,
             any: query.any,
             null_filter,
@@ -237,6 +254,9 @@ fn execute_streaming_inner<W: Write>(
         .collect::<Vec<_>>()
         .join("\t");
     writeln!(output, "{header}")?;
+    if preflight_matches <= query.offset {
+        return Ok(());
+    }
 
     let left_width = left_names.len();
     let end = query
@@ -251,6 +271,7 @@ fn execute_streaming_inner<W: Write>(
         &hash,
         ProbeOptions {
             materialize_rows: true,
+            materialize_after: query.offset,
             stop_after,
             any: query.any,
             null_filter,
@@ -288,31 +309,27 @@ fn probe_right<F>(
     hash: &HashMap<Vec<typed::Key>, Vec<usize>>,
     options: ProbeOptions,
     mut emit: F,
-) -> Result<(), ExecutionError>
+) -> Result<usize, ExecutionError>
 where
     F: FnMut(&[typed::Cell], &[typed::Cell]) -> Result<(), ExecutionError>,
 {
     if options.stop_after == Some(0) {
-        return Ok(());
+        return Ok(0);
     }
     let mut reader = TypedQueryReader::open(right_path, right_names)?;
     let mut matches = 0usize;
     let left_width = left_rows.first().map_or(0, Vec::len);
     // Each retained left row can match only its first right row.
     let mut seen_left = options.any.then(|| vec![false; left_rows.len()]);
+    let mut remaining_left = seen_left.as_ref().map(Vec::len);
     let mut probe_key = Vec::with_capacity(right_keys.len());
     'scan: while let Some(batch) = reader.next_batch()? {
         for index in 0..batch[0].len() {
             if batch_key_into(&batch, index, right_keys, &mut probe_key) {
                 if let Some(left_indices) = hash.get(probe_key.as_slice()) {
-                    let right_row = if options.materialize_rows {
-                        batch
-                            .iter()
-                            .map(|column| typed::cell(column, index))
-                            .collect::<Vec<_>>()
-                    } else {
-                        Vec::new()
-                    };
+                    // Most matches may be filtered or already claimed by ANY.
+                    // Decode the full probe row only when a match survives.
+                    let mut right_row: Option<Vec<typed::Cell>> = None;
                     for &left_index in left_indices {
                         if options.stop_after.is_some_and(|end| matches >= end) {
                             break 'scan;
@@ -322,6 +339,9 @@ where
                                 continue;
                             }
                             seen[left_index] = true;
+                            if let Some(remaining) = remaining_left.as_mut() {
+                                *remaining -= 1;
+                            }
                         }
                         if let Some((column, not_null)) = options.null_filter {
                             let is_null = if column < left_width {
@@ -339,14 +359,29 @@ where
                         if options.stop_after.is_none() && matches >= MAX_RESULT_ROWS {
                             return Err(invalid("JOIN produces more than 65536 rows"));
                         }
-                        emit(&left_rows[left_index], &right_row)?;
+                        let projection = if options.materialize_rows {
+                            right_row
+                                .get_or_insert_with(|| {
+                                    batch
+                                        .iter()
+                                        .map(|column| typed::cell(column, index))
+                                        .collect()
+                                })
+                                .as_slice()
+                        } else {
+                            &[]
+                        };
+                        emit(&left_rows[left_index], projection)?;
                         matches += 1;
+                    }
+                    if remaining_left == Some(0) {
+                        break 'scan;
                     }
                 }
             }
         }
     }
-    Ok(())
+    Ok(matches)
 }
 
 fn execute_streaming_right<W: Write>(
@@ -378,12 +413,21 @@ fn execute_streaming_right<W: Write>(
             hash.entry(key).or_default().push(index);
         }
     }
+    if hash.is_empty() {
+        let header = selected
+            .iter()
+            .map(|(_, name, _)| name.as_str())
+            .collect::<Vec<_>>()
+            .join("\t");
+        writeln!(output, "{header}")?;
+        return Ok(());
+    }
     let stop_after = query
         .limit
         .filter(|&limit| limit <= MAX_RESULT_ROWS)
         .and_then(|limit| query.offset.checked_add(limit));
     // Validate cardinality before sending a header or output rows.
-    probe_right(
+    let preflight_matches = probe_right(
         right_path,
         right_names,
         right_keys,
@@ -391,6 +435,7 @@ fn execute_streaming_right<W: Write>(
         &hash,
         ProbeOptions {
             materialize_rows: false,
+            materialize_after: 0,
             stop_after,
             any: query.any,
             null_filter,
@@ -403,6 +448,9 @@ fn execute_streaming_right<W: Write>(
         .collect::<Vec<_>>()
         .join("\t");
     writeln!(output, "{header}")?;
+    if preflight_matches <= query.offset {
+        return Ok(());
+    }
 
     let left_width = left_names.len();
     let end = query
@@ -417,6 +465,7 @@ fn execute_streaming_right<W: Write>(
         &hash,
         ProbeOptions {
             materialize_rows: true,
+            materialize_after: 0,
             stop_after,
             any: query.any,
             null_filter,
@@ -630,7 +679,8 @@ pub fn execute_join<W: Write>(
         })
     };
     let mut pairs: Vec<Pair> = Vec::new();
-    let mut matched_right = vec![false; right_rows.len()];
+    let mut matched_right = matches!(query.kind, JoinType::Right | JoinType::Full)
+        .then(|| vec![false; right_rows.len()]);
     for (left_index, row) in left_rows.iter().enumerate() {
         let mut matched = false;
         if let Some(key) = row_key(row, &left_keys) {
@@ -643,11 +693,16 @@ pub fn execute_join<W: Write>(
                         usize::MAX
                     })
                 {
-                    if query.any && query.kind == JoinType::Right && matched_right[right_index] {
+                    if query.any
+                        && query.kind == JoinType::Right
+                        && matched_right.as_ref().is_some_and(|flags| flags[right_index])
+                    {
                         continue;
                     }
                     matched = true;
-                    matched_right[right_index] = true;
+                    if let Some(flags) = matched_right.as_mut() {
+                        flags[right_index] = true;
+                    }
                     let pair = (Some(left_index), Some(right_index));
                     if keep(&pair) {
                         add_pair(&mut pairs, pair)?;
@@ -662,7 +717,7 @@ pub fn execute_join<W: Write>(
             }
         }
     }
-    if matches!(query.kind, JoinType::Right | JoinType::Full) {
+    if let Some(matched_right) = matched_right {
         for (right_index, matched) in matched_right.into_iter().enumerate() {
             if !matched {
                 let pair = (None, Some(right_index));

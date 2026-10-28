@@ -30,6 +30,10 @@ jobs:
             --binary target/release/rusthouse \
             --rows 65536 --runs 5 --warmups 2 \
             --output bench/results/sql-latency.json
+      - name: Validate all 20 query results and timing samples
+        run: |
+          python3 -m bench.latency.validate_report bench/results/sql-latency.json \
+            --rows 65536 --runs 5 --warmups 2
       - name: Upload latency report
         if: always()
         uses: actions/upload-artifact@v7

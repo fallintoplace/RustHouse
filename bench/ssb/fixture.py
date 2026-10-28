@@ -6,6 +6,7 @@ The output is synthetic. Full SSB uses five tables and more complex SQL.
 import argparse
 import random
 import sqlite3
+from contextlib import closing
 from pathlib import Path
 
 MAX_FACTS = 12000
@@ -51,7 +52,7 @@ def generate(root, rows=2000, seed=42):
     ]
     write_table(root, "date_dim", DATE_KEYS)
     write_table(root, "lineorder", facts)
-    with sqlite3.connect(root / "reference.sqlite") as connection:
+    with closing(sqlite3.connect(root / "reference.sqlite")) as connection, connection:
         for table, records in (("date_dim", DATE_KEYS), ("lineorder", facts)):
             connection.execute("CREATE TABLE " + table + " (" +
                                ", ".join(name + " INTEGER" for name, _ in TABLES[table]) + ")")

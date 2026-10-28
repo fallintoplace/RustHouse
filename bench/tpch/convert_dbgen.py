@@ -84,9 +84,11 @@ def convert_table(source, target, table):
 
 
 def convert_directory(source_dir, target_dir, selected=None):
-    selected = tuple(selected or TABLES)
-    if not selected or any(table not in TABLES for table in selected):
-        raise ValueError("select one or more known TPC-H tables")
+    selected = tuple(TABLES if selected is None else selected)
+    if not selected or len(set(selected)) != len(selected) or any(
+        table not in TABLES for table in selected
+    ):
+        raise ValueError("select a nonempty unique set of known TPC-H tables")
     counts = {}
     for table in selected:
         src = Path(source_dir) / (table + ".tbl")

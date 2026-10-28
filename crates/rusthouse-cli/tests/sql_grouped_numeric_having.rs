@@ -67,3 +67,26 @@ fn rejects_having_an_unselected_aggregate() {
         assert!(!result.status.success(), "{query}: {result:?}");
     }
 }
+
+#[test]
+fn groups_nullable_strings_with_repeated_metrics() {
+    let db = std::env::temp_dir().join(format!("rusthouse-nullable-group-multi-{}", std::process::id()));
+    for query in [
+        "CREATE TABLE sales (category Nullable(String), amount UInt64)",
+        "INSERT INTO sales VALUES ('books', 4), ('books', 6), ('games', 5), (NULL, 1)",
+        "INSERT INTO sales VALUES ('books', 3), (NULL, 2)",
+    ] {
+        let result = sql(query, &db);
+        assert!(result.status.success(), "{query}: {result:?}");
+    }
+    let result = sql(
+        "SELECT category, sum(amount), min(amount) FROM sales GROUP BY category ORDER BY category NULLS FIRST",
+        &db,
+    );
+    assert!(result.status.success(), "{result:?}");
+    assert_eq!(
+        result.stdout,
+        b"category\tsum(amount)\tmin(amount)\n\\N\t3\t1\nbooks\t13\t3\ngames\t5\t5\n"
+    );
+    fs::remove_dir_all(db).unwrap();
+}
