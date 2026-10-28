@@ -11,7 +11,9 @@ pub(super) fn literal_bytes(tokens: &[LikeToken]) -> Option<Vec<u8>> {
 }
 
 pub(super) fn compile_like(pattern: &str) -> Result<LikePattern, ExecutionError> {
-    let mut tokens = Vec::new();
+    // Escape handling can expand a token by at most one byte, so the
+    // pattern byte length is an upper bound on compiled token count.
+    let mut tokens = Vec::with_capacity(pattern.len());
     let mut bytes = pattern.bytes();
     while let Some(byte) = bytes.next() {
         match byte {
@@ -271,6 +273,16 @@ mod perf_tests {
         assert!(!like_matches(b"ab", &binary, false));
         assert!(like_matches(b"prefixababa", &pattern, false));
         assert!(like_matches(b"anything", &compile_like("%%").unwrap(), false));
+    }
+
+    #[test]
+    fn long_like_patterns_keep_prefix_and_escape_semantics() {
+        let prefix = "x".repeat(1024);
+        let pattern = compile_like(&format!("{prefix}%")).unwrap();
+        assert!(like_matches(format!("{prefix}tail").as_bytes(), &pattern, false));
+        assert!(!like_matches(b"short", &pattern, false));
+        let escaped = compile_like(r"left\\%right").unwrap();
+        assert!(like_matches(b"left%right", &escaped, false));
     }
 
 }
