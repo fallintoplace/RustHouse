@@ -72,6 +72,7 @@ pub(super) fn is_function(name: &str) -> bool {
             | "BASE64_ENCODE"
             | "HASTOKENCASEINSENSITIVE"
             | "ENDS_WITH"
+            | "PATHFULL"
             | "REPLACE_LAST"
             | "STRIP_SUFFIX"
             | "REPEAT"
@@ -1091,6 +1092,23 @@ fn parse_at_depth(parser: &mut Parser, depth: usize) -> Result<ConstantValue, Pa
                     ConstantValue::Text(result)
                 }
                 _ => ConstantValue::Null,
+            }
+        }
+        "PATHFULL" => {
+            let input = text_arg(parser, depth + 1)?;
+            require(parser, Token::RParen, "pathFull requires one argument")?;
+            match input {
+                Some(input) => {
+                    let suffix = if let Some((_, after_scheme)) = input.split_once("://") {
+                        let start = after_scheme.find(['/', '?', '#'])
+                            .unwrap_or(after_scheme.len());
+                        &after_scheme[start..]
+                    } else {
+                        input.as_str()
+                    };
+                    ConstantValue::Text(suffix.to_owned())
+                }
+                None => ConstantValue::Null,
             }
         }
         "REPLACE" => {
