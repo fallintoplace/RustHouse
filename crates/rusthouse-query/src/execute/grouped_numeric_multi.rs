@@ -271,6 +271,13 @@ pub(super) fn execute<W: Write>(
             }
         }
     }
+    if let Some(having) = &query.having {
+        let index = having.aggregate_index.ok_or_else(|| {
+            ExecutionError::Invalid("HAVING metric index is required".into())
+        })?;
+        groups.retain(|(_, states)| states.get(index)
+            .is_some_and(|state| state.passes_having(having)));
+    }
     let mut bounded_order = None;
     if query.order_by.is_some() {
         let terms = query.order_terms().map(|order| {

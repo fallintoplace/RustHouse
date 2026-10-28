@@ -185,6 +185,11 @@ pub fn explain_select(query: &Select) -> String {
                 value_column,
                 ..
             } => format!("{}({value_column})", function.name()),
+            Projection::GroupedAggregates { items, .. }
+            | Projection::GroupedMultiAggregates { items, .. } => having.aggregate_index
+                .and_then(|index| items.get(index))
+                .map(|(function, column)| format!("{}({column})", function.name()))
+                .unwrap_or_else(|| "count(*)".into()),
             _ => "count(*)".into(),
         };
         steps.push(format!(
