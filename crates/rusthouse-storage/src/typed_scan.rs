@@ -466,6 +466,148 @@ pub struct TypedPartReader {
     next_mark: usize,
 }
 
+/// Decode one requested projection column. Each column has independent file
+/// streams, so wide analytical marks can decode on separate CPU workers.
+fn decode_typed_column(
+    column: &mut ColumnReader,
+    index: usize,
+    rows: usize,
+) -> Result<TypedColumn, PartError> {
+    let mark = &column.data.marks[index];
+    let nulls = column
+        .null_map
+        .as_mut()
+        .map(|stream| stream.read_fixed(index, rows))
+        .transpose()?;
+    let values = match &column.kind {
+        StorageKind::Numeric(kind) | StorageKind::NullableNumeric(kind) => {
+            TypedColumn::Numeric(read_numeric_granule_cached(
+                &mut column.data.reader,
+                mark,
+                kind,
+                &mut column.data.cached,
+            )?)
+        }
+        StorageKind::String | StorageKind::NullableString => {
+            let mut stream = MarkStream::open(&mut column.data, index)?;
+            TypedColumn::Text(
+                read_legacy_strings(&mut stream, rows)
+                    .map_err(|error| PartError::InvalidScan(error.to_string()))?,
+            )
+        }
+        StorageKind::NumericArray(kind) => {
+            let sizes = column.array_sizes.as_mut().ok_or_else(|| {
+                PartError::InvalidScan("missing Array size stream".into())
+            })?;
+            let mut sizes_stream = MarkStream::open(sizes, index)?;
+            let mut data_stream = MarkStream::open(&mut column.data, index)?;
+            let arrays = read_numeric_array_column(
+                &mut sizes_stream,
+                &mut data_stream,
+                kind,
+                rows,
+                ArrayOffsetsEncoding::Sizes,
+            )
+            .map_err(|error| PartError::InvalidScan(error.to_string()))?;
+            // Build one contiguous StringColumn as rows are rendered.
+            // Keep one expandable scratch String instead of allocating
+            // both a String and a Vec<u8> for every Array row.
+            let mut decoded = StringColumn::builder(rows)
+                .map_err(|error| PartError::InvalidScan(error.to_string()))?;
+            let mut text = String::new();
+            for row in 0..rows {
+                let range = arrays.row_range(row).ok_or_else(|| {
+                    PartError::InvalidScan("invalid Array row range".into())
+                })?;
+                text.clear();
+                text.push('[');
+                for element in range {
+                    if text.len() != 1 {
+                        text.push(',');
+                    }
+                    text.push_str(&numeric_array_element(arrays.values(), element));
+                }
+                text.push(']');
+                decoded
+                    .push_row(text.as_bytes())
+                    .map_err(|error| PartError::InvalidScan(error.to_string()))?;
+            }
+            TypedColumn::Text(decoded)
+        }
+        StorageKind::StringMap(value_type) => {
+            let values = column.map_values.as_mut().ok_or_else(|| {
+                PartError::InvalidScan("missing Map values stream".into())
+            })?;
+            let sizes = column
+                .map_sizes
+                .as_mut()
+                .ok_or_else(|| PartError::InvalidScan("missing Map size stream".into()))?;
+            TypedColumn::Text(read_string_key_map(
+                &mut column.data,
+                values,
+                sizes,
+                value_type,
+                index,
+                rows,
+            )?)
+        }
+        StorageKind::Uuid => {
+            let bytes = column.data.read_fixed(
+                index,
+                rows.checked_mul(16).ok_or_else(|| {
+                    PartError::InvalidScan("UUID granule too large".into())
+                })?,
+            )?;
+            TypedColumn::Uuid(
+                read_uuid_values(&mut bytes.as_slice(), rows)
+                    .map_err(|error| PartError::InvalidScan(error.to_string()))?,
+            )
+        }
+    };
+    let values = wrap_null_map(values, nulls)?;
+    if values.len() != rows {
+        return Err(PartError::InvalidScan(
+            "typed batch row count mismatch".into(),
+        ));
+    }
+    Ok(values)
+}
+
+/// Decode in deterministic column order. Thread the expensive wide-mark path
+/// only when the caller has enough rows and columns to amortize worker setup.
+fn decode_typed_columns(
+    columns: &mut [ColumnReader],
+    index: usize,
+    rows: usize,
+    workers: usize,
+) -> Result<Vec<TypedColumn>, PartError> {
+    if workers <= 1 || columns.len() < 2 {
+        return columns.iter_mut()
+            .map(|column| decode_typed_column(column, index, rows))
+            .collect();
+    }
+    let chunk_width = columns.len().div_ceil(workers);
+    let pieces = std::thread::scope(|scope| {
+        let handles = columns.chunks_mut(chunk_width)
+            .map(|chunk| scope.spawn(move || {
+                chunk.iter_mut()
+                    .map(|column| decode_typed_column(column, index, rows))
+                    .collect::<Result<Vec<_>, PartError>>()
+            }))
+            .collect::<Vec<_>>();
+        handles.into_iter()
+            .map(|handle| handle.join().unwrap_or_else(|_| {
+                Err(PartError::InvalidScan("typed mark decoder panicked".into()))
+            }))
+            .collect::<Vec<_>>()
+    });
+    let mut batch = Vec::with_capacity(columns.len());
+    for piece in pieces {
+        batch.extend(piece?);
+    }
+    Ok(batch)
+}
+
 impl TypedPartReader {
     pub fn open(part: impl AsRef<Path>, names: &[String]) -> Result<Self, PartError> {
         let part = part.as_ref();
@@ -667,107 +809,16 @@ impl TypedPartReader {
             })?,
         )
         .map_err(|_| PartError::InvalidScan("row count too large".into()))?;
-        let mut batch = Vec::with_capacity(self.columns.len());
-        for column in &mut self.columns {
-            let mark = &column.data.marks[index];
-            let nulls = column
-                .null_map
-                .as_mut()
-                .map(|stream| stream.read_fixed(index, rows))
-                .transpose()?;
-            let values = match &column.kind {
-                StorageKind::Numeric(kind) | StorageKind::NullableNumeric(kind) => {
-                    TypedColumn::Numeric(read_numeric_granule_cached(
-                        &mut column.data.reader,
-                        mark,
-                        kind,
-                        &mut column.data.cached,
-                    )?)
-                }
-                StorageKind::String | StorageKind::NullableString => {
-                    let mut stream = MarkStream::open(&mut column.data, index)?;
-                    TypedColumn::Text(
-                        read_legacy_strings(&mut stream, rows)
-                            .map_err(|error| PartError::InvalidScan(error.to_string()))?,
-                    )
-                }
-                StorageKind::NumericArray(kind) => {
-                    let sizes = column.array_sizes.as_mut().ok_or_else(|| {
-                        PartError::InvalidScan("missing Array size stream".into())
-                    })?;
-                    let mut sizes_stream = MarkStream::open(sizes, index)?;
-                    let mut data_stream = MarkStream::open(&mut column.data, index)?;
-                    let arrays = read_numeric_array_column(
-                        &mut sizes_stream,
-                        &mut data_stream,
-                        kind,
-                        rows,
-                        ArrayOffsetsEncoding::Sizes,
-                    )
-                    .map_err(|error| PartError::InvalidScan(error.to_string()))?;
-                    // Build one contiguous StringColumn as rows are rendered.
-                    // Keep one expandable scratch String instead of allocating
-                    // both a String and a Vec<u8> for every Array row.
-                    let mut decoded = StringColumn::builder(rows)
-                        .map_err(|error| PartError::InvalidScan(error.to_string()))?;
-                    let mut text = String::new();
-                    for row in 0..rows {
-                        let range = arrays.row_range(row).ok_or_else(|| {
-                            PartError::InvalidScan("invalid Array row range".into())
-                        })?;
-                        text.clear();
-                        text.push('[');
-                        for element in range {
-                            if text.len() != 1 {
-                                text.push(',');
-                            }
-                            text.push_str(&numeric_array_element(arrays.values(), element));
-                        }
-                        text.push(']');
-                        decoded
-                            .push_row(text.as_bytes())
-                            .map_err(|error| PartError::InvalidScan(error.to_string()))?;
-                    }
-                    TypedColumn::Text(decoded)
-                }
-                StorageKind::StringMap(value_type) => {
-                    let values = column.map_values.as_mut().ok_or_else(|| {
-                        PartError::InvalidScan("missing Map values stream".into())
-                    })?;
-                    let sizes = column
-                        .map_sizes
-                        .as_mut()
-                        .ok_or_else(|| PartError::InvalidScan("missing Map size stream".into()))?;
-                    TypedColumn::Text(read_string_key_map(
-                        &mut column.data,
-                        values,
-                        sizes,
-                        value_type,
-                        index,
-                        rows,
-                    )?)
-                }
-                StorageKind::Uuid => {
-                    let bytes = column.data.read_fixed(
-                        index,
-                        rows.checked_mul(16).ok_or_else(|| {
-                            PartError::InvalidScan("UUID granule too large".into())
-                        })?,
-                    )?;
-                    TypedColumn::Uuid(
-                        read_uuid_values(&mut bytes.as_slice(), rows)
-                            .map_err(|error| PartError::InvalidScan(error.to_string()))?,
-                    )
-                }
-            };
-            let values = wrap_null_map(values, nulls)?;
-            if values.len() != rows {
-                return Err(PartError::InvalidScan(
-                    "typed batch row count mismatch".into(),
-                ));
-            }
-            batch.push(values);
-        }
+        const PARALLEL_DECODE_ROWS: usize = 4096;
+        const PARALLEL_DECODE_COLUMNS: usize = 8;
+        let workers = if rows >= PARALLEL_DECODE_ROWS
+            && self.columns.len() >= PARALLEL_DECODE_COLUMNS
+        {
+            std::thread::available_parallelism().map_or(1, |count| count.get()).min(4)
+        } else {
+            1
+        };
+        let batch = decode_typed_columns(&mut self.columns, index, rows, workers)?;
         self.next_mark += 1;
         Ok(Some(batch))
     }
@@ -1266,6 +1317,47 @@ mod parallel_typed_open_tests {
         assert_eq!(batch.len(), 10);
         assert!(batch.iter().all(|column| column.len() == 2));
         assert!(reader.next_batch().unwrap().is_none());
+        fs::remove_dir_all(root).unwrap();
+    }
+}
+
+#[cfg(test)]
+mod parallel_wide_decode_tests {
+    use super::*;
+    use crate::{Column, write_wide_part};
+    use std::fs;
+
+    #[test]
+    fn parallel_columns_match_serial_granule_decode_and_projection_order() {
+        let root = std::env::temp_dir().join(format!(
+            "rusthouse-typed-wide-decode-{}", std::process::id()
+        ));
+        let _ = fs::remove_dir_all(&root);
+        let columns = (0..12).map(|i| Column {
+            name: format!("metric{i}"),
+            data_type: "UInt64".into(),
+        }).collect::<Vec<_>>();
+        let rows = (0..1024).map(|i| (0..12)
+            .map(|column| Some((i * 1000 + column).to_string()))
+            .collect::<Vec<_>>()).collect::<Vec<_>>();
+        write_wide_part(&root, &columns, &rows).unwrap();
+        let projection = columns.iter().map(|column| column.name.clone()).collect::<Vec<_>>();
+        let mut serial = TypedPartReader::open(&root, &projection).unwrap();
+        let mut parallel = TypedPartReader::open(&root, &projection).unwrap();
+        let left = decode_typed_columns(&mut serial.columns, 0, 1024, 1).unwrap();
+        let right = decode_typed_columns(&mut parallel.columns, 0, 1024, 4).unwrap();
+        assert_eq!(left.len(), 12);
+        for (column, (a, b)) in left.into_iter().zip(right).enumerate() {
+            match (a, b) {
+                (TypedColumn::Numeric(NumericColumn::UInt64(a)),
+                 TypedColumn::Numeric(NumericColumn::UInt64(b))) => {
+                    assert_eq!(a, b);
+                    assert_eq!(a[0], column as u64);
+                    assert_eq!(a[1023], 1_023_000 + column as u64);
+                }
+                _ => panic!("wrong wide projection column type"),
+            }
+        }
         fs::remove_dir_all(root).unwrap();
     }
 }
