@@ -309,14 +309,9 @@ where
         for index in 0..batch[0].len() {
             if batch_key_into(&batch, index, right_keys, &mut probe_key) {
                 if let Some(left_indices) = hash.get(probe_key.as_slice()) {
-                    let right_row = if options.materialize_rows {
-                        batch
-                            .iter()
-                            .map(|column| typed::cell(column, index))
-                            .collect::<Vec<_>>()
-                    } else {
-                        Vec::new()
-                    };
+                    // Most matches may be filtered or already claimed by ANY.
+                    // Decode the full probe row only when a match survives.
+                    let mut right_row: Option<Vec<typed::Cell>> = None;
                     for &left_index in left_indices {
                         if options.stop_after.is_some_and(|end| matches >= end) {
                             break 'scan;
@@ -343,7 +338,19 @@ where
                         if options.stop_after.is_none() && matches >= MAX_RESULT_ROWS {
                             return Err(invalid("JOIN produces more than 65536 rows"));
                         }
-                        emit(&left_rows[left_index], &right_row)?;
+                        let projection = if options.materialize_rows {
+                            right_row
+                                .get_or_insert_with(|| {
+                                    batch
+                                        .iter()
+                                        .map(|column| typed::cell(column, index))
+                                        .collect()
+                                })
+                                .as_slice()
+                        } else {
+                            &[]
+                        };
+                        emit(&left_rows[left_index], projection)?;
                         matches += 1;
                     }
                 }
