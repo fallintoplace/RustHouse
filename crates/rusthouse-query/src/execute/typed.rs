@@ -2089,7 +2089,7 @@ mod direct_numeric_set_probe_tests {
             nulls: vec![0, 1, 0],
         }];
         let includes = [vec![Condition {
-            index: 0, test: Test::NumericInSet(targets.clone(), false),
+            index: 0, test: Test::NumericInSet(HashSet::from([NumberKey::from(Number::Signed(-3))]), false),
         }]];
         let excludes = [vec![Condition {
             index: 0, test: Test::NumericInSet(targets, true),
