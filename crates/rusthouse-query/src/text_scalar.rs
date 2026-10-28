@@ -24,6 +24,7 @@ pub(super) fn is_function(name: &str) -> bool {
             | "LOWER"
             | "HEX_ENCODE"
             | "IS_ASCII"
+            | "IPV4STRINGTONUMORNULL"
             | "UPPER"
             | "URL_DECODE"
             | "IS_EMPTY"
@@ -330,6 +331,17 @@ fn parse_at_depth(parser: &mut Parser, depth: usize) -> Result<ConstantValue, Pa
                     }
                     ConstantValue::Text(result)
                 }
+                None => ConstantValue::Null,
+            }
+        }
+        "IPV4STRINGTONUMORNULL" => {
+            let input = text_arg(parser, depth + 1)?;
+            require(parser, Token::RParen, "IPv4StringToNumOrNull requires one string")?;
+            match input {
+                Some(value) => value
+                    .parse::<std::net::Ipv4Addr>()
+                    .map(|ip| ConstantValue::Integer(i64::from(u32::from(ip))))
+                    .unwrap_or(ConstantValue::Null),
                 None => ConstantValue::Null,
             }
         }
@@ -1993,5 +2005,41 @@ fn text_arg(parser: &mut Parser, depth: usize) -> Result<Option<String>, ParseEr
         _ => Err(ParseError(
             "expected a string literal or string function".into(),
         )),
+    }
+}
+
+#[cfg(test)]
+mod clickhouse_ipv4_string_to_num_or_null_tests {
+    use crate::{ConstantValue, Projection, parse_select};
+
+    fn value(sql: &str) -> ConstantValue {
+        match parse_select(sql).unwrap().projection {
+            Projection::Constants(columns) if columns.len() == 1 => columns[0].value.clone(),
+            Projection::Literal(number) => ConstantValue::Integer(number),
+            other => panic!("unexpected projection: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn supported_inputs() {
+        for (sql, expected) in [
+            ("SELECT IPv4StringToNumOrNull('127.0.0.1')", ConstantValue::Integer(2130706433)),
+            ("SELECT IPv4StringToNumOrNull('192.168.0.1')", ConstantValue::Integer(3232235521)),
+            ("SELECT IPv4StringToNumOrNull('999.0.0.1')", ConstantValue::Null),
+            ("SELECT IPv4StringToNumOrNull(NULL)", ConstantValue::Null),
+        ] {
+            assert_eq!(value(sql), expected, "{sql}");
+        }
+    }
+
+    #[test]
+    fn invalid_inputs() {
+        for sql in [
+            "SELECT IPv4StringToNumOrNull()",
+            "SELECT IPv4StringToNumOrNull(1)",
+            "SELECT IPv4StringToNumOrNull('1.2.3.4','a')",
+        ] {
+            assert!(parse_select(sql).is_err(), "{sql}");
+        }
     }
 }
