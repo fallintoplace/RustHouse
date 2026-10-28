@@ -44,7 +44,7 @@ pub struct JoinSelect {
     pub keys: Vec<(JoinColumn, JoinColumn)>,
     /// Shared-key names for JOIN USING; star output projects each key once.
     pub using_keys: Vec<String>,
-    /// Optional post-join IS [NOT] NULL filter (true means IS NOT NULL).
+    /// Optional post-join NULL filter (`true` means `IS NOT NULL`).
     pub where_null: Option<(JoinColumn, bool)>,
     /// Ordered key, descending flag, and optional explicit NULL placement.
     pub order_by: Vec<(JoinColumn, bool, Option<bool>)>,
