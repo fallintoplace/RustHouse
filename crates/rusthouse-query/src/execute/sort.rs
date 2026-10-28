@@ -282,6 +282,20 @@ impl SortedRows {
         Ok(())
     }
 
+    /// Merging run files only changes row ordering. Their serialized row
+    /// bytes remain identical, so input lengths predict output disk usage.
+    fn preflight_merge_run(&self, inputs: &[PathBuf]) -> Result<(), ExecutionError> {
+        let bytes = inputs.iter().try_fold(0u64, |total, input| {
+            total.checked_add(fs::metadata(input)?.len())
+                .ok_or_else(|| invalid("external sort temporary byte overflow"))
+        })?;
+        if self.temp_bytes.checked_add(bytes)
+            .is_none_or(|total| total > MAX_TEMP_SORT_BYTES) {
+            return Err(invalid("external sort exceeded 32 GiB temporary disk budget"));
+        }
+        Ok(())
+    }
+
     fn flush_run(&mut self) -> Result<(), ExecutionError> {
         if self.rows.is_empty() { return Ok(()); }
         let path = self.next_path()?;
@@ -386,6 +400,7 @@ impl SortedRows {
                 let previous = std::mem::take(&mut self.run_paths);
                 let mut reduced = Vec::new();
                 for group in previous.chunks(MERGE_FAN_IN) {
+                    self.preflight_merge_run(group)?;
                     let path = self.next_path()?;
                     let mut writer = BufWriter::new(OpenOptions::new()
                         .create_new(true).write(true).open(&path)?);
@@ -651,5 +666,25 @@ mod spill_live_bytes_accounting_tests {
         sorted.delete_run(&run).unwrap();
         assert_eq!(sorted.temp_bytes, 0);
         assert!(!run.exists());
+    }
+}
+
+#[cfg(test)]
+mod preflight_external_merge_budget_tests {
+    use super::*;
+
+    #[test]
+    fn predicts_bytes_of_merged_runs_without_writing_new_output() {
+        let sorted = SortedRows::new(None, false);
+        let temp = SortScratch::new().unwrap();
+        let first = temp.0.join("source-1.bin");
+        let second = temp.0.join("source-2.bin");
+        fs::write(&first, vec![0u8; 1024]).unwrap();
+        fs::write(&second, vec![0u8; 3072]).unwrap();
+        let paths = vec![first, second];
+        assert!(sorted.preflight_merge_run(&paths).is_ok());
+        let mut nearly_full = sorted;
+        nearly_full.temp_bytes = MAX_TEMP_SORT_BYTES - 2_048;
+        assert!(nearly_full.preflight_merge_run(&paths).is_err());
     }
 }
