@@ -520,7 +520,7 @@ impl Parser {
                     }
                 },
                 Projection::GroupedAggregate {
-                    column, function, ..
+                    column, ..
                 } => match position {
                     1 => column.clone(),
                     2 => "#aggregate".into(),
