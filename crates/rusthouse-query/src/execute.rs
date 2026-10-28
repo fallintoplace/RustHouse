@@ -861,6 +861,9 @@ fn execute_grouped_aggregate_numbers<W: Write>(
             }
         }
     }
+    if let Some(having) = &query.having {
+        groups.retain(|(_, state)| state.passes_having(having));
+    }
     if let Some(order) = &query.order_by {
         groups.sort_by(|(left, _), (right, _)| {
             let ordering = compare_numbers(*left, *right);
@@ -1530,6 +1533,25 @@ impl AggregateState {
         }
         self.count = next_count;
         Ok(())
+    }
+
+    /// Compare supported numeric aggregate values without rounding to text.
+    fn passes_having(&self, having: &crate::Having) -> bool {
+        let value = match self.function {
+            AggregateFunction::Sum | AggregateFunction::Min | AggregateFunction::Max => self.value,
+            AggregateFunction::Avg if self.count > 0 => Some(Number::Float(self.mean)),
+            _ => None,
+        };
+        let Some(value) = value else {
+            // SQL HAVING removes groups whose aggregate is NULL.
+            return false;
+        };
+        let threshold = match value {
+            Number::Unsigned(_) => Number::Unsigned(u128::from(having.value)),
+            Number::Signed(_) => Number::Signed(i128::from(having.value)),
+            Number::Float(_) => Number::Float(having.value as f64),
+        };
+        number_matches(value, threshold, having.operator)
     }
 
     fn render(&self) -> String {

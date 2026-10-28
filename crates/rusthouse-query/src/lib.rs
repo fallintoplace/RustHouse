@@ -1255,32 +1255,58 @@ fn parse_select_tokens(tokens: Vec<Token>) -> Result<Select, ParseError> {
     }
 
     let having = if parser.keyword("HAVING") {
-        if !matches!(
+        if matches!(
             projection,
             Projection::GroupedCount { .. } | Projection::GroupedMultiCount { .. }
         ) {
-            return Err(ParseError("HAVING requires GROUP BY with COUNT(*)".into()));
-        }
-        let using_alias = alias.as_ref().is_some_and(|value| {
-            matches!(parser.tokens.get(parser.index), Some(Token::Word(word)) if word == value)
-        });
-        if using_alias {
-            parser.index += 1;
-        } else {
-            if !parser.keyword("COUNT") || !parser.take(Token::LParen) {
-                return Err(ParseError("HAVING requires COUNT(*)".into()));
+            let using_alias = alias.as_ref().is_some_and(|value| {
+                matches!(parser.tokens.get(parser.index), Some(Token::Word(word)) if word == value)
+            });
+            if using_alias {
+                parser.index += 1;
+            } else {
+                if !parser.keyword("COUNT") || !parser.take(Token::LParen) {
+                    return Err(ParseError("HAVING requires COUNT(*)".into()));
+                }
+                if !parser.take(Token::RParen)
+                    && !(parser.take(Token::Star) && parser.take(Token::RParen))
+                {
+                    return Err(ParseError("HAVING requires COUNT() or COUNT(*)".into()));
+                }
             }
-            if !parser.take(Token::RParen)
-                && !(parser.take(Token::Star) && parser.take(Token::RParen))
+        } else if let Projection::GroupedAggregate {
+            function,
+            value_column,
+            ..
+        } = &projection
+        {
+            if !matches!(
+                function,
+                AggregateFunction::Sum
+                    | AggregateFunction::Min
+                    | AggregateFunction::Max
+                    | AggregateFunction::Avg
+            ) {
+                return Err(ParseError("HAVING does not support this aggregate".into()));
+            }
+            let name = parser.word()?;
+            if !name.eq_ignore_ascii_case(function.name())
+                || !parser.take(Token::LParen)
+                || parser.word()? != *value_column
+                || !parser.take(Token::RParen)
             {
-                return Err(ParseError("HAVING requires COUNT() or COUNT(*)".into()));
+                return Err(ParseError(
+                    "HAVING must match the selected aggregate".into(),
+                ));
             }
+        } else {
+            return Err(ParseError("HAVING requires a grouped aggregate".into()));
         }
         let operator = parser.operator()?;
         let value = parser
             .number()?
             .parse::<u64>()
-            .map_err(|_| ParseError("HAVING count must be a UInt64".into()))?;
+            .map_err(|_| ParseError("HAVING threshold must be a UInt64".into()))?;
         Some(Having { operator, value })
     } else {
         None
