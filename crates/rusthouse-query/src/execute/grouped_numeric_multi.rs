@@ -2,7 +2,7 @@
 use super::typed::{self, Cell};
 use super::{AggregateState, ExecutionError};
 use crate::{AggregateFunction, Select};
-use rusthouse_storage::{TypedColumn, TypedQueryReader, inspect_query_source};
+use rusthouse_storage::{NumericColumn, TypedColumn, TypedQueryReader, inspect_query_source};
 use std::collections::{HashMap, hash_map::Entry};
 use std::io::Write;
 use std::path::Path;
@@ -61,6 +61,10 @@ pub(super) fn execute<W: Write>(
     let group_index = indices[column];
     let item_indices = items.iter().map(|(_, name)| indices[name]).collect::<Vec<_>>();
     let mut groups = Vec::<(Cell, Vec<AggregateState>)>::new();
+    // Two hundred and fifty-six fixed slots replace per-row hashing for
+    // non-nullable 8-bit grouping dimensions.
+    let mut dense_slots = matches!(group_type.as_str(), "UInt8" | "Int8")
+        .then(|| vec![usize::MAX; 256]);
     let mut by_key = HashMap::<typed::Key, usize>::new();
     let mut by_text = HashMap::<Vec<u8>, usize>::new();
     let mut reader = TypedQueryReader::open_with_metadata(part, &names, &metadata)?;
@@ -72,6 +76,25 @@ pub(super) fn execute<W: Write>(
             }
             // Nullable String keys can use the same borrowed-byte lookup as String.
             // Only new groups need to own the decoded bytes.
+            let index = if let Some(slots) = dense_slots.as_mut() {
+                let byte = match &batch[group_index] {
+                    TypedColumn::Numeric(NumericColumn::UInt8(values)) => values[row],
+                    TypedColumn::Numeric(NumericColumn::Int8(values)) => values[row] as u8,
+                    _ => return Err(ExecutionError::Invalid("unexpected byte GROUP BY type".into())),
+                };
+                let slot = &mut slots[usize::from(byte)];
+                if *slot != usize::MAX {
+                    *slot
+                } else {
+                    let index = groups.len();
+                    *slot = index;
+                    groups.push((
+                        typed::cell(&batch[group_index], row),
+                        items.iter().map(|(function, _)| AggregateState::new(*function)).collect(),
+                    ));
+                    index
+                }
+            } else {
             let borrowed_text = match &batch[group_index] {
                 TypedColumn::Text(values) => values.get(row),
                 TypedColumn::NullableText { values, nulls } if nulls[row] == 0 => values.get(row),
@@ -102,6 +125,8 @@ pub(super) fn execute<W: Write>(
                         groups.len() - 1
                     }
                 }
+            };
+                index
             };
             for (&column_index, state) in item_indices.iter().zip(groups[index].1.iter_mut()) {
                 match typed::cell(&batch[column_index], row) {

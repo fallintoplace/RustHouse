@@ -69,7 +69,14 @@ pub(super) fn batch_key_into(
             result.clear();
             return false;
         }
-        result.push(value.key());
+        // Reuse owned text and UUID values from the batch rather than cloning
+        // the allocation a second time when converting Cell into a hash key.
+        let key = match value {
+            typed::Cell::Text(bytes) => typed::Key::Text(bytes),
+            typed::Cell::Uuid(text) => typed::Key::Uuid(text),
+            _ => value.key(),
+        };
+        result.push(key);
     }
     true
 }
@@ -94,4 +101,25 @@ pub(super) fn add_pair(pairs: &mut Vec<Pair>, pair: Pair) -> Result<(), Executio
     }
     pairs.push(pair);
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use rusthouse_storage::read_legacy_strings;
+
+    #[test]
+    fn probe_key_moves_text_and_rejects_nullable_text() {
+        let mut stream = b"\x03abc\x03def".as_slice();
+        let values = read_legacy_strings(&mut stream, 2).unwrap();
+        let batch = vec![TypedColumn::NullableText {
+            values,
+            nulls: vec![0, 1],
+        }];
+        let mut key = Vec::new();
+        assert!(batch_key_into(&batch, 0, &[0], &mut key));
+        assert!(matches!(key.as_slice(), [typed::Key::Text(value)] if value == b"abc"));
+        assert!(!batch_key_into(&batch, 1, &[0], &mut key));
+        assert!(key.is_empty());
+    }
 }
