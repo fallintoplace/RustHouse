@@ -12,7 +12,7 @@ use std::io::Write;
 use std::path::Path;
 
 // Ordered and outer joins retain both inputs, bounded by row count and bytes.
-pub(super) const MAX_INPUT_ROWS: u64 = 16_384;
+pub(super) const MAX_INPUT_ROWS: u64 = 32_768;
 pub(super) const MAX_RESULT_ROWS: usize = 65_536;
 // Unordered INNER joins can build a larger hash side than sorted/outer joins.
 // Bound retained cells as well as row count to protect against wide String rows.
