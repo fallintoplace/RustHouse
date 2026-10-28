@@ -18,6 +18,21 @@ enum JsonKind<'a> {
 }
 
 impl<'a> JsonValue<'a> {
+    pub(crate) fn type_name(&self) -> &'static str {
+        match &self.kind {
+            JsonKind::Text(_) => "String",
+            JsonKind::Array(_) => "Array",
+            JsonKind::Object(_) => "Object",
+            JsonKind::Primitive => match self.raw {
+                "true" | "false" => "Bool",
+                "null" => "Null",
+                text if text.contains(['.', 'e', 'E']) => "Float64",
+                text if text.starts_with('-') => "Int64",
+                _ => "UInt64",
+            },
+        }
+    }
+
     pub(crate) fn raw(&self) -> &str {
         self.raw
     }
