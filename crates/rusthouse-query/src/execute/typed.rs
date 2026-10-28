@@ -976,16 +976,15 @@ pub(super) fn execute_typed<W: Write>(
     let mut single_distinct = HashSet::<Key>::new();
     // Small integer domains need only 32 bytes (8-bit) or 8 KiB (16-bit)
     // to identify already emitted DISTINCT values, without hashing.
-    let mut dense_single_distinct =
-        if query.distinct && projection_indices.len() == 1 {
-            match projection_types.first().copied() {
-                Some("UInt8" | "Int8") => Some(vec![0u64; 4]),
-                Some("UInt16" | "Int16") => Some(vec![0u64; 1024]),
-                _ => None,
-            }
-        } else {
-            None
-        };
+    let mut dense_single_distinct = if query.distinct && projection_indices.len() == 1 {
+        match projection_types.first().copied() {
+            Some("UInt8" | "Int8") => Some(vec![0u64; 4]),
+            Some("UInt16" | "Int16") => Some(vec![0u64; 1024]),
+            _ => None,
+        }
+    } else {
+        None
+    };
     let mut distinct_probe = Vec::<Key>::new();
     // COUNT(DISTINCT column) has one key; avoid a Vec allocation per row.
     let mut count_distinct_keys = HashSet::<Key>::new();
