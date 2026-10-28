@@ -14,6 +14,20 @@ use super::join::{
 const MAX_CHAIN_BYTES: usize = crate::join::MAX_JOIN_CHAIN_BYTES;
 const MAX_CHAIN_COLUMNS: usize = 128;
 
+fn write_join_header<W: Write>(
+    output: &mut W,
+    selected: &[(usize, String, Option<usize>)],
+) -> Result<(), ExecutionError> {
+    for (index, (_, name, _)) in selected.iter().enumerate() {
+        if index != 0 {
+            output.write_all(b"\t")?;
+        }
+        output.write_all(name.as_bytes())?;
+    }
+    output.write_all(b"\n")?;
+    Ok(())
+}
+
 fn invalid(message: impl Into<String>) -> ExecutionError {
     ExecutionError::Invalid(message.into())
 }
@@ -321,12 +335,7 @@ pub fn execute_multi_join<W: Write>(
             column_index(&relations, column)?;
         }
         let selected = output_columns(query, &relations, &initial_step)?;
-        let header = selected
-            .iter()
-            .map(|(_, name, _)| name.as_str())
-            .collect::<Vec<_>>()
-            .join("\t");
-        writeln!(output, "{header}")?;
+        write_join_header(output, &selected)?;
         return Ok(());
     }
 
@@ -454,12 +463,7 @@ pub fn execute_multi_join<W: Write>(
         });
     }
     let selected = output_columns(query, &relations, &initial_step)?;
-    let header = selected
-        .iter()
-        .map(|(_, name, _)| name.as_str())
-        .collect::<Vec<_>>()
-        .join("\t");
-    writeln!(output, "{header}")?;
+    write_join_header(output, &selected)?;
     for row in rows
         .iter()
         .skip(query.offset)
