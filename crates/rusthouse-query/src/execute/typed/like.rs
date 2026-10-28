@@ -112,7 +112,7 @@ pub(super) fn like_matches(value: &[u8], pattern: &LikePattern, case_insensitive
             value
                 .get(..bytes.len())
                 .is_some_and(|prefix| equal_like_bytes(prefix, bytes, case_insensitive))
-        },
+        }
         LikePattern::Suffix(bytes) => {
             if case_insensitive {
                 if let Some(matches) =
@@ -124,7 +124,7 @@ pub(super) fn like_matches(value: &[u8], pattern: &LikePattern, case_insensitive
             value
                 .get(value.len().saturating_sub(bytes.len())..)
                 .is_some_and(|suffix| equal_like_bytes(suffix, bytes, case_insensitive))
-        },
+        }
         LikePattern::Contains(bytes) => {
             if case_insensitive {
                 if let Some(matches) =
@@ -136,7 +136,9 @@ pub(super) fn like_matches(value: &[u8], pattern: &LikePattern, case_insensitive
             if bytes.is_empty() {
                 true
             } else if !case_insensitive {
-                value.windows(bytes.len()).any(|part| part == bytes.as_slice())
+                value
+                    .windows(bytes.len())
+                    .any(|part| part == bytes.as_slice())
             } else if value.is_ascii() && bytes.is_ascii() {
                 value
                     .windows(bytes.len())
