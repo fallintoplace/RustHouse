@@ -153,9 +153,7 @@ pub(super) fn like_matches(value: &[u8], pattern: &LikePattern, case_insensitive
                 {
                     haystack.contains(needle)
                 } else {
-                    value
-                        .windows(bytes.len())
-                        .any(|part| part == bytes)
+                    value.windows(bytes.len()).any(|part| part == bytes)
                 }
             } else if value.is_ascii() && bytes.is_ascii() {
                 value
