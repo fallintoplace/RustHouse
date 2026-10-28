@@ -5,7 +5,7 @@ use crate::numeric::numeric_storage_type;
 use crate::query_parts;
 use crate::scan_layout::ScanLayout;
 use crate::{
-    CompressedBlockReader, DecodedBlock, NumericColumn, PartError, StringColumn, UuidValue,
+    CompressedBlockReader, DecodedBlock, NumericColumn, PartError, PartMetadata, StringColumn, UuidValue,
     WideMark, inspect_part, read_legacy_strings, read_uuid_values, read_wide_marks,
 };
 use crate::mark_validation::validate_wide_marks_reader;
@@ -360,6 +360,30 @@ impl TypedQueryReader {
     pub fn open(path: &Path, columns: &[String]) -> Result<Self, PartError> {
         let parts = query_parts(path)?;
         let metadata = crate::query_source::inspect_parts_metadata(path, &parts)?;
+        Self::from_validated_parts(parts, columns, &metadata)
+    }
+
+    /// Reuse the planner's validated metadata for an immutable snapshot
+    /// instead of inspecting every part again before the typed scan.
+    pub fn open_with_metadata(
+        path: &Path,
+        columns: &[String],
+        metadata: &PartMetadata,
+    ) -> Result<Self, PartError> {
+        if metadata.path.as_path() != path {
+            return Err(PartError::InvalidScan(
+                "scan metadata belongs to a different snapshot".into(),
+            ));
+        }
+        let parts = query_parts(path)?;
+        Self::from_validated_parts(parts, columns, metadata)
+    }
+
+    fn from_validated_parts(
+        parts: Vec<PathBuf>,
+        columns: &[String],
+        metadata: &PartMetadata,
+    ) -> Result<Self, PartError> {
         for name in columns {
             if !metadata.columns.iter().any(|column| &column.name == name) {
                 return Err(PartError::InvalidScan(format!("unknown column: {name}")));
@@ -511,6 +535,26 @@ mod tests {
             })
             .collect::<Vec<_>>();
         write_wide_part(&part, &columns, &rows).unwrap();
+        let metadata = crate::inspect_query_source(&part).unwrap();
+        let mut snapshot = TypedQueryReader::open_with_metadata(
+            &part,
+            &["id".into(), "note".into()],
+            &metadata,
+        ).unwrap();
+        let mut scanned = 0;
+        while let Some(batch) = snapshot.next_batch().unwrap() {
+            scanned += batch[0].len();
+        }
+        assert_eq!(scanned, 2050);
+        assert!(matches!(
+            TypedQueryReader::open_with_metadata(
+                &root,
+                &["id".into()],
+                &metadata,
+            ),
+            Err(PartError::InvalidScan(_))
+        ));
+
 
         let mut reader = TypedPartReader::open(&part, &["id".into(), "note".into()]).unwrap();
         assert_eq!(reader.mark_count(), 3);
