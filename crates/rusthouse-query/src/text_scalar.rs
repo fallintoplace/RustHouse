@@ -12,6 +12,7 @@ pub(super) fn is_function(name: &str) -> bool {
             | "OCTET_LENGTH"
             | "ASCII"
             | "UTF16_LENGTH"
+            | "SUBTRACTQUARTERS"
             | "HASSUBSEQUENCE"
             | "CHR"
             | "STRINGBYTESUNIQ"
@@ -267,6 +268,49 @@ fn parse_at_depth(parser: &mut Parser, depth: usize) -> Result<ConstantValue, Pa
                     ConstantValue::Text(output)
                 }
                 None => ConstantValue::Null,
+            }
+        }
+        "SUBTRACTQUARTERS" => {
+            let input = text_arg(parser, depth + 1)?;
+            require(parser, Token::Comma, "subtractQuarters requires an interval")?;
+            let count = integer_arg(parser, depth + 1)?;
+            require(parser, Token::RParen, "subtractQuarters requires two arguments")?;
+            match (input, count) {
+                (Some(value), Some(count)) => {
+                    if rusthouse_storage::parse_date(&value).is_none() {
+                        return Err(ParseError("invalid Date argument".into()));
+                    }
+                    let year = value[..4].parse::<i64>()
+                        .map_err(|_| ParseError("invalid Date year".into()))?;
+                    let month = value[5..7].parse::<i64>()
+                        .map_err(|_| ParseError("invalid Date month".into()))?;
+                    let day = value[8..10].parse::<i64>()
+                        .map_err(|_| ParseError("invalid Date day".into()))?;
+                    let shift = count.checked_mul(3).and_then(|n| n.checked_neg())
+                        .ok_or_else(|| ParseError("date interval exceeds Int64".into()))?;
+                    let month_index = (year - 1970) * 12 + month - 1;
+                    let target_index = month_index.checked_add(shift)
+                        .ok_or_else(|| ParseError("date interval exceeds Int64".into()))?;
+                    let target_year = 1970 + target_index.div_euclid(12);
+                    let target_month = target_index.rem_euclid(12) + 1;
+                    let leap = target_year % 4 == 0
+                        && (target_year % 100 != 0 || target_year % 400 == 0);
+                    let maximum_day = match target_month {
+                        2 if leap => 29,
+                        2 => 28,
+                        4 | 6 | 9 | 11 => 30,
+                        _ => 31,
+                    };
+                    let target = format!(
+                        "{target_year:04}-{target_month:02}-{:02}",
+                        day.min(maximum_day)
+                    );
+                    if rusthouse_storage::parse_date(&target).is_none() {
+                        return Err(ParseError("result is outside Date range".into()));
+                    }
+                    ConstantValue::Text(target)
+                }
+                _ => ConstantValue::Null,
             }
         }
         "UTF16_LENGTH" => {
