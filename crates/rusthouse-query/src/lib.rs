@@ -666,6 +666,10 @@ fn parse_select_tokens(tokens: Vec<Token>) -> Result<Select, ParseError> {
         Some(Token::Word(word)) if word.eq_ignore_ascii_case("NULL") || scalar::is_function(word) || text_scalar::is_function(word)
     ) {
         let mut columns = Vec::new();
+        let is_text_scalar = matches!(
+            parser.tokens.get(parser.index),
+            Some(Token::Word(name)) if text_scalar::is_function(name)
+        );
         loop {
             if columns.len() >= 64 {
                 return Err(ParseError("SELECT supports at most 64 constants".into()));
@@ -701,7 +705,9 @@ fn parse_select_tokens(tokens: Vec<Token>) -> Result<Select, ParseError> {
                 break;
             }
         }
-        if let [
+        if is_text_scalar {
+            Projection::Constants(columns)
+        } else if let [
             Constant {
                 value: ConstantValue::Integer(value),
                 alias,
