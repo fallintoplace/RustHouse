@@ -59,3 +59,30 @@ fn rejects_mismatched_grouping_keys() {
     );
     assert!(!bad.status.success(), "{bad:?}");
 }
+
+#[test]
+fn repeated_composite_keys_across_parts_keep_distinct_groups() {
+    let db = std::env::temp_dir().join(format!(
+        "rusthouse-multikey-repeated-{}-{}",
+        std::process::id(),
+        NEXT.fetch_add(1, Ordering::Relaxed)
+    ));
+    for query in [
+        "CREATE TABLE sales (region String, category String, amount Nullable(UInt64))",
+        "INSERT INTO sales VALUES ('EU', 'books', 10), ('EU', 'books', NULL), ('US', 'games', 3)",
+        "INSERT INTO sales VALUES ('EU', 'books', 5), ('US', 'games', 7), ('EU', 'games', 2)",
+    ] {
+        let result = sql(query, &db);
+        assert!(result.status.success(), "{query}: {result:?}");
+    }
+    let result = sql(
+        "SELECT region, category, sum(amount), min(amount), max(amount) FROM sales GROUP BY region, category ORDER BY region, category",
+        &db,
+    );
+    assert!(result.status.success(), "{result:?}");
+    assert_eq!(
+        result.stdout,
+        b"region\tcategory\tsum(amount)\tmin(amount)\tmax(amount)\nEU\tbooks\t15\t5\t10\nEU\tgames\t2\t2\t2\nUS\tgames\t10\t3\t7\n"
+    );
+    fs::remove_dir_all(db).unwrap();
+}
