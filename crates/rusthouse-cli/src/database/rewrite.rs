@@ -14,8 +14,9 @@ const MAX_PART_BUFFER_BYTES: usize = 4 * 1024 * 1024;
 const MAX_STREAMED_PART_BYTES: usize = 64 * 1024 * 1024;
 const MAX_STREAMED_COLUMN_BYTES: usize = 7 * 1024 * 1024;
 const MAX_REWRITE_PARTS: u64 = 16_384;
-// The writer accepts 65,536 rows. Rewrites also retain a 4 MiB value budget.
-const PART_ROWS: usize = 65_536;
+// Large COPY batches reduce the number of immutable parts without relaxing
+// byte budgets. Row-based rewrites still honor their existing memory cap.
+const PART_ROWS: usize = 262_144;
 
 // Debug-only simulated publication errors allow integration tests to exercise
 // cleanup and recovery without relying on platform-dependent permissions.
@@ -344,7 +345,7 @@ pub(super) fn append_parts_stream(
             }
             sync_directory(&destination)?;
         }
-        let mut buffer: StoredRows = Vec::with_capacity(PART_ROWS);
+        let mut buffer: StoredRows = Vec::with_capacity(PART_ROWS.min(65_536));
         let mut buffered_bytes = 0usize;
         let mut column_bytes = vec![0usize; cols.len()];
         let mut part_index = 0usize;
