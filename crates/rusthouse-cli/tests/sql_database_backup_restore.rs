@@ -48,7 +48,10 @@ fn copy_directory(source: &Path, destination: &Path) {
         if kind.is_dir() {
             copy_directory(&source_path, &target);
         } else {
-            assert!(kind.is_file(), "backup must not follow links: {source_path:?}");
+            assert!(
+                kind.is_file(),
+                "backup must not follow links: {source_path:?}"
+            );
             fs::copy(source_path, target).unwrap();
         }
     }
@@ -84,11 +87,7 @@ fn complete_offline_copy_restores_active_rows_and_accepts_new_writes() {
     fs::create_dir(&source).unwrap();
     populate(&source);
 
-    let expected = must_succeed(sql(
-        &source,
-        "SELECT id, name FROM events ORDER BY id",
-    ))
-    .stdout;
+    let expected = must_succeed(sql(&source, "SELECT id, name FROM events ORDER BY id")).stdout;
     assert_eq!(expected, b"id\tname\n2\tbeta\n3\tgamma\n");
     must_succeed(doctor(&source));
 

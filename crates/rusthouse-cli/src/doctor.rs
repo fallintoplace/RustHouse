@@ -154,7 +154,10 @@ fn inspect_saved_generations(
         let entry = match entry {
             Ok(entry) => entry,
             Err(error) => {
-                report.error(table, format!("cannot read saved generation entry: {error}"));
+                report.error(
+                    table,
+                    format!("cannot read saved generation entry: {error}"),
+                );
                 continue;
             }
         };
