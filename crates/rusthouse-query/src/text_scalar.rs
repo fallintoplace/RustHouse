@@ -39,6 +39,7 @@ pub(super) fn is_function(name: &str) -> bool {
             | "COALESCE"
             | "CONCAT_WS"
             | "CUTFRAGMENT"
+            | "YYYYMMDDHHMMSSTODATETIME"
             | "URL_ENCODE"
             | "FRAGMENT"
             | "JSON_QUOTE"
@@ -431,6 +432,36 @@ fn parse_at_depth(parser: &mut Parser, depth: usize) -> Result<ConstantValue, Pa
             require(parser, Token::RParen, "REVERSE requires one argument")?;
             match input {
                 Some(value) => ConstantValue::Text(value.chars().rev().collect()),
+                None => ConstantValue::Null,
+            }
+        }
+        "YYYYMMDDHHMMSSTODATETIME" => {
+            let input = integer_arg(parser, depth + 1)?;
+            require(
+                parser,
+                Token::RParen,
+                "YYYYMMDDhhmmssToDateTime requires one argument",
+            )?;
+            match input {
+                Some(value) => {
+                    let digits = value.to_string();
+                    if digits.len() != 14 || !digits.is_ascii() {
+                        return Err(ParseError("YYYYMMDDhhmmssToDateTime requires a 14-digit integer".into()));
+                    }
+                    let timestamp = format!(
+                        "{}-{}-{} {}:{}:{}",
+                        &digits[..4],
+                        &digits[4..6],
+                        &digits[6..8],
+                        &digits[8..10],
+                        &digits[10..12],
+                        &digits[12..14],
+                    );
+                    if rusthouse_storage::parse_datetime(&timestamp).is_none() {
+                        return Err(ParseError("YYYYMMDDhhmmssToDateTime requires a valid UTC calendar value".into()));
+                    }
+                    ConstantValue::Text(timestamp)
+                }
                 None => ConstantValue::Null,
             }
         }
