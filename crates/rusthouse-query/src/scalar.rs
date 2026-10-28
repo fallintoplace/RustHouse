@@ -87,6 +87,7 @@ pub(super) fn is_function(name: &str) -> bool {
         || name.eq_ignore_ascii_case("FLOOR_TO_MULTIPLE")
         || name.eq_ignore_ascii_case("ROUND_TO_MULTIPLE")
         || name.eq_ignore_ascii_case("PMOD")
+        || name.eq_ignore_ascii_case("POSITIVEMODULO")
         || name.eq_ignore_ascii_case("TRAILING_ONES")
 }
 
@@ -990,7 +991,7 @@ fn factor(parser: &mut Parser, depth: usize) -> Result<i64, ParseError> {
     if parser.keyword("ROUND_TO_MULTIPLE") {
         return parse_round_to_multiple(parser, depth);
     }
-    if parser.keyword("PMOD") {
+    if parser.keyword("PMOD") || parser.keyword("POSITIVEMODULO") {
         return parse_pmod(parser, depth);
     }
     if parser.keyword("FLOOR_TO_MULTIPLE") {
