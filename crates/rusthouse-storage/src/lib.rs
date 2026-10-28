@@ -2,6 +2,7 @@ mod arrays;
 mod checksums;
 mod columns;
 mod compression;
+pub mod distributed_chunk_plan;
 mod database_lock;
 mod dates;
 mod decimal;
