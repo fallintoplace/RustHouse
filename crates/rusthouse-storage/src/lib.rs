@@ -5,6 +5,7 @@ pub mod distributed_object_key;
 mod columns;
 pub mod distributed_crc32c;
 mod compression;
+pub mod distributed_chunk_plan;
 mod database_lock;
 mod dates;
 mod decimal;
