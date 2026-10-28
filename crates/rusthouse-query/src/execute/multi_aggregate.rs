@@ -400,7 +400,9 @@ fn generated_series_metrics(
 ) -> Option<Result<Vec<String>, ExecutionError>> {
     if !items.iter().all(|item| {
         !item.distinct
-            && matches!(item.argument.as_ref(), None | Some(ScalarExpr::Column(name)) if name == "number")
+            && item.argument.as_ref().is_none_or(|expression| {
+                matches!(expression, ScalarExpr::Column(name) if name == "number")
+            })
             && matches!(item.function, None | Some(crate::AggregateFunction::Count
                 | crate::AggregateFunction::Sum | crate::AggregateFunction::Min
                 | crate::AggregateFunction::Max | crate::AggregateFunction::Avg))
@@ -417,7 +419,7 @@ fn generated_series_metrics(
     let sum = if n & 1 == 0 {
         (n / 2) * (first + last)
     } else {
-        n * ((first + last) / 2) + n * ((first + last) % 2) / 2
+        n * ((first + last) / 2)
     };
     let results = items.iter().map(|item| {
         Ok(match item.function {
