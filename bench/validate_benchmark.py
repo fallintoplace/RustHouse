@@ -40,9 +40,9 @@ def validate_manifest(directory, manifest, *, rows, samples, stations):
             raise ValueError(f"unexpected output filename for benchmark suite: {suite}")
         stdout_path = directory / output
         stderr_path = directory / error
-        if not stdout_path.is_file() or stdout_path.stat().st_size == 0:
+        if stdout_path.is_symlink() or not stdout_path.is_file() or stdout_path.stat().st_size == 0:
             raise ValueError(f"missing or empty benchmark measurements: {output}")
-        if not stderr_path.is_file():
+        if stderr_path.is_symlink() or not stderr_path.is_file():
             raise ValueError(f"missing benchmark diagnostics: {error}")
     if seen != set(BENCHMARK_SUITES):
         raise ValueError("benchmark manifest does not cover all configured suites")
