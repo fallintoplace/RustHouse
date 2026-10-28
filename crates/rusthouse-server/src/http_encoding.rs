@@ -1,7 +1,12 @@
 use super::*;
 
 pub(super) fn hex_digit(value: u8) -> Option<u8> {
-    (value as char).to_digit(16).map(|digit| digit as u8)
+    match value {
+        b'0'..=b'9' => Some(value - b'0'),
+        b'a'..=b'f' => Some(value - b'a' + 10),
+        b'A'..=b'F' => Some(value - b'A' + 10),
+        _ => None,
+    }
 }
 
 pub(super) fn decode_url(value: &str) -> Result<String, &'static str> {
@@ -87,6 +92,17 @@ pub(super) fn write_json_string<W: Write>(writer: &mut W, value: &str) -> io::Re
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn parses_only_ascii_hex_digits() {
+        assert_eq!(hex_digit(b'0'), Some(0));
+        assert_eq!(hex_digit(b'9'), Some(9));
+        assert_eq!(hex_digit(b'a'), Some(10));
+        assert_eq!(hex_digit(b'F'), Some(15));
+        assert_eq!(hex_digit(b'G'), None);
+        assert_eq!(hex_digit(0xff), None);
+        assert_eq!(decode_url("%4f%4A").unwrap(), "OJ");
+    }
 
     #[test]
     fn bounds_encoded_query_size_before_allocation() {

@@ -68,27 +68,27 @@ fn parse_headers(line: &[u8]) -> io::Result<Vec<Vec<u8>>> {
 }
 
 fn write_json_row<W: Write>(output: &mut W, headers: &[Vec<u8>], line: &[u8]) -> io::Result<()> {
-    let field_count = 1 + line.iter().filter(|byte| **byte == b'\t').count();
-    if field_count != headers.len() {
-        return Err(io::Error::new(
-            io::ErrorKind::InvalidData,
-            "JSONL row does not match header column count",
-        ));
-    }
-
+    // Visit each TSV field once. Validate the shape in the local row buffer
+    // so malformed records never partially write to the output stream.
+    let mut fields = line.split(|byte| *byte == b'\t');
     let mut row = Vec::with_capacity(line.len() + headers.len() * 8 + 3);
     row.write_all(b"{")?;
-    for (index, (header, value)) in headers
-        .iter()
-        .zip(line.split(|byte| *byte == b'\t'))
-        .enumerate()
-    {
+    for (index, header) in headers.iter().enumerate() {
+        let value = fields.next().ok_or_else(|| {
+            io::Error::new(io::ErrorKind::InvalidData, "JSONL row does not match header column count")
+        })?;
         if index > 0 {
             row.write_all(b",")?;
         }
         write_json_string(&mut row, header)?;
         row.write_all(b":")?;
         write_json_value(&mut row, value)?;
+    }
+    if fields.next().is_some() {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            "JSONL row does not match header column count",
+        ));
     }
     row.write_all(b"}\n")?;
     output.write_all(&row)
@@ -405,5 +405,26 @@ mod decoded_tsv_json_regressions {
         write_json_value(&mut output, b"a\\tb").unwrap();
         assert_eq!(output, "\"café\"\"a\\tb\"".as_bytes());
         assert!(write_json_value(&mut Vec::new(), &[0xff]).is_err());
+    }
+}
+
+#[cfg(test)]
+mod single_pass_row_tests {
+    use super::*;
+
+    #[test]
+    fn mismatched_fields_never_emit_partial_json() {
+        let headers = vec![b"id".to_vec(), b"value".to_vec()];
+        for malformed in [b"one".as_slice(), b"one\ttwo\tthree".as_slice()] {
+            let mut output = Vec::new();
+            assert_eq!(
+                write_json_row(&mut output, &headers, malformed).unwrap_err().kind(),
+                io::ErrorKind::InvalidData
+            );
+            assert!(output.is_empty());
+        }
+        let mut output = Vec::new();
+        write_json_row(&mut output, &headers, b"one\ttwo").unwrap();
+        assert_eq!(output, b"{\"id\":\"one\",\"value\":\"two\"}\n");
     }
 }

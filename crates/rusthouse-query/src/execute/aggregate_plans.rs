@@ -404,19 +404,27 @@ pub(super) fn execute_count_distinct_part<W: Write>(
             "UInt16" | "Int16" => Some(65536usize),
             _ => None,
         });
-    if no_filters && query.order_by.is_none() && query.order_by_extra.is_empty() {
+    if query.order_by.is_none() && query.order_by_extra.is_empty() {
         if let Some(domain) = domain {
             let mut bits = vec![0u64; domain / 64];
             while let Some(batch) = reader.next_batch()? {
-                let mut record = |value: usize| {
+                // Narrow values remain in their native array. Apply WHERE
+                // before setting the bit, without constructing NumberKey or
+                // probing a hash table for each qualifying row.
+                for row in 0..batch[0].len() {
+                    if !no_filters && !batch_matches(&batch, row, &comparisons) {
+                        continue;
+                    }
+                    let value = match &batch[0] {
+                        NumericColumn::UInt8(values) => usize::from(values[row]),
+                        NumericColumn::Int8(values) => usize::from(values[row] as u8),
+                        NumericColumn::UInt16(values) => usize::from(values[row]),
+                        NumericColumn::Int16(values) => usize::from(values[row] as u16),
+                        _ => return Err(ExecutionError::Invalid(
+                            "unexpected COUNT(DISTINCT) narrow column type".into(),
+                        )),
+                    };
                     bits[value / 64] |= 1u64 << (value % 64);
-                };
-                match &batch[0] {
-                    NumericColumn::UInt8(values) => values.iter().for_each(|&value| record(value as usize)),
-                    NumericColumn::Int8(values) => values.iter().for_each(|&value| record((value as u8) as usize)),
-                    NumericColumn::UInt16(values) => values.iter().for_each(|&value| record(value as usize)),
-                    NumericColumn::Int16(values) => values.iter().for_each(|&value| record((value as u16) as usize)),
-                    _ => return Err(ExecutionError::Invalid("unexpected COUNT(DISTINCT) narrow column type".into())),
                 }
             }
             if query.offset.unwrap_or(0) == 0 {
@@ -471,16 +479,58 @@ pub(super) fn execute_aggregate_part<W: Write>(
     if query.limit == Some(0) {
         return Ok(());
     }
-    // A native array can compute its local minimum or maximum in one
-    // contiguous pass. Only compare one candidate per granule as Number.
-    let unfiltered = query.predicates.is_empty() && query.or_predicates.is_empty();
+    let no_filters = query.predicates.is_empty() && query.or_predicates.is_empty();
+    // For plain integer SUM without WHERE, operate on contiguous typed arrays
+    // and avoid AggregateState dispatch and Number conversion on every row.
     let native_integer = metadata.columns.iter().any(|candidate| {
         candidate.name == column && matches!(candidate.data_type.as_str(),
             "UInt8" | "UInt16" | "UInt32" | "UInt64" | "UInt128"
             | "Int8" | "Int16" | "Int32" | "Int64" | "Int128")
     });
+    if function == AggregateFunction::Sum && no_filters && native_integer {
+        let mut total: Option<Number> = None;
+        macro_rules! fold_batch {
+            ($values:expr, $kind:ident, $wide:ty) => {{
+                for &value in $values {
+                    let value = <$wide>::from(value);
+                    total = Some(match total {
+                        None => Number::$kind(value),
+                        Some(Number::$kind(previous)) => Number::$kind(
+                            previous.checked_add(value).ok_or_else(|| {
+                                ExecutionError::Invalid(format!(
+                                    "{} SUM overflow", stringify!($kind).to_lowercase()
+                                ))
+                            })?
+                        ),
+                        _ => return Err(ExecutionError::Invalid("incompatible types in SUM".into())),
+                    });
+                }
+            }};
+        }
+        while let Some(batch) = reader.next_batch()? {
+            match &batch[0] {
+                NumericColumn::UInt8(values) => fold_batch!(values, Unsigned, u128),
+                NumericColumn::UInt16(values) => fold_batch!(values, Unsigned, u128),
+                NumericColumn::UInt32(values) => fold_batch!(values, Unsigned, u128),
+                NumericColumn::UInt64(values) => fold_batch!(values, Unsigned, u128),
+                NumericColumn::UInt128(values) => fold_batch!(values, Unsigned, u128),
+                NumericColumn::Int8(values) => fold_batch!(values, Signed, i128),
+                NumericColumn::Int16(values) => fold_batch!(values, Signed, i128),
+                NumericColumn::Int32(values) => fold_batch!(values, Signed, i128),
+                NumericColumn::Int64(values) => fold_batch!(values, Signed, i128),
+                NumericColumn::Int128(values) => fold_batch!(values, Signed, i128),
+                _ => return Err(ExecutionError::Invalid("unexpected numeric SUM column type".into())),
+            }
+        }
+        if query.offset.unwrap_or(0) == 0 {
+            if let Some(value) = total { writeln!(output, "{value}")?; }
+            else { writeln!(output, "NULL")?; }
+        }
+        return Ok(());
+    }
+    // Reduce each native integer batch to one MIN/MAX candidate.
     if matches!(function, AggregateFunction::Min | AggregateFunction::Max)
-        && unfiltered && native_integer
+        && no_filters && native_integer
     {
         let mut extremum: Option<Number> = None;
         macro_rules! candidate {
@@ -523,7 +573,6 @@ pub(super) fn execute_aggregate_part<W: Write>(
         return Ok(());
     }
     let mut state = AggregateState::new(function);
-    let no_filters = query.predicates.is_empty() && query.or_predicates.is_empty();
     while let Some(batch) = reader.next_batch()? {
         for row in 0..batch[0].len() {
             if !no_filters && !batch_matches(&batch, row, &comparisons) {
@@ -614,6 +663,19 @@ pub(super) fn execute_aggregate_numbers<W: Write>(
         }
         return Ok(());
         }
+    }
+    // Positive equality/IN filters identify a small set of source positions.
+    // Visit those exact rows instead of enumerating a billion unmatched values.
+    if let Some(indices) = sparse_generated_positions(&comparisons, start, rows, step) {
+        let mut state = AggregateState::new(function);
+        for index in indices {
+            let value = u128::from(start) + u128::from(index) * u128::from(step);
+            state.update(Number::Unsigned(value))?;
+        }
+        if query.offset.unwrap_or(0) == 0 {
+            writeln!(output, "{}", state.render())?;
+        }
+        return Ok(());
     }
     let mut state = AggregateState::new(function);
     for index in 0..rows {

@@ -1,5 +1,6 @@
 //! Strict, explicit membership file for experimental storage clusters.
 use std::collections::HashSet;
+use std::fmt::Write;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Member {
@@ -73,13 +74,13 @@ pub fn format_membership(members: &[Member]) -> Result<String, &'static str> {
             return Err("invalid or duplicate membership record");
         }
     }
-    let mut text = String::new();
+    let mut text = String::with_capacity((members.len() * 64).min(8192));
     for member in members {
-        let record = format!("{} {} {}\n", member.node, member.zone, member.weight);
-        if text.len() + record.len() > 8192 {
+        write!(&mut text, "{} {} {}\n", member.node, member.zone, member.weight)
+            .expect("writing to String is infallible");
+        if text.len() > 8192 {
             return Err("membership manifest too large");
         }
-        text.push_str(&record);
     }
     Ok(text)
 }

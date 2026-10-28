@@ -130,15 +130,102 @@ pub(super) fn count_batch_matches(
             return batch.first().map_or(0, NumericColumn::len);
         }
         if let [predicate] = predicates.as_slice() {
+            if let CompiledTest::InSet { targets, negated } = &predicate.test {
+                macro_rules! count_hashed_in {
+                    ($values:expr, $variant:ident, $wide:ty) => {{
+                        return $values.iter().filter(|&&value| {
+                            let key = NumberKey::$variant(<$wide>::from(value));
+                            targets.contains(&key) != *negated
+                        }).count();
+                    }};
+                }
+                match &batch[predicate.index] {
+                    NumericColumn::UInt8(v) => count_hashed_in!(v, Unsigned, u128),
+                    NumericColumn::UInt16(v) => count_hashed_in!(v, Unsigned, u128),
+                    NumericColumn::UInt32(v) => count_hashed_in!(v, Unsigned, u128),
+                    NumericColumn::UInt64(v) => count_hashed_in!(v, Unsigned, u128),
+                    NumericColumn::UInt128(v) => count_hashed_in!(v, Unsigned, u128),
+                    NumericColumn::Int8(v) => count_hashed_in!(v, Signed, i128),
+                    NumericColumn::Int16(v) => count_hashed_in!(v, Signed, i128),
+                    NumericColumn::Int32(v) => count_hashed_in!(v, Signed, i128),
+                    NumericColumn::Int64(v) => count_hashed_in!(v, Signed, i128),
+                    NumericColumn::Int128(v) => count_hashed_in!(v, Signed, i128),
+                    NumericColumn::Float32(_) | NumericColumn::Float64(_) => {}
+                }
+            }
+            if let CompiledTest::NotBetween { lower, upper } = &predicate.test {
+                macro_rules! count_outside {
+                    ($values:expr, $lower:expr, $upper:expr, $wide:ty) => {{
+                        return $values.iter().filter(|&&value| {
+                            let value = <$wide>::from(value);
+                            !(value >= $lower && value <= $upper)
+                        }).count();
+                    }};
+                }
+                match (&batch[predicate.index], *lower, *upper) {
+                    (NumericColumn::UInt8(v), Number::Unsigned(a), Number::Unsigned(b)) => count_outside!(v, a, b, u128),
+                    (NumericColumn::UInt16(v), Number::Unsigned(a), Number::Unsigned(b)) => count_outside!(v, a, b, u128),
+                    (NumericColumn::UInt32(v), Number::Unsigned(a), Number::Unsigned(b)) => count_outside!(v, a, b, u128),
+                    (NumericColumn::UInt64(v), Number::Unsigned(a), Number::Unsigned(b)) => count_outside!(v, a, b, u128),
+                    (NumericColumn::UInt128(v), Number::Unsigned(a), Number::Unsigned(b)) => count_outside!(v, a, b, u128),
+                    (NumericColumn::Int8(v), Number::Signed(a), Number::Signed(b)) => count_outside!(v, a, b, i128),
+                    (NumericColumn::Int16(v), Number::Signed(a), Number::Signed(b)) => count_outside!(v, a, b, i128),
+                    (NumericColumn::Int32(v), Number::Signed(a), Number::Signed(b)) => count_outside!(v, a, b, i128),
+                    (NumericColumn::Int64(v), Number::Signed(a), Number::Signed(b)) => count_outside!(v, a, b, i128),
+                    (NumericColumn::Int128(v), Number::Signed(a), Number::Signed(b)) => count_outside!(v, a, b, i128),
+                    (NumericColumn::Float32(v), Number::Float(a), Number::Float(b)) => count_outside!(v, a, b, f64),
+                    (NumericColumn::Float64(v), Number::Float(a), Number::Float(b)) => count_outside!(v, a, b, f64),
+                    _ => {}
+                }
+            }
+            if let CompiledTest::Always(value) = &predicate.test {
+                return if *value {
+                    batch.first().map_or(0, NumericColumn::len)
+                } else {
+                    0
+                };
+            }
             if let CompiledTest::Comparison { operator, target } = &predicate.test {
+                if let Operator::Modulo(modulus) | Operator::ModuloNe(modulus) = *operator {
+                    let negated = matches!(operator, Operator::ModuloNe(_));
+                    if modulus != 0 {
+                        macro_rules! modulo_count {
+                            ($values:expr, $target:expr, $wide:ty) => {{
+                                let divisor = <$wide>::from(modulus);
+                                return $values.iter().filter(|&&value| {
+                                    ((<$wide>::from(value) % divisor) == $target) != negated
+                                }).count();
+                            }};
+                        }
+                        match (&batch[predicate.index], *target) {
+                            (NumericColumn::UInt8(v), Number::Unsigned(t)) => modulo_count!(v, t, u128),
+                            (NumericColumn::UInt16(v), Number::Unsigned(t)) => modulo_count!(v, t, u128),
+                            (NumericColumn::UInt32(v), Number::Unsigned(t)) => modulo_count!(v, t, u128),
+                            (NumericColumn::UInt64(v), Number::Unsigned(t)) => modulo_count!(v, t, u128),
+                            (NumericColumn::UInt128(v), Number::Unsigned(t)) => modulo_count!(v, t, u128),
+                            (NumericColumn::Int8(v), Number::Signed(t)) => modulo_count!(v, t, i128),
+                            (NumericColumn::Int16(v), Number::Signed(t)) => modulo_count!(v, t, i128),
+                            (NumericColumn::Int32(v), Number::Signed(t)) => modulo_count!(v, t, i128),
+                            (NumericColumn::Int64(v), Number::Signed(t)) => modulo_count!(v, t, i128),
+                            (NumericColumn::Int128(v), Number::Signed(t)) => modulo_count!(v, t, i128),
+                            _ => {}
+                        }
+                    }
+                }
                 if !matches!(operator, Operator::Modulo(_) | Operator::ModuloNe(_)) {
                     macro_rules! count_direct {
-                        ($values:expr, $target:expr, $operator:expr, $wide:ty) => {
-                            $values
-                                .iter()
-                                .filter(|&&value| compare(<$wide>::from(value), $target, $operator))
-                                .count()
-                        };
+                        ($values:expr, $target:expr, $operator:expr, $wide:ty) => {{
+                            let target: $wide = $target;
+                            match $operator {
+                                Operator::Eq => $values.iter().filter(|&&value| <$wide>::from(value) == target).count(),
+                                Operator::Ne => $values.iter().filter(|&&value| <$wide>::from(value) != target).count(),
+                                Operator::Lt => $values.iter().filter(|&&value| <$wide>::from(value) < target).count(),
+                                Operator::Le => $values.iter().filter(|&&value| <$wide>::from(value) <= target).count(),
+                                Operator::Gt => $values.iter().filter(|&&value| <$wide>::from(value) > target).count(),
+                                Operator::Ge => $values.iter().filter(|&&value| <$wide>::from(value) >= target).count(),
+                                Operator::Modulo(_) | Operator::ModuloNe(_) => unreachable!("modulo is handled separately"),
+                            }
+                        }};
                     }
                     match (&batch[predicate.index], *target) {
                         (NumericColumn::UInt8(values), Number::Unsigned(target)) => {
@@ -183,10 +270,89 @@ pub(super) fn count_batch_matches(
             }
         }
     }
+    // WHERE key >= lower AND key < upper is a common billion-row COUNT.
+    // On one numeric column, evaluate both comparisons on the native values
+    // instead of boxing each element and dispatching the predicate tree twice.
+    if let [predicates] = branches {
+        if let [first, second] = predicates.as_slice() {
+            if first.index == second.index {
+                if let (
+                    CompiledTest::Comparison { operator: first_op, target: first_target },
+                    CompiledTest::Comparison { operator: second_op, target: second_target },
+                ) = (&first.test, &second.test) {
+                    if !matches!(first_op, Operator::Modulo(_) | Operator::ModuloNe(_))
+                        && !matches!(second_op, Operator::Modulo(_) | Operator::ModuloNe(_))
+                    {
+                        macro_rules! count_pair {
+                            ($values:expr, $a:expr, $b:expr, $first:expr, $second:expr, $wide:ty) => {
+                                $values.iter().filter(|&&value| {
+                                    let value = <$wide>::from(value);
+                                    compare(value, $a, $first) && compare(value, $b, $second)
+                                }).count()
+                            };
+                        }
+                        match (&batch[first.index], *first_target, *second_target) {
+                        (NumericColumn::UInt8(values), Number::Unsigned(a), Number::Unsigned(b)) => {
+                            return count_pair!(values, a, b, *first_op, *second_op, u128);
+                        }
+                        (NumericColumn::UInt16(values), Number::Unsigned(a), Number::Unsigned(b)) => {
+                            return count_pair!(values, a, b, *first_op, *second_op, u128);
+                        }
+                        (NumericColumn::UInt32(values), Number::Unsigned(a), Number::Unsigned(b)) => {
+                            return count_pair!(values, a, b, *first_op, *second_op, u128);
+                        }
+                        (NumericColumn::UInt64(values), Number::Unsigned(a), Number::Unsigned(b)) => {
+                            return count_pair!(values, a, b, *first_op, *second_op, u128);
+                        }
+                        (NumericColumn::UInt128(values), Number::Unsigned(a), Number::Unsigned(b)) => {
+                            return count_pair!(values, a, b, *first_op, *second_op, u128);
+                        }
+                        (NumericColumn::Int8(values), Number::Signed(a), Number::Signed(b)) => {
+                            return count_pair!(values, a, b, *first_op, *second_op, i128);
+                        }
+                        (NumericColumn::Int16(values), Number::Signed(a), Number::Signed(b)) => {
+                            return count_pair!(values, a, b, *first_op, *second_op, i128);
+                        }
+                        (NumericColumn::Int32(values), Number::Signed(a), Number::Signed(b)) => {
+                            return count_pair!(values, a, b, *first_op, *second_op, i128);
+                        }
+                        (NumericColumn::Int64(values), Number::Signed(a), Number::Signed(b)) => {
+                            return count_pair!(values, a, b, *first_op, *second_op, i128);
+                        }
+                        (NumericColumn::Int128(values), Number::Signed(a), Number::Signed(b)) => {
+                            return count_pair!(values, a, b, *first_op, *second_op, i128);
+                        }
+                        (NumericColumn::Float32(values), Number::Float(a), Number::Float(b)) => {
+                            return count_pair!(values, a, b, *first_op, *second_op, f64);
+                        }
+                        (NumericColumn::Float64(values), Number::Float(a), Number::Float(b)) => {
+                            return count_pair!(values, a, b, *first_op, *second_op, f64);
+                        }
+                            _ => {}
+                        }
+                    }
+                }
+            }
+        }
+    }
     // Compound OR/AND, IN and modulo retain the original semantics.
     (0..batch.first().map_or(0, NumericColumn::len))
         .filter(|&row| batch_matches(batch, row, branches))
         .count()
+}
+
+fn order_numeric_conditions(conditions: &mut [CompiledPredicate]) {
+    conditions.sort_by_key(|condition| match &condition.test {
+        CompiledTest::Always(false) => 0,
+        CompiledTest::Comparison { operator: Operator::Modulo(_) | Operator::ModuloNe(_), .. } => 4,
+        CompiledTest::Comparison { .. }
+        | CompiledTest::DistinctFrom { .. }
+        | CompiledTest::NotBetween { .. } => 1,
+        CompiledTest::InSet { .. } => 2,
+        CompiledTest::In(values) | CompiledTest::NotIn(values) if values.len() <= 4 => 2,
+        CompiledTest::In(_) | CompiledTest::NotIn(_) => 3,
+        CompiledTest::Always(true) => 5,
+    });
 }
 
 pub(super) fn compile_part_where(
@@ -196,7 +362,11 @@ pub(super) fn compile_part_where(
 ) -> Result<Vec<Vec<CompiledPredicate>>, ExecutionError> {
     std::iter::once(query.predicates.as_slice())
         .chain(query.or_predicates.iter().map(Vec::as_slice))
-        .map(|predicates| compile_part_predicates(predicates, scan_columns, &mut convert))
+        .map(|predicates| {
+            let mut compiled = compile_part_predicates(predicates, scan_columns, &mut convert)?;
+            order_numeric_conditions(&mut compiled);
+            Ok(compiled)
+        })
         .collect()
 }
 
@@ -267,6 +437,57 @@ pub(super) fn monotonic_range_indices(
     let lower = lower.min(end);
     let upper = upper.min(end).max(lower);
     Some((lower as u64, upper as u64))
+}
+
+/// Enumerate small finite matching sets across OR branches exactly.
+/// Each disjunct needs a positive equality or IN seed. Unbounded branches
+/// retain the normal executor rather than changing their semantics.
+pub(super) fn sparse_generated_positions(
+    branches: &[Vec<CompiledPredicate>],
+    start: u64,
+    rows: u64,
+    step: u64,
+) -> Option<Vec<u64>> {
+    if step == 0 { return None; }
+    let (start, step, rows) = (u128::from(start), u128::from(step), u128::from(rows));
+    let mut indices = Vec::new();
+    let mut examined = 0usize;
+    for conjunction in branches {
+        let mut seed = None;
+        for predicate in conjunction {
+            let candidates = match &predicate.test {
+                CompiledTest::Comparison { operator: Operator::Eq, target: Number::Unsigned(value) } => Some(vec![*value]),
+                CompiledTest::In(items) => Some(items.iter().filter_map(|item| {
+                    if let Number::Unsigned(value) = item { Some(*value) } else { None }
+                }).collect()),
+                CompiledTest::InSet { targets, negated: false } => Some(targets.iter().filter_map(|key| {
+                    if let NumberKey::Unsigned(value) = key { Some(*value) } else { None }
+                }).collect()),
+                _ => None,
+            };
+            if candidates.is_some() {
+                seed = candidates;
+                break;
+            }
+        }
+        let values: Vec<u128> = seed?;
+        examined = examined.checked_add(values.len())?;
+        if examined > 4096 { return None; }
+        for value in values {
+            if value < start || (value - start) % step != 0 {
+                continue;
+            }
+            let index = (value - start) / step;
+            if index < rows && conjunction.iter().all(|predicate| {
+                predicate.test.matches(Number::Unsigned(value))
+            }) {
+                indices.push(index as u64);
+            }
+        }
+    }
+    indices.sort_unstable();
+    indices.dedup();
+    Some(indices)
 }
 
 pub(super) fn count_monotonic_numbers(
@@ -579,6 +800,36 @@ mod tests {
     use super::*;
 
     #[test]
+    fn compiles_fast_numeric_predicates_ahead_of_modulo() {
+        let query = crate::parse_select(
+            "SELECT number FROM numbers(100) WHERE number % 10 = 0 AND number < 50",
+        ).unwrap();
+        let branches = compile_numbers_predicates(&query).unwrap();
+        assert_eq!(branches.len(), 1);
+        assert!(matches!(&branches[0][0].test, CompiledTest::Comparison { operator: Operator::Lt, .. }));
+        assert!(number_matches_all(Number::Unsigned(40), &branches));
+        assert!(!number_matches_all(Number::Unsigned(60), &branches));
+    }
+
+    #[test]
+    fn direct_pair_counts_match_rowwise_across_numeric_types() {
+        for (values, target_a, target_b) in [
+            (NumericColumn::UInt16(vec![0, 1, 5, 10, 65535]), Number::Unsigned(1), Number::Unsigned(11)),
+            (NumericColumn::Int16(vec![-10, -1, 0, 5, 32767]), Number::Signed(-1), Number::Signed(6)),
+            (NumericColumn::Float32(vec![-1.0, 0.0, 0.5, 6.0, f32::NAN]), Number::Float(0.0), Number::Float(6.0)),
+        ] {
+            let predicates = vec![vec![
+                CompiledPredicate { index: 0, test: CompiledTest::Comparison { operator: Operator::Ge, target: target_a } },
+                CompiledPredicate { index: 0, test: CompiledTest::Comparison { operator: Operator::Lt, target: target_b } },
+            ]];
+            let expected = (0..values.len())
+                .filter(|&row| batch_matches(std::slice::from_ref(&values), row, &predicates))
+                .count();
+            assert_eq!(count_batch_matches(&[values], &predicates), expected);
+        }
+    }
+
+    #[test]
     fn compiles_or_branches_using_the_same_numeric_conversion() {
         let query =
             crate::parse_select("SELECT number FROM numbers(10) WHERE number = 1 OR number = 3")
@@ -673,6 +924,110 @@ mod tests {
         let included = compile_in_test(values, false);
         assert!(included.matches(Number::Float(0.0)));
         assert!(!included.matches(Number::Float(f64::NAN)));
+    }
+}
+
+#[cfg(test)]
+mod stored_hashed_membership_count_tests {
+    use super::*;
+
+    #[test]
+    fn hashed_membership_matches_row_by_row_for_wide_integer_columns() {
+        let signed = vec![NumericColumn::Int64((-5_000..5_000).collect())];
+        let unsigned = vec![NumericColumn::UInt64((0..10_000).collect())];
+        for (batch, signed) in [(&signed, true), (&unsigned, false)] {
+            for negated in [false, true] {
+                let values: Vec<Number> = (0..32)
+                    .map(|index| if signed {
+                        Number::Signed(index - 12)
+                    } else {
+                        Number::Unsigned(index as u128)
+                    })
+                    .collect();
+                let branches = vec![vec![CompiledPredicate {
+                    index: 0,
+                    test: compile_in_test(values, negated),
+                }]];
+                let expected = (0..batch[0].len())
+                    .filter(|&row| batch_matches(batch, row, &branches))
+                    .count();
+                assert_eq!(count_batch_matches(batch, &branches), expected);
+            }
+        }
+    }
+}
+
+#[cfg(test)]
+mod stored_not_between_count_tests {
+    use super::*;
+
+    #[test]
+    fn matches_row_wise_not_between_for_signed_and_nan_values() {
+        let signed = vec![NumericColumn::Int64((-1_000..1_000).collect())];
+        let floats = vec![NumericColumn::Float64(vec![
+            f64::NAN, f64::NEG_INFINITY, -1.0, 0.0, 1.0, f64::INFINITY,
+        ])];
+        for (batch, lower, upper) in [
+            (&signed, Number::Signed(-10), Number::Signed(10)),
+            (&floats, Number::Float(-1.0), Number::Float(1.0)),
+            (&floats, Number::Float(1.0), Number::Float(-1.0)),
+        ] {
+            let branches = vec![vec![CompiledPredicate {
+                index: 0,
+                test: CompiledTest::NotBetween { lower, upper },
+            }]];
+            let expected = (0..batch[0].len())
+                .filter(|&row| batch_matches(batch, row, &branches))
+                .count();
+            assert_eq!(count_batch_matches(batch, &branches), expected);
+        }
+    }
+}
+
+#[cfg(test)]
+mod stored_modulo_count_tests {
+    use super::*;
+
+    #[test]
+    fn matches_signed_and_unsigned_modulo_counts() {
+        let unsigned = vec![NumericColumn::UInt64((0..10_000).collect())];
+        let signed = vec![NumericColumn::Int64((-5_000..5_000).collect())];
+        for (batch, target, modulus) in [
+            (&unsigned, Number::Unsigned(2), 7u64),
+            (&signed, Number::Signed(-2), 7u64),
+        ] {
+            for negated in [false, true] {
+                let branches = vec![vec![CompiledPredicate {
+                    index: 0,
+                    test: CompiledTest::Comparison {
+                        operator: if negated { Operator::ModuloNe(modulus) }
+                                  else { Operator::Modulo(modulus) },
+                        target,
+                    },
+                }]];
+                let expected = (0..batch[0].len())
+                    .filter(|&row| batch_matches(batch, row, &branches))
+                    .count();
+                assert_eq!(count_batch_matches(batch, &branches), expected);
+            }
+        }
+    }
+}
+
+#[cfg(test)]
+mod stored_constant_count_tests {
+    use super::*;
+
+    #[test]
+    fn counts_constant_predicates_without_per_row_dispatch() {
+        let values = vec![NumericColumn::UInt64((0..100_000).collect())];
+        for (value, expected) in [(true, 100_000), (false, 0)] {
+            let branches = vec![vec![CompiledPredicate {
+                index: 0,
+                test: CompiledTest::Always(value),
+            }]];
+            assert_eq!(count_batch_matches(&values, &branches), expected);
+        }
     }
 }
 

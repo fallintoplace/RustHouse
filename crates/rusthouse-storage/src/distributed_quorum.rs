@@ -1,7 +1,7 @@
 //! Quorum policy validation for future replicated storage writes.
 //! This module does not implement consensus or distributed transactions.
 
-use std::collections::HashSet;
+use std::collections::HashMap;
 
 fn valid_member(member: &str) -> bool {
     !member.is_empty()
@@ -57,21 +57,20 @@ impl QuorumPolicy {
         if members.len() != self.replicas || acknowledgements.len() > 256 {
             return Err("quorum membership or acknowledgement count mismatch");
         }
-        let mut membership = HashSet::new();
-        for &member in members {
-            if !valid_member(member) || !membership.insert(member)
-            {
+        let mut membership = HashMap::with_capacity(members.len());
+        for (index, &member) in members.iter().enumerate() {
+            if !valid_member(member) || membership.insert(member, index).is_some() {
                 return Err("invalid or duplicate quorum member");
             }
         }
-        let mut received = HashSet::new();
+        let mut received = 0u16;
         for &replica in acknowledgements {
-            if !membership.contains(replica) {
+            let Some(&index) = membership.get(replica) else {
                 return Err("acknowledgement from unknown replica");
-            }
-            received.insert(replica);
+            };
+            received |= 1u16 << index;
         }
-        let distinct_acks = received.len();
+        let distinct_acks = received.count_ones() as usize;
         Ok(QuorumObservation {
             distinct_acks,
             can_read: self.can_read(distinct_acks),
