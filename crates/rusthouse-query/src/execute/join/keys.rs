@@ -88,17 +88,38 @@ pub(super) fn batch_key_into(
     for &index in indices {
         // UUID probe keys are already stored as canonical bytes. Avoid
         // allocating a 36-byte display String for each probed row.
-        let key = if let TypedColumn::Uuid(values) = &batch[index] {
-            typed::Key::UuidBytes(*values[row].as_bytes())
-        } else {
-            let value = typed::cell(&batch[index], row);
-            if !key_eligible(&value) {
-                result.clear();
-                return false;
+        let key = match &batch[index] {
+            TypedColumn::Uuid(values) => typed::Key::UuidBytes(*values[row].as_bytes()),
+            TypedColumn::Numeric(values) => {
+                let value = super::super::number_at(values, row);
+                if matches!(value, Number::Float(number) if number.is_nan()) {
+                    result.clear();
+                    return false;
+                }
+                typed::Key::Numeric(super::super::NumberKey::from(value))
             }
-            match value {
-                typed::Cell::Text(bytes) => typed::Key::Text(bytes),
-                _ => value.key(),
+            TypedColumn::NullableNumeric { values, nulls } => {
+                if nulls[row] != 0 {
+                    result.clear();
+                    return false;
+                }
+                let value = super::super::number_at(values, row);
+                if matches!(value, Number::Float(number) if number.is_nan()) {
+                    result.clear();
+                    return false;
+                }
+                typed::Key::Numeric(super::super::NumberKey::from(value))
+            }
+            column => {
+                let value = typed::cell(column, row);
+                if !key_eligible(&value) {
+                    result.clear();
+                    return false;
+                }
+                match value {
+                    typed::Cell::Text(bytes) => typed::Key::Text(bytes),
+                    _ => value.key(),
+                }
             }
         };
         result.push(key);
@@ -203,5 +224,31 @@ mod uuid_join_key_tests {
         assert!(build != reusable);
         assert!(row_key_into(&rows[1..], &[0], &mut reusable));
         assert!(reusable == row_key(&rows[1..], &[0]).unwrap());
+    }
+}
+
+#[cfg(test)]
+mod direct_numeric_join_probe_tests {
+    use super::*;
+    use rusthouse_storage::NumericColumn;
+
+    #[test]
+    fn native_probe_keys_match_materialized_build_keys() {
+        let batch = [
+            TypedColumn::Numeric(NumericColumn::Int64(vec![-12, 9])),
+            TypedColumn::NullableNumeric {
+                values: NumericColumn::UInt64(vec![7, 8]),
+                nulls: vec![0, 1],
+            },
+        ];
+        let mut key = Vec::new();
+        assert!(batch_key_into(&batch, 0, &[0, 1], &mut key));
+        let row = [typed::Cell::Numeric(Number::Signed(-12)),
+                   typed::Cell::Numeric(Number::Unsigned(7))];
+        assert_eq!(key, row_key(&row, &[0, 1]).unwrap());
+        assert!(!batch_key_into(&batch, 1, &[0, 1], &mut key));
+        assert!(key.is_empty());
+        let nan = [TypedColumn::Numeric(NumericColumn::Float64(vec![f64::NAN]))];
+        assert!(!batch_key_into(&nan, 0, &[0], &mut key));
     }
 }
