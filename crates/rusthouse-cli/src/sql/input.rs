@@ -63,6 +63,22 @@ pub(super) fn split_sql_script(input: &str) -> Result<Vec<String>, String> {
             segment = index;
             continue;
         }
+        if !quoted && bytes[index] == b'/' && bytes.get(index + 1) == Some(&b'*') {
+            current.push_str(&input[segment..index]);
+            current.push(' ');
+            index += 2;
+            while index + 1 < bytes.len()
+                && !(bytes[index] == b'*' && bytes[index + 1] == b'/')
+            {
+                index += 1;
+            }
+            if index + 1 >= bytes.len() {
+                return Err("unterminated SQL block comment".into());
+            }
+            index += 2;
+            segment = index;
+            continue;
+        }
         if !quoted && bytes[index] == b';' {
             current.push_str(&input[segment..index]);
             let statement = current.trim();
@@ -117,4 +133,27 @@ pub(super) fn read_script(path: &std::path::Path) -> Result<Vec<String>, String>
     let input =
         String::from_utf8(bytes).map_err(|_| "SQL script must be valid UTF-8".to_string())?;
     split_sql_script(&input)
+}
+
+#[cfg(test)]
+mod block_comment_tests {
+    use super::split_sql_script;
+
+    #[test]
+    fn ignores_comment_delimiters_inside_sql_scripts() {
+        assert_eq!(
+            split_sql_script("SELECT 1 /* ; ; */; /* comment */ SELECT 2;").unwrap(),
+            vec!["SELECT 1", "SELECT 2"]
+        );
+        assert_eq!(
+            split_sql_script("SELECT '/* ; */' AS text;").unwrap(),
+            vec!["SELECT '/* ; */' AS text"]
+        );
+    }
+
+    #[test]
+    fn rejects_unterminated_sql_block_comments() {
+        assert!(split_sql_script("SELECT 1; /* unterminated").is_err());
+        assert!(split_sql_script("/* comment only */").is_err());
+    }
 }
