@@ -6,6 +6,10 @@ on:
       - 'crates/rusthouse-query/src/execute.rs'
       - 'crates/rusthouse-query/src/execute/**'
       - 'crates/rusthouse-query/benches/queries.rs'
+      - 'crates/rusthouse-query/benches/parts.rs'
+      - 'crates/rusthouse-storage/src/**'
+      - 'bench/pr_parts_compare.py'
+      - 'bench/test_pr_parts_compare.py'
       - 'bench/pr_bench_compare.py'
       - 'bench/test_pr_bench_compare.py'
       - 'crates/rusthouse-query/benches/grouped.rs'
@@ -45,6 +49,8 @@ jobs:
             | tee "$RUNNER_TEMP/rusthouse-base-bench.txt"
           cargo bench -p rusthouse-query --bench grouped --locked -- --rows 65536 --samples 11 \
             | tee "$RUNNER_TEMP/rusthouse-base-grouped.txt"
+          cargo bench -p rusthouse-query --bench parts --locked -- --rows 32768 --samples 5 --csv \
+            | tee "$RUNNER_TEMP/rusthouse-base-parts.csv"
       - name: Benchmark PR commit
         shell: bash
         run: |
@@ -53,8 +59,10 @@ jobs:
             | tee "$RUNNER_TEMP/rusthouse-pr-bench.txt"
           cargo bench -p rusthouse-query --bench grouped --locked -- --rows 65536 --samples 11 \
             | tee "$RUNNER_TEMP/rusthouse-pr-grouped.txt"
+          cargo bench -p rusthouse-query --bench parts --locked -- --rows 32768 --samples 5 --csv \
+            | tee "$RUNNER_TEMP/rusthouse-pr-parts.csv"
       - name: Test comparison formatter
-        run: python3 -m unittest bench.test_pr_bench_compare bench.test_pr_grouped_compare
+        run: python3 -m unittest bench.test_pr_bench_compare bench.test_pr_grouped_compare bench.test_pr_parts_compare
       - name: Show base vs PR numbers in job summary
         shell: bash
         run: |
@@ -68,6 +76,11 @@ jobs:
             --candidate "$RUNNER_TEMP/rusthouse-pr-grouped.txt" \
             --summary "$RUNNER_TEMP/rusthouse-grouped-summary.md"
           cat "$RUNNER_TEMP/rusthouse-grouped-summary.md" >> "$GITHUB_STEP_SUMMARY"
+          python3 -m bench.pr_parts_compare \
+            --baseline "$RUNNER_TEMP/rusthouse-base-parts.csv" \
+            --candidate "$RUNNER_TEMP/rusthouse-pr-parts.csv" \
+            --summary "$RUNNER_TEMP/rusthouse-parts-summary.md"
+          cat "$RUNNER_TEMP/rusthouse-parts-summary.md" >> "$GITHUB_STEP_SUMMARY"
       - name: Upload raw benchmark results
         if: always()
         uses: actions/upload-artifact@v7
@@ -79,6 +92,9 @@ jobs:
             ${{ runner.temp }}/rusthouse-bench-summary.md
             ${{ runner.temp }}/rusthouse-base-grouped.txt
             ${{ runner.temp }}/rusthouse-pr-grouped.txt
+            ${{ runner.temp }}/rusthouse-base-parts.csv
+            ${{ runner.temp }}/rusthouse-pr-parts.csv
+            ${{ runner.temp }}/rusthouse-parts-summary.md
             ${{ runner.temp }}/rusthouse-grouped-summary.md
           if-no-files-found: warn
           retention-days: 14
