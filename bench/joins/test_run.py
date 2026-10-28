@@ -44,12 +44,12 @@ class JoinWorkloadTests(unittest.TestCase):
             self.assertEqual(len(rows), 7)
             self.assertEqual(rows[1], rows[2])
             all_matches = (
-                b"0\\tgroup-0\\n0\\tgroup-0\\n"
-                b"4\\tgroup-1\\n4\\tgroup-1\\n"
-                b"8\\tgroup-2\\n8\\tgroup-2\\n"
+                b"0\tgroup-0\n0\tgroup-0\n"
+                b"4\tgroup-1\n4\tgroup-1\n"
+                b"8\tgroup-2\n8\tgroup-2\n"
             )
             verify_result(all_matches, expected, multiplicity=2)
-            any_matches = b"0\\tgroup-0\\n4\\tgroup-1\\n8\\tgroup-2\\n"
+            any_matches = b"0\tgroup-0\n4\tgroup-1\n8\tgroup-2\n"
             verify_result(any_matches, expected, multiplicity=1)
             with self.assertRaises(ValueError):
                 verify_result(any_matches, expected, multiplicity=2)
