@@ -295,12 +295,18 @@ fn compile_in(kind: &str, values: &[String], negated: bool) -> Result<Test, Exec
     ))
 }
 
+fn order_compiled_conditions(conditions: &mut [Condition]) {
+    // Reordering AND predicates is safe after compilation, and lets cheap
+    // comparisons reject rows before expensive wildcard matching.
+    conditions.sort_by_key(|condition| matches!(&condition.test, Test::Like { .. }));
+}
+
 pub(super) fn compile(
     predicates: &[Predicate],
     indices: &HashMap<String, usize>,
     types: &HashMap<String, String>,
 ) -> Result<Vec<Condition>, ExecutionError> {
-    predicates
+    let mut conditions = predicates
         .iter()
         .map(|pred| {
             let name = pred.column();
@@ -351,7 +357,9 @@ pub(super) fn compile(
             };
             Ok(Condition { index, test })
         })
-        .collect()
+        .collect::<Result<Vec<_>, _>>()?;
+    order_compiled_conditions(&mut conditions);
+    Ok(conditions)
 }
 
 pub(super) fn cmp(left: &Cell, right: &Cell) -> Ordering {
@@ -1165,6 +1173,29 @@ pub(super) fn execute_typed<W: Write>(
         }
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod predicate_order_tests {
+    use super::*;
+
+    #[test]
+    fn cheap_conditions_run_before_expensive_like_conditions() {
+        let mut conditions = vec![
+            Condition {
+                index: 0,
+                test: Test::Like {
+                    pattern: LikePattern::Exact(b"match".to_vec()),
+                    case_insensitive: false,
+                    negated: false,
+                },
+            },
+            Condition { index: 1, test: Test::IsNull(false) },
+        ];
+        order_compiled_conditions(&mut conditions);
+        assert_eq!(conditions[0].index, 1);
+        assert_eq!(conditions[1].index, 0);
+    }
 }
 
 #[cfg(test)]
