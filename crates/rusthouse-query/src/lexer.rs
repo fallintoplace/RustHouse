@@ -32,7 +32,7 @@ pub(super) fn tokenize(sql: &str) -> Result<Vec<Token>, ParseError> {
     while index < bytes.len() {
         let byte = bytes[index];
         let token = match byte {
-            b' ' | b'\t' | b'\r' | b'\n' => {
+            b' ' | b'\t' | b'\r' | b'\n' | b'\x0b' | b'\x0c' => {
                 index += 1;
                 continue;
             }
@@ -232,4 +232,17 @@ mod tests {
         }
         assert!(tokenize(&" ".repeat(4096)).is_ok());
     }
+    #[test]
+    fn accepts_ascii_vertical_tab_and_form_feed_separators() {
+        assert_eq!(
+            tokenize("SELECT\x0b1\x0c+\x0b2").unwrap(),
+            vec![
+                Token::Word("SELECT".into()),
+                Token::Number("1".into()),
+                Token::Plus,
+                Token::Number("2".into()),
+            ]
+        );
+    }
+
 }
