@@ -76,6 +76,34 @@ pub(super) fn push_cell(kind: &str, value: Option<&str>, output: &mut Vec<u8>) -
     Ok(is_null)
 }
 
+/// Encode a numeric Array as ClickHouse's element stream and per-row size0 stream.
+pub(super) fn push_numeric_array(
+    inner: &str,
+    literal: Option<&str>,
+    elements: &mut Vec<u8>,
+    sizes: &mut Vec<u8>,
+) -> Result<(), PartError> {
+    let literal = literal.ok_or_else(|| invalid("NULL is not permitted for Array"))?;
+    let body = literal
+        .trim()
+        .strip_prefix('[')
+        .and_then(|value| value.strip_suffix(']'))
+        .ok_or_else(|| invalid("Array values require a bracketed list"))?;
+    let mut count = 0u64;
+    if !body.trim().is_empty() {
+        for element in body.split(',') {
+            let value = element.trim();
+            if value.is_empty() {
+                return Err(invalid("Array cannot contain an empty element"));
+            }
+            push_cell(inner, Some(value), elements)?;
+            count = count.checked_add(1).ok_or_else(|| invalid("Array has too many elements"))?;
+        }
+    }
+    sizes.extend_from_slice(&count.to_le_bytes());
+    Ok(())
+}
+
 pub(super) fn checksum_hash(data: &[u8]) -> u128 {
     const HASH_BLOCK_BYTES: usize = 2048;
     let mut seed = U128::new(0, 0);
