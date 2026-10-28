@@ -81,6 +81,95 @@ impl HyperLogLog {
         Ok(())
     }
 
+    /// Hash typed tuples without constructing or retaining row keys.
+    /// Prefix every field with its type tag and byte length to separate
+    /// ("ab","c") from ("a","bc") and distinguish NULL from non-NULL.
+    pub(super) fn observe_tuple(
+        &mut self,
+        columns: &[TypedColumn],
+        row: usize,
+    ) -> Result<(), ExecutionError> {
+        const OFFSET: u64 = 0xcbf29ce484222325;
+        const PRIME: u64 = 0x100000001b3;
+        fn feed(hash: &mut u64, bytes: &[u8]) {
+            for &byte in bytes {
+                *hash ^= u64::from(byte);
+                *hash = (*hash).wrapping_mul(PRIME);
+            }
+        }
+        let mut hash = OFFSET;
+        for column in columns {
+            let (tag, bytes): (u8, &[u8]) = match column {
+                TypedColumn::Text(values) => (4, values.get(row).ok_or_else(|| {
+                    ExecutionError::Invalid("missing tuple String value".into())
+                })?),
+                TypedColumn::NullableText { values, nulls } if nulls[row] == 0 =>
+                    (4, values.get(row).ok_or_else(|| {
+                        ExecutionError::Invalid("missing tuple nullable String".into())
+                    })?),
+                TypedColumn::Uuid(values) => (5, values[row].as_bytes()),
+                TypedColumn::Numeric(values) => {
+                    match number_at(values, row) {
+                        Number::Unsigned(value) => {
+                            feed(&mut hash, &[1]);
+                            feed(&mut hash, &16u64.to_le_bytes());
+                            feed(&mut hash, &value.to_le_bytes());
+                        }
+                        Number::Signed(value) => {
+                            feed(&mut hash, &[2]);
+                            feed(&mut hash, &16u64.to_le_bytes());
+                            feed(&mut hash, &value.to_le_bytes());
+                        }
+                        Number::Float(value) => {
+                            let bits = if value == 0.0 { 0 } else if value.is_nan() {
+                                f64::NAN.to_bits()
+                            } else {
+                                value.to_bits()
+                            };
+                            feed(&mut hash, &[3]);
+                            feed(&mut hash, &8u64.to_le_bytes());
+                            feed(&mut hash, &bits.to_le_bytes());
+                        }
+                    }
+                    continue;
+                }
+                TypedColumn::NullableNumeric { values, nulls } if nulls[row] == 0 => {
+                    match number_at(values, row) {
+                        Number::Unsigned(value) => {
+                            feed(&mut hash, &[1]);
+                            feed(&mut hash, &16u64.to_le_bytes());
+                            feed(&mut hash, &value.to_le_bytes());
+                        }
+                        Number::Signed(value) => {
+                            feed(&mut hash, &[2]);
+                            feed(&mut hash, &16u64.to_le_bytes());
+                            feed(&mut hash, &value.to_le_bytes());
+                        }
+                        Number::Float(value) => {
+                            let bits = if value == 0.0 { 0 } else if value.is_nan() {
+                                f64::NAN.to_bits()
+                            } else { value.to_bits() };
+                            feed(&mut hash, &[3]);
+                            feed(&mut hash, &8u64.to_le_bytes());
+                            feed(&mut hash, &bits.to_le_bytes());
+                        }
+                    }
+                    continue;
+                }
+                TypedColumn::NullableText { .. } | TypedColumn::NullableNumeric { .. } => return Ok(()),
+            };
+            feed(&mut hash, &[tag]);
+            feed(&mut hash, &(bytes.len() as u64).to_le_bytes());
+            feed(&mut hash, bytes);
+        }
+        hash ^= hash >> 33;
+        hash = hash.wrapping_mul(0xff51afd7ed558ccd);
+        hash ^= hash >> 33;
+        hash = hash.wrapping_mul(0xc4ceb9fe1a85ec53);
+        self.add(hash ^ (hash >> 33));
+        Ok(())
+    }
+
     pub(super) fn estimate(&self) -> u64 {
         let m = REGISTERS as f64;
         let zero = self.registers.iter().filter(|&&rank| rank == 0).count();
@@ -136,6 +225,33 @@ mod tests {
         assert_eq!(sketch.estimate(), 1);
         sketch.observe_number(Number::Float(f64::NAN));
         sketch.observe_number(Number::Float(-f64::NAN));
+        assert_eq!(sketch.estimate(), 2);
+    }
+}
+
+
+#[cfg(test)]
+mod tuple_tests {
+    use super::*;
+    use rusthouse_storage::NumericColumn;
+
+    #[test]
+    fn tuple_field_boundaries_are_not_ambiguous() {
+        let first = TypedColumn::Text(vec![b"ab".to_vec(), b"a".to_vec()]);
+        let second = TypedColumn::Text(vec![b"c".to_vec(), b"bc".to_vec()]);
+        let mut sketch = HyperLogLog::default();
+        sketch.observe_tuple(&[first, second], 0).unwrap_err();
+    }
+
+    #[test]
+    fn composite_numeric_tuple_is_bounded_and_deduplicates() {
+        let x = TypedColumn::Numeric(NumericColumn::UInt64(vec![1, 2, 1]));
+        let y = TypedColumn::Numeric(NumericColumn::UInt8(vec![1, 1, 1]));
+        let mut sketch = HyperLogLog::default();
+        let values = [x, y];
+        for row in 0..3 {
+            sketch.observe_tuple(&values, row).unwrap();
+        }
         assert_eq!(sketch.estimate(), 2);
     }
 }
