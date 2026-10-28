@@ -145,13 +145,13 @@ pub(super) fn execute<W: Write>(
             // a 36-byte String before hashing the distinct key.
             if let TypedColumn::Uuid(values) = &batch[value_index] {
                 let key = *values[row].as_bytes();
-                if !groups[id].distinct_uuids.contains(&key) {
-                    if total_pairs >= MAX_GROUP_VALUE_PAIRS {
+                if total_pairs >= MAX_GROUP_VALUE_PAIRS {
+                    if !groups[id].distinct_uuids.contains(&key) {
                         return Err(ExecutionError::Invalid(
                             "grouped COUNT(DISTINCT) supports at most 100000 distinct pairs".into(),
                         ));
                     }
-                    groups[id].distinct_uuids.insert(key);
+                } else if groups[id].distinct_uuids.insert(key) {
                     total_pairs += 1;
                 }
                 continue;
@@ -179,13 +179,13 @@ pub(super) fn execute<W: Write>(
                 continue;
             }
             let key = value.key();
-            if !groups[id].distinct.contains(&key) {
-                if total_pairs >= MAX_GROUP_VALUE_PAIRS {
+            if total_pairs >= MAX_GROUP_VALUE_PAIRS {
+                if !groups[id].distinct.contains(&key) {
                     return Err(ExecutionError::Invalid(
                         "grouped COUNT(DISTINCT) supports at most 100000 distinct pairs".into(),
                     ));
                 }
-                groups[id].distinct.insert(key);
+            } else if groups[id].distinct.insert(key) {
                 total_pairs += 1;
             }
         }
