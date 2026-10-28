@@ -16,6 +16,7 @@ pub(super) fn is_function(name: &str) -> bool {
             | "CHR"
             | "STRINGBYTESUNIQ"
             | "BIT_LENGTH"
+            | "BIN"
             | "IS_INT64"
             | "BTRIM"
             | "RTRIM"
@@ -226,6 +227,19 @@ fn parse_at_depth(parser: &mut Parser, depth: usize) -> Result<ConstantValue, Pa
                         seen[usize::from(byte)] = true;
                     }
                     ConstantValue::Integer(seen.iter().filter(|&&present| present).count() as i64)
+                }
+                None => ConstantValue::Null,
+            }
+        }
+        "BIN" => {
+            let input = integer_arg(parser, depth + 1)?;
+            require(parser, Token::RParen, "bin requires one argument")?;
+            match input {
+                Some(value) => {
+                    let bits = value as u64;
+                    let encoded = format!("{bits:064b}");
+                    let skipped = (bits.leading_zeros() as usize / 8).min(7) * 8;
+                    ConstantValue::Text(encoded[skipped..].to_owned())
                 }
                 None => ConstantValue::Null,
             }
