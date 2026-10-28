@@ -12,6 +12,7 @@ pub(super) fn is_function(name: &str) -> bool {
             | "ASCII"
             | "UTF16_LENGTH"
             | "HASSUBSEQUENCE"
+            | "BYTEHAMMINGDISTANCE"
             | "CHR"
             | "STRINGBYTESUNIQ"
             | "BIT_LENGTH"
@@ -238,6 +239,25 @@ fn parse_at_depth(parser: &mut Parser, depth: usize) -> Result<ConstantValue, Pa
                     ConstantValue::Text(result)
                 }
                 None => ConstantValue::Null,
+            }
+        }
+        "BYTEHAMMINGDISTANCE" => {
+            let left = text_arg(parser, depth + 1)?;
+            require(parser, Token::Comma, "byteHammingDistance requires two strings")?;
+            let right = text_arg(parser, depth + 1)?;
+            require(parser, Token::RParen, "expected ')' after byteHammingDistance")?;
+            match (left, right) {
+                (Some(left), Some(right)) => {
+                    if left.len() != right.len() {
+                        return Err(ParseError("byteHammingDistance requires equal byte lengths".into()));
+                    }
+                    let mismatches = left.bytes().zip(right.bytes())
+                        .filter(|(a, b)| a != b).count();
+                    ConstantValue::Integer(i64::try_from(mismatches).map_err(|_| {
+                        ParseError("byteHammingDistance count exceeds Int64".into())
+                    })?)
+                }
+                _ => ConstantValue::Null,
             }
         }
         "HASSUBSEQUENCE" => {
