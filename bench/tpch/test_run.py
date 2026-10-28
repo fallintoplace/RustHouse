@@ -3,7 +3,7 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from run import benchmark_one, load_queries, official_22_coverage, query_fingerprint, select_queries, summary, summarize_coverage
+from run import benchmark_one, compare_reference, load_queries, official_22_coverage, query_fingerprint, select_queries, summary, summarize_coverage
 
 class RunnerTests(unittest.TestCase):
     def test_query_discovery_is_numeric(self):
@@ -43,6 +43,15 @@ class RunnerTests(unittest.TestCase):
         result = benchmark_one(6, "SELECT 6", lambda _: b"6\\n", 2, 0)
         self.assertEqual(result["status"], "unverified")
         self.assertEqual(summarize_coverage([result])["verified_queries"], 0)
+
+    def test_unordered_rows_preserve_duplicate_counts(self):
+        expected = b"1\n2\n2\n"
+        self.assertFalse(compare_reference(b"2\n1\n2\n", expected))
+        self.assertTrue(compare_reference(b"2\n1\n2\n", expected, "unordered"))
+        self.assertFalse(compare_reference(b"2\n1\n1\n", expected, "unordered"))
+        result = benchmark_one(1, "SELECT id", lambda _: b"2\n1\n2\n",
+                               2, 0, expected, comparison="unordered")
+        self.assertEqual(result["status"], "passed")
 
     def test_failed_late_iteration_discards_partial_samples(self):
         calls = 0
