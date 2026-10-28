@@ -87,6 +87,7 @@ pub(super) fn execute<W: Write>(
     };
     let mut by_key = HashMap::<typed::Key, usize>::new();
     let mut by_text = HashMap::<Vec<u8>, usize>::new();
+    let mut by_uuid = HashMap::<[u8; 16], usize>::new();
     let mut reader = TypedQueryReader::open_with_metadata(part, &names, &metadata)?;
     let no_filters = query.predicates.is_empty() && query.or_predicates.is_empty();
     while let Some(batch) = reader.next_batch()? {
@@ -135,7 +136,31 @@ pub(super) fn execute<W: Write>(
                     }
                     _ => None,
                 };
-                if let Some(key) = borrowed_text {
+                let borrowed_uuid = match &batch[group_index] {
+                    TypedColumn::Uuid(values) => Some(*values[row].as_bytes()),
+                    _ => None,
+                };
+                if let Some(key) = borrowed_uuid {
+                    if let Some(&group) = by_uuid.get(&key) {
+                        group
+                    } else {
+                        if groups.len() >= MAX_GROUPS {
+                            return Err(ExecutionError::Invalid(
+                                "GROUP BY supports at most 200000 groups".into(),
+                            ));
+                        }
+                        let group = groups.len();
+                        by_uuid.insert(key, group);
+                        groups.push((
+                            typed::cell(&batch[group_index], row),
+                            items
+                                .iter()
+                                .map(|(function, _)| AggregateState::new(*function))
+                                .collect(),
+                        ));
+                        group
+                    }
+                } else if let Some(key) = borrowed_text {
                     if let Some(&group) = by_text.get(key) {
                         group
                     } else {
