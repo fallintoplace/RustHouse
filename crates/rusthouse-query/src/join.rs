@@ -37,9 +37,10 @@ pub struct JoinStep {
     pub using_keys: Vec<String>,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum JoinAggregate {
     CountStar,
+    Sum(JoinColumn),
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -96,6 +97,15 @@ pub fn parse_join(sql: &str) -> Result<Option<JoinSelect>, ParseError> {
             return Err(ParseError("JOIN COUNT requires COUNT(*)".into()));
         }
         Some(JoinAggregate::CountStar)
+    } else if parser.keyword("SUM") {
+        if !parser.take(Token::LParen) {
+            return Err(ParseError("JOIN SUM requires SUM(alias.column)".into()));
+        }
+        let column = qualified(&mut parser)?;
+        if !parser.take(Token::RParen) {
+            return Err(ParseError("JOIN SUM requires a closing ')'".into()));
+        }
+        Some(JoinAggregate::Sum(column))
     } else {
         None
     };
@@ -476,7 +486,7 @@ pub fn parse_join(sql: &str) -> Result<Option<JoinSelect>, ParseError> {
     if aggregate.is_some() &&
         (kind != JoinType::Inner || !steps.is_empty() || !order_by.is_empty()) {
         return Err(ParseError(
-            "streamed JOIN COUNT requires a two-table INNER JOIN without ORDER BY".into()
+            "streamed JOIN aggregate requires a two-table INNER JOIN without ORDER BY".into()
         ));
     }
     Ok(Some(JoinSelect {
@@ -563,8 +573,11 @@ pub fn explain_join(query: &JoinSelect) -> String {
     }
     plan.push_str(&format!(
         "\nProject: {}\nLimit: {}",
-        if query.aggregate.is_some() {
-            "count(*)".to_owned()
+        if let Some(aggregate) = &query.aggregate {
+            match aggregate {
+                JoinAggregate::CountStar => "count(*)".to_owned(),
+                JoinAggregate::Sum(col) => format!("sum({}.{})", col.relation, col.name),
+            }
         } else { query.columns.as_ref().map_or("*".to_owned(), |columns| {
             columns
                 .iter()
