@@ -566,7 +566,7 @@ pub(super) fn count_monotonic_numbers(
     if step == 0 {
         return None;
     }
-    if let [predicate] = conjunction {
+    if let [predicate] = conjunction.as_slice() {
         if let CompiledTest::DistinctFrom {
             target: Number::Unsigned(target),
             negated,
@@ -584,13 +584,13 @@ pub(super) fn count_monotonic_numbers(
         }
     }
 
-    if let [predicate] = conjunction {
+    if let [predicate] = conjunction.as_slice() {
         if let CompiledTest::Always(value) = &predicate.test {
             return Some(if *value { rows } else { 0 });
         }
     }
 
-    if let [predicate] = conjunction {
+    if let [predicate] = conjunction.as_slice() {
         if let CompiledTest::NotBetween {
             lower: Number::Unsigned(lower),
             upper: Number::Unsigned(upper),
@@ -617,7 +617,7 @@ pub(super) fn count_monotonic_numbers(
         }
     }
 
-    if let [predicate] = conjunction {
+    if let [predicate] = conjunction.as_slice() {
         let membership = match &predicate.test {
             CompiledTest::In(values) => Some((
                 values.iter().filter_map(|value| match value {
@@ -667,7 +667,7 @@ pub(super) fn count_monotonic_numbers(
     // For consecutive generated rows, a modulo filter is a periodic
     // arithmetic progression. Count matching positions in O(1) instead of
     // iterating over billions of generated values.
-    if let [predicate] = conjunction {
+    if let [predicate] = conjunction.as_slice() {
         if let CompiledTest::Comparison {
             operator: Operator::Modulo(modulus) | Operator::ModuloNe(modulus),
             target: Number::Unsigned(target),
