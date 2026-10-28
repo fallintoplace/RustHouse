@@ -32,6 +32,7 @@ fn canonical_type(name: &str) -> Option<&'static str> {
         "FLOAT32" => "Float32",
         "FLOAT64" => "Float64",
         "STRING" => "String",
+        "UUID" => "UUID",
         "DATE" => "Date",
         "DATETIME" => "DateTime",
         "BOOL" => "Bool",

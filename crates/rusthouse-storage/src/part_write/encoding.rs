@@ -8,6 +8,39 @@ pub(super) fn push_varuint(mut value: u64, output: &mut Vec<u8>) {
     output.push(value as u8);
 }
 
+fn push_uuid(value: &str, output: &mut Vec<u8>) -> Result<(), PartError> {
+    let bytes = value.as_bytes();
+    if bytes.len() != 36 || [8, 13, 18, 23].iter().any(|&index| bytes[index] != b'-') {
+        return Err(invalid(format!("invalid UUID value: {value}")));
+    }
+    let mut canonical = [0u8; 16];
+    let mut digit_index = 0usize;
+    for (position, &byte) in bytes.iter().enumerate() {
+        if matches!(position, 8 | 13 | 18 | 23) {
+            continue;
+        }
+        let digit = match byte {
+            b'0'..=b'9' => byte - b'0',
+            b'a'..=b'f' => byte - b'a' + 10,
+            b'A'..=b'F' => byte - b'A' + 10,
+            _ => return Err(invalid(format!("invalid UUID value: {value}"))),
+        };
+        let slot = &mut canonical[digit_index / 2];
+        if digit_index.is_multiple_of(2) {
+            *slot = digit << 4;
+        } else {
+            *slot |= digit;
+        }
+        digit_index += 1;
+    }
+    // ClickHouse stores each UInt64 UUID half in little-endian order.
+    for half in canonical.chunks_exact_mut(8) {
+        half.reverse();
+    }
+    output.extend_from_slice(&canonical);
+    Ok(())
+}
+
 pub(super) fn push_cell(
     kind: &str,
     value: Option<&str>,
@@ -32,6 +65,7 @@ pub(super) fn push_cell(
             push_varuint(value.len() as u64, output);
             output.extend_from_slice(value.as_bytes());
         }
+        "UUID" => push_uuid(value, output)?,
         "Date" => {
             let days = crate::parse_date(value)
                 .or_else(|| value.parse::<u16>().ok())
@@ -299,4 +333,36 @@ pub(super) fn encode_checksums(files: &[FileChecksum]) -> Vec<u8> {
         }
     }
     bytes
+}
+
+#[cfg(test)]
+mod uuid_writer_tests {
+    use super::*;
+
+    #[test]
+    fn writes_clickhouse_uuid_byte_order_and_rejects_bad_literals() {
+        let mut output = Vec::new();
+        push_cell(
+            "UUID",
+            Some("61f0c404-5cb3-11e7-907b-a6006ad3dba0"),
+            &mut output,
+        )
+        .unwrap();
+        assert_eq!(
+            output,
+            [
+                0xe7, 0x11, 0xb3, 0x5c, 0x04, 0xc4, 0xf0, 0x61, 0xa0, 0xdb, 0xd3,
+                0x6a, 0x00, 0xa6, 0x7b, 0x90,
+            ]
+        );
+        for bad in [
+            "",
+            "00000000-0000-0000-0000-00000000000z",
+            "000000000000-0000-0000-000000000000",
+            "00000000-0000-0000-0000-0000000000000",
+        ] {
+            assert!(push_cell("UUID", Some(bad), &mut Vec::new()).is_err(), "{bad}");
+        }
+        assert!(push_cell("UUID", None, &mut Vec::new()).is_err());
+    }
 }
