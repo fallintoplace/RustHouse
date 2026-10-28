@@ -172,6 +172,25 @@ pub(super) fn execute_count_column_part<W: Write>(
             .ok_or_else(|| ExecutionError::Invalid(format!("unknown WHERE column: {name}")))?;
         parse_numeric(&col.data_type, literal)
     })?;
+    // All rows in a plain numeric column are non-NULL. For an unfiltered
+    // COUNT(column), immutable part metadata is sufficient even for large tables.
+    // Other types continue through the validated reader path.
+    let fast_count_type = metadata.columns.iter().any(|candidate| {
+        candidate.name == column
+            && matches!(
+                candidate.data_type.as_str(),
+                "UInt8" | "UInt16" | "UInt32" | "UInt64" | "UInt128"
+                    | "Int8" | "Int16" | "Int32" | "Int64" | "Int128"
+                    | "Float32" | "Float64" | "Date" | "Date32" | "DateTime"
+            )
+    });
+    if fast_count_type && query.predicates.is_empty() && query.or_predicates.is_empty() {
+        write_header(query, output, &format!("count({column})"))?;
+        if query.limit != Some(0) && query.offset.unwrap_or(0) == 0 {
+            writeln!(output, "{}", metadata.rows)?;
+        }
+        return Ok(());
+    }
     let mut reader = NumericQueryReader::open(part, &scan_columns)?;
     write_header(query, output, &format!("count({column})"))?;
     if query.limit == Some(0) {
