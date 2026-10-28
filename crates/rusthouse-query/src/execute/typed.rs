@@ -302,6 +302,14 @@ fn uuid_key(value: &str) -> [u8; 16] {
 
 fn compile_in(kind: &str, values: &[String], negated: bool) -> Result<Test, ExecutionError> {
     let targets = parse_literals(kind, values)?;
+    // Nullable and other typed numeric scans do not need a membership
+    // collection when there is exactly one equality target.
+    if targets.len() == 1 && !matches!(base_type(kind), "String" | "UUID") {
+        return Ok(Test::Compare(
+            if negated { Operator::Ne } else { Operator::Eq },
+            targets.into_iter().next().expect("one target"),
+        ));
+    }
     if base_type(kind) == "UUID" {
         return Ok(Test::UuidInSet(
             targets
