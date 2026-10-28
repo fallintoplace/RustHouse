@@ -200,9 +200,20 @@ fn eval_number(
                 "aggregate expression requires numeric columns".into(),
             )),
         },
-        BoundExpr::TextLength(index) => match typed::cell(&batch[*index], row) {
-            Cell::Text(bytes) => Ok(Some(Number::Unsigned(bytes.len() as u128))),
-            Cell::Null => Ok(None),
+        BoundExpr::TextLength(index) => match &batch[*index] {
+            // Length only needs the decoded byte span. Do not clone payloads.
+            TypedColumn::Text(values) => Ok(values
+                .get(row)
+                .map(|bytes| Number::Unsigned(bytes.len() as u128))),
+            TypedColumn::NullableText { values, nulls } => {
+                if nulls[row] != 0 {
+                    Ok(None)
+                } else {
+                    Ok(values
+                        .get(row)
+                        .map(|bytes| Number::Unsigned(bytes.len() as u128)))
+                }
+            }
             _ => Err(ExecutionError::Invalid(
                 "length requires a String column".into(),
             )),

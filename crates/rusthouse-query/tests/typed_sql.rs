@@ -190,6 +190,28 @@ fn aggregates_numeric_values_after_text_filters() {
 }
 
 #[test]
+fn length_aggregates_reuse_string_spans_and_skip_nulls() {
+    let part = part();
+    for (sql, expected) in [
+        (
+            "SELECT sum(length(service)), avg(length(message)) FROM part",
+            "sum(length(service))\tavg(length(message))\n8\t5\n",
+        ),
+        (
+            "SELECT sum(length(message)), count(message) FROM part WHERE status >= 500",
+            "sum(length(message))\tcount(message)\n5\t1\n",
+        ),
+        (
+            "SELECT sum(length(message)), count(message) FROM part WHERE message IS NULL",
+            "sum(length(message))\tcount(message)\nNULL\t0\n",
+        ),
+    ] {
+        assert_eq!(query(sql, &part), expected, "{sql}");
+    }
+    fs::remove_dir_all(part).unwrap();
+}
+
+#[test]
 fn aggregates_ignore_nulls_and_preserve_empty_result_semantics() {
     let part = part();
     for (sql, expected) in [
