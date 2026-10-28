@@ -16,7 +16,7 @@ fn canonical_type(name: &str) -> Option<&'static str> {
         "BIGINT" => "Int64",
         "TEXT" | "VARCHAR" | "CHARACTER" => "String",
         "TIMESTAMP" => "DateTime",
-        "REAL" => "Float32",
+        "REAL" | "FLOAT" => "Float32",
         "DOUBLE" => "Float64",
         "BOOLEAN" => "Bool",
         "UINT8" => "UInt8",
@@ -113,6 +113,21 @@ pub(super) fn parse_column_definitions(parser: &mut Parser) -> Result<Vec<Column
     Ok(columns)
 }
 
+#[cfg(test)]
+mod alias_tests {
+    use super::*;
+
+    #[test]
+    fn float_alias_uses_supported_storage_type() {
+        let parsed = crate::ddl::parse_ddl("CREATE TABLE values_table (score FLOAT)")
+            .unwrap()
+            .unwrap();
+        let crate::ddl::Ddl::CreateTable { columns, .. } = parsed else {
+            panic!("expected a CREATE TABLE");
+        };
+        assert_eq!(columns[0].data_type, "Float32");
+    }
+}
 #[cfg(test)]
 mod varchar_alias_tests {
     use super::*;

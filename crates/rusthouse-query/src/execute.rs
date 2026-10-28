@@ -1,5 +1,31 @@
 mod aggregate_plans;
 
+#[cfg(test)]
+mod dynamic_part_tests {
+    use super::*;
+
+    #[test]
+    fn workers_claim_every_part_once_even_for_uneven_shares() {
+        let cursor = AtomicUsize::new(0);
+        let mut indices = std::thread::scope(|scope| {
+            let handles = (0..4)
+                .map(|_| scope.spawn(|| {
+                    let mut claimed = Vec::new();
+                    while let Some(index) = next_part_index(&cursor, 257) {
+                        claimed.push(index);
+                    }
+                    claimed
+                }))
+                .collect::<Vec<_>>();
+            handles.into_iter().flat_map(|handle| handle.join().unwrap()).collect::<Vec<_>>()
+        });
+        indices.sort_unstable();
+        assert_eq!(indices, (0..257).collect::<Vec<_>>());
+        assert_eq!(next_part_index(&cursor, 257), None);
+    }
+}
+
+
 use self::aggregate_plans::*;
 
 use crate::{AggregateFunction, Projection, Select, Source};
@@ -11,6 +37,7 @@ use std::error::Error;
 use std::fmt;
 use std::io::{self, BufWriter, Write};
 use std::path::Path;
+use std::sync::atomic::{AtomicUsize, Ordering as AtomicOrdering};
 
 mod grouped_distinct;
 mod grouped_multi;
@@ -31,7 +58,8 @@ mod typed_aggregate;
 use predicates::{CompiledTest, compile_in_test};
 use predicates::{
     batch_matches, compile_numbers_predicates, compile_part_where, count_batch_matches,
-    count_monotonic_numbers, number_matches, number_matches_all, parse_numeric,
+    constant_predicate_result, count_monotonic_numbers, monotonic_range_indices,
+    number_matches, number_matches_all, parse_numeric,
 };
 
 #[derive(Debug)]
@@ -206,9 +234,77 @@ pub fn execute<W: Write>(
     Ok(())
 }
 
+/// Atomically hand out independent part indices to workers. This avoids
+/// stranding a worker on one large immutable part while other workers finish.
+fn next_part_index(cursor: &AtomicUsize, part_count: usize) -> Option<usize> {
+    let index = cursor.fetch_add(1, AtomicOrdering::Relaxed);
+    (index < part_count).then_some(index)
+}
+
 /// Evaluate filtered COUNT independently on immutable parts, then reduce the
 /// partial counts. Skip small snapshots where thread startup costs dominate.
 /// An unfiltered COUNT already has a cheaper metadata-only path.
+/// Compile numeric WHERE predicates once and scan immutable parts directly,
+/// without restarting the SQL executor or parsing tabular output per part.
+/// Text and nullable filters retain the existing general-purpose fallback.
+fn parallel_numeric_filtered_count(
+    query: &Select,
+    parts: &[std::path::PathBuf],
+    metadata: &rusthouse_storage::PartMetadata,
+    workers: usize,
+) -> Result<Option<u64>, ExecutionError> {
+    let supported = |name: &str| -> Result<bool, ExecutionError> {
+        let column = metadata.columns.iter().find(|column| column.name == name)
+            .ok_or_else(|| ExecutionError::Invalid(format!("unknown WHERE column: {name}")))?;
+        Ok(matches!(column.data_type.as_str(),
+            "UInt8" | "UInt16" | "UInt32" | "UInt64" | "UInt128" |
+            "Int8" | "Int16" | "Int32" | "Int64" | "Int128" |
+            "Float32" | "Float64"))
+    };
+    for predicate in query.predicates.iter().chain(query.or_predicates.iter().flatten()) {
+        if !supported(predicate.column())? {
+            return Ok(None);
+        }
+    }
+    let mut columns = Vec::new();
+    let branches = compile_part_where(query, &mut columns, |name, literal| {
+        let column = metadata.columns.iter().find(|column| column.name == name)
+            .ok_or_else(|| ExecutionError::Invalid(format!("unknown WHERE column: {name}")))?;
+        parse_numeric(&column.data_type, literal)
+    })?;
+    if columns.is_empty() {
+        return Ok(None);
+    }
+    let next = AtomicUsize::new(0);
+    let count = std::thread::scope(|scope| -> Result<u64, ExecutionError> {
+        let handles = (0..workers).map(|_| {
+            let columns = &columns;
+            let branches = &branches;
+            let next = &next;
+            scope.spawn(move || -> Result<u64, ExecutionError> {
+                let mut partial = 0u64;
+                while let Some(index) = next_part_index(next, parts.len()) {
+                    let mut reader = rusthouse_storage::NumericPartReader::open(&parts[index], columns)?;
+                    while let Some(batch) = reader.next_batch()? {
+                        partial = partial.checked_add(count_batch_matches(&batch, branches) as u64)
+                            .ok_or_else(|| ExecutionError::Invalid("parallel COUNT overflow".into()))?;
+                    }
+                }
+                Ok(partial)
+            })
+        }).collect::<Vec<_>>();
+        let mut total = 0u64;
+        for handle in handles {
+            let partial = handle.join()
+                .map_err(|_| ExecutionError::Invalid("parallel COUNT worker panicked".into()))??;
+            total = total.checked_add(partial)
+                .ok_or_else(|| ExecutionError::Invalid("parallel COUNT overflow".into()))?;
+        }
+        Ok(total)
+    })?;
+    Ok(Some(count))
+}
+
 fn parallel_filtered_count(query: &Select, source: &Path) -> Result<Option<u64>, ExecutionError> {
     if !matches!(query.projection, Projection::Count)
         || (query.predicates.is_empty() && query.or_predicates.is_empty())
@@ -232,7 +328,10 @@ fn parallel_filtered_count(query: &Select, source: &Path) -> Result<Option<u64>,
     }
     // Validate all part schemas before executing any partial count. A mismatched
     // or incomplete snapshot must never produce a plausible partial answer.
-    inspect_query_source(source)?;
+    let metadata = inspect_query_source(source)?;
+    if let Some(count) = parallel_numeric_filtered_count(query, &parts, &metadata, workers)? {
+        return Ok(Some(count));
+    }
     let chunk_size = parts.len().div_ceil(workers);
     let total = std::thread::scope(|scope| -> Result<u64, ExecutionError> {
         let handles = parts
@@ -579,6 +678,24 @@ fn execute_into<W: Write>(
             })?;
         parse_numeric(&column.data_type, literal)
     })?;
+    // A constant predicate on non-nullable numeric columns can be resolved
+    // from validated part row counts without decoding any compressed blocks.
+    // Check every referenced column first to retain unknown-column errors.
+    if matches!(query.projection, Projection::Count)
+        && !query.distinct
+        && query.order_by.is_none()
+        && query.order_by_extra.is_empty()
+        && query.having.is_none()
+        && scan_columns.iter().all(|name| metadata.columns.iter().any(|column| &column.name == name))
+    {
+        if let Some(matches_all) = constant_predicate_result(&comparisons) {
+            write_header(query, output, "count")?;
+            if query.limit != Some(0) && query.offset.unwrap_or(0) == 0 {
+                writeln!(output, "{}", if matches_all { metadata.rows } else { 0 })?;
+            }
+            return Ok(());
+        }
+    }
     let sort_index = query.order_by.as_ref().map(|order| {
         let column_name = query.order_source_column(&order.column);
         if let Some(index) = scan_columns.iter().position(|column| column == column_name) {
@@ -599,7 +716,7 @@ fn execute_into<W: Write>(
         };
         extra_sort_indices.push(index);
     }
-    let mut reader = NumericQueryReader::open(part, &scan_columns)?;
+    let mut reader = NumericQueryReader::open_with_metadata(part, &scan_columns, &metadata)?;
     let no_filters = query.predicates.is_empty() && query.or_predicates.is_empty();
     let mut distinct: Option<HashSet<Vec<NumberKey>>> = query.distinct.then(HashSet::new);
 
@@ -617,15 +734,23 @@ fn execute_into<W: Write>(
                     continue;
                 }
                 let key = number_at(&batch[index], row);
+                // Defer secondary-key decoding and allocation until the primary
+                // key actually has a chance to enter the bounded Top-K heap.
+                // DISTINCT must still see every row before pruning.
+                if !query.distinct
+                    && sorted.would_discard(
+                        key,
+                        extra_sort_indices
+                            .iter()
+                            .map(|&index| number_at(&batch[index], row)),
+                    )
+                {
+                    continue;
+                }
                 let extra_keys = extra_sort_indices
                     .iter()
                     .map(|&index| number_at(&batch[index], row))
                     .collect::<Vec<_>>();
-                // DISTINCT must still see every row, even if it would lose
-                // the Top-K heap comparison.
-                if !query.distinct && sorted.would_discard(key, &extra_keys) {
-                    continue;
-                }
                 let values: Vec<Number> = projected_indices
                     .iter()
                     .map(|projected_index| number_at(&batch[*projected_index], row))
@@ -883,6 +1008,31 @@ fn execute_numbers<W: Write>(
             "--part cannot be used with numbers(N)".into(),
         ));
     }
+    // Large virtual sources are safe only when COUNT can be computed
+    // directly from the sequence. Preserve the old scan bound otherwise.
+    if rows > 10_000_000 {
+        let scalar_count = matches!(
+            query.projection,
+            Projection::Count | Projection::CountColumn { .. } | Projection::CountDistinct { .. }
+        );
+        let simple_result = query.order_by.is_none()
+            && query.order_by_extra.is_empty()
+            && query.having.is_none()
+            && !query.distinct;
+        let arithmetic_count = if query.predicates.is_empty() && query.or_predicates.is_empty() {
+            true
+        } else if scalar_count && simple_result {
+            let compiled = compile_numbers_predicates(query)?;
+            count_monotonic_numbers(&compiled, start, rows, step).is_some()
+        } else {
+            false
+        };
+        if !scalar_count || !simple_result || !arithmetic_count {
+            return Err(ExecutionError::Invalid(
+                "virtual inputs over 10000000 rows require an arithmetic COUNT query".into(),
+            ));
+        }
+    }
     if matches!(
         query.projection,
         Projection::MultipleAggregates(_)
@@ -1025,6 +1175,34 @@ fn execute_numbers<W: Write>(
     }
     if query.limit == Some(0) {
         return Ok(());
+    }
+
+    // All generated values are unique and monotonic. With a simple range
+    // predicate, both the first matching index and the page boundary are
+    // known without visiting any of the preceding billion generated rows.
+    if !is_count
+        && (!query.predicates.is_empty() || !query.or_predicates.is_empty())
+    {
+        if let Some(limit) = query.limit {
+            if let Some((lower, upper)) = monotonic_range_indices(&comparisons, start, rows, step) {
+                let available = upper - lower;
+                let skip = (query.offset.unwrap_or(0) as u64).min(available);
+                let emit = (limit as u64).min(available - skip);
+                let descending = sorting.as_ref().is_some_and(SortedRows::descending);
+                for position in skip..skip + emit {
+                    let index = if descending { upper - 1 - position } else { lower + position };
+                    let number = u128::from(start) + u128::from(index) * u128::from(step);
+                    for column in 0..projected.len() {
+                        if column > 0 {
+                            output.write_all(b"\t")?;
+                        }
+                        write!(output, "{number}")?;
+                    }
+                    writeln!(output)?;
+                }
+                return Ok(());
+            }
+        }
     }
 
     // numbers() is already sorted and its values are unique. A filter-free

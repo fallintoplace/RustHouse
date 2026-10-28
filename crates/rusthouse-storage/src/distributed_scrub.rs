@@ -79,4 +79,22 @@ mod tests {
         assert!(scrub_snapshot(&root, 0).is_err());
         fs::remove_dir_all(root).unwrap();
     }
+    #[test]
+    fn refuses_tampered_snapshot_files() {
+        let root = std::env::temp_dir().join(format!(
+            "rusthouse-scrub-corrupt-{}", std::process::id()
+        ));
+        let _ = fs::remove_dir_all(&root);
+        fs::create_dir(&root).unwrap();
+        let part = root.join("all_0_0_0");
+        write_wide_part(
+            &part,
+            &[Column { name: "id".into(), data_type: "UInt64".into() }],
+            &[vec![Some("4".into())]],
+        ).unwrap();
+        fs::write(part.join("count.txt"), "999\n").unwrap();
+        assert!(scrub_snapshot(&root, 1).is_err());
+        fs::remove_dir_all(root).unwrap();
+    }
+
 }

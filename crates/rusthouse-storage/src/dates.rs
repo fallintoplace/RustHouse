@@ -88,11 +88,11 @@ fn parse_clock_time(text: &str) -> Option<u64> {
 pub fn parse_datetime(text: &str) -> Option<u32> {
     let timestamp = text.get(..19)?;
     let bytes = timestamp.as_bytes();
-    if !matches!(bytes[10], b' ' | b'T') {
+    if !matches!(bytes[10], b' ' | b'T' | b't') {
         return None;
     }
     let offset = match text.get(19..)? {
-        "" | "Z" => 0i64,
+        "" | "Z" | "z" => 0i64,
         suffix => {
             let bytes = suffix.as_bytes();
             if bytes.len() != 6
@@ -201,4 +201,16 @@ mod tests {
             assert!(parse_datetime(text).is_none(), "{text}");
         }
     }
+    #[test]
+    fn accepts_lowercase_rfc3339_separators() {
+        assert_eq!(
+            parse_datetime("2024-02-29t12:30:00z"),
+            parse_datetime("2024-02-29T12:30:00Z")
+        );
+        assert_eq!(
+            parse_datetime("2024-02-29t13:30:00+01:00"),
+            parse_datetime("2024-02-29T12:30:00Z")
+        );
+    }
+
 }

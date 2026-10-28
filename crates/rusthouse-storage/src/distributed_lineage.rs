@@ -56,4 +56,26 @@ mod tests {
             VersionRelation::Diverged
         );
     }
+    #[test]
+    fn reversing_snapshot_inputs_reverses_direction() {
+        for local in 1..=8 {
+            for remote in 1..=8 {
+                let a = SnapshotVersion { epoch: 2, generation: local, fingerprint: 10 };
+                let b = SnapshotVersion { epoch: 2, generation: remote, fingerprint: 10 };
+                let forward = compare_snapshots(a, b);
+                let backward = compare_snapshots(b, a);
+                match forward {
+                    VersionRelation::Identical => assert_eq!(backward, VersionRelation::Identical),
+                    VersionRelation::LocalAhead => assert_eq!(backward, VersionRelation::LocalBehind),
+                    VersionRelation::LocalBehind => assert_eq!(backward, VersionRelation::LocalAhead),
+                    VersionRelation::Diverged => panic!("identical epochs cannot diverge here"),
+                }
+                assert_eq!(
+                    compare_snapshots(a, SnapshotVersion { epoch: 3, ..b }),
+                    VersionRelation::Diverged
+                );
+            }
+        }
+    }
+
 }
