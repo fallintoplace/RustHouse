@@ -7,6 +7,7 @@ pub(super) fn is_function(name: &str) -> bool {
     matches!(
         name.to_ascii_uppercase().as_str(),
         "LENGTH"
+            | "TOMONTH"
             | "LENGTHUTF8"
             | "CHAR_LENGTH"
             | "OCTET_LENGTH"
@@ -1939,6 +1940,19 @@ fn parse_at_depth(parser: &mut Parser, depth: usize) -> Result<ConstantValue, Pa
                         return Err(ParseError("lowerUTF8 result is too large".into()));
                     }
                     ConstantValue::Text(result)
+                }
+                None => ConstantValue::Null,
+            }
+        }
+        "TOMONTH" => {
+            let input = text_arg(parser, depth + 1)?;
+            require(parser, Token::RParen, "toMonth requires one argument")?;
+            match input {
+                Some(value) => {
+                    if rusthouse_storage::parse_date(&value).is_none() {
+                        return Err(ParseError("invalid Date argument".into()));
+                    }
+                    ConstantValue::Integer(value[5..7].parse::<i64>().unwrap())
                 }
                 None => ConstantValue::Null,
             }
