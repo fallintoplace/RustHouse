@@ -190,5 +190,4 @@ mod tests {
         write_compact_row(&mut output, b"a\tb\tc", 3).unwrap();
         assert_eq!(output, b"[\"a\",\"b\",\"c\"]\n");
     }
-
 }

@@ -209,5 +209,4 @@ mod tests {
         let output = sink.finish().unwrap();
         assert_eq!(output, format!("[{}]\n", input.trim_end()).as_bytes());
     }
-
 }

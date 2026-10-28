@@ -27,9 +27,8 @@ use markdown::MarkdownWriter;
 use rusthouse_query::{Source, execute, explain_select, parse_select};
 use rusthouse_storage::{inspect_query_source, resolve_database_table};
 use sql_values::SqlValuesWriter;
-use std::fs;
 use std::io::{self, Write};
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 
 pub const MAX_QUERY_BYTES: usize = 64 * 1024;
 pub const MAX_HEADER_BYTES: usize = 8192;
@@ -454,6 +453,8 @@ pub fn handle_request(method: &str, target: &str, body: &[u8], config: &Config) 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::fs;
+    use std::path::Path;
 
     fn config() -> Config {
         Config {
