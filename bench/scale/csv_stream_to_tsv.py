@@ -29,10 +29,10 @@ def convert(source, destination, *, header=False, empty_as_null=False,
     count = 0
     width = None
     destination = Path(destination)
-    if destination.exists():
-        raise ValueError("refusing to overwrite an existing output")
     pending = destination.with_name("." + destination.name + f".{os.getpid()}.pending")
     try:
+        if destination.exists():
+            raise ValueError("refusing to overwrite an existing output")
         with open(source, "r", encoding="utf-8-sig", newline="") as input_file:
             with pending.open("x", encoding="utf-8", newline="") as output_file:
                 reader = csv.reader(input_file, strict=True)
