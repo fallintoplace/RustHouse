@@ -156,7 +156,10 @@ mod tests {
     #[test]
     fn validates_sparse_indexes_before_selecting_bounded_transfer_prefix() {
         let selected = plan_missing_chunks(101, 1, 128, &[0, 2, 7, 63, 64, 100], 3, 3).unwrap();
-        assert_eq!(selected.iter().map(|part| part.index).collect::<Vec<_>>(), vec![0, 2, 7]);
+        assert_eq!(
+            selected.iter().map(|part| part.index).collect::<Vec<_>>(),
+            vec![0, 2, 7]
+        );
         assert!(plan_missing_chunks(101, 1, 128, &[0, 2, 7, 7], 4, 4).is_err());
         assert!(plan_missing_chunks(101, 1, 128, &[0, 2, 101], 4, 4).is_err());
     }
