@@ -368,6 +368,57 @@ pub(super) fn monotonic_range_indices(
     Some((lower as u64, upper as u64))
 }
 
+/// Enumerate small finite matching sets across OR branches exactly.
+/// Each disjunct needs a positive equality or IN seed. Unbounded branches
+/// retain the normal executor rather than changing their semantics.
+pub(super) fn sparse_generated_positions(
+    branches: &[Vec<CompiledPredicate>],
+    start: u64,
+    rows: u64,
+    step: u64,
+) -> Option<Vec<u64>> {
+    if step == 0 { return None; }
+    let (start, step, rows) = (u128::from(start), u128::from(step), u128::from(rows));
+    let mut indices = Vec::new();
+    let mut examined = 0usize;
+    for conjunction in branches {
+        let mut seed = None;
+        for predicate in conjunction {
+            let candidates = match &predicate.test {
+                CompiledTest::Comparison { operator: Operator::Eq, target: Number::Unsigned(value) } => Some(vec![*value]),
+                CompiledTest::In(items) => Some(items.iter().filter_map(|item| {
+                    if let Number::Unsigned(value) = item { Some(*value) } else { None }
+                }).collect()),
+                CompiledTest::InSet { targets, negated: false } => Some(targets.iter().filter_map(|key| {
+                    if let NumberKey::Unsigned(value) = key { Some(*value) } else { None }
+                }).collect()),
+                _ => None,
+            };
+            if candidates.is_some() {
+                seed = candidates;
+                break;
+            }
+        }
+        let values: Vec<u128> = seed?;
+        examined = examined.checked_add(values.len())?;
+        if examined > 4096 { return None; }
+        for value in values {
+            if value < start || (value - start) % step != 0 {
+                continue;
+            }
+            let index = (value - start) / step;
+            if index < rows && conjunction.iter().all(|predicate| {
+                predicate.test.matches(Number::Unsigned(value))
+            }) {
+                indices.push(index as u64);
+            }
+        }
+    }
+    indices.sort_unstable();
+    indices.dedup();
+    Some(indices)
+}
+
 pub(super) fn count_monotonic_numbers(
     branches: &[Vec<CompiledPredicate>],
     start: u64,
