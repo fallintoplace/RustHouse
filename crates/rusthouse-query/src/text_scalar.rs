@@ -85,6 +85,7 @@ pub(super) fn is_function(name: &str) -> bool {
             | "BASE64_DECODE"
             | "APPENDTRAILINGCHARIFABSENT"
             | "RPAD"
+            | "ENCODEURLCOMPONENT"
             | "SPACE"
     )
 }
@@ -359,7 +360,7 @@ fn parse_at_depth(parser: &mut Parser, depth: usize) -> Result<ConstantValue, Pa
                 None => ConstantValue::Null,
             }
         }
-        "URL_ENCODE" => {
+        "URL_ENCODE" | "ENCODEURLCOMPONENT" => {
             let input = text_arg(parser, depth + 1)?;
             require(parser, Token::RParen, "URL_ENCODE requires one argument")?;
             match input {
