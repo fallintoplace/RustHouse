@@ -79,6 +79,8 @@ pub(super) fn execute_typed_aggregate<W: Write>(
 
     let mut state = AggregateState::new(*function);
     let mut ordered_value: Option<Cell> = None;
+    // Only stringify the winning UUID, not every scanned UUID row.
+    let mut ordered_uuid: Option<[u8; 16]> = None;
     while let Some(batch) = reader.next_batch()? {
         for row in 0..batch[0].len() {
             if !no_filters && !typed::passes(&batch, row, &conditions) {
@@ -98,6 +100,19 @@ pub(super) fn execute_typed_aggregate<W: Write>(
                         })?;
                         if replaces_text_extreme(value, ordered_value.as_ref(), *function) {
                             ordered_value = Some(Cell::Text(value.to_vec()));
+                        }
+                        continue;
+                    }
+                    TypedColumn::Uuid(values) => {
+                        let value = *values[row].as_bytes();
+                        let replace = ordered_uuid.is_none_or(|best| match function {
+                            AggregateFunction::Min => value < best,
+                            AggregateFunction::Max => value > best,
+                            _ => false,
+                        });
+                        if replace {
+                            ordered_uuid = Some(value);
+                            ordered_value = Some(Cell::Uuid(values[row].to_string()));
                         }
                         continue;
                     }
