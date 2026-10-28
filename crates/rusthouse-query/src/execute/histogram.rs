@@ -13,13 +13,13 @@ use std::io::Write;
 use std::path::Path;
 
 #[derive(Clone, Copy)]
-struct Bin {
-    min: f64,
-    max: f64,
-    count: u64,
+pub(super) struct Bin {
+    pub(super) min: f64,
+    pub(super) max: f64,
+    pub(super) count: u64,
 }
 
-fn number_as_float(value: Number) -> Result<f64, ExecutionError> {
+pub(super) fn number_as_float(value: Number) -> Result<f64, ExecutionError> {
     let value = match value {
         Number::Unsigned(value) => value as f64,
         Number::Signed(value) => value as f64,
@@ -34,7 +34,7 @@ fn number_as_float(value: Number) -> Result<f64, ExecutionError> {
     }
 }
 
-fn bucket(value: f64, min: f64, max: f64, bins: usize) -> usize {
+pub(super) fn bucket(value: f64, min: f64, max: f64, bins: usize) -> usize {
     if min == max {
         return 0;
     }
@@ -42,7 +42,7 @@ fn bucket(value: f64, min: f64, max: f64, bins: usize) -> usize {
     ((fraction * bins as f64) as usize).min(bins - 1)
 }
 
-fn to_bins(min: f64, max: f64, counts: &[u64]) -> Vec<Bin> {
+pub(super) fn to_bins(min: f64, max: f64, counts: &[u64]) -> Vec<Bin> {
     if min == max {
         return vec![Bin {
             min,
