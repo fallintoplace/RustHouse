@@ -42,6 +42,7 @@ pub(super) fn is_function(name: &str) -> bool {
             | "CUTQUERYSTRINGANDFRAGMENT"
             | "COALESCE"
             | "CONCAT_WS"
+            | "CONCATWITHSEPARATOR"
             | "CUTFRAGMENT"
             | "URL_ENCODE"
             | "FRAGMENT"
@@ -529,7 +530,7 @@ fn parse_at_depth(parser: &mut Parser, depth: usize) -> Result<ConstantValue, Pa
             )?;
             first.map_or(ConstantValue::Null, ConstantValue::Text)
         }
-        "CONCAT_WS" => {
+        "CONCAT_WS" | "CONCATWITHSEPARATOR" => {
             let separator = text_arg(parser, depth + 1)?;
             require(
                 parser,
