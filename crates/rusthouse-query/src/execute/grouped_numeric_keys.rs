@@ -128,7 +128,7 @@ pub(super) fn execute<W: Write>(
             } else {
             probe_key.clear();
             for &index in &group_indices {
-                probe_key.push(typed::cell(&batch[index], row).key());
+                probe_key.push(typed::key_at(&batch[index], row));
             }
             let group = if let Some(&index) = by_key.get(probe_key.as_slice()) {
                 index

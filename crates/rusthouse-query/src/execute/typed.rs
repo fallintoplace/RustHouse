@@ -53,6 +53,30 @@ impl Cell {
     }
 }
 
+/// Build a grouped hash key directly from a typed batch slot.
+/// Avoid creating an owned Cell only to clone its String or UUID again.
+pub(super) fn key_at(column: &TypedColumn, row: usize) -> Key {
+    match column {
+        TypedColumn::Numeric(values) => Key::Numeric(NumberKey::from(number_at(values, row))),
+        TypedColumn::NullableNumeric { values, nulls } => {
+            if nulls[row] != 0 {
+                Key::Null
+            } else {
+                Key::Numeric(NumberKey::from(number_at(values, row)))
+            }
+        }
+        TypedColumn::Text(values) => Key::Text(values.get(row).unwrap().to_vec()),
+        TypedColumn::NullableText { values, nulls } => {
+            if nulls[row] != 0 {
+                Key::Null
+            } else {
+                Key::Text(values.get(row).unwrap().to_vec())
+            }
+        }
+        TypedColumn::Uuid(values) => Key::Uuid(values[row].to_string()),
+    }
+}
+
 /// Test the null bitmap without converting a value or allocating String/UUID cells.
 pub(super) fn is_null_at(column: &TypedColumn, row: usize) -> bool {
     match column {
@@ -1316,6 +1340,32 @@ mod predicate_order_tests {
         order_compiled_conditions(&mut conditions);
         assert_eq!(conditions[0].index, 1);
         assert_eq!(conditions[1].index, 0);
+    }
+}
+
+#[cfg(test)]
+mod direct_group_key_tests {
+    use super::{cell, key_at};
+    use rusthouse_storage::{TypedColumn, read_legacy_strings};
+
+    #[test]
+    fn direct_group_keys_match_materialized_cells() {
+        let mut input = b"\x03foo\x00\x03foo".as_slice();
+        let values = read_legacy_strings(&mut input, 3).unwrap();
+        let plain = TypedColumn::Text(values);
+        for row in 0..3 {
+            assert!(key_at(&plain, row) == cell(&plain, row).key());
+        }
+
+        let mut input = b"\x03foo\x00\x03bar".as_slice();
+        let values = read_legacy_strings(&mut input, 3).unwrap();
+        let nullable = TypedColumn::NullableText {
+            values,
+            nulls: vec![0, 1, 0],
+        };
+        for row in 0..3 {
+            assert!(key_at(&nullable, row) == cell(&nullable, row).key());
+        }
     }
 }
 
