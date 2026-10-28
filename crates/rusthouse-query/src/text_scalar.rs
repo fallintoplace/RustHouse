@@ -57,6 +57,7 @@ pub(super) fn is_function(name: &str) -> bool {
             | "LPAD"
             | "COUNTSUBSTRINGSCASEINSENSITIVE"
             | "HEX_DECODE"
+            | "DECODEURLFORMCOMPONENT"
             | "REPLACE"
             | "PROTOCOL"
             | "TRANSLATE"
@@ -1511,6 +1512,44 @@ fn parse_at_depth(parser: &mut Parser, depth: usize) -> Result<ConstantValue, Pa
                     ConstantValue::Text(
                         String::from_utf8(result)
                             .map_err(|_| ParseError("URL_DECODE result is not UTF-8".into()))?,
+                    )
+                }
+                None => ConstantValue::Null,
+            }
+        }
+        "DECODEURLFORMCOMPONENT" => {
+            let input = text_arg(parser, depth + 1)?;
+            require(parser, Token::RParen, "decodeURLFormComponent requires one argument")?;
+            match input {
+                Some(input) => {
+                    let source = input.as_bytes();
+                    let mut output = Vec::with_capacity(source.len());
+                    let mut index = 0;
+                    while index < source.len() {
+                        if source[index] == b'%' {
+                            if index + 2 >= source.len() {
+                                return Err(ParseError("decodeURLFormComponent has incomplete escape".into()));
+                            }
+                            let hex = |byte: u8| -> Option<u8> {
+                                match byte {
+                                    b'0'..=b'9' => Some(byte - b'0'),
+                                    b'a'..=b'f' => Some(byte - b'a' + 10),
+                                    b'A'..=b'F' => Some(byte - b'A' + 10),
+                                    _ => None,
+                                }
+                            };
+                            let hi = hex(source[index + 1]).ok_or_else(|| ParseError("decodeURLFormComponent invalid escape".into()))?;
+                            let lo = hex(source[index + 2]).ok_or_else(|| ParseError("decodeURLFormComponent invalid escape".into()))?;
+                            output.push((hi << 4) | lo);
+                            index += 3;
+                        } else {
+                            output.push(if source[index] == b'+' { b' ' } else { source[index] });
+                            index += 1;
+                        }
+                    }
+                    ConstantValue::Text(
+                        String::from_utf8(output)
+                            .map_err(|_| ParseError("decodeURLFormComponent result is not UTF-8".into()))?,
                     )
                 }
                 None => ConstantValue::Null,
