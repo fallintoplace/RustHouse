@@ -86,6 +86,7 @@ pub(super) fn is_function(name: &str) -> bool {
             | "APPENDTRAILINGCHARIFABSENT"
             | "RPAD"
             | "SPACE"
+            | "SOUNDEX"
     )
 }
 
@@ -1607,6 +1608,47 @@ fn parse_at_depth(parser: &mut Parser, depth: usize) -> Result<ConstantValue, Pa
                     ConstantValue::Text(value.chars().skip(skip).collect())
                 }
                 _ => ConstantValue::Null,
+            }
+        }
+        "SOUNDEX" => {
+            let input = text_arg(parser, depth + 1)?;
+            require(parser, Token::RParen, "soundex requires one string")?;
+            match input {
+                Some(input) => {
+                    let mut letters = input.bytes().filter(u8::is_ascii_alphabetic);
+                    let Some(first) = letters.next() else {
+                        return Ok(ConstantValue::Text(String::new()));
+                    };
+                    let mut result = String::with_capacity(4);
+                    result.push(char::from(first.to_ascii_uppercase()));
+                    let soundex_digit = |byte: u8| match byte.to_ascii_uppercase() {
+                        b'B' | b'F' | b'P' | b'V' => b'1',
+                        b'C' | b'G' | b'J' | b'K' | b'Q' | b'S' | b'X' | b'Z' => b'2',
+                        b'D' | b'T' => b'3',
+                        b'L' => b'4',
+                        b'M' | b'N' => b'5',
+                        b'R' => b'6',
+                        _ => b'0',
+                    };
+                    let mut previous = soundex_digit(first);
+                    for letter in letters {
+                        let next = soundex_digit(letter);
+                        if next != b'0' && next != previous {
+                            result.push(char::from(next));
+                            if result.len() == 4 {
+                                break;
+                            }
+                        }
+                        if !matches!(letter.to_ascii_uppercase(), b'H' | b'W') {
+                            previous = next;
+                        }
+                    }
+                    while result.len() < 4 {
+                        result.push('0');
+                    }
+                    ConstantValue::Text(result)
+                }
+                None => ConstantValue::Null,
             }
         }
         "SPACE" => {
