@@ -733,7 +733,7 @@ fn static_nonnullable_null_filter(
             let kind = types.get(&names[condition.index])?;
             match &condition.test {
                 Test::IsNull(negated) if !kind.starts_with("Nullable(") => {
-                    if !negated {
+                    if !*negated {
                         impossible = true;
                         break;
                     }
