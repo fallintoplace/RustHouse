@@ -385,8 +385,18 @@ pub(super) fn weighted_avg_shard_sql(sql: &str, select: &Select) -> Option<Strin
     };
     let mut expected = select.clone();
     expected.projection = Projection::MultipleAggregates(vec![
-        (AggregateFunction::Sum, column.clone()),
-        (AggregateFunction::Count, column.clone()),
+        AggregateItem {
+            function: Some(AggregateFunction::Sum),
+            argument: Some(ScalarExpr::Column(column.clone())),
+            distinct: false,
+            alias: None,
+        },
+        AggregateItem {
+            function: None,
+            argument: Some(ScalarExpr::Column(column.clone())),
+            distinct: false,
+            alias: None,
+        },
     ]);
     let upper = sql.to_ascii_uppercase();
     for (index, _) in sql.char_indices() {
