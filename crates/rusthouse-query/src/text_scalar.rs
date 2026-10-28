@@ -228,9 +228,7 @@ fn parse_at_depth(parser: &mut Parser, depth: usize) -> Result<ConstantValue, Pa
                 Some(value) => {
                     let seconds = rusthouse_storage::parse_datetime(&value)
                         .ok_or_else(|| ParseError("invalid UTC DateTime argument".into()))?;
-                    ConstantValue::Text(rusthouse_storage::format_datetime(
-                        seconds / 900 * 900,
-                    ))
+                    ConstantValue::Text(rusthouse_storage::format_datetime(seconds / 900 * 900))
                 }
                 None => ConstantValue::Null,
             }
