@@ -13,6 +13,7 @@ from datetime import date, timedelta
 from pathlib import Path
 
 from bench.common import cli_sql, emit_json, latency_summary
+from bench.analytics.sqlite_oracle import assert_matches
 
 SCHEMA = (
     "CREATE TABLE events (event_id UInt64, user_id UInt64, region String, "
@@ -47,6 +48,12 @@ def load_workload(path):
         name, sql = case["name"], case["sql"].strip()
         if not name or name in names or not sql.upper().startswith("SELECT ") or ";" in sql or len(sql.encode("utf-8")) > 4096:
             raise ValueError("query names must be unique and SQL must be one SELECT under 4096 bytes")
+        if case.get("oracle", "exact") not in ("exact", "typed"):
+            raise ValueError("query oracle must be exact or typed")
+        if "unordered" in case and type(case["unordered"]) is not bool:
+            raise ValueError("unordered must be a boolean")
+        if case.get("unordered") and case.get("oracle", "exact") != "typed":
+            raise ValueError("unordered comparisons require typed oracle")
         names.add(name)
     return data
 
@@ -102,6 +109,13 @@ def sqlite_reference(oracle, sql):
     return rendered
 
 
+def sqlite_typed_reference(oracle, sql):
+    rows = oracle.execute(sql).fetchall()
+    if len(rows) > 100_000:
+        raise ValueError("oracle result exceeds 100000 rows")
+    return rows
+
+
 def benchmark_one(number, case, expected, execute, runs, warmups):
     timings = []
     status, error = "passed", None
@@ -116,7 +130,13 @@ def benchmark_one(number, case, expected, execute, runs, warmups):
             status, error = "error", str(failure)[:2000]
             break
         elapsed = (time.perf_counter_ns() - started) / 1_000_000_000 if started is not None else None
-        if actual != expected:
+        if case.get("oracle", "exact") == "typed":
+            try:
+                assert_matches(actual, expected, unordered=case.get("unordered", False))
+            except (ValueError, UnicodeError) as failure:
+                status, error = "mismatch", str(failure)[:2000]
+                break
+        elif actual != expected:
             status, error = "mismatch", f"expected {expected[:120]!r}, received {actual[:120]!r}"
             break
         if elapsed is not None:
@@ -139,7 +159,12 @@ def run_suite(binary, workload, rows=10_000, runs=3, warmups=1, timeout=120, exe
         root = Path(directory)
         source, oracle = make_fixture(root, rows)
         try:
-            references = [sqlite_reference(oracle, case["sql"]) for case in workload["queries"]]
+            references = [
+                sqlite_typed_reference(oracle, case["sql"])
+                if case.get("oracle", "exact") == "typed"
+                else sqlite_reference(oracle, case["sql"])
+                for case in workload["queries"]
+            ]
         finally:
             oracle.close()
         database = root / "database"

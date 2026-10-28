@@ -1,0 +1,26 @@
+{
+  "name": "typed-analytics-reference",
+  "description": "Float, NULL and mixed-metric analytics verified using SQLite typed rows",
+  "queries": [
+    {
+      "name": "overall-average",
+      "sql": "SELECT AVG(amount) FROM events",
+      "oracle": "typed"
+    },
+    {
+      "name": "per-region-average",
+      "sql": "SELECT region, AVG(amount) FROM events GROUP BY region ORDER BY region",
+      "oracle": "typed"
+    },
+    {
+      "name": "empty-aggregate-null",
+      "sql": "SELECT MIN(amount), MAX(amount), AVG(amount) FROM events WHERE status = 'missing'",
+      "oracle": "typed"
+    },
+    {
+      "name": "conditional-regional-average",
+      "sql": "SELECT region, AVG(amount) FROM events WHERE coupon IS NOT NULL GROUP BY region ORDER BY region",
+      "oracle": "typed"
+    }
+  ]
+}
