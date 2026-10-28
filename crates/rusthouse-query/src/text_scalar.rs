@@ -23,6 +23,7 @@ pub(super) fn is_function(name: &str) -> bool {
             | "CUTQUERYSTRING"
             | "COLLAPSE_WHITESPACE"
             | "LOWER"
+            | "TODATETIME"
             | "HEX_ENCODE"
             | "HEX"
             | "IS_ASCII"
@@ -310,6 +311,20 @@ fn parse_at_depth(parser: &mut Parser, depth: usize) -> Result<ConstantValue, Pa
                         .and_then(|length| i64::try_from(length).ok())
                         .ok_or_else(|| ParseError("BIT_LENGTH result exceeds Int64".into()))?;
                     ConstantValue::Integer(bits)
+                }
+                None => ConstantValue::Null,
+            }
+        }
+        "TODATETIME" => {
+            let input = text_arg(parser, depth + 1)?;
+            require(parser, Token::RParen, "toDateTime requires one argument")?;
+            match input {
+                Some(value) => {
+                    let seconds = rusthouse_storage::parse_datetime(&value)
+                        .or_else(|| rusthouse_storage::parse_date(&value)
+                            .and_then(|days| u32::from(days).checked_mul(86_400)))
+                        .ok_or_else(|| ParseError("toDateTime requires a valid UTC DateTime".into()))?;
+                    ConstantValue::Text(rusthouse_storage::format_datetime(seconds))
                 }
                 None => ConstantValue::Null,
             }
