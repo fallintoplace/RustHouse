@@ -18,7 +18,7 @@ pub(super) fn execute_grouped_part<W: Write>(
             })?;
         parse_numeric(&metadata_column.data_type, literal)
     })?;
-    let mut reader = NumericQueryReader::open(part, &scan_columns)?;
+    let mut reader = NumericQueryReader::open_with_metadata(part, &scan_columns, &metadata)?;
     let mut groups = GroupedCounts::default();
     if query.limit == Some(0) {
         return groups.write(query, column, output);
@@ -267,7 +267,7 @@ pub(super) fn execute_count_column_part<W: Write>(
         }
         return Ok(());
     }
-    let mut reader = NumericQueryReader::open(part, &scan_columns)?;
+    let mut reader = NumericQueryReader::open_with_metadata(part, &scan_columns, &metadata)?;
     write_header(query, output, &format!("count({column})"))?;
     if query.limit == Some(0) {
         return Ok(());
@@ -311,7 +311,7 @@ pub(super) fn execute_count_distinct_part<W: Write>(
             })?;
         parse_numeric(&metadata_column.data_type, literal)
     })?;
-    let mut reader = NumericQueryReader::open(part, &scan_columns)?;
+    let mut reader = NumericQueryReader::open_with_metadata(part, &scan_columns, &metadata)?;
     write_header(query, output, &format!("countDistinct({column})"))?;
     if query.limit == Some(0) {
         return Ok(());
@@ -387,7 +387,7 @@ pub(super) fn execute_aggregate_part<W: Write>(
             })?;
         parse_numeric(&metadata_column.data_type, literal)
     })?;
-    let mut reader = NumericQueryReader::open(part, &scan_columns)?;
+    let mut reader = NumericQueryReader::open_with_metadata(part, &scan_columns, &metadata)?;
     write_header(query, output, &format!("{}({column})", function.name()))?;
     if query.limit == Some(0) {
         return Ok(());
