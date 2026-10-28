@@ -24,6 +24,7 @@ pub(super) fn is_function(name: &str) -> bool {
             | "COLLAPSE_WHITESPACE"
             | "LOWER"
             | "HEX_ENCODE"
+            | "TOSTARTOFFIVEMINUTES"
             | "HEX"
             | "IS_ASCII"
             | "UPPER"
@@ -242,6 +243,19 @@ fn parse_at_depth(parser: &mut Parser, depth: usize) -> Result<ConstantValue, Pa
                         output.push_str(fragment);
                     }
                     ConstantValue::Text(output)
+                }
+                None => ConstantValue::Null,
+            }
+        }
+        "TOSTARTOFFIVEMINUTES" => {
+            let input = text_arg(parser, depth + 1)?;
+            require(parser, Token::RParen, "toStartOfFiveMinutes requires one argument")?;
+            match input {
+                Some(value) => {
+                    let seconds = rusthouse_storage::parse_datetime(&value).ok_or_else(|| {
+                        ParseError("toStartOfFiveMinutes requires a valid UTC DateTime".into())
+                    })?;
+                    ConstantValue::Text(rusthouse_storage::format_datetime(seconds - seconds % 300))
                 }
                 None => ConstantValue::Null,
             }
