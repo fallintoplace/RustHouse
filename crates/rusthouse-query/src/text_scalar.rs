@@ -47,6 +47,7 @@ pub(super) fn is_function(name: &str) -> bool {
             | "REVERSEUTF8"
             | "INITCAP"
             | "CONCAT"
+            | "CONCATASSUMEINJECTIVE"
             | "QUOTE_LITERAL"
             | "CUTQUERYSTRINGANDFRAGMENT"
             | "COALESCE"
@@ -778,7 +779,7 @@ fn parse_at_depth(parser: &mut Parser, depth: usize) -> Result<ConstantValue, Pa
                 None => ConstantValue::Null,
             }
         }
-        "CONCAT" => {
+        "CONCAT" | "CONCATASSUMEINJECTIVE" => {
             let mut result = String::new();
             let mut count = 0;
             let mut is_null = false;
