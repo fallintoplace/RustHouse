@@ -213,6 +213,15 @@ fn execute_streaming_inner<W: Write>(
             hash.entry(key).or_default().push(index);
         }
     }
+    if hash.is_empty() {
+        let header = selected
+            .iter()
+            .map(|(_, name, _)| name.as_str())
+            .collect::<Vec<_>>()
+            .join("\t");
+        writeln!(output, "{header}")?;
+        return Ok(());
+    }
     // A LIMIT that fits the output budget can page through more than
     // 65,536 matched pairs without retaining them all. Without such a LIMIT,
     // continue to reject oversized results before emitting the header.
