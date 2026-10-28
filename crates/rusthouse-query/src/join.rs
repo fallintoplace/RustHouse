@@ -139,6 +139,16 @@ pub fn parse_join(sql: &str) -> Result<Option<JoinSelect>, ParseError> {
     if left_alias == right_alias {
         return Err(ParseError("joined tables require distinct aliases".into()));
     }
+    if let Some(columns) = &columns {
+        for column in columns {
+            if column.relation != left_alias && column.relation != right_alias {
+                return Err(ParseError(format!(
+                    "unknown JOIN qualifier: {}",
+                    column.relation
+                )));
+            }
+        }
+    }
     let (keys, using_keys) = if parser.keyword("USING") {
         if !parser.take(Token::LParen) {
             return Err(ParseError("JOIN USING requires '('".into()));
@@ -860,4 +870,15 @@ mod tests {
             assert!(parse_join(sql).is_err(), "{sql}");
         }
     }
+    #[test]
+    fn rejects_unknown_projected_qualifiers_during_parse() {
+        for statement in [
+            "SELECT c.id FROM lefts a JOIN rights b ON a.id = b.id",
+            "SELECT c.* FROM lefts a JOIN rights b ON a.id = b.id LIMIT 0",
+        ] {
+            assert!(parse_join(statement).is_err(), "{statement}");
+        }
+        assert!(parse_join("SELECT a.*, b.id FROM lefts a JOIN rights b ON a.id = b.id").is_ok());
+    }
+
 }
