@@ -12,6 +12,7 @@ pub(super) fn is_function(name: &str) -> bool {
             | "ASCII"
             | "UTF16_LENGTH"
             | "CHR"
+            | "STRINGBYTESUNIQ"
             | "BIT_LENGTH"
             | "IS_INT64"
             | "BTRIM"
@@ -134,6 +135,20 @@ fn parse_at_depth(parser: &mut Parser, depth: usize) -> Result<ConstantValue, Pa
                     let length = i64::try_from(value.encode_utf16().count())
                         .map_err(|_| ParseError("UTF16_LENGTH result exceeds Int64".into()))?;
                     ConstantValue::Integer(length)
+                }
+                None => ConstantValue::Null,
+            }
+        }
+        "STRINGBYTESUNIQ" => {
+            let input = text_arg(parser, depth + 1)?;
+            require(parser, Token::RParen, "stringBytesUniq requires one argument")?;
+            match input {
+                Some(value) => {
+                    let mut seen = [false; 256];
+                    for byte in value.bytes() {
+                        seen[usize::from(byte)] = true;
+                    }
+                    ConstantValue::Integer(seen.iter().filter(|&&present| present).count() as i64)
                 }
                 None => ConstantValue::Null,
             }
