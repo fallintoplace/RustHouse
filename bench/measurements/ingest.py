@@ -58,9 +58,9 @@ def verify(binary, database, rows, stations, minimum, maximum, total, timeout):
     if (
         count != rows
         or distinct_stations != stations
-        or not math.isclose(actual_min, minimum, abs_tol=1e-9)
-        or not math.isclose(actual_max, maximum, abs_tol=1e-9)
-        or not math.isclose(actual_sum, total, abs_tol=1e-6)
+        or not math.isclose(actual_min, minimum, rel_tol=0, abs_tol=1e-9)
+        or not math.isclose(actual_max, maximum, rel_tol=0, abs_tol=1e-9)
+        or not math.isclose(actual_sum, total, rel_tol=0, abs_tol=1e-6)
     ):
         raise RuntimeError(
             f"import result mismatch: count={count}, stations={distinct_stations}, "
