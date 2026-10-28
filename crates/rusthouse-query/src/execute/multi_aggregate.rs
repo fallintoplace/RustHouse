@@ -450,6 +450,35 @@ pub(super) fn execute<W: Write>(
     Ok(())
 }
 
+/// Exact unsigned sum-of-squares of an arithmetic progression. Cancel 6
+/// before multiplying the cubic term so valid u128 results do not overflow
+/// just because of an intermediate numerator.
+fn generated_sum_squares(start: u64, rows: u64, step: u64) -> Result<u128, ExecutionError> {
+    if rows == 0 {
+        return Ok(0);
+    }
+    let (n, s, d) = (u128::from(rows), u128::from(start), u128::from(step));
+    let overflow = || ExecutionError::Invalid("unsigned SUMSQUARES overflow".into());
+    let constant = n.checked_mul(s.checked_mul(s).ok_or_else(overflow)?)
+        .ok_or_else(overflow)?;
+    let pair = n.checked_mul(n - 1).ok_or_else(overflow)?;
+    let linear = pair.checked_mul(s).and_then(|v| v.checked_mul(d))
+        .ok_or_else(overflow)?;
+    let mut factors = [n, n - 1, 2 * n - 1];
+    for divisor in [2_u128, 3] {
+        let factor = factors.iter_mut().find(|value| **value % divisor == 0)
+            .ok_or_else(overflow)?;
+        *factor /= divisor;
+    }
+    let cubic = factors.into_iter()
+        .try_fold(1_u128, |acc, value| acc.checked_mul(value))
+        .and_then(|value| value.checked_mul(d))
+        .and_then(|value| value.checked_mul(d))
+        .ok_or_else(overflow)?;
+    constant.checked_add(linear).and_then(|value| value.checked_add(cubic))
+        .ok_or_else(overflow)
+}
+
 /// Expose the proven O(1) aggregate subset to virtual-source admission.
 pub(super) fn supports_generated_series_metrics(items: &[AggregateItem]) -> bool {
     items.iter().all(|item| {
@@ -465,6 +494,7 @@ pub(super) fn supports_generated_series_metrics(items: &[AggregateItem]) -> bool
                 crate::AggregateFunction::Count
                     | crate::AggregateFunction::CountIf
                     | crate::AggregateFunction::Sum
+                    | crate::AggregateFunction::SumSquares
                     | crate::AggregateFunction::Min
                     | crate::AggregateFunction::Max
                     | crate::AggregateFunction::Avg
@@ -521,6 +551,8 @@ fn generated_series_metrics(
             None | Some(A::Count) => rows.to_string(),
             Some(A::CountIf) => (rows - u64::from(rows > 0 && start == 0)).to_string(),
             Some(A::Sum) if n > 0 => sum.to_string(),
+            Some(A::SumSquares) if n > 0 =>
+                generated_sum_squares(start, rows, step)?.to_string(),
             Some(A::Min | A::Any) if n > 0 => first.to_string(),
             Some(A::Max | A::AnyLast) if n > 0 => last.to_string(),
             Some(A::Range) if n > 0 => (last - first).to_string(),
@@ -542,7 +574,7 @@ fn generated_series_metrics(
                 (variance * count_float / (count_float - 1.0)).sqrt().to_string(),
             Some(A::Rms) if n > 0 => mean.hypot(variance.sqrt()).to_string(),
             Some(
-                A::Sum | A::Min | A::Max | A::Any | A::AnyLast | A::Range
+                A::Sum | A::SumSquares | A::Min | A::Max | A::Any | A::AnyLast | A::Range
                 | A::Avg | A::Median | A::VarPop | A::VarSamp
                 | A::StddevPop | A::StddevSamp | A::Rms
             ) => "NULL".into(),
