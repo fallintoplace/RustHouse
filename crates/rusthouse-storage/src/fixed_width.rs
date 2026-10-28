@@ -20,6 +20,18 @@ pub(crate) fn read_fixed_width<R: Read, T, const WIDTH: usize>(
         return Ok(Vec::new());
     }
     let mut result = Vec::with_capacity(rows);
+    // Small marks should not initialize the entire 64 KiB scan buffer.
+    const SMALL_BYTES: usize = 512;
+    if rows * WIDTH <= SMALL_BYTES {
+        let mut buffer = [0u8; SMALL_BYTES];
+        reader.read_exact(&mut buffer[..rows * WIDTH])?;
+        result.extend(
+            buffer[..rows * WIDTH]
+                .chunks_exact(WIDTH)
+                .map(|chunk| decode(chunk.try_into().expect("fixed-width chunk size"))),
+        );
+        return Ok(result);
+    }
     let mut buffer = [0u8; READ_BUFFER_BYTES];
     while result.len() < rows {
         let count = (rows - result.len()).min(buffer.len() / WIDTH);
@@ -93,5 +105,28 @@ mod empty_batch_fast_path_tests {
             read_fixed_width::<_, u64, 8>(&mut NoReads, 0, "invalid width", u64::from_le_bytes)
                 .unwrap();
         assert!(decoded.is_empty());
+    }
+}
+
+#[cfg(test)]
+mod small_mark_tests {
+    use super::*;
+
+    #[test]
+    fn decodes_small_marks_and_preserves_the_next_record() {
+        let mut data = Vec::new();
+        for number in [4u64, 5, 6, 7] {
+            data.extend_from_slice(&number.to_le_bytes());
+        }
+        let mut input = data.as_slice();
+        let first = read_fixed_width::<_, u64, 8>(
+            &mut input, 3, "invalid size", u64::from_le_bytes,
+        ).unwrap();
+        assert_eq!(first, vec![4, 5, 6]);
+        let second = read_fixed_width::<_, u64, 8>(
+            &mut input, 1, "invalid size", u64::from_le_bytes,
+        ).unwrap();
+        assert_eq!(second, vec![7]);
+        assert!(input.is_empty());
     }
 }

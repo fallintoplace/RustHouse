@@ -74,7 +74,7 @@ pub(super) fn key_at(column: &TypedColumn, row: usize) -> Key {
                 Key::Text(values.get(row).unwrap().to_vec())
             }
         }
-        TypedColumn::Uuid(values) => Key::Uuid(values[row].to_string()),
+        TypedColumn::Uuid(values) => Key::UuidBytes(*values[row].as_bytes()),
     }
 }
 
@@ -206,20 +206,20 @@ fn parse_literal(data_type: &str, literal: &str) -> Result<Cell, ExecutionError>
 
 /// Decode a validated UUID literal once for binary comparisons during scans.
 fn uuid_literal_bytes(text: &str) -> Result<[u8; 16], ExecutionError> {
-    parse_literal("UUID", text)?;
-    let mut output = [0u8; 16];
-    let mut digits = text.bytes().filter(|byte| *byte != b'-');
-    for byte in &mut output {
-        let high = digits.next().expect("validated UUID").to_ascii_lowercase();
-        let low = digits.next().expect("validated UUID").to_ascii_lowercase();
-        let nibble = |value: u8| match value {
-            b'0'..=b'9' => value - b'0',
-            b'a'..=b'f' => value - b'a' + 10,
-            _ => unreachable!("validated UUID"),
-        };
-        *byte = (nibble(high) << 4) | nibble(low);
+    // Validate directly on the source bytes. The old path first allocated
+    // a lowercased UUID display String just to discard it before decoding.
+    let valid = text.len() == 36
+        && text.bytes().enumerate().all(|(index, byte)| {
+            if matches!(index, 8 | 13 | 18 | 23) {
+                byte == b'-'
+            } else {
+                byte.is_ascii_hexdigit()
+            }
+        });
+    if !valid {
+        return Err(ExecutionError::Invalid("invalid UUID literal".into()));
     }
-    Ok(output)
+    Ok(uuid_key(text))
 }
 
 fn matches_uuid_compare(value: &[u8; 16], target: &[u8; 16], operator: Operator) -> bool {
@@ -268,6 +268,7 @@ enum Test {
     UuidNotBetween([u8; 16], [u8; 16]),
     IsNull(bool),
     DistinctFrom(Cell, bool),
+    UuidDistinctFrom([u8; 16], bool),
     Like {
         pattern: LikePattern,
         case_insensitive: bool,
@@ -283,7 +284,7 @@ pub(super) struct Condition {
 const HASHED_TYPED_IN_MIN_VALUES: usize = 16;
 
 /// Convert already-validated canonical UUID literals into fixed-width hash keys.
-fn uuid_key(value: &str) -> [u8; 16] {
+pub(super) fn uuid_key(value: &str) -> [u8; 16] {
     let mut digits = value.bytes().filter(|&byte| byte != b'-');
     let nibble = |byte: u8| match byte {
         b'0'..=b'9' => byte - b'0',
@@ -310,7 +311,20 @@ fn compile_in(kind: &str, values: &[String], negated: bool) -> Result<Test, Exec
             targets.into_iter().next().expect("one target"),
         ));
     }
+    // A single String member needs only one direct borrowed-byte comparison.
+    if targets.len() == 1 && base_type(kind) == "String" {
+        return Ok(Test::Compare(
+            if negated { Operator::Ne } else { Operator::Eq },
+            targets.into_iter().next().expect("one target"),
+        ));
+    }
     if base_type(kind) == "UUID" {
+        if let [Cell::Uuid(text)] = targets.as_slice() {
+            return Ok(Test::UuidCompare(
+                if negated { Operator::Ne } else { Operator::Eq },
+                uuid_key(text),
+            ));
+        }
         return Ok(Test::UuidInSet(
             targets
                 .into_iter()
@@ -388,6 +402,9 @@ pub(super) fn compile(
                     Test::NotBetween(parse_literal(kind, lower)?, parse_literal(kind, upper)?)
                 }
                 Predicate::IsNull { negated, .. } => Test::IsNull(*negated),
+                Predicate::DistinctFrom { value, negated, .. } if base_type(kind) == "UUID" => {
+                    Test::UuidDistinctFrom(uuid_literal_bytes(value)?, *negated)
+                }
                 Predicate::DistinctFrom { value, negated, .. } => {
                     Test::DistinctFrom(parse_literal(kind, value)?, *negated)
                 }
@@ -571,6 +588,12 @@ pub(super) fn passes(batch: &[TypedColumn], row: usize, branches: &[Vec<Conditio
                 Test::UuidCompare(operator, target) => match column {
                     TypedColumn::Uuid(values) => {
                         matches_uuid_compare(values[row].as_bytes(), target, *operator)
+                    }
+                    _ => false,
+                },
+                Test::UuidDistinctFrom(target, negated) => match column {
+                    TypedColumn::Uuid(values) => {
+                        (values[row].as_bytes() == target) == *negated
                     }
                     _ => false,
                 },
@@ -982,6 +1005,17 @@ pub(super) fn execute_typed<W: Write>(
     let mut distinct = HashSet::<Vec<Key>>::new();
     // A one-column DISTINCT key does not need a heap-allocated Vec<Key>.
     let mut single_distinct = HashSet::<Key>::new();
+    // Small integer domains need only 32 bytes (8-bit) or 8 KiB (16-bit)
+    // to identify already emitted DISTINCT values, without hashing.
+    let mut dense_single_distinct = if query.distinct && projection_indices.len() == 1 {
+        match projection_types.first().copied() {
+            Some("UInt8" | "Int8") => Some(vec![0u64; 4]),
+            Some("UInt16" | "Int16") => Some(vec![0u64; 1024]),
+            _ => None,
+        }
+    } else {
+        None
+    };
     let mut distinct_probe = Vec::<Key>::new();
     // COUNT(DISTINCT column) has one key; avoid a Vec allocation per row.
     let mut count_distinct_keys = HashSet::<Key>::new();
@@ -989,7 +1023,7 @@ pub(super) fn execute_typed<W: Write>(
     let mut count_distinct_sixteen = if is_count_distinct
         && matches!(
             projection_types.first().copied(),
-            Some("UInt16" | "Int16" | "Nullable(UInt16)" | "Nullable(Int16)")
+            Some("UInt8" | "Int8" | "UInt16" | "Int16" | "Nullable(UInt8)" | "Nullable(Int8)" | "Nullable(UInt16)" | "Nullable(Int16)")
         )
     {
         Some(vec![0u64; 1024])
@@ -1196,9 +1230,19 @@ pub(super) fn execute_typed<W: Write>(
                             values: NumericColumn::Int16(values),
                             ..
                         } => values[index] as u16,
+                        TypedColumn::Numeric(NumericColumn::UInt8(values))
+                        | TypedColumn::NullableNumeric {
+                            values: NumericColumn::UInt8(values),
+                            ..
+                        } => u16::from(values[index]),
+                        TypedColumn::Numeric(NumericColumn::Int8(values))
+                        | TypedColumn::NullableNumeric {
+                            values: NumericColumn::Int8(values),
+                            ..
+                        } => values[index] as u16,
                         _ => {
                             return Err(ExecutionError::Invalid(
-                                "unexpected 16-bit DISTINCT column type".into(),
+                                "unexpected 8-bit or 16-bit DISTINCT column type".into(),
                             ));
                         }
                     };
@@ -1252,11 +1296,34 @@ pub(super) fn execute_typed<W: Write>(
             if query.distinct {
                 if projection_indices.len() == 1 {
                     // Avoid a second heap container around a single typed key.
-                    if !single_distinct.insert(key_at(&batch[projection_indices[0]], index)) {
-                        continue;
-                    }
-                    if single_distinct.len() > MAX_BUFFERED_ROWS {
-                        return Err(ExecutionError::Invalid("too many distinct rows".into()));
+                    if let Some(bitmap) = dense_single_distinct.as_mut() {
+                        let key = match &batch[projection_indices[0]] {
+                            TypedColumn::Numeric(NumericColumn::UInt8(values)) => {
+                                u16::from(values[index])
+                            }
+                            TypedColumn::Numeric(NumericColumn::Int8(values)) => {
+                                values[index] as u16
+                            }
+                            TypedColumn::Numeric(NumericColumn::UInt16(values)) => values[index],
+                            TypedColumn::Numeric(NumericColumn::Int16(values)) => {
+                                values[index] as u16
+                            }
+                            _ => unreachable!("dense DISTINCT requires a fixed-width integer"),
+                        };
+                        let key = usize::from(key);
+                        let bit = 1u64 << (key % 64);
+                        let word = &mut bitmap[key / 64];
+                        if *word & bit != 0 {
+                            continue;
+                        }
+                        *word |= bit;
+                    } else {
+                        if !single_distinct.insert(key_at(&batch[projection_indices[0]], index)) {
+                            continue;
+                        }
+                        if single_distinct.len() > MAX_BUFFERED_ROWS {
+                            return Err(ExecutionError::Invalid("too many distinct rows".into()));
+                        }
                     }
                 } else {
                     // Probe with just the hash key. Duplicate rows should never
@@ -1273,6 +1340,19 @@ pub(super) fn execute_typed<W: Write>(
                     }
                     distinct.insert(std::mem::take(&mut distinct_probe));
                     distinct_probe = Vec::with_capacity(projection_indices.len());
+                }
+            }
+            // Unordered single-UUID projections can write the canonical
+            // representation directly. Avoid a temporary String and Vec<Cell>
+            // for each output row after predicates and OFFSET are applied.
+            if !query.distinct && sort_indices.is_empty() && projection_indices.len() == 1 {
+                if let TypedColumn::Uuid(values) = &batch[projection_indices[0]] {
+                    writeln!(output, "{}", values[index])?;
+                    emitted += 1;
+                    if emitted == limit {
+                        return Ok(());
+                    }
+                    continue;
                 }
             }
             let cells = projection_indices
@@ -1916,5 +1996,74 @@ mod single_column_distinct_perf_tests {
         execute(&query, Some(&part), &mut output).unwrap();
         assert_eq!(output, b"word\nalpha\nbeta\ngamma\n");
         std::fs::remove_dir_all(part).unwrap();
+    }
+}
+
+#[cfg(test)]
+mod uuid_distinct_key_tests {
+    use super::{Key, key_at};
+    use rusthouse_storage::{TypedColumn, read_uuid_values};
+
+    #[test]
+    fn distinct_probe_uses_canonical_uuid_bytes_without_formatting() {
+        let mut disk = [0u8; 48];
+        disk[16] = 1;
+        let values = read_uuid_values(&mut disk.as_slice(), 3).unwrap();
+        let column = TypedColumn::Uuid(values);
+        let first = key_at(&column, 0);
+        let second = key_at(&column, 1);
+        assert!(matches!(&first, Key::UuidBytes(_)));
+        assert!(first != second);
+        assert!(first == key_at(&column, 2));
+    }
+}
+
+#[cfg(test)]
+mod single_uuid_membership_tests {
+    use super::{Test, compile_in};
+    use crate::Operator;
+
+    #[test]
+    fn one_uuid_member_uses_binary_comparison() {
+        let value = "61f0c404-5cb3-11e7-907b-a6006ad3dba0".to_owned();
+        for negated in [false, true] {
+            let compiled = compile_in("UUID", &[value.clone()], negated).unwrap();
+            match compiled {
+                Test::UuidCompare(operator, bytes) => {
+                    assert!(matches!(
+                        (operator, negated),
+                        (Operator::Eq, false) | (Operator::Ne, true)
+                    ));
+                    assert_eq!(bytes[0], 0x61);
+                    assert_eq!(bytes[15], 0xa0);
+                }
+                _ => panic!("single UUID IN should use fixed-width comparison"),
+            }
+        }
+    }
+}
+
+#[cfg(test)]
+mod uuid_literal_byte_parse_tests {
+    use super::uuid_literal_bytes;
+
+    #[test]
+    fn decodes_uppercase_and_lowercase_without_changing_byte_order() {
+        let lower = uuid_literal_bytes("61f0c404-5cb3-11e7-907b-a6006ad3dba0").unwrap();
+        let upper = uuid_literal_bytes("61F0C404-5CB3-11E7-907B-A6006AD3DBA0").unwrap();
+        assert_eq!(lower, upper);
+        assert_eq!(lower[..4], [0x61, 0xf0, 0xc4, 0x04]);
+        assert_eq!(lower[15], 0xa0);
+    }
+
+    #[test]
+    fn rejects_invalid_uuid_literals_before_decoding() {
+        for invalid in [
+            "", "1", "61f0c4045cb311e7907ba6006ad3dba0",
+            "61f0c404-5cb3-11e7-907b-a6006ad3dbzz",
+            "61f0c404-5cb3-11e7-907b-a6006ad3dbax",
+        ] {
+            assert!(uuid_literal_bytes(invalid).is_err(), "{invalid}");
+        }
     }
 }
