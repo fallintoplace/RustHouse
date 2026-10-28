@@ -8,6 +8,7 @@ pub(super) fn is_function(name: &str) -> bool {
         name.to_ascii_uppercase().as_str(),
         "LENGTH"
             | "LENGTHUTF8"
+            | "TOSTARTOFFIVEMINUTES"
             | "CHAR_LENGTH"
             | "OCTET_LENGTH"
             | "ASCII"
@@ -128,6 +129,20 @@ fn parse_at_depth(parser: &mut Parser, depth: usize) -> Result<ConstantValue, Pa
                     i64::try_from(value.chars().count())
                         .map_err(|_| ParseError("lengthUTF8 result exceeds Int64".into()))?,
                 ),
+                None => ConstantValue::Null,
+            }
+        }
+        "TOSTARTOFFIVEMINUTES" => {
+            let input = text_arg(parser, depth + 1)?;
+            require(parser, Token::RParen, "toStartOfFiveMinutes requires one argument")?;
+            match input {
+                Some(value) => {
+                    let seconds = rusthouse_storage::parse_datetime(&value)
+                        .ok_or_else(|| ParseError("invalid UTC DateTime argument".into()))?;
+                    ConstantValue::Text(rusthouse_storage::format_datetime(
+                        seconds / 300 * 300,
+                    ))
+                }
                 None => ConstantValue::Null,
             }
         }
