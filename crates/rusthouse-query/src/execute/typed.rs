@@ -821,6 +821,23 @@ pub(super) fn execute_typed<W: Write>(
     if query.limit == Some(0) {
         return Ok(());
     }
+    // COUNT(non-nullable column) is identical to COUNT(*). Read the
+    // snapshot row count rather than decoding String/UUID/numeric streams.
+    if let Projection::CountColumn { column } = &query.projection {
+        if query.predicates.is_empty() && query.or_predicates.is_empty()
+            && !query.distinct
+            && query.order_by.is_none()
+            && query.order_by_extra.is_empty()
+            && metadata.columns.iter().any(|candidate| {
+                candidate.name == *column && !candidate.data_type.starts_with("Nullable(")
+            })
+        {
+            if query.offset.unwrap_or(0) == 0 {
+                writeln!(output, "{}", metadata.rows)?;
+            }
+            return Ok(());
+        }
+    }
     let mut scan = TypedQueryReader::open_with_metadata(part, &names, &metadata)?;
     let is_count = matches!(query.projection, Projection::Count);
     let is_count_column = matches!(query.projection, Projection::CountColumn { .. });
