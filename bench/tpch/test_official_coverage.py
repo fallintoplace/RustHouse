@@ -25,8 +25,8 @@ class CoverageTests(unittest.TestCase):
     def test_query_inventory_matches_cli_64k_statement_limit(self):
         with tempfile.TemporaryDirectory() as root:
             path = Path(root)
-            (path / "q01.sql").write_text("SELECT 1" + " " * 5000)
-            (path / "q02.sql").write_text("SELECT 2" + " " * 65536)
+            (path / "q01.sql").write_text("SELECT '" + "x" * 5000 + "'")
+            (path / "q02.sql").write_text("SELECT '" + "x" * 65536 + "'")
             observed = []
             def execute(sql):
                 observed.append(sql)
