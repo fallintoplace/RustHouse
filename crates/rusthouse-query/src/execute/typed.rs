@@ -7,7 +7,7 @@ use self::like::*;
 
 use super::{ExecutionError, Number, NumberKey, compare_numbers, number_at};
 use crate::{Operator, Predicate, Projection, Select};
-use rusthouse_storage::{TypedColumn, TypedQueryReader, inspect_query_source};
+use rusthouse_storage::{NumericColumn, TypedColumn, TypedQueryReader, inspect_query_source};
 use std::cmp::Ordering;
 use std::collections::{BinaryHeap, HashMap, HashSet, hash_map::Entry};
 use std::io::Write;
@@ -39,6 +39,7 @@ pub(super) enum Key {
     Numeric(NumberKey),
     Text(Vec<u8>),
     Uuid(String),
+    UuidBytes([u8; 16]),
     Null,
 }
 
@@ -141,10 +142,19 @@ pub(super) fn requires_typed_scan(query: &Select, path: &Path) -> Result<bool, E
     for order in query.order_terms() {
         names.push(query.order_source_column(&order.column));
     }
+    // Most queries reference just a few columns. Keep the cheaper linear
+    // probe for them, but use hashed membership for wide SELECT * plans.
+    if names.len() < 16 {
+        return Ok(metadata
+            .columns
+            .iter()
+            .any(|column| is_typed(&column.data_type) && names.contains(&column.name.as_str())));
+    }
+    let referenced: HashSet<&str> = names.into_iter().collect();
     Ok(metadata
         .columns
         .iter()
-        .any(|column| is_typed(&column.data_type) && names.contains(&column.name.as_str())))
+        .any(|column| is_typed(&column.data_type) && referenced.contains(column.name.as_str())))
 }
 
 pub(super) fn base_type(data_type: &str) -> &str {
@@ -962,9 +972,22 @@ pub(super) fn execute_typed<W: Write>(
     let is_grouped = matches!(query.projection, Projection::GroupedCount { .. });
     let mut count = 0u64;
     let mut distinct = HashSet::<Vec<Key>>::new();
+    // A one-column DISTINCT key does not need a heap-allocated Vec<Key>.
+    let mut single_distinct = HashSet::<Key>::new();
     let mut distinct_probe = Vec::<Key>::new();
     // COUNT(DISTINCT column) has one key; avoid a Vec allocation per row.
     let mut count_distinct_keys = HashSet::<Key>::new();
+    // A nullable 16-bit domain fits into 8 KiB, independent of scan length.
+    let mut count_distinct_sixteen = if is_count_distinct
+        && matches!(
+            projection_types.first().copied(),
+            Some("UInt16" | "Int16" | "Nullable(UInt16)" | "Nullable(Int16)")
+        )
+    {
+        Some(vec![0u64; 1024])
+    } else {
+        None
+    };
     // Borrow decoded strings on duplicate probes. Own only new distinct values.
     let mut count_distinct_text = HashSet::<Vec<u8>>::new();
     // UUIDs have a fixed-size identity. Hash their bytes rather than allocating
@@ -973,6 +996,7 @@ pub(super) fn execute_typed<W: Write>(
     let mut group_indices = HashMap::<Key, usize>::new();
     // String group probes can borrow the decoded input instead of cloning it.
     let mut text_group_indices = HashMap::<Vec<u8>, usize>::new();
+    let mut uuid_group_indices = HashMap::<[u8; 16], usize>::new();
     let mut grouped_rows = Vec::<(Cell, u64)>::new();
     let mut ordered = Vec::<Row>::new();
     let mut top = BinaryHeap::<TopRow>::new();
@@ -1076,6 +1100,25 @@ pub(super) fn execute_typed<W: Write>(
                     }
                     continue;
                 }
+                if let TypedColumn::Uuid(values) = &batch[projection_indices[0]] {
+                    let key = *values[index].as_bytes();
+                    if let Some(&group) = uuid_group_indices.get(&key) {
+                        let count = &mut grouped_rows[group].1;
+                        *count = count.checked_add(1).ok_or_else(|| {
+                            ExecutionError::Invalid("group count overflow".into())
+                        })?;
+                    } else {
+                        if grouped_rows.len() >= MAX_BUFFERED_ROWS {
+                            return Err(ExecutionError::Invalid(
+                                "GROUP BY supports at most 200000 groups".into(),
+                            ));
+                        }
+                        let group = grouped_rows.len();
+                        uuid_group_indices.insert(key, group);
+                        grouped_rows.push((cell(&batch[projection_indices[0]], index), 1));
+                    }
+                    continue;
+                }
                 let value = cell(&batch[projection_indices[0]], index);
                 match group_indices.entry(value.key()) {
                     Entry::Occupied(entry) => {
@@ -1129,6 +1172,32 @@ pub(super) fn execute_typed<W: Write>(
                 candidate_sort_keys = Some(keys);
             }
             if is_count_distinct {
+                if let Some(bitmap) = count_distinct_sixteen.as_mut() {
+                    let column = &batch[projection_indices[0]];
+                    if is_null_at(column, index) {
+                        continue;
+                    }
+                    let key = match column {
+                        TypedColumn::Numeric(NumericColumn::UInt16(values))
+                        | TypedColumn::NullableNumeric {
+                            values: NumericColumn::UInt16(values),
+                            ..
+                        } => values[index],
+                        TypedColumn::Numeric(NumericColumn::Int16(values))
+                        | TypedColumn::NullableNumeric {
+                            values: NumericColumn::Int16(values),
+                            ..
+                        } => values[index] as u16,
+                        _ => {
+                            return Err(ExecutionError::Invalid(
+                                "unexpected 16-bit DISTINCT column type".into(),
+                            ));
+                        }
+                    };
+                    let index = usize::from(key);
+                    bitmap[index / 64] |= 1u64 << (index % 64);
+                    continue;
+                }
                 match &batch[projection_indices[0]] {
                     TypedColumn::Text(strings) => {
                         let value = strings.get(index).ok_or_else(|| {
@@ -1146,45 +1215,57 @@ pub(super) fn execute_typed<W: Write>(
                     }
                     TypedColumn::Uuid(values) => {
                         let key = *values[index].as_bytes();
-                        if count_distinct_uuids.len() >= MAX_BUFFERED_ROWS
-                            && !count_distinct_uuids.contains(&key)
-                        {
-                            return Err(ExecutionError::Invalid("too many distinct rows".into()));
+                        if count_distinct_uuids.len() >= MAX_BUFFERED_ROWS {
+                            if !count_distinct_uuids.contains(&key) {
+                                return Err(ExecutionError::Invalid("too many distinct rows".into()));
+                            }
+                        } else {
+                            count_distinct_uuids.insert(key);
                         }
-                        count_distinct_uuids.insert(key);
                     }
                     column => {
                         let value = cell(column, index);
                         if !matches!(&value, Cell::Null) {
                             let key = value.key();
-                            if count_distinct_keys.len() >= MAX_BUFFERED_ROWS
-                                && !count_distinct_keys.contains(&key)
-                            {
-                                return Err(ExecutionError::Invalid(
-                                    "too many distinct rows".into(),
-                                ));
+                            if count_distinct_keys.len() >= MAX_BUFFERED_ROWS {
+                                if !count_distinct_keys.contains(&key) {
+                                    return Err(ExecutionError::Invalid(
+                                        "too many distinct rows".into(),
+                                    ));
+                                }
+                            } else {
+                                count_distinct_keys.insert(key);
                             }
-                            count_distinct_keys.insert(key);
                         }
                     }
                 }
                 continue;
             }
             if query.distinct {
-                // Probe with just the hash key. Duplicate rows should never
-                // materialize a second set of projected String/UUID cells.
-                distinct_probe.clear();
-                for &idx in &projection_indices {
-                    distinct_probe.push(key_at(&batch[idx], index));
+                if projection_indices.len() == 1 {
+                    // Avoid a second heap container around a single typed key.
+                    if !single_distinct.insert(key_at(&batch[projection_indices[0]], index)) {
+                        continue;
+                    }
+                    if single_distinct.len() > MAX_BUFFERED_ROWS {
+                        return Err(ExecutionError::Invalid("too many distinct rows".into()));
+                    }
+                } else {
+                    // Probe with just the hash key. Duplicate rows should never
+                    // materialize a second set of projected String/UUID cells.
+                    distinct_probe.clear();
+                    for &idx in &projection_indices {
+                        distinct_probe.push(key_at(&batch[idx], index));
+                    }
+                    if distinct.contains(distinct_probe.as_slice()) {
+                        continue;
+                    }
+                    if distinct.len() >= MAX_BUFFERED_ROWS {
+                        return Err(ExecutionError::Invalid("too many distinct rows".into()));
+                    }
+                    distinct.insert(std::mem::take(&mut distinct_probe));
+                    distinct_probe = Vec::with_capacity(projection_indices.len());
                 }
-                if distinct.contains(distinct_probe.as_slice()) {
-                    continue;
-                }
-                if distinct.len() >= MAX_BUFFERED_ROWS {
-                    return Err(ExecutionError::Invalid("too many distinct rows".into()));
-                }
-                distinct.insert(std::mem::take(&mut distinct_probe));
-                distinct_probe = Vec::with_capacity(projection_indices.len());
             }
             let cells = projection_indices
                 .iter()
@@ -1309,8 +1390,12 @@ pub(super) fn execute_typed<W: Write>(
             let result = if is_count || is_count_column {
                 count
             } else {
-                (count_distinct_keys.len() + count_distinct_text.len() + count_distinct_uuids.len())
-                    as u64
+                (count_distinct_keys.len()
+                    + count_distinct_text.len()
+                    + count_distinct_uuids.len()
+                    + count_distinct_sixteen.as_ref().map_or(0, |bitmap| {
+                        bitmap.iter().map(|bits| bits.count_ones() as usize).sum::<usize>()
+                    })) as u64
             };
             writeln!(output, "{result}")?;
         }
@@ -1787,6 +1872,41 @@ mod nullable_string_group_tests {
         let mut output = Vec::new();
         execute(&query, Some(&part), &mut output).unwrap();
         assert_eq!(output, b"category\tcount\nx\t2\n\\N\t2\ny\t1\n");
+        std::fs::remove_dir_all(part).unwrap();
+    }
+}
+
+#[cfg(test)]
+mod single_column_distinct_perf_tests {
+    use crate::{execute, parse_select};
+    use rusthouse_storage::{Column, write_wide_part};
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
+    static NEXT: AtomicUsize = AtomicUsize::new(0);
+
+    #[test]
+    fn single_string_distinct_preserves_first_seen_order() {
+        let part = std::env::temp_dir().join(format!(
+            "rusthouse-single-distinct-{}-{}",
+            std::process::id(),
+            NEXT.fetch_add(1, Ordering::Relaxed),
+        ));
+        let columns = [Column {
+            name: "word".into(),
+            data_type: "String".into(),
+        }];
+        let rows = [
+            vec![Some("alpha".into())],
+            vec![Some("beta".into())],
+            vec![Some("alpha".into())],
+            vec![Some("gamma".into())],
+            vec![Some("beta".into())],
+        ];
+        write_wide_part(&part, &columns, &rows).unwrap();
+        let query = parse_select("SELECT DISTINCT word FROM part").unwrap();
+        let mut output = Vec::new();
+        execute(&query, Some(&part), &mut output).unwrap();
+        assert_eq!(output, b"word\nalpha\nbeta\ngamma\n");
         std::fs::remove_dir_all(part).unwrap();
     }
 }

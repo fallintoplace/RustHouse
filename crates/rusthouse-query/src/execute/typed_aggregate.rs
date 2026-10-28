@@ -104,6 +104,21 @@ pub(super) fn execute_typed_aggregate<W: Write>(
                     _ => {}
                 }
             }
+            // Avoid constructing Cell enums on the common numeric batch path.
+            // NULLs remain skipped, and checked AggregateState math is shared.
+            match &batch[projected_index] {
+                TypedColumn::Numeric(values) => {
+                    state.update(super::number_at(values, row))?;
+                    continue;
+                }
+                TypedColumn::NullableNumeric { values, nulls } => {
+                    if nulls[row] == 0 {
+                        state.update(super::number_at(values, row))?;
+                    }
+                    continue;
+                }
+                _ => {}
+            }
             match typed::cell(&batch[projected_index], row) {
                 Cell::Numeric(value) => state.update(value)?,
                 Cell::Null => {}
@@ -232,9 +247,14 @@ pub(super) fn execute_grouped_aggregate<W: Write>(
     // Keep String keys in an owned map and probe with borrowed bytes.
     // Repeated station names no longer allocate a new key on every row.
     let mut text_groups = HashMap::<Vec<u8>, usize>::new();
+    let mut uuid_groups = HashMap::<[u8; 16], usize>::new();
     let mut groups = Vec::<(Cell, AggregateState)>::new();
     // Non-nullable byte keys can be indexed directly rather than hashed.
-    let mut dense_slots = matches!(group_type, "UInt8" | "Int8").then(|| vec![usize::MAX; 256]);
+    let mut dense_slots = match group_type {
+        "UInt8" | "Int8" => Some(vec![usize::MAX; 256]),
+        "UInt16" | "Int16" => Some(vec![usize::MAX; 65_536]),
+        _ => None,
+    };
     let no_filters = query.predicates.is_empty() && query.or_predicates.is_empty();
     while let Some(batch) = reader.next_batch()? {
         for row in 0..batch[0].len() {
@@ -242,16 +262,22 @@ pub(super) fn execute_grouped_aggregate<W: Write>(
                 continue;
             }
             let group = if let Some(slots) = dense_slots.as_mut() {
-                let byte = match &batch[group_index] {
-                    TypedColumn::Numeric(NumericColumn::UInt8(values)) => values[row],
-                    TypedColumn::Numeric(NumericColumn::Int8(values)) => values[row] as u8,
+                let key = match &batch[group_index] {
+                    TypedColumn::Numeric(NumericColumn::UInt8(values)) => usize::from(values[row]),
+                    TypedColumn::Numeric(NumericColumn::Int8(values)) => {
+                        usize::from(values[row] as u8)
+                    }
+                    TypedColumn::Numeric(NumericColumn::UInt16(values)) => usize::from(values[row]),
+                    TypedColumn::Numeric(NumericColumn::Int16(values)) => {
+                        usize::from(values[row] as u16)
+                    }
                     _ => {
                         return Err(ExecutionError::Invalid(
-                            "unexpected byte GROUP BY column".into(),
+                            "unexpected dense GROUP BY column".into(),
                         ));
                     }
                 };
-                let group = &mut slots[usize::from(byte)];
+                let group = &mut slots[key];
                 if *group != usize::MAX {
                     *group
                 } else {
@@ -271,7 +297,28 @@ pub(super) fn execute_grouped_aggregate<W: Write>(
                     }
                     _ => None,
                 };
-                if let Some(key) = borrowed_text {
+                let borrowed_uuid = match &batch[group_index] {
+                    TypedColumn::Uuid(values) => Some(*values[row].as_bytes()),
+                    _ => None,
+                };
+                if let Some(key) = borrowed_uuid {
+                    if let Some(&existing) = uuid_groups.get(&key) {
+                        existing
+                    } else {
+                        if groups.len() >= MAX_GROUPS {
+                            return Err(ExecutionError::Invalid(
+                                "GROUP BY supports at most 100000 groups".into(),
+                            ));
+                        }
+                        let index = groups.len();
+                        uuid_groups.insert(key, index);
+                        groups.push((
+                            typed::cell(&batch[group_index], row),
+                            AggregateState::new(*function),
+                        ));
+                        index
+                    }
+                } else if let Some(key) = borrowed_text {
                     if let Some(&existing) = text_groups.get(key) {
                         existing
                     } else {
@@ -304,7 +351,7 @@ pub(super) fn execute_grouped_aggregate<W: Write>(
             };
             if *function == AggregateFunction::Count {
                 if !typed::is_null_at(&batch[value_index], row) {
-                    groups[group].1.update(Number::Unsigned(1))?;
+                    groups[group].1.increment_count()?;
                 }
                 continue;
             }

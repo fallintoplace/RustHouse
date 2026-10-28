@@ -145,3 +145,78 @@ mod tests {
         fs::remove_dir_all(root).unwrap();
     }
 }
+
+use std::io::Read;
+
+/// Read the canonical active-generation pointer without opening snapshot parts.
+/// A missing pointer is reported as None. This does not validate part contents.
+pub fn read_active_generation(root: &Path) -> Result<Option<u64>, PartError> {
+    let pointer = root.join(".rusthouse-active");
+    match fs::symlink_metadata(&pointer) {
+        Ok(meta) if !meta.file_type().is_file() || meta.len() > 64 => {
+            return Err(PartError::InvalidScan("invalid active generation pointer".into()));
+        }
+        Ok(_) => {}
+        Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(None),
+        Err(error) => return Err(io_error(&pointer, error)),
+    }
+    let file = fs::File::open(&pointer).map_err(|error| io_error(&pointer, error))?;
+    let opened = file.metadata().map_err(|error| io_error(&pointer, error))?;
+    if !opened.file_type().is_file() || opened.len() > 64 {
+        return Err(PartError::InvalidScan("active generation pointer changed".into()));
+    }
+    let mut bytes = Vec::new();
+    file.take(65)
+        .read_to_end(&mut bytes)
+        .map_err(|error| io_error(&pointer, error))?;
+    let text = std::str::from_utf8(&bytes)
+        .map_err(|_| PartError::InvalidScan("active generation pointer is not UTF8".into()))?;
+    let generation = text
+        .strip_prefix('g')
+        .and_then(|value| value.strip_suffix('\n'))
+        .and_then(|value| value.parse::<u64>().ok())
+        .ok_or_else(|| PartError::InvalidScan("invalid active generation pointer".into()))?;
+    if generation == 0 || text != format!("g{generation}\n") {
+        return Err(PartError::InvalidScan("noncanonical active generation pointer".into()));
+    }
+    Ok(Some(generation))
+}
+
+#[cfg(test)]
+mod active_generation_read_tests {
+    use super::*;
+    use std::fs;
+
+    #[test]
+    fn reads_only_valid_canonical_generation_pointers() {
+        let root = std::env::temp_dir().join(format!(
+            "rusthouse-active-read-{}", std::process::id()
+        ));
+        let _ = fs::remove_dir_all(&root);
+        fs::create_dir_all(&root).unwrap();
+        assert_eq!(read_active_generation(&root).unwrap(), None);
+        let pointer = root.join(".rusthouse-active");
+        fs::write(&pointer, "g42\n").unwrap();
+        assert_eq!(read_active_generation(&root).unwrap(), Some(42));
+        for invalid in ["g0\n", "g042\n", "g42", "g1\r\n", "bad\n"] {
+            fs::write(&pointer, invalid).unwrap();
+            assert!(read_active_generation(&root).is_err(), "{invalid:?}");
+        }
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn refuses_symlinked_active_pointers() {
+        use std::os::unix::fs::symlink;
+        let root = std::env::temp_dir().join(format!(
+            "rusthouse-active-symlink-{}", std::process::id()
+        ));
+        let _ = fs::remove_dir_all(&root);
+        fs::create_dir_all(&root).unwrap();
+        fs::write(root.join("real"), "g1\n").unwrap();
+        symlink("real", root.join(".rusthouse-active")).unwrap();
+        assert!(read_active_generation(&root).is_err());
+        fs::remove_dir_all(root).unwrap();
+    }
+}

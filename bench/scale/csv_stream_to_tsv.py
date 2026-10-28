@@ -10,12 +10,18 @@ import os
 from pathlib import Path
 
 
+ESCAPE_TRANSLATION = str.maketrans({
+    "\\": r"\\", "\t": r"\t", "\n": r"\n", "\r": r"\r",
+    "\x00": r"\0", "\b": r"\b", "\f": r"\f", "\v": r"\v",
+})
+
+
 def escape_field(value, empty_as_null=False):
     if value == "" and empty_as_null:
         return r"\N"
-    replacements = {"\\": r"\\", "\t": r"\t", "\n": r"\n", "\r": r"\r",
-                    "\x00": r"\0", "\b": r"\b", "\f": r"\f", "\v": r"\v"}
-    return "".join(replacements.get(char, char) for char in value)
+    # Translate in CPython instead of rebuilding a map and iterating every
+    # character in Python for each field of huge COPY inputs.
+    return value.translate(ESCAPE_TRANSLATION)
 
 
 def convert(source, destination, *, header=False, empty_as_null=False,

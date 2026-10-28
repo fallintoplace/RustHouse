@@ -145,3 +145,82 @@ mod tests {
         fs::remove_dir_all(root).unwrap();
     }
 }
+
+/// Stored-byte checksum of one frozen snapshot file.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CheckedInventoryEntry {
+    pub relative_path: PathBuf,
+    pub bytes: u64,
+    pub crc32c: u32,
+}
+
+/// Build a bounded, content-checksummed inventory for replica reconciliation.
+/// CRC32C is an accidental corruption check, not authentication.
+pub fn inventory_snapshot_crc32c(
+    root: &Path,
+    max_files: usize,
+    max_bytes: u64,
+) -> Result<Vec<CheckedInventoryEntry>, PartError> {
+    let entries = inventory_snapshot(root, max_files, max_bytes)?;
+    let active = resolve_active_snapshot(root)?;
+    let mut checked = Vec::with_capacity(entries.len());
+    for entry in entries {
+        let path = active.join(&entry.relative_path);
+        let metadata = fs::symlink_metadata(&path).map_err(|error| io_error(&path, error))?;
+        if !metadata.file_type().is_file() || metadata.len() != entry.bytes {
+            return Err(PartError::InvalidScan(
+                "snapshot inventory file changed before hashing".into(),
+            ));
+        }
+        let mut file = fs::File::open(&path).map_err(|error| io_error(&path, error))?;
+        let opened = file.metadata().map_err(|error| io_error(&path, error))?;
+        if !opened.file_type().is_file() || opened.len() != entry.bytes {
+            return Err(PartError::InvalidScan(
+                "snapshot inventory file changed before hashing".into(),
+            ));
+        }
+        let (bytes, crc32c) =
+            crate::distributed_crc32c::crc32c_reader(&mut file, entry.bytes)
+                .map_err(|error| io_error(&path, error))?;
+        if bytes != entry.bytes {
+            return Err(PartError::InvalidScan("snapshot inventory file changed during hashing".into()));
+        }
+        checked.push(CheckedInventoryEntry {
+            relative_path: entry.relative_path,
+            bytes,
+            crc32c,
+        });
+    }
+    Ok(checked)
+}
+
+#[cfg(test)]
+mod checksummed_inventory_tests {
+    use super::*;
+    use crate::{Column, write_wide_part};
+
+    #[test]
+    fn checksums_actual_wide_part_files() {
+        let root = std::env::temp_dir().join(format!(
+            "rusthouse-hashed-inventory-{}", std::process::id()
+        ));
+        let _ = fs::remove_dir_all(&root);
+        fs::create_dir(&root).unwrap();
+        let part = root.join("all_0_0_0");
+        write_wide_part(
+            &part,
+            &[Column { name: "id".into(), data_type: "UInt64".into() }],
+            &[vec![Some("9".into())]],
+        ).unwrap();
+        let inventory = inventory_snapshot_crc32c(&root, 32, 1_000_000).unwrap();
+        let count = inventory
+            .iter()
+            .find(|item| item.relative_path == Path::new("all_0_0_0/count.txt"))
+            .unwrap();
+        let expected = fs::read(part.join("count.txt")).unwrap();
+        assert_eq!(count.bytes, expected.len() as u64);
+        assert_eq!(count.crc32c, crate::distributed_crc32c::crc32c(&expected));
+        assert!(inventory_snapshot_crc32c(&root, 1, 1_000_000).is_err());
+        fs::remove_dir_all(root).unwrap();
+    }
+}

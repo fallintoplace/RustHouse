@@ -188,3 +188,50 @@ mod tests {
         );
     }
 }
+
+/// Select a bounded batch from the deterministic copy-only reconciliation plan.
+/// Oversized objects are skipped so smaller copies can still make progress.
+pub fn plan_replica_copy_batch(
+    source: &[ObjectMetadata],
+    destination: &[ObjectMetadata],
+    max_bytes: u64,
+    max_objects: usize,
+) -> Result<Vec<ObjectMetadata>, &'static str> {
+    if max_objects > 65_536 {
+        return Err("replica copy batch exceeds object limit");
+    }
+    let needed = plan_replica_copies(source, destination)?;
+    let mut remaining = max_bytes;
+    let mut selected = Vec::with_capacity(needed.len().min(max_objects));
+    for object in needed {
+        if selected.len() == max_objects {
+            break;
+        }
+        if object.bytes <= remaining {
+            remaining -= object.bytes;
+            selected.push(object);
+        }
+    }
+    Ok(selected)
+}
+
+#[cfg(test)]
+mod copy_batch_tests {
+    use super::*;
+
+    #[test]
+    fn selects_bounded_copies_without_deleting_destination_only_objects() {
+        let objects = [
+            ObjectMetadata { key: "a/large".into(), bytes: 9, crc32c: 1 },
+            ObjectMetadata { key: "b/small".into(), bytes: 2, crc32c: 2 },
+            ObjectMetadata { key: "c/small".into(), bytes: 4, crc32c: 3 },
+        ];
+        let batch = plan_replica_copy_batch(&objects, &[], 6, 3).unwrap();
+        assert_eq!(
+            batch.iter().map(|item| item.key.as_str()).collect::<Vec<_>>(),
+            vec!["b/small", "c/small"]
+        );
+        assert_eq!(plan_replica_copy_batch(&objects, &[], 6, 1).unwrap().len(), 1);
+        assert!(plan_replica_copy_batch(&objects, &[], 6, 65_537).is_err());
+    }
+}

@@ -238,3 +238,57 @@ mod tests {
         assert!(plan_missing_chunks(65_537, 1, 65_536, &[], 0, 1).is_err());
     }
 }
+
+/// Page through a transfer plan without allocating the entire chunk list.
+pub fn plan_chunk_window(
+    total_bytes: u64,
+    chunk_bytes: u64,
+    max_chunks: usize,
+    start_index: usize,
+    requested: usize,
+) -> Result<Vec<IndexedChunk>, &'static str> {
+    let count = checked_chunk_count(total_bytes, chunk_bytes, max_chunks)?;
+    if start_index > count || requested > count - start_index {
+        return Err("transfer chunk window exceeds bounds");
+    }
+    let mut page = Vec::with_capacity(requested);
+    for index in start_index..start_index + requested {
+        page.push(IndexedChunk {
+            index,
+            chunk: chunk_at_index(total_bytes, chunk_bytes, index),
+        });
+    }
+    Ok(page)
+}
+
+#[cfg(test)]
+mod chunk_window_tests {
+    use super::*;
+
+    #[test]
+    fn pages_partial_tail_with_original_indexes() {
+        assert_eq!(
+            plan_chunk_window(10, 4, 3, 1, 2).unwrap(),
+            vec![
+                IndexedChunk {
+                    index: 1,
+                    chunk: Chunk { offset: 4, length: 4 },
+                },
+                IndexedChunk {
+                    index: 2,
+                    chunk: Chunk { offset: 8, length: 2 },
+                },
+            ]
+        );
+        assert!(plan_chunk_window(10, 4, 3, 2, 2).is_err());
+        assert!(plan_chunk_window(10, 4, 3, 4, 0).is_err());
+        assert!(plan_chunk_window(0, 4, 3, 0, 0).unwrap().is_empty());
+    }
+
+    #[test]
+    fn large_transfers_allocate_only_requested_chunks() {
+        let page = plan_chunk_window(65_536, 1, 65_536, 65_534, 2).unwrap();
+        assert_eq!(page.len(), 2);
+        assert_eq!(page[1].index, 65_535);
+    }
+}

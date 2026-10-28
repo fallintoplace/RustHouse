@@ -24,27 +24,23 @@ impl<W: Write> CsvWriter<W> {
     }
 
     fn finish_row(&mut self) -> io::Result<()> {
-        let field_count = 1 + self.line.iter().filter(|&&byte| byte == b'\t').count();
-        if let Some(columns) = self.columns {
-            if columns != field_count {
-                return Err(io::Error::new(
-                    io::ErrorKind::InvalidData,
-                    "CSV row has a different column count",
-                ));
-            }
-        }
+        // Encode into a temporary buffer before publishing anything, so
+        // malformed rows never leak partially written CSV to the client.
         self.encoded.clear();
-        self.encoded.reserve(
-            self.line
-                .len()
-                .saturating_add(field_count.saturating_mul(2))
-                .saturating_add(2),
-        );
-        for (index, field) in self.line.split(|byte| *byte == b'\t').enumerate() {
-            if index != 0 {
+        self.encoded.reserve(self.line.len().saturating_add(4));
+        let mut field_count = 0usize;
+        for field in self.line.split(|byte| *byte == b'\t') {
+            if field_count != 0 {
                 self.encoded.write_all(b",")?;
             }
             write_csv_field(&mut self.encoded, field)?;
+            field_count += 1;
+        }
+        if self.columns.is_some_and(|columns| columns != field_count) {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                "CSV row has a different column count",
+            ));
         }
         self.encoded.write_all(b"\r\n")?;
         self.output.write_all(&self.encoded)?;
@@ -275,5 +271,21 @@ mod literal_null_marker_regressions {
             .unwrap();
         assert_eq!(writer.output, format!("value\r\n{large}\r\n").as_bytes());
         assert!(writer.encoded.capacity() >= large.len() + 4);
+    }
+}
+
+#[cfg(test)]
+mod single_pass_row_tests {
+    use super::*;
+    #[test]
+    fn encodes_multi_column_rows_and_rejects_bad_width_without_leaking_output() {
+        let mut csv = CsvWriter::new(Vec::new());
+        csv.write_all(b"a\tb\n1\t2\n").unwrap();
+        assert_eq!(csv.output, b"a,b\r\n1,2\r\n");
+        assert_eq!(
+            csv.write_all(b"only-one\n").unwrap_err().kind(),
+            io::ErrorKind::InvalidData
+        );
+        assert_eq!(csv.output, b"a,b\r\n1,2\r\n");
     }
 }

@@ -151,3 +151,44 @@ mod tests {
         }
     }
 }
+
+/// Additional replica acknowledgements needed to satisfy a quorum policy.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct QuorumDeficit {
+    pub distinct_acks: usize,
+    pub missing_reads: usize,
+    pub missing_writes: usize,
+}
+
+impl QuorumPolicy {
+    /// This only counts replies from listed members; it does not implement consensus.
+    pub fn deficits(
+        self,
+        members: &[&str],
+        acknowledgements: &[&str],
+    ) -> Result<QuorumDeficit, &'static str> {
+        let observed = self.observe(members, acknowledgements)?;
+        Ok(QuorumDeficit {
+            distinct_acks: observed.distinct_acks,
+            missing_reads: self.reads.saturating_sub(observed.distinct_acks),
+            missing_writes: self.writes.saturating_sub(observed.distinct_acks),
+        })
+    }
+}
+
+#[cfg(test)]
+mod quorum_deficit_tests {
+    use super::*;
+
+    #[test]
+    fn counts_missing_votes_without_double_counting_duplicates() {
+        let policy = QuorumPolicy::new(3, 2, 2).unwrap();
+        let members = ["a", "b", "c"];
+        assert_eq!(
+            policy.deficits(&members, &["a", "a"]).unwrap(),
+            QuorumDeficit { distinct_acks: 1, missing_reads: 1, missing_writes: 1 }
+        );
+        assert_eq!(policy.deficits(&members, &["a", "b"]).unwrap().missing_writes, 0);
+        assert!(policy.deficits(&members, &["unknown"]).is_err());
+    }
+}
