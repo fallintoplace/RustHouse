@@ -74,7 +74,13 @@ pub fn plan_missing_chunks(
         }
         previous = Some(index);
     }
-    let mut selected = Vec::with_capacity(remaining_indices.len().min(max_batch_chunks));
+    // At most one tail chunk can fit beyond the number of full chunks
+    // affordable by the current budget.
+    let affordable = usize::try_from(byte_budget / chunk_bytes)
+        .unwrap_or(usize::MAX)
+        .saturating_add(1);
+    let capacity = remaining_indices.len().min(max_batch_chunks).min(affordable);
+    let mut selected = Vec::with_capacity(capacity);
     let mut remaining_bytes = byte_budget;
     for &index in remaining_indices {
         if selected.len() >= max_batch_chunks {
