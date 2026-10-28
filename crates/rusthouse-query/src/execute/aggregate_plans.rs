@@ -318,9 +318,8 @@ pub(super) fn execute_aggregate_numbers<W: Write>(
     }
     // A filtered arithmetic progression can be aggregated from its exact
     // matching interval without generating a billion individual rows.
-    if matches!(function, AggregateFunction::Sum | AggregateFunction::Min | AggregateFunction::Max)
-        && let Some((lower, upper)) = monotonic_range_indices(&comparisons, start, rows, step)
-    {
+    if matches!(function, AggregateFunction::Sum | AggregateFunction::Min | AggregateFunction::Max) {
+        if let Some((lower, upper)) = monotonic_range_indices(&comparisons, start, rows, step) {
         if query.offset.unwrap_or(0) == 0 {
             if lower == upper {
                 writeln!(output, "NULL")?;
@@ -347,6 +346,7 @@ pub(super) fn execute_aggregate_numbers<W: Write>(
             }
         }
         return Ok(());
+        }
     }
     let mut state = AggregateState::new(function);
     for index in 0..rows {
