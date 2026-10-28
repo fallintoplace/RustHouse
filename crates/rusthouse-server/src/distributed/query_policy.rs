@@ -100,7 +100,13 @@ pub(super) fn integer_type(kind: &str) -> bool {
 }
 
 pub(super) fn is_safe_grouped_count(select: &Select) -> bool {
-    matches!(select.projection, Projection::GroupedCount { .. }) && is_safe_unpaged_select(select)
+    matches!(select.projection, Projection::GroupedCount { .. })
+        && matches!(select.source, Some(Source::Table(_)))
+        && !select.distinct
+        && select.rename.is_none()
+        && select.alias.is_none()
+        // The coordinator can rank merged counts, but not local shard keys.
+        && select.order_terms().all(|term| term.column == "count")
 }
 
 pub(super) fn is_safe_grouped_sum(select: &Select) -> bool {
@@ -140,6 +146,44 @@ pub(super) fn unpaged_scan_sql(sql: &str, select: &Select) -> Option<String> {
                     .is_some_and(u8::is_ascii_whitespace)
         });
         if !keyword || (index > 0 && !sql.as_bytes()[index - 1].is_ascii_whitespace()) {
+            continue;
+        }
+        let candidate = sql[..index].trim_end();
+        if parse_select(candidate).is_ok_and(|parsed| parsed == expected) {
+            return Some(candidate.to_owned());
+        }
+    }
+    None
+}
+
+ 
+/// Remove global HAVING, ORDER BY and pagination before per-shard grouping.
+/// Require a full parser round trip to avoid changing WHERE string literals.
+pub(super) fn grouped_count_shard_sql(sql: &str, select: &Select) -> Option<String> {
+    let mut expected = select.clone();
+    expected.having = None;
+    expected.order_by = None;
+    expected.order_by_extra.clear();
+    expected.limit = None;
+    expected.offset = None;
+    if expected == *select {
+        return Some(sql.to_owned());
+    }
+    for (index, _) in sql.char_indices() {
+        if index == 0 || !sql.as_bytes()[index - 1].is_ascii_whitespace() {
+            continue;
+        }
+        let suffix = &sql[index..];
+        let boundary = ["HAVING", "ORDER", "LIMIT", "OFFSET"].iter().any(|word| {
+            suffix
+                .get(..word.len())
+                .is_some_and(|prefix| prefix.eq_ignore_ascii_case(word))
+                && suffix
+                    .as_bytes()
+                    .get(word.len())
+                    .is_some_and(u8::is_ascii_whitespace)
+        });
+        if !boundary {
             continue;
         }
         let candidate = sql[..index].trim_end();
