@@ -1,6 +1,6 @@
 //! Numeric aggregates grouped by multiple typed columns.
 use super::typed::{self, Cell, Key};
-use super::{AggregateState, ExecutionError};
+use super::{AggregateState, ExecutionError, Number};
 use crate::{AggregateFunction, Select};
 use rusthouse_storage::{NumericColumn, TypedColumn, TypedQueryReader, inspect_query_source};
 use std::cmp::Ordering;
@@ -43,11 +43,13 @@ pub(super) fn execute<W: Write>(
     }
 
     let mut names = columns.to_vec();
-    for (_, column) in items {
+    for (function, column) in items {
         let kind = types.get(column).ok_or_else(|| {
             ExecutionError::Invalid(format!("unknown aggregate column: {column}"))
         })?;
-        if matches!(typed::base_type(kind), "String" | "UUID") {
+        if *function != AggregateFunction::Count
+            && matches!(typed::base_type(kind), "String" | "UUID")
+        {
             return Err(ExecutionError::Invalid(
                 "numeric aggregates require numeric columns".into(),
             ));
@@ -170,7 +172,16 @@ pub(super) fn execute<W: Write>(
                     index
                 }
             };
-            for (&index, state) in item_indices.iter().zip(groups[group].1.iter_mut()) {
+            for ((function, _), (&index, state)) in items
+                .iter()
+                .zip(item_indices.iter().zip(groups[group].1.iter_mut()))
+            {
+                if *function == AggregateFunction::Count {
+                    if !typed::is_null_at(&batch[index], row) {
+                        state.update(Number::Unsigned(1))?;
+                    }
+                    continue;
+                }
                 match typed::cell(&batch[index], row) {
                     Cell::Numeric(value) => state.update(value)?,
                     Cell::Null => {}
