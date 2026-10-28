@@ -8,11 +8,15 @@ struct DenseGroupChunk {
 /// Parallelize low-cardinality GROUP BY over many immutable parts. Each worker
 /// keeps fixed-size counters rather than one hash entry per input row.
 /// Merge chunks in part order to retain stable first-seen output order.
-fn parallel_dense_grouped_count(
+fn parallel_dense_grouped_count<F>(
     part: &Path,
-    column: &str,
+    columns: &[String],
     kind: &str,
-) -> Result<Option<GroupedCounts>, ExecutionError> {
+    matches: &F,
+) -> Result<Option<GroupedCounts>, ExecutionError>
+where
+    F: Fn(&[NumericColumn], usize) -> bool + Sync,
+{
     let parts = rusthouse_storage::query_parts(part)?;
     let workers = std::thread::available_parallelism()
         .map_or(1, |count| count.get())
@@ -25,10 +29,11 @@ fn parallel_dense_grouped_count(
     } else {
         65_536
     };
-    let names = [column.to_owned()];
+    let names = columns;
     let chunk_size = parts.len().div_ceil(workers);
     let chunks = std::thread::scope(|scope| {
         let names = &names;
+        let matches = matches;
         let handles = parts
             .chunks(chunk_size)
             .map(|paths| {
@@ -40,7 +45,10 @@ fn parallel_dense_grouped_count(
                         while let Some(batch) = reader.next_batch()? {
                             match &batch[0] {
                                 NumericColumn::UInt8(values) => {
-                                    for &value in values {
+                                    for (row, &value) in values.iter().enumerate() {
+                                        if !matches(&batch, row) {
+                                            continue;
+                                        }
                                         let slot = usize::from(value);
                                         if counts[slot] == 0 {
                                             order.push(value.into());
@@ -50,7 +58,10 @@ fn parallel_dense_grouped_count(
                                     }
                                 }
                                 NumericColumn::Int8(values) => {
-                                    for &value in values {
+                                    for (row, &value) in values.iter().enumerate() {
+                                        if !matches(&batch, row) {
+                                            continue;
+                                        }
                                         let slot = usize::from(value as u8);
                                         if counts[slot] == 0 {
                                             order.push(slot as u16);
@@ -60,7 +71,10 @@ fn parallel_dense_grouped_count(
                                     }
                                 }
                                 NumericColumn::UInt16(values) => {
-                                    for &value in values {
+                                    for (row, &value) in values.iter().enumerate() {
+                                        if !matches(&batch, row) {
+                                            continue;
+                                        }
                                         let slot = usize::from(value);
                                         if counts[slot] == 0 {
                                             order.push(value);
@@ -70,7 +84,10 @@ fn parallel_dense_grouped_count(
                                     }
                                 }
                                 NumericColumn::Int16(values) => {
-                                    for &value in values {
+                                    for (row, &value) in values.iter().enumerate() {
+                                        if !matches(&batch, row) {
+                                            continue;
+                                        }
                                         let slot = usize::from(value as u16);
                                         if counts[slot] == 0 {
                                             order.push(slot as u16);
@@ -124,10 +141,14 @@ fn parallel_dense_grouped_count(
 /// Parallelize 32/64-bit GROUP BY counts across immutable parts. Each worker
 /// retains an ordered hash aggregation. Merge chunks in input-part order so
 /// unordered query output still follows the serial first-seen key contract.
-fn parallel_hash_grouped_count(
+fn parallel_hash_grouped_count<F>(
     part: &Path,
-    column: &str,
-) -> Result<Option<GroupedCounts>, ExecutionError> {
+    columns: &[String],
+    matches: &F,
+) -> Result<Option<GroupedCounts>, ExecutionError>
+where
+    F: Fn(&[NumericColumn], usize) -> bool + Sync,
+{
     let parts = rusthouse_storage::query_parts(part)?;
     let workers = std::thread::available_parallelism()
         .map_or(1, |count| count.get())
@@ -135,10 +156,11 @@ fn parallel_hash_grouped_count(
     if workers < 2 || parts.len() < 16 {
         return Ok(None);
     }
-    let names = [column.to_owned()];
+    let names = columns;
     let chunk_size = parts.len().div_ceil(workers);
     let chunks = std::thread::scope(|scope| {
         let names = &names;
+        let matches = matches;
         let handles = parts
             .chunks(chunk_size)
             .map(|paths| {
@@ -149,6 +171,9 @@ fn parallel_hash_grouped_count(
                         while let Some(batch) = reader.next_batch()? {
                             let values = &batch[0];
                             for row in 0..values.len() {
+                                if !matches(&batch, row) {
+                                    continue;
+                                }
                                 let number = match values {
                                     NumericColumn::UInt32(values) => Number::Unsigned(u128::from(values[row])),
                                     NumericColumn::Int32(values) => Number::Signed(i128::from(values[row])),
@@ -218,22 +243,25 @@ pub(super) fn execute_grouped_part<W: Write>(
         return groups.write(query, column, output);
     }
     let no_filters = query.predicates.is_empty() && query.or_predicates.is_empty();
-    if no_filters {
+    let matches = |batch: &[NumericColumn], row: usize| {
+        no_filters || batch_matches(batch, row, &comparisons)
+    };
+    {
         if let Some(kind) = metadata.columns.iter()
             .find(|candidate| candidate.name == column)
             .map(|candidate| candidate.data_type.as_str())
             .filter(|kind| matches!(*kind, "UInt8" | "Int8" | "UInt16" | "Int16"))
         {
-            if let Some(groups) = parallel_dense_grouped_count(part, column, kind)? {
+            if let Some(groups) = parallel_dense_grouped_count(part, &scan_columns, kind, &matches)? {
                 return groups.write(query, column, output);
             }
         }
     }
-    if no_filters && metadata.columns.iter().any(|candidate| {
+    if metadata.columns.iter().any(|candidate| {
         candidate.name == column
             && matches!(candidate.data_type.as_str(), "UInt32" | "Int32" | "UInt64" | "Int64")
     }) {
-        if let Some(groups) = parallel_hash_grouped_count(part, column)? {
+        if let Some(groups) = parallel_hash_grouped_count(part, &scan_columns, &matches)? {
             return groups.write(query, column, output);
         }
     }
