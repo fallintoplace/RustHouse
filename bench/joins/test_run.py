@@ -28,6 +28,9 @@ class JoinWorkloadTests(unittest.TestCase):
             verify_result(b"0\tgroup-1\n4\tgroup-1\n", expected)
         with self.assertRaises(ValueError):
             verify_result(b"0\tgroup-0\n8\tgroup-1\n", expected)
+        for bad in [b"+0\tgroup-0\n4\tgroup-1\n", b"00\tgroup-0\n4\tgroup-1\n"]:
+            with self.assertRaises(ValueError):
+                verify_result(bad, expected)
         with tempfile.TemporaryDirectory() as directory:
             with self.assertRaises(ValueError):
                 write_fixture(directory, 20, 32769)
