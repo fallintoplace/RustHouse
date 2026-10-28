@@ -82,6 +82,7 @@ pub(super) fn is_function(name: &str) -> bool {
             | "TRY_TO_INT64"
             | "TOINT64ORNULL"
             | "LPAD"
+            | "TOSTARTOFFIFTEENMINUTES"
             | "LEFTPADUTF8"
             | "COUNTSUBSTRINGSCASEINSENSITIVE"
             | "HEX_DECODE"
@@ -1131,6 +1132,19 @@ fn parse_at_depth(parser: &mut Parser, depth: usize) -> Result<ConstantValue, Pa
                         .parse::<i64>()
                         .map_err(|_| ParseError("TO_INT64 requires an Int64 string".into()))?,
                 ),
+                None => ConstantValue::Null,
+            }
+        }
+        "TOSTARTOFFIFTEENMINUTES" => {
+            let input = text_arg(parser, depth + 1)?;
+            require(parser, Token::RParen, "toStartOfFifteenMinutes requires one argument")?;
+            match input {
+                Some(value) => {
+                    let seconds = rusthouse_storage::parse_datetime(&value).ok_or_else(|| {
+                        ParseError("toStartOfFifteenMinutes requires a valid UTC DateTime".into())
+                    })?;
+                    ConstantValue::Text(rusthouse_storage::format_datetime(seconds - seconds % 900))
+                }
                 None => ConstantValue::Null,
             }
         }
