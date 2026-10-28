@@ -99,6 +99,7 @@ pub(super) fn is_function(name: &str) -> bool {
             | "NETLOC"
             | "STRIP_SUFFIX"
             | "REPEAT"
+            | "TODAYSSINCEYEARZERO"
             | "BASE64_DECODE"
             | "BASE64DECODE"
             | "APPENDTRAILINGCHARIFABSENT"
@@ -1967,6 +1968,20 @@ fn parse_at_depth(parser: &mut Parser, depth: usize) -> Result<ConstantValue, Pa
                     }
                     result.push('"');
                     ConstantValue::Text(result)
+                }
+                None => ConstantValue::Null,
+            }
+        }
+        "TODAYSSINCEYEARZERO" => {
+            let input = text_arg(parser, depth + 1)?;
+            require(parser, Token::RParen, "toDaysSinceYearZero requires one argument")?;
+            match input {
+                Some(value) => {
+                    let days = rusthouse_storage::parse_date(&value).map(u32::from)
+                        .or_else(|| rusthouse_storage::parse_datetime(&value)
+                            .map(|seconds| seconds / 86_400))
+                        .ok_or_else(|| ParseError("toDaysSinceYearZero requires a valid UTC date".into()))?;
+                    ConstantValue::Integer(i64::from(days) + 719_528)
                 }
                 None => ConstantValue::Null,
             }
