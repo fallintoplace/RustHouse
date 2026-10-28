@@ -546,6 +546,20 @@ fn matches_in_at(column: &TypedColumn, row: usize, targets: &[Cell], negated: bo
                 != negated
         });
     }
+    let numeric = match column {
+        TypedColumn::Numeric(values) => Some(number_at(values, row)),
+        TypedColumn::NullableNumeric { values, nulls } if nulls[row] == 0 => {
+            Some(number_at(values, row))
+        }
+        TypedColumn::NullableNumeric { .. } => return false,
+        _ => None,
+    };
+    if let Some(value) = numeric {
+        return targets.iter().any(|target| {
+            matches!(target, Cell::Numeric(expected)
+                if super::predicates::number_matches(value, *expected, Operator::Eq))
+        }) != negated;
+    }
     let value = cell(column, row);
     if matches!(value, Cell::Null) {
         return false;
@@ -2065,5 +2079,25 @@ mod uuid_literal_byte_parse_tests {
         ] {
             assert!(uuid_literal_bytes(invalid).is_err(), "{invalid}");
         }
+    }
+}
+
+#[cfg(test)]
+mod native_short_in_probe_tests {
+    use super::{Cell, matches_in_at, Number};
+    use rusthouse_storage::{NumericColumn, TypedColumn};
+
+    #[test]
+    fn short_numeric_in_does_not_match_nulls() {
+        let column = TypedColumn::NullableNumeric {
+            values: NumericColumn::Int32(vec![1, -4, 1]),
+            nulls: vec![0, 0, 1],
+        };
+        let targets = [Cell::Numeric(Number::Signed(-4))];
+        assert!(!matches_in_at(&column, 0, &targets, false));
+        assert!(matches_in_at(&column, 1, &targets, false));
+        assert!(!matches_in_at(&column, 2, &targets, false));
+        assert!(!matches_in_at(&column, 2, &targets, true));
+        assert!(matches_in_at(&column, 0, &targets, true));
     }
 }
