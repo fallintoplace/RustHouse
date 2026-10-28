@@ -580,13 +580,18 @@ impl TypedPartReader {
             self.next_mark = self.marks;
             return Ok(None);
         }
+        // ScanLayout has already validated that all requested column streams
+        // share the same adaptive granule row count. Decode this once instead
+        // of repeating the conversion for every column in a wide projection.
+        let rows = usize::try_from(
+            self.columns[0].data.marks[index].rows.ok_or_else(|| {
+                PartError::InvalidScan("typed scan requires adaptive marks".into())
+            })?,
+        )
+        .map_err(|_| PartError::InvalidScan("row count too large".into()))?;
         let mut batch = Vec::with_capacity(self.columns.len());
         for column in &mut self.columns {
             let mark = &column.data.marks[index];
-            let rows = usize::try_from(mark.rows.ok_or_else(|| {
-                PartError::InvalidScan("typed scan requires adaptive marks".into())
-            })?)
-            .map_err(|_| PartError::InvalidScan("row count too large".into()))?;
             let nulls = column
                 .null_map
                 .as_mut()
