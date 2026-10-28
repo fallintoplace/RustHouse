@@ -15,8 +15,13 @@ fn has_token_is_ascii_case_insensitive() {
         ("SELECT hasTokenCaseInsensitive('one_TWO', 'two')", 0),
         ("SELECT hasTokenCaseInsensitive('one_TWO', 'ONE_two')", 1),
         ("SELECT hasTokenCaseInsensitive('foot', 'FOO')", 0),
-    ] { assert_eq!(value(sql), ConstantValue::Integer(expected), "{sql}"); }
-    assert_eq!(value("SELECT hasTokenCaseInsensitive(NULL, 'hi')"), ConstantValue::Null);
+    ] {
+        assert_eq!(value(sql), ConstantValue::Integer(expected), "{sql}");
+    }
+    assert_eq!(
+        value("SELECT hasTokenCaseInsensitive(NULL, 'hi')"),
+        ConstantValue::Null
+    );
 }
 #[test]
 fn rejects_invalid_case_insensitive_tokens() {
@@ -25,5 +30,7 @@ fn rejects_invalid_case_insensitive_tokens() {
         "SELECT hasTokenCaseInsensitive('a', '')",
         "SELECT hasTokenCaseInsensitive('a')",
         "SELECT hasTokenCaseInsensitive(1, 'a')",
-    ] { assert!(parse_select(sql).is_err(), "{sql}"); }
+    ] {
+        assert!(parse_select(sql).is_err(), "{sql}");
+    }
 }

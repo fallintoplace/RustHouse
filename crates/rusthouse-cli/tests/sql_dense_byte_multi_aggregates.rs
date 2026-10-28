@@ -12,7 +12,8 @@ fn sql(query: &str, db: &Path) -> Output {
 
 #[test]
 fn dense_byte_multi_aggregate_groups_handle_nullable_values() {
-    let db = std::env::temp_dir().join(format!("rusthouse-dense-byte-multi-{}", std::process::id()));
+    let db =
+        std::env::temp_dir().join(format!("rusthouse-dense-byte-multi-{}", std::process::id()));
     for query in [
         "CREATE TABLE metrics (category Int8, amount Nullable(UInt64))",
         "INSERT INTO metrics VALUES (-128, 10), (127, 1), (-128, NULL)",

@@ -18,7 +18,10 @@ pub(super) fn validate_stream_pairs(
     Ok(())
 }
 
-pub(super) fn account_decoded_blocks(data: &Path, report: &mut PartVerification) -> Result<u64, PartError> {
+pub(super) fn account_decoded_blocks(
+    data: &Path,
+    report: &mut PartVerification,
+) -> Result<u64, PartError> {
     let mut reader = CompressedBlockReader::open(data)?;
     let mut decoded_size = 0u64;
     while let Some(block) = reader.next_decoded() {

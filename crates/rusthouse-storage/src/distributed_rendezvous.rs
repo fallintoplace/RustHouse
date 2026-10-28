@@ -51,8 +51,7 @@ pub fn replicas_for(
     }
     let mut unique = HashSet::new();
     for node in nodes {
-        if !valid_node(node) || !unique.insert(node.as_str())
-        {
+        if !valid_node(node) || !unique.insert(node.as_str()) {
             return Err("invalid or duplicate replica node");
         }
     }
@@ -74,9 +73,14 @@ pub fn replicas_for(
         .iter()
         .map(|node| (score_with_seed(seed, node), node.as_str()))
         .collect();
-    ranked.sort_unstable_by(|left, right| {
-        right.0.cmp(&left.0).then_with(|| left.1.cmp(right.1))
-    });
+    if replicas < ranked.len() {
+        // Partition the ranking when only a prefix is requested.
+        ranked.select_nth_unstable_by(replicas, |left, right| {
+            right.0.cmp(&left.0).then_with(|| left.1.cmp(right.1))
+        });
+        ranked.truncate(replicas);
+    }
+    ranked.sort_unstable_by(|left, right| right.0.cmp(&left.0).then_with(|| left.1.cmp(right.1)));
     Ok(ranked
         .into_iter()
         .take(replicas)
@@ -113,18 +117,19 @@ pub fn weighted_replicas_for(
     let seed = shard_seed(shard);
     let mut winner: Option<(f64, &str)> = None;
     for &(node, weight) in nodes {
-        if !valid_node(node) || !(1..=1024).contains(&weight) || !seen.insert(node)
-        {
+        if !valid_node(node) || !(1..=1024).contains(&weight) || !seen.insert(node) {
             return Err("invalid weighted replica node or weight");
         }
         // Keep U strictly inside (0, 1). Using the top 53 bits avoids
         // rounding a 64-bit hash to 1.0 in f64.
-        let uniform = ((score_with_seed(seed, node) >> 11) as f64 + 0.5)
-            / ((1u64 << 53) as f64);
+        let uniform = ((score_with_seed(seed, node) >> 11) as f64 + 0.5) / ((1u64 << 53) as f64);
         let priority = -uniform.ln() / f64::from(weight);
         if replicas == 1 {
             if winner.is_none_or(|(best, best_node)| {
-                priority.total_cmp(&best).then_with(|| node.cmp(best_node)).is_lt()
+                priority
+                    .total_cmp(&best)
+                    .then_with(|| node.cmp(best_node))
+                    .is_lt()
             }) {
                 winner = Some((priority, node));
             }
@@ -135,11 +140,21 @@ pub fn weighted_replicas_for(
     if replicas == 1 {
         return Ok(vec![winner.expect("valid nonempty nodes").1.to_owned()]);
     }
+    if replicas < ranked.len() {
+        // Partition first; sorting just the selected replica prefix is enough.
+        ranked.select_nth_unstable_by(replicas, |left, right| {
+            left.0.total_cmp(&right.0).then_with(|| left.1.cmp(right.1))
+        });
+        ranked.truncate(replicas);
+    }
     ranked.sort_unstable_by(|left, right| {
         left.0.total_cmp(&right.0).then_with(|| left.1.cmp(right.1))
     });
-    Ok(ranked.into_iter().take(replicas)
-        .map(|(_, node)| node.to_owned()).collect())
+    Ok(ranked
+        .into_iter()
+        .take(replicas)
+        .map(|(_, node)| node.to_owned())
+        .collect())
 }
 
 #[cfg(test)]
@@ -176,12 +191,22 @@ mod tests {
         let nodes = [("small", 1u16), ("large", 16u16)];
         assert_eq!(
             weighted_replicas_for("example", &nodes, 2).unwrap(),
-            weighted_replicas_for("example", &nodes.iter().rev().copied().collect::<Vec<_>>(), 2).unwrap()
+            weighted_replicas_for(
+                "example",
+                &nodes.iter().rev().copied().collect::<Vec<_>>(),
+                2
+            )
+            .unwrap()
         );
-        let selected = (0..256).filter(|i| {
-            weighted_replicas_for(&format!("shard_{i}"), &nodes, 1).unwrap()[0] == "large"
-        }).count();
-        assert!(selected > 128, "weighted placement did not favor larger node: {selected}");
+        let selected = (0..256)
+            .filter(|i| {
+                weighted_replicas_for(&format!("shard_{i}"), &nodes, 1).unwrap()[0] == "large"
+            })
+            .count();
+        assert!(
+            selected > 128,
+            "weighted placement did not favor larger node: {selected}"
+        );
         assert!(weighted_replicas_for("s", &[("n", 0)], 1).is_err());
         assert!(weighted_replicas_for("s", &[("n", 1025)], 1).is_err());
         assert!(weighted_replicas_for("s", &[("n", 1), ("n", 2)], 1).is_err());
@@ -191,7 +216,15 @@ mod tests {
     #[test]
     fn rejects_unsafe_shard_names() {
         let nodes = ["node_a".to_owned()];
-        for shard in ["../private", "one/two", ".hidden", "a..b", "a\\b", "é", "x\n"] {
+        for shard in [
+            "../private",
+            "one/two",
+            ".hidden",
+            "a..b",
+            "a\\b",
+            "é",
+            "x\n",
+        ] {
             assert!(replicas_for(shard, &nodes, 1).is_err(), "{shard}");
             assert!(
                 weighted_replicas_for(shard, &[("node_a", 1)], 1).is_err(),
@@ -221,4 +254,33 @@ mod tests {
         }
     }
 
+    #[test]
+    fn weighted_primary_matches_full_ranking_on_many_shards() {
+        let nodes = (0..64)
+            .map(|index| (format!("node_{index}"), 1 + index as u16))
+            .collect::<Vec<_>>();
+        let weighted = nodes
+            .iter()
+            .map(|(node, weight)| (node.as_str(), *weight))
+            .collect::<Vec<_>>();
+        for index in 0..32 {
+            let shard = format!("weighted_{index}");
+            let first = weighted_replicas_for(&shard, &weighted, 1).unwrap();
+            let all = weighted_replicas_for(&shard, &weighted, weighted.len()).unwrap();
+            assert_eq!(first[0], all[0]);
+        }
+    }
+
+    #[test]
+    fn one_pass_primary_matches_full_rendezvous_ranking() {
+        let nodes = (0..64)
+            .map(|index| format!("node_{index}"))
+            .collect::<Vec<_>>();
+        for index in 0..64 {
+            let shard = format!("shard_{index}");
+            let first = replicas_for(&shard, &nodes, 1).unwrap();
+            let all = replicas_for(&shard, &nodes, nodes.len()).unwrap();
+            assert_eq!(first[0], all[0]);
+        }
+    }
 }

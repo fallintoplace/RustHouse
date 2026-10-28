@@ -89,6 +89,33 @@ impl<W: Write> JsonArraySink<W> {
 
 impl<W: Write> Write for JsonArraySink<W> {
     fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
+        // The common complete single-row write can be forwarded directly.
+        // Fragmented and multi-row writes still use the bounded row buffer.
+        if self.row.is_empty() {
+            if let Some(row) = buf.strip_suffix(b"\n") {
+                if !row.contains(&b'\n') {
+                    if row.len() > MAX_RESPONSE_BYTES {
+                        return Err(io::Error::new(
+                            io::ErrorKind::InvalidData,
+                            "JSON array row exceeds 8 MiB",
+                        ));
+                    }
+                    if !row.starts_with(b"{") || !row.ends_with(b"}") {
+                        return Err(io::Error::new(
+                            io::ErrorKind::InvalidData,
+                            "expected a complete JSON object",
+                        ));
+                    }
+                    self.write_row_prefix()?;
+                    if self.pretty {
+                        write_pretty_json_row(&mut self.output, row)?;
+                    } else {
+                        self.output.write_all(row)?;
+                    }
+                    return Ok(buf.len());
+                }
+            }
+        }
         for chunk in buf.split_inclusive(|&byte| byte == b'\n') {
             let complete = chunk.last() == Some(&b'\n');
             let fragment = if complete {
@@ -172,4 +199,15 @@ mod tests {
             format!("[{large_row},{{}}]\n").as_bytes()
         );
     }
+
+    #[test]
+    fn complete_json_row_skips_temporary_buffering() {
+        let input = format!("{{\"label\":\"{}\"}}\n", "x".repeat(4096));
+        let mut sink = JsonArraySink::new(Vec::new());
+        sink.write_all(input.as_bytes()).unwrap();
+        assert_eq!(sink.row.capacity(), 0);
+        let output = sink.finish().unwrap();
+        assert_eq!(output, format!("[{}]\n", input.trim_end()).as_bytes());
+    }
+
 }

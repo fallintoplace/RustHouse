@@ -21,6 +21,14 @@ fn checked_chunk_count(
     Ok(count as usize)
 }
 
+fn chunk_at_index(total_bytes: u64, chunk_bytes: u64, index: usize) -> Chunk {
+    let offset = index as u64 * chunk_bytes;
+    Chunk {
+        offset,
+        length: (total_bytes - offset).min(chunk_bytes),
+    }
+}
+
 /// Plan nonoverlapping ranges. Empty files have no data chunks.
 pub fn plan_chunks(
     total_bytes: u64,
@@ -29,11 +37,8 @@ pub fn plan_chunks(
 ) -> Result<Vec<Chunk>, &'static str> {
     let count = checked_chunk_count(total_bytes, chunk_bytes, max_chunks)?;
     let mut chunks = Vec::with_capacity(count);
-    let mut offset = 0u64;
-    while offset < total_bytes {
-        let length = (total_bytes - offset).min(chunk_bytes);
-        chunks.push(Chunk { offset, length });
-        offset += length;
+    for index in 0..count {
+        chunks.push(chunk_at_index(total_bytes, chunk_bytes, index));
     }
     Ok(chunks)
 }
@@ -62,10 +67,12 @@ pub fn plan_missing_chunks(
         return Err("transfer batch chunk limit exceeds bound");
     }
     let chunk_count = checked_chunk_count(total_bytes, chunk_bytes, max_chunks)?;
-    if remaining_indices.iter().any(|&index| index >= chunk_count)
-        || remaining_indices.windows(2).any(|pair| pair[0] >= pair[1])
-    {
-        return Err("invalid or duplicate missing chunk index");
+    let mut previous = None;
+    for &index in remaining_indices {
+        if index >= chunk_count || previous.is_some_and(|last| index <= last) {
+            return Err("invalid or duplicate missing chunk index");
+        }
+        previous = Some(index);
     }
     let mut selected = Vec::with_capacity(remaining_indices.len().min(max_batch_chunks));
     let mut remaining_bytes = byte_budget;
@@ -73,13 +80,11 @@ pub fn plan_missing_chunks(
         if selected.len() >= max_batch_chunks {
             break;
         }
-        let offset = (index as u64) * chunk_bytes;
-        let length = (total_bytes - offset).min(chunk_bytes);
-        if length > remaining_bytes {
+        let chunk = chunk_at_index(total_bytes, chunk_bytes, index);
+        if chunk.length > remaining_bytes {
             break;
         }
-        let chunk = Chunk { offset, length };
-        remaining_bytes -= length;
+        remaining_bytes -= chunk.length;
         selected.push(IndexedChunk { index, chunk });
     }
     Ok(selected)
@@ -94,9 +99,18 @@ mod tests {
         assert_eq!(
             plan_chunks(10, 4, 3).unwrap(),
             vec![
-                Chunk { offset: 0, length: 4 },
-                Chunk { offset: 4, length: 4 },
-                Chunk { offset: 8, length: 2 },
+                Chunk {
+                    offset: 0,
+                    length: 4
+                },
+                Chunk {
+                    offset: 4,
+                    length: 4
+                },
+                Chunk {
+                    offset: 8,
+                    length: 2
+                },
             ]
         );
         assert!(plan_chunks(0, 4, 1).unwrap().is_empty());
@@ -107,20 +121,62 @@ mod tests {
     #[test]
     fn schedules_only_missing_chunks_with_stable_indices_and_byte_budget() {
         let pending = plan_missing_chunks(10, 4, 3, &[0, 2], 6, 3).unwrap();
-        assert_eq!(pending, vec![
-            IndexedChunk { index: 0, chunk: Chunk { offset: 0, length: 4 } },
-            IndexedChunk { index: 2, chunk: Chunk { offset: 8, length: 2 } },
-        ]);
+        assert_eq!(
+            pending,
+            vec![
+                IndexedChunk {
+                    index: 0,
+                    chunk: Chunk {
+                        offset: 0,
+                        length: 4
+                    }
+                },
+                IndexedChunk {
+                    index: 2,
+                    chunk: Chunk {
+                        offset: 8,
+                        length: 2
+                    }
+                },
+            ]
+        );
         assert_eq!(
             plan_missing_chunks(10, 4, 3, &[0, 1, 2], 7, 3).unwrap(),
-            vec![IndexedChunk { index: 0, chunk: Chunk { offset: 0, length: 4 } }],
+            vec![IndexedChunk {
+                index: 0,
+                chunk: Chunk {
+                    offset: 0,
+                    length: 4
+                }
+            }],
         );
         assert_eq!(
             plan_missing_chunks(10, 4, 3, &[2], 2, 1).unwrap(),
-            vec![IndexedChunk { index: 2, chunk: Chunk { offset: 8, length: 2 } }],
+            vec![IndexedChunk {
+                index: 2,
+                chunk: Chunk {
+                    offset: 8,
+                    length: 2
+                }
+            }],
         );
         assert!(plan_missing_chunks(0, 4, 3, &[], 0, 3).unwrap().is_empty());
-        assert!(plan_missing_chunks(10, 4, 3, &[2], 0, 3).unwrap().is_empty());
+        assert!(
+            plan_missing_chunks(10, 4, 3, &[2], 0, 3)
+                .unwrap()
+                .is_empty()
+        );
+    }
+
+    #[test]
+    fn validates_sparse_indexes_before_selecting_bounded_transfer_prefix() {
+        let selected = plan_missing_chunks(101, 1, 128, &[0, 2, 7, 63, 64, 100], 3, 3).unwrap();
+        assert_eq!(
+            selected.iter().map(|part| part.index).collect::<Vec<_>>(),
+            vec![0, 2, 7]
+        );
+        assert!(plan_missing_chunks(101, 1, 128, &[0, 2, 7, 7], 4, 4).is_err());
+        assert!(plan_missing_chunks(101, 1, 128, &[0, 2, 101], 4, 4).is_err());
     }
 
     #[test]
@@ -136,19 +192,33 @@ mod tests {
     fn handles_the_largest_u64_range() {
         assert_eq!(
             plan_chunks(u64::MAX, u64::MAX, 1).unwrap(),
-            vec![Chunk { offset: 0, length: u64::MAX }]
+            vec![Chunk {
+                offset: 0,
+                length: u64::MAX
+            }]
         );
     }
     #[test]
     fn sparse_resume_uses_stable_indexes_at_maximum_chunk_count() {
         let selected = plan_missing_chunks(65_536, 1, 65_536, &[0, 32_768, 65_535], 2, 3).unwrap();
         assert_eq!(selected.len(), 2);
-        assert_eq!(selected[0].chunk, Chunk { offset: 0, length: 1 });
-        assert_eq!(selected[1], IndexedChunk {
-            index: 32_768,
-            chunk: Chunk { offset: 32_768, length: 1 },
-        });
+        assert_eq!(
+            selected[0].chunk,
+            Chunk {
+                offset: 0,
+                length: 1
+            }
+        );
+        assert_eq!(
+            selected[1],
+            IndexedChunk {
+                index: 32_768,
+                chunk: Chunk {
+                    offset: 32_768,
+                    length: 1
+                },
+            }
+        );
         assert!(plan_missing_chunks(65_537, 1, 65_536, &[], 0, 1).is_err());
     }
-
 }

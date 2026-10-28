@@ -110,7 +110,12 @@ fn describe_sort(query: &Select) -> String {
         .order_terms()
         .map(|order| {
             let label = if order.column == "#aggregate" {
-                if let Projection::GroupedAggregate { function, value_column, .. } = &query.projection {
+                if let Projection::GroupedAggregate {
+                    function,
+                    value_column,
+                    ..
+                } = &query.projection
+                {
                     format!("{}({value_column})", function.name())
                 } else {
                     order.column.clone()

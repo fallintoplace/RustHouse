@@ -34,6 +34,12 @@ impl<W: Write> CsvWriter<W> {
             }
         }
         self.encoded.clear();
+        self.encoded.reserve(
+            self.line
+                .len()
+                .saturating_add(field_count.saturating_mul(2))
+                .saturating_add(2),
+        );
         for (index, field) in self.line.split(|byte| *byte == b'\t').enumerate() {
             if index != 0 {
                 self.encoded.write_all(b",")?;
@@ -52,7 +58,16 @@ fn write_csv_field<W: Write>(output: &mut W, field: &[u8]) -> io::Result<()> {
     if field == b"\\N" {
         return output.write_all(b"\\N");
     }
-    let value = decode_tsv_value(field)?;
+    let decoded = if field.contains(&b'\\') {
+        Some(decode_tsv_value(field)?)
+    } else {
+        None
+    };
+    let value = match decoded.as_deref() {
+        Some(value) => value,
+        None => std::str::from_utf8(field)
+            .map_err(|_| io::Error::new(io::ErrorKind::InvalidData, "invalid UTF-8 field"))?,
+    };
     let needs_quotes = value == "\\N"
         || value
             .bytes()
@@ -238,4 +253,26 @@ mod literal_null_marker_regressions {
         assert_eq!(writer.columns, Some(256));
         assert!(writer.write_all(b"one\tcolumn\n").is_err());
     }
+
+    #[test]
+    fn csv_plain_utf8_fields_skip_escape_decoding() {
+        let mut output = Vec::new();
+        write_csv_field(&mut output, "café".as_bytes()).unwrap();
+        assert_eq!(output, "café".as_bytes());
+        output.clear();
+        write_csv_field(&mut output, b"hello,world").unwrap();
+        assert_eq!(output, b"\"hello,world\"");
+        output.clear();
+        assert!(write_csv_field(&mut output, b"\xff").is_err());
+    }
+
+    #[test]
+    fn wide_plain_csv_rows_reuse_reserved_output_capacity() {
+        let large = "x".repeat(4096);
+        let mut writer = CsvWriter::new(Vec::new());
+        writer.write_all(format!("value\n{large}\n").as_bytes()).unwrap();
+        assert_eq!(writer.output, format!("value\r\n{large}\r\n").as_bytes());
+        assert!(writer.encoded.capacity() >= large.len() + 4);
+    }
+
 }

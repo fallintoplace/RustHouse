@@ -32,10 +32,28 @@ fn empty_outer_inputs() {
     ));
     successful(&db, "CREATE TABLE lefts (id UInt64)");
     successful(&db, "CREATE TABLE rights (id UInt64)");
-    assert_eq!(successful(&db, "SELECT * FROM lefts l FULL JOIN rights r USING (id) LIMIT 5"), b"l.id\n");
+    assert_eq!(
+        successful(
+            &db,
+            "SELECT * FROM lefts l FULL JOIN rights r USING (id) LIMIT 5"
+        ),
+        b"l.id\n"
+    );
     successful(&db, "INSERT INTO lefts VALUES (1)");
-    assert_eq!(successful(&db, "SELECT * FROM lefts l FULL JOIN rights r USING (id) LIMIT 5"), b"l.id\n1\n");
+    assert_eq!(
+        successful(
+            &db,
+            "SELECT * FROM lefts l FULL JOIN rights r USING (id) LIMIT 5"
+        ),
+        b"l.id\n1\n"
+    );
     successful(&db, "INSERT INTO rights VALUES (2)");
-    assert_eq!(successful(&db, "SELECT * FROM lefts l FULL JOIN rights r USING (id) ORDER BY l.id NULLS LAST"), b"l.id\n1\n2\n");
+    assert_eq!(
+        successful(
+            &db,
+            "SELECT * FROM lefts l FULL JOIN rights r USING (id) ORDER BY l.id NULLS LAST"
+        ),
+        b"l.id\n1\n2\n"
+    );
     fs::remove_dir_all(db).unwrap();
 }

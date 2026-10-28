@@ -8,7 +8,44 @@ pub(super) fn push_varuint(mut value: u64, output: &mut Vec<u8>) {
     output.push(value as u8);
 }
 
-pub(super) fn push_cell(kind: &str, value: Option<&str>, output: &mut Vec<u8>) -> Result<bool, PartError> {
+fn push_uuid(value: &str, output: &mut Vec<u8>) -> Result<(), PartError> {
+    let bytes = value.as_bytes();
+    if bytes.len() != 36 || [8, 13, 18, 23].iter().any(|&index| bytes[index] != b'-') {
+        return Err(invalid(format!("invalid UUID value: {value}")));
+    }
+    let mut canonical = [0u8; 16];
+    let mut digit_index = 0usize;
+    for (position, &byte) in bytes.iter().enumerate() {
+        if matches!(position, 8 | 13 | 18 | 23) {
+            continue;
+        }
+        let digit = match byte {
+            b'0'..=b'9' => byte - b'0',
+            b'a'..=b'f' => byte - b'a' + 10,
+            b'A'..=b'F' => byte - b'A' + 10,
+            _ => return Err(invalid(format!("invalid UUID value: {value}"))),
+        };
+        let slot = &mut canonical[digit_index / 2];
+        if digit_index % 2 == 0 {
+            *slot = digit << 4;
+        } else {
+            *slot |= digit;
+        }
+        digit_index += 1;
+    }
+    // ClickHouse stores each UInt64 UUID half in little-endian order.
+    for half in canonical.chunks_exact_mut(8) {
+        half.reverse();
+    }
+    output.extend_from_slice(&canonical);
+    Ok(())
+}
+
+pub(super) fn push_cell(
+    kind: &str,
+    value: Option<&str>,
+    output: &mut Vec<u8>,
+) -> Result<bool, PartError> {
     let (base, nullable) = base_type(kind);
     let is_null = value.is_none();
     if is_null && !nullable {
@@ -28,6 +65,7 @@ pub(super) fn push_cell(kind: &str, value: Option<&str>, output: &mut Vec<u8>) -
             push_varuint(value.len() as u64, output);
             output.extend_from_slice(value.as_bytes());
         }
+        "UUID" => push_uuid(value, output)?,
         "Date" => {
             let days = crate::parse_date(value)
                 .or_else(|| value.parse::<u16>().ok())
@@ -145,8 +183,7 @@ fn read_map_string(input: &str, position: &mut usize) -> Result<String, PartErro
                     if !(0xDC00..=0xDFFF).contains(&low) {
                         return Err(invalid("invalid Map Unicode surrogate pair"));
                     }
-                    0x10000 + (u32::from(first - 0xD800) << 10)
-                        + u32::from(low - 0xDC00)
+                    0x10000 + (u32::from(first - 0xD800) << 10) + u32::from(low - 0xDC00)
                 } else {
                     if (0xDC00..=0xDFFF).contains(&first) {
                         return Err(invalid("isolated Map Unicode low surrogate"));
@@ -198,9 +235,10 @@ pub(super) fn push_string_key_map(
                 read_map_string(literal, &mut cursor)?
             } else {
                 let begin = cursor;
-                while bytes.get(cursor).is_some_and(|byte| {
-                    !matches!(byte, b',' | b'}') && !byte.is_ascii_whitespace()
-                }) {
+                while bytes
+                    .get(cursor)
+                    .is_some_and(|byte| !matches!(byte, b',' | b'}') && !byte.is_ascii_whitespace())
+                {
                     cursor += 1;
                 }
                 if cursor == begin {
@@ -210,7 +248,9 @@ pub(super) fn push_string_key_map(
             };
             push_cell("String", Some(&key), keys)?;
             push_cell(value_type, Some(&value), values)?;
-            pairs = pairs.checked_add(1).ok_or_else(|| invalid("Map has too many pairs"))?;
+            pairs = pairs
+                .checked_add(1)
+                .ok_or_else(|| invalid("Map has too many pairs"))?;
             skip_map_ws(bytes, &mut cursor);
             match bytes.get(cursor) {
                 Some(b',') => {
@@ -253,7 +293,9 @@ pub(super) fn push_numeric_array(
                 return Err(invalid("Array cannot contain an empty element"));
             }
             push_cell(inner, Some(value), elements)?;
-            count = count.checked_add(1).ok_or_else(|| invalid("Array has too many elements"))?;
+            count = count
+                .checked_add(1)
+                .ok_or_else(|| invalid("Array has too many elements"))?;
         }
     }
     sizes.extend_from_slice(&count.to_le_bytes());
@@ -274,7 +316,15 @@ pub(super) fn checksum_hash(data: &[u8]) -> u128 {
 }
 
 pub(super) fn encode_checksums(files: &[FileChecksum]) -> Vec<u8> {
-    let mut bytes = b"checksums format version: 3\n".to_vec();
+    const HEADER: &[u8] = b"checksums format version: 3\n";
+    // Account for names, checksums, and bounded varuint fields so metadata
+    // encoding rarely needs to grow its buffer during part publication.
+    let capacity = files.iter().fold(HEADER.len() + 10, |size, file| {
+        size.saturating_add(file.name.len())
+            .saturating_add(if file.uncompressed.is_some() { 64 } else { 40 })
+    });
+    let mut bytes = Vec::with_capacity(capacity);
+    bytes.extend_from_slice(HEADER);
     push_varuint(files.len() as u64, &mut bytes);
     for file in files {
         push_varuint(file.name.len() as u64, &mut bytes);
@@ -291,4 +341,60 @@ pub(super) fn encode_checksums(files: &[FileChecksum]) -> Vec<u8> {
         }
     }
     bytes
+}
+
+
+#[cfg(test)]
+mod checksum_preallocation_tests {
+    use super::*;
+
+    #[test]
+    fn checksum_preallocation_preserves_wire_bytes() {
+        let file = FileChecksum {
+            name: "a".into(),
+            size: 1,
+            hash: 0,
+            uncompressed: None,
+        };
+        let mut expected = b"checksums format version: 3\n".to_vec();
+        expected.extend_from_slice(&[1, 1, b'a', 1]);
+        expected.extend_from_slice(&0u128.to_le_bytes());
+        expected.push(0);
+        assert_eq!(encode_checksums(&[file]), expected);
+    }
+}
+
+#[cfg(test)]
+mod uuid_writer_tests {
+    use super::*;
+
+    #[test]
+    fn writes_clickhouse_uuid_byte_order_and_rejects_bad_literals() {
+        let mut output = Vec::new();
+        push_cell(
+            "UUID",
+            Some("61f0c404-5cb3-11e7-907b-a6006ad3dba0"),
+            &mut output,
+        )
+        .unwrap();
+        assert_eq!(
+            output,
+            [
+                0xe7, 0x11, 0xb3, 0x5c, 0x04, 0xc4, 0xf0, 0x61, 0xa0, 0xdb, 0xd3, 0x6a, 0x00, 0xa6,
+                0x7b, 0x90,
+            ]
+        );
+        for bad in [
+            "",
+            "00000000-0000-0000-0000-00000000000z",
+            "000000000000-0000-0000-000000000000",
+            "00000000-0000-0000-0000-0000000000000",
+        ] {
+            assert!(
+                push_cell("UUID", Some(bad), &mut Vec::new()).is_err(),
+                "{bad}"
+            );
+        }
+        assert!(push_cell("UUID", None, &mut Vec::new()).is_err());
+    }
 }
