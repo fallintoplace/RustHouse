@@ -74,7 +74,9 @@ fn populate(database: &Path) {
 fn active_generation(database: &Path) -> PathBuf {
     let parts = database.join("events.parts");
     let label = fs::read_to_string(parts.join(".rusthouse-active")).unwrap();
-    let label = label.strip_suffix('\n').expect("snapshot pointer ends with a newline");
+    let label = label
+        .strip_suffix('\n')
+        .expect("snapshot pointer ends with a newline");
     parts.join(".rusthouse-versions").join(label)
 }
 
