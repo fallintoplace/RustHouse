@@ -51,6 +51,7 @@ pub(super) fn is_function(name: &str) -> bool {
             | "TO_INT64"
             | "TRIM"
             | "LTRIM"
+            | "TRIMLEFT"
             | "BASENAME"
             | "TRIM_WHITESPACE"
             | "TRY_TO_INT64"
@@ -874,7 +875,7 @@ fn parse_at_depth(parser: &mut Parser, depth: usize) -> Result<ConstantValue, Pa
                 None => ConstantValue::Null,
             }
         }
-        "LTRIM" => {
+        "LTRIM" | "TRIMLEFT" => {
             let input = text_arg(parser, depth + 1)?;
             let characters = if parser.take(Token::Comma) {
                 Some(text_arg(parser, depth + 1)?)
