@@ -29,6 +29,7 @@ pub(super) fn is_function(name: &str) -> bool {
             | "HEX"
             | "IS_ASCII"
             | "UPPER"
+            | "UPPERUTF8"
             | "URL_DECODE"
             | "IS_EMPTY"
             | "EMPTY"
@@ -366,7 +367,7 @@ fn parse_at_depth(parser: &mut Parser, depth: usize) -> Result<ConstantValue, Pa
                 None => ConstantValue::Null,
             }
         }
-        "UPPER" => {
+        "UPPER" | "UPPERUTF8" => {
             let input = text_arg(parser, depth + 1)?;
             require(parser, Token::RParen, "UPPER requires one argument")?;
             match input {
