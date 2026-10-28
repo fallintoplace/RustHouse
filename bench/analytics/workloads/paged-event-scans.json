@@ -1,0 +1,18 @@
+{
+  "name": "paged-event-scans",
+  "description": "deterministic top pages, offset scans and filtered pages",
+  "queries": [
+    {
+      "name": "first-page",
+      "sql": "SELECT event_id, user_id FROM events ORDER BY event_id LIMIT 20"
+    },
+    {
+      "name": "offset-page",
+      "sql": "SELECT event_id, user_id FROM events ORDER BY event_id LIMIT 20 OFFSET 50"
+    },
+    {
+      "name": "filtered-page",
+      "sql": "SELECT event_id, amount FROM events WHERE status = 'paid' ORDER BY event_id LIMIT 20 OFFSET 10"
+    }
+  ]
+}

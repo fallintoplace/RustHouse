@@ -1,0 +1,18 @@
+{
+  "name": "date-range-revenue",
+  "description": "date range predicates, revenue and date extrema",
+  "queries": [
+    {
+      "name": "first-quarter-count",
+      "sql": "SELECT COUNT(*) FROM events WHERE event_date >= '2024-01-01' AND event_date < '2024-04-01'"
+    },
+    {
+      "name": "february-revenue",
+      "sql": "SELECT SUM(amount) FROM events WHERE event_date BETWEEN '2024-02-01' AND '2024-02-29'"
+    },
+    {
+      "name": "date-extrema",
+      "sql": "SELECT MIN(event_date), MAX(event_date) FROM events"
+    }
+  ]
+}

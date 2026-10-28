@@ -7,6 +7,22 @@ use std::io::{Read, Seek};
 
 const MAX_GRANULE_BYTES: usize = 64 * 1024 * 1024;
 
+fn cached_granule_bytes<'a>(
+    cached: &'a Option<DecodedBlock>,
+    mark: &WideMark,
+    offset: usize,
+    byte_count: usize,
+) -> Option<&'a [u8]> {
+    cached
+        .as_ref()
+        .filter(|block| block.block.offset == mark.compressed_offset)
+        .and_then(|block| {
+            offset
+                .checked_add(byte_count)
+                .and_then(|end| block.data.get(offset..end))
+        })
+}
+
 pub fn read_mark_bytes<R: Read + Seek>(
     reader: &mut CompressedBlockReader<R>,
     mark: &WideMark,
@@ -32,15 +48,7 @@ pub(crate) fn read_mark_bytes_cached<R: Read + Seek>(
         .map_err(|_| invalid_mark(mark, "decompressed offset exceeds address space"))?;
     // Adjacent adaptive marks often reference the same compressed block.
     // Keep one verified decoded block per column stream and avoid re-decoding it.
-    if let Some(bytes) = cached
-        .as_ref()
-        .filter(|block| block.block.offset == mark.compressed_offset)
-        .and_then(|block| {
-            offset
-                .checked_add(byte_count)
-                .and_then(|end| block.data.get(offset..end))
-        })
-    {
+    if let Some(bytes) = cached_granule_bytes(cached, mark, offset, byte_count) {
         return Ok(bytes.to_vec());
     }
     reader.seek_to_block(mark.compressed_offset)?;
@@ -122,18 +130,9 @@ pub(crate) fn read_numeric_granule_cached<R: Read + Seek>(
     }
     // A verified cached block can be decoded directly. This avoids allocating
     // and copying the bytes of every adaptive mark sharing a compressed block.
-    if let Some(bytes) = cached
-        .as_ref()
-        .filter(|block| block.block.offset == mark.compressed_offset)
-        .and_then(|block| {
-            usize::try_from(mark.decompressed_offset)
-                .ok()
-                .and_then(|offset| {
-                    offset
-                        .checked_add(byte_count)
-                        .and_then(|end| block.data.get(offset..end))
-                })
-        })
+    if let Some(bytes) = usize::try_from(mark.decompressed_offset)
+        .ok()
+        .and_then(|offset| cached_granule_bytes(cached, mark, offset, byte_count))
     {
         return read_numeric_column(&mut &bytes[..], data_type, rows)
             .map_err(PartError::NumericRead);
