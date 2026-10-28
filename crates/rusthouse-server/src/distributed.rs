@@ -593,9 +593,14 @@ fn merge_grouped_integer_sums_query(
             if shard_rows >= *cap {
                 return Err(MergeError::ShardRowLimit);
             }
+            // Composite grouping keys span every field before the SUM value.
+            let key_width = key_column.as_bytes().iter().filter(|&&b| b == b'\t').count() + 1;
+            if row.iter().filter(|&&b| b == b'\t').count() != key_width {
+                return Err(MergeError::InvalidGroupedSum);
+            }
             let delimiter = row
                 .iter()
-                .position(|&byte| byte == b'\t')
+                .rposition(|&byte| byte == b'\t')
                 .ok_or(MergeError::InvalidGroupedSum)?;
             let key = &row[..delimiter];
             let value = &row[delimiter + 1..];
@@ -994,6 +999,7 @@ pub fn handle(method: &str, body: &[u8], cluster: &Cluster, max_rows: usize) -> 
                 || is_safe_grouped_count(&select)
                 || is_safe_grouped_sum(&select)
                 || is_safe_grouped_extremum(&select)
+                || is_safe_grouped_multikey_sum(&select)
                 || is_safe_sum(&select)
                 || is_safe_extremum(&select) =>
         {
@@ -1014,6 +1020,7 @@ pub fn handle(method: &str, body: &[u8], cluster: &Cluster, max_rows: usize) -> 
     let grouped_count_query = is_safe_grouped_count(&select);
     let grouped_sum_query = is_safe_grouped_sum(&select);
     let grouped_extremum_query = is_safe_grouped_extremum(&select);
+    let grouped_multikey_sum_query = is_safe_grouped_multikey_sum(&select);
     let sum_query = is_safe_sum(&select);
     let shard_sql = if is_safe_scan(&select) {
         match unpaged_scan_sql(sql, &select) {
@@ -1072,6 +1079,11 @@ pub fn handle(method: &str, body: &[u8], cluster: &Cluster, max_rows: usize) -> 
                 ..
             },
         ) => Some((table.as_str(), value_column.as_str())),
+        (
+            Some(Source::Table(table)),
+            Projection::GroupedMultiAggregates { items, .. },
+        ) if items.len() == 1 && items[0].0 == AggregateFunction::Sum =>
+            Some((table.as_str(), items[0].1.as_str())),
         _ => None,
     };
     let group_schema = match (&select.source, &select.projection) {
@@ -1194,6 +1206,15 @@ pub fn handle(method: &str, body: &[u8], cluster: &Cluster, max_rows: usize) -> 
                 } else {
                     merge_grouped_integer_sums(&shards, limit, kind, key, value)
                 }
+            }
+            _ => Err(MergeError::InvalidGroupedSum),
+        }
+    } else if grouped_multikey_sum_query {
+        match (sum_type.as_deref(), &select.projection) {
+            (Some(kind), Projection::GroupedMultiAggregates { columns, items }) => {
+                merge_grouped_integer_sums(
+                    &shards, max_rows.min(250_000), kind, &columns.join("\t"), &items[0].1,
+                )
             }
             _ => Err(MergeError::InvalidGroupedSum),
         }
@@ -1428,6 +1449,28 @@ mod tests {
             merge_grouped_integer_extrema(&min_shards, 2, "Int64", "region", "amount",
                 AggregateFunction::Min, Some(&min_query)).unwrap(),
             b"region\tmin(amount)\na\t3\nb\t4\n"
+        );
+    }
+
+    #[test]
+    fn distributed_multidimensional_sum_reduces_shared_composite_keys() {
+        let query = parse_select(
+            "SELECT region, category, sum(revenue) FROM events GROUP BY region, category",
+        ).unwrap();
+        assert!(is_safe_grouped_multikey_sum(&query));
+        let shards = [
+            shard(10, "region\tcategory\tsum(revenue)\neu\ttools\t11\nus\ttools\t2\n"),
+            shard(10, "region\tcategory\tsum(revenue)\neu\ttools\t6\nus\ttools\tNULL\neu\tbooks\t3\n"),
+        ];
+        assert_eq!(
+            merge_grouped_integer_sums(&shards, 10, "UInt64", "region\tcategory", "revenue").unwrap(),
+            b"region\tcategory\tsum(revenue)\neu\ttools\t17\nus\ttools\t2\neu\tbooks\t3\n"
+        );
+        let malformed = [shard(10, "region\tcategory\tsum(revenue)\neu\ttools\t5\n"),
+            shard(10, "region\tcategory\tsum(revenue)\neu\t3\n")];
+        assert_eq!(
+            merge_grouped_integer_sums(&malformed, 10, "UInt64", "region\tcategory", "revenue"),
+            Err(MergeError::InvalidGroupedSum)
         );
     }
     #[test]
