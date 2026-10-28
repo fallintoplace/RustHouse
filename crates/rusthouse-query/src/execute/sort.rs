@@ -74,7 +74,9 @@ pub(super) struct SortedRows {
 impl SortedRows {
     pub(super) fn new(limit: Option<usize>, descending: bool) -> Self {
         Self {
-            rows: BinaryHeap::new(),
+            // Most ORDER BY queries use a small explicit LIMIT. Reserve
+            // the bounded heap once, without eagerly allocating an unbounded sort.
+            rows: BinaryHeap::with_capacity(limit.unwrap_or(0).min(1024)),
             requested: limit.unwrap_or(usize::MAX),
             offset: 0,
             seen: 0,
@@ -98,6 +100,10 @@ impl SortedRows {
             .transpose()?
             .unwrap_or(usize::MAX);
         sorted.offset = offset;
+        if limit.is_some() {
+            // OFFSET expands the number of retained candidates beyond LIMIT.
+            sorted.rows.reserve(sorted.requested.min(1024));
+        }
         Ok(sorted)
     }
 
@@ -206,6 +212,16 @@ impl SortedRows {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn reserves_bounded_topk_and_offset_without_eager_unbounded_allocation() {
+        let limited = SortedRows::new(Some(16), false);
+        assert!(limited.rows.capacity() >= 16);
+        let paged = SortedRows::with_offset(Some(5), 90, true).unwrap();
+        assert!(paged.rows.capacity() >= 95);
+        let unbounded = SortedRows::new(None, false);
+        assert_eq!(unbounded.rows.capacity(), 0);
+    }
 
     #[test]
     fn direction_comparison_reverses_order_without_changing_ties() {
