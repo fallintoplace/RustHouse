@@ -52,7 +52,11 @@ def profile_table(path, table):
 
 
 def profile_directory(directory, selected=None):
-    selected = tuple(selected or TABLES)
+    selected = tuple(TABLES if selected is None else selected)
+    if not selected or len(set(selected)) != len(selected) or any(
+        table not in TABLES for table in selected
+    ):
+        raise ValueError("select a nonempty unique set of known TPC-H tables")
     profiles = [profile_table(Path(directory) / (table + ".tsv"), table)
                 for table in selected]
     return {"workload": "tpch-input-profile", "certified": False,
