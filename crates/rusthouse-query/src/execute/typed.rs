@@ -339,6 +339,7 @@ enum Test {
     NumericInSet(HashSet<NumberKey>, bool),
     NotBetween(Cell, Cell),
     IsNull(bool),
+    DistinctFrom(Cell, bool),
     Like {
         pattern: LikePattern,
         case_insensitive: bool,
@@ -401,6 +402,9 @@ pub(super) fn compile(
                     Test::NotBetween(parse_literal(kind, lower)?, parse_literal(kind, upper)?)
                 }
                 Predicate::IsNull { negated, .. } => Test::IsNull(*negated),
+                Predicate::DistinctFrom { value, negated, .. } => {
+                    Test::DistinctFrom(parse_literal(kind, value)?, *negated)
+                }
                 Predicate::Like {
                     pattern,
                     case_insensitive,
@@ -575,6 +579,15 @@ pub(super) fn passes(batch: &[TypedColumn], row: usize, branches: &[Vec<Conditio
                 }
                 Test::Compare(operator, target) => {
                     matches_comparison_at(column, row, target, *operator)
+                }
+                Test::DistinctFrom(target, negated) => {
+                    let equal = if let Cell::Numeric(super::Number::Float(right)) = target {
+                        matches!(cell(column, row), Cell::Numeric(super::Number::Float(left)) if left.is_nan() && right.is_nan())
+                            || matches_comparison_at(column, row, target, Operator::Eq)
+                    } else {
+                        matches_comparison_at(column, row, target, Operator::Eq)
+                    };
+                    equal == *negated
                 }
                 Test::In(targets, negated) => {
                     matches_in_at(column, row, targets, *negated)
