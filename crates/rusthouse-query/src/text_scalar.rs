@@ -41,6 +41,7 @@ pub(super) fn is_function(name: &str) -> bool {
             | "JSONHAS"
             | "JSONEXTRACTSTRING"
             | "JSONEXTRACTRAW"
+            | "JSONEXTRACTSTRINGCASEINSENSITIVE"
             | "SUBSTRING"
             | "HASSUBSEQUENCECASEINSENSITIVE"
             | "OVERLAY"
@@ -1910,9 +1911,51 @@ fn parse_at_depth(parser: &mut Parser, depth: usize) -> Result<ConstantValue, Pa
                 _ => ConstantValue::Null,
             }
         }
+        "JSONEXTRACTSTRINGCASEINSENSITIVE" => {
+            let input = text_arg(parser, depth + 1)?;
+            let path = case_json_path(parser, depth + 1)?;
+            match (input, path) {
+                (Some(input), Some(steps)) => {
+                    let json = crate::json::parse_json(&input)
+                        .map_err(|error| ParseError(format!("invalid JSON: {error}")))?;
+                    let value = json.at_case_path(&steps).and_then(|value| value.as_string());
+                    ConstantValue::Text(value.unwrap_or("").to_owned())
+                }
+                _ => ConstantValue::Null,
+            }
+        }
         _ => return Err(ParseError(format!("unsupported string function: {name}"))),
     };
     Ok(value)
+}
+
+fn case_json_path(
+    parser: &mut Parser,
+    depth: usize,
+) -> Result<Option<Vec<crate::json::CasePathStep>>, ParseError> {
+    let mut steps = Vec::new();
+    while parser.take(Token::Comma) {
+        if steps.len() >= 16 {
+            return Err(ParseError("JSON extraction supports at most 16 path elements".into()));
+        }
+        let string_function = matches!(
+            parser.tokens.get(parser.index),
+            Some(Token::Word(name)) if is_function(name) || name.eq_ignore_ascii_case("NULL")
+        );
+        if matches!(parser.tokens.get(parser.index), Some(Token::String(_))) || string_function {
+            match text_arg(parser, depth + 1)? {
+                Some(key) => steps.push(crate::json::CasePathStep::Key(key)),
+                None => return Ok(None),
+            }
+        } else {
+            match integer_arg(parser, depth + 1)? {
+                Some(index) => steps.push(crate::json::CasePathStep::Index(index)),
+                None => return Ok(None),
+            }
+        }
+    }
+    require(parser, Token::RParen, "expected ')' after JSON extraction")?;
+    Ok(Some(steps))
 }
 
 fn require(parser: &mut Parser, token: Token, message: &str) -> Result<(), ParseError> {
