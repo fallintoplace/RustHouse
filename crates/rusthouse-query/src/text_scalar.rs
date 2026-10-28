@@ -99,6 +99,7 @@ pub(super) fn is_function(name: &str) -> bool {
             | "STRIP_SUFFIX"
             | "REPEAT"
             | "BASE64_DECODE"
+            | "TRYBASE64DECODE"
             | "BASE64DECODE"
             | "APPENDTRAILINGCHARIFABSENT"
             | "RPAD"
@@ -2004,5 +2005,25 @@ fn text_arg(parser: &mut Parser, depth: usize) -> Result<Option<String>, ParseEr
         _ => Err(ParseError(
             "expected a string literal or string function".into(),
         )),
+    }
+}
+
+#[cfg(test)]
+mod clickhouse_try_base64_scalar_tests {
+    use crate::{parse_select, ConstantValue, Projection};
+    #[test]
+    fn try_base64_decode_returns_empty_string_on_errors() {
+        for (sql, expected) in [
+            ("SELECT tryBase64Decode('Y2xpY2tob3VzZQ==')", "clickhouse"),
+            ("SELECT tryBase64Decode('')", ""),
+            ("SELECT tryBase64Decode('not_base64!')", ""),
+            ("SELECT tryBase64Decode('aA==')", "h"),
+        ] {
+            assert!(matches!(parse_select(sql).unwrap().projection, Projection::Constants(values)
+                if values.len() == 1 && values[0].value == ConstantValue::Text(expected.into())), "{sql}");
+        }
+        assert!(matches!(parse_select("SELECT tryBase64Decode(NULL)").unwrap().projection,
+            Projection::Constants(values) if values[0].value == ConstantValue::Null));
+        assert!(parse_select("SELECT tryBase64Decode()").is_err());
     }
 }
