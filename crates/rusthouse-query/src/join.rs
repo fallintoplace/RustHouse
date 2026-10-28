@@ -328,19 +328,27 @@ pub fn explain_join(query: &JoinSelect) -> String {
             if *not_null { "NOT " } else { "" }
         ));
     }
-    if let Some((column, descending, nulls_first)) = &query.order_by {
-        let placement = match nulls_first {
-            Some(true) => " NULLS FIRST",
-            Some(false) => " NULLS LAST",
-            None => "",
-        };
-        plan.push_str(&format!(
-            "\nOrder: {}.{} {}{}",
-            column.relation,
-            column.name,
-            if *descending { "DESC" } else { "ASC" },
-            placement
-        ));
+    if !query.order_by.is_empty() {
+        let terms = query
+            .order_by
+            .iter()
+            .map(|(column, descending, nulls_first)| {
+                let placement = match nulls_first {
+                    Some(true) => " NULLS FIRST",
+                    Some(false) => " NULLS LAST",
+                    None => "",
+                };
+                format!(
+                    "{}.{} {}{}",
+                    column.relation,
+                    column.name,
+                    if *descending { "DESC" } else { "ASC" },
+                    placement
+                )
+            })
+            .collect::<Vec<_>>()
+            .join(", ");
+        plan.push_str(&format!("\nOrder: {terms}"));
     }
     if query.offset > 0 {
         plan.push_str(&format!("\nOffset: {}", query.offset));
@@ -368,6 +376,17 @@ mod tests {
         ] {
             assert!(plan.contains(expected), "{plan}");
         }
+    }
+
+    #[test]
+    fn explain_lists_multiple_join_sort_columns() {
+        let query = parse_join(
+            "SELECT a.id, b.name FROM a JOIN b ON a.id = b.id ORDER BY a.id ASC, b.name DESC NULLS LAST LIMIT 3",
+        )
+        .unwrap()
+        .unwrap();
+        let plan = explain_join(&query);
+        assert!(plan.contains("Order: a.id ASC, b.name DESC NULLS LAST"), "{plan}");
     }
 
     #[test]
