@@ -48,6 +48,9 @@ fn describe_projection(projection: &Projection) -> String {
         Projection::Histogram { column, bins } => {
             format!("Aggregate: histogram({bins})({column}) [two-pass bounded bins]")
         }
+        Projection::GroupedHistogram { column, value_column, bins } => {
+            format!("Aggregate: GROUP BY {column}, histogram({bins})({value_column}) [bounded two-pass]")
+        }
         Projection::GroupedCount { column } => {
             format!("Aggregate: GROUP BY {column}, count(*)")
         }
