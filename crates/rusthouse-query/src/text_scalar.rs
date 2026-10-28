@@ -29,6 +29,7 @@ pub(super) fn is_function(name: &str) -> bool {
             | "UPPER"
             | "URL_DECODE"
             | "IS_EMPTY"
+            | "ISIPV6STRING"
             | "EMPTY"
             | "REVERSE"
             | "REVERSEUTF8"
@@ -349,6 +350,16 @@ fn parse_at_depth(parser: &mut Parser, depth: usize) -> Result<ConstantValue, Pa
             require(parser, Token::RParen, "IS_ASCII requires one argument")?;
             match input {
                 Some(value) => ConstantValue::Integer(i64::from(value.is_ascii())),
+                None => ConstantValue::Null,
+            }
+        }
+        "ISIPV6STRING" => {
+            let input = text_arg(parser, depth + 1)?;
+            require(parser, Token::RParen, "isIPv6String requires one string")?;
+            match input {
+                Some(input) => ConstantValue::Integer(i64::from(
+                    input.parse::<std::net::Ipv6Addr>().is_ok(),
+                )),
                 None => ConstantValue::Null,
             }
         }
@@ -2004,5 +2015,42 @@ fn text_arg(parser: &mut Parser, depth: usize) -> Result<Option<String>, ParseEr
         _ => Err(ParseError(
             "expected a string literal or string function".into(),
         )),
+    }
+}
+
+#[cfg(test)]
+mod clickhouse_is_ipv6_string_tests {
+    use crate::{ConstantValue, Projection, parse_select};
+
+    fn value(sql: &str) -> ConstantValue {
+        match parse_select(sql).unwrap().projection {
+            Projection::Constants(columns) if columns.len() == 1 => columns[0].value.clone(),
+            Projection::Literal(number) => ConstantValue::Integer(number),
+            other => panic!("unexpected projection: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn supported_inputs() {
+        for (sql, expected) in [
+            ("SELECT isIPv6String('::1')", ConstantValue::Integer(1)),
+            ("SELECT isIPv6String('::ffff:127.0.0.1')", ConstantValue::Integer(1)),
+            ("SELECT isIPv6String('127.0.0.1')", ConstantValue::Integer(0)),
+            ("SELECT isIPv6String('invalid')", ConstantValue::Integer(0)),
+            ("SELECT isIPv6String(NULL)", ConstantValue::Null),
+        ] {
+            assert_eq!(value(sql), expected, "{sql}");
+        }
+    }
+
+    #[test]
+    fn invalid_inputs() {
+        for sql in [
+            "SELECT isIPv6String()",
+            "SELECT isIPv6String(123)",
+            "SELECT isIPv6String('::','::')",
+        ] {
+            assert!(parse_select(sql).is_err(), "{sql}");
+        }
     }
 }
