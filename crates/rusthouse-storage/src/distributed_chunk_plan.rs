@@ -38,9 +38,18 @@ mod tests {
         assert_eq!(
             plan_chunks(10, 4, 3).unwrap(),
             vec![
-                Chunk { offset: 0, length: 4 },
-                Chunk { offset: 4, length: 4 },
-                Chunk { offset: 8, length: 2 },
+                Chunk {
+                    offset: 0,
+                    length: 4
+                },
+                Chunk {
+                    offset: 4,
+                    length: 4
+                },
+                Chunk {
+                    offset: 8,
+                    length: 2
+                },
             ]
         );
         assert!(plan_chunks(0, 4, 1).unwrap().is_empty());
@@ -52,7 +61,10 @@ mod tests {
     fn handles_the_largest_u64_range() {
         assert_eq!(
             plan_chunks(u64::MAX, u64::MAX, 1).unwrap(),
-            vec![Chunk { offset: 0, length: u64::MAX }]
+            vec![Chunk {
+                offset: 0,
+                length: u64::MAX
+            }]
         );
     }
 }
