@@ -9,6 +9,22 @@ pub struct ReplicaStatus {
     pub healthy: bool,
 }
 
+fn valid_node(node: &str) -> bool {
+    !node.is_empty()
+        && node.len() <= 64
+        && node
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_'))
+}
+
+fn newest_first(left: &ReplicaStatus, right: &ReplicaStatus) -> std::cmp::Ordering {
+    right
+        .epoch
+        .cmp(&left.epoch)
+        .then_with(|| right.generation.cmp(&left.generation))
+        .then_with(|| left.node.cmp(&right.node))
+}
+
 /// Return healthy node IDs, newest advertised version first.
 /// A caller must still validate returned data and enforce its consistency model.
 pub fn rank_read_replicas(replicas: &[ReplicaStatus]) -> Result<Vec<String>, &'static str> {
@@ -17,13 +33,7 @@ pub fn rank_read_replicas(replicas: &[ReplicaStatus]) -> Result<Vec<String>, &'s
     }
     let mut seen = HashSet::new();
     for replica in replicas {
-        if replica.node.is_empty()
-            || replica.node.len() > 64
-            || !replica
-                .node
-                .bytes()
-                .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_'))
-            || !seen.insert(replica.node.as_str())
+        if !valid_node(&replica.node) || !seen.insert(replica.node.as_str())
         {
             return Err("invalid or duplicate replica node");
         }
@@ -35,13 +45,7 @@ pub fn rank_read_replicas(replicas: &[ReplicaStatus]) -> Result<Vec<String>, &'s
     if healthy.is_empty() {
         return Err("no healthy storage replica");
     }
-    healthy.sort_unstable_by(|left, right| {
-        right
-            .epoch
-            .cmp(&left.epoch)
-            .then_with(|| right.generation.cmp(&left.generation))
-            .then_with(|| left.node.cmp(&right.node))
-    });
+    healthy.sort_unstable_by(newest_first);
     Ok(healthy.into_iter().map(|replica| replica.node.clone()).collect())
 }
 
