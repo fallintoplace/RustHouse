@@ -76,6 +76,163 @@ pub(super) fn push_cell(kind: &str, value: Option<&str>, output: &mut Vec<u8>) -
     Ok(is_null)
 }
 
+// Parses JSON-style string keys and String/numeric values. Map preserves duplicate keys.
+fn skip_map_ws(input: &[u8], position: &mut usize) {
+    while input.get(*position).is_some_and(u8::is_ascii_whitespace) {
+        *position += 1;
+    }
+}
+
+fn read_map_hex(input: &[u8], position: &mut usize) -> Result<u16, PartError> {
+    let mut number = 0u16;
+    for _ in 0..4 {
+        let byte = *input
+            .get(*position)
+            .ok_or_else(|| invalid("incomplete Map Unicode escape"))?;
+        let digit = (byte as char)
+            .to_digit(16)
+            .ok_or_else(|| invalid("invalid Map Unicode escape"))?;
+        number = number * 16 + digit as u16;
+        *position += 1;
+    }
+    Ok(number)
+}
+
+fn read_map_string(input: &str, position: &mut usize) -> Result<String, PartError> {
+    let bytes = input.as_bytes();
+    if bytes.get(*position) != Some(&b'"') {
+        return Err(invalid("Map keys and String values require JSON quotes"));
+    }
+    *position += 1;
+    let mut fragment = *position;
+    let mut output = String::new();
+    while let Some(&byte) = bytes.get(*position) {
+        if byte == b'"' {
+            output.push_str(&input[fragment..*position]);
+            *position += 1;
+            return Ok(output);
+        }
+        if byte < 0x20 {
+            return Err(invalid("unescaped control byte in Map string"));
+        }
+        if byte != b'\\' {
+            *position += 1;
+            continue;
+        }
+        output.push_str(&input[fragment..*position]);
+        *position += 1;
+        let escaped = *bytes
+            .get(*position)
+            .ok_or_else(|| invalid("unterminated Map string escape"))?;
+        *position += 1;
+        match escaped {
+            b'"' => output.push('"'),
+            b'\\' => output.push('\\'),
+            b'/' => output.push('/'),
+            b'b' => output.push('\u{0008}'),
+            b'f' => output.push('\u{000C}'),
+            b'n' => output.push('\n'),
+            b'r' => output.push('\r'),
+            b't' => output.push('\t'),
+            b'u' => {
+                let first = read_map_hex(bytes, position)?;
+                let codepoint = if (0xD800..=0xDBFF).contains(&first) {
+                    if bytes.get(*position..*position + 2) != Some(&b"\\u"[..]) {
+                        return Err(invalid("Map Unicode high surrogate needs low surrogate"));
+                    }
+                    *position += 2;
+                    let low = read_map_hex(bytes, position)?;
+                    if !(0xDC00..=0xDFFF).contains(&low) {
+                        return Err(invalid("invalid Map Unicode surrogate pair"));
+                    }
+                    0x10000 + (u32::from(first - 0xD800) << 10)
+                        + u32::from(low - 0xDC00)
+                } else {
+                    if (0xDC00..=0xDFFF).contains(&first) {
+                        return Err(invalid("isolated Map Unicode low surrogate"));
+                    }
+                    u32::from(first)
+                };
+                output.push(
+                    char::from_u32(codepoint)
+                        .ok_or_else(|| invalid("invalid Map Unicode codepoint"))?,
+                );
+            }
+            _ => return Err(invalid("invalid Map string escape")),
+        }
+        fragment = *position;
+    }
+    Err(invalid("unterminated Map string"))
+}
+
+/// Encode an unbucketed ClickHouse Map(String, T) as keys/values/size0 streams.
+pub(super) fn push_string_key_map(
+    value_type: &str,
+    literal: Option<&str>,
+    keys: &mut Vec<u8>,
+    values: &mut Vec<u8>,
+    sizes: &mut Vec<u8>,
+) -> Result<(), PartError> {
+    let literal = literal.ok_or_else(|| invalid("NULL is not permitted for Map"))?;
+    let bytes = literal.as_bytes();
+    let mut cursor = 0;
+    skip_map_ws(bytes, &mut cursor);
+    if bytes.get(cursor) != Some(&b'{') {
+        return Err(invalid("Map requires a JSON-style object"));
+    }
+    cursor += 1;
+    skip_map_ws(bytes, &mut cursor);
+    let mut pairs = 0u64;
+    if bytes.get(cursor) == Some(&b'}') {
+        cursor += 1;
+    } else {
+        loop {
+            let key = read_map_string(literal, &mut cursor)?;
+            skip_map_ws(bytes, &mut cursor);
+            if bytes.get(cursor) != Some(&b':') {
+                return Err(invalid("expected ':' after Map key"));
+            }
+            cursor += 1;
+            skip_map_ws(bytes, &mut cursor);
+            let value = if value_type == "String" {
+                read_map_string(literal, &mut cursor)?
+            } else {
+                let begin = cursor;
+                while bytes.get(cursor).is_some_and(|byte| {
+                    !matches!(byte, b',' | b'}') && !byte.is_ascii_whitespace()
+                }) {
+                    cursor += 1;
+                }
+                if cursor == begin {
+                    return Err(invalid("Map numeric value is missing"));
+                }
+                literal[begin..cursor].to_owned()
+            };
+            push_cell("String", Some(&key), keys)?;
+            push_cell(value_type, Some(&value), values)?;
+            pairs = pairs.checked_add(1).ok_or_else(|| invalid("Map has too many pairs"))?;
+            skip_map_ws(bytes, &mut cursor);
+            match bytes.get(cursor) {
+                Some(b',') => {
+                    cursor += 1;
+                    skip_map_ws(bytes, &mut cursor);
+                }
+                Some(b'}') => {
+                    cursor += 1;
+                    break;
+                }
+                _ => return Err(invalid("expected ',' or '}' after Map entry")),
+            }
+        }
+    }
+    skip_map_ws(bytes, &mut cursor);
+    if cursor != bytes.len() {
+        return Err(invalid("unexpected tokens after Map object"));
+    }
+    sizes.extend_from_slice(&pairs.to_le_bytes());
+    Ok(())
+}
+
 pub(super) fn checksum_hash(data: &[u8]) -> u128 {
     const HASH_BLOCK_BYTES: usize = 2048;
     let mut seed = U128::new(0, 0);
