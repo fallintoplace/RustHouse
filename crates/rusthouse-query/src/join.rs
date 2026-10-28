@@ -11,7 +11,7 @@ pub(crate) const MAX_JOIN_CHAIN_BYTES: usize = 64 * 1024 * 1024;
 
 use self::syntax::*;
 
-use super::{ParseError, Parser, Token, tokenize};
+use super::{Having, ParseError, Parser, Token, tokenize};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct JoinColumn {
@@ -40,7 +40,14 @@ pub struct JoinStep {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum JoinAggregate {
     CountStar,
+    CountDistinct(JoinColumn),
     Sum(JoinColumn),
+    GroupCount(JoinColumn),
+    GroupMultiCount(Vec<JoinColumn>),
+    GroupDistinct { keys: Vec<JoinColumn>, value: JoinColumn },
+    GroupMultiSum { keys: Vec<JoinColumn>, value: JoinColumn },
+    GroupSumCount { keys: Vec<JoinColumn>, value: JoinColumn },
+    GroupSum { group: JoinColumn, value: JoinColumn },
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -62,6 +69,9 @@ pub struct JoinSelect {
     pub where_null: Option<(JoinColumn, bool)>,
     /// Ordered key, descending flag, and optional explicit NULL placement.
     pub order_by: Vec<(JoinColumn, bool, Option<bool>)>,
+    /// Aggregate ORDER BY for grouped joined facts.
+    pub group_order_by: Option<(bool, Option<bool>)>,
+    pub group_having: Option<Having>,
     pub limit: Option<usize>,
     pub offset: usize,
     /// Additional JOIN steps after the first two-table join.
@@ -90,13 +100,20 @@ pub fn parse_join(sql: &str) -> Result<Option<JoinSelect>, ParseError> {
     let mut parser = Parser { tokens, index: 0 };
     parser.keyword("SELECT");
     let aggregate = if parser.keyword("COUNT") {
-        if !parser.take(Token::LParen)
-            || !parser.take(Token::Star)
-            || !parser.take(Token::RParen)
-        {
-            return Err(ParseError("JOIN COUNT requires COUNT(*)".into()));
+        if !parser.take(Token::LParen) {
+            return Err(ParseError("JOIN COUNT requires '('".into()));
         }
-        Some(JoinAggregate::CountStar)
+        let parsed = if parser.take(Token::Star) {
+            JoinAggregate::CountStar
+        } else if parser.keyword("DISTINCT") {
+            JoinAggregate::CountDistinct(qualified(&mut parser)?)
+        } else {
+            return Err(ParseError("JOIN COUNT requires * or DISTINCT relation.column".into()));
+        };
+        if !parser.take(Token::RParen) {
+            return Err(ParseError("JOIN COUNT requires ')'".into()));
+        }
+        Some(parsed)
     } else if parser.keyword("SUM") {
         if !parser.take(Token::LParen) {
             return Err(ParseError("JOIN SUM requires SUM(alias.column)".into()));
@@ -107,7 +124,62 @@ pub fn parse_join(sql: &str) -> Result<Option<JoinSelect>, ParseError> {
         }
         Some(JoinAggregate::Sum(column))
     } else {
-        None
+        let saved = parser.index;
+        let grouped = if let Ok(first) = qualified(&mut parser) {
+            let mut keys = vec![first];
+            let mut result = None;
+            while parser.take(Token::Comma) {
+                if parser.keyword("COUNT") && parser.take(Token::LParen) {
+                    if parser.take(Token::Star) {
+                        if !parser.take(Token::RParen) {
+                            return Err(ParseError("JOIN COUNT requires ')'".into()));
+                        }
+                        result = Some(if keys.len() == 1 {
+                            JoinAggregate::GroupCount(keys.remove(0))
+                        } else {
+                            JoinAggregate::GroupMultiCount(keys)
+                        });
+                    } else if parser.keyword("DISTINCT") {
+                        let value = qualified(&mut parser)?;
+                        if !parser.take(Token::RParen) {
+                            return Err(ParseError("JOIN COUNT DISTINCT requires ')'".into()));
+                        }
+                        result = Some(JoinAggregate::GroupDistinct { keys, value });
+                    } else {
+                        return Err(ParseError("JOIN grouped COUNT needs * or DISTINCT column".into()));
+                    }
+                    break;
+                }
+                if parser.keyword("SUM") && parser.take(Token::LParen) {
+                    let value = qualified(&mut parser)?;
+                    if !parser.take(Token::RParen) {
+                        return Err(ParseError("JOIN grouped SUM requires ')'".into()));
+                    }
+                    if parser.take(Token::Comma) {
+                        if !parser.keyword("COUNT") || !parser.take(Token::LParen)
+                            || !parser.take(Token::Star) || !parser.take(Token::RParen) {
+                            return Err(ParseError("JOIN fused SUM requires trailing COUNT(*)".into()));
+                        }
+                        result = Some(JoinAggregate::GroupSumCount { keys, value });
+                    } else {
+                        result = Some(if keys.len() == 1 {
+                            JoinAggregate::GroupSum { group: keys.remove(0), value }
+                        } else {
+                            JoinAggregate::GroupMultiSum { keys, value }
+                        });
+                    }
+                    break;
+                }
+                if keys.len() == 8 {
+                    return Err(ParseError("JOIN GROUP BY supports at most eight dimensions".into()));
+                }
+                let Ok(next) = qualified(&mut parser) else { break };
+                keys.push(next);
+            }
+            result
+        } else { None };
+        if grouped.is_none() { parser.index = saved; }
+        grouped
     };
     let columns = if aggregate.is_some() || parser.take(Token::Star) {
         None
@@ -391,10 +463,129 @@ pub fn parse_join(sql: &str) -> Result<Option<JoinSelect>, ParseError> {
     } else {
         None
     };
+    let group_by = if parser.keyword("GROUP") {
+        if !parser.keyword("BY") {
+            return Err(ParseError("JOIN GROUP requires BY".into()));
+        }
+        let mut keys = vec![qualified(&mut parser)?];
+        while parser.take(Token::Comma) {
+            if keys.len() >= 8 {
+                return Err(ParseError("JOIN GROUP BY supports at most eight dimensions".into()));
+            }
+            keys.push(qualified(&mut parser)?);
+        }
+        keys
+    } else { Vec::new() };
+    let group_matches = match &aggregate {
+        Some(JoinAggregate::GroupCount(key)) =>
+            group_by.as_slice() == std::slice::from_ref(key),
+        Some(JoinAggregate::GroupSum { group, .. }) =>
+            group_by.as_slice() == std::slice::from_ref(group),
+        Some(JoinAggregate::GroupMultiCount(keys)) |
+        Some(JoinAggregate::GroupMultiSum { keys, .. }) |
+        Some(JoinAggregate::GroupSumCount { keys, .. }) |
+        Some(JoinAggregate::GroupDistinct { keys, .. }) => group_by == *keys,
+        _ => group_by.is_empty(),
+    };
+    if !group_matches {
+        return Err(ParseError("JOIN GROUP BY must match the selected dimensions".into()));
+    }
+    let group_having = if parser.keyword("HAVING") {
+        match &aggregate {
+            Some(JoinAggregate::GroupCount(_) | JoinAggregate::GroupMultiCount(_)) => {
+                if !parser.keyword("COUNT") || !parser.take(Token::LParen)
+                    || !parser.take(Token::Star) || !parser.take(Token::RParen) {
+                    return Err(ParseError("JOIN HAVING requires count(*)".into()));
+                }
+            }
+            Some(JoinAggregate::GroupDistinct { value, .. }) => {
+                if !parser.keyword("COUNT") || !parser.take(Token::LParen)
+                    || !parser.keyword("DISTINCT") ||
+                    qualified(&mut parser)? != *value || !parser.take(Token::RParen) {
+                    return Err(ParseError("JOIN HAVING must match selected COUNT DISTINCT".into()));
+                }
+            }
+            Some(JoinAggregate::GroupSum { value, .. }) |
+            Some(JoinAggregate::GroupMultiSum { value, .. }) |
+            Some(JoinAggregate::GroupSumCount { value, .. }) => {
+                if !parser.keyword("SUM") || !parser.take(Token::LParen) {
+                    return Err(ParseError("JOIN HAVING requires sum(column)".into()));
+                }
+                let selected = qualified(&mut parser)?;
+                if selected != *value || !parser.take(Token::RParen) {
+                    return Err(ParseError("JOIN HAVING must match selected SUM".into()));
+                }
+            }
+            _ => return Err(ParseError("JOIN HAVING requires grouped COUNT or SUM".into())),
+        }
+        let operator = parser.operator()?;
+        let value = parser.number()?.parse::<u64>()
+            .map_err(|_| ParseError("JOIN HAVING threshold must be UInt64".into()))?;
+        Some(Having { operator, value })
+    } else { None };
+    let mut group_order_by = None;
     let order_by = if parser.keyword("ORDER") {
         if !parser.keyword("BY") {
             return Err(ParseError("ORDER requires BY".into()));
         }
+        if let Some(aggregate @ (JoinAggregate::GroupCount(_) |
+            JoinAggregate::GroupMultiCount(_) |
+            JoinAggregate::GroupSum { .. } |
+            JoinAggregate::GroupMultiSum { .. } |
+            JoinAggregate::GroupSumCount { .. } | JoinAggregate::GroupDistinct { .. })) = aggregate.as_ref() {
+            let metric_position = match aggregate {
+                JoinAggregate::GroupCount(_) | JoinAggregate::GroupSum { .. } => 2,
+                JoinAggregate::GroupMultiCount(keys) |
+                JoinAggregate::GroupMultiSum { keys, .. } |
+                JoinAggregate::GroupSumCount { keys, .. } |
+                JoinAggregate::GroupDistinct { keys, .. } => keys.len() + 1,
+                _ => unreachable!(),
+            };
+            let position = matches!(parser.tokens.get(parser.index),
+                Some(Token::Number(value)) if value == &metric_position.to_string());
+            if position {
+                parser.index += 1;
+            } else {
+                match aggregate {
+                    JoinAggregate::GroupCount(_) | JoinAggregate::GroupMultiCount(_) => {
+                        if !parser.keyword("COUNT") || !parser.take(Token::LParen)
+                            || !parser.take(Token::Star) || !parser.take(Token::RParen) {
+                            return Err(ParseError("JOIN grouped ORDER BY requires count(*)".into()));
+                        }
+                    }
+                    JoinAggregate::GroupDistinct { value, .. } => {
+                        if !parser.keyword("COUNT") || !parser.take(Token::LParen)
+                            || !parser.keyword("DISTINCT") ||
+                            qualified(&mut parser)? != *value || !parser.take(Token::RParen) {
+                            return Err(ParseError("JOIN grouped ORDER BY requires matching COUNT DISTINCT".into()));
+                        }
+                    }
+                    JoinAggregate::GroupSum { value, .. } |
+                    JoinAggregate::GroupMultiSum { value, .. } |
+                    JoinAggregate::GroupSumCount { value, .. } => {
+                        if !parser.keyword("SUM") || !parser.take(Token::LParen) {
+                            return Err(ParseError("JOIN grouped ORDER BY requires sum(column)".into()));
+                        }
+                        let selected = qualified(&mut parser)?;
+                        if selected != *value || !parser.take(Token::RParen) {
+                            return Err(ParseError("JOIN ORDER BY must match selected SUM".into()));
+                        }
+                    }
+                    _ => unreachable!(),
+                }
+            }
+            let descending = if parser.keyword("DESC") { true } else {
+                parser.keyword("ASC");
+                false
+            };
+            let nulls_first = if parser.keyword("NULLS") {
+                if parser.keyword("FIRST") { Some(true) }
+                else if parser.keyword("LAST") { Some(false) }
+                else { return Err(ParseError("JOIN ORDER BY NULLS requires FIRST or LAST".into())); }
+            } else { None };
+            group_order_by = Some((descending, nulls_first));
+            Vec::new()
+        } else {
         let mut terms = Vec::new();
         loop {
             if terms.len() == 8 {
@@ -426,6 +617,7 @@ pub fn parse_join(sql: &str) -> Result<Option<JoinSelect>, ParseError> {
             }
         }
         terms
+        }
     } else {
         Vec::new()
     };
@@ -502,6 +694,8 @@ pub fn parse_join(sql: &str) -> Result<Option<JoinSelect>, ParseError> {
         using_keys,
         where_null,
         order_by,
+        group_order_by,
+        group_having,
         limit,
         offset,
         steps,
@@ -576,7 +770,41 @@ pub fn explain_join(query: &JoinSelect) -> String {
         if let Some(aggregate) = &query.aggregate {
             match aggregate {
                 JoinAggregate::CountStar => "count(*)".to_owned(),
+                JoinAggregate::CountDistinct(col) => {
+                    format!("count(DISTINCT {}.{})", col.relation, col.name)
+                },
                 JoinAggregate::Sum(col) => format!("sum({}.{})", col.relation, col.name),
+                JoinAggregate::GroupCount(col) => {
+                    format!("{}.{}, count(*)", col.relation, col.name)
+                },
+                JoinAggregate::GroupMultiCount(keys) => {
+                    let columns = keys.iter().map(|key|
+                        format!("{}.{}", key.relation, key.name)
+                    ).collect::<Vec<_>>().join(", ");
+                    format!("{columns}, count(*)")
+                },
+                JoinAggregate::GroupDistinct { keys, value } => {
+                    let columns = keys.iter().map(|key|
+                        format!("{}.{}", key.relation, key.name)
+                    ).collect::<Vec<_>>().join(", ");
+                    format!("{columns}, count(DISTINCT {}.{})", value.relation, value.name)
+                },
+                JoinAggregate::GroupMultiSum { keys, value } => {
+                    let columns = keys.iter().map(|key|
+                        format!("{}.{}", key.relation, key.name)
+                    ).collect::<Vec<_>>().join(", ");
+                    format!("{columns}, sum({}.{})", value.relation, value.name)
+                },
+                JoinAggregate::GroupSumCount { keys, value } => {
+                    let columns = keys.iter().map(|key|
+                        format!("{}.{}", key.relation, key.name)
+                    ).collect::<Vec<_>>().join(", ");
+                    format!("{columns}, sum({}.{}), count(*)", value.relation, value.name)
+                },
+                JoinAggregate::GroupSum { group, value } => format!(
+                    "{}.{}, sum({}.{})",
+                    group.relation, group.name, value.relation, value.name
+                ),
             }
         } else { query.columns.as_ref().map_or("*".to_owned(), |columns| {
             columns
@@ -621,6 +849,12 @@ pub fn explain_join(query: &JoinSelect) -> String {
             .collect::<Vec<_>>()
             .join(", ");
         plan.push_str(&format!("\nOrder: {terms}"));
+    }
+    if let Some(having) = &query.group_having {
+        plan.push_str(&format!("\nHaving: {:?} {}", having.operator, having.value));
+    }
+    if let Some((descending, _)) = query.group_order_by {
+        plan.push_str(&format!("\nAggregate order: {}", if descending { "DESC" } else { "ASC" }));
     }
     if query.offset > 0 {
         plan.push_str(&format!("\nOffset: {}", query.offset));

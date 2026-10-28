@@ -8,7 +8,7 @@ use super::{AggregateState, ExecutionError, Number, typed};
 use crate::{AggregateFunction, JoinAggregate, JoinColumn, JoinSelect, JoinType};
 use rusthouse_storage::{TypedColumn, TypedQueryReader, inspect_query_source};
 use std::cmp::Ordering;
-use std::collections::{BinaryHeap, HashMap};
+use std::collections::{hash_map::Entry, BinaryHeap, HashMap, HashSet};
 use std::io::Write;
 use std::sync::Arc;
 use std::path::Path;
@@ -809,6 +809,697 @@ fn execute_streaming_ordered_inner<W: Write>(
 
 
 
+
+
+
+
+struct JoinedDistinctGroup {
+    keys: Vec<typed::Cell>,
+    numeric: HashSet<typed::Key>,
+    strings: HashSet<Vec<u8>>,
+    uuids: HashSet<String>,
+    bytes: [u64; 4],
+    state: AggregateState,
+}
+
+fn execute_streaming_inner_group_distinct<W: Write>(
+    query: &JoinSelect,
+    left_path: &Path,
+    right_path: &Path,
+    columns: InnerJoinColumns<'_>,
+    left_count: u64,
+    right_count: u64,
+    indices: &[usize],
+    value_index: usize,
+    data_type: &str,
+    header: &str,
+    output: &mut W,
+) -> Result<(), ExecutionError> {
+    const MAX_GROUPS: usize = 200_000;
+    const MAX_PAIRS: usize = 500_000;
+    const MAX_BYTES: usize = 96 * 1024 * 1024;
+    let InnerJoinColumns {
+        left_names, right_names, left_keys, right_keys, null_filter, ..
+    } = columns;
+    if query.limit == Some(0) {
+        writeln!(output, "{header}")?;
+        return Ok(());
+    }
+    let byte_domain = matches!(base_type(data_type), "UInt8" | "Int8");
+    let mut groups = Vec::<JoinedDistinctGroup>::new();
+    let mut lookup = HashMap::<Vec<typed::Key>, usize>::new();
+    let mut total_pairs = 0usize;
+    let mut used_bytes = 0usize;
+    let width = left_names.len();
+    let mut accept = |left: &[typed::Cell], right: &[typed::Cell]| {
+        let at = |index: usize| {
+            if index < width { &left[index] } else { &right[index - width] }
+        };
+        let probe = indices.iter().map(|&index| at(index).key()).collect::<Vec<_>>();
+        let group = match lookup.entry(probe) {
+            Entry::Occupied(entry) => *entry.get(),
+            Entry::Vacant(entry) => {
+                if groups.len() >= MAX_GROUPS {
+                    return Err(invalid("joined DISTINCT exceeds 200000 groups"));
+                }
+                let keys = indices.iter().map(|&index| at(index).clone()).collect::<Vec<_>>();
+                let bytes = std::mem::size_of::<JoinedDistinctGroup>()
+                    .checked_add(indices.len() * std::mem::size_of::<typed::Key>())
+                    .and_then(|total| indices.iter().try_fold(total, |size, &index| {
+                        let dynamic = match at(index) {
+                            typed::Cell::Text(text) => text.len() * 2,
+                            typed::Cell::Uuid(value) => value.len() * 2,
+                            _ => 0
+                        };
+                        size.checked_add(dynamic)
+                    }))
+                    .ok_or_else(|| invalid("joined DISTINCT group memory overflow"))?;
+                used_bytes = used_bytes.checked_add(bytes)
+                    .ok_or_else(|| invalid("joined DISTINCT group memory overflow"))?;
+                if used_bytes > MAX_BYTES {
+                    return Err(invalid("joined DISTINCT exceeds memory budget"));
+                }
+                entry.insert(groups.len());
+                groups.push(JoinedDistinctGroup {
+                    keys,
+                    numeric: HashSet::new(),
+                    strings: HashSet::new(),
+                    uuids: HashSet::new(),
+                    bytes: [0; 4],
+                    state: AggregateState::new(AggregateFunction::Count)
+                });
+                groups.len() - 1
+            }
+        };
+        let value = at(value_index);
+        let fresh = match value {
+            typed::Cell::Null => false,
+            typed::Cell::Numeric(number) if byte_domain => {
+                let raw = match number {
+                    Number::Signed(value) => *value as u8,
+                    Number::Unsigned(value) => *value as u8,
+                    Number::Float(_) => return Err(invalid("invalid JOIN DISTINCT byte domain")),
+                };
+                let word = usize::from(raw) / 64;
+                let mask = 1u64 << (usize::from(raw) % 64);
+                let old = groups[group].bytes[word];
+                groups[group].bytes[word] |= mask;
+                old & mask == 0
+            }
+            typed::Cell::Text(text) => {
+                if groups[group].strings.contains(text.as_slice()) { false }
+                else {
+                    used_bytes = used_bytes.checked_add(text.len())
+                        .ok_or_else(|| invalid("joined DISTINCT memory overflow"))?;
+                    groups[group].strings.insert(text.to_vec())
+                }
+            }
+            typed::Cell::Uuid(value) => {
+                if groups[group].uuids.contains(value.as_str()) { false }
+                else {
+                    used_bytes = used_bytes.checked_add(value.len())
+                        .ok_or_else(|| invalid("joined DISTINCT memory overflow"))?;
+                    groups[group].uuids.insert(value.clone())
+                }
+            }
+            _ => groups[group].numeric.insert(value.key()),
+        };
+        if fresh {
+            total_pairs = total_pairs.checked_add(1)
+                .ok_or_else(|| invalid("joined DISTINCT pair count overflow"))?;
+            used_bytes = used_bytes.checked_add(std::mem::size_of::<typed::Key>())
+                .ok_or_else(|| invalid("joined DISTINCT memory overflow"))?;
+            if total_pairs > MAX_PAIRS || used_bytes > MAX_BYTES {
+                return Err(invalid("joined DISTINCT exceeds pair or memory budget"));
+            }
+            groups[group].state.increment_count()?;
+        }
+        Ok(())
+    };
+    if left_count != 0 && right_count != 0 {
+        let needs_left = indices.iter().any(|&i| i < width) || value_index < width;
+        let needs_right = indices.iter().any(|&i| i >= width) || value_index >= width;
+        if right_count <= MAX_STREAM_BUILD_ROWS &&
+            (right_count <= left_count || left_count > MAX_STREAM_BUILD_ROWS) {
+            let right_rows = read_rows(right_path, right_names, right_count,
+                MAX_STREAM_BUILD_ROWS, MAX_STREAM_BUILD_BYTES)?;
+            let mut hash = HashMap::<Vec<typed::Key>, Bucket>::with_capacity(right_rows.len());
+            for (index, row) in right_rows.iter().enumerate() {
+                if let Some(key) = row_key(row, right_keys) {
+                    if query.any { hash.entry(key).or_insert(Bucket::One(index)); }
+                    else {
+                        hash.entry(key).and_modify(|bucket| bucket.push(index))
+                            .or_insert(Bucket::One(index));
+                    }
+                }
+            }
+            probe_inner(left_path, left_names, left_keys, &right_rows, &hash,
+                ProbeOptions {
+                    materialize_rows: needs_left,
+                    materialize_after: 0, stop_after: Some(usize::MAX),
+                    any: query.any, null_filter,
+                }, &mut accept)?;
+        } else {
+            let left_rows = read_rows(left_path, left_names, left_count,
+                MAX_STREAM_BUILD_ROWS, MAX_STREAM_BUILD_BYTES)?;
+            let mut hash = HashMap::<Vec<typed::Key>, Bucket>::with_capacity(left_rows.len());
+            for (index, row) in left_rows.iter().enumerate() {
+                if let Some(key) = row_key(row, left_keys) {
+                    hash.entry(key).and_modify(|bucket| bucket.push(index))
+                        .or_insert(Bucket::One(index));
+                }
+            }
+            probe_right(right_path, right_names, right_keys, &left_rows, &hash,
+                ProbeOptions {
+                    materialize_rows: needs_right,
+                    materialize_after: 0, stop_after: Some(usize::MAX),
+                    any: query.any, null_filter,
+                }, &mut accept)?;
+        }
+    }
+    if let Some(having) = &query.group_having {
+        groups.retain(|group| group.state.passes_having(having));
+    }
+    let mut bounded_order = None;
+    if let Some((descending, nulls_first)) = query.group_order_by {
+        let compare = |left: &JoinedDistinctGroup, right: &JoinedDistinctGroup| {
+            typed::compare_order_cells(
+                &left.state.sort_cell(), &right.state.sort_cell(), descending, nulls_first
+            )
+        };
+        let end = query.limit.and_then(|limit| query.offset.checked_add(limit));
+        if let Some(end) = end.filter(|&end| end < groups.len()) {
+            let mut positions = (0..groups.len()).collect::<Vec<_>>();
+            let cmp = |left: &usize, right: &usize| {
+                compare(&groups[*left], &groups[*right]).then_with(|| left.cmp(right))
+            };
+            positions.select_nth_unstable_by(end, &cmp);
+            positions.truncate(end);
+            positions.sort_unstable_by(cmp);
+            bounded_order = Some(positions);
+        } else { groups.sort_by(compare); }
+    }
+    writeln!(output, "{header}")?;
+    let write_group = |group: &JoinedDistinctGroup, output: &mut W|
+        -> Result<(), ExecutionError> {
+        for (i, key) in group.keys.iter().enumerate() {
+            if i != 0 { output.write_all(b"\t")?; }
+            typed::write_value(output, key)?;
+        }
+        writeln!(output, "\t{}", group.state.render())?;
+        Ok(())
+    };
+    if let Some(indices) = bounded_order {
+        for index in indices.into_iter().skip(query.offset) {
+            write_group(&groups[index], output)?;
+        }
+    } else {
+        for group in groups.iter().skip(query.offset)
+            .take(query.limit.unwrap_or(usize::MAX)) {
+            write_group(group, output)?;
+        }
+    }
+    Ok(())
+}
+
+fn execute_streaming_inner_count_distinct<W: Write>(
+    query: &JoinSelect,
+    left_path: &Path,
+    right_path: &Path,
+    columns: InnerJoinColumns<'_>,
+    left_count: u64,
+    right_count: u64,
+    value_index: usize,
+    kind: &str,
+    header: &str,
+    output: &mut W,
+) -> Result<(), ExecutionError> {
+    const MAX_EXACT_KEYS: usize = 500_000;
+    const MAX_EXACT_BYTES: usize = 128 * 1024 * 1024;
+    let InnerJoinColumns {
+        left_names, right_names, left_keys, right_keys, null_filter, ..
+    } = columns;
+    if query.limit == Some(0) || query.offset > 0 {
+        writeln!(output, "{header}")?;
+        return Ok(());
+    }
+    let narrow = base_type(kind);
+    let mut bitmap = match narrow {
+        "UInt8" | "Int8" => Some(vec![0u64; 4]),
+        "UInt16" | "Int16" => Some(vec![0u64; 1024]),
+        _ => None,
+    };
+    let mut numeric = HashSet::<typed::Key>::new();
+    let mut strings = HashSet::<Vec<u8>>::new();
+    let mut uuids = HashSet::<String>::new();
+    let mut retained_bytes = 0usize;
+    let width = left_names.len();
+    let mut accept = |left: &[typed::Cell], right: &[typed::Cell]| {
+        let value = if value_index < width {
+            &left[value_index]
+        } else {
+            &right[value_index - width]
+        };
+        let was_new = match value {
+            typed::Cell::Null => return Ok(()),
+            typed::Cell::Numeric(number) if bitmap.is_some() => {
+                let raw = match number {
+                    Number::Signed(value) => *value as u16,
+                    Number::Unsigned(value) => *value as u16,
+                    Number::Float(_) => return Err(invalid("invalid integer DISTINCT bitmap")),
+                };
+                let bits = bitmap.as_mut().expect("checked bitmap");
+                let index = (usize::from(raw) % (bits.len() * 64)) / 64;
+                let word = &mut bits[index];
+                let shift = usize::from(raw) % 64;
+                let mask = 1u64 << shift;
+                let changed = *word & mask == 0;
+                *word |= mask;
+                changed
+            }
+            typed::Cell::Text(bytes) => {
+                if strings.contains(bytes.as_slice()) { false }
+                else {
+                    retained_bytes = retained_bytes.checked_add(bytes.len())
+                        .ok_or_else(|| invalid("JOIN DISTINCT memory overflow"))?;
+                    strings.insert(bytes.to_vec())
+                }
+            }
+            typed::Cell::Uuid(value) => {
+                if uuids.contains(value.as_str()) { false }
+                else {
+                    retained_bytes = retained_bytes.checked_add(value.len())
+                        .ok_or_else(|| invalid("JOIN DISTINCT memory overflow"))?;
+                    uuids.insert(value.clone())
+                }
+            }
+            _ => numeric.insert(value.key()),
+        };
+        if was_new {
+            let cardinality = numeric.len() + strings.len() + uuids.len() +
+                bitmap.as_ref().map_or(0, |bits|
+                    bits.iter().map(|word| word.count_ones() as usize).sum::<usize>()
+                );
+            if cardinality > MAX_EXACT_KEYS && bitmap.is_none() {
+                return Err(invalid("JOIN exact COUNT DISTINCT exceeds 500000 values"));
+            }
+            retained_bytes = retained_bytes.checked_add(std::mem::size_of::<typed::Key>())
+                .ok_or_else(|| invalid("JOIN DISTINCT memory overflow"))?;
+            if retained_bytes > MAX_EXACT_BYTES {
+                return Err(invalid("JOIN exact COUNT DISTINCT exceeds memory budget"));
+            }
+        }
+        Ok(())
+    };
+    if left_count != 0 && right_count != 0 {
+        if right_count <= MAX_STREAM_BUILD_ROWS &&
+            (right_count <= left_count || left_count > MAX_STREAM_BUILD_ROWS) {
+            let right_rows = read_rows(right_path, right_names, right_count,
+                MAX_STREAM_BUILD_ROWS, MAX_STREAM_BUILD_BYTES)?;
+            let mut hash = HashMap::<Vec<typed::Key>, Bucket>::with_capacity(right_rows.len());
+            for (index, row) in right_rows.iter().enumerate() {
+                if let Some(key) = row_key(row, right_keys) {
+                    if query.any {
+                        hash.entry(key).or_insert(Bucket::One(index));
+                    } else {
+                        hash.entry(key).and_modify(|bucket| bucket.push(index))
+                            .or_insert(Bucket::One(index));
+                    }
+                }
+            }
+            probe_inner(left_path, left_names, left_keys, &right_rows, &hash,
+                ProbeOptions {
+                    materialize_rows: value_index < width,
+                    materialize_after: 0, stop_after: Some(usize::MAX),
+                    any: query.any, null_filter,
+                }, &mut accept)?;
+        } else {
+            let left_rows = read_rows(left_path, left_names, left_count,
+                MAX_STREAM_BUILD_ROWS, MAX_STREAM_BUILD_BYTES)?;
+            let mut hash = HashMap::<Vec<typed::Key>, Bucket>::with_capacity(left_rows.len());
+            for (index, row) in left_rows.iter().enumerate() {
+                if let Some(key) = row_key(row, left_keys) {
+                    hash.entry(key).and_modify(|bucket| bucket.push(index))
+                        .or_insert(Bucket::One(index));
+                }
+            }
+            probe_right(right_path, right_names, right_keys, &left_rows, &hash,
+                ProbeOptions {
+                    materialize_rows: value_index >= width,
+                    materialize_after: 0, stop_after: Some(usize::MAX),
+                    any: query.any, null_filter,
+                }, &mut accept)?;
+        }
+    }
+    let distinct = numeric.len() + strings.len() + uuids.len() +
+        bitmap.as_ref().map_or(0, |bits|
+            bits.iter().map(|word| word.count_ones() as usize).sum::<usize>()
+        );
+    writeln!(output, "{header}\n{distinct}")?;
+    Ok(())
+}
+
+fn execute_streaming_inner_multi_grouped<W: Write>(
+    query: &JoinSelect,
+    left_path: &Path,
+    right_path: &Path,
+    columns: InnerJoinColumns<'_>,
+    left_count: u64,
+    right_count: u64,
+    indices: &[usize],
+    value_index: Option<usize>,
+    also_count: bool,
+    header: &str,
+    output: &mut W,
+) -> Result<(), ExecutionError> {
+    const MAX_GROUPS: usize = 200_000;
+    const MAX_GROUP_BYTES: usize = 64 * 1024 * 1024;
+    let InnerJoinColumns {
+        left_names, right_names, left_keys, right_keys, null_filter, ..
+    } = columns;
+    if query.limit == Some(0) {
+        writeln!(output, "{header}")?;
+        return Ok(());
+    }
+    let mut groups = Vec::<(Vec<typed::Cell>, AggregateState, Option<AggregateState>)>::new();
+    let function = if value_index.is_some() {
+        AggregateFunction::Sum
+    } else {
+        AggregateFunction::Count
+    };
+    let mut lookup = HashMap::<Vec<typed::Key>, usize>::new();
+    let width = left_names.len();
+    let mut used_bytes = 0usize;
+    let mut accept = |left: &[typed::Cell], right: &[typed::Cell]| {
+        let at = |index: usize| {
+            if index < width { &left[index] } else { &right[index - width] }
+        };
+        let probe = indices.iter().map(|&index| at(index).key()).collect::<Vec<_>>();
+        let group = match lookup.entry(probe) {
+            Entry::Occupied(entry) => *entry.get(),
+            Entry::Vacant(entry) => {
+                if groups.len() >= MAX_GROUPS {
+                    return Err(invalid("JOIN GROUP BY supports at most 200000 groups"));
+                }
+                let values = indices.iter().map(|&index| at(index).clone()).collect::<Vec<_>>();
+                let additional = indices.len()
+                    .checked_mul(std::mem::size_of::<typed::Key>() +
+                        std::mem::size_of::<typed::Cell>())
+                    .and_then(|bytes| indices.iter().try_fold(bytes, |total, &index| {
+                        let size = match at(index) {
+                            typed::Cell::Text(text) => text.len() * 2,
+                            typed::Cell::Uuid(value) => value.len() * 2,
+                            _ => 0
+                        };
+                        total.checked_add(size)
+                    }))
+                    .ok_or_else(|| invalid("JOIN GROUP BY memory overflow"))?;
+                let additional = additional.checked_add(
+                    std::mem::size_of::<AggregateState>() * if also_count { 2 } else { 1 }
+                ).ok_or_else(|| invalid("JOIN GROUP BY memory overflow"))?;
+                used_bytes = used_bytes.checked_add(additional)
+                    .ok_or_else(|| invalid("JOIN GROUP BY memory overflow"))?;
+                if used_bytes > MAX_GROUP_BYTES {
+                    return Err(invalid("JOIN GROUP BY exceeds retained group memory budget"));
+                }
+                entry.insert(groups.len());
+                groups.push((values, AggregateState::new(function),
+                    also_count.then(|| AggregateState::new(AggregateFunction::Count))));
+                groups.len() - 1
+            }
+        };
+        if let Some(count) = groups[group].2.as_mut() {
+            count.increment_count()?;
+        }
+        if let Some(index) = value_index {
+            match at(index) {
+                typed::Cell::Numeric(number) => groups[group].1.update(*number),
+                typed::Cell::Null => Ok(()),
+                _ => Err(invalid("JOIN grouped SUM requires exact integer values")),
+            }
+        } else {
+            groups[group].1.increment_count()
+        }
+    };
+    if left_count != 0 && right_count != 0 {
+        if right_count <= MAX_STREAM_BUILD_ROWS &&
+            (right_count <= left_count || left_count > MAX_STREAM_BUILD_ROWS) {
+            let right_rows = read_rows(right_path, right_names, right_count,
+                MAX_STREAM_BUILD_ROWS, MAX_STREAM_BUILD_BYTES)?;
+            let mut hash = HashMap::<Vec<typed::Key>, Bucket>::with_capacity(right_rows.len());
+            for (index, row) in right_rows.iter().enumerate() {
+                if let Some(key) = row_key(row, right_keys) {
+                    if query.any {
+                        hash.entry(key).or_insert(Bucket::One(index));
+                    } else {
+                        hash.entry(key).and_modify(|bucket| bucket.push(index))
+                            .or_insert(Bucket::One(index));
+                    }
+                }
+            }
+            probe_inner(left_path, left_names, left_keys, &right_rows, &hash,
+                ProbeOptions {
+                    materialize_rows: indices.iter().any(|&i| i < width) ||
+                        value_index.is_some_and(|i| i < width),
+                    materialize_after: 0, stop_after: Some(usize::MAX),
+                    any: query.any, null_filter,
+                }, &mut accept)?;
+        } else {
+            let left_rows = read_rows(left_path, left_names, left_count,
+                MAX_STREAM_BUILD_ROWS, MAX_STREAM_BUILD_BYTES)?;
+            let mut hash = HashMap::<Vec<typed::Key>, Bucket>::with_capacity(left_rows.len());
+            for (index, row) in left_rows.iter().enumerate() {
+                if let Some(key) = row_key(row, left_keys) {
+                    hash.entry(key).and_modify(|bucket| bucket.push(index))
+                        .or_insert(Bucket::One(index));
+                }
+            }
+            probe_right(right_path, right_names, right_keys, &left_rows, &hash,
+                ProbeOptions {
+                    materialize_rows: indices.iter().any(|&i| i >= width) ||
+                        value_index.is_some_and(|i| i >= width),
+                    materialize_after: 0, stop_after: Some(usize::MAX),
+                    any: query.any, null_filter,
+                }, &mut accept)?;
+        }
+    }
+    if let Some(having) = &query.group_having {
+        groups.retain(|(_, state, _)| state.passes_having(having));
+    }
+    let mut bounded_order = None;
+    if let Some((descending, nulls_first)) = query.group_order_by {
+        let compare = |left: &(Vec<typed::Cell>, AggregateState, Option<AggregateState>),
+                       right: &(Vec<typed::Cell>, AggregateState, Option<AggregateState>)| {
+            typed::compare_order_cells(
+                &left.1.sort_cell(), &right.1.sort_cell(), descending, nulls_first
+            )
+        };
+        let end = query.limit.and_then(|limit| query.offset.checked_add(limit));
+        if let Some(end) = end.filter(|&end| end < groups.len()) {
+            let mut positions = (0..groups.len()).collect::<Vec<_>>();
+            let cmp = |l: &usize, r: &usize| {
+                compare(&groups[*l], &groups[*r]).then_with(|| l.cmp(r))
+            };
+            positions.select_nth_unstable_by(end, &cmp);
+            positions.truncate(end);
+            positions.sort_unstable_by(cmp);
+            bounded_order = Some(positions);
+        } else { groups.sort_by(compare); }
+    }
+    writeln!(output, "{header}")?;
+    let write_group = |values: &[typed::Cell], state: &AggregateState,
+                       count: Option<&AggregateState>, output: &mut W|
+        -> Result<(), ExecutionError> {
+        for (i, value) in values.iter().enumerate() {
+            if i != 0 { output.write_all(b"\t")?; }
+            typed::write_value(output, value)?;
+        }
+        if let Some(count) = count {
+            writeln!(output, "\t{}\t{}", state.render(), count.render())?;
+        } else {
+            writeln!(output, "\t{}", state.render())?;
+        }
+        Ok(())
+    };
+    if let Some(positions) = bounded_order {
+        for index in positions.into_iter().skip(query.offset) {
+            write_group(&groups[index].0, &groups[index].1, groups[index].2.as_ref(), output)?;
+        }
+    } else {
+        for (values, state, count) in groups.into_iter()
+            .skip(query.offset).take(query.limit.unwrap_or(usize::MAX)) {
+            write_group(&values, &state, count.as_ref(), output)?;
+        }
+    }
+    Ok(())
+}
+
+fn execute_streaming_inner_grouped<W: Write>(
+    query: &JoinSelect,
+    left_path: &Path,
+    right_path: &Path,
+    columns: InnerJoinColumns<'_>,
+    left_count: u64,
+    right_count: u64,
+    group_index: usize,
+    value_index: Option<usize>,
+    header: &str,
+    output: &mut W,
+) -> Result<(), ExecutionError> {
+    const MAX_GROUPS: usize = 200_000;
+    const MAX_GROUP_BYTES: usize = 64 * 1024 * 1024;
+    let InnerJoinColumns {
+        left_names, right_names, left_keys, right_keys, null_filter, ..
+    } = columns;
+    let function = if value_index.is_some() {
+        AggregateFunction::Sum
+    } else {
+        AggregateFunction::Count
+    };
+    if query.limit == Some(0) {
+        writeln!(output, "{header}")?;
+        return Ok(());
+    }
+    let mut groups = Vec::<(typed::Cell, AggregateState)>::new();
+    let mut lookup = HashMap::<typed::Key, usize>::new();
+    let mut retained_bytes = 0usize;
+    let width = left_names.len();
+    let mut accept = |left: &[typed::Cell], right: &[typed::Cell]| {
+        let at = |index: usize| {
+            if index < width { &left[index] } else { &right[index - width] }
+        };
+        let key = at(group_index);
+        let entry_key = key.key();
+        let group = match lookup.entry(entry_key) {
+            Entry::Occupied(entry) => *entry.get(),
+            Entry::Vacant(entry) => {
+                if groups.len() >= MAX_GROUPS {
+                    return Err(invalid("JOIN GROUP BY supports at most 200000 groups"));
+                }
+                let variable = match key {
+                    typed::Cell::Text(value) => value.len(),
+                    typed::Cell::Uuid(value) => value.len(),
+                    _ => 0,
+                };
+                retained_bytes = retained_bytes
+                    .checked_add(std::mem::size_of::<typed::Key>()
+                        + std::mem::size_of::<(typed::Cell, AggregateState)>()
+                        + variable * 2)
+                    .ok_or_else(|| invalid("JOIN GROUP BY memory overflow"))?;
+                if retained_bytes > MAX_GROUP_BYTES {
+                    return Err(invalid("JOIN GROUP BY exceeds retained group memory budget"));
+                }
+                entry.insert(groups.len());
+                groups.push((key.clone(), AggregateState::new(function)));
+                groups.len() - 1
+            }
+        };
+        if let Some(index) = value_index {
+            match at(index) {
+                typed::Cell::Numeric(number) => groups[group].1.update(*number)?,
+                typed::Cell::Null => {},
+                _ => return Err(invalid("JOIN grouped SUM requires integer values")),
+            }
+        } else {
+            groups[group].1.increment_count()?;
+        }
+        Ok(())
+    };
+    if left_count != 0 && right_count != 0 {
+        let needs_left = group_index < width || value_index.is_some_and(|i| i < width);
+        let needs_right = group_index >= width || value_index.is_some_and(|i| i >= width);
+        if right_count <= MAX_STREAM_BUILD_ROWS &&
+            (right_count <= left_count || left_count > MAX_STREAM_BUILD_ROWS) {
+            let right_rows = read_rows(
+                right_path, right_names, right_count,
+                MAX_STREAM_BUILD_ROWS, MAX_STREAM_BUILD_BYTES
+            )?;
+            let mut hash = HashMap::<Vec<typed::Key>, Bucket>::with_capacity(right_rows.len());
+            for (index, row) in right_rows.iter().enumerate() {
+                if let Some(key) = row_key(row, right_keys) {
+                    if query.any {
+                        hash.entry(key).or_insert(Bucket::One(index));
+                    } else {
+                        hash.entry(key)
+                            .and_modify(|bucket| bucket.push(index))
+                            .or_insert(Bucket::One(index));
+                    }
+                }
+            }
+            probe_inner(
+                left_path, left_names, left_keys, &right_rows, &hash,
+                ProbeOptions {
+                    materialize_rows: needs_left,
+                    materialize_after: 0, stop_after: Some(usize::MAX),
+                    any: query.any, null_filter,
+                }, &mut accept
+            )?;
+        } else {
+            let left_rows = read_rows(
+                left_path, left_names, left_count,
+                MAX_STREAM_BUILD_ROWS, MAX_STREAM_BUILD_BYTES
+            )?;
+            let mut hash = HashMap::<Vec<typed::Key>, Bucket>::with_capacity(left_rows.len());
+            for (index, row) in left_rows.iter().enumerate() {
+                if let Some(key) = row_key(row, left_keys) {
+                    hash.entry(key)
+                        .and_modify(|bucket| bucket.push(index))
+                        .or_insert(Bucket::One(index));
+                }
+            }
+            probe_right(
+                right_path, right_names, right_keys, &left_rows, &hash,
+                ProbeOptions {
+                    materialize_rows: needs_right,
+                    materialize_after: 0, stop_after: Some(usize::MAX),
+                    any: query.any, null_filter,
+                }, &mut accept
+            )?;
+        }
+    }
+    if let Some(having) = &query.group_having {
+        // Filter only after every joined fact has updated the complete state.
+        groups.retain(|(_, state)| state.passes_having(having));
+    }
+    let mut bounded_order = None;
+    if let Some((descending, nulls_first)) = query.group_order_by {
+        let compare = |left: &(typed::Cell, AggregateState),
+                       right: &(typed::Cell, AggregateState)| {
+            typed::compare_order_cells(
+                &left.1.sort_cell(), &right.1.sort_cell(),
+                descending, nulls_first
+            )
+        };
+        let end = query.limit.and_then(|limit| query.offset.checked_add(limit));
+        if let Some(end) = end.filter(|&end| end < groups.len()) {
+            let mut indices = (0..groups.len()).collect::<Vec<_>>();
+            let compare_index = |left: &usize, right: &usize| {
+                compare(&groups[*left], &groups[*right]).then_with(|| left.cmp(right))
+            };
+            indices.select_nth_unstable_by(end, &compare_index);
+            indices.truncate(end);
+            indices.sort_unstable_by(compare_index);
+            bounded_order = Some(indices);
+        } else {
+            groups.sort_by(compare);
+        }
+    }
+    writeln!(output, "{header}")?;
+    if let Some(indices) = bounded_order {
+        for index in indices.into_iter().skip(query.offset) {
+            typed::write_value(output, &groups[index].0)?;
+            writeln!(output, "\t{}", groups[index].1.render())?;
+        }
+    } else {
+        for (key, state) in groups.into_iter()
+            .skip(query.offset).take(query.limit.unwrap_or(usize::MAX)) {
+            typed::write_value(output, &key)?;
+            writeln!(output, "\t{}", state.render())?;
+        }
+    }
+    Ok(())
+}
+
 fn execute_streaming_inner_sum<W: Write>(
     query: &JoinSelect,
     left_path: &Path,
@@ -1096,6 +1787,19 @@ pub fn execute_join<W: Write>(
                 query, left_path, right_path, columns,
                 left_meta.rows, right_meta.rows, output
             ),
+            JoinAggregate::CountDistinct(column) => {
+                let metric = resolve(query, column, &left_names, &right_names)?;
+                let data_type = if metric < width {
+                    &left_meta.columns[metric].data_type
+                } else {
+                    &right_meta.columns[metric - width].data_type
+                };
+                let header = format!("count(DISTINCT {}.{})", column.relation, column.name);
+                execute_streaming_inner_count_distinct(
+                    query, left_path, right_path, columns,
+                    left_meta.rows, right_meta.rows, metric, data_type, &header, output
+                )
+            },
             JoinAggregate::Sum(column) => {
                 let metric = resolve(query, column, &left_names, &right_names)?;
                 let data_type = if metric < width {
@@ -1113,6 +1817,116 @@ pub fn execute_join<W: Write>(
                 execute_streaming_inner_sum(
                     query, left_path, right_path, columns,
                     left_meta.rows, right_meta.rows, metric, &header, output
+                )
+            }
+            JoinAggregate::GroupDistinct { keys, value } => {
+                let indices = keys.iter().map(|column|
+                    resolve(query, column, &left_names, &right_names)
+                ).collect::<Result<Vec<_>, _>>()?;
+                let metric = resolve(query, value, &left_names, &right_names)?;
+                let data_type = if metric < width {
+                    &left_meta.columns[metric].data_type
+                } else {
+                    &right_meta.columns[metric - width].data_type
+                };
+                let header = keys.iter().map(|key|
+                    format!("{}.{}", key.relation, key.name)
+                ).collect::<Vec<_>>().join("\t") +
+                    &format!("\tcount(DISTINCT {}.{})", value.relation, value.name);
+                execute_streaming_inner_group_distinct(
+                    query, left_path, right_path, columns,
+                    left_meta.rows, right_meta.rows,
+                    &indices, metric, data_type, &header, output
+                )
+            }
+            JoinAggregate::GroupMultiCount(keys) => {
+                let indices = keys.iter().map(|column|
+                    resolve(query, column, &left_names, &right_names)
+                ).collect::<Result<Vec<_>, _>>()?;
+                let header = keys.iter().map(|key|
+                    format!("{}.{}", key.relation, key.name)
+                ).collect::<Vec<_>>().join("\t") + "\tcount";
+                execute_streaming_inner_multi_grouped(
+                    query, left_path, right_path, columns,
+                    left_meta.rows, right_meta.rows, &indices, None, false, &header, output
+                )
+            }
+            JoinAggregate::GroupMultiSum { keys, value } => {
+                let indices = keys.iter().map(|column|
+                    resolve(query, column, &left_names, &right_names)
+                ).collect::<Result<Vec<_>, _>>()?;
+                let metric = resolve(query, value, &left_names, &right_names)?;
+                let data_type = if metric < width {
+                    &left_meta.columns[metric].data_type
+                } else {
+                    &right_meta.columns[metric - width].data_type
+                };
+                if !matches!(base_type(data_type),
+                    "UInt8" | "UInt16" | "UInt32" | "UInt64" | "UInt128" |
+                    "Int8" | "Int16" | "Int32" | "Int64" | "Int128") {
+                    return Err(invalid("JOIN grouped SUM requires an exact integer column"));
+                }
+                let header = keys.iter().map(|key|
+                    format!("{}.{}", key.relation, key.name)
+                ).collect::<Vec<_>>().join("\t") +
+                    &format!("\tsum({}.{})", value.relation, value.name);
+                execute_streaming_inner_multi_grouped(
+                    query, left_path, right_path, columns,
+                    left_meta.rows, right_meta.rows, &indices, Some(metric), false, &header, output
+                )
+            }
+            JoinAggregate::GroupSumCount { keys, value } => {
+                let indices = keys.iter().map(|column|
+                    resolve(query, column, &left_names, &right_names)
+                ).collect::<Result<Vec<_>, _>>()?;
+                let metric = resolve(query, value, &left_names, &right_names)?;
+                let data_type = if metric < width {
+                    &left_meta.columns[metric].data_type
+                } else {
+                    &right_meta.columns[metric - width].data_type
+                };
+                if !matches!(base_type(data_type),
+                    "UInt8" | "UInt16" | "UInt32" | "UInt64" | "UInt128" |
+                    "Int8" | "Int16" | "Int32" | "Int64" | "Int128") {
+                    return Err(invalid("fused JOIN SUM requires an exact integer column"));
+                }
+                let header = keys.iter().map(|key|
+                    format!("{}.{}", key.relation, key.name)
+                ).collect::<Vec<_>>().join("\t") +
+                    &format!("\tsum({}.{})\tcount", value.relation, value.name);
+                execute_streaming_inner_multi_grouped(
+                    query, left_path, right_path, columns,
+                    left_meta.rows, right_meta.rows, &indices, Some(metric), true, &header, output
+                )
+            }
+            JoinAggregate::GroupCount(column) => {
+                let index = resolve(query, column, &left_names, &right_names)?;
+                let header = format!("{}.{}", column.relation, column.name);
+                execute_streaming_inner_grouped(
+                    query, left_path, right_path, columns,
+                    left_meta.rows, right_meta.rows, index, None, &format!("{header}\tcount"), output
+                )
+            }
+            JoinAggregate::GroupSum { group, value } => {
+                let key = resolve(query, group, &left_names, &right_names)?;
+                let metric = resolve(query, value, &left_names, &right_names)?;
+                let data_type = if metric < width {
+                    &left_meta.columns[metric].data_type
+                } else {
+                    &right_meta.columns[metric - width].data_type
+                };
+                if !matches!(base_type(data_type),
+                    "UInt8" | "UInt16" | "UInt32" | "UInt64" | "UInt128" |
+                    "Int8" | "Int16" | "Int32" | "Int64" | "Int128") {
+                    return Err(invalid("JOIN grouped SUM requires an exact integer column"));
+                }
+                let header = format!(
+                    "{}.{}\tsum({}.{})",
+                    group.relation, group.name, value.relation, value.name
+                );
+                execute_streaming_inner_grouped(
+                    query, left_path, right_path, columns,
+                    left_meta.rows, right_meta.rows, key, Some(metric), &header, output
                 )
             }
         };
