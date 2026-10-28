@@ -26,6 +26,15 @@ class ReportCSVTests(unittest.TestCase):
         self.assertEqual(rows[1]["samples"], "0")
         self.assertEqual(rows[1]["error"], "slow")
 
+    def test_rejects_bad_or_repeated_query_ids(self):
+        for rows in ([], [{"query": 0, "status": "timeout"}],
+                     [{"query": True, "status": "timeout"}],
+                     [{"query": 1, "status": "timeout"},
+                      {"query": 1, "status": "timeout"}]):
+            with self.subTest(rows=rows):
+                with self.assertRaises(ValueError):
+                    rows_from_report({"results": rows})
+
     def test_rejects_invalid_successful_measurements(self):
         for values, latency in [
             ([], None),
