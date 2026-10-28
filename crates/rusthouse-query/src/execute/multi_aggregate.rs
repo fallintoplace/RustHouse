@@ -399,7 +399,7 @@ mod distinct_key_tests {
 
     #[test]
     fn distinct_argument_preserves_nullable_string_values() {
-        let mut stream = b"\\x03abc\\x03abc".as_slice();
+        let mut stream = b"\x03abc\x03abc".as_slice();
         let strings = read_legacy_strings(&mut stream, 2).unwrap();
         let batch = vec![TypedColumn::NullableText {
             values: strings,
