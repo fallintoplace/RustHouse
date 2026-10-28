@@ -30,6 +30,7 @@ pub(super) fn is_function(name: &str) -> bool {
             | "URL_DECODE"
             | "IS_EMPTY"
             | "EMPTY"
+            | "ADDMINUTES"
             | "REVERSE"
             | "REVERSEUTF8"
             | "INITCAP"
@@ -376,6 +377,27 @@ fn parse_at_depth(parser: &mut Parser, depth: usize) -> Result<ConstantValue, Pa
                     ConstantValue::Text(result)
                 }
                 None => ConstantValue::Null,
+            }
+        }
+        "ADDMINUTES" => {
+            let input = text_arg(parser, depth + 1)?;
+            require(parser, Token::Comma, "addMinutes requires an offset")?;
+            let amount = integer_arg(parser, depth + 1)?;
+            require(parser, Token::RParen, "addMinutes requires two arguments")?;
+            match (input, amount) {
+                (Some(value), Some(amount)) => {
+                    let seconds = rusthouse_storage::parse_datetime(&value)
+                        .ok_or_else(|| ParseError("invalid UTC DateTime argument".into()))?;
+                    let delta = amount
+                        .checked_mul(60)
+                        .ok_or_else(|| ParseError("addMinutes offset overflow".into()))?;
+                    let shifted = i64::from(seconds)
+                        .checked_add(delta)
+                        .and_then(|value| u32::try_from(value).ok())
+                        .ok_or_else(|| ParseError("addMinutes result outside UTC DateTime range".into()))?;
+                    ConstantValue::Text(rusthouse_storage::format_datetime(shifted))
+                }
+                _ => ConstantValue::Null,
             }
         }
         "INITCAP" => {
