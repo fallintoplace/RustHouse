@@ -54,6 +54,7 @@ pub(super) fn is_function(name: &str) -> bool {
             | "COUNTSUBSTRINGSCASEINSENSITIVE"
             | "HEX_DECODE"
             | "REPLACE"
+            | "PROTOCOL"
             | "TRANSLATE"
             | "POSITIONCASEINSENSITIVE"
             | "STRPOS"
@@ -769,6 +770,22 @@ fn parse_at_depth(parser: &mut Parser, depth: usize) -> Result<ConstantValue, Pa
                     ConstantValue::Text(result)
                 }
                 _ => ConstantValue::Null,
+            }
+        }
+        "PROTOCOL" => {
+            let input = text_arg(parser, depth + 1)?;
+            require(parser, Token::RParen, "protocol requires one argument")?;
+            match input {
+                Some(input) => {
+                    let scheme = input.split_once(':').map_or("", |(scheme, _)| scheme);
+                    let valid = scheme.as_bytes().first().is_some_and(u8::is_ascii_alphabetic)
+                        && scheme.bytes().all(|byte|
+                            byte.is_ascii_alphanumeric()
+                                || matches!(byte, b'+' | b'-' | b'.')
+                        );
+                    ConstantValue::Text(if valid { scheme } else { "" }.to_owned())
+                }
+                None => ConstantValue::Null,
             }
         }
         "LTRIM" => {
