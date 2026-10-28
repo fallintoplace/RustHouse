@@ -727,7 +727,7 @@ mod map_writer_tests {
         let rows = [
             vec![Some(r#"{"a":1,"a":2,"b":65535}"#.into())],
             vec![Some("{}".into())],
-            vec![Some(r#"{"unicode\\u0020key":7}"#.into())],
+            vec![Some(r#"{"unicode\u0020key":7}"#.into())],
         ];
         write_wide_part(&part, &columns, &rows).unwrap();
         crate::verify_wide_part(&part).unwrap();
@@ -773,8 +773,8 @@ mod map_writer_tests {
             r#"{"a":1"#,
             r#"{"a" 1}"#,
             r#"{"a":"not a number"}"#,
-            r#"{"bad\\uD800":1}"#,
-            r#"{"bad\\uDC00":1}"#,
+            r#"{"bad\uD800":1}"#,
+            r#"{"bad\uDC00":1}"#,
             r#"{"a":1} trailing"#,
         ] {
             let path = root.join("reject");
