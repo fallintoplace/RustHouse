@@ -87,6 +87,26 @@ pub(super) fn execute_grouped_aggregate_numbers<W: Write>(
     if query.limit == Some(0) {
         return Ok(());
     }
+    // A generated number is a unique group key. Each unfiltered group
+    // contains one row, so a bounded page needs only its requested keys.
+    if query.predicates.is_empty()
+        && query.or_predicates.is_empty()
+        && query.having.is_none()
+        && query.order_by.is_none()
+        && query.order_by_extra.is_empty()
+    {
+        if let Some(limit) = query.limit {
+            let begin = (query.offset.unwrap_or(0) as u64).min(rows);
+            let length = (limit as u64).min(rows - begin);
+            for index in begin..begin + length {
+                let number = u128::from(start) + u128::from(index) * u128::from(step);
+                let mut state = AggregateState::new(*function);
+                state.update(Number::Unsigned(number))?;
+                writeln!(output, "{number}\t{}", state.render())?;
+            }
+            return Ok(());
+        }
+    }
     let mut by_key = HashMap::<NumberKey, usize>::new();
     let mut groups = Vec::<(Number, AggregateState)>::new();
     for index in 0..rows {
