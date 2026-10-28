@@ -141,6 +141,7 @@ pub(super) fn is_function(name: &str) -> bool {
             | "BASE64_DECODE"
             | "BASE64DECODE"
             | "APPENDTRAILINGCHARIFABSENT"
+            | "ADDMONTHS"
             | "RPAD"
             | "LOWERUTF8"
             | "SPACE"
@@ -1051,6 +1052,61 @@ fn parse_at_depth(parser: &mut Parser, depth: usize) -> Result<ConstantValue, Pa
                                 .unwrap_or(&input)
                         };
                         ConstantValue::Text(result.to_owned())
+                    }
+                }
+                _ => ConstantValue::Null,
+            }
+        }
+        "ADDMONTHS" => {
+            let input = text_arg(parser, depth + 1)?;
+            require(parser, Token::Comma, "addMonths requires a month count")?;
+            let amount = integer_arg(parser, depth + 1)?;
+            require(parser, Token::RParen, "addMonths requires two arguments")?;
+            match (input, amount) {
+                (Some(value), Some(amount)) => {
+                    let (calendar, clock) = if let Some(days) = rusthouse_storage::parse_date(&value) {
+                        (rusthouse_storage::format_date(days), None)
+                    } else if let Some(seconds) = rusthouse_storage::parse_datetime(&value) {
+                        let datetime = rusthouse_storage::format_datetime(seconds);
+                        (datetime[..10].to_owned(), Some(datetime[10..].to_owned()))
+                    } else {
+                        return Err(ParseError("invalid UTC Date or DateTime argument".into()));
+                    };
+                    let year = calendar[..4]
+                        .parse::<i64>()
+                        .map_err(|_| ParseError("invalid calendar year".into()))?;
+                    let month = calendar[5..7]
+                        .parse::<i64>()
+                        .map_err(|_| ParseError("invalid calendar month".into()))?;
+                    let day = calendar[8..10]
+                        .parse::<u32>()
+                        .map_err(|_| ParseError("invalid calendar day".into()))?;
+                    let offset = amount;
+                    let target = (year * 12 + month - 1)
+                        .checked_add(offset)
+                        .ok_or_else(|| ParseError("addMonths offset overflow".into()))?;
+                    let target_year = target.div_euclid(12);
+                    let target_month = target.rem_euclid(12) + 1;
+                    if !(1970..=2149).contains(&target_year) {
+                        return Err(ParseError("addMonths result outside Date range".into()));
+                    }
+                    let mut candidate = None;
+                    for target_day in (1..=day).rev() {
+                        let date = format!("{target_year:04}-{target_month:02}-{target_day:02}");
+                        if let Some(days) = rusthouse_storage::parse_date(&date) {
+                            candidate = Some((date, days));
+                            break;
+                        }
+                    }
+                    let (date, days) = candidate
+                        .ok_or_else(|| ParseError("addMonths result outside Date range".into()))?;
+                    if let Some(clock) = clock {
+                        let datetime = format!("{date}{clock}");
+                        let seconds = rusthouse_storage::parse_datetime(&datetime)
+                            .ok_or_else(|| ParseError("addMonths result outside DateTime range".into()))?;
+                        ConstantValue::Text(rusthouse_storage::format_datetime(seconds))
+                    } else {
+                        ConstantValue::Text(rusthouse_storage::format_date(days))
                     }
                 }
                 _ => ConstantValue::Null,
