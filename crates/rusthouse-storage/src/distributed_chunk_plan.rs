@@ -79,7 +79,10 @@ pub fn plan_missing_chunks(
     let affordable = usize::try_from(byte_budget / chunk_bytes)
         .unwrap_or(usize::MAX)
         .saturating_add(1);
-    let capacity = remaining_indices.len().min(max_batch_chunks).min(affordable);
+    let capacity = remaining_indices
+        .len()
+        .min(max_batch_chunks)
+        .min(affordable);
     let mut selected = Vec::with_capacity(capacity);
     let mut remaining_bytes = byte_budget;
     for &index in remaining_indices {
