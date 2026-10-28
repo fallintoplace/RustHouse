@@ -871,6 +871,10 @@ pub(super) fn execute_typed<W: Write>(
             .filter(|count| *count <= MAX_BUFFERED_ROWS)
     };
     let no_filters = query.predicates.is_empty() && query.or_predicates.is_empty();
+    if no_filters && !is_count && !is_count_column && !is_count_distinct
+        && !is_grouped && !query.distinct && sort_indices.is_empty() {
+        skipped = scan.skip_prefix_rows(offset)?;
+    }
     while let Some(batch) = scan.next_batch()? {
         for index in 0..batch[0].len() {
             if !no_filters && !passes(&batch, index, &conditions) {

@@ -283,6 +283,29 @@ impl TypedPartReader {
         Ok(())
     }
 
+    /// Skip validated, complete adaptive marks without decoding text, UUID
+    /// or numeric payloads. A partial mark is left for the caller to read.
+    pub fn skip_complete_marks(&mut self, max_rows: usize) -> usize {
+        let Some(column) = self.columns.first() else {
+            return 0;
+        };
+        let mut skipped = 0usize;
+        while self.next_mark < self.marks {
+            let Some(rows) = column.data.marks[self.next_mark].rows else {
+                break;
+            };
+            let Ok(rows) = usize::try_from(rows) else {
+                break;
+            };
+            if rows == 0 || rows > max_rows - skipped {
+                break;
+            }
+            skipped += rows;
+            self.next_mark += 1;
+        }
+        skipped
+    }
+
     pub fn next_batch(&mut self) -> Result<Option<Vec<TypedColumn>>, PartError> {
         if self.next_mark >= self.marks {
             return Ok(None);
@@ -395,6 +418,27 @@ impl TypedQueryReader {
             next_part: 0,
             current: None,
         })
+    }
+
+    /// Skip whole parts and adaptive marks for an unfiltered, unordered
+    /// OFFSET query. Only valid on a fresh snapshot reader.
+    pub fn skip_prefix_rows(&mut self, max_rows: usize) -> Result<usize, PartError> {
+        if self.next_part != 0 || self.current.is_some() {
+            return Err(PartError::InvalidScan(
+                "typed OFFSET mark skipping requires a fresh reader".into(),
+            ));
+        }
+        let mut skipped = 0usize;
+        while skipped < max_rows && self.next_part < self.parts.len() {
+            let mut reader = TypedPartReader::open(&self.parts[self.next_part], &self.columns)?;
+            self.next_part += 1;
+            skipped += reader.skip_complete_marks(max_rows - skipped);
+            if reader.next_mark != reader.mark_count() {
+                self.current = Some(reader);
+                break;
+            }
+        }
+        Ok(skipped)
     }
 
     pub fn next_batch(&mut self) -> Result<Option<Vec<TypedColumn>>, PartError> {
@@ -558,6 +602,10 @@ mod tests {
 
         let mut reader = TypedPartReader::open(&part, &["id".into(), "note".into()]).unwrap();
         assert_eq!(reader.mark_count(), 3);
+        let mut skip = TypedPartReader::open(&part, &["id".into(), "note".into()]).unwrap();
+        assert_eq!(skip.skip_complete_marks(2049), 2048);
+        assert_eq!(skip.next_batch().unwrap().unwrap()[0].len(), 2);
+
         reader.seek_to_mark(2).unwrap();
         let tail = reader.next_batch().unwrap().unwrap();
         match &tail[0] {
