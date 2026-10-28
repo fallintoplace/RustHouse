@@ -474,3 +474,74 @@ pub(super) fn grouped_weighted_avg_shard_sql(sql: &str, select: &Select) -> Opti
     }
     None
 }
+
+
+/// Two or more grouping dimensions with one AVG metric use exact integer
+/// partial SUM and COUNT, never a mean of shard-local means.
+pub(super) fn is_safe_multikey_weighted_avg(select: &Select) -> bool {
+    matches!(
+        &select.projection,
+        Projection::GroupedMultiAggregates { columns, items }
+            if (2..=8).contains(&columns.len())
+            && items.len() == 1
+            && items[0].0 == AggregateFunction::Avg
+            && select.order_terms().all(|term| columns.contains(&term.column))
+    ) && matches!(select.source, Some(Source::Table(_)))
+        && !select.distinct
+        && select.alias.is_none()
+        && select.rename.is_none()
+        && select.having.is_none()
+}
+
+/// Require full semantic equivalence after replacing AVG with SUM and COUNT.
+pub(super) fn multikey_weighted_avg_shard_sql(
+    sql: &str,
+    select: &Select,
+) -> Option<String> {
+    let (columns, value) = match &select.projection {
+        Projection::GroupedMultiAggregates { columns, items }
+            if items.len() == 1 && items[0].0 == AggregateFunction::Avg =>
+            (columns, &items[0].1),
+        _ => return None,
+    };
+    let mut expected = select.clone();
+    expected.projection = Projection::GroupedMultiAggregates {
+        columns: columns.clone(),
+        items: vec![
+            (AggregateFunction::Sum, value.clone()),
+            (AggregateFunction::Count, value.clone()),
+        ],
+    };
+    expected.having = None;
+    expected.order_by = None;
+    expected.order_by_extra.clear();
+    expected.limit = None;
+    expected.offset = None;
+    let upper = sql.to_ascii_uppercase();
+    let head = format!(
+        "SELECT {}, sum({value}), count({value})",
+        columns.join(", "),
+    );
+    for (from_start, _) in sql.char_indices() {
+        if !upper[from_start..].starts_with(" FROM ") {
+            continue;
+        }
+        for (end, _) in sql.char_indices() {
+            if end < from_start { continue; }
+            let suffix = &upper[end..];
+            if ![" ORDER ", " LIMIT ", " OFFSET "]
+                .iter().any(|keyword| suffix.starts_with(keyword)) {
+                continue;
+            }
+            let candidate = format!("{head}{}", &sql[from_start..end]);
+            if parse_select(&candidate).is_ok_and(|parsed| parsed == expected) {
+                return Some(candidate);
+            }
+        }
+        let candidate = format!("{head}{}", &sql[from_start..]);
+        if parse_select(&candidate).is_ok_and(|parsed| parsed == expected) {
+            return Some(candidate);
+        }
+    }
+    None
+}
