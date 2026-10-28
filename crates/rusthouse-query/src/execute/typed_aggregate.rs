@@ -231,11 +231,6 @@ fn narrow_group_bucket(
         NumericColumn::Int16(values) => usize::from(values[row] as u16),
         _ => return Err(ExecutionError::Invalid("unexpected dense GROUP BY column".into())),
     };
-    if bucket >= null_bucket && null_bucket != 0 {
-        // The reserved bucket is strictly beyond the non-null key space.
-        // For non-nullable keys it is never addressable.
-        return Ok(bucket);
-    }
     Ok(bucket)
 }
 
