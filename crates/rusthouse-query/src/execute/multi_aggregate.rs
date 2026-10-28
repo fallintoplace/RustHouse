@@ -255,6 +255,9 @@ pub(super) fn execute<W: Write>(
         if let Some(expression) = &item.argument {
             expression.referenced_columns(&mut names);
         }
+        if let Some(filter) = &item.filter {
+            filter.referenced_columns(&mut names);
+        }
     }
     for predicate in query
         .predicates
@@ -324,6 +327,10 @@ pub(super) fn execute<W: Write>(
                 .transpose()
         })
         .collect::<Result<Vec<_>, _>>()?;
+    let filters = items.iter()
+        .map(|item| item.filter.as_ref()
+            .map(|expression| BoundExpr::bind(expression, &indices)).transpose())
+        .collect::<Result<Vec<_>, _>>()?;
     let mut reader = TypedQueryReader::open_with_metadata(part, &names, &metadata)?;
     let no_filters = query.predicates.is_empty() && query.or_predicates.is_empty();
     while let Some(batch) = reader.next_batch()? {
@@ -331,7 +338,18 @@ pub(super) fn execute<W: Write>(
             if !no_filters && !typed::passes(&batch, row, &conditions) {
                 continue;
             }
-            for (state, argument) in states.iter_mut().zip(&arguments) {
+            for ((state, argument), filter) in states.iter_mut().zip(&arguments).zip(&filters) {
+                if let Some(filter) = filter {
+                    let enabled = match eval_number(filter, &batch, row)? {
+                        Some(Number::Unsigned(value)) => value != 0,
+                        Some(Number::Signed(value)) => value != 0,
+                        Some(Number::Float(value)) => value != 0.0,
+                        None => false,
+                    };
+                    if !enabled {
+                        continue;
+                    }
+                }
                 match state {
                     State::Count(value) => {
                         if count_argument(argument.as_ref(), &batch, row)? {
@@ -402,6 +420,13 @@ pub(super) fn execute_numbers<W: Write>(
                 "generated numeric aggregates require the number column".into(),
             ));
         }
+        if let Some(filter) = &item.filter {
+            if !matches!(filter, ScalarExpr::Column(name) if name == "number") {
+                return Err(ExecutionError::Invalid(
+                    "generated conditional aggregates require the number column".into(),
+                ));
+            }
+        }
     }
     let comparisons = super::compile_numbers_predicates(query)?;
     writeln!(
@@ -429,7 +454,10 @@ pub(super) fn execute_numbers<W: Write>(
         if !super::number_matches_all(value, &comparisons) {
             continue;
         }
-        for state in &mut states {
+        for (state, item) in states.iter_mut().zip(items) {
+            if item.filter.is_some() && matches!(value, Number::Unsigned(0)) {
+                continue;
+            }
             match state {
                 State::Count(count) => {
                     *count = count

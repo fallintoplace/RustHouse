@@ -7,6 +7,8 @@ pub struct AggregateItem {
     pub function: Option<AggregateFunction>,
     pub argument: Option<ScalarExpr>,
     pub distinct: bool,
+    /// -If combinator: only rows with nonzero numeric conditions contribute.
+    pub filter: Option<ScalarExpr>,
     pub alias: Option<String>,
 }
 
@@ -19,6 +21,8 @@ impl AggregateItem {
         let argument = self.argument.as_ref().map_or("*".into(), render_expr);
         if self.distinct {
             format!("count(DISTINCT {argument})")
+        } else if let Some(filter) = &self.filter {
+            format!("{function}If({argument}, {})", render_expr(filter))
         } else {
             format!("{function}({argument})")
         }
@@ -66,6 +70,10 @@ fn aggregate_function(name: &str) -> Option<Option<AggregateFunction>> {
         "AVG" => Some(Some(AggregateFunction::Avg)),
         "MIN" => Some(Some(AggregateFunction::Min)),
         "MAX" => Some(Some(AggregateFunction::Max)),
+        "SUMIF" => Some(Some(AggregateFunction::Sum)),
+        "AVGIF" => Some(Some(AggregateFunction::Avg)),
+        "MINIF" => Some(Some(AggregateFunction::Min)),
+        "MAXIF" => Some(Some(AggregateFunction::Max)),
         _ => None,
     }
 }
@@ -91,6 +99,10 @@ pub(crate) fn parse_multiple(
             parser.index = start;
             return Ok(None);
         }
+        let conditional = matches!(
+            name.to_ascii_uppercase().as_str(),
+            "SUMIF" | "AVGIF" | "MINIF" | "MAXIF"
+        );
         parser.index += 2;
         let distinct = parser.keyword("DISTINCT");
         if distinct && function.is_some() {
@@ -109,6 +121,14 @@ pub(crate) fn parse_multiple(
         if already_closed && distinct {
             return Err(ParseError("COUNT(DISTINCT) requires a column".into()));
         }
+        let filter = if conditional {
+            if !parser.take(Token::Comma) {
+                return Err(ParseError("conditional aggregate requires a filter argument".into()));
+            }
+            Some(parse_expression_tokens(parser)?)
+        } else {
+            None
+        };
         if !already_closed && !parser.take(Token::RParen) {
             return Err(ParseError("expected ')' after aggregate argument".into()));
         }
@@ -124,6 +144,7 @@ pub(crate) fn parse_multiple(
             function,
             argument,
             distinct,
+            filter,
             alias,
         });
         if !already_closed
@@ -144,7 +165,7 @@ pub(crate) fn parse_multiple(
             argument.referenced_columns(&mut columns);
             !columns.is_empty() && !matches!(argument, crate::ScalarExpr::Column(_))
         });
-    if items.len() < 2 && !is_computed {
+    if items.len() < 2 && !is_computed && items[0].filter.is_none() {
         parser.index = start;
         return Ok(None);
     }
