@@ -18,6 +18,14 @@ enum JsonKind<'a> {
 }
 
 impl<'a> JsonValue<'a> {
+    pub(crate) fn length(&self) -> usize {
+        match &self.kind {
+            JsonKind::Array(items) => items.len(),
+            JsonKind::Object(fields) => fields.len(),
+            _ => 0,
+        }
+    }
+
     pub(crate) fn raw(&self) -> &str {
         self.raw
     }
