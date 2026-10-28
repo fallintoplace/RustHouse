@@ -7,6 +7,7 @@ pub(super) fn is_function(name: &str) -> bool {
     matches!(
         name.to_ascii_uppercase().as_str(),
         "LENGTH"
+            | "TOSTARTOFMINUTE"
             | "LENGTHUTF8"
             | "CHAR_LENGTH"
             | "OCTET_LENGTH"
@@ -120,6 +121,19 @@ fn parse_at_depth(parser: &mut Parser, depth: usize) -> Result<ConstantValue, Pa
     require(parser, Token::LParen, "string function requires '('")?;
     let value = match name.as_str() {
 
+        "TOSTARTOFMINUTE" => {
+            let input = text_arg(parser, depth + 1)?;
+            require(parser, Token::RParen, "toStartOfMinute requires one argument")?;
+            match input {
+                Some(value) => {
+                    let seconds = rusthouse_storage::parse_datetime(&value)
+                        .ok_or_else(|| ParseError("invalid UTC DateTime argument".into()))?;
+                    let bucket = seconds - seconds % 60;
+                    ConstantValue::Text(rusthouse_storage::format_datetime(bucket))
+                }
+                None => ConstantValue::Null,
+            }
+        }
         "LENGTHUTF8" => {
             let input = text_arg(parser, depth + 1)?;
             require(parser, Token::RParen, "lengthUTF8 requires one argument")?;
