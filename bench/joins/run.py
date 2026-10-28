@@ -12,6 +12,14 @@ from common import cli_sql, emit_json, latency_summary
 
 QUERY = "SELECT f.id, d.label FROM facts f JOIN dimensions d ON f.id = d.id"
 
+
+def query_for_strictness(strictness):
+    if strictness == "all":
+        return QUERY
+    if strictness == "any":
+        return QUERY.replace(" JOIN ", " ANY JOIN ", 1)
+    raise ValueError(f"unsupported JOIN strictness: {strictness}")
+
 def write_facts(path, probe_rows):
     with path.open("w", encoding="utf-8") as facts:
         facts.write("id\tamount\n")
@@ -80,6 +88,7 @@ def main(argv=None):
     parser.add_argument("--binary", type=Path, required=True)
     parser.add_argument("--probe-rows", type=int, default=65536)
     parser.add_argument("--build-rows", type=int, default=8192)
+    parser.add_argument("--strictness", choices=("all", "any"), default="all")
     parser.add_argument("--disjoint", action="store_true", help="use nonmatching dimension keys")
     parser.add_argument("--runs", type=int, default=5)
     parser.add_argument("--warmups", type=int, default=2)
@@ -112,7 +121,7 @@ def main(argv=None):
         elapsed = []
         for iteration in range(-args.warmups, args.runs):
             start = time.perf_counter() if iteration >= 0 else None
-            output = run(QUERY)
+            output = run(query_for_strictness(args.strictness))
             if start is not None:
                 elapsed.append(time.perf_counter() - start)
             verify_result(output, expected)
@@ -123,6 +132,7 @@ def main(argv=None):
         "timing_scope": "end-to-end CLI join including output encoding",
         "probe_rows": args.probe_rows,
         "build_rows": args.build_rows,
+        "join_strictness": args.strictness,
         "disjoint": args.disjoint,
         "expected_matches": len(expected),
         "runs": args.runs, "warmups": args.warmups,

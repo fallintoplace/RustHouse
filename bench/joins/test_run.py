@@ -2,7 +2,7 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from run import logical_probe_throughput, main, verify_result, write_fixture
+from run import QUERY, logical_probe_throughput, main, query_for_strictness, verify_result, write_fixture
 
 class JoinWorkloadTests(unittest.TestCase):
     def test_join_throughput_rejects_invalid_medians(self):
@@ -16,6 +16,12 @@ class JoinWorkloadTests(unittest.TestCase):
             with self.assertRaises(SystemExit) as raised:
                 main(["--binary", "unused", f"--timeout={value}"])
             self.assertEqual(raised.exception.code, 2)
+
+    def test_any_join_variant_uses_same_columns_and_predicate(self):
+        self.assertEqual(query_for_strictness("all"), QUERY)
+        self.assertIn("facts f ANY JOIN dimensions d", query_for_strictness("any"))
+        with self.assertRaises(ValueError):
+            query_for_strictness("full")
 
     def test_small_fixture_and_matches(self):
         with tempfile.TemporaryDirectory() as directory:
