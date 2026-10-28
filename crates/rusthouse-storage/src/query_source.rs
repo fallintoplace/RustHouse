@@ -170,62 +170,90 @@ pub fn inspect_query_source(path: &Path) -> Result<PartMetadata, PartError> {
     inspect_parts_metadata(path, &paths)
 }
 
+/// Verify one chunk without retaining per-part metadata. Each worker holds at
+/// most one PartMetadata at a time, regardless of the number of parts.
+fn inspect_metadata_chunk(paths: &[PathBuf]) -> Result<(Vec<Column>, u64), PartError> {
+    let first = paths
+        .first()
+        .ok_or_else(|| PartError::InvalidScan("snapshot contains no readable parts".into()))?;
+    let mut columns: Option<Vec<Column>> = None;
+    let mut rows = 0u64;
+    for path in paths {
+        let part = inspect_part(path)?;
+        if let Some(expected) = &columns {
+            if part.columns != *expected {
+                return Err(PartError::InvalidScan(format!(
+                    "part schema mismatch in {}",
+                    path.display()
+                )));
+            }
+        } else {
+            columns = Some(part.columns);
+        }
+        rows = rows
+            .checked_add(part.rows)
+            .ok_or_else(|| PartError::InvalidScan("table row count overflow".into()))?;
+    }
+    Ok((columns.unwrap_or_else(|| unreachable!("checked first path")), rows))
+}
+
 pub(crate) fn inspect_parts_metadata(
     path: &Path,
     paths: &[PathBuf],
 ) -> Result<PartMetadata, PartError> {
-    // Part metadata is immutable for an offline snapshot. For tables with many
-    // parts, inspect independent files in parallel without spawning one thread
-    // per part. Preserve input order so corruption reports stay deterministic.
     const PARALLEL_THRESHOLD: usize = 32;
     const MAX_WORKERS: usize = 8;
+    if paths.is_empty() {
+        return Err(PartError::InvalidScan(
+            "snapshot contains no readable parts".into(),
+        ));
+    }
+
     let workers = std::thread::available_parallelism()
         .map_or(1, |parallelism| parallelism.get())
         .min(MAX_WORKERS);
-    let mut metadata = Vec::with_capacity(paths.len());
+    let mut columns: Option<Vec<Column>> = None;
+    let mut rows = 0u64;
+    let mut combine = |first_path: &Path, schema: Vec<Column>, count: u64| -> Result<(), PartError> {
+        if columns.as_ref().is_some_and(|expected| expected != &schema) {
+            return Err(PartError::InvalidScan(format!(
+                "part schema mismatch in {}",
+                first_path.display()
+            )));
+        }
+        if columns.is_none() {
+            columns = Some(schema);
+        }
+        rows = rows
+            .checked_add(count)
+            .ok_or_else(|| PartError::InvalidScan("table row count overflow".into()))?;
+        Ok(())
+    };
+
     if paths.len() >= PARALLEL_THRESHOLD && workers > 1 {
+        // A worker returns one schema and one row count, not a Vec of
+        // PartMetadata for its whole partition. Join handles in path order.
         let chunk_size = paths.len().div_ceil(workers);
         std::thread::scope(|scope| -> Result<(), PartError> {
             let handles = paths
                 .chunks(chunk_size)
-                .map(|chunk| {
-                    scope.spawn(move || chunk.iter().map(inspect_part).collect::<Vec<_>>())
-                })
+                .map(|chunk| (chunk[0].as_path(), scope.spawn(move || inspect_metadata_chunk(chunk))))
                 .collect::<Vec<_>>();
-            for handle in handles {
-                let chunk = handle.join().map_err(|_| {
+            for (first, handle) in handles {
+                let (schema, count) = handle.join().map_err(|_| {
                     PartError::InvalidScan("snapshot metadata worker panicked".into())
-                })?;
-                for result in chunk {
-                    metadata.push(result?);
-                }
+                })??;
+                combine(first, schema, count)?;
             }
             Ok(())
         })?;
     } else {
-        for part in paths {
-            metadata.push(inspect_part(part)?);
-        }
-    }
-
-    let first = metadata
-        .first()
-        .ok_or_else(|| PartError::InvalidScan("snapshot contains no readable parts".into()))?;
-    let mut rows = 0u64;
-    for (part, item) in paths.iter().zip(&metadata) {
-        if item.columns != first.columns {
-            return Err(PartError::InvalidScan(format!(
-                "part schema mismatch in {}",
-                part.display()
-            )));
-        }
-        rows = rows
-            .checked_add(item.rows)
-            .ok_or_else(|| PartError::InvalidScan("table row count overflow".into()))?;
+        let (schema, count) = inspect_metadata_chunk(paths)?;
+        combine(&paths[0], schema, count)?;
     }
     Ok(PartMetadata {
         path: path.to_owned(),
-        columns: first.columns.clone(),
+        columns: columns.expect("nonempty snapshot has a schema"),
         rows,
     })
 }
