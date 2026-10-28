@@ -356,6 +356,7 @@ fn read_string_key_map(
         )
     };
     let mut decoded_rows = Vec::with_capacity(rows);
+    let mut decoded_bytes = 0usize;
     for row in 0..rows {
         let range = offsets
             .row_range(row)
@@ -383,6 +384,10 @@ fn read_string_key_map(
             }
         }
         output.push('}');
+        decoded_bytes = decoded_bytes
+            .checked_add(output.len())
+            .filter(|&bytes| bytes <= 64 * 1024 * 1024)
+            .ok_or_else(|| PartError::InvalidScan("Map batch exceeds 64 MiB".into()))?;
         decoded_rows.push(output.into_bytes());
     }
     // Avoid encoding Map text as legacy varints just to decode it back into
