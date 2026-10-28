@@ -47,9 +47,10 @@ pub(super) fn parse_content_length(value: &str) -> Result<usize, String> {
 
 fn parse_required_headers<'a>(
     lines: impl Iterator<Item = &'a str>,
-) -> Result<(usize, String), String> {
+) -> Result<(usize, String, bool), String> {
     let mut length = None;
     let mut content_type = None;
+    let mut compressed = None;
     for line in lines {
         let (name, value) = parse_peer_header(line)?;
         if name.eq_ignore_ascii_case("content-length") {
@@ -65,15 +66,21 @@ fn parse_required_headers<'a>(
                 return Err("empty peer Content-Type".into());
             }
             content_type = Some(value.to_owned());
-        } else if name.eq_ignore_ascii_case("transfer-encoding")
-            || name.eq_ignore_ascii_case("content-encoding")
-        {
+        } else if name.eq_ignore_ascii_case("content-encoding") {
+            if compressed.is_some() {
+                return Err("duplicate peer Content-Encoding".into());
+            }
+            if value != "x-rusthouse-lz4" {
+                return Err("unsupported peer transfer encoding".into());
+            }
+            compressed = Some(true);
+        } else if name.eq_ignore_ascii_case("transfer-encoding") {
             return Err("unsupported peer transfer encoding".into());
         }
     }
     let length = length.ok_or("missing peer Content-Length")?;
     let content_type = content_type.ok_or("missing peer Content-Type")?;
-    Ok((length, content_type))
+    Ok((length, content_type, compressed.unwrap_or(false)))
 }
 
 struct ResponseHead {
@@ -81,6 +88,7 @@ struct ResponseHead {
     status: u16,
     content_type: String,
     body_length: usize,
+    compressed: bool,
 }
 
 /// Parse a complete HTTP response head without waiting for the peer to close
@@ -98,7 +106,7 @@ fn response_head(raw: &[u8]) -> Result<Option<ResponseHead>, String> {
     let head = std::str::from_utf8(&raw[..head_end]).map_err(|_| "peer headers are not UTF-8")?;
     let mut lines = head.split("\r\n");
     let status = parse_http_status(lines.next().ok_or("missing peer status")?)?;
-    let (length, content_type) = parse_required_headers(lines)?;
+    let (length, content_type, compressed) = parse_required_headers(lines)?;
     if length > MAX_RESPONSE_BYTES {
         return Err("peer response size mismatch or exceeds 8 MiB".into());
     }
@@ -107,6 +115,7 @@ fn response_head(raw: &[u8]) -> Result<Option<ResponseHead>, String> {
         status,
         content_type,
         body_length: length,
+        compressed,
     }))
 }
 
@@ -126,9 +135,52 @@ pub(super) fn parse_response(raw: &[u8]) -> Result<PeerResponse, String> {
     if raw.len() != head.body_start + head.body_length {
         return Err("peer response size mismatch or exceeds 8 MiB".into());
     }
+    let body = if head.compressed {
+        let compressed = &raw[head.body_start..];
+        if compressed.len() < 4 {
+            return Err("truncated compressed peer response".into());
+        }
+        // Bound the uncompressed size before any allocation. The wire length
+        // alone cannot protect against a decompression bomb.
+        let size = u32::from_le_bytes(compressed[..4].try_into().unwrap()) as usize;
+        if size > MAX_RESPONSE_BYTES {
+            return Err("decompressed peer response exceeds 16 MiB".into());
+        }
+        lz4_flex::decompress_size_prepended(compressed)
+            .map_err(|_| "invalid compressed peer response".to_owned())?
+    } else {
+        raw[head.body_start..].to_vec()
+    };
     Ok(PeerResponse {
         status: head.status,
         content_type: head.content_type,
-        body: raw[head.body_start..].to_vec(),
+        body,
     })
+}
+
+#[cfg(test)]
+mod compressed_response_tests {
+    use super::*;
+
+    #[test]
+    fn decodes_negotiated_large_lz4_response_with_exact_content_length() {
+        let plain = vec![b'e'; 512 * 1024];
+        let compressed = lz4_flex::compress_prepend_size(&plain);
+        let mut wire = format!(
+            "HTTP/1.1 200 OK\r\nContent-Length: {}\r\nContent-Type: text/tab-separated-values; charset=utf-8\r\nContent-Encoding: x-rusthouse-lz4\r\n\r\n",
+            compressed.len(),
+        ).into_bytes();
+        wire.extend_from_slice(&compressed);
+        assert_eq!(expected_wire_length(&wire).unwrap(), Some(wire.len()));
+        assert_eq!(parse_response(&wire).unwrap().body, plain);
+    }
+
+    #[test]
+    fn compressed_transport_rejects_bombs_and_unknown_encodings() {
+        let mut bomb = b"HTTP/1.1 200 OK\r\nContent-Length: 4\r\nContent-Type: text/plain\r\nContent-Encoding: x-rusthouse-lz4\r\n\r\n".to_vec();
+        bomb.extend_from_slice(&((MAX_RESPONSE_BYTES + 1) as u32).to_le_bytes());
+        assert!(parse_response(&bomb).is_err());
+        let unknown = b"HTTP/1.1 200 OK\r\nContent-Length: 2\r\nContent-Type: text/plain\r\nContent-Encoding: gzip\r\n\r\nOK";
+        assert!(parse_response(unknown).is_err());
+    }
 }

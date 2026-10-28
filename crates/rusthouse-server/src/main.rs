@@ -11,8 +11,21 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::Duration;
 
+const MAX_CONFIGURED_CONNECTIONS: usize = 64;
+
+/// Bound concurrent read-only analytical requests to avoid unbounded
+/// thread, decoded-block and response-buffer amplification.
+fn parse_max_connections(value: &str) -> io::Result<usize> {
+    let workers = value.parse::<usize>()
+        .map_err(|_| io::Error::other("invalid max connections"))?;
+    if !(1..=MAX_CONFIGURED_CONNECTIONS).contains(&workers) {
+        return Err(io::Error::other("max connections must be 1..64"));
+    }
+    Ok(workers)
+}
+
 fn usage() -> &'static str {
-    "Usage: rusthouse-server [--port <1-65535>] [--part <frozen-part-or-snapshot> | --database <directory>] [--max-rows <n>] [--peer IPv4:<port>]... [--bind <IPv4>] [--allow-private-network]\n\
+    "Usage: rusthouse-server [--port <1-65535>] [--part <frozen-part-or-snapshot> | --database <directory>] [--max-rows <n>] [--max-connections <1-64>] [--peer IPv4:<port>]... [--bind <IPv4>] [--allow-private-network]\n\
      Listens on 127.0.0.1 by default. Private networking requires opt-in. No TLS or authentication.\n"
 }
 
@@ -55,7 +68,7 @@ fn parse_request_line(line: &str) -> Result<(&str, &str), Response> {
     Ok((method, target))
 }
 
-fn read_request(stream: &mut TcpStream) -> Result<(String, String, Vec<u8>), Response> {
+fn read_request(stream: &mut TcpStream) -> Result<(String, String, Vec<u8>, bool), Response> {
     let mut input = BufReader::new(stream);
     let mut head = Vec::new();
     // Read only until the headers end, without consuming the beginning of the body.
@@ -81,6 +94,8 @@ fn read_request(stream: &mut TcpStream) -> Result<(String, String, Vec<u8>), Res
     let (method, target) = parse_request_line(first)?;
     let mut size = None;
     let mut transfer_encoding = false;
+    let mut accept_lz4 = false;
+    let mut seen_accept = false;
     for line in lines {
         if line.is_empty() {
             break;
@@ -107,6 +122,13 @@ fn read_request(stream: &mut TcpStream) -> Result<(String, String, Vec<u8>), Res
         if key.eq_ignore_ascii_case("transfer-encoding") {
             transfer_encoding = true;
         }
+        if key.eq_ignore_ascii_case("accept-encoding") {
+            if seen_accept {
+                return Err(Response::text("400 Bad Request", "duplicate Accept-Encoding\n"));
+            }
+            seen_accept = true;
+            accept_lz4 = value.trim() == "x-rusthouse-lz4";
+        }
     }
     if transfer_encoding {
         return Err(Response::text(
@@ -131,39 +153,52 @@ fn read_request(stream: &mut TcpStream) -> Result<(String, String, Vec<u8>), Res
     input
         .read_exact(&mut body)
         .map_err(|_| Response::text("400 Bad Request", "incomplete HTTP request body\n"))?;
-    Ok((method.to_owned(), target.to_owned(), body))
+    Ok((method.to_owned(), target.to_owned(), body, accept_lz4 && method == "POST" && target == "/"))
 }
 
-fn respond(stream: &mut TcpStream, response: Response) -> io::Result<()> {
+fn respond(stream: &mut TcpStream, response: Response, allow_lz4: bool) -> io::Result<()> {
+    // Compress only large successful analytical responses and only when the
+    // caller opted into our private peer encoding. Older clients are unchanged.
+    let compressed = if allow_lz4 && response.status == "200 OK" && response.body.len() >= 4096 {
+        let candidate = lz4_flex::compress_prepend_size(&response.body);
+        (candidate.len() + 64 < response.body.len()).then_some(candidate)
+    } else {
+        None
+    };
+    let (body, encoding) = match compressed.as_ref() {
+        Some(bytes) => (bytes.as_slice(), "Content-Encoding: x-rusthouse-lz4\r\n"),
+        None => (response.body.as_slice(), ""),
+    };
     write!(
         stream,
-        "HTTP/1.1 {}\r\nContent-Type: {}\r\nContent-Length: {}\r\n\
-         Connection: close\r\nCache-Control: no-store\r\n\
-         X-Content-Type-Options: nosniff\r\n\r\n",
+        "HTTP/1.1 {}\r\nContent-Type: {}\r\nContent-Length: {}\r\n{}Connection: close\r\nCache-Control: no-store\r\nX-Content-Type-Options: nosniff\r\n\r\n",
         response.status,
         response.content_type,
-        response.body.len()
+        body.len(),
+        encoding,
     )?;
-    stream.write_all(&response.body)
+    stream.write_all(body)
 }
 
 fn serve(mut stream: TcpStream, config: &Config, cluster: &Cluster) {
     let _ = stream.set_read_timeout(Some(Duration::from_secs(5)));
     let _ = stream.set_write_timeout(Some(Duration::from_secs(5)));
-    let response = match read_request(&mut stream) {
-        Ok((method, target, body)) if target == "/cluster" => {
+    let request = read_request(&mut stream);
+    let accept_lz4 = request.as_ref().is_ok_and(|(_, _, _, encoded)| *encoded);
+    let response = match request {
+        Ok((method, target, body, _)) if target == "/cluster" => {
             cluster::handle(&method, &body, cluster)
         }
-        Ok((method, target, body)) if target == "/cluster/health" => {
+        Ok((method, target, body, _)) if target == "/cluster/health" => {
             health::handle(&method, &body, cluster)
         }
-        Ok((method, target, body)) if target == "/distributed" => {
+        Ok((method, target, body, _)) if target == "/distributed" => {
             distributed::handle(&method, &body, cluster, config.max_rows)
         }
-        Ok((method, target, body)) => handle_request(&method, &target, &body, config),
+        Ok((method, target, body, _)) => handle_request(&method, &target, &body, config),
         Err(response) => response,
     };
-    let _ = respond(&mut stream, response);
+    let _ = respond(&mut stream, response, accept_lz4);
 }
 
 fn main() -> io::Result<()> {
@@ -172,6 +207,7 @@ fn main() -> io::Result<()> {
     let mut part = None;
     let mut database = None;
     let mut max_rows = 10_000usize;
+    let mut max_connections = MAX_CONNECTIONS;
     let mut peers = Vec::new();
     let mut bind = Ipv4Addr::LOCALHOST;
     let mut allow_private_network = false;
@@ -202,6 +238,11 @@ fn main() -> io::Result<()> {
                     args.next()
                         .ok_or_else(|| io::Error::other("missing database path"))?,
                 ));
+            }
+            "--max-connections" => {
+                let value = args.next()
+                    .ok_or_else(|| io::Error::other("missing max connections"))?;
+                max_connections = parse_max_connections(&value)?;
             }
             "--peer" => {
                 peers.push(
@@ -271,7 +312,7 @@ fn main() -> io::Result<()> {
         let stream = accepted?;
         let mut count = active.load(Ordering::Relaxed);
         let acquired = loop {
-            if count >= MAX_CONNECTIONS {
+            if count >= max_connections {
                 break false;
             }
             match active.compare_exchange_weak(
@@ -289,6 +330,7 @@ fn main() -> io::Result<()> {
             let _ = respond(
                 &mut stream,
                 Response::text("503 Service Unavailable", "server busy\n"),
+                false,
             );
             continue;
         }
@@ -384,5 +426,51 @@ mod request_line_spacing_regressions {
                 Some("400 Bad Request")
             );
         }
+    }
+}
+
+#[cfg(test)]
+mod compressed_peer_response_tests {
+    use super::*;
+    use std::net::Shutdown;
+
+    #[test]
+    fn negotiated_sql_response_compresses_without_changing_tsv_bytes() {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let addr = listener.local_addr().unwrap();
+        let client = std::thread::spawn(move || {
+            let mut stream = TcpStream::connect(addr).unwrap();
+            stream.shutdown(Shutdown::Write).unwrap();
+            let mut output = Vec::new();
+            stream.read_to_end(&mut output).unwrap();
+            output
+        });
+        let (mut stream, _) = listener.accept().unwrap();
+        let plain = b"user\tcount\n".repeat(8192);
+        respond(&mut stream, Response {
+            status: "200 OK", content_type: "text/tab-separated-values; charset=utf-8", body: plain.clone(),
+        }, true).unwrap();
+        drop(stream);
+        let raw = client.join().unwrap();
+        let end = raw.windows(4).position(|bytes| bytes == b"\r\n\r\n").unwrap() + 4;
+        assert!(raw[..end].windows(b"Content-Encoding: x-rusthouse-lz4".len())
+            .any(|bytes| bytes == b"Content-Encoding: x-rusthouse-lz4"));
+        assert_eq!(lz4_flex::decompress_size_prepended(&raw[end..]).unwrap(), plain);
+    }
+}
+
+#[cfg(test)]
+mod concurrency_capacity_tests {
+    use super::*;
+
+    #[test]
+    fn bounds_parallel_query_workers_before_binding_server() {
+        assert_eq!(parse_max_connections("1").unwrap(), 1);
+        assert_eq!(parse_max_connections("16").unwrap(), 16);
+        assert_eq!(parse_max_connections("64").unwrap(), 64);
+        for invalid in ["", "0", "65", "1000000", "-1", "4.5", "many"] {
+            assert!(parse_max_connections(invalid).is_err(), "{invalid}");
+        }
+        assert_eq!(MAX_CONNECTIONS, 16);
     }
 }
