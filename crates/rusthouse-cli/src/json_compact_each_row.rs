@@ -66,7 +66,7 @@ impl<W: Write> JsonCompactEachRowWriter<W> {
             .saturating_add(3);
         self.encoded.clear();
         self.encoded.reserve(capacity);
-        let encoded = &mut self.encoded;
+        let mut encoded = &mut self.encoded;
         encoded.write_all(b"[")?;
         for (index, value) in self.line.split(|byte| *byte == b'\t').enumerate() {
             if index != 0 {
