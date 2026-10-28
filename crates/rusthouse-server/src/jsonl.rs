@@ -62,13 +62,13 @@ fn write_json_row_into<W: Write>(
         if index != 0 {
             row.write_all(b",")?;
         }
-        write_json_string(&mut row, header)?;
+        write_json_string(&mut *row, header)?;
         row.write_all(b":")?;
         if field == b"\\N" {
             row.write_all(b"null")?;
         } else {
             let text = decoded_row_field(field)?;
-            write_json_string(&mut row, &text)?;
+            write_json_string(&mut *row, &text)?;
         }
     }
     if fields.next().is_some() {
