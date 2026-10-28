@@ -1,11 +1,11 @@
 mod arrays;
-pub mod distributed_inventory;
 mod checksums;
 mod columns;
 mod compression;
 mod database_lock;
 mod dates;
 mod decimal;
+pub mod distributed_inventory;
 mod enums;
 mod file_sizes;
 mod fixed_strings;
