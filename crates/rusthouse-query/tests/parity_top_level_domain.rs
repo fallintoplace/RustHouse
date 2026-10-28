@@ -15,18 +15,9 @@ fn clickhouse_compatibility_cases() {
             "SELECT topLevelDomain('https://www.example.com:8123/p')",
             ConstantValue::Text("com".into()),
         ),
-        (
-            "SELECT topLevelDomain('example.co.uk')",
-            ConstantValue::Text("uk".into()),
-        ),
-        (
-            "SELECT topLevelDomain('localhost')",
-            ConstantValue::Text("".into()),
-        ),
-        (
-            "SELECT topLevelDomain(NULL)",
-            ConstantValue::Null,
-        ),
+        ("SELECT topLevelDomain('example.co.uk')", ConstantValue::Text("uk".into())),
+        ("SELECT topLevelDomain('localhost')", ConstantValue::Text("".into())),
+        ("SELECT topLevelDomain(NULL)", ConstantValue::Null),
     ] {
         assert_eq!(value(sql), expected, "{sql}");
     }
