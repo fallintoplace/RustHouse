@@ -42,6 +42,7 @@ pub(super) fn is_function(name: &str) -> bool {
             | "URL_ENCODE"
             | "FRAGMENT"
             | "JSON_QUOTE"
+            | "MACSTRINGTOOUI"
             | "ISVALIDJSON"
             | "JSONHAS"
             | "JSONEXTRACTSTRING"
@@ -1878,6 +1879,29 @@ fn parse_at_depth(parser: &mut Parser, depth: usize) -> Result<ConstantValue, Pa
                 _ => ConstantValue::Null,
             }
         }
+        "MACSTRINGTOOUI" => {
+            let input = text_arg(parser, depth + 1)?;
+            require(parser, Token::RParen, "MACStringToOUI requires one string")?;
+            match input {
+                Some(value) => {
+                    let bytes = value.as_bytes();
+                    if !(8..=17).contains(&bytes.len()) {
+                        ConstantValue::Integer(0)
+                    } else {
+                        let positions = [0usize, 1, 3, 4, 6, 7];
+                        let mut numeric = 0u32;
+                        for index in positions {
+                            let Some(nibble) = char::from(bytes[index]).to_digit(16) else {
+                                return Ok(ConstantValue::Integer(0));
+                            };
+                            numeric = (numeric << 4) | nibble;
+                        }
+                        ConstantValue::Integer(i64::from(numeric))
+                    }
+                }
+                None => ConstantValue::Null,
+            }
+        }
         "JSON_QUOTE" => {
             let input = text_arg(parser, depth + 1)?;
             require(parser, Token::RParen, "JSON_QUOTE requires one argument")?;
@@ -2004,5 +2028,41 @@ fn text_arg(parser: &mut Parser, depth: usize) -> Result<Option<String>, ParseEr
         _ => Err(ParseError(
             "expected a string literal or string function".into(),
         )),
+    }
+}
+
+#[cfg(test)]
+mod clickhouse_mac_string_to_oui_tests {
+    use crate::{ConstantValue, Projection, parse_select};
+
+    fn value(sql: &str) -> ConstantValue {
+        match parse_select(sql).unwrap().projection {
+            Projection::Constants(columns) if columns.len() == 1 => columns[0].value.clone(),
+            Projection::Literal(number) => ConstantValue::Integer(number),
+            other => panic!("unexpected projection: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn reference_inputs() {
+        for (sql, expected) in [
+            ("SELECT MACStringToOUI('00:50:56:12:34:56')", ConstantValue::Integer(20566)),
+            ("SELECT MACStringToOUI('01:02:03')", ConstantValue::Integer(66051)),
+            ("SELECT MACStringToOUI('invalid')", ConstantValue::Integer(0)),
+            ("SELECT MACStringToOUI(NULL)", ConstantValue::Null),
+        ] {
+            assert_eq!(value(sql), expected, "{sql}");
+        }
+    }
+
+    #[test]
+    fn invalid_calls() {
+        for sql in [
+            "SELECT MACStringToOUI()",
+            "SELECT MACStringToOUI(1)",
+            "SELECT MACStringToOUI('01:02:03','x')",
+        ] {
+            assert!(parse_select(sql).is_err(), "{sql}");
+        }
     }
 }
