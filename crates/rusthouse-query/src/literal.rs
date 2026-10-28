@@ -22,29 +22,7 @@ fn fixed_decimal(value: &str) -> Result<(i128, usize), ParseError> {
     Ok((signed, fraction.len()))
 }
 
-/// Fold decimal literal arithmetic without floating point rounding in bounds.
-pub(super) fn arithmetic(left: &str, right: &str, subtract: bool) -> Result<String, ParseError> {
-    let (left, left_scale) = fixed_decimal(left)?;
-    let (right, right_scale) = fixed_decimal(right)?;
-    let scale = left_scale.max(right_scale);
-    let factor = |digits: usize| {
-        10_i128
-            .checked_pow((scale - digits) as u32)
-            .ok_or_else(|| ParseError("decimal constant scale is too large".into()))
-    };
-    let left = left
-        .checked_mul(factor(left_scale)?)
-        .ok_or_else(|| ParseError("decimal constant overflow".into()))?;
-    let right = right
-        .checked_mul(factor(right_scale)?)
-        .ok_or_else(|| ParseError("decimal constant overflow".into()))?;
-    let value = if subtract {
-        left.checked_sub(right)
-    } else {
-        left.checked_add(right)
-    }
-    .ok_or_else(|| ParseError("decimal constant overflow".into()))?;
-
+fn format_decimal(value: i128, scale: usize) -> String {
     let absolute = value.unsigned_abs();
     let divisor = 10_u128.pow(scale as u32);
     let mut formatted = if scale == 0 {
@@ -68,7 +46,33 @@ pub(super) fn arithmetic(left: &str, right: &str, subtract: bool) -> Result<Stri
     if value < 0 {
         formatted.insert(0, '-');
     }
-    Ok(formatted)
+    formatted
+}
+
+/// Fold decimal literal arithmetic without floating point rounding in bounds.
+pub(super) fn arithmetic(left: &str, right: &str, subtract: bool) -> Result<String, ParseError> {
+    let (left, left_scale) = fixed_decimal(left)?;
+    let (right, right_scale) = fixed_decimal(right)?;
+    let scale = left_scale.max(right_scale);
+    let factor = |digits: usize| {
+        10_i128
+            .checked_pow((scale - digits) as u32)
+            .ok_or_else(|| ParseError("decimal constant scale is too large".into()))
+    };
+    let left = left
+        .checked_mul(factor(left_scale)?)
+        .ok_or_else(|| ParseError("decimal constant overflow".into()))?;
+    let right = right
+        .checked_mul(factor(right_scale)?)
+        .ok_or_else(|| ParseError("decimal constant overflow".into()))?;
+    let value = if subtract {
+        left.checked_sub(right)
+    } else {
+        left.checked_add(right)
+    }
+    .ok_or_else(|| ParseError("decimal constant overflow".into()))?;
+
+    Ok(format_decimal(value, scale))
 }
 
 /// Add calendar years while preserving month/day, clamping Feb 29 to Feb 28.

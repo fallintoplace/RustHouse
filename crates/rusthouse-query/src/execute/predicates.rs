@@ -17,6 +17,12 @@ pub(super) enum CompiledTest {
         lower: Number,
         upper: Number,
     },
+    DistinctFrom {
+        target: Number,
+        negated: bool,
+    },
+    /// Constant predicate for non-Nullable generated numeric columns.
+    Always(bool),
     InSet {
         targets: HashSet<NumberKey>,
         negated: bool,
@@ -42,6 +48,12 @@ impl CompiledTest {
     pub(super) fn matches(&self, value: Number) -> bool {
         match self {
             Self::Comparison { operator, target } => number_matches(value, *target, *operator),
+            Self::DistinctFrom { target, negated } => {
+                let equal = matches!((value, *target), (Number::Float(left), Number::Float(right)) if left.is_nan() && right.is_nan())
+                    || number_matches(value, *target, Operator::Eq);
+                equal == *negated
+            }
+            Self::Always(value) => *value,
             Self::In(targets) => targets
                 .iter()
                 .any(|target| number_matches(value, *target, Operator::Eq)),
@@ -96,11 +108,11 @@ fn compile_predicate_test(
                 .collect::<Result<Vec<_>, _>>()?,
             matches!(predicate, Predicate::NotIn { .. }),
         ),
-        Predicate::IsNull { .. } => {
-            return Err(ExecutionError::Invalid(
-                "IS NULL requires a typed scan".into(),
-            ));
-        }
+        Predicate::IsNull { negated, .. } => CompiledTest::Always(*negated),
+        Predicate::DistinctFrom { value, negated, .. } => CompiledTest::DistinctFrom {
+            target: convert(column, value)?,
+            negated: *negated,
+        },
         Predicate::Like { .. } => {
             return Err(ExecutionError::Invalid(
                 "LIKE requires a String column".into(),

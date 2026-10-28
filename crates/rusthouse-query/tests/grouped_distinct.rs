@@ -97,3 +97,32 @@ fn rejects_invalid_grouped_distinct_syntax() {
         assert!(parse_select(sql).is_err(), "{sql}");
     }
 }
+
+#[test]
+fn groups_repeated_string_values_without_counting_nulls() {
+    let root = std::env::temp_dir().join(format!(
+        "rusthouse-string-grouped-distinct-{}-{}",
+        std::process::id(),
+        NEXT.fetch_add(1, Ordering::Relaxed)
+    ));
+    let columns = [
+        Column { name: "segment".into(), data_type: "String".into() },
+        Column { name: "tag".into(), data_type: "Nullable(String)".into() },
+    ];
+    let rows = [
+        vec![Some("east".into()), Some("a".into())],
+        vec![Some("east".into()), Some("a".into())],
+        vec![Some("east".into()), Some("b".into())],
+        vec![Some("east".into()), None],
+        vec![Some("west".into()), Some("x".into())],
+        vec![Some("west".into()), Some("x".into())],
+        vec![Some("west".into()), None],
+    ];
+    write_wide_part(&root, &columns, &rows).unwrap();
+    let mut output = Vec::new();
+    execute(&parse_select(
+        "SELECT segment, COUNT(DISTINCT tag) FROM part GROUP BY segment ORDER BY segment"
+    ).unwrap(), Some(&root), &mut output).unwrap();
+    assert_eq!(output, b"segment\tcountDistinct(tag)\neast\t2\nwest\t1\n");
+    fs::remove_dir_all(root).unwrap();
+}

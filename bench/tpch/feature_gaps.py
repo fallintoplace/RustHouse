@@ -19,18 +19,26 @@ RULES = (
 )
 
 
+KNOWN_STATUSES = frozenset((
+    "passed", "unverified", "missing_query", "missing_reference",
+    "unsupported_query", "mismatch", "timeout", "reference_error",
+))
+
+
+def classify_error(message):
+    for label, pattern in RULES:
+        if pattern.search(message):
+            return label
+    return "unclassified_error"
+
+
 def classify(result):
     status = result.get("status", "unknown")
-    if status in ("passed", "unverified", "missing_query", "missing_reference",
-                  "unsupported_query", "mismatch", "timeout", "reference_error"):
+    if status in KNOWN_STATUSES:
         return status
     if status != "error":
         return "unexpected_status"
-    error = result.get("error") or ""
-    for label, pattern in RULES:
-        if pattern.search(error):
-            return label
-    return "unclassified_error"
+    return classify_error(result.get("error") or "")
 
 
 def analyze(report, require_all_22=False):
