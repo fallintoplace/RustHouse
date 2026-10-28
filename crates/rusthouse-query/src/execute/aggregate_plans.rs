@@ -220,6 +220,28 @@ pub(super) fn execute_grouped_aggregate_numbers<W: Write>(
             return Ok(());
         }
     }
+    // Each generated key occurs exactly once. For simple filtered ranges,
+    // evaluate one-row aggregate states only for the requested page.
+    if (!query.predicates.is_empty() || !query.or_predicates.is_empty())
+        && query.having.is_none()
+        && query.order_by.is_none()
+        && query.order_by_extra.is_empty()
+    {
+        if let Some(limit) = query.limit {
+            if let Some((lower, upper)) = monotonic_range_indices(&comparisons, start, rows, step) {
+                let available = upper - lower;
+                let skip = (query.offset.unwrap_or(0) as u64).min(available);
+                let length = (limit as u64).min(available - skip);
+                for index in lower + skip..lower + skip + length {
+                    let number = u128::from(start) + u128::from(index) * u128::from(step);
+                    let mut state = AggregateState::new(*function);
+                    state.update(Number::Unsigned(number))?;
+                    writeln!(output, "{number}\t{}", state.render())?;
+                }
+                return Ok(());
+            }
+        }
+    }
     let mut by_key = HashMap::<NumberKey, usize>::new();
     let mut groups = Vec::<(Number, AggregateState)>::new();
     for index in 0..rows {
