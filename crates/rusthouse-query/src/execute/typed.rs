@@ -876,6 +876,23 @@ pub(super) fn execute_typed<W: Write>(
         skipped = scan.skip_prefix_rows(offset)?;
     }
     while let Some(batch) = scan.next_batch()? {
+        if no_filters && (is_count || is_count_column) {
+            let matches = if is_count {
+                batch[0].len()
+            } else {
+                match &batch[projection_indices[0]] {
+                    TypedColumn::NullableNumeric { nulls, .. }
+                    | TypedColumn::NullableText { nulls, .. } => {
+                        nulls.iter().filter(|&&null| null == 0).count()
+                    }
+                    _ => batch[0].len(),
+                }
+            };
+            count = count
+                .checked_add(matches as u64)
+                .ok_or_else(|| ExecutionError::Invalid("count overflow".into()))?;
+            continue;
+        }
         for index in 0..batch[0].len() {
             if !no_filters && !passes(&batch, index, &conditions) {
                 continue;
