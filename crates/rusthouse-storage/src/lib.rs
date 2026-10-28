@@ -7,6 +7,7 @@ pub mod distributed_crc32c;
 mod compression;
 pub mod distributed_chunk_plan;
 mod database_lock;
+pub mod distributed_rendezvous;
 mod dates;
 mod decimal;
 mod enums;
