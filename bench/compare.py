@@ -45,6 +45,37 @@ def ensure_compatible_reports(baseline, candidate):
             raise ValueError(f"cannot compare different {field} values")
 
 
+def classify_query(ident, old, new, slowdown_threshold_percent):
+    before, after = old.get("status"), new.get("status")
+    if before == "passed" and after != "passed":
+        return "regression", {
+            "query": ident, "reason": "correctness_downgrade",
+            "baseline_status": before, "candidate_status": after,
+        }, False
+    if before not in VALID or after not in VALID:
+        return "incomparable", {
+            "query": ident, "reason": "query_not_successful",
+            "baseline_status": before, "candidate_status": after,
+        }, False
+    previous, current = elapsed(old), elapsed(new)
+    if previous is None or current is None:
+        return "incomparable", {
+            "query": ident, "reason": "missing_positive_median",
+        }, False
+    change = 100 * (current / previous - 1)
+    item = {
+        "query": ident,
+        "baseline_ms": round(previous * 1000, 6),
+        "candidate_ms": round(current * 1000, 6),
+        "change_percent": round(change, 3),
+    }
+    if change > slowdown_threshold_percent:
+        return "regression", {**item, "reason": "latency_regression"}, True
+    if change < -slowdown_threshold_percent:
+        return "improvement", item, True
+    return None, None, True
+
+
 def compare(baseline, candidate, slowdown_threshold_percent=10):
     if not math.isfinite(slowdown_threshold_percent) or slowdown_threshold_percent < 0:
         raise ValueError("slowdown threshold must be nonnegative and finite")
@@ -58,29 +89,16 @@ def compare(baseline, candidate, slowdown_threshold_percent=10):
     incomparable = []
     compared = 0
     for ident in sorted(left):
-        old, new = left[ident], right[ident]
-        before, after = old.get("status"), new.get("status")
-        if before == "passed" and after != "passed":
-            regressions.append({"query": ident, "reason": "correctness_downgrade",
-                                "baseline_status": before, "candidate_status": after})
-            continue
-        if before not in VALID or after not in VALID:
-            incomparable.append({"query": ident, "reason": "query_not_successful",
-                                 "baseline_status": before, "candidate_status": after})
-            continue
-        previous, current = elapsed(old), elapsed(new)
-        if previous is None or current is None:
-            incomparable.append({"query": ident, "reason": "missing_positive_median"})
-            continue
-        compared += 1
-        change = 100 * (current / previous - 1)
-        item = {"query": ident, "baseline_ms": round(previous * 1000, 6),
-                "candidate_ms": round(current * 1000, 6),
-                "change_percent": round(change, 3)}
-        if change > slowdown_threshold_percent:
-            regressions.append({**item, "reason": "latency_regression"})
-        elif change < -slowdown_threshold_percent:
+        classification, item, measured = classify_query(
+            ident, left[ident], right[ident], slowdown_threshold_percent
+        )
+        compared += int(measured)
+        if classification == "regression":
+            regressions.append(item)
+        elif classification == "improvement":
             improvements.append(item)
+        elif classification == "incomparable":
+            incomparable.append(item)
     return {
         "comparison": "sql-query-latency",
         "threshold_percent": slowdown_threshold_percent,
