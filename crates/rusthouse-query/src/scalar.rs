@@ -41,6 +41,7 @@ pub(super) fn is_function(name: &str) -> bool {
         || name.eq_ignore_ascii_case("DIV")
         || name.eq_ignore_ascii_case("INTDIV")
         || name.eq_ignore_ascii_case("MOD")
+        || name.eq_ignore_ascii_case("MODULO")
         || name.eq_ignore_ascii_case("ABS_DIFF")
         || name.eq_ignore_ascii_case("MULTIPLY")
         || name.eq_ignore_ascii_case("SIGN")
@@ -971,7 +972,7 @@ fn factor(parser: &mut Parser, depth: usize) -> Result<i64, ParseError> {
     if parser.keyword("DIV") || parser.keyword("INTDIV") {
         return parse_div_mod(parser, depth, true);
     }
-    if parser.keyword("MOD") {
+    if parser.keyword("MOD") || parser.keyword("MODULO") {
         return parse_div_mod(parser, depth, false);
     }
     if parser.keyword("ABS_DIFF") {
