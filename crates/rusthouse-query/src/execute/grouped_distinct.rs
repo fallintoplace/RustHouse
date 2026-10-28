@@ -24,6 +24,124 @@ impl Group {
     }
 }
 
+
+/// Scan disjoint immutable parts with exact group/value sets, then merge in
+/// part order. Each partial result is bounded by the same exact-pair budget
+/// as the serial executor and outputs the same first-seen group order.
+fn parallel_grouped_distinct(
+    part: &Path,
+    names: &[String],
+    group_index: usize,
+    value_index: usize,
+    conditions: &[Vec<typed::Condition>],
+    no_filters: bool,
+) -> Result<Option<Vec<Group>>, ExecutionError> {
+    let parts = rusthouse_storage::query_parts(part)?;
+    let workers = std::thread::available_parallelism()
+        .map_or(1, |count| count.get())
+        .min(4);
+    if workers < 2 || parts.len() < 16 {
+        return Ok(None);
+    }
+    let size = parts.len().div_ceil(workers);
+    let chunks = std::thread::scope(|scope| {
+        let handles = parts.chunks(size).map(|paths| {
+            scope.spawn(move || -> Result<Vec<Group>, ExecutionError> {
+                let mut groups: Vec<Group> = Vec::new();
+                let mut by_key = HashMap::<Key, usize>::new();
+                let mut pairs = 0usize;
+                for path in paths {
+                    let mut reader = rusthouse_storage::TypedPartReader::open(path, names)?;
+                    while let Some(batch) = reader.next_batch()? {
+                        for row in 0..batch[0].len() {
+                            if !no_filters && !typed::passes(&batch, row, conditions) {
+                                continue;
+                            }
+                            let key = typed::key_at(&batch[group_index], row);
+                            let id = match by_key.entry(key) {
+                                Entry::Occupied(entry) => *entry.get(),
+                                Entry::Vacant(entry) => {
+                                    if groups.len() >= MAX_GROUPS {
+                                        return Err(ExecutionError::Invalid(
+                                            "GROUP BY supports at most 200000 groups".into(),
+                                        ));
+                                    }
+                                    let id = groups.len();
+                                    entry.insert(id);
+                                    groups.push(Group {
+                                        key: typed::cell(&batch[group_index], row),
+                                        distinct: HashSet::new(),
+                                        distinct_text: HashSet::new(),
+                                        distinct_uuids: HashSet::new(),
+                                    });
+                                    id
+                                }
+                            };
+                            if typed::is_null_at(&batch[value_index], row) {
+                                continue;
+                            }
+                            let inserted = match &batch[value_index] {
+                                TypedColumn::Uuid(values) => {
+                                    groups[id].distinct_uuids.insert(*values[row].as_bytes())
+                                }
+                                TypedColumn::Text(values) | TypedColumn::NullableText { values, .. } => {
+                                    groups[id].distinct_text.insert(values[row].to_vec())
+                                }
+                                column => {
+                                    groups[id].distinct.insert(typed::key_at(column, row))
+                                }
+                            };
+                            if inserted {
+                                pairs += 1;
+                                if pairs > MAX_GROUP_VALUE_PAIRS {
+                                    return Err(ExecutionError::Invalid(
+                                        "grouped COUNT(DISTINCT) supports at most 200000 distinct pairs".into(),
+                                    ));
+                                }
+                            }
+                        }
+                    }
+                }
+                Ok(groups)
+            })
+        }).collect::<Vec<_>>();
+        handles.into_iter().map(|handle| handle.join().unwrap_or_else(|_| {
+            Err(ExecutionError::Invalid("parallel distinct worker panicked".into()))
+        })).collect::<Vec<_>>()
+    });
+    let mut groups: Vec<Group> = Vec::new();
+    let mut by_key = HashMap::<Key, usize>::new();
+    let mut pairs = 0usize;
+    for chunk in chunks {
+        for group in chunk? {
+            let key = group.key.key();
+            if let Some(&id) = by_key.get(&key) {
+                let existing = &mut groups[id];
+                let before = existing.distinct_len();
+                existing.distinct.extend(group.distinct);
+                existing.distinct_text.extend(group.distinct_text);
+                existing.distinct_uuids.extend(group.distinct_uuids);
+                pairs += existing.distinct_len() - before;
+            } else {
+                if groups.len() >= MAX_GROUPS {
+                    return Err(ExecutionError::Invalid(
+                        "GROUP BY supports at most 200000 groups".into(),
+                    ));
+                }
+                pairs += group.distinct_len();
+                by_key.insert(key, groups.len());
+                groups.push(group);
+            }
+            if pairs > MAX_GROUP_VALUE_PAIRS {
+                return Err(ExecutionError::Invalid(
+                    "grouped COUNT(DISTINCT) supports at most 200000 distinct pairs".into(),
+                ));
+            }
+        }
+    }
+    Ok(Some(groups))
+}
+
 pub(super) fn execute<W: Write>(
     query: &Select,
     part: &Path,
@@ -80,7 +198,12 @@ pub(super) fn execute<W: Write>(
 
     let group_index = indices[column];
     let value_index = indices[value_column];
-    let mut groups = Vec::<Group>::new();
+    let no_filters = query.predicates.is_empty() && query.or_predicates.is_empty();
+    let partial = parallel_grouped_distinct(
+        part, &names, group_index, value_index, &conditions, no_filters,
+    )?;
+    let scan_serially = partial.is_none();
+    let mut groups = partial.unwrap_or_default();
     let mut by_key = HashMap::<Key, usize>::new();
     // Repeated String group keys can be checked without owning row bytes.
     let mut text_groups = HashMap::<Vec<u8>, usize>::new();
@@ -97,10 +220,13 @@ pub(super) fn execute<W: Write>(
     let mut dense_groups = matches!(types[column].as_str(), "UInt16" | "Int16")
         .then(|| vec![usize::MAX; 65_536]);
     let mut total_pairs = 0usize;
-    let mut reader = TypedQueryReader::open_with_metadata(part, &names, &metadata)?;
-    let no_filters = query.predicates.is_empty() && query.or_predicates.is_empty();
+    let mut reader = if scan_serially {
+        Some(TypedQueryReader::open_with_metadata(part, &names, &metadata)?)
+    } else {
+        None
+    };
 
-    while let Some(batch) = reader.next_batch()? {
+    while let Some(batch) = reader.as_mut().map_or(Ok(None), TypedQueryReader::next_batch)? {
         for row in 0..batch[0].len() {
             if !no_filters && !typed::passes(&batch, row, &conditions) {
                 continue;
