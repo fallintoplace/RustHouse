@@ -43,7 +43,9 @@ def execute(binary, database, sql, timeout):
     return cli_sql(binary, database, sql, timeout)
 
 def verify_result(output, expected_labels):
-    lines = output.splitlines()
+    if output and not output.endswith(b"\n"):
+        raise ValueError("join output is missing its final newline")
+    lines = output.split(b"\n")[:-1] if output else []
     if len(lines) != len(expected_labels):
         raise ValueError(
             f"expected {len(expected_labels)} join rows, received {len(lines)}"
