@@ -30,6 +30,15 @@ class CsvToTsvTests(unittest.TestCase):
         self.assertEqual(escape_field("", True), r"\N")
         self.assertEqual(escape_field("\x00\r\v"), r"\0\r\v")
 
+    def test_escape_translation_matches_character_reference(self):
+        substitutions = {"\\": r"\\", "\t": r"\t", "\n": r"\n",
+                         "\r": r"\r", "\x00": r"\0", "\b": r"\b",
+                         "\f": r"\f", "\v": r"\v"}
+        for value in ["", "plain 123", "a\\b\tc\né", "\0\b\f\v\r",
+                      "x" * 65536 + "\n" + "y" * 65536]:
+            expected = "".join(substitutions.get(char, char) for char in value)
+            self.assertEqual(escape_field(value), expected)
+
     def test_rejects_column_mismatch_and_same_file(self):
         with tempfile.TemporaryDirectory() as temp:
             source = Path(temp) / "in.csv"
