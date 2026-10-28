@@ -23,6 +23,14 @@ def split_tsv(source, output_dir, *, rows_per_chunk=65536):
     temporary = Path(tempfile.mkdtemp(prefix=".rusthouse-shards-", dir=output_dir.parent))
     shards = []
     current = None
+    pending = bytearray()
+
+    def flush_pending():
+        if pending:
+            current["file"].write(pending)
+            current["sha256"].update(pending)
+            pending.clear()
+
     try:
         with source.open("rb") as stream:
             while True:
@@ -35,6 +43,7 @@ def split_tsv(source, output_dir, *, rows_per_chunk=65536):
                     raise ValueError("empty TSV record")
                 if current is None or current["rows"] == rows_per_chunk:
                     if current is not None:
+                        flush_pending()
                         current["file"].close()
                         del current["file"]
                     filename = f"part-{len(shards):06}.tsv"
@@ -42,11 +51,13 @@ def split_tsv(source, output_dir, *, rows_per_chunk=65536):
                     current = {"path": filename, "rows": 0, "bytes": 0,
                                "sha256": hashlib.sha256(), "file": handle}
                     shards.append(current)
-                current["file"].write(record)
-                current["sha256"].update(record)
+                pending.extend(record)
+                if len(pending) >= 256 * 1024:
+                    flush_pending()
                 current["bytes"] += len(record)
                 current["rows"] += 1
         if current is not None:
+            flush_pending()
             current["file"].close()
             del current["file"]
         if not shards:
