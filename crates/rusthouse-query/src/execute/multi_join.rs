@@ -15,6 +15,29 @@ fn invalid(message: impl Into<String>) -> ExecutionError {
     ExecutionError::Invalid(message.into())
 }
 
+/// Keep the common unique-key join bucket inline instead of allocating
+/// a heap vector for every dimension key.
+enum Bucket {
+    One(usize),
+    Many(Vec<usize>),
+}
+
+impl Bucket {
+    fn push(&mut self, index: usize) {
+        match self {
+            Self::One(first) => *self = Self::Many(vec![*first, index]),
+            Self::Many(indices) => indices.push(index),
+        }
+    }
+
+    fn iter(&self) -> std::slice::Iter<'_, usize> {
+        match self {
+            Self::One(index) => std::slice::from_ref(index).iter(),
+            Self::Many(indices) => indices.iter(),
+        }
+    }
+}
+
 struct Relation {
     alias: String,
     names: Vec<String>,
@@ -332,11 +355,13 @@ pub fn execute_multi_join<W: Write>(
             MAX_INPUT_ROWS,
             MAX_STREAM_BUILD_BYTES,
         )?;
-        let mut hash: HashMap<Vec<typed::Key>, Vec<usize>> =
+        let mut hash: HashMap<Vec<typed::Key>, Bucket> =
             HashMap::with_capacity(right_rows.len());
         for (index, row) in right_rows.iter().enumerate() {
             if let Some(key) = row_key(row, &right_keys) {
-                hash.entry(key).or_default().push(index);
+                hash.entry(key)
+                    .and_modify(|bucket| bucket.push(index))
+                    .or_insert(Bucket::One(index));
             }
         }
         let mut next = Vec::new();
@@ -438,4 +463,18 @@ pub fn execute_multi_join<W: Write>(
         output.write_all(b"\n")?;
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod bucket_tests {
+    use super::*;
+
+    #[test]
+    fn singleton_bucket_promotes_to_duplicate_matches_in_input_order() {
+        let mut bucket = Bucket::One(3);
+        assert_eq!(bucket.iter().copied().collect::<Vec<_>>(), vec![3]);
+        bucket.push(7);
+        bucket.push(9);
+        assert_eq!(bucket.iter().copied().collect::<Vec<_>>(), vec![3, 7, 9]);
+    }
 }
