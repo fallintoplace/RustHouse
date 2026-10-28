@@ -54,6 +54,7 @@ pub(super) fn is_function(name: &str) -> bool {
             | "BASENAME"
             | "TRIM_WHITESPACE"
             | "TRY_TO_INT64"
+            | "TOINT64ORZERO"
             | "LPAD"
             | "COUNTSUBSTRINGSCASEINSENSITIVE"
             | "HEX_DECODE"
@@ -1621,6 +1622,14 @@ fn parse_at_depth(parser: &mut Parser, depth: usize) -> Result<ConstantValue, Pa
                     }
                     ConstantValue::Text(" ".repeat(width))
                 }
+                None => ConstantValue::Null,
+            }
+        }
+        "TOINT64ORZERO" => {
+            let input = text_arg(parser, depth + 1)?;
+            require(parser, Token::RParen, "toInt64OrZero requires one argument")?;
+            match input {
+                Some(value) => ConstantValue::Integer(value.parse::<i64>().unwrap_or(0)),
                 None => ConstantValue::Null,
             }
         }
