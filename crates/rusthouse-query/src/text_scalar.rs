@@ -97,6 +97,7 @@ pub(super) fn is_function(name: &str) -> bool {
             | "STRIP_SUFFIX"
             | "REPEAT"
             | "BASE64_DECODE"
+            | "BASE64DECODE"
             | "APPENDTRAILINGCHARIFABSENT"
             | "RPAD"
             | "LOWERUTF8"
@@ -1730,7 +1731,7 @@ fn parse_at_depth(parser: &mut Parser, depth: usize) -> Result<ConstantValue, Pa
                 _ => ConstantValue::Null,
             }
         }
-        "BASE64_DECODE" => {
+        "BASE64_DECODE" | "BASE64DECODE" => {
             let input = text_arg(parser, depth + 1)?;
             require(parser, Token::RParen, "BASE64_DECODE requires one argument")?;
             match input {
