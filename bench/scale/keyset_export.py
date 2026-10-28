@@ -59,13 +59,12 @@ def export(binary, database, table, output, start, rows, page_rows=8192, timeout
             for first in range(start, start + rows, page_rows):
                 count = min(page_rows, start + rows - first)
                 data = execute(page_sql(table, column, first, count))
-                expected = (f"{number}\n".encode("ascii") for number in range(first, first + count))
-                actual = iter(data.splitlines(keepends=True))
-                for value in expected:
-                    if next(actual, None) != value:
-                        raise ValueError(f"missing, duplicated or unordered ID near {first}")
-                if next(actual, None) is not None:
-                    raise ValueError(f"unexpected extra records in ID window {first}")
+                # Compare the complete expected page in one operation.
+                # Avoid one Python bytes allocation and one splitline per ID.
+                expected = "".join(f"{number}\n" for number in
+                                   range(first, first + count)).encode("ascii")
+                if data != expected:
+                    raise ValueError(f"missing, duplicated or unordered ID near {first}")
                 sink.write(data)
                 digest.update(data)
                 pages += 1
