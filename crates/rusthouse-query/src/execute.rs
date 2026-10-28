@@ -2,6 +2,7 @@ mod aggregate_plans;
 mod external_grouped;
 mod bitmap_distinct;
 mod histogram;
+mod grouped_histogram;
 mod hyperloglog;
 
 #[cfg(test)]
@@ -954,6 +955,9 @@ fn execute_into<W: Write>(
     let part = part.ok_or_else(|| {
         ExecutionError::Invalid("pass --part <directory> for table queries".into())
     })?;
+    if matches!(query.projection, Projection::GroupedHistogram { .. }) {
+        return grouped_histogram::execute(query, part, output);
+    }
     if matches!(query.projection, Projection::Histogram { .. }) {
         return histogram::execute_part(query, part, output);
     }
@@ -1062,6 +1066,7 @@ fn execute_into<W: Write>(
         | Projection::CountDistinct { .. }
         | Projection::ApproxDistinct { .. }
         | Projection::Histogram { .. }
+        | Projection::GroupedHistogram { .. }
         | Projection::GroupedCount { .. }
         | Projection::GroupedDistinctCount { .. }
         | Projection::GroupedMultiDistinctCount { .. }
@@ -1629,6 +1634,7 @@ fn execute_numbers<W: Write>(
         | Projection::CountDistinct { .. }
         | Projection::ApproxDistinct { .. }
         | Projection::Histogram { .. }
+        | Projection::GroupedHistogram { .. }
         | Projection::GroupedCount { .. }
         | Projection::GroupedDistinctCount { .. }
         | Projection::GroupedMultiDistinctCount { .. }
