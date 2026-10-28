@@ -15,6 +15,7 @@ pub(super) fn is_function(name: &str) -> bool {
             | "HASSUBSEQUENCE"
             | "CHR"
             | "STRINGBYTESUNIQ"
+            | "TOSTARTOFTHIRTYMINUTES"
             | "BIT_LENGTH"
             | "IS_INT64"
             | "BTRIM"
@@ -242,6 +243,18 @@ fn parse_at_depth(parser: &mut Parser, depth: usize) -> Result<ConstantValue, Pa
                         output.push_str(fragment);
                     }
                     ConstantValue::Text(output)
+                }
+                None => ConstantValue::Null,
+            }
+        }
+        "TOSTARTOFTHIRTYMINUTES" => {
+            let input = text_arg(parser, depth + 1)?;
+            require(parser, Token::RParen, "toStartOfThirtyMinutes requires one argument")?;
+            match input {
+                Some(value) => {
+                    let seconds = rusthouse_storage::parse_datetime(&value)
+                        .ok_or_else(|| ParseError("invalid UTC DateTime argument".into()))?;
+                    ConstantValue::Text(rusthouse_storage::format_datetime(seconds / 1800 * 1800))
                 }
                 None => ConstantValue::Null,
             }
