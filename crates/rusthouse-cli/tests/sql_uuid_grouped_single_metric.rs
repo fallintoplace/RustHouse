@@ -21,6 +21,9 @@ fn uuid_grouped_single_metric_preserves_exact_keys() {
     }
     let result = sql("SELECT user_id, sum(amount) FROM events GROUP BY user_id ORDER BY user_id");
     assert!(result.status.success(), "{result:?}");
-    assert_eq!(result.stdout, b"user_id\tsum(amount)\n00000000-0000-0000-0000-000000000001\t11\n00000000-0000-0000-0000-000000000002\t12\n");
+    assert_eq!(
+        result.stdout,
+        b"user_id\tsum(amount)\n00000000-0000-0000-0000-000000000001\t11\n00000000-0000-0000-0000-000000000002\t12\n"
+    );
     fs::remove_dir_all(db).unwrap();
 }
