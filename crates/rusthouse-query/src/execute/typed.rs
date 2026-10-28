@@ -118,14 +118,14 @@ fn is_typed(data_type: &str) -> bool {
 
 pub(super) fn requires_typed_scan(query: &Select, path: &Path) -> Result<bool, ExecutionError> {
     let metadata = inspect_query_source(path)?;
-    let mut names = Vec::new();
+    let mut names = HashSet::new();
     match &query.projection {
         Projection::All => names.extend(metadata.columns.iter().map(|c| c.name.as_str())),
         Projection::Columns(values) => names.extend(values.iter().map(String::as_str)),
         Projection::Aggregate { column, .. }
         | Projection::CountColumn { column }
         | Projection::CountDistinct { column }
-        | Projection::GroupedCount { column } => names.push(column),
+        | Projection::GroupedCount { column } => { names.insert(column.as_str()); },
         _ => {}
     }
     for pred in query
@@ -136,15 +136,15 @@ pub(super) fn requires_typed_scan(query: &Select, path: &Path) -> Result<bool, E
         if matches!(pred, Predicate::IsNull { .. } | Predicate::Like { .. }) {
             return Ok(true);
         }
-        names.push(pred.column());
+        names.insert(pred.column());
     }
     for order in query.order_terms() {
-        names.push(query.order_source_column(&order.column));
+        names.insert(query.order_source_column(&order.column));
     }
     Ok(metadata
         .columns
         .iter()
-        .any(|column| is_typed(&column.data_type) && names.contains(&column.name.as_str())))
+        .any(|column| is_typed(&column.data_type) && names.contains(column.name.as_str())))
 }
 
 pub(super) fn base_type(data_type: &str) -> &str {
