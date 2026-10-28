@@ -40,7 +40,11 @@ impl StringColumn {
 
     pub(crate) fn from_rows(rows: Vec<Vec<u8>>) -> Result<Self, StringReadError> {
         checked_rows(rows.len())?;
+        let total_bytes = rows.iter().try_fold(0usize, |size, row| {
+            checked_end(size, row.len() as u64)
+        })?;
         let mut column = Self::new(rows.len());
+        column.data.reserve(total_bytes);
         for row in rows {
             let end = checked_end(column.data.len(), row.len() as u64)?;
             column.data.extend_from_slice(&row);
@@ -200,6 +204,15 @@ mod tests {
             let count = buffer.len().min(1);
             self.0.read(&mut buffer[..count])
         }
+    }
+
+    #[test]
+    fn from_rows_preserves_boundaries_with_preallocated_payload() {
+        let column = StringColumn::from_rows(vec![vec![b'a'; 1024], Vec::new(), vec![b'z'; 4096]]).unwrap();
+        assert_eq!(column.len(), 3);
+        assert_eq!(column.offsets(), &[0, 1024, 1024, 5120]);
+        assert_eq!(column.get(2), Some(&vec![b'z'; 4096][..]));
+        assert!(column.data.capacity() >= column.data.len());
     }
 
     fn check_values(column: &StringColumn) {
