@@ -244,6 +244,7 @@ mod literal_null_marker_regressions {
         assert_eq!(writer.columns, Some(256));
         assert!(writer.write_all(b"one\tcolumn\n").is_err());
     }
+
     #[test]
     fn wide_plain_csv_rows_reuse_reserved_output_capacity() {
         let large = "x".repeat(4096);
