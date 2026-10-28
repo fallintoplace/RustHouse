@@ -54,6 +54,9 @@ pub(super) fn is_function(name: &str) -> bool {
             | "SUBSTRING_INDEX"
             | "SUBSTRINGINDEXUTF8"
             | "QUERYSTRINGANDFRAGMENT"
+            | "PARSEREADABLESIZE"
+            | "PARSEREADABLESIZEORNULL"
+            | "PARSEREADABLESIZEORZERO"
             | "TO_INT64"
             | "TRIM"
             | "LTRIM"
@@ -127,6 +130,25 @@ fn parse_at_depth(parser: &mut Parser, depth: usize) -> Result<ConstantValue, Pa
                     i64::try_from(value.chars().count())
                         .map_err(|_| ParseError("lengthUTF8 result exceeds Int64".into()))?,
                 ),
+                None => ConstantValue::Null,
+            }
+        }
+        "PARSEREADABLESIZE" | "PARSEREADABLESIZEORNULL" | "PARSEREADABLESIZEORZERO" => {
+            let input = text_arg(parser, depth + 1)?;
+            require(parser, Token::RParen, "parseReadableSize requires one argument")?;
+            match input {
+                Some(input) => match parse_readable_size_int64(&input) {
+                    Ok(bytes) => ConstantValue::Integer(bytes),
+                    Err(error) if name == "PARSEREADABLESIZEORNULL" => {
+                        let _ = error;
+                        ConstantValue::Null
+                    }
+                    Err(error) if name == "PARSEREADABLESIZEORZERO" => {
+                        let _ = error;
+                        ConstantValue::Integer(0)
+                    }
+                    Err(error) => return Err(error),
+                },
                 None => ConstantValue::Null,
             }
         }
@@ -2004,5 +2026,81 @@ fn text_arg(parser: &mut Parser, depth: usize) -> Result<Option<String>, ParseEr
         _ => Err(ParseError(
             "expected a string literal or string function".into(),
         )),
+    }
+}
+
+fn parse_readable_size_int64(input: &str) -> Result<i64, ParseError> {
+    let input = input.trim();
+    let split = input.find(|ch: char| !ch.is_ascii_digit() && ch != '.')
+        .ok_or_else(|| ParseError("size requires a byte unit".into()))?;
+    let (amount, unit) = input.split_at(split);
+    let unit = unit.trim().to_ascii_lowercase();
+    let factor: i128 = match unit.as_str() {
+        "b" => 1,
+        "kb" => 1000,
+        "mb" => 1000_i128.pow(2),
+        "gb" => 1000_i128.pow(3),
+        "tb" => 1000_i128.pow(4),
+        "pb" => 1000_i128.pow(5),
+        "eb" => 1000_i128.pow(6),
+        "kib" => 1024,
+        "mib" => 1024_i128.pow(2),
+        "gib" => 1024_i128.pow(3),
+        "tib" => 1024_i128.pow(4),
+        "pib" => 1024_i128.pow(5),
+        "eib" => 1024_i128.pow(6),
+        _ => return Err(ParseError("unknown byte unit".into())),
+    };
+    let mut components = amount.split('.');
+    let whole = components.next().unwrap_or("");
+    let fraction = components.next();
+    if whole.is_empty() || !whole.bytes().all(|b| b.is_ascii_digit()) ||
+        components.next().is_some() {
+        return Err(ParseError("invalid byte quantity".into()));
+    }
+    let whole: i128 = whole.parse()
+        .map_err(|_| ParseError("size exceeds Int64".into()))?;
+    let (fractional, divisor) = match fraction {
+        None => (0_i128, 1_i128),
+        Some(frac) if !frac.is_empty() && frac.len() <= 12
+            && frac.bytes().all(|b| b.is_ascii_digit()) => {
+                (frac.parse::<i128>().map_err(|_| ParseError("invalid fraction".into()))?,
+                    10_i128.pow(frac.len() as u32))
+            }
+        _ => return Err(ParseError("invalid decimal size".into())),
+    };
+    let numerator = whole.checked_mul(divisor)
+        .and_then(|n| n.checked_add(fractional))
+        .ok_or_else(|| ParseError("size exceeds Int64".into()))?;
+    let scaled = numerator.checked_mul(factor)
+        .ok_or_else(|| ParseError("size exceeds Int64".into()))?;
+    let bytes = scaled.checked_add(divisor - 1)
+        .ok_or_else(|| ParseError("size exceeds Int64".into()))? / divisor;
+    i64::try_from(bytes).map_err(|_| ParseError("size exceeds Int64".into()))
+}
+
+#[cfg(test)]
+mod clickhouse_parse_readable_size_tests {
+    use crate::{parse_select, ConstantValue, Projection};
+    #[test]
+    fn decodes_decimal_and_binary_units_with_round_up() {
+        for (sql, expected) in [
+            ("SELECT parseReadableSize('1 B')", 1),
+            ("SELECT parseReadableSize('1 KiB')", 1024),
+            ("SELECT parseReadableSize('3 MB')", 3_000_000),
+            ("SELECT parseReadableSize('5.314 KiB')", 5442),
+            ("SELECT parseReadableSize('0 B')", 0),
+        ] {
+            assert!(matches!(parse_select(sql).unwrap().projection, Projection::Constants(values)
+                if values.len() == 1 && values[0].value == ConstantValue::Integer(expected)), "{sql}");
+        }
+        assert!(matches!(parse_select("SELECT parseReadableSizeOrNull('invalid')").unwrap().projection,
+            Projection::Constants(values) if values[0].value == ConstantValue::Null));
+        assert!(matches!(parse_select("SELECT parseReadableSizeOrZero('invalid')").unwrap().projection,
+            Projection::Constants(values) if values[0].value == ConstantValue::Integer(0)));
+        for sql in ["SELECT parseReadableSize('invalid')", "SELECT parseReadableSize('-1 KiB')",
+            "SELECT parseReadableSize('9223372036854775808 B')"] {
+            assert!(parse_select(sql).is_err(), "{sql}");
+        }
     }
 }
