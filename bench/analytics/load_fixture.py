@@ -18,8 +18,15 @@ def load_fixture(binary, database, fixture_dir, timeout=120, execute=None):
         actual_header = source.readline().rstrip("\r\n").split("\t")
         if actual_header != [name for name, _, _ in FIELDS]:
             raise ValueError("hits TSV column names differ from the fixture schema")
-        expected = sum(1 for _ in source)
-    with closing(sqlite3.connect(root / "hits.sqlite")) as reference:
+        expected = 0
+        for record in source:
+            if len(record.rstrip("\r\n").split("\t")) != len(FIELDS):
+                raise ValueError(f"hits TSV row {expected + 1} has an invalid column count")
+            expected += 1
+    reference_path = root / "hits.sqlite"
+    if not reference_path.is_file():
+        raise ValueError("SQLite fixture reference is missing")
+    with closing(sqlite3.connect(reference_path)) as reference:
         sqlite_rows = reference.execute("SELECT COUNT(*) FROM hits").fetchone()[0]
     if expected < 1 or sqlite_rows != expected:
         raise ValueError(f"source row count {expected} differs from SQLite {sqlite_rows}")
