@@ -1,6 +1,14 @@
 //! Deterministic experimental shard-to-replica placement.
 use std::collections::HashSet;
 
+fn valid_node(node: &str) -> bool {
+    !node.is_empty()
+        && node.len() <= 64
+        && node
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'_' | b'-'))
+}
+
 fn score(shard: &str, node: &str) -> u64 {
     const OFFSET: u64 = 0xcbf2_9ce4_8422_2325;
     const PRIME: u64 = 0x0000_0100_0000_01b3;
@@ -40,12 +48,7 @@ pub fn replicas_for(
     }
     let mut unique = HashSet::new();
     for node in nodes {
-        if node.is_empty()
-            || node.len() > 64
-            || !node
-                .bytes()
-                .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'_' | b'-'))
-            || !unique.insert(node.as_str())
+        if !valid_node(node) || !unique.insert(node.as_str())
         {
             return Err("invalid or duplicate replica node");
         }
@@ -83,14 +86,7 @@ pub fn weighted_replicas_for(
     let mut seen = HashSet::new();
     let mut ranked = Vec::with_capacity(nodes.len());
     for &(node, weight) in nodes {
-        if node.is_empty()
-            || node.len() > 64
-            || weight == 0
-            || weight > 1024
-            || !node.bytes().all(|byte| {
-                byte.is_ascii_alphanumeric() || matches!(byte, b'_' | b'-')
-            })
-            || !seen.insert(node)
+        if !valid_node(node) || !(1..=1024).contains(&weight) || !seen.insert(node)
         {
             return Err("invalid weighted replica node or weight");
         }
