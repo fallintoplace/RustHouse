@@ -213,14 +213,26 @@ pub(super) fn execute<W: Write>(
                     }
                     continue;
                 }
-                match typed::cell(&batch[column_index], row) {
-                    Cell::Numeric(value) => state.update(value)?,
-                    Cell::Null => {}
-                    Cell::Text(_) | Cell::Uuid(_) => {
-                        return Err(ExecutionError::Invalid(
-                            "numeric aggregates require numeric columns".into(),
-                        ));
+                // Handle native numeric batches without creating a Cell
+                // for each aggregate value and every matching input row.
+                match &batch[column_index] {
+                    TypedColumn::Numeric(values) => {
+                        state.update(super::number_at(values, row))?;
                     }
+                    TypedColumn::NullableNumeric { values, nulls } => {
+                        if nulls[row] == 0 {
+                            state.update(super::number_at(values, row))?;
+                        }
+                    }
+                    column => match typed::cell(column, row) {
+                        Cell::Numeric(value) => state.update(value)?,
+                        Cell::Null => {}
+                        Cell::Text(_) | Cell::Uuid(_) => {
+                            return Err(ExecutionError::Invalid(
+                                "numeric aggregates require numeric columns".into(),
+                            ));
+                        }
+                    },
                 }
             }
         }
