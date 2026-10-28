@@ -112,6 +112,7 @@ fn is_typed(data_type: &str) -> bool {
     matches!(data_type, "String" | "UUID" | "Date" | "DateTime")
         || data_type.starts_with("Nullable(")
         || data_type.starts_with("Array(")
+        || data_type.starts_with("Map(")
 }
 
 pub(super) fn requires_typed_scan(query: &Select, path: &Path) -> Result<bool, ExecutionError> {
