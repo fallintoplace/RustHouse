@@ -7,6 +7,7 @@ pub(super) fn is_function(name: &str) -> bool {
     matches!(
         name.to_ascii_uppercase().as_str(),
         "LENGTH"
+            | "TOSTARTOFQUARTER"
             | "LENGTHUTF8"
             | "CHAR_LENGTH"
             | "OCTET_LENGTH"
@@ -1950,6 +1951,21 @@ fn parse_at_depth(parser: &mut Parser, depth: usize) -> Result<ConstantValue, Pa
                         return Err(ParseError("lowerUTF8 result is too large".into()));
                     }
                     ConstantValue::Text(result)
+                }
+                None => ConstantValue::Null,
+            }
+        }
+        "TOSTARTOFQUARTER" => {
+            let input = text_arg(parser, depth + 1)?;
+            require(parser, Token::RParen, "toStartOfQuarter requires one argument")?;
+            match input {
+                Some(value) => {
+                    if rusthouse_storage::parse_date(&value).is_none() {
+                        return Err(ParseError("invalid Date argument".into()));
+                    }
+                    let month = value[5..7].parse::<u32>().unwrap();
+                    let start = (month - 1) / 3 * 3 + 1;
+                    ConstantValue::Text(format!("{}-{start:02}-01", &value[..4]))
                 }
                 None => ConstantValue::Null,
             }
