@@ -124,7 +124,14 @@ pub(super) fn is_safe_grouped_sum(select: &Select) -> bool {
         && !select.distinct
         && select.rename.is_none()
         && select.alias.is_none()
-        && select.order_terms().all(|term| term.column == "#aggregate")
+        && match &select.projection {
+            Projection::GroupedAggregate { column, .. } => {
+                select.order_terms().all(|term| {
+                    term.column == "#aggregate" || term.column == *column
+                })
+            }
+            _ => false,
+        }
 }
 
 pub(super) fn group_key_type(kind: &str) -> bool {
