@@ -760,7 +760,10 @@ fn merge_grouped_integer_sums_query(
             let index = if let Some(&index) = positions.get(key) {
                 index
             } else {
-                if groups.len() >= max_rows {
+                // Output caps apply after global HAVING, sorting and pagination.
+                // A separate bounded working set preserves valid small top-K pages.
+                let group_budget = if global.is_some() { 250_000 } else { max_rows };
+                if groups.len() >= group_budget {
                     return Err(MergeError::CoordinatorLimit);
                 }
                 let index = groups.len();
@@ -850,6 +853,9 @@ fn merge_grouped_integer_sums_query(
     }
     let offset = global.and_then(|query| query.offset).unwrap_or(0);
     let limit = global.and_then(|query| query.limit).unwrap_or(usize::MAX);
+    if selected.len().saturating_sub(offset).min(limit) > max_rows {
+        return Err(MergeError::CoordinatorLimit);
+    }
     let mut output = Vec::with_capacity(header.len());
     output.extend_from_slice(header.as_bytes());
     for index in selected.into_iter().skip(offset).take(limit) {
@@ -875,6 +881,54 @@ fn merge_grouped_integer_sums_query(
     Ok(output)
 }
 
+
+#[cfg(test)]
+mod grouped_sum_intermediate_cap_tests {
+    use super::*;
+
+    #[test]
+    fn global_grouped_sum_pages_after_merging_more_groups_than_output_cap() {
+        let query = parse_select(
+            "SELECT region, sum(amount) FROM events GROUP BY region ORDER BY 2 DESC LIMIT 1",
+        ).unwrap();
+        let shards = [
+            (8, b"region\tsum(amount)\na\t2\nb\t3\n".to_vec()),
+            (8, b"region\tsum(amount)\nc\t4\nd\t7\n".to_vec()),
+        ];
+        assert_eq!(
+            merge_grouped_integer_sums_query(
+                &shards, 1, "Int64", "region", "amount", Some(&query)
+            ).unwrap(),
+            b"region\tsum(amount)\nd\t7\n"
+        );
+        let no_limit = parse_select(
+            "SELECT region, sum(amount) FROM events GROUP BY region",
+        ).unwrap();
+        assert_eq!(
+            merge_grouped_integer_sums_query(
+                &shards, 1, "Int64", "region", "amount", Some(&no_limit)
+            ),
+            Err(MergeError::CoordinatorLimit)
+        );
+    }
+
+    #[test]
+    fn grouped_sum_having_can_reduce_more_groups_than_final_cap() {
+        let query = parse_select(
+            "SELECT region, sum(amount) FROM events GROUP BY region HAVING sum(amount) > 6 LIMIT 1",
+        ).unwrap();
+        let shards = [
+            (8, b"region\tsum(amount)\na\t2\nb\t3\n".to_vec()),
+            (8, b"region\tsum(amount)\nc\t4\nd\t7\n".to_vec()),
+        ];
+        assert_eq!(
+            merge_grouped_integer_sums_query(
+                &shards, 1, "Int64", "region", "amount", Some(&query)
+            ).unwrap(),
+            b"region\tsum(amount)\nd\t7\n"
+        );
+    }
+}
 /// Reduce grouped COUNT results by their canonical TSV-encoded key.
 /// Preserve first-seen key order, reject malformed rows, and only emit a
 /// complete bounded result. Shards may hold overlapping group *keys*, but
