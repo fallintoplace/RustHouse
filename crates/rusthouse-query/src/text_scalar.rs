@@ -75,6 +75,7 @@ pub(super) fn is_function(name: &str) -> bool {
             | "STRIP_PREFIX"
             | "RIGHT"
             | "BASE64_ENCODE"
+            | "BASE32ENCODE"
             | "HASTOKENCASEINSENSITIVE"
             | "ENDS_WITH"
             | "PATHFULL"
@@ -1512,6 +1513,43 @@ fn parse_at_depth(parser: &mut Parser, depth: usize) -> Result<ConstantValue, Pa
                         String::from_utf8(result)
                             .map_err(|_| ParseError("URL_DECODE result is not UTF-8".into()))?,
                     )
+                }
+                None => ConstantValue::Null,
+            }
+        }
+        "BASE32ENCODE" => {
+            let input = text_arg(parser, depth + 1)?;
+            require(parser, Token::RParen, "base32Encode requires one argument")?;
+            match input {
+                Some(value) => {
+                    let output_len = value
+                        .len()
+                        .checked_add(4)
+                        .and_then(|size| size.checked_div(5))
+                        .and_then(|groups| groups.checked_mul(8))
+                        .ok_or_else(|| ParseError("base32Encode result is too large".into()))?;
+                    if output_len > MAX_TEXT_BYTES {
+                        return Err(ParseError("base32Encode result is too large".into()));
+                    }
+                    const ALPHABET: &[u8; 32] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZ234567";
+                    let mut encoded = String::with_capacity(output_len);
+                    for chunk in value.as_bytes().chunks(5) {
+                        let mut bits = 0_u64;
+                        for &byte in chunk {
+                            bits = (bits << 8) | u64::from(byte);
+                        }
+                        bits <<= (5 - chunk.len()) * 8;
+                        let digits = (chunk.len() * 8).div_ceil(5);
+                        for index in 0..8 {
+                            if index < digits {
+                                let symbol = ((bits >> (35 - index * 5)) & 31) as usize;
+                                encoded.push(char::from(ALPHABET[symbol]));
+                            } else {
+                                encoded.push('=');
+                            }
+                        }
+                    }
+                    ConstantValue::Text(encoded)
                 }
                 None => ConstantValue::Null,
             }
