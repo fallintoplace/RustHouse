@@ -287,6 +287,105 @@ fn parallel_filtered_count(query: &Select, source: &Path) -> Result<Option<u64>,
     Ok(Some(total))
 }
 
+/// Merge partial integer SUM values with the same overflow behavior as
+/// AggregateState. NULL partials represent shards with no matching rows.
+fn add_integer_partial(
+    total: Option<Number>,
+    next: Option<Number>,
+) -> Result<Option<Number>, ExecutionError> {
+    match (total, next) {
+        (None, value) | (value, None) => Ok(value),
+        (Some(Number::Signed(a)), Some(Number::Signed(b))) => {
+            Ok(Some(Number::Signed(a.checked_add(b).ok_or_else(|| {
+                ExecutionError::Invalid("parallel signed SUM overflow".into())
+            })?)))
+        }
+        (Some(Number::Unsigned(a)), Some(Number::Unsigned(b))) => {
+            Ok(Some(Number::Unsigned(a.checked_add(b).ok_or_else(|| {
+                ExecutionError::Invalid("parallel unsigned SUM overflow".into())
+            })?)))
+        }
+        _ => Err(ExecutionError::Invalid("parallel SUM type mismatch".into())),
+    }
+}
+
+/// Process independent frozen parts concurrently for exact integer SUM.
+/// Unsupported types and small inputs stay on the existing executor path.
+fn parallel_integer_sum(
+    query: &Select,
+    source: &Path,
+) -> Result<Option<Option<Number>>, ExecutionError> {
+    let Projection::Aggregate { function: AggregateFunction::Sum, column } = &query.projection else {
+        return Ok(None);
+    };
+    if query.distinct
+        || query.limit.is_some()
+        || query.offset.is_some()
+        || query.order_by.is_some()
+        || !query.order_by_extra.is_empty()
+        || query.having.is_some()
+    {
+        return Ok(None);
+    }
+    let parts = rusthouse_storage::query_parts(source)?;
+    let workers = std::thread::available_parallelism()
+        .map_or(1, |parallelism| parallelism.get()).min(4);
+    if parts.len() < 32 || workers < 2 {
+        return Ok(None);
+    }
+    let metadata = inspect_query_source(source)?;
+    let kind = metadata.columns.iter().find(|candidate| candidate.name == *column)
+        .map(|candidate| candidate.data_type.as_str());
+    let signed = match kind {
+        Some("Int8" | "Int16" | "Int32" | "Int64" | "Int128") => true,
+        Some("UInt8" | "UInt16" | "UInt32" | "UInt64" | "UInt128") => false,
+        _ => return Ok(None),
+    };
+    let chunk_size = parts.len().div_ceil(workers);
+    let sum = std::thread::scope(|scope| -> Result<Option<Number>, ExecutionError> {
+        let handles = parts.chunks(chunk_size).map(|chunk| {
+            scope.spawn(move || -> Result<Option<Number>, ExecutionError> {
+                let mut result = None;
+                let mut bytes = Vec::new();
+                for part in chunk {
+                    bytes.clear();
+                    // A single part does not re-enter the parallel path.
+                    execute(query, Some(part), &mut bytes)?;
+                    let end = bytes.iter().position(|&byte| byte == b'\n')
+                        .ok_or_else(|| ExecutionError::Invalid("missing partial SUM header".into()))?;
+                    let value = bytes.get(end + 1..)
+                        .and_then(|bytes| bytes.strip_suffix(b"\n"))
+                        .ok_or_else(|| ExecutionError::Invalid("malformed partial SUM".into()))?;
+                    let next = if value == b"NULL" {
+                        None
+                    } else {
+                        let text = std::str::from_utf8(value)
+                            .map_err(|_| ExecutionError::Invalid("invalid partial SUM".into()))?;
+                        Some(if signed {
+                            Number::Signed(text.parse::<i128>()
+                                .map_err(|_| ExecutionError::Invalid("invalid signed SUM".into()))?)
+                        } else {
+                            Number::Unsigned(text.parse::<u128>()
+                                .map_err(|_| ExecutionError::Invalid("invalid unsigned SUM".into()))?)
+                        })
+                    };
+                    result = add_integer_partial(result, next)?;
+                }
+                Ok(result)
+            })
+        }).collect::<Vec<_>>();
+        let mut total = None;
+        for handle in handles {
+            let partial = handle.join().map_err(|_| {
+                ExecutionError::Invalid("parallel SUM worker panicked".into())
+            })??;
+            total = add_integer_partial(total, partial)?;
+        }
+        Ok(total)
+    })?;
+    Ok(Some(sum))
+}
+
 fn execute_into<W: Write>(
     query: &Select,
     part: Option<&Path>,
@@ -352,6 +451,18 @@ fn execute_into<W: Write>(
     if let Some(count) = parallel_filtered_count(query, part)? {
         write_header(query, output, "count")?;
         writeln!(output, "{count}")?;
+        return Ok(());
+    }
+    if let Some(sum) = parallel_integer_sum(query, part)? {
+        let Projection::Aggregate { column, .. } = &query.projection else {
+            unreachable!("parallel_integer_sum only accepts SUM projections");
+        };
+        write_header(query, output, &format!("sum({column})"))?;
+        if let Some(value) = sum {
+            writeln!(output, "{value}")?;
+        } else {
+            writeln!(output, "NULL")?;
+        }
         return Ok(());
     }
     if let Projection::GroupedMultiCount { columns } = &query.projection {
@@ -1339,3 +1450,32 @@ fn number_at(column: &NumericColumn, row: usize) -> Number {
 
 #[cfg(test)]
 mod tests;
+
+#[cfg(test)]
+mod parallel_sum_tests {
+    use super::*;
+
+    #[test]
+    fn partial_sum_reduction_handles_null_signed_unsigned_and_overflow() {
+        let signed = add_integer_partial(None, Some(Number::Signed(-7))).unwrap();
+        let signed = add_integer_partial(signed, Some(Number::Signed(10))).unwrap();
+        assert_eq!(signed.unwrap().to_string(), "3");
+        assert_eq!(add_integer_partial(signed, None).unwrap().unwrap().to_string(), "3");
+
+        let unsigned = add_integer_partial(
+            Some(Number::Unsigned(u128::MAX - 1)),
+            Some(Number::Unsigned(1)),
+        ).unwrap();
+        assert_eq!(unsigned.unwrap().to_string(), u128::MAX.to_string());
+        assert!(add_integer_partial(unsigned, Some(Number::Unsigned(1))).is_err());
+        assert!(add_integer_partial(
+            Some(Number::Signed(i128::MAX)),
+            Some(Number::Signed(1)),
+        ).is_err());
+        assert!(add_integer_partial(
+            Some(Number::Signed(1)),
+            Some(Number::Unsigned(1)),
+        ).is_err());
+    }
+}
+
