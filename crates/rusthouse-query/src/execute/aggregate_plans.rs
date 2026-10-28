@@ -528,6 +528,50 @@ pub(super) fn execute_aggregate_part<W: Write>(
         }
         return Ok(());
     }
+    // Reduce each native integer batch to one MIN/MAX candidate.
+    if matches!(function, AggregateFunction::Min | AggregateFunction::Max)
+        && no_filters && native_integer
+    {
+        let mut extremum: Option<Number> = None;
+        macro_rules! candidate {
+            ($values:expr, $kind:ident, $wide:ty) => {{
+                let next = if function == AggregateFunction::Min {
+                    $values.iter().min()
+                } else {
+                    $values.iter().max()
+                };
+                if let Some(value) = next {
+                    let value = Number::$kind(<$wide>::from(*value));
+                    let replace = extremum.is_none_or(|previous| {
+                        let ordering = compare_numbers(value, previous);
+                        if function == AggregateFunction::Min { ordering.is_lt() }
+                        else { ordering.is_gt() }
+                    });
+                    if replace { extremum = Some(value); }
+                }
+            }};
+        }
+        while let Some(batch) = reader.next_batch()? {
+            match &batch[0] {
+                NumericColumn::UInt8(values) => candidate!(values, Unsigned, u128),
+                NumericColumn::UInt16(values) => candidate!(values, Unsigned, u128),
+                NumericColumn::UInt32(values) => candidate!(values, Unsigned, u128),
+                NumericColumn::UInt64(values) => candidate!(values, Unsigned, u128),
+                NumericColumn::UInt128(values) => candidate!(values, Unsigned, u128),
+                NumericColumn::Int8(values) => candidate!(values, Signed, i128),
+                NumericColumn::Int16(values) => candidate!(values, Signed, i128),
+                NumericColumn::Int32(values) => candidate!(values, Signed, i128),
+                NumericColumn::Int64(values) => candidate!(values, Signed, i128),
+                NumericColumn::Int128(values) => candidate!(values, Signed, i128),
+                _ => return Err(ExecutionError::Invalid("unexpected integer extremum column".into())),
+            }
+        }
+        if query.offset.unwrap_or(0) == 0 {
+            if let Some(value) = extremum { writeln!(output, "{value}")?; }
+            else { writeln!(output, "NULL")?; }
+        }
+        return Ok(());
+    }
     let mut state = AggregateState::new(function);
     while let Some(batch) = reader.next_batch()? {
         for row in 0..batch[0].len() {
@@ -632,6 +676,58 @@ pub(super) fn execute_aggregate_numbers<W: Write>(
             writeln!(output, "{}", state.render())?;
         }
         return Ok(());
+    }
+    // Exclude a small finite set from an arithmetic progression in O(k).
+    if matches!(
+        function,
+        AggregateFunction::Sum | AggregateFunction::Min | AggregateFunction::Max
+    ) {
+        if let Some(excluded) = excluded_generated_positions(&comparisons, start, rows, step) {
+            if query.offset.unwrap_or(0) == 0 {
+                let remaining = rows - excluded.len() as u64;
+                if remaining == 0 {
+                    writeln!(output, "NULL")?;
+                } else {
+                    let first = u128::from(start);
+                    let stride = u128::from(step);
+                    let last = first + u128::from(rows - 1) * stride;
+                    let result = match function {
+                        AggregateFunction::Sum => {
+                            let endpoints = first + last;
+                            let baseline = if rows % 2 == 0 {
+                                u128::from(rows / 2) * endpoints
+                            } else {
+                                u128::from(rows) * (endpoints / 2)
+                            };
+                            let removed = excluded
+                                .iter()
+                                .map(|&index| first + u128::from(index) * stride)
+                                .sum::<u128>();
+                            baseline.checked_sub(removed).ok_or_else(|| {
+                                ExecutionError::Invalid("excluded SUM underflow".into())
+                            })?
+                        }
+                        AggregateFunction::Min => {
+                            let mut index = 0u64;
+                            while excluded.binary_search(&index).is_ok() {
+                                index += 1;
+                            }
+                            first + u128::from(index) * stride
+                        }
+                        AggregateFunction::Max => {
+                            let mut index = rows - 1;
+                            while excluded.binary_search(&index).is_ok() {
+                                index -= 1;
+                            }
+                            first + u128::from(index) * stride
+                        }
+                        _ => unreachable!(),
+                    };
+                    writeln!(output, "{result}")?;
+                }
+            }
+            return Ok(());
+        }
     }
     let mut state = AggregateState::new(function);
     for index in 0..rows {

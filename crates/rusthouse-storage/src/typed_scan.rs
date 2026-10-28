@@ -5,9 +5,8 @@ use crate::numeric::numeric_storage_type;
 use crate::query_parts;
 use crate::scan_layout::ScanLayout;
 use crate::{
-    ArrayOffsetsEncoding, CompressedBlockReader, DecodedBlock, NumericColumn, PartError,
-    PartMetadata, StringColumn, UuidValue, WideMark, inspect_part, read_legacy_strings,
-    read_numeric_array_column, read_uuid_values, read_wide_marks,
+    ArrayOffsetsEncoding,     CompressedBlockReader, DecodedBlock, NumericColumn, PartError, PartMetadata, StringColumn, UuidValue,
+    WideMark, inspect_part, read_legacy_strings, read_numeric_array_column, read_uuid_values, read_wide_marks,
 };
 use crate::mark_validation::validate_wide_marks_reader;
 use std::fs::File;

@@ -112,6 +112,20 @@ fn write_json_string<W: Write>(writer: &mut W, input: &[u8]) -> io::Result<()> {
     let input = std::str::from_utf8(input).map_err(|_| {
         io::Error::new(io::ErrorKind::InvalidData, "JSONL field is not valid UTF-8")
     })?;
+    // The common short ASCII field needs no JSON escaping. Pack it into a
+    // stack buffer and make only one write call per field.
+    let bytes = input.as_bytes();
+    if bytes.len() <= 64
+        && bytes.iter().all(|&byte| {
+            (b' '..=b'~').contains(&byte) && byte != b'"' && byte != b'\\'
+        })
+    {
+        let mut quoted = [0u8; 66];
+        quoted[0] = b'"';
+        quoted[1..bytes.len() + 1].copy_from_slice(bytes);
+        quoted[bytes.len() + 1] = b'"';
+        return writer.write_all(&quoted[..bytes.len() + 2]);
+    }
     writer.write_all(b"\"")?;
     let mut start = 0;
     for (index, ch) in input.char_indices() {
@@ -168,6 +182,32 @@ impl<W: Write> Write for JsonlWriter<W> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn writes_short_ascii_json_strings_once() {
+        struct Calls {
+            writes: usize,
+            output: Vec<u8>,
+        }
+        impl Write for Calls {
+            fn write(&mut self, bytes: &[u8]) -> io::Result<usize> {
+                self.writes += 1;
+                self.output.extend_from_slice(bytes);
+                Ok(bytes.len())
+            }
+            fn flush(&mut self) -> io::Result<()> {
+                Ok(())
+            }
+        }
+
+        let mut sink = Calls {
+            writes: 0,
+            output: Vec::new(),
+        };
+        write_json_string(&mut sink, b"hello world").unwrap();
+        assert_eq!(sink.writes, 1);
+        assert_eq!(sink.output, br#""hello world""#);
+    }
 
     #[test]
     fn writes_plain_json_fields_in_bulk_without_losing_unicode() {
