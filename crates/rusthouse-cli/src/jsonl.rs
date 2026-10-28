@@ -91,9 +91,9 @@ fn write_json_row_into<W: Write>(
         if index > 0 {
             row.write_all(b",")?;
         }
-        write_json_string(&mut row, header)?;
+        write_json_string(&mut *row, header)?;
         row.write_all(b":")?;
-        write_json_value(&mut row, value)?;
+        write_json_value(&mut *row, value)?;
     }
     if fields.next().is_some() {
         return Err(io::Error::new(
