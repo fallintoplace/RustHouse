@@ -1,9 +1,9 @@
 # Verify the configured RustHouse source
 
-\`\`\`sh
+```sh
 python3 tools/source_probe.py --source generated
 python3 tools/source_probe.py --source database --table events
-\`\`\`
+```
 
 The probe validates the read-only capability marker and the source mode
 reported by the server. A database-mode probe can also verify schema discovery.
