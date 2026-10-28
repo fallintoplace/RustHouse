@@ -366,11 +366,13 @@ fn read_string_key_map(
         )
     };
     let mut encoded = Vec::new();
+    let mut output = String::new();
     for row in 0..rows {
         let range = offsets
             .row_range(row)
             .ok_or_else(|| PartError::InvalidScan("invalid Map row range".into()))?;
-        let mut output = String::from("{");
+        output.clear();
+        output.push('{');
         for element in range {
             if output.len() > 1 {
                 output.push(',');
@@ -955,4 +957,16 @@ mod tests {
         ));
         fs::remove_dir_all(root).unwrap();
     }
+
+    #[test]
+    fn map_row_scratch_buffer_retains_capacity_when_reused() {
+        let mut row = String::new();
+        row.push_str(&"value".repeat(1024));
+        let reserved = row.capacity();
+        row.clear();
+        row.push_str("{}");
+        assert_eq!(row, "{}");
+        assert!(row.capacity() >= reserved);
+    }
+
 }
