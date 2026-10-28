@@ -270,6 +270,7 @@ fn merge_tsv_page(
     max_rows: usize,
     offset: usize,
     limit: Option<usize>,
+    pushed_limit: Option<usize>,
 ) -> Result<Vec<u8>, MergeError> {
     let mut output = Vec::new();
     let mut header: Option<&[u8]> = None;
@@ -297,7 +298,14 @@ fn merge_tsv_page(
         }
         let rows = &body[header_end + 1..];
         let shard_rows = rows.iter().filter(|&&b| b == b'\n').count();
-        if *cap == 0 || shard_rows >= *cap {
+        // A local LIMIT may equal a peer's row cap without truncating
+        // any rows needed by the global page.
+        if pushed_limit.is_some_and(|bound| shard_rows > bound) {
+            return Err(MergeError::InvalidResponse);
+        }
+        if *cap == 0
+            || (shard_rows >= *cap && pushed_limit.is_none_or(|bound| *cap < bound))
+        {
             return Err(MergeError::ShardRowLimit);
         }
         for row in rows.split_inclusive(|&b| b == b'\n') {
@@ -758,12 +766,26 @@ pub fn handle(method: &str, body: &[u8], cluster: &Cluster, max_rows: usize) -> 
     let grouped_count_query = is_safe_grouped_count(&select);
     let grouped_sum_query = is_safe_grouped_sum(&select);
     let sum_query = is_safe_sum(&select);
+    // Do not push OFFSET to a shard: only a prefix bound is safe.
+    let proposed_bound = select
+        .limit
+        .and_then(|limit| select.offset.unwrap_or(0).checked_add(limit))
+        .filter(|&end| end <= 250_000);
+    let mut pushed_limit = None;
     let shard_sql = if is_safe_scan(&select) {
-        match unpaged_scan_sql(sql, &select) {
-            Some(query) => query,
-            None => {
-                return Response::text("400 Bad Request", "unsupported distributed pagination\n");
+        match proposed_bound.and_then(|end| {
+            bounded_scan_sql(sql, &select, end).map(|query| (query, end))
+        }) {
+            Some((query, end)) => {
+                pushed_limit = Some(end);
+                query
             }
+            None => match unpaged_scan_sql(sql, &select) {
+                Some(query) => query,
+                None => {
+                    return Response::text("400 Bad Request", "unsupported distributed pagination\n");
+                }
+            },
         }
     } else if distinct_count_column.is_some() {
         match distinct_shard_sql(sql, &select) {
@@ -927,6 +949,7 @@ pub fn handle(method: &str, body: &[u8], cluster: &Cluster, max_rows: usize) -> 
             max_rows.min(250_000),
             select.offset.unwrap_or(0),
             select.limit,
+            pushed_limit,
         )
     } else {
         merge_tsv(&shards, max_rows.min(250_000))
@@ -981,6 +1004,27 @@ pub fn handle(method: &str, body: &[u8], cluster: &Cluster, max_rows: usize) -> 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn pushes_global_page_end_to_shards_without_local_offset() {
+        let sql = "SELECT id FROM events LIMIT 8 OFFSET 12";
+        let parsed = parse_select(sql).unwrap();
+        assert_eq!(bounded_scan_sql(sql, &parsed, 20),
+            Some("SELECT id FROM events LIMIT 20".to_owned()));
+        let sql = "SELECT id FROM events WHERE tag = 'LIMIT 5' LIMIT 2";
+        let parsed = parse_select(sql).unwrap();
+        assert_eq!(bounded_scan_sql(sql, &parsed, 2), Some(sql.to_owned()));
+    }
+
+    #[test]
+    fn pushed_pages_accept_intentional_caps_not_silent_truncation() {
+        let shards = vec![shard(3, "id\n1\n2\n3\n"), shard(100, "id\n4\n5\n6\n")];
+        assert_eq!(merge_tsv_page(&shards, 4, 2, Some(1), Some(3)).unwrap(), b"id\n3\n");
+        assert_eq!(merge_tsv_page(&shards, 4, 2, Some(1), None),
+            Err(MergeError::ShardRowLimit));
+        assert_eq!(merge_tsv_page(&shards, 4, 2, Some(1), Some(2)),
+            Err(MergeError::InvalidResponse));
+    }
 
     #[test]
     fn extracts_column_types_from_one_validated_schema_response() {
@@ -1051,18 +1095,18 @@ mod tests {
     fn applies_global_limit_and_offset_in_peer_order() {
         let shards = [shard(8, "id\n1\n2\n3\n"), shard(8, "id\n4\n5\n")];
         assert_eq!(
-            merge_tsv_page(&shards, 2, 2, Some(2)).unwrap(),
+            merge_tsv_page(&shards, 2, 2, Some(2), None).unwrap(),
             b"id\n3\n4\n"
         );
-        assert_eq!(merge_tsv_page(&shards, 2, 3, None).unwrap(), b"id\n4\n5\n");
-        assert_eq!(merge_tsv_page(&shards, 2, 0, Some(0)).unwrap(), b"id\n");
-        assert_eq!(merge_tsv_page(&shards, 2, 999, Some(2)).unwrap(), b"id\n");
+        assert_eq!(merge_tsv_page(&shards, 2, 3, None, None).unwrap(), b"id\n4\n5\n");
+        assert_eq!(merge_tsv_page(&shards, 2, 0, Some(0), None).unwrap(), b"id\n");
+        assert_eq!(merge_tsv_page(&shards, 2, 999, Some(2), None).unwrap(), b"id\n");
         assert_eq!(
-            merge_tsv_page(&shards, 1, 0, Some(2)),
+            merge_tsv_page(&shards, 1, 0, Some(2), None),
             Err(MergeError::CoordinatorLimit)
         );
         assert_eq!(
-            merge_tsv_page(&[shard(2, "id\n1\n2\n")], 10, 0, Some(1)),
+            merge_tsv_page(&[shard(2, "id\n1\n2\n")], 10, 0, Some(1), None),
             Err(MergeError::ShardRowLimit)
         );
     }
