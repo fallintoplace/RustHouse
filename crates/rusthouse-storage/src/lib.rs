@@ -27,6 +27,7 @@ pub mod distributed_resume_map;
 mod mark_validation;
 pub mod distributed_scrub;
 mod marks;
+pub mod distributed_activate;
 mod metadata;
 mod nested_arrays;
 mod nullable;
