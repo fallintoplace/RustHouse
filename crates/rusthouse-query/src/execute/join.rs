@@ -7,8 +7,10 @@ use self::keys::*;
 use super::{ExecutionError, Number, typed};
 use crate::{JoinColumn, JoinSelect, JoinType};
 use rusthouse_storage::{TypedColumn, TypedQueryReader, inspect_query_source};
-use std::collections::HashMap;
+use std::cmp::Ordering;
+use std::collections::{BinaryHeap, HashMap};
 use std::io::Write;
+use std::sync::Arc;
 use std::path::Path;
 
 // Ordered and outer joins retain both inputs, bounded by row count and bytes.
@@ -532,6 +534,142 @@ fn execute_streaming_right<W: Write>(
     Ok(())
 }
 
+
+struct OrderedJoinRow {
+    values: Vec<typed::Cell>,
+    keys: Vec<typed::Cell>,
+    directions: Arc<[(bool, Option<bool>)]>,
+    sequence: usize,
+    retained_bytes: usize,
+}
+
+impl PartialEq for OrderedJoinRow {
+    fn eq(&self, other: &Self) -> bool { self.cmp(other) == Ordering::Equal }
+}
+impl Eq for OrderedJoinRow {}
+impl PartialOrd for OrderedJoinRow {
+    fn partial_cmp(&self, other: &Self) -> Option<Ordering> { Some(self.cmp(other)) }
+}
+impl Ord for OrderedJoinRow {
+    fn cmp(&self, other: &Self) -> Ordering {
+        for ((left, right), &(descending, nulls_first)) in self.keys.iter()
+            .zip(&other.keys).zip(self.directions.iter()) {
+            let ordering = typed::compare_order_cells(left, right, descending, nulls_first);
+            if ordering != Ordering::Equal { return ordering; }
+        }
+        self.sequence.cmp(&other.sequence)
+    }
+}
+
+fn ordered_join_retained_bytes(cells: &[typed::Cell]) -> Result<usize, ExecutionError> {
+    cells.iter().try_fold(
+        std::mem::size_of_val(cells),
+        |total, cell| total.checked_add(match cell {
+            typed::Cell::Text(bytes) => bytes.len(),
+            typed::Cell::Uuid(value) => value.len(),
+            _ => 0,
+        }).ok_or_else(|| invalid("ordered JOIN output size overflow"))
+    )
+}
+
+/// Scan an arbitrarily large fact side while retaining only the requested
+/// globally ordered page. The bounded dimension hash build is unchanged.
+fn execute_streaming_ordered_inner<W: Write>(
+    query: &JoinSelect,
+    left_path: &Path,
+    right_path: &Path,
+    columns: InnerJoinColumns<'_>,
+    order: &[(usize, bool, Option<bool>)],
+    requested: usize,
+    output: &mut W,
+) -> Result<(), ExecutionError> {
+    let InnerJoinColumns {
+        left_names, right_names, selected, left_keys, right_keys, null_filter
+    } = columns;
+    let right_metadata = inspect_query_source(right_path)?;
+    let right_rows = read_rows(
+        right_path, right_names, right_metadata.rows,
+        MAX_STREAM_BUILD_ROWS, MAX_STREAM_BUILD_BYTES
+    )?;
+    let mut hash = HashMap::<Vec<typed::Key>, Bucket>::with_capacity(right_rows.len());
+    for (index, row) in right_rows.iter().enumerate() {
+        if let Some(key) = row_key(row, right_keys) {
+            if query.any {
+                hash.entry(key).or_insert(Bucket::One(index));
+            } else {
+                hash.entry(key)
+                    .and_modify(|bucket| bucket.push(index))
+                    .or_insert(Bucket::One(index));
+            }
+        }
+    }
+    let mut heap = BinaryHeap::<OrderedJoinRow>::with_capacity(requested.min(1024));
+    let directions: Arc<[(bool, Option<bool>)]> =
+        order.iter().map(|(_, desc, nulls)| (*desc, *nulls)).collect::<Vec<_>>().into();
+    let mut retained = 0usize;
+    let mut sequence = 0usize;
+    let width = left_names.len();
+    probe_inner(
+        left_path, left_names, left_keys, &right_rows, &hash,
+        ProbeOptions {
+            materialize_rows: true,
+            materialize_after: 0,
+            // A small ordered result still needs to inspect every qualifying
+            // match, without the unordered 131072-output limit.
+            stop_after: Some(usize::MAX),
+            any: query.any,
+            null_filter,
+        },
+        |left, right| {
+            let at = |index: usize| -> &typed::Cell {
+                if index < width { &left[index] } else { &right[index - width] }
+            };
+            let keys = order.iter().map(|(index, _, _)| at(*index).clone()).collect();
+            let values: Vec<typed::Cell> = selected
+                .iter().map(|(index, _, _)| at(*index).clone()).collect();
+            let bytes = ordered_join_retained_bytes(&keys)?
+                .checked_add(ordered_join_retained_bytes(&values)?)
+                .ok_or_else(|| invalid("ordered JOIN output size overflow"))?;
+            let candidate = OrderedJoinRow {
+                values, keys, directions: directions.clone(), sequence,
+                retained_bytes: bytes,
+            };
+            sequence = sequence.checked_add(1)
+                .ok_or_else(|| invalid("ordered JOIN row count overflow"))?;
+            if heap.len() == requested &&
+                heap.peek().is_some_and(|worst| candidate >= *worst) {
+                return Ok(());
+            }
+            let removed = if heap.len() == requested {
+                heap.peek().map_or(0, |row| row.retained_bytes)
+            } else { 0 };
+            let total = retained.checked_sub(removed)
+                .and_then(|value| value.checked_add(bytes))
+                .ok_or_else(|| invalid("ordered JOIN output size overflow"))?;
+            if total > MAX_STREAM_BUILD_BYTES {
+                return Err(invalid("ordered JOIN exceeds its retained-row memory budget"));
+            }
+            retained = total;
+            if heap.len() < requested {
+                heap.push(candidate);
+            } else {
+                *heap.peek_mut().expect("nonempty ordered JOIN heap") = candidate;
+            }
+            Ok(())
+        },
+    )?;
+    let header = selected.iter().map(|(_, name, _)| name.as_str()).collect::<Vec<_>>().join("\t");
+    writeln!(output, "{header}")?;
+    for row in heap.into_sorted_vec().into_iter().skip(query.offset) {
+        for (index, value) in row.values.iter().enumerate() {
+            if index != 0 { output.write_all(b"\t")?; }
+            typed::write_value(output, value)?;
+        }
+        output.write_all(b"\n")?;
+    }
+    Ok(())
+}
+
 /// Evaluate a two-table JOIN using typed values, not serialized TSV.
 pub fn execute_join<W: Write>(
     query: &JoinSelect,
@@ -704,6 +842,29 @@ pub fn execute_join<W: Write>(
             },
             output,
         );
+    }
+
+    if query.kind == JoinType::Inner
+        && !order.is_empty()
+        && left_meta.rows > MAX_INPUT_ROWS
+        && right_meta.rows <= MAX_STREAM_BUILD_ROWS
+    {
+        if let Some(requested) = query.limit
+            .and_then(|limit| query.offset.checked_add(limit))
+            .filter(|&requested| requested <= MAX_RESULT_ROWS) {
+            return execute_streaming_ordered_inner(
+                query, left_path, right_path,
+                InnerJoinColumns {
+                    left_names: &left_names,
+                    right_names: &right_names,
+                    selected: &selected,
+                    left_keys: &left_keys,
+                    right_keys: &right_keys,
+                    null_filter,
+                },
+                &order, requested, output
+            );
+        }
     }
 
     let left_rows = read_rows(
