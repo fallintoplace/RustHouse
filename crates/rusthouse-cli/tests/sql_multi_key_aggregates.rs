@@ -52,7 +52,8 @@ fn aggregates_by_two_dimensions_with_nullable_metrics() {
 
 #[test]
 fn rejects_mismatched_grouping_keys() {
-    let db = std::env::temp_dir().join(format!("rusthouse-multikey-invalid-{}", std::process::id()));
+    let db =
+        std::env::temp_dir().join(format!("rusthouse-multikey-invalid-{}", std::process::id()));
     let bad = sql(
         "SELECT region, category, sum(amount) FROM sales GROUP BY region",
         &db,

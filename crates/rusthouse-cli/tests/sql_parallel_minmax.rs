@@ -18,20 +18,46 @@ fn parallel_minmax_reduces_stored_integer_parts_and_filters() {
         assert!(output.status.success(), "{query}: {output:?}");
     }
     for i in 0..32i64 {
-        let query = format!("INSERT INTO facts VALUES ({}, {}, {}), ({}, {}, 0)", i - 20, i, i % 2, i + 100, i + 100);
+        let query = format!(
+            "INSERT INTO facts VALUES ({}, {}, {}), ({}, {}, 0)",
+            i - 20,
+            i,
+            i % 2,
+            i + 100,
+            i + 100
+        );
         let output = sql(&query, &db);
         assert!(output.status.success(), "{query}: {output:?}");
     }
     for (query, expected) in [
-        ("SELECT min(signed_value) FROM facts", "min(signed_value)\n-20\n"),
-        ("SELECT max(unsigned_value) FROM facts", "max(unsigned_value)\n131\n"),
-        ("SELECT min(signed_value) FROM facts WHERE active = 1", "min(signed_value)\n-19\n"),
-        ("SELECT max(unsigned_value) FROM facts WHERE active = 1", "max(unsigned_value)\n31\n"),
-        ("SELECT min(signed_value) FROM facts WHERE active = 2", "min(signed_value)\nNULL\n"),
+        (
+            "SELECT min(signed_value) FROM facts",
+            "min(signed_value)\n-20\n",
+        ),
+        (
+            "SELECT max(unsigned_value) FROM facts",
+            "max(unsigned_value)\n131\n",
+        ),
+        (
+            "SELECT min(signed_value) FROM facts WHERE active = 1",
+            "min(signed_value)\n-19\n",
+        ),
+        (
+            "SELECT max(unsigned_value) FROM facts WHERE active = 1",
+            "max(unsigned_value)\n31\n",
+        ),
+        (
+            "SELECT min(signed_value) FROM facts WHERE active = 2",
+            "min(signed_value)\nNULL\n",
+        ),
     ] {
         let output = sql(query, &db);
         assert!(output.status.success(), "{query}: {output:?}");
-        assert_eq!(String::from_utf8(output.stdout).unwrap(), expected, "{query}");
+        assert_eq!(
+            String::from_utf8(output.stdout).unwrap(),
+            expected,
+            "{query}"
+        );
     }
     fs::remove_dir_all(db).unwrap();
 }

@@ -12,7 +12,8 @@ fn write_spaces<W: Write>(output: &mut W, mut remaining: usize) -> io::Result<()
 }
 
 fn write_indent<W: Write>(output: &mut W, depth: usize) -> io::Result<()> {
-    const SHORT_INDENT: &[u8; 65] = b"\n                                                                ";
+    const SHORT_INDENT: &[u8; 65] =
+        b"\n                                                                ";
     let spaces = (depth + 1) * 2;
     if spaces <= 64 {
         output.write_all(&SHORT_INDENT[..spaces + 1])

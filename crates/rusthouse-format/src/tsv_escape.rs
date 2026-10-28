@@ -102,7 +102,12 @@ mod tests {
 
     #[test]
     fn copies_long_plain_spans_around_sparse_escapes() {
-        let input = [vec![b'a'; 16 * 1024], br"\t".to_vec(), vec![b'b'; 16 * 1024]].concat();
+        let input = [
+            vec![b'a'; 16 * 1024],
+            br"\t".to_vec(),
+            vec![b'b'; 16 * 1024],
+        ]
+        .concat();
         let decoded = decode_tsv_field(&input).unwrap();
         assert_eq!(decoded.len(), 32 * 1024 + 1);
         assert_eq!(decoded[16 * 1024], b'\t');
