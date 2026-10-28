@@ -26,7 +26,9 @@ def emit(stream, rows, *, seed=0, batch_rows=8192):
     if not 1 <= batch_rows <= 1_000_000:
         raise ValueError("batch_rows must be in 1..1000000")
     for start in range(0, rows, batch_rows):
-        stream.write("".join(f"{permuted(i, seed)}\n"
+        # Validation is complete above, so avoid invoking permuted() and
+        # revalidating UInt64 bounds for every row in billion-row fixtures.
+        stream.write("".join(f"{(i * MULTIPLIER + seed) & MASK}\n"
                              for i in range(start, min(rows, start + batch_rows))))
 
 
