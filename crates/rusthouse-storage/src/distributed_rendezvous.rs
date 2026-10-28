@@ -25,7 +25,14 @@ pub fn replicas_for(
     nodes: &[String],
     replicas: usize,
 ) -> Result<Vec<String>, &'static str> {
-    if shard.is_empty() || shard.len() > 128 {
+    if shard.is_empty()
+        || shard.len() > 128
+        || !shard.as_bytes()[0].is_ascii_alphanumeric()
+        || shard.contains("..")
+        || !shard
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'_' | b'-' | b'.'))
+    {
         return Err("invalid shard identifier");
     }
     if nodes.is_empty() || nodes.len() > 64 || replicas == 0 || replicas > nodes.len() {
@@ -69,6 +76,15 @@ mod tests {
         assert_eq!(expected, replicas_for("events-2026", &reversed, 2).unwrap());
         assert_eq!(expected.len(), 2);
         assert_ne!(expected[0], expected[1]);
+    }
+
+    #[test]
+    fn rejects_unsafe_shard_names() {
+        let nodes = ["node_a".to_owned()];
+        for shard in ["../private", "one/two", ".hidden", "a..b", "a\\b", "é", "x\n"] {
+            assert!(replicas_for(shard, &nodes, 1).is_err(), "{shard}");
+        }
+        assert!(replicas_for("events.2026", &nodes, 1).is_ok());
     }
 
     #[test]
