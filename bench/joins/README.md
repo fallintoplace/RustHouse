@@ -18,3 +18,14 @@ This is not a standard TPC-H query and it does not establish cross-engine speed.
 Unit tests:
 
     python3 -m unittest discover -s bench/joins -p 'test_*.py'
+
+## Skewed fact keys
+
+For a reference-verified hot-key JOIN workload with deterministic skew:
+
+    python3 -m bench.joins.hotspot --binary target/release/rusthouse \
+      --probe-rows 65536 --build-rows 1024 --hot-percent 90
+
+The build side has unique dimension keys, while 90% of fact rows reuse a
+single key. The output is checked as a multiset, including duplicate counts.
+This measures fresh CLI SQL execution and does not compare with ClickHouse.
