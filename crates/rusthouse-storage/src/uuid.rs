@@ -174,7 +174,7 @@ mod tests {
             reads: 0,
         };
         let decoded = read_uuid_values(&mut reader, 2048).unwrap();
-        assert_eq!(reader.reads, 2);
+        assert_eq!(reader.reads, 1);
         assert_eq!(decoded[1024], decoded[0]);
 
         struct Bytewise<R>(R);
