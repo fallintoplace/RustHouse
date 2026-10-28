@@ -54,6 +54,7 @@ pub(super) fn is_function(name: &str) -> bool {
             | "LEFT"
             | "REPLACE_FIRST"
             | "STARTS_WITH"
+            | "HASTOKEN"
             | "CONTAINS"
             | "STRIP_PREFIX"
             | "RIGHT"
@@ -940,6 +941,26 @@ fn parse_at_depth(parser: &mut Parser, depth: usize) -> Result<ConstantValue, Pa
                         }
                         ConstantValue::Text(input.replace(&needle, &replacement))
                     }
+                }
+                _ => ConstantValue::Null,
+            }
+        }
+        "HASTOKEN" => {
+            let input = text_arg(parser, depth + 1)?;
+            require(parser, Token::Comma, "hasToken requires a token")?;
+            let token = text_arg(parser, depth + 1)?;
+            require(parser, Token::RParen, "expected ')' after hasToken")?;
+            match (input, token) {
+                (Some(input), Some(token)) => {
+                    if token.is_empty() || !token.bytes().all(|byte|
+                        byte.is_ascii_alphanumeric() || byte == b'_'
+                    ) {
+                        return Err(ParseError("hasToken requires a single ASCII token".into()));
+                    }
+                    let found = input
+                        .split(|ch: char| !ch.is_ascii_alphanumeric() && ch != '_')
+                        .any(|word| word == token);
+                    ConstantValue::Integer(i64::from(found))
                 }
                 _ => ConstantValue::Null,
             }
