@@ -427,7 +427,7 @@ mod borrow_map_string_tests {
         let input = "\"line\\nnext\"";
         let mut position = 0;
         let value = read_map_string(input, &mut position).unwrap();
-        assert!(matches!(value, Cow::Owned(_)));
+        assert!(matches!(&value, Cow::Owned(_)));
         assert_eq!(value.as_ref(), "line\nnext");
 
         let input = "\"\"";
