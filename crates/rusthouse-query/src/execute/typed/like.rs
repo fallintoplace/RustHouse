@@ -111,6 +111,9 @@ pub(super) fn like_matches(value: &[u8], pattern: &LikePattern, case_insensitive
     match pattern {
         LikePattern::Exact(bytes) => equal_like_bytes(value, bytes, case_insensitive),
         LikePattern::Prefix(bytes) => {
+            if case_insensitive && value.starts_with(bytes) {
+                return true;
+            }
             if case_insensitive {
                 if let Some(matches) =
                     unicode_folded_match(value, bytes, |input, prefix| input.starts_with(prefix))
@@ -123,6 +126,9 @@ pub(super) fn like_matches(value: &[u8], pattern: &LikePattern, case_insensitive
                 .is_some_and(|prefix| equal_like_bytes(prefix, bytes, case_insensitive))
         }
         LikePattern::Suffix(bytes) => {
+            if case_insensitive && value.ends_with(bytes) {
+                return true;
+            }
             if case_insensitive {
                 if let Some(matches) =
                     unicode_folded_match(value, bytes, |input, suffix| input.ends_with(suffix))
@@ -224,6 +230,15 @@ pub(super) fn like_matches_wildcards(
 #[cfg(test)]
 mod perf_tests {
     use super::*;
+
+    #[test]
+    fn exact_unicode_prefixes_and_suffixes_match_without_folding() {
+        let prefix = compile_like("Café%").unwrap();
+        let suffix = compile_like("%Café").unwrap();
+        assert!(like_matches("Café au lait".as_bytes(), &prefix, true));
+        assert!(like_matches("Un Café".as_bytes(), &suffix, true));
+        assert!(!like_matches("un thé".as_bytes(), &suffix, true));
+    }
 
     #[test]
     fn ascii_wildcard_steps_skip_unicode_validation() {
