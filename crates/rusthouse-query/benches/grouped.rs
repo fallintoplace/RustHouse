@@ -23,7 +23,12 @@ struct Stats {
 
 impl Stats {
     fn new() -> Self {
-        Self { min: i64::MAX, max: i64::MIN, sum: 0, count: 0 }
+        Self {
+            min: i64::MAX,
+            max: i64::MIN,
+            sum: 0,
+            count: 0,
+        }
     }
 
     fn add(&mut self, tenths: i64) {
@@ -50,23 +55,31 @@ struct Fixture {
 
 impl Fixture {
     fn new(rows: usize, stations: usize) -> Self {
-        let unique = SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_nanos();
+        let unique = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
         let root = std::env::temp_dir().join(format!(
             "rusthouse-grouped-bench-{}-{unique}",
             std::process::id()
         ));
         fs::create_dir_all(&root).unwrap();
         let columns = [
-            Column { name: "station".into(), data_type: "String".into() },
-            Column { name: "temperature".into(), data_type: "Float64".into() },
+            Column {
+                name: "station".into(),
+                data_type: "String".into(),
+            },
+            Column {
+                name: "temperature".into(),
+                data_type: "Float64".into(),
+            },
         ];
         let mut stats = vec![Stats::new(); stations];
         for (index, first) in (0..rows).step_by(PART_ROWS).enumerate() {
             let mut values = Vec::with_capacity((rows - first).min(PART_ROWS));
             for row in first..(first + PART_ROWS).min(rows) {
                 let station = row % stations;
-                let tenths =
-                    (row.wrapping_mul(2_654_435_761).wrapping_add(17) % 801) as i64 - 400;
+                let tenths = (row.wrapping_mul(2_654_435_761).wrapping_add(17) % 801) as i64 - 400;
                 stats[station].add(tenths);
                 values.push(vec![
                     Some(format!("station-{station:05}")),
@@ -78,7 +91,8 @@ impl Fixture {
                 &root.join(format!("all_{part}_{part}_0")),
                 &columns,
                 &values,
-            ).unwrap();
+            )
+            .unwrap();
         }
         Self { root, stats }
     }
@@ -120,8 +134,20 @@ fn options() -> (usize, usize, usize) {
         match arg.as_str() {
             "--bench" => {}
             "--rows" => rows = args.next().expect("--rows needs a value").parse().unwrap(),
-            "--stations" => stations = args.next().expect("--stations needs a value").parse().unwrap(),
-            "--samples" => samples = args.next().expect("--samples needs a value").parse().unwrap(),
+            "--stations" => {
+                stations = args
+                    .next()
+                    .expect("--stations needs a value")
+                    .parse()
+                    .unwrap()
+            }
+            "--samples" => {
+                samples = args
+                    .next()
+                    .expect("--samples needs a value")
+                    .parse()
+                    .unwrap()
+            }
             "-h" | "--help" => {
                 println!("Usage: grouped [--rows N] [--stations N] [--samples odd-N]");
                 std::process::exit(0);
@@ -170,7 +196,10 @@ fn main() {
     let (rows, stations, samples) = options();
     let fixture = Fixture::new(rows, stations);
     println!("RustHouse grouped scans: {rows} rows, {stations} keys, {samples} samples");
-    println!("{:<8} {:>12} {:>12} {:>16}", "aggregate", "median ms", "p90 ms", "M rows/s");
+    println!(
+        "{:<8} {:>12} {:>12} {:>16}",
+        "aggregate", "median ms", "p90 ms", "M rows/s"
+    );
     for function in ["min", "avg", "max"] {
         measure(&fixture, rows, samples, function);
     }

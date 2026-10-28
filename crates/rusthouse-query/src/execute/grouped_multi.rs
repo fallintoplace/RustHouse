@@ -14,11 +14,12 @@ const MAX_GROUPS: usize = 200_000;
 fn byte_group_key(column: &TypedColumn, row: usize) -> Option<u8> {
     match column {
         TypedColumn::Numeric(NumericColumn::UInt8(values)) => values.get(row).copied(),
-        TypedColumn::Numeric(NumericColumn::Int8(values)) => values.get(row).map(|value| *value as u8),
+        TypedColumn::Numeric(NumericColumn::Int8(values)) => {
+            values.get(row).map(|value| *value as u8)
+        }
         _ => None,
     }
 }
-
 
 pub(super) fn execute<W: Write>(
     query: &Select,
@@ -73,11 +74,10 @@ pub(super) fn execute<W: Write>(
     let mut by_key: HashMap<Vec<Key>, usize> = HashMap::new();
     let mut probe_key = Vec::with_capacity(group_indices.len());
     let mut dense_groups = (columns.len() == 2
-        && columns.iter().all(|name| matches!(
-            types.get(name).map(String::as_str),
-            Some("UInt8" | "Int8")
-        )))
-        .then(|| vec![usize::MAX; 1 << 16]);
+        && columns
+            .iter()
+            .all(|name| matches!(types.get(name).map(String::as_str), Some("UInt8" | "Int8"))))
+    .then(|| vec![usize::MAX; 1 << 16]);
     let no_filters = query.predicates.is_empty() && query.or_predicates.is_empty();
     while let Some(batch) = reader.next_batch()? {
         for row in 0..batch[0].len() {
@@ -85,19 +85,26 @@ pub(super) fn execute<W: Write>(
                 continue;
             }
             if let Some(by_pair) = dense_groups.as_mut() {
-                let left = byte_group_key(&batch[group_indices[0]], row)
-                    .ok_or_else(|| ExecutionError::Invalid("unexpected first byte GROUP BY type".into()))?;
-                let right = byte_group_key(&batch[group_indices[1]], row)
-                    .ok_or_else(|| ExecutionError::Invalid("unexpected second byte GROUP BY type".into()))?;
+                let left = byte_group_key(&batch[group_indices[0]], row).ok_or_else(|| {
+                    ExecutionError::Invalid("unexpected first byte GROUP BY type".into())
+                })?;
+                let right = byte_group_key(&batch[group_indices[1]], row).ok_or_else(|| {
+                    ExecutionError::Invalid("unexpected second byte GROUP BY type".into())
+                })?;
                 let slot = (usize::from(left) << 8) | usize::from(right);
                 let index = &mut by_pair[slot];
                 if *index != usize::MAX {
-                    groups[*index].1 = groups[*index].1.checked_add(1)
+                    groups[*index].1 = groups[*index]
+                        .1
+                        .checked_add(1)
                         .ok_or_else(|| ExecutionError::Invalid("group count overflow".into()))?;
                 } else {
                     *index = groups.len();
                     groups.push((
-                        group_indices.iter().map(|&index| typed::cell(&batch[index], row)).collect(),
+                        group_indices
+                            .iter()
+                            .map(|&index| typed::cell(&batch[index], row))
+                            .collect(),
                         1,
                     ));
                 }
@@ -177,7 +184,8 @@ pub(super) fn execute<W: Write>(
             }
             Ordering::Equal
         };
-        let end = query.limit
+        let end = query
+            .limit
             .and_then(|limit| query.offset.unwrap_or(0).checked_add(limit));
         if let Some(end) = end.filter(|&end| end < groups.len()) {
             let mut indices = (0..groups.len()).collect::<Vec<_>>();

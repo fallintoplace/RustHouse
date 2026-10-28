@@ -31,11 +31,6 @@ impl ResumeMap {
         (index / 8, 1u8 << (index % 8))
     }
 
-    fn is_complete(&self, index: usize) -> bool {
-        let (byte, mask) = Self::bit_position(index);
-        self.completed[byte] & mask != 0
-    }
-
     pub fn mark_complete(&mut self, index: usize) -> Result<(), &'static str> {
         if index >= self.chunks {
             return Err("chunk index out of bounds");
@@ -62,18 +57,27 @@ impl ResumeMap {
 
     pub fn complete(&self) -> bool {
         let full_bytes = self.chunks / 8;
-        if !self.completed[..full_bytes].iter().all(|&byte| byte == u8::MAX) {
+        if !self.completed[..full_bytes]
+            .iter()
+            .all(|&byte| byte == u8::MAX)
+        {
             return false;
         }
         let remainder = self.chunks % 8;
-        remainder == 0 || self.completed[full_bytes] & ((1u8 << remainder) - 1) == (1u8 << remainder) - 1
+        remainder == 0
+            || self.completed[full_bytes] & ((1u8 << remainder) - 1) == (1u8 << remainder) - 1
     }
 
     /// Stable ASCII encoding for persisting transfer progress.
     pub fn encode(&self) -> String {
-        (0..self.chunks)
-            .map(|index| if self.is_complete(index) { '1' } else { '0' })
-            .collect()
+        let mut encoded = String::with_capacity(self.chunks);
+        for (byte_index, &bits) in self.completed.iter().enumerate() {
+            let count = (self.chunks - byte_index * 8).min(8);
+            for index in 0..count {
+                encoded.push(if bits & (1 << index) != 0 { '1' } else { '0' });
+            }
+        }
+        encoded
     }
 
     pub fn decode(text: &str) -> Result<Self, &'static str> {
@@ -114,7 +118,7 @@ mod tests {
             }
             let restored = ResumeMap::decode(&progress.encode()).unwrap();
             assert_eq!(restored, progress);
-            assert_eq!(restored.remaining().len(), chunks - (chunks + 2) / 3);
+            assert_eq!(restored.remaining().len(), chunks - chunks.div_ceil(3));
             assert_eq!(restored.complete(), chunks == 0 || chunks == 1);
             for index in 0..chunks {
                 progress.mark_complete(index).unwrap();
@@ -155,6 +159,15 @@ mod tests {
     }
 
     #[test]
+    fn encoder_keeps_partial_byte_flags_in_index_order() {
+        let mut map = ResumeMap::new(11).unwrap();
+        for index in [0, 2, 7, 8, 10] {
+            map.mark_complete(index).unwrap();
+        }
+        assert_eq!(map.encode(), "10100001101");
+    }
+
+    #[test]
     fn decoding_large_bitmaps_keeps_exact_bit_positions() {
         let input = "10100111".repeat(8192);
         let decoded = ResumeMap::decode(&input).unwrap();
@@ -162,5 +175,4 @@ mod tests {
         assert_eq!(decoded.encode(), input);
         assert_eq!(decoded.remaining().len(), 3 * 8192);
     }
-
 }

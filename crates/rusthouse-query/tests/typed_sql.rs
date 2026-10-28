@@ -411,15 +411,24 @@ fn counts_and_filters_nullable_text() {
         "countDistinct(uid)\n1\n"
     );
     assert_eq!(
-        query("SELECT count(DISTINCT message) FROM part WHERE message IS NULL", &part),
+        query(
+            "SELECT count(DISTINCT message) FROM part WHERE message IS NULL",
+            &part
+        ),
         "countDistinct(message)\n0\n"
     );
     assert_eq!(
-        query("SELECT count(DISTINCT service) FROM part WHERE status > 200", &part),
+        query(
+            "SELECT count(DISTINCT service) FROM part WHERE status > 200",
+            &part
+        ),
         "countDistinct(service)\n2\n"
     );
     assert_eq!(
-        query("SELECT count(DISTINCT status) FROM part WHERE service = 'api'", &part),
+        query(
+            "SELECT count(DISTINCT status) FROM part WHERE service = 'api'",
+            &part
+        ),
         "countDistinct(status)\n2\n"
     );
     assert_eq!(
@@ -638,7 +647,10 @@ fn distinct_uuid_counts_duplicate_binary_values_once() {
     raw[32] = 2;
     stream(&part, "uid", &raw, 3);
     for (sql, expected) in [
-        ("SELECT count(DISTINCT uid) FROM part", "countDistinct(uid)\n2\n"),
+        (
+            "SELECT count(DISTINCT uid) FROM part",
+            "countDistinct(uid)\n2\n",
+        ),
         (
             "SELECT count(DISTINCT uid) FROM part WHERE service = 'api'",
             "countDistinct(uid)\n2\n",
@@ -755,9 +767,8 @@ fn multi_key_grouped_numeric_aggregates_are_fused_and_checked() {
     ] {
         assert!(parse_select(sql).is_err(), "{sql}");
     }
-    let nonnumeric = parse_select(
-        "SELECT service, uid, sum(message) FROM part GROUP BY service, uid",
-    ).unwrap();
+    let nonnumeric =
+        parse_select("SELECT service, uid, sum(message) FROM part GROUP BY service, uid").unwrap();
     assert!(execute(&nonnumeric, Some(&part), &mut Vec::new()).is_err());
     fs::remove_dir_all(part).unwrap();
 }

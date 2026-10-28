@@ -68,17 +68,13 @@ fn groups_distinct_values_and_ignores_nulls() {
                ORDER BY u DESC, SearchPhrase ASC LIMIT 10";
     assert_eq!(run(q14), "SearchPhrase\tu\nalpha\t2\nbeta\t1\n");
     assert_eq!(
-        run(
-            "SELECT RegionID, COUNT(DISTINCT UserID) FROM part \
-             GROUP BY 1 ORDER BY 2 DESC, 1 ASC LIMIT 2 OFFSET 1"
-        ),
+        run("SELECT RegionID, COUNT(DISTINCT UserID) FROM part \
+             GROUP BY 1 ORDER BY 2 DESC, 1 ASC LIMIT 2 OFFSET 1"),
         "RegionID\tcountDistinct(UserID)\n2\t1\n3\t0\n"
     );
     assert_eq!(
-        run(
-            "SELECT RegionID, COUNT(DISTINCT UserID) FROM part \
-             GROUP BY RegionID LIMIT 0"
-        ),
+        run("SELECT RegionID, COUNT(DISTINCT UserID) FROM part \
+             GROUP BY RegionID LIMIT 0"),
         "RegionID\tcountDistinct(UserID)\n"
     );
     fs::remove_dir_all(root).unwrap();
@@ -106,8 +102,14 @@ fn groups_repeated_string_values_without_counting_nulls() {
         NEXT.fetch_add(1, Ordering::Relaxed)
     ));
     let columns = [
-        Column { name: "segment".into(), data_type: "String".into() },
-        Column { name: "tag".into(), data_type: "Nullable(String)".into() },
+        Column {
+            name: "segment".into(),
+            data_type: "String".into(),
+        },
+        Column {
+            name: "tag".into(),
+            data_type: "Nullable(String)".into(),
+        },
     ];
     let rows = [
         vec![Some("east".into()), Some("a".into())],
@@ -120,9 +122,15 @@ fn groups_repeated_string_values_without_counting_nulls() {
     ];
     write_wide_part(&root, &columns, &rows).unwrap();
     let mut output = Vec::new();
-    execute(&parse_select(
-        "SELECT segment, COUNT(DISTINCT tag) FROM part GROUP BY segment ORDER BY segment"
-    ).unwrap(), Some(&root), &mut output).unwrap();
+    execute(
+        &parse_select(
+            "SELECT segment, COUNT(DISTINCT tag) FROM part GROUP BY segment ORDER BY segment",
+        )
+        .unwrap(),
+        Some(&root),
+        &mut output,
+    )
+    .unwrap();
     assert_eq!(output, b"segment\tcountDistinct(tag)\neast\t2\nwest\t1\n");
     fs::remove_dir_all(root).unwrap();
 }

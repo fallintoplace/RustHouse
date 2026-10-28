@@ -13,8 +13,14 @@ fn typed_count_uses_non_nullable_row_count_but_keeps_nullable_semantics() {
     ));
     fs::create_dir_all(&root).unwrap();
     let columns = [
-        Column { name: "label".into(), data_type: "String".into() },
-        Column { name: "optional".into(), data_type: "Nullable(String)".into() },
+        Column {
+            name: "label".into(),
+            data_type: "String".into(),
+        },
+        Column {
+            name: "optional".into(),
+            data_type: "Nullable(String)".into(),
+        },
     ];
     let rows = vec![
         vec![Some("a".into()), Some("a".into())],
@@ -26,8 +32,14 @@ fn typed_count_uses_non_nullable_row_count_but_keeps_nullable_semantics() {
         ("SELECT count(label) FROM part", "count(label)\n3\n"),
         ("SELECT count(optional) FROM part", "count(optional)\n2\n"),
         ("SELECT count(label) FROM part LIMIT 0", "count(label)\n"),
-        ("SELECT count(label) FROM part LIMIT 1 OFFSET 1", "count(label)\n"),
-        ("SELECT count(label) FROM part WHERE label = 'a'", "count(label)\n1\n"),
+        (
+            "SELECT count(label) FROM part LIMIT 1 OFFSET 1",
+            "count(label)\n",
+        ),
+        (
+            "SELECT count(label) FROM part WHERE label = 'a'",
+            "count(label)\n1\n",
+        ),
     ] {
         let mut result = Vec::new();
         execute(&parse_select(sql).unwrap(), Some(&root), &mut result).unwrap();

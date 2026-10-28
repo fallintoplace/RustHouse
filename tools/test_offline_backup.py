@@ -1,0 +1,34 @@
+import tempfile
+import unittest
+from pathlib import Path
+from offline_backup import preflight
+
+class BackupTests(unittest.TestCase):
+    def test_rejects_nested_destination(self):
+        with tempfile.TemporaryDirectory() as root:
+            source = Path(root)
+            with self.assertRaises(ValueError):
+                preflight(source, source / "backup")
+
+    def test_rejects_existing_destination(self):
+        with tempfile.TemporaryDirectory() as root:
+            with self.assertRaises(ValueError):
+                preflight(Path(root), Path(root))
+
+    def test_rejects_symlink_sources(self):
+        with tempfile.TemporaryDirectory() as root:
+            folder = Path(root)
+            (folder / "link").symlink_to(folder)
+            with self.assertRaises(ValueError):
+                preflight(folder, folder.parent / "unused-backup-for-test")
+
+    def test_allows_fresh_sibling(self):
+        with tempfile.TemporaryDirectory() as root:
+            source = Path(root) / "db"
+            source.mkdir()
+            dest = Path(root) / "archive"
+            self.assertEqual(preflight(source, dest)[1], dest)
+
+
+if __name__ == "__main__":
+    unittest.main()

@@ -6,6 +6,7 @@ reduces order bias. A missing or mismatching reference invalidates the query.
 This is not an official TPC-H benchmark or a warm engine-throughput test.
 """
 import argparse
+import os
 import hashlib
 import json
 import math
@@ -114,6 +115,7 @@ def compare(binary, database, duckdb_binary, duckdb_database,
     ratios = [r["duckdb_over_rusthouse"] for r in results] if all_verified else []
     return {
         "workload": "paired-duckdb-cli-sql-latency",
+        "revision": os.environ.get("GITHUB_SHA"),
         "timing_scope": "fresh native CLI process, warm OS cache possible",
         "official_tpch_score": False,
         "all_queries_verified": all_verified,

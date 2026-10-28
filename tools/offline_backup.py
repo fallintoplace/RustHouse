@@ -1,0 +1,65 @@
+#!/usr/bin/env python3
+"""Cold RustHouse database copy. Stop ALL writers and readers before using."""
+import argparse
+import os
+from pathlib import Path
+import shutil
+import subprocess
+import sys
+
+
+def preflight(source, destination):
+    if source.is_symlink() or not source.is_dir():
+        raise ValueError("source must be an existing real directory")
+    source = source.resolve(strict=True)
+    destination = destination.resolve(strict=False)
+    if destination.exists() or destination == source or source in destination.parents:
+        raise ValueError("destination must not exist or be inside the source")
+    stage = destination.with_name(destination.name + ".partial")
+    if stage.exists():
+        raise ValueError("staging destination already exists: " + str(stage))
+    for base, directories, files in os.walk(source, followlinks=False):
+        for item in directories + files:
+            if (Path(base) / item).is_symlink():
+                raise ValueError("backup refuses symlinks: " + str(Path(base) / item))
+    return source, destination, stage
+
+
+def backup(source, destination, binary="rusthouse"):
+    source, destination, stage = preflight(source, destination)
+    # Preserve the complete layout, including hidden files and lock inode contents.
+    shutil.copytree(source, stage, symlinks=False, copy_function=shutil.copy2)
+    try:
+        result = subprocess.run(
+            [str(binary), "doctor", "--database", str(stage), "--full-hashes"],
+            capture_output=True, text=True, timeout=3600, check=False,
+        )
+    except (OSError, subprocess.TimeoutExpired) as exc:
+        raise RuntimeError("backup remains at " + str(stage) + ": " + str(exc)) from exc
+    if result.returncode:
+        raise RuntimeError("doctor rejected staged backup at " + str(stage) +
+                           ": " + result.stderr[-2000:])
+    stage.rename(destination)
+    return destination
+
+
+def main():
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("source", type=Path)
+    parser.add_argument("destination", type=Path)
+    parser.add_argument("--binary", default="target/debug/rusthouse")
+    parser.add_argument("--offline-confirmed", action="store_true")
+    args = parser.parse_args()
+    if not args.offline_confirmed:
+        parser.error("stop ALL RustHouse readers and writers, then pass --offline-confirmed")
+    try:
+        target = backup(args.source, args.destination, args.binary)
+    except (ValueError, OSError, RuntimeError) as exc:
+        print("FAIL: " + str(exc), file=sys.stderr)
+        return 1
+    print("Verified cold backup: " + str(target))
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

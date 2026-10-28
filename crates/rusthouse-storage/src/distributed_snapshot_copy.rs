@@ -1,8 +1,8 @@
 //! Offline copy of a frozen set of immutable wide parts to a new local root.
 //! Both source and destination require trusted filesystems with stopped writers.
 use crate::{
-    PartError, inspect_query_source, query_parts, resolve_active_snapshot,
-    verify_part_file_hashes, verify_wide_part,
+    PartError, inspect_query_source, query_parts, resolve_active_snapshot, verify_part_file_hashes,
+    verify_wide_part,
 };
 use std::fs::{self, File};
 use std::io;
@@ -19,7 +19,10 @@ pub struct SnapshotCopy {
 }
 
 fn io_error(path: &Path, source: io::Error) -> PartError {
-    PartError::Io { path: path.to_owned(), source }
+    PartError::Io {
+        path: path.to_owned(),
+        source,
+    }
 }
 
 /// Copy a complete active generation into a new directory and validate it
@@ -33,7 +36,9 @@ pub fn copy_frozen_snapshot(
     let active = resolve_active_snapshot(source)?;
     let parts = query_parts(&active)?;
     if parts.len() > max_parts || max_parts > 16_384 {
-        return Err(PartError::InvalidScan("snapshot copy exceeds part limit".into()));
+        return Err(PartError::InvalidScan(
+            "snapshot copy exceeds part limit".into(),
+        ));
     }
     inspect_query_source(&active)?;
     match fs::symlink_metadata(destination) {
@@ -49,7 +54,9 @@ pub fn copy_frozen_snapshot(
         .file_type()
         .is_dir()
     {
-        return Err(PartError::InvalidScan("destination parent is not a directory".into()));
+        return Err(PartError::InvalidScan(
+            "destination parent is not a directory".into(),
+        ));
     }
     let staging = parent.join(format!(
         ".rusthouse-snapshot-copy-{}-{}",
@@ -58,7 +65,11 @@ pub fn copy_frozen_snapshot(
     ));
     fs::create_dir(&staging).map_err(|error| io_error(&staging, error))?;
     let copied = (|| -> Result<SnapshotCopy, PartError> {
-        let mut report = SnapshotCopy { parts: 0, files: 0, bytes: 0 };
+        let mut report = SnapshotCopy {
+            parts: 0,
+            files: 0,
+            bytes: 0,
+        };
         for part in &parts {
             verify_part_file_hashes(part)?;
             let name = part
@@ -74,7 +85,9 @@ pub fn copy_frozen_snapshot(
                     .map_err(|error| io_error(&source_file, error))?
                     .is_file()
                 {
-                    return Err(PartError::InvalidScan("part contains non-file entries".into()));
+                    return Err(PartError::InvalidScan(
+                        "part contains non-file entries".into(),
+                    ));
                 }
                 let destination_file = copy.join(entry.file_name());
                 let bytes = entry
@@ -122,7 +135,9 @@ pub fn copy_frozen_snapshot(
     };
     if destination.exists() {
         let _ = fs::remove_dir_all(&staging);
-        return Err(PartError::InvalidScan("destination appeared during copy".into()));
+        return Err(PartError::InvalidScan(
+            "destination appeared during copy".into(),
+        ));
     }
     if let Err(error) = fs::rename(&staging, destination) {
         let _ = fs::remove_dir_all(&staging);
@@ -142,17 +157,18 @@ mod tests {
 
     #[test]
     fn copies_verified_snapshot_and_rejects_overwrites() {
-        let base = std::env::temp_dir().join(format!(
-            "rusthouse-snapshot-copy-{}",
-            std::process::id()
-        ));
+        let base =
+            std::env::temp_dir().join(format!("rusthouse-snapshot-copy-{}", std::process::id()));
         let _ = fs::remove_dir_all(&base);
         let source = base.join("source");
         let target = base.join("replica");
         fs::create_dir_all(&source).unwrap();
         write_wide_part(
             &source.join("all_0_0_0"),
-            &[Column { name: "id".into(), data_type: "UInt64".into() }],
+            &[Column {
+                name: "id".into(),
+                data_type: "UInt64".into(),
+            }],
             &[vec![Some("12".into())]],
         )
         .unwrap();
@@ -165,9 +181,8 @@ mod tests {
     }
     #[test]
     fn corrupted_snapshot_never_publishes_destination() {
-        let root = std::env::temp_dir().join(format!(
-            "rusthouse-copy-corrupt-{}", std::process::id()
-        ));
+        let root =
+            std::env::temp_dir().join(format!("rusthouse-copy-corrupt-{}", std::process::id()));
         let _ = fs::remove_dir_all(&root);
         let source = root.join("source");
         let target = root.join("target");
@@ -175,13 +190,16 @@ mod tests {
         let part = source.join("all_0_0_0");
         write_wide_part(
             &part,
-            &[Column { name: "id".into(), data_type: "UInt64".into() }],
+            &[Column {
+                name: "id".into(),
+                data_type: "UInt64".into(),
+            }],
             &[vec![Some("12".into())]],
-        ).unwrap();
+        )
+        .unwrap();
         fs::write(part.join("count.txt"), "100\n").unwrap();
         assert!(copy_frozen_snapshot(&source, &target, 1, 1_000_000).is_err());
         assert!(!target.exists());
         fs::remove_dir_all(root).unwrap();
     }
-
 }
