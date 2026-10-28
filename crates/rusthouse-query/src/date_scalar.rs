@@ -10,6 +10,7 @@ pub(super) fn is_function(name: &str) -> bool {
     matches!(
         name.to_ascii_uppercase().as_str(),
         "ADDDAYS"
+            | "SUBTRACTDAYS"
     )
 }
 
@@ -20,6 +21,7 @@ pub(super) fn parse_after_open(
 ) -> Result<ConstantValue, ParseError> {
     match name {
         "ADDDAYS" => offset_seconds(parser, depth, DAY_SECONDS, false, false),
+        "SUBTRACTDAYS" => offset_seconds(parser, depth, DAY_SECONDS, true, false),
         _ => Err(ParseError(format!("unsupported date function: {name}"))),
     }
 }
