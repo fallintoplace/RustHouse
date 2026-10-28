@@ -37,7 +37,8 @@ fn tokenize_with_limit(sql: &str, max_bytes: usize) -> Result<Vec<Token>, ParseE
         )));
     }
     let bytes = sql.as_bytes();
-    let mut tokens = Vec::new();
+    // Avoid repeated vector growth on common SELECT statements and large INSERTs.
+    let mut tokens = Vec::with_capacity((sql.len() / 8).min(2048));
     let mut index = if sql.starts_with('\u{feff}') { 3 } else { 0 };
     while index < bytes.len() {
         let byte = bytes[index];
@@ -368,5 +369,20 @@ mod tests {
             ]
         );
         assert!(tokenize("-- only a comment").unwrap().is_empty());
+    }
+
+    #[test]
+    fn tokenizes_large_plain_sql_statements_without_losing_positions() {
+        let sql = format!(
+            "SELECT {}",
+            (0..100)
+                .map(|i| i.to_string())
+                .collect::<Vec<_>>()
+                .join(",")
+        );
+        let tokens = tokenize(&sql).unwrap();
+        assert!(matches!(tokens.first(), Some(Token::Word(word)) if word == "SELECT"));
+        assert_eq!(tokens.len(), 200);
+        assert_eq!(tokens.last(), Some(&Token::Number("99".into())));
     }
 }
