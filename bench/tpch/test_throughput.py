@@ -29,6 +29,21 @@ class ThroughputTests(unittest.TestCase):
         self.assertEqual(result["verified_executions"], 0)
         self.assertEqual(result["successful_executions"], 1)
 
+    def test_verified_mode_rejects_missing_or_partial_goldens(self):
+        with self.assertRaisesRegex(ValueError, "reference"):
+            run_throughput([(1, "SELECT 1")], lambda _: b"1\\n",
+                           require_verified=True)
+        with self.assertRaisesRegex(ValueError, "reference"):
+            run_throughput([(1, "SELECT 1"), (2, "SELECT 2")],
+                           lambda _: b"1\\n", references={1: b"1\\n"},
+                           require_verified=True)
+        report = run_throughput(
+            [(1, "SELECT 1")], lambda _: b"1\\n",
+            rounds=1, references={1: b"1\\n"}, require_verified=True,
+        )
+        self.assertTrue(report["all_executions_verified"])
+        self.assertTrue(report["verification_required"])
+
     def test_limits_are_enforced(self):
         with self.assertRaisesRegex(ValueError, "clients"):
             run_throughput([(1, "sql")], lambda _: b"", clients=0)
