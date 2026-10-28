@@ -316,6 +316,38 @@ pub(super) fn execute_aggregate_numbers<W: Write>(
         }
         return Ok(());
     }
+    // A filtered arithmetic progression can be aggregated from its exact
+    // matching interval without generating a billion individual rows.
+    if matches!(function, AggregateFunction::Sum | AggregateFunction::Min | AggregateFunction::Max)
+        && let Some((lower, upper)) = monotonic_range_indices(&comparisons, start, rows, step)
+    {
+        if query.offset.unwrap_or(0) == 0 {
+            if lower == upper {
+                writeln!(output, "NULL")?;
+            } else {
+                let first = u128::from(start) + u128::from(lower) * u128::from(step);
+                let last = u128::from(start) + u128::from(upper - 1) * u128::from(step);
+                let count = u128::from(upper - lower);
+                let result = match function {
+                    // Halve before multiplying to avoid a transient u128
+                    // overflow at the full UInt64 cardinality boundary.
+                    AggregateFunction::Sum => {
+                        let endpoints = first + last;
+                        if count % 2 == 0 {
+                            (count / 2) * endpoints
+                        } else {
+                            count * (endpoints / 2)
+                        }
+                    }
+                    AggregateFunction::Min => first,
+                    AggregateFunction::Max => last,
+                    _ => unreachable!(),
+                };
+                writeln!(output, "{result}")?;
+            }
+        }
+        return Ok(());
+    }
     let mut state = AggregateState::new(function);
     for index in 0..rows {
         let number = start + index * step;

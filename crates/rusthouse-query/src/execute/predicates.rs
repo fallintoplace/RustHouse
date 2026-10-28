@@ -195,6 +195,58 @@ pub(super) fn compile_numbers_predicates(
 /// Count a single AND branch over an increasing generated UInt64 sequence
 /// without visiting its rows. Unsupported OR, IN and modulo predicates keep
 /// the normal row-wise executor. Arithmetic uses u128 at UInt64 boundaries.
+
+/* Return the matching row interval for a monotone generated UInt64 source.
+ * Only conjunctions of range/equality comparisons are safe to collapse.
+ * OR, NE, modulo, IN and other operators use the normal executor. */
+pub(super) fn monotonic_range_indices(
+    branches: &[Vec<CompiledPredicate>],
+    start: u64,
+    rows: u64,
+    step: u64,
+) -> Option<(u64, u64)> {
+    let [conjunction] = branches else { return None };
+    if step == 0 { return None; }
+    let first = u128::from(start);
+    let stride = u128::from(step);
+    let end = u128::from(rows);
+    let mut lower = 0u128;
+    let mut upper = end;
+    for predicate in conjunction {
+        let CompiledTest::Comparison {
+            operator,
+            target: Number::Unsigned(target),
+        } = &predicate.test else { return None };
+        match operator {
+            Operator::Eq => {
+                if *target >= first && (*target - first) % stride == 0 {
+                    let index = (*target - first) / stride;
+                    lower = lower.max(index);
+                    upper = upper.min(index.saturating_add(1));
+                } else {
+                    upper = 0;
+                }
+            }
+            Operator::Lt => {
+                upper = upper.min(if *target <= first { 0 } else { (*target - first).div_ceil(stride) });
+            }
+            Operator::Le => {
+                upper = upper.min(if *target < first { 0 } else { ((*target - first) / stride).saturating_add(1) });
+            }
+            Operator::Gt => {
+                lower = lower.max(if *target < first { 0 } else { ((*target - first) / stride).saturating_add(1) });
+            }
+            Operator::Ge => {
+                lower = lower.max(if *target <= first { 0 } else { (*target - first).div_ceil(stride) });
+            }
+            Operator::Ne | Operator::Modulo(_) | Operator::ModuloNe(_) => return None,
+        }
+    }
+    let lower = lower.min(end);
+    let upper = upper.min(end).max(lower);
+    Some((lower as u64, upper as u64))
+}
+
 pub(super) fn count_monotonic_numbers(
     branches: &[Vec<CompiledPredicate>],
     start: u64,
