@@ -812,9 +812,22 @@ fn execute_streaming_ordered_inner<W: Write>(
         left_names, right_names, selected, left_keys, right_keys, null_filter
     } = columns;
     let right_metadata = inspect_query_source(right_path)?;
-    let right_rows = read_rows(
-        right_path, right_names, right_metadata.rows,
-        MAX_STREAM_BUILD_ROWS, MAX_STREAM_BUILD_BYTES
+    let mut keep = retained_build_columns(
+        right_names, right_keys, selected, null_filter, left_names.len(),
+    );
+    // An ORDER BY column can be absent from SELECT but is still needed
+    // when comparing the streamed joined rows.
+    for &(index, _, _) in order {
+        if let Some(local) = index.checked_sub(left_names.len())
+            .filter(|&index| index < right_names.len()) {
+            keep.push(local);
+        }
+    }
+    keep.sort_unstable();
+    keep.dedup();
+    let right_rows = read_projected_build_rows(
+        right_path, right_names, &keep, right_metadata.rows,
+        MAX_STREAM_BUILD_ROWS, MAX_STREAM_BUILD_BYTES,
     )?;
     let mut hash = HashMap::<Vec<typed::Key>, Bucket>::with_capacity(right_rows.len());
     for (index, row) in right_rows.iter().enumerate() {
