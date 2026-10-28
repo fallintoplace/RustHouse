@@ -3,6 +3,7 @@ mod checksums;
 mod columns;
 mod compression;
 mod database_lock;
+pub mod distributed_rendezvous;
 mod dates;
 mod decimal;
 mod enums;
