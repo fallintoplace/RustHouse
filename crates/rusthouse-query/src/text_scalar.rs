@@ -87,6 +87,7 @@ pub(super) fn is_function(name: &str) -> bool {
             | "RPAD"
             | "LOWERUTF8"
             | "SPACE"
+            | "ISIPADDRESSINRANGE"
             | "IPV4NUMTOSTRINGCLASSC"
             | "IPV4NUMTOSTRING"
             | "INET_NTOA"
@@ -1993,6 +1994,43 @@ fn parse_at_depth(parser: &mut Parser, depth: usize) -> Result<ConstantValue, Pa
                     ConstantValue::Text(format!("{a}.{b}.{c}.xxx"))
                 }
                 None => ConstantValue::Null,
+            }
+        }
+        "ISIPADDRESSINRANGE" => {
+            let address = text_arg(parser, depth + 1)?;
+            require(parser, Token::Comma, "isIPAddressInRange requires a CIDR prefix")?;
+            let cidr = text_arg(parser, depth + 1)?;
+            require(parser, Token::RParen, "expected ')' after isIPAddressInRange")?;
+            match (address, cidr) {
+                (Some(address), Some(cidr)) => {
+                    let address = address.parse::<std::net::IpAddr>()
+                        .map_err(|_| ParseError("invalid IP address".into()))?;
+                    let (network, width) = cidr.split_once('/')
+                        .ok_or_else(|| ParseError("CIDR prefix must contain '/'".into()))?;
+                    let network = network.parse::<std::net::IpAddr>()
+                        .map_err(|_| ParseError("invalid CIDR network".into()))?;
+                    let bits = width.parse::<u8>()
+                        .map_err(|_| ParseError("invalid CIDR prefix length".into()))?;
+                    let match_address = match (address, network) {
+                        (std::net::IpAddr::V4(address), std::net::IpAddr::V4(network)) => {
+                            if bits > 32 {
+                                return Err(ParseError("IPv4 CIDR prefix exceeds 32".into()));
+                            }
+                            let mask = u32::MAX.checked_shl(u32::from(32 - bits)).unwrap_or(0);
+                            (u32::from(address) & mask) == (u32::from(network) & mask)
+                        }
+                        (std::net::IpAddr::V6(address), std::net::IpAddr::V6(network)) => {
+                            if bits > 128 {
+                                return Err(ParseError("IPv6 CIDR prefix exceeds 128".into()));
+                            }
+                            let mask = u128::MAX.checked_shl(u32::from(128 - bits)).unwrap_or(0);
+                            (u128::from(address) & mask) == (u128::from(network) & mask)
+                        }
+                        _ => false,
+                    };
+                    ConstantValue::Integer(i64::from(match_address))
+                }
+                _ => ConstantValue::Null,
             }
         }
         _ => return Err(ParseError(format!("unsupported string function: {name}"))),
