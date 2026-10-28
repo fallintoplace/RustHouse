@@ -42,6 +42,7 @@ pub(super) fn is_function(name: &str) -> bool {
             | "JSONEXTRACTSTRING"
             | "JSONEXTRACTRAW"
             | "JSON_VALUE"
+            | "JSON_QUERY"
             | "SUBSTRING"
             | "HASSUBSEQUENCECASEINSENSITIVE"
             | "OVERLAY"
@@ -1932,6 +1933,32 @@ fn parse_at_depth(parser: &mut Parser, depth: usize) -> Result<ConstantValue, Pa
                         }
                     });
                     ConstantValue::Text(output.to_owned())
+                }
+                _ => ConstantValue::Null,
+            }
+        }
+        "JSON_QUERY" => {
+            let input = text_arg(parser, depth + 1)?;
+            require(parser, Token::Comma, "JSON_QUERY requires a JSONPath")?;
+            let path = text_arg(parser, depth + 1)?;
+            require(parser, Token::RParen, "expected ')' after JSON_QUERY")?;
+            match (input, path) {
+                (Some(input), Some(path)) => {
+                    let key = crate::json::exact_json_path(&path)
+                        .map_err(|error| ParseError(error.into()))?;
+                    let json = crate::json::parse_json(&input)
+                        .map_err(|error| ParseError(format!("invalid JSON: {error}")))?;
+                    let found = if key.is_empty() { Some(&json) } else { json.at_path(&key) };
+                    let output = match found {
+                        Some(value) => {
+                            if value.raw().len() + 2 > MAX_TEXT_BYTES {
+                                return Err(ParseError("JSON_QUERY result is too large".into()));
+                            }
+                            format!("[{}]", value.raw())
+                        }
+                        None => String::new(),
+                    };
+                    ConstantValue::Text(output)
                 }
                 _ => ConstantValue::Null,
             }
