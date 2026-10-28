@@ -462,4 +462,26 @@ mod tests {
         assert_eq!(result.marks.len(), 4_096);
         assert_eq!(result.marks[4_095].compressed_offset, 4_095 * 16);
     }
+    #[test]
+    fn reconstructs_adaptive_marks_at_every_block_split() {
+        let mut record = Vec::new();
+        record.extend_from_slice(&7u64.to_le_bytes());
+        record.extend_from_slice(&9u64.to_le_bytes());
+        record.extend_from_slice(&12u64.to_le_bytes());
+        let expected = vec![WideMark {
+            compressed_offset: 7,
+            decompressed_offset: 9,
+            rows: Some(12),
+        }];
+        for split in 1..record.len() {
+            let mut bytes = checked_block(0x02, &record[..split]);
+            bytes.extend(checked_block(0x02, &record[split..]));
+            assert_eq!(
+                read_compressed(bytes, WideMarkFormat::Adaptive).unwrap(),
+                expected,
+                "split {split}"
+            );
+        }
+    }
+
 }

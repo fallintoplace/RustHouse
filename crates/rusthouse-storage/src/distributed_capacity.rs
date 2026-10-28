@@ -89,4 +89,24 @@ mod tests {
         assert!(cap.commit(2).is_err());
         assert!(Capacity { total: 1, used: u64::MAX, reserved: 2 }.available().is_err());
     }
+    #[test]
+    fn small_capacity_states_preserve_accounting_invariants() {
+        for total in 0..=12u64 {
+            for used in 0..=total {
+                for reserved in 0..=total - used {
+                    let state = Capacity { total, used, reserved };
+                    let available = state.available().unwrap();
+                    assert_eq!(used + reserved + available, total);
+                    let held = state.reserve(available).unwrap();
+                    assert_eq!(held.available().unwrap(), 0);
+                    let restored = held.release(available).unwrap();
+                    assert_eq!(restored, state);
+                    let committed = state.commit(reserved).unwrap();
+                    assert_eq!(committed.used, used + reserved);
+                    assert_eq!(committed.reserved, 0);
+                }
+            }
+        }
+    }
+
 }
