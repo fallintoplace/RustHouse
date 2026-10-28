@@ -8,38 +8,56 @@ pub(super) fn is_function(name: &str) -> bool {
         name.to_ascii_uppercase().as_str(),
         "LENGTH"
             | "CHAR_LENGTH"
+            | "OCTET_LENGTH"
             | "ASCII"
+            | "UTF16_LENGTH"
+            | "CHR"
+            | "BIT_LENGTH"
+            | "IS_INT64"
             | "BTRIM"
             | "RTRIM"
+            | "COLLAPSE_WHITESPACE"
             | "LOWER"
             | "HEX_ENCODE"
+            | "IS_ASCII"
             | "UPPER"
             | "URL_DECODE"
+            | "IS_EMPTY"
             | "REVERSE"
             | "INITCAP"
             | "CONCAT"
             | "QUOTE_LITERAL"
+            | "COALESCE"
             | "CONCAT_WS"
             | "URL_ENCODE"
+            | "JSON_QUOTE"
             | "SUBSTRING"
             | "OVERLAY"
             | "SPLIT_PART"
             | "SUBSTRING_INDEX"
+            | "TO_INT64"
             | "TRIM"
             | "LTRIM"
+            | "TRIM_WHITESPACE"
+            | "TRY_TO_INT64"
             | "LPAD"
             | "HEX_DECODE"
             | "REPLACE"
             | "TRANSLATE"
             | "STRPOS"
             | "COUNT_SUBSTRING"
+            | "NULLIF"
+            | "LAST_INDEX_OF"
             | "LEFT"
             | "REPLACE_FIRST"
             | "STARTS_WITH"
             | "CONTAINS"
+            | "STRIP_PREFIX"
             | "RIGHT"
+            | "BASE64_ENCODE"
             | "ENDS_WITH"
             | "REPLACE_LAST"
+            | "STRIP_SUFFIX"
             | "REPEAT"
             | "BASE64_DECODE"
             | "RPAD"
@@ -68,7 +86,7 @@ fn parse_at_depth(parser: &mut Parser, depth: usize) -> Result<ConstantValue, Pa
                 None => ConstantValue::Null,
             }
         }
-        "LENGTH" | "CHAR_LENGTH" => {
+        "LENGTH" | "CHAR_LENGTH" | "OCTET_LENGTH" => {
             let input = text_arg(parser, depth + 1)?;
             require(parser, Token::RParen, "LENGTH requires one argument")?;
             match input {
@@ -108,6 +126,33 @@ fn parse_at_depth(parser: &mut Parser, depth: usize) -> Result<ConstantValue, Pa
                 None => ConstantValue::Null,
             }
         }
+        "UTF16_LENGTH" => {
+            let input = text_arg(parser, depth + 1)?;
+            require(parser, Token::RParen, "UTF16_LENGTH requires one argument")?;
+            match input {
+                Some(value) => {
+                    let length = i64::try_from(value.encode_utf16().count())
+                        .map_err(|_| ParseError("UTF16_LENGTH result exceeds Int64".into()))?;
+                    ConstantValue::Integer(length)
+                }
+                None => ConstantValue::Null,
+            }
+        }
+        "BIT_LENGTH" => {
+            let input = text_arg(parser, depth + 1)?;
+            require(parser, Token::RParen, "BIT_LENGTH requires one argument")?;
+            match input {
+                Some(value) => {
+                    let bits = value
+                        .len()
+                        .checked_mul(8)
+                        .and_then(|length| i64::try_from(length).ok())
+                        .ok_or_else(|| ParseError("BIT_LENGTH result exceeds Int64".into()))?;
+                    ConstantValue::Integer(bits)
+                }
+                None => ConstantValue::Null,
+            }
+        }
         "LOWER" => {
             let input = text_arg(parser, depth + 1)?;
             require(parser, Token::RParen, "LOWER requires one argument")?;
@@ -118,6 +163,21 @@ fn parse_at_depth(parser: &mut Parser, depth: usize) -> Result<ConstantValue, Pa
                         return Err(ParseError("LOWER result is too large".into()));
                     }
                     ConstantValue::Text(result)
+                }
+                None => ConstantValue::Null,
+            }
+        }
+        "CHR" => {
+            let input = integer_arg(parser, depth + 1)?;
+            require(parser, Token::RParen, "CHR requires one argument")?;
+            match input {
+                Some(value) => {
+                    let character = u32::try_from(value)
+                        .ok()
+                        .filter(|code| *code != 0)
+                        .and_then(char::from_u32)
+                        .ok_or_else(|| ParseError("CHR requires a nonzero Unicode scalar".into()))?;
+                    ConstantValue::Text(character.to_string())
                 }
                 None => ConstantValue::Null,
             }
@@ -160,6 +220,30 @@ fn parse_at_depth(parser: &mut Parser, depth: usize) -> Result<ConstantValue, Pa
                 None => ConstantValue::Null,
             }
         }
+        "IS_ASCII" => {
+            let input = text_arg(parser, depth + 1)?;
+            require(parser, Token::RParen, "IS_ASCII requires one argument")?;
+            match input {
+                Some(value) => ConstantValue::Integer(i64::from(value.is_ascii())),
+                None => ConstantValue::Null,
+            }
+        }
+        "IS_EMPTY" => {
+            let input = text_arg(parser, depth + 1)?;
+            require(parser, Token::RParen, "IS_EMPTY requires one argument")?;
+            match input {
+                Some(value) => ConstantValue::Integer(i64::from(value.is_empty())),
+                None => ConstantValue::Null,
+            }
+        }
+        "IS_INT64" => {
+            let input = text_arg(parser, depth + 1)?;
+            require(parser, Token::RParen, "IS_INT64 requires one argument")?;
+            match input {
+                Some(value) => ConstantValue::Integer(i64::from(value.parse::<i64>().is_ok())),
+                None => ConstantValue::Null,
+            }
+        }
         "REVERSE" => {
             let input = text_arg(parser, depth + 1)?;
             require(parser, Token::RParen, "REVERSE requires one argument")?;
@@ -199,6 +283,25 @@ fn parse_at_depth(parser: &mut Parser, depth: usize) -> Result<ConstantValue, Pa
                 }
                 None => ConstantValue::Null,
             }
+        }
+        "COALESCE" => {
+            let mut first = None;
+            let mut count = 0;
+            loop {
+                if count == 16 {
+                    return Err(ParseError("COALESCE supports at most 16 arguments".into()));
+                }
+                let value = text_arg(parser, depth + 1)?;
+                if first.is_none() {
+                    first = value;
+                }
+                count += 1;
+                if !parser.take(Token::Comma) {
+                    break;
+                }
+            }
+            require(parser, Token::RParen, "expected ')' after COALESCE arguments")?;
+            first.map_or(ConstantValue::Null, ConstantValue::Text)
         }
         "CONCAT_WS" => {
             let separator = text_arg(parser, depth + 1)?;
@@ -467,6 +570,18 @@ fn parse_at_depth(parser: &mut Parser, depth: usize) -> Result<ConstantValue, Pa
                 None => ConstantValue::Null,
             }
         }
+        "TO_INT64" => {
+            let input = text_arg(parser, depth + 1)?;
+            require(parser, Token::RParen, "TO_INT64 requires one argument")?;
+            match input {
+                Some(value) => ConstantValue::Integer(
+                    value
+                        .parse::<i64>()
+                        .map_err(|_| ParseError("TO_INT64 requires an Int64 string".into()))?,
+                ),
+                None => ConstantValue::Null,
+            }
+        }
         "LPAD" => {
             let input = text_arg(parser, depth + 1)?;
             require(parser, Token::Comma, "LPAD requires a width")?;
@@ -523,6 +638,14 @@ fn parse_at_depth(parser: &mut Parser, depth: usize) -> Result<ConstantValue, Pa
                 _ => ConstantValue::Null,
             }
         }
+        "TRIM_WHITESPACE" => {
+            let input = text_arg(parser, depth + 1)?;
+            require(parser, Token::RParen, "TRIM_WHITESPACE requires one argument")?;
+            match input {
+                Some(value) => ConstantValue::Text(value.trim().to_owned()),
+                None => ConstantValue::Null,
+            }
+        }
         "TRIM" => {
             let input = text_arg(parser, depth + 1)?;
             require(parser, Token::RParen, "TRIM requires one argument")?;
@@ -547,6 +670,17 @@ fn parse_at_depth(parser: &mut Parser, depth: usize) -> Result<ConstantValue, Pa
                     )
                 }
                 _ => ConstantValue::Null,
+            }
+        }
+        "NULLIF" => {
+            let left = text_arg(parser, depth + 1)?;
+            require(parser, Token::Comma, "NULLIF requires a second argument")?;
+            let right = text_arg(parser, depth + 1)?;
+            require(parser, Token::RParen, "expected ')' after NULLIF arguments")?;
+            match (left, right) {
+                (Some(left), Some(right)) if left == right => ConstantValue::Null,
+                (Some(left), _) => ConstantValue::Text(left),
+                (None, _) => ConstantValue::Null,
             }
         }
         "STRPOS" => {
@@ -584,6 +718,53 @@ fn parse_at_depth(parser: &mut Parser, depth: usize) -> Result<ConstantValue, Pa
                     input.trim_end_matches(|ch| characters.contains(ch)).to_owned(),
                 ),
                 _ => ConstantValue::Null,
+            }
+        }
+        "LAST_INDEX_OF" => {
+            let input = text_arg(parser, depth + 1)?;
+            require(parser, Token::Comma, "LAST_INDEX_OF requires a substring")?;
+            let needle = text_arg(parser, depth + 1)?;
+            require(parser, Token::RParen, "expected ')' after LAST_INDEX_OF arguments")?;
+            match (input, needle) {
+                (Some(input), Some(needle)) => {
+                    let index = input
+                        .rfind(needle.as_str())
+                        .map(|byte_index| input[..byte_index].chars().count() + 1)
+                        .unwrap_or(0);
+                    ConstantValue::Integer(
+                        i64::try_from(index)
+                            .map_err(|_| ParseError("LAST_INDEX_OF exceeds Int64".into()))?,
+                    )
+                }
+                _ => ConstantValue::Null,
+            }
+        }
+        "COLLAPSE_WHITESPACE" => {
+            let input = text_arg(parser, depth + 1)?;
+            require(parser, Token::RParen, "COLLAPSE_WHITESPACE requires one argument")?;
+            match input {
+                Some(value) => {
+                    let mut result = String::new();
+                    let mut pending_space = false;
+                    for character in value.chars() {
+                        if character.is_whitespace() {
+                            pending_space = !result.is_empty();
+                        } else {
+                            if pending_space {
+                                result.push(' ');
+                                pending_space = false;
+                            }
+                            result.push(character);
+                        }
+                        if result.len() > MAX_TEXT_BYTES {
+                            return Err(ParseError(
+                                "COLLAPSE_WHITESPACE result is too large".into(),
+                            ));
+                        }
+                    }
+                    ConstantValue::Text(result)
+                }
+                None => ConstantValue::Null,
             }
         }
         "BTRIM" => {
@@ -723,6 +904,21 @@ fn parse_at_depth(parser: &mut Parser, depth: usize) -> Result<ConstantValue, Pa
                 _ => ConstantValue::Null,
             }
         }
+        "STRIP_PREFIX" => {
+            let input = text_arg(parser, depth + 1)?;
+            require(parser, Token::Comma, "STRIP_PREFIX requires a prefix")?;
+            let prefix = text_arg(parser, depth + 1)?;
+            require(parser, Token::RParen, "expected ')' after STRIP_PREFIX arguments")?;
+            match (input, prefix) {
+                (Some(input), Some(prefix)) => ConstantValue::Text(
+                    input
+                        .strip_prefix(prefix.as_str())
+                        .unwrap_or(input.as_str())
+                        .to_owned(),
+                ),
+                _ => ConstantValue::Null,
+            }
+        }
         "LEFT" => {
             let input = text_arg(parser, depth + 1)?;
             require(parser, Token::Comma, "LEFT requires a character count")?;
@@ -815,6 +1011,63 @@ fn parse_at_depth(parser: &mut Parser, depth: usize) -> Result<ConstantValue, Pa
                 None => ConstantValue::Null,
             }
         }
+        "BASE64_ENCODE" => {
+            let input = text_arg(parser, depth + 1)?;
+            require(parser, Token::RParen, "BASE64_ENCODE requires one argument")?;
+            match input {
+                Some(value) => {
+                    let output_len = value.len()
+                        .checked_add(2)
+                        .and_then(|length| length.checked_div(3))
+                        .and_then(|groups| groups.checked_mul(4))
+                        .ok_or_else(|| ParseError("BASE64_ENCODE result is too large".into()))?;
+                    if output_len > MAX_TEXT_BYTES {
+                        return Err(ParseError("BASE64_ENCODE result is too large".into()));
+                    }
+                    const ALPHABET: &[u8; 64] =
+                        b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+                    let mut result = String::with_capacity(output_len);
+                    for chunk in value.as_bytes().chunks(3) {
+                        let mut bits = u32::from(chunk[0]) << 16;
+                        if chunk.len() > 1 {
+                            bits |= u32::from(chunk[1]) << 8;
+                        }
+                        if chunk.len() > 2 {
+                            bits |= u32::from(chunk[2]);
+                        }
+                        result.push(char::from(ALPHABET[((bits >> 18) & 63) as usize]));
+                        result.push(char::from(ALPHABET[((bits >> 12) & 63) as usize]));
+                        if chunk.len() > 1 {
+                            result.push(char::from(ALPHABET[((bits >> 6) & 63) as usize]));
+                        } else {
+                            result.push('=');
+                        }
+                        if chunk.len() > 2 {
+                            result.push(char::from(ALPHABET[(bits & 63) as usize]));
+                        } else {
+                            result.push('=');
+                        }
+                    }
+                    ConstantValue::Text(result)
+                }
+                None => ConstantValue::Null,
+            }
+        }
+        "STRIP_SUFFIX" => {
+            let input = text_arg(parser, depth + 1)?;
+            require(parser, Token::Comma, "STRIP_SUFFIX requires a suffix")?;
+            let suffix = text_arg(parser, depth + 1)?;
+            require(parser, Token::RParen, "expected ')' after STRIP_SUFFIX arguments")?;
+            match (input, suffix) {
+                (Some(input), Some(suffix)) => ConstantValue::Text(
+                    input
+                        .strip_suffix(suffix.as_str())
+                        .unwrap_or(input.as_str())
+                        .to_owned(),
+                ),
+                _ => ConstantValue::Null,
+            }
+        }
         "RIGHT" => {
             let input = text_arg(parser, depth + 1)?;
             require(parser, Token::Comma, "RIGHT requires a character count")?;
@@ -844,6 +1097,16 @@ fn parse_at_depth(parser: &mut Parser, depth: usize) -> Result<ConstantValue, Pa
                     }
                     ConstantValue::Text(" ".repeat(width))
                 }
+                None => ConstantValue::Null,
+            }
+        }
+        "TRY_TO_INT64" => {
+            let input = text_arg(parser, depth + 1)?;
+            require(parser, Token::RParen, "TRY_TO_INT64 requires one argument")?;
+            match input {
+                Some(value) => value
+                    .parse::<i64>()
+                    .map_or(ConstantValue::Null, ConstantValue::Integer),
                 None => ConstantValue::Null,
             }
         }
@@ -944,6 +1207,37 @@ fn parse_at_depth(parser: &mut Parser, depth: usize) -> Result<ConstantValue, Pa
                         String::from_utf8(bytes)
                             .map_err(|_| ParseError("BASE64_DECODE result is not UTF-8".into()))?,
                     )
+                }
+                None => ConstantValue::Null,
+            }
+        }
+        "JSON_QUOTE" => {
+            let input = text_arg(parser, depth + 1)?;
+            require(parser, Token::RParen, "JSON_QUOTE requires one argument")?;
+            match input {
+                Some(value) => {
+                    let mut result = String::with_capacity(value.len().saturating_add(2));
+                    result.push('"');
+                    for character in value.chars() {
+                        match character {
+                            '"' => result.push_str("\\\""),
+                            '\\' => result.push_str("\\\\"),
+                            '\n' => result.push_str("\\n"),
+                            '\r' => result.push_str("\\r"),
+                            '\t' => result.push_str("\\t"),
+                            '\u{0008}' => result.push_str("\\b"),
+                            '\u{000C}' => result.push_str("\\f"),
+                            character if character < '\u{0020}' => {
+                                result.push_str(&format!("\\u{:04x}", character as u32));
+                            }
+                            character => result.push(character),
+                        }
+                        if result.len() >= MAX_TEXT_BYTES {
+                            return Err(ParseError("JSON_QUOTE result is too large".into()));
+                        }
+                    }
+                    result.push('"');
+                    ConstantValue::Text(result)
                 }
                 None => ConstantValue::Null,
             }

@@ -33,6 +33,13 @@ def records(count, seed):
         )
 
 
+def insert_batch(connection, batch):
+    connection.executemany(
+        "INSERT INTO hits VALUES (" + ",".join("?" for _ in FIELDS) + ")",
+        batch,
+    )
+
+
 def generate(directory, rows=10000, seed=42):
     if not 1 <= rows <= 1000000:
         raise ValueError("rows must be in 1..1000000")
@@ -51,10 +58,10 @@ def generate(directory, rows=10000, seed=42):
             stream.write("\t".join(map(str, record)) + "\n")
             batch.append(record)
             if len(batch) == 512:
-                connection.executemany("INSERT INTO hits VALUES (" + ",".join("?" for _ in FIELDS) + ")", batch)
+                insert_batch(connection, batch)
                 batch.clear()
         if batch:
-            connection.executemany("INSERT INTO hits VALUES (" + ",".join("?" for _ in FIELDS) + ")", batch)
+            insert_batch(connection, batch)
     (directory / "create.sql").write_text(
         "CREATE TABLE hits (" + ", ".join(f"{name} {kind}" for name, kind, _ in FIELDS) + ");\n",
         encoding="utf-8",

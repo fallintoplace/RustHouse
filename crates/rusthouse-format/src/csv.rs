@@ -4,9 +4,7 @@ use std::io::{self, Write};
 pub fn write_quoted_csv_field<W: Write>(output: &mut W, field: &[u8]) -> io::Result<()> {
     output.write_all(b"\"")?;
     let mut segments = field.split(|&byte| byte == b'"');
-    if let Some(first) = segments.next() {
-        output.write_all(first)?;
-    }
+    output.write_all(segments.next().unwrap_or_default())?;
     for segment in segments {
         output.write_all(b"\"\"")?;
         output.write_all(segment)?;
