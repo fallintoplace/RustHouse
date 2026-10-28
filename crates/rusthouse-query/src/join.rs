@@ -11,7 +11,7 @@ pub(crate) const MAX_JOIN_CHAIN_BYTES: usize = 64 * 1024 * 1024;
 
 use self::syntax::*;
 
-use super::{ParseError, Parser, Token, tokenize};
+use super::{Having, ParseError, Parser, Token, tokenize};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct JoinColumn {
@@ -66,6 +66,7 @@ pub struct JoinSelect {
     pub order_by: Vec<(JoinColumn, bool, Option<bool>)>,
     /// Aggregate ORDER BY for grouped joined facts.
     pub group_order_by: Option<(bool, Option<bool>)>,
+    pub group_having: Option<Having>,
     pub limit: Option<usize>,
     pub offset: usize,
     /// Additional JOIN steps after the first two-table join.
@@ -433,6 +434,30 @@ pub fn parse_join(sql: &str) -> Result<Option<JoinSelect>, ParseError> {
         }
         _ => {},
     }
+    let group_having = if parser.keyword("HAVING") {
+        match &aggregate {
+            Some(JoinAggregate::GroupCount(_)) => {
+                if !parser.keyword("COUNT") || !parser.take(Token::LParen)
+                    || !parser.take(Token::Star) || !parser.take(Token::RParen) {
+                    return Err(ParseError("JOIN HAVING requires count(*)".into()));
+                }
+            }
+            Some(JoinAggregate::GroupSum { value, .. }) => {
+                if !parser.keyword("SUM") || !parser.take(Token::LParen) {
+                    return Err(ParseError("JOIN HAVING requires sum(column)".into()));
+                }
+                let selected = qualified(&mut parser)?;
+                if selected != *value || !parser.take(Token::RParen) {
+                    return Err(ParseError("JOIN HAVING must match selected SUM".into()));
+                }
+            }
+            _ => return Err(ParseError("JOIN HAVING requires grouped COUNT or SUM".into())),
+        }
+        let operator = parser.operator()?;
+        let value = parser.number()?.parse::<u64>()
+            .map_err(|_| ParseError("JOIN HAVING threshold must be UInt64".into()))?;
+        Some(Having { operator, value })
+    } else { None };
     let mut group_order_by = None;
     let order_by = if parser.keyword("ORDER") {
         if !parser.keyword("BY") {
@@ -585,6 +610,7 @@ pub fn parse_join(sql: &str) -> Result<Option<JoinSelect>, ParseError> {
         where_null,
         order_by,
         group_order_by,
+        group_having,
         limit,
         offset,
         steps,
@@ -711,6 +737,9 @@ pub fn explain_join(query: &JoinSelect) -> String {
             .collect::<Vec<_>>()
             .join(", ");
         plan.push_str(&format!("\nOrder: {terms}"));
+    }
+    if let Some(having) = &query.group_having {
+        plan.push_str(&format!("\nHaving: {:?} {}", having.operator, having.value));
     }
     if let Some((descending, _)) = query.group_order_by {
         plan.push_str(&format!("\nAggregate order: {}", if descending { "DESC" } else { "ASC" }));
