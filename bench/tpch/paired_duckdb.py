@@ -75,12 +75,17 @@ def benchmark_pair(sql, reference, execute, runs=5, warmups=2, comparison="exact
     ratio = medians["duckdb"] / medians["rusthouse"]
     if not math.isfinite(ratio) or ratio <= 0:
         raise ValueError("paired speed ratio is not finite and positive")
+    # Tail speedup may differ from the median when cache effects vary.
+    p90_ratio = p90["duckdb"] / p90["rusthouse"]
+    if not math.isfinite(p90_ratio) or p90_ratio <= 0:
+        raise ValueError("paired p90 speed ratio is not finite and positive")
     return {
         "rusthouse_median_seconds": medians["rusthouse"],
         "duckdb_median_seconds": medians["duckdb"],
         "rusthouse_p90_seconds": p90["rusthouse"],
         "duckdb_p90_seconds": p90["duckdb"],
         "duckdb_over_rusthouse": ratio,
+        "duckdb_p90_over_rusthouse": p90_ratio,
         "rusthouse_samples_seconds": samples["rusthouse"],
         "duckdb_samples_seconds": samples["duckdb"],
     }
