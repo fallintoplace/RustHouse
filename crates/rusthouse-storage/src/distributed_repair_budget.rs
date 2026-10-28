@@ -50,6 +50,15 @@ pub fn plan_repairs(
     if job_limit == 0 {
         return Ok(Vec::new());
     }
+    if job_limit == 1 {
+        return Ok(jobs
+            .iter()
+            .filter(|job| job.bytes <= byte_budget)
+            .min_by(|left, right| repair_priority(left, right))
+            .cloned()
+            .into_iter()
+            .collect());
+    }
     let mut ranked: Vec<&RepairJob> = jobs.iter().collect();
     ranked.sort_unstable_by(|left, right| repair_priority(left, right));
     let mut selected = Vec::with_capacity(jobs.len().min(job_limit));
