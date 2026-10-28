@@ -1882,6 +1882,7 @@ impl AggregateState {
                     self.value = Some(value);
                 }
             }
+            AggregateFunction::Count => {}
             AggregateFunction::CountIf => {
                 let truthy = match value {
                     Number::Unsigned(n) => n != 0,
@@ -2034,6 +2035,7 @@ impl AggregateState {
         let value = match self.function {
             AggregateFunction::Sum | AggregateFunction::Min | AggregateFunction::Max => self.value,
             AggregateFunction::Avg if self.count > 0 => Some(Number::Float(self.mean)),
+            AggregateFunction::Count => Some(Number::Unsigned(u128::from(self.count))),
             _ => None,
         };
         let Some(value) = value else {
@@ -2053,12 +2055,16 @@ impl AggregateState {
         let value = match self.function {
             AggregateFunction::Sum | AggregateFunction::Min | AggregateFunction::Max => self.value,
             AggregateFunction::Avg if self.count > 0 => Some(Number::Float(self.mean)),
+            AggregateFunction::Count => Some(Number::Unsigned(u128::from(self.count))),
             _ => None,
         };
         value.map_or(typed::Cell::Null, typed::Cell::Numeric)
     }
 
     fn render(&self) -> String {
+        if self.function == AggregateFunction::Count {
+            return self.count.to_string();
+        }
         if self.function == AggregateFunction::CountIf {
             return self
                 .value
