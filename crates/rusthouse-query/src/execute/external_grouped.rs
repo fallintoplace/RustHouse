@@ -88,9 +88,9 @@ fn write_group(output: &mut impl Write, key: u64, count: u64)
     Ok(())
 }
 
-fn merge(
+fn merge_until(
     files: &[PathBuf],
-    mut emit: impl FnMut(u64, u64) -> Result<(), ExecutionError>,
+    mut emit: impl FnMut(u64, u64) -> Result<bool, ExecutionError>,
 ) -> Result<(), ExecutionError> {
     let mut streams = files.iter().map(File::open)
         .map(|reader| reader.map(BufReader::new))
@@ -109,7 +109,9 @@ fn merge(
                     .ok_or_else(|| invalid("GROUP BY count overflow"))?;
             }
             _ => {
-                if let Some((last, total)) = current.take() { emit(last, total)?; }
+                if let Some((last, total)) = current.take() {
+                    if !emit(last, total)? { return Ok(()); }
+                }
                 current = Some((key, count));
             }
         }
@@ -117,8 +119,50 @@ fn merge(
             heap.push(Reverse((next, index, count)));
         }
     }
-    if let Some((last, count)) = current { emit(last, count)?; }
+    if let Some((last, count)) = current { let _ = emit(last, count)?; }
     Ok(())
+}
+
+/// Full-run merge for intermediate compaction: every key must be written.
+fn merge(
+    files: &[PathBuf],
+    mut emit: impl FnMut(u64, u64) -> Result<(), ExecutionError>,
+) -> Result<(), ExecutionError> {
+    merge_until(files, |key, count| { emit(key, count)?; Ok(true) })
+}
+
+/// Stable eight-pass LSD radix sort for large encoded UInt64 group keys.
+/// Each key requires bounded scratch space and no comparison-based branches.
+/// Small runs keep the standard library sort to avoid histogram overhead.
+fn sort_run_keys(keys: &mut Vec<u64>) {
+    if keys.len() < 16_384 {
+        keys.sort_unstable();
+        return;
+    }
+    let mut scratch = vec![0u64; keys.len()];
+    for shift in (0..64).step_by(8) {
+        let mut offsets = [0usize; 256];
+        for &key in keys.iter() {
+            offsets[((key >> shift) & 255) as usize] += 1;
+        }
+        // Whole-byte uniformity is common on narrow dimensions, so do not
+        // copy the input for passes that cannot change its ordering.
+        if offsets.iter().any(|&count| count == keys.len()) {
+            continue;
+        }
+        let mut begin = 0usize;
+        for count in &mut offsets {
+            let next = begin + *count;
+            *count = begin;
+            begin = next;
+        }
+        for &key in keys.iter() {
+            let bucket = ((key >> shift) & 255) as usize;
+            scratch[offsets[bucket]] = key;
+            offsets[bucket] += 1;
+        }
+        std::mem::swap(keys, &mut scratch);
+    }
 }
 
 pub(super) struct ExternalGroupCount64 {
@@ -160,9 +204,20 @@ impl ExternalGroupCount64 {
         }
         Ok(())
     }
+    // Reclaim the quota only after the previous run has actually been
+    // removed. Counting obsolete files after each fan-in pass can reject
+    // queries whose current temporary disk footprint is well below budget.
+    fn remove_run(&mut self, path: &Path) -> Result<(), ExecutionError> {
+        let bytes = fs::metadata(path)?.len();
+        fs::remove_file(path)?;
+        self.disk_bytes = self.disk_bytes.checked_sub(bytes)
+            .ok_or_else(|| invalid("GROUP BY spill accounting underflow"))?;
+        Ok(())
+    }
+
     fn flush(&mut self) -> Result<(), ExecutionError> {
         if self.keys.is_empty() { return Ok(()); }
-        self.keys.sort_unstable();
+        sort_run_keys(&mut self.keys);
         let path = self.next_path()?;
         let mut stream = BufWriter::new(OpenOptions::new()
             .write(true).create_new(true).open(&path)?);
@@ -189,32 +244,45 @@ impl ExternalGroupCount64 {
         let key = if self.descending { !encoded } else { encoded };
         if self.signed { key ^ (1 << 63) } else { key }
     }
-    pub(super) fn finish(
-        mut self, mut emit: impl FnMut(u64, u64) -> Result<(), ExecutionError>,
+    fn compact_runs(&mut self) -> Result<(), ExecutionError> {
+            while self.runs.len() > FAN_IN {
+                let previous = std::mem::take(&mut self.runs);
+                let mut reduced = Vec::new();
+                for chunk in previous.chunks(FAN_IN) {
+                    let path = self.next_path()?;
+                    let mut writer = BufWriter::new(OpenOptions::new()
+                        .create_new(true).write(true).open(&path)?);
+                    merge(chunk, |key, count| write_group(&mut writer, key, count))?;
+                    writer.flush()?;
+                    self.reserve_disk(&path)?;
+                    reduced.push(path);
+                    for old in chunk { self.remove_run(old)?; }
+                }
+                self.runs = reduced;
+            }
+        Ok(())
+    }
+
+    /// Stop the final k-way merge when the client has received its page.
+    /// Intermediate fan-in runs are always fully reduced before this step.
+    pub(super) fn finish_until(
+        mut self, mut emit: impl FnMut(u64, u64) -> Result<bool, ExecutionError>,
     ) -> Result<(), ExecutionError> {
         self.flush()?;
-        while self.runs.len() > FAN_IN {
-            let previous = std::mem::take(&mut self.runs);
-            let mut reduced = Vec::new();
-            for chunk in previous.chunks(FAN_IN) {
-                let path = self.next_path()?;
-                let mut writer = BufWriter::new(OpenOptions::new()
-                    .create_new(true).write(true).open(&path)?);
-                merge(chunk, |key, count| write_group(&mut writer, key, count))?;
-                writer.flush()?;
-                self.reserve_disk(&path)?;
-                reduced.push(path);
-                for old in chunk { fs::remove_file(old)?; }
-            }
-            self.runs = reduced;
-        }
+        self.compact_runs()?;
         let signed = self.signed;
         let descending = self.descending;
-        merge(&self.runs, |encoded, count| {
+        merge_until(&self.runs, |encoded, count| {
             let key = if descending { !encoded } else { encoded };
             let key = if signed { key ^ (1 << 63) } else { key };
             emit(key, count)
         })
+    }
+
+    pub(super) fn finish(
+        self, mut emit: impl FnMut(u64, u64) -> Result<(), ExecutionError>,
+    ) -> Result<(), ExecutionError> {
+        self.finish_until(|key, count| { emit(key, count)?; Ok(true) })
     }
 }
 
@@ -262,6 +330,86 @@ mod tests {
         let mut out = Vec::new();
         write_varint(&mut out, u64::MAX).unwrap();
         assert_eq!(read_varint(&mut out.as_slice(), false).unwrap(), Some(u64::MAX));
+    }
+
+    #[test]
+    fn multi_pass_spill_budget_counts_only_existing_runs() {
+        let mut group = ExternalGroupCount64::new(false, false);
+        for id in 0..(RUN_KEYS * (FAN_IN + 3)) {
+            group.insert(id as u64).unwrap();
+        }
+        assert!(group.runs.len() > FAN_IN);
+        group.compact_runs().unwrap();
+        let actual: u64 = group.runs.iter()
+            .map(|path| fs::metadata(path).unwrap().len()).sum();
+        assert_eq!(group.disk_bytes, actual);
+        assert!(group.runs.len() <= FAN_IN);
+        let mut seen = 0_u64;
+        group.finish(|_, count| { seen += count; Ok(()) }).unwrap();
+        assert_eq!(seen, (RUN_KEYS * (FAN_IN + 3)) as u64);
+    }
+
+    #[test]
+    fn paged_final_merge_stops_after_requested_groups() {
+        let mut group = ExternalGroupCount64::new(false, false);
+        for index in (0..(RUN_KEYS * (FAN_IN + 2))).rev() {
+            group.insert((index % 50_000) as u64).unwrap();
+        }
+        let mut seen = 0usize;
+        let mut selected = Vec::new();
+        group.finish_until(|key, count| {
+            if seen >= 100 && selected.len() < 7 { selected.push((key, count)); }
+            seen += 1;
+            Ok(selected.len() < 7)
+        }).unwrap();
+        assert_eq!(seen, 107);
+        assert_eq!(selected.iter().map(|row| row.0).collect::<Vec<_>>(),
+            (100u64..107).collect::<Vec<_>>());
+        assert!(selected.iter().all(|row| row.1 > 0));
+    }
+
+    #[test]
+    fn early_stop_keeps_distinct_keys_fully_merged() {
+        let mut group = ExternalGroupCount64::new(true, true);
+        for value in [-1_i64, 1, -1, 3, 3, 3, 0] {
+            group.insert(value as u64).unwrap();
+        }
+        let mut result = Vec::new();
+        group.finish_until(|key, count| {
+            result.push((key as i64, count));
+            Ok(result.len() < 2)
+        }).unwrap();
+        assert_eq!(result, [(3, 3), (1, 1)]);
+    }
+
+    #[test]
+    fn radix_sort_matches_full_u64_reference_on_large_random_runs() {
+        let mut keys = Vec::with_capacity(100_003);
+        let mut seed = 0x9e3779b97f4a7c15_u64;
+        for index in 0..100_003_u64 {
+            seed ^= seed << 13;
+            seed ^= seed >> 7;
+            seed ^= seed << 17;
+            keys.push(seed ^ index.rotate_left(23));
+        }
+        let mut expected = keys.clone();
+        expected.sort_unstable();
+        sort_run_keys(&mut keys);
+        assert_eq!(keys, expected);
+    }
+
+    #[test]
+    fn radix_sort_preserves_duplicates_and_high_sign_bits() {
+        let mut keys = Vec::new();
+        for index in (0..50_000_u64).rev() {
+            keys.push(index.wrapping_mul(u64::MAX / 65535));
+            keys.push(u64::MAX);
+            keys.push(1_u64 << 63);
+        }
+        let mut expected = keys.clone();
+        expected.sort_unstable();
+        sort_run_keys(&mut keys);
+        assert_eq!(keys, expected);
     }
 
     #[test]
