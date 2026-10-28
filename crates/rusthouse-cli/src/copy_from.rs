@@ -516,7 +516,6 @@ mod utf8_bom_regressions {
 #[cfg(test)]
 mod copy_file_capacity_tests {
     use super::*;
-    use std::fs;
 
     #[test]
     fn csv_streams_quoted_newlines_and_preserves_null_semantics() {
@@ -555,12 +554,13 @@ mod copy_file_capacity_tests {
         assert!(bad.next_record().is_err());
 
         let mut giant = CsvRecords {
-            reader: BufReader::new(Box::new(std::io::Cursor::new(vec![b'a'; MAX_CSV_RECORD_BYTES + 1]))),
+            reader: BufReader::new(Box::new(std::io::Cursor::new(vec![
+                b'a';
+                MAX_CSV_RECORD_BYTES + 1
+            ]))),
             buffer: Vec::new(),
             first: true,
         };
         assert!(giant.next_record().unwrap_err().contains("8 MiB"));
     }
-
-
 }
