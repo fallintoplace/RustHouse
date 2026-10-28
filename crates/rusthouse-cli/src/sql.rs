@@ -39,6 +39,7 @@ impl SqlOutputFormat {
         match value.and_then(|value| value.into_string().ok()).as_deref() {
             Some("tsv") => Ok(Self::Tsv),
             Some("tsv-no-header") => Ok(Self::TsvNoHeader),
+            Some("TSV") => Ok(Self::TsvNoHeader),
             Some("csv") => Ok(Self::Csv),
             Some("csv-no-header") => Ok(Self::CsvNoHeader),
             Some("jsonl") => Ok(Self::Jsonl),
