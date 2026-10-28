@@ -135,6 +135,10 @@ pub(super) fn like_matches(value: &[u8], pattern: &LikePattern, case_insensitive
                 .is_some_and(|suffix| equal_like_bytes(suffix, bytes, case_insensitive))
         }
         LikePattern::Contains(bytes) => {
+            // '%' matches every non-null String. Do not Unicode-fold every row.
+            if bytes.is_empty() {
+                return true;
+            }
             if case_insensitive {
                 if let Some(matches) =
                     unicode_folded_match(value, bytes, |input, needle| input.contains(needle))
@@ -286,6 +290,14 @@ mod perf_tests {
             &compile_like("%%").unwrap(),
             false
         ));
+    }
+
+    #[test]
+    fn empty_contains_matches_unicode_and_binary_rows() {
+        let pattern = compile_like("%%").unwrap();
+        assert!(like_matches("İstanbul".as_bytes(), &pattern, true));
+        assert!(like_matches(b"\xff", &pattern, true));
+        assert!(like_matches(b"", &pattern, true));
     }
 
     #[test]
