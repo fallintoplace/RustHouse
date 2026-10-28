@@ -7,6 +7,7 @@ pub(super) fn is_function(name: &str) -> bool {
     matches!(
         name.to_ascii_uppercase().as_str(),
         "LENGTH"
+            | "TODAYOFYEAR"
             | "LENGTHUTF8"
             | "CHAR_LENGTH"
             | "OCTET_LENGTH"
@@ -1947,6 +1948,21 @@ fn parse_at_depth(parser: &mut Parser, depth: usize) -> Result<ConstantValue, Pa
                         return Err(ParseError("lowerUTF8 result is too large".into()));
                     }
                     ConstantValue::Text(result)
+                }
+                None => ConstantValue::Null,
+            }
+        }
+        "TODAYOFYEAR" => {
+            let input = text_arg(parser, depth + 1)?;
+            require(parser, Token::RParen, "toDayOfYear requires one argument")?;
+            match input {
+                Some(value) => {
+                    if rusthouse_storage::parse_date(&value).is_none() {
+                        return Err(ParseError("invalid Date argument".into()));
+                    }
+                    let day = rusthouse_storage::parse_date(&value).unwrap();
+                    let january = rusthouse_storage::parse_date(&format!("{}-01-01", &value[..4])).unwrap();
+                    ConstantValue::Integer(i64::from(day - january + 1))
                 }
                 None => ConstantValue::Null,
             }
