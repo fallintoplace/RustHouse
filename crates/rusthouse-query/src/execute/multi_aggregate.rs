@@ -450,6 +450,45 @@ pub(super) fn execute<W: Write>(
     Ok(())
 }
 
+fn xor_prefix_u64(last: u64) -> u64 {
+    match last & 3 {
+        0 => last,
+        1 => 1,
+        2 => last + 1,
+        _ => 0,
+    }
+}
+
+fn bitwise_range_u64(first: u64, last: u64, function: crate::AggregateFunction) -> u64 {
+    use crate::AggregateFunction as A;
+    let common_prefix = |a: u64, b: u64| {
+        let varying_bits = 64 - (a ^ b).leading_zeros();
+        a & u64::MAX.checked_shl(varying_bits).unwrap_or(0)
+    };
+    match function {
+        A::GroupBitXor => xor_prefix_u64(last)
+            ^ if first == 0 { 0 } else { xor_prefix_u64(first - 1) },
+        A::GroupBitAnd => common_prefix(first, last),
+        A::GroupBitOr => !common_prefix(!last, !first),
+        _ => unreachable!("bitwise range requires a bitwise aggregate"),
+    }
+}
+
+fn needs_contiguous_generated_bits(items: &[AggregateItem]) -> bool {
+    items.iter().any(|item| {
+        matches!(item.function, Some(
+            crate::AggregateFunction::GroupBitXor
+                | crate::AggregateFunction::GroupBitAnd
+                | crate::AggregateFunction::GroupBitOr
+        ))
+    })
+}
+
+/// The bitwise range shortcut only applies to consecutive input values.
+pub(super) fn supports_generated_stride(items: &[AggregateItem], step: u64) -> bool {
+    step == 1 || !needs_contiguous_generated_bits(items)
+}
+
 /// Exact unsigned sum-of-squares of an arithmetic progression. Cancel 6
 /// before multiplying the cubic term so valid u128 results do not overflow
 /// just because of an intermediate numerator.
@@ -495,6 +534,9 @@ pub(super) fn supports_generated_series_metrics(items: &[AggregateItem]) -> bool
                     | crate::AggregateFunction::CountIf
                     | crate::AggregateFunction::Sum
                     | crate::AggregateFunction::SumSquares
+                    | crate::AggregateFunction::GroupBitXor
+                    | crate::AggregateFunction::GroupBitAnd
+                    | crate::AggregateFunction::GroupBitOr
                     | crate::AggregateFunction::Min
                     | crate::AggregateFunction::Max
                     | crate::AggregateFunction::Avg
@@ -520,7 +562,7 @@ fn generated_series_metrics(
     step: u64,
     items: &[AggregateItem],
 ) -> Option<Result<Vec<String>, ExecutionError>> {
-    if !supports_generated_series_metrics(items) {
+    if !supports_generated_series_metrics(items) || !supports_generated_stride(items, step) {
         return None;
     }
     let first = u128::from(start);
@@ -553,6 +595,9 @@ fn generated_series_metrics(
             Some(A::Sum) if n > 0 => sum.to_string(),
             Some(A::SumSquares) if n > 0 =>
                 generated_sum_squares(start, rows, step)?.to_string(),
+            Some(function @ (A::GroupBitXor | A::GroupBitAnd | A::GroupBitOr)) if n > 0 => {
+                bitwise_range_u64(start, last as u64, function).to_string()
+            },
             Some(A::Min | A::Any) if n > 0 => first.to_string(),
             Some(A::Max | A::AnyLast) if n > 0 => last.to_string(),
             Some(A::Range) if n > 0 => (last - first).to_string(),
@@ -574,7 +619,8 @@ fn generated_series_metrics(
                 (variance * count_float / (count_float - 1.0)).sqrt().to_string(),
             Some(A::Rms) if n > 0 => mean.hypot(variance.sqrt()).to_string(),
             Some(
-                A::Sum | A::SumSquares | A::Min | A::Max | A::Any | A::AnyLast | A::Range
+                A::Sum | A::SumSquares | A::GroupBitXor | A::GroupBitAnd | A::GroupBitOr
+                | A::Min | A::Max | A::Any | A::AnyLast | A::Range
                 | A::Avg | A::Median | A::VarPop | A::VarSamp
                 | A::StddevPop | A::StddevSamp | A::Rms
             ) => "NULL".into(),
@@ -622,7 +668,7 @@ pub(super) fn execute_numbers<W: Write>(
     // Restrict filtered generated metrics to a single proven contiguous
     // index interval. OR, modulo, and sparse predicates stay on the bounded
     // row scan rather than silently using an incorrect range.
-    if supports_generated_series_metrics(items) {
+    if supports_generated_series_metrics(items) && supports_generated_stride(items, step) {
         let interval = if query.predicates.is_empty() && query.or_predicates.is_empty() {
             Some((0, rows))
         } else {
