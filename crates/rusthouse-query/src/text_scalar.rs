@@ -57,6 +57,7 @@ pub(super) fn is_function(name: &str) -> bool {
             | "FORMATREADABLETIMEDELTA"
             | "TO_INT64"
             | "TRIM"
+            | "TOUNIXTIMESTAMP"
             | "LTRIM"
             | "TRIMLEFT"
             | "BASENAME"
@@ -1001,6 +1002,20 @@ fn parse_at_depth(parser: &mut Parser, depth: usize) -> Result<ConstantValue, Pa
             )?;
             match input {
                 Some(value) => ConstantValue::Text(value.trim().to_owned()),
+                None => ConstantValue::Null,
+            }
+        }
+        "TOUNIXTIMESTAMP" => {
+            let input = text_arg(parser, depth + 1)?;
+            require(parser, Token::RParen, "toUnixTimestamp requires one argument")?;
+            match input {
+                Some(value) => {
+                    let seconds = rusthouse_storage::parse_datetime(&value).map(i64::from)
+                        .or_else(|| rusthouse_storage::parse_date(&value)
+                            .map(|days| i64::from(days) * 86_400))
+                        .ok_or_else(|| ParseError("toUnixTimestamp requires a valid UTC date".into()))?;
+                    ConstantValue::Integer(seconds)
+                }
                 None => ConstantValue::Null,
             }
         }
