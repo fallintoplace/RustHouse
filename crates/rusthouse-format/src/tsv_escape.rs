@@ -125,7 +125,7 @@ mod tests {
     }
     #[test]
     fn sparse_escaped_tsv_uses_plain_spans_without_losing_adjacent_escapes() {
-        let input = [vec![b'z'; 65_536], br"\\t\\n".to_vec(), vec![b'y'; 65_536]].concat();
+        let input = [vec![b'z'; 65_536], br"\t\n".to_vec(), vec![b'y'; 65_536]].concat();
         let decoded = decode_tsv_field(&input).unwrap();
         assert_eq!(decoded.len(), 131_074);
         assert_eq!(&decoded[65_536..65_538], b"\t\n");
