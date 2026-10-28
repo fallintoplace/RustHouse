@@ -1,0 +1,19 @@
+{
+  "name": "fact-dimension-join",
+  "description": "bounded fact-to-account inner and left joins",
+  "queries": [
+    {
+      "name": "joined-accounts",
+      "sql": "SELECT e.event_id, a.tier FROM events e JOIN accounts a ON e.user_id = a.user_id ORDER BY e.event_id LIMIT 20"
+    },
+    {
+      "name": "joined-countries",
+      "sql": "SELECT e.event_id, a.country FROM events e JOIN accounts a ON e.user_id = a.user_id ORDER BY e.event_id DESC LIMIT 20"
+    },
+    {
+      "name": "left-join-events",
+      "sql": "SELECT e.event_id, a.tier FROM events e LEFT JOIN accounts a ON e.user_id = a.user_id ORDER BY e.event_id LIMIT 20"
+    }
+  ],
+  "max_rows": 16000
+}

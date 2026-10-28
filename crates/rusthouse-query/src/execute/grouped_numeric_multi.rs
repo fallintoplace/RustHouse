@@ -69,10 +69,14 @@ pub(super) fn execute<W: Write>(
             if !typed::passes(&batch, row, &conditions) {
                 continue;
             }
-            let index = if let TypedColumn::Text(values) = &batch[group_index] {
-                let key = values.get(row).ok_or_else(|| {
-                    ExecutionError::Invalid("invalid String row index".into())
-                })?;
+            // Nullable String keys can use the same borrowed-byte lookup as String.
+            // Only new groups need to own the decoded bytes.
+            let borrowed_text = match &batch[group_index] {
+                TypedColumn::Text(values) => values.get(row),
+                TypedColumn::NullableText { values, nulls } if nulls[row] == 0 => values.get(row),
+                _ => None,
+            };
+            let index = if let Some(key) = borrowed_text {
                 if let Some(&group) = by_text.get(key) {
                     group
                 } else {

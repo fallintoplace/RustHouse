@@ -22,6 +22,14 @@ fn valid_generation_label(label: &str) -> bool {
         && label.as_bytes()[1..].iter().all(u8::is_ascii_digit)
 }
 
+fn require_snapshot_directory(path: &Path, message: &'static str) -> Result<(), PartError> {
+    let metadata = fs::symlink_metadata(path).map_err(|error| io_error(path, error))?;
+    if !metadata.file_type().is_dir() {
+        return Err(PartError::InvalidScan(message.into()));
+    }
+    Ok(())
+}
+
 /// Resolve the immutable active generation of a local table.
 /// Legacy tables without a pointer use their original parts directory.
 pub fn resolve_active_snapshot(root: &Path) -> Result<PathBuf, PartError> {
@@ -46,20 +54,12 @@ pub fn resolve_active_snapshot(root: &Path) -> Result<PathBuf, PartError> {
         ));
     }
     let versions = root.join(".rusthouse-versions");
-    let versions_kind =
-        fs::symlink_metadata(&versions).map_err(|error| io_error(&versions, error))?;
-    if !versions_kind.file_type().is_dir() {
-        return Err(PartError::InvalidScan(
-            "database snapshot versions root is not a directory".into(),
-        ));
-    }
+    require_snapshot_directory(
+        &versions,
+        "database snapshot versions root is not a directory",
+    )?;
     let active = versions.join(label);
-    let kind = fs::symlink_metadata(&active).map_err(|error| io_error(&active, error))?;
-    if !kind.file_type().is_dir() {
-        return Err(PartError::InvalidScan(
-            "active database snapshot is not a directory".into(),
-        ));
-    }
+    require_snapshot_directory(&active, "active database snapshot is not a directory")?;
     Ok(active)
 }
 

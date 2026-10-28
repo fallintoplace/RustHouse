@@ -1,3 +1,7 @@
+mod validation;
+
+use self::validation::*;
+
 use crate::{CompressedBlockReader, PartError};
 use std::collections::HashSet;
 use std::fs::{self, File};
@@ -76,10 +80,7 @@ impl PartChecksums {
 
 pub fn read_checksums(path: impl AsRef<Path>) -> Result<PartChecksums, PartError> {
     let path = path.as_ref();
-    let metadata = fs::symlink_metadata(path).map_err(|source| PartError::Io {
-        path: path.to_path_buf(),
-        source,
-    })?;
+    let metadata = fs::symlink_metadata(path).map_err(|source| checksums_io_error(path, source))?;
     if !metadata.file_type().is_file() {
         return Err(PartError::Io {
             path: path.to_path_buf(),
@@ -89,16 +90,10 @@ pub fn read_checksums(path: impl AsRef<Path>) -> Result<PartChecksums, PartError
             ),
         });
     }
-    let file = File::open(path).map_err(|source| PartError::Io {
-        path: path.to_path_buf(),
-        source,
-    })?;
+    let file = File::open(path).map_err(|source| checksums_io_error(path, source))?;
     let size = file
         .metadata()
-        .map_err(|source| PartError::Io {
-            path: path.to_path_buf(),
-            source,
-        })?
+        .map_err(|source| checksums_io_error(path, source))?
         .len();
     if size > MAX_CHECKSUMS_BYTES {
         return Err(invalid(path, "checksums file exceeds 64 MiB"));
@@ -107,30 +102,11 @@ pub fn read_checksums(path: impl AsRef<Path>) -> Result<PartChecksums, PartError
     let mut content = Vec::with_capacity(size as usize);
     file.take(MAX_CHECKSUMS_BYTES + 1)
         .read_to_end(&mut content)
-        .map_err(|source| PartError::Io {
-            path: path.to_path_buf(),
-            source,
-        })?;
+        .map_err(|source| checksums_io_error(path, source))?;
     if content.len() as u64 > MAX_CHECKSUMS_BYTES {
         return Err(invalid(path, "checksums file exceeds 64 MiB"));
     }
     parse_checksums(&content, path)
-}
-
-fn parse_checksum_header<'a>(content: &'a [u8], path: &Path) -> Result<(u8, &'a [u8]), PartError> {
-    let header = content
-        .strip_prefix(HEADER)
-        .ok_or_else(|| invalid(path, "missing format header"))?;
-    let end = header
-        .iter()
-        .position(|byte| *byte == b'\n')
-        .ok_or_else(|| invalid(path, "unterminated format header"))?;
-    let version = match &header[..end] {
-        b"3" => 3,
-        b"4" => 4,
-        _ => return Err(invalid(path, "unsupported checksums format version")),
-    };
-    Ok((version, &header[end + 1..]))
 }
 
 fn parse_checksums(content: &[u8], path: &Path) -> Result<PartChecksums, PartError> {
@@ -166,43 +142,6 @@ fn parse_checksums(content: &[u8], path: &Path) -> Result<PartChecksums, PartErr
         version,
         files,
     })
-}
-
-fn decode_compressed_checksums(payload: &[u8], path: &Path) -> Result<Vec<u8>, PartError> {
-    let mut decoded = Vec::new();
-    let mut blocks = CompressedBlockReader::new(Cursor::new(payload), path)?;
-    while let Some(block) = blocks.next_decoded() {
-        let block = block?;
-        if block.data.len() > MAX_CHECKSUMS_BYTES as usize - decoded.len() {
-            return Err(invalid(path, "decoded checksums exceed 64 MiB"));
-        }
-        if decoded.is_empty() {
-            // A single compressed checksums block is common. Take ownership
-            // of its decoded allocation instead of copying its entire body.
-            decoded = block.data;
-        } else {
-            decoded.extend_from_slice(&block.data);
-        }
-    }
-    Ok(decoded)
-}
-
-fn valid_name(name: &str) -> bool {
-    !name.is_empty()
-        && !name.contains('\\')
-        && !name.contains(':')
-        && !name.bytes().any(|byte| byte.is_ascii_control())
-        && name
-            .split('/')
-            .all(|part| !part.is_empty() && part != "." && part != "..")
-        && !name.starts_with('/')
-}
-
-fn invalid(path: &Path, reason: &'static str) -> PartError {
-    PartError::InvalidChecksums {
-        path: path.to_path_buf(),
-        reason,
-    }
 }
 
 struct BinaryReader<'a> {

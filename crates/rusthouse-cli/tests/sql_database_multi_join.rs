@@ -117,8 +117,7 @@ fn chained_left_joins_null_extend_each_unmatched_relation() {
     }
     let joined = sql(
         "SELECT o.id, c.name, r.label FROM orders o LEFT JOIN customers c ON o.customer_id = c.id LEFT JOIN regions r ON c.region_id = r.id ORDER BY o.id LIMIT 10",
-        &db,
-        &[],
+        &db, &[],
     );
     assert!(joined.status.success(), "{joined:?}");
     assert_eq!(
@@ -127,8 +126,7 @@ fn chained_left_joins_null_extend_each_unmatched_relation() {
     );
     let missing = sql(
         "SELECT o.id FROM orders o LEFT JOIN customers c ON o.customer_id = c.id LEFT JOIN regions r ON c.region_id = r.id WHERE r.label IS NULL ORDER BY o.id",
-        &db,
-        &[],
+        &db, &[],
     );
     assert!(missing.status.success(), "{missing:?}");
     assert_eq!(missing.stdout, b"o.id\n2\n3\n");
@@ -151,22 +149,16 @@ fn chained_right_and_full_joins_preserve_unmatched_right_rows() {
     }
     let right = sql(
         "SELECT o.id, c.id, r.label FROM orders o JOIN customers c ON o.customer_id = c.id RIGHT JOIN regions r ON c.region_id = r.id ORDER BY r.id",
-        &db,
-        &[],
+        &db, &[],
     );
     assert!(right.status.success(), "{right:?}");
     assert_eq!(right.stdout, b"o.id\tc.id\tr.label\n1\t10\tWest\n\\N\t\\N\tEast\n");
-
     let full = sql(
         "SELECT o.id, c.id, r.label FROM orders o JOIN customers c ON o.customer_id = c.id FULL JOIN regions r ON c.region_id = r.id ORDER BY r.id ASC NULLS LAST",
-        &db,
-        &[],
+        &db, &[],
     );
     assert!(full.status.success(), "{full:?}");
-    assert_eq!(
-        full.stdout,
-        b"o.id\tc.id\tr.label\n1\t10\tWest\n\\N\t\\N\tEast\n2\t20\t\\N\n"
-    );
+    assert_eq!(full.stdout, b"o.id\tc.id\tr.label\n1\t10\tWest\n\\N\t\\N\tEast\n2\t20\t\\N\n");
     fs::remove_dir_all(db).unwrap();
 }
 
@@ -186,8 +178,7 @@ fn chained_any_joins_select_only_one_matching_row_at_each_step() {
     }
     let result = sql(
         "SELECT o.id, c.region_id, r.label FROM orders o LEFT ANY JOIN customers c ON o.customer_id = c.id LEFT ANY JOIN regions r ON c.region_id = r.id ORDER BY o.id",
-        &db,
-        &[],
+        &db, &[],
     );
     assert!(result.status.success(), "{result:?}");
     assert_eq!(
