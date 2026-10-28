@@ -81,6 +81,7 @@ pub(super) fn is_function(name: &str) -> bool {
             | "REPLACEALL"
             | "PROTOCOL"
             | "TRANSLATE"
+            | "TRANSLATEUTF8"
             | "POSITIONCASEINSENSITIVE"
             | "STRPOS"
             | "POSITIONUTF8"
@@ -1374,7 +1375,7 @@ fn parse_at_depth(parser: &mut Parser, depth: usize) -> Result<ConstantValue, Pa
                 _ => ConstantValue::Null,
             }
         }
-        "TRANSLATE" => {
+        "TRANSLATE" | "TRANSLATEUTF8" => {
             let input = text_arg(parser, depth + 1)?;
             require(parser, Token::Comma, "TRANSLATE requires source characters")?;
             let from = text_arg(parser, depth + 1)?;
@@ -1391,6 +1392,9 @@ fn parse_at_depth(parser: &mut Parser, depth: usize) -> Result<ConstantValue, Pa
             )?;
             match (input, from, to) {
                 (Some(input), Some(from), Some(to)) => {
+                    if name == "TRANSLATEUTF8" && from.chars().count() != to.chars().count() {
+                        return Err(ParseError("translateUTF8 requires matching character counts".into()));
+                    }
                     let mut replacements = std::collections::HashMap::new();
                     let mut to_chars = to.chars();
                     for ch in from.chars() {
