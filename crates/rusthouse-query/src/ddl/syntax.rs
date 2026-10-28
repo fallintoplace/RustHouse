@@ -8,9 +8,8 @@ pub(super) fn identifier(parser: &mut Parser) -> Result<String, ParseError> {
     Ok(value)
 }
 
-pub(super) fn data_type(parser: &mut Parser, nesting: usize) -> Result<String, ParseError> {
-    let name = parser.word()?;
-    let canonical = match name.to_ascii_uppercase().as_str() {
+fn canonical_type(name: &str) -> Option<&'static str> {
+    Some(match name.to_ascii_uppercase().as_str() {
         "TINYINT" => "Int8",
         "SMALLINT" => "Int16",
         "INTEGER" | "INT" => "Int32",
@@ -38,8 +37,14 @@ pub(super) fn data_type(parser: &mut Parser, nesting: usize) -> Result<String, P
         "BOOL" => "Bool",
         "NULLABLE" => "Nullable",
         "ARRAY" => "Array",
-        _ => return Err(ParseError(format!("unsupported DDL column type: {name}"))),
-    };
+        _ => return None,
+    })
+}
+
+pub(super) fn data_type(parser: &mut Parser, nesting: usize) -> Result<String, ParseError> {
+    let name = parser.word()?;
+    let canonical = canonical_type(&name)
+        .ok_or_else(|| ParseError(format!("unsupported DDL column type: {name}")))?;
     if canonical == "Nullable" || canonical == "Array" {
         if nesting >= 4 {
             return Err(ParseError("DDL type nesting exceeds 4 levels".into()));
