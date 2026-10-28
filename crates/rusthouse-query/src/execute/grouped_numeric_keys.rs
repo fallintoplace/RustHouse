@@ -87,7 +87,7 @@ fn append_group_component(column: &TypedColumn, row: usize, buffer: &mut Vec<u8>
 }
 
 
-/// Partial exact COUNT/SUM aggregates over multi-dimensional typed group keys.
+/// Partial exact COUNT, SUM, MIN and MAX aggregates over typed composite keys.
 /// Merge in input-part order to preserve the serial first-seen group ordering.
 fn parallel_multi_dimensional_metrics(
     part: &Path,
@@ -293,7 +293,10 @@ pub(super) fn execute<W: Write>(
     let no_filters = query.predicates.is_empty() && query.or_predicates.is_empty();
     let parallel_safe = items.iter().all(|(function, value_column)| {
         *function == AggregateFunction::Count || (
-            *function == AggregateFunction::Sum && matches!(
+            matches!(
+                function,
+                AggregateFunction::Sum | AggregateFunction::Min | AggregateFunction::Max
+            ) && matches!(
                 typed::base_type(&types[value_column]),
                 "UInt8" | "UInt16" | "UInt32" | "UInt64" | "UInt128"
                     | "Int8" | "Int16" | "Int32" | "Int64" | "Int128"
