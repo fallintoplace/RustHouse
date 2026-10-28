@@ -499,13 +499,14 @@ impl Parser {
                             | AggregateFunction::Min
                             | AggregateFunction::Max
                             | AggregateFunction::Avg
+                            | AggregateFunction::Count
                     ) =>
                     {
                         "#aggregate".into()
                     }
                     _ => {
                         return Err(ParseError(
-                            "ORDER BY aggregate output requires SUM, MIN, MAX or AVG".into(),
+                            "ORDER BY aggregate output requires SUM, MIN, MAX, AVG or COUNT".into(),
                         ));
                     }
                 },
@@ -1332,6 +1333,7 @@ fn parse_select_tokens(tokens: Vec<Token>) -> Result<Select, ParseError> {
                     | AggregateFunction::Min
                     | AggregateFunction::Max
                     | AggregateFunction::Avg
+                    | AggregateFunction::Count
             ) {
                 return Err(ParseError("HAVING does not support this aggregate".into()));
             }
