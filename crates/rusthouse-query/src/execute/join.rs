@@ -360,8 +360,9 @@ fn execute_streaming_right_outer<W: Write>(
         left_names, right_names, selected, left_keys, right_keys, null_filter,
     } = columns;
     let left_meta = inspect_query_source(left_path)?;
-    let left_rows = read_rows(
-        left_path, left_names, left_meta.rows,
+    let keep = retained_build_columns(left_names, left_keys, selected, null_filter, 0);
+    let left_rows = read_projected_build_rows(
+        left_path, left_names, &keep, left_meta.rows,
         MAX_STREAM_BUILD_ROWS, MAX_STREAM_BUILD_BYTES,
     )?;
     let mut hash = HashMap::<Vec<typed::Key>, Bucket>::with_capacity(left_rows.len());
