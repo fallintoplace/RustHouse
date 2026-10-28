@@ -443,9 +443,18 @@ mod tests {
             }
         }
         let values = vec![1234u16; 32_768];
-        let bytes = values.iter().flat_map(|value| value.to_le_bytes()).collect::<Vec<_>>();
-        let mut reader = Counting { inner: &bytes, reads: 0 };
-        assert_eq!(read_numeric_column(&mut reader, "UInt16", values.len()).unwrap(), NumericColumn::UInt16(values));
+        let bytes = values
+            .iter()
+            .flat_map(|value| value.to_le_bytes())
+            .collect::<Vec<_>>();
+        let mut reader = Counting {
+            inner: &bytes,
+            reads: 0,
+        };
+        assert_eq!(
+            read_numeric_column(&mut reader, "UInt16", values.len()).unwrap(),
+            NumericColumn::UInt16(values)
+        );
         assert_eq!(reader.reads, 1);
     }
 
