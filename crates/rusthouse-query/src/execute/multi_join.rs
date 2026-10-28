@@ -8,7 +8,7 @@ use std::path::PathBuf;
 
 use super::join::{
     MAX_INPUT_ROWS, MAX_RESULT_ROWS, MAX_STREAM_BUILD_BYTES, multi_join_row_key as row_key,
-    read_rows,
+    multi_join_row_key_into as row_key_into, read_rows,
 };
 
 const MAX_CHAIN_BYTES: usize = crate::join::MAX_JOIN_CHAIN_BYTES;
@@ -383,10 +383,11 @@ pub fn execute_multi_join<W: Write>(
         let mut retained = 0usize;
         let mut matched_right = matches!(step.kind, JoinType::Right | JoinType::Full)
             .then(|| vec![false; right_rows.len()]);
+        let mut probe_key = Vec::with_capacity(left_keys.len());
         for row in &rows {
             let mut matched = false;
-            if let Some(key) = row_key(row, &left_keys) {
-                if let Some(matches) = hash.get(&key) {
+            if row_key_into(row, &left_keys, &mut probe_key) {
+                if let Some(matches) = hash.get(probe_key.as_slice()) {
                     for &match_index in
                         matches
                             .iter()
