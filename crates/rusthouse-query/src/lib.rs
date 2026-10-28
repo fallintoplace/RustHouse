@@ -132,6 +132,10 @@ pub enum Projection {
     ApproxDistinct {
         column: String,
     },
+    /// Composite high-cardinality uniq over up to eight typed dimensions.
+    ApproxDistinctTuple {
+        columns: Vec<String>,
+    },
     GroupedCount {
         column: String,
     },
@@ -680,11 +684,24 @@ fn parse_select_tokens(tokens: Vec<Token>) -> Result<Select, ParseError> {
     {
         parser.keyword("UNIQ");
         parser.take(Token::LParen);
-        let column = parser.word()?;
-        if !parser.take(Token::RParen) {
-            return Err(ParseError("expected ')' after uniq(column)".into()));
+        let first = parser.word()?;
+        let mut columns = vec![first];
+        while parser.take(Token::Comma) {
+            if columns.len() >= 8 {
+                return Err(ParseError("uniq supports at most 8 columns".into()));
+            }
+            columns.push(parser.word()?);
         }
-        Projection::ApproxDistinct { column }
+        if !parser.take(Token::RParen) {
+            return Err(ParseError("expected ')' after uniq columns".into()));
+        }
+        if columns.len() == 1 {
+            Projection::ApproxDistinct {
+                column: columns.remove(0),
+            }
+        } else {
+            Projection::ApproxDistinctTuple { columns }
+        }
     } else if matches!(parser.tokens.get(parser.index + 1), Some(Token::LParen))
         && !matches!(parser.tokens.get(parser.index), Some(Token::Word(word)) if scalar::is_function(word) || text_scalar::is_function(word))
     {
@@ -1018,6 +1035,7 @@ fn parse_select_tokens(tokens: Vec<Token>) -> Result<Select, ParseError> {
                 | Projection::CountColumn { .. }
                 | Projection::CountDistinct { .. }
                 | Projection::ApproxDistinct { .. }
+                | Projection::ApproxDistinctTuple { .. }
                 | Projection::Aggregate { .. }
                 | Projection::GroupedCount { .. }
                 | Projection::GroupedDistinctCount { .. }
@@ -1550,6 +1568,7 @@ fn parse_select_tokens(tokens: Vec<Token>) -> Result<Select, ParseError> {
                 | Projection::CountColumn { .. }
                 | Projection::CountDistinct { .. }
                 | Projection::ApproxDistinct { .. }
+                | Projection::ApproxDistinctTuple { .. }
                 | Projection::Aggregate { .. }
                 | Projection::MultipleAggregates(_)
                 | Projection::StringLength { .. }
