@@ -600,6 +600,7 @@ fn execute_into<W: Write>(
         extra_sort_indices.push(index);
     }
     let mut reader = NumericQueryReader::open(part, &scan_columns)?;
+    let no_filters = query.predicates.is_empty() && query.or_predicates.is_empty();
     let mut distinct: Option<HashSet<Vec<NumberKey>>> = query.distinct.then(HashSet::new);
 
     if let (Some(order), Some(index)) = (&query.order_by, sort_index) {
@@ -612,7 +613,7 @@ fn execute_into<W: Write>(
         }
         while let Some(batch) = reader.next_batch()? {
             for row in 0..batch[0].len() {
-                if !batch_matches(&batch, row, &comparisons) {
+                if !no_filters && !batch_matches(&batch, row, &comparisons) {
                     continue;
                 }
                 let key = number_at(&batch[index], row);
@@ -672,7 +673,7 @@ fn execute_into<W: Write>(
         }
         let rows = batch[0].len();
         for row in 0..rows {
-            if !batch_matches(&batch, row, &comparisons) {
+            if !no_filters && !batch_matches(&batch, row, &comparisons) {
                 continue;
             }
             if is_count {
