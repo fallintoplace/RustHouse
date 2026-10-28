@@ -41,6 +41,7 @@ pub(super) fn is_function(name: &str) -> bool {
             | "JSONHAS"
             | "JSONEXTRACTSTRING"
             | "JSONEXTRACTRAW"
+            | "JSON_EXISTS"
             | "SUBSTRING"
             | "HASSUBSEQUENCECASEINSENSITIVE"
             | "OVERLAY"
@@ -1906,6 +1907,139 @@ fn parse_at_depth(parser: &mut Parser, depth: usize) -> Result<ConstantValue, Pa
                         }
                         ConstantValue::Text(value.repeat(count))
                     }
+                }
+                _ => ConstantValue::Null,
+            }
+        }
+        "JSON_EXISTS" => {
+            let input = text_arg(parser, depth + 1)?;
+            require(parser, Token::Comma, "JSON_EXISTS requires a JSONPath")?;
+            let path = text_arg(parser, depth + 1)?;
+            require(parser, Token::RParen, "expected ')' after JSON_EXISTS")?;
+            match (input, path) {
+                (Some(input), Some(path)) => {
+                    let suffix = path.strip_prefix('
+    };
+    Ok(value)
+}
+
+fn require(parser: &mut Parser, token: Token, message: &str) -> Result<(), ParseError> {
+    if parser.take(token) {
+        Ok(())
+    } else {
+        Err(ParseError(message.into()))
+    }
+}
+
+fn integer_arg(parser: &mut Parser, depth: usize) -> Result<Option<i64>, ParseError> {
+    if matches!(
+        parser.tokens.get(parser.index),
+        Some(Token::Word(word)) if word.eq_ignore_ascii_case("NULL")
+    ) {
+        parser.index += 1;
+        return Ok(None);
+    }
+    if matches!(parser.tokens.get(parser.index), Some(Token::Word(word)) if is_function(word)) {
+        return match parse_at_depth(parser, depth)? {
+            ConstantValue::Integer(value) => Ok(Some(value)),
+            ConstantValue::Null => Ok(None),
+            ConstantValue::Text(_) => Err(ParseError("expected an integer expression".into())),
+        };
+    }
+    Ok(Some(super::scalar::parse(parser)?))
+}
+
+fn text_arg(parser: &mut Parser, depth: usize) -> Result<Option<String>, ParseError> {
+    match parser.tokens.get(parser.index) {
+        Some(Token::String(value)) => {
+            let result = value.clone();
+            parser.index += 1;
+            Ok(Some(result))
+        }
+        Some(Token::Word(word)) if word.eq_ignore_ascii_case("NULL") => {
+            parser.index += 1;
+            Ok(None)
+        }
+        Some(Token::Word(word)) if is_function(word) => match parse_at_depth(parser, depth)? {
+            ConstantValue::Text(value) => Ok(Some(value)),
+            ConstantValue::Null => Ok(None),
+            ConstantValue::Integer(_) => Err(ParseError("expected a string expression".into())),
+        },
+        _ => Err(ParseError(
+            "expected a string literal or string function".into(),
+        )),
+    }
+}
+)
+                        .ok_or_else(|| ParseError("JSON_EXISTS path must begin with '
+    };
+    Ok(value)
+}
+
+fn require(parser: &mut Parser, token: Token, message: &str) -> Result<(), ParseError> {
+    if parser.take(token) {
+        Ok(())
+    } else {
+        Err(ParseError(message.into()))
+    }
+}
+
+fn integer_arg(parser: &mut Parser, depth: usize) -> Result<Option<i64>, ParseError> {
+    if matches!(
+        parser.tokens.get(parser.index),
+        Some(Token::Word(word)) if word.eq_ignore_ascii_case("NULL")
+    ) {
+        parser.index += 1;
+        return Ok(None);
+    }
+    if matches!(parser.tokens.get(parser.index), Some(Token::Word(word)) if is_function(word)) {
+        return match parse_at_depth(parser, depth)? {
+            ConstantValue::Integer(value) => Ok(Some(value)),
+            ConstantValue::Null => Ok(None),
+            ConstantValue::Text(_) => Err(ParseError("expected an integer expression".into())),
+        };
+    }
+    Ok(Some(super::scalar::parse(parser)?))
+}
+
+fn text_arg(parser: &mut Parser, depth: usize) -> Result<Option<String>, ParseError> {
+    match parser.tokens.get(parser.index) {
+        Some(Token::String(value)) => {
+            let result = value.clone();
+            parser.index += 1;
+            Ok(Some(result))
+        }
+        Some(Token::Word(word)) if word.eq_ignore_ascii_case("NULL") => {
+            parser.index += 1;
+            Ok(None)
+        }
+        Some(Token::Word(word)) if is_function(word) => match parse_at_depth(parser, depth)? {
+            ConstantValue::Text(value) => Ok(Some(value)),
+            ConstantValue::Null => Ok(None),
+            ConstantValue::Integer(_) => Err(ParseError("expected a string expression".into())),
+        },
+        _ => Err(ParseError(
+            "expected a string literal or string function".into(),
+        )),
+    }
+}
+".into()))?;
+                    if !suffix.is_empty() && !suffix.starts_with(['.', '[']) {
+                        return Err(ParseError("invalid JSON_EXISTS JSONPath".into()));
+                    }
+                    if suffix.contains('*') || suffix.matches('[').count() != suffix.matches(']').count() {
+                        return Err(ParseError("unsupported JSON_EXISTS JSONPath".into()));
+                    }
+                    let key = suffix.replace('[', ".").replace(']', "");
+                    let key = key.trim_start_matches('.');
+                    let json = crate::json::parse_json(&input)
+                        .map_err(|error| ParseError(format!("invalid JSON: {error}")))?;
+                    let found = if suffix.is_empty() {
+                        true
+                    } else {
+                        !key.is_empty() && json.at_path(key).is_some()
+                    };
+                    ConstantValue::Integer(i64::from(found))
                 }
                 _ => ConstantValue::Null,
             }
