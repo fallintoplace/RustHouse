@@ -1,8 +1,8 @@
 # Check experimental distributed peer health
 
-\`\`\`sh
+```sh
 python3 tools/cluster_health.py --url http://127.0.0.1:8123
-\`\`\`
+```
 
 Exits zero only when the server reports internally consistent, fully healthy
 peer reachability. It accepts the existing endpoint's HTTP 503 to parse partial
