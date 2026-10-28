@@ -1,0 +1,19 @@
+{
+  "name": "join-self-fact",
+  "description": "Measure fact self-joins with identical keys and payload access",
+  "queries": [
+    {
+      "name": "self-inner",
+      "sql": "SELECT e.event_id, f.category FROM events e JOIN events f ON e.event_id = f.event_id ORDER BY e.event_id LIMIT 20"
+    },
+    {
+      "name": "self-left",
+      "sql": "SELECT e.event_id, f.amount FROM events e LEFT JOIN events f ON e.event_id = f.event_id ORDER BY e.event_id LIMIT 20"
+    },
+    {
+      "name": "self-inner-desc",
+      "sql": "SELECT e.event_id, f.quantity FROM events e JOIN events f ON e.event_id = f.event_id ORDER BY e.event_id DESC LIMIT 20"
+    }
+  ],
+  "max_rows": 16000
+}
