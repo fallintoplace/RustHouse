@@ -23,7 +23,7 @@ Its current server and distributed capabilities remain experimental.
 
 ## One-hour evaluation, using today's supported CLI
 
-\`\`\`sh
+```sh
 cargo build --release --locked -p rusthouse-cli
 target/release/rusthouse sql "SELECT number FROM numbers(5) ORDER BY number DESC"
 db="$(mktemp -d)"
@@ -31,7 +31,7 @@ target/release/rusthouse sql "CREATE TABLE events (id UInt64, region String)" --
 target/release/rusthouse sql "INSERT INTO events VALUES (1, 'EU'), (2, 'US')" --database "$db"
 target/release/rusthouse sql "SELECT region, count(*) FROM events GROUP BY region ORDER BY region" --database "$db"
 target/release/rusthouse doctor --database "$db"
-\`\`\`
+```
 
 The test uses a disposable local database. Do not copy a live external part.
 Local scripts are not cross-statement transactions.
