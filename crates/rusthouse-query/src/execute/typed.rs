@@ -981,6 +981,17 @@ pub(super) fn execute_typed<W: Write>(
     let mut distinct = HashSet::<Vec<Key>>::new();
     // A one-column DISTINCT key does not need a heap-allocated Vec<Key>.
     let mut single_distinct = HashSet::<Key>::new();
+    // Small integer domains need only 32 bytes (8-bit) or 8 KiB (16-bit)
+    // to identify already emitted DISTINCT values, without hashing.
+    let mut dense_single_distinct = if query.distinct && projection_indices.len() == 1 {
+        match projection_types.first().copied() {
+            Some("UInt8" | "Int8") => Some(vec![0u64; 4]),
+            Some("UInt16" | "Int16") => Some(vec![0u64; 1024]),
+            _ => None,
+        }
+    } else {
+        None
+    };
     let mut distinct_probe = Vec::<Key>::new();
     // COUNT(DISTINCT column) has one key; avoid a Vec allocation per row.
     let mut count_distinct_keys = HashSet::<Key>::new();
@@ -1261,11 +1272,34 @@ pub(super) fn execute_typed<W: Write>(
             if query.distinct {
                 if projection_indices.len() == 1 {
                     // Avoid a second heap container around a single typed key.
-                    if !single_distinct.insert(key_at(&batch[projection_indices[0]], index)) {
-                        continue;
-                    }
-                    if single_distinct.len() > MAX_BUFFERED_ROWS {
-                        return Err(ExecutionError::Invalid("too many distinct rows".into()));
+                    if let Some(bitmap) = dense_single_distinct.as_mut() {
+                        let key = match &batch[projection_indices[0]] {
+                            TypedColumn::Numeric(NumericColumn::UInt8(values)) => {
+                                u16::from(values[index])
+                            }
+                            TypedColumn::Numeric(NumericColumn::Int8(values)) => {
+                                values[index] as u16
+                            }
+                            TypedColumn::Numeric(NumericColumn::UInt16(values)) => values[index],
+                            TypedColumn::Numeric(NumericColumn::Int16(values)) => {
+                                values[index] as u16
+                            }
+                            _ => unreachable!("dense DISTINCT requires a fixed-width integer"),
+                        };
+                        let key = usize::from(key);
+                        let bit = 1u64 << (key % 64);
+                        let word = &mut bitmap[key / 64];
+                        if *word & bit != 0 {
+                            continue;
+                        }
+                        *word |= bit;
+                    } else {
+                        if !single_distinct.insert(key_at(&batch[projection_indices[0]], index)) {
+                            continue;
+                        }
+                        if single_distinct.len() > MAX_BUFFERED_ROWS {
+                            return Err(ExecutionError::Invalid("too many distinct rows".into()));
+                        }
                     }
                 } else {
                     // Probe with just the hash key. Duplicate rows should never
