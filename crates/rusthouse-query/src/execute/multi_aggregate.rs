@@ -457,9 +457,23 @@ pub(super) fn supports_generated_series_metrics(items: &[AggregateItem]) -> bool
             && item.argument.as_ref().is_none_or(|expression| {
                 matches!(expression, ScalarExpr::Column(name) if name == "number")
             })
-            && matches!(item.function, None | Some(crate::AggregateFunction::Count
-                | crate::AggregateFunction::Sum | crate::AggregateFunction::Min
-                | crate::AggregateFunction::Max | crate::AggregateFunction::Avg))
+            && matches!(item.function, None | Some(
+                crate::AggregateFunction::Count
+                    | crate::AggregateFunction::CountIf
+                    | crate::AggregateFunction::Sum
+                    | crate::AggregateFunction::Min
+                    | crate::AggregateFunction::Max
+                    | crate::AggregateFunction::Avg
+                    | crate::AggregateFunction::Median
+                    | crate::AggregateFunction::Range
+                    | crate::AggregateFunction::Any
+                    | crate::AggregateFunction::AnyLast
+                    | crate::AggregateFunction::Rms
+                    | crate::AggregateFunction::VarPop
+                    | crate::AggregateFunction::VarSamp
+                    | crate::AggregateFunction::StddevPop
+                    | crate::AggregateFunction::StddevSamp
+            ))
     })
 }
 
@@ -487,16 +501,43 @@ fn generated_series_metrics(
     } else {
         n * ((first + last) / 2)
     };
+    // For an arithmetic progression, population variance depends only on
+    // its length and step. This avoids both per-row Welford dispatch and
+    // unstable subtraction of very large squared totals.
+    let count_float = rows as f64;
+    let mean = first as f64 / 2.0 + last as f64 / 2.0;
+    let variance = (step as f64).powi(2) * ((count_float - 1.0) * (count_float + 1.0)) / 12.0;
     let results = items.iter().map(|item| {
+        use crate::AggregateFunction as A;
         Ok(match item.function {
-            None | Some(crate::AggregateFunction::Count) => rows.to_string(),
-            Some(crate::AggregateFunction::Sum) if n > 0 => sum.to_string(),
-            Some(crate::AggregateFunction::Min) if n > 0 => first.to_string(),
-            Some(crate::AggregateFunction::Max) if n > 0 => last.to_string(),
-            Some(crate::AggregateFunction::Avg) if n > 0 =>
-                ((first as f64 + last as f64) / 2.0).to_string(),
-            Some(crate::AggregateFunction::Sum | crate::AggregateFunction::Min
-                | crate::AggregateFunction::Max | crate::AggregateFunction::Avg) => "NULL".into(),
+            None | Some(A::Count) => rows.to_string(),
+            Some(A::CountIf) => (rows - u64::from(rows > 0 && start == 0)).to_string(),
+            Some(A::Sum) if n > 0 => sum.to_string(),
+            Some(A::Min | A::Any) if n > 0 => first.to_string(),
+            Some(A::Max | A::AnyLast) if n > 0 => last.to_string(),
+            Some(A::Range) if n > 0 => (last - first).to_string(),
+            Some(A::Avg) if n > 0 => mean.to_string(),
+            Some(A::Median) if n > 0 => {
+                if rows % 2 == 1 {
+                    (first + (n / 2) * u128::from(step)).to_string()
+                } else {
+                    let middle = first + (n / 2 - 1) * u128::from(step);
+                    (middle as f64 / 2.0 + (middle + u128::from(step)) as f64 / 2.0)
+                        .to_string()
+                }
+            }
+            Some(A::VarPop) if n > 0 => variance.to_string(),
+            Some(A::StddevPop) if n > 0 => variance.sqrt().to_string(),
+            Some(A::VarSamp) if n > 1 =>
+                (variance * count_float / (count_float - 1.0)).to_string(),
+            Some(A::StddevSamp) if n > 1 =>
+                (variance * count_float / (count_float - 1.0)).sqrt().to_string(),
+            Some(A::Rms) if n > 0 => mean.hypot(variance.sqrt()).to_string(),
+            Some(
+                A::Sum | A::Min | A::Max | A::Any | A::AnyLast | A::Range
+                | A::Avg | A::Median | A::VarPop | A::VarSamp
+                | A::StddevPop | A::StddevSamp | A::Rms
+            ) => "NULL".into(),
             _ => unreachable!("fast path excludes other aggregate functions"),
         })
     }).collect::<Result<Vec<_>, ExecutionError>>();
