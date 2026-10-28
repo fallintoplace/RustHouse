@@ -821,6 +821,29 @@ pub(super) fn execute_typed<W: Write>(
     if query.limit == Some(0) {
         return Ok(());
     }
+    // COUNT(nullable_column) only needs the per-row NULL bit. Decode its
+    // small null-map stream instead of materializing possibly huge payloads.
+    if let Projection::CountColumn { column } = &query.projection {
+        if query.predicates.is_empty()
+            && query.or_predicates.is_empty()
+            && !query.distinct
+            && query.order_by.is_none()
+            && query.order_by_extra.is_empty()
+            && types.get(column).is_some_and(|kind| kind.starts_with("Nullable("))
+        {
+            let mut reader = TypedQueryReader::open(part, std::slice::from_ref(column))?;
+            let mut count = 0u64;
+            while let Some(nulls) = reader.next_null_batch()? {
+                count = count
+                    .checked_add(nulls.iter().filter(|&&byte| byte == 0).count() as u64)
+                    .ok_or_else(|| ExecutionError::Invalid("count overflow".into()))?;
+            }
+            if query.offset.unwrap_or(0) == 0 {
+                writeln!(output, "{count}")?;
+            }
+            return Ok(());
+        }
+    }
     let mut scan = TypedQueryReader::open(part, &names)?;
     let is_count = matches!(query.projection, Projection::Count);
     let is_count_column = matches!(query.projection, Projection::CountColumn { .. });

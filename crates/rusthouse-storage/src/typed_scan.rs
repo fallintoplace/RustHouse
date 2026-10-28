@@ -283,6 +283,35 @@ impl TypedPartReader {
         Ok(())
     }
 
+    /// Scan just a nullable column's compact null map. Its value stream
+    /// remains unopened for decoding, but marks and metadata are validated.
+    pub fn next_null_batch(&mut self) -> Result<Option<Vec<u8>>, PartError> {
+        if self.next_mark >= self.marks {
+            return Ok(None);
+        }
+        if self.columns.len() != 1 {
+            return Err(PartError::InvalidScan(
+                "null-map scan requires exactly one column".into(),
+            ));
+        }
+        let index = self.next_mark;
+        let stream = &mut self.columns[0];
+        let rows = usize::try_from(stream.data.marks[index].rows.ok_or_else(|| {
+            PartError::InvalidScan("null-map scan requires adaptive marks".into())
+        })?)
+        .map_err(|_| PartError::InvalidScan("row count too large".into()))?;
+        if rows == 0 {
+            self.next_mark = self.marks;
+            return Ok(None);
+        }
+        let null_map = stream.null_map.as_mut().ok_or_else(|| {
+            PartError::InvalidScan("null-map scan requires a nullable column".into())
+        })?;
+        let bytes = null_map.read_fixed(index, rows)?;
+        self.next_mark += 1;
+        Ok(Some(bytes))
+    }
+
     pub fn next_batch(&mut self) -> Result<Option<Vec<TypedColumn>>, PartError> {
         if self.next_mark >= self.marks {
             return Ok(None);
@@ -371,6 +400,31 @@ impl TypedQueryReader {
             next_part: 0,
             current: None,
         })
+    }
+
+    /// Read NULL maps across a multi-part snapshot without decoding values.
+    pub fn next_null_batch(&mut self) -> Result<Option<Vec<u8>>, PartError> {
+        if self.columns.len() != 1 {
+            return Err(PartError::InvalidScan(
+                "null-map scan requires exactly one column".into(),
+            ));
+        }
+        loop {
+            if let Some(reader) = self.current.as_mut() {
+                if let Some(nulls) = reader.next_null_batch()? {
+                    return Ok(Some(nulls));
+                }
+                self.current = None;
+            }
+            if self.next_part == self.parts.len() {
+                return Ok(None);
+            }
+            self.current = Some(TypedPartReader::open(
+                &self.parts[self.next_part],
+                &self.columns,
+            )?);
+            self.next_part += 1;
+        }
     }
 
     pub fn next_batch(&mut self) -> Result<Option<Vec<TypedColumn>>, PartError> {
