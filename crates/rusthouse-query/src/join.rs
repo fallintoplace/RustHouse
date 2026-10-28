@@ -109,7 +109,12 @@ pub fn parse_join(sql: &str) -> Result<Option<JoinSelect>, ParseError> {
     } else {
         None
     };
-    let kind = parse_join_kind(&mut parser);
+    let cross = parser.keyword("CROSS");
+    let kind = if cross {
+        JoinType::Inner
+    } else {
+        parse_join_kind(&mut parser)
+    };
     let trailing_strictness = if parser.keyword("ANY") {
         Some(true)
     } else if parser.keyword("ALL") {
@@ -121,6 +126,9 @@ pub fn parse_join(sql: &str) -> Result<Option<JoinSelect>, ParseError> {
         return Err(ParseError("JOIN strictness specified twice".into()));
     }
     let any = leading_strictness.or(trailing_strictness).unwrap_or(false);
+    if cross && (leading_strictness.is_some() || trailing_strictness.is_some()) {
+        return Err(ParseError("CROSS JOIN does not accept ANY or ALL".into()));
+    }
     if any && !matches!(kind, JoinType::Inner | JoinType::Left | JoinType::Right) {
         return Err(ParseError(
             "ANY JOIN supports only INNER, LEFT and RIGHT joins".into(),
@@ -139,7 +147,9 @@ pub fn parse_join(sql: &str) -> Result<Option<JoinSelect>, ParseError> {
     if left_alias == right_alias {
         return Err(ParseError("joined tables require distinct aliases".into()));
     }
-    let (keys, using_keys) = if parser.keyword("USING") {
+    let (keys, using_keys) = if cross {
+        (Vec::new(), Vec::new())
+    } else if parser.keyword("USING") {
         if !parser.take(Token::LParen) {
             return Err(ParseError("JOIN USING requires '('".into()));
         }
@@ -209,7 +219,7 @@ pub fn parse_join(sql: &str) -> Result<Option<JoinSelect>, ParseError> {
     while matches!(
         parser.tokens.get(parser.index),
         Some(Token::Word(word))
-            if ["JOIN", "INNER", "LEFT", "RIGHT", "FULL", "ANY", "ALL"]
+            if ["JOIN", "INNER", "LEFT", "RIGHT", "FULL", "CROSS", "ANY", "ALL"]
                 .iter()
                 .any(|keyword| word.eq_ignore_ascii_case(keyword))
     ) {
@@ -218,13 +228,21 @@ pub fn parse_join(sql: &str) -> Result<Option<JoinSelect>, ParseError> {
         }
         let leading_any = parser.keyword("ANY");
         let leading_all = !leading_any && parser.keyword("ALL");
-        let step_kind = parse_join_kind(&mut parser);
+        let step_cross = parser.keyword("CROSS");
+        let step_kind = if step_cross {
+            JoinType::Inner
+        } else {
+            parse_join_kind(&mut parser)
+        };
         let trailing_any = parser.keyword("ANY");
         let trailing_all = !trailing_any && parser.keyword("ALL");
         if (leading_any || leading_all) && (trailing_any || trailing_all) {
             return Err(ParseError("JOIN strictness specified twice".into()));
         }
         let step_any = leading_any || trailing_any;
+        if step_cross && (leading_any || leading_all || trailing_any || trailing_all) {
+            return Err(ParseError("CROSS JOIN does not accept ANY or ALL".into()));
+        }
         if !parser.keyword("JOIN") {
             return Err(ParseError("expected JOIN after join type".into()));
         }
@@ -246,7 +264,9 @@ pub fn parse_join(sql: &str) -> Result<Option<JoinSelect>, ParseError> {
                 "chained ANY JOIN supports only INNER, LEFT and RIGHT joins".into(),
             ));
         }
-        let (step_keys, step_using) = if parser.keyword("USING") {
+        let (step_keys, step_using) = if step_cross {
+            (Vec::new(), Vec::new())
+        } else if parser.keyword("USING") {
             if !parser.take(Token::LParen) {
                 return Err(ParseError("JOIN USING requires '('".into()));
             }
@@ -442,33 +462,46 @@ pub fn explain_join(query: &JoinSelect) -> String {
         })
         .collect::<Vec<_>>()
         .join(" AND ");
-    let predicate = if query.using_keys.is_empty() {
+    let predicate = if query.keys.is_empty() && query.using_keys.is_empty() {
+        "cartesian product".to_owned()
+    } else if query.using_keys.is_empty() {
         format!("ON {conditions}")
     } else {
         format!("USING ({})", query.using_keys.join(", "))
     };
     let mut plan = format!(
-        "Source: table {} AS {}\nSource: table {} AS {}\nJoin: {}{:?} {}",
+        "Source: table {} AS {}\nSource: table {} AS {}\nJoin: {} {}",
         query.left,
         query.left_alias,
         query.right,
         query.right_alias,
-        if query.any { "Any " } else { "" },
-        query.kind,
+        if query.keys.is_empty() && query.using_keys.is_empty() {
+            "Cross".to_owned()
+        } else {
+            format!("{}{:?}", if query.any { "Any " } else { "" }, query.kind)
+        },
         predicate,
     );
     for step in &query.steps {
         let conditions = step.keys.iter()
             .map(|(left, right)| format!("{}.{} = {}.{}", left.relation, left.name, right.relation, right.name))
             .collect::<Vec<_>>().join(" AND ");
-        let predicate = if step.using_keys.is_empty() {
+        let predicate = if step.keys.is_empty() && step.using_keys.is_empty() {
+            "cartesian product".to_owned()
+        } else if step.using_keys.is_empty() {
             format!("ON {conditions}")
         } else {
             format!("USING ({})", step.using_keys.join(", "))
         };
         plan.push_str(&format!(
-            "\nSource: table {} AS {}\nJoin: {}{:?} {}",
-            step.table, step.alias, if step.any { "Any " } else { "" }, step.kind, predicate
+            "\nSource: table {} AS {}\nJoin: {} {}",
+            step.table, step.alias,
+            if step.keys.is_empty() && step.using_keys.is_empty() {
+                "Cross".to_owned()
+            } else {
+                format!("{}{:?}", if step.any { "Any " } else { "" }, step.kind)
+            },
+            predicate
         ));
     }
     plan.push_str(&format!(
