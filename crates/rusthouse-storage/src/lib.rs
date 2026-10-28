@@ -15,6 +15,7 @@ mod mark_validation;
 mod marks;
 mod metadata;
 mod nested_arrays;
+pub mod distributed_repair_budget;
 mod nullable;
 mod nullable_arrays;
 mod numeric;
