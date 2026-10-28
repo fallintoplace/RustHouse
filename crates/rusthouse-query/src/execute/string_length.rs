@@ -86,7 +86,7 @@ pub(super) fn execute<W: Write>(
         return Ok(());
     }
 
-    let mut reader = TypedQueryReader::open(part, &names)?;
+    let mut reader = TypedQueryReader::open_with_metadata(part, &names, &metadata)?;
     let mut skipped = 0usize;
     let mut written = 0usize;
     let offset = query.offset.unwrap_or(0);
