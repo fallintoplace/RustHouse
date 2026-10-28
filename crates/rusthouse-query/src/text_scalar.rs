@@ -15,6 +15,7 @@ pub(super) fn is_function(name: &str) -> bool {
             | "CHR"
             | "STRINGBYTESUNIQ"
             | "BIT_LENGTH"
+            | "CRC32IEEE"
             | "IS_INT64"
             | "BTRIM"
             | "RTRIM"
@@ -207,6 +208,23 @@ fn parse_at_depth(parser: &mut Parser, depth: usize) -> Result<ConstantValue, Pa
                         seen[usize::from(byte)] = true;
                     }
                     ConstantValue::Integer(seen.iter().filter(|&&present| present).count() as i64)
+                }
+                None => ConstantValue::Null,
+            }
+        }
+        "CRC32IEEE" => {
+            let input = text_arg(parser, depth + 1)?;
+            require(parser, Token::RParen, "CRC32IEEE requires one string")?;
+            match input {
+                Some(input) => {
+                    let mut crc = 0u32;
+                    for byte in input.bytes() {
+                        crc ^= u32::from(byte);
+                        for _ in 0..8 {
+                            crc = (crc >> 1) ^ if crc & 1 != 0 { 0xedb8_8320 } else { 0 };
+                        }
+                    }
+                    ConstantValue::Integer(i64::from(crc))
                 }
                 None => ConstantValue::Null,
             }
@@ -1960,5 +1978,40 @@ fn text_arg(parser: &mut Parser, depth: usize) -> Result<Option<String>, ParseEr
         _ => Err(ParseError(
             "expected a string literal or string function".into(),
         )),
+    }
+}
+
+#[cfg(test)]
+mod clickhouse_crc32_ieee_tests {
+    use crate::{ConstantValue, Projection, parse_select};
+
+    fn value(sql: &str) -> ConstantValue {
+        match parse_select(sql).unwrap().projection {
+            Projection::Constants(columns) if columns.len() == 1 => columns[0].value.clone(),
+            Projection::Literal(number) => ConstantValue::Integer(number),
+            other => panic!("unexpected projection: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn handles_values_and_null() {
+        for (sql, expected) in [
+            ("SELECT CRC32IEEE('ClickHouse')", ConstantValue::Integer(3089448422)),
+            ("SELECT CRC32IEEE('')", ConstantValue::Integer(0)),
+            ("SELECT CRC32IEEE(NULL)", ConstantValue::Null),
+        ] {
+            assert_eq!(value(sql), expected, "{sql}");
+        }
+    }
+
+    #[test]
+    fn rejects_bad_calls() {
+        for sql in [
+            "SELECT CRC32IEEE()",
+            "SELECT CRC32IEEE(1)",
+            "SELECT CRC32IEEE('a','b')",
+        ] {
+            assert!(parse_select(sql).is_err(), "{sql}");
+        }
     }
 }
