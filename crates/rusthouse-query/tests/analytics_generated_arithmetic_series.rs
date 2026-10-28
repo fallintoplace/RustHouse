@@ -35,3 +35,15 @@ fn predicates_and_distinct_keep_streaming_and_null_semantics() {
         "sum(number)\tcount(*)\n"
     );
 }
+
+#[test]
+fn unfiltered_billion_row_generated_metrics_finish_with_exact_results() {
+    assert_eq!(
+        run("SELECT count(*), sum(number), min(number), max(number), avg(number) FROM numbers(1000000000)").unwrap(),
+        "count(*)\tsum(number)\tmin(number)\tmax(number)\tavg(number)\n1000000000\t499999999500000000\t0\t999999999\t499999999.5\n"
+    );
+    assert_eq!(
+        run("SELECT sum(number), count(*) FROM generate_series(100, 110, 2)").unwrap(),
+        "sum(number)\tcount(*)\n630\t6\n"
+    );
+}
