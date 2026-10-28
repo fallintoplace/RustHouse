@@ -2,6 +2,7 @@
 """Run a reference-checked, bounded star-schema join end to end."""
 import argparse
 import sqlite3
+from contextlib import closing
 import subprocess
 import sys
 import tempfile
@@ -17,7 +18,7 @@ SQL = ("SELECT l.lo_orderkey, d.d_year FROM lineorder l "
 
 
 def expected_rows(reference):
-    with sqlite3.connect(reference) as db:
+    with closing(sqlite3.connect(reference)) as db:
         rows = db.execute(SQL).fetchall()
     return "".join(f"{order}\t{year}\n" for order, year in rows).encode()
 

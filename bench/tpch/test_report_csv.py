@@ -26,6 +26,21 @@ class ReportCSVTests(unittest.TestCase):
         self.assertEqual(rows[1]["samples"], "0")
         self.assertEqual(rows[1]["error"], "slow")
 
+    def test_rejects_invalid_successful_measurements(self):
+        for values, latency in [
+            ([], None),
+            ([0], {"median_seconds": 0, "p90_seconds": 0}),
+            ([float("nan")], {"median_seconds": 1, "p90_seconds": 1}),
+            ([1], {"median_seconds": 1}),
+            ([True], {"median_seconds": 1, "p90_seconds": 1}),
+        ]:
+            with self.subTest(values=values, latency=latency):
+                with self.assertRaisesRegex(ValueError, "invalid"):
+                    rows_from_report({"results": [{
+                        "query": 1, "status": "passed",
+                        "timings_seconds": values, "latency": latency,
+                    }]})
+
     def test_rejects_incomplete_json(self):
         for payload in ({}, {"results": None}, {"results": [{}]}):
             with self.assertRaises(ValueError):

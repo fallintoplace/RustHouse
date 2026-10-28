@@ -1299,6 +1299,17 @@ fn parse_select_tokens(tokens: Vec<Token>) -> Result<Select, ParseError> {
                     "HAVING must match the selected aggregate".into(),
                 ));
             }
+        } else if let Projection::GroupedDistinctCount { value_column, .. } = &projection {
+            if !parser.keyword("COUNT")
+                || !parser.take(Token::LParen)
+                || !parser.keyword("DISTINCT")
+                || parser.word()? != *value_column
+                || !parser.take(Token::RParen)
+            {
+                return Err(ParseError(
+                    "HAVING must match the selected COUNT(DISTINCT column)".into(),
+                ));
+            }
         } else {
             return Err(ParseError("HAVING requires a grouped aggregate".into()));
         }

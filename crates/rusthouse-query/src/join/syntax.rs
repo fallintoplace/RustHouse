@@ -77,8 +77,7 @@ pub(super) fn equality_group(
                 return Err(ParseError("JOIN ON requires closing ')'".into()));
             }
         } else {
-            // Bound raw input separately; repeated equality keys are removed
-            // before the eight-distinct-key execution limit is checked.
+            // Repeated equalities count against the raw limit, but not the distinct-key limit.
             if keys.len() == 32 {
                 return Err(ParseError("JOIN supports at most 32 ON equalities".into()));
             }

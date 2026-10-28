@@ -15,12 +15,15 @@ from common import cli_sql, emit_json, latency_summary
 from run import load_queries, select_queries
 
 
-def run_throughput(queries, execute, clients=2, rounds=2, references=None):
+def run_throughput(queries, execute, clients=2, rounds=2, references=None,
+                   require_verified=False):
     if not 1 <= clients <= 64 or not 1 <= rounds <= 100:
         raise ValueError("clients must be 1..64 and rounds 1..100")
     if not queries:
         raise ValueError("at least one SQL query is required")
     references = references or {}
+    if require_verified and any(number not in references for number, _ in queries):
+        raise ValueError("verified throughput requires a reference for every query")
     # Explicitly cap the planned jobs to avoid runaway CI load.
     if len(queries) * rounds > 2200:
         raise ValueError("no more than 2200 query executions per run")
@@ -59,6 +62,8 @@ def run_throughput(queries, execute, clients=2, rounds=2, references=None):
         "planned_executions": len(tasks),
         "successful_executions": len(successful),
         "verified_executions": verified,
+        "all_executions_verified": verified == len(tasks),
+        "verification_required": require_verified,
         "elapsed_seconds": elapsed,
         "successful_queries_per_second": len(successful) / elapsed if elapsed > 0 else None,
         "latency": latency_summary(durations),
@@ -72,6 +77,8 @@ def main(argv=None):
     parser.add_argument("--database", type=Path, required=True)
     parser.add_argument("--queries-dir", type=Path, required=True)
     parser.add_argument("--reference-dir", type=Path)
+    parser.add_argument("--require-verified", action="store_true",
+                        help="Require a reference match for every throughput sample")
     parser.add_argument("--only")
     parser.add_argument("--clients", type=int, default=2)
     parser.add_argument("--rounds", type=int, default=2)
@@ -80,6 +87,8 @@ def main(argv=None):
     args = parser.parse_args(argv)
     if args.timeout <= 0:
         parser.error("--timeout must be positive")
+    if args.require_verified and args.reference_dir is None:
+        parser.error("--require-verified needs --reference-dir")
     try:
         queries = select_queries(load_queries(args.queries_dir), args.only)
         references = {}
@@ -93,11 +102,13 @@ def main(argv=None):
             queries,
             lambda sql: cli_sql(args.binary, args.database, sql, args.timeout),
             clients=args.clients, rounds=args.rounds, references=references,
+            require_verified=args.require_verified,
         )
     except (OSError, ValueError) as error:
         parser.exit(1, f"throughput run failed: {error}\n")
     emit_json(report, args.output)
-    return int(report["successful_executions"] != report["planned_executions"])
+    return int(report["successful_executions"] != report["planned_executions"]
+               or (args.require_verified and not report["all_executions_verified"]))
 
 
 if __name__ == "__main__":

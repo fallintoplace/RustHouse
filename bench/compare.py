@@ -37,10 +37,11 @@ def elapsed(record):
 
 
 def ensure_compatible_reports(baseline, candidate):
-    for field in ("workload", "engine", "rows", "seed", "timing_scope"):
+    for field in ("workload", "engine", "rows", "seed", "timing_scope",
+                  "query_sha256", "comparison"):
         old = baseline.get(field)
         new = candidate.get(field)
-        if old is not None and new is not None and old != new:
+        if (old is None) != (new is None) or (old is not None and old != new):
             raise ValueError(f"cannot compare different {field} values")
 
 

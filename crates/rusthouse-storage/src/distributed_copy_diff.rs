@@ -13,6 +13,7 @@ fn valid_key(key: &str) -> bool {
         && key.len() <= 512
         && key.split('/').all(|segment| {
             !segment.is_empty()
+                && segment.as_bytes()[0].is_ascii_alphanumeric()
                 && segment != "."
                 && segment != ".."
                 && !segment.contains("..")
@@ -73,6 +74,24 @@ mod tests {
         ];
         assert_eq!(plan_replica_copies(&objects, &existing).unwrap(), vec![objects[1].clone()]);
         assert!(plan_replica_copies(&objects, &objects).unwrap().is_empty());
+    }
+
+    #[test]
+    fn rejects_hidden_path_segments() {
+        for key in [".hidden/file", "part/.private", "part/é"] {
+            let object = ObjectMetadata {
+                key: key.into(),
+                bytes: 1,
+                crc32c: 0,
+            };
+            assert!(plan_replica_copies(&[object], &[]).is_err(), "{key}");
+        }
+        let valid = ObjectMetadata {
+            key: "part/checksums.txt".into(),
+            bytes: 1,
+            crc32c: 0,
+        };
+        assert_eq!(plan_replica_copies(&[valid.clone()], &[]).unwrap(), vec![valid]);
     }
 
     #[test]

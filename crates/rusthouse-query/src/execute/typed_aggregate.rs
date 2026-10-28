@@ -196,9 +196,10 @@ pub(super) fn execute_grouped_aggregate<W: Write>(
     // Repeated station names no longer allocate a new key on every row.
     let mut text_groups = HashMap::<Vec<u8>, usize>::new();
     let mut groups = Vec::<(Cell, AggregateState)>::new();
+    let no_filters = query.predicates.is_empty() && query.or_predicates.is_empty();
     while let Some(batch) = reader.next_batch()? {
         for row in 0..batch[0].len() {
-            if !typed::passes(&batch, row, &conditions) {
+            if !no_filters && !typed::passes(&batch, row, &conditions) {
                 continue;
             }
             let group = if let TypedColumn::Text(strings) = &batch[group_index] {

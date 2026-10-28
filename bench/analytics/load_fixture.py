@@ -2,6 +2,7 @@
 """Load the synthetic ClickBench fixture and verify source/reference row counts."""
 import argparse
 import sqlite3
+from contextlib import closing
 import sys
 import time
 from pathlib import Path
@@ -18,7 +19,7 @@ def load_fixture(binary, database, fixture_dir, timeout=120, execute=None):
         if actual_header != [name for name, _, _ in FIELDS]:
             raise ValueError("hits TSV column names differ from the fixture schema")
         expected = sum(1 for _ in source)
-    with sqlite3.connect(root / "hits.sqlite") as reference:
+    with closing(sqlite3.connect(root / "hits.sqlite")) as reference:
         sqlite_rows = reference.execute("SELECT COUNT(*) FROM hits").fetchone()[0]
     if expected < 1 or sqlite_rows != expected:
         raise ValueError(f"source row count {expected} differs from SQLite {sqlite_rows}")

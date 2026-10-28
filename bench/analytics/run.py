@@ -100,6 +100,8 @@ def run_benchmark(queries, indices, runs, timeout, execute, reference_dir=None, 
             if start is not None:
                 elapsed = (time.perf_counter_ns() - start) / 1_000_000_000
                 timings.append(round(elapsed, 9))
+        if status not in ("passed", "unverified"):
+            timings = []
         results.append({
             "query": index + 1,
             "status": status,

@@ -20,7 +20,14 @@ def inspect_tsv(path, table):
         header = stream.readline().rstrip(b"\n").rstrip(b"\r")
         if header != "\t".join(names(table)).encode("utf-8"):
             raise ValueError(f"{table}: header does not match expected dbgen columns")
-        count = sum(1 for _ in stream)
+        count = 0
+        expected_width = len(names(table))
+        for record in stream:
+            if not record.endswith(b"\n") or len(
+                record.removesuffix(b"\n").removesuffix(b"\r").split(b"\t")
+            ) != expected_width:
+                raise ValueError(f"{table}: malformed TSV data row {count + 1}")
+            count += 1
     if count < 1:
         raise ValueError(f"{table}: dataset is empty")
     return count
