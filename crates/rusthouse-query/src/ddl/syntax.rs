@@ -133,7 +133,6 @@ pub(super) fn parse_column_definitions(parser: &mut Parser) -> Result<Vec<Column
 
 #[cfg(test)]
 mod alias_tests {
-    use super::*;
 
     #[test]
     fn float_alias_uses_supported_storage_type() {
@@ -148,7 +147,6 @@ mod alias_tests {
 }
 #[cfg(test)]
 mod varchar_alias_tests {
-    use super::*;
 
     #[test]
     fn text_aliases_use_string_storage() {
