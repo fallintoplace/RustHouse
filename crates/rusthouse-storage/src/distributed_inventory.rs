@@ -91,7 +91,9 @@ mod tests {
         )
         .unwrap();
         let files = inventory_snapshot(&root, 32, 1_000_000).unwrap();
-        assert!(files.iter().any(|entry| entry.relative_path == Path::new("all_0_0_0/count.txt")));
+        assert!(files
+            .iter()
+            .any(|entry| entry.relative_path == Path::new("all_0_0_0/count.txt")));
         assert!(files.iter().all(|entry| entry.bytes <= 1_000_000));
         assert!(inventory_snapshot(&root, 1, 1_000_000).is_err());
         assert!(inventory_snapshot(&root, 32, 1).is_err());
@@ -110,7 +112,14 @@ mod tests {
         let part = root.join("all_0_0_0");
         fs::create_dir_all(&part).unwrap();
         fs::write(part.join("count.txt"), "0\n").unwrap();
-        fs::write(part.join("columns.txt"), "columns format version: 1\n1 columns:\n\`id\` UInt64\n").unwrap();
+        fs::write(
+            part.join("columns.txt"),
+            "columns format version: 1\
+1 columns:\
+`id` UInt64\
+",
+        )
+        .unwrap();
         symlink(part.join("count.txt"), part.join("shadow.txt")).unwrap();
         assert!(inventory_snapshot(&root, 32, 1_000_000).is_err());
         fs::remove_dir_all(root).unwrap();
