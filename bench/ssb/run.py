@@ -52,6 +52,8 @@ def benchmark(binary, rows=2000, seed=42, runs=3, warmups=1,
                 break
             if started is not None:
                 samples.append(time.perf_counter() - started)
+        if status != "passed":
+            samples = []
         return {
             "workload": "ssb-inspired-two-table-join",
             "official_ssb": False,

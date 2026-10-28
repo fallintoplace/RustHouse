@@ -26,6 +26,28 @@ class StarJoinBenchmarkTests(unittest.TestCase):
         self.assertFalse(result["official_ssb"])
         self.assertEqual(sum(query.startswith("COPY ") for query in seen), 2)
 
+    def test_late_result_mismatch_clears_partial_timings(self):
+        with tempfile.TemporaryDirectory() as root:
+            generate(root, rows=15, seed=8)
+            reference = expected_rows(Path(root) / "reference.sqlite")
+        calls = 0
+
+        def execute(sql):
+            nonlocal calls
+            if sql == "SELECT COUNT(*) FROM date_dim":
+                return str(len(DATE_KEYS)).encode() + b"\n"
+            if sql == "SELECT COUNT(*) FROM lineorder":
+                return b"15\n"
+            if sql == SQL:
+                calls += 1
+                return reference if calls == 1 else b"wrong\n"
+            return b""
+
+        result = benchmark("fake", rows=15, seed=8, runs=3, warmups=0, execute=execute)
+        self.assertEqual(result["status"], "mismatch")
+        self.assertEqual(result["timings_seconds"], [])
+        self.assertIsNone(result["latency"])
+
     def test_reference_mismatch_and_input_limit(self):
         def execute(sql):
             if sql == "SELECT COUNT(*) FROM date_dim":
