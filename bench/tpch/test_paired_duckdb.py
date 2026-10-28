@@ -2,7 +2,7 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from bench.tpch.paired_duckdb import ABBA, benchmark_pair, command, compare
+from bench.tpch.paired_duckdb import ABBA, BAAB, benchmark_pair, command, compare
 
 
 class PairedDuckDbTests(unittest.TestCase):
@@ -23,7 +23,7 @@ class PairedDuckDbTests(unittest.TestCase):
             calls.append(engine)
             return b"1\n", {"rusthouse": 0.002, "duckdb": 0.001}[engine]
         result = benchmark_pair("SELECT 1", b"1\n", execute, runs=2, warmups=1)
-        self.assertEqual(calls, ["rusthouse", "duckdb", *ABBA, *ABBA])
+        self.assertEqual(calls, ["rusthouse", "duckdb", *ABBA, *BAAB])
         self.assertEqual(result["duckdb_over_rusthouse"], 0.5)
         self.assertEqual(len(result["rusthouse_samples_seconds"]), 4)
         self.assertEqual(len(result["duckdb_samples_seconds"]), 4)
