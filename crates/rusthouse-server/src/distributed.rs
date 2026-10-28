@@ -70,6 +70,59 @@ fn merge_distinct_counts(shards: &[(usize, Vec<u8>)], column: &str) -> Result<Ve
     Ok(format!("count(DISTINCT {column})\n{}\n", values.len()).into_bytes())
 }
 
+/// Recover an exact physical type from the validated common shard schema.
+fn validated_schema_kind<'a>(schema: &'a [u8], column: &str) -> Option<&'a str> {
+    let schema = std::str::from_utf8(schema).ok()?;
+    let needle = format!("\"name\":\"{column}\",\"type\":\"");
+    let (_, tail) = schema.split_once(&needle)?;
+    let (kind, remaining) = tail.split_once('"')?;
+    remaining.starts_with('}').then_some(kind)
+}
+
+/// Exact global 32-bit DISTINCT union, bounded to 256 MiB of bitmap payload.
+fn merge_distinct_bitmap32(
+    shards: &[(usize, Vec<u8>)], column: &str, signed: bool,
+) -> Result<Vec<u8>, MergeError> {
+    const MAX_BLOCKS: usize = 32_768;
+    let expected_header = format!("{column}\n");
+    let mut blocks = HashMap::<u16, Box<[u64; 1024]>>::new();
+    let mut distinct = 0u64;
+    for (cap, body) in shards {
+        if !body.ends_with(b"\n") || !body.starts_with(expected_header.as_bytes()) {
+            return Err(MergeError::InvalidDistinctCount);
+        }
+        let rows = &body[expected_header.len()..];
+        if rows.is_empty() { continue; }
+        let mut shard_rows = 0usize;
+        for row in rows[..rows.len()-1].split(|&b| b == b'\n') {
+            shard_rows = shard_rows.checked_add(1).ok_or(MergeError::CoordinatorLimit)?;
+            if *cap == 0 || shard_rows >= *cap {
+                return Err(MergeError::ShardRowLimit);
+            }
+            if row == b"\\N" { continue; }
+            let value = std::str::from_utf8(row).map_err(|_| MergeError::InvalidDistinctCount)?;
+            let key = if signed {
+                value.parse::<i32>().map_err(|_| MergeError::InvalidDistinctCount)? as u32
+            } else {
+                value.parse::<u32>().map_err(|_| MergeError::InvalidDistinctCount)?
+            };
+            let prefix = (key >> 16) as u16;
+            if blocks.len() >= MAX_BLOCKS && !blocks.contains_key(&prefix) {
+                return Err(MergeError::CoordinatorLimit);
+            }
+            let block = blocks.entry(prefix).or_insert_with(|| Box::new([0u64; 1024]));
+            let index = (key & 0xffff) as usize;
+            let bit = 1u64 << (index % 64);
+            let word = &mut block[index / 64];
+            if *word & bit == 0 {
+                *word |= bit;
+                distinct = distinct.checked_add(1).ok_or(MergeError::CountOverflow)?;
+            }
+        }
+    }
+    Ok(format!("count(DISTINCT {column})\n{distinct}\n").into_bytes())
+}
+
 fn shard_row_cap(peer: Peer) -> Result<usize, String> {
     let response = remote::capabilities(peer)?;
     if response.status != 200 || !response.content_type.starts_with("application/json") {
@@ -977,7 +1030,13 @@ pub fn handle(method: &str, body: &[u8], cluster: &Cluster, max_rows: usize) -> 
     let merged = if count_query {
         sum_shard_counts(&shards)
     } else if let Some(column) = distinct_count_column {
-        merge_distinct_counts(&shards, column)
+        let kind = expected_schema.as_deref()
+            .and_then(|schema| validated_schema_kind(schema, column));
+        match kind {
+            Some("Int32" | "Nullable(Int32)") => merge_distinct_bitmap32(&shards, column, true),
+            Some("UInt32" | "Nullable(UInt32)") => merge_distinct_bitmap32(&shards, column, false),
+            _ => merge_distinct_counts(&shards, column),
+        }
     } else if sum_query {
         sum_type
             .as_deref()
@@ -1087,6 +1146,26 @@ pub fn handle(method: &str, body: &[u8], cluster: &Cluster, max_rows: usize) -> 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn distributed_bitmap32_merges_high_cardinality_exactly() {
+        let mut body = String::from("id\n");
+        for id in 0..125_000u32 {
+            body.push_str(&format!("{id}\n"));
+        }
+        let shards = [shard(250_000, &body), shard(250_000, &body)];
+        assert_eq!(
+            merge_distinct_bitmap32(&shards, "id", false).unwrap(),
+            b"count(DISTINCT id)\n125000\n"
+        );
+        assert_eq!(
+            merge_distinct_bitmap32(&[shard(10, "id\n-1\n0\n-1\n\\N\n")],
+                "id", true).unwrap(),
+            b"count(DISTINCT id)\n2\n"
+        );
+        assert_eq!(validated_schema_kind(
+            br#"[{\"name\":\"id\",\"type\":\"UInt32\"}]"#, "id"), Some("UInt32"));
+    }
 
     #[test]
     fn extracts_column_types_from_one_validated_schema_response() {
