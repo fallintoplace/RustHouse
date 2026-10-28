@@ -26,6 +26,7 @@ pub(super) fn is_function(name: &str) -> bool {
             | "HEX_ENCODE"
             | "HEX"
             | "IS_ASCII"
+            | "TODATETIME"
             | "UPPER"
             | "URL_DECODE"
             | "IS_EMPTY"
@@ -345,6 +346,22 @@ fn parse_at_depth(parser: &mut Parser, depth: usize) -> Result<ConstantValue, Pa
                     ConstantValue::Integer(i64::from(next.is_none()))
                 }
                 _ => ConstantValue::Null,
+            }
+        }
+        "TODATETIME" => {
+            let input = text_arg(parser, depth + 1)?;
+            require(parser, Token::RParen, "toDateTime requires one argument")?;
+            match input {
+                Some(value) => {
+                    let seconds = rusthouse_storage::parse_datetime(&value)
+                        .or_else(|| {
+                            rusthouse_storage::parse_date(&value)
+                                .and_then(|days| u32::try_from(u64::from(days) * 86_400).ok())
+                        })
+                        .ok_or_else(|| ParseError("invalid UTC DateTime argument".into()))?;
+                    ConstantValue::Text(rusthouse_storage::format_datetime(seconds))
+                }
+                None => ConstantValue::Null,
             }
         }
         "CHR" => {
