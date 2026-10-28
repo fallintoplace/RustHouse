@@ -811,6 +811,21 @@ fn parse_select_tokens(tokens: Vec<Token>) -> Result<Select, ParseError> {
                             "AVG" => AggregateFunction::Avg,
                             "SUM" => AggregateFunction::Sum,
                             "COUNT" => AggregateFunction::Count,
+                            "COUNTIF" => AggregateFunction::CountIf,
+                            "PRODUCT" => AggregateFunction::Product,
+                            "SUMSQUARES" => AggregateFunction::SumSquares,
+                            "RANGE" => AggregateFunction::Range,
+                            "RMS" => AggregateFunction::Rms,
+                            "VARPOP" => AggregateFunction::VarPop,
+                            "VARSAMP" => AggregateFunction::VarSamp,
+                            "STDDEVPOP" => AggregateFunction::StddevPop,
+                            "STDDEVSAMP" => AggregateFunction::StddevSamp,
+                            "MEDIAN" => AggregateFunction::Median,
+                            "ANY" => AggregateFunction::Any,
+                            "ANYLAST" => AggregateFunction::AnyLast,
+                            "GROUPBITAND" => AggregateFunction::GroupBitAnd,
+                            "GROUPBITOR" => AggregateFunction::GroupBitOr,
+                            "GROUPBITXOR" => AggregateFunction::GroupBitXor,
                             _ => {
                                 return Err(ParseError(format!(
                                     "unsupported grouped aggregate: {name}"
