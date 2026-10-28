@@ -32,7 +32,12 @@ fn render_expr(expr: &ScalarExpr) -> String {
         ScalarExpr::Integer(number) => number.to_string(),
         ScalarExpr::Add(left, right) => format!("{} + {}", render_expr(left), render_expr(right)),
         ScalarExpr::Subtract(left, right) => {
-            format!("{} - {}", render_expr(left), render_expr(right))
+            let right = if matches!(right.as_ref(), ScalarExpr::Add(..) | ScalarExpr::Subtract(..)) {
+                format!("({})", render_expr(right))
+            } else {
+                render_expr(right)
+            };
+            format!("{} - {right}", render_expr(left))
         }
         ScalarExpr::Divide(left, right) => {
             format!("({}) / ({})", render_expr(left), render_expr(right))
@@ -156,6 +161,15 @@ mod tests {
         assert_eq!(items.len(), 3);
         assert_eq!(items[0].header(), "sum(width + 1)");
         assert_eq!(items[1].header(), "count(*)");
+    }
+
+    #[test]
+    fn renders_nested_subtraction_without_losing_parentheses() {
+        let query = parse_select("SELECT sum(a - (b - c)) FROM part").unwrap();
+        let Projection::MultipleAggregates(items) = query.projection else {
+            panic!("expected computed aggregate");
+        };
+        assert_eq!(items[0].header(), "sum(a - (b - c))");
     }
 
     #[test]
