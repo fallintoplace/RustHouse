@@ -209,8 +209,38 @@ pub(super) fn execute_count_distinct_part<W: Write>(
     if query.limit == Some(0) {
         return Ok(());
     }
-    let mut seen = HashSet::new();
     let no_filters = query.predicates.is_empty() && query.or_predicates.is_empty();
+    // Narrow integer domains fit in a tiny exact bitmap. This avoids
+    // hashing every row of a billion-row low-cardinality column.
+    let domain = metadata.columns.iter().find(|candidate| candidate.name == column)
+        .and_then(|candidate| match candidate.data_type.as_str() {
+            "UInt8" | "Int8" => Some(256usize),
+            "UInt16" | "Int16" => Some(65536usize),
+            _ => None,
+        });
+    if no_filters && query.order_by.is_none() && query.order_by_extra.is_empty() {
+        if let Some(domain) = domain {
+            let mut bits = vec![0u64; domain / 64];
+            while let Some(batch) = reader.next_batch()? {
+                let mut record = |value: usize| {
+                    bits[value / 64] |= 1u64 << (value % 64);
+                };
+                match &batch[0] {
+                    NumericColumn::UInt8(values) => values.iter().for_each(|&value| record(value as usize)),
+                    NumericColumn::Int8(values) => values.iter().for_each(|&value| record((value as u8) as usize)),
+                    NumericColumn::UInt16(values) => values.iter().for_each(|&value| record(value as usize)),
+                    NumericColumn::Int16(values) => values.iter().for_each(|&value| record((value as u16) as usize)),
+                    _ => return Err(ExecutionError::Invalid("unexpected COUNT(DISTINCT) narrow column type".into())),
+                }
+            }
+            if query.offset.unwrap_or(0) == 0 {
+                let total: u64 = bits.iter().map(|word| u64::from(word.count_ones())).sum();
+                writeln!(output, "{total}")?;
+            }
+            return Ok(());
+        }
+    }
+    let mut seen = HashSet::new();
     while let Some(batch) = reader.next_batch()? {
         for row in 0..batch[0].len() {
             if !no_filters && !batch_matches(&batch, row, &comparisons) {
