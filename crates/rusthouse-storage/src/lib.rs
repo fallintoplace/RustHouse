@@ -10,6 +10,7 @@ mod file_sizes;
 mod fixed_strings;
 mod fixed_width;
 mod granules;
+pub mod distributed_range_read;
 mod ip;
 mod mark_validation;
 mod marks;
