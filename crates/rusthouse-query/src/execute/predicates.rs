@@ -195,47 +195,50 @@ pub(super) fn compile_numbers_predicates(
 /// Count a single AND branch over an increasing generated UInt64 sequence
 /// without visiting its rows. Unsupported OR, IN and modulo predicates keep
 /// the normal row-wise executor. Arithmetic uses u128 at UInt64 boundaries.
-/// Exact generated-row positions for small positive equality or IN sets.
-/// The returned positions are sorted so order-dependent aggregates preserve
-/// the source's normal ascending scan order.
+/// Enumerate small finite matching sets across OR branches exactly.
+/// Each disjunct needs a positive equality or IN seed. Unbounded branches
+/// retain the normal executor rather than changing their semantics.
 pub(super) fn sparse_generated_positions(
     branches: &[Vec<CompiledPredicate>],
     start: u64,
     rows: u64,
     step: u64,
 ) -> Option<Vec<u64>> {
-    let [conjunction] = branches else { return None; };
     if step == 0 { return None; }
-    let mut values = None;
-    for predicate in conjunction {
-        let candidates = match &predicate.test {
-            CompiledTest::Comparison { operator: Operator::Eq, target: Number::Unsigned(value) } => Some(vec![*value]),
-            CompiledTest::In(items) => Some(items.iter().filter_map(|item| {
-                if let Number::Unsigned(value) = item { Some(*value) } else { None }
-            }).collect()),
-            CompiledTest::InSet { targets, negated: false } => Some(targets.iter().filter_map(|key| {
-                if let NumberKey::Unsigned(value) = key { Some(*value) } else { None }
-            }).collect()),
-            _ => None,
-        };
-        if let Some(candidates) = candidates {
-            values = Some(candidates);
-            break;
-        }
-    }
-    let candidates: Vec<u128> = values?;
-    if candidates.len() > 4096 { return None; }
     let (start, step, rows) = (u128::from(start), u128::from(step), u128::from(rows));
     let mut indices = Vec::new();
-    for value in candidates {
-        if value < start || (value - start) % step != 0 {
-            continue;
+    let mut examined = 0usize;
+    for conjunction in branches {
+        let mut seed = None;
+        for predicate in conjunction {
+            let candidates = match &predicate.test {
+                CompiledTest::Comparison { operator: Operator::Eq, target: Number::Unsigned(value) } => Some(vec![*value]),
+                CompiledTest::In(items) => Some(items.iter().filter_map(|item| {
+                    if let Number::Unsigned(value) = item { Some(*value) } else { None }
+                }).collect()),
+                CompiledTest::InSet { targets, negated: false } => Some(targets.iter().filter_map(|key| {
+                    if let NumberKey::Unsigned(value) = key { Some(*value) } else { None }
+                }).collect()),
+                _ => None,
+            };
+            if candidates.is_some() {
+                seed = candidates;
+                break;
+            }
         }
-        let index = (value - start) / step;
-        if index < rows && conjunction.iter().all(|predicate| {
-            predicate.test.matches(Number::Unsigned(value))
-        }) {
-            indices.push(index as u64);
+        let values: Vec<u128> = seed?;
+        examined = examined.checked_add(values.len())?;
+        if examined > 4096 { return None; }
+        for value in values {
+            if value < start || (value - start) % step != 0 {
+                continue;
+            }
+            let index = (value - start) / step;
+            if index < rows && conjunction.iter().all(|predicate| {
+                predicate.test.matches(Number::Unsigned(value))
+            }) {
+                indices.push(index as u64);
+            }
         }
     }
     indices.sort_unstable();
