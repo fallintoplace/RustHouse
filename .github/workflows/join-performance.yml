@@ -1,0 +1,72 @@
+name: Pull request physical JOIN performance
+
+on:
+  pull_request:
+    paths:
+      - 'crates/rusthouse-query/src/execute/join.rs'
+      - 'crates/rusthouse-query/src/execute/join/**'
+      - 'crates/rusthouse-query/src/join.rs'
+      - 'crates/rusthouse-query/benches/join.rs'
+      - 'crates/rusthouse-query/Cargo.toml'
+      - 'crates/rusthouse-storage/src/**'
+      - 'bench/pr_join_compare.py'
+      - 'bench/test_pr_join_compare.py'
+      - '.github/workflows/join-performance.yml'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: physical-join-perf-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+jobs:
+  physical-join:
+    name: Verified on-disk JOIN base vs PR
+    runs-on: ubuntu-24.04
+    timeout-minutes: 25
+    env:
+      BASE_SHA: ${{ github.event.pull_request.base.sha }}
+      HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: physical-join-comparison
+          save-if: false
+      - name: Benchmark base commit
+        shell: bash
+        run: |
+          git checkout --detach "$BASE_SHA"
+          cargo bench -p rusthouse-query --bench join --locked -- --rows 8192 --match-percent 50 --samples 11 \
+            | tee "$RUNNER_TEMP/join-base.txt"
+      - name: Benchmark PR commit
+        shell: bash
+        run: |
+          git checkout --detach "$HEAD_SHA"
+          cargo bench -p rusthouse-query --bench join --locked -- --rows 8192 --match-percent 50 --samples 11 \
+            | tee "$RUNNER_TEMP/join-pr.txt"
+      - name: Verify comparison formatting
+        run: python3 -m unittest bench.test_pr_join_compare
+      - name: Summarize physical JOIN latency changes
+        shell: bash
+        run: |
+          python3 -m bench.pr_join_compare \
+            --baseline "$RUNNER_TEMP/join-base.txt" \
+            --candidate "$RUNNER_TEMP/join-pr.txt" \
+            --summary "$RUNNER_TEMP/join-summary.md"
+          cat "$RUNNER_TEMP/join-summary.md" >> "$GITHUB_STEP_SUMMARY"
+      - name: Upload benchmark artifacts
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: rusthouse-physical-join-${{ github.event.pull_request.number }}-${{ github.run_attempt }}
+          path: |
+            ${{ runner.temp }}/join-base.txt
+            ${{ runner.temp }}/join-pr.txt
+            ${{ runner.temp }}/join-summary.md
+          if-no-files-found: warn
+          retention-days: 14
