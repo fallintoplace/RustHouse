@@ -89,6 +89,7 @@ pub(super) fn is_function(name: &str) -> bool {
             | "STRIP_SUFFIX"
             | "REPEAT"
             | "BASE64_DECODE"
+            | "BASE32DECODE"
             | "APPENDTRAILINGCHARIFABSENT"
             | "RPAD"
             | "LOWERUTF8"
@@ -1720,6 +1721,53 @@ fn parse_at_depth(parser: &mut Parser, depth: usize) -> Result<ConstantValue, Pa
                     ConstantValue::Text(result)
                 }
                 _ => ConstantValue::Null,
+            }
+        }
+        "BASE32DECODE" => {
+            let input = text_arg(parser, depth + 1)?;
+            require(parser, Token::RParen, "base32Decode requires one argument")?;
+            match input {
+                Some(input) => {
+                    let source = input.as_bytes();
+                    if source.len() % 8 != 0 {
+                        return Err(ParseError("base32Decode requires complete eight-character blocks".into()));
+                    }
+                    let mut padding = false;
+                    let mut pad_count = 0usize;
+                    let mut digits = 0usize;
+                    let mut bits = 0u32;
+                    let mut bit_count = 0u32;
+                    let mut output = Vec::with_capacity(source.len() / 8 * 5);
+                    for &byte in source {
+                        if byte == b'=' {
+                            padding = true;
+                            pad_count += 1;
+                            continue;
+                        }
+                        if padding {
+                            return Err(ParseError("invalid base32Decode padding".into()));
+                        }
+                        let digit = match byte {
+                            b'A'..=b'Z' => u32::from(byte - b'A'),
+                            b'2'..=b'7' => u32::from(byte - b'2' + 26),
+                            _ => return Err(ParseError("invalid base32Decode digit".into())),
+                        };
+                        digits += 1;
+                        bits = (bits << 5) | digit;
+                        bit_count += 5;
+                        if bit_count >= 8 {
+                            bit_count -= 8;
+                            output.push((bits >> bit_count) as u8);
+                            bits &= (1u32 << bit_count) - 1;
+                        }
+                    }
+                    if !matches!((digits % 8, pad_count), (0, 0) | (2, 6) | (4, 4) | (5, 3) | (7, 1)) || bits != 0 {
+                        return Err(ParseError("invalid base32Decode padding or unused bits".into()));
+                    }
+                    ConstantValue::Text(String::from_utf8(output)
+                        .map_err(|_| ParseError("base32Decode result is not UTF-8".into()))?)
+                }
+                None => ConstantValue::Null,
             }
         }
         "BASE64_DECODE" => {
