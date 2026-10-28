@@ -12,8 +12,14 @@ fn write_spaces<W: Write>(output: &mut W, mut remaining: usize) -> io::Result<()
 }
 
 fn write_indent<W: Write>(output: &mut W, depth: usize) -> io::Result<()> {
-    output.write_all(b"\n")?;
-    write_spaces(output, (depth + 1) * 2)
+    const SHORT_INDENT: &[u8; 65] = b"\n                                                                ";
+    let spaces = (depth + 1) * 2;
+    if spaces <= 64 {
+        output.write_all(&SHORT_INDENT[..spaces + 1])
+    } else {
+        output.write_all(b"\n")?;
+        write_spaces(output, spaces)
+    }
 }
 
 /// Pretty-print a validated JSON row, preserving punctuation inside strings.
@@ -77,6 +83,31 @@ mod tests {
             assert_eq!(output.len(), 1 + (depth + 1) * 2);
             assert!(output[1..].iter().all(|&byte| byte == b' '));
         }
+    }
+
+    #[test]
+    fn short_indent_uses_one_write() {
+        struct CountingWriter {
+            writes: usize,
+            bytes: Vec<u8>,
+        }
+        impl Write for CountingWriter {
+            fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
+                self.writes += 1;
+                self.bytes.extend_from_slice(buf);
+                Ok(buf.len())
+            }
+            fn flush(&mut self) -> io::Result<()> {
+                Ok(())
+            }
+        }
+        let mut output = CountingWriter {
+            writes: 0,
+            bytes: Vec::new(),
+        };
+        write_indent(&mut output, 1).unwrap();
+        assert_eq!(output.writes, 1);
+        assert_eq!(output.bytes, b"\n    ");
     }
 
     #[test]
