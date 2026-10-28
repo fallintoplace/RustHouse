@@ -464,7 +464,7 @@ fn execute_streaming_right<W: Write>(
         &left_rows,
         &hash,
         ProbeOptions {
-            materialize_rows: true,
+            materialize_rows: selected.iter().any(|(column, _, _)| *column >= left_width),
             materialize_after: 0,
             stop_after,
             any: query.any,
