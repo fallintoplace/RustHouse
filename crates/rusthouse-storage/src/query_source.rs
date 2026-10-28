@@ -243,6 +243,30 @@ impl NumericQueryReader {
     pub fn open(path: &Path, columns: &[String]) -> Result<Self, PartError> {
         let parts = query_parts(path)?;
         let metadata = inspect_parts_metadata(path, &parts)?;
+        Self::from_validated_parts(parts, columns, &metadata)
+    }
+
+    /// Reuse metadata that was validated for this immutable snapshot by
+    /// the query planner, rather than opening every part's metadata twice.
+    pub fn open_with_metadata(
+        path: &Path,
+        columns: &[String],
+        metadata: &PartMetadata,
+    ) -> Result<Self, PartError> {
+        if metadata.path.as_path() != path {
+            return Err(PartError::InvalidScan(
+                "scan metadata belongs to a different snapshot".into(),
+            ));
+        }
+        let parts = query_parts(path)?;
+        Self::from_validated_parts(parts, columns, metadata)
+    }
+
+    fn from_validated_parts(
+        parts: Vec<PathBuf>,
+        columns: &[String],
+        metadata: &PartMetadata,
+    ) -> Result<Self, PartError> {
         for column in columns {
             if !metadata.columns.iter().any(|c: &Column| &c.name == column) {
                 return Err(PartError::InvalidScan(format!("unknown column: {column}")));
@@ -380,6 +404,22 @@ mod tests {
         let metadata = inspect_query_source(&root).unwrap();
         assert_eq!(metadata.rows, 40);
         assert_eq!(metadata.columns, columns);
+        let mut reader =
+            NumericQueryReader::open_with_metadata(&root, &["id".into()], &metadata).unwrap();
+        let mut inspected = 0;
+        while let Some(batch) = reader.next_batch().unwrap() {
+            inspected += batch[0].len();
+        }
+        assert_eq!(inspected, 40);
+        assert!(matches!(
+            NumericQueryReader::open_with_metadata(
+                &root.join("other-snapshot"),
+                &["id".into()],
+                &metadata,
+            ),
+            Err(PartError::InvalidScan(_))
+        ));
+
 
         let changed = root.join("all_40_40_0");
         fs::remove_dir_all(&changed).unwrap();
