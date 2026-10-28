@@ -124,8 +124,8 @@ fn parse_checksums(content: &[u8], path: &Path) -> Result<PartChecksums, PartErr
         return Err(invalid(path, "file count exceeds remaining data"));
     }
 
-    let mut files = Vec::new();
-    let mut names = HashSet::new();
+    let mut files = Vec::with_capacity(count.min(128));
+    let mut names = HashSet::with_capacity(count.min(128));
     for _ in 0..count {
         let entry = reader.file_checksum()?;
         if !names.insert(entry.name.clone()) {
