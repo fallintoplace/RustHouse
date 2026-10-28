@@ -149,6 +149,8 @@ def benchmark_one(number, sql, execute, runs, warmups, reference=None):
             break
         if start is not None:
             elapsed.append(time.perf_counter() - start)
+    if status not in SUCCESS:
+        elapsed = []
     return {
         "query": number,
         "sql": sql,
