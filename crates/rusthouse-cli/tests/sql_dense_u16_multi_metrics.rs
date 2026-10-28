@@ -12,9 +12,8 @@ fn sql(statement: &str, database: &Path) -> Output {
 
 #[test]
 fn dense_sixteen_bit_grouped_multi_aggregates_preserve_values_and_filters() {
-    let db = std::env::temp_dir().join(format!(
-        "rusthouse-dense-u16-multi-{}", std::process::id()
-    ));
+    let db =
+        std::env::temp_dir().join(format!("rusthouse-dense-u16-multi-{}", std::process::id()));
     for statement in [
         "CREATE TABLE events (category UInt16, signed_category Int16, value UInt64, flag UInt8)",
         "INSERT INTO events VALUES (65535, -32768, 5, 1), (0, 32767, 3, 0), (42, -1, 7, 1)",
@@ -39,7 +38,11 @@ fn dense_sixteen_bit_grouped_multi_aggregates_preserve_values_and_filters() {
     ] {
         let result = sql(statement, &db);
         assert!(result.status.success(), "{statement}: {result:?}");
-        assert_eq!(String::from_utf8(result.stdout).unwrap(), expected, "{statement}");
+        assert_eq!(
+            String::from_utf8(result.stdout).unwrap(),
+            expected,
+            "{statement}"
+        );
     }
     fs::remove_dir_all(db).unwrap();
 }
