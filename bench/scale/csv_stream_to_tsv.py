@@ -28,9 +28,13 @@ def convert(source, destination, *, header=False, empty_as_null=False,
     csv.field_size_limit(max_field_bytes)
     count = 0
     width = None
+    destination = Path(destination)
+    if destination.exists():
+        raise ValueError("refusing to overwrite an existing output")
+    pending = destination.with_name("." + destination.name + f".{os.getpid()}.pending")
     try:
         with open(source, "r", encoding="utf-8-sig", newline="") as input_file:
-            with open(destination, "x", encoding="utf-8", newline="") as output_file:
+            with pending.open("x", encoding="utf-8", newline="") as output_file:
                 reader = csv.reader(input_file, strict=True)
                 for fields in reader:
                     if width is None:
@@ -39,17 +43,21 @@ def convert(source, destination, *, header=False, empty_as_null=False,
                             raise ValueError("CSV must contain 1..128 columns")
                     elif len(fields) != width:
                         raise ValueError(f"CSV column count mismatch at record {count + 1}")
-                    if not header or count > 0:
-                        count += 1
-                    else:
-                        count += 1
-                    if count and any(len(value.encode("utf-8")) > max_field_bytes for value in fields):
+                    if any(len(value.encode("utf-8")) > max_field_bytes for value in fields):
                         raise ValueError("CSV record contains an oversized UTF-8 field")
-                    output_file.write("\t".join(escape_field(value, empty_as_null)
-                                                for value in fields) + "\n")
+                    rendered = "\t".join(escape_field(value, empty_as_null)
+                                         for value in fields) + "\n"
+                    if len(rendered.encode("utf-8")) > 8 * 1024 * 1024:
+                        raise ValueError("COPY TSV record exceeds 8 MiB")
+                    output_file.write(rendered)
+                    count += 1
                 output_file.flush()
                 os.fsync(output_file.fileno())
+        if destination.exists():
+            raise ValueError("refusing to overwrite an existing output")
+        os.link(pending, destination)
     finally:
+        pending.unlink(missing_ok=True)
         csv.field_size_limit(old_limit)
     return {"records": count, "data_rows": count - int(header and count > 0),
             "columns": width or 0, "header": header,
