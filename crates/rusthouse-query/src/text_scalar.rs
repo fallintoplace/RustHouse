@@ -97,6 +97,7 @@ pub(super) fn is_function(name: &str) -> bool {
             | "TRANSLATEUTF8"
             | "POSITIONCASEINSENSITIVE"
             | "STRPOS"
+            | "TOSTARTOFISOYEAR"
             | "POSITIONUTF8"
             | "COUNT_SUBSTRING"
             | "COUNTSUBSTRINGS"
@@ -1453,6 +1454,32 @@ fn parse_at_depth(parser: &mut Parser, depth: usize) -> Result<ConstantValue, Pa
                     })?)
                 }
                 _ => ConstantValue::Null,
+            }
+        }
+        "TOSTARTOFISOYEAR" => {
+            let input = text_arg(parser, depth + 1)?;
+            require(parser, Token::RParen, "toStartOfISOYear requires one argument")?;
+            match input {
+                Some(value) => {
+                    let days = rusthouse_storage::parse_date(&value).map(u32::from)
+                        .or_else(|| rusthouse_storage::parse_datetime(&value).map(|seconds| seconds / 86_400))
+                        .ok_or_else(|| ParseError("toStartOfISOYear requires a valid UTC Date or DateTime".into()))?;
+                    let weekday = (days + 3) % 7;
+                    let thursday = i64::from(days) + 3 - i64::from(weekday);
+                    let thursday = u16::try_from(thursday).map_err(|_| {
+                        ParseError("toStartOfISOYear is outside the Date range".into())
+                    })?;
+                    let calendar_day = rusthouse_storage::format_date(thursday);
+                    let year = &calendar_day[..4];
+                    let jan4 = rusthouse_storage::parse_date(&format!("{year}-01-04"))
+                        .ok_or_else(|| ParseError("invalid ISO calendar year".into()))?;
+                    let iso_start = i64::from(jan4) - i64::from((u32::from(jan4) + 3) % 7);
+                    let iso_start = u16::try_from(iso_start).map_err(|_| {
+                        ParseError("toStartOfISOYear result is outside the Date range".into())
+                    })?;
+                    ConstantValue::Text(rusthouse_storage::format_date(iso_start))
+                }
+                None => ConstantValue::Null,
             }
         }
         "STRPOS" | "POSITIONUTF8" => {
