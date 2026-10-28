@@ -27,15 +27,21 @@ impl ResumeMap {
         self.chunks == 0
     }
 
+    fn bit_position(index: usize) -> (usize, u8) {
+        (index / 8, 1u8 << (index % 8))
+    }
+
     fn is_complete(&self, index: usize) -> bool {
-        self.completed[index / 8] & (1u8 << (index % 8)) != 0
+        let (byte, mask) = Self::bit_position(index);
+        self.completed[byte] & mask != 0
     }
 
     pub fn mark_complete(&mut self, index: usize) -> Result<(), &'static str> {
         if index >= self.chunks {
             return Err("chunk index out of bounds");
         }
-        self.completed[index / 8] |= 1u8 << (index % 8);
+        let (byte, mask) = Self::bit_position(index);
+        self.completed[byte] |= mask;
         Ok(())
     }
 
