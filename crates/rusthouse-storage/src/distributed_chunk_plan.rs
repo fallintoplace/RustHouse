@@ -74,7 +74,13 @@ pub fn plan_missing_chunks(
         }
         previous = Some(index);
     }
-    let mut selected = Vec::with_capacity(remaining_indices.len().min(max_batch_chunks));
+    // Only full chunks plus possibly one short final chunk can fit this budget.
+    let budget_chunks = byte_budget / chunk_bytes;
+    let reserve = remaining_indices
+        .len()
+        .min(max_batch_chunks)
+        .min(usize::try_from(budget_chunks.saturating_add(1)).unwrap_or(usize::MAX));
+    let mut selected = Vec::with_capacity(reserve);
     let mut remaining_bytes = byte_budget;
     for &index in remaining_indices {
         if selected.len() >= max_batch_chunks {
@@ -166,6 +172,16 @@ mod tests {
                 .unwrap()
                 .is_empty()
         );
+    }
+
+    #[test]
+    fn tiny_resume_budget_does_not_reserve_full_batch() {
+        let remaining = (0..65_536).collect::<Vec<_>>();
+        let chunks = plan_missing_chunks(65_536, 1, 65_536, &remaining, 0, 65_536).unwrap();
+        assert!(chunks.is_empty());
+        assert!(chunks.capacity() <= 1);
+        let last = plan_missing_chunks(9, 4, 3, &[2], 1, 3).unwrap();
+        assert_eq!(last.len(), 1);
     }
 
     #[test]
