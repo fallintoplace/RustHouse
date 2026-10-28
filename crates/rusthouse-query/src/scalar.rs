@@ -34,6 +34,7 @@ pub(super) fn is_function(name: &str) -> bool {
     }
     is_saturating(name)
         || name.eq_ignore_ascii_case("ABS")
+        || name.eq_ignore_ascii_case("NEGATE")
         || name.eq_ignore_ascii_case("BIT_PARITY")
         || name.eq_ignore_ascii_case("BIT_MASK")
         || name.eq_ignore_ascii_case("BIT_WIDTH")
@@ -169,6 +170,13 @@ fn parse_saturating(parser: &mut Parser, depth: usize, name: &str) -> Result<i64
         "SATURATING_MUL" => left.saturating_mul(right),
         _ => unreachable!("only saturating functions reach this branch"),
     })
+}
+
+fn parse_negate(parser: &mut Parser, depth: usize) -> Result<i64, ParseError> {
+    require_token(parser, Token::LParen, "negate requires '('")?;
+    let value = expression(parser, depth + 1)?;
+    require_token(parser, Token::RParen, "expected ')' after negate argument")?;
+    value.checked_neg().ok_or_else(overflow)
 }
 
 fn parse_power(parser: &mut Parser, depth: usize) -> Result<i64, ParseError> {
@@ -931,6 +939,9 @@ fn factor(parser: &mut Parser, depth: usize) -> Result<i64, ParseError> {
     if matches!(parser.tokens.get(parser.index), Some(Token::Word(name)) if is_saturating(name)) {
         let name = parser.word()?;
         return parse_saturating(parser, depth, &name);
+    }
+    if parser.keyword("NEGATE") {
+        return parse_negate(parser, depth);
     }
     if parser.take(Token::Minus) {
         return factor(parser, depth + 1)?
