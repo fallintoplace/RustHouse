@@ -8,7 +8,7 @@ use super::{AggregateState, ExecutionError, Number, typed};
 use crate::{AggregateFunction, JoinAggregate, JoinColumn, JoinSelect, JoinType};
 use rusthouse_storage::{TypedColumn, TypedQueryReader, inspect_query_source};
 use std::cmp::Ordering;
-use std::collections::{hash_map::Entry, BinaryHeap, HashMap};
+use std::collections::{hash_map::Entry, BinaryHeap, HashMap, HashSet};
 use std::io::Write;
 use std::sync::Arc;
 use std::path::Path;
@@ -811,6 +811,143 @@ fn execute_streaming_ordered_inner<W: Write>(
 
 
 
+
+fn execute_streaming_inner_count_distinct<W: Write>(
+    query: &JoinSelect,
+    left_path: &Path,
+    right_path: &Path,
+    columns: InnerJoinColumns<'_>,
+    left_count: u64,
+    right_count: u64,
+    value_index: usize,
+    kind: &str,
+    header: &str,
+    output: &mut W,
+) -> Result<(), ExecutionError> {
+    const MAX_EXACT_KEYS: usize = 500_000;
+    const MAX_EXACT_BYTES: usize = 128 * 1024 * 1024;
+    let InnerJoinColumns {
+        left_names, right_names, left_keys, right_keys, null_filter, ..
+    } = columns;
+    if query.limit == Some(0) || query.offset > 0 {
+        writeln!(output, "{header}")?;
+        return Ok(());
+    }
+    let narrow = base_type(kind);
+    let mut bitmap = match narrow {
+        "UInt8" | "Int8" => Some(vec![0u64; 4]),
+        "UInt16" | "Int16" => Some(vec![0u64; 1024]),
+        _ => None,
+    };
+    let mut numeric = HashSet::<typed::Key>::new();
+    let mut strings = HashSet::<Vec<u8>>::new();
+    let mut uuids = HashSet::<String>::new();
+    let mut retained_bytes = 0usize;
+    let width = left_names.len();
+    let mut accept = |left: &[typed::Cell], right: &[typed::Cell]| {
+        let value = if value_index < width {
+            &left[value_index]
+        } else {
+            &right[value_index - width]
+        };
+        let was_new = match value {
+            typed::Cell::Null => return Ok(()),
+            typed::Cell::Numeric(number) if bitmap.is_some() => {
+                let raw = match number {
+                    Number::Signed(value) => *value as u16,
+                    Number::Unsigned(value) => *value as u16,
+                    Number::Float(_) => return Err(invalid("invalid integer DISTINCT bitmap")),
+                };
+                let bits = bitmap.as_mut().expect("checked bitmap");
+                let word = &mut bits[usize::from(raw) % (bits.len() * 64) / 64];
+                let shift = usize::from(raw) % 64;
+                let mask = 1u64 << shift;
+                let changed = *word & mask == 0;
+                *word |= mask;
+                changed
+            }
+            typed::Cell::Text(bytes) => {
+                if strings.contains(bytes.as_slice()) { false }
+                else {
+                    retained_bytes = retained_bytes.checked_add(bytes.len())
+                        .ok_or_else(|| invalid("JOIN DISTINCT memory overflow"))?;
+                    strings.insert(bytes.to_vec())
+                }
+            }
+            typed::Cell::Uuid(value) => {
+                if uuids.contains(value.as_str()) { false }
+                else {
+                    retained_bytes = retained_bytes.checked_add(value.len())
+                        .ok_or_else(|| invalid("JOIN DISTINCT memory overflow"))?;
+                    uuids.insert(value.clone())
+                }
+            }
+            _ => numeric.insert(value.key()),
+        };
+        if was_new {
+            let cardinality = numeric.len() + strings.len() + uuids.len() +
+                bitmap.as_ref().map_or(0, |bits|
+                    bits.iter().map(|word| word.count_ones() as usize).sum::<usize>()
+                );
+            if cardinality > MAX_EXACT_KEYS && bitmap.is_none() {
+                return Err(invalid("JOIN exact COUNT DISTINCT exceeds 500000 values"));
+            }
+            retained_bytes = retained_bytes.checked_add(std::mem::size_of::<typed::Key>())
+                .ok_or_else(|| invalid("JOIN DISTINCT memory overflow"))?;
+            if retained_bytes > MAX_EXACT_BYTES {
+                return Err(invalid("JOIN exact COUNT DISTINCT exceeds memory budget"));
+            }
+        }
+        Ok(())
+    };
+    if left_count != 0 && right_count != 0 {
+        if right_count <= MAX_STREAM_BUILD_ROWS &&
+            (right_count <= left_count || left_count > MAX_STREAM_BUILD_ROWS) {
+            let right_rows = read_rows(right_path, right_names, right_count,
+                MAX_STREAM_BUILD_ROWS, MAX_STREAM_BUILD_BYTES)?;
+            let mut hash = HashMap::<Vec<typed::Key>, Bucket>::with_capacity(right_rows.len());
+            for (index, row) in right_rows.iter().enumerate() {
+                if let Some(key) = row_key(row, right_keys) {
+                    if query.any {
+                        hash.entry(key).or_insert(Bucket::One(index));
+                    } else {
+                        hash.entry(key).and_modify(|bucket| bucket.push(index))
+                            .or_insert(Bucket::One(index));
+                    }
+                }
+            }
+            probe_inner(left_path, left_names, left_keys, &right_rows, &hash,
+                ProbeOptions {
+                    materialize_rows: value_index < width,
+                    materialize_after: 0, stop_after: Some(usize::MAX),
+                    any: query.any, null_filter,
+                }, &mut accept)?;
+        } else {
+            let left_rows = read_rows(left_path, left_names, left_count,
+                MAX_STREAM_BUILD_ROWS, MAX_STREAM_BUILD_BYTES)?;
+            let mut hash = HashMap::<Vec<typed::Key>, Bucket>::with_capacity(left_rows.len());
+            for (index, row) in left_rows.iter().enumerate() {
+                if let Some(key) = row_key(row, left_keys) {
+                    hash.entry(key).and_modify(|bucket| bucket.push(index))
+                        .or_insert(Bucket::One(index));
+                }
+            }
+            probe_right(right_path, right_names, right_keys, &left_rows, &hash,
+                ProbeOptions {
+                    materialize_rows: value_index >= width,
+                    materialize_after: 0, stop_after: Some(usize::MAX),
+                    any: query.any, null_filter,
+                }, &mut accept)?;
+        }
+    }
+    let distinct = numeric.len() + strings.len() + uuids.len() +
+        bitmap.as_ref().map_or(0, |bits|
+            bits.iter().map(|word| word.count_ones() as usize).sum::<usize>()
+        );
+    writeln!(output, "{header}\n{distinct}")?;
+    Ok(())
+}
+
 fn execute_streaming_inner_multi_grouped<W: Write>(
     query: &JoinSelect,
     left_path: &Path,
@@ -1439,6 +1576,19 @@ pub fn execute_join<W: Write>(
                 query, left_path, right_path, columns,
                 left_meta.rows, right_meta.rows, output
             ),
+            JoinAggregate::CountDistinct(column) => {
+                let metric = resolve(query, column, &left_names, &right_names)?;
+                let data_type = if metric < width {
+                    &left_meta.columns[metric].data_type
+                } else {
+                    &right_meta.columns[metric - width].data_type
+                };
+                let header = format!("count(DISTINCT {}.{})", column.relation, column.name);
+                execute_streaming_inner_count_distinct(
+                    query, left_path, right_path, columns,
+                    left_meta.rows, right_meta.rows, metric, data_type, &header, output
+                )
+            },
             JoinAggregate::Sum(column) => {
                 let metric = resolve(query, column, &left_names, &right_names)?;
                 let data_type = if metric < width {
