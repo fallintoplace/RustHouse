@@ -149,6 +149,20 @@ pub(super) fn execute_count_column_part<W: Write>(
     output: &mut W,
 ) -> Result<(), ExecutionError> {
     let metadata = inspect_query_source(part)?;
+    // A non-nullable column has one value for every stored row. The
+    // validated snapshot metadata already contains the exact row count.
+    // Avoid opening and decompressing column streams for COUNT(column).
+    if query.predicates.is_empty() && query.or_predicates.is_empty() {
+        let selected = metadata.columns.iter().find(|item| item.name == column)
+            .ok_or_else(|| ExecutionError::Invalid(format!("unknown column: {column}")))?;
+        if !selected.data_type.starts_with("Nullable(") {
+            write_header(query, output, &format!("count({column})"))?;
+            if query.limit != Some(0) && query.offset.unwrap_or(0) == 0 {
+                writeln!(output, "{}", metadata.rows)?;
+            }
+            return Ok(());
+        }
+    }
     let mut scan_columns = vec![column.to_owned()];
     let comparisons = compile_part_where(query, &mut scan_columns, |name, literal| {
         let col = metadata
@@ -313,6 +327,19 @@ pub(super) fn execute_aggregate_numbers<W: Write>(
                 }
             };
             writeln!(output, "{result}")?;
+        }
+        return Ok(());
+    }
+    // Positive equality/IN filters identify a small set of source positions.
+    // Visit those exact rows instead of enumerating a billion unmatched values.
+    if let Some(indices) = sparse_generated_positions(&comparisons, start, rows, step) {
+        let mut state = AggregateState::new(function);
+        for index in indices {
+            let value = u128::from(start) + u128::from(index) * u128::from(step);
+            state.update(Number::Unsigned(value))?;
+        }
+        if query.offset.unwrap_or(0) == 0 {
+            writeln!(output, "{}", state.render())?;
         }
         return Ok(());
     }

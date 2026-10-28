@@ -195,6 +195,54 @@ pub(super) fn compile_numbers_predicates(
 /// Count a single AND branch over an increasing generated UInt64 sequence
 /// without visiting its rows. Unsupported OR, IN and modulo predicates keep
 /// the normal row-wise executor. Arithmetic uses u128 at UInt64 boundaries.
+/// Exact generated-row positions for small positive equality or IN sets.
+/// The returned positions are sorted so order-dependent aggregates preserve
+/// the source's normal ascending scan order.
+pub(super) fn sparse_generated_positions(
+    branches: &[Vec<CompiledPredicate>],
+    start: u64,
+    rows: u64,
+    step: u64,
+) -> Option<Vec<u64>> {
+    let [conjunction] = branches else { return None; };
+    if step == 0 { return None; }
+    let mut values = None;
+    for predicate in conjunction {
+        let candidates = match &predicate.test {
+            CompiledTest::Comparison { operator: Operator::Eq, target: Number::Unsigned(value) } => Some(vec![*value]),
+            CompiledTest::In(items) => Some(items.iter().filter_map(|item| {
+                if let Number::Unsigned(value) = item { Some(*value) } else { None }
+            }).collect()),
+            CompiledTest::InSet { targets, negated: false } => Some(targets.iter().filter_map(|key| {
+                if let NumberKey::Unsigned(value) = key { Some(*value) } else { None }
+            }).collect()),
+            _ => None,
+        };
+        if let Some(candidates) = candidates {
+            values = Some(candidates);
+            break;
+        }
+    }
+    let candidates: Vec<u128> = values?;
+    if candidates.len() > 4096 { return None; }
+    let (start, step, rows) = (u128::from(start), u128::from(step), u128::from(rows));
+    let mut indices = Vec::new();
+    for value in candidates {
+        if value < start || (value - start) % step != 0 {
+            continue;
+        }
+        let index = (value - start) / step;
+        if index < rows && conjunction.iter().all(|predicate| {
+            predicate.test.matches(Number::Unsigned(value))
+        }) {
+            indices.push(index as u64);
+        }
+    }
+    indices.sort_unstable();
+    indices.dedup();
+    Some(indices)
+}
+
 pub(super) fn count_monotonic_numbers(
     branches: &[Vec<CompiledPredicate>],
     start: u64,
@@ -209,6 +257,36 @@ pub(super) fn count_monotonic_numbers(
     }
     let start = u128::from(start);
     let step = u128::from(step);
+    // For consecutive generated rows, a modulo filter is a periodic
+    // arithmetic progression. Count matching positions in O(1) instead of
+    // iterating over billions of generated values.
+    if let [predicate] = conjunction {
+        if let CompiledTest::Comparison {
+            operator: Operator::Modulo(modulus) | Operator::ModuloNe(modulus),
+            target: Number::Unsigned(target),
+        } = &predicate.test
+        {
+            if step == 1 && *modulus != 0 {
+                let divisor = u128::from(*modulus);
+                let equal = if *target >= divisor {
+                    0
+                } else {
+                    let first = (*target + divisor - (start % divisor)) % divisor;
+                    if first >= u128::from(rows) {
+                        0
+                    } else {
+                        1 + (u128::from(rows) - 1 - first) / divisor
+                    }
+                };
+                let matches = if matches!(predicate.test, CompiledTest::Comparison { operator: Operator::ModuloNe(_), .. }) {
+                    u128::from(rows) - equal
+                } else {
+                    equal
+                };
+                return u64::try_from(matches).ok();
+            }
+        }
+    }
     let mut lower = 0u128;
     let mut upper = u128::from(rows);
     let mut excluded = Vec::new();
@@ -442,5 +520,36 @@ mod tests {
         let included = compile_in_test(values, false);
         assert!(included.matches(Number::Float(0.0)));
         assert!(!included.matches(Number::Float(f64::NAN)));
+    }
+}
+
+#[cfg(test)]
+mod generated_modulo_count_tests {
+    use super::*;
+
+    fn count(start: u64, rows: u64, modulus: u64, remainder: u128, negated: bool) -> u64 {
+        let predicate = CompiledPredicate {
+            index: 0,
+            test: CompiledTest::Comparison {
+                operator: if negated { Operator::ModuloNe(modulus) } else { Operator::Modulo(modulus) },
+                target: Number::Unsigned(remainder),
+            },
+        };
+        count_monotonic_numbers(&[vec![predicate]], start, rows, 1).unwrap()
+    }
+
+    #[test]
+    fn modulo_count_skips_billion_row_iteration() {
+        assert_eq!(count(0, 1_000_000_000, 7, 0, false), 142_857_143);
+        assert_eq!(count(0, 1_000_000_000, 7, 0, true), 857_142_857);
+    }
+
+    #[test]
+    fn modulo_count_handles_offsets_and_impossible_remainders() {
+        assert_eq!(count(10, 20, 7, 0, false), 3);
+        assert_eq!(count(10, 20, 7, 0, true), 17);
+        assert_eq!(count(10, 20, 7, 7, false), 0);
+        assert_eq!(count(10, 20, 7, 7, true), 20);
+        assert_eq!(count(0, 0, 7, 0, false), 0);
     }
 }
