@@ -351,6 +351,10 @@ pub fn write_wide_part_with_compression(
             let mut uncompressed = Vec::new();
             let mut marks = Vec::with_capacity(24 * granules.len());
             for (index, data) in granules.iter().enumerate() {
+                // Empty Array and Map element streams still need a readable block
+                // for each adaptive mark. Offsets record zero logical elements;
+                // the single padding byte is never exposed as a cell.
+                let data: &[u8] = if data.is_empty() { &[0] } else { data };
                 if data.len() > MAX_STREAM_BYTES - uncompressed.len() {
                     return Err(invalid("part column exceeds 8 MiB"));
                 }
@@ -918,6 +922,53 @@ mod numeric_array_writer_tests {
             arrays.values(),
             &NumericColumn::UInt16(vec![12, 65535, 7, 0, 1, 2])
         );
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn all_empty_array_and_map_granules_have_valid_stream_blocks() {
+        let dir = std::env::temp_dir().join(format!(
+            "rusthouse-empty-collection-part-{}-{}",
+            std::process::id(),
+            NEXT.fetch_add(1, Ordering::Relaxed)
+        ));
+        std::fs::create_dir(&dir).unwrap();
+        let part = dir.join("all_1_1_0");
+        let columns = [
+            Column {
+                name: "items".into(),
+                data_type: "Array(Int8)".into(),
+            },
+            Column {
+                name: "attrs".into(),
+                data_type: "Map(String, UInt8)".into(),
+            },
+        ];
+        let rows = (0..1025)
+            .map(|_| vec![Some("[]".into()), Some("{}".into())])
+            .collect::<Vec<_>>();
+        write_wide_part(&part, &columns, &rows).unwrap();
+        crate::verify_wide_part(&part).unwrap();
+
+        let mut reader = crate::TypedPartReader::open(
+            &part,
+            &["items".into(), "attrs".into()],
+        )
+        .unwrap();
+        for expected in [1024, 1] {
+            let batch = reader.next_batch().unwrap().unwrap();
+            assert_eq!(batch[0].len(), expected);
+            assert_eq!(batch[1].len(), expected);
+            assert!(matches!(
+                &batch[0],
+                crate::TypedColumn::Text(values) if values.get(0) == Some(&b"[]"[..])
+            ));
+            assert!(matches!(
+                &batch[1],
+                crate::TypedColumn::Text(values) if values.get(0) == Some(&b"{}"[..])
+            ));
+        }
+        assert!(reader.next_batch().unwrap().is_none());
         std::fs::remove_dir_all(dir).unwrap();
     }
 

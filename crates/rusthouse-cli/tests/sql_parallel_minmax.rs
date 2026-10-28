@@ -13,10 +13,9 @@ fn sql(statement: &str, db: &Path) -> Output {
 #[test]
 fn parallel_minmax_reduces_stored_integer_parts_and_filters() {
     let db = std::env::temp_dir().join(format!("rusthouse-parallel-minmax-{}", std::process::id()));
-    for query in ["CREATE TABLE facts (signed_value Int64, unsigned_value UInt64, active UInt8)"] {
-        let output = sql(query, &db);
-        assert!(output.status.success(), "{query}: {output:?}");
-    }
+    let query = "CREATE TABLE facts (signed_value Int64, unsigned_value UInt64, active UInt8)";
+    let output = sql(query, &db);
+    assert!(output.status.success(), "{query}: {output:?}");
     for i in 0..32i64 {
         let query = format!(
             "INSERT INTO facts VALUES ({}, {}, {}), ({}, {}, 0)",

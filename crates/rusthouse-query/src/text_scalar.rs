@@ -898,13 +898,9 @@ fn parse_at_depth(parser: &mut Parser, depth: usize) -> Result<ConstantValue, Pa
             let input = text_arg(parser, depth + 1)?;
             require(parser, Token::RParen, "basename requires one argument")?;
             match input {
-                Some(input) => ConstantValue::Text(
-                    input
-                        .rsplit(['/', '\\'])
-                        .next()
-                        .unwrap_or("")
-                        .to_owned(),
-                ),
+                Some(input) => {
+                    ConstantValue::Text(input.rsplit(['/', '\\']).next().unwrap_or("").to_owned())
+                }
                 None => ConstantValue::Null,
             }
         }
@@ -1354,9 +1350,7 @@ fn parse_at_depth(parser: &mut Parser, depth: usize) -> Result<ConstantValue, Pa
                         ConstantValue::Text(input)
                     } else {
                         let length = input.len() - needle.len();
-                        if length.saturating_add(replacement.len())
-                            > MAX_TEXT_BYTES
-                        {
+                        if length.saturating_add(replacement.len()) > MAX_TEXT_BYTES {
                             return Err(ParseError("REPLACE_FIRST result is too large".into()));
                         }
                         ConstantValue::Text(input.replacen(&needle, &replacement, 1))
@@ -1661,9 +1655,7 @@ fn parse_at_depth(parser: &mut Parser, depth: usize) -> Result<ConstantValue, Pa
                         ));
                     }
                     if !input.is_empty() && !input.ends_with(&ending) {
-                        if input.len().saturating_add(ending.len())
-                            > MAX_TEXT_BYTES
-                        {
+                        if input.len().saturating_add(ending.len()) > MAX_TEXT_BYTES {
                             return Err(ParseError(
                                 "appendTrailingCharIfAbsent result is too large".into(),
                             ));
