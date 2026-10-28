@@ -27,6 +27,7 @@ pub(super) fn is_function(name: &str) -> bool {
             | "UPPER"
             | "URL_DECODE"
             | "IS_EMPTY"
+            | "EMPTY"
             | "REVERSE"
             | "REVERSEUTF8"
             | "INITCAP"
@@ -342,7 +343,7 @@ fn parse_at_depth(parser: &mut Parser, depth: usize) -> Result<ConstantValue, Pa
                 None => ConstantValue::Null,
             }
         }
-        "IS_EMPTY" => {
+        "IS_EMPTY" | "EMPTY" => {
             let input = text_arg(parser, depth + 1)?;
             require(parser, Token::RParen, "IS_EMPTY requires one argument")?;
             match input {
