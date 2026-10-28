@@ -1436,12 +1436,20 @@ pub(super) fn execute_typed<W: Write>(
         }
         let mut bounded_order = None;
         if query.order_by.is_some() {
+            // Compile the ORDER BY expression flags once per grouped query.
+            // Comparators may execute many times for a high-cardinality GROUP BY.
+            let sort_terms = query
+                .order_terms()
+                .map(|term| {
+                    (term.column == "count", term.descending, term.nulls_first)
+                })
+                .collect::<Vec<_>>();
             let compare = |(left_key, left_count): &(Cell, u64),
                            (right_key, right_count): &(Cell, u64)| {
-                for order in query.order_terms() {
-                    let comparison = if order.column == "count" {
+                for &(sort_count, descending, nulls_first) in &sort_terms {
+                    let comparison = if sort_count {
                         let comparison = left_count.cmp(right_count);
-                        if order.descending {
+                        if descending {
                             comparison.reverse()
                         } else {
                             comparison
@@ -1450,8 +1458,8 @@ pub(super) fn execute_typed<W: Write>(
                         compare_order_cells(
                             left_key,
                             right_key,
-                            order.descending,
-                            order.nulls_first,
+                            descending,
+                            nulls_first,
                         )
                     };
                     if comparison != Ordering::Equal {
