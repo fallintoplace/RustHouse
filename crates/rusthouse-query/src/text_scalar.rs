@@ -35,6 +35,7 @@ pub(super) fn is_function(name: &str) -> bool {
             | "CONCAT_WS"
             | "CUTFRAGMENT"
             | "URL_ENCODE"
+            | "FRAGMENT"
             | "JSON_QUOTE"
             | "SUBSTRING"
             | "HASSUBSEQUENCECASEINSENSITIVE"
@@ -648,6 +649,18 @@ fn parse_at_depth(parser: &mut Parser, depth: usize) -> Result<ConstantValue, Pa
                     ConstantValue::Text(result)
                 }
                 _ => ConstantValue::Null,
+            }
+        }
+        "FRAGMENT" => {
+            let input = text_arg(parser, depth + 1)?;
+            require(parser, Token::RParen, "fragment requires one argument")?;
+            match input {
+                Some(input) => ConstantValue::Text(
+                    input.split_once('#')
+                        .map_or("", |(_, fragment)| fragment)
+                        .to_owned(),
+                ),
+                None => ConstantValue::Null,
             }
         }
         "SUBSTRING" => {
