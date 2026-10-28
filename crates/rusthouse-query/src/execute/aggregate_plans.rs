@@ -760,6 +760,26 @@ pub(super) fn execute_aggregate_part<W: Write>(
         }
         return Ok(());
     }
+    // Low-cardinality 8/16-bit integer medians need a fixed histogram,
+    // not an input-sized heap. This remains exact for billion-row scans.
+    if function == AggregateFunction::Median {
+        let kind = metadata.columns.iter()
+            .find(|candidate| candidate.name == column)
+            .map(|candidate| candidate.data_type.as_str()).unwrap_or("");
+        if let Some(mut histogram) = NarrowMedian::new(kind) {
+            while let Some(batch) = reader.next_batch()? {
+                for row in 0..batch[0].len() {
+                    if no_filters || batch_matches(&batch, row, &comparisons) {
+                        histogram.insert(&batch[0], row)?;
+                    }
+                }
+            }
+            if query.offset.unwrap_or(0) == 0 {
+                writeln!(output, "{}", histogram.render())?;
+            }
+            return Ok(());
+        }
+    }
     let mut state = AggregateState::new(function);
     while let Some(batch) = reader.next_batch()? {
         for row in 0..batch[0].len() {
