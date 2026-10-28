@@ -523,7 +523,6 @@ mod tests {
         }
     }
 
-
     #[test]
     fn explain_includes_using_filter_sort_and_offset() {
         let query = parse_join(
