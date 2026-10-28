@@ -353,7 +353,7 @@ where
     let mut seen_left = options.any.then(|| vec![false; left_rows.len()]);
     let mut remaining_left = seen_left
         .as_ref()
-        .map(|_| hash.values().map(Vec::len).sum::<usize>());
+        .map(|_| hash.values().map(|bucket| bucket.iter().count()).sum::<usize>());
     let mut probe_key = Vec::with_capacity(right_keys.len());
     'scan: while let Some(batch) = reader.next_batch()? {
         for index in 0..batch[0].len() {
@@ -362,7 +362,7 @@ where
                     // Most matches may be filtered or already claimed by ANY.
                     // Decode the full probe row only when a match survives.
                     let mut right_row: Option<Vec<typed::Cell>> = None;
-                    for &left_index in left_indices {
+                    for &left_index in left_indices.iter() {
                         if options.stop_after.is_some_and(|end| matches >= end) {
                             break 'scan;
                         }
