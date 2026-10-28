@@ -134,3 +134,32 @@ fn groups_repeated_string_values_without_counting_nulls() {
     assert_eq!(output, b"segment\tcountDistinct(tag)\neast\t2\nwest\t1\n");
     fs::remove_dir_all(root).unwrap();
 }
+
+#[test]
+fn dense_byte_grouped_distinct_keeps_first_seen_signed_keys() {
+    let root = std::env::temp_dir().join(format!(
+        "rusthouse-byte-grouped-distinct-{}-{}",
+        std::process::id(),
+        NEXT.fetch_add(1, Ordering::Relaxed),
+    ));
+    let columns = [
+        Column { name: "segment".into(), data_type: "Int8".into() },
+        Column { name: "tag".into(), data_type: "Nullable(UInt64)".into() },
+    ];
+    let rows = [
+        vec![Some("-1".into()), Some("7".into())],
+        vec![Some("3".into()), Some("10".into())],
+        vec![Some("-1".into()), Some("7".into())],
+        vec![Some("-1".into()), Some("8".into())],
+        vec![Some("3".into()), None],
+    ];
+    write_wide_part(&root, &columns, &rows).unwrap();
+    let mut output = Vec::new();
+    execute(
+        &parse_select("SELECT segment, COUNT(DISTINCT tag) FROM part GROUP BY segment").unwrap(),
+        Some(&root),
+        &mut output,
+    ).unwrap();
+    assert_eq!(output, b"segment\tcountDistinct(tag)\n-1\t2\n3\t1\n");
+    fs::remove_dir_all(root).unwrap();
+}

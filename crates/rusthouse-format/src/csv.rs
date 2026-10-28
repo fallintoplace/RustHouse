@@ -18,14 +18,29 @@ fn write_short_escaped_field<W: Write>(output: &mut W, field: &[u8]) -> io::Resu
 }
 
 fn write_long_escaped_field<W: Write>(output: &mut W, field: &[u8]) -> io::Result<()> {
-    output.write_all(b"\"")?;
-    let mut segments = field.split(|&byte| byte == b'"');
-    output.write_all(segments.next().unwrap_or_default())?;
-    for segment in segments {
-        output.write_all(b"\"\"")?;
-        output.write_all(segment)?;
+    // Streaming a quote-heavy value one segment at a time can cause thousands
+    // of tiny writes. Batch escaping on the stack without growing a String.
+    let mut buffer = [0u8; 4096];
+    let mut used = 1;
+    buffer[0] = b'"';
+    for &byte in field {
+        if used + 2 > buffer.len() {
+            output.write_all(&buffer[..used])?;
+            used = 0;
+        }
+        buffer[used] = byte;
+        used += 1;
+        if byte == b'"' {
+            buffer[used] = b'"';
+            used += 1;
+        }
     }
-    output.write_all(b"\"")
+    if used == buffer.len() {
+        output.write_all(&buffer)?;
+        used = 0;
+    }
+    buffer[used] = b'"';
+    output.write_all(&buffer[..used + 1])
 }
 
 /// Write one RFC 4180 quoted CSV field, doubling embedded quotes.
@@ -168,5 +183,53 @@ mod tests {
         write_quoted_csv_field(&mut output, b"a\"\"b").unwrap();
         assert_eq!(output.writes, 1);
         assert_eq!(output.bytes, b"\"a\"\"\"\"b\"");
+    }
+}
+
+#[cfg(test)]
+mod quote_batching_tests {
+    use super::*;
+    struct Counted {
+        writes: usize,
+        bytes: Vec<u8>,
+    }
+    impl Write for Counted {
+        fn write(&mut self, data: &[u8]) -> io::Result<usize> {
+            self.writes += 1;
+            self.bytes.extend_from_slice(data);
+            Ok(data.len())
+        }
+        fn flush(&mut self) -> io::Result<()> {
+            Ok(())
+        }
+    }
+    #[test]
+    fn quote_heavy_large_field_uses_bounded_writes() {
+        let mut writer = Counted {
+            writes: 0,
+            bytes: Vec::new(),
+        };
+        let input = vec![b'"'; 10_000];
+        write_quoted_csv_field(&mut writer, &input).unwrap();
+        assert_eq!(writer.bytes.len(), 20_002);
+        assert_eq!(writer.bytes.first(), Some(&b'"'));
+        assert_eq!(writer.bytes.last(), Some(&b'"'));
+        assert!(writer.bytes[1..20_001].iter().all(|&b| b == b'"'));
+        assert!(writer.writes <= 6, "{} writes", writer.writes);
+    }
+    #[test]
+    fn chunk_boundary_preserves_every_quote_and_binary_byte() {
+        let input = [vec![b'a'; 4094], b"\"\\b\n".to_vec(), vec![b'"'; 5000]].concat();
+        let mut output = Vec::new();
+        write_quoted_csv_field(&mut output, &input).unwrap();
+        let mut expected = vec![b'"'];
+        for &byte in &input {
+            expected.push(byte);
+            if byte == b'"' {
+                expected.push(b'"');
+            }
+        }
+        expected.push(b'"');
+        assert_eq!(output, expected);
     }
 }

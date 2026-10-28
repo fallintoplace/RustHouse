@@ -22,6 +22,18 @@ class KeysetExportTests(unittest.TestCase):
             self.assertEqual(len(report["sha256"]), 64)
             self.assertIn("LIMIT 3", seen[0])
 
+    def test_batched_page_verification_handles_large_uint64_pages(self):
+        with tempfile.TemporaryDirectory() as temp:
+            start = 2**64 - 50000
+            rows = 50000
+            path = Path(temp) / "large.tsv"
+            expected = "".join(f"{number}\n"
+                               for number in range(start, start + rows)).encode("ascii")
+            report = export("unused", "unused", "events", path, start, rows,
+                            page_rows=50000, execute=lambda _: expected)
+            self.assertEqual(path.read_bytes(), expected)
+            self.assertEqual(report["pages"], 1)
+
     def test_detects_duplicates_and_leaves_no_visible_file(self):
         with tempfile.TemporaryDirectory() as temp:
             dest = Path(temp) / "out.tsv"

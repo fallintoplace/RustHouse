@@ -58,7 +58,7 @@ def compare_text(baseline, candidate):
             change = "N/A (below printed precision)"
         else:
             change = f"{(head_ms / base_ms - 1) * 100:+.1f}%"
-        result.append(f"| {name} | {base_ms:.3f} | {head_ms:.3f} | {change} |")
+        result.append(f"| {name} | {base_ms:.6f} | {head_ms:.6f} | {change} |")
     result.extend([
         "",
         "Negative latency change means faster. Both revisions ran on the same "

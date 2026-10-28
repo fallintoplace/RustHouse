@@ -17,9 +17,15 @@ def report(rows=200000, topk=12.500, samples=21):
 class CompareRustBenchTests(unittest.TestCase):
     def test_reports_improvements_and_sub_microsecond_measurements(self):
         result = compare_text(report(), report(topk=1.250))
-        self.assertIn("| filtered top-K | 12.500 | 1.250 | -90.0% |", result)
+        self.assertIn("| filtered top-K | 12.500000 | 1.250000 | -90.0% |", result)
         self.assertIn("N/A (below printed precision)", result)
         self.assertIn("informational, not a required CI gate", result)
+
+    def test_submicrosecond_improvements_are_not_rounded_to_zero(self):
+        baseline = report().replace("filtered count 0.000 0.00", "filtered count 0.000123 0.00")
+        candidate = report().replace("filtered count 0.000 0.00", "filtered count 0.000082 0.00")
+        summary = compare_text(baseline, candidate)
+        self.assertIn("| filtered count | 0.000123 | 0.000082 | -33.3% |", summary)
 
     def test_rejects_incompatible_settings(self):
         with self.assertRaisesRegex(ValueError, "settings do not match"):

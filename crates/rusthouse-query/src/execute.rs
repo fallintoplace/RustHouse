@@ -1831,6 +1831,16 @@ impl AggregateState {
         }
     }
 
+    /// Count a non-NULL grouped row without going through numeric value dispatch.
+    fn increment_count(&mut self) -> Result<(), ExecutionError> {
+        debug_assert_eq!(self.function, AggregateFunction::Count);
+        self.count = self
+            .count
+            .checked_add(1)
+            .ok_or_else(|| ExecutionError::Invalid("aggregate row count overflow".into()))?;
+        Ok(())
+    }
+
     fn update(&mut self, value: Number) -> Result<(), ExecutionError> {
         let next_count = self
             .count

@@ -734,12 +734,14 @@ pub fn execute_join<W: Write>(
         })
     };
     let mut pairs: Vec<Pair> = Vec::new();
+    // Reuse JOIN probe storage instead of allocating a fresh key Vec per left row.
+    let mut lookup_key = Vec::with_capacity(left_keys.len());
     let mut matched_right = matches!(query.kind, JoinType::Right | JoinType::Full)
         .then(|| vec![false; right_rows.len()]);
     for (left_index, row) in left_rows.iter().enumerate() {
         let mut matched = false;
-        if let Some(key) = row_key(row, &left_keys) {
-            if let Some(matches) = hash.get(&key) {
+        if row_key_into(row, &left_keys, &mut lookup_key) {
+            if let Some(matches) = hash.get(lookup_key.as_slice()) {
                 for &right_index in
                     matches
                         .iter()

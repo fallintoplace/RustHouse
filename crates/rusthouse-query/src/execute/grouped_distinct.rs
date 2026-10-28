@@ -2,7 +2,7 @@
 use super::ExecutionError;
 use super::typed::{self, Cell, Key};
 use crate::Select;
-use rusthouse_storage::{TypedColumn, TypedQueryReader, inspect_query_source};
+use rusthouse_storage::{NumericColumn, TypedColumn, TypedQueryReader, inspect_query_source};
 use std::cmp::Ordering;
 use std::collections::{HashMap, HashSet, hash_map::Entry};
 use std::io::Write;
@@ -85,6 +85,17 @@ pub(super) fn execute<W: Write>(
     // Repeated String group keys can be checked without owning row bytes.
     let mut text_groups = HashMap::<Vec<u8>, usize>::new();
     let mut uuid_groups = HashMap::<[u8; 16], usize>::new();
+    // One byte yields at most 256 groups. Use direct lookup rather than
+    // hashing every GROUP BY key in large low-cardinality scans.
+    let mut dense_slots = matches!(
+        types.get(column).map(String::as_str),
+        Some("UInt8" | "Int8")
+    )
+    .then(|| [usize::MAX; 256]);
+    // Byte-sized grouped DISTINCT is optimized separately. This path
+    // specializes the larger 16-bit key domain.
+    let mut dense_groups = matches!(types[column].as_str(), "UInt16" | "Int16")
+        .then(|| vec![usize::MAX; 65_536]);
     let mut total_pairs = 0usize;
     let mut reader = TypedQueryReader::open_with_metadata(part, &names, &metadata)?;
     let no_filters = query.predicates.is_empty() && query.or_predicates.is_empty();
@@ -104,7 +115,56 @@ pub(super) fn execute<W: Write>(
                 TypedColumn::Uuid(values) => Some(*values[row].as_bytes()),
                 _ => None,
             };
-            let id = if let Some(key) = group_uuid {
+            let id = if let Some(slots) = dense_slots.as_mut() {
+                let byte = match &batch[group_index] {
+                    TypedColumn::Numeric(NumericColumn::UInt8(values)) => values[row],
+                    TypedColumn::Numeric(NumericColumn::Int8(values)) => values[row] as u8,
+                    _ => {
+                        return Err(ExecutionError::Invalid(
+                            "unexpected byte-width grouped DISTINCT column".into(),
+                        ));
+                    }
+                };
+                let slot = &mut slots[usize::from(byte)];
+                if *slot == usize::MAX {
+                    *slot = groups.len();
+                    groups.push(Group {
+                        key: typed::cell(&batch[group_index], row),
+                        distinct: HashSet::new(),
+                        distinct_text: HashSet::new(),
+                        distinct_uuids: HashSet::new(),
+                    });
+                }
+                *slot
+            } else if let Some(slots) = dense_groups.as_mut() {
+                let key = match &batch[group_index] {
+                    TypedColumn::Numeric(rusthouse_storage::NumericColumn::UInt16(values)) => {
+                        usize::from(values[row])
+                    }
+                    TypedColumn::Numeric(rusthouse_storage::NumericColumn::Int16(values)) => {
+                        usize::from(values[row] as u16)
+                    }
+                    _ => {
+                        return Err(ExecutionError::Invalid(
+                            "unexpected dense GROUP BY key type".into(),
+                        ));
+                    }
+                };
+                let slot = &mut slots[key];
+                if *slot != usize::MAX {
+                    *slot
+                } else {
+                    let id = groups.len();
+                    *slot = id;
+                    groups.push(Group {
+                        key: typed::cell(&batch[group_index], row),
+                        distinct: HashSet::new(),
+                        distinct_text: HashSet::new(),
+                        distinct_uuids: HashSet::new(),
+                    });
+                    id
+                }
+            } else if let Some(key) = group_uuid {
                 if let Some(&id) = uuid_groups.get(&key) {
                     id
                 } else {

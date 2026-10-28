@@ -182,14 +182,26 @@ pub(super) fn execute<W: Write>(
                     }
                     continue;
                 }
-                match typed::cell(&batch[index], row) {
-                    Cell::Numeric(value) => state.update(value)?,
-                    Cell::Null => {}
-                    Cell::Text(_) | Cell::Uuid(_) => {
-                        return Err(ExecutionError::Invalid(
-                            "numeric aggregates require numeric columns".into(),
-                        ));
+                // Most aggregate input columns are native numeric arrays.
+                // Skip constructing a Cell for each matching value.
+                match &batch[index] {
+                    TypedColumn::Numeric(values) => {
+                        state.update(super::number_at(values, row))?;
                     }
+                    TypedColumn::NullableNumeric { values, nulls } => {
+                        if nulls[row] == 0 {
+                            state.update(super::number_at(values, row))?;
+                        }
+                    }
+                    column => match typed::cell(column, row) {
+                        Cell::Numeric(value) => state.update(value)?,
+                        Cell::Null => {}
+                        Cell::Text(_) | Cell::Uuid(_) => {
+                            return Err(ExecutionError::Invalid(
+                                "numeric aggregates require numeric columns".into(),
+                            ));
+                        }
+                    },
                 }
             }
         }
