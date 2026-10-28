@@ -64,9 +64,8 @@ pub(super) fn execute_grouped_part<W: Write>(
             } else {
                 Number::Unsigned(u128::from(byte))
             };
-            groups
-                .by_key
-                .insert(NumberKey::from(value), groups.rows.len());
+            // Dense keys were already deduplicated by their slot.
+            // The final writer consumes only rows, not the hash index.
             groups.rows.push((value, counts[byte as usize]));
         }
         return groups.write(query, column, output);
@@ -105,10 +104,51 @@ pub(super) fn execute_grouped_part<W: Write>(
             } else {
                 Number::Unsigned(u128::from(key))
             };
-            groups
-                .by_key
-                .insert(NumberKey::from(value), groups.rows.len());
             groups.rows.push((value, counts[usize::from(key)]));
+        }
+        return groups.write(query, column, output);
+    }
+    // Keep 32-bit group hash keys compact instead of widening each input
+    // number into a NumberKey. Retain the first-seen group order.
+    if matches!(narrow, Some("UInt32" | "Int32")) {
+        let mut indices = HashMap::<u32, usize>::new();
+        while let Some(batch) = reader.next_batch()? {
+            for row in 0..batch[0].len() {
+                if !no_filters && !batch_matches(&batch, row, &comparisons) {
+                    continue;
+                }
+                let key = match &batch[0] {
+                    NumericColumn::UInt32(values) => values[row],
+                    NumericColumn::Int32(values) => values[row] as u32,
+                    _ => {
+                        return Err(ExecutionError::Invalid(
+                            "unexpected 32-bit GROUP BY type".into(),
+                        ));
+                    }
+                };
+                match indices.entry(key) {
+                    Entry::Occupied(entry) => {
+                        let count = &mut groups.rows[*entry.get()].1;
+                        *count = count
+                            .checked_add(1)
+                            .ok_or_else(|| ExecutionError::Invalid("group count overflow".into()))?;
+                    }
+                    Entry::Vacant(entry) => {
+                        if groups.rows.len() >= MAX_GROUPS {
+                            return Err(ExecutionError::Invalid(
+                                "GROUP BY supports at most 200000 groups".into(),
+                            ));
+                        }
+                        let value = if matches!(narrow, Some("Int32")) {
+                            Number::Signed(i128::from(key as i32))
+                        } else {
+                            Number::Unsigned(u128::from(key))
+                        };
+                        entry.insert(groups.rows.len());
+                        groups.rows.push((value, 1));
+                    }
+                }
+            }
         }
         return groups.write(query, column, output);
     }
@@ -534,12 +574,17 @@ pub(super) fn execute_count_distinct_part<W: Write>(
                 continue;
             }
             let key = NumberKey::from(number_at(&batch[0], row));
-            if seen.len() >= MAX_DISTINCT_ROWS && !seen.contains(&key) {
-                return Err(ExecutionError::Invalid(
-                    "COUNT(DISTINCT) supports at most 100000 unique values".into(),
-                ));
+            if seen.len() >= MAX_DISTINCT_ROWS {
+                // At the memory cap, check membership without then inserting
+                // the already-present key a second time.
+                if !seen.contains(&key) {
+                    return Err(ExecutionError::Invalid(
+                        "COUNT(DISTINCT) supports at most 100000 unique values".into(),
+                    ));
+                }
+            } else {
+                seen.insert(key);
             }
-            seen.insert(key);
         }
     }
     if query.offset.unwrap_or(0) == 0 {
@@ -592,42 +637,54 @@ pub(super) fn execute_aggregate_part<W: Write>(
             )
     });
     if function == AggregateFunction::Sum && no_filters && native_integer {
-        let mut total: Option<Number> = None;
-        macro_rules! fold_batch {
-            ($values:expr, $kind:ident, $wide:ty) => {{
+        // Keep the accumulator in its native wide integer type, instead of
+        // matching and rebuilding a Number enum for every input value.
+        let mut unsigned_total = 0u128;
+        let mut signed_total = 0i128;
+        let mut saw_value = false;
+        let mut signed_kind: Option<bool> = None;
+        macro_rules! check_kind {
+            ($signed:expr) => {{
+                if signed_kind.is_some_and(|previous| previous != $signed) {
+                    return Err(ExecutionError::Invalid("incompatible types in SUM".into()));
+                }
+                signed_kind = Some($signed);
+            }};
+        }
+        macro_rules! fold_unsigned {
+            ($values:expr) => {{
+                check_kind!(false);
                 for &value in $values {
-                    let value = <$wide>::from(value);
-                    total = Some(match total {
-                        None => Number::$kind(value),
-                        Some(Number::$kind(previous)) => {
-                            Number::$kind(previous.checked_add(value).ok_or_else(|| {
-                                ExecutionError::Invalid(format!(
-                                    "{} SUM overflow",
-                                    stringify!($kind).to_lowercase()
-                                ))
-                            })?)
-                        }
-                        _ => {
-                            return Err(ExecutionError::Invalid(
-                                "incompatible types in SUM".into(),
-                            ));
-                        }
-                    });
+                    saw_value = true;
+                    unsigned_total = unsigned_total
+                        .checked_add(u128::from(value))
+                        .ok_or_else(|| ExecutionError::Invalid("unsigned SUM overflow".into()))?;
+                }
+            }};
+        }
+        macro_rules! fold_signed {
+            ($values:expr) => {{
+                check_kind!(true);
+                for &value in $values {
+                    saw_value = true;
+                    signed_total = signed_total
+                        .checked_add(i128::from(value))
+                        .ok_or_else(|| ExecutionError::Invalid("signed SUM overflow".into()))?;
                 }
             }};
         }
         while let Some(batch) = reader.next_batch()? {
             match &batch[0] {
-                NumericColumn::UInt8(values) => fold_batch!(values, Unsigned, u128),
-                NumericColumn::UInt16(values) => fold_batch!(values, Unsigned, u128),
-                NumericColumn::UInt32(values) => fold_batch!(values, Unsigned, u128),
-                NumericColumn::UInt64(values) => fold_batch!(values, Unsigned, u128),
-                NumericColumn::UInt128(values) => fold_batch!(values, Unsigned, u128),
-                NumericColumn::Int8(values) => fold_batch!(values, Signed, i128),
-                NumericColumn::Int16(values) => fold_batch!(values, Signed, i128),
-                NumericColumn::Int32(values) => fold_batch!(values, Signed, i128),
-                NumericColumn::Int64(values) => fold_batch!(values, Signed, i128),
-                NumericColumn::Int128(values) => fold_batch!(values, Signed, i128),
+                NumericColumn::UInt8(values) => fold_unsigned!(values),
+                NumericColumn::UInt16(values) => fold_unsigned!(values),
+                NumericColumn::UInt32(values) => fold_unsigned!(values),
+                NumericColumn::UInt64(values) => fold_unsigned!(values),
+                NumericColumn::UInt128(values) => fold_unsigned!(values),
+                NumericColumn::Int8(values) => fold_signed!(values),
+                NumericColumn::Int16(values) => fold_signed!(values),
+                NumericColumn::Int32(values) => fold_signed!(values),
+                NumericColumn::Int64(values) => fold_signed!(values),
+                NumericColumn::Int128(values) => fold_signed!(values),
                 _ => {
                     return Err(ExecutionError::Invalid(
                         "unexpected numeric SUM column type".into(),
@@ -636,10 +693,12 @@ pub(super) fn execute_aggregate_part<W: Write>(
             }
         }
         if query.offset.unwrap_or(0) == 0 {
-            if let Some(value) = total {
-                writeln!(output, "{value}")?;
-            } else {
+            if !saw_value {
                 writeln!(output, "NULL")?;
+            } else if signed_kind == Some(true) {
+                writeln!(output, "{signed_total}")?;
+            } else {
+                writeln!(output, "{unsigned_total}")?;
             }
         }
         return Ok(());
