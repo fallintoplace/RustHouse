@@ -42,6 +42,15 @@ fn describe_projection(projection: &Projection) -> String {
         Projection::CountDistinct { column } => {
             format!("Aggregate: count(DISTINCT {column})")
         }
+        Projection::ApproxDistinct { column } => {
+            format!("Aggregate: uniq({column}) [HyperLogLog, 16384 registers]")
+        }
+        Projection::Histogram { column, bins } => {
+            format!("Aggregate: histogram({bins})({column}) [two-pass bounded bins]")
+        }
+        Projection::ApproxDistinctState { column } => {
+            format!("Partial aggregate: uniqState({column}) [16384 hex HLL registers]")
+        }
         Projection::GroupedCount { column } => {
             format!("Aggregate: GROUP BY {column}, count(*)")
         }

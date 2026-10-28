@@ -150,19 +150,21 @@ pub(super) fn execute<W: Write>(
     }
 
     let group_indices = columns.iter().map(|name| indices[name]).collect::<Vec<_>>();
-    let mut groups: Vec<(Vec<Cell>, u64)> =
-        parallel_grouped_parts(
-            part,
-            &names,
-            &group_indices,
-            &conditions,
-            query.predicates.is_empty() && query.or_predicates.is_empty(),
-        )?.unwrap_or_default();
-    let mut reader = if groups.is_empty() {
+    let partial = parallel_grouped_parts(
+        part,
+        &names,
+        &group_indices,
+        &conditions,
+        query.predicates.is_empty() && query.or_predicates.is_empty(),
+    )?;
+    // Some(empty) is a completed parallel scan with zero matching rows.
+    // It is not a request to decode and rescan the full snapshot serially.
+    let mut reader = if partial.is_none() {
         Some(TypedQueryReader::open_with_metadata(part, &names, &metadata)?)
     } else {
         None
     };
+    let mut groups: Vec<(Vec<Cell>, u64)> = partial.unwrap_or_default();
     let mut by_key: HashMap<Vec<Key>, usize> = HashMap::new();
     let mut probe_key = Vec::with_capacity(group_indices.len());
     // Probe repeated String dimensions without cloning their decoded bytes.

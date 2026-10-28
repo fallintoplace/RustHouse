@@ -37,6 +37,11 @@ pub struct JoinStep {
     pub using_keys: Vec<String>,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum JoinAggregate {
+    CountStar,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct JoinSelect {
     pub left: String,
@@ -48,6 +53,7 @@ pub struct JoinSelect {
     pub any: bool,
     /// None projects every column from both tables.
     pub columns: Option<Vec<JoinColumn>>,
+    pub aggregate: Option<JoinAggregate>,
     pub keys: Vec<(JoinColumn, JoinColumn)>,
     /// Shared-key names for JOIN USING; star output projects each key once.
     pub using_keys: Vec<String>,
@@ -82,7 +88,18 @@ pub fn parse_join(sql: &str) -> Result<Option<JoinSelect>, ParseError> {
     }
     let mut parser = Parser { tokens, index: 0 };
     parser.keyword("SELECT");
-    let columns = if parser.take(Token::Star) {
+    let aggregate = if parser.keyword("COUNT") {
+        if !parser.take(Token::LParen)
+            || !parser.take(Token::Star)
+            || !parser.take(Token::RParen)
+        {
+            return Err(ParseError("JOIN COUNT requires COUNT(*)".into()));
+        }
+        Some(JoinAggregate::CountStar)
+    } else {
+        None
+    };
+    let columns = if aggregate.is_some() || parser.take(Token::Star) {
         None
     } else {
         let mut columns = Vec::new();
@@ -456,6 +473,12 @@ pub fn parse_join(sql: &str) -> Result<Option<JoinSelect>, ParseError> {
             "unexpected JOIN syntax; supported: equi-JOIN, ORDER BY, LIMIT, OFFSET".into(),
         ));
     }
+    if aggregate.is_some() &&
+        (kind != JoinType::Inner || !steps.is_empty() || !order_by.is_empty()) {
+        return Err(ParseError(
+            "streamed JOIN COUNT requires a two-table INNER JOIN without ORDER BY".into()
+        ));
+    }
     Ok(Some(JoinSelect {
         left,
         right,
@@ -464,6 +487,7 @@ pub fn parse_join(sql: &str) -> Result<Option<JoinSelect>, ParseError> {
         kind,
         any,
         columns,
+        aggregate,
         keys,
         using_keys,
         where_null,
@@ -539,13 +563,15 @@ pub fn explain_join(query: &JoinSelect) -> String {
     }
     plan.push_str(&format!(
         "\nProject: {}\nLimit: {}",
-        query.columns.as_ref().map_or("*".to_owned(), |columns| {
+        if query.aggregate.is_some() {
+            "count(*)".to_owned()
+        } else { query.columns.as_ref().map_or("*".to_owned(), |columns| {
             columns
                 .iter()
                 .map(|col| format!("{}.{}", col.relation, col.name))
                 .collect::<Vec<_>>()
                 .join(", ")
-        }),
+        }) },
         query
             .limit
             .map_or("unbounded".to_owned(), |n| n.to_string())
