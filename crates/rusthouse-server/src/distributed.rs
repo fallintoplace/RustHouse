@@ -1474,7 +1474,12 @@ fn merge_grouped_weighted_avg(
         indices.sort_by(|&a, &b| {
             for term in &terms {
                 let cmp = if term.column == "#aggregate" {
-                    let compare = groups[a].1.total_cmp(&groups[b].1);
+                    let compare = match (groups[a].1, groups[b].1) {
+                        (Some(left), Some(right)) => left.total_cmp(&right),
+                        (None, None) => std::cmp::Ordering::Equal,
+                        (None, Some(_)) => std::cmp::Ordering::Less,
+                        (Some(_), None) => std::cmp::Ordering::Greater,
+                    };
                     let a_null = groups[a].1.is_none();
                     let b_null = groups[b].1.is_none();
                     match (a_null, b_null, term.nulls_first) {
