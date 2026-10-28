@@ -1,5 +1,5 @@
 //! Copy-only reconciliation plan for trusted immutable object inventories.
-use std::collections::BTreeMap;
+use std::collections::HashMap;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ObjectMetadata {
@@ -31,11 +31,11 @@ fn valid_key(key: &str) -> bool {
 
 fn index<'a>(
     objects: &'a [ObjectMetadata],
-) -> Result<BTreeMap<&'a str, &'a ObjectMetadata>, &'static str> {
+) -> Result<HashMap<&'a str, &'a ObjectMetadata>, &'static str> {
     if objects.len() > 65_536 {
         return Err("replica inventory too large");
     }
-    let mut indexed = BTreeMap::new();
+    let mut indexed = HashMap::with_capacity(objects.len());
     for object in objects {
         if !valid_key(&object.key) || indexed.insert(object.key.as_str(), object).is_some() {
             return Err("unsafe or duplicate replica object key");
@@ -52,15 +52,17 @@ pub fn plan_replica_copies(
 ) -> Result<Vec<ObjectMetadata>, &'static str> {
     let source = index(source)?;
     let destination = index(destination)?;
-    Ok(source
-        .into_iter()
-        .filter(|(key, meta)| {
+    let mut changed: Vec<ObjectMetadata> = source
+        .into_values()
+        .filter(|meta| {
             destination
-                .get(key)
+                .get(meta.key.as_str())
                 .is_none_or(|existing| !meta.same_contents(existing))
         })
-        .map(|(_, meta)| meta.clone())
-        .collect())
+        .cloned()
+        .collect();
+    changed.sort_unstable_by(|left, right| left.key.cmp(&right.key));
+    Ok(changed)
 }
 
 #[cfg(test)]
@@ -109,4 +111,17 @@ mod tests {
             &[],
         ).is_err());
     }
+    #[test]
+    fn copy_plan_is_sorted_even_when_source_order_is_reversed() {
+        let source = vec![
+            ObjectMetadata { key: "z/file".into(), bytes: 2, crc32c: 20 },
+            ObjectMetadata { key: "a/file".into(), bytes: 1, crc32c: 10 },
+            ObjectMetadata { key: "m/file".into(), bytes: 3, crc32c: 30 },
+        ];
+        let destination = vec![source[0].clone()];
+        let plan = plan_replica_copies(&source, &destination).unwrap();
+        assert_eq!(plan.iter().map(|item| item.key.as_str()).collect::<Vec<_>>(),
+            vec!["a/file", "m/file"]);
+    }
+
 }

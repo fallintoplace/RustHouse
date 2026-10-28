@@ -19,10 +19,13 @@ pub fn retention_candidates(
     if unique.len() != generations.len() || unique.contains(&0) || !unique.contains(&active) {
         return Err("duplicate, missing, or invalid generation");
     }
-    let preserved: BTreeSet<u64> = unique.iter().rev().take(keep_latest).copied().collect();
+    let candidate_count = unique.len().saturating_sub(keep_latest);
     Ok(unique
         .into_iter()
-        .filter(|generation| *generation != active && !preserved.contains(generation))
+        .enumerate()
+        .filter_map(|(index, generation)| {
+            (index < candidate_count && generation != active).then_some(generation)
+        })
         .collect())
 }
 
@@ -45,4 +48,11 @@ mod tests {
         assert!(retention_candidates(&[1, 2], 3, 1).is_err());
         assert!(retention_candidates(&[1, 2], 1, 0).is_err());
     }
+    #[test]
+    fn protects_active_generation_even_when_it_is_oldest() {
+        assert_eq!(retention_candidates(&[5, 3, 1, 4, 2], 1, 2).unwrap(), vec![2, 3]);
+        assert_eq!(retention_candidates(&[5, 3, 1, 4, 2], 5, 2).unwrap(), vec![1, 2, 3]);
+        assert!(retention_candidates(&[1, 2, 3], 1, usize::MAX).unwrap().is_empty());
+    }
+
 }

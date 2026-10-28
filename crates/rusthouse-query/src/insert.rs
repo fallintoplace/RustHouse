@@ -27,6 +27,17 @@ fn value(parser: &mut Parser) -> Result<Option<String>, ParseError> {
             parser.index += 1;
             Ok(None)
         }
+        Some(Token::Plus) => {
+            parser.index += 1;
+            match parser.tokens.get(parser.index) {
+                Some(Token::Number(value)) if !value.starts_with('-') => {
+                    let value = value.clone();
+                    parser.index += 1;
+                    Ok(Some(value))
+                }
+                _ => Err(ParseError("INSERT + requires a numeric literal".into())),
+            }
+        }
         _ => Err(ParseError("INSERT values must be literals or NULL".into())),
     }
 }
@@ -230,4 +241,21 @@ mod tests {
             assert!(parse_insert(input).is_err(), "{input}");
         }
     }
+    #[test]
+    fn accepts_unary_plus_only_before_insert_numbers() {
+        let parsed = parse_insert("INSERT INTO events VALUES (+3, -4)")
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            parsed.rows,
+            vec![vec![Some("3".into()), Some("-4".into())]]
+        );
+        for invalid in [
+            "INSERT INTO events VALUES (+NULL)",
+            "INSERT INTO events VALUES (+'text')",
+        ] {
+            assert!(parse_insert(invalid).is_err(), "{invalid}");
+        }
+    }
+
 }

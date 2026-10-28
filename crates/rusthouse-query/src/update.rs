@@ -19,6 +19,17 @@ fn value(parser: &mut Parser) -> Result<Option<String>, ParseError> {
             parser.index += 1;
             Ok(None)
         }
+        Some(Token::Plus) => {
+            parser.index += 1;
+            match parser.tokens.get(parser.index) {
+                Some(Token::Number(value)) if !value.starts_with('-') => {
+                    let value = value.clone();
+                    parser.index += 1;
+                    Ok(Some(value))
+                }
+                _ => Err(ParseError("UPDATE + requires a numeric literal".into())),
+            }
+        }
         _ => Err(ParseError(
             "UPDATE SET accepts only literal values or NULL".into(),
         )),
@@ -180,4 +191,13 @@ mod tests {
             assert!(parse_update(statement).is_err(), "{statement}");
         }
     }
+    #[test]
+    fn accepts_unsigned_numeric_literals_with_unary_plus() {
+        let parsed = parse_update("UPDATE events SET id = +3 WHERE id = 1")
+            .unwrap()
+            .unwrap();
+        assert_eq!(parsed.assignments, vec![("id".into(), Some("3".into()))]);
+        assert!(parse_update("UPDATE events SET id = +NULL").is_err());
+    }
+
 }
