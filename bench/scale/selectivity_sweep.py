@@ -5,6 +5,7 @@ Timing includes a new CLI process and potentially warm OS file caches.
 """
 import argparse
 import json
+import math
 import statistics
 import subprocess
 import time
@@ -18,8 +19,10 @@ def thresholds(rows):
 
 
 def run_sweep(binary, part, rows, *, samples=3, timeout=600, execute=None):
-    if samples < 1 or timeout <= 0:
-        raise ValueError("samples and timeout must be positive")
+    if (type(samples) is not int or samples < 1
+            or type(timeout) not in (int, float) or not math.isfinite(timeout)
+            or timeout <= 0):
+        raise ValueError("samples must be positive integers and timeout finite and positive")
     run = execute or subprocess.run
     results = []
     for threshold in thresholds(rows):
