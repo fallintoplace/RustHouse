@@ -2,6 +2,7 @@
 """Validate the configured RustHouse HTTP source, not only process liveness."""
 import argparse
 import json
+import re
 import sys
 from urllib.parse import quote, urlsplit
 from urllib.request import urlopen
@@ -33,7 +34,7 @@ def probe(base, expected_source, table=None, timeout=5):
     if table is not None:
         if expected_source != "database":
             raise ValueError("--table requires database mode")
-        if not table or len(table.encode()) > 128:
+        if not re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]{0,127}", table):
             raise ValueError("invalid table")
         schema = read_json(base + "/schema?table=" + quote(table, safe=""), timeout)
         if not isinstance(schema.get("columns"), list):
