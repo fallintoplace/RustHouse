@@ -32,6 +32,7 @@ pub(super) fn is_function(name: &str) -> bool {
             | "URL_ENCODE"
             | "JSON_QUOTE"
             | "SUBSTRING"
+            | "HASSUBSEQUENCECASEINSENSITIVE"
             | "OVERLAY"
             | "SPLIT_PART"
             | "SUBSTRING_INDEX"
@@ -456,6 +457,25 @@ fn parse_at_depth(parser: &mut Parser, depth: usize) -> Result<ConstantValue, Pa
                     ConstantValue::Text(
                         input.split(delimiter.as_str()).nth(index).unwrap_or("").to_owned(),
                     )
+                }
+                _ => ConstantValue::Null,
+            }
+        }
+        "HASSUBSEQUENCECASEINSENSITIVE" => {
+            let input = text_arg(parser, depth + 1)?;
+            require(parser, Token::Comma, "hasSubsequenceCaseInsensitive requires a needle")?;
+            let needle = text_arg(parser, depth + 1)?;
+            require(parser, Token::RParen, "expected ')' after hasSubsequenceCaseInsensitive")?;
+            match (input, needle) {
+                (Some(input), Some(needle)) => {
+                    let mut required = needle.bytes().map(|byte| byte.to_ascii_lowercase());
+                    let mut next = required.next();
+                    for byte in input.bytes() {
+                        if next == Some(byte.to_ascii_lowercase()) {
+                            next = required.next();
+                        }
+                    }
+                    ConstantValue::Integer(i64::from(next.is_none()))
                 }
                 _ => ConstantValue::Null,
             }
