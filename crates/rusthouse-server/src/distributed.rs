@@ -526,6 +526,17 @@ fn merge_grouped_integer_sums(
     key_column: &str,
     value_column: &str,
 ) -> Result<Vec<u8>, MergeError> {
+    merge_grouped_integer_sums_query(shards, max_rows, kind, key_column, value_column, None)
+}
+
+fn merge_grouped_integer_sums_query(
+    shards: &[(usize, Vec<u8>)],
+    max_rows: usize,
+    kind: &str,
+    key_column: &str,
+    value_column: &str,
+    global: Option<&Select>,
+) -> Result<Vec<u8>, MergeError> {
     let header = format!("{key_column}\tsum({value_column})\n");
     let unsigned = kind
         .strip_prefix("Nullable(")
@@ -608,9 +619,54 @@ fn merge_grouped_integer_sums(
             }
         }
     }
+    // Reduce all shards before any global filtering, ranking, or paging.
+    // Shard-local HAVING or LIMIT would produce incorrect aggregated results.
+    let mut selected = (0..groups.len()).collect::<Vec<_>>();
+    if let Some(query) = global {
+        if let Some(having) = &query.having {
+            selected.retain(|&index| {
+                let relation = if unsigned {
+                    groups[index].2.map(|value| value.cmp(&u128::from(having.value)))
+                } else {
+                    groups[index].1.map(|value| value.cmp(&i128::from(having.value)))
+                };
+                relation.is_some_and(|ordering| match having.operator {
+                    Operator::Eq => ordering.is_eq(),
+                    Operator::Ne => ordering.is_ne(),
+                    Operator::Lt => ordering.is_lt(),
+                    Operator::Le => ordering.is_le(),
+                    Operator::Gt => ordering.is_gt(),
+                    Operator::Ge => ordering.is_ge(),
+                    _ => false,
+                })
+            });
+        }
+        if let Some(order) = &query.order_by {
+            selected.sort_unstable_by(|&left, &right| {
+                let comparison = if unsigned {
+                    groups[left].2.cmp(&groups[right].2)
+                } else {
+                    groups[left].1.cmp(&groups[right].1)
+                };
+                let left_null = if unsigned { groups[left].2.is_none() } else { groups[left].1.is_none() };
+                let right_null = if unsigned { groups[right].2.is_none() } else { groups[right].1.is_none() };
+                let comparison = match (left_null, right_null, order.nulls_first) {
+                    (true, false, Some(true)) | (false, true, Some(false)) =>
+                        std::cmp::Ordering::Less,
+                    (true, false, Some(false)) | (false, true, Some(true)) =>
+                        std::cmp::Ordering::Greater,
+                    _ => if order.descending { comparison.reverse() } else { comparison },
+                };
+                comparison.then_with(|| left.cmp(&right))
+            });
+        }
+    }
+    let offset = global.and_then(|query| query.offset).unwrap_or(0);
+    let limit = global.and_then(|query| query.limit).unwrap_or(usize::MAX);
     let mut output = Vec::with_capacity(header.len());
     output.extend_from_slice(header.as_bytes());
-    for (key, signed, unsigned_value) in groups {
+    for index in selected.into_iter().skip(offset).take(limit) {
+        let (key, signed, unsigned_value) = groups[index];
         let rendered = if unsigned {
             unsigned_value.map(|value| value.to_string())
         } else {
@@ -831,6 +887,11 @@ pub fn handle(method: &str, body: &[u8], cluster: &Cluster, max_rows: usize) -> 
                 return Response::text("400 Bad Request", "unsupported distributed pagination\n");
             }
         }
+    } else if grouped_sum_query {
+        match grouped_count_shard_sql(sql, &select) {
+            Some(query) => query,
+            None => return Response::text("400 Bad Request", "unsupported global grouped SUM\n"),
+        }
     } else if grouped_count_query {
         match grouped_count_shard_sql(sql, &select) {
             Some(query) => query,
@@ -993,7 +1054,14 @@ pub fn handle(method: &str, body: &[u8], cluster: &Cluster, max_rows: usize) -> 
     } else if grouped_sum_query {
         match (sum_type.as_deref(), group_schema, sum_schema) {
             (Some(kind), Some((_, key)), Some((_, value))) => {
-                merge_grouped_integer_sums(&shards, max_rows.min(250_000), kind, key, value)
+                if select.having.is_some() || select.order_by.is_some()
+                    || select.limit.is_some() || select.offset.is_some() {
+                    merge_grouped_integer_sums_query(
+                        &shards, max_rows.min(250_000), kind, key, value, Some(&select),
+                    )
+                } else {
+                    merge_grouped_integer_sums(&shards, max_rows.min(250_000), kind, key, value)
+                }
             }
             _ => Err(MergeError::InvalidGroupedSum),
         }
@@ -1145,6 +1213,25 @@ mod tests {
         assert_eq!(
             merge_grouped_counts_query(&[shard(10, "region\tcount\na\tnot-a-number\n")], 1, Some(&query)),
             Err(MergeError::InvalidGroupedCount)
+        );
+    }
+
+    #[test]
+    fn global_grouped_sum_having_and_order_apply_after_reduction() {
+        let sql = "SELECT region, sum(amount) FROM events GROUP BY region HAVING sum(amount) > 100 ORDER BY 2 DESC LIMIT 2";
+        let select = parse_select(sql).unwrap();
+        assert!(is_safe_grouped_sum(&select));
+        assert_eq!(
+            grouped_count_shard_sql(sql, &select).as_deref(),
+            Some("SELECT region, sum(amount) FROM events GROUP BY region")
+        );
+        let shards = [
+            shard(10, "region\tsum(amount)\nwest\t80\neast\t90\n"),
+            shard(10, "region\tsum(amount)\nwest\t70\neast\t15\nnorth\t151\n"),
+        ];
+        assert_eq!(
+            merge_grouped_integer_sums_query(&shards, 10, "Int64", "region", "amount", Some(&select)).unwrap(),
+            b"region\tsum(amount)\nnorth\t151\nwest\t150\n"
         );
     }
 
