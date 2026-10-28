@@ -99,6 +99,7 @@ pub(super) fn is_function(name: &str) -> bool {
             | "STRIP_SUFFIX"
             | "REPEAT"
             | "BASE64_DECODE"
+            | "FROM_BASE64"
             | "BASE64DECODE"
             | "APPENDTRAILINGCHARIFABSENT"
             | "RPAD"
@@ -1733,7 +1734,7 @@ fn parse_at_depth(parser: &mut Parser, depth: usize) -> Result<ConstantValue, Pa
                 _ => ConstantValue::Null,
             }
         }
-        "BASE64_DECODE" | "BASE64DECODE" => {
+        "BASE64_DECODE" | "BASE64DECODE" | "FROM_BASE64" => {
             let input = text_arg(parser, depth + 1)?;
             require(parser, Token::RParen, "BASE64_DECODE requires one argument")?;
             match input {
@@ -2004,5 +2005,19 @@ fn text_arg(parser: &mut Parser, depth: usize) -> Result<Option<String>, ParseEr
         _ => Err(ParseError(
             "expected a string literal or string function".into(),
         )),
+    }
+}
+
+#[cfg(test)]
+mod parity_from_base64_tests {
+    use crate::{parse_select, ConstantValue, Projection};
+    #[test]
+    fn clickhouse_alias_matches_existing_base64() {
+        let sql = "SELECT FROM_BASE64('Y2xpY2tob3VzZQ==')";
+        let canonical = "SELECT BASE64_DECODE('Y2xpY2tob3VzZQ==')";
+        assert_eq!(parse_select(sql).unwrap().projection, parse_select(canonical).unwrap().projection);
+        assert!(matches!(parse_select(sql).unwrap().projection, Projection::Constants(values)
+            if values.len() == 1 && values[0].value == ConstantValue::Text("clickhouse".into())));
+        assert!(parse_select("SELECT FROM_BASE64()").is_err());
     }
 }
