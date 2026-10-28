@@ -129,7 +129,7 @@ fn request(peer: Peer, method: &str, path: &str, body: &[u8]) -> Result<PeerResp
     .map_err(|error| error.to_string())?;
     stream.write_all(body).map_err(|error| error.to_string())?;
     let raw = read_with_deadline(&mut stream, response_timeout(method, path))?;
-    parse_response(&raw)
+    parse_response_owned(raw)
 }
 
 #[cfg(test)]
