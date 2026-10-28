@@ -45,7 +45,7 @@ fn render_peer_health(cluster: &Cluster, healthy: &[bool]) -> String {
 
 fn render_health_response(cluster: &Cluster, healthy: &[bool]) -> Response {
     let count = healthy.iter().filter(|&&alive| alive).count();
-    let details = render_peer_health(cluster, &healthy);
+    let details = render_peer_health(cluster, healthy);
     let status = if count == healthy.len() {
         "200 OK"
     } else {
