@@ -27,7 +27,7 @@ impl<W: Write> CsvWriter<W> {
         // Encode into a temporary buffer before publishing anything, so
         // malformed rows never leak partially written CSV to the client.
         self.encoded.clear();
-        self.encoded.reserve(self.line.len().saturating_add(2));
+        self.encoded.reserve(self.line.len().saturating_add(4));
         let mut field_count = 0usize;
         for field in self.line.split(|byte| *byte == b'\t') {
             if field_count != 0 {
@@ -282,7 +282,10 @@ mod single_pass_row_tests {
         let mut csv = CsvWriter::new(Vec::new());
         csv.write_all(b"a\tb\n1\t2\n").unwrap();
         assert_eq!(csv.output, b"a,b\r\n1,2\r\n");
-        assert_eq!(csv.write_all(b"only-one\n").unwrap_err().kind(), io::ErrorKind::InvalidData);
+        assert_eq!(
+            csv.write_all(b"only-one\n").unwrap_err().kind(),
+            io::ErrorKind::InvalidData
+        );
         assert_eq!(csv.output, b"a,b\r\n1,2\r\n");
     }
 }
