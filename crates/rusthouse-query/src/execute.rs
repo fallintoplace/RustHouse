@@ -1496,10 +1496,21 @@ fn execute_numbers<W: Write>(
         } else {
             false
         };
+        // Only formula-backed multi-aggregates may exceed the virtual scan
+        // limit. Every other aggregate keeps its regular bounded scan.
+        let direct_multi_aggregate = matches!(
+            &query.projection,
+            Projection::MultipleAggregates(items)
+                if simple_result
+                    && query.predicates.is_empty()
+                    && query.or_predicates.is_empty()
+                    && multi_aggregate::supports_generated_series_metrics(items)
+        );
         if !(scalar_count && simple_result && arithmetic_count)
             && !bounded_page
             && !grouped_page
             && !direct_aggregate
+            && !direct_multi_aggregate
         {
             return Err(ExecutionError::Invalid(
                 "virtual inputs over 10000000 rows require an exact aggregate or bounded page query".into(),
