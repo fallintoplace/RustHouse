@@ -239,11 +239,11 @@ pub fn parse_join(sql: &str) -> Result<Option<JoinSelect>, ParseError> {
         {
             return Err(ParseError("joined tables require distinct aliases".into()));
         }
-        if (step_any && !matches!(step_kind, JoinType::Inner | JoinType::Left))
-            || (any && !matches!(kind, JoinType::Inner | JoinType::Left))
+        if (step_any && !matches!(step_kind, JoinType::Inner | JoinType::Left | JoinType::Right))
+            || (any && !matches!(kind, JoinType::Inner | JoinType::Left | JoinType::Right))
         {
             return Err(ParseError(
-                "chained ANY JOIN supports only INNER and LEFT joins".into(),
+                "chained ANY JOIN supports only INNER, LEFT and RIGHT joins".into(),
             ));
         }
         let (step_keys, step_using) = if parser.keyword("USING") {
@@ -269,22 +269,38 @@ pub fn parse_join(sql: &str) -> Result<Option<JoinSelect>, ParseError> {
             }
             (Vec::new(), names)
         } else if parser.keyword("ON") {
-            let mut keys = Vec::new();
-            loop {
-                if keys.len() == 8 {
-                    return Err(ParseError("JOIN supports at most 8 equality keys".into()));
+            let mut raw = Vec::new();
+            equality_group(&mut parser, &mut raw, 0)?;
+            let mut keys: Vec<(JoinColumn, JoinColumn)> = Vec::new();
+            for (first, second) in raw {
+                for column in [&first, &second] {
+                    if column.relation != left_alias
+                        && column.relation != right_alias
+                        && column.relation != alias
+                        && !steps.iter().any(|step| step.alias == column.relation)
+                    {
+                        return Err(ParseError(format!(
+                            "unknown JOIN qualifier: {}",
+                            column.relation
+                        )));
+                    }
                 }
-                let first = qualified(&mut parser)?;
-                if !parser.take(Token::Operator(super::Operator::Eq)) {
+                let first_is_new = first.relation == alias;
+                let second_is_new = second.relation == alias;
+                if first_is_new == second_is_new {
                     return Err(ParseError(
-                        "JOIN ON supports AND-connected equality keys".into(),
+                        "JOIN ON must compare an existing relation to the new table".into(),
                     ));
                 }
-                let second = qualified(&mut parser)?;
-                keys.push((first, second));
-                if !parser.keyword("AND") {
-                    break;
+                if !keys.iter().any(|(left, right)| {
+                    (left == &first && right == &second)
+                        || (left == &second && right == &first)
+                }) {
+                    keys.push((first, second));
                 }
+            }
+            if keys.len() > 8 {
+                return Err(ParseError("JOIN supports at most 8 equality keys".into()));
             }
             (keys, Vec::new())
         } else {
@@ -426,15 +442,20 @@ pub fn explain_join(query: &JoinSelect) -> String {
         })
         .collect::<Vec<_>>()
         .join(" AND ");
+    let predicate = if query.using_keys.is_empty() {
+        format!("ON {conditions}")
+    } else {
+        format!("USING ({})", query.using_keys.join(", "))
+    };
     let mut plan = format!(
-        "Source: table {} AS {}\nSource: table {} AS {}\nJoin: {}{:?} ON {}",
+        "Source: table {} AS {}\nSource: table {} AS {}\nJoin: {}{:?} {}",
         query.left,
         query.left_alias,
         query.right,
         query.right_alias,
         if query.any { "Any " } else { "" },
         query.kind,
-        conditions,
+        predicate,
     );
     for step in &query.steps {
         let conditions = step.keys.iter()
@@ -505,6 +526,61 @@ pub fn explain_join(query: &JoinSelect) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn chained_join_accepts_nested_on_equalities() {
+        let query = parse_join(
+            "SELECT * FROM a x JOIN b y ON x.id = y.id JOIN c z ON (y.id = z.id AND (x.k = z.k))",
+        )
+        .unwrap()
+        .unwrap();
+        assert_eq!(query.steps[0].keys.len(), 2);
+        for statement in [
+            "SELECT * FROM a x JOIN b y ON x.id = y.id JOIN c z ON (y.id = z.id",
+            "SELECT * FROM a x JOIN b y ON x.id = y.id JOIN c z ON (y.id = z.id OR x.k = z.k)",
+        ] {
+            assert!(parse_join(statement).is_err(), "{statement}");
+        }
+    }
+
+    #[test]
+    fn chained_join_rejects_equalities_on_the_same_side() {
+        for statement in [
+            "SELECT * FROM a x JOIN b y ON x.id = y.id JOIN c z ON x.id = y.id",
+            "SELECT * FROM a x JOIN b y ON x.id = y.id JOIN c z ON z.id = z.other",
+            "SELECT * FROM a x JOIN b y ON x.id = y.id JOIN c z ON z.id = x.id AND x.k = y.k",
+        ] {
+            assert!(parse_join(statement).is_err(), "{statement}");
+        }
+        assert!(parse_join(
+            "SELECT * FROM a x JOIN b y ON x.id = y.id JOIN c z ON y.id = z.id",
+        )
+        .is_ok());
+    }
+
+    #[test]
+    fn explain_shows_the_original_using_predicate() {
+        let query = parse_join("SELECT * FROM a x FULL JOIN b y USING (id, tenant)")
+            .unwrap()
+            .unwrap();
+        let plan = explain_join(&query);
+        assert!(plan.contains("Join: Full USING (id, tenant)"), "{plan}");
+        assert!(!plan.contains("Join: Full ON"), "{plan}");
+    }
+
+    #[test]
+    fn chained_join_rejects_unknown_on_qualifiers_at_parse_time() {
+        for statement in [
+            "SELECT * FROM a x JOIN b y ON x.id = y.id JOIN c z ON missing.id = z.id",
+            "SELECT * FROM a x JOIN b y ON x.id = y.id JOIN c z ON z.id = missing.id",
+        ] {
+            assert!(parse_join(statement).is_err(), "{statement}");
+        }
+        assert!(parse_join(
+            "SELECT * FROM a x JOIN b y ON x.id = y.id JOIN c z ON x.id = z.id",
+        )
+        .is_ok());
+    }
 
     #[test]
     fn explain_lists_chained_sources_before_project_and_limit() {
@@ -651,7 +727,7 @@ mod tests {
         assert_eq!(query.steps[0].keys[0].0.relation, "c");
         assert_eq!(query.order_by[0].0.relation, "o");
         assert!(parse_join("SELECT * FROM a x JOIN b y ON x.id = y.id JOIN c x ON y.id = x.id").is_err());
-        assert!(parse_join("SELECT * FROM a x JOIN b y ON x.id = y.id RIGHT ANY JOIN c z ON y.id = z.id").is_err());
+        assert!(parse_join("SELECT * FROM a x JOIN b y ON x.id = y.id RIGHT ANY JOIN c z ON y.id = z.id").is_ok());
     }
 
     #[test]

@@ -20,6 +20,7 @@ struct Relation {
     names: Vec<String>,
     types: Vec<String>,
     start: usize,
+    rows: u64,
 }
 
 fn base_type(value: &str) -> &str {
@@ -180,7 +181,7 @@ fn output_columns(
     // For unqualified *, the USING key appears once. With a RIGHT/FULL
     // join, fall back to the newly joined value when the old side is NULL.
     let mut omitted = HashMap::new();
-    for (index, step) in std::iter::once(initial_step)
+    for (index, step) in std::iter::once(&initial_step)
         .chain(query.steps.iter())
         .enumerate()
     {
@@ -273,6 +274,7 @@ pub fn execute_multi_join<W: Write>(
             names,
             types,
             start: width - metadata.columns.len(),
+            rows: metadata.rows,
         });
     }
 
@@ -284,8 +286,7 @@ pub fn execute_multi_join<W: Write>(
         keys: query.keys.clone(),
         using_keys: query.using_keys.clone(),
     };
-    // A zero-row result still binds every key, projection, filter, and sort,
-    // but must not scan inputs or enforce the normal materialized-row caps.
+    // Validate the complete output schema without materializing rows.
     if query.limit == Some(0) {
         for (index, join) in std::iter::once(&initial_step)
             .chain(query.steps.iter())
@@ -310,11 +311,10 @@ pub fn execute_multi_join<W: Write>(
         return Ok(());
     }
 
-    let first_meta = inspect_query_source(&paths[0])?;
     let mut rows = read_rows(
         &paths[0],
         &relations[0].names,
-        first_meta.rows,
+        relations[0].rows,
         MAX_INPUT_ROWS,
         MAX_STREAM_BUILD_BYTES,
     )?;
@@ -325,11 +325,10 @@ pub fn execute_multi_join<W: Write>(
         let right_relation = &relations[step_index + 1];
         let left_width = right_relation.start;
         let (left_keys, right_keys) = step_keys(step, &relations[..=step_index + 1], left_width)?;
-        let metadata = inspect_query_source(&paths[step_index + 1])?;
         let right_rows = read_rows(
             &paths[step_index + 1],
             &right_relation.names,
-            metadata.rows,
+            right_relation.rows,
             MAX_INPUT_ROWS,
             MAX_STREAM_BUILD_BYTES,
         )?;
@@ -342,14 +341,30 @@ pub fn execute_multi_join<W: Write>(
         }
         let mut next = Vec::new();
         let mut retained = 0usize;
-        let mut matched_right = vec![false; right_rows.len()];
+        let mut matched_right = matches!(step.kind, JoinType::Right | JoinType::Full)
+            .then(|| vec![false; right_rows.len()]);
         for row in &rows {
             let mut matched = false;
             if let Some(key) = row_key(row, &left_keys) {
                 if let Some(matches) = hash.get(&key) {
-                    for &match_index in matches.iter().take(if step.any { 1 } else { usize::MAX }) {
+                    for &match_index in matches
+                        .iter()
+                        .take(if step.any && step.kind != JoinType::Right {
+                            1
+                        } else {
+                            usize::MAX
+                        })
+                    {
+                        if step.any
+                            && step.kind == JoinType::Right
+                            && matched_right.as_ref().is_some_and(|flags| flags[match_index])
+                        {
+                            continue;
+                        }
                         matched = true;
-                        matched_right[match_index] = true;
+                        if let Some(flags) = matched_right.as_mut() {
+                            flags[match_index] = true;
+                        }
                         let mut joined =
                             Vec::with_capacity(left_width + right_relation.names.len());
                         joined.extend_from_slice(row);
@@ -365,7 +380,7 @@ pub fn execute_multi_join<W: Write>(
                 push_row(&mut next, joined, &mut retained)?;
             }
         }
-        if matches!(step.kind, JoinType::Right | JoinType::Full) {
+        if let Some(matched_right) = matched_right {
             for (right_index, matched) in matched_right.into_iter().enumerate() {
                 if !matched {
                     let mut joined = vec![typed::Cell::Null; left_width];

@@ -321,7 +321,9 @@ where
     let left_width = left_rows.first().map_or(0, Vec::len);
     // Each retained left row can match only its first right row.
     let mut seen_left = options.any.then(|| vec![false; left_rows.len()]);
-    let mut remaining_left = seen_left.as_ref().map(Vec::len);
+    let mut remaining_left = seen_left
+        .as_ref()
+        .map(|_| hash.values().map(Vec::len).sum::<usize>());
     let mut probe_key = Vec::with_capacity(right_keys.len());
     'scan: while let Some(batch) = reader.next_batch()? {
         for index in 0..batch[0].len() {
@@ -466,7 +468,7 @@ fn execute_streaming_right<W: Write>(
         &left_rows,
         &hash,
         ProbeOptions {
-            materialize_rows: true,
+            materialize_rows: selected.iter().any(|(column, _, _)| *column >= left_width),
             materialize_after: query.offset,
             stop_after,
             any: query.any,
