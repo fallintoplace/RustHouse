@@ -62,7 +62,7 @@ fn main() {
 
     let sql = format!("SELECT count(*) FROM part WHERE {filter}");
     let query = parse_select(&sql).expect("filtered COUNT SQL must parse");
-    let expected = format!("count\\n{expected_count}\\n");
+    let expected = format!("count\n{expected_count}\n");
     let mut output = Vec::new();
     for _ in 0..warmups {
         output.clear();
