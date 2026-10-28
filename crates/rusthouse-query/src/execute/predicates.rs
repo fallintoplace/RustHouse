@@ -214,12 +214,18 @@ pub(super) fn count_batch_matches(
                 }
                 if !matches!(operator, Operator::Modulo(_) | Operator::ModuloNe(_)) {
                     macro_rules! count_direct {
-                        ($values:expr, $target:expr, $operator:expr, $wide:ty) => {
-                            $values
-                                .iter()
-                                .filter(|&&value| compare(<$wide>::from(value), $target, $operator))
-                                .count()
-                        };
+                        ($values:expr, $target:expr, $operator:expr, $wide:ty) => {{
+                            let target: $wide = $target;
+                            match $operator {
+                                Operator::Eq => $values.iter().filter(|&&value| <$wide>::from(value) == target).count(),
+                                Operator::Ne => $values.iter().filter(|&&value| <$wide>::from(value) != target).count(),
+                                Operator::Lt => $values.iter().filter(|&&value| <$wide>::from(value) < target).count(),
+                                Operator::Le => $values.iter().filter(|&&value| <$wide>::from(value) <= target).count(),
+                                Operator::Gt => $values.iter().filter(|&&value| <$wide>::from(value) > target).count(),
+                                Operator::Ge => $values.iter().filter(|&&value| <$wide>::from(value) >= target).count(),
+                                Operator::Modulo(_) | Operator::ModuloNe(_) => unreachable!("modulo is handled separately"),
+                            }
+                        }};
                     }
                     match (&batch[predicate.index], *target) {
                         (NumericColumn::UInt8(values), Number::Unsigned(target)) => {
@@ -366,6 +372,57 @@ pub(super) fn monotonic_range_indices(
     let lower = lower.min(end);
     let upper = upper.min(end).max(lower);
     Some((lower as u64, upper as u64))
+}
+
+/// Enumerate small finite matching sets across OR branches exactly.
+/// Each disjunct needs a positive equality or IN seed. Unbounded branches
+/// retain the normal executor rather than changing their semantics.
+pub(super) fn sparse_generated_positions(
+    branches: &[Vec<CompiledPredicate>],
+    start: u64,
+    rows: u64,
+    step: u64,
+) -> Option<Vec<u64>> {
+    if step == 0 { return None; }
+    let (start, step, rows) = (u128::from(start), u128::from(step), u128::from(rows));
+    let mut indices = Vec::new();
+    let mut examined = 0usize;
+    for conjunction in branches {
+        let mut seed = None;
+        for predicate in conjunction {
+            let candidates = match &predicate.test {
+                CompiledTest::Comparison { operator: Operator::Eq, target: Number::Unsigned(value) } => Some(vec![*value]),
+                CompiledTest::In(items) => Some(items.iter().filter_map(|item| {
+                    if let Number::Unsigned(value) = item { Some(*value) } else { None }
+                }).collect()),
+                CompiledTest::InSet { targets, negated: false } => Some(targets.iter().filter_map(|key| {
+                    if let NumberKey::Unsigned(value) = key { Some(*value) } else { None }
+                }).collect()),
+                _ => None,
+            };
+            if candidates.is_some() {
+                seed = candidates;
+                break;
+            }
+        }
+        let values: Vec<u128> = seed?;
+        examined = examined.checked_add(values.len())?;
+        if examined > 4096 { return None; }
+        for value in values {
+            if value < start || (value - start) % step != 0 {
+                continue;
+            }
+            let index = (value - start) / step;
+            if index < rows && conjunction.iter().all(|predicate| {
+                predicate.test.matches(Number::Unsigned(value))
+            }) {
+                indices.push(index as u64);
+            }
+        }
+    }
+    indices.sort_unstable();
+    indices.dedup();
+    Some(indices)
 }
 
 pub(super) fn count_monotonic_numbers(

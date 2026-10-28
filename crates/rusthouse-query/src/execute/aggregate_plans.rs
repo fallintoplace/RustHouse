@@ -620,6 +620,19 @@ pub(super) fn execute_aggregate_numbers<W: Write>(
         return Ok(());
         }
     }
+    // Positive equality/IN filters identify a small set of source positions.
+    // Visit those exact rows instead of enumerating a billion unmatched values.
+    if let Some(indices) = sparse_generated_positions(&comparisons, start, rows, step) {
+        let mut state = AggregateState::new(function);
+        for index in indices {
+            let value = u128::from(start) + u128::from(index) * u128::from(step);
+            state.update(Number::Unsigned(value))?;
+        }
+        if query.offset.unwrap_or(0) == 0 {
+            writeln!(output, "{}", state.render())?;
+        }
+        return Ok(());
+    }
     let mut state = AggregateState::new(function);
     for index in 0..rows {
         let number = start + index * step;

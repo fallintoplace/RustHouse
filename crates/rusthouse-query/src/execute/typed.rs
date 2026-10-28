@@ -251,11 +251,18 @@ const HASHED_TYPED_IN_MIN_VALUES: usize = 16;
 
 /// Convert already-validated canonical UUID literals into fixed-width hash keys.
 fn uuid_key(value: &str) -> [u8; 16] {
-    let hex = value.replace('-', "");
+    let mut digits = value.bytes().filter(|&byte| byte != b'-');
+    let nibble = |byte: u8| match byte {
+        b'0'..=b'9' => byte - b'0',
+        b'a'..=b'f' => byte - b'a' + 10,
+        b'A'..=b'F' => byte - b'A' + 10,
+        _ => unreachable!("UUID literal validated during compilation"),
+    };
     let mut bytes = [0u8; 16];
-    for (index, byte) in bytes.iter_mut().enumerate() {
-        *byte = u8::from_str_radix(&hex[index * 2..index * 2 + 2], 16)
-            .expect("UUID literal was validated during predicate compilation");
+    for byte in &mut bytes {
+        let high = digits.next().expect("validated UUID hex digits");
+        let low = digits.next().expect("validated UUID hex digits");
+        *byte = (nibble(high) << 4) | nibble(low);
     }
     bytes
 }

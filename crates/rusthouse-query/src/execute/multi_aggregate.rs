@@ -193,7 +193,9 @@ fn distinct_argument(
 ) -> Result<Option<typed::Key>, ExecutionError> {
     if let BoundExpr::Column(index) = expression {
         let key = match &batch[*index] {
-            TypedColumn::Numeric(values) => Some(typed::Key::Numeric(NumberKey::from(number_at(values, row)))),
+            TypedColumn::Numeric(values) => {
+                Some(typed::Key::Numeric(NumberKey::from(number_at(values, row))))
+            }
             TypedColumn::Text(values) => values.get(row).map(|value| typed::Key::Text(value.to_vec())),
             TypedColumn::Uuid(values) => Some(typed::Key::Uuid(values[row].to_string())),
             TypedColumn::NullableNumeric { values, nulls } => (nulls[row] == 0)
@@ -395,5 +397,27 @@ mod affine_tests {
             BoundExpr::bind(&reversed, &indices).unwrap(),
             BoundExpr::Add(_, _)
         ));
+    }
+}
+
+#[cfg(test)]
+mod distinct_key_tests {
+    use super::*;
+    use rusthouse_storage::read_legacy_strings;
+
+    #[test]
+    fn distinct_argument_preserves_nullable_string_values() {
+        let mut stream = b"\x03abc\x03abc".as_slice();
+        let strings = read_legacy_strings(&mut stream, 2).unwrap();
+        let batch = vec![TypedColumn::NullableText {
+            values: strings,
+            nulls: vec![0, 1],
+        }];
+        let expression = BoundExpr::Column(0);
+        assert!(matches!(
+            distinct_argument(&expression, &batch, 0).unwrap(),
+            Some(typed::Key::Text(value)) if value == b"abc"
+        ));
+        assert!(distinct_argument(&expression, &batch, 1).unwrap().is_none());
     }
 }

@@ -36,16 +36,19 @@ pub fn plan_repairs(
     if jobs.len() > 4096 || job_limit > 4096 {
         return Err("repair job count exceeds bound");
     }
-    let mut unique = HashSet::new();
+    let mut unique = HashSet::with_capacity(jobs.len());
     for job in jobs {
         if !valid_repair_job(job) || !unique.insert(job.shard.as_str())
         {
             return Err("invalid or duplicate repair job");
         }
     }
+    if job_limit == 0 {
+        return Ok(Vec::new());
+    }
     let mut ranked: Vec<&RepairJob> = jobs.iter().collect();
     ranked.sort_unstable_by(|left, right| repair_priority(left, right));
-    let mut selected = Vec::new();
+    let mut selected = Vec::with_capacity(jobs.len().min(job_limit));
     let mut remaining = byte_budget;
     for job in ranked {
         if selected.len() == job_limit {
