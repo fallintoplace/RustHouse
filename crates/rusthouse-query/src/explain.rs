@@ -45,6 +45,10 @@ fn describe_projection(projection: &Projection) -> String {
         Projection::ApproxDistinct { column } => {
             format!("Aggregate: uniq({column}) [HyperLogLog, 16384 registers]")
         }
+        Projection::ApproxQuantile { column, probability_ppm } => {
+            let p = f64::from(*probability_ppm) / 1_000_000.0;
+            format!("Aggregate: quantile({p})({column}) [8192-row reservoir]")
+        }
         Projection::GroupedCount { column } => {
             format!("Aggregate: GROUP BY {column}, count(*)")
         }
