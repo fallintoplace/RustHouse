@@ -30,12 +30,25 @@ def numeric_equal(left, right, tolerance=Decimal("0")):
     return lhs.is_finite() and rhs.is_finite() and abs(lhs - rhs) <= tolerance
 
 
+def split_tsv_rows(data):
+    if b"\r" in data.replace(b"\r\n", b""):
+        return None
+    if not data:
+        return []
+    rows = data.replace(b"\r\n", b"\n").split(b"\n")
+    if data.endswith(b"\n"):
+        rows.pop()
+    return rows
+
+
 def compare_tsv(actual, reference, tolerance=Decimal("0")):
     tolerance = parse_tolerance(tolerance)
     if actual.endswith(b"\n") != reference.endswith(b"\n"):
         return False
-    left_rows = actual.splitlines()
-    right_rows = reference.splitlines()
+    left_rows = split_tsv_rows(actual)
+    right_rows = split_tsv_rows(reference)
+    if left_rows is None or right_rows is None:
+        return False
     if len(left_rows) != len(right_rows):
         return False
     for left, right in zip(left_rows, right_rows):
