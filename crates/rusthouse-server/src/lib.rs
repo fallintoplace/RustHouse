@@ -741,12 +741,16 @@ mod tests {
 
     #[test]
     fn can_return_more_than_one_hundred_thousand_rows() {
-        let config = Config { max_rows: 100_001, ..config() };
-        let response = handle_request(
-            "POST", "/", b"SELECT number FROM numbers(100001)", &config
-        );
+        let config = Config {
+            max_rows: 100_001,
+            ..config()
+        };
+        let response = handle_request("POST", "/", b"SELECT number FROM numbers(100001)", &config);
         assert_eq!(response.status, "200 OK");
-        assert_eq!(response.body.iter().filter(|&&byte| byte == b'\n').count(), 100_002);
+        assert_eq!(
+            response.body.iter().filter(|&&byte| byte == b'\n').count(),
+            100_002
+        );
     }
 
     #[test]

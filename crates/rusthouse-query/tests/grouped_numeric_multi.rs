@@ -21,17 +21,29 @@ fn groups_several_numeric_aggregates_in_one_scan() {
     ));
     fs::create_dir_all(&root).unwrap();
     let columns = vec![
-        Column { name: "station".into(), data_type: "String".into() },
-        Column { name: "temperature".into(), data_type: "Float64".into() },
+        Column {
+            name: "station".into(),
+            data_type: "String".into(),
+        },
+        Column {
+            name: "temperature".into(),
+            data_type: "Float64".into(),
+        },
     ];
     let left = [("Berlin", "10"), ("Bremen", "-4"), ("Berlin", "20")];
     let right = [("Bremen", "2"), ("Berlin", "30"), ("Cologne", "1")];
     for (index, rows) in [left.as_slice(), right.as_slice()].iter().enumerate() {
-        let records = rows.iter().map(|(station, temp)| {
-            vec![Some((*station).into()), Some((*temp).into())]
-        }).collect::<Vec<_>>();
+        let records = rows
+            .iter()
+            .map(|(station, temp)| vec![Some((*station).into()), Some((*temp).into())])
+            .collect::<Vec<_>>();
         let name = index + 1;
-        write_wide_part(&root.join(format!("all_{name}_{name}_0")), &columns, &records).unwrap();
+        write_wide_part(
+            &root.join(format!("all_{name}_{name}_0")),
+            &columns,
+            &records,
+        )
+        .unwrap();
     }
     let query = "SELECT station, min(temperature), avg(temperature), max(temperature) FROM part GROUP BY station ORDER BY station";
     assert_eq!(
@@ -39,18 +51,25 @@ fn groups_several_numeric_aggregates_in_one_scan() {
         "station\tmin(temperature)\tavg(temperature)\tmax(temperature)\nBerlin\t10\t20\t30\nBremen\t-4\t-1\t2\nCologne\t1\t1\t1\n"
     );
     assert_eq!(
-        run("SELECT station, min(temperature), max(temperature) FROM part GROUP BY station ORDER BY station DESC LIMIT 1", &root),
+        run(
+            "SELECT station, min(temperature), max(temperature) FROM part GROUP BY station ORDER BY station DESC LIMIT 1",
+            &root
+        ),
         "station\tmin(temperature)\tmax(temperature)\nCologne\t1\t1\n"
     );
     assert_eq!(
-        run("SELECT station, min(temperature), avg(temperature) FROM part GROUP BY station LIMIT 0", &root),
+        run(
+            "SELECT station, min(temperature), avg(temperature) FROM part GROUP BY station LIMIT 0",
+            &root
+        ),
         "station\tmin(temperature)\tavg(temperature)\n"
     );
-    assert!(parse_select(
-        "SELECT station, min(temperature), max(temperature) FROM part GROUP BY temperature"
-    ).is_err());
-    assert!(parse_select(
-        "SELECT station, min(temperature), max(temperature) FROM part"
-    ).is_err());
+    assert!(
+        parse_select(
+            "SELECT station, min(temperature), max(temperature) FROM part GROUP BY temperature"
+        )
+        .is_err()
+    );
+    assert!(parse_select("SELECT station, min(temperature), max(temperature) FROM part").is_err());
     fs::remove_dir_all(root).unwrap();
 }

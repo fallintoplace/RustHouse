@@ -15,10 +15,11 @@ fn stream_bounded_copy(
 ) -> io::Result<u64> {
     let mut total = 0u64;
     // Small files avoid allocating a large buffer; large copies reduce syscall count.
-    let buffer_bytes = expected_bytes.min(256 * 1024).max(1) as usize;
+    let buffer_bytes = expected_bytes.clamp(1, 256 * 1024) as usize;
     let mut buffer = vec![0u8; buffer_bytes];
     loop {
-        let available = max_bytes.saturating_sub(total)
+        let available = max_bytes
+            .saturating_sub(total)
             .saturating_add(1)
             .min(buffer.len() as u64) as usize;
         let len = input.read(&mut buffer[..available])?;
@@ -51,7 +52,9 @@ pub fn copy_immutable_file(source: &Path, destination: &Path, max_bytes: u64) ->
         .parent()
         .ok_or_else(|| io::Error::other("destination has no parent directory"))?;
     if !fs::symlink_metadata(parent)?.file_type().is_dir() {
-        return Err(io::Error::other("destination parent is not a real directory"));
+        return Err(io::Error::other(
+            "destination parent is not a real directory",
+        ));
     }
     let staging = parent.join(format!(
         ".rusthouse-replica-{}-{}",
@@ -94,10 +97,8 @@ mod tests {
 
     #[test]
     fn copies_once_and_never_replaces_existing_data() {
-        let dir = std::env::temp_dir().join(format!(
-            "rusthouse-atomic-copy-{}",
-            std::process::id()
-        ));
+        let dir =
+            std::env::temp_dir().join(format!("rusthouse-atomic-copy-{}", std::process::id()));
         let _ = fs::remove_dir_all(&dir);
         fs::create_dir(&dir).unwrap();
         let src = dir.join("source");
@@ -111,9 +112,8 @@ mod tests {
     }
     #[test]
     fn oversized_source_reads_only_one_byte_past_cap() {
-        let dir = std::env::temp_dir().join(format!(
-            "rusthouse-bounded-copy-{}", std::process::id()
-        ));
+        let dir =
+            std::env::temp_dir().join(format!("rusthouse-bounded-copy-{}", std::process::id()));
         let _ = fs::remove_dir_all(&dir);
         fs::create_dir(&dir).unwrap();
         let source = dir.join("source");
@@ -126,5 +126,4 @@ mod tests {
         assert_eq!(output.metadata().unwrap().len(), 0);
         fs::remove_dir_all(dir).unwrap();
     }
-
 }

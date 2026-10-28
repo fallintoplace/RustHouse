@@ -75,7 +75,10 @@ fn write_json_row<W: Write>(output: &mut W, headers: &[Vec<u8>], line: &[u8]) ->
     row.write_all(b"{")?;
     for (index, header) in headers.iter().enumerate() {
         let value = fields.next().ok_or_else(|| {
-            io::Error::new(io::ErrorKind::InvalidData, "JSONL row does not match header column count")
+            io::Error::new(
+                io::ErrorKind::InvalidData,
+                "JSONL row does not match header column count",
+            )
         })?;
         if index > 0 {
             row.write_all(b",")?;
@@ -116,9 +119,9 @@ fn write_json_string<W: Write>(writer: &mut W, input: &[u8]) -> io::Result<()> {
     // stack buffer and make only one write call per field.
     let bytes = input.as_bytes();
     if bytes.len() <= 64
-        && bytes.iter().all(|&byte| {
-            (b' '..=b'~').contains(&byte) && byte != b'"' && byte != b'\\'
-        })
+        && bytes
+            .iter()
+            .all(|&byte| (b' '..=b'~').contains(&byte) && byte != b'"' && byte != b'\\')
     {
         let mut quoted = [0u8; 66];
         quoted[0] = b'"';
@@ -458,7 +461,9 @@ mod single_pass_row_tests {
         for malformed in [b"one".as_slice(), b"one\ttwo\tthree".as_slice()] {
             let mut output = Vec::new();
             assert_eq!(
-                write_json_row(&mut output, &headers, malformed).unwrap_err().kind(),
+                write_json_row(&mut output, &headers, malformed)
+                    .unwrap_err()
+                    .kind(),
                 io::ErrorKind::InvalidData
             );
             assert!(output.is_empty());

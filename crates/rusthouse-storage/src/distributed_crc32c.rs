@@ -218,9 +218,13 @@ mod tests {
             }
         }
         let data = b"retry safe replica bytes";
-        let mut reader = Once { cursor: Cursor::new(data.as_slice()), interrupt: true };
-        assert_eq!(crc32c_reader(&mut reader, data.len() as u64).unwrap(),
-            (data.len() as u64, crc32c(data)));
+        let mut reader = Once {
+            cursor: Cursor::new(data.as_slice()),
+            interrupt: true,
+        };
+        assert_eq!(
+            crc32c_reader(&mut reader, data.len() as u64).unwrap(),
+            (data.len() as u64, crc32c(data))
+        );
     }
-
 }

@@ -33,7 +33,10 @@ fn having_filters_grouped_distinct_counts_after_null_elimination() {
         &db,
     );
     assert!(positive.status.success(), "{positive:?}");
-    assert_eq!(positive.stdout, b"category\tcountDistinct(user_id)\nA\t2\nB\t1\n");
+    assert_eq!(
+        positive.stdout,
+        b"category\tcountDistinct(user_id)\nA\t2\nB\t1\n"
+    );
 
     let mismatch = sql(
         "SELECT category, count(DISTINCT user_id) FROM events GROUP BY category HAVING count(DISTINCT other) > 0",

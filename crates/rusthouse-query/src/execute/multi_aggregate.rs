@@ -39,9 +39,10 @@ impl BoundExpr {
         indices: &HashMap<String, usize>,
     ) -> Result<Self, ExecutionError> {
         let index = |name: &str| {
-            indices.get(name).copied().ok_or_else(|| {
-                ExecutionError::Invalid(format!("unknown aggregate column: {name}"))
-            })
+            indices
+                .get(name)
+                .copied()
+                .ok_or_else(|| ExecutionError::Invalid(format!("unknown aggregate column: {name}")))
         };
         Ok(match expression {
             ScalarExpr::Column(name) => Self::Column(index(name)?),
@@ -110,12 +111,9 @@ fn eval_number(
             constant,
             subtract,
         } => match typed::cell(&batch[*index], row) {
-            Cell::Numeric(value) => checked_binary(
-                value,
-                Number::Signed(i128::from(*constant)),
-                *subtract,
-            )
-            .map(Some),
+            Cell::Numeric(value) => {
+                checked_binary(value, Number::Signed(i128::from(*constant)), *subtract).map(Some)
+            }
             Cell::Null => Ok(None),
             _ => Err(ExecutionError::Invalid(
                 "aggregate expression requires numeric columns".into(),
@@ -196,7 +194,9 @@ fn distinct_argument(
             TypedColumn::Numeric(values) => {
                 Some(typed::Key::Numeric(NumberKey::from(number_at(values, row))))
             }
-            TypedColumn::Text(values) => values.get(row).map(|value| typed::Key::Text(value.to_vec())),
+            TypedColumn::Text(values) => values
+                .get(row)
+                .map(|value| typed::Key::Text(value.to_vec())),
             TypedColumn::Uuid(values) => Some(typed::Key::Uuid(values[row].to_string())),
             TypedColumn::NullableNumeric { values, nulls } => (nulls[row] == 0)
                 .then(|| typed::Key::Numeric(NumberKey::from(number_at(values, row)))),
@@ -204,7 +204,9 @@ fn distinct_argument(
                 if nulls[row] != 0 {
                     None
                 } else {
-                    values.get(row).map(|value| typed::Key::Text(value.to_vec()))
+                    values
+                        .get(row)
+                        .map(|value| typed::Key::Text(value.to_vec()))
                 }
             }
         };

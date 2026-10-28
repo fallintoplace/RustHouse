@@ -85,7 +85,13 @@ mod tests {
             )
         );
         for sql in ["ClientIP - 3", "ClientIP-3", "ClientIP -3"] {
-            assert!(matches!(parse_scalar_expression(sql).unwrap(), ScalarExpr::Subtract(..)), "{sql}");
+            assert!(
+                matches!(
+                    parse_scalar_expression(sql).unwrap(),
+                    ScalarExpr::Subtract(..)
+                ),
+                "{sql}"
+            );
         }
     }
 

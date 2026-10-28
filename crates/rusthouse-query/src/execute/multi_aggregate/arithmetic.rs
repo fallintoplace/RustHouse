@@ -1,6 +1,10 @@
 use super::*;
 
-pub(super) fn checked_binary(left: Number, right: Number, subtract: bool) -> Result<Number, ExecutionError> {
+pub(super) fn checked_binary(
+    left: Number,
+    right: Number,
+    subtract: bool,
+) -> Result<Number, ExecutionError> {
     let op = |a: i128, b: i128| {
         if subtract {
             a.checked_sub(b)

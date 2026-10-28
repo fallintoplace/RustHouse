@@ -134,7 +134,7 @@ pub(super) fn execute<W: Write>(
                             key: group,
                             distinct: HashSet::new(),
                             distinct_text: HashSet::new(),
-                        distinct_uuids: HashSet::new(),
+                            distinct_uuids: HashSet::new(),
                         });
                         id
                     }

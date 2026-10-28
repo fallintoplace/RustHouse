@@ -23,7 +23,10 @@ fn verify_file_sizes_supports_hash_verification_modes() {
     for (option, status) in [
         (None, "file hashes not verified"),
         (Some("--hashes"), "stored hashes verified"),
-        (Some("--full-hashes"), "stored and uncompressed hashes verified"),
+        (
+            Some("--full-hashes"),
+            "stored and uncompressed hashes verified",
+        ),
     ] {
         let mut cmd = Command::new(env!("CARGO_BIN_EXE_rusthouse"));
         cmd.arg("verify-file-sizes").arg(&part);

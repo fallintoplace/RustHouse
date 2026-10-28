@@ -58,7 +58,16 @@ fn write_csv_field<W: Write>(output: &mut W, field: &[u8]) -> io::Result<()> {
     if field == b"\\N" {
         return output.write_all(b"\\N");
     }
-    let value = decode_tsv_value(field)?;
+    let decoded = if field.contains(&b'\\') {
+        Some(decode_tsv_value(field)?)
+    } else {
+        None
+    };
+    let value = match decoded.as_deref() {
+        Some(value) => value,
+        None => std::str::from_utf8(field)
+            .map_err(|_| io::Error::new(io::ErrorKind::InvalidData, "invalid UTF-8 field"))?,
+    };
     let needs_quotes = value == "\\N"
         || value
             .bytes()
@@ -243,6 +252,18 @@ mod literal_null_marker_regressions {
         );
         assert_eq!(writer.columns, Some(256));
         assert!(writer.write_all(b"one\tcolumn\n").is_err());
+    }
+
+    #[test]
+    fn csv_plain_utf8_fields_skip_escape_decoding() {
+        let mut output = Vec::new();
+        write_csv_field(&mut output, "café".as_bytes()).unwrap();
+        assert_eq!(output, "café".as_bytes());
+        output.clear();
+        write_csv_field(&mut output, b"hello,world").unwrap();
+        assert_eq!(output, b"\"hello,world\"");
+        output.clear();
+        assert!(write_csv_field(&mut output, b"\xff").is_err());
     }
 
     #[test]

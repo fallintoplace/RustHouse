@@ -10,11 +10,16 @@ fn value(sql: &str) -> ConstantValue {
 #[test]
 fn extracts_url_path_without_query() {
     for (sql, expected) in [
-        ("SELECT path('https://clickhouse.com/docs/faq?q=1#top')", "/docs/faq"),
+        (
+            "SELECT path('https://clickhouse.com/docs/faq?q=1#top')",
+            "/docs/faq",
+        ),
         ("SELECT path('http://localhost:8123/')", "/"),
         ("SELECT path('https://example.com?x=1')", ""),
         ("SELECT path('https://example.com/a/b')", "/a/b"),
-    ] { assert_eq!(value(sql), ConstantValue::Text(expected.into()), "{sql}"); }
+    ] {
+        assert_eq!(value(sql), ConstantValue::Text(expected.into()), "{sql}");
+    }
     assert_eq!(value("SELECT path(NULL)"), ConstantValue::Null);
 }
 #[test]

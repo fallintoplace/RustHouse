@@ -6,27 +6,26 @@ use std::collections::HashMap;
 use std::io::Write;
 use std::path::Path;
 
-fn checked_string_length(column: &TypedColumn, row: usize) -> Result<Option<usize>, ExecutionError> {
+fn checked_string_length(
+    column: &TypedColumn,
+    row: usize,
+) -> Result<Option<usize>, ExecutionError> {
     let missing = || ExecutionError::Invalid("missing LENGTH string value in batch".into());
-    match column {
-        TypedColumn::Text(values) => values
-            .byte_length(row)
-            .map(Some)
-            .ok_or_else(missing),
+    let values = match column {
+        TypedColumn::Text(values) => values,
         TypedColumn::NullableText { values, nulls } => {
             if *nulls.get(row).ok_or_else(missing)? != 0 {
-                Ok(None)
-            } else {
-                values
-                    .byte_length(row)
-                    .map(Some)
-                    .ok_or_else(missing)
+                return Ok(None);
             }
+            values
         }
-        _ => Err(ExecutionError::Invalid(
-            "LENGTH read unexpected column type".into(),
-        )),
-    }
+        _ => {
+            return Err(ExecutionError::Invalid(
+                "LENGTH read unexpected column type".into(),
+            ));
+        }
+    };
+    values.byte_length(row).map(Some).ok_or_else(missing)
 }
 
 fn projection_columns(query: &Select, column: &str) -> Vec<String> {
@@ -94,10 +93,7 @@ pub(super) fn execute<W: Write>(
     let no_filters = query.predicates.is_empty() && query.or_predicates.is_empty();
     // Reuse typed mark skipping: LENGTH only needs rows after OFFSET when
     // neither filtering, sorting nor deduplication changes row positions.
-    if no_filters
-        && query.order_by.is_none()
-        && query.order_by_extra.is_empty()
-        && !query.distinct
+    if no_filters && query.order_by.is_none() && query.order_by_extra.is_empty() && !query.distinct
     {
         skipped = reader.skip_prefix_rows(offset)?;
     }

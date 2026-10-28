@@ -20,7 +20,10 @@ fn position_is_one_based_and_ascii_insensitive() {
     ] {
         assert_eq!(value(sql), ConstantValue::Integer(expected), "{sql}");
     }
-    assert_eq!(value("SELECT positionCaseInsensitive(NULL, 'a')"), ConstantValue::Null);
+    assert_eq!(
+        value("SELECT positionCaseInsensitive(NULL, 'a')"),
+        ConstantValue::Null
+    );
 }
 #[test]
 fn rejects_invalid_position_and_type() {
@@ -29,5 +32,7 @@ fn rejects_invalid_position_and_type() {
         "SELECT positionCaseInsensitive('a', 'a', -1)",
         "SELECT positionCaseInsensitive(1, '1')",
         "SELECT positionCaseInsensitive('a', 'a', 1, 2)",
-    ] { assert!(parse_select(sql).is_err(), "{sql}"); }
+    ] {
+        assert!(parse_select(sql).is_err(), "{sql}");
+    }
 }

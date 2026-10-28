@@ -28,34 +28,76 @@ fn null_safe_comparisons_handle_text_numeric_and_null_values() {
         assert!(result.status.success(), "{query}: {result:?}");
     }
     for (query, expected) in [
-        ("SELECT id FROM records WHERE tag IS DISTINCT FROM 'a' ORDER BY id", "id\n1\n3\n"),
-        ("SELECT id FROM records WHERE tag IS NOT DISTINCT FROM 'a' ORDER BY id", "id\n2\n4\n"),
-        ("SELECT id FROM records WHERE tag IS DISTINCT FROM NULL ORDER BY id", "id\n2\n3\n4\n"),
-        ("SELECT id FROM records WHERE tag IS NOT DISTINCT FROM NULL", "id\n1\n"),
-        ("SELECT id FROM records WHERE amount IS DISTINCT FROM 10 ORDER BY id", "id\n1\n4\n"),
-        ("SELECT id FROM records WHERE amount IS NOT DISTINCT FROM 10 ORDER BY id", "id\n2\n3\n"),
-        ("SELECT id FROM records WHERE NOT amount IS DISTINCT FROM 10 ORDER BY id", "id\n2\n3\n"),
+        (
+            "SELECT id FROM records WHERE tag IS DISTINCT FROM 'a' ORDER BY id",
+            "id\n1\n3\n",
+        ),
+        (
+            "SELECT id FROM records WHERE tag IS NOT DISTINCT FROM 'a' ORDER BY id",
+            "id\n2\n4\n",
+        ),
+        (
+            "SELECT id FROM records WHERE tag IS DISTINCT FROM NULL ORDER BY id",
+            "id\n2\n3\n4\n",
+        ),
+        (
+            "SELECT id FROM records WHERE tag IS NOT DISTINCT FROM NULL",
+            "id\n1\n",
+        ),
+        (
+            "SELECT id FROM records WHERE amount IS DISTINCT FROM 10 ORDER BY id",
+            "id\n1\n4\n",
+        ),
+        (
+            "SELECT id FROM records WHERE amount IS NOT DISTINCT FROM 10 ORDER BY id",
+            "id\n2\n3\n",
+        ),
+        (
+            "SELECT id FROM records WHERE NOT amount IS DISTINCT FROM 10 ORDER BY id",
+            "id\n2\n3\n",
+        ),
     ] {
         let result = sql(query, &db);
         assert!(result.status.success(), "{query}: {result:?}");
-        assert_eq!(String::from_utf8(result.stdout).unwrap(), expected, "{query}");
+        assert_eq!(
+            String::from_utf8(result.stdout).unwrap(),
+            expected,
+            "{query}"
+        );
     }
     for (query, expected) in [
-        ("SELECT number FROM numbers(5) WHERE number IS DISTINCT FROM 3", "number\n0\n1\n2\n4\n"),
-        ("SELECT number FROM numbers(5) WHERE number IS NOT DISTINCT FROM 3", "number\n3\n"),
-        ("SELECT number FROM numbers(5) WHERE number IS DISTINCT FROM NULL", "number\n0\n1\n2\n3\n4\n"),
-        ("SELECT number FROM numbers(5) WHERE number IS NOT DISTINCT FROM NULL", "number\n"),
+        (
+            "SELECT number FROM numbers(5) WHERE number IS DISTINCT FROM 3",
+            "number\n0\n1\n2\n4\n",
+        ),
+        (
+            "SELECT number FROM numbers(5) WHERE number IS NOT DISTINCT FROM 3",
+            "number\n3\n",
+        ),
+        (
+            "SELECT number FROM numbers(5) WHERE number IS DISTINCT FROM NULL",
+            "number\n0\n1\n2\n3\n4\n",
+        ),
+        (
+            "SELECT number FROM numbers(5) WHERE number IS NOT DISTINCT FROM NULL",
+            "number\n",
+        ),
     ] {
         let result = sql(query, &db);
         assert!(result.status.success(), "{query}: {result:?}");
-        assert_eq!(String::from_utf8(result.stdout).unwrap(), expected, "{query}");
+        assert_eq!(
+            String::from_utf8(result.stdout).unwrap(),
+            expected,
+            "{query}"
+        );
     }
     fs::remove_dir_all(db).unwrap();
 }
 
 #[test]
 fn rejects_incomplete_distinct_from_syntax() {
-    let db = std::env::temp_dir().join(format!("rusthouse-distinct-invalid-{}", std::process::id()));
+    let db =
+        std::env::temp_dir().join(format!("rusthouse-distinct-invalid-{}", std::process::id()));
     for query in [
         "SELECT number FROM numbers(3) WHERE number IS DISTINCT 2",
         "SELECT number FROM numbers(3) WHERE number IS NOT DISTINCT",

@@ -33,6 +33,10 @@ fn escapes_scalar_sql_results_in_multiple_formats() {
             "{\"name\":\"O'Brien\",\"note\":null}\n",
         ),
     ] {
-        assert_eq!(run(query, format), expected.as_bytes(), "{query} ({format})");
+        assert_eq!(
+            run(query, format),
+            expected.as_bytes(),
+            "{query} ({format})"
+        );
     }
 }
