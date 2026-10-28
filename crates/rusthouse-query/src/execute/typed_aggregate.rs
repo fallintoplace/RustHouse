@@ -7,6 +7,21 @@ use std::collections::{HashMap, hash_map::Entry};
 use std::io::Write;
 use std::path::Path;
 
+fn replaces_text_extreme(
+    value: &[u8],
+    current: Option<&Cell>,
+    function: AggregateFunction,
+) -> bool {
+    let Some(Cell::Text(best)) = current else {
+        return current.is_none();
+    };
+    match function {
+        AggregateFunction::Min => value < best.as_slice(),
+        AggregateFunction::Max => value > best.as_slice(),
+        _ => false,
+    }
+}
+
 pub(super) fn execute_typed_aggregate<W: Write>(
     query: &Select,
     part: &Path,
@@ -68,6 +83,24 @@ pub(super) fn execute_typed_aggregate<W: Write>(
         for row in 0..batch[0].len() {
             if !no_filters && !typed::passes(&batch, row, &conditions) {
                 continue;
+            }
+            if ordered_text {
+                match &batch[projected_index] {
+                    TypedColumn::Text(strings)
+                    | TypedColumn::NullableText { values: strings, .. } => {
+                        if typed::is_null_at(&batch[projected_index], row) {
+                            continue;
+                        }
+                        let value = strings.get(row).ok_or_else(|| {
+                            ExecutionError::Invalid("missing String value in aggregate".into())
+                        })?;
+                        if replaces_text_extreme(value, ordered_value.as_ref(), *function) {
+                            ordered_value = Some(Cell::Text(value.to_vec()));
+                        }
+                        continue;
+                    }
+                    _ => {}
+                }
             }
             match typed::cell(&batch[projected_index], row) {
                 Cell::Numeric(value) => state.update(value)?,
@@ -331,4 +364,19 @@ const MAX_GROUPS: usize = 100_000;
         }
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod borrowed_text_extrema_tests {
+    use super::*;
+
+    #[test]
+    fn compares_borrowed_text_without_replacing_ties() {
+        let incumbent = Cell::Text(b"beta".to_vec());
+        assert!(replaces_text_extreme(b"alpha", Some(&incumbent), AggregateFunction::Min));
+        assert!(!replaces_text_extreme(b"beta", Some(&incumbent), AggregateFunction::Min));
+        assert!(!replaces_text_extreme(b"alpha", Some(&incumbent), AggregateFunction::Max));
+        assert!(replaces_text_extreme(b"gamma", Some(&incumbent), AggregateFunction::Max));
+        assert!(replaces_text_extreme(b"beta", None, AggregateFunction::Min));
+    }
 }
