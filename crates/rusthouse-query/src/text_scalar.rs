@@ -41,6 +41,7 @@ pub(super) fn is_function(name: &str) -> bool {
             | "CUTFRAGMENT"
             | "URL_ENCODE"
             | "FRAGMENT"
+            | "DATETRUNC"
             | "JSON_QUOTE"
             | "ISVALIDJSON"
             | "JSONHAS"
@@ -627,6 +628,27 @@ fn parse_at_depth(parser: &mut Parser, depth: usize) -> Result<ConstantValue, Pa
                 ConstantValue::Null
             } else {
                 ConstantValue::Text(result)
+            }
+        }
+        "DATETRUNC" => {
+            let unit = text_arg(parser, depth + 1)?;
+            require(parser, Token::Comma, "dateTrunc requires a timestamp")?;
+            let input = text_arg(parser, depth + 1)?;
+            require(parser, Token::RParen, "dateTrunc requires two arguments")?;
+            match (unit, input) {
+                (Some(unit), Some(input)) => {
+                    let step: u32 = match unit.to_ascii_lowercase().as_str() {
+                        "second" | "seconds" => 1,
+                        "minute" | "minutes" => 60,
+                        "hour" | "hours" => 3_600,
+                        "day" | "days" => 86_400,
+                        _ => return Err(ParseError("unsupported dateTrunc unit".into())),
+                    };
+                    let seconds = rusthouse_storage::parse_datetime(&input)
+                        .ok_or_else(|| ParseError("invalid UTC DateTime argument".into()))?;
+                    ConstantValue::Text(rusthouse_storage::format_datetime(seconds / step * step))
+                }
+                _ => ConstantValue::Null,
             }
         }
         "QUERYSTRING" => {
