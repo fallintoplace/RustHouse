@@ -572,6 +572,20 @@ fn merge_grouped_integer_sums_query(
     value_column: &str,
     global: Option<&Select>,
 ) -> Result<Vec<u8>, MergeError> {
+    merge_grouped_integer_sums_typed(
+        shards, max_rows, kind, key_column, value_column, global, None,
+    )
+}
+
+fn merge_grouped_integer_sums_typed(
+    shards: &[(usize, Vec<u8>)],
+    max_rows: usize,
+    kind: &str,
+    key_column: &str,
+    value_column: &str,
+    global: Option<&Select>,
+    group_kind: Option<&str>,
+) -> Result<Vec<u8>, MergeError> {
     let header = format!("{key_column}\tsum({value_column})\n");
     let unsigned = kind
         .strip_prefix("Nullable(")
@@ -670,17 +684,51 @@ fn merge_grouped_integer_sums_query(
                 }
             });
         }
-        if let Some(order) = &select.order_by {
-            groups.sort_by(|left, right| {
-                let cmp = if unsigned { left.2.cmp(&right.2) } else { left.1.cmp(&right.1) };
-                match (left.1.is_none(), right.1.is_none(), order.nulls_first) {
-                    (true, false, Some(true)) => std::cmp::Ordering::Less,
-                    (false, true, Some(true)) => std::cmp::Ordering::Greater,
-                    (true, false, Some(false)) => std::cmp::Ordering::Greater,
-                    (false, true, Some(false)) => std::cmp::Ordering::Less,
-                    _ => if order.descending { cmp.reverse() } else { cmp },
+        if select.order_by.is_some() {
+            let terms = select.order_terms().collect::<Vec<_>>();
+            let wants_key = terms.iter().any(|order| order.column != "#aggregate");
+            let key_kind = if wants_key {
+                Some(group_kind.ok_or(MergeError::InvalidGroupedSum)?)
+            } else {
+                None
+            };
+            let mut indices = groups.iter().enumerate()
+                .map(|(index, (key, _, _))| {
+                    key_kind.map_or(Ok(None), |kind| {
+                        parse_group_sort_key(key, kind).map(Some)
+                    }).map(|parsed| (index, parsed))
+                })
+                .collect::<Result<Vec<_>, MergeError>>()?;
+            indices.sort_by(|(left, left_key), (right, right_key)| {
+                for order in &terms {
+                    let compare = if order.column == "#aggregate" {
+                        let l = &groups[*left];
+                        let r = &groups[*right];
+                        let cmp = if unsigned { l.2.cmp(&r.2) } else { l.1.cmp(&r.1) };
+                        let a_null = if unsigned { l.2.is_none() } else { l.1.is_none() };
+                        let b_null = if unsigned { r.2.is_none() } else { r.1.is_none() };
+                        match (a_null, b_null, order.nulls_first) {
+                            (true, false, Some(true)) => std::cmp::Ordering::Less,
+                            (false, true, Some(true)) => std::cmp::Ordering::Greater,
+                            (true, false, Some(false)) => std::cmp::Ordering::Greater,
+                            (false, true, Some(false)) => std::cmp::Ordering::Less,
+                            _ => if order.descending { cmp.reverse() } else { cmp },
+                        }
+                    } else {
+                        compare_group_sort_keys(
+                            left_key.as_ref().expect("verified group key"),
+                            right_key.as_ref().expect("verified group key"),
+                            order.descending,
+                            order.nulls_first,
+                        )
+                    };
+                    if compare != std::cmp::Ordering::Equal {
+                        return compare;
+                    }
                 }
+                std::cmp::Ordering::Equal
             });
+            groups = indices.into_iter().map(|(index, _)| groups[index]).collect();
         }
         groups = groups
             .into_iter()
@@ -1592,7 +1640,9 @@ pub fn handle(method: &str, body: &[u8], cluster: &Cluster, max_rows: usize) -> 
                 if select.having.is_some() || select.order_by.is_some()
                     || select.limit.is_some() || select.offset.is_some()
                 {
-                    merge_grouped_integer_sums_query(&shards, limit, kind, key, value, Some(&select))
+                    merge_grouped_integer_sums_typed(
+                        &shards, limit, kind, key, value, Some(&select), group_key_kind.as_deref(),
+                    )
                 } else {
                     merge_grouped_integer_sums(&shards, limit, kind, key, value)
                 }
@@ -2029,6 +2079,32 @@ mod tests {
             merge_grouped_counts_typed(&[shard(10, "category\tcount\n\\q\t1\n")], 10,
                 Some(&query), Some("String")),
             Err(MergeError::InvalidGroupedCount)
+        );
+    }
+
+    #[test]
+    fn distributed_grouped_sum_orders_by_typed_key_then_value() {
+        let sql = "SELECT customer, sum(amount) FROM events GROUP BY customer ORDER BY customer ASC, 2 DESC LIMIT 2";
+        let query = parse_select(sql).unwrap();
+        assert!(is_safe_grouped_sum(&query));
+        let shards = [
+            shard(10, "customer\tsum(amount)\n10\t9\n2\t2\n1\t4\n"),
+            shard(10, "customer\tsum(amount)\n10\t5\n2\t8\n1\t1\n"),
+        ];
+        assert_eq!(
+            merge_grouped_integer_sums_typed(
+                &shards, 2, "UInt64", "customer", "amount", Some(&query), Some("UInt64"),
+            ).unwrap(),
+            b"customer\tsum(amount)\n1\t5\n2\t10\n"
+        );
+        let by_sum = parse_select(
+            "SELECT customer, sum(amount) FROM events GROUP BY customer ORDER BY 2 DESC, customer ASC LIMIT 2",
+        ).unwrap();
+        assert_eq!(
+            merge_grouped_integer_sums_typed(
+                &shards, 2, "UInt64", "customer", "amount", Some(&by_sum), Some("UInt64"),
+            ).unwrap(),
+            b"customer\tsum(amount)\n10\t14\n2\t10\n"
         );
     }
     #[test]
