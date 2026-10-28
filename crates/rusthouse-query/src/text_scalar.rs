@@ -59,6 +59,7 @@ pub(super) fn is_function(name: &str) -> bool {
             | "STRIP_PREFIX"
             | "RIGHT"
             | "BASE64_ENCODE"
+            | "HASTOKENCASEINSENSITIVE"
             | "ENDS_WITH"
             | "REPLACE_LAST"
             | "STRIP_SUFFIX"
@@ -1068,6 +1069,28 @@ fn parse_at_depth(parser: &mut Parser, depth: usize) -> Result<ConstantValue, Pa
                     } else {
                         ConstantValue::Text(input)
                     }
+                }
+                _ => ConstantValue::Null,
+            }
+        }
+        "HASTOKENCASEINSENSITIVE" => {
+            let input = text_arg(parser, depth + 1)?;
+            require(parser, Token::Comma, "hasTokenCaseInsensitive requires a token")?;
+            let token = text_arg(parser, depth + 1)?;
+            require(parser, Token::RParen, "expected ')' after hasTokenCaseInsensitive")?;
+            match (input, token) {
+                (Some(input), Some(token)) => {
+                    if token.is_empty() || !token.bytes().all(|byte|
+                        byte.is_ascii_alphanumeric() || byte == b'_'
+                    ) {
+                        return Err(ParseError(
+                            "hasTokenCaseInsensitive requires a single ASCII token".into(),
+                        ));
+                    }
+                    let found = input
+                        .split(|ch: char| !ch.is_ascii_alphanumeric() && ch != '_')
+                        .any(|word| word.eq_ignore_ascii_case(&token));
+                    ConstantValue::Integer(i64::from(found))
                 }
                 _ => ConstantValue::Null,
             }
