@@ -17,7 +17,39 @@ enum JsonKind<'a> {
     Object(Vec<(String, JsonValue<'a>)>),
 }
 
+/// Case-insensitive ClickHouse JSON extraction path, with 1-based array indices.
+pub(crate) enum CasePathStep {
+    Key(String),
+    Index(i64),
+}
+
 impl<'a> JsonValue<'a> {
+    pub(crate) fn at_case_path(&self, steps: &[CasePathStep]) -> Option<&Self> {
+        let mut value = self;
+        for step in steps {
+            value = match (&value.kind, step) {
+                (JsonKind::Object(fields), CasePathStep::Key(key)) => fields
+                    .iter()
+                    .rev()
+                    .find(|(name, _)| name.eq_ignore_ascii_case(key))
+                    .map(|(_, value)| value)?,
+                (JsonKind::Array(items), CasePathStep::Index(position)) => {
+                    let index = if *position > 0 {
+                        usize::try_from(*position).ok()?.checked_sub(1)?
+                    } else if *position < 0 {
+                        items.len().checked_sub(usize::try_from(position.unsigned_abs()).ok()?)?
+                    } else {
+                        return None;
+                    };
+                    items.get(index)?
+                }
+                _ => return None,
+            };
+        }
+        Some(value)
+    }
+
+
     pub(crate) fn raw(&self) -> &str {
         self.raw
     }
