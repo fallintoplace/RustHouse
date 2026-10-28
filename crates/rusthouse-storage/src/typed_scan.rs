@@ -1,15 +1,16 @@
 //! Read typed batches from immutable wide MergeTree parts.
 //! This reader is deliberately separate from the optimized numeric-only scan.
 use crate::granules::{read_mark_bytes_cached, read_numeric_granule_cached};
+use crate::mark_validation::validate_wide_marks_reader;
 use crate::numeric::numeric_storage_type;
 use crate::query_parts;
 use crate::scan_layout::ScanLayout;
 use crate::{
-    ArrayOffsetsEncoding, CompressedBlockReader, DecodedBlock, NumericColumn, PartError, PartMetadata, StringColumn, UuidValue,
-    WideMark, inspect_part, read_array_offsets, read_legacy_strings, read_numeric_array_column,
-    read_numeric_column, read_uuid_values, read_wide_marks,
+    ArrayOffsetsEncoding, CompressedBlockReader, DecodedBlock, NumericColumn, PartError,
+    PartMetadata, StringColumn, UuidValue, WideMark, inspect_part, read_array_offsets,
+    read_legacy_strings, read_numeric_array_column, read_numeric_column, read_uuid_values,
+    read_wide_marks,
 };
-use crate::mark_validation::validate_wide_marks_reader;
 use std::fs::File;
 use std::io::{self, Read};
 use std::path::{Path, PathBuf};
@@ -194,9 +195,19 @@ impl StorageKind {
         {
             if matches!(
                 value_type,
-                "String" | "UInt8" | "UInt16" | "UInt32" | "UInt64" | "UInt128"
-                    | "Int8" | "Int16" | "Int32" | "Int64" | "Int128"
-                    | "Float32" | "Float64"
+                "String"
+                    | "UInt8"
+                    | "UInt16"
+                    | "UInt32"
+                    | "UInt64"
+                    | "UInt128"
+                    | "Int8"
+                    | "Int16"
+                    | "Int32"
+                    | "Int64"
+                    | "Int128"
+                    | "Float32"
+                    | "Float64"
             ) {
                 return Ok(Self::StringMap(value_type.to_owned()));
             }
@@ -207,9 +218,18 @@ impl StorageKind {
         {
             if matches!(
                 inner,
-                "UInt8" | "UInt16" | "UInt32" | "UInt64" | "UInt128"
-                    | "Int8" | "Int16" | "Int32" | "Int64" | "Int128"
-                    | "Float32" | "Float64"
+                "UInt8"
+                    | "UInt16"
+                    | "UInt32"
+                    | "UInt64"
+                    | "UInt128"
+                    | "Int8"
+                    | "Int16"
+                    | "Int32"
+                    | "Int64"
+                    | "Int128"
+                    | "Float32"
+                    | "Float64"
             ) {
                 return Ok(Self::NumericArray(data_type.to_owned()));
             }
@@ -329,15 +349,19 @@ fn read_string_key_map(
     } else {
         text_values = None;
         numeric_values = Some(
-            read_numeric_column(&mut MarkStream::open(values_stream, mark)?, value_type, count)
-                .map_err(|error| PartError::InvalidScan(error.to_string()))?,
+            read_numeric_column(
+                &mut MarkStream::open(values_stream, mark)?,
+                value_type,
+                count,
+            )
+            .map_err(|error| PartError::InvalidScan(error.to_string()))?,
         );
     }
     let mut encoded = Vec::new();
     for row in 0..rows {
-        let range = offsets.row_range(row).ok_or_else(|| {
-            PartError::InvalidScan("invalid Map row range".into())
-        })?;
+        let range = offsets
+            .row_range(row)
+            .ok_or_else(|| PartError::InvalidScan("invalid Map row range".into()))?;
         let mut output = String::from("{");
         for element in range {
             if output.len() > 1 {
@@ -345,17 +369,16 @@ fn read_string_key_map(
             }
             quoted_map_text(
                 &mut output,
-                keys.get(element).ok_or_else(|| {
-                    PartError::InvalidScan("missing Map key".into())
-                })?,
+                keys.get(element)
+                    .ok_or_else(|| PartError::InvalidScan("missing Map key".into()))?,
             )?;
             output.push(':');
             if let Some(values) = &text_values {
                 quoted_map_text(
                     &mut output,
-                    values.get(element).ok_or_else(|| {
-                        PartError::InvalidScan("missing Map String value".into())
-                    })?,
+                    values
+                        .get(element)
+                        .ok_or_else(|| PartError::InvalidScan("missing Map String value".into()))?,
                 )?;
             } else if let Some(values) = &numeric_values {
                 output.push_str(&map_numeric_text(values, element));
@@ -610,9 +633,10 @@ impl TypedPartReader {
                     let values = column.map_values.as_mut().ok_or_else(|| {
                         PartError::InvalidScan("missing Map values stream".into())
                     })?;
-                    let sizes = column.map_sizes.as_mut().ok_or_else(|| {
-                        PartError::InvalidScan("missing Map size stream".into())
-                    })?;
+                    let sizes = column
+                        .map_sizes
+                        .as_mut()
+                        .ok_or_else(|| PartError::InvalidScan("missing Map size stream".into()))?;
                     TypedColumn::Text(read_string_key_map(
                         &mut column.data,
                         values,
@@ -883,25 +907,18 @@ mod tests {
             .collect::<Vec<_>>();
         write_wide_part(&part, &columns, &rows).unwrap();
         let metadata = crate::inspect_query_source(&part).unwrap();
-        let mut snapshot = TypedQueryReader::open_with_metadata(
-            &part,
-            &["id".into(), "note".into()],
-            &metadata,
-        ).unwrap();
+        let mut snapshot =
+            TypedQueryReader::open_with_metadata(&part, &["id".into(), "note".into()], &metadata)
+                .unwrap();
         let mut scanned = 0;
         while let Some(batch) = snapshot.next_batch().unwrap() {
             scanned += batch[0].len();
         }
         assert_eq!(scanned, 2050);
         assert!(matches!(
-            TypedQueryReader::open_with_metadata(
-                &root,
-                &["id".into()],
-                &metadata,
-            ),
+            TypedQueryReader::open_with_metadata(&root, &["id".into()], &metadata,),
             Err(PartError::InvalidScan(_))
         ));
-
 
         let mut reader = TypedPartReader::open(&part, &["id".into(), "note".into()]).unwrap();
         assert_eq!(reader.mark_count(), 3);

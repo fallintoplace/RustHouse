@@ -53,19 +53,39 @@ fn numeric_array_inner_type(kind: &str) -> Option<&str> {
     let inner = kind.strip_prefix("Array(")?.strip_suffix(')')?;
     matches!(
         inner,
-        "UInt8" | "UInt16" | "UInt32" | "UInt64" | "UInt128"
-            | "Int8" | "Int16" | "Int32" | "Int64" | "Int128"
-            | "Float32" | "Float64"
-    ).then_some(inner)
+        "UInt8"
+            | "UInt16"
+            | "UInt32"
+            | "UInt64"
+            | "UInt128"
+            | "Int8"
+            | "Int16"
+            | "Int32"
+            | "Int64"
+            | "Int128"
+            | "Float32"
+            | "Float64"
+    )
+    .then_some(inner)
 }
 
 fn map_string_value_type(kind: &str) -> Option<&str> {
     let value = kind.strip_prefix("Map(String, ")?.strip_suffix(')')?;
     matches!(
         value,
-        "String" | "UInt8" | "UInt16" | "UInt32" | "UInt64" | "UInt128"
-            | "Int8" | "Int16" | "Int32" | "Int64" | "Int128"
-            | "Float32" | "Float64"
+        "String"
+            | "UInt8"
+            | "UInt16"
+            | "UInt32"
+            | "UInt64"
+            | "UInt128"
+            | "Int8"
+            | "Int16"
+            | "Int32"
+            | "Int64"
+            | "Int128"
+            | "Float32"
+            | "Float64"
     )
     .then_some(value)
 }
@@ -288,9 +308,8 @@ pub fn write_wide_part_with_compression(
                 // A fixed-width column's final granule size is known
                 // before encoding. Reserve it once instead of growing at
                 // every row; nullable maps have exactly one byte per row.
-                let mut data = Vec::with_capacity(
-                    granule.len() * fixed_width_bytes_per_row(&col.data_type),
-                );
+                let mut data =
+                    Vec::with_capacity(granule.len() * fixed_width_bytes_per_row(&col.data_type));
                 let mut nulls = Vec::with_capacity(if nullable { granule.len() } else { 0 });
                 for row in granule {
                     let null = push_cell(&col.data_type, row[index].as_deref(), &mut data)?;
@@ -757,7 +776,10 @@ mod tests {
 #[cfg(test)]
 mod map_writer_tests {
     use super::*;
-    use crate::{ArrayOffsetsEncoding, NumericColumn, read_array_offsets, read_legacy_strings, read_numeric_column};
+    use crate::{
+        ArrayOffsetsEncoding, NumericColumn, read_array_offsets, read_legacy_strings,
+        read_numeric_column,
+    };
     use std::sync::atomic::{AtomicUsize, Ordering};
 
     static NEXT: AtomicUsize = AtomicUsize::new(0);
@@ -805,12 +827,8 @@ mod map_writer_tests {
         assert_eq!(keys.get(0), Some(&b"a"[..]));
         assert_eq!(keys.get(1), Some(&b"a"[..]));
         assert_eq!(keys.get(3), Some(&b"unicode key"[..]));
-        let values = read_numeric_column(
-            &mut values.as_slice(),
-            "UInt16",
-            offsets.element_count(),
-        )
-        .unwrap();
+        let values =
+            read_numeric_column(&mut values.as_slice(), "UInt16", offsets.element_count()).unwrap();
         assert_eq!(values, NumericColumn::UInt16(vec![1, 2, 65535, 7]));
         std::fs::remove_dir_all(root).unwrap();
     }
@@ -923,9 +941,7 @@ mod numeric_array_writer_tests {
             );
             assert!(!part.exists(), "{value}");
         }
-        assert!(
-            write_wide_part(&dir.join("reject-null"), &columns, &[vec![None]]).is_err()
-        );
+        assert!(write_wide_part(&dir.join("reject-null"), &columns, &[vec![None]]).is_err());
         assert!(
             write_wide_part(
                 &dir.join("reject-nested"),

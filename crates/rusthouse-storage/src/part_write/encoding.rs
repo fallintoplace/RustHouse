@@ -8,7 +8,11 @@ pub(super) fn push_varuint(mut value: u64, output: &mut Vec<u8>) {
     output.push(value as u8);
 }
 
-pub(super) fn push_cell(kind: &str, value: Option<&str>, output: &mut Vec<u8>) -> Result<bool, PartError> {
+pub(super) fn push_cell(
+    kind: &str,
+    value: Option<&str>,
+    output: &mut Vec<u8>,
+) -> Result<bool, PartError> {
     let (base, nullable) = base_type(kind);
     let is_null = value.is_none();
     if is_null && !nullable {
@@ -145,8 +149,7 @@ fn read_map_string(input: &str, position: &mut usize) -> Result<String, PartErro
                     if !(0xDC00..=0xDFFF).contains(&low) {
                         return Err(invalid("invalid Map Unicode surrogate pair"));
                     }
-                    0x10000 + (u32::from(first - 0xD800) << 10)
-                        + u32::from(low - 0xDC00)
+                    0x10000 + (u32::from(first - 0xD800) << 10) + u32::from(low - 0xDC00)
                 } else {
                     if (0xDC00..=0xDFFF).contains(&first) {
                         return Err(invalid("isolated Map Unicode low surrogate"));
@@ -198,9 +201,10 @@ pub(super) fn push_string_key_map(
                 read_map_string(literal, &mut cursor)?
             } else {
                 let begin = cursor;
-                while bytes.get(cursor).is_some_and(|byte| {
-                    !matches!(byte, b',' | b'}') && !byte.is_ascii_whitespace()
-                }) {
+                while bytes
+                    .get(cursor)
+                    .is_some_and(|byte| !matches!(byte, b',' | b'}') && !byte.is_ascii_whitespace())
+                {
                     cursor += 1;
                 }
                 if cursor == begin {
@@ -210,7 +214,9 @@ pub(super) fn push_string_key_map(
             };
             push_cell("String", Some(&key), keys)?;
             push_cell(value_type, Some(&value), values)?;
-            pairs = pairs.checked_add(1).ok_or_else(|| invalid("Map has too many pairs"))?;
+            pairs = pairs
+                .checked_add(1)
+                .ok_or_else(|| invalid("Map has too many pairs"))?;
             skip_map_ws(bytes, &mut cursor);
             match bytes.get(cursor) {
                 Some(b',') => {
@@ -253,7 +259,9 @@ pub(super) fn push_numeric_array(
                 return Err(invalid("Array cannot contain an empty element"));
             }
             push_cell(inner, Some(value), elements)?;
-            count = count.checked_add(1).ok_or_else(|| invalid("Array has too many elements"))?;
+            count = count
+                .checked_add(1)
+                .ok_or_else(|| invalid("Array has too many elements"))?;
         }
     }
     sizes.extend_from_slice(&count.to_le_bytes());
