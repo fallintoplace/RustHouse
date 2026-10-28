@@ -48,6 +48,9 @@ fn describe_projection(projection: &Projection) -> String {
         Projection::TopK { column, k } => {
             format!("Aggregate: topK({k})({column}) [bounded SpaceSaving]")
         }
+        Projection::GroupedTopK { column, value_column, k } => {
+            format!("Aggregate: GROUP BY {column}, topK({k})({value_column}) [bounded SpaceSaving]")
+        }
         Projection::GroupedCount { column } => {
             format!("Aggregate: GROUP BY {column}, count(*)")
         }
