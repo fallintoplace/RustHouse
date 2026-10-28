@@ -1,3 +1,7 @@
+mod comparison;
+
+use self::comparison::*;
+
 use super::{ExecutionError, Number, NumberKey, number_at};
 use crate::{Operator, Predicate, Select};
 use rusthouse_storage::NumericColumn;
@@ -17,6 +21,12 @@ pub(super) enum CompiledTest {
         lower: Number,
         upper: Number,
     },
+    DistinctFrom {
+        target: Number,
+        negated: bool,
+    },
+    /// Constant predicate for non-Nullable generated numeric columns.
+    Always(bool),
     InSet {
         targets: HashSet<NumberKey>,
         negated: bool,
@@ -42,6 +52,12 @@ impl CompiledTest {
     pub(super) fn matches(&self, value: Number) -> bool {
         match self {
             Self::Comparison { operator, target } => number_matches(value, *target, *operator),
+            Self::DistinctFrom { target, negated } => {
+                let equal = matches!((value, *target), (Number::Float(left), Number::Float(right)) if left.is_nan() && right.is_nan())
+                    || number_matches(value, *target, Operator::Eq);
+                equal == *negated
+            }
+            Self::Always(value) => *value,
             Self::In(targets) => targets
                 .iter()
                 .any(|target| number_matches(value, *target, Operator::Eq)),
@@ -65,75 +81,6 @@ impl CompiledTest {
 pub(super) struct CompiledPredicate {
     index: usize,
     test: CompiledTest,
-}
-
-fn compile_predicate_test(
-    predicate: &Predicate,
-    column: &str,
-    convert: &mut impl FnMut(&str, &str) -> Result<Number, ExecutionError>,
-) -> Result<CompiledTest, ExecutionError> {
-    Ok(match predicate {
-        Predicate::Comparison {
-            operator, value, ..
-        } => {
-            let target = convert(column, value)?;
-            if matches!(*operator, Operator::Modulo(_) | Operator::ModuloNe(_))
-                && matches!(target, Number::Float(_))
-            {
-                return Err(ExecutionError::Invalid(
-                    "modulo requires integer columns".into(),
-                ));
-            }
-            CompiledTest::Comparison {
-                operator: *operator,
-                target,
-            }
-        }
-        Predicate::In { values, .. } | Predicate::NotIn { values, .. } => compile_in_test(
-            values
-                .iter()
-                .map(|value| convert(column, value))
-                .collect::<Result<Vec<_>, _>>()?,
-            matches!(predicate, Predicate::NotIn { .. }),
-        ),
-        Predicate::IsNull { .. } => {
-            return Err(ExecutionError::Invalid(
-                "IS NULL requires a typed scan".into(),
-            ));
-        }
-        Predicate::Like { .. } => {
-            return Err(ExecutionError::Invalid(
-                "LIKE requires a String column".into(),
-            ));
-        }
-        Predicate::NotBetween { lower, upper, .. } => CompiledTest::NotBetween {
-            lower: convert(column, lower)?,
-            upper: convert(column, upper)?,
-        },
-    })
-}
-
-fn compile_part_predicates(
-    predicates: &[Predicate],
-    scan_columns: &mut Vec<String>,
-    mut convert: impl FnMut(&str, &str) -> Result<Number, ExecutionError>,
-) -> Result<Vec<CompiledPredicate>, ExecutionError> {
-    let mut compiled = Vec::with_capacity(predicates.len());
-    for predicate in predicates {
-        let column = predicate.column();
-        let test = compile_predicate_test(predicate, column, &mut convert)?;
-        let index = if let Some(index) = scan_columns
-            .iter()
-            .position(|candidate| candidate.as_str() == column)
-        {
-            index
-        } else {
-            scan_columns.push(column.to_owned());
-            scan_columns.len() - 1
-        };
-        compiled.push(CompiledPredicate { index, test });
-    }
-    Ok(compiled)
 }
 
 pub(super) fn batch_matches(
@@ -393,20 +340,6 @@ pub(super) fn number_matches(value: Number, target: Number, operator: Operator) 
         (Number::Signed(value), Number::Signed(target)) => compare(value, target, operator),
         (Number::Float(value), Number::Float(target)) => compare(value, target, operator),
         _ => false,
-    }
-}
-
-fn compare<T: PartialOrd>(value: T, target: T, operator: Operator) -> bool {
-    match operator {
-        Operator::Eq => value == target,
-        Operator::Ne => value != target,
-        Operator::Lt => value < target,
-        Operator::Le => value <= target,
-        Operator::Gt => value > target,
-        Operator::Ge => value >= target,
-        Operator::Modulo(_) | Operator::ModuloNe(_) => {
-            unreachable!("modulo handled before comparison")
-        }
     }
 }
 

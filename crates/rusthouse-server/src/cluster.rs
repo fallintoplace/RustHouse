@@ -18,6 +18,24 @@ pub fn is_private_address(address: Ipv4Addr) -> bool {
     }
 }
 
+fn permitted_peer(address: Ipv4Addr, allow_private_network: bool) -> bool {
+    address == Ipv4Addr::LOCALHOST
+        || (allow_private_network && is_private_address(address))
+}
+
+fn validate_peer_address(
+    address: &SocketAddrV4,
+    allow_private_network: bool,
+) -> Result<(), &'static str> {
+    if address.port() == 0 {
+        return Err("peer port must be nonzero");
+    }
+    if !permitted_peer(*address.ip(), allow_private_network) {
+        return Err("remote peers require --allow-private-network and private IPv4");
+    }
+    Ok(())
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Peer {
     address: SocketAddrV4,
@@ -35,14 +53,7 @@ impl Peer {
         let address: SocketAddrV4 = address
             .parse()
             .map_err(|_| "peers must use a numeric IPv4 address and port")?;
-        if address.port() == 0 {
-            return Err("peer port must be nonzero");
-        }
-        if *address.ip() != Ipv4Addr::LOCALHOST
-            && (!allow_private_network || !is_private_address(*address.ip()))
-        {
-            return Err("remote peers require --allow-private-network and private IPv4");
-        }
+        validate_peer_address(&address, allow_private_network)?;
         Ok(Self { address })
     }
 

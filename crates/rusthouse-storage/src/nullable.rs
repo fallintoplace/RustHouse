@@ -93,6 +93,17 @@ fn nullable_inner_type(data_type: &str) -> Result<&str, NullableReadError> {
         .ok_or_else(|| NullableReadError::InvalidType(data_type.to_owned()))
 }
 
+fn read_nullable_values<N: Read, T, E>(
+    nulls: &mut N,
+    rows: usize,
+    read_values: impl FnOnce() -> Result<T, E>,
+    map_error: impl FnOnce(E) -> NullableReadError,
+) -> Result<NullableColumn<T>, NullableReadError> {
+    let null_map = read_null_map(nulls, rows)?;
+    let values = read_values().map_err(map_error)?;
+    Ok(NullableColumn { null_map, values })
+}
+
 pub fn read_nullable_numeric_column<N: Read, D: Read>(
     nulls: &mut N,
     data: &mut D,
@@ -103,10 +114,12 @@ pub fn read_nullable_numeric_column<N: Read, D: Read>(
     if read_numeric_column(&mut io::empty(), nested_type, 0).is_err() {
         return Err(NullableReadError::InvalidType(data_type.to_owned()));
     }
-    let null_map = read_null_map(nulls, rows)?;
-    let values =
-        read_numeric_column(data, nested_type, rows).map_err(NullableReadError::Numeric)?;
-    Ok(NullableColumn { null_map, values })
+    read_nullable_values(
+        nulls,
+        rows,
+        || read_numeric_column(data, nested_type, rows),
+        NullableReadError::Numeric,
+    )
 }
 
 pub fn read_nullable_fixed_strings<N: Read, D: Read>(
@@ -122,10 +135,12 @@ pub fn read_nullable_fixed_strings<N: Read, D: Read>(
     crate::fixed_strings::checked_size(nested_type, rows)
         .map_err(NullableReadError::FixedString)?;
 
-    let null_map = read_null_map(nulls, rows)?;
-    let values =
-        read_fixed_strings(data, nested_type, rows).map_err(NullableReadError::FixedString)?;
-    Ok(NullableColumn { null_map, values })
+    read_nullable_values(
+        nulls,
+        rows,
+        || read_fixed_strings(data, nested_type, rows),
+        NullableReadError::FixedString,
+    )
 }
 
 fn read_nullable_strings<N: Read>(
@@ -133,9 +148,7 @@ fn read_nullable_strings<N: Read>(
     rows: usize,
     read_values: impl FnOnce() -> Result<StringColumn, StringReadError>,
 ) -> Result<NullableColumn<StringColumn>, NullableReadError> {
-    let null_map = read_null_map(nulls, rows)?;
-    let values = read_values().map_err(NullableReadError::String)?;
-    Ok(NullableColumn { null_map, values })
+    read_nullable_values(nulls, rows, read_values, NullableReadError::String)
 }
 
 pub fn read_nullable_legacy_strings<N: Read, D: Read>(

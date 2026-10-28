@@ -1,0 +1,14 @@
+{
+  "name": "having-group-filter",
+  "description": "group cardinality filtering with HAVING",
+  "queries": [
+    {
+      "name": "popular-categories",
+      "sql": "SELECT category, COUNT(*) FROM events GROUP BY category HAVING COUNT(*) >= 10 ORDER BY category"
+    },
+    {
+      "name": "frequent-regions",
+      "sql": "SELECT region, COUNT(*) FROM events GROUP BY region HAVING COUNT(*) > 20 ORDER BY region"
+    }
+  ]
+}

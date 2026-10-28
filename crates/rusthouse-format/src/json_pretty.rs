@@ -1,16 +1,19 @@
 //! Shared pretty-printing for complete, validated JSONL rows.
 use std::io::{self, Write};
 
-fn write_indent<W: Write>(output: &mut W, depth: usize) -> io::Result<()> {
-    output.write_all(b"\n")?;
+fn write_spaces<W: Write>(output: &mut W, mut remaining: usize) -> io::Result<()> {
     let spaces = [b' '; 64];
-    let mut remaining = (depth + 1) * 2;
     while remaining > 0 {
         let count = remaining.min(spaces.len());
         output.write_all(&spaces[..count])?;
         remaining -= count;
     }
     Ok(())
+}
+
+fn write_indent<W: Write>(output: &mut W, depth: usize) -> io::Result<()> {
+    output.write_all(b"\n")?;
+    write_spaces(output, (depth + 1) * 2)
 }
 
 /// Pretty-print a validated JSON row, preserving punctuation inside strings.

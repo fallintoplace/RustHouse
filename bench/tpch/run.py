@@ -1,6 +1,8 @@
 #!/usr/bin/env python3
 """Run SQL compatibility and end-to-end latency checks against RustHouse."""
 import argparse
+from collections import Counter
+import hashlib
 import re
 import subprocess
 import sys
@@ -35,6 +37,15 @@ def load_queries(directory):
         raise ValueError("duplicate query numbers")
     return queries
 
+def query_fingerprint(queries):
+    digest = hashlib.sha256()
+    for number, sql in sorted(queries):
+        digest.update(f"q{number:02d}\\0".encode("ascii"))
+        digest.update(sql.encode("utf-8"))
+        digest.update(b"\\0")
+    return digest.hexdigest()
+
+
 def invoke(binary, database, sql, timeout):
     return cli_sql(binary, database, sql, timeout)
 
@@ -42,7 +53,17 @@ def invoke(binary, database, sql, timeout):
 def summary(seconds):
     return latency_summary(seconds)
 
-def benchmark_one(number, sql, execute, runs, warmups, reference=None):
+def compare_reference(actual, reference, mode="exact"):
+    if mode == "exact":
+        return actual == reference
+    if mode == "unordered":
+        return Counter(actual.splitlines(keepends=True)) == Counter(
+            reference.splitlines(keepends=True)
+        )
+    raise ValueError(f"unknown reference comparison mode: {mode}")
+
+
+def benchmark_one(number, sql, execute, runs, warmups, reference=None, comparison="exact"):
     elapsed = []
     status = "unverified" if reference is None else "passed"
     error = None
@@ -56,7 +77,7 @@ def benchmark_one(number, sql, execute, runs, warmups, reference=None):
         except (OSError, RuntimeError, ValueError) as exc:
             status, error = "error", str(exc)
             break
-        if reference is not None and output != reference:
+        if reference is not None and not compare_reference(output, reference, comparison):
             status, error = "mismatch", "output differs from reference bytes"
             break
         if started is not None:
@@ -85,13 +106,35 @@ def summarize_coverage(results):
     }
 
 
+def official_22_coverage(queries):
+    present = {number for number, _ in queries}
+    expected = set(range(1, 23))
+    return {
+        "available_queries": len(present & expected),
+        "missing_query_ids": sorted(expected - present),
+        "unexpected_query_ids": sorted(present - expected),
+        "coverage_percent": round(100 * len(present & expected) / 22, 2),
+    }
+
+
 def select_queries(queries, spec):
-    if not spec:
+    if spec is None:
         return queries
+    selected = set()
     try:
-        selected = {int(fragment) for fragment in spec.split(",")}
+        for fragment in spec.split(","):
+            parts = fragment.strip().split("-")
+            if not 1 <= len(parts) <= 2 or not all(
+                part.isascii() and part.isdecimal() for part in parts
+            ):
+                raise ValueError("invalid query ID or range")
+            first = int(parts[0])
+            last = int(parts[-1])
+            if first < 1 or last < first or last > 99:
+                raise ValueError("query IDs must be in increasing order within 1..99")
+            selected.update(range(first, last + 1))
     except ValueError as exc:
-        raise ValueError("--only must contain comma-separated integer IDs") from exc
+        raise ValueError("--only must contain query IDs or ranges such as 1,6,10-12") from exc
     available = {number for number, _ in queries}
     if not selected or not selected.issubset(available):
         raise ValueError("--only contains an unavailable query ID")
@@ -104,13 +147,21 @@ def main(argv=None):
     parser.add_argument("--database", type=Path, required=True)
     parser.add_argument("--queries-dir", type=Path, required=True)
     parser.add_argument("--reference-dir", type=Path)
+    parser.add_argument("--comparison", choices=("exact", "unordered"), default="exact",
+                        help="Compare row order exactly or as a multiset")
+    parser.add_argument("--require-verified", action="store_true",
+                        help="Require golden output for every measured query")
     parser.add_argument("--only", help="Comma-separated query IDs, e.g. 1,6,12")
+    parser.add_argument("--require-22", action="store_true",
+                        help="Reject query directories missing any of the 22 official IDs")
     parser.add_argument("--runs", type=int, default=5)
     parser.add_argument("--warmups", type=int, default=1)
     parser.add_argument("--timeout", type=float, default=120)
     parser.add_argument("--expected-lineitem-rows", type=int)
     parser.add_argument("--output", type=Path)
     args = parser.parse_args(argv)
+    if args.require_verified and args.reference_dir is None:
+        parser.error("--require-verified needs --reference-dir")
     if args.runs < 1 or args.warmups < 0 or args.timeout <= 0:
         parser.error("runs and timeout must be positive; warmups cannot be negative")
     if args.expected_lineitem_rows is not None and args.expected_lineitem_rows < 0:
@@ -120,6 +171,10 @@ def main(argv=None):
     except (OSError, ValueError) as exc:
         parser.error(str(exc))
     try:
+        official_coverage = official_22_coverage(queries)
+        if args.require_22 and (official_coverage["missing_query_ids"]
+                                or official_coverage["unexpected_query_ids"]):
+            parser.error("query directory must contain exactly q01.sql to q22.sql")
         queries = select_queries(queries, args.only)
     except ValueError as exc:
         parser.error(str(exc))
@@ -147,17 +202,23 @@ def main(argv=None):
                 continue
             reference = path.read_bytes()
         results.append(benchmark_one(
-            number, sql, execute, args.runs, args.warmups, reference
+            number, sql, execute, args.runs, args.warmups, reference,
+            comparison=args.comparison,
         ))
     report = {
         "engine": "rusthouse-cli",
         "timing_scope": "end-to-end CLI invocation, excluding query load and preflight",
         "runs": args.runs, "warmups": args.warmups,
+        "query_sha256": query_fingerprint(queries),
         "reference_checked": args.reference_dir is not None,
+        "comparison": args.comparison,
         "coverage": summarize_coverage(results),
+        "official_22_coverage": official_coverage,
         "results": results,
     }
     emit_json(report, args.output)
+    if args.require_verified:
+        return int(any(result["status"] != "passed" for result in results))
     return int(any(result["status"] not in ("passed", "unverified") for result in results))
 
 if __name__ == "__main__":

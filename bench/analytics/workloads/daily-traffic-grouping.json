@@ -1,0 +1,14 @@
+{
+  "name": "daily-traffic-grouping",
+  "description": "bounded grouped daily traffic scans",
+  "queries": [
+    {
+      "name": "daily-counts",
+      "sql": "SELECT event_date, COUNT(*) FROM events GROUP BY event_date ORDER BY event_date LIMIT 30"
+    },
+    {
+      "name": "paid-daily-counts",
+      "sql": "SELECT event_date, COUNT(*) FROM events WHERE status = 'paid' GROUP BY event_date ORDER BY event_date LIMIT 30"
+    }
+  ]
+}
