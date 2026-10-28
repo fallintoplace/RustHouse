@@ -41,6 +41,11 @@ impl ResumeMap {
     }
 
     pub fn remaining(&self) -> Vec<usize> {
+        // Fresh transfers have no completed bits: construct the complete
+        // index range with its final allocation size in one pass.
+        if self.completed.iter().all(|&byte| byte == 0) {
+            return (0..self.chunks).collect();
+        }
         let mut missing = Vec::new();
         for (byte_index, &completed) in self.completed.iter().enumerate() {
             let mut bits = !completed;
