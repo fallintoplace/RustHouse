@@ -115,9 +115,14 @@ fn request(peer: Peer, method: &str, path: &str, body: &[u8]) -> Result<PeerResp
     stream
         .set_write_timeout(Some(IO_TIMEOUT))
         .map_err(|error| error.to_string())?;
+    let accept_encoding = if method == "POST" && path == "/" {
+        "Accept-Encoding: x-rusthouse-lz4\r\n"
+    } else {
+        ""
+    };
     write!(
         stream,
-        "{method} {path} HTTP/1.1\r\nHost: {}\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+        "{method} {path} HTTP/1.1\r\nHost: {}\r\nContent-Length: {}\r\n{accept_encoding}Connection: close\r\n\r\n",
         peer.address().ip(),
         body.len()
     )
