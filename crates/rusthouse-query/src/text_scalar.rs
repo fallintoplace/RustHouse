@@ -22,6 +22,7 @@ pub(super) fn is_function(name: &str) -> bool {
             | "RTRIM"
             | "CUTQUERYSTRING"
             | "COLLAPSE_WHITESPACE"
+            | "TOSTARTOFFIFTEENMINUTES"
             | "LOWER"
             | "HEX_ENCODE"
             | "HEX"
@@ -310,6 +311,19 @@ fn parse_at_depth(parser: &mut Parser, depth: usize) -> Result<ConstantValue, Pa
                         .and_then(|length| i64::try_from(length).ok())
                         .ok_or_else(|| ParseError("BIT_LENGTH result exceeds Int64".into()))?;
                     ConstantValue::Integer(bits)
+                }
+                None => ConstantValue::Null,
+            }
+        }
+        "TOSTARTOFFIFTEENMINUTES" => {
+            let input = text_arg(parser, depth + 1)?;
+            require(parser, Token::RParen, "toStartOfFifteenMinutes requires one argument")?;
+            match input {
+                Some(value) => {
+                    let seconds = rusthouse_storage::parse_datetime(&value)
+                        .ok_or_else(|| ParseError("invalid UTC DateTime argument".into()))?;
+                    let bucket = seconds - seconds % 900;
+                    ConstantValue::Text(rusthouse_storage::format_datetime(bucket))
                 }
                 None => ConstantValue::Null,
             }
