@@ -31,6 +31,7 @@ pub mod distributed_activate;
 mod metadata;
 pub mod distributed_retention;
 mod nested_arrays;
+pub mod distributed_repair_budget;
 mod nullable;
 mod nullable_arrays;
 mod numeric;
