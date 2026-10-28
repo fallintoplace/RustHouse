@@ -828,6 +828,19 @@ pub(super) fn execute_aggregate_part<W: Write>(
         return Ok(());
     }
     let no_filters = query.predicates.is_empty() && query.or_predicates.is_empty();
+    // Exact radix selection needs only 256 counters per byte and a bounded
+    // number of repeated immutable scans, not a full materialized row array.
+    if function == AggregateFunction::Median && no_filters {
+        if let Some(kind) = metadata.columns.iter().find(|candidate| candidate.name == column) {
+            if super::radix_median::supports_type(&kind.data_type) {
+                let median = super::radix_median::median(part, column, &metadata)?;
+                if query.offset.unwrap_or(0) == 0 {
+                    writeln!(output, "{}", median.unwrap_or_else(|| "NULL".into()))?;
+                }
+                return Ok(());
+            }
+        }
+    }
     // For plain integer SUM without WHERE, operate on contiguous typed arrays
     // and avoid AggregateState dispatch and Number conversion on every row.
     let native_integer = metadata.columns.iter().any(|candidate| {
