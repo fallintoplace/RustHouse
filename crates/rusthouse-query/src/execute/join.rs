@@ -820,6 +820,7 @@ fn execute_streaming_inner_multi_grouped<W: Write>(
     right_count: u64,
     indices: &[usize],
     value_index: Option<usize>,
+    also_count: bool,
     header: &str,
     output: &mut W,
 ) -> Result<(), ExecutionError> {
@@ -832,7 +833,7 @@ fn execute_streaming_inner_multi_grouped<W: Write>(
         writeln!(output, "{header}")?;
         return Ok(());
     }
-    let mut groups = Vec::<(Vec<typed::Cell>, AggregateState)>::new();
+    let mut groups = Vec::<(Vec<typed::Cell>, AggregateState, Option<AggregateState>)>::new();
     let function = if value_index.is_some() {
         AggregateFunction::Sum
     } else {
@@ -865,16 +866,23 @@ fn execute_streaming_inner_multi_grouped<W: Write>(
                         total.checked_add(size)
                     }))
                     .ok_or_else(|| invalid("JOIN GROUP BY memory overflow"))?;
+                let additional = additional.checked_add(
+                    std::mem::size_of::<AggregateState>() * if also_count { 2 } else { 1 }
+                ).ok_or_else(|| invalid("JOIN GROUP BY memory overflow"))?;
                 used_bytes = used_bytes.checked_add(additional)
                     .ok_or_else(|| invalid("JOIN GROUP BY memory overflow"))?;
                 if used_bytes > MAX_GROUP_BYTES {
                     return Err(invalid("JOIN GROUP BY exceeds retained group memory budget"));
                 }
                 entry.insert(groups.len());
-                groups.push((values, AggregateState::new(function)));
+                groups.push((values, AggregateState::new(function),
+                    also_count.then(|| AggregateState::new(AggregateFunction::Count))));
                 groups.len() - 1
             }
         };
+        if let Some(count) = groups[group].2.as_mut() {
+            count.increment_count()?;
+        }
         if let Some(index) = value_index {
             match at(index) {
                 typed::Cell::Numeric(number) => groups[group].1.update(*number),
@@ -928,12 +936,12 @@ fn execute_streaming_inner_multi_grouped<W: Write>(
         }
     }
     if let Some(having) = &query.group_having {
-        groups.retain(|(_, state)| state.passes_having(having));
+        groups.retain(|(_, state, _)| state.passes_having(having));
     }
     let mut bounded_order = None;
     if let Some((descending, nulls_first)) = query.group_order_by {
-        let compare = |left: &(Vec<typed::Cell>, AggregateState),
-                       right: &(Vec<typed::Cell>, AggregateState)| {
+        let compare = |left: &(Vec<typed::Cell>, AggregateState, Option<AggregateState>),
+                       right: &(Vec<typed::Cell>, AggregateState, Option<AggregateState>)| {
             typed::compare_order_cells(
                 &left.1.sort_cell(), &right.1.sort_cell(), descending, nulls_first
             )
@@ -951,23 +959,28 @@ fn execute_streaming_inner_multi_grouped<W: Write>(
         } else { groups.sort_by(compare); }
     }
     writeln!(output, "{header}")?;
-    let write_group = |values: &[typed::Cell], state: &AggregateState, output: &mut W|
+    let write_group = |values: &[typed::Cell], state: &AggregateState,
+                       count: Option<&AggregateState>, output: &mut W|
         -> Result<(), ExecutionError> {
         for (i, value) in values.iter().enumerate() {
             if i != 0 { output.write_all(b"\t")?; }
             typed::write_value(output, value)?;
         }
-        writeln!(output, "\t{}", state.render())?;
+        if let Some(count) = count {
+            writeln!(output, "\t{}\t{}", state.render(), count.render())?;
+        } else {
+            writeln!(output, "\t{}", state.render())?;
+        }
         Ok(())
     };
     if let Some(positions) = bounded_order {
         for index in positions.into_iter().skip(query.offset) {
-            write_group(&groups[index].0, &groups[index].1, output)?;
+            write_group(&groups[index].0, &groups[index].1, groups[index].2.as_ref(), output)?;
         }
     } else {
-        for (values, state) in groups.into_iter()
+        for (values, state, count) in groups.into_iter()
             .skip(query.offset).take(query.limit.unwrap_or(usize::MAX)) {
-            write_group(&values, &state, output)?;
+            write_group(&values, &state, count.as_ref(), output)?;
         }
     }
     Ok(())
@@ -1454,7 +1467,7 @@ pub fn execute_join<W: Write>(
                 ).collect::<Vec<_>>().join("\t") + "\tcount";
                 execute_streaming_inner_multi_grouped(
                     query, left_path, right_path, columns,
-                    left_meta.rows, right_meta.rows, &indices, None, &header, output
+                    left_meta.rows, right_meta.rows, &indices, None, false, &header, output
                 )
             }
             JoinAggregate::GroupMultiSum { keys, value } => {
@@ -1478,7 +1491,31 @@ pub fn execute_join<W: Write>(
                     &format!("\tsum({}.{})", value.relation, value.name);
                 execute_streaming_inner_multi_grouped(
                     query, left_path, right_path, columns,
-                    left_meta.rows, right_meta.rows, &indices, Some(metric), &header, output
+                    left_meta.rows, right_meta.rows, &indices, Some(metric), false, &header, output
+                )
+            }
+            JoinAggregate::GroupSumCount { keys, value } => {
+                let indices = keys.iter().map(|column|
+                    resolve(query, column, &left_names, &right_names)
+                ).collect::<Result<Vec<_>, _>>()?;
+                let metric = resolve(query, value, &left_names, &right_names)?;
+                let data_type = if metric < width {
+                    &left_meta.columns[metric].data_type
+                } else {
+                    &right_meta.columns[metric - width].data_type
+                };
+                if !matches!(base_type(data_type),
+                    "UInt8" | "UInt16" | "UInt32" | "UInt64" | "UInt128" |
+                    "Int8" | "Int16" | "Int32" | "Int64" | "Int128") {
+                    return Err(invalid("fused JOIN SUM requires an exact integer column"));
+                }
+                let header = keys.iter().map(|key|
+                    format!("{}.{}", key.relation, key.name)
+                ).collect::<Vec<_>>().join("\t") +
+                    &format!("\tsum({}.{})\tcount", value.relation, value.name);
+                execute_streaming_inner_multi_grouped(
+                    query, left_path, right_path, columns,
+                    left_meta.rows, right_meta.rows, &indices, Some(metric), true, &header, output
                 )
             }
             JoinAggregate::GroupCount(column) => {
