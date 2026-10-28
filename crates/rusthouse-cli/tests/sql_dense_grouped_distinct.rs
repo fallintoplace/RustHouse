@@ -3,9 +3,8 @@ use std::process::Command;
 
 #[test]
 fn distinct_counts_preserve_sixteen_bit_group_keys_and_null_values() {
-    let db = std::env::temp_dir().join(format!(
-        "rusthouse-dense-group-distinct-{}", std::process::id()
-    ));
+    let db =
+        std::env::temp_dir().join(format!("rusthouse-dense-group-distinct-{}", std::process::id()));
     let sql = |query: &str| {
         Command::new(env!("CARGO_BIN_EXE_rusthouse"))
             .args(["sql", query, "--database"])
@@ -33,7 +32,11 @@ fn distinct_counts_preserve_sixteen_bit_group_keys_and_null_values() {
     ] {
         let result = sql(statement);
         assert!(result.status.success(), "{statement}: {result:?}");
-        assert_eq!(String::from_utf8(result.stdout).unwrap(), expected, "{statement}");
+        assert_eq!(
+            String::from_utf8(result.stdout).unwrap(),
+            expected,
+            "{statement}"
+        );
     }
     fs::remove_dir_all(db).unwrap();
 }
