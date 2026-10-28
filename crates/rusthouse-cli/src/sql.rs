@@ -45,6 +45,7 @@ impl SqlOutputFormat {
             Some("json") => Ok(Self::Json),
             Some("json-pretty") => Ok(Self::JsonPretty),
             Some("json-compact-each-row") => Ok(Self::JsonCompactEachRow),
+            Some("JSONCompactStringsEachRow") => Ok(Self::JsonCompactEachRow),
             Some("json-seq") => Ok(Self::JsonSeq),
             Some("markdown") => Ok(Self::Markdown),
             Some("html") => Ok(Self::Html),
