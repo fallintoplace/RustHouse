@@ -1175,7 +1175,7 @@ pub(super) fn execute_typed<W: Write>(
                 // materialize a second set of projected String/UUID cells.
                 distinct_probe.clear();
                 for &idx in &projection_indices {
-                    distinct_probe.push(cell(&batch[idx], index).key());
+                    distinct_probe.push(key_at(&batch[idx], index));
                 }
                 if distinct.contains(distinct_probe.as_slice()) {
                     continue;
