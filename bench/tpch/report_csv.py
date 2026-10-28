@@ -13,10 +13,17 @@ FIELDS = ("query", "status", "samples", "median_ms", "p90_ms", "error")
 def rows_from_report(report):
     if not isinstance(report, dict) or not isinstance(report.get("results"), list):
         raise ValueError("report must contain a results array")
+    if not report["results"]:
+        raise ValueError("report must contain query results")
     rows = []
+    seen = set()
     for result in report["results"]:
         if not isinstance(result, dict) or "query" not in result or "status" not in result:
             raise ValueError("each result needs query and status")
+        number = result["query"]
+        if type(number) is not int or number < 1 or number in seen:
+            raise ValueError("query IDs must be distinct positive integers")
+        seen.add(number)
         values = result.get("timings_seconds", [])
         latency = result.get("latency")
         if not isinstance(values, list):
