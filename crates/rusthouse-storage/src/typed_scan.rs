@@ -363,13 +363,16 @@ fn read_string_key_map(
             ),
         )
     };
-    let mut decoded_rows = Vec::with_capacity(rows);
+    let mut decoded = StringColumn::builder(rows)
+        .map_err(|error| PartError::InvalidScan(error.to_string()))?;
+    let mut output = String::new();
     let mut decoded_bytes = 0usize;
     for row in 0..rows {
         let range = offsets
             .row_range(row)
             .ok_or_else(|| PartError::InvalidScan("invalid Map row range".into()))?;
-        let mut output = String::from("{");
+        output.clear();
+        output.push('{');
         for element in range {
             if output.len() > 1 {
                 output.push(',');
@@ -396,12 +399,12 @@ fn read_string_key_map(
             .checked_add(output.len())
             .filter(|&bytes| bytes <= 64 * 1024 * 1024)
             .ok_or_else(|| PartError::InvalidScan("Map batch exceeds 64 MiB".into()))?;
-        decoded_rows.push(output.into_bytes());
+        decoded
+            .push_row(output.as_bytes())
+            .map_err(|error| PartError::InvalidScan(error.to_string()))?;
     }
-    // Avoid encoding Map text as legacy varints just to decode it back into
-    // the final StringColumn. The constructor still enforces the 64 MiB cap.
-    StringColumn::from_rows(decoded_rows)
-        .map_err(|error| PartError::InvalidScan(error.to_string()))
+    // Rows are already appended to the final contiguous StringColumn.
+    Ok(decoded)
 }
 
 struct ColumnReader {
@@ -989,4 +992,16 @@ mod map_row_fast_path_tests {
         assert_eq!(rows.get(0), Some(text.as_bytes()));
         assert_eq!(rows.get(1), Some(&b"{}"[..]));
     }
+
+    #[test]
+    fn map_row_scratch_buffer_retains_capacity_when_reused() {
+        let mut row = String::new();
+        row.push_str(&"value".repeat(1024));
+        let reserved = row.capacity();
+        row.clear();
+        row.push_str("{}");
+        assert_eq!(row, "{}");
+        assert!(row.capacity() >= reserved);
+    }
+
 }
