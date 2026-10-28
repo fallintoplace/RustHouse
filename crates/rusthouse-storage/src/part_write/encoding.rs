@@ -274,7 +274,15 @@ pub(super) fn checksum_hash(data: &[u8]) -> u128 {
 }
 
 pub(super) fn encode_checksums(files: &[FileChecksum]) -> Vec<u8> {
-    let mut bytes = b"checksums format version: 3\n".to_vec();
+    const HEADER: &[u8] = b"checksums format version: 3\n";
+    // Account for names, checksums, and bounded varuint fields so metadata
+    // encoding rarely needs to grow its buffer during part publication.
+    let capacity = files.iter().fold(HEADER.len() + 10, |size, file| {
+        size.saturating_add(file.name.len())
+            .saturating_add(if file.uncompressed.is_some() { 64 } else { 40 })
+    });
+    let mut bytes = Vec::with_capacity(capacity);
+    bytes.extend_from_slice(HEADER);
     push_varuint(files.len() as u64, &mut bytes);
     for file in files {
         push_varuint(file.name.len() as u64, &mut bytes);
@@ -291,4 +299,24 @@ pub(super) fn encode_checksums(files: &[FileChecksum]) -> Vec<u8> {
         }
     }
     bytes
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn checksum_preallocation_preserves_wire_bytes() {
+        let file = FileChecksum {
+            name: "a".into(),
+            size: 1,
+            hash: 0,
+            uncompressed: None,
+        };
+        let mut expected = b"checksums format version: 3\n".to_vec();
+        expected.extend_from_slice(&[1, 1, b'a', 1]);
+        expected.extend_from_slice(&0u128.to_le_bytes());
+        expected.push(0);
+        assert_eq!(encode_checksums(&[file]), expected);
+    }
 }
