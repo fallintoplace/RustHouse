@@ -44,6 +44,7 @@ pub(super) fn is_function(name: &str) -> bool {
             | "JSONHAS"
             | "JSONEXTRACTSTRING"
             | "JSONEXTRACTRAW"
+            | "JSONKEY"
             | "SUBSTRING"
             | "HASSUBSEQUENCECASEINSENSITIVE"
             | "OVERLAY"
@@ -1943,6 +1944,39 @@ fn parse_at_depth(parser: &mut Parser, depth: usize) -> Result<ConstantValue, Pa
                     ConstantValue::Text(result)
                 }
                 None => ConstantValue::Null,
+            }
+        }
+        "JSONKEY" => {
+            let input = text_arg(parser, depth + 1)?;
+            require(parser, Token::Comma, "JSONKey requires a field position")?;
+            let path_input = matches!(
+                parser.tokens.get(parser.index),
+                Some(Token::String(_))
+            ) || matches!(
+                parser.tokens.get(parser.index),
+                Some(Token::Word(name)) if is_function(name)
+            );
+            let (path, position) = if path_input {
+                let path = text_arg(parser, depth + 1)?;
+                require(parser, Token::Comma, "JSONKey requires a final field position")?;
+                (Some(path), integer_arg(parser, depth + 1)?)
+            } else {
+                (None, integer_arg(parser, depth + 1)?)
+            };
+            require(parser, Token::RParen, "expected ')' after JSONKey")?;
+            match (input, position, path) {
+                (Some(input), Some(position), path) => {
+                    let json = crate::json::parse_json(&input)
+                        .map_err(|error| ParseError(format!("invalid JSON: {error}")))?;
+                    let node = match path {
+                        None => Some(&json),
+                        Some(Some(path)) => json.at_path(&path),
+                        Some(None) => return Ok(ConstantValue::Null),
+                    };
+                    let name = node.and_then(|node| node.object_key_at(position)).unwrap_or("");
+                    ConstantValue::Text(name.to_owned())
+                }
+                _ => ConstantValue::Null,
             }
         }
         _ => return Err(ParseError(format!("unsupported string function: {name}"))),
