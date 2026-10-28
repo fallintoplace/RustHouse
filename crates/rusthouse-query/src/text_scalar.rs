@@ -44,6 +44,7 @@ pub(super) fn is_function(name: &str) -> bool {
             | "HEX_DECODE"
             | "REPLACE"
             | "TRANSLATE"
+            | "POSITIONCASEINSENSITIVE"
             | "STRPOS"
             | "COUNT_SUBSTRING"
             | "NULLIF"
@@ -681,6 +682,40 @@ fn parse_at_depth(parser: &mut Parser, depth: usize) -> Result<ConstantValue, Pa
                 (Some(left), Some(right)) if left == right => ConstantValue::Null,
                 (Some(left), _) => ConstantValue::Text(left),
                 (None, _) => ConstantValue::Null,
+            }
+        }
+        "POSITIONCASEINSENSITIVE" => {
+            let input = text_arg(parser, depth + 1)?;
+            require(parser, Token::Comma, "positionCaseInsensitive requires a needle")?;
+            let needle = text_arg(parser, depth + 1)?;
+            let start = if parser.take(Token::Comma) {
+                integer_arg(parser, depth + 1)?
+            } else {
+                Some(1)
+            };
+            require(parser, Token::RParen, "expected ')' after positionCaseInsensitive")?;
+            match (input, needle, start) {
+                (Some(input), Some(needle), Some(start)) => {
+                    if start < 0 {
+                        return Err(ParseError("positionCaseInsensitive start must be nonnegative".into()));
+                    }
+                    let offset = usize::try_from(start.max(1) - 1).unwrap_or(usize::MAX);
+                    let position = if offset > input.len() {
+                        0
+                    } else if needle.is_empty() {
+                        offset + 1
+                    } else {
+                        input.as_bytes()[offset..]
+                            .windows(needle.len())
+                            .position(|window| window.eq_ignore_ascii_case(needle.as_bytes()))
+                            .map_or(0, |index| offset + index + 1)
+                    };
+                    ConstantValue::Integer(
+                        i64::try_from(position)
+                            .map_err(|_| ParseError("positionCaseInsensitive result exceeds Int64".into()))?,
+                    )
+                }
+                _ => ConstantValue::Null,
             }
         }
         "STRPOS" => {
