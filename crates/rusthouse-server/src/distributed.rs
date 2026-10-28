@@ -21,6 +21,7 @@ enum MergeError {
     InvalidDistinctCount,
     InvalidGroupedCount,
     InvalidGroupedSum,
+    InvalidGroupedExtremum,
     InvalidSum,
     InvalidExtremum,
     CountOverflow,
@@ -620,6 +621,100 @@ fn merge_grouped_integer_sums(
     Ok(output)
 }
 
+
+/// Merge exact integer extrema across disjoint read-only shard groups.
+/// A NULL partial cannot suppress a non-NULL value from another shard.
+fn merge_grouped_integer_extrema(
+    shards: &[(usize, Vec<u8>)],
+    max_rows: usize,
+    kind: &str,
+    key_column: &str,
+    value_column: &str,
+    function: AggregateFunction,
+) -> Result<Vec<u8>, MergeError> {
+    let header = format!("{key_column}\t{}({value_column})\n", function.name());
+    let unsigned = kind.strip_prefix("Nullable(").unwrap_or(kind).starts_with("UInt");
+    let mut positions = HashMap::<&[u8], usize>::new();
+    let mut groups = Vec::<(&[u8], Option<i128>, Option<u128>)>::new();
+    for (cap, body) in shards {
+        if *cap == 0 || !body.ends_with(b"\n") {
+            return Err(MergeError::InvalidGroupedExtremum);
+        }
+        let header_end = body.iter().position(|&byte| byte == b'\n')
+            .ok_or(MergeError::InvalidGroupedExtremum)?;
+        if &body[..=header_end] != header.as_bytes() {
+            return Err(MergeError::SchemaMismatch);
+        }
+        let rows = &body[header_end + 1..];
+        if rows.is_empty() {
+            continue;
+        }
+        let mut shard_rows = 0usize;
+        for row in rows[..rows.len() - 1].split(|&byte| byte == b'\n') {
+            shard_rows += 1;
+            if shard_rows >= *cap {
+                return Err(MergeError::ShardRowLimit);
+            }
+            let delimiter = row.iter().position(|&byte| byte == b'\t')
+                .ok_or(MergeError::InvalidGroupedExtremum)?;
+            let key = &row[..delimiter];
+            let value = &row[delimiter + 1..];
+            let index = if let Some(&existing) = positions.get(key) {
+                existing
+            } else {
+                if groups.len() >= max_rows {
+                    return Err(MergeError::CoordinatorLimit);
+                }
+                let index = groups.len();
+                positions.insert(key, index);
+                groups.push((key, None, None));
+                index
+            };
+            if value == b"NULL" {
+                continue;
+            }
+            let value = std::str::from_utf8(value)
+                .map_err(|_| MergeError::InvalidGroupedExtremum)?;
+            if unsigned {
+                let next = value.parse::<u128>()
+                    .map_err(|_| MergeError::InvalidGroupedExtremum)?;
+                let slot = &mut groups[index].2;
+                *slot = Some(match *slot {
+                    None => next,
+                    Some(previous) if function == AggregateFunction::Min => previous.min(next),
+                    Some(previous) => previous.max(next),
+                });
+            } else {
+                let next = value.parse::<i128>()
+                    .map_err(|_| MergeError::InvalidGroupedExtremum)?;
+                let slot = &mut groups[index].1;
+                *slot = Some(match *slot {
+                    None => next,
+                    Some(previous) if function == AggregateFunction::Min => previous.min(next),
+                    Some(previous) => previous.max(next),
+                });
+            }
+        }
+    }
+    let mut output = header.into_bytes();
+    for (key, signed, unsigned_value) in groups {
+        let value = if unsigned {
+            unsigned_value.map(|number| number.to_string())
+        } else {
+            signed.map(|number| number.to_string())
+        }.unwrap_or_else(|| "NULL".into());
+        if output.len().checked_add(key.len() + value.len() + 2)
+            .is_none_or(|len| len > MAX_RESPONSE_BYTES) {
+            return Err(MergeError::CoordinatorLimit);
+        }
+        output.extend_from_slice(key);
+        output.push(b'\t');
+        output.extend_from_slice(value.as_bytes());
+        output.push(b'\n');
+    }
+    Ok(output)
+}
+
 /// Reduce grouped COUNT results by their canonical TSV-encoded key.
 /// Preserve first-seen key order, reject malformed rows, and only emit a
 /// complete bounded result. Shards may hold overlapping group *keys*, but
@@ -782,6 +877,7 @@ pub fn handle(method: &str, body: &[u8], cluster: &Cluster, max_rows: usize) -> 
                 || is_safe_count_if(&select)
                 || is_safe_grouped_count(&select)
                 || is_safe_grouped_sum(&select)
+                || is_safe_grouped_extremum(&select)
                 || is_safe_sum(&select)
                 || is_safe_extremum(&select) =>
         {
@@ -801,7 +897,15 @@ pub fn handle(method: &str, body: &[u8], cluster: &Cluster, max_rows: usize) -> 
     };
     let grouped_count_query = is_safe_grouped_count(&select);
     let grouped_sum_query = is_safe_grouped_sum(&select);
+    let grouped_extremum_query = is_safe_grouped_extremum(&select);
     let sum_query = is_safe_sum(&select);
+    let grouped_extremum_function = match &select.projection {
+        Projection::GroupedAggregate {
+            function: function @ (AggregateFunction::Min | AggregateFunction::Max),
+            ..
+        } => Some(*function),
+        _ => None,
+    };
     let shard_sql = if is_safe_scan(&select) {
         match unpaged_scan_sql(sql, &select) {
             Some(query) => query,
@@ -847,7 +951,7 @@ pub fn handle(method: &str, body: &[u8], cluster: &Cluster, max_rows: usize) -> 
         (
             Some(Source::Table(table)),
             Projection::GroupedAggregate {
-                function: AggregateFunction::Sum,
+                function: AggregateFunction::Sum | AggregateFunction::Min | AggregateFunction::Max,
                 value_column,
                 ..
             },
@@ -858,7 +962,7 @@ pub fn handle(method: &str, body: &[u8], cluster: &Cluster, max_rows: usize) -> 
         (
             Some(Source::Table(table)),
             Projection::GroupedAggregate {
-                function: AggregateFunction::Sum,
+                function: AggregateFunction::Sum | AggregateFunction::Min | AggregateFunction::Max,
                 column,
                 ..
             },
@@ -963,6 +1067,15 @@ pub fn handle(method: &str, body: &[u8], cluster: &Cluster, max_rows: usize) -> 
             .map_or(Err(MergeError::InvalidExtremum), |kind| {
                 merge_integer_extrema(&shards, kind, function)
             })
+    } else if grouped_extremum_query {
+        match (sum_type.as_deref(), group_schema, sum_schema, grouped_extremum_function) {
+            (Some(kind), Some((_, key)), Some((_, value)), Some(function)) => {
+                merge_grouped_integer_extrema(
+                    &shards, max_rows.min(250_000), kind, key, value, function,
+                )
+            }
+            _ => Err(MergeError::InvalidGroupedExtremum),
+        }
     } else if grouped_sum_query {
         match (sum_type.as_deref(), group_schema, sum_schema) {
             (Some(kind), Some((_, key)), Some((_, value))) => {
@@ -1022,6 +1135,9 @@ pub fn handle(method: &str, body: &[u8], cluster: &Cluster, max_rows: usize) -> 
         }
         Err(MergeError::InvalidGroupedSum) => {
             Response::text("502 Bad Gateway", "malformed shard grouped SUM response\n")
+        }
+        Err(MergeError::InvalidGroupedExtremum) => {
+            Response::text("502 Bad Gateway", "malformed shard grouped MIN/MAX response\n")
         }
         Err(MergeError::InvalidSum) => {
             Response::text("502 Bad Gateway", "malformed shard SUM response\n")
@@ -1407,6 +1523,44 @@ mod tests {
                 10
             ),
             Err(MergeError::CountOverflow)
+        );
+    }
+
+
+    #[test]
+    fn merges_exact_distributed_grouped_min_max_with_null_shards() {
+        for sql in [
+            "SELECT region, min(amount) FROM events GROUP BY region",
+            "SELECT region, max(amount) FROM events WHERE id > 0 GROUP BY region",
+        ] {
+            assert!(is_safe_grouped_extremum(&parse_select(sql).unwrap()));
+        }
+        assert_eq!(
+            merge_grouped_integer_extrema(
+                &[
+                    shard(10, "region\tmin(amount)\na\tNULL\nb\t5\n"),
+                    shard(10, "region\tmin(amount)\na\t-10000000000\nb\t-3\n"),
+                ],
+                10, "Nullable(Int64)", "region", "amount", AggregateFunction::Min,
+            ).unwrap(),
+            b"region\tmin(amount)\na\t-10000000000\nb\t-3\n"
+        );
+        assert_eq!(
+            merge_grouped_integer_extrema(
+                &[
+                    shard(10, "region\tmax(amount)\na\t18446744073709551615\n"),
+                    shard(10, "region\tmax(amount)\na\t2\nb\tNULL\n"),
+                ],
+                10, "UInt64", "region", "amount", AggregateFunction::Max,
+            ).unwrap(),
+            b"region\tmax(amount)\na\t18446744073709551615\nb\tNULL\n"
+        );
+        assert_eq!(
+            merge_grouped_integer_extrema(
+                &[shard(10, "region\tmin(amount)\na\tinvalid\n")],
+                10, "Int64", "region", "amount", AggregateFunction::Min,
+            ),
+            Err(MergeError::InvalidGroupedExtremum)
         );
     }
 
