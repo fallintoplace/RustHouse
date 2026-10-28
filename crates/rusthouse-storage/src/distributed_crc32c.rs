@@ -6,6 +6,7 @@ const POLYNOMIAL: u32 = 0x82f6_3b78;
 // Build the Castagnoli lookup table at compile time. Replication verifies every
 // copied byte, so avoid an eight-iteration bit loop for every input byte.
 const TABLE: [u32; 256] = make_table();
+const SLICING_TABLES: [[u32; 256]; 4] = make_slicing_tables();
 
 const fn make_table() -> [u32; 256] {
     let mut table = [0u32; 256];
@@ -21,6 +22,22 @@ const fn make_table() -> [u32; 256] {
         index += 1;
     }
     table
+}
+
+const fn make_slicing_tables() -> [[u32; 256]; 4] {
+    let mut tables = [[0u32; 256]; 4];
+    tables[0] = TABLE;
+    let mut row = 1;
+    while row < 4 {
+        let mut index = 0;
+        while index < 256 {
+            let previous = tables[row - 1][index];
+            tables[row][index] = (previous >> 8) ^ TABLE[(previous & 0xff) as usize];
+            index += 1;
+        }
+        row += 1;
+    }
+    tables
 }
 
 struct Checksum(u32);
@@ -47,7 +64,16 @@ pub fn crc32c(bytes: &[u8]) -> u32 {
 }
 
 fn update(mut crc: u32, bytes: &[u8]) -> u32 {
-    for &byte in bytes {
+    let mut chunks = bytes.chunks_exact(4);
+    for bytes in &mut chunks {
+        let word = u32::from_le_bytes(bytes.try_into().expect("four-byte chunk"));
+        let value = crc ^ word;
+        crc = SLICING_TABLES[3][(value & 0xff) as usize]
+            ^ SLICING_TABLES[2][((value >> 8) & 0xff) as usize]
+            ^ SLICING_TABLES[1][((value >> 16) & 0xff) as usize]
+            ^ SLICING_TABLES[0][(value >> 24) as usize];
+    }
+    for &byte in chunks.remainder() {
         let index = ((crc ^ u32::from(byte)) & 0xff) as usize;
         crc = (crc >> 8) ^ TABLE[index];
     }
