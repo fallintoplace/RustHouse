@@ -40,6 +40,18 @@ class StarFixtureTests(unittest.TestCase):
                 len((Path(root) / "lineorder.tsv").read_text().splitlines()), 5
             )
 
+    def test_streamed_fact_reference_spans_more_than_buffered_join_limit(self):
+        with tempfile.TemporaryDirectory() as root:
+            report = generate(root, rows=32769, seed=9)
+            with closing(sqlite3.connect(Path(root) / "reference.sqlite")) as db:
+                self.assertEqual(
+                    db.execute("SELECT count(*), count(DISTINCT lo_orderkey) FROM lineorder").fetchone(),
+                    (32769, 32769)
+                )
+            self.assertEqual(report["rows"], 32769)
+            with (Path(root) / "lineorder.tsv").open() as stream:
+                self.assertEqual(sum(1 for _ in stream), 32770)
+
     def test_seed_is_deterministic_and_input_bounded(self):
         with tempfile.TemporaryDirectory() as a, tempfile.TemporaryDirectory() as b:
             generate(a, 70, 14)
