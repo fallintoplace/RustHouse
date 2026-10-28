@@ -339,7 +339,8 @@ pub fn execute_multi_join<W: Write>(
                 hash.entry(key).or_default().push(index);
             }
         }
-        let mut next = Vec::new();
+        // Most fact-to-dimension joins preserve the incoming row count.
+        let mut next = Vec::with_capacity(rows.len().min(MAX_RESULT_ROWS));
         let mut retained = 0usize;
         let mut matched_right = matches!(step.kind, JoinType::Right | JoinType::Full)
             .then(|| vec![false; right_rows.len()]);
