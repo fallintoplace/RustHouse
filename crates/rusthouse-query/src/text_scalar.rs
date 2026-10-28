@@ -35,6 +35,7 @@ pub(super) fn is_function(name: &str) -> bool {
             | "OVERLAY"
             | "SPLIT_PART"
             | "SUBSTRING_INDEX"
+            | "QUERYSTRINGANDFRAGMENT"
             | "TO_INT64"
             | "TRIM"
             | "LTRIM"
@@ -435,6 +436,20 @@ fn parse_at_depth(parser: &mut Parser, depth: usize) -> Result<ConstantValue, Pa
                     }
                 }
                 _ => ConstantValue::Null,
+            }
+        }
+        "QUERYSTRINGANDFRAGMENT" => {
+            let input = text_arg(parser, depth + 1)?;
+            require(parser, Token::RParen, "queryStringAndFragment requires one argument")?;
+            match input {
+                Some(input) => {
+                    let before_fragment = input.split_once('#')
+                        .map_or(input.as_str(), |(head, _)| head);
+                    let query = before_fragment.find('?')
+                        .map_or("", |position| &input[position + 1..]);
+                    ConstantValue::Text(query.to_owned())
+                }
+                None => ConstantValue::Null,
             }
         }
         "SPLIT_PART" => {
