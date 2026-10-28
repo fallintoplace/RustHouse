@@ -41,6 +41,7 @@ pub(super) fn is_function(name: &str) -> bool {
             | "CUTFRAGMENT"
             | "URL_ENCODE"
             | "FRAGMENT"
+            | "PRETTYPRINTJSON"
             | "JSON_QUOTE"
             | "ISVALIDJSON"
             | "JSONHAS"
@@ -1878,6 +1879,16 @@ fn parse_at_depth(parser: &mut Parser, depth: usize) -> Result<ConstantValue, Pa
                 _ => ConstantValue::Null,
             }
         }
+        "PRETTYPRINTJSON" => {
+            let input = text_arg(parser, depth + 1)?;
+            require(parser, Token::RParen, "prettyPrintJSON requires one argument")?;
+            match input {
+                Some(input) => ConstantValue::Text(
+                    crate::json::pretty_json(&input).map_err(|error| ParseError(error.into()))?
+                ),
+                None => ConstantValue::Null,
+            }
+        }
         "JSON_QUOTE" => {
             let input = text_arg(parser, depth + 1)?;
             require(parser, Token::RParen, "JSON_QUOTE requires one argument")?;
@@ -2004,5 +2015,16 @@ fn text_arg(parser: &mut Parser, depth: usize) -> Result<Option<String>, ParseEr
         _ => Err(ParseError(
             "expected a string literal or string function".into(),
         )),
+    }
+}
+
+#[cfg(test)]
+mod pretty_json_select_parity_tests {
+    use crate::{parse_select, ConstantValue, Projection};
+    #[test]
+    fn pretty_print_json_supports_constant_sql_select() {
+        let query = parse_select("SELECT prettyPrintJSON('{\"a\":1}')").unwrap();
+        assert!(matches!(query.projection, Projection::Constants(values)
+            if values.len() == 1 && values[0].value == ConstantValue::Text("{\\n  \\"a\\": 1\\n}".into())));
     }
 }
