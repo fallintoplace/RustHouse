@@ -121,6 +121,18 @@ pub(super) fn group_key_type(kind: &str) -> bool {
     integer_type(kind) || matches!(base, "String" | "UUID")
 }
 
+
+/// A global unordered OFFSET + LIMIT page depends on at most OFFSET + LIMIT
+/// rows from each shard. Reparse the rewritten SQL to preserve literals.
+pub(super) fn bounded_scan_sql(sql: &str, select: &Select, end: usize) -> Option<String> {
+    let unpaged = unpaged_scan_sql(sql, select)?;
+    let bounded = format!("{unpaged} LIMIT {end}");
+    let mut expected = select.clone();
+    expected.limit = Some(end);
+    expected.offset = None;
+    (parse_select(&bounded).ok()? == expected).then_some(bounded)
+}
+
 pub(super) fn unpaged_scan_sql(sql: &str, select: &Select) -> Option<String> {
     if select.limit.is_none() && select.offset.is_none() {
         return Some(sql.to_owned());
