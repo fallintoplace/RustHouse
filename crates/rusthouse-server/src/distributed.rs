@@ -241,6 +241,23 @@ fn schema_signature(response: &remote::PeerResponse) -> Result<Vec<u8>, String> 
     Ok(columns.as_bytes().to_vec())
 }
 
+/// Fetch independent control-plane metadata concurrently per shard, rather
+/// than paying two sequential network round trips for every distributed scan.
+/// Both scoped workers always join before a query can start.
+fn preflight_shard(
+    peer: Peer,
+    table: &str,
+) -> Result<(usize, remote::PeerResponse), String> {
+    let (cap, schema) = std::thread::scope(|scope| {
+        let cap = scope.spawn(|| shard_row_cap(peer));
+        let schema = scope.spawn(|| remote::schema(peer, table));
+        let cap = cap.join().unwrap_or_else(|_| Err("peer capabilities panicked".into()));
+        let schema = schema.join().unwrap_or_else(|_| Err("peer schema lookup panicked".into()));
+        (cap, schema)
+    });
+    Ok((cap?, schema?))
+}
+
 struct ShardResponse {
     cap: usize,
     body: Vec<u8>,
@@ -257,11 +274,10 @@ fn read_shard(
     table: &str,
     sorted_prefix_cap: Option<usize>,
 ) -> Result<ShardResponse, String> {
-    let cap = shard_row_cap(peer)?;
+    let (cap, schema_response) = preflight_shard(peer, table)?;
     if sorted_prefix_cap.is_some_and(|prefix| prefix >= cap) {
         return Err("peer row cap must exceed distributed top-K prefix".into());
     }
-    let schema_response = remote::schema(peer, table)?;
     let schema = schema_signature(&schema_response)?;
     let kind = sum_schema
         .map(|(_, column)| shard_integer_kind(&schema_response, column))
@@ -2038,6 +2054,46 @@ mod bounded_grouped_count_topk_tests {
         ).unwrap();
         let merged = merge_grouped_counts_query(&shards, 1, Some(&sql)).unwrap();
         assert_eq!(merged, b"dim\tcount\n");
+    }
+}
+
+#[cfg(test)]
+mod concurrent_preflight_tests {
+    use super::*;
+    use std::io::{Read, Write};
+    use std::net::TcpListener;
+
+    #[test]
+    fn both_metadata_requests_can_be_in_flight_before_either_completes() {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let peer = Peer::parse(&listener.local_addr().unwrap().to_string()).unwrap();
+        let server = std::thread::spawn(move || {
+            // Accepting both before answering either is an intentional
+            // concurrency requirement, not a wall-clock performance test.
+            let (mut first, _) = listener.accept().unwrap();
+            let (mut second, _) = listener.accept().unwrap();
+            for stream in [&mut first, &mut second] {
+                stream.set_read_timeout(Some(std::time::Duration::from_secs(2))).unwrap();
+                let mut incoming = [0u8; 1024];
+                let size = stream.read(&mut incoming).unwrap();
+                let path = std::str::from_utf8(&incoming[..size]).unwrap();
+                let payload = if path.starts_with("GET /capabilities ") {
+                    r#"{"name":"RustHouse","source":"database","read_only":true,"max_rows":10000}"#
+                } else if path.starts_with("GET /schema?table=facts ") {
+                    r#"{"rows":3,"columns":[{"name":"id","type":"UInt64"}]}"#
+                } else {
+                    panic!("unexpected metadata request {path}");
+                };
+                write!(stream,
+                    "HTTP/1.1 200 OK\r\nContent-Length: {}\r\nContent-Type: application/json; charset=utf-8\r\n\r\n{}",
+                    payload.len(), payload
+                ).unwrap();
+            }
+        });
+        let (cap, response) = preflight_shard(peer, "facts").unwrap();
+        assert_eq!(cap, 10_000);
+        assert_eq!(response.status, 200);
+        server.join().unwrap();
     }
 }
 
