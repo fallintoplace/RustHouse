@@ -739,10 +739,30 @@ fn merge_grouped_counts_query(
             groups.retain(|(_, count)| passes_count_having(*count, having));
         }
         if let Some(order) = &select.order_by {
-            groups.sort_by(|left, right| {
-                let cmp = left.1.cmp(&right.1);
-                if order.descending { cmp.reverse() } else { cmp }
+            let cmp = |left: &(&[u8], u64), right: &(&[u8], u64)| {
+                let ordering = left.1.cmp(&right.1);
+                if order.descending { ordering.reverse() } else { ordering }
+            };
+            // An analytics dashboard often asks for a tiny top-K from hundreds
+            // of thousands of groups. Select only the requested prefix, while
+            // preserving first-seen shard order for equal counts.
+            let end = select.limit.and_then(|limit| {
+                select.offset.unwrap_or(0).checked_add(limit)
             });
+            if let Some(end) = end.filter(|&end| end < groups.len()) {
+                let mut positions = (0..groups.len()).collect::<Vec<_>>();
+                let compare_index = |left: &usize, right: &usize| {
+                    cmp(&groups[*left], &groups[*right]).then_with(|| left.cmp(right))
+                };
+                positions.select_nth_unstable_by(end, compare_index);
+                positions.truncate(end);
+                positions.sort_unstable_by(compare_index);
+                groups = positions.into_iter().map(|index| groups[index]).collect();
+            } else {
+                // Stable sorting keeps first-seen order for ties even when a
+                // full ordered result is needed.
+                groups.sort_by(cmp);
+            }
         }
         groups = groups
             .into_iter()
@@ -1768,5 +1788,47 @@ mod tests {
             handle("POST", b"SELECT id FROM events", &cluster, 10).status,
             "400 Bad Request"
         );
+    }
+}
+
+#[cfg(test)]
+mod distributed_grouped_topk_tests {
+    use super::*;
+
+    #[test]
+    fn partial_sort_preserves_cross_shard_ties_and_matches_full_stable_sort() {
+        let mut first = b"dimension\tcount\n".to_vec();
+        let mut second = b"dimension\tcount\n".to_vec();
+        let mut expected = Vec::new();
+        for i in 0..3000 {
+            let count = (i * 83 % 101) as u64;
+            let line = format!("g{i:04}\t{count}\n");
+            if i % 2 == 0 { first.extend_from_slice(line.as_bytes()); }
+            else { second.extend_from_slice(line.as_bytes()); }
+            expected.push((i, count));
+        }
+        // The canonical merge order is all rows from the first shard, then
+        // all rows from the second shard, not interleaved generation order.
+        let mut seen = expected.iter().filter(|(i, _)| i % 2 == 0)
+            .chain(expected.iter().filter(|(i, _)| i % 2 != 0))
+            .map(|(i, count)| (format!("g{i:04}"), *count)).collect::<Vec<_>>();
+        let shards = [(4000usize, first), (4000, second)];
+        for descending in [false, true] {
+            if descending { seen.sort_by(|a, b| b.1.cmp(&a.1)); }
+            else { seen.sort_by(|a, b| a.1.cmp(&b.1)); }
+            for offset in [0, 3, 51, 2997, 3000] {
+                for limit in [0, 1, 4, 51, 250, 4000] {
+                    let order = if descending { "DESC" } else { "ASC" };
+                    let sql = format!("SELECT dimension, count(*) FROM events GROUP BY dimension ORDER BY count {order} LIMIT {limit} OFFSET {offset}");
+                    let query = rusthouse_query::parse_select(&sql).unwrap();
+                    let merged = merge_grouped_counts_query(&shards, 4000, Some(&query)).unwrap();
+                    let mut expected_output = "dimension\tcount\n".to_owned();
+                    for (key, count) in seen.iter().skip(offset).take(limit) {
+                        expected_output.push_str(&format!("{key}\t{count}\n"));
+                    }
+                    assert_eq!(merged, expected_output.as_bytes(), "{sql}");
+                }
+            }
+        }
     }
 }
