@@ -411,6 +411,7 @@ fn parallel_filtered_count(query: &Select, source: &Path) -> Result<Option<u64>,
         let handles = (0..workers)
             .map(|_| {
                 let next = &next;
+                let parts = &parts;
                 scope.spawn(move || -> Result<u64, ExecutionError> {
                     let mut sum = 0u64;
                     let mut buffer = Vec::new();
@@ -541,6 +542,7 @@ fn parallel_integer_minmax(
             let next = &next;
             let names = &names;
             let branches = &branches;
+            let parts = &parts;
             scope.spawn(move || -> Result<Option<Number>, ExecutionError> {
                 let mut state = AggregateState::new(*function);
                 while let Some(index) = next_part_index(next, parts.len()) {
@@ -680,6 +682,7 @@ fn parallel_integer_sum(
             let scan_columns = &scan_columns;
             let comparisons = &comparisons;
             let next = &next;
+            let parts = &parts;
             scope.spawn(move || -> Result<Option<Number>, ExecutionError> {
                 let mut result = None;
                 while let Some(index) = next_part_index(next, parts.len()) {
