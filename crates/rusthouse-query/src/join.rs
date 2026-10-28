@@ -40,6 +40,7 @@ pub struct JoinStep {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum JoinAggregate {
     CountStar,
+    CountDistinct(JoinColumn),
     Sum(JoinColumn),
     GroupCount(JoinColumn),
     GroupMultiCount(Vec<JoinColumn>),
@@ -98,13 +99,20 @@ pub fn parse_join(sql: &str) -> Result<Option<JoinSelect>, ParseError> {
     let mut parser = Parser { tokens, index: 0 };
     parser.keyword("SELECT");
     let aggregate = if parser.keyword("COUNT") {
-        if !parser.take(Token::LParen)
-            || !parser.take(Token::Star)
-            || !parser.take(Token::RParen)
-        {
-            return Err(ParseError("JOIN COUNT requires COUNT(*)".into()));
+        if !parser.take(Token::LParen) {
+            return Err(ParseError("JOIN COUNT requires '('".into()));
         }
-        Some(JoinAggregate::CountStar)
+        let parsed = if parser.take(Token::Star) {
+            JoinAggregate::CountStar
+        } else if parser.keyword("DISTINCT") {
+            JoinAggregate::CountDistinct(qualified(&mut parser)?)
+        } else {
+            return Err(ParseError("JOIN COUNT requires * or DISTINCT relation.column".into()));
+        };
+        if !parser.take(Token::RParen) {
+            return Err(ParseError("JOIN COUNT requires ')'".into()));
+        }
+        Some(parsed)
     } else if parser.keyword("SUM") {
         if !parser.take(Token::LParen) {
             return Err(ParseError("JOIN SUM requires SUM(alias.column)".into()));
@@ -726,6 +734,9 @@ pub fn explain_join(query: &JoinSelect) -> String {
         if let Some(aggregate) = &query.aggregate {
             match aggregate {
                 JoinAggregate::CountStar => "count(*)".to_owned(),
+                JoinAggregate::CountDistinct(col) => {
+                    format!("count(DISTINCT {}.{})", col.relation, col.name)
+                },
                 JoinAggregate::Sum(col) => format!("sum({}.{})", col.relation, col.name),
                 JoinAggregate::GroupCount(col) => {
                     format!("{}.{}, count(*)", col.relation, col.name)
