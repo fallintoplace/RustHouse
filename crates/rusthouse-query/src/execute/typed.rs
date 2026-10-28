@@ -984,6 +984,7 @@ pub(super) fn execute_typed<W: Write>(
     let mut group_indices = HashMap::<Key, usize>::new();
     // String group probes can borrow the decoded input instead of cloning it.
     let mut text_group_indices = HashMap::<Vec<u8>, usize>::new();
+    let mut uuid_group_indices = HashMap::<[u8; 16], usize>::new();
     let mut grouped_rows = Vec::<(Cell, u64)>::new();
     let mut ordered = Vec::<Row>::new();
     let mut top = BinaryHeap::<TopRow>::new();
@@ -1084,6 +1085,25 @@ pub(super) fn execute_typed<W: Write>(
                         let group = grouped_rows.len();
                         text_group_indices.insert(key.to_vec(), group);
                         grouped_rows.push((Cell::Text(key.to_vec()), 1));
+                    }
+                    continue;
+                }
+                if let TypedColumn::Uuid(values) = &batch[projection_indices[0]] {
+                    let key = *values[index].as_bytes();
+                    if let Some(&group) = uuid_group_indices.get(&key) {
+                        let count = &mut grouped_rows[group].1;
+                        *count = count.checked_add(1).ok_or_else(|| {
+                            ExecutionError::Invalid("group count overflow".into())
+                        })?;
+                    } else {
+                        if grouped_rows.len() >= MAX_BUFFERED_ROWS {
+                            return Err(ExecutionError::Invalid(
+                                "GROUP BY supports at most 200000 groups".into(),
+                            ));
+                        }
+                        let group = grouped_rows.len();
+                        uuid_group_indices.insert(key, group);
+                        grouped_rows.push((cell(&batch[projection_indices[0]], index), 1));
                     }
                     continue;
                 }
