@@ -146,6 +146,7 @@ pub(super) fn is_function(name: &str) -> bool {
             | "ADDMONTHS"
             | "RPAD"
             | "LOWERUTF8"
+            | "NOTEMPTY"
             | "SPACE"
             | "ENCODEURLFORMCOMPONENT"
     )
@@ -2746,6 +2747,14 @@ fn parse_at_depth(parser: &mut Parser, depth: usize) -> Result<ConstantValue, Pa
                     }
                     ConstantValue::Integer(value[..4].parse::<i64>().unwrap())
                 }
+                None => ConstantValue::Null,
+            }
+        }
+        "NOTEMPTY" => {
+            let input = text_arg(parser, depth + 1)?;
+            require(parser, Token::RParen, "notEmpty requires one argument")?;
+            match input {
+                Some(value) => ConstantValue::Integer(i64::from(!value.is_empty())),
                 None => ConstantValue::Null,
             }
         }
