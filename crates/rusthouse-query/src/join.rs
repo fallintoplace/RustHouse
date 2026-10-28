@@ -313,9 +313,6 @@ pub fn parse_join(sql: &str) -> Result<Option<JoinSelect>, ParseError> {
     let offset = if let Some(offset) = comma_offset {
         offset
     } else if parser.keyword("OFFSET") {
-        if limit.is_none() {
-            return Err(ParseError("OFFSET requires LIMIT".into()));
-        }
         bound(&mut parser, "OFFSET")?
     } else {
         0
@@ -480,6 +477,20 @@ mod tests {
     }
 
     #[test]
+    fn parses_offset_without_limit() {
+        let query = parse_join("SELECT * FROM l JOIN r ON l.id = r.id OFFSET 3")
+            .unwrap()
+            .unwrap();
+        assert_eq!(query.limit, None);
+        assert_eq!(query.offset, 3);
+        let query = parse_join("SELECT * FROM l JOIN r ON l.id = r.id ORDER BY l.id OFFSET 2")
+            .unwrap()
+            .unwrap();
+        assert_eq!(query.offset, 2);
+        assert!(parse_join("SELECT * FROM l JOIN r ON l.id = r.id OFFSET -1").is_err());
+    }
+
+    #[test]
     fn parses_any_inner_and_left_join_strictness() {
         for statement in [
             "SELECT * FROM a ANY JOIN b ON a.id = b.id",
@@ -568,7 +579,6 @@ mod tests {
             "SELECT * FROM a JOIN b ON a.id > b.id",
             "SELECT id FROM a JOIN b ON a.id = b.id",
             "SELECT * FROM a JOIN b ON a.id = b.id OR a.id = b.id",
-            "SELECT * FROM a JOIN b ON a.id = b.id OFFSET 2",
         ] {
             assert!(parse_join(sql).is_err(), "{sql}");
         }
