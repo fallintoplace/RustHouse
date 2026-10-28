@@ -38,6 +38,7 @@ pub(super) fn is_function(name: &str) -> bool {
         || name.eq_ignore_ascii_case("BIT_MASK")
         || name.eq_ignore_ascii_case("BIT_WIDTH")
         || name.eq_ignore_ascii_case("DIV")
+        || name.eq_ignore_ascii_case("INTDIVORZERO")
         || name.eq_ignore_ascii_case("MOD")
         || name.eq_ignore_ascii_case("ABS_DIFF")
         || name.eq_ignore_ascii_case("SIGN")
@@ -180,6 +181,15 @@ fn parse_power(parser: &mut Parser, depth: usize) -> Result<i64, ParseError> {
     let exponent = u32::try_from(exponent)
         .map_err(|_| ParseError("POWER exponent must be non-negative and fit UInt32".into()))?;
     base.checked_pow(exponent).ok_or_else(overflow)
+}
+
+fn parse_int_div_or_zero(parser: &mut Parser, depth: usize) -> Result<i64, ParseError> {
+    require_token(parser, Token::LParen, "intDivOrZero requires '('")?;
+    let left = expression(parser, depth + 1)?;
+    require_token(parser, Token::Comma, "intDivOrZero requires two arguments")?;
+    let right = expression(parser, depth + 1)?;
+    require_token(parser, Token::RParen, "expected ')' after intDivOrZero arguments")?;
+    Ok(left.checked_div(right).unwrap_or(0))
 }
 
 /// SQL-style truncating integer division and remainder.
@@ -936,6 +946,9 @@ fn factor(parser: &mut Parser, depth: usize) -> Result<i64, ParseError> {
         return factor(parser, depth + 1)?
             .checked_neg()
             .ok_or_else(overflow);
+    }
+    if parser.keyword("INTDIVORZERO") {
+        return parse_int_div_or_zero(parser, depth);
     }
     if parser.keyword("DIV") {
         return parse_div_mod(parser, depth, true);
