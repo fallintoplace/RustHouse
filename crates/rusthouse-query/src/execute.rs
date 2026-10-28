@@ -1501,6 +1501,7 @@ fn execute_numbers<W: Write>(
             Projection::MultipleAggregates(items)
                 if simple_result
                     && multi_aggregate::supports_generated_series_metrics(items)
+                    && multi_aggregate::supports_generated_stride(items, step)
                     && (if query.predicates.is_empty() && query.or_predicates.is_empty() {
                         true
                     } else {
