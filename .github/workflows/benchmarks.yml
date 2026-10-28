@@ -24,6 +24,10 @@ jobs:
           save-if: ${{ github.event_name == 'schedule' }}
       - name: Run verified benchmark suites
         run: python3 -m bench benchmark --rows 65536 --samples 7
+      - name: Validate benchmark manifest and measurements
+        run: |
+          python3 -m bench.validate_benchmark bench/results \
+            --rows 65536 --samples 7 --stations 413
       - name: Store benchmark measurements
         if: always()
         uses: actions/upload-artifact@v7
