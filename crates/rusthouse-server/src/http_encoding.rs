@@ -23,11 +23,15 @@ pub(super) fn decode_url(value: &str) -> Result<String, &'static str> {
     if bytes.len() > MAX_QUERY_BYTES * 3 {
         return Err("URL-encoded SQL statement exceeds 12288 bytes");
     }
-    if !bytes.contains(&b'%') && !bytes.contains(&b'+') {
+    if !bytes.contains(&b'%') {
         if bytes.len() > MAX_QUERY_BYTES {
             return Err("SQL statement exceeds 4096 bytes");
         }
-        return Ok(value.to_owned());
+        return Ok(if bytes.contains(&b'+') {
+            value.replace('+', " ")
+        } else {
+            value.to_owned()
+        });
     }
     let mut decoded = Vec::with_capacity(bytes.len());
     let mut index = 0;
@@ -167,6 +171,13 @@ mod tests {
         assert_eq!(hex_digit(b'G'), None);
         assert_eq!(hex_digit(0xff), None);
         assert_eq!(decode_url("%4f%4A").unwrap(), "OJ");
+    }
+
+    #[test]
+    fn plus_only_queries_keep_utf8_without_percent_decoding() {
+        assert_eq!(decode_url("SELECT+café+FROM+items").unwrap(), "SELECT café FROM items");
+        assert_eq!(decode_url("a+b%2Bc").unwrap(), "a b+c");
+        assert!(decode_url(&"a+".repeat(MAX_QUERY_BYTES)).is_err());
     }
 
     #[test]
