@@ -422,14 +422,9 @@ pub(super) fn insert_stream(
     })
 }
 
-/// Bulk insertion. Validate all rows before staging a new generation.
-/// Existing immutable parts are hard-linked and all new parts become active
-/// together when the snapshot pointer is replaced.
-pub(super) fn insert_many(database: &Path, insert: &Insert) -> Result<(), String> {
-    with_write_lock(database, || insert_many_locked(database, insert))
-}
+/// Bulk insertion under the caller's exclusive database write lock.
+/// All rows are validated before staging a new generation.
 
-/// The caller must already own the exclusive database write lock.
 pub(super) fn insert_many_locked(database: &Path, insert: &Insert) -> Result<(), String> {
     let cols = columns(database, &insert.table)?;
     let (_, parts) = validated_parts(database, &insert.table, &cols)?;
