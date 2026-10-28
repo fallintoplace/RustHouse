@@ -5,7 +5,7 @@ mod like;
 
 use self::like::*;
 
-use super::{ExecutionError, Number, NumberKey, compare_numbers, number_at};
+use super::{BitmapDistinct32, ExecutionError, Number, NumberKey, compare_numbers, number_at};
 use crate::{Operator, Predicate, Projection, Select};
 use rusthouse_storage::{NumericColumn, TypedColumn, TypedQueryReader, inspect_query_source};
 use std::cmp::Ordering;
