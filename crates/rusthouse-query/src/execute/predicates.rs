@@ -130,6 +130,29 @@ pub(super) fn count_batch_matches(
             return batch.first().map_or(0, NumericColumn::len);
         }
         if let [predicate] = predicates.as_slice() {
+            if let CompiledTest::InSet { targets, negated } = &predicate.test {
+                macro_rules! count_hashed_in {
+                    ($values:expr, $variant:ident, $wide:ty) => {{
+                        return $values.iter().filter(|&&value| {
+                            let key = NumberKey::$variant(<$wide>::from(value));
+                            targets.contains(&key) != *negated
+                        }).count();
+                    }};
+                }
+                match &batch[predicate.index] {
+                    NumericColumn::UInt8(v) => count_hashed_in!(v, Unsigned, u128),
+                    NumericColumn::UInt16(v) => count_hashed_in!(v, Unsigned, u128),
+                    NumericColumn::UInt32(v) => count_hashed_in!(v, Unsigned, u128),
+                    NumericColumn::UInt64(v) => count_hashed_in!(v, Unsigned, u128),
+                    NumericColumn::UInt128(v) => count_hashed_in!(v, Unsigned, u128),
+                    NumericColumn::Int8(v) => count_hashed_in!(v, Signed, i128),
+                    NumericColumn::Int16(v) => count_hashed_in!(v, Signed, i128),
+                    NumericColumn::Int32(v) => count_hashed_in!(v, Signed, i128),
+                    NumericColumn::Int64(v) => count_hashed_in!(v, Signed, i128),
+                    NumericColumn::Int128(v) => count_hashed_in!(v, Signed, i128),
+                    NumericColumn::Float32(_) | NumericColumn::Float64(_) => {}
+                }
+            }
             if let CompiledTest::NotBetween { lower, upper } = &predicate.test {
                 macro_rules! count_outside {
                     ($values:expr, $lower:expr, $upper:expr, $wide:ty) => {{
@@ -731,6 +754,36 @@ mod tests {
         let included = compile_in_test(values, false);
         assert!(included.matches(Number::Float(0.0)));
         assert!(!included.matches(Number::Float(f64::NAN)));
+    }
+}
+
+#[cfg(test)]
+mod stored_hashed_membership_count_tests {
+    use super::*;
+
+    #[test]
+    fn hashed_membership_matches_row_by_row_for_wide_integer_columns() {
+        let signed = vec![NumericColumn::Int64((-5_000..5_000).collect())];
+        let unsigned = vec![NumericColumn::UInt64((0..10_000).collect())];
+        for (batch, signed) in [(&signed, true), (&unsigned, false)] {
+            for negated in [false, true] {
+                let values: Vec<Number> = (0..32)
+                    .map(|index| if signed {
+                        Number::Signed(index - 12)
+                    } else {
+                        Number::Unsigned(index as u128)
+                    })
+                    .collect();
+                let branches = vec![vec![CompiledPredicate {
+                    index: 0,
+                    test: compile_in_test(values, negated),
+                }]];
+                let expected = (0..batch[0].len())
+                    .filter(|&row| batch_matches(batch, row, &branches))
+                    .count();
+                assert_eq!(count_batch_matches(batch, &branches), expected);
+            }
+        }
     }
 }
 
