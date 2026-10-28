@@ -14,7 +14,7 @@ import subprocess
 import time
 from pathlib import Path
 
-from bench.tpch.run import load_queries, query_fingerprint
+from bench.tpch.run import compare_reference, load_queries, query_fingerprint
 
 ENGINES = ("rusthouse", "duckdb")
 ABBA = ("rusthouse", "duckdb", "duckdb", "rusthouse")
@@ -41,7 +41,7 @@ def invoke(args, timeout):
     return result.stdout, duration
 
 
-def benchmark_pair(sql, reference, execute, runs=5, warmups=2):
+def benchmark_pair(sql, reference, execute, runs=5, warmups=2, comparison="exact"):
     if runs < 1 or warmups < 0:
         raise ValueError("runs must be positive and warmups nonnegative")
     if not isinstance(reference, bytes):
@@ -50,7 +50,7 @@ def benchmark_pair(sql, reference, execute, runs=5, warmups=2):
     samples = {engine: [] for engine in ENGINES}
     def checked(engine):
         output, seconds = execute(engine, sql)
-        if output != reference:
+        if not compare_reference(output, reference, comparison):
             raise ValueError(f"{engine} result differs from the reference TSV")
         if not math.isfinite(seconds) or seconds <= 0:
             raise ValueError("timings must be finite and positive")
@@ -74,9 +74,11 @@ def benchmark_pair(sql, reference, execute, runs=5, warmups=2):
 
 
 def compare(binary, database, duckdb_binary, duckdb_database,
-            queries, reference_dir, runs, warmups, timeout):
+            queries, reference_dir, runs, warmups, timeout, comparison="exact"):
     if timeout <= 0 or not math.isfinite(timeout):
         raise ValueError("timeout must be finite and positive")
+    if comparison not in ("exact", "unordered"):
+        raise ValueError("comparison must be exact or unordered")
     results = []
     for number, sql in queries:
         ref_path = reference_dir / f"q{number:02}.tsv"
@@ -99,7 +101,7 @@ def compare(binary, database, duckdb_binary, duckdb_database,
             return invoke(parts, timeout)
 
         try:
-            record.update(benchmark_pair(sql, reference, execute, runs, warmups))
+            record.update(benchmark_pair(sql, reference, execute, runs, warmups, comparison))
             record["status"] = "passed"
         except (OSError, RuntimeError, ValueError, subprocess.TimeoutExpired) as error:
             record["error"] = str(error)[-600:]
@@ -112,6 +114,7 @@ def compare(binary, database, duckdb_binary, duckdb_database,
         "timing_scope": "fresh native CLI process, warm OS cache possible",
         "official_tpch_score": False,
         "all_queries_verified": all_verified,
+        "comparison": comparison,
         "query_sha256": query_fingerprint(queries),
         "runs": runs, "warmups": warmups,
         "speedup_geomean_duckdb_over_rusthouse":
@@ -128,6 +131,8 @@ def main(argv=None):
     parser.add_argument("--duckdb-database", required=True, type=Path)
     parser.add_argument("--queries-dir", required=True, type=Path)
     parser.add_argument("--reference-dir", required=True, type=Path)
+    parser.add_argument("--comparison", choices=("exact", "unordered"), default="exact",
+                        help="Match ordered rows exactly, or compare unordered row multisets")
     parser.add_argument("--runs", type=int, default=5)
     parser.add_argument("--warmups", type=int, default=2)
     parser.add_argument("--timeout", type=float, default=120)
@@ -138,6 +143,7 @@ def main(argv=None):
         report = compare(
             args.binary, args.database, args.duckdb, args.duckdb_database,
             queries, args.reference_dir, args.runs, args.warmups, args.timeout,
+            comparison=args.comparison,
         )
     except (OSError, ValueError) as error:
         parser.exit(1, f"paired comparison failed: {error}\n")
