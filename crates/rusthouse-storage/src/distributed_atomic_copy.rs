@@ -14,7 +14,9 @@ fn stream_bounded_copy(
     max_bytes: u64,
 ) -> io::Result<u64> {
     let mut total = 0u64;
-    let mut buffer = [0u8; 32 * 1024];
+    // Small files avoid allocating a large buffer; large copies reduce syscall count.
+    let buffer_bytes = expected_bytes.min(256 * 1024).max(1) as usize;
+    let mut buffer = vec![0u8; buffer_bytes];
     loop {
         let available = max_bytes.saturating_sub(total)
             .saturating_add(1)

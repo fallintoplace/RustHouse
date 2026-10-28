@@ -15,18 +15,31 @@ impl ObjectMetadata {
 }
 
 fn valid_key(key: &str) -> bool {
-    !key.is_empty()
-        && key.len() <= 512
-        && key.split('/').all(|segment| {
-            !segment.is_empty()
-                && segment.as_bytes()[0].is_ascii_alphanumeric()
-                && segment != "."
-                && segment != ".."
-                && !segment.contains("..")
-                && segment
-                    .bytes()
-                    .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'_' | b'-' | b'.'))
-        })
+    let bytes = key.as_bytes();
+    if bytes.is_empty() || bytes.len() > 512 {
+        return false;
+    }
+    let mut segment_start = true;
+    let mut previous_dot = false;
+    for &byte in bytes {
+        if byte == b'/' {
+            if segment_start {
+                return false;
+            }
+            segment_start = true;
+            previous_dot = false;
+            continue;
+        }
+        if (segment_start && !byte.is_ascii_alphanumeric())
+            || (!byte.is_ascii_alphanumeric() && !matches!(byte, b'_' | b'-' | b'.'))
+            || (byte == b'.' && previous_dot)
+        {
+            return false;
+        }
+        segment_start = false;
+        previous_dot = byte == b'.';
+    }
+    !segment_start
 }
 
 fn index<'a>(

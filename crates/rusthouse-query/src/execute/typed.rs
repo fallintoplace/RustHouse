@@ -251,11 +251,18 @@ const HASHED_TYPED_IN_MIN_VALUES: usize = 16;
 
 /// Convert already-validated canonical UUID literals into fixed-width hash keys.
 fn uuid_key(value: &str) -> [u8; 16] {
-    let hex = value.replace('-', "");
+    let mut digits = value.bytes().filter(|&byte| byte != b'-');
+    let nibble = |byte: u8| match byte {
+        b'0'..=b'9' => byte - b'0',
+        b'a'..=b'f' => byte - b'a' + 10,
+        b'A'..=b'F' => byte - b'A' + 10,
+        _ => unreachable!("UUID literal validated during compilation"),
+    };
     let mut bytes = [0u8; 16];
-    for (index, byte) in bytes.iter_mut().enumerate() {
-        *byte = u8::from_str_radix(&hex[index * 2..index * 2 + 2], 16)
-            .expect("UUID literal was validated during predicate compilation");
+    for byte in &mut bytes {
+        let high = digits.next().expect("validated UUID hex digits");
+        let low = digits.next().expect("validated UUID hex digits");
+        *byte = (nibble(high) << 4) | nibble(low);
     }
     bytes
 }
@@ -295,12 +302,18 @@ fn compile_in(kind: &str, values: &[String], negated: bool) -> Result<Test, Exec
     ))
 }
 
+fn order_compiled_conditions(conditions: &mut [Condition]) {
+    // Reordering AND predicates is safe after compilation, and lets cheap
+    // comparisons reject rows before expensive wildcard matching.
+    conditions.sort_by_key(|condition| matches!(&condition.test, Test::Like { .. }));
+}
+
 pub(super) fn compile(
     predicates: &[Predicate],
     indices: &HashMap<String, usize>,
     types: &HashMap<String, String>,
 ) -> Result<Vec<Condition>, ExecutionError> {
-    predicates
+    let mut conditions = predicates
         .iter()
         .map(|pred| {
             let name = pred.column();
@@ -351,7 +364,9 @@ pub(super) fn compile(
             };
             Ok(Condition { index, test })
         })
-        .collect()
+        .collect::<Result<Vec<_>, _>>()?;
+    order_compiled_conditions(&mut conditions);
+    Ok(conditions)
 }
 
 pub(super) fn cmp(left: &Cell, right: &Cell) -> Ordering {
@@ -1279,6 +1294,29 @@ pub(super) fn execute_typed<W: Write>(
         }
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod predicate_order_tests {
+    use super::*;
+
+    #[test]
+    fn cheap_conditions_run_before_expensive_like_conditions() {
+        let mut conditions = vec![
+            Condition {
+                index: 0,
+                test: Test::Like {
+                    pattern: LikePattern::Exact(b"match".to_vec()),
+                    case_insensitive: false,
+                    negated: false,
+                },
+            },
+            Condition { index: 1, test: Test::IsNull(false) },
+        ];
+        order_compiled_conditions(&mut conditions);
+        assert_eq!(conditions[0].index, 1);
+        assert_eq!(conditions[1].index, 0);
+    }
 }
 
 #[cfg(test)]

@@ -195,7 +195,11 @@ fn distinct_argument(
         let value = typed::cell(&batch[*index], row);
         return match value {
             Cell::Null => Ok(None),
-            _ => Ok(Some(value.key())),
+            // These Cells already own the input bytes. Move the allocation
+            // into the distinct key instead of cloning every text/UUID value.
+            Cell::Text(bytes) => Ok(Some(typed::Key::Text(bytes))),
+            Cell::Uuid(text) => Ok(Some(typed::Key::Uuid(text))),
+            other => Ok(Some(other.key())),
         };
     }
     Ok(eval_number(expression, batch, row)?.map(|value| Cell::Numeric(value).key()))
@@ -385,5 +389,27 @@ mod affine_tests {
             BoundExpr::bind(&reversed, &indices).unwrap(),
             BoundExpr::Add(_, _)
         ));
+    }
+}
+
+#[cfg(test)]
+mod distinct_key_tests {
+    use super::*;
+    use rusthouse_storage::read_legacy_strings;
+
+    #[test]
+    fn distinct_argument_preserves_nullable_string_values() {
+        let mut stream = b"\x03abc\x03abc".as_slice();
+        let strings = read_legacy_strings(&mut stream, 2).unwrap();
+        let batch = vec![TypedColumn::NullableText {
+            values: strings,
+            nulls: vec![0, 1],
+        }];
+        let expression = BoundExpr::Column(0);
+        assert!(matches!(
+            distinct_argument(&expression, &batch, 0).unwrap(),
+            Some(typed::Key::Text(value)) if value == b"abc"
+        ));
+        assert!(distinct_argument(&expression, &batch, 1).unwrap().is_none());
     }
 }
