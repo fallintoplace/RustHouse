@@ -620,6 +620,17 @@ pub fn execute_join<W: Write>(
         return Ok(());
     }
 
+    // A validated INNER join with an empty input cannot produce matches.
+    if query.kind == JoinType::Inner && (left_meta.rows == 0 || right_meta.rows == 0) {
+        let header = selected
+            .iter()
+            .map(|(_, name, _)| name.as_str())
+            .collect::<Vec<_>>()
+            .join("\t");
+        writeln!(output, "{header}")?;
+        return Ok(());
+    }
+
     if query.kind == JoinType::Inner && order.is_empty() {
         // A very large right table can be the streamed side if the left fits
         // the same bounded hash-build budget.
