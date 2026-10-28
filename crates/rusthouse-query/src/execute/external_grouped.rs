@@ -160,6 +160,17 @@ impl ExternalGroupCount64 {
         }
         Ok(())
     }
+    // Reclaim the quota only after the previous run has actually been
+    // removed. Counting obsolete files after each fan-in pass can reject
+    // queries whose current temporary disk footprint is well below budget.
+    fn remove_run(&mut self, path: &Path) -> Result<(), ExecutionError> {
+        let bytes = fs::metadata(path)?.len();
+        fs::remove_file(path)?;
+        self.disk_bytes = self.disk_bytes.checked_sub(bytes)
+            .ok_or_else(|| invalid("GROUP BY spill accounting underflow"))?;
+        Ok(())
+    }
+
     fn flush(&mut self) -> Result<(), ExecutionError> {
         if self.keys.is_empty() { return Ok(()); }
         self.keys.sort_unstable();
@@ -189,25 +200,30 @@ impl ExternalGroupCount64 {
         let key = if self.descending { !encoded } else { encoded };
         if self.signed { key ^ (1 << 63) } else { key }
     }
+    fn compact_runs(&mut self) -> Result<(), ExecutionError> {
+            while self.runs.len() > FAN_IN {
+                let previous = std::mem::take(&mut self.runs);
+                let mut reduced = Vec::new();
+                for chunk in previous.chunks(FAN_IN) {
+                    let path = self.next_path()?;
+                    let mut writer = BufWriter::new(OpenOptions::new()
+                        .create_new(true).write(true).open(&path)?);
+                    merge(chunk, |key, count| write_group(&mut writer, key, count))?;
+                    writer.flush()?;
+                    self.reserve_disk(&path)?;
+                    reduced.push(path);
+                    for old in chunk { self.remove_run(old)?; }
+                }
+                self.runs = reduced;
+            }
+        Ok(())
+    }
+
     pub(super) fn finish(
         mut self, mut emit: impl FnMut(u64, u64) -> Result<(), ExecutionError>,
     ) -> Result<(), ExecutionError> {
         self.flush()?;
-        while self.runs.len() > FAN_IN {
-            let previous = std::mem::take(&mut self.runs);
-            let mut reduced = Vec::new();
-            for chunk in previous.chunks(FAN_IN) {
-                let path = self.next_path()?;
-                let mut writer = BufWriter::new(OpenOptions::new()
-                    .create_new(true).write(true).open(&path)?);
-                merge(chunk, |key, count| write_group(&mut writer, key, count))?;
-                writer.flush()?;
-                self.reserve_disk(&path)?;
-                reduced.push(path);
-                for old in chunk { fs::remove_file(old)?; }
-            }
-            self.runs = reduced;
-        }
+        self.compact_runs()?;
         let signed = self.signed;
         let descending = self.descending;
         merge(&self.runs, |encoded, count| {
@@ -262,6 +278,23 @@ mod tests {
         let mut out = Vec::new();
         write_varint(&mut out, u64::MAX).unwrap();
         assert_eq!(read_varint(&mut out.as_slice(), false).unwrap(), Some(u64::MAX));
+    }
+
+    #[test]
+    fn multi_pass_spill_budget_counts_only_existing_runs() {
+        let mut group = ExternalGroupCount64::new(false, false);
+        for id in 0..(RUN_KEYS * (FAN_IN + 3)) {
+            group.insert(id as u64).unwrap();
+        }
+        assert!(group.runs.len() > FAN_IN);
+        group.compact_runs().unwrap();
+        let actual: u64 = group.runs.iter()
+            .map(|path| fs::metadata(path).unwrap().len()).sum();
+        assert_eq!(group.disk_bytes, actual);
+        assert!(group.runs.len() <= FAN_IN);
+        let mut seen = 0_u64;
+        group.finish(|_, count| { seen += count; Ok(()) }).unwrap();
+        assert_eq!(seen, (RUN_KEYS * (FAN_IN + 3)) as u64);
     }
 
     #[test]
