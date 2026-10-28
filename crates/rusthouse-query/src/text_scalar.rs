@@ -38,6 +38,7 @@ pub(super) fn is_function(name: &str) -> bool {
             | "CUTQUERYSTRINGANDFRAGMENT"
             | "COALESCE"
             | "CONCAT_WS"
+            | "CONCATWITHSEPARATORASSUMEINJECTIVE"
             | "CUTFRAGMENT"
             | "URL_ENCODE"
             | "FRAGMENT"
@@ -517,6 +518,44 @@ fn parse_at_depth(parser: &mut Parser, depth: usize) -> Result<ConstantValue, Pa
                 "expected ')' after COALESCE arguments",
             )?;
             first.map_or(ConstantValue::Null, ConstantValue::Text)
+        }
+        "CONCATWITHSEPARATORASSUMEINJECTIVE" => {
+            let separator = text_arg(parser, depth + 1)?;
+            let mut output = String::new();
+            let mut null_result = separator.is_none();
+            let mut count = 0_usize;
+            while parser.take(Token::Comma) {
+                if count == 16 {
+                    return Err(ParseError("concatWithSeparatorAssumeInjective supports at most 16 values".into()));
+                }
+                match text_arg(parser, depth + 1)? {
+                    Some(value) if !null_result => {
+                        let separator = separator.as_deref().unwrap_or("");
+                        let extra = if count == 0 { 0 } else { separator.len() };
+                        let new_len = output.len().checked_add(extra).and_then(|n| n.checked_add(value.len()))
+                            .ok_or_else(|| ParseError("concatWithSeparatorAssumeInjective output too large".into()))?;
+                        if new_len > MAX_TEXT_BYTES {
+                            return Err(ParseError("concatWithSeparatorAssumeInjective output too large".into()));
+                        }
+                        if count > 0 {
+                            output.push_str(separator);
+                        }
+                        output.push_str(&value);
+                    }
+                    None => null_result = true,
+                    _ => {}
+                }
+                count += 1;
+            }
+            if count == 0 {
+                return Err(ParseError("concatWithSeparatorAssumeInjective requires a value".into()));
+            }
+            require(parser, Token::RParen, "expected ')' after concatWithSeparatorAssumeInjective")?;
+            if null_result {
+                ConstantValue::Null
+            } else {
+                ConstantValue::Text(output)
+            }
         }
         "CONCAT_WS" => {
             let separator = text_arg(parser, depth + 1)?;
