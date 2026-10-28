@@ -201,6 +201,138 @@ where
     Ok(matches)
 }
 
+/// Stream a large LEFT JOIN probe table without retaining its rows or
+/// unmatched pairs. Hash match detection precedes the optional IS NULL filter.
+fn probe_left_outer<F>(
+    left_path: &Path,
+    left_names: &[String],
+    left_keys: &[usize],
+    right_rows: &[Vec<typed::Cell>],
+    right_width: usize,
+    hash: &HashMap<Vec<typed::Key>, Bucket>,
+    options: ProbeOptions,
+    mut emit: F,
+) -> Result<usize, ExecutionError>
+where
+    F: FnMut(&[typed::Cell], &[typed::Cell]) -> Result<(), ExecutionError>,
+{
+    if options.stop_after == Some(0) { return Ok(0); }
+    let mut reader = TypedQueryReader::open(left_path, left_names)?;
+    let null_right = vec![typed::Cell::Null; right_width];
+    let mut matches = 0usize;
+    let mut probe_key = Vec::with_capacity(left_keys.len());
+    'scan: while let Some(batch) = reader.next_batch()? {
+        for row in 0..batch[0].len() {
+            let candidates = if batch_key_into(&batch, row, left_keys, &mut probe_key) {
+                hash.get(probe_key.as_slice())
+            } else { None };
+            let matched = candidates.is_some();
+            let mut left_row: Option<Vec<typed::Cell>> = None;
+            // When a key matches, LEFT JOIN does not emit an extra NULL row
+            // even if a subsequent WHERE filter removes every matched pair.
+            let candidates = candidates.into_iter().flat_map(|bucket| {
+                bucket.iter().take(if options.any { 1 } else { usize::MAX })
+                    .map(Some)
+            });
+            for right_index in candidates.chain((!matched).then_some(None)) {
+                let right = right_index.map_or(null_right.as_slice(),
+                    |&index| right_rows[index].as_slice());
+                if let Some((column, not_null)) = options.null_filter {
+                    let is_null = if column < left_names.len() {
+                        typed::is_null_at(&batch[column], row)
+                    } else {
+                        matches!(&right[column - left_names.len()], typed::Cell::Null)
+                    };
+                    if is_null == not_null { continue; }
+                }
+                if options.stop_after.is_some_and(|end| matches >= end) {
+                    break 'scan;
+                }
+                if options.stop_after.is_none() && matches >= MAX_RESULT_ROWS {
+                    return Err(invalid("JOIN produces more than 131072 rows"));
+                }
+                let projection = if options.materialize_rows
+                    && matches >= options.materialize_after {
+                    left_row.get_or_insert_with(|| {
+                        batch.iter().map(|column| typed::cell(column, row)).collect()
+                    }).as_slice()
+                } else { &[] };
+                emit(projection, right)?;
+                matches += 1;
+            }
+        }
+    }
+    Ok(matches)
+}
+
+fn execute_streaming_left<W: Write>(
+    query: &JoinSelect,
+    left_path: &Path,
+    right_path: &Path,
+    columns: InnerJoinColumns<'_>,
+    output: &mut W,
+) -> Result<(), ExecutionError> {
+    let InnerJoinColumns {
+        left_names, right_names, selected, left_keys, right_keys, null_filter,
+    } = columns;
+    let right_meta = inspect_query_source(right_path)?;
+    let right_rows = read_rows(
+        right_path, right_names, right_meta.rows,
+        MAX_STREAM_BUILD_ROWS, MAX_STREAM_BUILD_BYTES,
+    )?;
+    let mut hash = HashMap::<Vec<typed::Key>, Bucket>::with_capacity(right_rows.len());
+    for (index, row) in right_rows.iter().enumerate() {
+        if let Some(key) = row_key(row, right_keys) {
+            if query.any {
+                hash.entry(key).or_insert(Bucket::One(index));
+            } else {
+                hash.entry(key).and_modify(|bucket| bucket.push(index))
+                    .or_insert(Bucket::One(index));
+            }
+        }
+    }
+    let stop_after = query.limit.filter(|&limit| limit <= MAX_RESULT_ROWS)
+        .and_then(|limit| query.offset.checked_add(limit));
+    let preflight = probe_left_outer(
+        left_path, left_names, left_keys, &right_rows, right_names.len(), &hash,
+        ProbeOptions {
+            materialize_rows: false, materialize_after: 0,
+            stop_after, any: query.any, null_filter,
+        },
+        |_, _| Ok(()),
+    )?;
+    let header = selected.iter().map(|(_, name, _)| name.as_str())
+        .collect::<Vec<_>>().join("\t");
+    writeln!(output, "{header}")?;
+    if preflight <= query.offset { return Ok(()); }
+    let end = query.offset.saturating_add(query.limit.unwrap_or(usize::MAX));
+    let mut seen = 0usize;
+    probe_left_outer(
+        left_path, left_names, left_keys, &right_rows, right_names.len(), &hash,
+        ProbeOptions {
+            materialize_rows: selected.iter().any(|(column, _, _)| *column < left_names.len()),
+            materialize_after: query.offset, stop_after, any: query.any, null_filter,
+        },
+        |left, right| {
+            if seen >= query.offset && seen < end {
+                for (pos, (column, _, _)) in selected.iter().enumerate() {
+                    if pos > 0 { output.write_all(b"\t")?; }
+                    let value = if *column < left_names.len() {
+                        &left[*column]
+                    } else {
+                        &right[*column - left_names.len()]
+                    };
+                    typed::write_value(output, value)?;
+                }
+                output.write_all(b"\n")?;
+            }
+            seen += 1;
+            Ok(())
+        },
+    )?;
+    Ok(())
+}
+
 /// For unordered INNER joins, build only the small right side and stream the
 /// left side twice. A bounded page needs only its prefix; unbounded or
 /// oversized requests still validate the 131,072-result limit before output.
@@ -671,6 +803,24 @@ pub fn execute_join<W: Write>(
         return Ok(());
     }
 
+    if query.kind == JoinType::Left && order.is_empty()
+        && right_meta.rows <= MAX_STREAM_BUILD_ROWS
+        && left_meta.rows > MAX_INPUT_ROWS
+    {
+        return execute_streaming_left(
+            query, left_path, right_path,
+            InnerJoinColumns {
+                left_names: &left_names,
+                right_names: &right_names,
+                selected: &selected,
+                left_keys: &left_keys,
+                right_keys: &right_keys,
+                null_filter,
+            },
+            output,
+        );
+    }
+
     if query.kind == JoinType::Inner && order.is_empty() {
         // A very large right table can be the streamed side if the left fits
         // the same bounded hash-build budget.
@@ -835,6 +985,46 @@ pub fn execute_join<W: Write>(
 mod tests {
     use super::*;
     use rusthouse_storage::NumericColumn;
+
+    #[test]
+    fn streaming_left_outer_emits_unmatched_rows_without_duplicates() {
+        use rusthouse_storage::{Column, write_wide_part};
+        use std::fs;
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        static NEXT: AtomicUsize = AtomicUsize::new(0);
+        let root = std::env::temp_dir().join(format!(
+            "rusthouse-left-stream-test-{}-{}",
+            std::process::id(), NEXT.fetch_add(1, Ordering::Relaxed)
+        ));
+        let left = root.join("left");
+        let schema = [Column { name: "id".into(), data_type: "UInt64".into() }];
+        write_wide_part(&left, &schema, &[
+            vec![Some("3".into())], vec![Some("1".into())],
+            vec![Some("2".into())],
+        ]).unwrap();
+        let right_rows = vec![
+            vec![typed::Cell::Numeric(Number::Unsigned(1))],
+            vec![typed::Cell::Numeric(Number::Unsigned(1))],
+        ];
+        let mut hash = HashMap::new();
+        hash.insert(vec![typed::Key::Numeric(super::typed::NumberKey::from(Number::Unsigned(1)))],
+            Bucket::Many(vec![0, 1]));
+        let mut seen = Vec::new();
+        let count = probe_left_outer(
+            &left, &["id".into()], &[0], &right_rows, 1, &hash,
+            ProbeOptions {
+                materialize_rows: true, materialize_after: 0,
+                stop_after: None, any: false, null_filter: None,
+            },
+            |left, right| {
+                seen.push((format!("{:?}", left[0].key()), matches!(right[0], typed::Cell::Null)));
+                Ok(())
+            },
+        ).unwrap();
+        assert_eq!(count, 4);
+        assert_eq!(seen.iter().filter(|(_, null)| *null).count(), 2);
+        fs::remove_dir_all(root).unwrap();
+    }
 
     #[test]
     fn probe_keys_match_materialized_keys_and_skip_invalid_values() {
