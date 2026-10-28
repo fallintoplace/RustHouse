@@ -236,7 +236,9 @@ mod tests {
         for invalid in [b"one".as_slice(), b"one\ttwo\tthree".as_slice()] {
             let mut output = Vec::new();
             assert_eq!(
-                write_json_row(&mut output, &headers, invalid).unwrap_err().kind(),
+                write_json_row(&mut output, &headers, invalid)
+                    .unwrap_err()
+                    .kind(),
                 io::ErrorKind::InvalidData
             );
             assert!(output.is_empty());

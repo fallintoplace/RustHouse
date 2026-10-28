@@ -21,7 +21,10 @@ pub(super) const MAX_STREAM_BUILD_BYTES: usize = 32 * 1024 * 1024;
 
 type Pair = (Option<usize>, Option<usize>);
 
-pub(super) fn multi_join_row_key(row: &[typed::Cell], indices: &[usize]) -> Option<Vec<typed::Key>> {
+pub(super) fn multi_join_row_key(
+    row: &[typed::Cell],
+    indices: &[usize],
+) -> Option<Vec<typed::Key>> {
     row_key(row, indices)
 }
 
@@ -173,20 +176,19 @@ where
                         if options.stop_after.is_none() && matches >= MAX_RESULT_ROWS {
                             return Err(invalid("JOIN produces more than 131072 rows"));
                         }
-                        let projection = if options.materialize_rows
-                            && matches >= options.materialize_after
-                        {
-                            left_row
-                                .get_or_insert_with(|| {
-                                    batch
-                                        .iter()
-                                        .map(|column| typed::cell(column, index))
-                                        .collect()
-                                })
-                                .as_slice()
-                        } else {
-                            &[]
-                        };
+                        let projection =
+                            if options.materialize_rows && matches >= options.materialize_after {
+                                left_row
+                                    .get_or_insert_with(|| {
+                                        batch
+                                            .iter()
+                                            .map(|column| typed::cell(column, index))
+                                            .collect()
+                                    })
+                                    .as_slice()
+                            } else {
+                                &[]
+                            };
                         emit(projection, &right_rows[right_index])?;
                         matches += 1;
                     }
@@ -242,7 +244,9 @@ fn execute_streaming_inner<W: Write>(
             if query.any {
                 hash.entry(key).or_insert(Bucket::One(index));
             } else {
-                hash.entry(key).and_modify(|bucket| bucket.push(index)).or_insert(Bucket::One(index));
+                hash.entry(key)
+                    .and_modify(|bucket| bucket.push(index))
+                    .or_insert(Bucket::One(index));
             }
         }
     }
@@ -351,9 +355,11 @@ where
     let left_width = left_rows.first().map_or(0, Vec::len);
     // Each retained left row can match only its first right row.
     let mut seen_left = options.any.then(|| vec![false; left_rows.len()]);
-    let mut remaining_left = seen_left
-        .as_ref()
-        .map(|_| hash.values().map(|bucket| bucket.iter().count()).sum::<usize>());
+    let mut remaining_left = seen_left.as_ref().map(|_| {
+        hash.values()
+            .map(|bucket| bucket.iter().count())
+            .sum::<usize>()
+    });
     let mut probe_key = Vec::with_capacity(right_keys.len());
     'scan: while let Some(batch) = reader.next_batch()? {
         for index in 0..batch[0].len() {
@@ -388,20 +394,19 @@ where
                         if options.stop_after.is_none() && matches >= MAX_RESULT_ROWS {
                             return Err(invalid("JOIN produces more than 131072 rows"));
                         }
-                        let projection = if options.materialize_rows
-                            && matches >= options.materialize_after
-                        {
-                            right_row
-                                .get_or_insert_with(|| {
-                                    batch
-                                        .iter()
-                                        .map(|column| typed::cell(column, index))
-                                        .collect()
-                                })
-                                .as_slice()
-                        } else {
-                            &[]
-                        };
+                        let projection =
+                            if options.materialize_rows && matches >= options.materialize_after {
+                                right_row
+                                    .get_or_insert_with(|| {
+                                        batch
+                                            .iter()
+                                            .map(|column| typed::cell(column, index))
+                                            .collect()
+                                    })
+                                    .as_slice()
+                            } else {
+                                &[]
+                            };
                         emit(&left_rows[left_index], projection)?;
                         matches += 1;
                     }
@@ -441,7 +446,9 @@ fn execute_streaming_right<W: Write>(
     let mut hash: HashMap<Vec<typed::Key>, Bucket> = HashMap::with_capacity(left_rows.len());
     for (index, row) in left_rows.iter().enumerate() {
         if let Some(key) = row_key(row, left_keys) {
-            hash.entry(key).and_modify(|bucket| bucket.push(index)).or_insert(Bucket::One(index));
+            hash.entry(key)
+                .and_modify(|bucket| bucket.push(index))
+                .or_insert(Bucket::One(index));
         }
     }
     if hash.is_empty() {
@@ -593,7 +600,11 @@ pub fn execute_join<W: Write>(
         }
         for (index, name) in right_names.iter().enumerate() {
             if !query.using_keys.contains(name) {
-                selected.push((width + index, format!("{}.{}", query.right_alias, name), None));
+                selected.push((
+                    width + index,
+                    format!("{}.{}", query.right_alias, name),
+                    None,
+                ));
             }
         }
         selected
@@ -710,7 +721,9 @@ pub fn execute_join<W: Write>(
     let mut hash: HashMap<Vec<typed::Key>, Bucket> = HashMap::with_capacity(right_rows.len());
     for (index, row) in right_rows.iter().enumerate() {
         if let Some(key) = row_key(row, &right_keys) {
-            hash.entry(key).and_modify(|bucket| bucket.push(index)).or_insert(Bucket::One(index));
+            hash.entry(key)
+                .and_modify(|bucket| bucket.push(index))
+                .or_insert(Bucket::One(index));
         }
     }
     let keep = |pair: &Pair| {
@@ -727,17 +740,20 @@ pub fn execute_join<W: Write>(
         let mut matched = false;
         if let Some(key) = row_key(row, &left_keys) {
             if let Some(matches) = hash.get(&key) {
-                for &right_index in matches
-                    .iter()
-                    .take(if query.any && query.kind != JoinType::Right {
-                        1
-                    } else {
-                        usize::MAX
-                    })
+                for &right_index in
+                    matches
+                        .iter()
+                        .take(if query.any && query.kind != JoinType::Right {
+                            1
+                        } else {
+                            usize::MAX
+                        })
                 {
                     if query.any
                         && query.kind == JoinType::Right
-                        && matched_right.as_ref().is_some_and(|flags| flags[right_index])
+                        && matched_right
+                            .as_ref()
+                            .is_some_and(|flags| flags[right_index])
                     {
                         continue;
                     }

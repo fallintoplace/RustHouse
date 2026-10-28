@@ -55,7 +55,9 @@ pub(super) fn add_date_years(date: &str, years: i64) -> Result<String, ParseErro
     };
     let shifted = format!("{year:04}-{month}-{day}");
     if rusthouse_storage::parse_date(&shifted).is_none() {
-        return Err(ParseError("DATE interval is outside supported Date range".into()));
+        return Err(ParseError(
+            "DATE interval is outside supported Date range".into(),
+        ));
     }
     Ok(shifted)
 }

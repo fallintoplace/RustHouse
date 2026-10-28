@@ -37,22 +37,37 @@ fn queries_remain_consistent_after_persisted_rewrites() {
         run(&db, statement);
     }
     assert_eq!(
-        run(&db, "SELECT id, status FROM inventory WHERE qty > 1 ORDER BY id"),
+        run(
+            &db,
+            "SELECT id, status FROM inventory WHERE qty > 1 ORDER BY id"
+        ),
         "id\tstatus\n1\tnew\n2\theld\n3\tnew\n5\theld\n"
     );
-    run(&db, "UPDATE inventory SET status = 'done' WHERE status = 'new'");
+    run(
+        &db,
+        "UPDATE inventory SET status = 'done' WHERE status = 'new'",
+    );
     assert_eq!(
-        run(&db, "SELECT status, count(*) AS n FROM inventory GROUP BY status ORDER BY status"),
+        run(
+            &db,
+            "SELECT status, count(*) AS n FROM inventory GROUP BY status ORDER BY status"
+        ),
         "status\tn\ndone\t3\nheld\t2\n"
     );
     run(&db, "DELETE FROM inventory WHERE qty = 0");
     assert_eq!(
-        run(&db, "SELECT id, status FROM inventory ORDER BY id DESC LIMIT 2"),
+        run(
+            &db,
+            "SELECT id, status FROM inventory ORDER BY id DESC LIMIT 2"
+        ),
         "id\tstatus\n5\theld\n3\tdone\n"
     );
     run(&db, "INSERT INTO inventory VALUES (6, 'done', 9, NULL)");
     assert_eq!(
-        run(&db, "SELECT count(*) AS remaining, count(note) AS tagged FROM inventory WHERE status = 'done'"),
+        run(
+            &db,
+            "SELECT count(*) AS remaining, count(note) AS tagged FROM inventory WHERE status = 'done'"
+        ),
         "remaining\ttagged\n3\t1\n"
     );
     fs::remove_dir_all(db).unwrap();

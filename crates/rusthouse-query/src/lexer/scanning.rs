@@ -10,7 +10,11 @@ pub(super) fn advance_ascii_digits(bytes: &[u8], index: &mut usize) {
     }
 }
 
-pub(super) fn require_digit(bytes: &[u8], index: usize, message: &'static str) -> Result<(), ParseError> {
+pub(super) fn require_digit(
+    bytes: &[u8],
+    index: usize,
+    message: &'static str,
+) -> Result<(), ParseError> {
     if !is_ascii_digit_at(bytes, index) {
         return Err(ParseError(message.into()));
     }

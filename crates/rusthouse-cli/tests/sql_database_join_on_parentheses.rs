@@ -3,10 +3,7 @@ use std::process::Command;
 
 #[test]
 fn parenthesized_composite_join_predicates_execute() {
-    let db = std::env::temp_dir().join(format!(
-        "rusthouse-join-on-paren-{}",
-        std::process::id()
-    ));
+    let db = std::env::temp_dir().join(format!("rusthouse-join-on-paren-{}", std::process::id()));
     let sql = |statement: &str| {
         Command::new(env!("CARGO_BIN_EXE_rusthouse"))
             .args(["sql", statement, "--database"])

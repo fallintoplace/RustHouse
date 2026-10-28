@@ -76,8 +76,12 @@ pub fn format_membership(members: &[Member]) -> Result<String, &'static str> {
     }
     let mut text = String::with_capacity((members.len() * 64).min(8192));
     for member in members {
-        write!(&mut text, "{} {} {}\n", member.node, member.zone, member.weight)
-            .expect("writing to String is infallible");
+        writeln!(
+            &mut text,
+            "{} {} {}",
+            member.node, member.zone, member.weight
+        )
+        .expect("writing to String is infallible");
         if text.len() > 8192 {
             return Err("membership manifest too large");
         }
@@ -93,22 +97,38 @@ mod tests {
     fn round_trips_membership() {
         let parsed = parse_membership("node_a eu1 3\nnode_b eu2 1\n").unwrap();
         assert_eq!(parsed.len(), 2);
-        assert_eq!(format_membership(&parsed).unwrap(), "node_a eu1 3\nnode_b eu2 1\n");
+        assert_eq!(
+            format_membership(&parsed).unwrap(),
+            "node_a eu1 3\nnode_b eu2 1\n"
+        );
     }
 
     #[test]
     fn rejects_duplicates_and_bad_records() {
-        for input in ["", "a eu1 0\n", "a eu1 1\na eu2 2\n", "../etc eu 1\n", "a eu 1 extra\n"] {
+        for input in [
+            "",
+            "a eu1 0\n",
+            "a eu1 1\na eu2 2\n",
+            "../etc eu 1\n",
+            "a eu 1 extra\n",
+        ] {
             assert!(parse_membership(input).is_err(), "{input}");
         }
     }
     #[test]
     fn formatting_rejects_oversized_and_duplicate_records() {
-        let huge = Member { node: "x".repeat(1_000_000), zone: "z".into(), weight: 1 };
+        let huge = Member {
+            node: "x".repeat(1_000_000),
+            zone: "z".into(),
+            weight: 1,
+        };
         assert!(format_membership(&[huge]).is_err());
-        let member = Member { node: "n".into(), zone: "z".into(), weight: 1 };
+        let member = Member {
+            node: "n".into(),
+            zone: "z".into(),
+            weight: 1,
+        };
         assert!(format_membership(&[member.clone(), member]).is_err());
         assert!(format_membership(&[]).is_err());
     }
-
 }

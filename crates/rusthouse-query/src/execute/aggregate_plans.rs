@@ -26,7 +26,10 @@ pub(super) fn execute_grouped_part<W: Write>(
     let no_filters = query.predicates.is_empty() && query.or_predicates.is_empty();
     // A single-byte group key has only 256 possible values. Accumulate in a
     // dense array, retaining the first-seen key order for unordered queries.
-    let narrow = metadata.columns.iter().find(|candidate| candidate.name == column)
+    let narrow = metadata
+        .columns
+        .iter()
+        .find(|candidate| candidate.name == column)
         .map(|candidate| candidate.data_type.as_str());
     if matches!(narrow, Some("UInt8" | "Int8")) {
         let mut counts = [0u64; 256];
@@ -40,13 +43,18 @@ pub(super) fn execute_grouped_part<W: Write>(
                 let byte = match &batch[0] {
                     NumericColumn::UInt8(values) => values[row],
                     NumericColumn::Int8(values) => values[row] as u8,
-                    _ => return Err(ExecutionError::Invalid("unexpected byte-width GROUP BY type".into())),
+                    _ => {
+                        return Err(ExecutionError::Invalid(
+                            "unexpected byte-width GROUP BY type".into(),
+                        ));
+                    }
                 };
                 if !visited[byte as usize] {
                     visited[byte as usize] = true;
                     insertion_order.push(byte);
                 }
-                counts[byte as usize] = counts[byte as usize].checked_add(1)
+                counts[byte as usize] = counts[byte as usize]
+                    .checked_add(1)
                     .ok_or_else(|| ExecutionError::Invalid("group count overflow".into()))?;
             }
         }
@@ -56,7 +64,9 @@ pub(super) fn execute_grouped_part<W: Write>(
             } else {
                 Number::Unsigned(u128::from(byte))
             };
-            groups.by_key.insert(NumberKey::from(value), groups.rows.len());
+            groups
+                .by_key
+                .insert(NumberKey::from(value), groups.rows.len());
             groups.rows.push((value, counts[byte as usize]));
         }
         return groups.write(query, column, output);
@@ -74,15 +84,18 @@ pub(super) fn execute_grouped_part<W: Write>(
                 let key = match &batch[0] {
                     NumericColumn::UInt16(values) => values[row],
                     NumericColumn::Int16(values) => values[row] as u16,
-                    _ => return Err(ExecutionError::Invalid(
-                        "unexpected 16-bit GROUP BY type".into(),
-                    )),
+                    _ => {
+                        return Err(ExecutionError::Invalid(
+                            "unexpected 16-bit GROUP BY type".into(),
+                        ));
+                    }
                 };
                 let count = &mut counts[usize::from(key)];
                 if *count == 0 {
                     insertion_order.push(key);
                 }
-                *count = count.checked_add(1)
+                *count = count
+                    .checked_add(1)
                     .ok_or_else(|| ExecutionError::Invalid("group count overflow".into()))?;
             }
         }
@@ -92,7 +105,9 @@ pub(super) fn execute_grouped_part<W: Write>(
             } else {
                 Number::Unsigned(u128::from(key))
             };
-            groups.by_key.insert(NumberKey::from(value), groups.rows.len());
+            groups
+                .by_key
+                .insert(NumberKey::from(value), groups.rows.len());
             groups.rows.push((value, counts[usize::from(key)]));
         }
         return groups.write(query, column, output);
@@ -136,7 +151,11 @@ pub(super) fn execute_grouped_numbers<W: Write>(
         if let Some(limit) = query.limit {
             let begin = (query.offset.unwrap_or(0) as u64).min(rows);
             let length = (limit as u64).min(rows - begin);
-            writeln!(output, "{column}\t{}", query.alias.as_deref().unwrap_or("count"))?;
+            writeln!(
+                output,
+                "{column}\t{}",
+                query.alias.as_deref().unwrap_or("count")
+            )?;
             for index in begin..begin + length {
                 let number = u128::from(start) + u128::from(index) * u128::from(step);
                 writeln!(output, "{number}\t1")?;
@@ -156,7 +175,11 @@ pub(super) fn execute_grouped_numbers<W: Write>(
                 let available = upper - lower;
                 let skip = (query.offset.unwrap_or(0) as u64).min(available);
                 let length = (limit as u64).min(available - skip);
-                writeln!(output, "{column}\t{}", query.alias.as_deref().unwrap_or("count"))?;
+                writeln!(
+                    output,
+                    "{column}\t{}",
+                    query.alias.as_deref().unwrap_or("count")
+                )?;
                 for index in lower + skip..lower + skip + length {
                     let number = u128::from(start) + u128::from(index) * u128::from(step);
                     writeln!(output, "{number}\t1")?;
@@ -280,9 +303,15 @@ pub(super) fn execute_grouped_aggregate_numbers<W: Write>(
                     )
                 } else {
                     let ordering = compare_numbers(*left_key, *right_key);
-                    if term.descending { ordering.reverse() } else { ordering }
+                    if term.descending {
+                        ordering.reverse()
+                    } else {
+                        ordering
+                    }
                 };
-                if comparison != Ordering::Equal { return comparison; }
+                if comparison != Ordering::Equal {
+                    return comparison;
+                }
             }
             Ordering::Equal
         });
@@ -308,7 +337,10 @@ pub(super) fn execute_count_column_part<W: Write>(
     // validated snapshot metadata already contains the exact row count.
     // Avoid opening and decompressing column streams for COUNT(column).
     if query.predicates.is_empty() && query.or_predicates.is_empty() {
-        let selected = metadata.columns.iter().find(|item| item.name == column)
+        let selected = metadata
+            .columns
+            .iter()
+            .find(|item| item.name == column)
             .ok_or_else(|| ExecutionError::Invalid(format!("unknown column: {column}")))?;
         if !selected.data_type.starts_with("Nullable(") {
             write_header(query, output, &format!("count({column})"))?;
@@ -334,9 +366,21 @@ pub(super) fn execute_count_column_part<W: Write>(
         candidate.name == column
             && matches!(
                 candidate.data_type.as_str(),
-                "UInt8" | "UInt16" | "UInt32" | "UInt64" | "UInt128"
-                    | "Int8" | "Int16" | "Int32" | "Int64" | "Int128"
-                    | "Float32" | "Float64" | "Date" | "Date32" | "DateTime"
+                "UInt8"
+                    | "UInt16"
+                    | "UInt32"
+                    | "UInt64"
+                    | "UInt128"
+                    | "Int8"
+                    | "Int16"
+                    | "Int32"
+                    | "Int64"
+                    | "Int128"
+                    | "Float32"
+                    | "Float64"
+                    | "Date"
+                    | "Date32"
+                    | "DateTime"
             )
     });
     if fast_count_type && query.predicates.is_empty() && query.or_predicates.is_empty() {
@@ -398,7 +442,10 @@ pub(super) fn execute_count_distinct_part<W: Write>(
     let no_filters = query.predicates.is_empty() && query.or_predicates.is_empty();
     // Narrow integer domains fit in a tiny exact bitmap. This avoids
     // hashing every row of a billion-row low-cardinality column.
-    let domain = metadata.columns.iter().find(|candidate| candidate.name == column)
+    let domain = metadata
+        .columns
+        .iter()
+        .find(|candidate| candidate.name == column)
         .and_then(|candidate| match candidate.data_type.as_str() {
             "UInt8" | "Int8" => Some(256usize),
             "UInt16" | "Int16" => Some(65536usize),
@@ -420,9 +467,11 @@ pub(super) fn execute_count_distinct_part<W: Write>(
                         NumericColumn::Int8(values) => usize::from(values[row] as u8),
                         NumericColumn::UInt16(values) => usize::from(values[row]),
                         NumericColumn::Int16(values) => usize::from(values[row] as u16),
-                        _ => return Err(ExecutionError::Invalid(
-                            "unexpected COUNT(DISTINCT) narrow column type".into(),
-                        )),
+                        _ => {
+                            return Err(ExecutionError::Invalid(
+                                "unexpected COUNT(DISTINCT) narrow column type".into(),
+                            ));
+                        }
                     };
                     bits[value / 64] |= 1u64 << (value % 64);
                 }
@@ -483,9 +532,20 @@ pub(super) fn execute_aggregate_part<W: Write>(
     // For plain integer SUM without WHERE, operate on contiguous typed arrays
     // and avoid AggregateState dispatch and Number conversion on every row.
     let native_integer = metadata.columns.iter().any(|candidate| {
-        candidate.name == column && matches!(candidate.data_type.as_str(),
-            "UInt8" | "UInt16" | "UInt32" | "UInt64" | "UInt128"
-            | "Int8" | "Int16" | "Int32" | "Int64" | "Int128")
+        candidate.name == column
+            && matches!(
+                candidate.data_type.as_str(),
+                "UInt8"
+                    | "UInt16"
+                    | "UInt32"
+                    | "UInt64"
+                    | "UInt128"
+                    | "Int8"
+                    | "Int16"
+                    | "Int32"
+                    | "Int64"
+                    | "Int128"
+            )
     });
     if function == AggregateFunction::Sum && no_filters && native_integer {
         let mut total: Option<Number> = None;
@@ -495,14 +555,19 @@ pub(super) fn execute_aggregate_part<W: Write>(
                     let value = <$wide>::from(value);
                     total = Some(match total {
                         None => Number::$kind(value),
-                        Some(Number::$kind(previous)) => Number::$kind(
-                            previous.checked_add(value).ok_or_else(|| {
+                        Some(Number::$kind(previous)) => {
+                            Number::$kind(previous.checked_add(value).ok_or_else(|| {
                                 ExecutionError::Invalid(format!(
-                                    "{} SUM overflow", stringify!($kind).to_lowercase()
+                                    "{} SUM overflow",
+                                    stringify!($kind).to_lowercase()
                                 ))
-                            })?
-                        ),
-                        _ => return Err(ExecutionError::Invalid("incompatible types in SUM".into())),
+                            })?)
+                        }
+                        _ => {
+                            return Err(ExecutionError::Invalid(
+                                "incompatible types in SUM".into(),
+                            ));
+                        }
                     });
                 }
             }};
@@ -519,18 +584,26 @@ pub(super) fn execute_aggregate_part<W: Write>(
                 NumericColumn::Int32(values) => fold_batch!(values, Signed, i128),
                 NumericColumn::Int64(values) => fold_batch!(values, Signed, i128),
                 NumericColumn::Int128(values) => fold_batch!(values, Signed, i128),
-                _ => return Err(ExecutionError::Invalid("unexpected numeric SUM column type".into())),
+                _ => {
+                    return Err(ExecutionError::Invalid(
+                        "unexpected numeric SUM column type".into(),
+                    ));
+                }
             }
         }
         if query.offset.unwrap_or(0) == 0 {
-            if let Some(value) = total { writeln!(output, "{value}")?; }
-            else { writeln!(output, "NULL")?; }
+            if let Some(value) = total {
+                writeln!(output, "{value}")?;
+            } else {
+                writeln!(output, "NULL")?;
+            }
         }
         return Ok(());
     }
     // Reduce each native integer batch to one MIN/MAX candidate.
     if matches!(function, AggregateFunction::Min | AggregateFunction::Max)
-        && no_filters && native_integer
+        && no_filters
+        && native_integer
     {
         let mut extremum: Option<Number> = None;
         macro_rules! candidate {
@@ -544,10 +617,15 @@ pub(super) fn execute_aggregate_part<W: Write>(
                     let value = Number::$kind(<$wide>::from(*value));
                     let replace = extremum.is_none_or(|previous| {
                         let ordering = compare_numbers(value, previous);
-                        if function == AggregateFunction::Min { ordering.is_lt() }
-                        else { ordering.is_gt() }
+                        if function == AggregateFunction::Min {
+                            ordering.is_lt()
+                        } else {
+                            ordering.is_gt()
+                        }
                     });
-                    if replace { extremum = Some(value); }
+                    if replace {
+                        extremum = Some(value);
+                    }
                 }
             }};
         }
@@ -563,12 +641,19 @@ pub(super) fn execute_aggregate_part<W: Write>(
                 NumericColumn::Int32(values) => candidate!(values, Signed, i128),
                 NumericColumn::Int64(values) => candidate!(values, Signed, i128),
                 NumericColumn::Int128(values) => candidate!(values, Signed, i128),
-                _ => return Err(ExecutionError::Invalid("unexpected integer extremum column".into())),
+                _ => {
+                    return Err(ExecutionError::Invalid(
+                        "unexpected integer extremum column".into(),
+                    ));
+                }
             }
         }
         if query.offset.unwrap_or(0) == 0 {
-            if let Some(value) = extremum { writeln!(output, "{value}")?; }
-            else { writeln!(output, "NULL")?; }
+            if let Some(value) = extremum {
+                writeln!(output, "{value}")?;
+            } else {
+                writeln!(output, "NULL")?;
+            }
         }
         return Ok(());
     }
@@ -634,34 +719,37 @@ pub(super) fn execute_aggregate_numbers<W: Write>(
     }
     // A filtered arithmetic progression can be aggregated from its exact
     // matching interval without generating a billion individual rows.
-    if matches!(function, AggregateFunction::Sum | AggregateFunction::Min | AggregateFunction::Max) {
+    if matches!(
+        function,
+        AggregateFunction::Sum | AggregateFunction::Min | AggregateFunction::Max
+    ) {
         if let Some((lower, upper)) = monotonic_range_indices(&comparisons, start, rows, step) {
-        if query.offset.unwrap_or(0) == 0 {
-            if lower == upper {
-                writeln!(output, "NULL")?;
-            } else {
-                let first = u128::from(start) + u128::from(lower) * u128::from(step);
-                let last = u128::from(start) + u128::from(upper - 1) * u128::from(step);
-                let count = u128::from(upper - lower);
-                let result = match function {
-                    // Halve before multiplying to avoid a transient u128
-                    // overflow at the full UInt64 cardinality boundary.
-                    AggregateFunction::Sum => {
-                        let endpoints = first + last;
-                        if count % 2 == 0 {
-                            (count / 2) * endpoints
-                        } else {
-                            count * (endpoints / 2)
+            if query.offset.unwrap_or(0) == 0 {
+                if lower == upper {
+                    writeln!(output, "NULL")?;
+                } else {
+                    let first = u128::from(start) + u128::from(lower) * u128::from(step);
+                    let last = u128::from(start) + u128::from(upper - 1) * u128::from(step);
+                    let count = u128::from(upper - lower);
+                    let result = match function {
+                        // Halve before multiplying to avoid a transient u128
+                        // overflow at the full UInt64 cardinality boundary.
+                        AggregateFunction::Sum => {
+                            let endpoints = first + last;
+                            if count % 2 == 0 {
+                                (count / 2) * endpoints
+                            } else {
+                                count * (endpoints / 2)
+                            }
                         }
-                    }
-                    AggregateFunction::Min => first,
-                    AggregateFunction::Max => last,
-                    _ => unreachable!(),
-                };
-                writeln!(output, "{result}")?;
+                        AggregateFunction::Min => first,
+                        AggregateFunction::Max => last,
+                        _ => unreachable!(),
+                    };
+                    writeln!(output, "{result}")?;
+                }
             }
-        }
-        return Ok(());
+            return Ok(());
         }
     }
     // Positive equality/IN filters identify a small set of source positions.

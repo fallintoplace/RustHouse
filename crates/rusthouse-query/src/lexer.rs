@@ -50,8 +50,7 @@ fn tokenize_with_limit(sql: &str, max_bytes: usize) -> Result<Vec<Token>, ParseE
             b'.' if is_ascii_digit_at(bytes, index + 1) => scan_number(sql, &mut index)?,
             b'/' if bytes.get(index + 1) == Some(&b'*') => {
                 index += 2;
-                while index + 1 < bytes.len()
-                    && !(bytes[index] == b'*' && bytes[index + 1] == b'/')
+                while index + 1 < bytes.len() && !(bytes[index] == b'*' && bytes[index + 1] == b'/')
                 {
                     index += 1;
                 }
@@ -184,9 +183,14 @@ mod tests {
         assert_eq!(
             tokenize("count-2 count -2 SELECT -3").unwrap(),
             vec![
-                Token::Word("count".into()), Token::Minus, Token::Number("2".into()),
-                Token::Word("count".into()), Token::Minus, Token::Number("2".into()),
-                Token::Word("SELECT".into()), Token::Number("-3".into()),
+                Token::Word("count".into()),
+                Token::Minus,
+                Token::Number("2".into()),
+                Token::Word("count".into()),
+                Token::Minus,
+                Token::Number("2".into()),
+                Token::Word("SELECT".into()),
+                Token::Number("-3".into()),
             ]
         );
     }
@@ -365,5 +369,4 @@ mod tests {
         );
         assert!(tokenize("-- only a comment").unwrap().is_empty());
     }
-
 }

@@ -125,10 +125,12 @@ mod tests {
                 Ok(())
             }
         }
-        let mut output = CountWrites { writes: 0, bytes: Vec::new() };
+        let mut output = CountWrites {
+            writes: 0,
+            bytes: Vec::new(),
+        };
         write_quoted_csv_field(&mut output, b"a\"\"b").unwrap();
         assert_eq!(output.writes, 1);
         assert_eq!(output.bytes, b"\"a\"\"\"\"b\"");
     }
-
 }

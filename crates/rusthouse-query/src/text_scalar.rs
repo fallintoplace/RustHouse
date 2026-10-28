@@ -105,7 +105,11 @@ fn parse_at_depth(parser: &mut Parser, depth: usize) -> Result<ConstantValue, Pa
             require(parser, Token::RParen, "ASCII requires one argument")?;
             match input {
                 Some(value) => ConstantValue::Integer(
-                    value.chars().next().map(|ch| i64::from(ch as u32)).unwrap_or(0),
+                    value
+                        .chars()
+                        .next()
+                        .map(|ch| i64::from(ch as u32))
+                        .unwrap_or(0),
                 ),
                 None => ConstantValue::Null,
             }
@@ -130,14 +134,19 @@ fn parse_at_depth(parser: &mut Parser, depth: usize) -> Result<ConstantValue, Pa
         }
         "CUTQUERYSTRING" => {
             let input = text_arg(parser, depth + 1)?;
-            require(parser, Token::RParen, "cutQueryString requires one argument")?;
+            require(
+                parser,
+                Token::RParen,
+                "cutQueryString requires one argument",
+            )?;
             match input {
                 Some(input) => {
                     let (before_fragment, fragment) = match input.split_once('#') {
                         Some((head, tail)) => (head, Some(tail)),
                         None => (input.as_str(), None),
                     };
-                    let prefix = before_fragment.split_once('?')
+                    let prefix = before_fragment
+                        .split_once('?')
                         .map_or(before_fragment, |(head, _)| head);
                     let mut output = prefix.to_owned();
                     if let Some(fragment) = fragment {
@@ -154,7 +163,8 @@ fn parse_at_depth(parser: &mut Parser, depth: usize) -> Result<ConstantValue, Pa
             require(parser, Token::RParen, "HEX_ENCODE requires one argument")?;
             match input {
                 Some(value) => {
-                    let length = value.len()
+                    let length = value
+                        .len()
                         .checked_mul(2)
                         .ok_or_else(|| ParseError("HEX_ENCODE result is too large".into()))?;
                     if length > MAX_TEXT_BYTES {
@@ -185,7 +195,11 @@ fn parse_at_depth(parser: &mut Parser, depth: usize) -> Result<ConstantValue, Pa
         }
         "STRINGBYTESUNIQ" => {
             let input = text_arg(parser, depth + 1)?;
-            require(parser, Token::RParen, "stringBytesUniq requires one argument")?;
+            require(
+                parser,
+                Token::RParen,
+                "stringBytesUniq requires one argument",
+            )?;
             match input {
                 Some(value) => {
                     let mut seen = [false; 256];
@@ -254,7 +268,9 @@ fn parse_at_depth(parser: &mut Parser, depth: usize) -> Result<ConstantValue, Pa
                         .ok()
                         .filter(|code| *code != 0)
                         .and_then(char::from_u32)
-                        .ok_or_else(|| ParseError("CHR requires a nonzero Unicode scalar".into()))?;
+                        .ok_or_else(|| {
+                            ParseError("CHR requires a nonzero Unicode scalar".into())
+                        })?;
                     ConstantValue::Text(character.to_string())
                 }
                 None => ConstantValue::Null,
@@ -335,7 +351,8 @@ fn parse_at_depth(parser: &mut Parser, depth: usize) -> Result<ConstantValue, Pa
             require(parser, Token::RParen, "cutFragment requires one argument")?;
             match input {
                 Some(input) => ConstantValue::Text(
-                    input.split_once('#')
+                    input
+                        .split_once('#')
                         .map_or(input.as_str(), |(prefix, _)| prefix)
                         .to_owned(),
                 ),
@@ -352,7 +369,8 @@ fn parse_at_depth(parser: &mut Parser, depth: usize) -> Result<ConstantValue, Pa
                     }
                     let mut length = 0usize;
                     for byte in input.bytes() {
-                        length = length.checked_add(if unreserved(byte) { 1 } else { 3 })
+                        length = length
+                            .checked_add(if unreserved(byte) { 1 } else { 3 })
                             .ok_or_else(|| ParseError("URL_ENCODE result is too large".into()))?;
                         if length > MAX_TEXT_BYTES {
                             return Err(ParseError("URL_ENCODE result is too large".into()));
@@ -376,7 +394,11 @@ fn parse_at_depth(parser: &mut Parser, depth: usize) -> Result<ConstantValue, Pa
         }
         "CUTQUERYSTRINGANDFRAGMENT" => {
             let input = text_arg(parser, depth + 1)?;
-            require(parser, Token::RParen, "cutQueryStringAndFragment requires one argument")?;
+            require(
+                parser,
+                Token::RParen,
+                "cutQueryStringAndFragment requires one argument",
+            )?;
             match input {
                 Some(input) => {
                     let end = input.find(['?', '#']).unwrap_or(input.len());
@@ -401,12 +423,20 @@ fn parse_at_depth(parser: &mut Parser, depth: usize) -> Result<ConstantValue, Pa
                     break;
                 }
             }
-            require(parser, Token::RParen, "expected ')' after COALESCE arguments")?;
+            require(
+                parser,
+                Token::RParen,
+                "expected ')' after COALESCE arguments",
+            )?;
             first.map_or(ConstantValue::Null, ConstantValue::Text)
         }
         "CONCAT_WS" => {
             let separator = text_arg(parser, depth + 1)?;
-            require(parser, Token::Comma, "CONCAT_WS requires at least one value")?;
+            require(
+                parser,
+                Token::Comma,
+                "CONCAT_WS requires at least one value",
+            )?;
             let mut result = String::new();
             let mut written = false;
             let mut count = 0;
@@ -436,7 +466,11 @@ fn parse_at_depth(parser: &mut Parser, depth: usize) -> Result<ConstantValue, Pa
                     break;
                 }
             }
-            require(parser, Token::RParen, "expected ')' after CONCAT_WS arguments")?;
+            require(
+                parser,
+                Token::RParen,
+                "expected ')' after CONCAT_WS arguments",
+            )?;
             if separator.is_some() {
                 ConstantValue::Text(result)
             } else {
@@ -449,7 +483,8 @@ fn parse_at_depth(parser: &mut Parser, depth: usize) -> Result<ConstantValue, Pa
             match input {
                 Some(value) => {
                     let quotes = value.bytes().filter(|byte| *byte == b'\'').count();
-                    let length = value.len()
+                    let length = value
+                        .len()
                         .checked_add(quotes)
                         .and_then(|n| n.checked_add(2))
                         .ok_or_else(|| ParseError("QUOTE_LITERAL result is too large".into()))?;
@@ -511,9 +546,11 @@ fn parse_at_depth(parser: &mut Parser, depth: usize) -> Result<ConstantValue, Pa
             require(parser, Token::RParen, "queryString requires one argument")?;
             match input {
                 Some(input) => {
-                    let before_fragment = input.split_once('#')
+                    let before_fragment = input
+                        .split_once('#')
                         .map_or(input.as_str(), |(head, _)| head);
-                    let query = before_fragment.split_once('?')
+                    let query = before_fragment
+                        .split_once('?')
                         .map_or("", |(_, query)| query);
                     ConstantValue::Text(query.to_owned())
                 }
@@ -524,9 +561,17 @@ fn parse_at_depth(parser: &mut Parser, depth: usize) -> Result<ConstantValue, Pa
             let input = text_arg(parser, depth + 1)?;
             require(parser, Token::Comma, "SUBSTRING_INDEX requires a delimiter")?;
             let delimiter = text_arg(parser, depth + 1)?;
-            require(parser, Token::Comma, "SUBSTRING_INDEX requires a field count")?;
+            require(
+                parser,
+                Token::Comma,
+                "SUBSTRING_INDEX requires a field count",
+            )?;
             let count = integer_arg(parser, depth + 1)?;
-            require(parser, Token::RParen, "expected ')' after SUBSTRING_INDEX arguments")?;
+            require(
+                parser,
+                Token::RParen,
+                "expected ')' after SUBSTRING_INDEX arguments",
+            )?;
             match (input, delimiter, count) {
                 (Some(input), Some(delimiter), Some(count)) => {
                     if delimiter.is_empty() || count == 0 {
@@ -536,12 +581,14 @@ fn parse_at_depth(parser: &mut Parser, depth: usize) -> Result<ConstantValue, Pa
                             .unwrap_or(usize::MAX)
                             .saturating_sub(1);
                         let result = if count > 0 {
-                            input.match_indices(delimiter.as_str())
+                            input
+                                .match_indices(delimiter.as_str())
                                 .nth(field)
                                 .map(|(index, _)| &input[..index])
                                 .unwrap_or(&input)
                         } else {
-                            input.rmatch_indices(delimiter.as_str())
+                            input
+                                .rmatch_indices(delimiter.as_str())
                                 .nth(field)
                                 .map(|(index, _)| &input[index + delimiter.len()..])
                                 .unwrap_or(&input)
@@ -554,12 +601,18 @@ fn parse_at_depth(parser: &mut Parser, depth: usize) -> Result<ConstantValue, Pa
         }
         "QUERYSTRINGANDFRAGMENT" => {
             let input = text_arg(parser, depth + 1)?;
-            require(parser, Token::RParen, "queryStringAndFragment requires one argument")?;
+            require(
+                parser,
+                Token::RParen,
+                "queryStringAndFragment requires one argument",
+            )?;
             match input {
                 Some(input) => {
-                    let before_fragment = input.split_once('#')
+                    let before_fragment = input
+                        .split_once('#')
                         .map_or(input.as_str(), |(head, _)| head);
-                    let query = before_fragment.find('?')
+                    let query = before_fragment
+                        .find('?')
                         .map_or("", |position| &input[position + 1..]);
                     ConstantValue::Text(query.to_owned())
                 }
@@ -572,7 +625,11 @@ fn parse_at_depth(parser: &mut Parser, depth: usize) -> Result<ConstantValue, Pa
             let delimiter = text_arg(parser, depth + 1)?;
             require(parser, Token::Comma, "SPLIT_PART requires a field index")?;
             let index = integer_arg(parser, depth + 1)?;
-            require(parser, Token::RParen, "expected ')' after SPLIT_PART arguments")?;
+            require(
+                parser,
+                Token::RParen,
+                "expected ')' after SPLIT_PART arguments",
+            )?;
             match (input, delimiter, index) {
                 (Some(input), Some(delimiter), Some(index)) => {
                     if delimiter.is_empty() {
@@ -583,7 +640,11 @@ fn parse_at_depth(parser: &mut Parser, depth: usize) -> Result<ConstantValue, Pa
                     }
                     let index = usize::try_from(index - 1).unwrap_or(usize::MAX);
                     ConstantValue::Text(
-                        input.split(delimiter.as_str()).nth(index).unwrap_or("").to_owned(),
+                        input
+                            .split(delimiter.as_str())
+                            .nth(index)
+                            .unwrap_or("")
+                            .to_owned(),
                     )
                 }
                 _ => ConstantValue::Null,
@@ -591,9 +652,17 @@ fn parse_at_depth(parser: &mut Parser, depth: usize) -> Result<ConstantValue, Pa
         }
         "HASSUBSEQUENCECASEINSENSITIVE" => {
             let input = text_arg(parser, depth + 1)?;
-            require(parser, Token::Comma, "hasSubsequenceCaseInsensitive requires a needle")?;
+            require(
+                parser,
+                Token::Comma,
+                "hasSubsequenceCaseInsensitive requires a needle",
+            )?;
             let needle = text_arg(parser, depth + 1)?;
-            require(parser, Token::RParen, "expected ')' after hasSubsequenceCaseInsensitive")?;
+            require(
+                parser,
+                Token::RParen,
+                "expected ')' after hasSubsequenceCaseInsensitive",
+            )?;
             match (input, needle) {
                 (Some(input), Some(needle)) => {
                     let mut required = needle.bytes().map(|byte| byte.to_ascii_lowercase());
@@ -619,7 +688,11 @@ fn parse_at_depth(parser: &mut Parser, depth: usize) -> Result<ConstantValue, Pa
             } else {
                 None
             };
-            require(parser, Token::RParen, "expected ')' after OVERLAY arguments")?;
+            require(
+                parser,
+                Token::RParen,
+                "expected ')' after OVERLAY arguments",
+            )?;
             match (input, replacement, start) {
                 (Some(input), Some(replacement), Some(start)) => {
                     if start < 1 {
@@ -665,7 +738,8 @@ fn parse_at_depth(parser: &mut Parser, depth: usize) -> Result<ConstantValue, Pa
             require(parser, Token::RParen, "fragment requires one argument")?;
             match input {
                 Some(input) => ConstantValue::Text(
-                    input.split_once('#')
+                    input
+                        .split_once('#')
                         .map_or("", |(_, fragment)| fragment)
                         .to_owned(),
                 ),
@@ -713,7 +787,9 @@ fn parse_at_depth(parser: &mut Parser, depth: usize) -> Result<ConstantValue, Pa
             match input {
                 Some(value) => {
                     if value.len() % 2 != 0 || !value.is_ascii() {
-                        return Err(ParseError("HEX_DECODE requires even-length ASCII hex".into()));
+                        return Err(ParseError(
+                            "HEX_DECODE requires even-length ASCII hex".into(),
+                        ));
                     }
                     let mut bytes = Vec::with_capacity(value.len() / 2);
                     for pair in value.as_bytes().chunks_exact(2) {
@@ -786,11 +862,13 @@ fn parse_at_depth(parser: &mut Parser, depth: usize) -> Result<ConstantValue, Pa
             match input {
                 Some(input) => {
                     let scheme = input.split_once(':').map_or("", |(scheme, _)| scheme);
-                    let valid = scheme.as_bytes().first().is_some_and(u8::is_ascii_alphabetic)
-                        && scheme.bytes().all(|byte|
-                            byte.is_ascii_alphanumeric()
-                                || matches!(byte, b'+' | b'-' | b'.')
-                        );
+                    let valid = scheme
+                        .as_bytes()
+                        .first()
+                        .is_some_and(u8::is_ascii_alphabetic)
+                        && scheme.bytes().all(|byte| {
+                            byte.is_ascii_alphanumeric() || matches!(byte, b'+' | b'-' | b'.')
+                        });
                     ConstantValue::Text(if valid { scheme } else { "" }.to_owned())
                 }
                 None => ConstantValue::Null,
@@ -809,7 +887,9 @@ fn parse_at_depth(parser: &mut Parser, depth: usize) -> Result<ConstantValue, Pa
                     ConstantValue::Text(input.trim_start_matches(' ').to_owned())
                 }
                 (Some(input), Some(Some(characters))) => ConstantValue::Text(
-                    input.trim_start_matches(|ch| characters.contains(ch)).to_owned(),
+                    input
+                        .trim_start_matches(|ch| characters.contains(ch))
+                        .to_owned(),
                 ),
                 _ => ConstantValue::Null,
             }
@@ -818,18 +898,19 @@ fn parse_at_depth(parser: &mut Parser, depth: usize) -> Result<ConstantValue, Pa
             let input = text_arg(parser, depth + 1)?;
             require(parser, Token::RParen, "basename requires one argument")?;
             match input {
-                Some(input) => ConstantValue::Text(
-                    input.rsplit(|ch| ch == '/' || ch == '\\')
-                        .next()
-                        .unwrap_or("")
-                        .to_owned(),
-                ),
+                Some(input) => {
+                    ConstantValue::Text(input.rsplit(['/', '\\']).next().unwrap_or("").to_owned())
+                }
                 None => ConstantValue::Null,
             }
         }
         "TRIM_WHITESPACE" => {
             let input = text_arg(parser, depth + 1)?;
-            require(parser, Token::RParen, "TRIM_WHITESPACE requires one argument")?;
+            require(
+                parser,
+                Token::RParen,
+                "TRIM_WHITESPACE requires one argument",
+            )?;
             match input {
                 Some(value) => ConstantValue::Text(value.trim().to_owned()),
                 None => ConstantValue::Null,
@@ -845,18 +926,28 @@ fn parse_at_depth(parser: &mut Parser, depth: usize) -> Result<ConstantValue, Pa
         }
         "COUNTSUBSTRINGSCASEINSENSITIVE" => {
             let input = text_arg(parser, depth + 1)?;
-            require(parser, Token::Comma, "countSubstringsCaseInsensitive requires a needle")?;
+            require(
+                parser,
+                Token::Comma,
+                "countSubstringsCaseInsensitive requires a needle",
+            )?;
             let needle = text_arg(parser, depth + 1)?;
             let start = if parser.take(Token::Comma) {
                 integer_arg(parser, depth + 1)?
             } else {
                 Some(1)
             };
-            require(parser, Token::RParen, "expected ')' after countSubstringsCaseInsensitive")?;
+            require(
+                parser,
+                Token::RParen,
+                "expected ')' after countSubstringsCaseInsensitive",
+            )?;
             match (input, needle, start) {
                 (Some(input), Some(needle), Some(start)) => {
                     if start < 0 {
-                        return Err(ParseError("countSubstringsCaseInsensitive start must be nonnegative".into()));
+                        return Err(ParseError(
+                            "countSubstringsCaseInsensitive start must be nonnegative".into(),
+                        ));
                     }
                     let offset = usize::try_from(start.max(1) - 1).unwrap_or(usize::MAX);
                     let bytes = input.as_bytes().get(offset..).unwrap_or_default();
@@ -882,15 +973,20 @@ fn parse_at_depth(parser: &mut Parser, depth: usize) -> Result<ConstantValue, Pa
             let input = text_arg(parser, depth + 1)?;
             require(parser, Token::Comma, "COUNT_SUBSTRING requires a substring")?;
             let needle = text_arg(parser, depth + 1)?;
-            require(parser, Token::RParen, "expected ')' after COUNT_SUBSTRING arguments")?;
+            require(
+                parser,
+                Token::RParen,
+                "expected ')' after COUNT_SUBSTRING arguments",
+            )?;
             match (input, needle) {
                 (Some(input), Some(needle)) => {
                     if needle.is_empty() {
                         return Err(ParseError("COUNT_SUBSTRING needle cannot be empty".into()));
                     }
                     ConstantValue::Integer(
-                        i64::try_from(input.matches(&needle).count())
-                            .map_err(|_| ParseError("COUNT_SUBSTRING count exceeds Int64".into()))?,
+                        i64::try_from(input.matches(&needle).count()).map_err(|_| {
+                            ParseError("COUNT_SUBSTRING count exceeds Int64".into())
+                        })?,
                     )
                 }
                 _ => ConstantValue::Null,
@@ -902,7 +998,8 @@ fn parse_at_depth(parser: &mut Parser, depth: usize) -> Result<ConstantValue, Pa
             match input {
                 Some(input) => {
                     let suffix = if let Some((_, after_scheme)) = input.split_once("://") {
-                        let start = after_scheme.find(['/', '?', '#'])
+                        let start = after_scheme
+                            .find(['/', '?', '#'])
                             .unwrap_or(after_scheme.len());
                         &after_scheme[start..]
                     } else {
@@ -910,9 +1007,7 @@ fn parse_at_depth(parser: &mut Parser, depth: usize) -> Result<ConstantValue, Pa
                     };
                     let end = suffix.find(['?', '#']).unwrap_or(suffix.len());
                     let path = &suffix[..end];
-                    ConstantValue::Text(
-                        if path.starts_with('/') { path } else { "" }.to_owned()
-                    )
+                    ConstantValue::Text(if path.starts_with('/') { path } else { "" }.to_owned())
                 }
                 None => ConstantValue::Null,
             }
@@ -930,18 +1025,28 @@ fn parse_at_depth(parser: &mut Parser, depth: usize) -> Result<ConstantValue, Pa
         }
         "POSITIONCASEINSENSITIVE" => {
             let input = text_arg(parser, depth + 1)?;
-            require(parser, Token::Comma, "positionCaseInsensitive requires a needle")?;
+            require(
+                parser,
+                Token::Comma,
+                "positionCaseInsensitive requires a needle",
+            )?;
             let needle = text_arg(parser, depth + 1)?;
             let start = if parser.take(Token::Comma) {
                 integer_arg(parser, depth + 1)?
             } else {
                 Some(1)
             };
-            require(parser, Token::RParen, "expected ')' after positionCaseInsensitive")?;
+            require(
+                parser,
+                Token::RParen,
+                "expected ')' after positionCaseInsensitive",
+            )?;
             match (input, needle, start) {
                 (Some(input), Some(needle), Some(start)) => {
                     if start < 0 {
-                        return Err(ParseError("positionCaseInsensitive start must be nonnegative".into()));
+                        return Err(ParseError(
+                            "positionCaseInsensitive start must be nonnegative".into(),
+                        ));
                     }
                     let offset = usize::try_from(start.max(1) - 1).unwrap_or(usize::MAX);
                     let position = if offset > input.len() {
@@ -954,10 +1059,9 @@ fn parse_at_depth(parser: &mut Parser, depth: usize) -> Result<ConstantValue, Pa
                             .position(|window| window.eq_ignore_ascii_case(needle.as_bytes()))
                             .map_or(0, |index| offset + index + 1)
                     };
-                    ConstantValue::Integer(
-                        i64::try_from(position)
-                            .map_err(|_| ParseError("positionCaseInsensitive result exceeds Int64".into()))?,
-                    )
+                    ConstantValue::Integer(i64::try_from(position).map_err(|_| {
+                        ParseError("positionCaseInsensitive result exceeds Int64".into())
+                    })?)
                 }
                 _ => ConstantValue::Null,
             }
@@ -990,11 +1094,11 @@ fn parse_at_depth(parser: &mut Parser, depth: usize) -> Result<ConstantValue, Pa
             };
             require(parser, Token::RParen, "expected ')' after RTRIM arguments")?;
             match (input, characters) {
-                (Some(input), None) => {
-                    ConstantValue::Text(input.trim_end_matches(' ').to_owned())
-                }
+                (Some(input), None) => ConstantValue::Text(input.trim_end_matches(' ').to_owned()),
                 (Some(input), Some(Some(characters))) => ConstantValue::Text(
-                    input.trim_end_matches(|ch| characters.contains(ch)).to_owned(),
+                    input
+                        .trim_end_matches(|ch| characters.contains(ch))
+                        .to_owned(),
                 ),
                 _ => ConstantValue::Null,
             }
@@ -1003,7 +1107,11 @@ fn parse_at_depth(parser: &mut Parser, depth: usize) -> Result<ConstantValue, Pa
             let input = text_arg(parser, depth + 1)?;
             require(parser, Token::Comma, "LAST_INDEX_OF requires a substring")?;
             let needle = text_arg(parser, depth + 1)?;
-            require(parser, Token::RParen, "expected ')' after LAST_INDEX_OF arguments")?;
+            require(
+                parser,
+                Token::RParen,
+                "expected ')' after LAST_INDEX_OF arguments",
+            )?;
             match (input, needle) {
                 (Some(input), Some(needle)) => {
                     let index = input
@@ -1020,7 +1128,11 @@ fn parse_at_depth(parser: &mut Parser, depth: usize) -> Result<ConstantValue, Pa
         }
         "COLLAPSE_WHITESPACE" => {
             let input = text_arg(parser, depth + 1)?;
-            require(parser, Token::RParen, "COLLAPSE_WHITESPACE requires one argument")?;
+            require(
+                parser,
+                Token::RParen,
+                "COLLAPSE_WHITESPACE requires one argument",
+            )?;
             match input {
                 Some(value) => {
                     let mut result = String::new();
@@ -1055,11 +1167,11 @@ fn parse_at_depth(parser: &mut Parser, depth: usize) -> Result<ConstantValue, Pa
             };
             require(parser, Token::RParen, "expected ')' after BTRIM arguments")?;
             match (input, characters) {
-                (Some(input), None) => {
-                    ConstantValue::Text(input.trim_matches(' ').to_owned())
-                }
+                (Some(input), None) => ConstantValue::Text(input.trim_matches(' ').to_owned()),
                 (Some(input), Some(Some(characters))) => ConstantValue::Text(
-                    input.trim_matches(|character| characters.contains(character)).to_owned(),
+                    input
+                        .trim_matches(|character| characters.contains(character))
+                        .to_owned(),
                 ),
                 _ => ConstantValue::Null,
             }
@@ -1068,9 +1180,17 @@ fn parse_at_depth(parser: &mut Parser, depth: usize) -> Result<ConstantValue, Pa
             let input = text_arg(parser, depth + 1)?;
             require(parser, Token::Comma, "TRANSLATE requires source characters")?;
             let from = text_arg(parser, depth + 1)?;
-            require(parser, Token::Comma, "TRANSLATE requires replacement characters")?;
+            require(
+                parser,
+                Token::Comma,
+                "TRANSLATE requires replacement characters",
+            )?;
             let to = text_arg(parser, depth + 1)?;
-            require(parser, Token::RParen, "expected ')' after TRANSLATE arguments")?;
+            require(
+                parser,
+                Token::RParen,
+                "expected ')' after TRANSLATE arguments",
+            )?;
             match (input, from, to) {
                 (Some(input), Some(from), Some(to)) => {
                     let mut replacements = std::collections::HashMap::new();
@@ -1106,7 +1226,8 @@ fn parse_at_depth(parser: &mut Parser, depth: usize) -> Result<ConstantValue, Pa
             match input {
                 Some(input) => {
                     let suffix = if let Some((_, after_scheme)) = input.split_once("://") {
-                        let start = after_scheme.find(['/', '?', '#'])
+                        let start = after_scheme
+                            .find(['/', '?', '#'])
                             .unwrap_or(after_scheme.len());
                         &after_scheme[start..]
                     } else {
@@ -1161,9 +1282,11 @@ fn parse_at_depth(parser: &mut Parser, depth: usize) -> Result<ConstantValue, Pa
             require(parser, Token::RParen, "expected ')' after hasToken")?;
             match (input, token) {
                 (Some(input), Some(token)) => {
-                    if token.is_empty() || !token.bytes().all(|byte|
-                        byte.is_ascii_alphanumeric() || byte == b'_'
-                    ) {
+                    if token.is_empty()
+                        || !token
+                            .bytes()
+                            .all(|byte| byte.is_ascii_alphanumeric() || byte == b'_')
+                    {
                         return Err(ParseError("hasToken requires a single ASCII token".into()));
                     }
                     let found = input
@@ -1178,7 +1301,11 @@ fn parse_at_depth(parser: &mut Parser, depth: usize) -> Result<ConstantValue, Pa
             let input = text_arg(parser, depth + 1)?;
             require(parser, Token::Comma, "CONTAINS requires a substring")?;
             let needle = text_arg(parser, depth + 1)?;
-            require(parser, Token::RParen, "expected ')' after CONTAINS arguments")?;
+            require(
+                parser,
+                Token::RParen,
+                "expected ')' after CONTAINS arguments",
+            )?;
             match (input, needle) {
                 (Some(input), Some(needle)) => {
                     ConstantValue::Integer(i64::from(input.contains(needle.as_str())))
@@ -1190,7 +1317,11 @@ fn parse_at_depth(parser: &mut Parser, depth: usize) -> Result<ConstantValue, Pa
             let input = text_arg(parser, depth + 1)?;
             require(parser, Token::Comma, "STARTS_WITH requires a prefix")?;
             let prefix = text_arg(parser, depth + 1)?;
-            require(parser, Token::RParen, "expected ')' after STARTS_WITH arguments")?;
+            require(
+                parser,
+                Token::RParen,
+                "expected ')' after STARTS_WITH arguments",
+            )?;
             match (input, prefix) {
                 (Some(input), Some(prefix)) => {
                     ConstantValue::Integer(i64::from(input.starts_with(prefix.as_str())))
@@ -1200,18 +1331,26 @@ fn parse_at_depth(parser: &mut Parser, depth: usize) -> Result<ConstantValue, Pa
         }
         "REPLACE_FIRST" => {
             let input = text_arg(parser, depth + 1)?;
-            require(parser, Token::Comma, "REPLACE_FIRST requires a search string")?;
+            require(
+                parser,
+                Token::Comma,
+                "REPLACE_FIRST requires a search string",
+            )?;
             let needle = text_arg(parser, depth + 1)?;
             require(parser, Token::Comma, "REPLACE_FIRST requires a replacement")?;
             let replacement = text_arg(parser, depth + 1)?;
-            require(parser, Token::RParen, "expected ')' after REPLACE_FIRST arguments")?;
+            require(
+                parser,
+                Token::RParen,
+                "expected ')' after REPLACE_FIRST arguments",
+            )?;
             match (input, needle, replacement) {
                 (Some(input), Some(needle), Some(replacement)) => {
                     if needle.is_empty() || !input.contains(&needle) {
                         ConstantValue::Text(input)
                     } else {
                         let length = input.len() - needle.len();
-                        if length.checked_add(replacement.len()).unwrap_or(usize::MAX) > MAX_TEXT_BYTES {
+                        if length.saturating_add(replacement.len()) > MAX_TEXT_BYTES {
                             return Err(ParseError("REPLACE_FIRST result is too large".into()));
                         }
                         ConstantValue::Text(input.replacen(&needle, &replacement, 1))
@@ -1224,7 +1363,11 @@ fn parse_at_depth(parser: &mut Parser, depth: usize) -> Result<ConstantValue, Pa
             let input = text_arg(parser, depth + 1)?;
             require(parser, Token::Comma, "STRIP_PREFIX requires a prefix")?;
             let prefix = text_arg(parser, depth + 1)?;
-            require(parser, Token::RParen, "expected ')' after STRIP_PREFIX arguments")?;
+            require(
+                parser,
+                Token::RParen,
+                "expected ')' after STRIP_PREFIX arguments",
+            )?;
             match (input, prefix) {
                 (Some(input), Some(prefix)) => ConstantValue::Text(
                     input
@@ -1253,11 +1396,19 @@ fn parse_at_depth(parser: &mut Parser, depth: usize) -> Result<ConstantValue, Pa
         }
         "REPLACE_LAST" => {
             let input = text_arg(parser, depth + 1)?;
-            require(parser, Token::Comma, "REPLACE_LAST requires a search string")?;
+            require(
+                parser,
+                Token::Comma,
+                "REPLACE_LAST requires a search string",
+            )?;
             let needle = text_arg(parser, depth + 1)?;
             require(parser, Token::Comma, "REPLACE_LAST requires a replacement")?;
             let replacement = text_arg(parser, depth + 1)?;
-            require(parser, Token::RParen, "expected ')' after REPLACE_LAST arguments")?;
+            require(
+                parser,
+                Token::RParen,
+                "expected ')' after REPLACE_LAST arguments",
+            )?;
             match (input, needle, replacement) {
                 (Some(input), Some(needle), Some(replacement)) => {
                     if needle.is_empty() {
@@ -1283,14 +1434,24 @@ fn parse_at_depth(parser: &mut Parser, depth: usize) -> Result<ConstantValue, Pa
         }
         "HASTOKENCASEINSENSITIVE" => {
             let input = text_arg(parser, depth + 1)?;
-            require(parser, Token::Comma, "hasTokenCaseInsensitive requires a token")?;
+            require(
+                parser,
+                Token::Comma,
+                "hasTokenCaseInsensitive requires a token",
+            )?;
             let token = text_arg(parser, depth + 1)?;
-            require(parser, Token::RParen, "expected ')' after hasTokenCaseInsensitive")?;
+            require(
+                parser,
+                Token::RParen,
+                "expected ')' after hasTokenCaseInsensitive",
+            )?;
             match (input, token) {
                 (Some(input), Some(token)) => {
-                    if token.is_empty() || !token.bytes().all(|byte|
-                        byte.is_ascii_alphanumeric() || byte == b'_'
-                    ) {
+                    if token.is_empty()
+                        || !token
+                            .bytes()
+                            .all(|byte| byte.is_ascii_alphanumeric() || byte == b'_')
+                    {
                         return Err(ParseError(
                             "hasTokenCaseInsensitive requires a single ASCII token".into(),
                         ));
@@ -1307,7 +1468,11 @@ fn parse_at_depth(parser: &mut Parser, depth: usize) -> Result<ConstantValue, Pa
             let input = text_arg(parser, depth + 1)?;
             require(parser, Token::Comma, "ENDS_WITH requires a suffix")?;
             let suffix = text_arg(parser, depth + 1)?;
-            require(parser, Token::RParen, "expected ')' after ENDS_WITH arguments")?;
+            require(
+                parser,
+                Token::RParen,
+                "expected ')' after ENDS_WITH arguments",
+            )?;
             match (input, suffix) {
                 (Some(input), Some(suffix)) => {
                     ConstantValue::Integer(i64::from(input.ends_with(suffix.as_str())))
@@ -1332,7 +1497,9 @@ fn parse_at_depth(parser: &mut Parser, depth: usize) -> Result<ConstantValue, Pa
                             let low = char::from(source[index + 2]).to_digit(16);
                             let byte = match (high, low) {
                                 (Some(high), Some(low)) => (high * 16 + low) as u8,
-                                _ => return Err(ParseError("URL_DECODE has invalid escape".into())),
+                                _ => {
+                                    return Err(ParseError("URL_DECODE has invalid escape".into()));
+                                }
                             };
                             result.push(byte);
                             index += 3;
@@ -1354,7 +1521,8 @@ fn parse_at_depth(parser: &mut Parser, depth: usize) -> Result<ConstantValue, Pa
             require(parser, Token::RParen, "BASE64_ENCODE requires one argument")?;
             match input {
                 Some(value) => {
-                    let output_len = value.len()
+                    let output_len = value
+                        .len()
                         .checked_add(2)
                         .and_then(|length| length.checked_div(3))
                         .and_then(|groups| groups.checked_mul(4))
@@ -1395,7 +1563,11 @@ fn parse_at_depth(parser: &mut Parser, depth: usize) -> Result<ConstantValue, Pa
             let input = text_arg(parser, depth + 1)?;
             require(parser, Token::Comma, "STRIP_SUFFIX requires a suffix")?;
             let suffix = text_arg(parser, depth + 1)?;
-            require(parser, Token::RParen, "expected ')' after STRIP_SUFFIX arguments")?;
+            require(
+                parser,
+                Token::RParen,
+                "expected ')' after STRIP_SUFFIX arguments",
+            )?;
             match (input, suffix) {
                 (Some(input), Some(suffix)) => ConstantValue::Text(
                     input
@@ -1411,11 +1583,10 @@ fn parse_at_depth(parser: &mut Parser, depth: usize) -> Result<ConstantValue, Pa
             require(parser, Token::RParen, "netloc requires one argument")?;
             match input {
                 Some(input) => {
-                    let authority = input.split_once("://")
-                        .map_or("", |(_, rest)| {
-                            let end = rest.find(['/', '?', '#']).unwrap_or(rest.len());
-                            &rest[..end]
-                        });
+                    let authority = input.split_once("://").map_or("", |(_, rest)| {
+                        let end = rest.find(['/', '?', '#']).unwrap_or(rest.len());
+                        &rest[..end]
+                    });
                     ConstantValue::Text(authority.to_owned())
                 }
                 None => ConstantValue::Null,
@@ -1465,9 +1636,17 @@ fn parse_at_depth(parser: &mut Parser, depth: usize) -> Result<ConstantValue, Pa
         }
         "APPENDTRAILINGCHARIFABSENT" => {
             let input = text_arg(parser, depth + 1)?;
-            require(parser, Token::Comma, "appendTrailingCharIfAbsent requires a character")?;
+            require(
+                parser,
+                Token::Comma,
+                "appendTrailingCharIfAbsent requires a character",
+            )?;
             let ending = text_arg(parser, depth + 1)?;
-            require(parser, Token::RParen, "expected ')' after appendTrailingCharIfAbsent")?;
+            require(
+                parser,
+                Token::RParen,
+                "expected ')' after appendTrailingCharIfAbsent",
+            )?;
             match (input, ending) {
                 (Some(mut input), Some(ending)) => {
                     if ending.chars().count() != 1 {
@@ -1476,8 +1655,10 @@ fn parse_at_depth(parser: &mut Parser, depth: usize) -> Result<ConstantValue, Pa
                         ));
                     }
                     if !input.is_empty() && !input.ends_with(&ending) {
-                        if input.len().checked_add(ending.len()).unwrap_or(usize::MAX) > MAX_TEXT_BYTES {
-                            return Err(ParseError("appendTrailingCharIfAbsent result is too large".into()));
+                        if input.len().saturating_add(ending.len()) > MAX_TEXT_BYTES {
+                            return Err(ParseError(
+                                "appendTrailingCharIfAbsent result is too large".into(),
+                            ));
                         }
                         input.push_str(&ending);
                     }
@@ -1554,17 +1735,20 @@ fn parse_at_depth(parser: &mut Parser, depth: usize) -> Result<ConstantValue, Pa
                             }
                             (0, 0, 1)
                         } else if group[3] == b'=' {
-                            let c = digit(group[2])
-                                .ok_or_else(|| ParseError("invalid BASE64_DECODE character".into()))?;
+                            let c = digit(group[2]).ok_or_else(|| {
+                                ParseError("invalid BASE64_DECODE character".into())
+                            })?;
                             if !last || c & 3 != 0 {
                                 return Err(ParseError("invalid BASE64_DECODE padding".into()));
                             }
                             (c, 0, 2)
                         } else {
-                            let c = digit(group[2])
-                                .ok_or_else(|| ParseError("invalid BASE64_DECODE character".into()))?;
-                            let d = digit(group[3])
-                                .ok_or_else(|| ParseError("invalid BASE64_DECODE character".into()))?;
+                            let c = digit(group[2]).ok_or_else(|| {
+                                ParseError("invalid BASE64_DECODE character".into())
+                            })?;
+                            let d = digit(group[3]).ok_or_else(|| {
+                                ParseError("invalid BASE64_DECODE character".into())
+                            })?;
                             (c, d, 3)
                         };
                         let bits = (u32::from(a) << 18)
@@ -1589,24 +1773,36 @@ fn parse_at_depth(parser: &mut Parser, depth: usize) -> Result<ConstantValue, Pa
         }
         "EXTRACTURLPARAMETER" => {
             let input = text_arg(parser, depth + 1)?;
-            require(parser, Token::Comma, "extractURLParameter requires a parameter name")?;
+            require(
+                parser,
+                Token::Comma,
+                "extractURLParameter requires a parameter name",
+            )?;
             let name = text_arg(parser, depth + 1)?;
-            require(parser, Token::RParen, "expected ')' after extractURLParameter")?;
+            require(
+                parser,
+                Token::RParen,
+                "expected ')' after extractURLParameter",
+            )?;
             match (input, name) {
                 (Some(input), Some(name)) => {
-                    let before_fragment = input.split_once('#')
+                    let before_fragment = input
+                        .split_once('#')
                         .map_or(input.as_str(), |(head, _)| head);
-                    let query = before_fragment.split_once('?')
+                    let query = before_fragment
+                        .split_once('?')
                         .map_or("", |(_, query)| query);
-                    let value = query.split('&').find_map(|part| {
-                        if part == name {
-                            Some("")
-                        } else {
-                            part.split_once('=').and_then(|(key, value)|
-                                (key == name).then_some(value)
-                            )
-                        }
-                    }).unwrap_or("");
+                    let value = query
+                        .split('&')
+                        .find_map(|part| {
+                            if part == name {
+                                Some("")
+                            } else {
+                                part.split_once('=')
+                                    .and_then(|(key, value)| (key == name).then_some(value))
+                            }
+                        })
+                        .unwrap_or("");
                     ConstantValue::Text(value.to_owned())
                 }
                 _ => ConstantValue::Null,
@@ -1626,7 +1822,11 @@ fn parse_at_depth(parser: &mut Parser, depth: usize) -> Result<ConstantValue, Pa
             let input = text_arg(parser, depth + 1)?;
             require(parser, Token::Comma, "JSON function requires a key")?;
             let path = text_arg(parser, depth + 1)?;
-            require(parser, Token::RParen, "JSON function requires two arguments")?;
+            require(
+                parser,
+                Token::RParen,
+                "JSON function requires two arguments",
+            )?;
             match (input, path) {
                 (Some(input), Some(path)) => {
                     let json = crate::json::parse_json(&input)

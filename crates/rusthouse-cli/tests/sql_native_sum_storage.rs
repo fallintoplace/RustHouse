@@ -24,11 +24,18 @@ fn sums_native_signed_and_unsigned_integer_batches() {
     for (query, expected) in [
         ("SELECT sum(signed) FROM values", "sum(signed)\n96\n"),
         ("SELECT sum(unsigned) FROM values", "sum(unsigned)\n460\n"),
-        ("SELECT sum(signed) FROM values WHERE unsigned > 20", "sum(signed)\n90\n"),
+        (
+            "SELECT sum(signed) FROM values WHERE unsigned > 20",
+            "sum(signed)\n90\n",
+        ),
     ] {
         let output = sql(query, &db);
         assert!(output.status.success(), "{query}: {output:?}");
-        assert_eq!(String::from_utf8(output.stdout).unwrap(), expected, "{query}");
+        assert_eq!(
+            String::from_utf8(output.stdout).unwrap(),
+            expected,
+            "{query}"
+        );
     }
     fs::remove_dir_all(db).unwrap();
 }

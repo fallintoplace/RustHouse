@@ -1,12 +1,11 @@
 use super::*;
 
-fn monotonic_mark_keys<T: Ord + Copy>(
-    len: usize,
-    key_at: &impl Fn(usize) -> Option<T>,
-) -> bool {
+fn monotonic_mark_keys<T: Ord + Copy>(len: usize, key_at: &impl Fn(usize) -> Option<T>) -> bool {
     let mut previous = None;
     for mark in 0..len {
-        let Some(key) = key_at(mark) else { return false };
+        let Some(key) = key_at(mark) else {
+            return false;
+        };
         if previous.is_some_and(|last| last > key) {
             return false;
         }
@@ -77,19 +76,26 @@ pub(super) fn candidate_mark_ranges<T: Ord + Copy>(
     if intervals.iter().any(|(lower, upper)| {
         matches!(lower, Bound::Unbounded) && matches!(upper, Bound::Unbounded)
     }) {
-        return Some(if len == 0 { Vec::new() } else { vec![0..len] });
+        return Some(if len == 0 {
+            Vec::new()
+        } else {
+            std::iter::once(0..len).collect()
+        });
     }
     if !monotonic_mark_keys(len, &key_at) {
         return None;
     }
     if let [(lower, upper)] = intervals {
-        let range = candidate_mark_range_sorted(len, &key_at, lower.clone(), upper.clone());
-        return Some(if range.is_empty() { Vec::new() } else { vec![range] });
+        let range = candidate_mark_range_sorted(len, &key_at, *lower, *upper);
+        return Some(if range.is_empty() {
+            Vec::new()
+        } else {
+            vec![range]
+        });
     }
-    let mut ranges: Vec<_> = intervals.iter()
-        .map(|(lower, upper)| candidate_mark_range_sorted(
-            len, &key_at, lower.clone(), upper.clone()
-        ))
+    let mut ranges: Vec<_> = intervals
+        .iter()
+        .map(|(lower, upper)| candidate_mark_range_sorted(len, &key_at, *lower, *upper))
         .filter(|range| !range.is_empty())
         .collect();
     ranges.sort_unstable_by_key(|range| range.start);
@@ -139,6 +145,6 @@ mod unbounded_range_tests {
             |_| panic!("full-range OR must not inspect mark keys"),
             &intervals,
         );
-        assert_eq!(merged, Some(vec![0..17]));
+        assert_eq!(merged, Some(std::iter::once(0..17).collect::<Vec<_>>()));
     }
 }

@@ -32,6 +32,7 @@ fn canonical_type(name: &str) -> Option<&'static str> {
         "FLOAT32" => "Float32",
         "FLOAT64" => "Float64",
         "STRING" => "String",
+        "UUID" => "UUID",
         "DATE" => "Date",
         "DATETIME" => "DateTime",
         "BOOL" => "Bool",
@@ -58,10 +59,21 @@ pub(super) fn data_type(parser: &mut Parser, nesting: usize) -> Result<String, P
         let result = if canonical == "Map" {
             if !matches!(
                 first.as_str(),
-                "String" | "Int8" | "Int16" | "Int32" | "Int64" | "Int128"
-                    | "UInt8" | "UInt16" | "UInt32" | "UInt64" | "UInt128"
+                "String"
+                    | "Int8"
+                    | "Int16"
+                    | "Int32"
+                    | "Int64"
+                    | "Int128"
+                    | "UInt8"
+                    | "UInt16"
+                    | "UInt32"
+                    | "UInt64"
+                    | "UInt128"
             ) {
-                return Err(ParseError("Map keys must be non-nullable String or integer types".into()));
+                return Err(ParseError(
+                    "Map keys must be non-nullable String or integer types".into(),
+                ));
             }
             if !parser.take(Token::Comma) {
                 return Err(ParseError("Map requires a key and value type".into()));
@@ -150,11 +162,10 @@ mod varchar_alias_tests {
 
     #[test]
     fn text_aliases_use_string_storage() {
-        let parsed = crate::ddl::parse_ddl(
-            "CREATE TABLE labels (short_name VARCHAR, initial CHARACTER)",
-        )
-        .unwrap()
-        .unwrap();
+        let parsed =
+            crate::ddl::parse_ddl("CREATE TABLE labels (short_name VARCHAR, initial CHARACTER)")
+                .unwrap()
+                .unwrap();
         let crate::ddl::Ddl::CreateTable { columns, .. } = parsed else {
             panic!("expected a CREATE TABLE");
         };

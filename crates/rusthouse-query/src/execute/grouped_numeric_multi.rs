@@ -26,25 +26,37 @@ pub(super) fn execute<W: Write>(
             .columns
             .iter()
             .find(|candidate| candidate.name == *value_column)
-            .ok_or_else(|| ExecutionError::Invalid(format!("unknown aggregate column: {value_column}")))?;
+            .ok_or_else(|| {
+                ExecutionError::Invalid(format!("unknown aggregate column: {value_column}"))
+            })?;
         if matches!(typed::base_type(&selected.data_type), "String" | "UUID") {
-            return Err(ExecutionError::Invalid("numeric aggregates require numeric columns".into()));
+            return Err(ExecutionError::Invalid(
+                "numeric aggregates require numeric columns".into(),
+            ));
         }
     }
-    for predicate in query.predicates.iter().chain(query.or_predicates.iter().flatten()) {
+    for predicate in query
+        .predicates
+        .iter()
+        .chain(query.or_predicates.iter().flatten())
+    {
         if !names.contains(&predicate.column().to_owned()) {
             names.push(predicate.column().to_owned());
         }
     }
-    let indices = names.iter().enumerate()
+    let indices = names
+        .iter()
+        .enumerate()
         .map(|(index, name)| (name.clone(), index))
         .collect::<HashMap<_, _>>();
-    let types = metadata.columns.iter()
+    let types = metadata
+        .columns
+        .iter()
         .map(|column| (column.name.clone(), column.data_type.clone()))
         .collect::<HashMap<_, _>>();
-    let group_type = types.get(column).ok_or_else(|| {
-        ExecutionError::Invalid(format!("unknown group column: {column}"))
-    })?;
+    let group_type = types
+        .get(column)
+        .ok_or_else(|| ExecutionError::Invalid(format!("unknown group column: {column}")))?;
     let mut conditions = vec![typed::compile(&query.predicates, &indices, &types)?];
     for branch in &query.or_predicates {
         conditions.push(typed::compile(branch, &indices, &types)?);
@@ -59,12 +71,15 @@ pub(super) fn execute<W: Write>(
     }
 
     let group_index = indices[column];
-    let item_indices = items.iter().map(|(_, name)| indices[name]).collect::<Vec<_>>();
+    let item_indices = items
+        .iter()
+        .map(|(_, name)| indices[name])
+        .collect::<Vec<_>>();
     let mut groups = Vec::<(Cell, Vec<AggregateState>)>::new();
     // Two hundred and fifty-six fixed slots replace per-row hashing for
     // non-nullable 8-bit grouping dimensions.
-    let mut dense_slots = matches!(group_type.as_str(), "UInt8" | "Int8")
-        .then(|| vec![usize::MAX; 256]);
+    let mut dense_slots =
+        matches!(group_type.as_str(), "UInt8" | "Int8").then(|| vec![usize::MAX; 256]);
     let mut by_key = HashMap::<typed::Key, usize>::new();
     let mut by_text = HashMap::<Vec<u8>, usize>::new();
     let mut reader = TypedQueryReader::open_with_metadata(part, &names, &metadata)?;
@@ -80,7 +95,11 @@ pub(super) fn execute<W: Write>(
                 let byte = match &batch[group_index] {
                     TypedColumn::Numeric(NumericColumn::UInt8(values)) => values[row],
                     TypedColumn::Numeric(NumericColumn::Int8(values)) => values[row] as u8,
-                    _ => return Err(ExecutionError::Invalid("unexpected byte GROUP BY type".into())),
+                    _ => {
+                        return Err(ExecutionError::Invalid(
+                            "unexpected byte GROUP BY type".into(),
+                        ));
+                    }
                 };
                 let slot = &mut slots[usize::from(byte)];
                 if *slot != usize::MAX {
@@ -90,50 +109,72 @@ pub(super) fn execute<W: Write>(
                     *slot = index;
                     groups.push((
                         typed::cell(&batch[group_index], row),
-                        items.iter().map(|(function, _)| AggregateState::new(*function)).collect(),
+                        items
+                            .iter()
+                            .map(|(function, _)| AggregateState::new(*function))
+                            .collect(),
                     ));
                     index
                 }
             } else {
-            let borrowed_text = match &batch[group_index] {
-                TypedColumn::Text(values) => values.get(row),
-                TypedColumn::NullableText { values, nulls } if nulls[row] == 0 => values.get(row),
-                _ => None,
-            };
-            let index = if let Some(key) = borrowed_text {
-                if let Some(&group) = by_text.get(key) {
-                    group
-                } else {
-                    if groups.len() >= MAX_GROUPS {
-                        return Err(ExecutionError::Invalid("GROUP BY supports at most 200000 groups".into()));
+                let borrowed_text = match &batch[group_index] {
+                    TypedColumn::Text(values) => values.get(row),
+                    TypedColumn::NullableText { values, nulls } if nulls[row] == 0 => {
+                        values.get(row)
                     }
-                    let group = groups.len();
-                    by_text.insert(key.to_vec(), group);
-                    groups.push((Cell::Text(key.to_vec()), items.iter().map(|(function, _)| AggregateState::new(*function)).collect()));
-                    group
-                }
-            } else {
-                let key = typed::cell(&batch[group_index], row);
-                match by_key.entry(key.key()) {
-                    Entry::Occupied(entry) => *entry.get(),
-                    Entry::Vacant(entry) => {
+                    _ => None,
+                };
+                if let Some(key) = borrowed_text {
+                    if let Some(&group) = by_text.get(key) {
+                        group
+                    } else {
                         if groups.len() >= MAX_GROUPS {
-                            return Err(ExecutionError::Invalid("GROUP BY supports at most 200000 groups".into()));
+                            return Err(ExecutionError::Invalid(
+                                "GROUP BY supports at most 200000 groups".into(),
+                            ));
                         }
-                        entry.insert(groups.len());
-                        groups.push((key, items.iter().map(|(function, _)| AggregateState::new(*function)).collect()));
-                        groups.len() - 1
+                        let group = groups.len();
+                        by_text.insert(key.to_vec(), group);
+                        groups.push((
+                            Cell::Text(key.to_vec()),
+                            items
+                                .iter()
+                                .map(|(function, _)| AggregateState::new(*function))
+                                .collect(),
+                        ));
+                        group
+                    }
+                } else {
+                    let key = typed::cell(&batch[group_index], row);
+                    match by_key.entry(key.key()) {
+                        Entry::Occupied(entry) => *entry.get(),
+                        Entry::Vacant(entry) => {
+                            if groups.len() >= MAX_GROUPS {
+                                return Err(ExecutionError::Invalid(
+                                    "GROUP BY supports at most 200000 groups".into(),
+                                ));
+                            }
+                            entry.insert(groups.len());
+                            groups.push((
+                                key,
+                                items
+                                    .iter()
+                                    .map(|(function, _)| AggregateState::new(*function))
+                                    .collect(),
+                            ));
+                            groups.len() - 1
+                        }
                     }
                 }
-            };
-                index
             };
             for (&column_index, state) in item_indices.iter().zip(groups[index].1.iter_mut()) {
                 match typed::cell(&batch[column_index], row) {
                     Cell::Numeric(value) => state.update(value)?,
                     Cell::Null => {}
                     Cell::Text(_) | Cell::Uuid(_) => {
-                        return Err(ExecutionError::Invalid("numeric aggregates require numeric columns".into()));
+                        return Err(ExecutionError::Invalid(
+                            "numeric aggregates require numeric columns".into(),
+                        ));
                     }
                 }
             }
@@ -141,8 +182,7 @@ pub(super) fn execute<W: Write>(
     }
     let mut bounded_order = None;
     if let Some(order) = &query.order_by {
-        let compare = |left: &(Cell, Vec<AggregateState>),
-                       right: &(Cell, Vec<AggregateState>)| {
+        let compare = |left: &(Cell, Vec<AggregateState>), right: &(Cell, Vec<AggregateState>)| {
             typed::compare_order_cells(&left.0, &right.0, order.descending, order.nulls_first)
         };
         let end = query
@@ -161,15 +201,15 @@ pub(super) fn execute<W: Write>(
             groups.sort_by(compare);
         }
     }
-    let write_group = |key: &Cell, states: &[AggregateState], output: &mut W|
-        -> Result<(), ExecutionError> {
-        typed::write_typed_value(output, key, group_type)?;
-        for state in states {
-            write!(output, "\t{}", state.render())?;
-        }
-        writeln!(output)?;
-        Ok(())
-    };
+    let write_group =
+        |key: &Cell, states: &[AggregateState], output: &mut W| -> Result<(), ExecutionError> {
+            typed::write_typed_value(output, key, group_type)?;
+            for state in states {
+                write!(output, "\t{}", state.render())?;
+            }
+            writeln!(output)?;
+            Ok(())
+        };
     if let Some(indices) = bounded_order {
         for index in indices.into_iter().skip(query.offset.unwrap_or(0)) {
             write_group(&groups[index].0, &groups[index].1, output)?;

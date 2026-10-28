@@ -6,7 +6,10 @@ use std::collections::HashMap;
 use std::io::Write;
 use std::path::PathBuf;
 
-use super::join::{MAX_INPUT_ROWS, MAX_RESULT_ROWS, MAX_STREAM_BUILD_BYTES, multi_join_row_key as row_key, read_rows};
+use super::join::{
+    MAX_INPUT_ROWS, MAX_RESULT_ROWS, MAX_STREAM_BUILD_BYTES, multi_join_row_key as row_key,
+    read_rows,
+};
 
 const MAX_CHAIN_BYTES: usize = 64 * 1024 * 1024;
 const MAX_CHAIN_COLUMNS: usize = 128;
@@ -118,10 +121,7 @@ fn push_row(
 
 /// Resolve USING only when exactly one existing input supplies that key.
 /// Ambiguous names must use qualified ON instead.
-fn using_column_pair(
-    relations: &[Relation],
-    name: &str,
-) -> Result<(usize, usize), ExecutionError> {
+fn using_column_pair(relations: &[Relation], name: &str) -> Result<(usize, usize), ExecutionError> {
     let (right, earlier) = relations
         .split_last()
         .ok_or_else(|| invalid("JOIN USING has no relations"))?;
@@ -162,15 +162,11 @@ fn step_keys(
         left_keys.push(left);
         right_keys.push(right - left_width);
     }
-    for (first, second) in step
-        .keys
-        .iter()
-        .take(if step.using_keys.is_empty() {
-            usize::MAX
-        } else {
-            0
-        })
-    {
+    for (first, second) in step.keys.iter().take(if step.using_keys.is_empty() {
+        usize::MAX
+    } else {
+        0
+    }) {
         let first_index = column_index(relations, first)?;
         let second_index = column_index(relations, second)?;
         let (left, right) = if first_index < left_width && second_index >= left_width {
@@ -232,7 +228,7 @@ fn output_columns(
                 }
             } else {
                 selected.push((
-                    column_index(&relations, column)?,
+                    column_index(relations, column)?,
                     format!("{}.{}", column.relation, column.name),
                     None,
                 ));
@@ -365,8 +361,7 @@ pub fn execute_multi_join<W: Write>(
             MAX_INPUT_ROWS,
             MAX_STREAM_BUILD_BYTES,
         )?;
-        let mut hash: HashMap<Vec<typed::Key>, Bucket> =
-            HashMap::with_capacity(right_rows.len());
+        let mut hash: HashMap<Vec<typed::Key>, Bucket> = HashMap::with_capacity(right_rows.len());
         for (index, row) in right_rows.iter().enumerate() {
             if let Some(key) = row_key(row, &right_keys) {
                 hash.entry(key)
@@ -383,17 +378,20 @@ pub fn execute_multi_join<W: Write>(
             let mut matched = false;
             if let Some(key) = row_key(row, &left_keys) {
                 if let Some(matches) = hash.get(&key) {
-                    for &match_index in matches
-                        .iter()
-                        .take(if step.any && step.kind != JoinType::Right {
-                            1
-                        } else {
-                            usize::MAX
-                        })
+                    for &match_index in
+                        matches
+                            .iter()
+                            .take(if step.any && step.kind != JoinType::Right {
+                                1
+                            } else {
+                                usize::MAX
+                            })
                     {
                         if step.any
                             && step.kind == JoinType::Right
-                            && matched_right.as_ref().is_some_and(|flags| flags[match_index])
+                            && matched_right
+                                .as_ref()
+                                .is_some_and(|flags| flags[match_index])
                         {
                             continue;
                         }
@@ -433,7 +431,9 @@ pub fn execute_multi_join<W: Write>(
         rows.retain(|row| matches!(row[index], typed::Cell::Null) != *not_null);
     }
     if !query.order_by.is_empty() {
-        let ordering_columns = query.order_by.iter()
+        let ordering_columns = query
+            .order_by
+            .iter()
             .map(|(column, descending, nulls_first)| {
                 column_index(&relations, column).map(|index| (index, *descending, *nulls_first))
             })
@@ -441,9 +441,14 @@ pub fn execute_multi_join<W: Write>(
         rows.sort_by(|left, right| {
             for (index, descending, nulls_first) in &ordering_columns {
                 let ordering = typed::compare_order_cells(
-                    &left[*index], &right[*index], *descending, *nulls_first
+                    &left[*index],
+                    &right[*index],
+                    *descending,
+                    *nulls_first,
                 );
-                if !ordering.is_eq() { return ordering; }
+                if !ordering.is_eq() {
+                    return ordering;
+                }
             }
             std::cmp::Ordering::Equal
         });

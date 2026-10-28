@@ -102,7 +102,18 @@ mod tests {
 
     #[test]
     fn rejects_traversal_and_unsafe_names() {
-        for invalid in ["", ".", "..", "../secrets", "/tmp", "foo/bar", ".hidden", "a..b", "a\\b", "x\n"] {
+        for invalid in [
+            "",
+            ".",
+            "..",
+            "../secrets",
+            "/tmp",
+            "foo/bar",
+            ".hidden",
+            "a..b",
+            "a\\b",
+            "x\n",
+        ] {
             assert!(ObjectKey::new(invalid, "s1", 1, "all_0_0_0", "count.txt").is_err());
             assert!(ObjectKey::new("prod", "s1", 1, "all_0_0_0", invalid).is_err());
         }

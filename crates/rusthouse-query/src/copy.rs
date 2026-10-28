@@ -221,7 +221,9 @@ mod tests {
             .unwrap();
         assert_eq!(parsed.format, CopyFormat::Csv);
         assert!(parsed.header);
-        assert!(parse_copy_from("COPY events FROM 'x.csv' WITH (FORMAT CSV, HEADER, FORMAT TSV)").is_err());
+        assert!(
+            parse_copy_from("COPY events FROM 'x.csv' WITH (FORMAT CSV, HEADER, FORMAT TSV)")
+                .is_err()
+        );
     }
-
 }

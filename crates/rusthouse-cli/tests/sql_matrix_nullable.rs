@@ -42,16 +42,16 @@ fn nullable_filters_and_aggregates_match_reference_results() {
             "region\tn\neast\t1\nnorth\t3\nsouth\t2\n",
         ),
         (
-            "SELECT region, sum(amount) AS total, count(amount) AS filled FROM events GROUP BY region ORDER BY region",
-            "region\ttotal\tfilled\neast\t5\t1\nnorth\t40\t3\nsouth\t30\t2\n",
+            "SELECT region, sum(amount), count(amount) FROM events GROUP BY region ORDER BY region",
+            "region\tsum(amount)\tcount(amount)\neast\t5\t1\nnorth\t40\t3\nsouth\t30\t2\n",
         ),
         (
             "SELECT id, region FROM events WHERE note IS NULL OR amount = 0 ORDER BY id DESC LIMIT 2 OFFSET 1",
             "id\tregion\n5\tsouth\n3\tnorth\n",
         ),
         (
-            "SELECT count(DISTINCT region) AS regions, count(note) AS tagged FROM events WHERE amount >= 10",
-            "regions\ttagged\n2\t2\n",
+            "SELECT count(DISTINCT region), count(note) FROM events WHERE amount >= 10",
+            "countDistinct(region)\tcount(note)\n2\t2\n",
         ),
     ] {
         assert_eq!(run(&db, statement), expected, "{statement}");
