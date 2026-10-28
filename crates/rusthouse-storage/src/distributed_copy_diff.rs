@@ -63,25 +63,55 @@ mod tests {
     #[test]
     fn plans_only_missing_and_mismatched_objects() {
         let objects = vec![
-            ObjectMetadata { key: "s/g1/a".into(), bytes: 12, crc32c: 1 },
-            ObjectMetadata { key: "s/g1/b".into(), bytes: 6, crc32c: 2 },
+            ObjectMetadata {
+                key: "s/g1/a".into(),
+                bytes: 12,
+                crc32c: 1,
+            },
+            ObjectMetadata {
+                key: "s/g1/b".into(),
+                bytes: 6,
+                crc32c: 2,
+            },
         ];
         let existing = vec![
             objects[0].clone(),
-            ObjectMetadata { key: "s/g1/b".into(), bytes: 6, crc32c: 3 },
-            ObjectMetadata { key: "s/g0/old".into(), bytes: 1, crc32c: 0 },
+            ObjectMetadata {
+                key: "s/g1/b".into(),
+                bytes: 6,
+                crc32c: 3,
+            },
+            ObjectMetadata {
+                key: "s/g0/old".into(),
+                bytes: 1,
+                crc32c: 0,
+            },
         ];
-        assert_eq!(plan_replica_copies(&objects, &existing).unwrap(), vec![objects[1].clone()]);
+        assert_eq!(
+            plan_replica_copies(&objects, &existing).unwrap(),
+            vec![objects[1].clone()]
+        );
         assert!(plan_replica_copies(&objects, &objects).unwrap().is_empty());
     }
 
     #[test]
     fn rejects_duplicate_and_traversing_keys() {
-        let object = ObjectMetadata { key: "a/b".into(), bytes: 1, crc32c: 0 };
+        let object = ObjectMetadata {
+            key: "a/b".into(),
+            bytes: 1,
+            crc32c: 0,
+        };
         assert!(plan_replica_copies(&[object.clone(), object], &[]).is_err());
-        assert!(plan_replica_copies(
-            &[ObjectMetadata { key: "a/../b".into(), bytes: 1, crc32c: 0 }],
-            &[],
-        ).is_err());
+        assert!(
+            plan_replica_copies(
+                &[ObjectMetadata {
+                    key: "a/../b".into(),
+                    bytes: 1,
+                    crc32c: 0
+                }],
+                &[],
+            )
+            .is_err()
+        );
     }
 }
