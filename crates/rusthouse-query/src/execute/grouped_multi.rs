@@ -44,7 +44,7 @@ fn parallel_grouped_parts(
                 let mut index: HashMap<Vec<Key>, usize> = HashMap::new();
                 for path in paths {
                     let mut reader = rusthouse_storage::TypedPartReader::open(path, names)?;
-                    while let Some(batch) = reader.as_mut().map_or(Ok(None), TypedQueryReader::next_batch)? {
+                    while let Some(batch) = reader.next_batch()? {
                         for row in 0..batch[0].len() {
                             if !no_filters && !typed::passes(&batch, row, conditions) {
                                 continue;
@@ -179,7 +179,7 @@ pub(super) fn execute<W: Write>(
             .all(|name| matches!(types.get(name).map(String::as_str), Some("UInt8" | "Int8"))))
     .then(|| vec![usize::MAX; 1 << 16]);
     let no_filters = query.predicates.is_empty() && query.or_predicates.is_empty();
-    while let Some(batch) = reader.next_batch()? {
+    while let Some(batch) = reader.as_mut().map_or(Ok(None), TypedQueryReader::next_batch)? {
         for row in 0..batch[0].len() {
             if !no_filters && !typed::passes(&batch, row, &conditions) {
                 continue;
