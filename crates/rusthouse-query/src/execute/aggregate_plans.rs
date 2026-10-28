@@ -698,6 +698,35 @@ pub(super) fn execute_count_distinct_part<W: Write>(
             return Ok(());
         }
     }
+    // Exact chunked bitmaps handle millions of 32-bit dimension IDs without
+    // maintaining a large boxed HashSet per observed value.
+    if query.order_by.is_none() && query.order_by_extra.is_empty()
+        && metadata.columns.iter().any(|candidate| {
+            candidate.name == column &&
+                matches!(candidate.data_type.as_str(), "UInt32" | "Int32")
+        })
+    {
+        let mut distinct = BitmapDistinct32::new();
+        while let Some(batch) = reader.next_batch()? {
+            for row in 0..batch[0].len() {
+                if !no_filters && !batch_matches(&batch, row, &comparisons) {
+                    continue;
+                }
+                let key = match &batch[0] {
+                    NumericColumn::UInt32(values) => values[row],
+                    NumericColumn::Int32(values) => values[row] as u32,
+                    _ => return Err(ExecutionError::Invalid(
+                        "unexpected 32-bit COUNT(DISTINCT) column type".into()
+                    )),
+                };
+                distinct.insert(key)?;
+            }
+        }
+        if query.offset.unwrap_or(0) == 0 {
+            writeln!(output, "{}", distinct.len())?;
+        }
+        return Ok(());
+    }
     let mut seen = HashSet::new();
     while let Some(batch) = reader.next_batch()? {
         for row in 0..batch[0].len() {

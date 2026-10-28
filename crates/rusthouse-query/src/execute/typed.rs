@@ -5,7 +5,7 @@ mod like;
 
 use self::like::*;
 
-use super::{ExecutionError, Number, NumberKey, compare_numbers, number_at};
+use super::{BitmapDistinct32, ExecutionError, Number, NumberKey, compare_numbers, number_at};
 use crate::{Operator, Predicate, Projection, Select};
 use rusthouse_storage::{NumericColumn, TypedColumn, TypedQueryReader, inspect_query_source};
 use std::cmp::Ordering;
@@ -1048,6 +1048,17 @@ pub(super) fn execute_typed<W: Write>(
     } else {
         None
     };
+    // A dense, exact 32-bit bitmap handles high-cardinality nullable IDs.
+    let mut count_distinct_thirty_two = if is_count_distinct
+        && matches!(
+            projection_types.first().copied(),
+            Some("UInt32" | "Int32" | "Nullable(UInt32)" | "Nullable(Int32)")
+        )
+    {
+        Some(BitmapDistinct32::new())
+    } else {
+        None
+    };
     // Borrow decoded strings on duplicate probes. Own only new distinct values.
     let mut count_distinct_text = HashSet::<Vec<u8>>::new();
     // UUIDs have a fixed-size identity. Hash their bytes rather than allocating
@@ -1232,6 +1243,23 @@ pub(super) fn execute_typed<W: Write>(
                 candidate_sort_keys = Some(keys);
             }
             if is_count_distinct {
+                if let Some(bitmap) = count_distinct_thirty_two.as_mut() {
+                    let column = &batch[projection_indices[0]];
+                    if is_null_at(column, index) {
+                        continue;
+                    }
+                    let value = match column {
+                        TypedColumn::Numeric(NumericColumn::UInt32(values))
+                        | TypedColumn::NullableNumeric { values: NumericColumn::UInt32(values), .. } => values[index],
+                        TypedColumn::Numeric(NumericColumn::Int32(values))
+                        | TypedColumn::NullableNumeric { values: NumericColumn::Int32(values), .. } => values[index] as u32,
+                        _ => return Err(ExecutionError::Invalid(
+                            "unexpected 32-bit COUNT(DISTINCT) column type".into()
+                        )),
+                    };
+                    bitmap.insert(value)?;
+                    continue;
+                }
                 if let Some(bitmap) = count_distinct_sixteen.as_mut() {
                     let column = &batch[projection_indices[0]];
                     if is_null_at(column, index) {
@@ -1507,6 +1535,7 @@ pub(super) fn execute_typed<W: Write>(
                 (count_distinct_keys.len()
                     + count_distinct_text.len()
                     + count_distinct_uuids.len()
+                    + count_distinct_thirty_two.as_ref().map_or(0, |bitmap| bitmap.len() as usize)
                     + count_distinct_sixteen.as_ref().map_or(0, |bitmap| {
                         bitmap.iter().map(|bits| bits.count_ones() as usize).sum::<usize>()
                     })) as u64
