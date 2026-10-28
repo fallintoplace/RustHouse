@@ -202,10 +202,12 @@ pub(super) fn execute_grouped_aggregate<W: Write>(
             if !no_filters && !typed::passes(&batch, row, &conditions) {
                 continue;
             }
-            let group = if let TypedColumn::Text(strings) = &batch[group_index] {
-                let key = strings.get(row).ok_or_else(|| {
-                    ExecutionError::Invalid("invalid String row index".into())
-                })?;
+            let borrowed_text = match &batch[group_index] {
+                TypedColumn::Text(strings) => strings.get(row),
+                TypedColumn::NullableText { values, nulls } if nulls[row] == 0 => values.get(row),
+                _ => None,
+            };
+            let group = if let Some(key) = borrowed_text {
                 if let Some(&existing) = text_groups.get(key) {
                     existing
                 } else {
