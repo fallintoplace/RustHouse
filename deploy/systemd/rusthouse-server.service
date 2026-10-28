@@ -1,0 +1,27 @@
+[Unit]
+Description=RustHouse experimental local read-only HTTP server
+After=local-fs.target
+ConditionPathIsDirectory=/var/lib/rusthouse
+
+[Service]
+Type=simple
+User=rusthouse
+Group=rusthouse
+WorkingDirectory=/var/lib/rusthouse
+ExecStart=/usr/local/bin/rusthouse-server --database /var/lib/rusthouse --port 8123
+Restart=on-failure
+RestartSec=2
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+ReadWritePaths=/var/lib/rusthouse
+RestrictAddressFamilies=AF_UNIX AF_INET
+IPAddressDeny=any
+IPAddressAllow=localhost
+LimitNOFILE=4096
+MemoryMax=2G
+TasksMax=64
+
+[Install]
+WantedBy=multi-user.target

@@ -12,10 +12,7 @@ fn sql(query: &str, database: &Path) -> Output {
 
 #[test]
 fn groups_unsigned_and_signed_16_bit_keys_across_parts() {
-    let db = std::env::temp_dir().join(format!(
-        "rusthouse-dense-u16-group-{}",
-        std::process::id()
-    ));
+    let db = std::env::temp_dir().join(format!("rusthouse-dense-u16-group-{}", std::process::id()));
     for query in [
         "CREATE TABLE samples (category UInt16, signed_category Int16, flag UInt8)",
         "INSERT INTO samples VALUES (65535, -32768, 1), (0, 32767, 0), (42, -1, 1)",
@@ -40,7 +37,11 @@ fn groups_unsigned_and_signed_16_bit_keys_across_parts() {
     ] {
         let result = sql(query, &db);
         assert!(result.status.success(), "{query}: {result:?}");
-        assert_eq!(String::from_utf8(result.stdout).unwrap(), expected, "{query}");
+        assert_eq!(
+            String::from_utf8(result.stdout).unwrap(),
+            expected,
+            "{query}"
+        );
     }
     fs::remove_dir_all(db).unwrap();
 }

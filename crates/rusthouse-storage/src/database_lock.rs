@@ -68,7 +68,10 @@ fn validate_lock_identity(path: &Path, file: &fs::File) -> Result<(), String> {
 }
 
 fn lock_error(action: &str, kind: &str, path: &Path, error: io::Error) -> String {
-    format!("cannot {action} database {kind} lock {}: {error}", path.display())
+    format!(
+        "cannot {action} database {kind} lock {}: {error}",
+        path.display()
+    )
 }
 
 /// Exclusive for writes, shared for reads. Unix locks are released after crashes.

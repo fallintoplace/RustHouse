@@ -22,15 +22,34 @@ fn native_extrema_preserve_signed_order_and_filtered_fallback() {
         assert!(output.status.success(), "{query}: {output:?}");
     }
     for (query, expected) in [
-        ("SELECT min(signed_value) FROM facts", "min(signed_value)\n-100\n"),
-        ("SELECT max(signed_value) FROM facts", "max(signed_value)\n200\n"),
-        ("SELECT min(unsigned_value) FROM facts", "min(unsigned_value)\n0\n"),
-        ("SELECT max(unsigned_value) FROM facts", "max(unsigned_value)\n800\n"),
-        ("SELECT min(signed_value) FROM facts WHERE flag = 1", "min(signed_value)\n-90\n"),
+        (
+            "SELECT min(signed_value) FROM facts",
+            "min(signed_value)\n-100\n",
+        ),
+        (
+            "SELECT max(signed_value) FROM facts",
+            "max(signed_value)\n200\n",
+        ),
+        (
+            "SELECT min(unsigned_value) FROM facts",
+            "min(unsigned_value)\n0\n",
+        ),
+        (
+            "SELECT max(unsigned_value) FROM facts",
+            "max(unsigned_value)\n800\n",
+        ),
+        (
+            "SELECT min(signed_value) FROM facts WHERE flag = 1",
+            "min(signed_value)\n-90\n",
+        ),
     ] {
         let output = sql(query, &db);
         assert!(output.status.success(), "{query}: {output:?}");
-        assert_eq!(String::from_utf8(output.stdout).unwrap(), expected, "{query}");
+        assert_eq!(
+            String::from_utf8(output.stdout).unwrap(),
+            expected,
+            "{query}"
+        );
     }
     fs::remove_dir_all(db).unwrap();
 }

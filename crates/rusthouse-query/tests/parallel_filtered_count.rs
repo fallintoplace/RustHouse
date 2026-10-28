@@ -113,9 +113,18 @@ fn parallel_compiled_numeric_filters_agree_with_expected_counts() {
     let source = Snapshot::new();
     for (sql, expected) in [
         ("SELECT count(*) FROM part WHERE id % 7 = 0", "count\n366\n"),
-        ("SELECT count(*) FROM part WHERE id BETWEEN 100 AND 900", "count\n801\n"),
-        ("SELECT count(*) FROM part WHERE id IN (2, 5, 2500)", "count\n3\n"),
-        ("SELECT count(*) FROM part WHERE id < 5 OR id >= 2558", "count\n7\n"),
+        (
+            "SELECT count(*) FROM part WHERE id BETWEEN 100 AND 900",
+            "count\n801\n",
+        ),
+        (
+            "SELECT count(*) FROM part WHERE id IN (2, 5, 2500)",
+            "count\n3\n",
+        ),
+        (
+            "SELECT count(*) FROM part WHERE id < 5 OR id >= 2558",
+            "count\n7\n",
+        ),
     ] {
         let query = parse_select(sql).unwrap();
         let mut output = Vec::new();

@@ -19,7 +19,10 @@ fn try_to_int64_handles_signed_integer_text() {
     assert_eq!(value("SELECT TRY_TO_INT64(NULL)"), ConstantValue::Null);
     assert_eq!(value("SELECT TRY_TO_INT64('abc')"), ConstantValue::Null);
     assert_eq!(value("SELECT TRY_TO_INT64('1.2')"), ConstantValue::Null);
-    assert_eq!(value("SELECT TRY_TO_INT64('9223372036854775808')"), ConstantValue::Null);
+    assert_eq!(
+        value("SELECT TRY_TO_INT64('9223372036854775808')"),
+        ConstantValue::Null
+    );
 }
 
 #[test]

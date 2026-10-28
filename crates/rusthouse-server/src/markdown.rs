@@ -166,7 +166,9 @@ mod tests {
     #[test]
     fn shared_decoder_validates_unicode_and_bad_bytes() {
         assert_eq!(
-            decode_markdown_field(br"caf\xC3\xA9", true).unwrap().as_ref(),
+            decode_markdown_field(br"caf\xC3\xA9", true)
+                .unwrap()
+                .as_ref(),
             "café".as_bytes()
         );
         assert!(decode_markdown_field(br"\xFF", true).is_err());

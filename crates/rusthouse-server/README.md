@@ -19,7 +19,7 @@ CSV includes headers, quotes embedded commas/newlines, and uses an unquoted `\\N
 Use `format=csv-no-header` to omit column headers while preserving CSV escaping and response limits.
 Pass `format=sql-values` to export rows as SQL `VALUES ('text', NULL), ...;` tuples.
 The output uses quoted text literals for every non-NULL value, matches the CLI format,
-and inherits the 8 MiB response and 1 MiB line limits.
+and inherits the 16 MiB response and per-line output limits.
 Pass `format=markdown` to return a Markdown table with escaped cell text and bounded output.
 Pass `format=jsonl` on either method for `application/x-ndjson`, one JSON object per result row.
 Pass `format=json-compact-each-row` for newline-delimited JSON arrays of column values.
@@ -31,10 +31,10 @@ JSONL value encoding, an explicit closing bracket, and existing response size li
 This works with `GET /?query=SELECT%201&format=jsonl` and `POST /?format=jsonl` with a raw SELECT body.
 JSONL values are strings to preserve 128-bit numeric precision, and TSV NULL markers become JSON null.
 The JSONL converter decodes text escapes, rejects duplicate column names and invalid UTF-8,
-and uses the existing 8 MiB response bound plus a 1 MiB per-row bound.
-Inputs are limited to 4096-byte statements and 8192-byte HTTP headers.
-Responses are capped at 8 MiB, concurrent requests at 16, and result rows
-at 10000 by default (up to 100000 with --max-rows).
+and uses the existing 16 MiB response bound plus a per-row bound.
+Inputs are limited to 65536-byte statements and 8192-byte HTTP headers.
+Responses are capped at 16 MiB, concurrent requests at 16, and result rows
+at 10000 by default (up to 250000 with --max-rows).
 Loopback is the default. Explicit private IPv4 access is opt-in. There is no TLS or authentication,
 or full wire-protocol compatibility.
 
@@ -53,11 +53,11 @@ only, requires `--part`, and never exposes DDL or file writes. With `--database`
 use `GET /schema?table=events` to inspect a named persistent table instead.
 Database schema reads use the same shared lock and validation as SQL queries.
 Only one URL-encoded `table` parameter is accepted. Schema responses share
-the server's 8 MiB response limit.
+the server's 16 MiB response limit.
 
 `GET /explain?query=...` and `POST /explain` with a raw SELECT body
 return the bounded logical plan as plain text. The endpoint parses SQL but does
-not inspect parts or read rows. It uses the same 4096-byte input limit and
+not inspect parts or read rows. It uses the same 65536-byte input limit and
 server-side row cap as ordinary queries. This is not a physical or cost-based plan.
 
 `GET /capabilities` returns read-only JSON with the server version, source mode,

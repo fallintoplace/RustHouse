@@ -23,7 +23,11 @@ fn initcap_uses_unicode_and_word_boundaries() {
 
 #[test]
 fn initcap_rejects_bad_arguments() {
-    for sql in ["SELECT INITCAP()", "SELECT INITCAP('a', 'b')", "SELECT INITCAP(3)"] {
+    for sql in [
+        "SELECT INITCAP()",
+        "SELECT INITCAP('a', 'b')",
+        "SELECT INITCAP(3)",
+    ] {
         assert!(parse_select(sql).is_err(), "{sql}");
     }
 }

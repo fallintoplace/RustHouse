@@ -22,13 +22,13 @@ fn successful(statement: &str, db: &Path) -> String {
 
 #[test]
 fn streams_semicolon_delimited_measurements_and_preserves_snapshot_on_error() {
-    let db = std::env::temp_dir().join(format!(
-        "rusthouse-copy-ssv-{}",
-        std::process::id()
-    ));
+    let db = std::env::temp_dir().join(format!("rusthouse-copy-ssv-{}", std::process::id()));
     let _ = fs::remove_dir_all(&db);
     fs::create_dir_all(&db).unwrap();
-    successful("CREATE TABLE measurements (station String, temperature Float64)", &db);
+    successful(
+        "CREATE TABLE measurements (station String, temperature Float64)",
+        &db,
+    );
     let input = db.join("readings.txt");
     fs::write(&input, "Berlin;12.3\nBremen;-1.1\nBerlin;3.7\n").unwrap();
     let copy = format!(
@@ -67,13 +67,13 @@ fn streams_semicolon_delimited_measurements_and_preserves_snapshot_on_error() {
 
 #[test]
 fn respects_ssv_headers_and_tsv_escapes() {
-    let db = std::env::temp_dir().join(format!(
-        "rusthouse-copy-ssv-header-{}",
-        std::process::id()
-    ));
+    let db = std::env::temp_dir().join(format!("rusthouse-copy-ssv-header-{}", std::process::id()));
     let _ = fs::remove_dir_all(&db);
     fs::create_dir_all(&db).unwrap();
-    successful("CREATE TABLE readings (station String, temperature Float64)", &db);
+    successful(
+        "CREATE TABLE readings (station String, temperature Float64)",
+        &db,
+    );
     let input = db.join("readings.ssv");
     fs::write(&input, "temperature;station\n12.5;North\\x3bEast\n").unwrap();
     successful(
