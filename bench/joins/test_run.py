@@ -36,6 +36,26 @@ class JoinWorkloadTests(unittest.TestCase):
             self.assertEqual(len(dimensions), 6)
             verify_result(b"0\tgroup-0\n4\tgroup-1\n8\tgroup-2\n12\tgroup-3\n16\tgroup-4\n", expected)
 
+    def test_duplicate_dimension_keys_cover_all_and_any_join_shapes(self):
+        with tempfile.TemporaryDirectory() as root:
+            expected = write_fixture(root, 12, 6, duplicate_factor=2)
+            self.assertEqual(sorted(expected), [0, 4, 8])
+            rows = (Path(root) / "dimensions.tsv").read_text().splitlines()
+            self.assertEqual(len(rows), 7)
+            self.assertEqual(rows[1], rows[2])
+            all_matches = (
+                b"0\\tgroup-0\\n0\\tgroup-0\\n"
+                b"4\\tgroup-1\\n4\\tgroup-1\\n"
+                b"8\\tgroup-2\\n8\\tgroup-2\\n"
+            )
+            verify_result(all_matches, expected, multiplicity=2)
+            any_matches = b"0\\tgroup-0\\n4\\tgroup-1\\n8\\tgroup-2\\n"
+            verify_result(any_matches, expected, multiplicity=1)
+            with self.assertRaises(ValueError):
+                verify_result(any_matches, expected, multiplicity=2)
+            with self.assertRaisesRegex(ValueError, "duplicate factor"):
+                write_fixture(root, 12, 5, duplicate_factor=2)
+
     def test_requires_lf_terminated_join_rows(self):
         expected = {0: "group-0"}
         for bad in [b"0\tgroup-0", b"0\tgroup-0\r\n", b"0\tgroup-0\r"]:
