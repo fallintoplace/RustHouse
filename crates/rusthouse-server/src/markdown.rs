@@ -51,6 +51,19 @@ fn decode_markdown_field(field: &[u8], data_row: bool) -> io::Result<Cow<'_, [u8
 }
 
 fn write_markdown_row<W: Write>(output: &mut W, line: &[u8], data_row: bool) -> io::Result<()> {
+    // Plain rows have no escape sequences to decode and need no field Vec.
+    if !data_row || !line.contains(&b'\\') {
+        std::str::from_utf8(line).map_err(|_| {
+            io::Error::new(io::ErrorKind::InvalidData, "Markdown field is not UTF-8")
+        })?;
+        output.write_all(b"|")?;
+        for field in line.split(|&byte| byte == b'\t') {
+            output.write_all(b" ")?;
+            write_cell(output, field)?;
+            output.write_all(b" |")?;
+        }
+        return output.write_all(b"\n");
+    }
     let fields = line
         .split(|&byte| byte == b'\t')
         .map(|field| decode_markdown_field(field, data_row))
