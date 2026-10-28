@@ -13,8 +13,10 @@ pub fn parse_columns(content: &str) -> Result<Vec<Column>, PartError> {
     let expected =
         parse_column_count(header).ok_or_else(|| invalid(2, "expected '<count> columns:'"))?;
 
-    let mut columns = Vec::new();
-    let mut names = HashSet::new();
+    // Keep malformed huge counts from triggering an unbounded allocation.
+    let capacity = expected.min(1024);
+    let mut columns = Vec::with_capacity(capacity);
+    let mut names = HashSet::with_capacity(capacity);
     for index in 0..expected {
         let line_number = index + 3;
         let line = lines
