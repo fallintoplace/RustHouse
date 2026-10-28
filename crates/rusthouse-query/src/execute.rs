@@ -998,11 +998,11 @@ fn execute_into<W: Write>(
     if matches!(query.projection, Projection::GroupedAggregate { .. }) {
         return typed_aggregate::execute_grouped_aggregate(query, part, output);
     }
-    if let Projection::GroupedAggregates { column, items, aliases } = &query.projection {
-        return grouped_numeric_multi::execute(query, part, column, items, aliases, output);
+    if let Projection::GroupedAggregates { column, items, aliases, filters } = &query.projection {
+        return grouped_numeric_multi::execute(query, part, column, items, aliases, filters, output);
     }
-    if let Projection::GroupedMultiAggregates { columns, items, aliases } = &query.projection {
-        return grouped_numeric_keys::execute(query, part, columns, items, aliases, output);
+    if let Projection::GroupedMultiAggregates { columns, items, aliases, filters } = &query.projection {
+        return grouped_numeric_keys::execute(query, part, columns, items, aliases, filters, output);
     }
     if typed::requires_typed_scan(query, part)? {
         if matches!(query.projection, Projection::Aggregate { .. }) {

@@ -151,11 +151,13 @@ pub enum Projection {
         column: String,
         items: Vec<(AggregateFunction, String)>,
         aliases: Vec<Option<String>>,
+        filters: Vec<Option<String>>,
     },
     GroupedMultiAggregates {
         columns: Vec<String>,
         items: Vec<(AggregateFunction, String)>,
         aliases: Vec<Option<String>>,
+        filters: Vec<Option<String>>,
     },
     Aggregate {
         function: AggregateFunction,
@@ -835,13 +837,13 @@ fn parse_select_tokens(tokens: Vec<Token>) -> Result<Select, ParseError> {
                         "ANY" => Some(AggregateFunction::Any),
                         "COUNTIF" => Some(AggregateFunction::CountIf),
                         "COUNT" => Some(AggregateFunction::Count),
-                        "SUM" => Some(AggregateFunction::Sum),
+                        "SUM" | "SUMIF" => Some(AggregateFunction::Sum),
                         "PRODUCT" => Some(AggregateFunction::Product),
-                        "AVG" => Some(AggregateFunction::Avg),
+                        "AVG" | "AVGIF" => Some(AggregateFunction::Avg),
                         "SUMSQUARES" => Some(AggregateFunction::SumSquares),
-                        "MIN" => Some(AggregateFunction::Min),
+                        "MIN" | "MINIF" => Some(AggregateFunction::Min),
                         "RANGE" => Some(AggregateFunction::Range),
-                        "MAX" => Some(AggregateFunction::Max),
+                        "MAX" | "MAXIF" => Some(AggregateFunction::Max),
                         "RMS" => Some(AggregateFunction::Rms),
                         "VARPOP" => Some(AggregateFunction::VarPop),
                         "STDDEVPOP" => Some(AggregateFunction::StddevPop),
@@ -853,13 +855,25 @@ fn parse_select_tokens(tokens: Vec<Token>) -> Result<Select, ParseError> {
                     _ => None,
                 };
                 if let Some(function) = function {
+                    let conditional = matches!(parser.tokens.get(parser.index),
+                        Some(Token::Word(name)) if matches!(name.to_ascii_uppercase().as_str(),
+                            "SUMIF" | "AVGIF" | "MINIF" | "MAXIF"));
                     parser.index += 1;
                     parser.take(Token::LParen);
                     let value_column = parser.word()?;
+                    let filter = if conditional {
+                        if !parser.take(Token::Comma) {
+                            return Err(ParseError("conditional aggregate requires filter column".into()));
+                        }
+                        Some(parser.word()?)
+                    } else {
+                        None
+                    };
                     if !parser.take(Token::RParen) {
                         return Err(ParseError("expected ')' after grouped aggregate".into()));
                     }
                     let mut items = vec![(function, value_column)];
+                    let mut filters = vec![filter];
                     let mut aliases = vec![if parser.keyword("AS") {
                         Some(parser.word()?)
                     } else {
@@ -872,11 +886,13 @@ fn parse_select_tokens(tokens: Vec<Token>) -> Result<Select, ParseError> {
                             ));
                         }
                         let name = parser.word()?;
+                        let conditional = matches!(name.to_ascii_uppercase().as_str(),
+                            "SUMIF" | "AVGIF" | "MINIF" | "MAXIF");
                         let function = match name.to_ascii_uppercase().as_str() {
-                            "MIN" => AggregateFunction::Min,
-                            "MAX" => AggregateFunction::Max,
-                            "AVG" => AggregateFunction::Avg,
-                            "SUM" => AggregateFunction::Sum,
+                            "MIN" | "MINIF" => AggregateFunction::Min,
+                            "MAX" | "MAXIF" => AggregateFunction::Max,
+                            "AVG" | "AVGIF" => AggregateFunction::Avg,
+                            "SUM" | "SUMIF" => AggregateFunction::Sum,
                             "COUNT" => AggregateFunction::Count,
                             "COUNTIF" => AggregateFunction::CountIf,
                             "PRODUCT" => AggregateFunction::Product,
@@ -903,10 +919,19 @@ fn parse_select_tokens(tokens: Vec<Token>) -> Result<Select, ParseError> {
                             return Err(ParseError("expected '(' after aggregate name".into()));
                         }
                         let value_column = parser.word()?;
+                        let filter = if conditional {
+                            if !parser.take(Token::Comma) {
+                                return Err(ParseError("conditional aggregate requires filter column".into()));
+                            }
+                            Some(parser.word()?)
+                        } else {
+                            None
+                        };
                         if !parser.take(Token::RParen) {
                             return Err(ParseError("expected ')' after grouped aggregate".into()));
                         }
                         items.push((function, value_column));
+                        filters.push(filter);
                         aliases.push(if parser.keyword("AS") {
                             Some(parser.word()?)
                         } else {
@@ -921,10 +946,11 @@ fn parse_select_tokens(tokens: Vec<Token>) -> Result<Select, ParseError> {
                             return Err(ParseError("duplicate or ambiguous aggregate alias".into()));
                         }
                     }
-                    if items.len() == 1 && columns.len() == 1 && aliases[0].is_none() {
+                    if items.len() == 1 && columns.len() == 1
+                        && aliases[0].is_none() && filters[0].is_none() {
                         grouped_aggregate = items.pop();
                     } else {
-                        grouped_aggregates = Some((items, aliases));
+                        grouped_aggregates = Some((items, aliases, filters));
                     }
                     break;
                 }
@@ -957,18 +983,19 @@ fn parse_select_tokens(tokens: Vec<Token>) -> Result<Select, ParseError> {
                 function,
                 value_column,
             }
-        } else if let Some((items, aliases)) = grouped_aggregates {
+        } else if let Some((items, aliases, filters)) = grouped_aggregates {
             if columns.len() == 1 {
                 Projection::GroupedAggregates {
                     column: columns.remove(0),
                     items,
                     aliases,
+                    filters,
                 }
             } else {
                 if columns.len() > 8 {
                     return Err(ParseError("GROUP BY supports at most 8 keys".into()));
                 }
-                Projection::GroupedMultiAggregates { columns, items, aliases }
+                Projection::GroupedMultiAggregates { columns, items, aliases, filters }
             }
         } else {
             Projection::Columns(columns)
