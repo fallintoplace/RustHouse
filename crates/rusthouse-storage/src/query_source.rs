@@ -249,6 +249,45 @@ pub(crate) fn inspect_parts_metadata(
     })
 }
 
+/// Reuse one bounded worker across thousands of immutable numeric parts.
+/// A single in-flight open avoids thread creation per part without retaining
+/// data batches or opening the whole table at once.
+struct NumericPartPrefetchWorker {
+    requests: Option<std::sync::mpsc::SyncSender<PathBuf>>,
+    responses: std::sync::mpsc::Receiver<Result<NumericPartReader, PartError>>,
+    thread: Option<std::thread::JoinHandle<()>>,
+}
+
+impl NumericPartPrefetchWorker {
+    fn new(columns: std::sync::Arc<[String]>) -> Self {
+        let (requests, jobs) = std::sync::mpsc::sync_channel::<PathBuf>(1);
+        let (answers, responses) =
+            std::sync::mpsc::sync_channel::<Result<NumericPartReader, PartError>>(1);
+        let thread = std::thread::spawn(move || {
+            while let Ok(path) = jobs.recv() {
+                if answers.send(NumericPartReader::open(&path, &columns)).is_err() {
+                    break;
+                }
+            }
+        });
+        Self {
+            requests: Some(requests),
+            responses,
+            thread: Some(thread),
+        }
+    }
+}
+
+impl Drop for NumericPartPrefetchWorker {
+    fn drop(&mut self) {
+        // Disconnect requests first so a worker waiting for more jobs exits.
+        self.requests.take();
+        if let Some(thread) = self.thread.take() {
+            let _ = thread.join();
+        }
+    }
+}
+
 /// Keep only one part's streams open at once; the executor sees a single
 /// continuous sequence, so GROUP BY, ORDER BY, DISTINCT and LIMIT are global.
 pub struct NumericQueryReader {
@@ -256,9 +295,11 @@ pub struct NumericQueryReader {
     columns: std::sync::Arc<[String]>,
     next_part: usize,
     current: Option<NumericPartReader>,
-    // At most one independently opened part is queued ahead. The batches
-    // themselves remain lazy and in stable physical part order.
-    prefetched: Option<std::thread::JoinHandle<Result<NumericPartReader, PartError>>>,
+    // One prefetched part open, never prefetched decoded data batches.
+    prefetched: bool,
+    worker: Option<NumericPartPrefetchWorker>,
+    #[cfg(test)]
+    prefetch_worker_starts: usize,
 }
 
 impl NumericQueryReader {
@@ -299,28 +340,42 @@ impl NumericQueryReader {
             columns: std::sync::Arc::from(columns.to_owned()),
             next_part: 0,
             current: None,
-            prefetched: None,
+            prefetched: false,
+            worker: None,
+            #[cfg(test)]
+            prefetch_worker_starts: 0,
         })
     }
 
-    /// Queue just one future part stream while the current part is decoded.
-    /// Cloning an Arc avoids copying a large projection schema on every part.
+    /// Keep exactly one future part open in the worker's bounded queue.
     fn prefetch_next(&mut self) {
-        if self.prefetched.is_some() || self.next_part >= self.parts.len() {
+        if self.prefetched || self.next_part >= self.parts.len() {
             return;
         }
+        if self.worker.is_none() {
+            self.worker = Some(NumericPartPrefetchWorker::new(self.columns.clone()));
+            #[cfg(test)]
+            { self.prefetch_worker_starts += 1; }
+        }
         let path = self.parts[self.next_part].clone();
-        let columns = self.columns.clone();
-        self.next_part += 1;
-        self.prefetched = Some(std::thread::spawn(move || {
-            NumericPartReader::open(&path, &columns)
-        }));
+        let queued = self.worker.as_ref()
+            .and_then(|worker| worker.requests.as_ref())
+            .is_some_and(|queue| queue.send(path).is_ok());
+        if queued {
+            self.next_part += 1;
+            self.prefetched = true;
+        } else {
+            self.worker.take();
+        }
     }
 
     fn advance_part(&mut self) -> Result<bool, PartError> {
-        let reader = if let Some(handle) = self.prefetched.take() {
-            handle.join().map_err(|_| {
-                PartError::InvalidScan("numeric snapshot part opener panicked".into())
+        let reader = if self.prefetched {
+            self.prefetched = false;
+            self.worker.as_ref().ok_or_else(|| {
+                PartError::InvalidScan("missing numeric part prefetch worker".into())
+            })?.responses.recv().map_err(|_| {
+                PartError::InvalidScan("numeric snapshot part opener stopped".into())
             })??
         } else if self.next_part < self.parts.len() {
             let reader = NumericPartReader::open(
@@ -382,10 +437,8 @@ impl NumericQueryReader {
 
 impl Drop for NumericQueryReader {
     fn drop(&mut self) {
-        // An early LIMIT must not detach a worker holding open part files.
-        if let Some(handle) = self.prefetched.take() {
-            let _ = handle.join();
-        }
+        // Wait for any active open, including when LIMIT exits early.
+        self.worker.take();
     }
 }
 
@@ -471,6 +524,7 @@ mod tests {
             }
         }
         assert_eq!(seen, (0..24u64).collect::<Vec<_>>());
+        assert_eq!(scan.prefetch_worker_starts, 1);
         drop(scan);
 
         let mut paged = NumericQueryReader::open(&root, &["id".to_owned()]).unwrap();

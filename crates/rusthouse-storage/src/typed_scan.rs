@@ -824,6 +824,44 @@ impl TypedPartReader {
     }
 }
 
+// One worker serves the entire immutable snapshot. Spawning once per part
+// is expensive for tables with tens of thousands of small MergeTree parts.
+struct PartPrefetchWorker {
+    queue: Option<std::sync::mpsc::SyncSender<PathBuf>>,
+    results: std::sync::mpsc::Receiver<Result<TypedPartReader, PartError>>,
+    thread: Option<std::thread::JoinHandle<()>>,
+}
+
+impl PartPrefetchWorker {
+    fn new(columns: std::sync::Arc<[String]>) -> Self {
+        let (queue, requests) = std::sync::mpsc::sync_channel::<PathBuf>(1);
+        let (responses, results) =
+            std::sync::mpsc::sync_channel::<Result<TypedPartReader, PartError>>(1);
+        let thread = std::thread::spawn(move || {
+            while let Ok(path) = requests.recv() {
+                if responses.send(TypedPartReader::open(&path, &columns)).is_err() {
+                    break;
+                }
+            }
+        });
+        Self {
+            queue: Some(queue),
+            results,
+            thread: Some(thread),
+        }
+    }
+}
+
+impl Drop for PartPrefetchWorker {
+    fn drop(&mut self) {
+        // Disconnect requests before joining, including on LIMIT and error.
+        self.queue.take();
+        if let Some(thread) = self.thread.take() {
+            let _ = thread.join();
+        }
+    }
+}
+
 /// Read typed rows from one part or a frozen multi-part snapshot.
 /// Only one part's file streams are held open at a time.
 pub struct TypedQueryReader {
@@ -831,8 +869,11 @@ pub struct TypedQueryReader {
     columns: std::sync::Arc<[String]>,
     next_part: usize,
     current: Option<TypedPartReader>,
-    // Only one unopened part is staged ahead, never decoded batches.
-    prefetched: Option<std::thread::JoinHandle<Result<TypedPartReader, PartError>>>,
+    // At most one part-open result is staged ahead, never decoded batches.
+    prefetched: bool,
+    worker: Option<PartPrefetchWorker>,
+    #[cfg(test)]
+    prefetch_worker_starts: usize,
 }
 
 impl TypedQueryReader {
@@ -873,28 +914,43 @@ impl TypedQueryReader {
             columns: std::sync::Arc::from(columns.to_vec()),
             next_part: 0,
             current: None,
-            prefetched: None,
+            prefetched: false,
+            worker: None,
+            #[cfg(test)]
+            prefetch_worker_starts: 0,
         })
     }
 
-    // Open metadata and mark streams for the next immutable part while the
-    // current part is still being scanned. Projection names are shared.
+    // Schedule one validated part open on the persistent worker. When a
+    // receiver fails, fall back to synchronous opens without losing a part.
     fn prefetch_next(&mut self) {
-        if self.prefetched.is_some() || self.next_part >= self.parts.len() {
+        if self.prefetched || self.next_part >= self.parts.len() {
             return;
         }
+        if self.worker.is_none() {
+            self.worker = Some(PartPrefetchWorker::new(self.columns.clone()));
+            #[cfg(test)]
+            { self.prefetch_worker_starts += 1; }
+        }
         let path = self.parts[self.next_part].clone();
-        let columns = self.columns.clone();
-        self.next_part += 1;
-        self.prefetched = Some(std::thread::spawn(move || {
-            TypedPartReader::open(&path, &columns)
-        }));
+        let queued = self.worker.as_ref()
+            .and_then(|worker| worker.queue.as_ref())
+            .is_some_and(|queue| queue.send(path).is_ok());
+        if queued {
+            self.next_part += 1;
+            self.prefetched = true;
+        } else {
+            self.worker.take();
+        }
     }
 
     fn advance_part(&mut self) -> Result<bool, PartError> {
-        let reader = if let Some(handle) = self.prefetched.take() {
-            handle.join().map_err(|_| {
-                PartError::InvalidScan("typed snapshot part opener panicked".into())
+        let reader = if self.prefetched {
+            self.prefetched = false;
+            self.worker.as_ref().ok_or_else(|| {
+                PartError::InvalidScan("missing part prefetch worker".into())
+            })?.results.recv().map_err(|_| {
+                PartError::InvalidScan("typed snapshot part opener stopped".into())
             })??
         } else if self.next_part < self.parts.len() {
             let reader = TypedPartReader::open(
@@ -975,10 +1031,8 @@ impl TypedQueryReader {
 
 impl Drop for TypedQueryReader {
     fn drop(&mut self) {
-        // A terminating LIMIT or early query error cannot detach file I/O.
-        if let Some(handle) = self.prefetched.take() {
-            let _ = handle.join();
-        }
+        // Disconnect and join the persistent opener before releasing the scan.
+        self.worker.take();
     }
 }
 
@@ -1019,6 +1073,7 @@ mod tests {
             seen,
             (0..24).map(|index| format!("category-{index}").into_bytes()).collect::<Vec<_>>()
         );
+        assert_eq!(scan.prefetch_worker_starts, 1);
         drop(scan);
 
         let mut paged = TypedQueryReader::open(&root, &["category".into()]).unwrap();
