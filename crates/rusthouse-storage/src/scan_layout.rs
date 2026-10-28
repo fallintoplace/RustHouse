@@ -45,6 +45,9 @@ fn validate_mark_rows(
 ) -> Result<Option<Vec<u64>>, PartError> {
     // Capture only the first column's row counts. Later columns validate
     // against the reference without allocating another boundary vector.
+    if reference.is_some_and(|reference| reference.len() != marks.len()) {
+        return Err(granule_boundary_mismatch(name));
+    }
     let mut first_row_counts = reference.is_none().then(|| Vec::with_capacity(marks.len()));
     let mut total_rows = 0u64;
     for (index, mark) in marks.iter().enumerate() {
@@ -56,7 +59,7 @@ fn validate_mark_rows(
             .checked_add(rows)
             .ok_or_else(|| row_count_mismatch(name))?;
         if let Some(reference) = reference {
-            if reference.get(index) != Some(&rows) {
+            if reference[index] != rows {
                 return Err(granule_boundary_mismatch(name));
             }
         } else if let Some(first) = first_row_counts.as_mut() {
@@ -65,9 +68,6 @@ fn validate_mark_rows(
     }
     if total_rows != expected_rows {
         return Err(row_count_mismatch(name));
-    }
-    if reference.is_some_and(|reference| reference.len() != marks.len()) {
-        return Err(granule_boundary_mismatch(name));
     }
     Ok(first_row_counts)
 }
