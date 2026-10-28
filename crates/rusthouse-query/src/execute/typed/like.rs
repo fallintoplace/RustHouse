@@ -136,9 +136,9 @@ pub(super) fn like_matches(value: &[u8], pattern: &LikePattern, case_insensitive
             if bytes.is_empty() {
                 true
             } else if !case_insensitive {
-                value
-                    .windows(bytes.len())
-                    .any(|part| part == bytes.as_slice())
+                value.windows(bytes.len()).any(|part| {
+                    part[0] == bytes[0] && part[1..] == bytes[1..]
+                })
             } else if value.is_ascii() && bytes.is_ascii() {
                 value
                     .windows(bytes.len())
@@ -228,4 +228,15 @@ mod perf_tests {
         assert!(like_matches("préfixe".as_bytes(), &pattern, true));
         assert!(!like_matches("préfixe".as_bytes(), &pattern, false));
     }
+    #[test]
+    fn contains_literal_handles_binary_boundaries_and_repeated_prefixes() {
+        let pattern = compile_like("%ababa%").unwrap();
+        assert!(like_matches(b"zzabababa", &pattern, false));
+        assert!(!like_matches(b"zzababab", &pattern, false));
+        let binary = compile_like("%a\\x00b%").unwrap();
+        assert!(!like_matches(b"ab", &binary, false));
+        assert!(like_matches(b"prefixababa", &pattern, false));
+        assert!(like_matches(b"anything", &compile_like("%%").unwrap(), false));
+    }
+
 }
