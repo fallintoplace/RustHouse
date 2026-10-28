@@ -1002,7 +1002,8 @@ fn parse_at_depth(parser: &mut Parser, depth: usize) -> Result<ConstantValue, Pa
             match input {
                 Some(input) => {
                     let suffix = if let Some((_, after_scheme)) = input.split_once("://") {
-                        let start = after_scheme.find(['/', '?', '#'])
+                        let start = after_scheme
+                            .find(['/', '?', '#'])
                             .unwrap_or(after_scheme.len());
                         &after_scheme[start..]
                     } else {
@@ -1229,7 +1230,8 @@ fn parse_at_depth(parser: &mut Parser, depth: usize) -> Result<ConstantValue, Pa
             match input {
                 Some(input) => {
                     let suffix = if let Some((_, after_scheme)) = input.split_once("://") {
-                        let start = after_scheme.find(['/', '?', '#'])
+                        let start = after_scheme
+                            .find(['/', '?', '#'])
                             .unwrap_or(after_scheme.len());
                         &after_scheme[start..]
                     } else {

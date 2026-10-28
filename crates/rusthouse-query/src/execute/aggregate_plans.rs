@@ -564,7 +564,9 @@ pub(super) fn execute_aggregate_part<W: Write>(
                             })?)
                         }
                         _ => {
-                            return Err(ExecutionError::Invalid("incompatible types in SUM".into()));
+                            return Err(ExecutionError::Invalid(
+                                "incompatible types in SUM".into(),
+                            ));
                         }
                     });
                 }

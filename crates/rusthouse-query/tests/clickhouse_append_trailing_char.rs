@@ -35,5 +35,7 @@ fn rejects_non_character_suffixes() {
         "SELECT appendTrailingCharIfAbsent('a', 'bc')",
         "SELECT appendTrailingCharIfAbsent('a')",
         "SELECT appendTrailingCharIfAbsent(1, '/')",
-    ] { assert!(parse_select(sql).is_err(), "{sql}"); }
+    ] {
+        assert!(parse_select(sql).is_err(), "{sql}");
+    }
 }

@@ -131,9 +131,6 @@ mod tests {
     fn leaves_json_string_punctuation_unchanged() {
         let mut output = Vec::new();
         write_pretty_json_row(&mut output, br#"{"text":"a,{}","ok":null}"#).unwrap();
-        assert_eq!(
-            output,
-            b"{\n    \"text\": \"a,{}\",\n    \"ok\": null\n  }"
-        );
+        assert_eq!(output, b"{\n    \"text\": \"a,{}\",\n    \"ok\": null\n  }");
     }
 }

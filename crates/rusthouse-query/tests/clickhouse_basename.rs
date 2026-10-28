@@ -25,5 +25,7 @@ fn rejects_invalid_basename_arguments() {
         "SELECT basename()",
         "SELECT basename(1)",
         "SELECT basename('a', 'b')",
-    ] { assert!(parse_select(sql).is_err(), "{sql}"); }
+    ] {
+        assert!(parse_select(sql).is_err(), "{sql}");
+    }
 }

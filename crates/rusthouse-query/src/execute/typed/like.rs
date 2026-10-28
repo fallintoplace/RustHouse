@@ -327,5 +327,4 @@ mod perf_tests {
         let escaped = compile_like(r"left\%right").unwrap();
         assert!(like_matches(b"left%right", &escaped, false));
     }
-
 }

@@ -207,5 +207,4 @@ mod tests {
         assert_eq!(parsed.assignments, vec![("id".into(), Some("3".into()))]);
         assert!(parse_update("UPDATE events SET id = +NULL").is_err());
     }
-
 }

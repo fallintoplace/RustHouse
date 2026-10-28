@@ -325,7 +325,6 @@ fn parses_like_predicates_and_rejects_nontext_patterns() {
         assert!(parse_select(invalid).is_err(), "{invalid}");
     }
 }
-
 #[test]
 fn parses_ilike_and_rejects_malformed_patterns() {
     let select = parse_select(

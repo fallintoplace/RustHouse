@@ -137,5 +137,4 @@ mod tests {
         assert_eq!(decoded[0], b'z');
         assert_eq!(*decoded.last().unwrap(), b'y');
     }
-
 }

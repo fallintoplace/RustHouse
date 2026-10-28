@@ -1152,5 +1152,4 @@ mod tests {
         }
         assert!(parse_join("SELECT a.*, b.id FROM lefts a JOIN rights b ON a.id = b.id").is_ok());
     }
-
 }

@@ -34,5 +34,7 @@ fn rejects_invalid_count_arguments() {
         "SELECT countSubstringsCaseInsensitive('a', 'a', -1)",
         "SELECT countSubstringsCaseInsensitive(1, 'a')",
         "SELECT countSubstringsCaseInsensitive('a', 'a', 1, 2)",
-    ] { assert!(parse_select(sql).is_err(), "{sql}"); }
+    ] {
+        assert!(parse_select(sql).is_err(), "{sql}");
+    }
 }

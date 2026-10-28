@@ -267,5 +267,4 @@ mod tests {
             assert!(parse_insert(invalid).is_err(), "{invalid}");
         }
     }
-
 }

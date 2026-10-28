@@ -369,5 +369,4 @@ mod tests {
         );
         assert!(tokenize("-- only a comment").unwrap().is_empty());
     }
-
 }
