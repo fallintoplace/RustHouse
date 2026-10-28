@@ -37,9 +37,9 @@ class PairedDuckDbTests(unittest.TestCase):
                            lambda engine, sql: (b"1\n", float("nan")), 1, 0)
 
     def test_unordered_results_preserve_duplicate_counts(self):
-        reference = b"A\\nB\\nB\\n"
+        reference = b"A\nB\nB\n"
         def shuffled(engine, statement):
-            return b"B\\nA\\nB\\n", 0.001
+            return b"B\nA\nB\n", 0.001
         result = benchmark_pair(
             "SELECT label FROM t", reference, shuffled,
             runs=1, warmups=0, comparison="unordered",
@@ -49,7 +49,7 @@ class PairedDuckDbTests(unittest.TestCase):
             benchmark_pair("SELECT label FROM t", reference, shuffled, 1, 0)
         with self.assertRaisesRegex(ValueError, "differs"):
             benchmark_pair("SELECT label FROM t", reference,
-                           lambda engine, statement: (b"B\\nA\\nA\\n", 0.001),
+                           lambda engine, statement: (b"B\nA\nA\n", 0.001),
                            1, 0, comparison="unordered")
 
     def test_missing_reference_never_claims_speedup(self):
