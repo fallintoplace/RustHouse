@@ -3,6 +3,10 @@ mod external_grouped;
 mod bitmap_distinct;
 mod hyperloglog;
 
+pub fn merge_uniq_states(states: &[&str]) -> Result<u64, String> {
+    hyperloglog::merge_state_hex_values(states)
+}
+
 #[cfg(test)]
 mod dynamic_part_tests {
     use super::*;
@@ -954,7 +958,7 @@ fn execute_into<W: Write>(
         ExecutionError::Invalid("pass --part <directory> for table queries".into())
     })?;
     // A single typed scan serves numeric and String columns with fixed 16 KiB state.
-    if matches!(query.projection, Projection::ApproxDistinct { .. }) {
+    if matches!(query.projection, Projection::ApproxDistinct { .. } | Projection::ApproxDistinctState { .. }) {
         return typed::execute_typed(query, part, output);
     }
     if let Some(count) = parallel_filtered_count(query, part)? {
@@ -1057,6 +1061,7 @@ fn execute_into<W: Write>(
         | Projection::CountColumn { .. }
         | Projection::CountDistinct { .. }
         | Projection::ApproxDistinct { .. }
+        | Projection::ApproxDistinctState { .. }
         | Projection::GroupedCount { .. }
         | Projection::GroupedDistinctCount { .. }
         | Projection::GroupedMultiDistinctCount { .. }
@@ -1562,6 +1567,11 @@ fn execute_numbers<W: Write>(
         }
         return Ok(());
     }
+    if matches!(query.projection, Projection::ApproxDistinctState { .. }) {
+        return Err(ExecutionError::Invalid(
+            "uniqState requires a physical table snapshot".into(),
+        ));
+    }
     if let Projection::CountDistinct { column } | Projection::ApproxDistinct { column } = &query.projection {
         if column != "number" {
             return Err(ExecutionError::Invalid(
@@ -1619,6 +1629,7 @@ fn execute_numbers<W: Write>(
         | Projection::CountColumn { .. }
         | Projection::CountDistinct { .. }
         | Projection::ApproxDistinct { .. }
+        | Projection::ApproxDistinctState { .. }
         | Projection::GroupedCount { .. }
         | Projection::GroupedDistinctCount { .. }
         | Projection::GroupedMultiDistinctCount { .. }

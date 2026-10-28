@@ -21,6 +21,7 @@ enum MergeError {
     CoordinatorLimit,
     InvalidCount,
     InvalidDistinctCount,
+    InvalidUniqState,
     InvalidGroupedCount,
     InvalidGroupedSum,
     InvalidSortedScan,
@@ -121,6 +122,32 @@ fn merge_distinct_bitmap32(
         }
     }
     Ok(format!("count(DISTINCT {column})\n{distinct}\n").into_bytes())
+}
+
+/// Merge one strict 16 KiB register state per shard. Shards can overlap
+/// arbitrarily: register-wise max computes the correct global HLL union.
+fn merge_uniq_shard_states(
+    shards: &[(usize, Vec<u8>)],
+    column: &str,
+    alias: Option<&str>,
+) -> Result<Vec<u8>, MergeError> {
+    let expected_header = format!("uniqState({column})\n");
+    let mut states = Vec::with_capacity(shards.len());
+    for (_, body) in shards {
+        let state = body
+            .strip_prefix(expected_header.as_bytes())
+            .and_then(|bytes| bytes.strip_suffix(b"\n"))
+            .ok_or(MergeError::InvalidUniqState)?;
+        if state.contains(&b'\n') {
+            return Err(MergeError::InvalidUniqState);
+        }
+        let state = std::str::from_utf8(state).map_err(|_| MergeError::InvalidUniqState)?;
+        states.push(state);
+    }
+    let count = rusthouse_query::merge_uniq_states(&states)
+        .map_err(|_| MergeError::InvalidUniqState)?;
+    let name = alias.map_or_else(|| format!("uniq({column})"), str::to_owned);
+    Ok(format!("{name}\n{count}\n").into_bytes())
 }
 
 fn shard_row_cap(peer: Peer) -> Result<usize, String> {
@@ -922,6 +949,7 @@ pub fn handle(method: &str, body: &[u8], cluster: &Cluster, max_rows: usize) -> 
             if is_safe_scan(&select)
                 || is_safe_count(&select)
                 || is_safe_count_distinct(&select)
+                || is_safe_uniq(&select)
                 || is_safe_sorted_scan(&select)
                 || is_safe_count_if(&select)
                 || is_safe_grouped_count(&select)
@@ -934,7 +962,7 @@ pub fn handle(method: &str, body: &[u8], cluster: &Cluster, max_rows: usize) -> 
         _ => {
             return Response::text(
                 "400 Bad Request",
-                "distributed queries require unordered SELECT, bounded integer top-K SELECT, COUNT, COUNT(DISTINCT), COUNTIF, integer SUM, MIN, MAX, or grouped aggregates\n",
+                "distributed queries require unordered SELECT, bounded integer top-K SELECT, COUNT, COUNT(DISTINCT), uniq, COUNTIF, integer SUM, MIN, MAX, or grouped aggregates\n",
             );
         }
     };
@@ -950,6 +978,7 @@ pub fn handle(method: &str, body: &[u8], cluster: &Cluster, max_rows: usize) -> 
     let grouped_count_query = is_safe_grouped_count(&select);
     let grouped_sum_query = is_safe_grouped_sum(&select);
     let sum_query = is_safe_sum(&select);
+    let uniq_query = is_safe_uniq(&select);
     let shard_sql = if sorted_query {
         match sorted_scan_sql(sql, &select) {
             Some(query) => query,
@@ -973,6 +1002,11 @@ pub fn handle(method: &str, body: &[u8], cluster: &Cluster, max_rows: usize) -> 
             None => {
                 return Response::text("400 Bad Request", "unsupported global grouped query\n");
             }
+        }
+    } else if uniq_query {
+        match uniq_state_shard_sql(sql, &select) {
+            Some(query) => query,
+            None => return Response::text("400 Bad Request", "unsupported distributed uniq query\n"),
         }
     } else if distinct_count_column.is_some() {
         match distinct_shard_sql(sql, &select) {
@@ -1120,6 +1154,12 @@ pub fn handle(method: &str, body: &[u8], cluster: &Cluster, max_rows: usize) -> 
             Some("UInt32" | "Nullable(UInt32)") => merge_distinct_bitmap32(&shards, column, false),
             _ => merge_distinct_counts(&shards, column),
         }
+    } else if uniq_query {
+        match &select.projection {
+            Projection::ApproxDistinct { column } =>
+                merge_uniq_shard_states(&shards, column, select.alias.as_deref()),
+            _ => Err(MergeError::InvalidUniqState),
+        }
     } else if sum_query {
         sum_type
             .as_deref()
@@ -1205,6 +1245,9 @@ pub fn handle(method: &str, body: &[u8], cluster: &Cluster, max_rows: usize) -> 
         }
         Err(MergeError::InvalidCount) => {
             Response::text("502 Bad Gateway", "malformed shard COUNT response\n")
+        }
+        Err(MergeError::InvalidUniqState) => {
+            Response::text("502 Bad Gateway", "malformed shard uniq state\n")
         }
         Err(MergeError::InvalidDistinctCount) => {
             Response::text("502 Bad Gateway", "malformed shard DISTINCT response\n")
@@ -1984,5 +2027,61 @@ mod bounded_grouped_count_topk_tests {
         ).unwrap();
         let merged = merge_grouped_counts_query(&shards, 1, Some(&sql)).unwrap();
         assert_eq!(merged, b"dim\tcount\n");
+    }
+}
+
+
+#[cfg(test)]
+mod distributed_uniq_state_tests {
+    use super::*;
+
+    #[test]
+    fn global_union_merges_sketch_states_not_estimates() {
+        let mut first = "00".repeat(1 << 14);
+        first.replace_range(0..2, "01");
+        let mut second = "00".repeat(1 << 14);
+        second.replace_range(2..4, "01");
+        let shards = [
+            (100, format!("uniqState(uid)\n{first}\n").into_bytes()),
+            (100, format!("uniqState(uid)\n{second}\n").into_bytes()),
+        ];
+        assert_eq!(
+            merge_uniq_shard_states(&shards, "uid", None).unwrap(),
+            b"uniq(uid)\n2\n"
+        );
+        assert_eq!(
+            merge_uniq_shard_states(&shards, "uid", Some("active_users")).unwrap(),
+            b"active_users\n2\n"
+        );
+    }
+
+    #[test]
+    fn corrupted_or_mismatched_shard_sketches_reject_entire_query() {
+        let cases = [
+            "uniqState(uid)\n0\n".to_string(),
+            "uniqState(uid)\n".to_string(),
+            "wrong\n".to_string(),
+            format!("uniqState(uid)\n{}\n", "ff".repeat(1 << 14)),
+            format!("uniqState(uid)\n{}\n\n", "00".repeat(1 << 14)),
+        ];
+        for content in cases {
+            assert_eq!(
+                merge_uniq_shard_states(&[(100, content.into_bytes())], "uid", None),
+                Err(MergeError::InvalidUniqState)
+            );
+        }
+    }
+
+    #[test]
+    fn query_rewrite_keeps_where_predicates_and_rejects_order() {
+        let sql = "SELECT uniq(uid) FROM events WHERE region = 'FROM east'";
+        let select = parse_select(sql).unwrap();
+        assert!(is_safe_uniq(&select));
+        assert_eq!(
+            uniq_state_shard_sql(sql, &select).as_deref(),
+            Some("SELECT uniqState(uid) FROM events WHERE region = 'FROM east'")
+        );
+        let unsafe_query = parse_select("SELECT uniq(uid) FROM events ORDER BY uid").unwrap();
+        assert!(!is_safe_uniq(&unsafe_query));
     }
 }
