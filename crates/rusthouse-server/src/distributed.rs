@@ -598,6 +598,21 @@ fn merge_grouped_integer_sums_typed(
     global: Option<&Select>,
     group_kind: Option<&str>,
 ) -> Result<Vec<u8>, MergeError> {
+    merge_grouped_integer_sums_multi_typed(
+        shards, max_rows, kind, key_column, value_column, global, group_kind, None,
+    )
+}
+
+fn merge_grouped_integer_sums_multi_typed(
+    shards: &[(usize, Vec<u8>)],
+    max_rows: usize,
+    kind: &str,
+    key_column: &str,
+    value_column: &str,
+    global: Option<&Select>,
+    group_kind: Option<&str>,
+    group_kinds: Option<&[String]>,
+) -> Result<Vec<u8>, MergeError> {
     let header = format!("{key_column}\tsum({value_column})\n");
     let unsigned = kind
         .strip_prefix("Nullable(")
@@ -699,16 +714,32 @@ fn merge_grouped_integer_sums_typed(
         if select.order_by.is_some() {
             let terms = select.order_terms().collect::<Vec<_>>();
             let wants_key = terms.iter().any(|order| order.column != "#aggregate");
-            let key_kind = if wants_key {
-                Some(group_kind.ok_or(MergeError::InvalidGroupedSum)?)
-            } else {
+            let group_columns = key_column.split('\t').collect::<Vec<_>>();
+            let kinds = if !wants_key {
                 None
+            } else if group_columns.len() == 1 {
+                Some(vec![group_kind.ok_or(MergeError::InvalidGroupedSum)?])
+            } else {
+                let kinds = group_kinds.ok_or(MergeError::InvalidGroupedSum)?;
+                if kinds.len() != group_columns.len() {
+                    return Err(MergeError::InvalidGroupedSum);
+                }
+                Some(kinds.iter().map(String::as_str).collect::<Vec<_>>())
             };
             let mut indices = groups.iter().enumerate()
                 .map(|(index, (key, _, _))| {
-                    key_kind.map_or(Ok(None), |kind| {
-                        parse_group_sort_key(key, kind).map(Some)
-                    }).map(|parsed| (index, parsed))
+                    let parsed = if let Some(kinds) = &kinds {
+                        let fields = key.split(|&byte| byte == b'\t').collect::<Vec<_>>();
+                        if fields.len() != kinds.len() {
+                            return Err(MergeError::InvalidGroupedSum);
+                        }
+                        Some(fields.into_iter().zip(kinds)
+                            .map(|(field, kind)| parse_group_sort_key(field, kind))
+                            .collect::<Result<Vec<_>, _>>()?)
+                    } else {
+                        None
+                    };
+                    Ok((index, parsed))
                 })
                 .collect::<Result<Vec<_>, MergeError>>()?;
             indices.sort_by(|(left, left_key), (right, right_key)| {
@@ -727,11 +758,13 @@ fn merge_grouped_integer_sums_typed(
                             _ => if order.descending { cmp.reverse() } else { cmp },
                         }
                     } else {
+                        let position = group_columns.iter()
+                            .position(|column| *column == order.column)
+                            .expect("validated grouped key ORDER BY");
                         compare_group_sort_keys(
-                            left_key.as_ref().expect("verified group key"),
-                            right_key.as_ref().expect("verified group key"),
-                            order.descending,
-                            order.nulls_first,
+                            &left_key.as_ref().expect("verified group key")[position],
+                            &right_key.as_ref().expect("verified group key")[position],
+                            order.descending, order.nulls_first,
                         )
                     };
                     if compare != std::cmp::Ordering::Equal {
@@ -1577,7 +1610,7 @@ pub fn handle(method: &str, body: &[u8], cluster: &Cluster, max_rows: usize) -> 
             None => return Response::text("400 Bad Request", "unsupported grouped DISTINCT rewrite
 "),
         }
-    } else if grouped_sum_query || grouped_extremum_query {
+    } else if grouped_sum_query || grouped_extremum_query || grouped_multikey_sum_query {
         match grouped_aggregate_shard_sql(sql, &select) {
             Some(query) => query,
             None => {
@@ -1643,6 +1676,9 @@ pub fn handle(method: &str, body: &[u8], cluster: &Cluster, max_rows: usize) -> 
     let group_sort_columns = match &select.projection {
         Projection::GroupedMultiCount { columns } if grouped_count_query
             && select.order_terms().any(|term| term.column != "count") =>
+            Some(columns.as_slice()),
+        Projection::GroupedMultiAggregates { columns, .. }
+            if grouped_multikey_sum_query && select.order_by.is_some() =>
             Some(columns.as_slice()),
         _ => None,
     };
@@ -1839,8 +1875,9 @@ pub fn handle(method: &str, body: &[u8], cluster: &Cluster, max_rows: usize) -> 
     } else if grouped_multikey_sum_query {
         match (sum_type.as_deref(), &select.projection) {
             (Some(kind), Projection::GroupedMultiAggregates { columns, items }) => {
-                merge_grouped_integer_sums(
+                merge_grouped_integer_sums_multi_typed(
                     &shards, max_rows.min(250_000), kind, &columns.join("\t"), &items[0].1,
+                    Some(&select), None, group_sort_kinds.as_deref(),
                 )
             }
             _ => Err(MergeError::InvalidGroupedSum),
@@ -2335,6 +2372,28 @@ mod tests {
             merge_grouped_counts_multi_typed(&shards, 3, Some(&query), None,
                 Some(&["String".into()])),
             Err(MergeError::InvalidGroupedCount)
+        );
+    }
+
+    #[test]
+    fn distributed_multikey_sum_global_topk_ranks_all_shard_groups() {
+        let sql = "SELECT region, category, sum(amount) FROM sales GROUP BY region, category ORDER BY region ASC, category DESC LIMIT 2 OFFSET 1";
+        let query = parse_select(sql).unwrap();
+        assert!(is_safe_grouped_multikey_sum(&query));
+        assert_eq!(
+            grouped_aggregate_shard_sql(sql, &query).as_deref(),
+            Some("SELECT region, category, sum(amount) FROM sales GROUP BY region, category")
+        );
+        let shards = [
+            shard(10, "region\tcategory\tsum(amount)\n10\ta\t4\n2\tb\t2\n2\ta\t5\n"),
+            shard(10, "region\tcategory\tsum(amount)\n10\ta\t6\n2\tb\t3\n2\tc\t7\n"),
+        ];
+        assert_eq!(
+            merge_grouped_integer_sums_multi_typed(
+                &shards, 2, "UInt64", "region\tcategory", "amount",
+                Some(&query), None, Some(&["UInt64".into(), "String".into()]),
+            ).unwrap(),
+            b"region\tcategory\tsum(amount)\n2\tb\t5\n2\ta\t5\n"
         );
     }
     #[test]
