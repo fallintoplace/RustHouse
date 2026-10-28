@@ -54,6 +54,7 @@ pub(super) fn is_function(name: &str) -> bool {
             | "SUBSTRING_INDEX"
             | "SUBSTRINGINDEXUTF8"
             | "QUERYSTRINGANDFRAGMENT"
+            | "TOYYYYMMDDHHMMSS"
             | "TO_INT64"
             | "TRIM"
             | "LTRIM"
@@ -127,6 +128,38 @@ fn parse_at_depth(parser: &mut Parser, depth: usize) -> Result<ConstantValue, Pa
                     i64::try_from(value.chars().count())
                         .map_err(|_| ParseError("lengthUTF8 result exceeds Int64".into()))?,
                 ),
+                None => ConstantValue::Null,
+            }
+        }
+        "TOYYYYMMDDHHMMSS" => {
+            let input = text_arg(parser, depth + 1)?;
+            require(parser, Token::RParen, "toYYYYMMDDhhmmss requires one argument")?;
+            match input {
+                Some(value) => {
+                    let bytes = value.as_bytes();
+                    let date = value.get(..10)
+                        .ok_or_else(|| ParseError("invalid DateTime argument".into()))?;
+                    if value.len() != 19 || rusthouse_storage::parse_date(date).is_none()
+                        || bytes[10] != b' ' || bytes[13] != b':' || bytes[16] != b':'
+                    {
+                        return Err(ParseError("invalid DateTime argument".into()));
+                    }
+                    let segment = |begin, end| -> Result<u32, ParseError> {
+                        value.get(begin..end)
+                            .and_then(|digits| digits.parse::<u32>().ok())
+                            .ok_or_else(|| ParseError("invalid DateTime component".into()))
+                    };
+                    let (hour, minute, second) =
+                        (segment(11, 13)?, segment(14, 16)?, segment(17, 19)?);
+                    if hour > 23 || minute > 59 || second > 59 {
+                        return Err(ParseError("invalid DateTime time".into()));
+                    }
+                    let digits: String = value.chars()
+                        .filter(|character| character.is_ascii_digit()).collect();
+                    let value = digits.parse::<i64>()
+                        .map_err(|_| ParseError("DateTime value exceeds Int64".into()))?;
+                    ConstantValue::Integer(value)
+                }
                 None => ConstantValue::Null,
             }
         }
@@ -2004,5 +2037,29 @@ fn text_arg(parser: &mut Parser, depth: usize) -> Result<Option<String>, ParseEr
         _ => Err(ParseError(
             "expected a string literal or string function".into(),
         )),
+    }
+}
+
+#[cfg(test)]
+mod parity_to_yyyymmddhhmmss_tests {
+    use crate::{parse_select, ConstantValue, Projection};
+    #[test]
+    fn clickhouse_date_constants_validate_calendar_values() {
+        for (expression, expected) in [
+            ("toYYYYMMDDhhmmss('2026-10-28 07:08:09')", 20261028070809_i64),
+            ("toYYYYMMDDhhmmss('2000-02-29 23:59:59')", 20000229235959_i64),
+        ] {
+            let sql = format!("SELECT {expression}");
+            assert!(matches!(parse_select(&sql).unwrap().projection, Projection::Constants(values)
+                if values.len() == 1 && values[0].value == ConstantValue::Integer(expected)), "{sql}");
+        }
+        for expression in [
+            "toYYYYMMDDhhmmss('2023-02-29 10:30:00')",
+            "toYYYYMMDDhhmmss('2026-10-28 24:00:00')",
+            "toYYYYMMDDhhmmss('2026-10-28 00:60:00')",
+            "toYYYYMMDDhhmmss('2026-10-28')",
+        ] {
+            assert!(parse_select(&format!("SELECT {expression}")).is_err(), "{expression}");
+        }
     }
 }
