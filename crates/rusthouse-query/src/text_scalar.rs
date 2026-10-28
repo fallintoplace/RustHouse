@@ -70,6 +70,7 @@ pub(super) fn is_function(name: &str) -> bool {
             | "TRANSLATE"
             | "POSITIONCASEINSENSITIVE"
             | "STRPOS"
+            | "POSITIONUTF8"
             | "COUNT_SUBSTRING"
             | "COUNTSUBSTRINGS"
             | "EXTRACTURLPARAMETER"
@@ -1092,7 +1093,7 @@ fn parse_at_depth(parser: &mut Parser, depth: usize) -> Result<ConstantValue, Pa
                 _ => ConstantValue::Null,
             }
         }
-        "STRPOS" => {
+        "STRPOS" | "POSITIONUTF8" => {
             let input = text_arg(parser, depth + 1)?;
             require(parser, Token::Comma, "STRPOS requires a substring")?;
             let needle = text_arg(parser, depth + 1)?;
