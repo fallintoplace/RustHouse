@@ -13,6 +13,7 @@ pub(super) fn is_function(name: &str) -> bool {
             | "ASCII"
             | "UTF16_LENGTH"
             | "HASSUBSEQUENCE"
+            | "FROMMODIFIEDJULIANDAY"
             | "CHR"
             | "STRINGBYTESUNIQ"
             | "BIT_LENGTH"
@@ -324,6 +325,26 @@ fn parse_at_depth(parser: &mut Parser, depth: usize) -> Result<ConstantValue, Pa
                         return Err(ParseError("LOWER result is too large".into()));
                     }
                     ConstantValue::Text(result)
+                }
+                None => ConstantValue::Null,
+            }
+        }
+        "FROMMODIFIEDJULIANDAY" => {
+            let input = integer_arg(parser, depth + 1)?;
+            require(
+                parser,
+                Token::RParen,
+                "fromModifiedJulianDay requires one argument",
+            )?;
+            match input {
+                Some(value) => {
+                    let days = value
+                        .checked_sub(40_587)
+                        .and_then(|days| u16::try_from(days).ok())
+                        .ok_or_else(|| {
+                            ParseError("fromModifiedJulianDay is outside the supported Date range".into())
+                        })?;
+                    ConstantValue::Text(rusthouse_storage::format_date(days))
                 }
                 None => ConstantValue::Null,
             }
