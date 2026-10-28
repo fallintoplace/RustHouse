@@ -381,9 +381,7 @@ pub(super) fn compile(
                     Test::NotBetween(parse_literal(kind, lower)?, parse_literal(kind, upper)?)
                 }
                 Predicate::IsNull { negated, .. } => Test::IsNull(*negated),
-                Predicate::DistinctFrom { value, negated, .. }
-                    if base_type(kind) == "UUID" =>
-                {
+                Predicate::DistinctFrom { value, negated, .. } if base_type(kind) == "UUID" => {
                     Test::UuidDistinctFrom(uuid_literal_bytes(value)?, *negated)
                 }
                 Predicate::DistinctFrom { value, negated, .. } => {
