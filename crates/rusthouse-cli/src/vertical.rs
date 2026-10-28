@@ -56,6 +56,17 @@ fn write_row<W: Write>(
     headers: &[Vec<u8>],
     line: &[u8],
 ) -> io::Result<()> {
+    if !line.contains(&b'\\') {
+        writeln!(output, "Row {row}:")?;
+        for (header, field) in headers.iter().zip(line.split(|&byte| byte == b'\t')) {
+            output.write_all(b"  ")?;
+            write_visible(output, header)?;
+            output.write_all(b": ")?;
+            write_visible(output, field)?;
+            output.write_all(b"\n")?;
+        }
+        return output.write_all(b"\n");
+    }
     let fields = decode_row_fields(line)?;
     writeln!(output, "Row {row}:")?;
     for (header, field) in headers.iter().zip(&fields) {
@@ -138,6 +149,13 @@ impl<W: Write> Write for VerticalWriter<W> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn plain_rows_keep_controls_and_unicode_without_field_collection() {
+        let mut writer = VerticalWriter::new(Vec::new());
+        writer.write_all("title\ncafé\n".as_bytes()).unwrap();
+        assert_eq!(writer.output, "Row 1:\n  title: café\n\n".as_bytes());
+    }
 
     #[test]
     fn processes_many_rows_from_one_bulk_write() {
