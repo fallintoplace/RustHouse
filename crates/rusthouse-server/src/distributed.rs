@@ -158,21 +158,19 @@ fn schema_signature(response: &remote::PeerResponse) -> Result<Vec<u8>, String> 
     Ok(columns.as_bytes().to_vec())
 }
 
-struct ShardResponse {
+struct ShardMetadata {
     cap: usize,
-    body: Vec<u8>,
     kind: Option<String>,
     key_kind: Option<String>,
     schema: Vec<u8>,
 }
 
-fn read_shard(
+fn prepare_shard(
     peer: Peer,
-    sql: &str,
     sum_schema: Option<(&str, &str)>,
     group_schema: Option<(&str, &str)>,
     table: &str,
-) -> Result<ShardResponse, String> {
+) -> Result<ShardMetadata, String> {
     let cap = shard_row_cap(peer)?;
     let schema_response = remote::schema(peer, table)?;
     let schema = schema_signature(&schema_response)?;
@@ -188,20 +186,57 @@ fn read_shard(
             Ok(kind)
         })
         .transpose()?;
-    let result = remote::query(peer, sql)?;
-    if result.status != 200 {
-        return Err(format!("peer returned HTTP {}", result.status));
-    }
-    if result.content_type != "text/tab-separated-values; charset=utf-8" {
-        return Err("peer did not return TSV".into());
-    }
-    Ok(ShardResponse {
+    Ok(ShardMetadata {
         cap,
-        body: result.body,
         kind,
         key_kind,
         schema,
     })
+}
+
+fn query_prepared_shard(
+    peer: Peer,
+    sql: &str,
+    metadata: ShardMetadata,
+) -> Result<(usize, Vec<u8>), String> {
+    let response = remote::query(peer, sql)?;
+    if response.status != 200 {
+        return Err(format!("peer returned HTTP {}", response.status));
+    }
+    if response.content_type != "text/tab-separated-values; charset=utf-8" {
+        return Err("peer did not return TSV".into());
+    }
+    Ok((metadata.cap, response.body))
+}
+
+fn check_prepared_schema(
+    expected_schema: &mut Option<Vec<u8>>,
+    sum_type: &mut Option<String>,
+    group_key_kind: &mut Option<String>,
+    current: &ShardMetadata,
+) -> Result<(), &'static str> {
+    if expected_schema
+        .as_ref()
+        .is_some_and(|previous| previous != &current.schema)
+    {
+        return Err("distributed shard schemas disagree");
+    }
+    if expected_schema.is_none() {
+        *expected_schema = Some(current.schema.clone());
+    }
+    if let Some(kind) = &current.kind {
+        if sum_type.as_ref().is_some_and(|previous| previous != kind) {
+            return Err("distributed integer aggregate shard column types disagree");
+        }
+        *sum_type = Some(kind.clone());
+    }
+    if let Some(kind) = &current.key_kind {
+        if group_key_kind.as_ref().is_some_and(|previous| previous != kind) {
+            return Err("distributed GROUP BY key types disagree");
+        }
+        *group_key_kind = Some(kind.clone());
+    }
+    Ok(())
 }
 
 /// Merge only identical TSV headers and whole, newline-terminated rows.
@@ -825,75 +860,46 @@ pub fn handle(method: &str, body: &[u8], cluster: &Cluster, max_rows: usize) -> 
         Some(Source::Table(table)) => table.as_str(),
         _ => unreachable!("validated named table"),
     };
-    let results = std::thread::scope(|scope| {
-        let shard_query = shard_sql.as_str();
-        let handles = cluster
-            .peers()
-            .iter()
-            .map(|&peer| {
-                scope.spawn(move || read_shard(peer, shard_query, sum_schema, group_schema, table))
-            })
-            .collect::<Vec<_>>();
-        handles
-            .into_iter()
-            .map(|handle| {
-                handle
-                    .join()
-                    .unwrap_or_else(|_| Err("peer query panicked".into()))
-            })
-            .collect::<Vec<_>>()
+    // Preflight every shard's capabilities and schema before allowing any
+    // expensive analytic SQL to run. Heterogeneous shards fail fast.
+    let metadata_results = std::thread::scope(|scope| {
+        let handles = cluster.peers().iter().map(|&peer| {
+            scope.spawn(move || prepare_shard(peer, sum_schema, group_schema, table))
+        }).collect::<Vec<_>>();
+        handles.into_iter().map(|handle| {
+            handle.join().unwrap_or_else(|_| Err("peer metadata worker panicked".into()))
+        }).collect::<Vec<_>>()
     });
-    let mut shards = Vec::with_capacity(results.len());
+    let mut metadata = Vec::with_capacity(metadata_results.len());
     let mut sum_type: Option<String> = None;
     let mut group_key_kind: Option<String> = None;
     let mut expected_schema: Option<Vec<u8>> = None;
+    for result in metadata_results {
+        let current = match result {
+            Ok(current) => current,
+            Err(message) => return Response::text("502 Bad Gateway", &format!("{message}\n")),
+        };
+        if let Err(message) = check_prepared_schema(
+            &mut expected_schema, &mut sum_type, &mut group_key_kind, &current,
+        ) {
+            return Response::text("409 Conflict", &format!("{message}\n"));
+        }
+        metadata.push(current);
+    }
+
+    let results = std::thread::scope(|scope| {
+        let handles = cluster.peers().iter().copied().zip(metadata).map(|(peer, metadata)| {
+            scope.spawn(move || query_prepared_shard(peer, &shard_sql, metadata))
+        }).collect::<Vec<_>>();
+        handles.into_iter().map(|handle| {
+            handle.join().unwrap_or_else(|_| Err("peer query panicked".into()))
+        }).collect::<Vec<_>>()
+    });
+    let mut shards = Vec::with_capacity(results.len());
     for result in results {
         match result {
-            Ok(ShardResponse {
-                cap,
-                body,
-                kind,
-                key_kind,
-                schema,
-            }) => {
-                if expected_schema
-                    .as_ref()
-                    .is_some_and(|expected| expected != &schema)
-                {
-                    return Response::text("409 Conflict", "distributed shard schemas disagree\n");
-                }
-                if expected_schema.is_none() {
-                    expected_schema = Some(schema);
-                }
-                if let Some(kind) = kind {
-                    if sum_type
-                        .as_deref()
-                        .is_some_and(|existing| existing != kind.as_str())
-                    {
-                        return Response::text(
-                            "409 Conflict",
-                            "distributed integer aggregate shard column types disagree\n",
-                        );
-                    }
-                    sum_type = Some(kind);
-                }
-                if let Some(key_kind) = key_kind {
-                    if group_key_kind
-                        .as_deref()
-                        .is_some_and(|existing| existing != key_kind.as_str())
-                    {
-                        return Response::text(
-                            "409 Conflict",
-                            "distributed GROUP BY key types disagree\n",
-                        );
-                    }
-                    group_key_kind = Some(key_kind);
-                }
-                shards.push((cap, body));
-            }
-            Err(message) => {
-                return Response::text("502 Bad Gateway", &format!("{message}\n"));
-            }
+            Ok(shard) => shards.push(shard),
+            Err(message) => return Response::text("502 Bad Gateway", &format!("{message}\n")),
         }
     }
     let merged = if count_query {
@@ -981,6 +987,27 @@ pub fn handle(method: &str, body: &[u8], cluster: &Cluster, max_rows: usize) -> 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn schema_preflight_rejects_mismatches_without_query_dispatch() {
+        let mut schema = None;
+        let mut sum = None;
+        let mut key = None;
+        let first = ShardMetadata {
+            cap: 250_000,
+            kind: Some("UInt64".into()),
+            key_kind: Some("String".into()),
+            schema: b"[{\"name\":\"amount\",\"type\":\"UInt64\"}]".to_vec(),
+        };
+        assert_eq!(check_prepared_schema(&mut schema, &mut sum, &mut key, &first), Ok(()));
+        assert_eq!(check_prepared_schema(&mut schema, &mut sum, &mut key, &first), Ok(()));
+        let changed = ShardMetadata { schema: b"changed".to_vec(), ..first };
+        assert_eq!(
+            check_prepared_schema(&mut schema, &mut sum, &mut key, &changed),
+            Err("distributed shard schemas disagree")
+        );
+        assert_eq!(schema.as_deref(), Some(first.schema.as_slice()));
+    }
 
     #[test]
     fn extracts_column_types_from_one_validated_schema_response() {
