@@ -65,43 +65,40 @@ pub(super) fn write_json_string<W: Write>(writer: &mut W, value: &str) -> io::Re
             quoted[value.len() + 1] = b'"';
             return writer.write_all(&quoted[..value.len() + 2]);
         }
-        writer.write_all(b"\"")?;
-        writer.write_all(value.as_bytes())?;
-        return writer.write_all(b"\"");
-    }
-    writer.write_all(b"\"")?;
-    let mut start = 0;
-    for (index, ch) in value.char_indices() {
-        let escape: Option<&[u8]> = match ch {
-            '"' => Some(b"\\\""),
-            '\\' => Some(b"\\\\"),
-            '\n' => Some(b"\\n"),
-            '\r' => Some(b"\\r"),
-            '\t' => Some(b"\\t"),
-            '\u{08}' => Some(b"\\b"),
-            '\u{0c}' => Some(b"\\f"),
-            ch if ch <= '\u{1f}' => {
-                if start < index {
-                    writer.write_all(&value.as_bytes()[start..index])?;
-                }
-                write!(writer, "\\u{:04x}", ch as u32)?;
-                start = index + ch.len_utf8();
-                continue;
+        let mut buffer = [0u8; 4096];
+    let mut used = 1;
+    buffer[0] = b'"';
+    const HEX: &[u8; 16] = b"0123456789abcdef";
+    for &byte in value.as_bytes() {
+        let mut control = [b'\\', b'u', b'0', b'0', 0, 0];
+        let escape: &[u8] = match byte {
+            b'"' => b"\\\"",
+            b'\\' => b"\\\\",
+            b'\n' => b"\\n",
+            b'\r' => b"\\r",
+            b'\t' => b"\\t",
+            8 => b"\\b",
+            12 => b"\\f",
+            0..=31 => {
+                control[4] = HEX[usize::from(byte >> 4)];
+                control[5] = HEX[usize::from(byte & 0x0f)];
+                &control
             }
-            _ => None,
+            _ => std::slice::from_ref(&byte),
         };
-        if let Some(escape) = escape {
-            if start < index {
-                writer.write_all(&value.as_bytes()[start..index])?;
-            }
-            writer.write_all(escape)?;
-            start = index + ch.len_utf8();
+        if used + escape.len() > buffer.len() {
+            writer.write_all(&buffer[..used])?;
+            used = 0;
         }
+        buffer[used..used + escape.len()].copy_from_slice(escape);
+        used += escape.len();
     }
-    if start < value.len() {
-        writer.write_all(&value.as_bytes()[start..])?;
+    if used == buffer.len() {
+        writer.write_all(&buffer[..used])?;
+        used = 0;
     }
-    writer.write_all(b"\"")
+    buffer[used] = b'"';
+    writer.write_all(&buffer[..used + 1])
 }
 
 #[cfg(test)]
@@ -190,4 +187,39 @@ mod tests {
         assert!(decode_url(&format!("{maximum}%41")).is_err());
         assert!(decode_url(&("a".repeat(MAX_QUERY_BYTES * 4))).is_err());
     }
+
+    #[test]
+    fn quote_heavy_json_uses_bounded_output_writes() {
+        struct CountingWriter {
+            calls: usize,
+            output: Vec<u8>,
+        }
+
+        impl Write for CountingWriter {
+            fn write(&mut self, data: &[u8]) -> io::Result<usize> {
+                self.calls += 1;
+                self.output.extend_from_slice(data);
+                Ok(data.len())
+            }
+
+            fn flush(&mut self) -> io::Result<()> {
+                Ok(())
+            }
+        }
+
+        let input = "\"".repeat(10_000);
+        let mut output = CountingWriter {
+            calls: 0,
+            output: Vec::new(),
+        };
+        write_json_string(&mut output, &input).unwrap();
+        assert_eq!(output.output.len(), 20_002);
+        assert_eq!(&output.output[..3], b"\"\\\"");
+        assert_eq!(output.output.last(), Some(&b'"'));
+        assert!(output.calls <= 6);
+        let mut control = Vec::new();
+        write_json_string(&mut control, "a\n\t\u{0001}café").unwrap();
+        assert_eq!(control, br#""a\n\t\u0001café""#);
+    }
+
 }
