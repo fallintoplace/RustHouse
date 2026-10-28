@@ -38,6 +38,13 @@ class IngestBenchmarkTests(unittest.TestCase):
             with self.assertRaisesRegex(RuntimeError, "sum="):
                 runner.verify(Path("/missing"), Path("/missing"), 3, 2, -1, 1, 0, 1)
 
+    def test_large_sums_cannot_hide_small_absolute_errors(self):
+        values = ["3", "2", "0", "100000000", "100000000.05"]
+        with mock.patch.object(runner, "sql", side_effect=values):
+            with self.assertRaisesRegex(RuntimeError, "sum="):
+                runner.verify(Path("binary"), Path("db"), 3, 2, 0, 100000000,
+                              100000000, 5)
+
     def test_semicolon_input_uses_the_same_oracle(self):
         with tempfile.TemporaryDirectory() as temp:
             path = Path(temp) / "readings.ssv"
