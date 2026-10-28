@@ -70,6 +70,7 @@ pub(super) fn is_function(name: &str) -> bool {
             | "REPLACE"
             | "REPLACEALL"
             | "PROTOCOL"
+            | "FROMUNIXTIMESTAMP64NANO"
             | "TRANSLATE"
             | "POSITIONCASEINSENSITIVE"
             | "STRPOS"
@@ -942,6 +943,29 @@ fn parse_at_depth(parser: &mut Parser, depth: usize) -> Result<ConstantValue, Pa
                     ConstantValue::Text(result)
                 }
                 _ => ConstantValue::Null,
+            }
+        }
+        "FROMUNIXTIMESTAMP64NANO" => {
+            let input = integer_arg(parser, depth + 1)?;
+            require(
+                parser,
+                Token::RParen,
+                "fromUnixTimestamp64Nano requires one argument",
+            )?;
+            match input {
+                Some(input) => {
+                    let unit = 10_i64.pow(9);
+                    let seconds = u32::try_from(input.div_euclid(unit)).map_err(|_| {
+                        ParseError("fromUnixTimestamp64Nano requires a supported UTC DateTime".into())
+                    })?;
+                    let fraction = input.rem_euclid(unit);
+                    let datetime = rusthouse_storage::format_datetime(seconds);
+                    ConstantValue::Text(format!(
+                        "{datetime}.{fraction:0width$}",
+                        width = 9
+                    ))
+                }
+                None => ConstantValue::Null,
             }
         }
         "PROTOCOL" => {
