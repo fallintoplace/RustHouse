@@ -6,6 +6,40 @@ mod dynamic_part_tests {
     use super::*;
 
     #[test]
+    fn parallel_integer_avg_uses_exact_checked_sum_and_filtered_counts() {
+        use rusthouse_storage::{Column, write_wide_part};
+        use std::fs;
+        static NEXT: AtomicUsize = AtomicUsize::new(0);
+        let root = std::env::temp_dir().join(format!(
+            "rusthouse-parallel-average-{}-{}",
+            std::process::id(), NEXT.fetch_add(1, AtomicOrdering::Relaxed)
+        ));
+        fs::create_dir(&root).unwrap();
+        let columns = vec![
+            Column { name: "id".into(), data_type: "UInt64".into() },
+            Column { name: "price".into(), data_type: "Int64".into() },
+        ];
+        for i in 0..40 {
+            write_wide_part(&root.join(format!("all_{i}_{i}_0")), &columns, &[
+                vec![Some(i.to_string()), Some("-20".into())],
+                vec![Some((i+40).to_string()), Some("40".into())],
+            ]).unwrap();
+        }
+        for (sql, expected) in [
+            ("SELECT avg(price) FROM part", "10"),
+            ("SELECT avg(price) FROM part WHERE id >= 40", "40"),
+            ("SELECT avg(price) FROM part WHERE id > 100", "NULL"),
+        ] {
+            let query = crate::parse_select(sql).unwrap();
+            let mut output = Vec::new();
+            execute(&query, Some(&root), &mut output).unwrap();
+            assert!(String::from_utf8_lossy(&output).ends_with(&format!("{expected}\n")),
+                "{sql}: {}", String::from_utf8_lossy(&output));
+        }
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
     fn workers_claim_every_part_once_even_for_uneven_shares() {
         let cursor = AtomicUsize::new(0);
         let mut indices = std::thread::scope(|scope| {
@@ -887,6 +921,59 @@ fn parallel_integer_sum(
     Ok(Some(sum))
 }
 
+/// Exact integer SUM divided by its non-NULL row count. Reuse the
+/// validated parallel SUM and COUNT planners rather than scanning serially.
+/// On an unfiltered integer column COUNT is a metadata lookup, so this is
+/// one parallel physical scan regardless of the number of stored rows.
+fn parallel_integer_avg(
+    query: &Select,
+    source: &Path,
+) -> Result<Option<Option<f64>>, ExecutionError> {
+    let Projection::Aggregate { function: AggregateFunction::Avg, column } = &query.projection
+    else { return Ok(None); };
+    if query.distinct || query.limit.is_some() || query.offset.is_some()
+        || query.order_by.is_some() || !query.order_by_extra.is_empty()
+        || query.having.is_some() {
+        return Ok(None);
+    }
+    let mut sum_plan = query.clone();
+    sum_plan.projection = Projection::Aggregate {
+        function: AggregateFunction::Sum, column: column.clone(),
+    };
+    let Some(sum) = parallel_integer_sum(&sum_plan, source)? else {
+        return Ok(None);
+    };
+    let count = if query.predicates.is_empty() && query.or_predicates.is_empty() {
+        inspect_query_source(source)?.rows
+    } else {
+        let mut count_plan = query.clone();
+        count_plan.projection = Projection::Count;
+        match parallel_filtered_count(&count_plan, source)? {
+            Some(count) => count,
+            None => return Ok(None),
+        }
+    };
+    if count == 0 {
+        if sum.is_some() {
+            return Err(ExecutionError::Invalid(
+                "parallel AVG produced nonempty sum with zero matching rows".into()
+            ));
+        }
+        return Ok(Some(None));
+    }
+    let sum = sum.ok_or_else(|| ExecutionError::Invalid(
+        "parallel AVG produced NULL sum with matching rows".into()
+    ))?;
+    let numerator = match sum {
+        Number::Unsigned(value) => value as f64,
+        Number::Signed(value) => value as f64,
+        Number::Float(_) => return Err(ExecutionError::Invalid(
+            "parallel integer AVG received a floating partial sum".into()
+        )),
+    };
+    Ok(Some(Some(numerator / count as f64)))
+}
+
 fn execute_into<W: Write>(
     query: &Select,
     part: Option<&Path>,
@@ -949,6 +1036,17 @@ fn execute_into<W: Write>(
     let part = part.ok_or_else(|| {
         ExecutionError::Invalid("pass --part <directory> for table queries".into())
     })?;
+    if let Some(average) = parallel_integer_avg(query, part)? {
+        let Projection::Aggregate { column, .. } = &query.projection else {
+            unreachable!("parallel_integer_avg requires AVG projection")
+        };
+        write_header(query, output, &format!("avg({column})"))?;
+        match average {
+            Some(value) => writeln!(output, "{value}")?,
+            None => writeln!(output, "NULL")?,
+        }
+        return Ok(());
+    }
     if let Some(count) = parallel_filtered_count(query, part)? {
         write_header(query, output, "count")?;
         writeln!(output, "{count}")?;
