@@ -2,9 +2,15 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from run import verify_result, write_fixture
+from run import QUERY, query_for_strictness, verify_result, write_fixture
 
 class JoinWorkloadTests(unittest.TestCase):
+    def test_any_join_variant_uses_same_columns_and_predicate(self):
+        self.assertEqual(query_for_strictness("all"), QUERY)
+        self.assertIn("facts f ANY JOIN dimensions d", query_for_strictness("any"))
+        with self.assertRaises(ValueError):
+            query_for_strictness("full")
+
     def test_small_fixture_and_matches(self):
         with tempfile.TemporaryDirectory() as directory:
             expected = write_fixture(Path(directory), 20, 5)
