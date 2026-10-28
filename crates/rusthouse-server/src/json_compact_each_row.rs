@@ -33,12 +33,12 @@ fn write_compact_row_into<W: Write>(
             row.write_all(b"null")?;
         } else {
             if value.contains(&b'\\') {
-                write_json_string(&mut row, &decode_tsv_value(value)?)?;
+                write_json_string(&mut *row, &decode_tsv_value(value)?)?;
             } else {
                 let text = std::str::from_utf8(value).map_err(|_| {
                     io::Error::new(io::ErrorKind::InvalidData, "invalid UTF-8 field")
                 })?;
-                write_json_string(&mut row, text)?;
+                write_json_string(&mut *row, text)?;
             }
         }
     }
