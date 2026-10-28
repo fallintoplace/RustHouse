@@ -24,7 +24,12 @@ fn identifies_ipv6_addresses_and_rejects_ipv4() {
 }
 #[test]
 fn validates_ipv6_function_arity_and_types() {
-    for sql in ["SELECT isIPv6String()", "SELECT isIPv6String(123)", "SELECT isIPv6String('::', 'x')", "SELECT isIPv6String('::') FROM numbers(1)"] {
+    for sql in [
+        "SELECT isIPv6String()",
+        "SELECT isIPv6String(123)",
+        "SELECT isIPv6String('::', 'x')",
+        "SELECT isIPv6String('::') FROM numbers(1)",
+    ] {
         assert!(parse_select(sql).is_err(), "{sql}");
     }
 }
