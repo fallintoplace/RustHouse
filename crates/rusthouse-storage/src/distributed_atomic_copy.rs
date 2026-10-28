@@ -7,6 +7,34 @@ use std::sync::atomic::{AtomicU64, Ordering};
 
 static NEXT_STAGE: AtomicU64 = AtomicU64::new(0);
 
+fn stream_bounded_copy(
+    input: &mut File,
+    output: &mut File,
+    expected_bytes: u64,
+    max_bytes: u64,
+) -> io::Result<u64> {
+    let mut total = 0u64;
+    let mut buffer = [0u8; 32 * 1024];
+    loop {
+        let len = input.read(&mut buffer)?;
+        if len == 0 {
+            break;
+        }
+        total = total
+            .checked_add(len as u64)
+            .ok_or_else(|| io::Error::other("replica size overflow"))?;
+        if total > max_bytes {
+            return Err(io::Error::other("replica file exceeds byte cap"));
+        }
+        output.write_all(&buffer[..len])?;
+    }
+    if total != expected_bytes {
+        return Err(io::Error::other("source changed during immutable copy"));
+    }
+    output.sync_all()?;
+    Ok(total)
+}
+
 /// Stage, sync, and hard-link an immutable destination file.
 /// Both paths must be on a trusted local filesystem. Existing objects are never replaced.
 pub fn copy_immutable_file(source: &Path, destination: &Path, max_bytes: u64) -> io::Result<u64> {
@@ -30,28 +58,7 @@ pub fn copy_immutable_file(source: &Path, destination: &Path, max_bytes: u64) ->
         .write(true)
         .create_new(true)
         .open(&staging)?;
-    let copied = (|| -> io::Result<u64> {
-        let mut total = 0u64;
-        let mut buffer = [0u8; 32 * 1024];
-        loop {
-            let len = input.read(&mut buffer)?;
-            if len == 0 {
-                break;
-            }
-            total = total
-                .checked_add(len as u64)
-                .ok_or_else(|| io::Error::other("replica size overflow"))?;
-            if total > max_bytes {
-                return Err(io::Error::other("replica file exceeds byte cap"));
-            }
-            output.write_all(&buffer[..len])?;
-        }
-        if total != source_meta.len() {
-            return Err(io::Error::other("source changed during immutable copy"));
-        }
-        output.sync_all()?;
-        Ok(total)
-    })();
+    let copied = stream_bounded_copy(&mut input, &mut output, source_meta.len(), max_bytes);
     drop(output);
     let total = match copied {
         Ok(total) => total,
