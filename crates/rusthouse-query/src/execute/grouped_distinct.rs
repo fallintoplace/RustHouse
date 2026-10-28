@@ -190,6 +190,16 @@ pub(super) fn execute<W: Write>(
         }
     }
 
+    if let Some(having) = &query.having {
+        groups.retain(|group| {
+            super::predicates::number_matches(
+                super::Number::Unsigned(group.distinct_len() as u128),
+                super::Number::Unsigned(u128::from(having.value)),
+                having.operator,
+            )
+        });
+    }
+
     if query.order_by.is_some() {
         groups.sort_by(|left, right| {
             for order in query.order_terms() {
