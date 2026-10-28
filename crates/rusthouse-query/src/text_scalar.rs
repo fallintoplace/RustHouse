@@ -17,6 +17,7 @@ pub(super) fn is_function(name: &str) -> bool {
             | "BIT_LENGTH"
             | "IS_INT64"
             | "BTRIM"
+            | "TRIMBOTH"
             | "RTRIM"
             | "CUTQUERYSTRING"
             | "COLLAPSE_WHITESPACE"
@@ -1158,7 +1159,7 @@ fn parse_at_depth(parser: &mut Parser, depth: usize) -> Result<ConstantValue, Pa
                 None => ConstantValue::Null,
             }
         }
-        "BTRIM" => {
+        "BTRIM" | "TRIMBOTH" => {
             let input = text_arg(parser, depth + 1)?;
             let characters = if parser.take(Token::Comma) {
                 Some(text_arg(parser, depth + 1)?)
