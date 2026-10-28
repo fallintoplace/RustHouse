@@ -152,6 +152,50 @@ pub(super) fn execute_grouped_part<W: Write>(
         }
         return groups.write(query, column, output);
     }
+    // 64-bit group keys do not need a 128-bit NumberKey on every row.
+    // Keep an ordered list of first-seen groups for stable unordered results.
+    if matches!(narrow, Some("UInt64" | "Int64")) {
+        let mut indices = HashMap::<u64, usize>::new();
+        while let Some(batch) = reader.next_batch()? {
+            for row in 0..batch[0].len() {
+                if !no_filters && !batch_matches(&batch, row, &comparisons) {
+                    continue;
+                }
+                let key = match &batch[0] {
+                    NumericColumn::UInt64(values) => values[row],
+                    NumericColumn::Int64(values) => values[row] as u64,
+                    _ => {
+                        return Err(ExecutionError::Invalid(
+                            "unexpected 64-bit GROUP BY type".into(),
+                        ));
+                    }
+                };
+                match indices.entry(key) {
+                    Entry::Occupied(entry) => {
+                        let count = &mut groups.rows[*entry.get()].1;
+                        *count = count.checked_add(1).ok_or_else(|| {
+                            ExecutionError::Invalid("group count overflow".into())
+                        })?;
+                    }
+                    Entry::Vacant(entry) => {
+                        if groups.rows.len() >= MAX_GROUPS {
+                            return Err(ExecutionError::Invalid(
+                                "GROUP BY supports at most 200000 groups".into(),
+                            ));
+                        }
+                        let value = if matches!(narrow, Some("Int64")) {
+                            Number::Signed(i128::from(key as i64))
+                        } else {
+                            Number::Unsigned(u128::from(key))
+                        };
+                        entry.insert(groups.rows.len());
+                        groups.rows.push((value, 1));
+                    }
+                }
+            }
+        }
+        return groups.write(query, column, output);
+    }
     while let Some(batch) = reader.next_batch()? {
         for row in 0..batch[0].len() {
             if no_filters || batch_matches(&batch, row, &comparisons) {
