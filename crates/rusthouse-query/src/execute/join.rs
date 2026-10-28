@@ -933,6 +933,10 @@ fn execute_streaming_inner_grouped<W: Write>(
             )?;
         }
     }
+    if let Some(having) = &query.group_having {
+        // Filter only after every joined fact has updated the complete state.
+        groups.retain(|(_, state)| state.passes_having(having));
+    }
     let mut bounded_order = None;
     if let Some((descending, nulls_first)) = query.group_order_by {
         let compare = |left: &(typed::Cell, AggregateState),
