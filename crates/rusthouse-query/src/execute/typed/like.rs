@@ -278,7 +278,8 @@ mod perf_tests {
     fn contains_literal_handles_binary_boundaries_and_repeated_prefixes() {
         let pattern = compile_like("%ababa%").unwrap();
         assert!(like_matches(b"zzabababa", &pattern, false));
-        assert!(!like_matches(b"zzababab", &pattern, false));
+        assert!(like_matches(b"zzababab", &pattern, false));
+        assert!(!like_matches(b"zzabab", &pattern, false));
         let binary = compile_like("%a\\x00b%").unwrap();
         assert!(!like_matches(b"ab", &binary, false));
         assert!(like_matches(b"prefixababa", &pattern, false));
