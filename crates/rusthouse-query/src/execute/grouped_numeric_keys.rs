@@ -14,11 +14,12 @@ const MAX_GROUPS: usize = 200_000;
 fn byte_group_key(column: &TypedColumn, row: usize) -> Option<u8> {
     match column {
         TypedColumn::Numeric(NumericColumn::UInt8(values)) => values.get(row).copied(),
-        TypedColumn::Numeric(NumericColumn::Int8(values)) => values.get(row).map(|value| *value as u8),
+        TypedColumn::Numeric(NumericColumn::Int8(values)) => {
+            values.get(row).map(|value| *value as u8)
+        }
         _ => None,
     }
 }
-
 
 pub(super) fn execute<W: Write>(
     query: &Select,
@@ -35,7 +36,9 @@ pub(super) fn execute<W: Write>(
         .collect::<HashMap<_, _>>();
     for column in columns {
         if !types.contains_key(column) {
-            return Err(ExecutionError::Invalid(format!("unknown group column: {column}")));
+            return Err(ExecutionError::Invalid(format!(
+                "unknown group column: {column}"
+            )));
         }
     }
 
@@ -93,11 +96,10 @@ pub(super) fn execute<W: Write>(
     let mut by_key = HashMap::<Vec<Key>, usize>::new();
     let mut groups = Vec::<(Vec<Cell>, Vec<AggregateState>)>::new();
     let mut dense_slots = (columns.len() == 2
-        && columns.iter().all(|key| matches!(
-            types.get(key).map(String::as_str),
-            Some("UInt8" | "Int8")
-        )))
-        .then(|| vec![usize::MAX; 1 << 16]);
+        && columns
+            .iter()
+            .all(|key| matches!(types.get(key).map(String::as_str), Some("UInt8" | "Int8"))))
+    .then(|| vec![usize::MAX; 1 << 16]);
     let mut reader = TypedQueryReader::open_with_metadata(part, &names, &metadata)?;
     // Reuse a probe buffer for existing groups instead of allocating a Vec
     // of Cells and a Vec of Keys for every matching input row.
@@ -109,10 +111,12 @@ pub(super) fn execute<W: Write>(
                 continue;
             }
             let group = if let Some(slots) = dense_slots.as_mut() {
-                let first = byte_group_key(&batch[group_indices[0]], row)
-                    .ok_or_else(|| ExecutionError::Invalid("unexpected first byte GROUP BY type".into()))?;
-                let second = byte_group_key(&batch[group_indices[1]], row)
-                    .ok_or_else(|| ExecutionError::Invalid("unexpected second byte GROUP BY type".into()))?;
+                let first = byte_group_key(&batch[group_indices[0]], row).ok_or_else(|| {
+                    ExecutionError::Invalid("unexpected first byte GROUP BY type".into())
+                })?;
+                let second = byte_group_key(&batch[group_indices[1]], row).ok_or_else(|| {
+                    ExecutionError::Invalid("unexpected second byte GROUP BY type".into())
+                })?;
                 let slot = (usize::from(first) << 8) | usize::from(second);
                 let index = &mut slots[slot];
                 if *index != usize::MAX {
@@ -120,40 +124,46 @@ pub(super) fn execute<W: Write>(
                 } else {
                     *index = groups.len();
                     groups.push((
-                        group_indices.iter().map(|&column| typed::cell(&batch[column], row)).collect(),
-                        items.iter().map(|(function, _)| AggregateState::new(*function)).collect(),
+                        group_indices
+                            .iter()
+                            .map(|&column| typed::cell(&batch[column], row))
+                            .collect(),
+                        items
+                            .iter()
+                            .map(|(function, _)| AggregateState::new(*function))
+                            .collect(),
                     ));
                     *index
                 }
             } else {
-            probe_key.clear();
-            for &index in &group_indices {
-                probe_key.push(typed::key_at(&batch[index], row));
-            }
-            let group = if let Some(&index) = by_key.get(probe_key.as_slice()) {
-                index
-            } else {
-                if groups.len() >= MAX_GROUPS {
-                    return Err(ExecutionError::Invalid(
-                        "GROUP BY supports at most 200000 groups".into(),
-                    ));
+                probe_key.clear();
+                for &index in &group_indices {
+                    probe_key.push(typed::key_at(&batch[index], row));
                 }
-                let index = groups.len();
-                let keys = group_indices
-                    .iter()
-                    .map(|&column| typed::cell(&batch[column], row))
-                    .collect::<Vec<_>>();
-                by_key.insert(std::mem::take(&mut probe_key), index);
-                probe_key = Vec::with_capacity(group_indices.len());
-                groups.push((
-                    keys,
-                    items
+                let group = if let Some(&index) = by_key.get(probe_key.as_slice()) {
+                    index
+                } else {
+                    if groups.len() >= MAX_GROUPS {
+                        return Err(ExecutionError::Invalid(
+                            "GROUP BY supports at most 200000 groups".into(),
+                        ));
+                    }
+                    let index = groups.len();
+                    let keys = group_indices
                         .iter()
-                        .map(|(function, _)| AggregateState::new(*function))
-                        .collect(),
-                ));
-                index
-            };
+                        .map(|&column| typed::cell(&batch[column], row))
+                        .collect::<Vec<_>>();
+                    by_key.insert(std::mem::take(&mut probe_key), index);
+                    probe_key = Vec::with_capacity(group_indices.len());
+                    groups.push((
+                        keys,
+                        items
+                            .iter()
+                            .map(|(function, _)| AggregateState::new(*function))
+                            .collect(),
+                    ));
+                    index
+                };
                 group
             };
             for (&index, state) in item_indices.iter().zip(groups[group].1.iter_mut()) {
@@ -183,12 +193,8 @@ pub(super) fn execute<W: Write>(
     let compare = |(left, _): &(Vec<Cell>, Vec<AggregateState>),
                    (right, _): &(Vec<Cell>, Vec<AggregateState>)| {
         for &(index, descending, nulls_first) in &terms {
-            let order = typed::compare_order_cells(
-                &left[index],
-                &right[index],
-                descending,
-                nulls_first,
-            );
+            let order =
+                typed::compare_order_cells(&left[index], &right[index], descending, nulls_first);
             if order != Ordering::Equal {
                 return order;
             }
@@ -214,20 +220,20 @@ pub(super) fn execute<W: Write>(
         }
     }
 
-    let write_group = |keys: &[Cell], states: &[AggregateState], output: &mut W|
-        -> Result<(), ExecutionError> {
-        for (index, key) in keys.iter().enumerate() {
-            if index != 0 {
-                output.write_all(b"\t")?;
+    let write_group =
+        |keys: &[Cell], states: &[AggregateState], output: &mut W| -> Result<(), ExecutionError> {
+            for (index, key) in keys.iter().enumerate() {
+                if index != 0 {
+                    output.write_all(b"\t")?;
+                }
+                typed::write_typed_value(output, key, &types[&columns[index]])?;
             }
-            typed::write_typed_value(output, key, &types[&columns[index]])?;
-        }
-        for state in states {
-            write!(output, "\t{}", state.render())?;
-        }
-        writeln!(output)?;
-        Ok(())
-    };
+            for state in states {
+                write!(output, "\t{}", state.render())?;
+            }
+            writeln!(output)?;
+            Ok(())
+        };
     if let Some(indices) = bounded_order {
         for index in indices.into_iter().skip(query.offset.unwrap_or(0)) {
             write_group(&groups[index].0, &groups[index].1, output)?;
