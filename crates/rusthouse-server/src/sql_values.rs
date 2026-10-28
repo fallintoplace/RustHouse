@@ -39,28 +39,30 @@ fn append_literal(output: &mut Vec<u8>, field: &[u8]) -> io::Result<()> {
     Ok(())
 }
 
-fn encode_values_row(line: &[u8], columns: usize) -> io::Result<Vec<u8>> {
-    let mut values = Vec::new();
+fn encode_values_row(line: &[u8], columns: usize, values: &mut Vec<u8>) -> io::Result<()> {
+    values.clear();
+    values.reserve(line.len().saturating_add(columns.saturating_mul(3)).saturating_add(2));
     let mut count = 0;
     values.push(b'(');
     for field in line.split(|&byte| byte == b'\t') {
         if count > 0 {
             values.extend_from_slice(b", ");
         }
-        append_literal(&mut values, field)?;
+        append_literal(values, field)?;
         count += 1;
     }
     if count != columns {
         return Err(invalid("SQL VALUES row width differs from the header"));
     }
     values.push(b')');
-    Ok(values)
+    Ok(())
 }
 
 pub struct SqlValuesWriter<W: Write> {
     output: W,
     columns: Option<usize>,
     line: Vec<u8>,
+    values: Vec<u8>,
     rows: usize,
     finished: bool,
 }
@@ -71,6 +73,7 @@ impl<W: Write> SqlValuesWriter<W> {
             output,
             columns: None,
             line: Vec::new(),
+            values: Vec::new(),
             rows: 0,
             finished: false,
         }
@@ -86,13 +89,13 @@ impl<W: Write> SqlValuesWriter<W> {
             self.line.clear();
             return Ok(());
         };
-        let values = encode_values_row(&self.line, columns)?;
+        encode_values_row(&self.line, columns, &mut self.values)?;
         if self.rows == 0 {
             self.output.write_all(b"VALUES ")?;
         } else {
             self.output.write_all(b",\n")?;
         }
-        self.output.write_all(&values)?;
+        self.output.write_all(&self.values)?;
         self.rows += 1;
         self.line.clear();
         Ok(())
@@ -190,9 +193,20 @@ mod tests {
     }
 
     #[test]
+    fn sql_values_reuses_row_buffer_for_many_rows() {
+        let mut writer = SqlValuesWriter::new(Vec::new());
+        writer.write_all(b"id\n1\n2\n3\n").unwrap();
+        assert!(writer.values.capacity() >= 5);
+        writer.finish().unwrap();
+        assert_eq!(writer.output, b"VALUES ('1'),\n('2'),\n('3');\n");
+    }
+
+    #[test]
     fn row_encoder_rejects_wrong_width_before_streaming() {
-        assert!(encode_values_row(b"one", 2).is_err());
-        assert_eq!(encode_values_row(b"1\t\\N", 2).unwrap(), b"('1', NULL)");
+        let mut values = Vec::new();
+        assert!(encode_values_row(b"one", 2, &mut values).is_err());
+        encode_values_row(b"1\t\\N", 2, &mut values).unwrap();
+        assert_eq!(values, b"('1', NULL)");
     }
 
     #[test]
