@@ -1589,6 +1589,7 @@ fn parse_select_tokens(tokens: Vec<Token>) -> Result<Select, ParseError> {
                 | Projection::CountColumn { .. }
                 | Projection::CountDistinct { .. }
                 | Projection::ApproxDistinct { .. }
+                | Projection::Histogram { .. }
                 | Projection::ApproxDistinctState { .. }
                 | Projection::Aggregate { .. }
                 | Projection::MultipleAggregates(_)
