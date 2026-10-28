@@ -31,6 +31,7 @@ pub(super) fn is_function(name: &str) -> bool {
             | "ENCODEXMLCOMPONENT"
             | "HEX"
             | "IS_ASCII"
+            | "ISIPV4STRING"
             | "UPPER"
             | "UPPERUTF8"
             | "URL_DECODE"
@@ -491,6 +492,17 @@ fn parse_at_depth(parser: &mut Parser, depth: usize) -> Result<ConstantValue, Pa
                         word_start = !ch.is_alphanumeric();
                     }
                     ConstantValue::Text(result)
+                }
+                None => ConstantValue::Null,
+            }
+        }
+        "ISIPV4STRING" => {
+            let input = text_arg(parser, depth + 1)?;
+            require(parser, Token::RParen, "isIPv4String requires one argument")?;
+            match input {
+                Some(value) => {
+                    let is_ipv4 = value.parse::<std::net::Ipv4Addr>().is_ok();
+                    ConstantValue::Integer(i64::from(is_ipv4))
                 }
                 None => ConstantValue::Null,
             }
