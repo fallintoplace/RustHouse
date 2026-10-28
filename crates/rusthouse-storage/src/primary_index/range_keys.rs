@@ -71,6 +71,10 @@ pub(super) fn candidate_mark_ranges<T: Ord + Copy>(
     if !monotonic_mark_keys(len, &key_at) {
         return None;
     }
+    if let [(lower, upper)] = intervals {
+        let range = candidate_mark_range_sorted(len, &key_at, lower.clone(), upper.clone());
+        return Some(if range.is_empty() { Vec::new() } else { vec![range] });
+    }
     let mut ranges: Vec<_> = intervals.iter()
         .map(|(lower, upper)| candidate_mark_range_sorted(
             len, &key_at, lower.clone(), upper.clone()
