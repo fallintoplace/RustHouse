@@ -5,7 +5,7 @@ mod like;
 
 use self::like::*;
 
-use super::{BitmapDistinct32, ExecutionError, Number, NumberKey, compare_numbers, number_at};
+use super::{BitmapDistinct32, ExecutionError, ExternalDistinct64, Number, NumberKey, compare_numbers, number_at};
 use crate::{Operator, Predicate, Projection, Select};
 use rusthouse_storage::{NumericColumn, TypedColumn, TypedQueryReader, inspect_query_source};
 use std::cmp::Ordering;
@@ -1059,6 +1059,10 @@ pub(super) fn execute_typed<W: Write>(
     } else {
         None
     };
+    let mut count_distinct_sixty_four = if is_count_distinct
+        && matches!(projection_types.first().copied(),
+            Some("UInt64" | "Int64" | "Nullable(UInt64)" | "Nullable(Int64)"))
+    { Some(ExternalDistinct64::new()) } else { None };
     // Borrow decoded strings on duplicate probes. Own only new distinct values.
     let mut count_distinct_text = HashSet::<Vec<u8>>::new();
     // UUIDs have a fixed-size identity. Hash their bytes rather than allocating
@@ -1243,6 +1247,20 @@ pub(super) fn execute_typed<W: Write>(
                 candidate_sort_keys = Some(keys);
             }
             if is_count_distinct {
+                if let Some(distinct) = count_distinct_sixty_four.as_mut() {
+                    let column = &batch[projection_indices[0]];
+                    if is_null_at(column, index) { continue; }
+                    let key = match column {
+                        TypedColumn::Numeric(NumericColumn::UInt64(values))
+                        | TypedColumn::NullableNumeric { values: NumericColumn::UInt64(values), .. } => values[index],
+                        TypedColumn::Numeric(NumericColumn::Int64(values))
+                        | TypedColumn::NullableNumeric { values: NumericColumn::Int64(values), .. } => values[index] as u64,
+                        _ => return Err(ExecutionError::Invalid(
+                            "unexpected 64-bit distinct column".into())),
+                    };
+                    distinct.insert(key)?;
+                    continue;
+                }
                 if let Some(bitmap) = count_distinct_thirty_two.as_mut() {
                     let column = &batch[projection_indices[0]];
                     if is_null_at(column, index) {
@@ -1528,8 +1546,12 @@ pub(super) fn execute_typed<W: Write>(
         return Ok(());
     }
     if is_count || is_count_column || is_count_distinct {
+        let spill_count = count_distinct_sixty_four
+            .take().map(ExternalDistinct64::finish).transpose()?;
         if offset == 0 {
-            let result = if is_count || is_count_column {
+            let result = if let Some(count) = spill_count {
+                count
+            } else if is_count || is_count_column {
                 count
             } else {
                 (count_distinct_keys.len()
