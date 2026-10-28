@@ -774,6 +774,21 @@ fn merge_grouped_integer_extrema(
     function: AggregateFunction,
     global: Option<&Select>,
 ) -> Result<Vec<u8>, MergeError> {
+    merge_grouped_integer_extrema_typed(
+        shards, max_rows, kind, key_column, value_column, function, global, None,
+    )
+}
+
+fn merge_grouped_integer_extrema_typed(
+    shards: &[(usize, Vec<u8>)],
+    max_rows: usize,
+    kind: &str,
+    key_column: &str,
+    value_column: &str,
+    function: AggregateFunction,
+    global: Option<&Select>,
+    group_kind: Option<&str>,
+) -> Result<Vec<u8>, MergeError> {
     if !matches!(function, AggregateFunction::Min | AggregateFunction::Max) {
         return Err(MergeError::InvalidExtremum);
     }
@@ -849,19 +864,47 @@ fn merge_grouped_integer_extrema(
                 }
             });
         }
-        if let Some(order) = &select.order_by {
-            groups.sort_by(|a, b| {
-                let cmp = if unsigned { a.2.cmp(&b.2) } else { a.1.cmp(&b.1) };
-                let a_null = if unsigned { a.2.is_none() } else { a.1.is_none() };
-                let b_null = if unsigned { b.2.is_none() } else { b.1.is_none() };
-                match (a_null, b_null, order.nulls_first) {
-                    (true, false, Some(true)) => std::cmp::Ordering::Less,
-                    (false, true, Some(true)) => std::cmp::Ordering::Greater,
-                    (true, false, Some(false)) => std::cmp::Ordering::Greater,
-                    (false, true, Some(false)) => std::cmp::Ordering::Less,
-                    _ => if order.descending { cmp.reverse() } else { cmp },
+        if select.order_by.is_some() {
+            let terms = select.order_terms().collect::<Vec<_>>();
+            let group_kind = if terms.iter().any(|term| term.column != "#aggregate") {
+                Some(group_kind.ok_or(MergeError::InvalidExtremum)?)
+            } else {
+                None
+            };
+            let mut indices = groups.iter().enumerate()
+                .map(|(index, (key, _, _))| {
+                    group_kind.map_or(Ok(None), |kind| {
+                        parse_group_sort_key(key, kind).map(Some)
+                    }).map(|key| (index, key))
+                })
+                .collect::<Result<Vec<_>, MergeError>>()?;
+            indices.sort_by(|(left, left_key), (right, right_key)| {
+                for term in &terms {
+                    let cmp = if term.column == "#aggregate" {
+                        let a = &groups[*left];
+                        let b = &groups[*right];
+                        let cmp = if unsigned { a.2.cmp(&b.2) } else { a.1.cmp(&b.1) };
+                        let a_null = if unsigned { a.2.is_none() } else { a.1.is_none() };
+                        let b_null = if unsigned { b.2.is_none() } else { b.1.is_none() };
+                        match (a_null, b_null, term.nulls_first) {
+                            (true, false, Some(true)) => std::cmp::Ordering::Less,
+                            (false, true, Some(true)) => std::cmp::Ordering::Greater,
+                            (true, false, Some(false)) => std::cmp::Ordering::Greater,
+                            (false, true, Some(false)) => std::cmp::Ordering::Less,
+                            _ => if term.descending { cmp.reverse() } else { cmp },
+                        }
+                    } else {
+                        compare_group_sort_keys(
+                            left_key.as_ref().expect("validated group key"),
+                            right_key.as_ref().expect("validated group key"),
+                            term.descending, term.nulls_first,
+                        )
+                    };
+                    if cmp != std::cmp::Ordering::Equal { return cmp; }
                 }
+                std::cmp::Ordering::Equal
             });
+            groups = indices.into_iter().map(|(index, _)| groups[index]).collect();
         }
         groups = groups.into_iter()
             .skip(select.offset.unwrap_or(0))
@@ -1692,8 +1735,9 @@ pub fn handle(method: &str, body: &[u8], cluster: &Cluster, max_rows: usize) -> 
         match (sum_type.as_deref(), group_schema, sum_schema, &select.projection) {
             (Some(kind), Some((_, key)), Some((_, value)),
                 Projection::GroupedAggregate { function, .. }) => {
-                merge_grouped_integer_extrema(
+                merge_grouped_integer_extrema_typed(
                     &shards, max_rows.min(250_000), kind, key, value, *function, Some(&select),
+                    group_key_kind.as_deref(),
                 )
             }
             _ => Err(MergeError::InvalidExtremum),
@@ -2106,6 +2150,28 @@ mod tests {
             ).unwrap(),
             b"customer\tsum(amount)\n10\t14\n2\t10\n"
         );
+    }
+
+    #[test]
+    fn distributed_grouped_extrema_orders_typed_dimensions_and_metrics() {
+        let sql = "SELECT city, max(amount) FROM events GROUP BY city ORDER BY city ASC, 2 DESC LIMIT 2";
+        let query = parse_select(sql).unwrap();
+        assert!(is_safe_grouped_extremum(&query));
+        let shards = [
+            shard(10, "city\tmax(amount)\n10\t20\n2\t1\n1\t7\n"),
+            shard(10, "city\tmax(amount)\n10\t12\n2\t11\n1\t4\n"),
+        ];
+        assert_eq!(
+            merge_grouped_integer_extrema_typed(
+                &shards, 2, "UInt64", "city", "amount", AggregateFunction::Max,
+                Some(&query), Some("UInt32"),
+            ).unwrap(),
+            b"city\tmax(amount)\n1\t7\n2\t11\n"
+        );
+        let key_only = parse_select(
+            "SELECT city, min(amount) FROM events GROUP BY city ORDER BY city DESC LIMIT 1",
+        ).unwrap();
+        assert!(is_safe_grouped_extremum(&key_only));
     }
     #[test]
     fn distributed_count_distinct_uses_global_unique_values() {
