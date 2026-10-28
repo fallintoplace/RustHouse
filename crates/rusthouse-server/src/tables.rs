@@ -17,15 +17,15 @@ fn identifier(name: &str) -> bool {
         && bytes.all(|byte| byte.is_ascii_alphanumeric() || byte == b'_')
 }
 
-fn valid_schema(path: &Path) -> bool {
+fn read_schema_bytes(path: &Path) -> Option<Vec<u8>> {
     let Ok(metadata) = fs::symlink_metadata(path) else {
-        return false;
+        return None;
     };
     if !metadata.file_type().is_file() || metadata.len() > MAX_SCHEMA_BYTES {
-        return false;
+        return None;
     }
     let Ok(mut file) = fs::File::open(path) else {
-        return false;
+        return None;
     };
     let mut bytes = Vec::new();
     if Read::by_ref(&mut file)
@@ -34,12 +34,16 @@ fn valid_schema(path: &Path) -> bool {
         .is_err()
         || bytes.len() as u64 > MAX_SCHEMA_BYTES
     {
-        return false;
+        return None;
     }
-    let Ok(contents) = std::str::from_utf8(&bytes) else {
+    Some(bytes)
+}
+
+fn valid_schema(path: &Path) -> bool {
+    let Some(bytes) = read_schema_bytes(path) else {
         return false;
     };
-    valid_schema_contents(contents)
+    std::str::from_utf8(&bytes).is_ok_and(valid_schema_contents)
 }
 
 fn valid_schema_line<'a>(line: &'a str, names: &mut HashSet<&'a str>) -> bool {

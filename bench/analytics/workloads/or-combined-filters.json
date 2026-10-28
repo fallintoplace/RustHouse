@@ -1,0 +1,18 @@
+{
+  "name": "or-combined-filters",
+  "description": "OR branches and mixed AND/OR filters",
+  "queries": [
+    {
+      "name": "paid-or-latam",
+      "sql": "SELECT COUNT(*) FROM events WHERE status = 'paid' OR region = 'LATAM'"
+    },
+    {
+      "name": "book-or-food",
+      "sql": "SELECT COUNT(*) FROM events WHERE category = 'books' OR category = 'food'"
+    },
+    {
+      "name": "regional-or-segmented",
+      "sql": "SELECT COUNT(*) FROM events WHERE region = 'EU' AND status = 'paid' OR region = 'NA' AND status = 'pending'"
+    }
+  ]
+}

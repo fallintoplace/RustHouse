@@ -1,23 +1,43 @@
 mod arrays;
+pub mod distributed_inventory;
 mod checksums;
+pub mod distributed_object_key;
 mod columns;
+pub mod distributed_crc32c;
 mod compression;
+pub mod distributed_chunk_plan;
 mod database_lock;
+pub mod distributed_rendezvous;
 mod dates;
+pub mod distributed_quorum;
 mod decimal;
+pub mod distributed_replica_order;
 mod enums;
+pub mod distributed_membership;
 mod file_sizes;
+pub mod distributed_copy_diff;
 mod fixed_strings;
+pub mod distributed_capacity;
 mod fixed_width;
+pub mod distributed_atomic_copy;
 mod granules;
+pub mod distributed_range_read;
 mod ip;
+pub mod distributed_resume_map;
 mod mark_validation;
+pub mod distributed_scrub;
 mod marks;
+pub mod distributed_activate;
 mod metadata;
+pub mod distributed_retention;
 mod nested_arrays;
+pub mod distributed_repair_budget;
 mod nullable;
+pub mod distributed_lineage;
 mod nullable_arrays;
+pub mod distributed_retry;
 mod numeric;
+pub mod distributed_snapshot_copy;
 mod part_scan;
 mod part_verify;
 mod part_write;
@@ -43,7 +63,10 @@ pub use database_lock::{DatabaseLock, acquire_database_lock};
 pub use dates::{format_date, format_datetime, parse_date, parse_datetime};
 pub use decimal::{DecimalColumn, DecimalReadError, read_decimal_column};
 pub use enums::{EnumColumn, EnumReadError, read_enum_column};
-pub use file_sizes::{FileSizeVerification, verify_part_file_hashes, verify_part_file_sizes};
+pub use file_sizes::{
+    FileSizeVerification, verify_part_file_hashes, verify_part_file_hashes_full,
+    verify_part_file_sizes,
+};
 pub use fixed_strings::{
     FixedStringColumn, FixedStringReadError, read_fixed_string_granule, read_fixed_strings,
 };
@@ -66,7 +89,9 @@ pub use numeric::{NumericColumn, NumericReadError, read_numeric_column};
 pub use part_scan::NumericPartReader;
 pub use part_verify::{PartVerification, verify_wide_part};
 pub use part_write::{PartCompression, write_wide_part, write_wide_part_with_compression};
-pub use primary_index::{FixedPrimaryIndex, candidate_u64_mark_range, read_fixed_primary_index};
+pub use primary_index::{
+    FixedPrimaryIndex, candidate_i64_mark_range, candidate_u64_mark_range, read_fixed_primary_index,
+};
 pub use query_source::{
     NumericQueryReader, inspect_query_source, query_parts, resolve_active_snapshot,
 };
