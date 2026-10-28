@@ -45,6 +45,7 @@ use std::sync::atomic::{AtomicUsize, Ordering as AtomicOrdering};
 
 mod grouped_distinct;
 mod grouped_multi;
+mod grouped_multi_distinct;
 mod grouped_numeric_keys;
 mod grouped_numeric_multi;
 mod join;
@@ -985,6 +986,9 @@ fn execute_into<W: Write>(
     {
         return grouped_distinct::execute(query, part, column, value_column, output);
     }
+    if let Projection::GroupedMultiDistinctCount { columns, value_column } = &query.projection {
+        return grouped_multi_distinct::execute(query, part, columns, value_column, output);
+    }
     if let Projection::StringLength { column } = &query.projection {
         return string_length::execute(query, part, column, output);
     }
@@ -1044,6 +1048,7 @@ fn execute_into<W: Write>(
         | Projection::CountDistinct { .. }
         | Projection::GroupedCount { .. }
         | Projection::GroupedDistinctCount { .. }
+        | Projection::GroupedMultiDistinctCount { .. }
         | Projection::GroupedMultiCount { .. }
         | Projection::GroupedAggregate { .. }
         | Projection::GroupedAggregates { .. }
@@ -1509,6 +1514,7 @@ fn execute_numbers<W: Write>(
         Projection::GroupedAggregates { .. }
             | Projection::GroupedMultiAggregates { .. }
             | Projection::GroupedDistinctCount { .. }
+        | Projection::GroupedMultiDistinctCount { .. }
     ) {
         return Err(ExecutionError::Invalid(
             "multiple aggregates require a stored table".into(),
@@ -1594,6 +1600,7 @@ fn execute_numbers<W: Write>(
         | Projection::CountDistinct { .. }
         | Projection::GroupedCount { .. }
         | Projection::GroupedDistinctCount { .. }
+        | Projection::GroupedMultiDistinctCount { .. }
         | Projection::GroupedMultiCount { .. }
         | Projection::GroupedAggregate { .. }
         | Projection::GroupedAggregates { .. }

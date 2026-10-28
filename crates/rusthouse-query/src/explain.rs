@@ -49,6 +49,10 @@ fn describe_projection(projection: &Projection) -> String {
             column,
             value_column,
         } => format!("Aggregate: GROUP BY {column}, count(DISTINCT {value_column})"),
+        Projection::GroupedMultiDistinctCount { columns, value_column } => format!(
+            "Aggregate: GROUP BY {}, count(DISTINCT {value_column})",
+            columns.join(", ")
+        ),
         Projection::GroupedMultiCount { columns } => {
             format!("Aggregate: GROUP BY {}, count(*)", columns.join(", "))
         }
