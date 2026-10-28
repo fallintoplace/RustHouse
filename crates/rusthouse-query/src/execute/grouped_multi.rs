@@ -61,9 +61,10 @@ pub(super) fn execute<W: Write>(
     let mut groups: Vec<(Vec<Cell>, u64)> = Vec::new();
     let mut by_key: HashMap<Vec<Key>, usize> = HashMap::new();
     let mut probe_key = Vec::with_capacity(group_indices.len());
+    let no_filters = query.predicates.is_empty() && query.or_predicates.is_empty();
     while let Some(batch) = reader.next_batch()? {
         for row in 0..batch[0].len() {
-            if !typed::passes(&batch, row, &conditions) {
+            if !no_filters && !typed::passes(&batch, row, &conditions) {
                 continue;
             }
             // Build only the probe key for existing groups. Wide projection
