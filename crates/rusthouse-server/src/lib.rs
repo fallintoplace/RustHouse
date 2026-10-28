@@ -177,6 +177,7 @@ impl QueryFormat {
             "json" => Self::Json,
             "json-pretty" => Self::JsonPretty,
             "json-compact-each-row" => Self::JsonCompactEachRow,
+            "JSONCompactStringsEachRow" => Self::JsonCompactEachRow,
             "sql-values" => Self::SqlValues,
             "markdown" => Self::Markdown,
             _ => return Err("unsupported query format"),
