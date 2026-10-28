@@ -81,8 +81,10 @@ pub fn weighted_replicas_for(
         || !shard
             .bytes()
             .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'_' | b'-' | b'.'))
-        || nodes.is_empty() || nodes.len() > 64
-        || replicas == 0 || replicas > nodes.len()
+        || nodes.is_empty()
+        || nodes.len() > 64
+        || replicas == 0
+        || replicas > nodes.len()
     {
         return Err("invalid weighted replica placement configuration");
     }
@@ -150,7 +152,10 @@ mod tests {
         let nodes = ["node_a".to_owned()];
         for shard in ["../private", "one/two", ".hidden", "a..b", "a\\b", "é", "x\n"] {
             assert!(replicas_for(shard, &nodes, 1).is_err(), "{shard}");
-            assert!(weighted_replicas_for(shard, &[("node_a", 1)], 1).is_err(), "{shard}");
+            assert!(
+                weighted_replicas_for(shard, &[("node_a", 1)], 1).is_err(),
+                "{shard}"
+            );
         }
         assert!(replicas_for("events.2026", &nodes, 1).is_ok());
     }
