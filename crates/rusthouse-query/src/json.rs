@@ -88,10 +88,13 @@ impl<'a> Parser<'a> {
         let mut value = 0u16;
         for _ in 0..4 {
             let byte = self.next().ok_or("incomplete Unicode escape")?;
-            let digit = (byte as char)
-                .to_digit(16)
-                .ok_or("invalid Unicode escape")?;
-            value = value * 16 + digit as u16;
+            let digit = match byte {
+                b'0'..=b'9' => u16::from(byte - b'0'),
+                b'a'..=b'f' => u16::from(byte - b'a' + 10),
+                b'A'..=b'F' => u16::from(byte - b'A' + 10),
+                _ => return Err("invalid Unicode escape"),
+            };
+            value = value * 16 + digit;
             self.offset += 1;
         }
         Ok(value)
