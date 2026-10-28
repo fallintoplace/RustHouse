@@ -30,7 +30,7 @@ pub fn parse_delete(sql: &str) -> Result<Option<Select>, ParseError> {
         return Ok(None);
     };
     keyword(rest, "FROM").ok_or_else(|| ParseError("DELETE requires FROM table".into()))?;
-    // Work on the original tokens so a valid 4096-byte DELETE is not rejected
+    // Work on the original tokens so a valid 65536-byte DELETE is not rejected
     // just because the SELECT projection is two bytes longer.
     let mut tokens = tokenize(sql)?;
     tokens.splice(..1, [Token::Word("SELECT".into()), Token::Star]);
@@ -61,7 +61,7 @@ mod tests {
     #[test]
     fn accepts_a_delete_at_the_statement_size_limit() {
         let prefix = "DELETE FROM events";
-        let sql = format!("{prefix}{}", " ".repeat(4096 - prefix.len()));
+        let sql = format!("{prefix}{}", " ".repeat(64 * 1024 - prefix.len()));
         assert_eq!(
             parse_delete(&sql).unwrap().unwrap().source,
             Some(Source::Table("events".into()))
