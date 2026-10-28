@@ -859,7 +859,8 @@ fn execute_streaming_inner_count_distinct<W: Write>(
                     Number::Float(_) => return Err(invalid("invalid integer DISTINCT bitmap")),
                 };
                 let bits = bitmap.as_mut().expect("checked bitmap");
-                let word = &mut bits[usize::from(raw) % (bits.len() * 64) / 64];
+                let index = (usize::from(raw) % (bits.len() * 64)) / 64;
+                let word = &mut bits[index];
                 let shift = usize::from(raw) % 64;
                 let mask = 1u64 << shift;
                 let changed = *word & mask == 0;
