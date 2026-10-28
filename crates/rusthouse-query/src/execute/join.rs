@@ -270,7 +270,7 @@ fn execute_streaming_inner<W: Write>(
         &right_rows,
         &hash,
         ProbeOptions {
-            materialize_rows: true,
+            materialize_rows: selected.iter().any(|(column, _, _)| *column < left_width),
             materialize_after: query.offset,
             stop_after,
             any: query.any,
