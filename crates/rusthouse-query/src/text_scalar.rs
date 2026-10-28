@@ -33,6 +33,7 @@ pub(super) fn is_function(name: &str) -> bool {
             | "JSON_QUOTE"
             | "SUBSTRING"
             | "OVERLAY"
+            | "QUERYSTRING"
             | "SPLIT_PART"
             | "SUBSTRING_INDEX"
             | "TO_INT64"
@@ -403,6 +404,20 @@ fn parse_at_depth(parser: &mut Parser, depth: usize) -> Result<ConstantValue, Pa
                 ConstantValue::Null
             } else {
                 ConstantValue::Text(result)
+            }
+        }
+        "QUERYSTRING" => {
+            let input = text_arg(parser, depth + 1)?;
+            require(parser, Token::RParen, "queryString requires one argument")?;
+            match input {
+                Some(input) => {
+                    let before_fragment = input.split_once('#')
+                        .map_or(input.as_str(), |(head, _)| head);
+                    let query = before_fragment.split_once('?')
+                        .map_or("", |(_, query)| query);
+                    ConstantValue::Text(query.to_owned())
+                }
+                None => ConstantValue::Null,
             }
         }
         "SUBSTRING_INDEX" => {
