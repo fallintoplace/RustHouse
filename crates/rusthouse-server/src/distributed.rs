@@ -735,7 +735,12 @@ fn merge_grouped_integer_extrema(
             if shard_rows >= *cap {
                 return Err(MergeError::ShardRowLimit);
             }
-            let split = row.iter().position(|&byte| byte == b'\t')
+            // All grouping dimensions form the composite key.
+            let key_width = key_column.as_bytes().iter().filter(|&&b| b == b'\t').count() + 1;
+            if row.iter().filter(|&&b| b == b'\t').count() != key_width {
+                return Err(MergeError::InvalidExtremum);
+            }
+            let split = row.iter().rposition(|&byte| byte == b'\t')
                 .ok_or(MergeError::InvalidExtremum)?;
             let key = &row[..split];
             let text = &row[split + 1..];
@@ -1000,6 +1005,7 @@ pub fn handle(method: &str, body: &[u8], cluster: &Cluster, max_rows: usize) -> 
                 || is_safe_grouped_sum(&select)
                 || is_safe_grouped_extremum(&select)
                 || is_safe_grouped_multikey_sum(&select)
+                || is_safe_grouped_multikey_extremum(&select)
                 || is_safe_sum(&select)
                 || is_safe_extremum(&select) =>
         {
@@ -1021,6 +1027,7 @@ pub fn handle(method: &str, body: &[u8], cluster: &Cluster, max_rows: usize) -> 
     let grouped_sum_query = is_safe_grouped_sum(&select);
     let grouped_extremum_query = is_safe_grouped_extremum(&select);
     let grouped_multikey_sum_query = is_safe_grouped_multikey_sum(&select);
+    let grouped_multikey_extremum_query = is_safe_grouped_multikey_extremum(&select);
     let sum_query = is_safe_sum(&select);
     let shard_sql = if is_safe_scan(&select) {
         match unpaged_scan_sql(sql, &select) {
@@ -1082,7 +1089,7 @@ pub fn handle(method: &str, body: &[u8], cluster: &Cluster, max_rows: usize) -> 
         (
             Some(Source::Table(table)),
             Projection::GroupedMultiAggregates { items, .. },
-        ) if items.len() == 1 && items[0].0 == AggregateFunction::Sum =>
+        ) if items.len() == 1 && matches!(items[0].0, AggregateFunction::Sum | AggregateFunction::Min | AggregateFunction::Max) =>
             Some((table.as_str(), items[0].1.as_str())),
         _ => None,
     };
@@ -1208,6 +1215,16 @@ pub fn handle(method: &str, body: &[u8], cluster: &Cluster, max_rows: usize) -> 
                 }
             }
             _ => Err(MergeError::InvalidGroupedSum),
+        }
+    } else if grouped_multikey_extremum_query {
+        match (sum_type.as_deref(), &select.projection) {
+            (Some(kind), Projection::GroupedMultiAggregates { columns, items }) => {
+                merge_grouped_integer_extrema(
+                    &shards, max_rows.min(250_000), kind, &columns.join("\t"), &items[0].1,
+                    items[0].0, None,
+                )
+            }
+            _ => Err(MergeError::InvalidExtremum),
         }
     } else if grouped_multikey_sum_query {
         match (sum_type.as_deref(), &select.projection) {
@@ -1471,6 +1488,30 @@ mod tests {
         assert_eq!(
             merge_grouped_integer_sums(&malformed, 10, "UInt64", "region\tcategory", "revenue"),
             Err(MergeError::InvalidGroupedSum)
+        );
+    }
+
+    #[test]
+    fn distributed_multidimensional_extrema_preserve_composite_groups() {
+        let query = parse_select(
+            "SELECT country, product, max(price) FROM orders GROUP BY country, product",
+        ).unwrap();
+        assert!(is_safe_grouped_multikey_extremum(&query));
+        let shards = [
+            shard(10, "country\tproduct\tmax(price)\nde\tcars\t9\nfr\tcars\t4\n"),
+            shard(10, "country\tproduct\tmax(price)\nde\tcars\t11\nfr\tcars\t1\nde\tbikes\t2\n"),
+        ];
+        assert_eq!(
+            merge_grouped_integer_extrema(&shards, 10, "UInt64", "country\tproduct", "price",
+                AggregateFunction::Max, None).unwrap(),
+            b"country\tproduct\tmax(price)\nde\tcars\t11\nfr\tcars\t4\nde\tbikes\t2\n"
+        );
+        assert_eq!(
+            merge_grouped_integer_extrema(
+                &[shard(10, "country\tproduct\tmax(price)\nde\t1\n")], 10, "UInt64",
+                "country\tproduct", "price", AggregateFunction::Max, None,
+            ),
+            Err(MergeError::InvalidExtremum)
         );
     }
     #[test]

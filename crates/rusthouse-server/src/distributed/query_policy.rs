@@ -259,3 +259,14 @@ pub(super) fn is_safe_grouped_multikey_sum(select: &Select) -> bool {
             && items[0].0 == AggregateFunction::Sum
     ) && is_safe_unpaged_select(select)
 }
+
+/// Multiple dimensions with one exact integer extremum may reduce per composite key.
+pub(super) fn is_safe_grouped_multikey_extremum(select: &Select) -> bool {
+    matches!(
+        &select.projection,
+        Projection::GroupedMultiAggregates { columns, items }
+        if (2..=8).contains(&columns.len())
+            && items.len() == 1
+            && matches!(items[0].0, AggregateFunction::Min | AggregateFunction::Max)
+    ) && is_safe_unpaged_select(select)
+}
