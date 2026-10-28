@@ -402,3 +402,75 @@ pub(super) fn weighted_avg_shard_sql(sql: &str, select: &Select) -> Option<Strin
     }
     None
 }
+
+/// A grouped AVG must reduce per-group SUM and non-NULL COUNT separately.
+pub(super) fn is_safe_grouped_weighted_avg(select: &Select) -> bool {
+    matches!(
+        select.projection,
+        Projection::GroupedAggregate { function: AggregateFunction::Avg, .. }
+    ) && matches!(select.source, Some(Source::Table(_)))
+        && !select.distinct
+        && select.alias.is_none()
+        && select.rename.is_none()
+        && match &select.projection {
+            Projection::GroupedAggregate { column, .. } =>
+                select.order_terms().all(|term|
+                    term.column == "#aggregate" || term.column == *column),
+            _ => false,
+        }
+}
+
+/// Generate the two partial group metrics, preserving only the original
+/// FROM/WHERE/GROUP BY semantics after a full AST equivalence check.
+pub(super) fn grouped_weighted_avg_shard_sql(sql: &str, select: &Select) -> Option<String> {
+    let (key, value) = match &select.projection {
+        Projection::GroupedAggregate {
+            function: AggregateFunction::Avg,
+            column,
+            value_column,
+        } => (column, value_column),
+        _ => return None,
+    };
+    let mut expected = select.clone();
+    expected.projection = Projection::GroupedAggregates {
+        column: key.clone(),
+        items: vec![
+            (AggregateFunction::Sum, value.clone()),
+            (AggregateFunction::Count, value.clone()),
+        ],
+    };
+    expected.having = None;
+    expected.order_by = None;
+    expected.order_by_extra.clear();
+    expected.limit = None;
+    expected.offset = None;
+    let upper = sql.to_ascii_uppercase();
+    for (from_start, _) in sql.char_indices() {
+        if !upper[from_start..].starts_with(" FROM ") {
+            continue;
+        }
+        for (end, _) in sql.char_indices() {
+            if end < from_start { continue; }
+            let suffix = &upper[end..];
+            if end != sql.len() && ![" HAVING ", " ORDER ", " LIMIT ", " OFFSET "]
+                .iter().any(|keyword| suffix.starts_with(keyword)) {
+                continue;
+            }
+            let candidate = format!(
+                "SELECT {key}, sum({value}), count({value}){}",
+                &sql[from_start..end],
+            );
+            if parse_select(&candidate).is_ok_and(|parsed| parsed == expected) {
+                return Some(candidate);
+            }
+        }
+        let candidate = format!(
+            "SELECT {key}, sum({value}), count({value}){}",
+            &sql[from_start..],
+        );
+        if parse_select(&candidate).is_ok_and(|parsed| parsed == expected) {
+            return Some(candidate);
+        }
+    }
+    None
+}
