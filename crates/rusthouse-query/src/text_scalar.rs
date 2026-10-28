@@ -105,6 +105,7 @@ pub(super) fn is_function(name: &str) -> bool {
             | "RPAD"
             | "LOWERUTF8"
             | "SPACE"
+            | "TOSTARTOFSECOND"
     )
 }
 
@@ -1695,6 +1696,19 @@ fn parse_at_depth(parser: &mut Parser, depth: usize) -> Result<ConstantValue, Pa
                     ConstantValue::Text(value.chars().skip(skip).collect())
                 }
                 _ => ConstantValue::Null,
+            }
+        }
+        "TOSTARTOFSECOND" => {
+            let input = text_arg(parser, depth + 1)?;
+            require(parser, Token::RParen, "toStartOfSecond requires one argument")?;
+            match input {
+                Some(value) => {
+                    let seconds = rusthouse_storage::parse_datetime(&value).ok_or_else(|| {
+                        ParseError("toStartOfSecond requires a valid UTC DateTime".into())
+                    })?;
+                    ConstantValue::Text(rusthouse_storage::format_datetime(seconds - seconds % 1))
+                }
+                None => ConstantValue::Null,
             }
         }
         "SPACE" => {
