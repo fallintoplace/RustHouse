@@ -497,13 +497,9 @@ impl Parser {
                         columns[position - 1].clone()
                     } else {
                         let index = position - columns.len() - 1;
-                        let (function, _) = items.get(index).ok_or_else(|| {
+                        items.get(index).ok_or_else(|| {
                             ParseError("ORDER BY position is out of range".into())
                         })?;
-                        if !matches!(function, AggregateFunction::Sum | AggregateFunction::Min |
-                            AggregateFunction::Max | AggregateFunction::Avg | AggregateFunction::Count) {
-                            return Err(ParseError("ORDER BY this aggregate is not supported".into()));
-                        }
                         format!("#aggregate{index}")
                     }
                 },
@@ -511,17 +507,7 @@ impl Parser {
                     column, function, ..
                 } => match position {
                     1 => column.clone(),
-                    2 if matches!(
-                        function,
-                        AggregateFunction::Sum
-                            | AggregateFunction::Min
-                            | AggregateFunction::Max
-                            | AggregateFunction::Avg
-                            | AggregateFunction::Count
-                    ) =>
-                    {
-                        "#aggregate".into()
-                    }
+                    2 => "#aggregate".into(),
                     _ => {
                         return Err(ParseError(
                             "ORDER BY aggregate output requires SUM, MIN, MAX, AVG or COUNT".into(),
@@ -533,13 +519,9 @@ impl Parser {
                         column.clone()
                     } else {
                         let index = position - 2;
-                        let (function, _) = items.get(index).ok_or_else(|| {
+                        items.get(index).ok_or_else(|| {
                             ParseError("ORDER BY position is out of range".into())
                         })?;
-                        if !matches!(function, AggregateFunction::Sum | AggregateFunction::Min |
-                            AggregateFunction::Max | AggregateFunction::Avg | AggregateFunction::Count) {
-                            return Err(ParseError("ORDER BY this aggregate is not supported".into()));
-                        }
                         format!("#aggregate{index}")
                     }
                 },
@@ -586,8 +568,7 @@ impl Parser {
                 let index = items.iter().position(|(function, name)| {
                     function.name().eq_ignore_ascii_case(&column)
                         && name == &argument
-                        && matches!(function, AggregateFunction::Sum | AggregateFunction::Min |
-                            AggregateFunction::Max | AggregateFunction::Avg | AggregateFunction::Count)
+                        
                 }).ok_or_else(|| ParseError("ORDER BY aggregate must match SELECT".into()))?;
                 format!("#aggregate{index}")
             } else {
@@ -599,12 +580,7 @@ impl Parser {
                 let selected_alias = aliases.iter().position(|alias| alias.as_ref()
                     .is_some_and(|alias| alias.eq_ignore_ascii_case(&column)));
                 if let Some(index) = selected_alias {
-                    if !matches!(items[index].0,
-                        AggregateFunction::Sum | AggregateFunction::Min | AggregateFunction::Max
-                        | AggregateFunction::Avg | AggregateFunction::Count)
-                    {
-                        return Err(ParseError("ORDER BY this aggregate is not supported".into()));
-                    }
+
                     format!("#aggregate{index}")
                 } else {
                     column
