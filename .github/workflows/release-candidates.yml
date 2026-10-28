@@ -8,8 +8,7 @@ on:
       - 'Cargo.toml'
       - 'Cargo.lock'
       - 'rust-toolchain.toml'
-      - 'crates/rusthouse-cli/**'
-      - 'crates/rusthouse-server/**'
+      - 'crates/**'
   push:
     tags:
       - 'v[0-9]*'

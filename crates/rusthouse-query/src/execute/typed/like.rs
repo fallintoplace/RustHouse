@@ -77,8 +77,7 @@ pub(super) fn next_utf8_boundary(value: &[u8], index: usize) -> Option<usize> {
 }
 
 pub(super) fn equal_like_bytes(left: &[u8], right: &[u8], case_insensitive: bool) -> bool {
-    // Identical byte strings also have identical Unicode folds. This
-    // avoids two lowercase allocations for common equality hits.
+    // Identical bytes have identical Unicode folds without allocations.
     if left == right {
         return true;
     }
@@ -144,6 +143,9 @@ pub(super) fn like_matches(value: &[u8], pattern: &LikePattern, case_insensitive
             }
             if bytes.is_empty() {
                 true
+            } else if bytes.len() == 1 && !case_insensitive {
+                // Avoid a substring search for the common LIKE '%x%' case.
+                value.contains(&bytes[0])
             } else if !case_insensitive {
                 if let (Ok(haystack), Ok(needle)) =
                     (std::str::from_utf8(value), std::str::from_utf8(bytes))
@@ -276,6 +278,16 @@ mod perf_tests {
         assert!(!like_matches(b"ab", &binary, false));
         assert!(like_matches(b"prefixababa", &pattern, false));
         assert!(like_matches(b"anything", &compile_like("%%").unwrap(), false));
+    }
+
+    #[test]
+    fn single_byte_contains_checks_every_position_in_binary_rows() {
+        let pattern = compile_like("%x%").unwrap();
+        assert!(like_matches(b"x", &pattern, false));
+        assert!(like_matches(b"\0x\xff", &pattern, false));
+        assert!(!like_matches(b"\0y\xff", &pattern, false));
+        assert!(!like_matches(b"", &pattern, false));
+        assert!(like_matches(b"X", &pattern, true));
     }
 
     #[test]

@@ -49,6 +49,16 @@ fn base_type(kind: &str) -> (&str, bool) {
     }
 }
 
+fn numeric_array_inner_type(kind: &str) -> Option<&str> {
+    let inner = kind.strip_prefix("Array(")?.strip_suffix(')')?;
+    matches!(
+        inner,
+        "UInt8" | "UInt16" | "UInt32" | "UInt64" | "UInt128"
+            | "Int8" | "Int16" | "Int32" | "Int64" | "Int128"
+            | "Float32" | "Float64"
+    ).then_some(inner)
+}
+
 fn map_string_value_type(kind: &str) -> Option<&str> {
     let value = kind.strip_prefix("Map(String, ")?.strip_suffix(')')?;
     matches!(
@@ -62,6 +72,9 @@ fn map_string_value_type(kind: &str) -> Option<&str> {
 
 fn supported(kind: &str) -> bool {
     let (base, nullable) = base_type(kind);
+    if numeric_array_inner_type(base).is_some() {
+        return !nullable;
+    }
     if map_string_value_type(base).is_some() {
         return !nullable;
     }
@@ -227,6 +240,22 @@ pub fn write_wide_part_with_compression(
     if !rows.is_empty() {
         for (index, col) in columns.iter().enumerate() {
             let (_, nullable) = base_type(&col.data_type);
+            if let Some(inner) = numeric_array_inner_type(&col.data_type) {
+                let mut data_granules = Vec::with_capacity(granule_count);
+                let mut size_granules = Vec::with_capacity(granule_count);
+                for granule in rows.chunks(GRANULE_ROWS) {
+                    let mut data = Vec::new();
+                    let mut sizes = Vec::with_capacity(granule.len() * size_of::<u64>());
+                    for row in granule {
+                        push_numeric_array(inner, row[index].as_deref(), &mut data, &mut sizes)?;
+                    }
+                    data_granules.push(data);
+                    size_granules.push(sizes);
+                }
+                streams.push((col.name.clone(), data_granules));
+                streams.push((format!("{}.size0", col.name), size_granules));
+                continue;
+            }
             if let Some(value_type) = map_string_value_type(&col.data_type) {
                 let mut key_granules = Vec::with_capacity(granule_count);
                 let mut value_granules = Vec::with_capacity(granule_count);
@@ -817,5 +846,97 @@ mod map_writer_tests {
         }
         assert!(write_wide_part(&root.join("null"), &columns, &[vec![None]]).is_err());
         std::fs::remove_dir_all(root).unwrap();
+    }
+}
+
+#[cfg(test)]
+mod numeric_array_writer_tests {
+    use super::*;
+    use crate::{ArrayOffsetsEncoding, NumericColumn, read_numeric_array_column};
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
+    static NEXT: AtomicUsize = AtomicUsize::new(0);
+
+    fn read_block(path: &Path) -> Vec<u8> {
+        let mut reader = crate::CompressedBlockReader::open(path).unwrap();
+        reader.next_decoded().unwrap().unwrap().data
+    }
+
+    #[test]
+    fn writes_clickhouse_numeric_array_element_and_size_streams() {
+        let dir = std::env::temp_dir().join(format!(
+            "rusthouse-native-array-{}-{}",
+            std::process::id(),
+            NEXT.fetch_add(1, Ordering::Relaxed)
+        ));
+        std::fs::create_dir(&dir).unwrap();
+        let part = dir.join("all_1_1_0");
+        let columns = [Column {
+            name: "items".into(),
+            data_type: "Array(UInt16)".into(),
+        }];
+        let rows = [
+            vec![Some("[12, 65535]".into())],
+            vec![Some("[]".into())],
+            vec![Some("[7]".into())],
+            vec![Some("[0, 1, 2]".into())],
+        ];
+        write_wide_part(&part, &columns, &rows).unwrap();
+        crate::verify_wide_part(&part).unwrap();
+        assert!(part.join("items.size0.bin").exists());
+        assert!(part.join("items.size0.mrk2").exists());
+        let sizes = read_block(&part.join("items.size0.bin"));
+        let data = read_block(&part.join("items.bin"));
+        let arrays = read_numeric_array_column(
+            &mut sizes.as_slice(),
+            &mut data.as_slice(),
+            "Array(UInt16)",
+            4,
+            ArrayOffsetsEncoding::Sizes,
+        )
+        .unwrap();
+        assert_eq!(arrays.offsets(), &[0, 2, 2, 3, 6]);
+        assert_eq!(
+            arrays.values(),
+            &NumericColumn::UInt16(vec![12, 65535, 7, 0, 1, 2])
+        );
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn rejects_invalid_array_values_before_creating_part() {
+        let dir = std::env::temp_dir().join(format!(
+            "rusthouse-invalid-arrays-{}-{}",
+            std::process::id(),
+            NEXT.fetch_add(1, Ordering::Relaxed)
+        ));
+        std::fs::create_dir(&dir).unwrap();
+        let columns = [Column {
+            name: "xs".into(),
+            data_type: "Array(UInt8)".into(),
+        }];
+        for value in ["1,2", "[1,]", "[,1]", "[256]", "[NULL]", "[1, [2]]"] {
+            let part = dir.join("reject");
+            assert!(
+                write_wide_part(&part, &columns, &[vec![Some(value.into())]]).is_err(),
+                "{value}"
+            );
+            assert!(!part.exists(), "{value}");
+        }
+        assert!(
+            write_wide_part(&dir.join("reject-null"), &columns, &[vec![None]]).is_err()
+        );
+        assert!(
+            write_wide_part(
+                &dir.join("reject-nested"),
+                &[Column {
+                    name: "xs".into(),
+                    data_type: "Array(Array(UInt8))".into(),
+                }],
+                &[],
+            )
+            .is_err()
+        );
+        std::fs::remove_dir_all(dir).unwrap();
     }
 }

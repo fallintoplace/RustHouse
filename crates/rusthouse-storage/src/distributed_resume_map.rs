@@ -81,7 +81,7 @@ impl ResumeMap {
         for (index, byte) in text.bytes().enumerate() {
             match byte {
                 b'0' => {}
-                b'1' => result.mark_complete(index)?,
+                b'1' => result.completed[index / 8] |= 1u8 << (index % 8),
                 _ => return Err("invalid resume map byte"),
             }
         }
@@ -152,6 +152,15 @@ mod tests {
             let expected = (0..len).filter(|index| index % 2 == 1).collect::<Vec<_>>();
             assert_eq!(progress.remaining(), expected);
         }
+    }
+
+    #[test]
+    fn decoding_large_bitmaps_keeps_exact_bit_positions() {
+        let input = "10100111".repeat(8192);
+        let decoded = ResumeMap::decode(&input).unwrap();
+        assert_eq!(decoded.len(), 65_536);
+        assert_eq!(decoded.encode(), input);
+        assert_eq!(decoded.remaining().len(), 3 * 8192);
     }
 
 }
