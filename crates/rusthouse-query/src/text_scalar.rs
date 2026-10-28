@@ -62,6 +62,7 @@ pub(super) fn is_function(name: &str) -> bool {
             | "TRANSLATE"
             | "POSITIONCASEINSENSITIVE"
             | "STRPOS"
+            | "POSITIONUTF8"
             | "COUNT_SUBSTRING"
             | "EXTRACTURLPARAMETER"
             | "NULLIF"
@@ -1906,6 +1907,39 @@ fn parse_at_depth(parser: &mut Parser, depth: usize) -> Result<ConstantValue, Pa
                         }
                         ConstantValue::Text(value.repeat(count))
                     }
+                }
+                _ => ConstantValue::Null,
+            }
+        }
+        "POSITIONUTF8" => {
+            let input = text_arg(parser, depth + 1)?;
+            require(parser, Token::Comma, "positionUTF8 requires a needle")?;
+            let needle = text_arg(parser, depth + 1)?;
+            let start = if parser.take(Token::Comma) {
+                integer_arg(parser, depth + 1)?
+            } else {
+                Some(1)
+            };
+            require(parser, Token::RParen, "expected ')' after positionUTF8")?;
+            match (input, needle, start) {
+                (Some(input), Some(needle), Some(start)) => {
+                    if start < 0 {
+                        return Err(ParseError("positionUTF8 start must be nonnegative".into()));
+                    }
+                    let start = usize::try_from(start.max(1) - 1).unwrap_or(usize::MAX);
+                    let byte = input.char_indices().nth(start).map(|(byte, _)| byte);
+                    let index = if let Some(byte) = byte {
+                        input[byte..]
+                            .find(&needle)
+                            .map_or(0, |found| input[..byte + found].chars().count() + 1)
+                    } else if start == input.chars().count() && needle.is_empty() {
+                        start + 1
+                    } else {
+                        0
+                    };
+                    ConstantValue::Integer(i64::try_from(index).map_err(|_| {
+                        ParseError("positionUTF8 result exceeds Int64".into())
+                    })?)
                 }
                 _ => ConstantValue::Null,
             }
