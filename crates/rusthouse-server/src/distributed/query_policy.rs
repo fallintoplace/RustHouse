@@ -116,7 +116,19 @@ pub(super) fn is_safe_grouped_sum(select: &Select) -> bool {
             function: AggregateFunction::Sum,
             ..
         }
-    ) && is_safe_unpaged_select(select)
+    )
+        && matches!(select.source, Some(Source::Table(_)))
+        && !select.distinct
+        && select.rename.is_none()
+        && select.alias.is_none()
+        // The coordinator sorts merged SUMs, not shard-local partials.
+        && select.order_terms().all(|order| order.column == "#aggregate")
+        && select.having.as_ref().is_none_or(|having| matches!(
+            having.operator,
+            rusthouse_query::Operator::Eq | rusthouse_query::Operator::Ne
+                | rusthouse_query::Operator::Lt | rusthouse_query::Operator::Le
+                | rusthouse_query::Operator::Gt | rusthouse_query::Operator::Ge
+        ))
 }
 
 pub(super) fn group_key_type(kind: &str) -> bool {
