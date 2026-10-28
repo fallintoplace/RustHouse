@@ -777,9 +777,11 @@ impl TypedPartReader {
 /// Only one part's file streams are held open at a time.
 pub struct TypedQueryReader {
     parts: Vec<PathBuf>,
-    columns: Vec<String>,
+    columns: std::sync::Arc<[String]>,
     next_part: usize,
     current: Option<TypedPartReader>,
+    // Only one unopened part is staged ahead, never decoded batches.
+    prefetched: Option<std::thread::JoinHandle<Result<TypedPartReader, PartError>>>,
 }
 
 impl TypedQueryReader {
@@ -817,10 +819,44 @@ impl TypedQueryReader {
         }
         Ok(Self {
             parts,
-            columns: columns.to_vec(),
+            columns: std::sync::Arc::from(columns.to_vec()),
             next_part: 0,
             current: None,
+            prefetched: None,
         })
+    }
+
+    // Open metadata and mark streams for the next immutable part while the
+    // current part is still being scanned. Projection names are shared.
+    fn prefetch_next(&mut self) {
+        if self.prefetched.is_some() || self.next_part >= self.parts.len() {
+            return;
+        }
+        let path = self.parts[self.next_part].clone();
+        let columns = self.columns.clone();
+        self.next_part += 1;
+        self.prefetched = Some(std::thread::spawn(move || {
+            TypedPartReader::open(&path, &columns)
+        }));
+    }
+
+    fn advance_part(&mut self) -> Result<bool, PartError> {
+        let reader = if let Some(handle) = self.prefetched.take() {
+            handle.join().map_err(|_| {
+                PartError::InvalidScan("typed snapshot part opener panicked".into())
+            })??
+        } else if self.next_part < self.parts.len() {
+            let reader = TypedPartReader::open(
+                &self.parts[self.next_part], &self.columns,
+            )?;
+            self.next_part += 1;
+            reader
+        } else {
+            return Ok(false);
+        };
+        self.current = Some(reader);
+        self.prefetch_next();
+        Ok(true)
     }
 
     /// Read NULL maps across a multi-part snapshot without decoding values.
@@ -830,6 +866,9 @@ impl TypedQueryReader {
                 "null-map scan requires exactly one column".into(),
             ));
         }
+        if self.current.is_some() {
+            self.prefetch_next();
+        }
         loop {
             if let Some(reader) = self.current.as_mut() {
                 if let Some(nulls) = reader.next_null_batch()? {
@@ -837,14 +876,9 @@ impl TypedQueryReader {
                 }
                 self.current = None;
             }
-            if self.next_part == self.parts.len() {
+            if !self.advance_part()? {
                 return Ok(None);
             }
-            self.current = Some(TypedPartReader::open(
-                &self.parts[self.next_part],
-                &self.columns,
-            )?);
-            self.next_part += 1;
         }
     }
 
@@ -870,6 +904,10 @@ impl TypedQueryReader {
     }
 
     pub fn next_batch(&mut self) -> Result<Option<Vec<TypedColumn>>, PartError> {
+        // A preceding OFFSET skip may leave a partially consumed part open.
+        if self.current.is_some() {
+            self.prefetch_next();
+        }
         loop {
             if let Some(reader) = self.current.as_mut() {
                 if let Some(batch) = reader.next_batch()? {
@@ -877,14 +915,18 @@ impl TypedQueryReader {
                 }
                 self.current = None;
             }
-            if self.next_part == self.parts.len() {
+            if !self.advance_part()? {
                 return Ok(None);
             }
-            self.current = Some(TypedPartReader::open(
-                &self.parts[self.next_part],
-                &self.columns,
-            )?);
-            self.next_part += 1;
+        }
+    }
+}
+
+impl Drop for TypedQueryReader {
+    fn drop(&mut self) {
+        // A terminating LIMIT or early query error cannot detach file I/O.
+        if let Some(handle) = self.prefetched.take() {
+            let _ = handle.join();
         }
     }
 }
@@ -892,6 +934,91 @@ impl TypedQueryReader {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn typed_part_prefetch_keeps_physical_row_order_and_offset() {
+        use crate::{Column, write_wide_part};
+        use std::fs;
+
+        let root = std::env::temp_dir().join(format!(
+            "rusthouse-typed-part-prefetch-{}", std::process::id()
+        ));
+        let _ = fs::remove_dir_all(&root);
+        fs::create_dir_all(&root).unwrap();
+        let cols = [Column { name: "category".into(), data_type: "String".into() }];
+        for index in 0..24 {
+            write_wide_part(
+                &root.join(format!("all_{index}_{index}_0")),
+                &cols,
+                &[vec![Some(format!("category-{index}"))]],
+            ).unwrap();
+        }
+
+        let mut scan = TypedQueryReader::open(&root, &["category".into()]).unwrap();
+        let mut seen = Vec::new();
+        while let Some(batch) = scan.next_batch().unwrap() {
+            let TypedColumn::Text(values) = &batch[0] else {
+                panic!("expected String batch");
+            };
+            for index in 0..values.len() {
+                seen.push(values.get(index).unwrap().to_vec());
+            }
+        }
+        assert_eq!(
+            seen,
+            (0..24).map(|index| format!("category-{index}").into_bytes()).collect::<Vec<_>>()
+        );
+        drop(scan);
+
+        let mut paged = TypedQueryReader::open(&root, &["category".into()]).unwrap();
+        assert_eq!(paged.skip_prefix_rows(18).unwrap(), 18);
+        let mut after_offset = Vec::new();
+        while let Some(batch) = paged.next_batch().unwrap() {
+            let TypedColumn::Text(values) = &batch[0] else {
+                panic!("expected String batch");
+            };
+            for index in 0..values.len() {
+                after_offset.push(values.get(index).unwrap().to_vec());
+            }
+        }
+        assert_eq!(
+            after_offset,
+            (18..24).map(|index| format!("category-{index}").into_bytes()).collect::<Vec<_>>()
+        );
+        drop(paged);
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn prefetched_nullable_parts_preserve_nullmap_only_scan() {
+        use crate::{Column, write_wide_part};
+        use std::fs;
+
+        let root = std::env::temp_dir().join(format!(
+            "rusthouse-nullmap-prefetch-{}", std::process::id()
+        ));
+        let _ = fs::remove_dir_all(&root);
+        fs::create_dir_all(&root).unwrap();
+        let cols = [Column { name: "value".into(), data_type: "Nullable(UInt64)".into() }];
+        for index in 0..16 {
+            write_wide_part(
+                &root.join(format!("all_{index}_{index}_0")),
+                &cols,
+                &[vec![if index % 3 == 0 { None } else { Some(index.to_string()) }]],
+            ).unwrap();
+        }
+        let mut scan = TypedQueryReader::open(&root, &["value".into()]).unwrap();
+        let mut nullmaps = Vec::new();
+        while let Some(map) = scan.next_null_batch().unwrap() {
+            nullmaps.extend_from_slice(&map);
+        }
+        assert_eq!(
+            nullmaps,
+            (0..16).map(|index| if index % 3 == 0 { 1u8 } else { 0u8 }).collect::<Vec<_>>()
+        );
+        drop(scan);
+        fs::remove_dir_all(root).unwrap();
+    }
 
     #[test]
     fn typed_kinds_own_their_null_map_requirements() {
