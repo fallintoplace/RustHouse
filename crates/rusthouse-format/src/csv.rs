@@ -18,14 +18,28 @@ fn write_short_escaped_field<W: Write>(output: &mut W, field: &[u8]) -> io::Resu
 }
 
 fn write_long_escaped_field<W: Write>(output: &mut W, field: &[u8]) -> io::Result<()> {
-    output.write_all(b"\"")?;
-    let mut segments = field.split(|&byte| byte == b'"');
-    output.write_all(segments.next().unwrap_or_default())?;
-    for segment in segments {
-        output.write_all(b"\"\"")?;
-        output.write_all(segment)?;
+    // Batch consecutive escaped bytes without allocating in the hot loop.
+    let mut buffer = [0u8; 4096];
+    let mut used = 1;
+    buffer[0] = b'"';
+    for &byte in field {
+        if used + 2 > buffer.len() {
+            output.write_all(&buffer[..used])?;
+            used = 0;
+        }
+        buffer[used] = byte;
+        used += 1;
+        if byte == b'"' {
+            buffer[used] = b'"';
+            used += 1;
+        }
     }
-    output.write_all(b"\"")
+    if used == buffer.len() {
+        output.write_all(&buffer[..used])?;
+        used = 0;
+    }
+    buffer[used] = b'"';
+    output.write_all(&buffer[..used + 1])
 }
 
 /// Write one RFC 4180 quoted CSV field, doubling embedded quotes.
@@ -35,14 +49,15 @@ pub fn write_quoted_csv_field<W: Write>(output: &mut W, field: &[u8]) -> io::Res
     }
     // Short quote-free fields dominate tabular output. Emit both quotes and
     // the payload in a single write without a heap allocation.
-    if field.len() <= 256 && !field.contains(&b'"') {
+    let has_quotes = field.contains(&b'"');
+    if field.len() <= 256 && !has_quotes {
         let mut buffer = [0u8; 258];
         buffer[0] = b'"';
         buffer[1..field.len() + 1].copy_from_slice(field);
         buffer[field.len() + 1] = b'"';
         return output.write_all(&buffer[..field.len() + 2]);
     }
-    if !field.contains(&b'"') {
+    if !has_quotes {
         output.write_all(b"\"")?;
         output.write_all(field)?;
         return output.write_all(b"\"");
@@ -169,4 +184,35 @@ mod tests {
         assert_eq!(output.writes, 1);
         assert_eq!(output.bytes, b"\"a\"\"\"\"b\"");
     }
+
+    #[test]
+    fn long_quote_heavy_fields_use_bounded_bulk_writes() {
+        struct CountingWriter {
+            writes: usize,
+            bytes: Vec<u8>,
+        }
+
+        impl Write for CountingWriter {
+            fn write(&mut self, bytes: &[u8]) -> io::Result<usize> {
+                self.writes += 1;
+                self.bytes.extend_from_slice(bytes);
+                Ok(bytes.len())
+            }
+
+            fn flush(&mut self) -> io::Result<()> {
+                Ok(())
+            }
+        }
+
+        let input = vec![b'"'; 10_000];
+        let mut output = CountingWriter {
+            writes: 0,
+            bytes: Vec::new(),
+        };
+        write_quoted_csv_field(&mut output, &input).unwrap();
+        assert_eq!(output.bytes.len(), 20_002);
+        assert!(output.bytes.iter().all(|&byte| byte == b'"'));
+        assert!(output.writes <= 6, "used {} writes", output.writes);
+    }
+
 }
