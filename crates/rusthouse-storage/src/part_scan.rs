@@ -1,3 +1,7 @@
+mod open;
+
+use self::open::*;
+
 use crate::granules::read_numeric_granule_cached;
 use crate::numeric::numeric_storage_type;
 use crate::scan_layout::ScanLayout;
@@ -8,47 +12,11 @@ use crate::{
 use std::fs::File;
 use std::path::{Path, PathBuf};
 
-fn numeric_marks_path(part: &Path, name: &str) -> Result<PathBuf, PartError> {
-    let plain_marks = part.join(format!("{name}.mrk2"));
-    let compressed_marks = part.join(format!("{name}.cmrk2"));
-    match (plain_marks.exists(), compressed_marks.exists()) {
-        (true, true) => Err(PartError::InvalidScan(format!(
-            "multiple mark files for {name}"
-        ))),
-        (_, true) => Ok(compressed_marks),
-        _ => Ok(plain_marks),
-    }
-}
-
 struct ColumnStream {
     data_type: String,
     marks: Vec<WideMark>,
     reader: CompressedBlockReader<File>,
     cached: Option<DecodedBlock>,
-}
-
-fn open_numeric_stream(
-    part: &Path,
-    name: &str,
-    data_type: &str,
-    rows: u64,
-    layout: &mut ScanLayout,
-) -> Result<ColumnStream, PartError> {
-    let marks_path = numeric_marks_path(part, name)?;
-    let marks_file = read_wide_marks(&marks_path)?;
-    layout.validate(name, &marks_file.marks, rows)?;
-    let data_path = part.join(format!("{name}.bin"));
-    let mut reader = CompressedBlockReader::open(&data_path)?;
-    crate::mark_validation::validate_wide_marks_reader(&marks_file, &mut reader)?;
-    // Mark validation leaves the reader at EOF. Rewind the verified
-    // file instead of reopening it for the actual granule scan.
-    reader.seek_to_block(0)?;
-    Ok(ColumnStream {
-        data_type: data_type.to_owned(),
-        marks: marks_file.marks,
-        reader,
-        cached: None,
-    })
 }
 
 pub struct NumericPartReader {
