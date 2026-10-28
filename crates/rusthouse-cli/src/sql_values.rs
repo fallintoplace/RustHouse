@@ -122,14 +122,19 @@ impl<W: Write> Write for SqlValuesWriter<W> {
         if self.finished {
             return Err(invalid("SQL VALUES output is already finished"));
         }
-        for &byte in bytes {
-            if byte == b'\n' {
-                self.finish_line()?;
+        for chunk in bytes.split_inclusive(|&byte| byte == b'\n') {
+            let complete = chunk.last() == Some(&b'\n');
+            let fragment = if complete {
+                &chunk[..chunk.len() - 1]
             } else {
-                if self.line.len() >= MAX_LINE_BYTES {
-                    return Err(invalid("SQL VALUES input line exceeds 1 MiB"));
-                }
-                self.line.push(byte);
+                chunk
+            };
+            if fragment.len() > MAX_LINE_BYTES.saturating_sub(self.line.len()) {
+                return Err(invalid("SQL VALUES input line exceeds 1 MiB"));
+            }
+            self.line.extend_from_slice(fragment);
+            if complete {
+                self.finish_line()?;
             }
         }
         Ok(bytes.len())
@@ -143,6 +148,19 @@ impl<W: Write> Write for SqlValuesWriter<W> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn bulk_input_serializes_multiple_rows_and_fragmented_tail() {
+        let mut writer = SqlValuesWriter::new(Vec::new());
+        writer.write_all(b"value\n").unwrap();
+        writer.write_all("7\n".repeat(1000).as_bytes()).unwrap();
+        writer.write_all(b"par").unwrap();
+        writer.write_all(b"tial\n").unwrap();
+        writer.finish().unwrap();
+        assert_eq!(writer.rows, 1001);
+        assert!(writer.output.starts_with(b"VALUES ('7'),\n('7')"));
+        assert!(writer.output.ends_with(b"('partial');\n"));
+    }
 
     #[test]
     fn repeated_finish_does_not_duplicate_sql_or_accept_more_rows() {
