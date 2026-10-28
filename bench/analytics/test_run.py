@@ -93,6 +93,24 @@ class AnalyticsRunnerTests(unittest.TestCase):
             self.assertEqual(results[0]["seconds"], [])
             self.assertIsNone(results[0]["latency"])
 
+    def test_late_reference_failure_discards_partial_latency(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            (root / "q01.tsv").write_bytes(b"yes\n")
+            calls = 0
+
+            def changing(_sql, _timeout):
+                nonlocal calls
+                calls += 1
+                return b"yes\n" if calls == 1 else b"no\n"
+
+            result = runner.run_benchmark(
+                ["SELECT 1"], [0], 3, 10, changing, root, warmups=0
+            )[0]
+            self.assertEqual(result["status"], "mismatch")
+            self.assertEqual(result["seconds"], [])
+            self.assertIsNone(result["latency"])
+
     def test_missing_reference_is_a_failure(self):
         with tempfile.TemporaryDirectory() as temp:
             results = runner.run_benchmark(
