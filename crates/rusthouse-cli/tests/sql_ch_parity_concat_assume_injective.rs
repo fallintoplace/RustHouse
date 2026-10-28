@@ -10,7 +10,11 @@ fn clickhouse_concat_assume_injective_constants() {
             .args(["sql", query])
             .output()
             .expect("start rusthouse");
-        assert!(output.status.success(), "{query}: {}", String::from_utf8_lossy(&output.stderr));
+        assert!(
+            output.status.success(),
+            "{query}: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
         assert_eq!(output.stdout, expected.as_bytes(), "{query}");
     }
 }
