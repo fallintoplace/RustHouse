@@ -42,6 +42,7 @@ impl SqlOutputFormat {
             Some("csv") => Ok(Self::Csv),
             Some("csv-no-header") => Ok(Self::CsvNoHeader),
             Some("jsonl") => Ok(Self::Jsonl),
+            Some("JSONStringsEachRow") => Ok(Self::Jsonl),
             Some("json") => Ok(Self::Json),
             Some("json-pretty") => Ok(Self::JsonPretty),
             Some("json-compact-each-row") => Ok(Self::JsonCompactEachRow),
