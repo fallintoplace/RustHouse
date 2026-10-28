@@ -15,7 +15,7 @@ pub fn plan_chunks(
     if chunk_bytes == 0 || max_chunks == 0 || max_chunks > 65_536 {
         return Err("invalid transfer chunk limits");
     }
-    let count = total_bytes / chunk_bytes + u64::from(total_bytes % chunk_bytes != 0);
+    let count = total_bytes.div_ceil(chunk_bytes);
     if count > max_chunks as u64 {
         return Err("transfer exceeds chunk count limit");
     }
@@ -53,12 +53,10 @@ pub fn plan_missing_chunks(
         return Err("transfer batch chunk limit exceeds bound");
     }
     let chunks = plan_chunks(total_bytes, chunk_bytes, max_chunks)?;
-    let mut previous = None;
-    for &index in remaining_indices {
-        if index >= chunks.len() || previous.is_some_and(|last| index <= last) {
-            return Err("invalid or duplicate missing chunk index");
-        }
-        previous = Some(index);
+    if remaining_indices.iter().any(|&index| index >= chunks.len())
+        || remaining_indices.windows(2).any(|pair| pair[0] >= pair[1])
+    {
+        return Err("invalid or duplicate missing chunk index");
     }
     let mut selected = Vec::new();
     let mut remaining_bytes = byte_budget;
