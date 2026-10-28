@@ -14,6 +14,11 @@ pub fn write_quoted_csv_field<W: Write>(output: &mut W, field: &[u8]) -> io::Res
         buffer[field.len() + 1] = b'"';
         return output.write_all(&buffer[..field.len() + 2]);
     }
+    if !field.contains(&b'"') {
+        output.write_all(b"\"")?;
+        output.write_all(field)?;
+        return output.write_all(b"\"");
+    }
     output.write_all(b"\"")?;
     let mut segments = field.split(|&byte| byte == b'"');
     output.write_all(segments.next().unwrap_or_default())?;
