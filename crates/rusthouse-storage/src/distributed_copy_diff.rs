@@ -8,6 +8,12 @@ pub struct ObjectMetadata {
     pub crc32c: u32,
 }
 
+impl ObjectMetadata {
+    fn same_contents(&self, other: &Self) -> bool {
+        self.bytes == other.bytes && self.crc32c == other.crc32c
+    }
+}
+
 fn valid_key(key: &str) -> bool {
     !key.is_empty()
         && key.len() <= 512
@@ -49,9 +55,9 @@ pub fn plan_replica_copies(
     Ok(source
         .into_iter()
         .filter(|(key, meta)| {
-            destination.get(key).is_none_or(|existing| {
-                existing.bytes != meta.bytes || existing.crc32c != meta.crc32c
-            })
+            destination
+                .get(key)
+                .is_none_or(|existing| !meta.same_contents(existing))
         })
         .map(|(_, meta)| meta.clone())
         .collect())
