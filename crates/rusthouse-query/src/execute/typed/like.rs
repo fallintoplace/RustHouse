@@ -165,6 +165,13 @@ pub(super) fn like_matches(value: &[u8], pattern: &LikePattern, case_insensitive
             if bytes.is_empty() {
                 return true;
             }
+            // ILIKE '%x%' on ASCII text is a byte scan. Avoid the
+            // overlapping-window comparator for each candidate byte.
+            if case_insensitive && bytes.len() == 1 && bytes[0].is_ascii() && value.is_ascii() {
+                return value
+                    .iter()
+                    .any(|byte| byte.eq_ignore_ascii_case(&bytes[0]));
+            }
             if case_insensitive {
                 if let Some(matches) =
                     unicode_folded_match(value, bytes, |input, needle| input.contains(needle))
@@ -386,5 +393,22 @@ mod perf_tests {
         assert!(!like_matches(b"short", &pattern, false));
         let escaped = compile_like(r"left\%right").unwrap();
         assert!(like_matches(b"left%right", &escaped, false));
+    }
+}
+
+#[cfg(test)]
+mod single_byte_contains_tests {
+    use super::*;
+
+    #[test]
+    fn case_insensitive_ascii_contains_matches_exact_character_presence() {
+        let pattern = compile_like("%A%").unwrap();
+        for (value, expected) in [
+            ("alphabet", true), ("CAT", true), ("bbb", false),
+            ("", false), ("a", true), ("zzAzz", true),
+        ] {
+            assert_eq!(like_matches(value.as_bytes(), &pattern, true), expected, "{value}");
+        }
+        assert!(!like_matches(b"zzAzz", &pattern, false));
     }
 }
