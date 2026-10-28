@@ -34,6 +34,12 @@ class AnalyticsRunnerTests(unittest.TestCase):
                 with self.assertRaisesRegex(ValueError, "preflight result differs"):
                     runner.verify_input(lambda _sql, _timeout: actual, "SELECT 1", "42", 5)
 
+    def test_preflight_rejects_extra_empty_result_rows(self):
+        for actual in (b"42\n\n", b"42\r\n\r\n", b"42\r"):
+            with self.subTest(actual=actual):
+                with self.assertRaisesRegex(ValueError, "preflight result differs"):
+                    runner.verify_input(lambda _sql, _timeout: actual, "SELECT 1", "42", 5)
+
     def test_query_selection_preserves_order_and_checks_ranges(self):
         self.assertEqual(runner.select_indices("3,1-2,2", 43), [0, 1, 2])
         with self.assertRaises(ValueError):

@@ -54,13 +54,17 @@ fn update(mut crc: u32, bytes: &[u8]) -> u32 {
     crc
 }
 
-/// Stream a file without reading beyond max_bytes. Returns (length, checksum).
+/// Stream a file, reading at most one byte past max_bytes to detect oversized input.
+/// Returns (length, checksum).
 pub fn crc32c_reader(reader: &mut impl Read, max_bytes: u64) -> io::Result<(u64, u32)> {
     let mut checksum = Checksum::new();
     let mut total = 0u64;
     let mut buffer = [0u8; 32 * 1024];
     loop {
-        let count = reader.read(&mut buffer)?;
+        let available = (max_bytes - total)
+            .saturating_add(1)
+            .min(buffer.len() as u64) as usize;
+        let count = reader.read(&mut buffer[..available])?;
         if count == 0 {
             break;
         }
@@ -106,6 +110,30 @@ mod tests {
             crc = update(crc, &bytes[split..]);
             assert_eq!(crc ^ !0, bitwise(&bytes));
         }
+    }
+
+    #[test]
+    fn oversized_input_reads_at_most_one_byte_beyond_cap() {
+        struct Metered<'a> {
+            source: Cursor<&'a [u8]>,
+            consumed: usize,
+        }
+
+        impl Read for Metered<'_> {
+            fn read(&mut self, buf: &mut [u8]) -> io::Result<usize> {
+                let count = self.source.read(buf)?;
+                self.consumed += count;
+                Ok(count)
+            }
+        }
+
+        let data = vec![7u8; 100_000];
+        let mut reader = Metered {
+            source: Cursor::new(&data),
+            consumed: 0,
+        };
+        assert!(crc32c_reader(&mut reader, 5).is_err());
+        assert_eq!(reader.consumed, 6);
     }
 
     #[test]

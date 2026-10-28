@@ -72,6 +72,8 @@ def run_subset(binary, database, sqlite_db, only=None, runs=3, warmups=1,
                 break
             if started is not None:
                 samples.append(time.perf_counter() - started)
+        if status != "passed":
+            samples = []
         results.append({"query": number, "status": status, "error": failure,
                         "timings_seconds": samples, "latency": latency_summary(samples)})
     verified = sum(result["status"] == "passed" for result in results)

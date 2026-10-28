@@ -31,6 +31,8 @@ def convert_cell(raw, kind):
         number = int(raw)
     except ValueError as error:
         raise ValueError(f"invalid integer: {raw!r}") from error
+    if raw != str(number):
+        raise ValueError("non-canonical integer in converted TSV")
     if not SQLITE_INT_MIN <= number <= SQLITE_INT_MAX:
         raise ValueError("integer exceeds SQLite's signed 64-bit range")
     if kind == "UInt64" and number < 0:

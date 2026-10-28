@@ -57,6 +57,12 @@ class SQLiteLoadTests(unittest.TestCase):
                 load_database(directory, database, ["region"])
             self.assertFalse(database.exists())
 
+    def test_rejects_noncanonical_converted_integer_fields(self):
+        for value in (" 1", "01", "+1", "١", "-0"):
+            with self.subTest(value=value):
+                with self.assertRaisesRegex(ValueError, "non-canonical"):
+                    convert_cell(value, "Int64")
+
     def test_rejects_sqlite_integer_overflow(self):
         with self.assertRaisesRegex(ValueError, "64-bit"):
             convert_cell(str(2**63), "UInt64")

@@ -23,6 +23,16 @@ class Q6OracleTests(unittest.TestCase):
             self.assertEqual(report["coverage"]["verified_correct_percent"], 100.0)
             self.assertIn("l_quantity < 2400", Q6)
 
+    def test_rejects_missing_or_duplicate_q6_columns(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "lineitem.tsv"
+            for header in ("l_shipdate\tl_discount\n",
+                           "l_shipdate\tl_discount\tl_quantity\tl_quantity\tl_extendedprice\n"):
+                with self.subTest(header=header):
+                    path.write_text(header)
+                    with self.assertRaisesRegex(ValueError, "columns"):
+                        expected_revenue(path)
+
     def test_zero_revenue_from_qualifying_row_is_not_null(self):
         with tempfile.TemporaryDirectory() as directory:
             path = Path(directory) / "lineitem.tsv"
