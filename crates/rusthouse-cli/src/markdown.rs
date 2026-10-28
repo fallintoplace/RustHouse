@@ -51,6 +51,19 @@ fn decode_markdown_fields(line: &[u8], data_row: bool) -> io::Result<Vec<Cow<'_,
 }
 
 fn write_markdown_row<W: Write>(output: &mut W, line: &[u8], data_row: bool) -> io::Result<()> {
+    if !data_row || !line.contains(&b'\\') {
+        // Validate every field before writing so malformed UTF-8 is atomic.
+        std::str::from_utf8(line).map_err(|_| {
+            io::Error::new(io::ErrorKind::InvalidData, "Markdown field is not UTF-8")
+        })?;
+        output.write_all(b"|")?;
+        for field in line.split(|&byte| byte == b'\t') {
+            output.write_all(b" ")?;
+            write_cell(output, field)?;
+            output.write_all(b" |")?;
+        }
+        return output.write_all(b"\n");
+    }
     let fields = decode_markdown_fields(line, data_row)?;
     for field in &fields {
         std::str::from_utf8(field.as_ref()).map_err(|_| {
@@ -139,6 +152,13 @@ impl<W: Write> Write for MarkdownWriter<W> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn writes_plain_rows_without_decoding_field_allocations() {
+        let mut output = Vec::new();
+        write_markdown_row(&mut output, "café\tforty".as_bytes(), true).unwrap();
+        assert_eq!(output, "| café | forty |\n".as_bytes());
+    }
 
     #[test]
     fn rejects_invalid_utf8_before_emitting_a_markdown_row() {
