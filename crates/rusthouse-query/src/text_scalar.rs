@@ -268,13 +268,17 @@ fn parse_at_depth(parser: &mut Parser, depth: usize) -> Result<ConstantValue, Pa
             require(parser, Token::RParen, "isIPAddressInRange requires two arguments")?;
             match (address, cidr) {
                 (Some(address), Some(cidr)) => {
-                    let (network, prefix) = cidr.split_once('/')
+                    let (network, prefix) = cidr
+                        .split_once('/')
                         .ok_or_else(|| ParseError("CIDR prefix must contain '/'".into()))?;
-                    let network = network.parse::<IpAddr>()
+                    let network = network
+                        .parse::<IpAddr>()
                         .map_err(|_| ParseError("invalid CIDR network address".into()))?;
-                    let address = address.parse::<IpAddr>()
+                    let address = address
+                        .parse::<IpAddr>()
                         .map_err(|_| ParseError("invalid IP address".into()))?;
-                    let prefix = prefix.parse::<u32>()
+                    let prefix = prefix
+                        .parse::<u32>()
                         .map_err(|_| ParseError("invalid CIDR prefix length".into()))?;
                     let contained = match network {
                         IpAddr::V4(network) => {
@@ -302,6 +306,7 @@ fn parse_at_depth(parser: &mut Parser, depth: usize) -> Result<ConstantValue, Pa
                     };
                     ConstantValue::Integer(i64::from(contained))
                 }
+                (None, Some(_)) => ConstantValue::Integer(0),
                 _ => ConstantValue::Null,
             }
         }
