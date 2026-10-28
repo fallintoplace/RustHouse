@@ -81,6 +81,14 @@ impl HyperLogLog {
         Ok(())
     }
 
+    /// HLL registers form a mergeable max semilattice; partial scans may be
+    /// reduced in any order without retaining individual distinct values.
+    pub(super) fn merge(&mut self, other: &Self) {
+        for (target, &source) in self.registers.iter_mut().zip(other.registers.iter()) {
+            *target = (*target).max(source);
+        }
+    }
+
     pub(super) fn estimate(&self) -> u64 {
         let m = REGISTERS as f64;
         let zero = self.registers.iter().filter(|&&rank| rank == 0).count();
@@ -126,6 +134,27 @@ mod tests {
         let estimate = sketch.estimate();
         assert!(estimate.abs_diff(400_000) < 16_000, "estimate={estimate}");
         assert_eq!(sketch.registers.len(), REGISTERS);
+    }
+
+    #[test]
+    fn merge_is_idempotent_and_matches_a_single_global_scan() {
+        let mut left = HyperLogLog::default();
+        let mut right = HyperLogLog::default();
+        let mut full = HyperLogLog::default();
+        for value in 0..250_000u128 {
+            let number = Number::Unsigned(value % 90_000);
+            full.observe_number(number);
+            if value % 2 == 0 {
+                left.observe_number(number);
+            } else {
+                right.observe_number(number);
+            }
+        }
+        left.merge(&right);
+        assert_eq!(left.registers.as_slice(), full.registers.as_slice());
+        let estimate = left.estimate();
+        left.merge(&right);
+        assert_eq!(left.estimate(), estimate);
     }
 
     #[test]
