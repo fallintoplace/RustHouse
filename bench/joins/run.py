@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """Bench a full-probe, two-table equi-join with verified output cardinality."""
 import argparse
+import math
 import sys
 import tempfile
 import time
@@ -75,7 +76,12 @@ def main(argv=None):
     parser.add_argument("--timeout", type=float, default=120)
     parser.add_argument("--output", type=Path)
     args = parser.parse_args(argv)
-    if args.runs < 1 or args.warmups < 0 or args.timeout <= 0:
+    if (
+        args.runs < 1
+        or args.warmups < 0
+        or not math.isfinite(args.timeout)
+        or args.timeout <= 0
+    ):
         parser.error("invalid run count, warmups, or timeout")
     with tempfile.TemporaryDirectory(prefix="rusthouse-join-bench-") as root:
         root = Path(root)

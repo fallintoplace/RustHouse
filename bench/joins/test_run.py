@@ -2,9 +2,15 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from run import verify_result, write_fixture
+from run import main, verify_result, write_fixture
 
 class JoinWorkloadTests(unittest.TestCase):
+    def test_nonfinite_timeouts_are_rejected_before_launch(self):
+        for value in ["nan", "inf", "-inf"]:
+            with self.assertRaises(SystemExit) as raised:
+                main(["--binary", "unused", f"--timeout={value}"])
+            self.assertEqual(raised.exception.code, 2)
+
     def test_small_fixture_and_matches(self):
         with tempfile.TemporaryDirectory() as directory:
             expected = write_fixture(Path(directory), 20, 5)
