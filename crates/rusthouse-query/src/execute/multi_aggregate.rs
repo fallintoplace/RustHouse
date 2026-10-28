@@ -312,6 +312,95 @@ fn count_argument(
     }
 }
 
+
+/// Compute independent exact multi-aggregate partials over physical parts,
+/// then merge the checked integer SUM and COUNT states. Other aggregate types
+/// retain serial ordering to avoid changing floating-point semantics.
+fn parallel_exact_multi_aggregates(
+    part: &Path,
+    names: &[String],
+    items: &[AggregateItem],
+    arguments: &[Option<BoundExpr>],
+    conditions: &[Vec<typed::Condition>],
+    no_filters: bool,
+) -> Result<Option<Vec<State>>, ExecutionError> {
+    let parts = rusthouse_storage::query_parts(part)?;
+    let workers = std::thread::available_parallelism()
+        .map_or(1, |count| count.get())
+        .min(4);
+    if workers < 2 || parts.len() < 16 {
+        return Ok(None);
+    }
+    let chunk_size = parts.len().div_ceil(workers);
+    let chunks = std::thread::scope(|scope| {
+        let handles = parts.chunks(chunk_size).map(|paths| {
+            scope.spawn(move || -> Result<Vec<State>, ExecutionError> {
+                let mut states = items.iter().map(|item| match item.function {
+                    Some(function) => State::Numeric(AggregateState::new(function)),
+                    None => State::Count(0),
+                }).collect::<Vec<_>>();
+                for path in paths {
+                    let mut reader = rusthouse_storage::TypedPartReader::open(path, names)?;
+                    while let Some(batch) = reader.next_batch()? {
+                        for row in 0..batch[0].len() {
+                            if !no_filters && !typed::passes(&batch, row, conditions) {
+                                continue;
+                            }
+                            for (state, argument) in states.iter_mut().zip(arguments) {
+                                match state {
+                                    State::Count(value) => {
+                                        if count_argument(argument.as_ref(), &batch, row)? {
+                                            *value = value.checked_add(1).ok_or_else(|| {
+                                                ExecutionError::Invalid("COUNT overflow".into())
+                                            })?;
+                                        }
+                                    }
+                                    State::Numeric(value) => {
+                                        let expr = argument.as_ref().ok_or_else(|| {
+                                            ExecutionError::Invalid("aggregate argument missing".into())
+                                        })?;
+                                        if let Some(next) = eval_number(expr, &batch, row)? {
+                                            value.update(next)?;
+                                        }
+                                    }
+                                    State::Distinct(_) => unreachable!("only exact SUM and COUNT selected"),
+                                }
+                            }
+                        }
+                    }
+                }
+                Ok(states)
+            })
+        }).collect::<Vec<_>>();
+        handles.into_iter().map(|handle| handle.join().unwrap_or_else(|_| {
+            Err(ExecutionError::Invalid("parallel multi-aggregate worker panicked".into()))
+        })).collect::<Vec<_>>()
+    });
+    let mut totals = items.iter().map(|item| match item.function {
+        Some(function) => State::Numeric(AggregateState::new(function)),
+        None => State::Count(0),
+    }).collect::<Vec<_>>();
+    for chunk in chunks {
+        for (total, partial) in totals.iter_mut().zip(chunk?) {
+            match (total, partial) {
+                (State::Count(total), State::Count(partial)) => {
+                    *total = total.checked_add(partial)
+                        .ok_or_else(|| ExecutionError::Invalid("COUNT overflow".into()))?;
+                }
+                (State::Numeric(total), State::Numeric(partial)) => {
+                    if let Some(value) = partial.value {
+                        total.update(value)?;
+                    }
+                }
+                _ => return Err(ExecutionError::Invalid(
+                    "invalid parallel multi-aggregate state".into(),
+                )),
+            }
+        }
+    }
+    Ok(Some(totals))
+}
+
 pub(super) fn execute<W: Write>(
     query: &Select,
     part: &Path,
@@ -401,9 +490,35 @@ pub(super) fn execute<W: Write>(
                 .transpose()
         })
         .collect::<Result<Vec<_>, _>>()?;
-    let mut reader = TypedQueryReader::open_with_metadata(part, &names, &metadata)?;
     let no_filters = query.predicates.is_empty() && query.or_predicates.is_empty();
-    while let Some(batch) = reader.next_batch()? {
+    let parallel_safe = items.iter().all(|item| match (&item.function, &item.argument, item.distinct) {
+        (None, _, false) => true,
+        (Some(crate::AggregateFunction::Sum), Some(crate::ScalarExpr::Column(column)), false) => {
+            types.get(column).is_some_and(|kind| matches!(
+                typed::base_type(kind),
+                "UInt8" | "UInt16" | "UInt32" | "UInt64" | "UInt128"
+                    | "Int8" | "Int16" | "Int32" | "Int64" | "Int128"
+            ))
+        }
+        _ => false,
+    });
+    let parallel = if parallel_safe {
+        parallel_exact_multi_aggregates(
+            part, &names, items, &arguments, &conditions, no_filters,
+        )?
+    } else {
+        None
+    };
+    let scan_serially = parallel.is_none();
+    if let Some(partial) = parallel {
+        states = partial;
+    }
+    let mut reader = if scan_serially {
+        Some(TypedQueryReader::open_with_metadata(part, &names, &metadata)?)
+    } else {
+        None
+    };
+    while let Some(batch) = reader.as_mut().map_or(Ok(None), TypedQueryReader::next_batch)? {
         for row in 0..batch[0].len() {
             if !no_filters && !typed::passes(&batch, row, &conditions) {
                 continue;
