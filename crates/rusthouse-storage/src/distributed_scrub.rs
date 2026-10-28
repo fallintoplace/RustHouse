@@ -12,6 +12,25 @@ pub struct ScrubReport {
     pub blocks: u64,
 }
 
+impl ScrubReport {
+    fn record_part(&mut self, files: usize, bytes: u64, blocks: u64) -> Result<(), PartError> {
+        self.checked_files = self
+            .checked_files
+            .checked_add(files)
+            .ok_or_else(|| PartError::InvalidScan("scrub file count overflow".into()))?;
+        self.checked_bytes = self
+            .checked_bytes
+            .checked_add(bytes)
+            .ok_or_else(|| PartError::InvalidScan("scrub byte count overflow".into()))?;
+        self.blocks = self
+            .blocks
+            .checked_add(blocks)
+            .ok_or_else(|| PartError::InvalidScan("scrub block count overflow".into()))?;
+        self.parts += 1;
+        Ok(())
+    }
+}
+
 /// Check the physical structure and stored-byte hashes of every active part.
 /// Stop writers first. This does not repair or mutate replicas.
 pub fn scrub_snapshot(root: &Path, max_parts: usize) -> Result<ScrubReport, PartError> {
@@ -29,19 +48,7 @@ pub fn scrub_snapshot(root: &Path, max_parts: usize) -> Result<ScrubReport, Part
     for part in parts {
         let physical = verify_wide_part(&part)?;
         let hashes = verify_part_file_hashes(&part)?;
-        report.parts += 1;
-        report.checked_files = report
-            .checked_files
-            .checked_add(hashes.files)
-            .ok_or_else(|| PartError::InvalidScan("scrub file count overflow".into()))?;
-        report.checked_bytes = report
-            .checked_bytes
-            .checked_add(hashes.total_bytes)
-            .ok_or_else(|| PartError::InvalidScan("scrub byte count overflow".into()))?;
-        report.blocks = report
-            .blocks
-            .checked_add(physical.blocks)
-            .ok_or_else(|| PartError::InvalidScan("scrub block count overflow".into()))?;
+        report.record_part(hashes.files, hashes.total_bytes, physical.blocks)?;
     }
     Ok(report)
 }
