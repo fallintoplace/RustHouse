@@ -97,7 +97,11 @@ fn merge_distinct_counts(
         }
         let rows = &body[expected_header.len()..];
         let mut shard_rows = 0usize;
-        for value in rows.split_terminator(|&b| b == b'\n') {
+        // Slice::split includes the final empty segment. Remove the final
+        // newline first, but preserve a genuine empty-string row.
+        if !rows.is_empty() {
+            let rows = &rows[..rows.len() - 1];
+            for value in rows.split(|&b| b == b'\n') {
             shard_rows = shard_rows.checked_add(1).ok_or(MergeError::CoordinatorLimit)?;
             if *cap == 0 || shard_rows >= *cap {
                 return Err(MergeError::ShardRowLimit);
@@ -107,6 +111,7 @@ fn merge_distinct_counts(
                     return Err(MergeError::CoordinatorLimit);
                 }
                 values.insert(value);
+            }
             }
         }
     }
