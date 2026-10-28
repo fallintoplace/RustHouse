@@ -35,8 +35,8 @@ pub fn write_quoted_csv_field<W: Write>(output: &mut W, field: &[u8]) -> io::Res
     }
     // Short quote-free fields dominate tabular output. Emit both quotes and
     // the payload in a single write without a heap allocation.
-    if field.len() <= 64 && !field.contains(&b'"') {
-        let mut buffer = [0u8; 66];
+    if field.len() <= 256 && !field.contains(&b'"') {
+        let mut buffer = [0u8; 258];
         buffer[0] = b'"';
         buffer[1..field.len() + 1].copy_from_slice(field);
         buffer[field.len() + 1] = b'"';
@@ -109,6 +109,33 @@ mod tests {
         write_quoted_csv_field(&mut sink, b"hello").unwrap();
         assert_eq!(sink.count, 1);
         assert_eq!(sink.data, b"\"hello\"");
+    }
+
+    #[test]
+    fn medium_plain_field_uses_one_write() {
+        struct Count {
+            calls: usize,
+            bytes: Vec<u8>,
+        }
+        impl Write for Count {
+            fn write(&mut self, bytes: &[u8]) -> io::Result<usize> {
+                self.calls += 1;
+                self.bytes.extend_from_slice(bytes);
+                Ok(bytes.len())
+            }
+            fn flush(&mut self) -> io::Result<()> {
+                Ok(())
+            }
+        }
+        let plain = vec![b'x'; 200];
+        let mut sink = Count {
+            calls: 0,
+            bytes: Vec::new(),
+        };
+        write_quoted_csv_field(&mut sink, &plain).unwrap();
+        assert_eq!(sink.calls, 1);
+        assert_eq!(sink.bytes.len(), 202);
+        assert!(sink.bytes.starts_with(b"\"") && sink.bytes.ends_with(b"\""));
     }
 
     #[test]
