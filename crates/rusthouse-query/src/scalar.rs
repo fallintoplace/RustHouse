@@ -33,6 +33,7 @@ pub(super) fn is_function(name: &str) -> bool {
         return true;
     }
     is_saturating(name)
+        || name.eq_ignore_ascii_case("BITHAMMINGDISTANCE")
         || name.eq_ignore_ascii_case("ABS")
         || name.eq_ignore_ascii_case("BIT_PARITY")
         || name.eq_ignore_ascii_case("BIT_MASK")
@@ -952,7 +953,7 @@ fn factor(parser: &mut Parser, depth: usize) -> Result<i64, ParseError> {
     if parser.keyword("NEXT_POWER_OF_TWO") {
         return parse_next_power_of_two(parser, depth);
     }
-    if parser.keyword("HAMMING_DISTANCE") {
+    if parser.keyword("HAMMING_DISTANCE") || parser.keyword("BITHAMMINGDISTANCE") {
         return parse_hamming_distance(parser, depth);
     }
     if parser.keyword("POWER") || parser.keyword("POW") {
