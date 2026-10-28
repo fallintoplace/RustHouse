@@ -199,12 +199,13 @@ pub(super) fn execute<W: Write>(
             )
         });
     }
+    let mut bounded_order = None;
     if query.order_by.is_some() {
         let terms=query.order_terms().map(|term|{
             let index=columns.iter().position(|key|key==&term.column);
             (index,term.descending,term.nulls_first)
         }).collect::<Vec<_>>();
-        groups.sort_by(|a,b|{
+        let compare = |a: &Group, b: &Group| {
             for &(index,desc,nulls_first) in &terms {
                 let comparison=if let Some(index)=index {
                     typed::compare_order_cells(&a.keys[index],&b.keys[index],desc,nulls_first)
@@ -215,16 +216,40 @@ pub(super) fn execute<W: Write>(
                 if comparison!=Ordering::Equal {return comparison;}
             }
             Ordering::Equal
-        });
+        };
+        let end = query.limit
+            .and_then(|limit| query.offset.unwrap_or(0).checked_add(limit));
+        if let Some(end) = end.filter(|&end| end < groups.len()) {
+            let mut indices = (0..groups.len()).collect::<Vec<_>>();
+            let compare_index = |left: &usize, right: &usize| {
+                compare(&groups[*left], &groups[*right]).then_with(|| left.cmp(right))
+            };
+            indices.select_nth_unstable_by(end, &compare_index);
+            indices.truncate(end);
+            indices.sort_unstable_by(compare_index);
+            bounded_order = Some(indices);
+        } else {
+            groups.sort_by(compare);
+        }
     }
     let output_types=columns.iter().map(|column|types[column].as_str()).collect::<Vec<_>>();
-    for group in groups.iter().skip(query.offset.unwrap_or(0))
-        .take(query.limit.unwrap_or(usize::MAX)) {
+    let write_group = |group: &Group, output: &mut W| -> Result<(), ExecutionError> {
         for (index,cell) in group.keys.iter().enumerate() {
             if index>0 {write!(output,"\t")?;}
             typed::write_typed_value(output,cell,output_types[index])?;
         }
         writeln!(output,"\t{}",group.cardinality())?;
+        Ok(())
+    };
+    if let Some(indices) = bounded_order {
+        for index in indices.into_iter().skip(query.offset.unwrap_or(0)) {
+            write_group(&groups[index], output)?;
+        }
+    } else {
+        for group in groups.iter().skip(query.offset.unwrap_or(0))
+            .take(query.limit.unwrap_or(usize::MAX)) {
+            write_group(group, output)?;
+        }
     }
     Ok(())
 }
