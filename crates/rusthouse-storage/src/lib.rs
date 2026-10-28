@@ -25,6 +25,7 @@ pub mod distributed_range_read;
 mod ip;
 pub mod distributed_resume_map;
 mod mark_validation;
+pub mod distributed_scrub;
 mod marks;
 mod metadata;
 mod nested_arrays;
