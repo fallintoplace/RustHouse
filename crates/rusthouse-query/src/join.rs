@@ -71,7 +71,7 @@ fn alias(parser: &mut Parser, table: &str) -> Result<String, ParseError> {
         Some(Token::Word(word))
             if ![
                 "INNER", "LEFT", "RIGHT", "FULL", "CROSS", "OUTER", "JOIN", "ON", "USING", "WHERE",
-                "GROUP", "ORDER", "LIMIT", "OFFSET", "ANY",
+                "GROUP", "ORDER", "LIMIT", "OFFSET", "ANY", "ALL",
             ]
             .iter()
             .any(|keyword| word.eq_ignore_ascii_case(keyword)) =>
@@ -159,9 +159,25 @@ pub fn parse_join(sql: &str) -> Result<Option<JoinSelect>, ParseError> {
             "table identifiers cannot exceed 128 bytes".into(),
         ));
     }
-    let leading_any = parser.keyword("ANY");
+    let leading_strictness = if parser.keyword("ANY") {
+        Some(true)
+    } else if parser.keyword("ALL") {
+        Some(false)
+    } else {
+        None
+    };
     let kind = parse_join_kind(&mut parser);
-    let any = parser.keyword("ANY") || leading_any;
+    let trailing_strictness = if parser.keyword("ANY") {
+        Some(true)
+    } else if parser.keyword("ALL") {
+        Some(false)
+    } else {
+        None
+    };
+    if leading_strictness.is_some() && trailing_strictness.is_some() {
+        return Err(ParseError("JOIN strictness specified twice".into()));
+    }
+    let any = leading_strictness.or(trailing_strictness).unwrap_or(false);
     if any && !matches!(kind, JoinType::Inner | JoinType::Left) {
         return Err(ParseError(
             "ANY JOIN supports only INNER and LEFT joins".into(),
@@ -480,6 +496,27 @@ mod tests {
         for statement in [
             "SELECT * FROM a RIGHT ANY JOIN b ON a.id = b.id",
             "SELECT * FROM a ANY FULL JOIN b ON a.id = b.id",
+        ] {
+            assert!(parse_join(statement).is_err(), "{statement}");
+        }
+    }
+
+    #[test]
+    fn parses_explicit_all_join_strictness() {
+        for statement in [
+            "SELECT * FROM a ALL JOIN b ON a.id = b.id",
+            "SELECT * FROM a ALL INNER JOIN b ON a.id = b.id",
+            "SELECT * FROM a INNER ALL JOIN b ON a.id = b.id",
+            "SELECT * FROM a LEFT ALL JOIN b USING (id)",
+            "SELECT * FROM a RIGHT ALL JOIN b USING (id)",
+            "SELECT * FROM a FULL ALL JOIN b USING (id)",
+        ] {
+            assert!(!parse_join(statement).unwrap().unwrap().any, "{statement}");
+        }
+        for statement in [
+            "SELECT * FROM a ALL ANY JOIN b ON a.id = b.id",
+            "SELECT * FROM a ANY INNER ALL JOIN b ON a.id = b.id",
+            "SELECT * FROM a ALL INNER ALL JOIN b ON a.id = b.id",
         ] {
             assert!(parse_join(statement).is_err(), "{statement}");
         }
