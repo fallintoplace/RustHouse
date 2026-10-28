@@ -21,6 +21,7 @@ enum MergeError {
     CoordinatorLimit,
     InvalidCount,
     InvalidDistinctCount,
+    InvalidUniqState,
     InvalidGroupedCount,
     InvalidGroupedSum,
     InvalidSortedScan,
@@ -123,6 +124,32 @@ fn merge_distinct_bitmap32(
     Ok(format!("count(DISTINCT {column})\n{distinct}\n").into_bytes())
 }
 
+/// Merge one strict 16 KiB register state per shard. Shards can overlap
+/// arbitrarily: register-wise max computes the correct global HLL union.
+fn merge_uniq_shard_states(
+    shards: &[(usize, Vec<u8>)],
+    column: &str,
+    alias: Option<&str>,
+) -> Result<Vec<u8>, MergeError> {
+    let expected_header = format!("uniqState({column})\n");
+    let mut states = Vec::with_capacity(shards.len());
+    for (_, body) in shards {
+        let state = body
+            .strip_prefix(expected_header.as_bytes())
+            .and_then(|bytes| bytes.strip_suffix(b"\n"))
+            .ok_or(MergeError::InvalidUniqState)?;
+        if state.contains(&b'\n') {
+            return Err(MergeError::InvalidUniqState);
+        }
+        let state = std::str::from_utf8(state).map_err(|_| MergeError::InvalidUniqState)?;
+        states.push(state);
+    }
+    let count = rusthouse_query::merge_uniq_states(&states)
+        .map_err(|_| MergeError::InvalidUniqState)?;
+    let name = alias.map_or_else(|| format!("uniq({column})"), str::to_owned);
+    Ok(format!("{name}\n{count}\n").into_bytes())
+}
+
 fn shard_row_cap(peer: Peer) -> Result<usize, String> {
     let response = remote::capabilities(peer)?;
     if response.status != 200 || !response.content_type.starts_with("application/json") {
@@ -214,6 +241,23 @@ fn schema_signature(response: &remote::PeerResponse) -> Result<Vec<u8>, String> 
     Ok(columns.as_bytes().to_vec())
 }
 
+/// Fetch independent control-plane metadata concurrently per shard, rather
+/// than paying two sequential network round trips for every distributed scan.
+/// Both scoped workers always join before a query can start.
+fn preflight_shard(
+    peer: Peer,
+    table: &str,
+) -> Result<(usize, remote::PeerResponse), String> {
+    let (cap, schema) = std::thread::scope(|scope| {
+        let cap = scope.spawn(|| shard_row_cap(peer));
+        let schema = scope.spawn(|| remote::schema(peer, table));
+        let cap = cap.join().unwrap_or_else(|_| Err("peer capabilities panicked".into()));
+        let schema = schema.join().unwrap_or_else(|_| Err("peer schema lookup panicked".into()));
+        (cap, schema)
+    });
+    Ok((cap?, schema?))
+}
+
 struct ShardResponse {
     cap: usize,
     body: Vec<u8>,
@@ -230,11 +274,10 @@ fn read_shard(
     table: &str,
     sorted_prefix_cap: Option<usize>,
 ) -> Result<ShardResponse, String> {
-    let cap = shard_row_cap(peer)?;
+    let (cap, schema_response) = preflight_shard(peer, table)?;
     if sorted_prefix_cap.is_some_and(|prefix| prefix >= cap) {
         return Err("peer row cap must exceed distributed top-K prefix".into());
     }
-    let schema_response = remote::schema(peer, table)?;
     let schema = schema_signature(&schema_response)?;
     let kind = sum_schema
         .map(|(_, column)| shard_integer_kind(&schema_response, column))
@@ -695,7 +738,7 @@ fn merge_grouped_integer_sums_query(
             });
         }
         if let Some(order) = &query.order_by {
-            selected.sort_unstable_by(|&left, &right| {
+            let compare = |&left: &usize, &right: &usize| {
                 let comparison = if unsigned {
                     groups[left].2.cmp(&groups[right].2)
                 } else {
@@ -711,7 +754,18 @@ fn merge_grouped_integer_sums_query(
                     _ => if order.descending { comparison.reverse() } else { comparison },
                 };
                 comparison.then_with(|| left.cmp(&right))
+            };
+            // Large distributed GROUP BY reports often request only the
+            // highest few metric groups. Partition first, then sort the small
+            // winning prefix rather than fully ranking every group.
+            let prefix = query.limit.and_then(|limit| {
+                query.offset.unwrap_or(0).checked_add(limit)
             });
+            if let Some(end) = prefix.filter(|&end| end < selected.len()) {
+                selected.select_nth_unstable_by(end, &compare);
+                selected.truncate(end);
+            }
+            selected.sort_unstable_by(compare);
         }
     }
     let offset = global.and_then(|query| query.offset).unwrap_or(0);
@@ -922,6 +976,7 @@ pub fn handle(method: &str, body: &[u8], cluster: &Cluster, max_rows: usize) -> 
             if is_safe_scan(&select)
                 || is_safe_count(&select)
                 || is_safe_count_distinct(&select)
+                || is_safe_uniq(&select)
                 || is_safe_sorted_scan(&select)
                 || is_safe_count_if(&select)
                 || is_safe_grouped_count(&select)
@@ -934,7 +989,7 @@ pub fn handle(method: &str, body: &[u8], cluster: &Cluster, max_rows: usize) -> 
         _ => {
             return Response::text(
                 "400 Bad Request",
-                "distributed queries require unordered SELECT, bounded integer top-K SELECT, COUNT, COUNT(DISTINCT), COUNTIF, integer SUM, MIN, MAX, or grouped aggregates\n",
+                "distributed queries require unordered SELECT, bounded integer top-K SELECT, COUNT, COUNT(DISTINCT), uniq, COUNTIF, integer SUM, MIN, MAX, or grouped aggregates\n",
             );
         }
     };
@@ -950,6 +1005,7 @@ pub fn handle(method: &str, body: &[u8], cluster: &Cluster, max_rows: usize) -> 
     let grouped_count_query = is_safe_grouped_count(&select);
     let grouped_sum_query = is_safe_grouped_sum(&select);
     let sum_query = is_safe_sum(&select);
+    let uniq_query = is_safe_uniq(&select);
     let shard_sql = if sorted_query {
         match sorted_scan_sql(sql, &select) {
             Some(query) => query,
@@ -973,6 +1029,11 @@ pub fn handle(method: &str, body: &[u8], cluster: &Cluster, max_rows: usize) -> 
             None => {
                 return Response::text("400 Bad Request", "unsupported global grouped query\n");
             }
+        }
+    } else if uniq_query {
+        match uniq_state_shard_sql(sql, &select) {
+            Some(query) => query,
+            None => return Response::text("400 Bad Request", "unsupported distributed uniq query\n"),
         }
     } else if distinct_count_column.is_some() {
         match distinct_shard_sql(sql, &select) {
@@ -1120,6 +1181,12 @@ pub fn handle(method: &str, body: &[u8], cluster: &Cluster, max_rows: usize) -> 
             Some("UInt32" | "Nullable(UInt32)") => merge_distinct_bitmap32(&shards, column, false),
             _ => merge_distinct_counts(&shards, column),
         }
+    } else if uniq_query {
+        match &select.projection {
+            Projection::ApproxDistinct { column } =>
+                merge_uniq_shard_states(&shards, column, select.alias.as_deref()),
+            _ => Err(MergeError::InvalidUniqState),
+        }
     } else if sum_query {
         sum_type
             .as_deref()
@@ -1205,6 +1272,9 @@ pub fn handle(method: &str, body: &[u8], cluster: &Cluster, max_rows: usize) -> 
         }
         Err(MergeError::InvalidCount) => {
             Response::text("502 Bad Gateway", "malformed shard COUNT response\n")
+        }
+        Err(MergeError::InvalidUniqState) => {
+            Response::text("502 Bad Gateway", "malformed shard uniq state\n")
         }
         Err(MergeError::InvalidDistinctCount) => {
             Response::text("502 Bad Gateway", "malformed shard DISTINCT response\n")
@@ -1984,5 +2054,143 @@ mod bounded_grouped_count_topk_tests {
         ).unwrap();
         let merged = merge_grouped_counts_query(&shards, 1, Some(&sql)).unwrap();
         assert_eq!(merged, b"dim\tcount\n");
+    }
+}
+
+#[cfg(test)]
+mod concurrent_preflight_tests {
+    use super::*;
+    use std::io::{Read, Write};
+    use std::net::TcpListener;
+
+    #[test]
+    fn both_metadata_requests_can_be_in_flight_before_either_completes() {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let peer = Peer::parse(&listener.local_addr().unwrap().to_string()).unwrap();
+        let server = std::thread::spawn(move || {
+            // Accepting both before answering either is an intentional
+            // concurrency requirement, not a wall-clock performance test.
+            let (mut first, _) = listener.accept().unwrap();
+            let (mut second, _) = listener.accept().unwrap();
+            for stream in [&mut first, &mut second] {
+                stream.set_read_timeout(Some(std::time::Duration::from_secs(2))).unwrap();
+                let mut incoming = [0u8; 1024];
+                let size = stream.read(&mut incoming).unwrap();
+                let path = std::str::from_utf8(&incoming[..size]).unwrap();
+                let payload = if path.starts_with("GET /capabilities ") {
+                    r#"{"name":"RustHouse","source":"database","read_only":true,"max_rows":10000}"#
+                } else if path.starts_with("GET /schema?table=facts ") {
+                    r#"{"rows":3,"columns":[{"name":"id","type":"UInt64"}]}"#
+                } else {
+                    panic!("unexpected metadata request {path}");
+                };
+                write!(stream,
+                    "HTTP/1.1 200 OK\r\nContent-Length: {}\r\nContent-Type: application/json; charset=utf-8\r\n\r\n{}",
+                    payload.len(), payload
+                ).unwrap();
+            }
+        });
+        let (cap, response) = preflight_shard(peer, "facts").unwrap();
+        assert_eq!(cap, 10_000);
+        assert_eq!(response.status, 200);
+        server.join().unwrap();
+    }
+}
+
+#[cfg(test)]
+mod distributed_grouped_sum_selection_tests {
+    use super::*;
+
+    #[test]
+    fn partial_rank_matches_stable_global_sum_sort_at_scale() {
+        let mut first = b"dimension\tsum(metric)\n".to_vec();
+        let mut second = b"dimension\tsum(metric)\n".to_vec();
+        let mut canonical = Vec::new();
+        for shard in 0..2 {
+            for i in (shard..3000).step_by(2) {
+                let value = (i * 379 % 997) as u64;
+                let row = format!("g{i:04}\t{value}\n");
+                if shard == 0 { first.extend_from_slice(row.as_bytes()); }
+                else { second.extend_from_slice(row.as_bytes()); }
+                canonical.push((i, value));
+            }
+        }
+        let shards = [(4000usize, first), (4000usize, second)];
+        for descending in [true, false] {
+            let mut order = canonical.clone();
+            if descending { order.sort_by(|a, b| b.1.cmp(&a.1)); }
+            else { order.sort_by(|a, b| a.1.cmp(&b.1)); }
+            for offset in [0, 1, 25, 2999, 3000] {
+                for limit in [0, 1, 7, 100, 3000] {
+                    let direction = if descending { "DESC" } else { "ASC" };
+                    let sql = format!("SELECT dimension, sum(metric) FROM events GROUP BY dimension ORDER BY 2 {direction} LIMIT {limit} OFFSET {offset}");
+                    let select = rusthouse_query::parse_select(&sql).unwrap();
+                    let actual = merge_grouped_integer_sums_query(
+                        &shards, 4000, "UInt64", "dimension", "metric", Some(&select)
+                    ).unwrap();
+                    let mut expected = "dimension\tsum(metric)\n".to_string();
+                    for (i, amount) in order.iter().skip(offset).take(limit) {
+                        expected.push_str(&format!("g{i:04}\t{amount}\n"));
+                    }
+                    assert_eq!(actual, expected.as_bytes(), "{sql}");
+                }
+            }
+        }
+    }
+}
+
+
+#[cfg(test)]
+mod distributed_uniq_state_tests {
+    use super::*;
+
+    #[test]
+    fn global_union_merges_sketch_states_not_estimates() {
+        let mut first = "00".repeat(1 << 14);
+        first.replace_range(0..2, "01");
+        let mut second = "00".repeat(1 << 14);
+        second.replace_range(2..4, "01");
+        let shards = [
+            (100, format!("uniqState(uid)\n{first}\n").into_bytes()),
+            (100, format!("uniqState(uid)\n{second}\n").into_bytes()),
+        ];
+        assert_eq!(
+            merge_uniq_shard_states(&shards, "uid", None).unwrap(),
+            b"uniq(uid)\n2\n"
+        );
+        assert_eq!(
+            merge_uniq_shard_states(&shards, "uid", Some("active_users")).unwrap(),
+            b"active_users\n2\n"
+        );
+    }
+
+    #[test]
+    fn corrupted_or_mismatched_shard_sketches_reject_entire_query() {
+        let cases = [
+            "uniqState(uid)\n0\n".to_string(),
+            "uniqState(uid)\n".to_string(),
+            "wrong\n".to_string(),
+            format!("uniqState(uid)\n{}\n", "ff".repeat(1 << 14)),
+            format!("uniqState(uid)\n{}\n\n", "00".repeat(1 << 14)),
+        ];
+        for content in cases {
+            assert_eq!(
+                merge_uniq_shard_states(&[(100, content.into_bytes())], "uid", None),
+                Err(MergeError::InvalidUniqState)
+            );
+        }
+    }
+
+    #[test]
+    fn query_rewrite_keeps_where_predicates_and_rejects_order() {
+        let sql = "SELECT uniq(uid) FROM events WHERE region = 'FROM east'";
+        let select = parse_select(sql).unwrap();
+        assert!(is_safe_uniq(&select));
+        assert_eq!(
+            uniq_state_shard_sql(sql, &select).as_deref(),
+            Some("SELECT uniqState(uid) FROM events WHERE region = 'FROM east'")
+        );
+        let unsafe_query = parse_select("SELECT uniq(uid) FROM events ORDER BY uid").unwrap();
+        assert!(!is_safe_uniq(&unsafe_query));
     }
 }
