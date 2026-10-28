@@ -84,6 +84,7 @@ pub(super) fn execute<W: Write>(
     let mut by_key = HashMap::<Key, usize>::new();
     // Repeated String group keys can be checked without owning row bytes.
     let mut text_groups = HashMap::<Vec<u8>, usize>::new();
+    let mut uuid_groups = HashMap::<[u8; 16], usize>::new();
     let mut total_pairs = 0usize;
     let mut reader = TypedQueryReader::open_with_metadata(part, &names, &metadata)?;
     let no_filters = query.predicates.is_empty() && query.or_predicates.is_empty();
@@ -99,7 +100,30 @@ pub(super) fn execute<W: Write>(
                 TypedColumn::NullableText { values, nulls } if nulls[row] == 0 => values.get(row),
                 _ => None,
             };
-            let id = if let Some(text) = group_text {
+            let group_uuid = match &batch[group_index] {
+                TypedColumn::Uuid(values) => Some(*values[row].as_bytes()),
+                _ => None,
+            };
+            let id = if let Some(key) = group_uuid {
+                if let Some(&id) = uuid_groups.get(&key) {
+                    id
+                } else {
+                    if groups.len() >= MAX_GROUPS {
+                        return Err(ExecutionError::Invalid(
+                            "GROUP BY supports at most 200000 groups".into(),
+                        ));
+                    }
+                    let id = groups.len();
+                    uuid_groups.insert(key, id);
+                    groups.push(Group {
+                        key: typed::cell(&batch[group_index], row),
+                        distinct: HashSet::new(),
+                        distinct_text: HashSet::new(),
+                        distinct_uuids: HashSet::new(),
+                    });
+                    id
+                }
+            } else if let Some(text) = group_text {
                 if let Some(&id) = text_groups.get(text) {
                     id
                 } else {
