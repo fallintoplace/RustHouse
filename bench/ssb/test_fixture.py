@@ -40,6 +40,21 @@ class StarFixtureTests(unittest.TestCase):
                 len((Path(root) / "lineorder.tsv").read_text().splitlines()), 5
             )
 
+    def test_streamed_fixture_matches_sqlite_reference_at_multiple_part_scales(self):
+        with tempfile.TemporaryDirectory() as root:
+            report = generate(root, rows=32769, seed=9)
+            with closing(sqlite3.connect(Path(root) / "reference.sqlite")) as db:
+                self.assertEqual(
+                    db.execute("SELECT count(*), count(DISTINCT lo_orderkey) FROM lineorder").fetchone(),
+                    (32769, 32769),
+                )
+                sample = db.execute(
+                    "SELECT lo_orderkey, lo_revenue FROM lineorder ORDER BY lo_orderkey DESC LIMIT 1"
+                ).fetchone()
+            self.assertEqual(sample[0], 32769)
+            self.assertEqual(report["rows"], 32769)
+            self.assertEqual(sum(1 for _ in (Path(root) / "lineorder.tsv").open()), 32770)
+
     def test_seed_is_deterministic_and_input_bounded(self):
         with tempfile.TemporaryDirectory() as a, tempfile.TemporaryDirectory() as b:
             generate(a, 70, 14)
