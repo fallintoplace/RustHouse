@@ -304,12 +304,12 @@ fn probe_right<F>(
     hash: &HashMap<Vec<typed::Key>, Vec<usize>>,
     options: ProbeOptions,
     mut emit: F,
-) -> Result<(), ExecutionError>
+) -> Result<usize, ExecutionError>
 where
     F: FnMut(&[typed::Cell], &[typed::Cell]) -> Result<(), ExecutionError>,
 {
     if options.stop_after == Some(0) {
-        return Ok(());
+        return Ok(0);
     }
     let mut reader = TypedQueryReader::open(right_path, right_names)?;
     let mut matches = 0usize;
@@ -369,7 +369,7 @@ where
             }
         }
     }
-    Ok(())
+    Ok(matches)
 }
 
 fn execute_streaming_right<W: Write>(
@@ -415,7 +415,7 @@ fn execute_streaming_right<W: Write>(
         .filter(|&limit| limit <= MAX_RESULT_ROWS)
         .and_then(|limit| query.offset.checked_add(limit));
     // Validate cardinality before sending a header or output rows.
-    probe_right(
+    let preflight_matches = probe_right(
         right_path,
         right_names,
         right_keys,
@@ -435,6 +435,9 @@ fn execute_streaming_right<W: Write>(
         .collect::<Vec<_>>()
         .join("\t");
     writeln!(output, "{header}")?;
+    if preflight_matches <= query.offset {
+        return Ok(());
+    }
 
     let left_width = left_names.len();
     let end = query
