@@ -266,7 +266,15 @@ pub fn parse_join(sql: &str) -> Result<Option<JoinSelect>, ParseError> {
     } else if parser.keyword("ON") {
         let mut keys = Vec::new();
         equality_group(&mut parser, &mut keys, 0)?;
-        (keys, Vec::new())
+        let mut unique: Vec<(JoinColumn, JoinColumn)> = Vec::with_capacity(keys.len());
+        for (first, second) in keys {
+            if !unique.iter().any(|(left, right)| {
+                (left == &first && right == &second) || (left == &second && right == &first)
+            }) {
+                unique.push((first, second));
+            }
+        }
+        (unique, Vec::new())
     } else {
         return Err(ParseError("JOIN requires ON or USING".into()));
     };
@@ -507,6 +515,18 @@ mod tests {
             ")".repeat(17)
         );
         assert!(parse_join(&deep).is_err());
+    }
+
+    #[test]
+    fn removes_duplicate_and_reversed_join_equalities() {
+        let parsed = parse_join(
+            "SELECT * FROM a JOIN b ON a.id = b.id AND b.id = a.id AND a.k = b.k AND a.id = b.id",
+        )
+        .unwrap()
+        .unwrap();
+        assert_eq!(parsed.keys.len(), 2);
+        assert_eq!(parsed.keys[0].0.name, "id");
+        assert_eq!(parsed.keys[1].0.name, "k");
     }
 
     #[test]
