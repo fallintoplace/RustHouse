@@ -128,6 +128,7 @@ pub(super) fn requires_typed_scan(query: &Select, path: &Path) -> Result<bool, E
         | Projection::CountColumn { column }
         | Projection::CountDistinct { column }
         | Projection::ApproxDistinct { column }
+        | Projection::ApproxDistinctState { column }
         | Projection::GroupedCount { column } => names.push(column),
         _ => {}
     }
@@ -873,6 +874,7 @@ pub(super) fn execute_typed<W: Write>(
         Projection::CountColumn { column }
         | Projection::CountDistinct { column }
         | Projection::ApproxDistinct { column }
+        | Projection::ApproxDistinctState { column }
         | Projection::GroupedCount { column } => {
             vec![column.clone()]
         }
@@ -948,6 +950,7 @@ pub(super) fn execute_typed<W: Write>(
         Projection::CountColumn { column } => format!("count({column})"),
         Projection::CountDistinct { column } => format!("countDistinct({column})"),
         Projection::ApproxDistinct { column } => format!("uniq({column})"),
+        Projection::ApproxDistinctState { column } => format!("uniqState({column})"),
         Projection::GroupedCount { column } => {
             format!("{column}\t{}", query.alias.as_deref().unwrap_or("count"))
         }
@@ -1022,7 +1025,8 @@ pub(super) fn execute_typed<W: Write>(
     let is_count = matches!(query.projection, Projection::Count);
     let is_count_column = matches!(query.projection, Projection::CountColumn { .. });
     let is_count_distinct = matches!(query.projection, Projection::CountDistinct { .. });
-    let is_approx_distinct = matches!(query.projection, Projection::ApproxDistinct { .. });
+    let is_approx_distinct = matches!(query.projection, Projection::ApproxDistinct { .. } | Projection::ApproxDistinctState { .. });
+    let is_approx_state = matches!(query.projection, Projection::ApproxDistinctState { .. });
     let mut sketch = HyperLogLog::default();
     let is_grouped = matches!(query.projection, Projection::GroupedCount { .. });
     let mut count = 0u64;
@@ -1540,6 +1544,10 @@ pub(super) fn execute_typed<W: Write>(
     }
     if is_count || is_count_column || is_count_distinct || is_approx_distinct {
         if offset == 0 {
+            if is_approx_state {
+                writeln!(output, "{}", sketch.encode_state())?;
+                return Ok(());
+            }
             let result = if is_approx_distinct {
                 sketch.estimate()
             } else if is_count || is_count_column {
