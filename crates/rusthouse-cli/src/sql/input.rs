@@ -145,7 +145,11 @@ pub(super) fn read_script(path: &std::path::Path) -> Result<Vec<String>, String>
 
     let file = std::fs::File::open(path)
         .map_err(|error| format!("cannot open SQL script {}: {error}", path.display()))?;
-    let mut bytes = Vec::new();
+    let capacity = file
+        .metadata()
+        .map(|metadata| metadata.len().min(MAX_SCRIPT_BYTES as u64) as usize)
+        .unwrap_or(0);
+    let mut bytes = Vec::with_capacity(capacity);
     file.take((MAX_SCRIPT_BYTES + 1) as u64)
         .read_to_end(&mut bytes)
         .map_err(|error| format!("cannot read SQL script {}: {error}", path.display()))?;
