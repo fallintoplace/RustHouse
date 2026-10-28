@@ -1100,8 +1100,10 @@ pub(super) fn execute_typed<W: Write>(
                 )
             });
         }
+        let mut bounded_order = None;
         if query.order_by.is_some() {
-            grouped_rows.sort_by(|(left_key, left_count), (right_key, right_count)| {
+            let compare = |(left_key, left_count): &(Cell, u64),
+                           (right_key, right_count): &(Cell, u64)| {
                 for order in query.order_terms() {
                     let comparison = if order.column == "count" {
                         let comparison = left_count.cmp(right_count);
@@ -1123,11 +1125,36 @@ pub(super) fn execute_typed<W: Write>(
                     }
                 }
                 cmp(left_key, right_key)
-            });
+            };
+            let end = query.limit.and_then(|page| offset.checked_add(page));
+            if let Some(end) = end.filter(|&end| end < grouped_rows.len()) {
+                let mut indices = (0..grouped_rows.len()).collect::<Vec<_>>();
+                let compare_index = |left: &usize, right: &usize| {
+                    compare(&grouped_rows[*left], &grouped_rows[*right])
+                        .then_with(|| left.cmp(right))
+                };
+                indices.select_nth_unstable_by(end, &compare_index);
+                indices.truncate(end);
+                indices.sort_unstable_by(compare_index);
+                bounded_order = Some(indices);
+            } else {
+                grouped_rows.sort_by(compare);
+            }
         }
-        for (key, count) in grouped_rows.into_iter().skip(offset).take(limit) {
-            write_typed_value(output, &key, projection_types[0])?;
+        let write_group = |key: &Cell, count: u64, output: &mut W|
+            -> Result<(), ExecutionError> {
+            write_typed_value(output, key, projection_types[0])?;
             writeln!(output, "\t{count}")?;
+            Ok(())
+        };
+        if let Some(indices) = bounded_order {
+            for index in indices.into_iter().skip(offset) {
+                write_group(&grouped_rows[index].0, grouped_rows[index].1, output)?;
+            }
+        } else {
+            for (key, count) in grouped_rows.iter().skip(offset).take(limit) {
+                write_group(key, *count, output)?;
+            }
         }
         return Ok(());
     }
