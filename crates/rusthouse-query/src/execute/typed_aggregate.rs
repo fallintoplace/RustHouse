@@ -1,6 +1,6 @@
 //! Numeric aggregates over typed wide parts, including text filters and nullable values.
 use super::typed::{self, Cell};
-use super::{AggregateState, ExecutionError};
+use super::{AggregateState, ExecutionError, Number};
 use crate::{AggregateFunction, Projection, Select};
 use rusthouse_storage::{NumericColumn, TypedColumn, TypedQueryReader, inspect_query_source};
 use std::collections::{HashMap, hash_map::Entry};
@@ -179,7 +179,9 @@ pub(super) fn execute_grouped_aggregate<W: Write>(
         .ok_or_else(|| {
             ExecutionError::Invalid(format!("unknown aggregate column: {value_column}"))
         })?;
-    if matches!(typed::base_type(&selected.data_type), "String" | "UUID") {
+    if *function != AggregateFunction::Count
+        && matches!(typed::base_type(&selected.data_type), "String" | "UUID")
+    {
         return Err(ExecutionError::Invalid(
             "numeric aggregates require a numeric column".into(),
         ));
@@ -300,6 +302,12 @@ pub(super) fn execute_grouped_aggregate<W: Write>(
                     }
                 }
             };
+            if *function == AggregateFunction::Count {
+                if !typed::is_null_at(&batch[value_index], row) {
+                    groups[group].1.update(Number::Unsigned(1))?;
+                }
+                continue;
+            }
             let value = typed::cell(&batch[value_index], row);
             match value {
                 Cell::Numeric(value) => groups[group].1.update(value)?,
