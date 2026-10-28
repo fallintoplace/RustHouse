@@ -18,7 +18,7 @@ const MAX_CAPACITY: usize = 2048;
 const MAX_TEXT_BYTES: usize = 4096;
 
 #[derive(Debug, Clone, Eq, PartialEq, Ord, PartialOrd)]
-enum Key {
+pub(super) enum Key {
     Unsigned(u128),
     Signed(i128),
     Float(u64),
