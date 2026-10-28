@@ -1,4 +1,5 @@
 mod aggregate_plans;
+mod radix_median;
 mod external_grouped;
 mod bitmap_distinct;
 mod hyperloglog;
