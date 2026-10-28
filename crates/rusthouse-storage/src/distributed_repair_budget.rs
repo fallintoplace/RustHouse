@@ -26,6 +26,16 @@ fn repair_priority(left: &RepairJob, right: &RepairJob) -> std::cmp::Ordering {
         .then_with(|| left.shard.cmp(&right.shard))
 }
 
+fn validate_repair_jobs(jobs: &[RepairJob]) -> Result<(), &'static str> {
+    let mut unique = HashSet::with_capacity(jobs.len());
+    for job in jobs {
+        if !valid_repair_job(job) || !unique.insert(job.shard.as_str()) {
+            return Err("invalid or duplicate repair job");
+        }
+    }
+    Ok(())
+}
+
 /// Prioritize severe under-replication, then smaller objects, then shard ID.
 /// The result is a schedule only; a transfer engine must execute it.
 pub fn plan_repairs(
@@ -36,13 +46,7 @@ pub fn plan_repairs(
     if jobs.len() > 4096 || job_limit > 4096 {
         return Err("repair job count exceeds bound");
     }
-    let mut unique = HashSet::with_capacity(jobs.len());
-    for job in jobs {
-        if !valid_repair_job(job) || !unique.insert(job.shard.as_str())
-        {
-            return Err("invalid or duplicate repair job");
-        }
-    }
+    validate_repair_jobs(jobs)?;
     if job_limit == 0 {
         return Ok(Vec::new());
     }
