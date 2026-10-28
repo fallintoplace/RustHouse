@@ -29,21 +29,25 @@ pub enum TypedColumn {
     },
 }
 
-fn numeric_array_element(values: &NumericColumn, index: usize) -> String {
+fn append_numeric_array_element(output: &mut String, values: &NumericColumn, index: usize) {
+    use std::fmt::Write as _;
+    // Write directly into the reusable array-row buffer instead of creating
+    // a temporary heap String for each numeric element.
     match values {
-        NumericColumn::UInt8(values) => values[index].to_string(),
-        NumericColumn::UInt16(values) => values[index].to_string(),
-        NumericColumn::UInt32(values) => values[index].to_string(),
-        NumericColumn::UInt64(values) => values[index].to_string(),
-        NumericColumn::UInt128(values) => values[index].to_string(),
-        NumericColumn::Int8(values) => values[index].to_string(),
-        NumericColumn::Int16(values) => values[index].to_string(),
-        NumericColumn::Int32(values) => values[index].to_string(),
-        NumericColumn::Int64(values) => values[index].to_string(),
-        NumericColumn::Int128(values) => values[index].to_string(),
-        NumericColumn::Float32(values) => values[index].to_string(),
-        NumericColumn::Float64(values) => values[index].to_string(),
+        NumericColumn::UInt8(values) => write!(output, "{}", values[index]),
+        NumericColumn::UInt16(values) => write!(output, "{}", values[index]),
+        NumericColumn::UInt32(values) => write!(output, "{}", values[index]),
+        NumericColumn::UInt64(values) => write!(output, "{}", values[index]),
+        NumericColumn::UInt128(values) => write!(output, "{}", values[index]),
+        NumericColumn::Int8(values) => write!(output, "{}", values[index]),
+        NumericColumn::Int16(values) => write!(output, "{}", values[index]),
+        NumericColumn::Int32(values) => write!(output, "{}", values[index]),
+        NumericColumn::Int64(values) => write!(output, "{}", values[index]),
+        NumericColumn::Int128(values) => write!(output, "{}", values[index]),
+        NumericColumn::Float32(values) => write!(output, "{}", values[index]),
+        NumericColumn::Float64(values) => write!(output, "{}", values[index]),
     }
+    .expect("formatting into a String cannot fail");
 }
 
 impl TypedColumn {
@@ -632,7 +636,7 @@ impl TypedPartReader {
                             if text.len() != 1 {
                                 text.push(',');
                             }
-                            text.push_str(&numeric_array_element(arrays.values(), element));
+                            append_numeric_array_element(&mut text, arrays.values(), element);
                         }
                         text.push(']');
                         rendered.push(text.into_bytes());
@@ -1004,4 +1008,21 @@ mod map_row_fast_path_tests {
         assert!(row.capacity() >= reserved);
     }
 
+}
+
+#[cfg(test)]
+mod direct_numeric_array_render_tests {
+    use super::*;
+
+    #[test]
+    fn appends_128_bit_signed_and_float_array_items_without_temp_strings() {
+        let mut row = String::from("[");
+        append_numeric_array_element(&mut row, &NumericColumn::Int128(vec![i128::MIN]), 0);
+        row.push(',');
+        append_numeric_array_element(&mut row, &NumericColumn::UInt64(vec![123456789]), 0);
+        row.push(',');
+        append_numeric_array_element(&mut row, &NumericColumn::Float32(vec![0.5]), 0);
+        row.push(']');
+        assert_eq!(row, format!("[{},123456789,0.5]", i128::MIN));
+    }
 }
