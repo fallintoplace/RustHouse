@@ -85,6 +85,7 @@ pub(super) fn is_function(name: &str) -> bool {
             | "BASE64_DECODE"
             | "APPENDTRAILINGCHARIFABSENT"
             | "RPAD"
+            | "CUTWWW"
             | "SPACE"
     )
 }
@@ -1908,6 +1909,28 @@ fn parse_at_depth(parser: &mut Parser, depth: usize) -> Result<ConstantValue, Pa
                     }
                 }
                 _ => ConstantValue::Null,
+            }
+        }
+        "CUTWWW" => {
+            let input = text_arg(parser, depth + 1)?;
+            require(parser, Token::RParen, "cutWWW requires one argument")?;
+            match input {
+                Some(input) => {
+                    let start = input.find("://").map_or(0, |index| index + 3);
+                    let authority_end = input[start..]
+                        .find(['/', '?', '#'])
+                        .map_or(input.len(), |index| start + index);
+                    let host_start = input[start..authority_end]
+                        .rfind('@')
+                        .map_or(start, |index| start + index + 1);
+                    let result = if input[host_start..authority_end].starts_with("www.") {
+                        format!("{}{}", &input[..host_start], &input[host_start + 4..])
+                    } else {
+                        input
+                    };
+                    ConstantValue::Text(result)
+                }
+                None => ConstantValue::Null,
             }
         }
         _ => return Err(ParseError(format!("unsupported string function: {name}"))),
