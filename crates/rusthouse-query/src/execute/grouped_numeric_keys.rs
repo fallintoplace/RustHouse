@@ -2,13 +2,23 @@
 use super::typed::{self, Cell, Key};
 use super::{AggregateState, ExecutionError};
 use crate::{AggregateFunction, Select};
-use rusthouse_storage::{TypedQueryReader, inspect_query_source};
+use rusthouse_storage::{NumericColumn, TypedColumn, TypedQueryReader, inspect_query_source};
 use std::cmp::Ordering;
 use std::collections::HashMap;
 use std::io::Write;
 use std::path::Path;
 
 const MAX_GROUPS: usize = 200_000;
+
+// Convert a non-nullable 8-bit numeric key into a compact slot index.
+fn byte_group_key(column: &TypedColumn, row: usize) -> Option<u8> {
+    match column {
+        TypedColumn::Numeric(NumericColumn::UInt8(values)) => values.get(row).copied(),
+        TypedColumn::Numeric(NumericColumn::Int8(values)) => values.get(row).map(|value| *value as u8),
+        _ => None,
+    }
+}
+
 
 pub(super) fn execute<W: Write>(
     query: &Select,
@@ -82,6 +92,12 @@ pub(super) fn execute<W: Write>(
         .collect::<Vec<_>>();
     let mut by_key = HashMap::<Vec<Key>, usize>::new();
     let mut groups = Vec::<(Vec<Cell>, Vec<AggregateState>)>::new();
+    let mut dense_slots = (columns.len() == 2
+        && columns.iter().all(|key| matches!(
+            types.get(key).map(String::as_str),
+            Some("UInt8" | "Int8")
+        )))
+        .then(|| vec![usize::MAX; 1 << 16]);
     let mut reader = TypedQueryReader::open_with_metadata(part, &names, &metadata)?;
     // Reuse a probe buffer for existing groups instead of allocating a Vec
     // of Cells and a Vec of Keys for every matching input row.
@@ -92,6 +108,24 @@ pub(super) fn execute<W: Write>(
             if !no_filters && !typed::passes(&batch, row, &conditions) {
                 continue;
             }
+            let group = if let Some(slots) = dense_slots.as_mut() {
+                let first = byte_group_key(&batch[group_indices[0]], row)
+                    .ok_or_else(|| ExecutionError::Invalid("unexpected first byte GROUP BY type".into()))?;
+                let second = byte_group_key(&batch[group_indices[1]], row)
+                    .ok_or_else(|| ExecutionError::Invalid("unexpected second byte GROUP BY type".into()))?;
+                let slot = (usize::from(first) << 8) | usize::from(second);
+                let index = &mut slots[slot];
+                if *index != usize::MAX {
+                    *index
+                } else {
+                    *index = groups.len();
+                    groups.push((
+                        group_indices.iter().map(|&column| typed::cell(&batch[column], row)).collect(),
+                        items.iter().map(|(function, _)| AggregateState::new(*function)).collect(),
+                    ));
+                    *index
+                }
+            } else {
             probe_key.clear();
             for &index in &group_indices {
                 probe_key.push(typed::key_at(&batch[index], row));
@@ -119,6 +153,8 @@ pub(super) fn execute<W: Write>(
                         .collect(),
                 ));
                 index
+            };
+                group
             };
             for (&index, state) in item_indices.iter().zip(groups[group].1.iter_mut()) {
                 match typed::cell(&batch[index], row) {

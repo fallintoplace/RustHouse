@@ -46,7 +46,18 @@ impl ResumeMap {
     }
 
     pub fn remaining(&self) -> Vec<usize> {
-        (0..self.chunks).filter(|&index| !self.is_complete(index)).collect()
+        let mut missing = Vec::new();
+        for (byte_index, &completed) in self.completed.iter().enumerate() {
+            let mut bits = !completed;
+            if byte_index == self.completed.len() - 1 && self.chunks % 8 != 0 {
+                bits &= ((1u16 << (self.chunks % 8)) - 1) as u8;
+            }
+            while bits != 0 {
+                missing.push(byte_index * 8 + bits.trailing_zeros() as usize);
+                bits &= bits - 1;
+            }
+        }
+        missing
     }
 
     pub fn complete(&self) -> bool {
@@ -129,6 +140,18 @@ mod tests {
         progress.mark_complete(8).unwrap();
         assert!(progress.complete());
         assert!(ResumeMap::new(0).unwrap().complete());
+    }
+
+    #[test]
+    fn remaining_ignores_unused_tail_bits() {
+        for len in [1, 2, 7, 8, 9, 10, 15, 16, 17] {
+            let mut progress = ResumeMap::new(len).unwrap();
+            for index in (0..len).step_by(2) {
+                progress.mark_complete(index).unwrap();
+            }
+            let expected = (0..len).filter(|index| index % 2 == 1).collect::<Vec<_>>();
+            assert_eq!(progress.remaining(), expected);
+        }
     }
 
 }

@@ -58,7 +58,7 @@ mod typed_aggregate;
 use predicates::{CompiledTest, compile_in_test};
 use predicates::{
     batch_matches, compile_numbers_predicates, compile_part_where, count_batch_matches,
-    constant_predicate_result, count_monotonic_numbers, monotonic_range_indices,
+    constant_predicate_result, count_monotonic_numbers, monotonic_range_indices, sparse_generated_positions,
     number_matches, number_matches_all, parse_numeric,
 };
 
@@ -305,6 +305,71 @@ fn parallel_numeric_filtered_count(
     Ok(Some(count))
 }
 
+/// A large single immutable part can use all CPU workers too. Divide its
+/// validated adaptive granules into disjoint ranges; each worker owns reader
+/// state and decompresses only its assigned marks.
+fn parallel_single_part_filtered_count(
+    query: &Select,
+    part: &Path,
+    metadata: &rusthouse_storage::PartMetadata,
+    workers: usize,
+) -> Result<Option<u64>, ExecutionError> {
+    for predicate in query.predicates.iter().chain(query.or_predicates.iter().flatten()) {
+        let selected = metadata.columns.iter().find(|candidate| candidate.name == predicate.column())
+            .ok_or_else(|| ExecutionError::Invalid(format!("unknown WHERE column: {}", predicate.column())))?;
+        if !matches!(selected.data_type.as_str(),
+            "UInt8" | "UInt16" | "UInt32" | "UInt64" | "UInt128"
+            | "Int8" | "Int16" | "Int32" | "Int64" | "Int128"
+            | "Float32" | "Float64")
+        {
+            return Ok(None);
+        }
+    }
+    let mut columns = Vec::new();
+    let branches = compile_part_where(query, &mut columns, |name, text| {
+        let selected = metadata.columns.iter().find(|candidate| candidate.name == name)
+            .ok_or_else(|| ExecutionError::Invalid(format!("unknown WHERE column: {name}")))?;
+        parse_numeric(&selected.data_type, text)
+    })?;
+    if columns.is_empty() { return Ok(None); }
+
+    let reference = rusthouse_storage::NumericPartReader::open(part, &columns)?;
+    let marks = reference.mark_count();
+    // A few marks are faster on the serial path. Avoid extra decompression
+    // readers unless there is enough work to amortize startup.
+    const MIN_PARALLEL_MARKS: usize = 64;
+    if marks < MIN_PARALLEL_MARKS || workers < 2 { return Ok(None); }
+    let chunk = marks.div_ceil(workers);
+    let count = std::thread::scope(|scope| -> Result<u64, ExecutionError> {
+        let handles = (0..marks).step_by(chunk).map(|begin| {
+            let end = (begin + chunk).min(marks);
+            let columns = &columns;
+            let branches = &branches;
+            scope.spawn(move || -> Result<u64, ExecutionError> {
+                let mut reader = rusthouse_storage::NumericPartReader::open(part, columns)?;
+                reader.seek_to_mark(begin)?;
+                let mut subtotal = 0u64;
+                for _ in begin..end {
+                    if let Some(batch) = reader.next_batch()? {
+                        subtotal = subtotal.checked_add(count_batch_matches(&batch, branches) as u64)
+                            .ok_or_else(|| ExecutionError::Invalid("parallel COUNT overflow".into()))?;
+                    }
+                }
+                Ok(subtotal)
+            })
+        }).collect::<Vec<_>>();
+        let mut total = 0u64;
+        for handle in handles {
+            let subtotal = handle.join()
+                .map_err(|_| ExecutionError::Invalid("parallel COUNT worker panicked".into()))??;
+            total = total.checked_add(subtotal)
+                .ok_or_else(|| ExecutionError::Invalid("parallel COUNT overflow".into()))?;
+        }
+        Ok(total)
+    })?;
+    Ok(Some(count))
+}
+
 fn parallel_filtered_count(query: &Select, source: &Path) -> Result<Option<u64>, ExecutionError> {
     if !matches!(query.projection, Projection::Count)
         || (query.predicates.is_empty() && query.or_predicates.is_empty())
@@ -323,27 +388,36 @@ fn parallel_filtered_count(query: &Select, source: &Path) -> Result<Option<u64>,
     let workers = std::thread::available_parallelism()
         .map_or(1, |parallelism| parallelism.get())
         .min(MAX_WORKERS);
-    if parts.len() < MIN_PARALLEL_PARTS || workers < 2 {
-        return Ok(None);
+    if workers < 2 { return Ok(None); }
+    if parts.len() == 1 {
+        let metadata = inspect_query_source(source)?;
+        if let Some(count) = parallel_single_part_filtered_count(
+            query, &parts[0], &metadata, workers,
+        )? {
+            return Ok(Some(count));
+        }
     }
+    if parts.len() < MIN_PARALLEL_PARTS { return Ok(None); }
     // Validate all part schemas before executing any partial count. A mismatched
     // or incomplete snapshot must never produce a plausible partial answer.
     let metadata = inspect_query_source(source)?;
     if let Some(count) = parallel_numeric_filtered_count(query, &parts, &metadata, workers)? {
         return Ok(Some(count));
     }
-    let chunk_size = parts.len().div_ceil(workers);
+    // Text and nullable filters use the general executor. Balance uneven
+    // part sizes by claiming one verified part at a time.
+    let next = AtomicUsize::new(0);
     let total = std::thread::scope(|scope| -> Result<u64, ExecutionError> {
-        let handles = parts
-            .chunks(chunk_size)
-            .map(|chunk| {
+        let handles = (0..workers)
+            .map(|_| {
+                let next = &next;
                 scope.spawn(move || -> Result<u64, ExecutionError> {
                     let mut sum = 0u64;
                     let mut buffer = Vec::new();
-                    for part in chunk {
+                    while let Some(index) = next_part_index(next, parts.len()) {
                         buffer.clear();
                         // A single-part source avoids re-entering this parallel path.
-                        execute(query, Some(part), &mut buffer)?;
+                        execute(query, Some(&parts[index]), &mut buffer)?;
                         let header_end =
                             buffer
                                 .iter()
@@ -410,6 +484,95 @@ fn add_integer_partial(
     }
 }
 
+/// Evaluate MIN and MAX over many immutable parts in parallel. The scan
+/// applies the same typed numeric predicates as a serial aggregate, while
+/// reducing only one extremum from each worker.
+fn parallel_integer_minmax(
+    query: &Select,
+    source: &Path,
+) -> Result<Option<Option<Number>>, ExecutionError> {
+    let Projection::Aggregate { function, column } = &query.projection else {
+        return Ok(None);
+    };
+    if !matches!(function, AggregateFunction::Min | AggregateFunction::Max)
+        || query.distinct || query.limit.is_some() || query.offset.is_some()
+        || query.order_by.is_some() || !query.order_by_extra.is_empty()
+        || query.having.is_some()
+    {
+        return Ok(None);
+    }
+    let parts = rusthouse_storage::query_parts(source)?;
+    let workers = std::thread::available_parallelism().map_or(1, |n| n.get()).min(4);
+    if parts.len() < 32 || workers < 2 {
+        return Ok(None);
+    }
+    let metadata = inspect_query_source(source)?;
+    let Some(kind) = metadata.columns.iter().find(|candidate| candidate.name == *column)
+        .map(|candidate| candidate.data_type.as_str())
+    else {
+        return Err(ExecutionError::Invalid(format!("unknown aggregate column: {column}")));
+    };
+    if !matches!(kind, "Int8" | "Int16" | "Int32" | "Int64" | "Int128"
+        | "UInt8" | "UInt16" | "UInt32" | "UInt64" | "UInt128")
+    {
+        return Ok(None);
+    }
+    for predicate in query.predicates.iter().chain(query.or_predicates.iter().flatten()) {
+        let selected = metadata.columns.iter().find(|candidate| candidate.name == predicate.column())
+            .ok_or_else(|| ExecutionError::Invalid(format!("unknown WHERE column: {}", predicate.column())))?;
+        if !matches!(selected.data_type.as_str(),
+            "Int8" | "Int16" | "Int32" | "Int64" | "Int128"
+            | "UInt8" | "UInt16" | "UInt32" | "UInt64" | "UInt128"
+            | "Float32" | "Float64")
+        {
+            return Ok(None);
+        }
+    }
+    let mut names = vec![column.clone()];
+    let branches = compile_part_where(query, &mut names, |name, text| {
+        let kind = metadata.columns.iter().find(|candidate| candidate.name == name)
+            .ok_or_else(|| ExecutionError::Invalid(format!("unknown WHERE column: {name}")))?;
+        parse_numeric(&kind.data_type, text)
+    })?;
+    let no_filters = query.predicates.is_empty() && query.or_predicates.is_empty();
+    let next = AtomicUsize::new(0);
+    let result = std::thread::scope(|scope| -> Result<Option<Number>, ExecutionError> {
+        let handles = (0..workers).map(|_| {
+            let next = &next;
+            let names = &names;
+            let branches = &branches;
+            scope.spawn(move || -> Result<Option<Number>, ExecutionError> {
+                let mut state = AggregateState::new(*function);
+                while let Some(index) = next_part_index(next, parts.len()) {
+                    let mut reader = rusthouse_storage::NumericPartReader::open(&parts[index], names)?;
+                    while let Some(batch) = reader.next_batch()? {
+                        for row in 0..batch[0].len() {
+                            if no_filters || batch_matches(&batch, row, branches) {
+                                state.update(number_at(&batch[0], row))?;
+                            }
+                        }
+                    }
+                }
+                Ok(state.value)
+            })
+        }).collect::<Vec<_>>();
+        let mut extremum = None;
+        for handle in handles {
+            if let Some(value) = handle.join()
+                .map_err(|_| ExecutionError::Invalid("parallel extremum worker panicked".into()))??
+            {
+                let replace = extremum.is_none_or(|previous| {
+                    let ordering = compare_numbers(value, previous);
+                    if *function == AggregateFunction::Min { ordering.is_lt() } else { ordering.is_gt() }
+                });
+                if replace { extremum = Some(value); }
+            }
+        }
+        Ok(extremum)
+    })?;
+    Ok(Some(result))
+}
+
 /// Process independent frozen parts concurrently for exact integer SUM.
 /// Unsupported types and small inputs stay on the existing executor path.
 fn parallel_integer_sum(
@@ -431,7 +594,7 @@ fn parallel_integer_sum(
     let parts = rusthouse_storage::query_parts(source)?;
     let workers = std::thread::available_parallelism()
         .map_or(1, |parallelism| parallelism.get()).min(4);
-    if parts.len() < 32 || workers < 2 {
+    if workers < 2 || (parts.len() < 32 && parts.len() != 1) {
         return Ok(None);
     }
     let metadata = inspect_query_source(source)?;
@@ -469,17 +632,60 @@ fn parallel_integer_sum(
         parse_numeric(&selected.data_type, literal)
     })?;
     let no_filters = query.predicates.is_empty() && query.or_predicates.is_empty();
-    let chunk_size = parts.len().div_ceil(workers);
+    // Unequal part sizes should not leave idle workers waiting for a single
+    // large chunk. Claim one part at a time, as in filtered COUNT.
+    if parts.len() == 1 {
+        let single_part = &parts[0];
+        let reference = rusthouse_storage::NumericPartReader::open(single_part, &scan_columns)?;
+        let marks = reference.mark_count();
+        const MIN_PARALLEL_MARKS: usize = 64;
+        if marks < MIN_PARALLEL_MARKS {
+            return Ok(None);
+        }
+        let chunk = marks.div_ceil(workers);
+        let sum = std::thread::scope(|scope| -> Result<Option<Number>, ExecutionError> {
+            let handles = (0..marks).step_by(chunk).map(|begin| {
+                let end = (begin + chunk).min(marks);
+                let scan_columns = &scan_columns;
+                let comparisons = &comparisons;
+                scope.spawn(move || -> Result<Option<Number>, ExecutionError> {
+                    let mut reader = rusthouse_storage::NumericPartReader::open(single_part, scan_columns)?;
+                    reader.seek_to_mark(begin)?;
+                    let mut state = AggregateState::new(AggregateFunction::Sum);
+                    for _ in begin..end {
+                        if let Some(batch) = reader.next_batch()? {
+                            for row in 0..batch[0].len() {
+                                if no_filters || batch_matches(&batch, row, comparisons) {
+                                    state.update(number_at(&batch[0], row))?;
+                                }
+                            }
+                        }
+                    }
+                    Ok(state.value)
+                })
+            }).collect::<Vec<_>>();
+            let mut total = None;
+            for handle in handles {
+                let partial = handle.join()
+                    .map_err(|_| ExecutionError::Invalid("parallel SUM worker panicked".into()))??;
+                total = add_integer_partial(total, partial)?;
+            }
+            Ok(total)
+        })?;
+        return Ok(Some(sum));
+    }
+    let next = AtomicUsize::new(0);
     let sum = std::thread::scope(|scope| -> Result<Option<Number>, ExecutionError> {
-        let handles = parts.chunks(chunk_size).map(|chunk| {
+        let handles = (0..workers).map(|_| {
             let scan_columns = &scan_columns;
             let comparisons = &comparisons;
+            let next = &next;
             scope.spawn(move || -> Result<Option<Number>, ExecutionError> {
                 let mut result = None;
-                for part in chunk {
+                while let Some(index) = next_part_index(next, parts.len()) {
                     // Scan compressed numeric columns directly, without
                     // recursive SQL execution or TSV serialization.
-                    let mut reader = rusthouse_storage::NumericPartReader::open(part, scan_columns)?;
+                    let mut reader = rusthouse_storage::NumericPartReader::open(&parts[index], scan_columns)?;
                     let mut state = AggregateState::new(AggregateFunction::Sum);
                     while let Some(batch) = reader.next_batch()? {
                         for row in 0..batch[0].len() {
@@ -570,6 +776,18 @@ fn execute_into<W: Write>(
     if let Some(count) = parallel_filtered_count(query, part)? {
         write_header(query, output, "count")?;
         writeln!(output, "{count}")?;
+        return Ok(());
+    }
+    if let Some(extremum) = parallel_integer_minmax(query, part)? {
+        let Projection::Aggregate { function, column } = &query.projection else {
+            unreachable!("parallel_integer_minmax accepts only aggregate projections");
+        };
+        write_header(query, output, &format!("{}({column})", function.name()))?;
+        if let Some(value) = extremum {
+            writeln!(output, "{value}")?;
+        } else {
+            writeln!(output, "NULL")?;
+        }
         return Ok(());
     }
     if let Some(sum) = parallel_integer_sum(query, part)? {
