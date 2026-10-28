@@ -23,8 +23,18 @@ pub(super) enum Token {
 }
 
 pub(super) fn tokenize(sql: &str) -> Result<Vec<Token>, ParseError> {
-    if sql.len() > 4096 {
-        return Err(ParseError("statement exceeds the 4096-byte limit".into()));
+    tokenize_with_limit(sql, 4096)
+}
+
+pub(super) fn tokenize_insert(sql: &str) -> Result<Vec<Token>, ParseError> {
+    tokenize_with_limit(sql, 1024 * 1024)
+}
+
+fn tokenize_with_limit(sql: &str, max_bytes: usize) -> Result<Vec<Token>, ParseError> {
+    if sql.len() > max_bytes {
+        return Err(ParseError(format!(
+            "statement exceeds the {max_bytes}-byte limit"
+        )));
     }
     let bytes = sql.as_bytes();
     let mut tokens = Vec::new();
