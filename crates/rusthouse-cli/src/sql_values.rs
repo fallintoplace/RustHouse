@@ -43,8 +43,9 @@ fn append_quoted_text(output: &mut Vec<u8>, value: &str) {
     output.push(b'\'');
 }
 
-fn encode_values_row(line: &[u8], columns: usize) -> io::Result<Vec<u8>> {
-    let mut values = Vec::with_capacity(
+fn encode_values_row_into(line: &[u8], columns: usize, values: &mut Vec<u8>) -> io::Result<()> {
+    values.clear();
+    values.reserve(
         line.len()
             .saturating_add(columns.saturating_mul(3))
             .saturating_add(2),
@@ -55,20 +56,28 @@ fn encode_values_row(line: &[u8], columns: usize) -> io::Result<Vec<u8>> {
         if count > 0 {
             values.extend_from_slice(b", ");
         }
-        append_literal(&mut values, field)?;
+        append_literal(values, field)?;
         count += 1;
     }
     if count != columns {
         return Err(invalid("SQL VALUES row width differs from the header"));
     }
     values.push(b')');
-    Ok(values)
+    Ok(())
+}
+
+#[cfg(test)]
+fn encode_values_row(line: &[u8], columns: usize) -> io::Result<Vec<u8>> {
+    let mut encoded = Vec::new();
+    encode_values_row_into(line, columns, &mut encoded)?;
+    Ok(encoded)
 }
 
 pub struct SqlValuesWriter<W: Write> {
     output: W,
     columns: Option<usize>,
     line: Vec<u8>,
+    encoded: Vec<u8>,
     rows: usize,
     finished: bool,
 }
@@ -79,6 +88,7 @@ impl<W: Write> SqlValuesWriter<W> {
             output,
             columns: None,
             line: Vec::new(),
+            encoded: Vec::new(),
             rows: 0,
             finished: false,
         }
@@ -94,13 +104,13 @@ impl<W: Write> SqlValuesWriter<W> {
             self.line.clear();
             return Ok(());
         };
-        let values = encode_values_row(&self.line, columns)?;
+        encode_values_row_into(&self.line, columns, &mut self.encoded)?;
         if self.rows == 0 {
             self.output.write_all(b"VALUES ")?;
         } else {
             self.output.write_all(b",\n")?;
         }
-        self.output.write_all(&values)?;
+        self.output.write_all(&self.encoded)?;
         self.rows += 1;
         self.line.clear();
         Ok(())
@@ -251,5 +261,22 @@ mod tests {
         assert!(render(b"id\nbad\\xg0\n").is_err());
         assert!(render(b"a\tb\n1\n").is_err());
         assert!(render(b"id\n1").is_err());
+    }
+}
+
+#[cfg(test)]
+mod reuse_sql_values_row_buffer_tests {
+    use super::*;
+
+    #[test]
+    fn encoded_buffer_capacity_is_reused_for_subsequent_rows() {
+        let mut writer = SqlValuesWriter::new(Vec::new());
+        let large = "x".repeat(32 * 1024);
+        writer.write_all(format!("value\n{large}\n").as_bytes()).unwrap();
+        let capacity = writer.encoded.capacity();
+        writer.write_all(b"small\nsmall\n").unwrap();
+        assert_eq!(writer.encoded.capacity(), capacity);
+        writer.finish().unwrap();
+        assert!(writer.output.ends_with(b"('small'),\n('small');\n"));
     }
 }
