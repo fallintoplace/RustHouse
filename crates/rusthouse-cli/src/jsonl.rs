@@ -131,12 +131,19 @@ fn write_json_string<W: Write>(writer: &mut W, input: &[u8]) -> io::Result<()> {
     // The common short ASCII field needs no JSON escaping. Pack it into a
     // stack buffer and make only one write call per field.
     let bytes = input.as_bytes();
-    if bytes.len() <= 64
+    if bytes.len() <= 256
         && bytes
             .iter()
             .all(|&byte| (b' '..=b'~').contains(&byte) && byte != b'"' && byte != b'\\')
     {
-        let mut quoted = [0u8; 66];
+        if bytes.len() <= 64 {
+            let mut quoted = [0u8; 66];
+            quoted[0] = b'"';
+            quoted[1..bytes.len() + 1].copy_from_slice(bytes);
+            quoted[bytes.len() + 1] = b'"';
+            return writer.write_all(&quoted[..bytes.len() + 2]);
+        }
+        let mut quoted = [0u8; 258];
         quoted[0] = b'"';
         quoted[1..bytes.len() + 1].copy_from_slice(bytes);
         quoted[bytes.len() + 1] = b'"';
@@ -497,4 +504,36 @@ mod single_pass_row_tests {
         write_json_row(&mut output, &headers, b"one\ttwo").unwrap();
         assert_eq!(output, b"{\"id\":\"one\",\"value\":\"two\"}\n");
     }
+
+    #[test]
+    fn medium_json_fields_use_one_output_write() {
+        struct CountingWriter {
+            calls: usize,
+            encoded: Vec<u8>,
+        }
+
+        impl Write for CountingWriter {
+            fn write(&mut self, bytes: &[u8]) -> io::Result<usize> {
+                self.calls += 1;
+                self.encoded.extend_from_slice(bytes);
+                Ok(bytes.len())
+            }
+
+            fn flush(&mut self) -> io::Result<()> {
+                Ok(())
+            }
+        }
+
+        let mut writer = CountingWriter {
+            calls: 0,
+            encoded: Vec::new(),
+        };
+        let input = "x".repeat(200);
+        write_json_string(&mut writer, input.as_bytes()).unwrap();
+        assert_eq!(writer.calls, 1);
+        assert_eq!(writer.encoded.len(), 202);
+        assert_eq!(writer.encoded[0], b'"');
+        assert_eq!(writer.encoded.last(), Some(&b'"'));
+    }
+
 }
