@@ -2,7 +2,7 @@ import tempfile
 import unittest
 from pathlib import Path
 from fixture import DATE_KEYS, generate
-from run import SQL, benchmark, expected_rows
+from run import COUNT_SQL, GROUPED_SQL, SQL, benchmark, expected_rows
 
 
 class StarJoinBenchmarkTests(unittest.TestCase):
@@ -25,6 +25,32 @@ class StarJoinBenchmarkTests(unittest.TestCase):
         self.assertEqual(len(result["timings_seconds"]), 2)
         self.assertFalse(result["official_ssb"])
         self.assertEqual(sum(query.startswith("COPY ") for query in seen), 2)
+
+    def test_large_join_count_and_grouped_revenue_reference_modes(self):
+        with tempfile.TemporaryDirectory() as root:
+            generate(root, rows=40961, seed=8)
+            expected = {
+                query: expected_rows(Path(root) / "reference.sqlite", statement)
+                for query, statement in (
+                    ("count-join", COUNT_SQL), ("grouped-revenue", GROUPED_SQL)
+                )
+            }
+        for query, statement in (
+            ("count-join", COUNT_SQL), ("grouped-revenue", GROUPED_SQL)
+        ):
+            def execute(sql):
+                if sql == statement:
+                    return expected[query]
+                if sql == "SELECT COUNT(*) FROM date_dim":
+                    return str(len(DATE_KEYS)).encode() + b"\n"
+                if sql == "SELECT COUNT(*) FROM lineorder":
+                    return b"40961\n"
+                return b""
+            result = benchmark("fake", rows=40961, seed=8, runs=1,
+                               warmups=0, execute=execute, query=query)
+            self.assertEqual(result["status"], "passed")
+            self.assertEqual(result["query"], query)
+            self.assertEqual(len(result["timings_seconds"]), 1)
 
     def test_late_result_mismatch_clears_partial_timings(self):
         with tempfile.TemporaryDirectory() as root:
@@ -61,7 +87,7 @@ class StarJoinBenchmarkTests(unittest.TestCase):
         self.assertEqual(result["status"], "mismatch")
         self.assertEqual(result["timings_seconds"], [])
         with self.assertRaisesRegex(ValueError, "invalid row"):
-            benchmark("fake", rows=20000)
+            benchmark("fake", rows=1_000_001)
 
 
 if __name__ == "__main__":
