@@ -32,7 +32,10 @@ fn render_expr(expr: &ScalarExpr) -> String {
         ScalarExpr::Integer(number) => number.to_string(),
         ScalarExpr::Add(left, right) => format!("{} + {}", render_expr(left), render_expr(right)),
         ScalarExpr::Subtract(left, right) => {
-            let right = if matches!(right.as_ref(), ScalarExpr::Add(..) | ScalarExpr::Subtract(..)) {
+            let right = if matches!(
+                right.as_ref(),
+                ScalarExpr::Add(..) | ScalarExpr::Subtract(..)
+            ) {
                 format!("({})", render_expr(right))
             } else {
                 render_expr(right)
