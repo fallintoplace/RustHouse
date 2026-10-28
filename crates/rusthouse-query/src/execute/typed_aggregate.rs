@@ -2,7 +2,7 @@
 use super::typed::{self, Cell};
 use super::{AggregateState, ExecutionError};
 use crate::{AggregateFunction, Projection, Select};
-use rusthouse_storage::{TypedColumn, TypedQueryReader, inspect_query_source};
+use rusthouse_storage::{NumericColumn, TypedColumn, TypedQueryReader, inspect_query_source};
 use std::collections::{HashMap, hash_map::Entry};
 use std::io::Write;
 use std::path::Path;
@@ -122,8 +122,7 @@ pub(super) fn execute_typed_aggregate<W: Write>(
 
 const MAX_GROUPS: usize = 100_000;
 
-/// Group filtered rows by a typed key and evaluate a numeric aggregate on each group.
-pub(super) fn execute_grouped_aggregate<W: Write>(
+/// Group filtered rows by a typed key and evaluate a numeric aggregate pub(super) fn execute_grouped_aggregate<W: Write>(
     query: &Select,
     part: &Path,
     output: &mut W,
@@ -196,12 +195,31 @@ pub(super) fn execute_grouped_aggregate<W: Write>(
     // Repeated station names no longer allocate a new key on every row.
     let mut text_groups = HashMap::<Vec<u8>, usize>::new();
     let mut groups = Vec::<(Cell, AggregateState)>::new();
+    // Non-nullable byte keys can be indexed directly rather than hashed.
+    let mut dense_slots = matches!(group_type, "UInt8" | "Int8")
+        .then(|| vec![usize::MAX; 256]);
     let no_filters = query.predicates.is_empty() && query.or_predicates.is_empty();
     while let Some(batch) = reader.next_batch()? {
         for row in 0..batch[0].len() {
             if !no_filters && !typed::passes(&batch, row, &conditions) {
                 continue;
             }
+            let group = if let Some(slots) = dense_slots.as_mut() {
+                let byte = match &batch[group_index] {
+                    TypedColumn::Numeric(NumericColumn::UInt8(values)) => values[row],
+                    TypedColumn::Numeric(NumericColumn::Int8(values)) => values[row] as u8,
+                    _ => return Err(ExecutionError::Invalid("unexpected byte GROUP BY column".into())),
+                };
+                let group = &mut slots[usize::from(byte)];
+                if *group != usize::MAX {
+                    *group
+                } else {
+                    let index = groups.len();
+                    *group = index;
+                    groups.push((typed::cell(&batch[group_index], row), AggregateState::new(*function)));
+                    index
+                }
+            } else {
             let borrowed_text = match &batch[group_index] {
                 TypedColumn::Text(strings) => strings.get(row),
                 TypedColumn::NullableText { values, nulls } if nulls[row] == 0 => values.get(row),
@@ -236,6 +254,8 @@ pub(super) fn execute_grouped_aggregate<W: Write>(
                         groups.len() - 1
                     }
                 }
+            };
+                group
             };
             let value = typed::cell(&batch[value_index], row);
             match value {
