@@ -25,6 +25,10 @@ class NoiseReportTests(unittest.TestCase):
         invalid = assess_query({"query": 1, "status": "passed",
                                 "timings_seconds": [float("nan")] * 5})
         self.assertEqual(invalid["state"], "invalid_samples")
+        for values in ([0] * 5, [True] * 5, [1, 1, 1, 0, 1]):
+            result = assess_query({"query": 6, "status": "passed",
+                                   "timings_seconds": values})
+            self.assertEqual(result["state"], "invalid_samples")
 
 
 if __name__ == "__main__":
