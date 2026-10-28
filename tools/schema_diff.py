@@ -18,13 +18,19 @@ def validate_url(origin):
 
 
 def columns(payload):
+    if not isinstance(payload, dict):
+        raise ValueError("schema response must be an object")
     result = payload.get("columns")
     if not isinstance(result, list):
         raise ValueError("response has no columns list")
     output = []
+    seen = set()
     for col in result:
         if not isinstance(col, dict) or not isinstance(col.get("name"), str) or not isinstance(col.get("type"), str):
             raise ValueError("malformed column")
+        if not col["name"] or not col["type"] or col["name"] in seen:
+            raise ValueError("empty or duplicate schema column")
+        seen.add(col["name"])
         output.append((col["name"], col["type"]))
     return output
 
