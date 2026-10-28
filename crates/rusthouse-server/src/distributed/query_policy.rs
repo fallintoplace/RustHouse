@@ -270,3 +270,21 @@ pub(super) fn is_safe_grouped_multikey_extremum(select: &Select) -> bool {
             && matches!(items[0].0, AggregateFunction::Min | AggregateFunction::Max)
     ) && is_safe_unpaged_select(select)
 }
+
+/// Fused exact integer aggregates are decomposable across disjoint shards.
+pub(super) fn is_safe_grouped_fused_metrics(select: &Select) -> bool {
+    let items = match &select.projection {
+        Projection::GroupedAggregates { items, .. }
+        | Projection::GroupedMultiAggregates { items, .. } => items,
+        _ => return false,
+    };
+    (2..=16).contains(&items.len())
+        && items.iter().all(|(function, _)| matches!(
+            function,
+            AggregateFunction::Count
+                | AggregateFunction::Sum
+                | AggregateFunction::Min
+                | AggregateFunction::Max
+        ))
+        && is_safe_unpaged_select(select)
+}
