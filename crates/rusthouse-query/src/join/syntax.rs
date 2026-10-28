@@ -77,8 +77,10 @@ pub(super) fn equality_group(
                 return Err(ParseError("JOIN ON requires closing ')'".into()));
             }
         } else {
-            if keys.len() == 8 {
-                return Err(ParseError("JOIN supports at most 8 equality keys".into()));
+            // Bound raw input separately; repeated equality keys are removed
+            // before the eight-distinct-key execution limit is checked.
+            if keys.len() == 32 {
+                return Err(ParseError("JOIN supports at most 32 ON equalities".into()));
             }
             let first = qualified(parser)?;
             if !parser.take(Token::Operator(super::super::Operator::Eq)) {
