@@ -75,8 +75,7 @@ fn nullable_text_predicates_keep_case_escapes_and_null_semantics() {
     ] {
         let parsed = parse_select(sql).unwrap_or_else(|error| panic!("{sql}: {error}"));
         let mut output = Vec::new();
-        execute(&parsed, Some(&root), &mut output)
-            .unwrap_or_else(|error| panic!("{sql}: {error}"));
+        execute(&parsed, Some(&root), &mut output).unwrap_or_else(|error| panic!("{sql}: {error}"));
         assert_eq!(String::from_utf8(output).unwrap(), expected, "{sql}");
     }
     fs::remove_dir_all(root).unwrap();
