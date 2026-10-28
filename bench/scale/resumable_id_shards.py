@@ -9,6 +9,8 @@ import json
 import os
 from pathlib import Path
 
+MAX_SHARDS = 16_384
+
 
 def positive(value, name, *, allow_zero=False):
     if type(value) is not int or value < (0 if allow_zero else 1):
@@ -60,6 +62,8 @@ def create(directory, start, rows, shard_rows):
     positive(shard_rows, "shard_rows")
     if start + rows > 2**64:
         raise ValueError("UInt64 fixture exceeds the supported value domain")
+    if (rows - 1) // shard_rows + 1 > MAX_SHARDS:
+        raise ValueError("requested shards exceed RustHouse's 16384-part limit")
     directory = Path(directory)
     directory.mkdir(parents=True, exist_ok=True)
     shards = []
