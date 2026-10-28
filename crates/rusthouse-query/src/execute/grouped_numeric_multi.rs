@@ -79,10 +79,12 @@ pub(super) fn execute<W: Write>(
         .map(|(_, name)| indices[name])
         .collect::<Vec<_>>();
     let mut groups = Vec::<(Cell, Vec<AggregateState>)>::new();
-    // Two hundred and fifty-six fixed slots replace per-row hashing for
-    // non-nullable 8-bit grouping dimensions.
-    let mut dense_slots =
-        matches!(group_type.as_str(), "UInt8" | "Int8").then(|| vec![usize::MAX; 256]);
+    // Direct slots avoid repeated hashing on compact grouping columns.
+    let mut dense_slots = match group_type.as_str() {
+        "UInt8" | "Int8" => Some(vec![usize::MAX; 256]),
+        "UInt16" | "Int16" => Some(vec![usize::MAX; 65_536]),
+        _ => None,
+    };
     let mut by_key = HashMap::<typed::Key, usize>::new();
     let mut by_text = HashMap::<Vec<u8>, usize>::new();
     let mut reader = TypedQueryReader::open_with_metadata(part, &names, &metadata)?;
@@ -95,16 +97,22 @@ pub(super) fn execute<W: Write>(
             // Nullable String keys can use the same borrowed-byte lookup as String.
             // Only new groups need to own the decoded bytes.
             let index = if let Some(slots) = dense_slots.as_mut() {
-                let byte = match &batch[group_index] {
-                    TypedColumn::Numeric(NumericColumn::UInt8(values)) => values[row],
-                    TypedColumn::Numeric(NumericColumn::Int8(values)) => values[row] as u8,
+                let key = match &batch[group_index] {
+                    TypedColumn::Numeric(NumericColumn::UInt8(values)) => usize::from(values[row]),
+                    TypedColumn::Numeric(NumericColumn::Int8(values)) => {
+                        usize::from(values[row] as u8)
+                    }
+                    TypedColumn::Numeric(NumericColumn::UInt16(values)) => usize::from(values[row]),
+                    TypedColumn::Numeric(NumericColumn::Int16(values)) => {
+                        usize::from(values[row] as u16)
+                    }
                     _ => {
                         return Err(ExecutionError::Invalid(
-                            "unexpected byte GROUP BY type".into(),
+                            "unexpected dense GROUP BY type".into(),
                         ));
                     }
                 };
-                let slot = &mut slots[usize::from(byte)];
+                let slot = &mut slots[key];
                 if *slot != usize::MAX {
                     *slot
                 } else {
