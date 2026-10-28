@@ -1639,6 +1639,7 @@ fn execute_numbers<W: Write>(
         | Projection::CountColumn { .. }
         | Projection::CountDistinct { .. }
         | Projection::ApproxDistinct { .. }
+        | Projection::Histogram { .. }
         | Projection::ApproxDistinctState { .. }
         | Projection::GroupedCount { .. }
         | Projection::GroupedDistinctCount { .. }
