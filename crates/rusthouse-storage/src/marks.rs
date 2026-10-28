@@ -60,27 +60,25 @@ pub fn read_wide_marks(path: impl AsRef<Path>) -> Result<WideMarks, PartError> {
     })
 }
 
-fn read_plain_wide_marks(path: &Path, format: WideMarkFormat) -> Result<Vec<WideMark>, PartError> {
-    let entry = std::fs::symlink_metadata(path).map_err(|source| PartError::Io {
+fn marks_io_error(path: &Path, source: io::Error) -> PartError {
+    PartError::Io {
         path: path.to_path_buf(),
         source,
-    })?;
+    }
+}
+
+fn read_plain_wide_marks(path: &Path, format: WideMarkFormat) -> Result<Vec<WideMark>, PartError> {
+    let entry = std::fs::symlink_metadata(path).map_err(|source| marks_io_error(path, source))?;
     if !entry.file_type().is_file() {
         return Err(PartError::Io {
             path: path.to_path_buf(),
             source: io::Error::new(io::ErrorKind::InvalidInput, "expected a regular marks file"),
         });
     }
-    let file = File::open(path).map_err(|source| PartError::Io {
-        path: path.to_path_buf(),
-        source,
-    })?;
+    let file = File::open(path).map_err(|source| marks_io_error(path, source))?;
     let size = file
         .metadata()
-        .map_err(|source| PartError::Io {
-            path: path.to_path_buf(),
-            source,
-        })?
+        .map_err(|source| marks_io_error(path, source))?
         .len();
     if size > MAX_MARKS_BYTES as u64 {
         return Err(marks_too_large(path));
@@ -88,10 +86,7 @@ fn read_plain_wide_marks(path: &Path, format: WideMarkFormat) -> Result<Vec<Wide
     let mut content = Vec::with_capacity(size as usize);
     file.take(MAX_MARKS_BYTES as u64 + 1)
         .read_to_end(&mut content)
-        .map_err(|source| PartError::Io {
-            path: path.to_path_buf(),
-            source,
-        })?;
+        .map_err(|source| marks_io_error(path, source))?;
     if content.len() > MAX_MARKS_BYTES {
         return Err(marks_too_large(path));
     }
