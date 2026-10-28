@@ -35,6 +35,13 @@ pub(super) fn resolve(
         })
 }
 
+fn join_key(value: &typed::Cell) -> typed::Key {
+    match value {
+        typed::Cell::Uuid(text) => typed::Key::UuidBytes(typed::uuid_key(text)),
+        _ => value.key(),
+    }
+}
+
 fn key_eligible(value: &typed::Cell) -> bool {
     !matches!(value, typed::Cell::Null)
         && !matches!(value, typed::Cell::Numeric(Number::Float(number)) if number.is_nan())
@@ -45,7 +52,7 @@ pub(super) fn row_key(row: &[typed::Cell], indices: &[usize]) -> Option<Vec<type
     if indices.iter().any(|&index| !key_eligible(&row[index])) {
         return None;
     }
-    Some(indices.iter().map(|&index| row[index].key()).collect())
+    Some(indices.iter().map(|&index| join_key(&row[index])).collect())
 }
 
 pub(super) fn row_key_into(
@@ -57,7 +64,7 @@ pub(super) fn row_key_into(
     if indices.iter().any(|&index| !key_eligible(&row[index])) {
         return false;
     }
-    result.extend(indices.iter().map(|&index| row[index].key()));
+    result.extend(indices.iter().map(|&index| join_key(&row[index])));
     true
 }
 
@@ -79,17 +86,20 @@ pub(super) fn batch_key_into(
     // The same vector is reused across batches and rows.
     result.reserve(indices.len());
     for &index in indices {
-        let value = typed::cell(&batch[index], row);
-        if !key_eligible(&value) {
-            result.clear();
-            return false;
-        }
-        // Reuse owned text and UUID values from the batch rather than cloning
-        // the allocation a second time when converting Cell into a hash key.
-        let key = match value {
-            typed::Cell::Text(bytes) => typed::Key::Text(bytes),
-            typed::Cell::Uuid(text) => typed::Key::Uuid(text),
-            _ => value.key(),
+        // UUID probe keys are already stored as canonical bytes. Avoid
+        // allocating a 36-byte display String for each probed row.
+        let key = if let TypedColumn::Uuid(values) = &batch[index] {
+            typed::Key::UuidBytes(*values[row].as_bytes())
+        } else {
+            let value = typed::cell(&batch[index], row);
+            if !key_eligible(&value) {
+                result.clear();
+                return false;
+            }
+            match value {
+                typed::Cell::Text(bytes) => typed::Key::Text(bytes),
+                _ => value.key(),
+            }
         };
         result.push(key);
     }
@@ -166,5 +176,32 @@ mod tests {
         assert!(matches!(key.as_slice(), [typed::Key::Text(value)] if value == b"abc"));
         assert!(!batch_key_into(&batch, 1, &[0], &mut key));
         assert!(key.is_empty());
+    }
+}
+
+#[cfg(test)]
+mod uuid_join_key_tests {
+    use super::*;
+    use rusthouse_storage::read_uuid_values;
+
+    #[test]
+    fn build_and_probe_share_raw_uuid_keys() {
+        let mut disk = [0u8; 32];
+        disk[16] = 1;
+        let values = read_uuid_values(&mut disk.as_slice(), 2).unwrap();
+        let rows = vec![
+            typed::Cell::Uuid(values[0].to_string()),
+            typed::Cell::Uuid(values[1].to_string()),
+        ];
+        let batch = [TypedColumn::Uuid(values)];
+        let build = row_key(&rows[..1], &[0]).unwrap();
+        let mut reusable = Vec::new();
+        assert!(batch_key_into(&batch, 0, &[0], &mut reusable));
+        assert!(matches!(reusable.first(), Some(typed::Key::UuidBytes(_))));
+        assert!(build == reusable);
+        assert!(batch_key_into(&batch, 1, &[0], &mut reusable));
+        assert!(build != reusable);
+        assert!(row_key_into(&rows[1..], &[0], &mut reusable));
+        assert!(reusable == row_key(&rows[1..], &[0]).unwrap());
     }
 }
