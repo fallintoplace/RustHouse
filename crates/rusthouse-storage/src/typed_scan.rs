@@ -303,21 +303,23 @@ fn quoted_map_text(output: &mut String, bytes: &[u8]) -> Result<(), PartError> {
     Ok(())
 }
 
-fn map_numeric_text(values: &NumericColumn, index: usize) -> String {
+fn push_map_numeric_text(output: &mut String, values: &NumericColumn, index: usize) {
+    use std::fmt::Write as _;
     match values {
-        NumericColumn::UInt8(rows) => rows[index].to_string(),
-        NumericColumn::UInt16(rows) => rows[index].to_string(),
-        NumericColumn::UInt32(rows) => rows[index].to_string(),
-        NumericColumn::UInt64(rows) => rows[index].to_string(),
-        NumericColumn::UInt128(rows) => rows[index].to_string(),
-        NumericColumn::Int8(rows) => rows[index].to_string(),
-        NumericColumn::Int16(rows) => rows[index].to_string(),
-        NumericColumn::Int32(rows) => rows[index].to_string(),
-        NumericColumn::Int64(rows) => rows[index].to_string(),
-        NumericColumn::Int128(rows) => rows[index].to_string(),
-        NumericColumn::Float32(rows) => rows[index].to_string(),
-        NumericColumn::Float64(rows) => rows[index].to_string(),
+        NumericColumn::UInt8(rows) => write!(output, "{}", rows[index]),
+        NumericColumn::UInt16(rows) => write!(output, "{}", rows[index]),
+        NumericColumn::UInt32(rows) => write!(output, "{}", rows[index]),
+        NumericColumn::UInt64(rows) => write!(output, "{}", rows[index]),
+        NumericColumn::UInt128(rows) => write!(output, "{}", rows[index]),
+        NumericColumn::Int8(rows) => write!(output, "{}", rows[index]),
+        NumericColumn::Int16(rows) => write!(output, "{}", rows[index]),
+        NumericColumn::Int32(rows) => write!(output, "{}", rows[index]),
+        NumericColumn::Int64(rows) => write!(output, "{}", rows[index]),
+        NumericColumn::Int128(rows) => write!(output, "{}", rows[index]),
+        NumericColumn::Float32(rows) => write!(output, "{}", rows[index]),
+        NumericColumn::Float64(rows) => write!(output, "{}", rows[index]),
     }
+    .expect("formatting into a String cannot fail");
 }
 
 fn push_encoded_map_text(encoded: &mut Vec<u8>, value: &str) {
@@ -389,7 +391,7 @@ fn read_string_key_map(
                         .ok_or_else(|| PartError::InvalidScan("missing Map String value".into()))?,
                 )?;
             } else if let Some(values) = &numeric_values {
-                output.push_str(&map_numeric_text(values, element));
+                push_map_numeric_text(&mut output, values, element);
             }
         }
         output.push('}');
@@ -955,4 +957,16 @@ mod tests {
         ));
         fs::remove_dir_all(root).unwrap();
     }
+
+    #[test]
+    fn maps_write_numeric_values_into_existing_string() {
+        let mut output = String::from("{\"x\":");
+        push_map_numeric_text(&mut output, &NumericColumn::UInt128(vec![u128::MAX]), 0);
+        output.push('}');
+        assert_eq!(output, format!("{{\"x\":{}}}", u128::MAX));
+        let mut output = String::new();
+        push_map_numeric_text(&mut output, &NumericColumn::Int64(vec![-17]), 0);
+        assert_eq!(output, "-17");
+    }
+
 }
