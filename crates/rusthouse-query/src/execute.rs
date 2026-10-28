@@ -946,6 +946,31 @@ fn execute_numbers<W: Write>(
             "--part cannot be used with numbers(N)".into(),
         ));
     }
+    // Large virtual sources are safe only when COUNT can be computed
+    // directly from the sequence. Preserve the old scan bound otherwise.
+    if rows > 10_000_000 {
+        let scalar_count = matches!(
+            query.projection,
+            Projection::Count | Projection::CountColumn { .. } | Projection::CountDistinct { .. }
+        );
+        let simple_result = query.order_by.is_none()
+            && query.order_by_extra.is_empty()
+            && query.having.is_none()
+            && !query.distinct;
+        let arithmetic_count = if query.predicates.is_empty() && query.or_predicates.is_empty() {
+            true
+        } else if scalar_count && simple_result {
+            let compiled = compile_numbers_predicates(query)?;
+            count_monotonic_numbers(&compiled, start, rows, step).is_some()
+        } else {
+            false
+        };
+        if !scalar_count || !simple_result || !arithmetic_count {
+            return Err(ExecutionError::Invalid(
+                "virtual inputs over 10000000 rows require an arithmetic COUNT query".into(),
+            ));
+        }
+    }
     if matches!(
         query.projection,
         Projection::MultipleAggregates(_)
