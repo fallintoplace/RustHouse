@@ -36,6 +36,7 @@ pub(super) fn is_function(name: &str) -> bool {
             | "CONCAT"
             | "QUOTE_LITERAL"
             | "CUTQUERYSTRINGANDFRAGMENT"
+            | "DATEDIFF"
             | "COALESCE"
             | "CONCAT_WS"
             | "CUTFRAGMENT"
@@ -493,6 +494,41 @@ fn parse_at_depth(parser: &mut Parser, depth: usize) -> Result<ConstantValue, Pa
                     ConstantValue::Text(input[..end].to_owned())
                 }
                 None => ConstantValue::Null,
+            }
+        }
+        "DATEDIFF" => {
+            let unit = text_arg(parser, depth + 1)?;
+            require(parser, Token::Comma, "dateDiff requires a start date")?;
+            let start = text_arg(parser, depth + 1)?;
+            require(parser, Token::Comma, "dateDiff requires an end date")?;
+            let end = text_arg(parser, depth + 1)?;
+            require(parser, Token::RParen, "dateDiff requires three arguments")?;
+            match (unit, start, end) {
+                (Some(unit), Some(start), Some(end)) => {
+                    let seconds_per_unit: i64 = match unit.to_ascii_lowercase().as_str() {
+                        "second" | "seconds" => 1,
+                        "minute" | "minutes" => 60,
+                        "hour" | "hours" => 3_600,
+                        "day" | "days" => 86_400,
+                        _ => return Err(ParseError("unsupported dateDiff unit".into())),
+                    };
+                    let utc_seconds = |value: &str| {
+                        rusthouse_storage::parse_datetime(value)
+                            .map(i64::from)
+                            .or_else(|| {
+                                rusthouse_storage::parse_date(value)
+                                    .map(|days| i64::from(days) * 86_400)
+                            })
+                    };
+                    let start = utc_seconds(&start)
+                        .ok_or_else(|| ParseError("invalid dateDiff start date".into()))?;
+                    let end = utc_seconds(&end)
+                        .ok_or_else(|| ParseError("invalid dateDiff end date".into()))?;
+                    ConstantValue::Integer(
+                        end.div_euclid(seconds_per_unit) - start.div_euclid(seconds_per_unit),
+                    )
+                }
+                _ => ConstantValue::Null,
             }
         }
         "COALESCE" => {
