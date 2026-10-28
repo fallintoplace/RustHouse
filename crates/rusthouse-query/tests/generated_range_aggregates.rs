@@ -23,7 +23,7 @@ fn billion_row_sums_and_extrema_use_exact_generated_intervals() {
 #[test]
 fn stepped_and_non_interval_predicates_keep_reference_results() {
     for (sql, expected) in [
-        ("SELECT sum(number) FROM generate_series(10, 22, 3) WHERE number >= 13 AND number < 22", "sum(number)\n51\n"),
+        ("SELECT sum(number) FROM generate_series(10, 22, 3) WHERE number >= 13 AND number < 22", "sum(number)\n48\n"),
         ("SELECT max(number) FROM numbers(20) WHERE number != 19", "max(number)\n18\n"),
         ("SELECT sum(number) FROM numbers(10) WHERE number % 2 = 0", "sum(number)\n20\n"),
         ("SELECT min(number) FROM numbers(10) WHERE number = 11", "min(number)\nNULL\n"),
