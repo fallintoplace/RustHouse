@@ -48,8 +48,32 @@ fn push_record(
     Ok(())
 }
 
+fn parse_plain_csv(data: &str) -> Result<Vec<Vec<Option<String>>>, String> {
+    let mut records = Vec::new();
+    for line in data.split_terminator('\n') {
+        let mut row = Vec::new();
+        for field in line.split(',') {
+            if row.len() >= 128 {
+                return Err("CSV records support at most 128 columns".into());
+            }
+            row.push(if field.is_empty() || field == "\\N" {
+                None
+            } else {
+                Some(field.to_owned())
+            });
+        }
+        push_record(&mut records, &mut row)?;
+    }
+    Ok(records)
+}
+
 fn parse_csv(data: &str) -> Result<Vec<Vec<Option<String>>>, String> {
     let data = data.strip_prefix('\u{feff}').unwrap_or(data);
+    // Unquoted CSV needs neither a character state machine nor incremental
+    // String::push calls. Reuse the validated bounded record path.
+    if !data.as_bytes().iter().any(|&byte| byte == b'"' || byte == b'\r') {
+        return parse_plain_csv(data);
+    }
     let mut records = Vec::new();
     let mut row = Vec::new();
     let mut field = String::new();
@@ -119,39 +143,10 @@ fn decode_tsv_cell(field: &str) -> Result<String, String> {
     if !field.as_bytes().contains(&b'\\') {
         return Ok(field.to_owned());
     }
-    let mut decoded = Vec::with_capacity(field.len());
-    let mut chars = field.chars();
-    while let Some(ch) = chars.next() {
-        if ch != '\\' {
-            let mut bytes = [0; 4];
-            decoded.extend_from_slice(ch.encode_utf8(&mut bytes).as_bytes());
-            continue;
-        }
-        let escaped = chars.next().ok_or("TSV ends with an incomplete escape")?;
-        match escaped {
-            't' => decoded.push(b'\t'),
-            'n' => decoded.push(b'\n'),
-            'r' => decoded.push(b'\r'),
-            '0' => decoded.push(0),
-            'b' => decoded.push(8),
-            'f' => decoded.push(12),
-            'v' => decoded.push(11),
-            '\\' => decoded.push(b'\\'),
-            'x' => {
-                let high = chars
-                    .next()
-                    .and_then(|digit| digit.to_digit(16))
-                    .ok_or("invalid TSV hex escape")?;
-                let low = chars
-                    .next()
-                    .and_then(|digit| digit.to_digit(16))
-                    .ok_or("invalid TSV hex escape")?;
-                decoded.push(((high << 4) | low) as u8);
-            }
-            'N' => return Err("TSV NULL marker must occupy the whole field".into()),
-            _ => return Err(format!("unsupported TSV escape: \\{escaped}")),
-        }
-    }
+    // Decode plain UTF-8 spans in bulk rather than encoding each character
+    // again. The shared decoder rejects unsupported or truncated escapes.
+    let decoded = crate::tsv_escape::decode_tsv_field(field.as_bytes())
+        .map_err(|error| error.to_string())?;
     String::from_utf8(decoded).map_err(|_| "invalid UTF-8 in TSV field".into())
 }
 
@@ -384,6 +379,17 @@ mod tests {
     }
 
     #[test]
+    fn plain_csv_fast_path_keeps_nulls_empty_lines_and_limits() {
+        let rows = parse_csv("id,value\n1,Ada\n2,\\N\n3,\n\n").unwrap();
+        assert_eq!(rows.len(), 5);
+        assert_eq!(rows[1], vec![Some("1".into()), Some("Ada".into())]);
+        assert_eq!(rows[2], vec![Some("2".into()), None]);
+        assert_eq!(rows[3], vec![Some("3".into()), None]);
+        assert_eq!(rows[4], vec![None]);
+        assert!(parse_csv(&"x,".repeat(129)).is_err());
+    }
+
+    #[test]
     fn csv_import_distinguishes_null_sentinel_and_quoted_text() {
         let rows = parse_csv("id,value\n1,\\N\n2,\"\\N\"\n3,\n4,\"\"\n").unwrap();
         assert_eq!(rows[1], vec![Some("1".into()), None]);
@@ -412,6 +418,10 @@ mod tests {
     fn decodes_tsv_cells_without_row_state() {
         assert_eq!(decode_tsv_cell("plain").unwrap(), "plain");
         assert_eq!(decode_tsv_cell("café-東京").unwrap(), "café-東京");
+        assert_eq!(
+            decode_tsv_cell("café-東京\\tMünchen").unwrap(),
+            "café-東京\tMünchen"
+        );
         assert_eq!(decode_tsv_cell("").unwrap(), "");
         assert_eq!(decode_tsv_cell("caf\\xC3\\xA9\\t").unwrap(), "café\t");
         assert!(decode_tsv_cell("\\N").is_err());
