@@ -10,16 +10,16 @@ fn checked_string_length(column: &TypedColumn, row: usize) -> Result<Option<usiz
     let missing = || ExecutionError::Invalid("missing LENGTH string value in batch".into());
     match column {
         TypedColumn::Text(values) => values
-            .get(row)
-            .map(|value| Some(value.len()))
+            .byte_length(row)
+            .map(Some)
             .ok_or_else(missing),
         TypedColumn::NullableText { values, nulls } => {
             if *nulls.get(row).ok_or_else(missing)? != 0 {
                 Ok(None)
             } else {
                 values
-                    .get(row)
-                    .map(|value| Some(value.len()))
+                    .byte_length(row)
+                    .map(Some)
                     .ok_or_else(missing)
             }
         }
