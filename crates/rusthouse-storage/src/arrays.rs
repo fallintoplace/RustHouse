@@ -255,7 +255,10 @@ mod tests {
 
     #[test]
     fn reads_8192_offsets_in_one_bulk_read() {
-        struct Counting<'a> { inner: &'a [u8], calls: usize }
+        struct Counting<'a> {
+            inner: &'a [u8],
+            calls: usize,
+        }
         impl Read for Counting<'_> {
             fn read(&mut self, bytes: &mut [u8]) -> io::Result<usize> {
                 self.calls += 1;
@@ -263,7 +266,10 @@ mod tests {
             }
         }
         let data = vec![0u8; 8192 * OFFSET_ENTRY_BYTES];
-        let mut reader = Counting { inner: &data, calls: 0 };
+        let mut reader = Counting {
+            inner: &data,
+            calls: 0,
+        };
         let offsets = read_array_offsets(&mut reader, 8192, ArrayOffsetsEncoding::Sizes).unwrap();
         assert_eq!(offsets.len(), 8192);
         assert_eq!(offsets.element_count(), 0);
