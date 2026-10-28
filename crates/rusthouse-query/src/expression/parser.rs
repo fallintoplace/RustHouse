@@ -49,13 +49,19 @@ pub(super) fn primary(parser: &mut Parser) -> Result<ScalarExpr, ParseError> {
 pub(super) fn product(parser: &mut Parser) -> Result<ScalarExpr, ParseError> {
     let mut expr = primary(parser)?;
     loop {
-        if parser.take(Token::Star) {
-            expr = ScalarExpr::Multiply(Box::new(expr), Box::new(primary(parser)?));
+        let multiply = if parser.take(Token::Star) {
+            true
         } else if parser.take(Token::Slash) {
-            expr = ScalarExpr::Divide(Box::new(expr), Box::new(primary(parser)?));
+            false
         } else {
             break;
-        }
+        };
+        let right = Box::new(primary(parser)?);
+        expr = if multiply {
+            ScalarExpr::Multiply(Box::new(expr), right)
+        } else {
+            ScalarExpr::Divide(Box::new(expr), right)
+        };
     }
     Ok(expr)
 }
