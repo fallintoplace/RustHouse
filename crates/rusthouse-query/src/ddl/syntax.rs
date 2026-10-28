@@ -14,7 +14,7 @@ fn canonical_type(name: &str) -> Option<&'static str> {
         "SMALLINT" => "Int16",
         "INTEGER" | "INT" => "Int32",
         "BIGINT" => "Int64",
-        "TEXT" => "String",
+        "TEXT" | "VARCHAR" | "CHARACTER" => "String",
         "TIMESTAMP" => "DateTime",
         "REAL" => "Float32",
         "DOUBLE" => "Float64",
@@ -111,4 +111,23 @@ pub(super) fn parse_column_definitions(parser: &mut Parser) -> Result<Vec<Column
         }
     }
     Ok(columns)
+}
+
+#[cfg(test)]
+mod varchar_alias_tests {
+    use super::*;
+
+    #[test]
+    fn text_aliases_use_string_storage() {
+        let parsed = crate::ddl::parse_ddl(
+            "CREATE TABLE labels (short_name VARCHAR, initial CHARACTER)",
+        )
+        .unwrap()
+        .unwrap();
+        let crate::ddl::Ddl::CreateTable { columns, .. } = parsed else {
+            panic!("expected a CREATE TABLE");
+        };
+        assert_eq!(columns[0].data_type, "String");
+        assert_eq!(columns[1].data_type, "String");
+    }
 }
