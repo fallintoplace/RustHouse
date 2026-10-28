@@ -1653,7 +1653,7 @@ mod clickhouse_uniq_exact_parity_tests {
         assert_eq!(alias.projection, canonical.projection);
         let mut output = Vec::new();
         execute(&alias, None, &mut output).unwrap();
-        assert!(String::from_utf8(output).unwrap().contains("\\n7\\n"));
+        assert!(String::from_utf8(output).unwrap().lines().any(|line| line == "7"));
         assert!(parse_select("SELECT uniqExact() FROM numbers(1)").is_err());
         assert!(parse_select("SELECT uniqExact(number, number) FROM numbers(1)").is_err());
     }
