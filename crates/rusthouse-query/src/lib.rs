@@ -128,6 +128,10 @@ pub enum Projection {
     CountDistinct {
         column: String,
     },
+    /// Fixed-memory approximate cardinality (~0.81% RSE).
+    ApproxDistinct {
+        column: String,
+    },
     GroupedCount {
         column: String,
     },
@@ -671,6 +675,16 @@ fn parse_select_tokens(tokens: Vec<Token>) -> Result<Select, ParseError> {
             }
             Projection::CountColumn { column }
         }
+    } else if matches!(parser.tokens.get(parser.index), Some(Token::Word(name)) if name.eq_ignore_ascii_case("UNIQ"))
+        && parser.tokens.get(parser.index + 1) == Some(&Token::LParen)
+    {
+        parser.keyword("UNIQ");
+        parser.take(Token::LParen);
+        let column = parser.word()?;
+        if !parser.take(Token::RParen) {
+            return Err(ParseError("expected ')' after uniq(column)".into()));
+        }
+        Projection::ApproxDistinct { column }
     } else if matches!(parser.tokens.get(parser.index + 1), Some(Token::LParen))
         && !matches!(parser.tokens.get(parser.index), Some(Token::Word(word)) if scalar::is_function(word) || text_scalar::is_function(word))
     {
@@ -1003,6 +1017,7 @@ fn parse_select_tokens(tokens: Vec<Token>) -> Result<Select, ParseError> {
                 | Projection::Count
                 | Projection::CountColumn { .. }
                 | Projection::CountDistinct { .. }
+                | Projection::ApproxDistinct { .. }
                 | Projection::Aggregate { .. }
                 | Projection::GroupedCount { .. }
                 | Projection::GroupedDistinctCount { .. }
@@ -1534,6 +1549,7 @@ fn parse_select_tokens(tokens: Vec<Token>) -> Result<Select, ParseError> {
             Projection::Count
                 | Projection::CountColumn { .. }
                 | Projection::CountDistinct { .. }
+                | Projection::ApproxDistinct { .. }
                 | Projection::Aggregate { .. }
                 | Projection::MultipleAggregates(_)
                 | Projection::StringLength { .. }
