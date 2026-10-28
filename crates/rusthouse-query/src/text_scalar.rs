@@ -80,6 +80,7 @@ pub(super) fn is_function(name: &str) -> bool {
             | "PATHFULL"
             | "REPLACE_LAST"
             | "NETLOC"
+            | "DOMAIN"
             | "STRIP_SUFFIX"
             | "REPEAT"
             | "BASE64_DECODE"
@@ -1576,6 +1577,29 @@ fn parse_at_depth(parser: &mut Parser, depth: usize) -> Result<ConstantValue, Pa
                         .to_owned(),
                 ),
                 _ => ConstantValue::Null,
+            }
+        }
+        "DOMAIN" => {
+            let input = text_arg(parser, depth + 1)?;
+            require(parser, Token::RParen, "domain requires one argument")?;
+            match input {
+                Some(input) => {
+                    let authority = input
+                        .split_once("://")
+                        .map(|(_, rest)| rest.split(['/', '?', '#']).next().unwrap_or(""))
+                        .unwrap_or("");
+                    let host_port = authority.rsplit('@').next().unwrap_or("");
+                    let host = if let Some(without_bracket) = host_port.strip_prefix('[') {
+                        without_bracket
+                            .split_once(']')
+                            .map(|(host, _)| host)
+                            .unwrap_or("")
+                    } else {
+                        host_port.split(':').next().unwrap_or("")
+                    };
+                    ConstantValue::Text(host.to_owned())
+                }
+                None => ConstantValue::Null,
             }
         }
         "NETLOC" => {
