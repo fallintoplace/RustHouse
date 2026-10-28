@@ -3,7 +3,7 @@ mod arithmetic;
 use self::arithmetic::*;
 
 use super::typed::{self, Cell};
-use super::{AggregateState, ExecutionError, Number};
+use super::{AggregateState, ExecutionError, Number, NumberKey, number_at};
 use crate::{AggregateItem, ScalarExpr, Select};
 use rusthouse_storage::{TypedColumn, TypedQueryReader, inspect_query_source};
 use std::collections::{HashMap, HashSet};
@@ -192,15 +192,23 @@ fn distinct_argument(
     row: usize,
 ) -> Result<Option<typed::Key>, ExecutionError> {
     if let BoundExpr::Column(index) = expression {
-        let value = typed::cell(&batch[*index], row);
-        return match value {
-            Cell::Null => Ok(None),
-            // These Cells already own the input bytes. Move the allocation
-            // into the distinct key instead of cloning every text/UUID value.
-            Cell::Text(bytes) => Ok(Some(typed::Key::Text(bytes))),
-            Cell::Uuid(text) => Ok(Some(typed::Key::Uuid(text))),
-            other => Ok(Some(other.key())),
+        let key = match &batch[*index] {
+            TypedColumn::Numeric(values) => {
+                Some(typed::Key::Numeric(NumberKey::from(number_at(values, row))))
+            }
+            TypedColumn::Text(values) => values.get(row).map(|value| typed::Key::Text(value.to_vec())),
+            TypedColumn::Uuid(values) => Some(typed::Key::Uuid(values[row].to_string())),
+            TypedColumn::NullableNumeric { values, nulls } => (nulls[row] == 0)
+                .then(|| typed::Key::Numeric(NumberKey::from(number_at(values, row)))),
+            TypedColumn::NullableText { values, nulls } => {
+                if nulls[row] != 0 {
+                    None
+                } else {
+                    values.get(row).map(|value| typed::Key::Text(value.to_vec()))
+                }
+            }
         };
+        return Ok(key);
     }
     Ok(eval_number(expression, batch, row)?.map(|value| Cell::Numeric(value).key()))
 }
