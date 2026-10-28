@@ -92,6 +92,19 @@ class BenchmarkEntryPointTests(unittest.TestCase):
              "--binary", "target/debug/rusthouse", "--rows", "2048"],
         )
 
+    def test_analytics_suite_uses_package_import_path(self):
+        with mock.patch.object(runner, "run_command", return_value=0) as invoke:
+            result = runner.main([
+                "workload", "analytics-suite", "--",
+                "--binary", "target/debug/rusthouse",
+            ])
+        self.assertEqual(result, 0)
+        self.assertEqual(
+            invoke.call_args.args[1],
+            [sys.executable, "-m", "bench.analytics.suite_runner",
+             "--binary", "target/debug/rusthouse"],
+        )
+
     def test_python_tests_keep_running_after_a_failure(self):
         with mock.patch.object(
             runner, "run_command", side_effect=[0, 1] + [0] * (len(runner.PYTHON_SUITES) - 2)
