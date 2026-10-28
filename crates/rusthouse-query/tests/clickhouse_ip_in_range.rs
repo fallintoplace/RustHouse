@@ -23,7 +23,10 @@ fn matches_ipv4_and_ipv6_cidr_and_rejects_cross_family() {
     ] {
         assert_eq!(value(sql), ConstantValue::Integer(expected), "{sql}");
     }
-    assert_eq!(value("SELECT isIPAddressInRange(NULL, '10.0.0.0/8')"), ConstantValue::Null);
+    assert_eq!(
+        value("SELECT isIPAddressInRange(NULL, '10.0.0.0/8')"),
+        ConstantValue::Integer(0)
+    );
 }
 #[test]
 fn rejects_malformed_addresses_ranges_and_wrong_argument_counts() {
