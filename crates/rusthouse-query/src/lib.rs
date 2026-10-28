@@ -136,6 +136,10 @@ pub enum Projection {
         column: String,
         value_column: String,
     },
+    GroupedMultiApproxDistinct {
+        columns: Vec<String>,
+        value_column: String,
+    },
     GroupedCount {
         column: String,
     },
@@ -495,6 +499,17 @@ impl Parser {
                     2 => "uniq".into(),
                     _ => return Err(ParseError("ORDER BY position is out of range".into())),
                 },
+                Projection::GroupedMultiApproxDistinct { columns, .. } => {
+                    if position == columns.len() + 1 {
+                        "uniq".into()
+                    } else {
+                        position
+                            .checked_sub(1)
+                            .and_then(|index| columns.get(index))
+                            .cloned()
+                            .ok_or_else(|| ParseError("ORDER BY position is out of range".into()))?
+                    }
+                }
                 Projection::GroupedMultiCount { columns }
                 | Projection::GroupedMultiDistinctCount { columns, .. } => {
                     if position == columns.len() + 1 {
@@ -990,12 +1005,16 @@ fn parse_select_tokens(tokens: Vec<Token>) -> Result<Select, ParseError> {
                 Projection::GroupedMultiDistinctCount { columns, value_column }
             }
         } else if let Some(value_column) = grouped_approx {
-            if columns.len() != 1 {
-                return Err(ParseError("grouped uniq requires exactly one GROUP BY key".into()));
+            if columns.len() > 8 {
+                return Err(ParseError("grouped uniq supports at most eight GROUP BY keys".into()));
             }
-            Projection::GroupedApproxDistinct {
-                column: columns.remove(0),
-                value_column,
+            if columns.len() == 1 {
+                Projection::GroupedApproxDistinct {
+                    column: columns.remove(0),
+                    value_column,
+                }
+            } else {
+                Projection::GroupedMultiApproxDistinct { columns, value_column }
             }
         } else if let Some((function, value_column)) = grouped_aggregate {
             Projection::GroupedAggregate {
@@ -1398,7 +1417,8 @@ fn parse_select_tokens(tokens: Vec<Token>) -> Result<Select, ParseError> {
                     column.clone()
                 }
                 Projection::GroupedMultiAggregates { columns, .. }
-                | Projection::GroupedMultiDistinctCount { columns, .. } => position
+                | Projection::GroupedMultiDistinctCount { columns, .. }
+                | Projection::GroupedMultiApproxDistinct { columns, .. } => position
                     .checked_sub(1)
                     .and_then(|index| columns.get(index))
                     .cloned()
@@ -1419,6 +1439,7 @@ fn parse_select_tokens(tokens: Vec<Token>) -> Result<Select, ParseError> {
             Projection::GroupedMultiCount { columns } if columns == &group_columns => {}
             Projection::GroupedMultiAggregates { columns, .. }
             | Projection::GroupedMultiDistinctCount { columns, .. }
+            | Projection::GroupedMultiApproxDistinct { columns, .. }
                 if columns == &group_columns => {}
             Projection::GroupedCount { column }
             | Projection::GroupedDistinctCount { column, .. }
@@ -1429,7 +1450,9 @@ fn parse_select_tokens(tokens: Vec<Token>) -> Result<Select, ParseError> {
             Projection::GroupedCount { .. }
             | Projection::GroupedDistinctCount { .. }
             | Projection::GroupedApproxDistinct { .. }
+            | Projection::GroupedMultiApproxDistinct { .. }
             | Projection::GroupedMultiDistinctCount { .. }
+            | Projection::GroupedMultiApproxDistinct { .. }
             | Projection::GroupedMultiCount { .. }
             | Projection::GroupedAggregate { .. }
             | Projection::GroupedAggregates { .. }
@@ -1450,6 +1473,7 @@ fn parse_select_tokens(tokens: Vec<Token>) -> Result<Select, ParseError> {
             | Projection::GroupedDistinctCount { .. }
             | Projection::GroupedApproxDistinct { .. }
             | Projection::GroupedMultiDistinctCount { .. }
+            | Projection::GroupedMultiApproxDistinct { .. }
             | Projection::GroupedMultiCount { .. }
             | Projection::GroupedAggregate { .. }
             | Projection::GroupedAggregates { .. }
@@ -1521,7 +1545,8 @@ fn parse_select_tokens(tokens: Vec<Token>) -> Result<Select, ParseError> {
                     "HAVING must match the selected aggregate".into(),
                 ));
             }
-        } else if let Projection::GroupedApproxDistinct { value_column, .. } = &projection {
+        } else if let Projection::GroupedApproxDistinct { value_column, .. }
+        | Projection::GroupedMultiApproxDistinct { value_column, .. } = &projection {
             if !parser.keyword("UNIQ")
                 || !parser.take(Token::LParen)
                 || parser.word()? != *value_column
@@ -1576,6 +1601,7 @@ fn parse_select_tokens(tokens: Vec<Token>) -> Result<Select, ParseError> {
             | Projection::GroupedDistinctCount { .. }
             | Projection::GroupedApproxDistinct { .. }
             | Projection::GroupedMultiDistinctCount { .. }
+            | Projection::GroupedMultiApproxDistinct { .. }
             | Projection::GroupedMultiCount { .. }
     ) {
         if let Some(count_alias) = alias.as_deref() {
@@ -1620,6 +1646,15 @@ fn parse_select_tokens(tokens: Vec<Token>) -> Result<Select, ParseError> {
             .any(|term| &term.column != column && term.column != "uniq")
         {
             return Err(ParseError("grouped uniq ORDER BY must be key or uniq".into()));
+        }
+    }
+    if let Projection::GroupedMultiApproxDistinct { columns, .. } = &projection {
+        if order_by
+            .iter()
+            .chain(order_by_extra.iter())
+            .any(|term| !columns.contains(&term.column) && term.column != "uniq")
+        {
+            return Err(ParseError("multi-group uniq ORDER BY needs a group key or uniq".into()));
         }
     }
     if let Projection::GroupedMultiCount { columns }
