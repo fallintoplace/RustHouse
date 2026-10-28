@@ -175,7 +175,7 @@ impl SortedRows {
             .checked_add(1)
             .ok_or_else(|| ExecutionError::Invalid("too many rows to sort".into()))?;
         let retained = self.requested.min(MAX_SORTED_ROWS);
-        if retained == 0 || (self.rows.len() == retained && self.would_discard(key, &extra_keys)) {
+        if retained == 0 || (self.rows.len() == retained && self.would_discard(key, extra_keys.iter().copied())) {
             return Ok(());
         }
         let row = SortedRow {
