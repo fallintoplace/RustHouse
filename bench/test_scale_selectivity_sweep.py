@@ -1,0 +1,28 @@
+import unittest
+from types import SimpleNamespace
+
+from bench.scale.selectivity_sweep import run_sweep, thresholds
+
+
+class SelectivitySweepTests(unittest.TestCase):
+    def test_thresholds_include_both_boundaries(self):
+        self.assertEqual(thresholds(8), [0, 2, 4, 6, 8])
+        self.assertEqual(thresholds(1), [0, 1])
+
+    def test_verifies_each_predicate(self):
+        def execute(command, **kwargs):
+            threshold = int(command[2].rsplit(" ", 1)[-1])
+            return SimpleNamespace(returncode=0, stdout=f"{8-threshold}\n".encode(), stderr=b"")
+        report = run_sweep("rusthouse", "frozen", 8, samples=2, execute=execute)
+        self.assertEqual(len(report["results"]), 5)
+        self.assertTrue(all(result["verified"] for result in report["results"]))
+
+    def test_fails_wrong_result(self):
+        def execute(command, **kwargs):
+            return SimpleNamespace(returncode=0, stdout=b"wrong\n", stderr=b"")
+        with self.assertRaisesRegex(ValueError, "differs"):
+            run_sweep("rusthouse", "frozen", 10, execute=execute)
+
+
+if __name__ == "__main__":
+    unittest.main()
