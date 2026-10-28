@@ -2,9 +2,15 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from run import verify_result, write_fixture
+from run import logical_probe_throughput, verify_result, write_fixture
 
 class JoinWorkloadTests(unittest.TestCase):
+    def test_join_throughput_rejects_invalid_medians(self):
+        self.assertEqual(logical_probe_throughput(20, 2.0), 10.0)
+        for median in [0, -1.0, float("nan"), float("inf")]:
+            with self.assertRaises(ValueError):
+                logical_probe_throughput(20, median)
+
     def test_small_fixture_and_matches(self):
         with tempfile.TemporaryDirectory() as directory:
             expected = write_fixture(Path(directory), 20, 5)
