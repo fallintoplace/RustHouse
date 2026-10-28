@@ -660,14 +660,12 @@ impl TypedPartReader {
                     )?)
                 }
                 StorageKind::Uuid => {
-                    let bytes = column.data.read_fixed(
-                        index,
-                        rows.checked_mul(16).ok_or_else(|| {
-                            PartError::InvalidScan("UUID granule too large".into())
-                        })?,
-                    )?;
+                    // Decode directly from the validated mark stream. The
+                    // previous path first allocated and copied an entire
+                    // mark's raw bytes before decoding into UUID values.
+                    let mut stream = MarkStream::open(&mut column.data, index)?;
                     TypedColumn::Uuid(
-                        read_uuid_values(&mut bytes.as_slice(), rows)
+                        read_uuid_values(&mut stream, rows)
                             .map_err(|error| PartError::InvalidScan(error.to_string()))?,
                     )
                 }
@@ -1004,4 +1002,38 @@ mod map_row_fast_path_tests {
         assert!(row.capacity() >= reserved);
     }
 
+}
+
+#[cfg(test)]
+mod direct_uuid_mark_scan_tests {
+    use super::{TypedColumn, TypedPartReader};
+    use crate::{Column, write_wide_part};
+    use std::fs;
+
+    #[test]
+    fn uuid_stream_preserves_row_order_across_multiple_marks() {
+        let root = std::env::temp_dir().join(format!(
+            "rusthouse-direct-uuid-mark-{}", std::process::id()
+        ));
+        let _ = fs::remove_dir_all(&root);
+        let columns = [Column { name: "id".into(), data_type: "UUID".into() }];
+        let rows = (0..2050)
+            .map(|i| vec![Some(format!("00000000-0000-0000-0000-{i:012x}"))])
+            .collect::<Vec<_>>();
+        write_wide_part(&root, &columns, &rows).unwrap();
+        let mut reader = TypedPartReader::open(&root, &["id".into()]).unwrap();
+        let mut observed = Vec::new();
+        while let Some(batch) = reader.next_batch().unwrap() {
+            if let TypedColumn::Uuid(uuids) = &batch[0] {
+                observed.extend(uuids.iter().map(ToString::to_string));
+            } else {
+                panic!("expected UUID batch");
+            }
+        }
+        let expected = rows.into_iter()
+            .map(|row| row[0].clone().unwrap())
+            .collect::<Vec<_>>();
+        assert_eq!(observed, expected);
+        fs::remove_dir_all(root).unwrap();
+    }
 }
