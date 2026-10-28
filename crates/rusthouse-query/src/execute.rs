@@ -1027,6 +1027,34 @@ fn execute_numbers<W: Write>(
         return Ok(());
     }
 
+    // All generated values are unique and monotonic. With a simple range
+    // predicate, both the first matching index and the page boundary are
+    // known without visiting any of the preceding billion generated rows.
+    if !is_count
+        && (!query.predicates.is_empty() || !query.or_predicates.is_empty())
+    {
+        if let Some(limit) = query.limit {
+            if let Some((lower, upper)) = monotonic_range_indices(&comparisons, start, rows, step) {
+                let available = upper - lower;
+                let skip = (query.offset.unwrap_or(0) as u64).min(available);
+                let emit = (limit as u64).min(available - skip);
+                let descending = sorting.as_ref().is_some_and(SortedRows::descending);
+                for position in skip..skip + emit {
+                    let index = if descending { upper - 1 - position } else { lower + position };
+                    let number = u128::from(start) + u128::from(index) * u128::from(step);
+                    for column in 0..projected.len() {
+                        if column > 0 {
+                            output.write_all(b"\t")?;
+                        }
+                        write!(output, "{number}")?;
+                    }
+                    writeln!(output)?;
+                }
+                return Ok(());
+            }
+        }
+    }
+
     // numbers() is already sorted and its values are unique. A filter-free
     // ORDER BY can page the generated range directly rather than filling a heap.
     let unfiltered_sort = if query.predicates.is_empty() && query.or_predicates.is_empty() {
