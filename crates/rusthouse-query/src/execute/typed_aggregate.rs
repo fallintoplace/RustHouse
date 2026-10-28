@@ -185,6 +185,25 @@ pub(super) fn execute_typed_aggregate<W: Write>(
     Ok(())
 }
 
+fn update_group_numeric(
+    state: &mut AggregateState,
+    column: &TypedColumn,
+    row: usize,
+) -> Result<(), ExecutionError> {
+    match column {
+        TypedColumn::Numeric(values) => state.update(super::number_at(values, row)),
+        TypedColumn::NullableNumeric { values, nulls } => {
+            if nulls[row] == 0 {
+                state.update(super::number_at(values, row))?;
+            }
+            Ok(())
+        }
+        _ => Err(ExecutionError::Invalid(
+            "numeric aggregates require a numeric column".into(),
+        )),
+    }
+}
+
 const MAX_GROUPS: usize = 100_000;
 
 /// Group filtered rows by a typed key and evaluate a numeric aggregate.
@@ -370,16 +389,9 @@ pub(super) fn execute_grouped_aggregate<W: Write>(
                 }
                 continue;
             }
-            let value = typed::cell(&batch[value_index], row);
-            match value {
-                Cell::Numeric(value) => groups[group].1.update(value)?,
-                Cell::Null => {}
-                Cell::Text(_) | Cell::Uuid(_) => {
-                    return Err(ExecutionError::Invalid(
-                        "numeric aggregates require a numeric column".into(),
-                    ));
-                }
-            }
+            // Numeric aggregate inputs are already native column vectors.
+            // Do not construct a Cell for each GROUP BY input row.
+            update_group_numeric(&mut groups[group].1, &batch[value_index], row)?;
         }
     }
     if let Some(having) = &query.having {
@@ -477,5 +489,26 @@ mod borrowed_text_extrema_tests {
             AggregateFunction::Max
         ));
         assert!(replaces_text_extreme(b"beta", None, AggregateFunction::Min));
+    }
+}
+
+#[cfg(test)]
+mod grouped_direct_numeric_aggregate_tests {
+    use super::*;
+
+    #[test]
+    fn direct_grouped_sum_skips_nulls_and_preserves_signed_values() {
+        let column = TypedColumn::NullableNumeric {
+            values: NumericColumn::Int64(vec![-3, 17, 9]),
+            nulls: vec![0, 1, 0],
+        };
+        let mut aggregate = AggregateState::new(AggregateFunction::Sum);
+        for row in 0..column.len() {
+            update_group_numeric(&mut aggregate, &column, row).unwrap();
+        }
+        assert_eq!(aggregate.render(), "6");
+        let non_numeric = TypedColumn::Numeric(NumericColumn::UInt64(vec![4]));
+        update_group_numeric(&mut aggregate, &non_numeric, 0).unwrap();
+        assert_eq!(aggregate.render(), "10");
     }
 }
