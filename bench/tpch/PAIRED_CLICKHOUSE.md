@@ -32,3 +32,18 @@ order bias but **does not equalize process startup, TCP transport, server caches
 or memory residency**. All samples are correctness-checked. The geomean is
 `null` unless every query passes. This is not an official TPC-H score or
 a general engine-throughput comparison.
+
+## Audit before publishing a speedup
+
+Paired measurements must be reference verified. Check the raw samples,
+per-query medians, p90 values, SQL fingerprint and geometric mean:
+
+    python3 -m bench.tpch.competitive_gate \
+      --input bench/results/paired-clickhouse.json \
+      --min-queries 22 --min-geomean 1.0
+
+Only use `--min-queries 22` when all 22 canonical query IDs were actually
+run and independently verified. This is an optional, manually invoked audit
+and does not turn the paired CLI comparison into an official TPC-H score.
+A ratio above 1 measures the RustHouse speed advantage in this specific
+fresh-process/native-client setup, not an in-process server comparison.
