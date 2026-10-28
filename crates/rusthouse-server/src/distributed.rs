@@ -1038,7 +1038,7 @@ pub fn handle(method: &str, body: &[u8], cluster: &Cluster, max_rows: usize) -> 
             None => return Response::text("400 Bad Request", "unsupported distributed sort\n"),
         }
     } else if is_safe_scan(&select) {
-        match unpaged_scan_sql(sql, &select) {
+        match bounded_scan_sql(sql, &select) {
             Some(query) => query,
             None => {
                 return Response::text("400 Bad Request", "unsupported distributed pagination\n");
