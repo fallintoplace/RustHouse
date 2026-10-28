@@ -86,6 +86,7 @@ pub(super) fn is_function(name: &str) -> bool {
             | "STARTS_WITH"
             | "STARTSWITH"
             | "HASTOKEN"
+            | "TOMONTHNUMSINCEEPOCH"
             | "CONTAINS"
             | "STRIP_PREFIX"
             | "RIGHT"
@@ -1361,6 +1362,28 @@ fn parse_at_depth(parser: &mut Parser, depth: usize) -> Result<ConstantValue, Pa
                     }
                 }
                 _ => ConstantValue::Null,
+            }
+        }
+        "TOMONTHNUMSINCEEPOCH" => {
+            let input = text_arg(parser, depth + 1)?;
+            require(parser, Token::RParen, "toMonthNumSinceEpoch requires one argument")?;
+            match input {
+                Some(value) => {
+                    let days = rusthouse_storage::parse_date(&value).map(u32::from)
+                        .or_else(|| rusthouse_storage::parse_datetime(&value).map(|seconds| seconds / 86_400))
+                        .ok_or_else(|| ParseError("toMonthNumSinceEpoch requires a valid UTC Date or DateTime".into()))?;
+                    let date = rusthouse_storage::format_date(u16::try_from(days).map_err(|_| {
+                        ParseError("toMonthNumSinceEpoch date is out of range".into())
+                    })?);
+                    let year = date[..4].parse::<i64>().map_err(|_| {
+                        ParseError("invalid calendar year".into())
+                    })?;
+                    let month = date[5..7].parse::<i64>().map_err(|_| {
+                        ParseError("invalid calendar month".into())
+                    })?;
+                    ConstantValue::Integer((year - 1970) * 12 + month - 1)
+                }
+                None => ConstantValue::Null,
             }
         }
         "HASTOKEN" => {
