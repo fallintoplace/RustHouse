@@ -3,6 +3,7 @@
 import argparse
 import csv
 import json
+import math
 import sys
 from pathlib import Path
 
@@ -16,11 +17,24 @@ def rows_from_report(report):
     for result in report["results"]:
         if not isinstance(result, dict) or "query" not in result or "status" not in result:
             raise ValueError("each result needs query and status")
-        values = result.get("timings_seconds") or []
+        values = result.get("timings_seconds", [])
         latency = result.get("latency")
         if not isinstance(values, list):
             raise ValueError("timings_seconds must be a list")
         valid = result["status"] in ("passed", "unverified")
+        if valid:
+            if not values or any(
+                type(value) not in (int, float) or not math.isfinite(value) or value <= 0
+                for value in values
+            ):
+                raise ValueError("successful query has invalid timing samples")
+            if not isinstance(latency, dict) or any(
+                type(latency.get(key)) not in (int, float)
+                or not math.isfinite(latency[key])
+                or latency[key] <= 0
+                for key in ("median_seconds", "p90_seconds")
+            ):
+                raise ValueError("successful query has invalid latency summary")
         rows.append({
             "query": result["query"],
             "status": result["status"],

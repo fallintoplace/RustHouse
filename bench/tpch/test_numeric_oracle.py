@@ -23,6 +23,10 @@ class NumericOracleTests(unittest.TestCase):
 
     def test_rejects_nan_infinity_and_bad_tolerances(self):
         self.assertFalse(numeric_equal(b"NaN", b"nan"))
+        self.assertFalse(numeric_equal(b"NaN", b"NaN"))
+        self.assertFalse(numeric_equal(b"Infinity", b"Infinity"))
+        self.assertFalse(numeric_equal(b"-Infinity", b"-Infinity"))
+        self.assertTrue(numeric_equal(b"NULL", b"NULL"))
         self.assertFalse(numeric_equal(b"Infinity", b"1"))
         for value in ("NaN", "Infinity", "-1", "abc"):
             with self.assertRaises(ValueError):

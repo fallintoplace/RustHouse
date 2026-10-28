@@ -86,9 +86,10 @@ pub(super) fn execute<W: Write>(
     // Reuse a probe buffer for existing groups instead of allocating a Vec
     // of Cells and a Vec of Keys for every matching input row.
     let mut probe_key = Vec::<Key>::with_capacity(group_indices.len());
+    let no_filters = query.predicates.is_empty() && query.or_predicates.is_empty();
     while let Some(batch) = reader.next_batch()? {
         for row in 0..batch[0].len() {
-            if !typed::passes(&batch, row, &conditions) {
+            if !no_filters && !typed::passes(&batch, row, &conditions) {
                 continue;
             }
             probe_key.clear();

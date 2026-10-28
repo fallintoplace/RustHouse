@@ -13,10 +13,13 @@ pub(super) fn fixed_decimal(value: &str) -> Result<(i128, usize), ParseError> {
     {
         return Err(ParseError("invalid decimal constant".into()));
     }
-    let magnitude = format!("{whole}{fraction}")
-        .parse::<i128>()
-        .map_err(|_| ParseError("decimal constant exceeds Int128".into()))?;
-    let signed = if negative { -magnitude } else { magnitude };
+    let digits = format!("{whole}{fraction}");
+    let signed = if negative {
+        format!("-{digits}").parse::<i128>()
+    } else {
+        digits.parse::<i128>()
+    }
+    .map_err(|_| ParseError("decimal constant exceeds Int128".into()))?;
     Ok((signed, fraction.len()))
 }
 

@@ -86,10 +86,11 @@ pub(super) fn execute<W: Write>(
     let mut text_groups = HashMap::<Vec<u8>, usize>::new();
     let mut total_pairs = 0usize;
     let mut reader = TypedQueryReader::open(part, &names)?;
+    let no_filters = query.predicates.is_empty() && query.or_predicates.is_empty();
 
     while let Some(batch) = reader.next_batch()? {
         for row in 0..batch[0].len() {
-            if !typed::passes(&batch, row, &conditions) {
+            if !no_filters && !typed::passes(&batch, row, &conditions) {
                 continue;
             }
             // Register the group even when every aggregate value is NULL.
@@ -188,6 +189,16 @@ pub(super) fn execute<W: Write>(
                 total_pairs += 1;
             }
         }
+    }
+
+    if let Some(having) = &query.having {
+        groups.retain(|group| {
+            super::predicates::number_matches(
+                super::Number::Unsigned(group.distinct_len() as u128),
+                super::Number::Unsigned(u128::from(having.value)),
+                having.operator,
+            )
+        });
     }
 
     if query.order_by.is_some() {

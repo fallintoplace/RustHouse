@@ -109,7 +109,7 @@ def load_database(input_dir, database, selected=None, batch_size=4096):
             connection.close()
         if database.exists():
             raise ValueError("target database was created while loading")
-        temp.replace(database)
+        os.link(temp, database)
     finally:
         temp.unlink(missing_ok=True)
     return {

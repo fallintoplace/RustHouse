@@ -45,11 +45,15 @@ pub(super) fn parse_content_length(value: &str) -> Result<usize, String> {
         .map_err(|_| "invalid peer Content-Length".into())
 }
 
-pub(super) fn parse_response(raw: &[u8]) -> Result<PeerResponse, String> {
-    let head_end = raw
-        .windows(4)
-        .position(|bytes| bytes == b"\r\n\r\n")
-        .ok_or("peer response has no header terminator")?;
+/// Parse a complete HTTP response head without waiting for the peer to close
+/// its connection. The advertised body length is untrusted and remains bounded.
+fn response_head(raw: &[u8]) -> Result<Option<(usize, u16, String, usize)>, String> {
+    let Some(head_end) = raw.windows(4).position(|bytes| bytes == b"\r\n\r\n") else {
+        if raw.len() >= MAX_HEADER_BYTES {
+            return Err("peer headers exceed 8 KiB".into());
+        }
+        return Ok(None);
+    };
     if head_end + 4 > MAX_HEADER_BYTES {
         return Err("peer headers exceed 8 KiB".into());
     }
@@ -80,12 +84,29 @@ pub(super) fn parse_response(raw: &[u8]) -> Result<PeerResponse, String> {
         }
     }
     let length = length.ok_or("missing peer Content-Length")?;
-    if length > MAX_RESPONSE_BYTES || raw.len() - head_end - 4 != length {
+    let content_type = content_type.ok_or("missing peer Content-Type")?;
+    if length > MAX_RESPONSE_BYTES {
+        return Err("peer response size mismatch or exceeds 8 MiB".into());
+    }
+    Ok(Some((head_end + 4, status, content_type, length)))
+}
+
+/// Total valid wire bytes needed for a complete content-length response.
+pub(super) fn expected_wire_length(raw: &[u8]) -> Result<Option<usize>, String> {
+    response_head(raw)?.map(|(start, _, _, length)| {
+        start.checked_add(length).ok_or("peer response size overflow".into())
+    }).transpose()
+}
+
+pub(super) fn parse_response(raw: &[u8]) -> Result<PeerResponse, String> {
+    let (body_start, status, content_type, length) = response_head(raw)?
+        .ok_or("peer response has no header terminator")?;
+    if raw.len() != body_start + length {
         return Err("peer response size mismatch or exceeds 8 MiB".into());
     }
     Ok(PeerResponse {
         status,
-        content_type: content_type.ok_or("missing peer Content-Type")?,
-        body: raw[head_end + 4..].to_vec(),
+        content_type,
+        body: raw[body_start..].to_vec(),
     })
 }

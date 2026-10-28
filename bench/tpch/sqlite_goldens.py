@@ -3,6 +3,7 @@
 import argparse
 import json
 import sqlite3
+from contextlib import closing
 from pathlib import Path
 
 from run import load_queries, select_queries
@@ -55,7 +56,7 @@ def generate(database, queries_dir, output_dir, only=None,
         raise ValueError("refusing to overwrite existing golden output")
     output_dir.mkdir(parents=True, exist_ok=True)
     summary = []
-    with sqlite3.connect(database.resolve().as_uri() + "?mode=ro", uri=True) as connection:
+    with closing(sqlite3.connect(database.resolve().as_uri() + "?mode=ro", uri=True)) as connection:
         connection.execute("PRAGMA query_only = ON")
         for (number, sql), destination in zip(queries, destinations):
             try:

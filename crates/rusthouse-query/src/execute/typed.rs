@@ -228,6 +228,7 @@ enum Test {
     Compare(Operator, Cell),
     UuidCompare(Operator, [u8; 16]),
     In(Vec<Cell>, bool),
+    UuidInSet(HashSet<[u8; 16]>, bool),
     TextInSet(HashSet<Vec<u8>>, bool),
     NumericInSet(HashSet<NumberKey>, bool),
     NotBetween(Cell, Cell),
@@ -248,9 +249,32 @@ pub(super) struct Condition {
 
 const HASHED_TYPED_IN_MIN_VALUES: usize = 16;
 
+/// Convert already-validated canonical UUID literals into fixed-width hash keys.
+fn uuid_key(value: &str) -> [u8; 16] {
+    let hex = value.replace('-', "");
+    let mut bytes = [0u8; 16];
+    for (index, byte) in bytes.iter_mut().enumerate() {
+        *byte = u8::from_str_radix(&hex[index * 2..index * 2 + 2], 16)
+            .expect("UUID literal was validated during predicate compilation");
+    }
+    bytes
+}
+
 fn compile_in(kind: &str, values: &[String], negated: bool) -> Result<Test, ExecutionError> {
     let targets = parse_literals(kind, values)?;
-    if targets.len() < HASHED_TYPED_IN_MIN_VALUES || base_type(kind) == "UUID" {
+    if base_type(kind) == "UUID" {
+        return Ok(Test::UuidInSet(
+            targets
+                .into_iter()
+                .filter_map(|value| match value {
+                    Cell::Uuid(text) => Some(uuid_key(&text)),
+                    _ => None,
+                })
+                .collect(),
+            negated,
+        ));
+    }
+    if targets.len() < HASHED_TYPED_IN_MIN_VALUES {
         return Ok(Test::In(targets, negated));
     }
     if base_type(kind) == "String" {
@@ -499,6 +523,14 @@ pub(super) fn passes(batch: &[TypedColumn], row: usize, branches: &[Vec<Conditio
                 }
                 Test::In(targets, negated) => {
                     matches_in_at(column, row, targets, *negated)
+                }
+                Test::UuidInSet(targets, negated) => {
+                    match column {
+                        TypedColumn::Uuid(values) => {
+                            targets.contains(values[row].as_bytes()) != *negated
+                        }
+                        _ => false,
+                    }
                 }
                 Test::TextInSet(targets, negated) => {
                     let value = match column {
@@ -796,6 +828,7 @@ pub(super) fn execute_typed<W: Write>(
     let is_grouped = matches!(query.projection, Projection::GroupedCount { .. });
     let mut count = 0u64;
     let mut distinct = HashSet::<Vec<Key>>::new();
+    let mut distinct_probe = Vec::<Key>::new();
     // COUNT(DISTINCT column) has one key; avoid a Vec allocation per row.
     let mut count_distinct_keys = HashSet::<Key>::new();
     // Borrow decoded strings on duplicate probes. Own only new distinct values.
@@ -837,9 +870,10 @@ pub(super) fn execute_typed<W: Write>(
             .and_then(|count| count.checked_add(offset))
             .filter(|count| *count <= MAX_BUFFERED_ROWS)
     };
+    let no_filters = query.predicates.is_empty() && query.or_predicates.is_empty();
     while let Some(batch) = scan.next_batch()? {
         for index in 0..batch[0].len() {
-            if !passes(&batch, index, &conditions) {
+            if !no_filters && !passes(&batch, index, &conditions) {
                 continue;
             }
             if is_count || is_count_column {
@@ -968,19 +1002,26 @@ pub(super) fn execute_typed<W: Write>(
                 }
                 continue;
             }
+            if query.distinct {
+                // Probe with just the hash key. Duplicate rows should never
+                // materialize a second set of projected String/UUID cells.
+                distinct_probe.clear();
+                for &idx in &projection_indices {
+                    distinct_probe.push(cell(&batch[idx], index).key());
+                }
+                if distinct.contains(distinct_probe.as_slice()) {
+                    continue;
+                }
+                if distinct.len() >= MAX_BUFFERED_ROWS {
+                    return Err(ExecutionError::Invalid("too many distinct rows".into()));
+                }
+                distinct.insert(std::mem::take(&mut distinct_probe));
+                distinct_probe = Vec::with_capacity(projection_indices.len());
+            }
             let cells = projection_indices
                 .iter()
                 .map(|&idx| cell(&batch[idx], index))
                 .collect::<Vec<_>>();
-            if query.distinct {
-                let key = cells.iter().map(Cell::key).collect::<Vec<_>>();
-                if distinct.len() >= MAX_BUFFERED_ROWS && !distinct.contains(&key) {
-                    return Err(ExecutionError::Invalid("too many distinct rows".into()));
-                }
-                if !distinct.insert(key) {
-                    continue;
-                }
-            }
             if !sort_indices.is_empty() {
                 let row = Row {
                     values: cells,

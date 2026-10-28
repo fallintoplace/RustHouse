@@ -2,6 +2,7 @@ import tempfile
 import unittest
 from pathlib import Path
 import sqlite3
+from contextlib import closing
 from sqlite_oracle import assert_matches, cell_equal, parse_rows, sqlite_query
 
 
@@ -27,7 +28,7 @@ class SqliteOracleTests(unittest.TestCase):
     def test_sqlite_query(self):
         with tempfile.TemporaryDirectory() as root:
             path = Path(root) / "db.sqlite"
-            with sqlite3.connect(path) as db:
+            with closing(sqlite3.connect(path)) as db, db:
                 db.execute("CREATE TABLE t (x INTEGER)")
                 db.execute("INSERT INTO t VALUES (3)")
             self.assertEqual(sqlite_query(path, "SELECT x FROM t"), [(3,)])

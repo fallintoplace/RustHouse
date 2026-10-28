@@ -194,19 +194,20 @@ pub fn write_wide_part_with_compression(
         return Err(invalid("a wide part supports at most 65536 rows"));
     }
     validate_part_columns(columns)?;
-    let mut streams = Vec::new();
+    if rows.iter().any(|row| row.len() != columns.len()) {
+        return Err(invalid("INSERT row width does not match table schema"));
+    }
+    let granule_count = rows.len().div_ceil(GRANULE_ROWS);
+    let mut streams = Vec::with_capacity(columns.len() * 2);
     if !rows.is_empty() {
         for (index, col) in columns.iter().enumerate() {
             let (_, nullable) = base_type(&col.data_type);
-            let mut data_granules = Vec::new();
-            let mut null_granules = Vec::new();
+            let mut data_granules = Vec::with_capacity(granule_count);
+            let mut null_granules = Vec::with_capacity(granule_count);
             for granule in rows.chunks(GRANULE_ROWS) {
                 let mut data = Vec::new();
                 let mut nulls = Vec::new();
                 for row in granule {
-                    if row.len() != columns.len() {
-                        return Err(invalid("INSERT row width does not match table schema"));
-                    }
                     let null = push_cell(&col.data_type, row[index].as_deref(), &mut data)?;
                     if nullable {
                         nulls.push(u8::from(null));

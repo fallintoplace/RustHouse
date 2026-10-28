@@ -118,9 +118,10 @@ pub fn read_legacy_strings<R: Read>(
 }
 
 fn append_sized_offsets(values: &mut StringColumn, bytes: &[u8]) -> Result<(), StringReadError> {
+    let mut end = *values.offsets.last().unwrap();
     for encoded in bytes.chunks_exact(SIZE_ENTRY_BYTES) {
         let length = u64::from_le_bytes(encoded.try_into().unwrap());
-        let end = checked_end(*values.offsets.last().unwrap(), length)?;
+        end = checked_end(end, length)?;
         values.offsets.push(end);
     }
     Ok(())
