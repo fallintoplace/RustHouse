@@ -153,3 +153,28 @@ jobs:
           cache-on-failure: true
       - name: Test minimum Rust version
         run: cargo test --workspace --locked --no-fail-fast
+
+  integration-gate:
+    name: Integration gate
+    if: ${{ always() }}
+    needs: [format, lint, rustdoc, test, windows-smoke, analytics-harness, msrv]
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Require every mandatory job to succeed
+        env:
+          FORMAT: ${{ needs.format.result }}
+          LINT: ${{ needs.lint.result }}
+          RUSTDOC: ${{ needs.rustdoc.result }}
+          TEST: ${{ needs.test.result }}
+          WINDOWS: ${{ needs.windows-smoke.result }}
+          ANALYTICS: ${{ needs.analytics-harness.result }}
+          MSRV: ${{ needs.msrv.result }}
+        shell: bash
+        run: |
+          for result in "$FORMAT" "$LINT" "$RUSTDOC" "$TEST" "$WINDOWS" "$ANALYTICS" "$MSRV"; do
+            if [ "$result" != "success" ]; then
+              echo "::error::Integration gate blocked: required job concluded $result"
+              exit 1
+            fi
+          done
