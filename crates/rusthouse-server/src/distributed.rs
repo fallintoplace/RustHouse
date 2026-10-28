@@ -1421,13 +1421,31 @@ fn merge_grouped_weighted_avg(
     select: &Select,
     group_kind: Option<&str>,
 ) -> Result<Vec<u8>, MergeError> {
+    merge_grouped_weighted_avg_multi(
+        shards, max_rows, kind, key_column, value_column, select, group_kind, None,
+    )
+}
+
+fn merge_grouped_weighted_avg_multi(
+    shards: &[(usize, Vec<u8>)],
+    max_rows: usize,
+    kind: &str,
+    key_column: &str,
+    value_column: &str,
+    select: &Select,
+    group_kind: Option<&str>,
+    group_kinds: Option<&[String]>,
+) -> Result<Vec<u8>, MergeError> {
+    let key_columns = key_column.split('\t').collect::<Vec<_>>();
     let items = vec![
         (AggregateFunction::Sum, value_column.to_owned()),
         (AggregateFunction::Count, value_column.to_owned()),
     ];
     let kinds = vec![kind.to_owned(), kind.to_owned()];
     let merged = merge_grouped_fused_metrics(
-        shards, 250_000, &[key_column.to_owned()], &items, &kinds,
+        shards, 250_000,
+        &key_columns.iter().map(|col| (*col).to_owned()).collect::<Vec<_>>(),
+        &items, &kinds,
     )?;
     let header = format!("{key_column}\tsum({value_column})\tcount({value_column})\n");
     if !merged.starts_with(header.as_bytes()) || !merged.ends_with(b"\n") {
@@ -1467,8 +1485,32 @@ fn merge_grouped_weighted_avg(
     }
     if select.order_by.is_some() {
         let terms = select.order_terms().collect::<Vec<_>>();
+        let kinds = if terms.iter().any(|term| term.column != "#aggregate") {
+            if key_columns.len() == 1 {
+                Some(vec![group_kind.ok_or(MergeError::InvalidGroupedSum)?])
+            } else {
+                let kinds = group_kinds.ok_or(MergeError::InvalidGroupedSum)?;
+                if kinds.len() != key_columns.len() {
+                    return Err(MergeError::InvalidGroupedSum);
+                }
+                Some(kinds.iter().map(String::as_str).collect::<Vec<_>>())
+            }
+        } else {
+            None
+        };
         let mut keys = groups.iter().map(|(key, _)| {
-            group_kind.map_or(Ok(None), |kind| parse_group_sort_key(key, kind).map(Some))
+            if let Some(kinds) = &kinds {
+                let fields = key.split(|&b| b == b'\t').collect::<Vec<_>>();
+                if fields.len() != kinds.len() {
+                    return Err(MergeError::InvalidGroupedSum);
+                }
+                let parsed = fields.into_iter().zip(kinds.iter())
+                    .map(|(field, kind)| parse_group_sort_key(field, kind))
+                    .collect::<Result<Vec<_>, _>>()?;
+                Ok(Some(parsed))
+            } else {
+                Ok(None)
+            }
         }).collect::<Result<Vec<_>, MergeError>>()?;
         let mut indices = (0..groups.len()).collect::<Vec<_>>();
         indices.sort_by(|&a, &b| {
@@ -1490,9 +1532,11 @@ fn merge_grouped_weighted_avg(
                         _ => if term.descending { compare.reverse() } else { compare },
                     }
                 } else {
+                    let position = key_columns.iter().position(|col| *col == term.column)
+                        .expect("verified multi-dimensional ORDER BY");
                     compare_group_sort_keys(
-                        keys[a].as_ref().expect("validated group type"),
-                        keys[b].as_ref().expect("validated group type"),
+                        &keys[a].as_ref().expect("validated group type")[position],
+                        &keys[b].as_ref().expect("validated group type")[position],
                         term.descending, term.nulls_first,
                     )
                 };
@@ -1793,6 +1837,7 @@ pub fn handle(method: &str, body: &[u8], cluster: &Cluster, max_rows: usize) -> 
                 || is_safe_grouped_distinct(&select)
                 || is_safe_weighted_avg(&select)
                 || is_safe_grouped_weighted_avg(&select)
+                || is_safe_multikey_weighted_avg(&select)
                 || is_safe_sum(&select)
                 || is_safe_extremum(&select) =>
         {
@@ -1819,6 +1864,7 @@ pub fn handle(method: &str, body: &[u8], cluster: &Cluster, max_rows: usize) -> 
     let grouped_distinct_query = is_safe_grouped_distinct(&select);
     let weighted_avg_query = is_safe_weighted_avg(&select);
     let grouped_weighted_avg_query = is_safe_grouped_weighted_avg(&select);
+    let multikey_weighted_avg_query = is_safe_multikey_weighted_avg(&select);
     let sum_query = is_safe_sum(&select);
     let shard_sql = if is_safe_scan(&select) {
         match unpaged_scan_sql(sql, &select) {
@@ -1826,6 +1872,11 @@ pub fn handle(method: &str, body: &[u8], cluster: &Cluster, max_rows: usize) -> 
             None => {
                 return Response::text("400 Bad Request", "unsupported distributed pagination\n");
             }
+        }
+    } else if multikey_weighted_avg_query {
+        match multikey_weighted_avg_shard_sql(sql, &select) {
+            Some(query) => query,
+            None => return Response::text("400 Bad Request", "unsupported composite AVG rewrite\n"),
         }
     } else if grouped_weighted_avg_query {
         match grouped_weighted_avg_shard_sql(sql, &select) {
@@ -1897,7 +1948,7 @@ pub fn handle(method: &str, body: &[u8], cluster: &Cluster, max_rows: usize) -> 
         (
             Some(Source::Table(table)),
             Projection::GroupedMultiAggregates { items, .. },
-        ) if items.len() == 1 && matches!(items[0].0, AggregateFunction::Sum | AggregateFunction::Min | AggregateFunction::Max) =>
+        ) if items.len() == 1 && matches!(items[0].0, AggregateFunction::Sum | AggregateFunction::Min | AggregateFunction::Max | AggregateFunction::Avg) =>
             Some((table.as_str(), items[0].1.as_str())),
         _ => None,
     };
@@ -1912,7 +1963,8 @@ pub fn handle(method: &str, body: &[u8], cluster: &Cluster, max_rows: usize) -> 
             && select.order_terms().any(|term| term.column != "count") =>
             Some(columns.as_slice()),
         Projection::GroupedMultiAggregates { columns, .. }
-            if (grouped_multikey_sum_query || grouped_multikey_extremum_query)
+            if (grouped_multikey_sum_query || grouped_multikey_extremum_query
+                || multikey_weighted_avg_query)
                 && select.order_by.is_some() =>
             Some(columns.as_slice()),
         _ => None,
@@ -2073,6 +2125,16 @@ pub fn handle(method: &str, body: &[u8], cluster: &Cluster, max_rows: usize) -> 
                 } else {
                     merge_grouped_integer_sums(&shards, limit, kind, key, value)
                 }
+            }
+            _ => Err(MergeError::InvalidGroupedSum),
+        }
+    } else if multikey_weighted_avg_query {
+        match (sum_type.as_deref(), &select.projection) {
+            (Some(kind), Projection::GroupedMultiAggregates { columns, items }) => {
+                merge_grouped_weighted_avg_multi(
+                    &shards, max_rows.min(250_000), kind, &columns.join("\t"),
+                    &items[0].1, &select, None, group_sort_kinds.as_deref(),
+                )
             }
             _ => Err(MergeError::InvalidGroupedSum),
         }
@@ -2721,6 +2783,28 @@ mod tests {
                 &shards, 2, "UInt64", "region", "amount", &query, Some("String"),
             ).unwrap(),
             format!("region\tavg(amount)\neast\t{}\n", 100f64 / 3.0).into_bytes()
+        );
+    }
+
+    #[test]
+    fn distributed_composite_weighted_avg_ranks_dimension_keys_globally() {
+        let sql = "SELECT region, category, avg(price) FROM sales GROUP BY region, category ORDER BY region ASC, category DESC LIMIT 2 OFFSET 1";
+        let query = parse_select(sql).unwrap();
+        assert!(is_safe_multikey_weighted_avg(&query));
+        assert_eq!(
+            multikey_weighted_avg_shard_sql(sql, &query).as_deref(),
+            Some("SELECT region, category, sum(price), count(price) FROM sales GROUP BY region, category")
+        );
+        let shards = [
+            shard(10, "region\tcategory\tsum(price)\tcount(price)\n10\ttools\t8\t2\n2\ttools\t6\t1\n2\tbooks\t5\t1\n"),
+            shard(10, "region\tcategory\tsum(price)\tcount(price)\n10\ttools\t12\t1\n2\ttools\t18\t2\n2\tbooks\tNULL\t0\n"),
+        ];
+        assert_eq!(
+            merge_grouped_weighted_avg_multi(
+                &shards, 2, "UInt64", "region\tcategory", "price", &query,
+                None, Some(&["UInt64".into(), "String".into()]),
+            ).unwrap(),
+            b"region\tcategory\tavg(price)\n2\tbooks\t5\n10\ttools\t6.666666666666667\n"
         );
     }
     #[test]
