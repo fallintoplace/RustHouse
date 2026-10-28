@@ -2,7 +2,10 @@
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ResumeMap {
-    completed: Vec<bool>,
+    // Bit-packed completion flags: 8 times smaller than Vec<bool> when every
+    // Rust bool occupies a byte, with the original ASCII encoding retained.
+    chunks: usize,
+    completed: Vec<u8>,
 }
 
 impl ResumeMap {
@@ -11,36 +14,43 @@ impl ResumeMap {
             return Err("resume map exceeds chunk limit");
         }
         Ok(Self {
-            completed: vec![false; chunks],
+            chunks,
+            completed: vec![0; chunks.div_ceil(8)],
         })
     }
 
+    pub fn len(&self) -> usize {
+        self.chunks
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.chunks == 0
+    }
+
+    fn is_complete(&self, index: usize) -> bool {
+        self.completed[index / 8] & (1u8 << (index % 8)) != 0
+    }
+
     pub fn mark_complete(&mut self, index: usize) -> Result<(), &'static str> {
-        let value = self
-            .completed
-            .get_mut(index)
-            .ok_or("chunk index out of bounds")?;
-        *value = true;
+        if index >= self.chunks {
+            return Err("chunk index out of bounds");
+        }
+        self.completed[index / 8] |= 1u8 << (index % 8);
         Ok(())
     }
 
     pub fn remaining(&self) -> Vec<usize> {
-        self.completed
-            .iter()
-            .enumerate()
-            .filter_map(|(index, complete)| (!complete).then_some(index))
-            .collect()
+        (0..self.chunks).filter(|&index| !self.is_complete(index)).collect()
     }
 
     pub fn complete(&self) -> bool {
-        self.completed.iter().all(|value| *value)
+        (0..self.chunks).all(|index| self.is_complete(index))
     }
 
     /// Stable ASCII encoding for persisting transfer progress.
     pub fn encode(&self) -> String {
-        self.completed
-            .iter()
-            .map(|value| if *value { '1' } else { '0' })
+        (0..self.chunks)
+            .map(|index| if self.is_complete(index) { '1' } else { '0' })
             .collect()
     }
 
@@ -69,6 +79,27 @@ mod tests {
         let recovered = ResumeMap::decode(&map.encode()).unwrap();
         assert_eq!(recovered.remaining(), vec![1, 3]);
         assert!(!recovered.complete());
+    }
+
+    #[test]
+    fn bitmap_roundtrips_across_byte_boundaries() {
+        for chunks in [0usize, 1, 7, 8, 9, 15, 16, 17, 65_536] {
+            let mut progress = ResumeMap::new(chunks).unwrap();
+            assert_eq!(progress.len(), chunks);
+            assert_eq!(progress.is_empty(), chunks == 0);
+            for index in (0..chunks).step_by(3) {
+                progress.mark_complete(index).unwrap();
+            }
+            let restored = ResumeMap::decode(&progress.encode()).unwrap();
+            assert_eq!(restored, progress);
+            assert_eq!(restored.remaining().len(), chunks - (chunks + 2) / 3);
+            assert_eq!(restored.complete(), chunks == 0 || chunks == 1);
+            for index in 0..chunks {
+                progress.mark_complete(index).unwrap();
+            }
+            assert!(progress.complete());
+            assert_eq!(progress.remaining(), Vec::<usize>::new());
+        }
     }
 
     #[test]
