@@ -133,5 +133,4 @@ mod tests {
         assert_eq!(output.writes, 1);
         assert_eq!(output.bytes, b"\"a\"\"\"\"b\"");
     }
-
 }

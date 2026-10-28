@@ -465,6 +465,9 @@ fn skips_rows_without_requiring_a_limit() {
     let result = sql("SELECT id FROM part OFFSET 8 ROWS", Some(&dir));
     assert!(result.status.success(), "{result:?}");
     let id = u64::from_le_bytes(*b"aaaaaaaa");
-    assert_eq!(String::from_utf8(result.stdout).unwrap(), format!("id\n{id}\n{id}\n"));
+    assert_eq!(
+        String::from_utf8(result.stdout).unwrap(),
+        format!("id\n{id}\n{id}\n")
+    );
     fs::remove_dir_all(dir).unwrap();
 }
