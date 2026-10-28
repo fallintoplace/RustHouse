@@ -1,6 +1,7 @@
 mod aggregate_plans;
 mod external_grouped;
 mod bitmap_distinct;
+mod parallel_approx_distinct;
 mod hyperloglog;
 
 #[cfg(test)]
@@ -953,8 +954,16 @@ fn execute_into<W: Write>(
     let part = part.ok_or_else(|| {
         ExecutionError::Invalid("pass --part <directory> for table queries".into())
     })?;
-    // A single typed scan serves numeric and String columns with fixed 16 KiB state.
-    if matches!(query.projection, Projection::ApproxDistinct { .. }) {
+    // Exact shard-overlap semantics: per-part HLL registers merge via maxima.
+    // Fall back to the ordinary typed scan for small or single-part snapshots.
+    if let Projection::ApproxDistinct { column } = &query.projection {
+        if let Some(count) = parallel_approx_distinct::try_execute(query, part)? {
+            write_header(query, output, &format!("uniq({column})"))?;
+            if query.limit != Some(0) && query.offset.unwrap_or(0) == 0 {
+                writeln!(output, "{count}")?;
+            }
+            return Ok(());
+        }
         return typed::execute_typed(query, part, output);
     }
     if let Some(count) = parallel_filtered_count(query, part)? {
