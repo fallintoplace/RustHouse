@@ -108,6 +108,13 @@ pub(super) fn count_batch_matches(
             return batch.first().map_or(0, NumericColumn::len);
         }
         if let [predicate] = predicates.as_slice() {
+            if let CompiledTest::Always(value) = &predicate.test {
+                return if *value {
+                    batch.first().map_or(0, NumericColumn::len)
+                } else {
+                    0
+                };
+            }
             if let CompiledTest::Comparison { operator, target } = &predicate.test {
                 if !matches!(operator, Operator::Modulo(_) | Operator::ModuloNe(_)) {
                     macro_rules! count_direct {
@@ -442,5 +449,22 @@ mod tests {
         let included = compile_in_test(values, false);
         assert!(included.matches(Number::Float(0.0)));
         assert!(!included.matches(Number::Float(f64::NAN)));
+    }
+}
+
+#[cfg(test)]
+mod stored_constant_count_tests {
+    use super::*;
+
+    #[test]
+    fn counts_constant_predicates_without_per_row_dispatch() {
+        let values = vec![NumericColumn::UInt64((0..100_000).collect())];
+        for (value, expected) in [(true, 100_000), (false, 0)] {
+            let branches = vec![vec![CompiledPredicate {
+                index: 0,
+                test: CompiledTest::Always(value),
+            }]];
+            assert_eq!(count_batch_matches(&values, &branches), expected);
+        }
     }
 }
