@@ -19,6 +19,13 @@ fn execute_selected_join<W: std::io::Write>(
     }
 }
 
+fn finish_join<T>(
+    result: Result<(), rusthouse_query::ExecutionError>,
+    finish: impl FnOnce() -> std::io::Result<T>,
+) -> Result<(), rusthouse_query::ExecutionError> {
+    result.and_then(|()| finish().map(|_| ()).map_err(rusthouse_query::ExecutionError::Io))
+}
+
 fn execute_formatted_join(
     query: &JoinSelect,
     paths: &[PathBuf],
@@ -27,79 +34,46 @@ fn execute_formatted_join(
 ) -> Result<(), rusthouse_query::ExecutionError> {
     match format {
         SqlOutputFormat::Tsv => execute_selected_join(query, paths, &mut output),
-        SqlOutputFormat::TsvNoHeader => execute_selected_join(
-            query,
-            paths,
+        SqlOutputFormat::TsvNoHeader => execute_selected_join(query, paths,
             &mut csv_no_header::WithoutHeader::new(&mut output),
         ),
         SqlOutputFormat::Csv => {
             execute_selected_join(query, paths, &mut csv::CsvWriter::new(&mut output))
         }
-        SqlOutputFormat::CsvNoHeader => execute_selected_join(
-            query,
-            paths,
+        SqlOutputFormat::CsvNoHeader => execute_selected_join(query, paths,
             &mut csv::CsvWriter::new(csv_no_header::WithoutHeader::new(&mut output)),
         ),
-        SqlOutputFormat::Markdown => execute_selected_join(
-            query,
-            paths,
+        SqlOutputFormat::Markdown => execute_selected_join(query, paths,
             &mut markdown::MarkdownWriter::new(&mut output),
         ),
         SqlOutputFormat::Html => {
             let mut writer = html::HtmlWriter::new(&mut output);
-            execute_selected_join(query, paths, &mut writer).and_then(|()| {
-                writer
-                    .finish()
-                    .map(|_| ())
-                    .map_err(rusthouse_query::ExecutionError::Io)
-            })
+            finish_join(execute_selected_join(query, paths, &mut writer), || writer.finish())
         }
-        SqlOutputFormat::Vertical => execute_selected_join(
-            query,
-            paths,
+        SqlOutputFormat::Vertical => execute_selected_join(query, paths,
             &mut vertical::VerticalWriter::new(&mut output),
         ),
         SqlOutputFormat::SqlValues => {
             let mut writer = sql_values::SqlValuesWriter::new(&mut output);
-            execute_selected_join(query, paths, &mut writer)
-                .and_then(|()| writer.finish().map_err(rusthouse_query::ExecutionError::Io))
+            finish_join(execute_selected_join(query, paths, &mut writer), || writer.finish())
         }
-        SqlOutputFormat::Jsonl => execute_selected_join(
-            query,
-            paths,
+        SqlOutputFormat::Jsonl => execute_selected_join(query, paths,
             &mut jsonl::JsonlWriter::new(&mut output),
         ),
-        SqlOutputFormat::JsonSeq => execute_selected_join(
-            query,
-            paths,
+        SqlOutputFormat::JsonSeq => execute_selected_join(query, paths,
             &mut json_seq::JsonSeqWriter::new(&mut output),
         ),
         SqlOutputFormat::Json => {
             let mut writer = json_array::JsonArrayWriter::new(&mut output);
-            execute_selected_join(query, paths, &mut writer).and_then(|()| {
-                writer
-                    .finish()
-                    .map(|_| ())
-                    .map_err(rusthouse_query::ExecutionError::Io)
-            })
+            finish_join(execute_selected_join(query, paths, &mut writer), || writer.finish())
         }
         SqlOutputFormat::JsonCompactEachRow => {
             let mut writer = json_compact_each_row::JsonCompactEachRowWriter::new(&mut output);
-            execute_selected_join(query, paths, &mut writer).and_then(|()| {
-                writer
-                    .finish()
-                    .map(|_| ())
-                    .map_err(rusthouse_query::ExecutionError::Io)
-            })
+            finish_join(execute_selected_join(query, paths, &mut writer), || writer.finish())
         }
         SqlOutputFormat::JsonPretty => {
             let mut writer = json_array::JsonArrayWriter::new_pretty(&mut output);
-            execute_selected_join(query, paths, &mut writer).and_then(|()| {
-                writer
-                    .finish()
-                    .map(|_| ())
-                    .map_err(rusthouse_query::ExecutionError::Io)
-            })
+            finish_join(execute_selected_join(query, paths, &mut writer), || writer.finish())
         }
     }
 }

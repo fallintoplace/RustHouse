@@ -1,0 +1,18 @@
+{
+  "name": "fused-numeric-aggregates",
+  "description": "multiple numeric aggregates in one scan and grouped aggregation",
+  "queries": [
+    {
+      "name": "sum-count",
+      "sql": "SELECT SUM(amount), COUNT(*) FROM events"
+    },
+    {
+      "name": "filter-sum-count",
+      "sql": "SELECT SUM(amount), COUNT(*) FROM events WHERE status = 'paid'"
+    },
+    {
+      "name": "regional-multi-aggregate",
+      "sql": "SELECT region, SUM(amount), MIN(amount), MAX(amount) FROM events GROUP BY region ORDER BY region"
+    }
+  ]
+}

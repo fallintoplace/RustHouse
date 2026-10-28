@@ -925,7 +925,6 @@ fn parses_limit_offset_and_rejects_invalid_pagination() {
         Some(0)
     );
     for sql in [
-        "SELECT number FROM numbers(10) OFFSET 2",
         "SELECT number FROM numbers(10) LIMIT 2 OFFSET -1",
         "SELECT number FROM numbers(10) LIMIT 2 OFFSET 1.5",
         "SELECT number FROM numbers(10) LIMIT 2 OFFSET",
@@ -1081,10 +1080,20 @@ fn rejects_malformed_fetch_clauses() {
         "SELECT number FROM numbers(10) FETCH FIRST 3",
         "SELECT number FROM numbers(10) FETCH FIRST 3 ROWS",
         "SELECT number FROM numbers(10) LIMIT 2 FETCH FIRST 3 ROWS ONLY",
-        "SELECT number FROM numbers(10) OFFSET 2 ROWS",
         "SELECT number FROM numbers(10) OFFSET -1 ROWS FETCH NEXT 2 ROWS ONLY",
         "SELECT number FROM numbers(10) FETCH NEXT 184467440737095516160 ROWS ONLY",
     ] {
         assert!(parse_select(sql).is_err(), "{sql}");
     }
+}
+
+#[test]
+fn accepts_offset_without_limit_or_fetch() {
+    let query = parse_select("SELECT number FROM numbers(10) OFFSET 2 ROWS").unwrap();
+    assert_eq!(query.limit, None);
+    assert_eq!(query.offset, Some(2));
+    let sorted =
+        parse_select("SELECT number FROM numbers(10) ORDER BY number DESC OFFSET 4").unwrap();
+    assert_eq!(sorted.limit, None);
+    assert_eq!(sorted.offset, Some(4));
 }

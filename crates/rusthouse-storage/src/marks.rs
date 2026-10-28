@@ -1,3 +1,7 @@
+mod parsing;
+
+use self::parsing::*;
+
 use crate::{CompressedBlockReader, PartError};
 use std::fs::File;
 use std::io::{self, Read, Seek};
@@ -60,27 +64,25 @@ pub fn read_wide_marks(path: impl AsRef<Path>) -> Result<WideMarks, PartError> {
     })
 }
 
-fn read_plain_wide_marks(path: &Path, format: WideMarkFormat) -> Result<Vec<WideMark>, PartError> {
-    let entry = std::fs::symlink_metadata(path).map_err(|source| PartError::Io {
+fn marks_io_error(path: &Path, source: io::Error) -> PartError {
+    PartError::Io {
         path: path.to_path_buf(),
         source,
-    })?;
+    }
+}
+
+fn read_plain_wide_marks(path: &Path, format: WideMarkFormat) -> Result<Vec<WideMark>, PartError> {
+    let entry = std::fs::symlink_metadata(path).map_err(|source| marks_io_error(path, source))?;
     if !entry.file_type().is_file() {
         return Err(PartError::Io {
             path: path.to_path_buf(),
             source: io::Error::new(io::ErrorKind::InvalidInput, "expected a regular marks file"),
         });
     }
-    let file = File::open(path).map_err(|source| PartError::Io {
-        path: path.to_path_buf(),
-        source,
-    })?;
+    let file = File::open(path).map_err(|source| marks_io_error(path, source))?;
     let size = file
         .metadata()
-        .map_err(|source| PartError::Io {
-            path: path.to_path_buf(),
-            source,
-        })?
+        .map_err(|source| marks_io_error(path, source))?
         .len();
     if size > MAX_MARKS_BYTES as u64 {
         return Err(marks_too_large(path));
@@ -88,38 +90,11 @@ fn read_plain_wide_marks(path: &Path, format: WideMarkFormat) -> Result<Vec<Wide
     let mut content = Vec::with_capacity(size as usize);
     file.take(MAX_MARKS_BYTES as u64 + 1)
         .read_to_end(&mut content)
-        .map_err(|source| PartError::Io {
-            path: path.to_path_buf(),
-            source,
-        })?;
+        .map_err(|source| marks_io_error(path, source))?;
     if content.len() > MAX_MARKS_BYTES {
         return Err(marks_too_large(path));
     }
     parse_wide_marks(&content, format, path)
-}
-
-fn parse_wide_marks(
-    content: &[u8],
-    format: WideMarkFormat,
-    path: &Path,
-) -> Result<Vec<WideMark>, PartError> {
-    if content.is_empty() {
-        return Err(PartError::EmptyMarksFile(path.to_path_buf()));
-    }
-
-    let record_size = format.record_size();
-    if content.len() % record_size != 0 {
-        return Err(PartError::InvalidMarksLength {
-            path: path.to_path_buf(),
-            size: content.len(),
-            record_size,
-        });
-    }
-
-    Ok(content
-        .chunks_exact(record_size)
-        .map(|record| parse_mark_record(record, format))
-        .collect())
 }
 
 fn read_compressed_wide_marks<R: Read + Seek>(
@@ -188,20 +163,6 @@ fn marks_too_large(path: &Path) -> PartError {
         path: path.to_path_buf(),
         source: io::Error::new(io::ErrorKind::InvalidData, "marks file exceeds 64 MiB"),
     }
-}
-
-fn parse_mark_record(record: &[u8], format: WideMarkFormat) -> WideMark {
-    WideMark {
-        compressed_offset: read_u64(&record[..8]),
-        decompressed_offset: read_u64(&record[8..16]),
-        rows: (format == WideMarkFormat::Adaptive).then(|| read_u64(&record[16..24])),
-    }
-}
-
-fn read_u64(bytes: &[u8]) -> u64 {
-    let mut value = [0; 8];
-    value.copy_from_slice(bytes);
-    u64::from_le_bytes(value)
 }
 
 #[cfg(test)]

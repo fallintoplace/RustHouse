@@ -117,8 +117,7 @@ fn chained_left_joins_null_extend_each_unmatched_relation() {
     }
     let joined = sql(
         "SELECT o.id, c.name, r.label FROM orders o LEFT JOIN customers c ON o.customer_id = c.id LEFT JOIN regions r ON c.region_id = r.id ORDER BY o.id LIMIT 10",
-        &db,
-        &[],
+        &db, &[],
     );
     assert!(joined.status.success(), "{joined:?}");
     assert_eq!(
@@ -127,8 +126,7 @@ fn chained_left_joins_null_extend_each_unmatched_relation() {
     );
     let missing = sql(
         "SELECT o.id FROM orders o LEFT JOIN customers c ON o.customer_id = c.id LEFT JOIN regions r ON c.region_id = r.id WHERE r.label IS NULL ORDER BY o.id",
-        &db,
-        &[],
+        &db, &[],
     );
     assert!(missing.status.success(), "{missing:?}");
     assert_eq!(missing.stdout, b"o.id\n2\n3\n");

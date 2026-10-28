@@ -6,7 +6,7 @@ use std::collections::HashMap;
 use std::io::Write;
 use std::path::PathBuf;
 
-use super::join::{MAX_INPUT_ROWS, MAX_RESULT_ROWS, MAX_STREAM_BUILD_BYTES, read_rows, row_key};
+use super::join::{MAX_INPUT_ROWS, MAX_RESULT_ROWS, MAX_STREAM_BUILD_BYTES, multi_join_row_key as row_key, read_rows};
 
 const MAX_CHAIN_BYTES: usize = 64 * 1024 * 1024;
 const MAX_CHAIN_COLUMNS: usize = 128;
@@ -243,10 +243,20 @@ pub fn execute_multi_join<W: Write>(
         let index = column_index(&relations, column)?;
         rows.retain(|row| matches!(row[index], typed::Cell::Null) != *not_null);
     }
-    if let Some((column, descending, nulls_first)) = &query.order_by {
-        let index = column_index(&relations, column)?;
+    if !query.order_by.is_empty() {
+        let ordering_columns = query.order_by.iter()
+            .map(|(column, descending, nulls_first)| {
+                column_index(&relations, column).map(|index| (index, *descending, *nulls_first))
+            })
+            .collect::<Result<Vec<_>, _>>()?;
         rows.sort_by(|left, right| {
-            typed::compare_order_cells(&left[index], &right[index], *descending, *nulls_first)
+            for (index, descending, nulls_first) in &ordering_columns {
+                let ordering = typed::compare_order_cells(
+                    &left[*index], &right[*index], *descending, *nulls_first
+                );
+                if !ordering.is_eq() { return ordering; }
+            }
+            std::cmp::Ordering::Equal
         });
     }
     let mut selected = Vec::new();

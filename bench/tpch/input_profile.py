@@ -7,6 +7,15 @@ from pathlib import Path
 from schema import TABLES, names
 
 
+def matches_q6(parts, indexes):
+    date = parts[indexes["l_shipdate"]]
+    return (
+        "1994-01-01" <= date < "1995-01-01"
+        and 500 <= int(parts[indexes["l_discount"]]) <= 700
+        and int(parts[indexes["l_quantity"]]) < 2400
+    )
+
+
 def profile_table(path, table):
     if table not in TABLES:
         raise ValueError(f"unknown table: {table}")
@@ -31,9 +40,7 @@ def profile_table(path, table):
                 date = parts[indexes["l_shipdate"]]
                 min_shipdate = date if min_shipdate is None else min(date, min_shipdate)
                 max_shipdate = date if max_shipdate is None else max(date, max_shipdate)
-                if ("1994-01-01" <= date < "1995-01-01"
-                        and 500 <= int(parts[indexes["l_discount"]]) <= 700
-                        and int(parts[indexes["l_quantity"]]) < 2400):
+                if matches_q6(parts, indexes):
                     q6_matches += 1
     result = {"table": table, "rows": rows, "size_bytes": bytes_read,
               "sha256": digest.hexdigest()}

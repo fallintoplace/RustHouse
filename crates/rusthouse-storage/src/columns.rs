@@ -57,6 +57,11 @@ fn hex_identifier_digit(
         .ok_or_else(|| invalid(line_number, "invalid hex identifier escape"))
 }
 
+fn append_utf8_character(name: &mut Vec<u8>, character: char) {
+    let mut encoded = [0; 4];
+    name.extend_from_slice(character.encode_utf8(&mut encoded).as_bytes());
+}
+
 fn append_identifier_escape(
     chars: &mut std::str::Chars<'_>,
     name: &mut Vec<u8>,
@@ -89,8 +94,7 @@ fn append_identifier_escape(
         'v' => b'\x0b',
         _ => {
             name.push(b'\\');
-            let mut encoded = [0; 4];
-            name.extend_from_slice(escaped.encode_utf8(&mut encoded).as_bytes());
+            append_utf8_character(name, escaped);
             return Ok(());
         }
     };
@@ -132,8 +136,7 @@ fn parse_column(line: &str, line_number: usize) -> Result<Column, PartError> {
             }
             '\\' => append_identifier_escape(&mut chars, &mut name, line_number)?,
             _ => {
-                let mut encoded = [0; 4];
-                name.extend_from_slice(ch.encode_utf8(&mut encoded).as_bytes());
+                append_utf8_character(&mut name, ch);
             }
         }
     }

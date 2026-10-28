@@ -133,6 +133,25 @@ fn count_column_excludes_nulls_after_typed_filters() {
 }
 
 #[test]
+fn fused_count_columns_respects_string_uuid_and_nullable_null_maps() {
+    let part = part();
+    let all = "SELECT count(service), count(message), count(uid), count(attempt) FROM part";
+    let api = concat!(
+        "SELECT count(service), count(message), count(uid), count(attempt) ",
+        "FROM part WHERE service = 'api'"
+    );
+    assert_eq!(
+        query(all, &part),
+        "count(service)\tcount(message)\tcount(uid)\tcount(attempt)\n3\t2\t3\t2\n"
+    );
+    assert_eq!(
+        query(api, &part),
+        "count(service)\tcount(message)\tcount(uid)\tcount(attempt)\n2\t2\t2\t2\n"
+    );
+    fs::remove_dir_all(part).unwrap();
+}
+
+#[test]
 fn aggregates_numeric_values_after_text_filters() {
     let part = part();
     for (sql, expected) in [
@@ -163,6 +182,28 @@ fn aggregates_numeric_values_after_text_filters() {
         (
             "SELECT median(status) FROM part WHERE service = 'api'",
             "median(status)\n350\n",
+        ),
+    ] {
+        assert_eq!(query(sql, &part), expected, "{sql}");
+    }
+    fs::remove_dir_all(part).unwrap();
+}
+
+#[test]
+fn length_aggregates_reuse_string_spans_and_skip_nulls() {
+    let part = part();
+    for (sql, expected) in [
+        (
+            "SELECT sum(length(service)), avg(length(message)) FROM part",
+            "sum(length(service))\tavg(length(message))\n8\t5\n",
+        ),
+        (
+            "SELECT sum(length(message)), count(message) FROM part WHERE status >= 500",
+            "sum(length(message))\tcount(message)\n5\t1\n",
+        ),
+        (
+            "SELECT sum(length(message)), count(message) FROM part WHERE message IS NULL",
+            "sum(length(message))\tcount(message)\nNULL\t0\n",
         ),
     ] {
         assert_eq!(query(sql, &part), expected, "{sql}");
@@ -455,6 +496,37 @@ fn skips_end_of_file_terminal_zero_row_marks() {
 }
 
 #[test]
+fn uuid_comparisons_and_ranges_use_canonical_byte_order() {
+    let part = part();
+    let mut raw = [0u8; 48];
+    raw[0] = 1;
+    raw[16] = 2;
+    raw[32] = 3;
+    stream(&part, "uid", &raw, 3);
+    for (sql, expected) in [
+        (
+            "SELECT service FROM part WHERE uid = '00000000-0000-0002-0000-000000000000'",
+            "service\ndb\n",
+        ),
+        (
+            "SELECT count(*) FROM part WHERE uid >= '00000000-0000-0002-0000-000000000000'",
+            "count\n2\n",
+        ),
+        (
+            "SELECT count(*) FROM part WHERE uid NOT BETWEEN '00000000-0000-0001-0000-000000000000' AND '00000000-0000-0002-0000-000000000000'",
+            "count\n1\n",
+        ),
+        (
+            "SELECT count(*) FROM part WHERE uid != '00000000-0000-0003-0000-000000000000'",
+            "count\n2\n",
+        ),
+    ] {
+        assert_eq!(query(sql, &part), expected, "{sql}");
+    }
+    fs::remove_dir_all(part).unwrap();
+}
+
+#[test]
 fn filters_text_by_like_and_not_like_across_nullable_values() {
     let part = part();
     assert_eq!(
@@ -554,6 +626,34 @@ fn groups_typed_columns_with_filters_having_and_pagination() {
         ),
         "service\tcount\ndb\t1\n"
     );
+    fs::remove_dir_all(part).unwrap();
+}
+
+#[test]
+fn distinct_uuid_counts_duplicate_binary_values_once() {
+    let part = part();
+    let mut raw = [0u8; 48];
+    raw[0] = 1;
+    raw[16] = 1;
+    raw[32] = 2;
+    stream(&part, "uid", &raw, 3);
+    for (sql, expected) in [
+        ("SELECT count(DISTINCT uid) FROM part", "countDistinct(uid)\n2\n"),
+        (
+            "SELECT count(DISTINCT uid) FROM part WHERE service = 'api'",
+            "countDistinct(uid)\n2\n",
+        ),
+        (
+            "SELECT count(DISTINCT uid) FROM part WHERE service = 'db'",
+            "countDistinct(uid)\n1\n",
+        ),
+        (
+            "SELECT count(DISTINCT uid) FROM part LIMIT 0",
+            "countDistinct(uid)\n",
+        ),
+    ] {
+        assert_eq!(query(sql, &part), expected, "{sql}");
+    }
     fs::remove_dir_all(part).unwrap();
 }
 

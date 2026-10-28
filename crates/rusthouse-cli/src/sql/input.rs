@@ -1,0 +1,120 @@
+use super::*;
+
+pub(super) fn parse_max_rows(value: Option<OsString>) -> Result<usize, String> {
+    let value = value.ok_or("missing --max-rows value")?;
+    let value = value
+        .to_str()
+        .ok_or("--max-rows must be a non-negative integer")?;
+    if value.is_empty() || !value.bytes().all(|byte| byte.is_ascii_digit()) {
+        return Err("--max-rows must be a non-negative integer".into());
+    }
+    value
+        .parse::<usize>()
+        .map_err(|_| "--max-rows is too large".into())
+}
+
+pub(super) fn read_sql_input(input: impl std::io::Read, source: &str, label: &str) -> Result<String, String> {
+    use std::io::Read;
+
+    let mut bytes = Vec::new();
+    input
+        .take((MAX_SQL_BYTES + 1) as u64)
+        .read_to_end(&mut bytes)
+        .map_err(|error| format!("cannot read {source}: {error}"))?;
+    if bytes.len() > MAX_SQL_BYTES {
+        return Err(format!(
+            "{label} exceeds the {MAX_SQL_BYTES}-byte statement limit"
+        ));
+    }
+    String::from_utf8(bytes)
+        .map(|input| input.strip_prefix('\u{feff}').unwrap_or(&input).to_owned())
+        .map_err(|_| format!("{label} must be valid UTF-8"))
+}
+
+pub(super) fn split_sql_script(input: &str) -> Result<Vec<String>, String> {
+    let input = input.strip_prefix('\u{feff}').unwrap_or(input);
+    let bytes = input.as_bytes();
+    let mut statements = Vec::new();
+    let mut current = String::new();
+    let mut segment = 0;
+    let mut index = 0;
+    let mut quoted = false;
+    while index < bytes.len() {
+        if bytes[index] == b'\\' && quoted && matches!(bytes.get(index + 1), Some(b'\\' | b'\'')) {
+            index += 2;
+            continue;
+        }
+        if bytes[index] == b'\'' {
+            if quoted && bytes.get(index + 1) == Some(&b'\'') {
+                index += 2;
+                continue;
+            }
+            quoted = !quoted;
+            index += 1;
+            continue;
+        }
+        if !quoted && bytes[index] == b'-' && bytes.get(index + 1) == Some(&b'-') {
+            current.push_str(&input[segment..index]);
+            current.push(' ');
+            index += 2;
+            while index < bytes.len() && bytes[index] != b'\n' {
+                index += 1;
+            }
+            segment = index;
+            continue;
+        }
+        if !quoted && bytes[index] == b';' {
+            current.push_str(&input[segment..index]);
+            let statement = current.trim();
+            if !statement.is_empty() {
+                if statement.len() > MAX_SQL_BYTES {
+                    return Err("SQL script statement exceeds 4096 bytes".into());
+                }
+                if statements.len() >= MAX_SCRIPT_STATEMENTS {
+                    return Err("SQL script supports at most 128 statements".into());
+                }
+                statements.push(statement.to_owned());
+            }
+            current.clear();
+            index += 1;
+            segment = index;
+            continue;
+        }
+        index += 1;
+    }
+    if quoted {
+        return Err("unterminated SQL string in script".into());
+    }
+    current.push_str(&input[segment..]);
+    let statement = current.trim();
+    if !statement.is_empty() {
+        if statement.len() > MAX_SQL_BYTES {
+            return Err("SQL script statement exceeds 4096 bytes".into());
+        }
+        if statements.len() >= MAX_SCRIPT_STATEMENTS {
+            return Err("SQL script supports at most 128 statements".into());
+        }
+        statements.push(statement.to_owned());
+    }
+    if statements.is_empty() {
+        return Err("SQL script contains no statements".into());
+    }
+    Ok(statements)
+}
+
+pub(super) fn read_script(path: &std::path::Path) -> Result<Vec<String>, String> {
+    use std::io::Read;
+
+    let file = std::fs::File::open(path)
+        .map_err(|error| format!("cannot open SQL script {}: {error}", path.display()))?;
+    let mut bytes = Vec::new();
+    file.take((MAX_SCRIPT_BYTES + 1) as u64)
+        .read_to_end(&mut bytes)
+        .map_err(|error| format!("cannot read SQL script {}: {error}", path.display()))?;
+    if bytes.len() > MAX_SCRIPT_BYTES {
+        return Err("SQL script exceeds the 256 KiB limit".into());
+    }
+    let input =
+        String::from_utf8(bytes).map_err(|_| "SQL script must be valid UTF-8".to_string())?;
+    split_sql_script(&input)
+}

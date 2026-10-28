@@ -20,9 +20,7 @@ pub(crate) fn read_fixed_width<R: Read, T, const WIDTH: usize>(
         let size = count * WIDTH;
         reader.read_exact(&mut buffer[..size])?;
         result.extend(buffer[..size].chunks_exact(WIDTH).map(|chunk| {
-            let mut bytes = [0u8; WIDTH];
-            bytes.copy_from_slice(chunk);
-            decode(bytes)
+            decode(chunk.try_into().expect("fixed-width chunk size"))
         }));
     }
     Ok(result)

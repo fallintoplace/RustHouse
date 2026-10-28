@@ -26,6 +26,14 @@ def inspect_tsv(path, table):
     return count
 
 
+def copy_statement(table, source):
+    escaped = source.as_posix().replace("'", "''")
+    query = f"COPY {table} FROM '{escaped}' WITH (FORMAT TSV, HEADER TRUE)"
+    if len(query.encode("utf-8")) > 4096:
+        raise ValueError("COPY statement exceeds RustHouse SQL limit")
+    return query
+
+
 def load_tables(binary, database, input_dir, selected=None, timeout=3600, execute=None):
     selected = tuple(selected or TABLES)
     if not selected or len(set(selected)) != len(selected):
@@ -44,10 +52,7 @@ def load_tables(binary, database, input_dir, selected=None, timeout=3600, execut
     for table in selected:
         source, expected = sources[table]
         execute(create_sql(table))
-        escaped = source.as_posix().replace("'", "''")
-        query = f"COPY {table} FROM '{escaped}' WITH (FORMAT TSV, HEADER TRUE)"
-        if len(query.encode("utf-8")) > 4096:
-            raise ValueError("COPY statement exceeds RustHouse SQL limit")
+        query = copy_statement(table, source)
         started = time.perf_counter()
         execute(query)
         elapsed = time.perf_counter() - started
