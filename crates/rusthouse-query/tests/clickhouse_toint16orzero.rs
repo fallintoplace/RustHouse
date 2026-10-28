@@ -1,0 +1,4 @@
+use rusthouse_query::{parse_select,ConstantValue,Projection};
+fn value(sql:&str)->ConstantValue{match parse_select(sql).unwrap().projection{Projection::Constants(v) if v.len()==1=>v[0].value.clone(),Projection::Literal(n)=>ConstantValue::Integer(n),other=>panic!("unexpected {other:?}")}}
+#[test]fn converts_signed_strings(){for(sql,expect)in[("SELECT toInt16OrZero('32767')",32767),("SELECT toInt16OrZero('32768')",-32768),("SELECT toInt16OrZero('-32769')",32767),("SELECT toInt16OrZero('bad')",0),("SELECT toInt16OrZero('1.5')",0)]{assert_eq!(value(sql),ConstantValue::Integer(expect),"{sql}");}assert_eq!(value("SELECT toInt16OrZero(NULL)"),ConstantValue::Null);}
+#[test]fn rejects_invalid_shapes(){for sql in ["SELECT toInt16OrZero()","SELECT toInt16OrZero(2)","SELECT toInt16OrZero('1','2')","SELECT toInt16OrZero('1') FROM numbers(1)"]{assert!(parse_select(sql).is_err(),"{sql}");}}
