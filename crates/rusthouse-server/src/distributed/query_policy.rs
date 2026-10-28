@@ -193,3 +193,54 @@ pub(super) fn grouped_count_shard_sql(sql: &str, select: &Select) -> Option<Stri
     }
     None
 }
+
+/// Exact distributed top-K currently accepts a single unaliased integer
+/// projection and ORDER BY that same column. Validate integer types against
+/// each peer's schema before dispatch.
+pub(super) fn is_safe_sorted_scan(select: &Select) -> bool {
+    let (Projection::Columns(columns), Some(order), Some(limit)) =
+        (&select.projection, &select.order_by, select.limit)
+    else { return false; };
+    matches!(select.source, Some(Source::Table(_)))
+        && !select.distinct
+        && select.rename.is_none()
+        && select.alias.is_none()
+        && select.having.is_none()
+        && select.order_by_extra.is_empty()
+        && order.nulls_first.is_none()
+        && columns.len() == 1
+        && columns[0] == order.column
+        && select.offset.unwrap_or(0)
+            .checked_add(limit)
+            .is_some_and(|prefix| prefix <= 10_000)
+}
+
+pub(super) fn sorted_scan_sql(sql: &str, select: &Select) -> Option<String> {
+    if !is_safe_sorted_scan(select) { return None; }
+    let prefix = select.offset.unwrap_or(0).checked_add(select.limit?)?;
+    let bare = unpaged_scan_sql(sql, select)?;
+    let rewritten = format!("{bare} LIMIT {prefix}");
+    let mut expected = select.clone();
+    expected.offset = None;
+    expected.limit = Some(prefix);
+    (parse_select(&rewritten).ok()? == expected).then_some(rewritten)
+}
+
+#[cfg(test)]
+mod sorted_scan_policy_tests {
+    use super::*;
+
+    #[test]
+    fn rewrites_validated_ordered_global_pagination() {
+        let sql = "SELECT id FROM events WHERE id > 4 ORDER BY id DESC LIMIT 3 OFFSET 2";
+        let parsed = parse_select(sql).unwrap();
+        assert!(is_safe_sorted_scan(&parsed));
+        assert_eq!(
+            sorted_scan_sql(sql, &parsed).as_deref(),
+            Some("SELECT id FROM events WHERE id > 4 ORDER BY id DESC LIMIT 5")
+        );
+        assert!(!is_safe_sorted_scan(
+            &parse_select("SELECT id, name FROM events ORDER BY id LIMIT 3").unwrap()
+        ));
+    }
+}
