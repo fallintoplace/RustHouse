@@ -1,4 +1,19 @@
 //! Conservative generation-retention planning; no files are deleted.
+fn validated_generations(
+    generations: &[u64],
+    active: u64,
+) -> Result<Vec<u64>, &'static str> {
+    let mut sorted = generations.to_vec();
+    sorted.sort_unstable();
+    if sorted[0] == 0
+        || sorted.windows(2).any(|pair| pair[0] == pair[1])
+        || sorted.binary_search(&active).is_err()
+    {
+        return Err("duplicate, missing, or invalid generation");
+    }
+    Ok(sorted)
+}
+
 /// List old generations eligible for review by a caller with exclusive ownership.
 /// Always preserve the active generation and the newest keep_latest generations.
 pub fn retention_candidates(
@@ -9,14 +24,7 @@ pub fn retention_candidates(
     if generations.is_empty() || generations.len() > 16_384 || keep_latest == 0 || active == 0 {
         return Err("invalid generation retention configuration");
     }
-    let mut sorted = generations.to_vec();
-    sorted.sort_unstable();
-    if sorted[0] == 0
-        || sorted.windows(2).any(|pair| pair[0] == pair[1])
-        || sorted.binary_search(&active).is_err()
-    {
-        return Err("duplicate, missing, or invalid generation");
-    }
+    let sorted = validated_generations(generations, active)?;
     let candidate_count = sorted.len().saturating_sub(keep_latest);
     Ok(sorted
         .into_iter()
