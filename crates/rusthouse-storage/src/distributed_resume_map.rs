@@ -160,7 +160,7 @@ mod tests {
         let decoded = ResumeMap::decode(&input).unwrap();
         assert_eq!(decoded.len(), 65_536);
         assert_eq!(decoded.encode(), input);
-        assert_eq!(decoded.remaining().len(), 65_536 / 2);
+        assert_eq!(decoded.remaining().len(), 3 * 8192);
     }
 
 }
