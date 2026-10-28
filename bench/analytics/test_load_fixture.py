@@ -18,6 +18,18 @@ class ClickBenchLoadTests(unittest.TestCase):
             self.assertEqual(len(commands), 3)
             self.assertFalse(result["official_clickbench"])
 
+    def test_rejects_malformed_tsv_before_running_sql(self):
+        with tempfile.TemporaryDirectory() as root:
+            generate(root, rows=12, seed=3)
+            fixture = Path(root) / "hits.tsv"
+            with fixture.open("a", encoding="utf-8") as output:
+                output.write("bad\trow\n")
+            called = []
+            with self.assertRaisesRegex(ValueError, "invalid column count"):
+                load_fixture(Path("fake"), Path(root) / "db", root,
+                             execute=lambda sql: called.append(sql))
+            self.assertEqual(called, [])
+
     def test_detects_wrong_engine_count(self):
         with tempfile.TemporaryDirectory() as root:
             generate(root, rows=12, seed=3)
