@@ -30,7 +30,8 @@ def validate(payload):
 def inspect(origin, timeout=5):
     url = urlsplit(origin)
     if (url.scheme != "http" or url.hostname not in ("localhost", "127.0.0.1")
-            or url.path not in ("", "/") or url.query or url.fragment):
+            or url.path not in ("", "/") or url.query or url.fragment
+            or url.username or url.password):
         raise ValueError("only loopback HTTP origins are accepted")
     try:
         with urlopen(origin.rstrip("/") + "/cluster/health", timeout=timeout) as response:
