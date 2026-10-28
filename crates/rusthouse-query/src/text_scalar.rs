@@ -1959,7 +1959,9 @@ fn parse_at_depth(parser: &mut Parser, depth: usize) -> Result<ConstantValue, Pa
                     if rusthouse_storage::parse_date(&value).is_none() {
                         return Err(ParseError("invalid Date argument".into()));
                     }
-                    ConstantValue::Integer(value[..4].parse::<i64>().unwrap() * 100 + value[5..7].parse::<i64>().unwrap())
+                    let year = value[..4].parse::<i64>().unwrap();
+                    let month = value[5..7].parse::<i64>().unwrap();
+                    ConstantValue::Integer(year * 100 + month)
                 }
                 None => ConstantValue::Null,
             }
