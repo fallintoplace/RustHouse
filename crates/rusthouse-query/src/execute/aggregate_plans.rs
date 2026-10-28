@@ -144,6 +144,56 @@ pub(super) fn execute_grouped_part<W: Write>(
         return groups.write(query, column, output);
     }
     let no_filters = query.predicates.is_empty() && query.or_predicates.is_empty();
+    // High-cardinality 64-bit GROUP BY with ORDER BY key is exact even when
+    // the distinct group set cannot fit in memory. Sorted spill runs avoid
+    // the fixed 200k-group HashMap ceiling and preserve ORDER BY semantics.
+    let kind = metadata.columns.iter().find(|c| c.name == column)
+        .map(|c| c.data_type.as_str());
+    let ordering = query.order_by.as_ref().filter(|order|
+        order.column == column && query.order_by_extra.is_empty());
+    if let (Some(kind @ ("UInt64" | "Int64")), Some(order)) = (kind, ordering) {
+        let signed = kind == "Int64";
+        let mut sorter = ExternalGroupCount64::new(signed, order.descending);
+        while let Some(batch) = reader.next_batch()? {
+            for row in 0..batch[0].len() {
+                if !no_filters && !batch_matches(&batch, row, &comparisons) { continue; }
+                let value = match &batch[0] {
+                    NumericColumn::UInt64(values) => values[row],
+                    NumericColumn::Int64(values) => values[row] as u64,
+                    _ => return Err(ExecutionError::Invalid(
+                        "unexpected external GROUP BY key type".into())),
+                };
+                sorter.insert(value)?;
+            }
+        }
+        writeln!(output, "{column}\t{}",
+            query.alias.as_deref().unwrap_or("count"))?;
+        let mut seen = 0usize;
+        let mut emitted = 0usize;
+        let offset = query.offset.unwrap_or(0);
+        let limit = query.limit.unwrap_or(usize::MAX);
+        sorter.finish(|key, count| {
+            if let Some(having) = &query.having {
+                if !number_matches(
+                    Number::Unsigned(u128::from(count)),
+                    Number::Unsigned(u128::from(having.value)),
+                    having.operator,
+                ) { return Ok(()); }
+            }
+            if seen >= offset && emitted < limit {
+                if signed {
+                    writeln!(output, "{}\t{count}", key as i64)?;
+                } else {
+                    writeln!(output, "{key}\t{count}")?;
+                }
+                emitted += 1;
+            }
+            seen = seen.checked_add(1)
+                .ok_or_else(|| ExecutionError::Invalid("GROUP BY row count overflow".into()))?;
+            Ok(())
+        })?;
+        return Ok(());
+    }
     if no_filters {
         if let Some(kind) = metadata.columns.iter()
             .find(|candidate| candidate.name == column)

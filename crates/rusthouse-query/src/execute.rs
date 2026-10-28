@@ -1,4 +1,5 @@
 mod aggregate_plans;
+mod external_grouped;
 mod bitmap_distinct;
 mod hyperloglog;
 
@@ -33,6 +34,7 @@ mod dynamic_part_tests {
 }
 
 use self::aggregate_plans::*;
+use external_grouped::ExternalGroupCount64;
 use bitmap_distinct::BitmapDistinct32;
 
 use crate::{AggregateFunction, Projection, Select, Source};
