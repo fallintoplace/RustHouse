@@ -257,6 +257,176 @@ impl<'a> Parser<'a> {
     }
 }
 
+/// Parse the intentionally bounded exact-key JSONPath subset used by constant SQL.
+pub(crate) fn exact_json_path(path: &str) -> Result<String, &'static str> {
+    let tail = path.strip_prefix(' -> Result<JsonValue<'_>, &'static str> {
+    if text.len() > MAX_JSON_BYTES {
+        return Err("JSON exceeds 1 MiB");
+    }
+    let mut parser = Parser { text, offset: 0 };
+    let value = parser.value(0)?;
+    parser.skip_ws();
+    if parser.offset != text.len() {
+        return Err("extra bytes after JSON value");
+    }
+    Ok(value)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::parse_json;
+
+    #[test]
+    fn parses_nested_objects_arrays_and_escapes() {
+        let json = r#"{"items":[{"name":"rocket \uD83D\uDE80"},null],"n":-1.2e+3}"#;
+        let value = parse_json(json).unwrap();
+        assert_eq!(
+            value.at_path("items.0.name").unwrap().as_string(),
+            Some("rocket 🚀")
+        );
+        assert_eq!(value.at_path("n").unwrap().raw(), "-1.2e+3");
+        assert!(value.at_path("items.1.name").is_none());
+    }
+
+    #[test]
+    fn rejects_invalid_json_numbers_strings_and_structure() {
+        for input in [
+            "",
+            "{",
+            "true false",
+            "01",
+            "+1",
+            "1.",
+            "1e",
+            "--1",
+            r#"{"bad":}"#,
+            r#"{"a":1,}"#,
+            "[1,]",
+            r#""bad\q""#,
+            r#""\uD800""#,
+            r#""\uDC00""#,
+            r#"{"a":1} trailing"#,
+            "{'single':1}",
+            "NaN",
+        ] {
+            assert!(parse_json(input).is_err(), "{input}");
+        }
+        assert!(parse_json(&"[".repeat(40)).is_err());
+    }
+
+    #[test]
+    fn respects_text_cap_and_last_duplicate_key() {
+        assert!(parse_json(&" ".repeat(1_048_577)).is_err());
+        let value = parse_json(r#"{"x":1,"x":2}"#).unwrap();
+        assert_eq!(value.at_path("x").unwrap().raw(), "2");
+    }
+}
+).ok_or("JSONPath must begin with ' -> Result<JsonValue<'_>, &'static str> {
+    if text.len() > MAX_JSON_BYTES {
+        return Err("JSON exceeds 1 MiB");
+    }
+    let mut parser = Parser { text, offset: 0 };
+    let value = parser.value(0)?;
+    parser.skip_ws();
+    if parser.offset != text.len() {
+        return Err("extra bytes after JSON value");
+    }
+    Ok(value)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::parse_json;
+
+    #[test]
+    fn parses_nested_objects_arrays_and_escapes() {
+        let json = r#"{"items":[{"name":"rocket \uD83D\uDE80"},null],"n":-1.2e+3}"#;
+        let value = parse_json(json).unwrap();
+        assert_eq!(
+            value.at_path("items.0.name").unwrap().as_string(),
+            Some("rocket 🚀")
+        );
+        assert_eq!(value.at_path("n").unwrap().raw(), "-1.2e+3");
+        assert!(value.at_path("items.1.name").is_none());
+    }
+
+    #[test]
+    fn rejects_invalid_json_numbers_strings_and_structure() {
+        for input in [
+            "",
+            "{",
+            "true false",
+            "01",
+            "+1",
+            "1.",
+            "1e",
+            "--1",
+            r#"{"bad":}"#,
+            r#"{"a":1,}"#,
+            "[1,]",
+            r#""bad\q""#,
+            r#""\uD800""#,
+            r#""\uDC00""#,
+            r#"{"a":1} trailing"#,
+            "{'single':1}",
+            "NaN",
+        ] {
+            assert!(parse_json(input).is_err(), "{input}");
+        }
+        assert!(parse_json(&"[".repeat(40)).is_err());
+    }
+
+    #[test]
+    fn respects_text_cap_and_last_duplicate_key() {
+        assert!(parse_json(&" ".repeat(1_048_577)).is_err());
+        let value = parse_json(r#"{"x":1,"x":2}"#).unwrap();
+        assert_eq!(value.at_path("x").unwrap().raw(), "2");
+    }
+}
+")?;
+    let bytes = tail.as_bytes();
+    let mut index = 0;
+    let mut result = String::new();
+    while index < bytes.len() {
+        match bytes[index] {
+            b'.' => {
+                index += 1;
+                let start = index;
+                while index < bytes.len() && bytes[index] != b'.' && bytes[index] != b'[' {
+                    if !(bytes[index].is_ascii_alphanumeric() || bytes[index] == b'_') {
+                        return Err("unsupported JSONPath field");
+                    }
+                    index += 1;
+                }
+                if index == start {
+                    return Err("empty JSONPath field");
+                }
+                if !result.is_empty() {
+                    result.push('.');
+                }
+                result.push_str(&tail[start..index]);
+            }
+            b'[' => {
+                index += 1;
+                let start = index;
+                while index < bytes.len() && bytes[index].is_ascii_digit() {
+                    index += 1;
+                }
+                if index == start || bytes.get(index) != Some(&b']') {
+                    return Err("unsupported JSONPath index");
+                }
+                if !result.is_empty() {
+                    result.push('.');
+                }
+                result.push_str(&tail[start..index]);
+                index += 1;
+            }
+            _ => return Err("unsupported JSONPath syntax"),
+        }
+    }
+    Ok(result)
+}
+
 pub(crate) fn parse_json(text: &str) -> Result<JsonValue<'_>, &'static str> {
     if text.len() > MAX_JSON_BYTES {
         return Err("JSON exceeds 1 MiB");
