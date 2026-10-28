@@ -3,6 +3,7 @@ pub mod distributed_inventory;
 mod checksums;
 pub mod distributed_object_key;
 mod columns;
+pub mod distributed_crc32c;
 mod compression;
 mod database_lock;
 mod dates;
