@@ -23,10 +23,7 @@ fn clickhouse_compatibility_cases() {
             "SELECT cutURLParameter('http://x/?a&b=2', 'a')",
             ConstantValue::Text("http://x/?a&b=2".into()),
         ),
-        (
-            "SELECT cutURLParameter(NULL, 'a')",
-            ConstantValue::Null,
-        ),
+        ("SELECT cutURLParameter(NULL, 'a')", ConstantValue::Null),
     ] {
         assert_eq!(value(sql), expected, "{sql}");
     }
