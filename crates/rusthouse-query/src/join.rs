@@ -427,7 +427,7 @@ pub fn explain_join(query: &JoinSelect) -> String {
         .collect::<Vec<_>>()
         .join(" AND ");
     let mut plan = format!(
-        "Source: table {} AS {}\nSource: table {} AS {}\nJoin: {}{:?} ON {}\nProject: {}\nLimit: {}",
+        "Source: table {} AS {}\nSource: table {} AS {}\nJoin: {}{:?} ON {}",
         query.left,
         query.left_alias,
         query.right,
@@ -435,16 +435,6 @@ pub fn explain_join(query: &JoinSelect) -> String {
         if query.any { "Any " } else { "" },
         query.kind,
         conditions,
-        query.columns.as_ref().map_or("*".to_owned(), |columns| {
-            columns
-                .iter()
-                .map(|col| format!("{}.{}", col.relation, col.name))
-                .collect::<Vec<_>>()
-                .join(", ")
-        }),
-        query
-            .limit
-            .map_or("unbounded".to_owned(), |n| n.to_string())
     );
     for step in &query.steps {
         let conditions = step.keys.iter()
@@ -460,6 +450,19 @@ pub fn explain_join(query: &JoinSelect) -> String {
             step.table, step.alias, if step.any { "Any " } else { "" }, step.kind, predicate
         ));
     }
+    plan.push_str(&format!(
+        "\nProject: {}\nLimit: {}",
+        query.columns.as_ref().map_or("*".to_owned(), |columns| {
+            columns
+                .iter()
+                .map(|col| format!("{}.{}", col.relation, col.name))
+                .collect::<Vec<_>>()
+                .join(", ")
+        }),
+        query
+            .limit
+            .map_or("unbounded".to_owned(), |n| n.to_string())
+    ));
     if !query.using_keys.is_empty() {
         plan.push_str(&format!("\nUsing: {}", query.using_keys.join(", ")));
     }
@@ -502,6 +505,20 @@ pub fn explain_join(query: &JoinSelect) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn explain_lists_chained_sources_before_project_and_limit() {
+        let query = parse_join(
+            "SELECT x.id FROM a x JOIN b y ON x.id = y.id JOIN c z ON y.id = z.id LIMIT 3",
+        )
+        .unwrap()
+        .unwrap();
+        let plan = explain_join(&query);
+        let step = plan.find("Source: table c AS z").unwrap();
+        let project = plan.find("Project: x.id").unwrap();
+        let limit = plan.find("Limit: 3").unwrap();
+        assert!(step < project && project < limit, "{plan}");
+    }
 
     #[test]
     fn chained_joins_accept_explicit_all_strictness() {
