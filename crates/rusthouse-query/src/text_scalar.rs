@@ -11,6 +11,7 @@ pub(super) fn is_function(name: &str) -> bool {
             | "OCTET_LENGTH"
             | "ASCII"
             | "UTF16_LENGTH"
+            | "HASSUBSEQUENCE"
             | "CHR"
             | "STRINGBYTESUNIQ"
             | "BIT_LENGTH"
@@ -184,6 +185,25 @@ fn parse_at_depth(parser: &mut Parser, depth: usize) -> Result<ConstantValue, Pa
                     ConstantValue::Text(result)
                 }
                 None => ConstantValue::Null,
+            }
+        }
+        "HASSUBSEQUENCE" => {
+            let input = text_arg(parser, depth + 1)?;
+            require(parser, Token::Comma, "hasSubsequence requires a needle")?;
+            let needle = text_arg(parser, depth + 1)?;
+            require(parser, Token::RParen, "expected ')' after hasSubsequence")?;
+            match (input, needle) {
+                (Some(input), Some(needle)) => {
+                    let mut required = needle.bytes();
+                    let mut next = required.next();
+                    for byte in input.bytes() {
+                        if next == Some(byte) {
+                            next = required.next();
+                        }
+                    }
+                    ConstantValue::Integer(i64::from(next.is_none()))
+                }
+                _ => ConstantValue::Null,
             }
         }
         "CHR" => {
