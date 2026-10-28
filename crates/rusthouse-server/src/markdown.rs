@@ -51,6 +51,19 @@ fn decode_markdown_field(field: &[u8], data_row: bool) -> io::Result<Cow<'_, [u8
 }
 
 fn write_markdown_row<W: Write>(output: &mut W, line: &[u8], data_row: bool) -> io::Result<()> {
+    if !line.contains(&b'\\') {
+        // Validate before writing, so malformed UTF-8 never leaves a partial row.
+        std::str::from_utf8(line).map_err(|_| {
+            io::Error::new(io::ErrorKind::InvalidData, "Markdown field is not UTF-8")
+        })?;
+        output.write_all(b"|")?;
+        for field in line.split(|&byte| byte == b'\t') {
+            output.write_all(b" ")?;
+            write_cell(output, field)?;
+            output.write_all(b" |")?;
+        }
+        return output.write_all(b"\n");
+    }
     let fields = line
         .split(|&byte| byte == b'\t')
         .map(|field| decode_markdown_field(field, data_row))
@@ -142,6 +155,13 @@ impl<W: Write> Write for MarkdownWriter<W> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn plain_markdown_rows_stream_without_escape_decoding() {
+        let mut output = Vec::new();
+        write_markdown_row(&mut output, "café\t42".as_bytes(), true).unwrap();
+        assert_eq!(output, b"| café | 42 |\n");
+    }
 
     #[test]
     fn field_decoder_borrows_plain_and_null_fields() {
