@@ -49,7 +49,7 @@ pub fn replicas_for(
     if nodes.is_empty() || nodes.len() > 64 || replicas == 0 || replicas > nodes.len() {
         return Err("invalid replica placement configuration");
     }
-    let mut unique = HashSet::new();
+    let mut unique = HashSet::with_capacity(nodes.len());
     for node in nodes {
         if !valid_node(node) || !unique.insert(node.as_str()) {
             return Err("invalid or duplicate replica node");
@@ -112,7 +112,7 @@ pub fn weighted_replicas_for(
     {
         return Err("invalid weighted replica placement configuration");
     }
-    let mut seen = HashSet::new();
+    let mut seen = HashSet::with_capacity(nodes.len());
     let mut ranked = Vec::with_capacity(if replicas == 1 { 0 } else { nodes.len() });
     let seed = shard_seed(shard);
     let mut winner: Option<(f64, &str)> = None;
