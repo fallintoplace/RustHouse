@@ -9,6 +9,126 @@ use std::path::Path;
 
 const MAX_GROUPS: usize = 200_000;
 
+
+/// Combine independent physical-part SUM and COUNT states for one grouping key.
+/// Only associative integer aggregates enter this path. Floating-point and
+/// order-sensitive aggregates retain their original serial evaluation.
+fn parallel_grouped_metrics(
+    part: &Path,
+    names: &[String],
+    group_index: usize,
+    item_indices: &[usize],
+    items: &[(AggregateFunction, String)],
+    conditions: &[Vec<typed::Condition>],
+    no_filters: bool,
+) -> Result<Option<Vec<(Cell, Vec<AggregateState>)>>, ExecutionError> {
+    let parts = rusthouse_storage::query_parts(part)?;
+    let workers = std::thread::available_parallelism()
+        .map_or(1, |count| count.get())
+        .min(4);
+    if workers < 2 || parts.len() < 16 {
+        return Ok(None);
+    }
+    let chunk_size = parts.len().div_ceil(workers);
+    let chunks = std::thread::scope(|scope| {
+        let handles = parts.chunks(chunk_size).map(|paths| {
+            scope.spawn(move || -> Result<Vec<(Cell, Vec<AggregateState>)>, ExecutionError> {
+                let mut groups: Vec<(Cell, Vec<AggregateState>)> = Vec::new();
+                let mut by_key = HashMap::<typed::Key, usize>::new();
+                for path in paths {
+                    let mut reader = rusthouse_storage::TypedPartReader::open(path, names)?;
+                    while let Some(batch) = reader.next_batch()? {
+                        for row in 0..batch[0].len() {
+                            if !no_filters && !typed::passes(&batch, row, conditions) {
+                                continue;
+                            }
+                            let group = match by_key.entry(typed::key_at(&batch[group_index], row)) {
+                                Entry::Occupied(entry) => *entry.get(),
+                                Entry::Vacant(entry) => {
+                                    if groups.len() >= MAX_GROUPS {
+                                        return Err(ExecutionError::Invalid(
+                                            "GROUP BY supports at most 200000 groups".into(),
+                                        ));
+                                    }
+                                    let id = groups.len();
+                                    entry.insert(id);
+                                    groups.push((
+                                        typed::cell(&batch[group_index], row),
+                                        items.iter().map(|(function, _)| {
+                                            AggregateState::new(*function)
+                                        }).collect(),
+                                    ));
+                                    id
+                                }
+                            };
+                            for ((function, _), (&index, state)) in items.iter().zip(
+                                item_indices.iter().zip(groups[group].1.iter_mut())
+                            ) {
+                                if typed::is_null_at(&batch[index], row) {
+                                    continue;
+                                }
+                                if *function == AggregateFunction::Count {
+                                    state.increment_count()?;
+                                } else {
+                                    match &batch[index] {
+                                        TypedColumn::Numeric(values) |
+                                        TypedColumn::NullableNumeric { values, .. } => {
+                                            state.update(super::number_at(values, row))?;
+                                        }
+                                        _ => return Err(ExecutionError::Invalid(
+                                            "integer SUM requires numeric values".into(),
+                                        )),
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+                Ok(groups)
+            })
+        }).collect::<Vec<_>>();
+        handles.into_iter().map(|handle| handle.join().unwrap_or_else(|_| {
+            Err(ExecutionError::Invalid("parallel grouped metrics worker panicked".into()))
+        })).collect::<Vec<_>>()
+    });
+    let mut groups: Vec<(Cell, Vec<AggregateState>)> = Vec::new();
+    let mut by_key = HashMap::<typed::Key, usize>::new();
+    for chunk in chunks {
+        for (key, states) in chunk? {
+            let id = match by_key.entry(key.key()) {
+                Entry::Occupied(entry) => *entry.get(),
+                Entry::Vacant(entry) => {
+                    if groups.len() >= MAX_GROUPS {
+                        return Err(ExecutionError::Invalid(
+                            "GROUP BY supports at most 200000 groups".into(),
+                        ));
+                    }
+                    let id = groups.len();
+                    entry.insert(id);
+                    groups.push((
+                        key,
+                        items.iter().map(|(function, _)| {
+                            AggregateState::new(*function)
+                        }).collect(),
+                    ));
+                    id
+                }
+            };
+            for ((function, _), (dest, source)) in items.iter().zip(
+                groups[id].1.iter_mut().zip(states.iter())
+            ) {
+                if *function == AggregateFunction::Count {
+                    dest.count = dest.count.checked_add(source.count)
+                        .ok_or_else(|| ExecutionError::Invalid("aggregate row count overflow".into()))?;
+                } else if let Some(value) = source.value {
+                    dest.update(value)?;
+                }
+            }
+        }
+    }
+    Ok(Some(groups))
+}
+
 pub(super) fn execute<W: Write>(
     query: &Select,
     part: &Path,
@@ -78,7 +198,28 @@ pub(super) fn execute<W: Write>(
         .iter()
         .map(|(_, name)| indices[name])
         .collect::<Vec<_>>();
-    let mut groups = Vec::<(Cell, Vec<AggregateState>)>::new();
+    let no_filters = query.predicates.is_empty() && query.or_predicates.is_empty();
+    let group_is_narrow = matches!(
+        group_type.as_str(), "UInt8" | "Int8" | "UInt16" | "Int16"
+    );
+    let associative_integers = items.iter().all(|(function, value_column)| {
+        *function == AggregateFunction::Count || (
+            *function == AggregateFunction::Sum && matches!(
+                typed::base_type(&types[value_column]),
+                "UInt8" | "UInt16" | "UInt32" | "UInt64" | "UInt128"
+                    | "Int8" | "Int16" | "Int32" | "Int64" | "Int128"
+            )
+        )
+    });
+    let parallel = if group_is_narrow && associative_integers {
+        parallel_grouped_metrics(
+            part, &names, group_index, &item_indices, items, &conditions, no_filters,
+        )?
+    } else {
+        None
+    };
+    let scan_serially = parallel.is_none();
+    let mut groups = parallel.unwrap_or_default();
     // Direct slots avoid repeated hashing on compact grouping columns.
     let mut dense_slots = match group_type.as_str() {
         "UInt8" | "Int8" => Some(vec![usize::MAX; 256]),
@@ -88,9 +229,12 @@ pub(super) fn execute<W: Write>(
     let mut by_key = HashMap::<typed::Key, usize>::new();
     let mut by_text = HashMap::<Vec<u8>, usize>::new();
     let mut by_uuid = HashMap::<[u8; 16], usize>::new();
-    let mut reader = TypedQueryReader::open_with_metadata(part, &names, &metadata)?;
-    let no_filters = query.predicates.is_empty() && query.or_predicates.is_empty();
-    while let Some(batch) = reader.next_batch()? {
+    let mut reader = if scan_serially {
+        Some(TypedQueryReader::open_with_metadata(part, &names, &metadata)?)
+    } else {
+        None
+    };
+    while let Some(batch) = reader.as_mut().map_or(Ok(None), TypedQueryReader::next_batch)? {
         for row in 0..batch[0].len() {
             if !no_filters && !typed::passes(&batch, row, &conditions) {
                 continue;
