@@ -31,7 +31,11 @@ fn thirty_two_bit_group_counts_keep_sign_and_first_seen_groups() {
     ] {
         let result = sql(statement);
         assert!(result.status.success(), "{statement}: {result:?}");
-        assert_eq!(String::from_utf8(result.stdout).unwrap(), expected, "{statement}");
+        assert_eq!(
+            String::from_utf8(result.stdout).unwrap(),
+            expected,
+            "{statement}"
+        );
     }
     fs::remove_dir_all(db).unwrap();
 }
