@@ -23,9 +23,10 @@ pub(super) fn execute_grouped_part<W: Write>(
     if query.limit == Some(0) {
         return groups.write(query, column, output);
     }
+    let no_filters = query.predicates.is_empty() && query.or_predicates.is_empty();
     while let Some(batch) = reader.next_batch()? {
         for row in 0..batch[0].len() {
-            if batch_matches(&batch, row, &comparisons) {
+            if no_filters || batch_matches(&batch, row, &comparisons) {
                 groups.push(number_at(&batch[0], row))?;
             }
         }
