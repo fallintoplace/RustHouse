@@ -195,7 +195,10 @@ mod tests {
 
     #[test]
     fn large_replica_checksums_use_64k_reads() {
-        struct Counting<'a> { input: &'a [u8], calls: usize }
+        struct Counting<'a> {
+            input: &'a [u8],
+            calls: usize,
+        }
         impl Read for Counting<'_> {
             fn read(&mut self, out: &mut [u8]) -> io::Result<usize> {
                 self.calls += 1;
@@ -203,8 +206,14 @@ mod tests {
             }
         }
         let bytes = vec![42; 128 * 1024];
-        let mut source = Counting { input: &bytes, calls: 0 };
-        assert_eq!(crc32c_reader(&mut source, bytes.len() as u64).unwrap(), (bytes.len() as u64, crc32c(&bytes)));
+        let mut source = Counting {
+            input: &bytes,
+            calls: 0,
+        };
+        assert_eq!(
+            crc32c_reader(&mut source, bytes.len() as u64).unwrap(),
+            (bytes.len() as u64, crc32c(&bytes))
+        );
         assert_eq!(source.calls, 3); // two data reads and one EOF check
     }
 
