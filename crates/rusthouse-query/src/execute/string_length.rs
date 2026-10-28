@@ -29,6 +29,21 @@ fn checked_string_length(column: &TypedColumn, row: usize) -> Result<Option<usiz
     }
 }
 
+fn projection_columns(query: &Select, column: &str) -> Vec<String> {
+    let mut names = vec![column.to_owned()];
+    for predicate in query
+        .predicates
+        .iter()
+        .chain(query.or_predicates.iter().flatten())
+    {
+        let predicate_column = predicate.column();
+        if !names.iter().any(|name| name == predicate_column) {
+            names.push(predicate_column.to_owned());
+        }
+    }
+    names
+}
+
 pub(super) fn execute<W: Write>(
     query: &Select,
     part: &Path,
@@ -46,17 +61,7 @@ pub(super) fn execute<W: Write>(
             "LENGTH requires a String column".into(),
         ));
     }
-    let mut names = vec![column.to_owned()];
-    for predicate in query
-        .predicates
-        .iter()
-        .chain(query.or_predicates.iter().flatten())
-    {
-        let predicate_column = predicate.column();
-        if !names.iter().any(|name| name == predicate_column) {
-            names.push(predicate_column.to_owned());
-        }
-    }
+    let names = projection_columns(query, column);
     let indices: HashMap<_, _> = names
         .iter()
         .enumerate()
