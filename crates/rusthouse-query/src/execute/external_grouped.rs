@@ -36,22 +36,55 @@ impl Drop for Scratch {
     fn drop(&mut self) { let _ = fs::remove_dir_all(&self.0); }
 }
 
+// Temporary sorted runs are private to a query, so use compact canonical
+// unsigned varints instead of 16-byte fixed-size key/count pairs. This cuts
+// disk bandwidth substantially on high-cardinality 32-bit dimensions.
+fn read_varint(input: &mut impl Read, eof_allowed: bool) -> Result<Option<u64>, ExecutionError> {
+    let mut result = 0_u64;
+    for index in 0..10 {
+        let mut byte = [0_u8; 1];
+        let read = input.read(&mut byte)?;
+        if read == 0 {
+            if index == 0 && eof_allowed { return Ok(None); }
+            return Err(invalid("truncated GROUP BY spill varint"));
+        }
+        let value = byte[0] & 0x7f;
+        if index == 9 && value > 1 {
+            return Err(invalid("GROUP BY spill varint overflow"));
+        }
+        result |= u64::from(value) << (index * 7);
+        if byte[0] & 0x80 == 0 {
+            if index > 0 && value == 0 {
+                return Err(invalid("noncanonical GROUP BY spill varint"));
+            }
+            return Ok(Some(result));
+        }
+    }
+    Err(invalid("GROUP BY spill varint too long"))
+}
+
+fn write_varint(output: &mut impl Write, mut value: u64) -> Result<(), ExecutionError> {
+    while value >= 128 {
+        output.write_all(&[((value as u8) & 0x7f) | 0x80])?;
+        value >>= 7;
+    }
+    output.write_all(&[value as u8])?;
+    Ok(())
+}
+
 fn read_group(reader: &mut BufReader<File>)
     -> Result<Option<(u64, u64)>, ExecutionError> {
-    let mut key = [0u8; 8];
-    if reader.read(&mut key[..1])? == 0 { return Ok(None); }
-    reader.read_exact(&mut key[1..])?;
-    let mut count = [0u8; 8];
-    reader.read_exact(&mut count)?;
-    let count = u64::from_le_bytes(count);
+    let Some(key) = read_varint(reader, true)? else { return Ok(None); };
+    let count = read_varint(reader, false)?
+        .ok_or_else(|| invalid("truncated GROUP BY spill count"))?;
     if count == 0 { return Err(invalid("invalid empty grouped spill entry")); }
-    Ok(Some((u64::from_le_bytes(key), count)))
+    Ok(Some((key, count)))
 }
 
 fn write_group(output: &mut impl Write, key: u64, count: u64)
     -> Result<(), ExecutionError> {
-    output.write_all(&key.to_le_bytes())?;
-    output.write_all(&count.to_le_bytes())?;
+    write_varint(output, key)?;
+    write_varint(output, count)?;
     Ok(())
 }
 
@@ -203,6 +236,32 @@ mod tests {
         assert!(values.windows(2).all(|pair| pair[0].0 < pair[1].0));
         assert_eq!(values.iter().map(|(_, count)| *count).sum::<u64>(),
             (RUN_KEYS * 35) as u64);
+    }
+
+    #[test]
+    fn compact_spills_reduce_io_for_billion_scale_dimension_ids() {
+        let mut groups = ExternalGroupCount64::new(false, false);
+        for id in 0..RUN_KEYS {
+            groups.insert(id as u64).unwrap();
+        }
+        assert_eq!(groups.runs.len(), 1);
+        let bytes = fs::metadata(&groups.runs[0]).unwrap().len();
+        // A fixed-width run would need 16 bytes for every unique group.
+        assert!(bytes < (RUN_KEYS as u64) * 8, "{bytes} bytes");
+        let mut total = 0_u64;
+        groups.finish(|_, count| { total += count; Ok(()) }).unwrap();
+        assert_eq!(total, RUN_KEYS as u64);
+    }
+
+    #[test]
+    fn spill_varints_reject_truncation_and_overflow() {
+        let mut truncated = &[0x80_u8][..];
+        assert!(read_varint(&mut truncated, true).is_err());
+        let mut excessive = &[0xff_u8; 11][..];
+        assert!(read_varint(&mut excessive, true).is_err());
+        let mut out = Vec::new();
+        write_varint(&mut out, u64::MAX).unwrap();
+        assert_eq!(read_varint(&mut out.as_slice(), false).unwrap(), Some(u64::MAX));
     }
 
     #[test]
