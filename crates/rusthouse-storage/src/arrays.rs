@@ -203,7 +203,7 @@ fn numeric_array_inner_type(data_type: &str) -> Result<&str, ArrayReadError> {
         .and_then(|inner| inner.strip_suffix(')'))
         .filter(|inner| !inner.is_empty())
         .ok_or_else(|| ArrayReadError::UnsupportedType(data_type.to_owned()))?;
-    if read_numeric_column(&mut io::empty(), nested_type, 0).is_err() {
+    if crate::numeric::numeric_storage_type(nested_type).is_none() {
         return Err(ArrayReadError::UnsupportedType(data_type.to_owned()));
     }
     Ok(nested_type)
@@ -552,5 +552,21 @@ mod tests {
         assert_eq!(first.offsets(), &[0, 2, 5]);
         assert_eq!(second.offsets(), &[0, 0, 4]);
         assert!(reader.is_empty());
+    }
+}
+
+#[cfg(test)]
+mod numeric_array_type_fastcheck_tests {
+    use super::*;
+
+    #[test]
+    fn validates_numeric_array_inner_type_without_decoding() {
+        for ty in ["Array(UInt64)", "Array(Int16)", "Array(Float64)", "Array(Date)",
+            "Array(DateTime64(3, 'UTC'))"] {
+            assert!(numeric_array_inner_type(ty).is_ok(), "{ty}");
+        }
+        for ty in ["Array(String)", "Array(Nullable(UInt64))", "Array(garbage)", "Array()"] {
+            assert!(numeric_array_inner_type(ty).is_err(), "{ty}");
+        }
     }
 }
