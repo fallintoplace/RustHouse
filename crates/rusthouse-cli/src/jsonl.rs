@@ -128,8 +128,6 @@ fn write_json_string<W: Write>(writer: &mut W, input: &[u8]) -> io::Result<()> {
     let input = std::str::from_utf8(input).map_err(|_| {
         io::Error::new(io::ErrorKind::InvalidData, "JSONL field is not valid UTF-8")
     })?;
-    // The common short ASCII field needs no JSON escaping. Pack it into a
-    // stack buffer and make only one write call per field.
     let bytes = input.as_bytes();
     if bytes.len() <= 64
         && bytes
@@ -142,29 +140,48 @@ fn write_json_string<W: Write>(writer: &mut W, input: &[u8]) -> io::Result<()> {
         quoted[bytes.len() + 1] = b'"';
         return writer.write_all(&quoted[..bytes.len() + 2]);
     }
-    writer.write_all(b"\"")?;
-    let mut start = 0;
-    for (index, ch) in input.char_indices() {
-        let escaped: Option<&[u8]> = match ch {
-            '"' => Some(b"\\\""),
-            '\\' => Some(b"\\\\"),
-            '\n' => Some(b"\\n"),
-            '\r' => Some(b"\\r"),
-            '\t' => Some(b"\\t"),
-            _ => None,
+    // Escaping every quote using separate writes becomes expensive for wide
+    // JSONL exports. Keep the existing Unicode-control escaping semantics.
+    const HEX: &[u8; 16] = b"0123456789abcdef";
+    let mut buffer = [0u8; 4096];
+    buffer[0] = b'"';
+    let mut used = 1;
+    for ch in input.chars() {
+        let mut codepoint_bytes = [0u8; 4];
+        let mut unicode_escape = [0u8; 6];
+        let encoded: &[u8] = match ch {
+            '"' => br#"\""#,
+            '\\' => br"\\",
+            '\n' => br"\n",
+            '\r' => br"\r",
+            '\t' => br"\t",
+            ch if ch.is_control() => {
+                let value = ch as u32;
+                unicode_escape = [
+                    b'\\',
+                    b'u',
+                    b'0',
+                    b'0',
+                    HEX[((value >> 4) & 15) as usize],
+                    HEX[(value & 15) as usize],
+                ];
+                &unicode_escape
+            }
+            ch => ch.encode_utf8(&mut codepoint_bytes).as_bytes(),
         };
-        if let Some(escaped) = escaped {
-            writer.write_all(&input.as_bytes()[start..index])?;
-            writer.write_all(escaped)?;
-            start = index + ch.len_utf8();
-        } else if ch.is_control() {
-            writer.write_all(&input.as_bytes()[start..index])?;
-            write!(writer, "\\u{:04x}", ch as u32)?;
-            start = index + ch.len_utf8();
+        if used + encoded.len() > buffer.len() {
+            writer.write_all(&buffer[..used])?;
+            used = 0;
         }
+        buffer[used..used + encoded.len()].copy_from_slice(encoded);
+        used += encoded.len();
     }
-    writer.write_all(&input.as_bytes()[start..])?;
-    writer.write_all(b"\"")
+    if used == buffer.len() {
+        writer.write_all(&buffer)?;
+        used = 0;
+    }
+    buffer[used] = b'"';
+    writer.write_all(&buffer[..used + 1])
 }
 
 impl<W: Write> Write for JsonlWriter<W> {
@@ -496,5 +513,43 @@ mod single_pass_row_tests {
         let mut output = Vec::new();
         write_json_row(&mut output, &headers, b"one\ttwo").unwrap();
         assert_eq!(output, b"{\"id\":\"one\",\"value\":\"two\"}\n");
+    }
+}
+
+#[cfg(test)]
+mod batched_jsonl_escaping_tests {
+    use super::*;
+
+    #[test]
+    fn preserves_unicode_and_escapes_non_ascii_controls() {
+        let mut output = Vec::new();
+        write_json_string(&mut output, "café\n\t\u{0085}\\\"".as_bytes()).unwrap();
+        assert_eq!(output, "\"café\\n\\t\\u0085\\\\\\\"\"".as_bytes());
+    }
+
+    #[test]
+    fn quote_heavy_jsonl_field_uses_few_write_calls() {
+        struct Count {
+            writes: usize,
+            output: Vec<u8>,
+        }
+        impl Write for Count {
+            fn write(&mut self, data: &[u8]) -> io::Result<usize> {
+                self.writes += 1;
+                self.output.extend_from_slice(data);
+                Ok(data.len())
+            }
+            fn flush(&mut self) -> io::Result<()> {
+                Ok(())
+            }
+        }
+        let input = "\"".repeat(10_000);
+        let mut output = Count {
+            writes: 0,
+            output: Vec::new(),
+        };
+        write_json_string(&mut output, input.as_bytes()).unwrap();
+        assert_eq!(output.output.len(), 20_002);
+        assert!(output.writes <= 6);
     }
 }
