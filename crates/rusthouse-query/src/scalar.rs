@@ -1214,8 +1214,12 @@ fn parse_clickhouse_ceil(parser: &mut Parser, depth: usize) -> Result<i64, Parse
     }
     let unit = 10_i128.pow((-scale) as u32);
     let value = i128::from(value);
-    let result = let remainder = value.rem_euclid(unit);
-    if remainder == 0 { value } else { value + unit - remainder };
+    let remainder = value.rem_euclid(unit);
+    let result = if remainder == 0 {
+        value
+    } else {
+        value + unit - remainder
+    };
     i64::try_from(result).map_err(|_| overflow())
 }
 
