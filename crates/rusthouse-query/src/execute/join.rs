@@ -213,7 +213,13 @@ fn execute_streaming_inner<W: Write>(
     let mut hash: HashMap<Vec<typed::Key>, Vec<usize>> = HashMap::with_capacity(right_rows.len());
     for (index, row) in right_rows.iter().enumerate() {
         if let Some(key) = row_key(row, right_keys) {
-            hash.entry(key).or_default().push(index);
+            // ANY keeps the first right match only, so duplicate indexes
+            // never need to be retained in the hash table.
+            if query.any {
+                hash.entry(key).or_insert_with(|| vec![index]);
+            } else {
+                hash.entry(key).or_default().push(index);
+            }
         }
     }
     if hash.is_empty() {
