@@ -253,9 +253,12 @@ pub(crate) fn inspect_parts_metadata(
 /// continuous sequence, so GROUP BY, ORDER BY, DISTINCT and LIMIT are global.
 pub struct NumericQueryReader {
     parts: Vec<PathBuf>,
-    columns: Vec<String>,
+    columns: std::sync::Arc<[String]>,
     next_part: usize,
     current: Option<NumericPartReader>,
+    // At most one independently opened part is queued ahead. The batches
+    // themselves remain lazy and in stable physical part order.
+    prefetched: Option<std::thread::JoinHandle<Result<NumericPartReader, PartError>>>,
 }
 
 impl NumericQueryReader {
@@ -293,10 +296,44 @@ impl NumericQueryReader {
         }
         Ok(Self {
             parts,
-            columns: columns.to_owned(),
+            columns: std::sync::Arc::from(columns.to_owned()),
             next_part: 0,
             current: None,
+            prefetched: None,
         })
+    }
+
+    /// Queue just one future part stream while the current part is decoded.
+    /// Cloning an Arc avoids copying a large projection schema on every part.
+    fn prefetch_next(&mut self) {
+        if self.prefetched.is_some() || self.next_part >= self.parts.len() {
+            return;
+        }
+        let path = self.parts[self.next_part].clone();
+        let columns = self.columns.clone();
+        self.next_part += 1;
+        self.prefetched = Some(std::thread::spawn(move || {
+            NumericPartReader::open(&path, &columns)
+        }));
+    }
+
+    fn advance_part(&mut self) -> Result<bool, PartError> {
+        let reader = if let Some(handle) = self.prefetched.take() {
+            handle.join().map_err(|_| {
+                PartError::InvalidScan("numeric snapshot part opener panicked".into())
+            })??
+        } else if self.next_part < self.parts.len() {
+            let reader = NumericPartReader::open(
+                &self.parts[self.next_part], &self.columns,
+            )?;
+            self.next_part += 1;
+            reader
+        } else {
+            return Ok(false);
+        };
+        self.current = Some(reader);
+        self.prefetch_next();
+        Ok(true)
     }
 
     /// Skip as much of an unfiltered OFFSET as possible using part/mark
@@ -325,6 +362,10 @@ impl NumericQueryReader {
     }
 
     pub fn next_batch(&mut self) -> Result<Option<Vec<NumericColumn>>, PartError> {
+        // OFFSET may have already installed a partially skipped part.
+        if self.current.is_some() {
+            self.prefetch_next();
+        }
         loop {
             if let Some(current) = self.current.as_mut() {
                 if let Some(batch) = current.next_batch()? {
@@ -332,14 +373,18 @@ impl NumericQueryReader {
                 }
                 self.current = None;
             }
-            if self.next_part == self.parts.len() {
+            if !self.advance_part()? {
                 return Ok(None);
             }
-            self.current = Some(NumericPartReader::open(
-                &self.parts[self.next_part],
-                &self.columns,
-            )?);
-            self.next_part += 1;
+        }
+    }
+}
+
+impl Drop for NumericQueryReader {
+    fn drop(&mut self) {
+        // An early LIMIT must not detach a worker holding open part files.
+        if let Some(handle) = self.prefetched.take() {
+            let _ = handle.join();
         }
     }
 }
@@ -397,6 +442,47 @@ mod tests {
             .unwrap();
         }
         assert_eq!(query_parts(&root).unwrap(), vec![active]);
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn prefetches_numeric_part_open_without_reordering_batches_or_offset() {
+        use crate::write_wide_part;
+        let root = std::env::temp_dir().join(format!(
+            "rusthouse-numeric-part-prefetch-{}", std::process::id()
+        ));
+        let _ = fs::remove_dir_all(&root);
+        fs::create_dir_all(&root).unwrap();
+        let columns = vec![Column { name: "id".into(), data_type: "UInt64".into() }];
+        for index in 0..24u64 {
+            write_wide_part(
+                &root.join(format!("all_{index}_{index}_0")),
+                &columns,
+                &[vec![Some(index.to_string())]],
+            ).unwrap();
+        }
+        let mut scan = NumericQueryReader::open(&root, &["id".to_owned()]).unwrap();
+        let mut seen = Vec::new();
+        while let Some(batch) = scan.next_batch().unwrap() {
+            if let NumericColumn::UInt64(values) = &batch[0] {
+                seen.extend_from_slice(values);
+            } else {
+                panic!("expected UInt64 batch");
+            }
+        }
+        assert_eq!(seen, (0..24u64).collect::<Vec<_>>());
+        drop(scan);
+
+        let mut paged = NumericQueryReader::open(&root, &["id".to_owned()]).unwrap();
+        assert_eq!(paged.skip_prefix_rows(18).unwrap(), 18);
+        let mut rest = Vec::new();
+        while let Some(batch) = paged.next_batch().unwrap() {
+            if let NumericColumn::UInt64(values) = &batch[0] {
+                rest.extend_from_slice(values);
+            }
+        }
+        assert_eq!(rest, (18..24u64).collect::<Vec<_>>());
+        drop(paged);
         fs::remove_dir_all(root).unwrap();
     }
 
