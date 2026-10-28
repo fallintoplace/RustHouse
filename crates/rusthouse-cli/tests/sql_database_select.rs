@@ -119,7 +119,7 @@ fn rejects_unknown_tables_and_incompatible_options() {
     let db = database();
     let unknown = sql("SELECT * FROM missing", &db, &[]);
     assert!(!unknown.status.success());
-    assert!(String::from_utf8_lossy(&unknown.stderr).contains("cannot read table"));
+    assert!(String::from_utf8_lossy(&unknown.stderr).contains("cannot read database table"));
 
     let conflicting = sql("SELECT 1", &db, &["--part", "somewhere"]);
     assert!(!conflicting.status.success());
