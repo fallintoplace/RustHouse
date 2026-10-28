@@ -269,22 +269,19 @@ pub fn parse_join(sql: &str) -> Result<Option<JoinSelect>, ParseError> {
             }
             (Vec::new(), names)
         } else if parser.keyword("ON") {
-            let mut keys = Vec::new();
-            loop {
-                if keys.len() == 8 {
-                    return Err(ParseError("JOIN supports at most 8 equality keys".into()));
+            let mut raw = Vec::new();
+            equality_group(&mut parser, &mut raw, 0)?;
+            let mut keys: Vec<(JoinColumn, JoinColumn)> = Vec::new();
+            for (first, second) in raw {
+                if !keys.iter().any(|(left, right)| {
+                    (left == &first && right == &second)
+                        || (left == &second && right == &first)
+                }) {
+                    keys.push((first, second));
                 }
-                let first = qualified(&mut parser)?;
-                if !parser.take(Token::Operator(super::Operator::Eq)) {
-                    return Err(ParseError(
-                        "JOIN ON supports AND-connected equality keys".into(),
-                    ));
-                }
-                let second = qualified(&mut parser)?;
-                keys.push((first, second));
-                if !parser.keyword("AND") {
-                    break;
-                }
+            }
+            if keys.len() > 8 {
+                return Err(ParseError("JOIN supports at most 8 equality keys".into()));
             }
             (keys, Vec::new())
         } else {
@@ -505,6 +502,22 @@ pub fn explain_join(query: &JoinSelect) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn chained_join_accepts_nested_on_equalities() {
+        let query = parse_join(
+            "SELECT * FROM a x JOIN b y ON x.id = y.id JOIN c z ON (y.id = z.id AND (x.k = z.k))",
+        )
+        .unwrap()
+        .unwrap();
+        assert_eq!(query.steps[0].keys.len(), 2);
+        for statement in [
+            "SELECT * FROM a x JOIN b y ON x.id = y.id JOIN c z ON (y.id = z.id",
+            "SELECT * FROM a x JOIN b y ON x.id = y.id JOIN c z ON (y.id = z.id OR x.k = z.k)",
+        ] {
+            assert!(parse_join(statement).is_err(), "{statement}");
+        }
+    }
 
     #[test]
     fn explain_lists_chained_sources_before_project_and_limit() {
