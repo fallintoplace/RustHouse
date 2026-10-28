@@ -25,6 +25,7 @@ fn is_bitwise(name: &str) -> bool {
             | "BITSHIFTRIGHT"
             | "BITROTATELEFT"
             | "BITROTATERIGHT"
+            | "BITTESTANY"
     )
 }
 
@@ -1087,6 +1088,7 @@ fn factor(parser: &mut Parser, depth: usize) -> Result<i64, ParseError> {
             }
             let second = expression(parser, depth + 1)?;
             match name.to_ascii_uppercase().as_str() {
+                "BITTESTANY" => i64::from((first & second) != 0),
                 "BITAND" => first & second,
                 "BITOR" => first | second,
                 "BITXOR" => first ^ second,
