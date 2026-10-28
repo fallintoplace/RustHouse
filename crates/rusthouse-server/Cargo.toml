@@ -9,3 +9,4 @@ license.workspace = true
 rusthouse-format = { path = "../rusthouse-format" }
 rusthouse-query = { path = "../rusthouse-query" }
 rusthouse-storage = { path = "../rusthouse-storage" }
+lz4_flex = { version = "0.14.0", default-features = false, features = ["alloc", "checked-decode", "safe-decode"] }
