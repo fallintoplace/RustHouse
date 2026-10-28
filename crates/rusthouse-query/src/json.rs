@@ -18,6 +18,15 @@ enum JsonKind<'a> {
 }
 
 impl<'a> JsonValue<'a> {
+    pub(crate) fn object_key_at(&self, position: i64) -> Option<&str> {
+        let index = usize::try_from(position).ok()?.checked_sub(1)?;
+        match &self.kind {
+            JsonKind::Object(fields) => fields.get(index).map(|(name, _)| name.as_str()),
+            _ => None,
+        }
+    }
+
+
     pub(crate) fn raw(&self) -> &str {
         self.raw
     }
