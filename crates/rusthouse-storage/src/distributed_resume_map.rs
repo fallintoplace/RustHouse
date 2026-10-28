@@ -46,7 +46,22 @@ impl ResumeMap {
         if self.completed.iter().all(|&byte| byte == 0) {
             return (0..self.chunks).collect();
         }
-        let mut missing = Vec::new();
+        // Count only valid completion bits before allocating the missing-index list.
+        let completed_count = self
+            .completed
+            .iter()
+            .enumerate()
+            .map(|(byte_index, &bits)| {
+                let valid = (self.chunks - byte_index * 8).min(8);
+                let mask = if valid == 8 {
+                    u8::MAX
+                } else {
+                    ((1u16 << valid) - 1) as u8
+                };
+                (bits & mask).count_ones() as usize
+            })
+            .sum::<usize>();
+        let mut missing = Vec::with_capacity(self.chunks - completed_count);
         for (byte_index, &completed) in self.completed.iter().enumerate() {
             let mut bits = !completed;
             if byte_index == self.completed.len() - 1 && self.chunks % 8 != 0 {
@@ -179,5 +194,18 @@ mod tests {
         assert_eq!(decoded.len(), 65_536);
         assert_eq!(decoded.encode(), input);
         assert_eq!(decoded.remaining().len(), 3 * 8192);
+    }
+
+    #[test]
+    fn partial_bitmap_reserves_exact_remaining_slots() {
+        let mut progress = ResumeMap::new(65_536).unwrap();
+        for index in (0..65_536).step_by(2) {
+            progress.mark_complete(index).unwrap();
+        }
+        let remaining = progress.remaining();
+        assert_eq!(remaining.len(), 32_768);
+        assert_eq!(remaining.capacity(), remaining.len());
+        assert_eq!(remaining[0], 1);
+        assert_eq!(*remaining.last().unwrap(), 65_535);
     }
 }
