@@ -1007,7 +1007,7 @@ mod tests {
             vec![typed::Cell::Numeric(Number::Unsigned(1))],
         ];
         let mut hash = HashMap::new();
-        hash.insert(vec![typed::Key::Numeric(super::typed::NumberKey::from(Number::Unsigned(1)))],
+        hash.insert(vec![typed::Cell::Numeric(Number::Unsigned(1)).key()],
             Bucket::Many(vec![0, 1]));
         let mut seen = Vec::new();
         let count = probe_left_outer(
@@ -1017,7 +1017,11 @@ mod tests {
                 stop_after: None, any: false, null_filter: None,
             },
             |left, right| {
-                seen.push((format!("{:?}", left[0].key()), matches!(right[0], typed::Cell::Null)));
+                let id = match &left[0] {
+                    typed::Cell::Numeric(Number::Unsigned(id)) => *id,
+                    _ => panic!("expected numeric left key"),
+                };
+                seen.push((id, matches!(&right[0], typed::Cell::Null)));
                 Ok(())
             },
         ).unwrap();
