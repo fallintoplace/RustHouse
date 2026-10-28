@@ -41,6 +41,7 @@ pub(super) fn is_function(name: &str) -> bool {
         || name.eq_ignore_ascii_case("DIV")
         || name.eq_ignore_ascii_case("INTDIV")
         || name.eq_ignore_ascii_case("MOD")
+        || name.eq_ignore_ascii_case("INTEXP2")
         || name.eq_ignore_ascii_case("ABS_DIFF")
         || name.eq_ignore_ascii_case("SIGN")
         || name.eq_ignore_ascii_case("DIGIT_COUNT")
@@ -955,6 +956,9 @@ fn factor(parser: &mut Parser, depth: usize) -> Result<i64, ParseError> {
     if parser.keyword("MOD") {
         return parse_div_mod(parser, depth, false);
     }
+    if parser.keyword("INTEXP2") {
+        return parse_clickhouse_intexp2(parser, depth);
+    }
     if parser.keyword("ABS_DIFF") {
         return parse_abs_diff(parser, depth);
     }
@@ -1191,6 +1195,16 @@ fn parse_next_power_of_two(parser: &mut Parser, depth: usize) -> Result<i64, Par
             .ok_or_else(overflow)?,
     )
     .map_err(|_| overflow())
+}
+
+fn parse_clickhouse_intexp2(parser: &mut Parser, depth: usize) -> Result<i64, ParseError> {
+    require_token(parser, Token::LParen, "INTEXP2 requires '('")?;
+    let value = expression(parser, depth + 1)?;
+    require_token(parser, Token::RParen, "INTEXP2 requires ')'")?;
+    if !(0..=62).contains(&value) {
+        return Err(ParseError("intExp2 exponent must be 0..=62 for Int64".into()));
+    }
+    Ok(1_i64 << value)
 }
 
 fn overflow() -> ParseError {
