@@ -41,6 +41,7 @@ impl SqlOutputFormat {
             Some("tsv-no-header") => Ok(Self::TsvNoHeader),
             Some("csv") => Ok(Self::Csv),
             Some("csv-no-header") => Ok(Self::CsvNoHeader),
+            Some("CSV") => Ok(Self::CsvNoHeader),
             Some("jsonl") => Ok(Self::Jsonl),
             Some("json") => Ok(Self::Json),
             Some("json-pretty") => Ok(Self::JsonPretty),
