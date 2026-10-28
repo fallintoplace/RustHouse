@@ -187,13 +187,8 @@ pub fn execute_multi_join<W: Write>(
         .chain(query.steps.iter())
         .enumerate()
     {
-        if !matches!(step.kind, JoinType::Inner | JoinType::Left)
-            || step.any
-            || !step.using_keys.is_empty()
-        {
-            return Err(invalid(
-                "chained JOIN currently supports only INNER and LEFT JOIN ON",
-            ));
+        if step.any || !step.using_keys.is_empty() {
+            return Err(invalid("chained ANY JOIN or USING is not supported yet"));
         }
         let right_relation = &relations[step_index + 1];
         let left_width = right_relation.start;
@@ -215,12 +210,14 @@ pub fn execute_multi_join<W: Write>(
         }
         let mut next = Vec::new();
         let mut retained = 0usize;
+        let mut matched_right = vec![false; right_rows.len()];
         for row in &rows {
             let mut matched = false;
             if let Some(key) = row_key(row, &left_keys) {
                 if let Some(matches) = hash.get(&key) {
                     for &match_index in matches {
                         matched = true;
+                        matched_right[match_index] = true;
                         let mut joined =
                             Vec::with_capacity(left_width + right_relation.names.len());
                         joined.extend_from_slice(row);
@@ -229,11 +226,20 @@ pub fn execute_multi_join<W: Write>(
                     }
                 }
             }
-            if !matched && step.kind == JoinType::Left {
+            if !matched && matches!(step.kind, JoinType::Left | JoinType::Full) {
                 let mut joined = Vec::with_capacity(left_width + right_relation.names.len());
                 joined.extend_from_slice(row);
                 joined.resize(left_width + right_relation.names.len(), typed::Cell::Null);
                 push_row(&mut next, joined, &mut retained)?;
+            }
+        }
+        if matches!(step.kind, JoinType::Right | JoinType::Full) {
+            for (right_index, matched) in matched_right.into_iter().enumerate() {
+                if !matched {
+                    let mut joined = vec![typed::Cell::Null; left_width];
+                    joined.extend_from_slice(&right_rows[right_index]);
+                    push_row(&mut next, joined, &mut retained)?;
+                }
             }
         }
         rows = next;
