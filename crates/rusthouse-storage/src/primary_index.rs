@@ -311,7 +311,7 @@ mod tests {
         );
         assert_eq!(
             candidate_i64_mark_range(&index, 1, Bound::Unbounded, Bound::Unbounded),
-            None
+            Some(0..6)
         );
         let unsorted = FixedPrimaryIndex {
             data: [0i64, -1].into_iter().flat_map(i64::to_le_bytes).collect(),
@@ -320,7 +320,7 @@ mod tests {
         };
         assert_eq!(
             candidate_i64_mark_range(&unsorted, 0, Bound::Unbounded, Bound::Unbounded),
-            None
+            Some(0..2)
         );
     }
 
@@ -333,11 +333,11 @@ mod tests {
         };
         assert_eq!(
             candidate_u64_mark_range(&index, 0, Bound::Unbounded, Bound::Unbounded),
-            None
+            Some(0..2)
         );
         assert_eq!(
             candidate_u64_mark_range(&index, 1, Bound::Unbounded, Bound::Unbounded),
-            None
+            Some(0..2)
         );
     }
 
@@ -401,7 +401,7 @@ mod tests {
         };
         assert!(
             candidate_u64_mark_ranges(&unsorted, 0, &[(Bound::Unbounded, Bound::Unbounded)])
-                .is_none()
+                == Some(vec![0..2])
         );
     }
 
