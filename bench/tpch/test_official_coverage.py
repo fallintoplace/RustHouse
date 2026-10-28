@@ -22,6 +22,21 @@ class CoverageTests(unittest.TestCase):
                                execute=lambda sql: b"6\n")
             self.assertEqual(checked["results"][5]["status"], "missing_reference")
 
+    def test_query_inventory_matches_cli_64k_statement_limit(self):
+        with tempfile.TemporaryDirectory() as root:
+            path = Path(root)
+            (path / "q01.sql").write_text("SELECT '" + "x" * 5000 + "'")
+            (path / "q02.sql").write_text("SELECT '" + "x" * 65536 + "'")
+            observed = []
+            def execute(sql):
+                observed.append(sql)
+                return b"1\n"
+            report = coverage("fake", "db", path, runs=1, warmups=0,
+                              execute=execute)
+            self.assertEqual(report["results"][0]["status"], "unverified")
+            self.assertEqual(report["results"][1]["status"], "unsupported_query")
+            self.assertEqual(len(observed), 1)
+
     def test_reference_match_and_mismatch_are_distinct(self):
         with tempfile.TemporaryDirectory() as root:
             path = Path(root)
