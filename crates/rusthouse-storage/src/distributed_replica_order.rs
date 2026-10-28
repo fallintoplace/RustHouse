@@ -25,18 +25,23 @@ fn newest_first(left: &ReplicaStatus, right: &ReplicaStatus) -> std::cmp::Orderi
         .then_with(|| left.node.cmp(&right.node))
 }
 
-/// Return healthy node IDs, newest advertised version first.
-/// A caller must still validate returned data and enforce its consistency model.
-pub fn rank_read_replicas(replicas: &[ReplicaStatus]) -> Result<Vec<String>, &'static str> {
-    if replicas.is_empty() || replicas.len() > 64 {
-        return Err("invalid replica status set");
-    }
+fn validate_replica_nodes(replicas: &[ReplicaStatus]) -> Result<(), &'static str> {
     let mut seen = HashSet::new();
     for replica in replicas {
         if !valid_node(&replica.node) || !seen.insert(replica.node.as_str()) {
             return Err("invalid or duplicate replica node");
         }
     }
+    Ok(())
+}
+
+/// Return healthy node IDs, newest advertised version first.
+/// A caller must still validate returned data and enforce its consistency model.
+pub fn rank_read_replicas(replicas: &[ReplicaStatus]) -> Result<Vec<String>, &'static str> {
+    if replicas.is_empty() || replicas.len() > 64 {
+        return Err("invalid replica status set");
+    }
+    validate_replica_nodes(replicas)?;
     let mut healthy: Vec<&ReplicaStatus> =
         replicas.iter().filter(|replica| replica.healthy).collect();
     if healthy.is_empty() {
