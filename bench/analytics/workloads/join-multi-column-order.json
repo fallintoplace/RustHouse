@@ -1,0 +1,19 @@
+{
+  "name": "join-multi-column-order",
+  "description": "Benchmark chained JOIN ORDER BY keys and mixed sort direction",
+  "queries": [
+    {
+      "name": "country-then-event",
+      "sql": "SELECT e.event_id, a.country FROM events e JOIN accounts a ON e.user_id = a.user_id ORDER BY a.country, e.event_id LIMIT 20"
+    },
+    {
+      "name": "tier-desc-event-asc",
+      "sql": "SELECT e.event_id, a.tier FROM events e JOIN accounts a ON e.user_id = a.user_id ORDER BY a.tier DESC, e.event_id ASC LIMIT 20"
+    },
+    {
+      "name": "country-asc-event-desc",
+      "sql": "SELECT e.event_id, a.country FROM events e JOIN accounts a ON e.user_id = a.user_id ORDER BY a.country ASC, e.event_id DESC LIMIT 20"
+    }
+  ],
+  "max_rows": 16000
+}
