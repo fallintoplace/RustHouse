@@ -7,6 +7,7 @@ pub(super) fn is_function(name: &str) -> bool {
     matches!(
         name.to_ascii_uppercase().as_str(),
         "LENGTH"
+            | "TOHOUR"
             | "LENGTHUTF8"
             | "CHAR_LENGTH"
             | "OCTET_LENGTH"
@@ -1950,6 +1951,18 @@ fn parse_at_depth(parser: &mut Parser, depth: usize) -> Result<ConstantValue, Pa
                         return Err(ParseError("lowerUTF8 result is too large".into()));
                     }
                     ConstantValue::Text(result)
+                }
+                None => ConstantValue::Null,
+            }
+        }
+        "TOHOUR" => {
+            let input = text_arg(parser, depth + 1)?;
+            require(parser, Token::RParen, "toHour requires one argument")?;
+            match input {
+                Some(value) => {
+                    let seconds = rusthouse_storage::parse_datetime(&value)
+                        .ok_or_else(|| ParseError("invalid DateTime argument".into()))?;
+                    ConstantValue::Integer(i64::from(seconds / 3600 % 24))
                 }
                 None => ConstantValue::Null,
             }
