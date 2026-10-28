@@ -17,6 +17,7 @@ pub(super) fn is_function(name: &str) -> bool {
             | "STRINGBYTESUNIQ"
             | "BIT_LENGTH"
             | "IS_INT64"
+            | "TOMODIFIEDJULIANDAY"
             | "BTRIM"
             | "TRIMBOTH"
             | "RTRIM"
@@ -415,6 +416,23 @@ fn parse_at_depth(parser: &mut Parser, depth: usize) -> Result<ConstantValue, Pa
             require(parser, Token::RParen, "IS_EMPTY requires one argument")?;
             match input {
                 Some(value) => ConstantValue::Integer(i64::from(value.is_empty())),
+                None => ConstantValue::Null,
+            }
+        }
+        "TOMODIFIEDJULIANDAY" => {
+            let input = text_arg(parser, depth + 1)?;
+            require(
+                parser,
+                Token::RParen,
+                "toModifiedJulianDay requires one argument",
+            )?;
+            match input {
+                Some(value) => {
+                    let days = rusthouse_storage::parse_date(&value).ok_or_else(|| {
+                        ParseError("toModifiedJulianDay requires a valid UTC Date".into())
+                    })?;
+                    ConstantValue::Integer(i64::from(days) + 40_587)
+                }
                 None => ConstantValue::Null,
             }
         }
