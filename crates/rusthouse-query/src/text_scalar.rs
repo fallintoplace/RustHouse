@@ -87,6 +87,7 @@ pub(super) fn is_function(name: &str) -> bool {
             | "RPAD"
             | "LOWERUTF8"
             | "SPACE"
+            | "IPV4STRINGTONUMORDEFAULT"
             | "IPV4STRINGTONUM"
             | "INET_ATON"
     )
@@ -1935,6 +1936,19 @@ fn parse_at_depth(parser: &mut Parser, depth: usize) -> Result<ConstantValue, Pa
                     let address = input.parse::<std::net::Ipv4Addr>()
                         .map_err(|_| ParseError("invalid IPv4StringToNum address".into()))?;
                     ConstantValue::Integer(i64::from(u32::from(address)))
+                }
+                None => ConstantValue::Null,
+            }
+        }
+        "IPV4STRINGTONUMORDEFAULT" => {
+            let input = text_arg(parser, depth + 1)?;
+            require(parser, Token::RParen, "IPv4StringToNumOrDefault requires one argument")?;
+            match input {
+                Some(input) => {
+                    let parsed = input.parse::<std::net::Ipv4Addr>()
+                        .map(u32::from)
+                        .unwrap_or(0);
+                    ConstantValue::Integer(i64::from(parsed))
                 }
                 None => ConstantValue::Null,
             }
