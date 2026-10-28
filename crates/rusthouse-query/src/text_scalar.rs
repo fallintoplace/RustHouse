@@ -17,6 +17,7 @@ pub(super) fn is_function(name: &str) -> bool {
             | "STRINGBYTESUNIQ"
             | "BIT_LENGTH"
             | "IS_INT64"
+            | "IPV4NUMTOSTRINGCLASSC"
             | "BTRIM"
             | "RTRIM"
             | "CUTQUERYSTRING"
@@ -346,6 +347,20 @@ fn parse_at_depth(parser: &mut Parser, depth: usize) -> Result<ConstantValue, Pa
             require(parser, Token::RParen, "IS_EMPTY requires one argument")?;
             match input {
                 Some(value) => ConstantValue::Integer(i64::from(value.is_empty())),
+                None => ConstantValue::Null,
+            }
+        }
+        "IPV4NUMTOSTRINGCLASSC" => {
+            let input = integer_arg(parser, depth + 1)?;
+            require(parser, Token::RParen, "IPv4NumToStringClassC requires one number")?;
+            match input {
+                Some(value) => {
+                    let number = u32::try_from(value).map_err(|_| {
+                        ParseError("IPv4NumToStringClassC requires UInt32".into())
+                    })?;
+                    let [a, b, c, _] = number.to_be_bytes();
+                    ConstantValue::Text(format!("{a}.{b}.{c}.xxx"))
+                }
                 None => ConstantValue::Null,
             }
         }
@@ -1993,5 +2008,41 @@ fn text_arg(parser: &mut Parser, depth: usize) -> Result<Option<String>, ParseEr
         _ => Err(ParseError(
             "expected a string literal or string function".into(),
         )),
+    }
+}
+
+#[cfg(test)]
+mod clickhouse_ipv4_num_to_string_classc_tests {
+    use crate::{ConstantValue, Projection, parse_select};
+
+    fn value(sql: &str) -> ConstantValue {
+        match parse_select(sql).unwrap().projection {
+            Projection::Constants(columns) if columns.len() == 1 => columns[0].value.clone(),
+            Projection::Literal(number) => ConstantValue::Integer(number),
+            other => panic!("unexpected projection: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn supported_inputs() {
+        for (sql, expected) in [
+            ("SELECT IPv4NumToStringClassC(3232235521)", ConstantValue::Text("192.168.0.xxx".into())),
+            ("SELECT IPv4NumToStringClassC(2130706433)", ConstantValue::Text("127.0.0.xxx".into())),
+            ("SELECT IPv4NumToStringClassC(0)", ConstantValue::Text("0.0.0.xxx".into())),
+            ("SELECT IPv4NumToStringClassC(NULL)", ConstantValue::Null),
+        ] {
+            assert_eq!(value(sql), expected, "{sql}");
+        }
+    }
+
+    #[test]
+    fn invalid_inputs() {
+        for sql in [
+            "SELECT IPv4NumToStringClassC()",
+            "SELECT IPv4NumToStringClassC(-1)",
+            "SELECT IPv4NumToStringClassC(4294967296)",
+        ] {
+            assert!(parse_select(sql).is_err(), "{sql}");
+        }
     }
 }
