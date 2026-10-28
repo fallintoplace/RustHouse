@@ -6,7 +6,7 @@ use std::path::Path;
 
 const MAX_INSERT_ROWS: usize = 50_000;
 const MAX_SINGLE_PART_ROWS: usize = 4096;
-const MAX_RESULT_BYTES: usize = 8 * 1024 * 1024;
+const MAX_RESULT_BYTES: usize = 16 * 1024 * 1024;
 
 #[derive(Default)]
 struct BoundedOutput(Vec<u8>);
@@ -14,7 +14,7 @@ struct BoundedOutput(Vec<u8>);
 impl Write for BoundedOutput {
     fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
         if buf.len() > MAX_RESULT_BYTES.saturating_sub(self.0.len()) {
-            return Err(io::Error::other("INSERT SELECT result exceeds 8 MiB"));
+            return Err(io::Error::other("INSERT SELECT result exceeds 16 MiB"));
         }
         self.0.extend_from_slice(buf);
         Ok(buf.len())
@@ -167,6 +167,14 @@ mod tests {
         })
         .unwrap();
         fs::remove_dir_all(database).unwrap();
+    }
+
+    #[test]
+    fn result_buffer_accepts_payload_above_eight_mib() {
+        let mut output = BoundedOutput::default();
+        let bytes = vec![b'1'; 8 * 1024 * 1024 + 1];
+        output.write_all(&bytes).unwrap();
+        assert_eq!(output.0.len(), bytes.len());
     }
 
     #[test]
