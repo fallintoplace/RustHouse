@@ -981,7 +981,7 @@ pub(super) fn execute_typed<W: Write>(
     let mut count_distinct_sixteen = if is_count_distinct
         && matches!(
             projection_types.first().copied(),
-            Some("UInt16" | "Int16" | "Nullable(UInt16)" | "Nullable(Int16)")
+            Some("UInt8" | "Int8" | "UInt16" | "Int16" | "Nullable(UInt8)" | "Nullable(Int8)" | "Nullable(UInt16)" | "Nullable(Int16)")
         )
     {
         Some(vec![0u64; 1024])
@@ -1188,9 +1188,19 @@ pub(super) fn execute_typed<W: Write>(
                             values: NumericColumn::Int16(values),
                             ..
                         } => values[index] as u16,
+                        TypedColumn::Numeric(NumericColumn::UInt8(values))
+                        | TypedColumn::NullableNumeric {
+                            values: NumericColumn::UInt8(values),
+                            ..
+                        } => u16::from(values[index]),
+                        TypedColumn::Numeric(NumericColumn::Int8(values))
+                        | TypedColumn::NullableNumeric {
+                            values: NumericColumn::Int8(values),
+                            ..
+                        } => values[index] as u16,
                         _ => {
                             return Err(ExecutionError::Invalid(
-                                "unexpected 16-bit DISTINCT column type".into(),
+                                "unexpected 8-bit or 16-bit DISTINCT column type".into(),
                             ));
                         }
                     };
