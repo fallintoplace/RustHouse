@@ -12,6 +12,7 @@ pub(super) fn is_function(name: &str) -> bool {
             | "OCTET_LENGTH"
             | "ASCII"
             | "UTF16_LENGTH"
+            | "ADDWEEKS"
             | "HASSUBSEQUENCE"
             | "CHR"
             | "STRINGBYTESUNIQ"
@@ -267,6 +268,25 @@ fn parse_at_depth(parser: &mut Parser, depth: usize) -> Result<ConstantValue, Pa
                     ConstantValue::Text(output)
                 }
                 None => ConstantValue::Null,
+            }
+        }
+        "ADDWEEKS" => {
+            let input = text_arg(parser, depth + 1)?;
+            require(parser, Token::Comma, "addWeeks requires an interval")?;
+            let count = integer_arg(parser, depth + 1)?;
+            require(parser, Token::RParen, "addWeeks requires two arguments")?;
+            match (input, count) {
+                (Some(value), Some(count)) => {
+                    let days = rusthouse_storage::parse_date(&value)
+                        .ok_or_else(|| ParseError("invalid Date argument".into()))?;
+                    let shift = count.checked_mul(7)
+                        .ok_or_else(|| ParseError("date interval exceeds Int64".into()))?;
+                    let shifted = i64::from(days).checked_add(shift)
+                        .and_then(|days| u16::try_from(days).ok())
+                        .ok_or_else(|| ParseError("result is outside Date range".into()))?;
+                    ConstantValue::Text(rusthouse_storage::format_date(shifted))
+                }
+                _ => ConstantValue::Null,
             }
         }
         "UTF16_LENGTH" => {
