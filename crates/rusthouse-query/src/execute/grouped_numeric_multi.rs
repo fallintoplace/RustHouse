@@ -1,6 +1,6 @@
 //! Multiple grouped numeric aggregates over one typed scan.
 use super::typed::{self, Cell};
-use super::{AggregateState, ExecutionError};
+use super::{AggregateState, ExecutionError, Number};
 use crate::{AggregateFunction, Select};
 use rusthouse_storage::{NumericColumn, TypedColumn, TypedQueryReader, inspect_query_source};
 use std::collections::{HashMap, hash_map::Entry};
@@ -18,7 +18,7 @@ pub(super) fn execute<W: Write>(
 ) -> Result<(), ExecutionError> {
     let metadata = inspect_query_source(part)?;
     let mut names = vec![column.to_owned()];
-    for (_, value_column) in items {
+    for (function, value_column) in items {
         if !names.contains(value_column) {
             names.push(value_column.clone());
         }
@@ -29,7 +29,9 @@ pub(super) fn execute<W: Write>(
             .ok_or_else(|| {
                 ExecutionError::Invalid(format!("unknown aggregate column: {value_column}"))
             })?;
-        if matches!(typed::base_type(&selected.data_type), "String" | "UUID") {
+        if *function != AggregateFunction::Count
+            && matches!(typed::base_type(&selected.data_type), "String" | "UUID")
+        {
             return Err(ExecutionError::Invalid(
                 "numeric aggregates require numeric columns".into(),
             ));
@@ -168,7 +170,16 @@ pub(super) fn execute<W: Write>(
                     }
                 }
             };
-            for (&column_index, state) in item_indices.iter().zip(groups[index].1.iter_mut()) {
+            for ((function, _), (&column_index, state)) in items
+                .iter()
+                .zip(item_indices.iter().zip(groups[index].1.iter_mut()))
+            {
+                if *function == AggregateFunction::Count {
+                    if !typed::is_null_at(&batch[column_index], row) {
+                        state.update(Number::Unsigned(1))?;
+                    }
+                    continue;
+                }
                 match typed::cell(&batch[column_index], row) {
                     Cell::Numeric(value) => state.update(value)?,
                     Cell::Null => {}
