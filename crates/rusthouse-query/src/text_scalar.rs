@@ -41,6 +41,7 @@ pub(super) fn is_function(name: &str) -> bool {
             | "CUTFRAGMENT"
             | "URL_ENCODE"
             | "FRAGMENT"
+            | "TOPLEVELDOMAINRFC"
             | "JSON_QUOTE"
             | "ISVALIDJSON"
             | "JSONHAS"
@@ -757,6 +758,35 @@ fn parse_at_depth(parser: &mut Parser, depth: usize) -> Result<ConstantValue, Pa
                     ConstantValue::Text(result)
                 }
                 _ => ConstantValue::Null,
+            }
+        }
+        "TOPLEVELDOMAINRFC" => {
+            let input = text_arg(parser, depth + 1)?;
+            require(parser, Token::RParen, "topLevelDomainRFC requires one string")?;
+            match input {
+                Some(url) => {
+                    let suffix = url
+                        .split_once("://")
+                        .map_or(url.as_str(), |(_, rest)| rest);
+                    let authority = suffix.split(['/', '?', '#']).next().unwrap_or("");
+                    let host_port = authority.rsplit('@').next().unwrap_or("");
+                    let host = if let Some((host, port)) = host_port.rsplit_once(':') {
+                        if port.bytes().all(|byte| byte.is_ascii_digit()) {
+                            host
+                        } else {
+                            host_port
+                        }
+                    } else {
+                        host_port
+                    };
+                    let tld = if host.contains([' ', '@', '[', ']']) {
+                        ""
+                    } else {
+                        host.rsplit_once('.').map_or("", |(_, tld)| tld)
+                    };
+                    ConstantValue::Text(tld.to_owned())
+                }
+                None => ConstantValue::Null,
             }
         }
         "FRAGMENT" => {
@@ -2000,5 +2030,41 @@ fn text_arg(parser: &mut Parser, depth: usize) -> Result<Option<String>, ParseEr
         _ => Err(ParseError(
             "expected a string literal or string function".into(),
         )),
+    }
+}
+
+#[cfg(test)]
+mod clickhouse_top_level_domain_rfc_tests {
+    use crate::{ConstantValue, Projection, parse_select};
+
+    fn value(sql: &str) -> ConstantValue {
+        match parse_select(sql).unwrap().projection {
+            Projection::Constants(columns) if columns.len() == 1 => columns[0].value.clone(),
+            Projection::Literal(number) => ConstantValue::Integer(number),
+            other => panic!("unexpected projection: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn example_values() {
+        for (sql, expected) in [
+            ("SELECT topLevelDomainRFC('http://foo:foo%41bar@foo.com')", ConstantValue::Text("com".into())),
+            ("SELECT topLevelDomainRFC('https://www.example.co.uk/path')", ConstantValue::Text("uk".into())),
+            ("SELECT topLevelDomainRFC('https://localhost')", ConstantValue::Text("".into())),
+            ("SELECT topLevelDomainRFC(NULL)", ConstantValue::Null),
+        ] {
+            assert_eq!(value(sql), expected, "{sql}");
+        }
+    }
+
+    #[test]
+    fn invalid_arity_and_types() {
+        for sql in [
+            "SELECT topLevelDomainRFC()",
+            "SELECT topLevelDomainRFC(0)",
+            "SELECT topLevelDomainRFC('x','y')",
+        ] {
+            assert!(parse_select(sql).is_err(), "{sql}");
+        }
     }
 }
