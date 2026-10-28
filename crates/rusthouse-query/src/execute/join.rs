@@ -220,7 +220,7 @@ fn execute_streaming_inner<W: Write>(
         .limit
         .filter(|&limit| limit <= MAX_RESULT_ROWS)
         .and_then(|limit| query.offset.checked_add(limit));
-    probe_inner(
+    let preflight_matches = probe_inner(
         left_path,
         left_names,
         left_keys,
@@ -241,6 +241,9 @@ fn execute_streaming_inner<W: Write>(
         .collect::<Vec<_>>()
         .join("\t");
     writeln!(output, "{header}")?;
+    if preflight_matches <= query.offset {
+        return Ok(());
+    }
 
     let left_width = left_names.len();
     let end = query
