@@ -699,15 +699,23 @@ fn execute_into<W: Write>(
                     continue;
                 }
                 let key = number_at(&batch[index], row);
+                // Defer secondary-key decoding and allocation until the primary
+                // key actually has a chance to enter the bounded Top-K heap.
+                // DISTINCT must still see every row before pruning.
+                if !query.distinct
+                    && sorted.would_discard(
+                        key,
+                        extra_sort_indices
+                            .iter()
+                            .map(|&index| number_at(&batch[index], row)),
+                    )
+                {
+                    continue;
+                }
                 let extra_keys = extra_sort_indices
                     .iter()
                     .map(|&index| number_at(&batch[index], row))
                     .collect::<Vec<_>>();
-                // DISTINCT must still see every row, even if it would lose
-                // the Top-K heap comparison.
-                if !query.distinct && sorted.would_discard(key, &extra_keys) {
-                    continue;
-                }
                 let values: Vec<Number> = projected_indices
                     .iter()
                     .map(|projected_index| number_at(&batch[*projected_index], row))
