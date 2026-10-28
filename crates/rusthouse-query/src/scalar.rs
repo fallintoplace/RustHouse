@@ -41,6 +41,7 @@ pub(super) fn is_function(name: &str) -> bool {
         || name.eq_ignore_ascii_case("DIV")
         || name.eq_ignore_ascii_case("INTDIV")
         || name.eq_ignore_ascii_case("MOD")
+        || name.eq_ignore_ascii_case("TRUNCATE")
         || name.eq_ignore_ascii_case("ABS_DIFF")
         || name.eq_ignore_ascii_case("SIGN")
         || name.eq_ignore_ascii_case("DIGIT_COUNT")
@@ -955,6 +956,9 @@ fn factor(parser: &mut Parser, depth: usize) -> Result<i64, ParseError> {
     if parser.keyword("MOD") {
         return parse_div_mod(parser, depth, false);
     }
+    if parser.keyword("TRUNCATE") {
+        return parse_clickhouse_truncate(parser, depth);
+    }
     if parser.keyword("ABS_DIFF") {
         return parse_abs_diff(parser, depth);
     }
@@ -1191,6 +1195,27 @@ fn parse_next_power_of_two(parser: &mut Parser, depth: usize) -> Result<i64, Par
             .ok_or_else(overflow)?,
     )
     .map_err(|_| overflow())
+}
+
+fn parse_clickhouse_truncate(parser: &mut Parser, depth: usize) -> Result<i64, ParseError> {
+    require_token(parser, Token::LParen, "TRUNCATE requires '('")?;
+    let value = expression(parser, depth + 1)?;
+    let scale = if parser.take(Token::Comma) {
+        expression(parser, depth + 1)?
+    } else {
+        0
+    };
+    require_token(parser, Token::RParen, "TRUNCATE requires ')'")?;
+    if scale >= 0 {
+        return Ok(value);
+    }
+    if scale < -18 {
+        return Err(ParseError("TRUNCATE scale is below -18".into()));
+    }
+    let unit = 10_i128.pow((-scale) as u32);
+    let value = i128::from(value);
+    let result = (value / unit) * unit;
+    i64::try_from(result).map_err(|_| overflow())
 }
 
 fn overflow() -> ParseError {
