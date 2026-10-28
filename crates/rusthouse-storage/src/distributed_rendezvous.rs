@@ -71,6 +71,13 @@ pub fn replicas_for(
         .iter()
         .map(|node| (score_with_seed(seed, node), node.as_str()))
         .collect();
+    if replicas < ranked.len() {
+        // Keep the fastest-scoring prefix without fully sorting all nodes.
+        ranked.select_nth_unstable_by(replicas, |left, right| {
+            right.0.cmp(&left.0).then_with(|| left.1.cmp(right.1))
+        });
+        ranked.truncate(replicas);
+    }
     ranked.sort_unstable_by(|left, right| {
         right.0.cmp(&left.0).then_with(|| left.1.cmp(right.1))
     });
