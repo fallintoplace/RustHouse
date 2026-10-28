@@ -18,14 +18,6 @@ pub struct CopyFrom {
     pub format: CopyFormat,
 }
 
-fn identifier(parser: &mut Parser) -> Result<String, ParseError> {
-    let name = parser.word()?;
-    if name.len() > 128 {
-        return Err(ParseError("identifiers cannot exceed 128 bytes".into()));
-    }
-    Ok(name)
-}
-
 fn parse_copy_columns(parser: &mut Parser) -> Result<Option<Vec<String>>, ParseError> {
     if !parser.take(Token::LParen) {
         return Ok(None);
@@ -36,7 +28,7 @@ fn parse_copy_columns(parser: &mut Parser) -> Result<Option<Vec<String>>, ParseE
         if columns.len() >= 128 {
             return Err(ParseError("COPY supports at most 128 columns".into()));
         }
-        let column = identifier(parser)?;
+        let column = parser.bounded_word()?;
         if !seen.insert(column.clone()) {
             return Err(ParseError(format!("duplicate COPY column: {column}")));
         }
@@ -121,7 +113,7 @@ pub fn parse_copy_from(sql: &str) -> Result<Option<CopyFrom>, ParseError> {
     if !parser.keyword("COPY") {
         return Ok(None);
     }
-    let table = identifier(&mut parser)?;
+    let table = parser.bounded_word()?;
     let columns = parse_copy_columns(&mut parser)?;
     if !parser.keyword("FROM") {
         return Err(ParseError("COPY requires FROM 'path'".into()));

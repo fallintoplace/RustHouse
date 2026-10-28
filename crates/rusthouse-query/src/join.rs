@@ -32,7 +32,7 @@ pub struct JoinSelect {
     /// Optional post-join IS [NOT] NULL filter (true means IS NOT NULL).
     pub where_null: Option<(JoinColumn, bool)>,
     /// Ordered key, descending flag, and optional explicit NULL placement.
-    pub order_by: Option<(JoinColumn, bool, Option<bool>)>,
+    pub order_by: Vec<(JoinColumn, bool, Option<bool>)>,
     pub limit: Option<usize>,
     pub offset: usize,
 }
@@ -71,7 +71,7 @@ fn alias(parser: &mut Parser, table: &str) -> Result<String, ParseError> {
         Some(Token::Word(word))
             if ![
                 "INNER", "LEFT", "RIGHT", "FULL", "CROSS", "OUTER", "JOIN", "ON", "USING", "WHERE",
-                "GROUP", "ORDER", "LIMIT", "OFFSET", "ANY",
+                "GROUP", "ORDER", "LIMIT", "OFFSET", "ANY", "ALL",
             ]
             .iter()
             .any(|keyword| word.eq_ignore_ascii_case(keyword)) =>
@@ -97,6 +97,40 @@ fn parse_join_kind(parser: &mut Parser) -> JoinType {
         parser.keyword("OUTER");
     }
     kind
+}
+
+fn equality_group(
+    parser: &mut Parser,
+    keys: &mut Vec<(JoinColumn, JoinColumn)>,
+    depth: usize,
+) -> Result<(), ParseError> {
+    if depth >= 16 {
+        return Err(ParseError("JOIN ON has too many nested parentheses".into()));
+    }
+    loop {
+        if parser.take(Token::LParen) {
+            equality_group(parser, keys, depth + 1)?;
+            if !parser.take(Token::RParen) {
+                return Err(ParseError("JOIN ON requires closing ')'".into()));
+            }
+        } else {
+            if keys.len() == 8 {
+                return Err(ParseError("JOIN supports at most 8 equality keys".into()));
+            }
+            let first = qualified(parser)?;
+            if !parser.take(Token::Operator(super::Operator::Eq)) {
+                return Err(ParseError(
+                    "JOIN ON supports AND-connected equality keys".into(),
+                ));
+            }
+            let second = qualified(parser)?;
+            keys.push((first, second));
+        }
+        if !parser.keyword("AND") {
+            break;
+        }
+    }
+    Ok(())
 }
 
 fn bound(parser: &mut Parser, label: &str) -> Result<usize, ParseError> {
@@ -159,9 +193,25 @@ pub fn parse_join(sql: &str) -> Result<Option<JoinSelect>, ParseError> {
             "table identifiers cannot exceed 128 bytes".into(),
         ));
     }
-    let leading_any = parser.keyword("ANY");
+    let leading_strictness = if parser.keyword("ANY") {
+        Some(true)
+    } else if parser.keyword("ALL") {
+        Some(false)
+    } else {
+        None
+    };
     let kind = parse_join_kind(&mut parser);
-    let any = parser.keyword("ANY") || leading_any;
+    let trailing_strictness = if parser.keyword("ANY") {
+        Some(true)
+    } else if parser.keyword("ALL") {
+        Some(false)
+    } else {
+        None
+    };
+    if leading_strictness.is_some() && trailing_strictness.is_some() {
+        return Err(ParseError("JOIN strictness specified twice".into()));
+    }
+    let any = leading_strictness.or(trailing_strictness).unwrap_or(false);
     if any && !matches!(kind, JoinType::Inner | JoinType::Left) {
         return Err(ParseError(
             "ANY JOIN supports only INNER and LEFT joins".into(),
@@ -214,27 +264,8 @@ pub fn parse_join(sql: &str) -> Result<Option<JoinSelect>, ParseError> {
         }
         (keys, names)
     } else if parser.keyword("ON") {
-        let first = qualified(&mut parser)?;
-        if !parser.take(Token::Operator(super::Operator::Eq)) {
-            return Err(ParseError(
-                "JOIN ON currently supports only equality".into(),
-            ));
-        }
-        let second = qualified(&mut parser)?;
-        let mut keys = vec![(first, second)];
-        while parser.keyword("AND") {
-            if keys.len() >= 8 {
-                return Err(ParseError("JOIN supports at most 8 equality keys".into()));
-            }
-            let first = qualified(&mut parser)?;
-            if !parser.take(Token::Operator(super::Operator::Eq)) {
-                return Err(ParseError(
-                    "JOIN ON supports AND-connected equality keys".into(),
-                ));
-            }
-            let second = qualified(&mut parser)?;
-            keys.push((first, second));
-        }
+        let mut keys = Vec::new();
+        equality_group(&mut parser, &mut keys, 0)?;
         (keys, Vec::new())
     } else {
         return Err(ParseError("JOIN requires ON or USING".into()));
@@ -260,29 +291,39 @@ pub fn parse_join(sql: &str) -> Result<Option<JoinSelect>, ParseError> {
         if !parser.keyword("BY") {
             return Err(ParseError("ORDER requires BY".into()));
         }
-        let key = qualified(&mut parser)?;
-        let descending = if parser.keyword("DESC") {
-            true
-        } else {
-            parser.keyword("ASC");
-            false
-        };
-        let nulls_first = if parser.keyword("NULLS") {
-            if parser.keyword("FIRST") {
-                Some(true)
-            } else if parser.keyword("LAST") {
-                Some(false)
-            } else {
-                return Err(ParseError(
-                    "JOIN ORDER BY NULLS requires FIRST or LAST".into(),
-                ));
+        let mut terms = Vec::new();
+        loop {
+            if terms.len() == 8 {
+                return Err(ParseError("JOIN ORDER BY supports at most 8 keys".into()));
             }
-        } else {
-            None
-        };
-        Some((key, descending, nulls_first))
+            let key = qualified(&mut parser)?;
+            let descending = if parser.keyword("DESC") {
+                true
+            } else {
+                parser.keyword("ASC");
+                false
+            };
+            let nulls_first = if parser.keyword("NULLS") {
+                if parser.keyword("FIRST") {
+                    Some(true)
+                } else if parser.keyword("LAST") {
+                    Some(false)
+                } else {
+                    return Err(ParseError(
+                        "JOIN ORDER BY NULLS requires FIRST or LAST".into(),
+                    ));
+                }
+            } else {
+                None
+            };
+            terms.push((key, descending, nulls_first));
+            if !parser.take(Token::Comma) {
+                break;
+            }
+        }
+        terms
     } else {
-        None
+        Vec::new()
     };
     let (limit, comma_offset) = if parser.keyword("LIMIT") {
         let first = bound(&mut parser, "LIMIT")?;
@@ -297,9 +338,6 @@ pub fn parse_join(sql: &str) -> Result<Option<JoinSelect>, ParseError> {
     let offset = if let Some(offset) = comma_offset {
         offset
     } else if parser.keyword("OFFSET") {
-        if limit.is_none() {
-            return Err(ParseError("OFFSET requires LIMIT".into()));
-        }
         bound(&mut parser, "OFFSET")?
     } else {
         0
@@ -339,7 +377,7 @@ pub fn explain_join(query: &JoinSelect) -> String {
         })
         .collect::<Vec<_>>()
         .join(" AND ");
-    format!(
+    let mut plan = format!(
         "Source: table {} AS {}\nSource: table {} AS {}\nJoin: {}{:?} ON {}\nProject: {}\nLimit: {}",
         query.left,
         query.left_alias,
@@ -358,12 +396,59 @@ pub fn explain_join(query: &JoinSelect) -> String {
         query
             .limit
             .map_or("unbounded".to_owned(), |n| n.to_string())
-    )
+    );
+    if !query.using_keys.is_empty() {
+        plan.push_str(&format!("\nUsing: {}", query.using_keys.join(", ")));
+    }
+    if let Some((column, not_null)) = &query.where_null {
+        plan.push_str(&format!(
+            "\nFilter: {}.{} IS {}NULL",
+            column.relation,
+            column.name,
+            if *not_null { "NOT " } else { "" }
+        ));
+    }
+    if let Some((column, descending, nulls_first)) = &query.order_by {
+        let placement = match nulls_first {
+            Some(true) => " NULLS FIRST",
+            Some(false) => " NULLS LAST",
+            None => "",
+        };
+        plan.push_str(&format!(
+            "\nOrder: {}.{} {}{}",
+            column.relation,
+            column.name,
+            if *descending { "DESC" } else { "ASC" },
+            placement
+        ));
+    }
+    if query.offset > 0 {
+        plan.push_str(&format!("\nOffset: {}", query.offset));
+    }
+    plan
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn explain_includes_using_filter_sort_and_offset() {
+        let query = parse_join(
+            "SELECT a.id FROM a FULL JOIN b USING (id) WHERE b.id IS NULL ORDER BY a.id DESC NULLS LAST LIMIT 5 OFFSET 2",
+        )
+        .unwrap()
+        .unwrap();
+        let plan = explain_join(&query);
+        for expected in [
+            "Using: id",
+            "Filter: b.id IS NULL",
+            "Order: a.id DESC NULLS LAST",
+            "Offset: 2",
+        ] {
+            assert!(plan.contains(expected), "{plan}");
+        }
+    }
 
     #[test]
     fn parses_inner_joins_with_aliases_and_bounds() {
@@ -396,6 +481,32 @@ mod tests {
         assert!(
             parse_join("SELECT * FROM a JOIN b ON a.id = b.id AND a.user_id != b.user_id").is_err()
         );
+    }
+
+    #[test]
+    fn parses_parenthesized_join_equalities() {
+        for statement in [
+            "SELECT * FROM a JOIN b ON (a.id = b.id)",
+            "SELECT * FROM a JOIN b ON (a.id = b.id AND (a.k = b.k))",
+            "SELECT * FROM a JOIN b ON (a.id = b.id) AND (a.k = b.k)",
+        ] {
+            let parsed = parse_join(statement).unwrap().unwrap();
+            assert_eq!(parsed.keys.len(), statement.matches(" = ").count());
+        }
+        for statement in [
+            "SELECT * FROM a JOIN b ON (a.id = b.id",
+            "SELECT * FROM a JOIN b ON a.id = b.id)",
+            "SELECT * FROM a JOIN b ON (a.id = b.id OR a.k = b.k)",
+            "SELECT * FROM a JOIN b ON ()",
+        ] {
+            assert!(parse_join(statement).is_err(), "{statement}");
+        }
+        let deep = format!(
+            "SELECT * FROM a JOIN b ON {}a.id = b.id{}",
+            "(".repeat(17),
+            ")".repeat(17)
+        );
+        assert!(parse_join(&deep).is_err());
     }
 
     #[test]
@@ -464,6 +575,20 @@ mod tests {
     }
 
     #[test]
+    fn parses_offset_without_limit() {
+        let query = parse_join("SELECT * FROM l JOIN r ON l.id = r.id OFFSET 3")
+            .unwrap()
+            .unwrap();
+        assert_eq!(query.limit, None);
+        assert_eq!(query.offset, 3);
+        let query = parse_join("SELECT * FROM l JOIN r ON l.id = r.id ORDER BY l.id OFFSET 2")
+            .unwrap()
+            .unwrap();
+        assert_eq!(query.offset, 2);
+        assert!(parse_join("SELECT * FROM l JOIN r ON l.id = r.id OFFSET -1").is_err());
+    }
+
+    #[test]
     fn parses_any_inner_and_left_join_strictness() {
         for statement in [
             "SELECT * FROM a ANY JOIN b ON a.id = b.id",
@@ -480,6 +605,27 @@ mod tests {
         for statement in [
             "SELECT * FROM a RIGHT ANY JOIN b ON a.id = b.id",
             "SELECT * FROM a ANY FULL JOIN b ON a.id = b.id",
+        ] {
+            assert!(parse_join(statement).is_err(), "{statement}");
+        }
+    }
+
+    #[test]
+    fn parses_explicit_all_join_strictness() {
+        for statement in [
+            "SELECT * FROM a ALL JOIN b ON a.id = b.id",
+            "SELECT * FROM a ALL INNER JOIN b ON a.id = b.id",
+            "SELECT * FROM a INNER ALL JOIN b ON a.id = b.id",
+            "SELECT * FROM a LEFT ALL JOIN b USING (id)",
+            "SELECT * FROM a RIGHT ALL JOIN b USING (id)",
+            "SELECT * FROM a FULL ALL JOIN b USING (id)",
+        ] {
+            assert!(!parse_join(statement).unwrap().unwrap().any, "{statement}");
+        }
+        for statement in [
+            "SELECT * FROM a ALL ANY JOIN b ON a.id = b.id",
+            "SELECT * FROM a ANY INNER ALL JOIN b ON a.id = b.id",
+            "SELECT * FROM a ALL INNER ALL JOIN b ON a.id = b.id",
         ] {
             assert!(parse_join(statement).is_err(), "{statement}");
         }
@@ -517,11 +663,31 @@ mod tests {
             let statement =
                 format!("SELECT * FROM l LEFT JOIN r ON l.id = r.id ORDER BY r.id {suffix}");
             let query = parse_join(&statement).unwrap().unwrap();
-            assert_eq!(query.order_by.unwrap().2, expected);
+            assert_eq!(query.order_by[0].2, expected);
         }
         assert!(
             parse_join("SELECT * FROM l JOIN r ON l.id = r.id ORDER BY l.id NULLS MIDDLE").is_err()
         );
+    }
+
+    #[test]
+    fn parses_multiple_join_sort_columns() {
+        let query = parse_join(
+            "SELECT l.id, r.rank FROM lefts l JOIN rights r USING (id) ORDER BY r.rank DESC NULLS LAST, l.id ASC LIMIT 10",
+        )
+        .unwrap()
+        .unwrap();
+        assert_eq!(query.order_by.len(), 2);
+        assert_eq!(query.order_by[0].0.relation, "r");
+        assert!(query.order_by[0].1);
+        assert_eq!(query.order_by[0].2, Some(false));
+        assert_eq!(query.order_by[1].0.name, "id");
+        assert!(!query.order_by[1].1);
+        let too_many = format!(
+            "SELECT * FROM l JOIN r USING (id) ORDER BY {}",
+            ["l.id"; 9].join(", ")
+        );
+        assert!(parse_join(&too_many).is_err());
     }
 
     #[test]
@@ -531,7 +697,6 @@ mod tests {
             "SELECT * FROM a JOIN b ON a.id > b.id",
             "SELECT id FROM a JOIN b ON a.id = b.id",
             "SELECT * FROM a JOIN b ON a.id = b.id OR a.id = b.id",
-            "SELECT * FROM a JOIN b ON a.id = b.id OFFSET 2",
         ] {
             assert!(parse_join(sql).is_err(), "{sql}");
         }
