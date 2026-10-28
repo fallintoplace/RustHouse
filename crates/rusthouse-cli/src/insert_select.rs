@@ -1,28 +1,34 @@
-//! INSERT ... SELECT reuses the query executor and the validated INSERT publisher.
-//! Result decoding is bounded and keeps RustHouse's escaped TSV NULL semantics.
-use rusthouse_query::{Insert, InsertSelect, Source, execute};
-use std::io::{self, Write};
-use std::path::Path;
+//! INSERT ... SELECT streams via an on-disk spool into one atomic part snapshot.
+//! The source query finishes before publishing, keeping self-INSERT consistent.
+use rusthouse_query::{InsertSelect, Source, execute};
+use std::fs::{self, File, OpenOptions};
+use std::io::{self, BufRead, BufReader, BufWriter, Write};
+use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicUsize, Ordering};
 
-const MAX_INSERT_ROWS: usize = 100_000;
-const MAX_SINGLE_PART_ROWS: usize = 4096;
-const MAX_RESULT_BYTES: usize = 16 * 1024 * 1024;
+const MAX_ROW_BYTES: usize = 8 * 1024 * 1024;
+static NEXT_SPOOL: AtomicUsize = AtomicUsize::new(0);
 
-#[derive(Default)]
-struct BoundedOutput(Vec<u8>);
+struct Spool(PathBuf);
 
-impl Write for BoundedOutput {
-    fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
-        if buf.len() > MAX_RESULT_BYTES.saturating_sub(self.0.len()) {
-            return Err(io::Error::other("INSERT SELECT result exceeds 16 MiB"));
-        }
-        self.0.extend_from_slice(buf);
-        Ok(buf.len())
+impl Drop for Spool {
+    fn drop(&mut self) {
+        let _ = fs::remove_file(&self.0);
     }
+}
 
-    fn flush(&mut self) -> io::Result<()> {
-        Ok(())
-    }
+fn new_spool(database: &Path) -> Result<(Spool, File), String> {
+    let path = database.join(format!(
+        ".rusthouse-insert-select-{}-{}.tmp",
+        std::process::id(),
+        NEXT_SPOOL.fetch_add(1, Ordering::Relaxed)
+    ));
+    let file = OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(&path)
+        .map_err(|error| format!("cannot create INSERT SELECT spool: {error}"))?;
+    Ok((Spool(path), file))
 }
 
 fn decode_field(value: &str) -> Result<Option<String>, String> {
@@ -70,38 +76,54 @@ fn decode_field(value: &str) -> Result<Option<String>, String> {
         .map_err(|_| "invalid UTF-8 in SELECT result".into())
 }
 
-fn decode_rows(data: &[u8]) -> Result<Vec<Vec<Option<String>>>, String> {
-    let value = std::str::from_utf8(data).map_err(|_| "invalid UTF-8 in SELECT result")?;
-    if !value.ends_with('\n') {
-        return Err("incomplete SELECT result".into());
-    }
-    let mut lines = value.split_terminator('\n');
-    lines.next().ok_or("missing SELECT result header")?;
-    let mut rows = Vec::new();
-    for line in lines {
-        if rows.len() >= MAX_INSERT_ROWS {
-            return Err(format!(
-                "INSERT SELECT supports at most {MAX_INSERT_ROWS} rows"
-            ));
+/// Read newline-terminated records without allocating for a malicious or
+/// accidentally enormous row. The copy publisher still validates all types.
+fn read_record<R: BufRead>(reader: &mut R, record: &mut Vec<u8>) -> Result<bool, String> {
+    record.clear();
+    loop {
+        let available = reader
+            .fill_buf()
+            .map_err(|error| format!("cannot read INSERT SELECT spool: {error}"))?;
+        if available.is_empty() {
+            if record.is_empty() {
+                return Ok(false);
+            }
+            return Err("incomplete SELECT result record".into());
         }
-        let fields = line
-            .split('\t')
-            .map(decode_field)
-            .collect::<Result<Vec<_>, _>>()?;
-        rows.push(fields);
+        let length = available
+            .iter()
+            .position(|&byte| byte == b'\n')
+            .map_or(available.len(), |index| index + 1);
+        if record.len().saturating_add(length) > MAX_ROW_BYTES {
+            return Err("INSERT SELECT row exceeds 8 MiB".into());
+        }
+        record.extend_from_slice(&available[..length]);
+        reader.consume(length);
+        if record.last() == Some(&b'\n') {
+            return Ok(true);
+        }
     }
-    Ok(rows)
+}
+
+fn decode_row(record: &[u8]) -> Result<Vec<Option<String>>, String> {
+    let record = record
+        .strip_suffix(b"\n")
+        .ok_or("incomplete SELECT result record")?;
+    let record = std::str::from_utf8(record).map_err(|_| "invalid UTF-8 in SELECT result")?;
+    if record.split('\t').count() > 128 {
+        return Err("INSERT SELECT supports at most 128 columns".into());
+    }
+    record
+        .split('\t')
+        .map(decode_field)
+        .collect::<Result<Vec<_>, _>>()
 }
 
 pub(super) fn run(database: &Path, statement: &InsertSelect) -> Result<(), String> {
-    // Keep source resolution, SELECT execution and final append under one
-    // database write lock so concurrent RENAME/DROP cannot invalidate the
-    // input, and self-INSERT observes a consistent pre-insert snapshot.
+    // Hold one write lock throughout source resolution, full source execution,
+    // target validation, and the final immutable snapshot publication.
     crate::database::with_write_lock(database, || {
         let mut query = statement.select.clone();
-        // Read one extra row to reject truncation rather than silently losing rows.
-        let cap = MAX_INSERT_ROWS + 1;
-        query.limit = Some(query.limit.map_or(cap, |limit| limit.min(cap)));
         let part = if let Some(Source::Table(table)) = query.source.as_ref() {
             let path = crate::database::select_source(database, table)?;
             query.source = Some(Source::Table("part".into()));
@@ -109,19 +131,31 @@ pub(super) fn run(database: &Path, statement: &InsertSelect) -> Result<(), Strin
         } else {
             None
         };
-        let mut output = BoundedOutput::default();
-        execute(&query, part.as_deref(), &mut output).map_err(|error| error.to_string())?;
-        let rows = decode_rows(&output.0)?;
-        let insert = Insert {
-            table: statement.table.clone(),
-            columns: statement.columns.clone(),
-            rows,
-        };
-        if insert.rows.len() > MAX_SINGLE_PART_ROWS {
-            crate::database::insert_many_locked(database, &insert)
-        } else {
-            crate::database::insert_locked(database, &insert)
+        let (spool, file) = new_spool(database)?;
+        {
+            let mut writer = BufWriter::new(file);
+            execute(&query, part.as_deref(), &mut writer).map_err(|error| error.to_string())?;
+            writer.flush().map_err(|error| format!("cannot flush INSERT SELECT spool: {error}"))?;
         }
+        let file = File::open(&spool.0)
+            .map_err(|error| format!("cannot reopen INSERT SELECT spool: {error}"))?;
+        let mut reader = BufReader::new(file);
+        let mut record = Vec::with_capacity(64 * 1024);
+        if !read_record(&mut reader, &mut record)? || record == b"\n" {
+            return Err("missing SELECT result header".into());
+        }
+        std::str::from_utf8(&record).map_err(|_| "invalid SELECT result header")?;
+        crate::database::insert_stream_locked(
+            database,
+            &statement.table,
+            statement.columns.clone(),
+            || {
+                if !read_record(&mut reader, &mut record)? {
+                    return Ok(None);
+                }
+                decode_row(&record).map(Some)
+            },
+        )
     })
 }
 
@@ -130,29 +164,36 @@ mod tests {
     use super::*;
 
     #[test]
-    fn decodes_more_than_fifty_thousand_rows_but_rejects_over_the_new_cap() {
-        let data = format!("number\n{}", "1\n".repeat(50_001));
-        assert_eq!(decode_rows(data.as_bytes()).unwrap().len(), 50_001);
-        let excessive = format!("number\n{}", "1\n".repeat(MAX_INSERT_ROWS + 1));
-        assert!(decode_rows(excessive.as_bytes()).is_err());
+    fn streamed_records_preserve_nulls_escapes_and_line_boundaries() {
+        let content = b"id\ttext\tnote\n1\tline\\nnext\t\\N\n2\t\\\\N\tback\\\\slash\n";
+        let mut input = BufReader::with_capacity(4, &content[..]);
+        let mut record = Vec::new();
+        assert!(read_record(&mut input, &mut record).unwrap());
+        assert_eq!(&record, b"id\ttext\tnote\n");
+        assert!(read_record(&mut input, &mut record).unwrap());
+        let first = decode_row(&record).unwrap();
+        assert_eq!(first[1], Some("line\nnext".into()));
+        assert_eq!(first[2], None);
+        assert!(read_record(&mut input, &mut record).unwrap());
+        let second = decode_row(&record).unwrap();
+        assert_eq!(second[1], Some(r"\N".into()));
+        assert_eq!(second[2], Some(r"back\slash".into()));
+        assert!(!read_record(&mut input, &mut record).unwrap());
     }
 
     #[test]
-    fn decoding_preserves_nulls_and_escaped_text() {
-        let rows =
-            decode_rows(b"id\ttext\tnote\n1\tline\\nnext\t\\N\n2\t\\\\N\tback\\\\slash\n").unwrap();
-        assert_eq!(rows[0][1], Some("line\nnext".into()));
-        assert_eq!(rows[0][2], None);
-        assert_eq!(rows[1][1], Some(r"\N".into()));
-        assert_eq!(rows[1][2], Some(r"back\slash".into()));
-        assert!(decode_rows(b"id\n1").is_err());
-        assert!(decode_rows(b"id\n\\xZ1\n").is_err());
+    fn never_accepts_truncated_or_oversized_rows() {
+        let mut record = Vec::new();
+        assert!(read_record(&mut &b"unterminated"[..], &mut record).is_err());
+        assert!(decode_row(b"field").is_err());
+        let too_large = vec![b'x'; MAX_ROW_BYTES + 1];
+        assert!(read_record(&mut too_large.as_slice(), &mut record).is_err());
+        assert!(decode_row(b"invalid\\xZZ\n").is_err());
     }
 
     #[cfg(unix)]
     #[test]
     fn locks_before_resolving_a_source_table() {
-        use std::fs;
         use std::sync::atomic::{AtomicUsize, Ordering};
         static NEXT: AtomicUsize = AtomicUsize::new(0);
 
@@ -167,28 +208,10 @@ mod tests {
                 .unwrap();
         crate::database::with_write_lock(&database, || {
             let error = run(&database, &statement).unwrap_err();
-            assert!(
-                error.contains("cannot acquire database write lock"),
-                "{error}"
-            );
+            assert!(error.contains("cannot acquire database write lock"), "{error}");
             Ok(())
         })
         .unwrap();
         fs::remove_dir_all(database).unwrap();
-    }
-
-    #[test]
-    fn result_buffer_accepts_payload_above_eight_mib() {
-        let mut output = BoundedOutput::default();
-        let bytes = vec![b'1'; 8 * 1024 * 1024 + 1];
-        output.write_all(&bytes).unwrap();
-        assert_eq!(output.0.len(), bytes.len());
-    }
-
-    #[test]
-    fn bounded_result_never_grows_past_limit() {
-        let mut output = BoundedOutput(vec![0; MAX_RESULT_BYTES]);
-        assert!(output.write_all(b"additional").is_err());
-        assert_eq!(output.0.len(), MAX_RESULT_BYTES);
     }
 }
