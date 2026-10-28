@@ -16,7 +16,7 @@ pub(super) const MAX_INPUT_ROWS: u64 = 32_768;
 pub(super) const MAX_RESULT_ROWS: usize = 65_536;
 // Unordered INNER joins can build a larger hash side than sorted/outer joins.
 // Bound retained cells as well as row count to protect against wide String rows.
-const MAX_STREAM_BUILD_ROWS: u64 = 32_768;
+const MAX_STREAM_BUILD_ROWS: u64 = 65_536;
 pub(super) const MAX_STREAM_BUILD_BYTES: usize = 32 * 1024 * 1024;
 
 type Pair = (Option<usize>, Option<usize>);
