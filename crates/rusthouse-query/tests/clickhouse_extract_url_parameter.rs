@@ -49,5 +49,7 @@ fn rejects_invalid_parameter_calls() {
         "SELECT extractURLParameter('a', 1)",
         "SELECT extractURLParameter(1, 'a')",
         "SELECT extractURLParameter('a', 'b', 'c')",
-    ] { assert!(parse_select(sql).is_err(), "{sql}"); }
+    ] {
+        assert!(parse_select(sql).is_err(), "{sql}");
+    }
 }

@@ -30,5 +30,7 @@ fn rejects_invalid_case_insensitive_tokens() {
         "SELECT hasTokenCaseInsensitive('a', '')",
         "SELECT hasTokenCaseInsensitive('a')",
         "SELECT hasTokenCaseInsensitive(1, 'a')",
-    ] { assert!(parse_select(sql).is_err(), "{sql}"); }
+    ] {
+        assert!(parse_select(sql).is_err(), "{sql}");
+    }
 }

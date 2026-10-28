@@ -32,5 +32,7 @@ fn rejects_invalid_position_and_type() {
         "SELECT positionCaseInsensitive('a', 'a', -1)",
         "SELECT positionCaseInsensitive(1, '1')",
         "SELECT positionCaseInsensitive('a', 'a', 1, 2)",
-    ] { assert!(parse_select(sql).is_err(), "{sql}"); }
+    ] {
+        assert!(parse_select(sql).is_err(), "{sql}");
+    }
 }

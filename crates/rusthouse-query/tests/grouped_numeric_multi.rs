@@ -58,14 +58,18 @@ fn groups_several_numeric_aggregates_in_one_scan() {
         "station\tmin(temperature)\tmax(temperature)\nCologne\t1\t1\n"
     );
     assert_eq!(
-        run("SELECT station, min(temperature), avg(temperature) FROM part GROUP BY station LIMIT 0", &root),
+        run(
+            "SELECT station, min(temperature), avg(temperature) FROM part GROUP BY station LIMIT 0",
+            &root
+        ),
         "station\tmin(temperature)\tavg(temperature)\n"
     );
-    assert!(parse_select(
-        "SELECT station, min(temperature), max(temperature) FROM part GROUP BY temperature"
-    ).is_err());
-    assert!(parse_select(
-        "SELECT station, min(temperature), max(temperature) FROM part"
-    ).is_err());
+    assert!(
+        parse_select(
+            "SELECT station, min(temperature), max(temperature) FROM part GROUP BY temperature"
+        )
+        .is_err()
+    );
+    assert!(parse_select("SELECT station, min(temperature), max(temperature) FROM part").is_err());
     fs::remove_dir_all(root).unwrap();
 }

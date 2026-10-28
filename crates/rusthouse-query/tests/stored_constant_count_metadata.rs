@@ -50,6 +50,13 @@ fn constant_nonnullable_count_filters_skip_rows_without_losing_validation() {
         assert_eq!(String::from_utf8(output).unwrap(), expected, "{sql}");
     }
     let mut result = Vec::new();
-    assert!(execute(&parse_select("SELECT count(*) FROM part WHERE missing IS NULL").unwrap(), Some(&root), &mut result).is_err());
+    assert!(
+        execute(
+            &parse_select("SELECT count(*) FROM part WHERE missing IS NULL").unwrap(),
+            Some(&root),
+            &mut result
+        )
+        .is_err()
+    );
     fs::remove_dir_all(root).unwrap();
 }

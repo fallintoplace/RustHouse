@@ -215,5 +215,4 @@ mod tests {
             parse_datetime("2024-02-29T12:30:00Z")
         );
     }
-
 }

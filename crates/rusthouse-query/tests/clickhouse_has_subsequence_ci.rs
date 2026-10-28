@@ -31,5 +31,7 @@ fn rejects_wrong_arity_and_types() {
         "SELECT hasSubsequenceCaseInsensitive('a')",
         "SELECT hasSubsequenceCaseInsensitive(1, 'a')",
         "SELECT hasSubsequenceCaseInsensitive('a', 'b', 'c')",
-    ] { assert!(parse_select(sql).is_err(), "{sql}"); }
+    ] {
+        assert!(parse_select(sql).is_err(), "{sql}");
+    }
 }

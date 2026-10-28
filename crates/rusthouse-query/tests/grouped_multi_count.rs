@@ -95,10 +95,14 @@ fn repeated_multikey_groups_are_counted_after_many_hash_probes() {
         .collect::<Vec<_>>();
     write_wide_part(&part, &cols, &rows).unwrap();
     let query = parse_select(
-        "SELECT region, event, count(*) FROM part GROUP BY region, event ORDER BY region LIMIT 2"
-    ).unwrap();
+        "SELECT region, event, count(*) FROM part GROUP BY region, event ORDER BY region LIMIT 2",
+    )
+    .unwrap();
     let mut output = Vec::new();
     execute(&query, Some(&part), &mut output).unwrap();
-    assert_eq!(output, b"region\tevent\tcount\n0\tscan\t120\n1\tscan\t120\n");
+    assert_eq!(
+        output,
+        b"region\tevent\tcount\n0\tscan\t120\n1\tscan\t120\n"
+    );
     fs::remove_dir_all(part).unwrap();
 }

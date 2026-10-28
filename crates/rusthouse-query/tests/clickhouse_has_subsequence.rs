@@ -31,5 +31,7 @@ fn requires_two_string_arguments() {
         "SELECT hasSubsequence(1, 'a')",
         "SELECT hasSubsequence('a', 1)",
         "SELECT hasSubsequence('a', 'b', 'c')",
-    ] { assert!(parse_select(sql).is_err(), "{sql}"); }
+    ] {
+        assert!(parse_select(sql).is_err(), "{sql}");
+    }
 }

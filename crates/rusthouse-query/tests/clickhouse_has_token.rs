@@ -29,5 +29,7 @@ fn rejects_ill_formed_tokens() {
         "SELECT hasToken('hi', 'a-b')",
         "SELECT hasToken(42, 'hi')",
         "SELECT hasToken('hi')",
-    ] { assert!(parse_select(sql).is_err(), "{sql}"); }
+    ] {
+        assert!(parse_select(sql).is_err(), "{sql}");
+    }
 }

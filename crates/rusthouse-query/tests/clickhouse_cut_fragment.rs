@@ -34,5 +34,7 @@ fn rejects_invalid_fragment_arguments() {
         "SELECT cutFragment()",
         "SELECT cutFragment(1)",
         "SELECT cutFragment('a', 'b')",
-    ] { assert!(parse_select(sql).is_err(), "{sql}"); }
+    ] {
+        assert!(parse_select(sql).is_err(), "{sql}");
+    }
 }

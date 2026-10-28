@@ -48,6 +48,9 @@ fn billion_row_virtual_count_requires_arithmetic_fast_path() {
         "SELECT sum(number) FROM numbers(1000000000)",
     ] {
         let mut output = Vec::new();
-        assert!(execute(&parse_select(sql).unwrap(), None, &mut output).is_err(), "{sql}");
+        assert!(
+            execute(&parse_select(sql).unwrap(), None, &mut output).is_err(),
+            "{sql}"
+        );
     }
 }
