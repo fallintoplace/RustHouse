@@ -86,7 +86,12 @@ fn merge_distinct_bitmap32(
 ) -> Result<Vec<u8>, MergeError> {
     const MAX_BLOCKS: usize = 32_768;
     let expected_header = format!("{column}\n");
-    let mut blocks = HashMap::<u16, Box<[u64; 1024]>>::new();
+    enum Block {
+        Sparse(HashSet<u16>),
+        Dense(Box<[u64; 1024]>),
+    }
+    const DENSE_THRESHOLD: usize = 4096;
+    let mut blocks = HashMap::<u16, Block>::new();
     let mut distinct = 0u64;
     for (cap, body) in shards {
         if !body.ends_with(b"\n") || !body.starts_with(expected_header.as_bytes()) {
@@ -111,12 +116,31 @@ fn merge_distinct_bitmap32(
             if blocks.len() >= MAX_BLOCKS && !blocks.contains_key(&prefix) {
                 return Err(MergeError::CoordinatorLimit);
             }
-            let block = blocks.entry(prefix).or_insert_with(|| Box::new([0u64; 1024]));
-            let index = (key & 0xffff) as usize;
-            let bit = 1u64 << (index % 64);
-            let word = &mut block[index / 64];
-            if *word & bit == 0 {
-                *word |= bit;
+            let suffix = (key & 0xffff) as u16;
+            let block = blocks.entry(prefix).or_insert_with(|| Block::Sparse(HashSet::new()));
+            let fresh = match block {
+                Block::Sparse(values) => {
+                    let inserted = values.insert(suffix);
+                    if inserted && values.len() == DENSE_THRESHOLD {
+                        let mut dense = Box::new([0u64; 1024]);
+                        for &value in values.iter() {
+                            let index = usize::from(value);
+                            dense[index / 64] |= 1u64 << (index % 64);
+                        }
+                        *block = Block::Dense(dense);
+                    }
+                    inserted
+                }
+                Block::Dense(bits) => {
+                    let index = usize::from(suffix);
+                    let mask = 1u64 << (index % 64);
+                    let word = &mut bits[index / 64];
+                    let inserted = *word & mask == 0;
+                    *word |= mask;
+                    inserted
+                }
+            };
+            if fresh {
                 distinct = distinct.checked_add(1).ok_or(MergeError::CountOverflow)?;
             }
         }
@@ -124,6 +148,36 @@ fn merge_distinct_bitmap32(
     Ok(format!("count(DISTINCT {column})\n{distinct}\n").into_bytes())
 }
 
+
+#[cfg(test)]
+mod adaptive_distinct_bitmap_tests {
+    use super::*;
+
+    #[test]
+    fn exact_sparse_prefixes_across_the_full_unsigned_domain() {
+        let mut body = b"id\n".to_vec();
+        for prefix in 0..32_768u32 {
+            body.extend_from_slice(format!("{}\n", prefix << 16).as_bytes());
+        }
+        assert_eq!(
+            merge_distinct_bitmap32(&[(40_000, body)], "id", false).unwrap(),
+            b"count(DISTINCT id)\n32768\n"
+        );
+    }
+
+    #[test]
+    fn dense_promotion_keeps_exact_distinct_and_deduplicates_shards() {
+        let mut body = b"id\n".to_vec();
+        for suffix in 0..5_000u32 {
+            body.extend_from_slice(format!("{}\n", (33u32 << 16) + suffix).as_bytes());
+        }
+        let shards = [(6_000, body.clone()), (6_000, body)];
+        assert_eq!(
+            merge_distinct_bitmap32(&shards, "id", false).unwrap(),
+            b"count(DISTINCT id)\n5000\n"
+        );
+    }
+}
 /// Merge one strict 16 KiB register state per shard. Shards can overlap
 /// arbitrarily: register-wise max computes the correct global HLL union.
 fn merge_uniq_shard_states(
