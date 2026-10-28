@@ -64,7 +64,11 @@ pub fn crc32c_reader(reader: &mut impl Read, max_bytes: u64) -> io::Result<(u64,
         let available = (max_bytes - total)
             .saturating_add(1)
             .min(buffer.len() as u64) as usize;
-        let count = reader.read(&mut buffer[..available])?;
+        let count = match reader.read(&mut buffer[..available]) {
+            Ok(count) => count,
+            Err(error) if error.kind() == io::ErrorKind::Interrupted => continue,
+            Err(error) => return Err(error),
+        };
         if count == 0 {
             break;
         }
@@ -145,4 +149,25 @@ mod tests {
         );
         assert!(crc32c_reader(&mut Cursor::new(data), 74_999).is_err());
     }
+    #[test]
+    fn interrupted_read_does_not_abort_streaming_checksum() {
+        struct Once<'a> {
+            cursor: Cursor<&'a [u8]>,
+            interrupt: bool,
+        }
+        impl Read for Once<'_> {
+            fn read(&mut self, buf: &mut [u8]) -> io::Result<usize> {
+                if self.interrupt {
+                    self.interrupt = false;
+                    return Err(io::ErrorKind::Interrupted.into());
+                }
+                self.cursor.read(buf)
+            }
+        }
+        let data = b"retry safe replica bytes";
+        let mut reader = Once { cursor: Cursor::new(data.as_slice()), interrupt: true };
+        assert_eq!(crc32c_reader(&mut reader, data.len() as u64).unwrap(),
+            (data.len() as u64, crc32c(data)));
+    }
+
 }
