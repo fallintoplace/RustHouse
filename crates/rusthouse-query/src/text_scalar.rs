@@ -82,6 +82,7 @@ pub(super) fn is_function(name: &str) -> bool {
             | "NETLOC"
             | "STRIP_SUFFIX"
             | "REPEAT"
+            | "REGEXPQUOTEMETA"
             | "BASE64_DECODE"
             | "APPENDTRAILINGCHARIFABSENT"
             | "RPAD"
@@ -1878,6 +1879,109 @@ fn parse_at_depth(parser: &mut Parser, depth: usize) -> Result<ConstantValue, Pa
                         }
                     }
                     result.push('"');
+                    ConstantValue::Text(result)
+                }
+                None => ConstantValue::Null,
+            }
+        }
+        "REGEXPQUOTEMETA" => {
+            let input = text_arg(parser, depth + 1)?;
+            require(parser, Token::RParen, "regexpQuoteMeta requires one argument")?;
+            match input {
+                Some(input) => {
+                    let mut result = String::with_capacity(input.len());
+                    for ch in input.chars() {
+                        if ch == '\0' {
+                            result.push_str("\\0");
+                        } else {
+                            if matches!(ch, '\\' | '|' | '(' | ')' | '^' | '
+            let input = text_arg(parser, depth + 1)?;
+            require(parser, Token::Comma, "REPEAT requires a count")?;
+            let count = integer_arg(parser, depth + 1)?;
+            require(parser, Token::RParen, "expected ')' after REPEAT arguments")?;
+            match (input, count) {
+                (Some(value), Some(count)) => {
+                    if count < 0 {
+                        return Err(ParseError("REPEAT count must be nonnegative".into()));
+                    }
+                    if value.is_empty() {
+                        ConstantValue::Text(String::new())
+                    } else {
+                        let count = usize::try_from(count).unwrap_or(usize::MAX);
+                        let length = value
+                            .len()
+                            .checked_mul(count)
+                            .ok_or_else(|| ParseError("REPEAT result is too large".into()))?;
+                        if length > MAX_TEXT_BYTES {
+                            return Err(ParseError("REPEAT result is too large".into()));
+                        }
+                        ConstantValue::Text(value.repeat(count))
+                    }
+                }
+                _ => ConstantValue::Null,
+            }
+        }
+        _ => return Err(ParseError(format!("unsupported string function: {name}"))),
+    };
+    Ok(value)
+}
+
+fn require(parser: &mut Parser, token: Token, message: &str) -> Result<(), ParseError> {
+    if parser.take(token) {
+        Ok(())
+    } else {
+        Err(ParseError(message.into()))
+    }
+}
+
+fn integer_arg(parser: &mut Parser, depth: usize) -> Result<Option<i64>, ParseError> {
+    if matches!(
+        parser.tokens.get(parser.index),
+        Some(Token::Word(word)) if word.eq_ignore_ascii_case("NULL")
+    ) {
+        parser.index += 1;
+        return Ok(None);
+    }
+    if matches!(parser.tokens.get(parser.index), Some(Token::Word(word)) if is_function(word)) {
+        return match parse_at_depth(parser, depth)? {
+            ConstantValue::Integer(value) => Ok(Some(value)),
+            ConstantValue::Null => Ok(None),
+            ConstantValue::Text(_) => Err(ParseError("expected an integer expression".into())),
+        };
+    }
+    Ok(Some(super::scalar::parse(parser)?))
+}
+
+fn text_arg(parser: &mut Parser, depth: usize) -> Result<Option<String>, ParseError> {
+    match parser.tokens.get(parser.index) {
+        Some(Token::String(value)) => {
+            let result = value.clone();
+            parser.index += 1;
+            Ok(Some(result))
+        }
+        Some(Token::Word(word)) if word.eq_ignore_ascii_case("NULL") => {
+            parser.index += 1;
+            Ok(None)
+        }
+        Some(Token::Word(word)) if is_function(word) => match parse_at_depth(parser, depth)? {
+            ConstantValue::Text(value) => Ok(Some(value)),
+            ConstantValue::Null => Ok(None),
+            ConstantValue::Integer(_) => Err(ParseError("expected a string expression".into())),
+        },
+        _ => Err(ParseError(
+            "expected a string literal or string function".into(),
+        )),
+    }
+}
+ | '.' | '[' | ']' | '?' | '*' | '+' | '{' | ':' | '-') {
+                                result.push('\\');
+                            }
+                            result.push(ch);
+                        }
+                        if result.len() > MAX_TEXT_BYTES {
+                            return Err(ParseError("regexpQuoteMeta result is too large".into()));
+                        }
+                    }
                     ConstantValue::Text(result)
                 }
                 None => ConstantValue::Null,
