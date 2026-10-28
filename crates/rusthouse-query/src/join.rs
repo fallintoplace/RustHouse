@@ -4,7 +4,7 @@ mod syntax;
 
 // Keep explained execution bounds and the executor's actual limits in sync.
 pub(crate) const MAX_BUFFERED_JOIN_ROWS: u64 = 32_768;
-pub(crate) const MAX_STREAM_JOIN_BUILD_ROWS: u64 = 65_536;
+pub(crate) const MAX_STREAM_JOIN_BUILD_ROWS: u64 = 262_144;
 pub(crate) const MAX_JOIN_RESULT_ROWS: usize = 131_072;
 pub(crate) const MAX_JOIN_BUILD_BYTES: usize = 32 * 1024 * 1024;
 pub(crate) const MAX_JOIN_CHAIN_BYTES: usize = 64 * 1024 * 1024;
