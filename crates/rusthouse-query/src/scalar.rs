@@ -33,6 +33,7 @@ pub(super) fn is_function(name: &str) -> bool {
         return true;
     }
     is_saturating(name)
+        || name.eq_ignore_ascii_case("BITTESTALL")
         || name.eq_ignore_ascii_case("ABS")
         || name.eq_ignore_ascii_case("BIT_PARITY")
         || name.eq_ignore_ascii_case("BIT_MASK")
@@ -291,6 +292,30 @@ fn parse_bit_mask(parser: &mut Parser, depth: usize) -> Result<i64, ParseError> 
     } else {
         ((1_u64 << width) - 1) as i64
     })
+}
+
+fn parse_bit_test_all(parser: &mut Parser, depth: usize) -> Result<i64, ParseError> {
+    require_token(parser, Token::LParen, "bitTestAll requires '('")?;
+    let value = expression(parser, depth + 1)? as u64;
+    require_token(parser, Token::Comma, "bitTestAll requires a bit position")?;
+    let mut bits = 0u64;
+    let mut count = 0;
+    loop {
+        if count == 16 {
+            return Err(ParseError("bitTestAll accepts at most 16 positions".into()));
+        }
+        let position = expression(parser, depth + 1)?;
+        if !(0..64).contains(&position) {
+            return Err(ParseError("bitTestAll position must be between 0 and 63".into()));
+        }
+        bits |= 1u64 << position;
+        count += 1;
+        if !parser.take(Token::Comma) {
+            break;
+        }
+    }
+    require_token(parser, Token::RParen, "expected ')' after bitTestAll positions")?;
+    Ok(i64::from(value & bits == bits))
 }
 
 fn parse_hamming_distance(parser: &mut Parser, depth: usize) -> Result<i64, ParseError> {
@@ -936,6 +961,9 @@ fn factor(parser: &mut Parser, depth: usize) -> Result<i64, ParseError> {
         return factor(parser, depth + 1)?
             .checked_neg()
             .ok_or_else(overflow);
+    }
+    if parser.keyword("BITTESTALL") {
+        return parse_bit_test_all(parser, depth);
     }
     if parser.keyword("DIV") {
         return parse_div_mod(parser, depth, true);
