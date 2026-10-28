@@ -1,0 +1,67 @@
+{
+  "name": "skewed-heavy-hitter-analytics",
+  "description": "Deterministic 80% hot-user traffic, dominant dimensions, sparse nullable promos and large-revenue outliers",
+  "max_rows": 200000,
+  "queries": [
+    {
+      "name": "top-20-customers-by-events",
+      "oracle": "typed",
+      "sql": "SELECT user_id, COUNT(*) FROM events GROUP BY user_id ORDER BY 2 DESC, user_id ASC LIMIT 20"
+    },
+    {
+      "name": "top-20-customers-by-spend",
+      "oracle": "typed",
+      "sql": "SELECT user_id, SUM(amount) AS spend, COUNT(amount) AS events FROM events GROUP BY user_id ORDER BY spend DESC, user_id ASC LIMIT 20"
+    },
+    {
+      "name": "regional-revenue-and-orders",
+      "oracle": "typed",
+      "sql": "SELECT region, SUM(amount) AS revenue, COUNT(amount) AS orders FROM events GROUP BY region ORDER BY revenue DESC"
+    },
+    {
+      "name": "category-revenue-top-3",
+      "oracle": "typed",
+      "sql": "SELECT category, SUM(amount), COUNT(amount) FROM events GROUP BY category ORDER BY 2 DESC LIMIT 3"
+    },
+    {
+      "name": "multi-dimensional-region-category-revenue",
+      "oracle": "typed",
+      "sql": "SELECT region, category, SUM(amount), COUNT(amount), MAX(amount) FROM events GROUP BY region, category ORDER BY region, category"
+    },
+    {
+      "name": "multi-dimensional-top-10-revenue",
+      "oracle": "typed",
+      "sql": "SELECT region, category, SUM(amount), COUNT(amount) FROM events GROUP BY region, category ORDER BY 3 DESC, region, category LIMIT 10"
+    },
+    {
+      "name": "unique-customers-by-region",
+      "oracle": "typed",
+      "sql": "SELECT region, COUNT(DISTINCT user_id) FROM events GROUP BY region ORDER BY region"
+    },
+    {
+      "name": "unique-customers-by-region-and-category",
+      "oracle": "typed",
+      "sql": "SELECT region, category, COUNT(DISTINCT user_id) FROM events GROUP BY region, category ORDER BY region, category"
+    },
+    {
+      "name": "paid-revenue-overview",
+      "oracle": "typed",
+      "sql": "SELECT SUM(amount), AVG(amount), MIN(amount), MAX(amount), COUNT(amount) FROM events WHERE status = 'paid'"
+    },
+    {
+      "name": "nullable-promo-segment-metrics",
+      "oracle": "typed",
+      "sql": "SELECT region, category, AVG(amount), MAX(amount), COUNT(amount) FROM events WHERE coupon IS NOT NULL GROUP BY region, category ORDER BY region, category"
+    },
+    {
+      "name": "top-paid-categories",
+      "oracle": "typed",
+      "sql": "SELECT category, SUM(amount), COUNT(amount) FROM events WHERE status = 'paid' GROUP BY category ORDER BY 2 DESC, category ASC LIMIT 3"
+    },
+    {
+      "name": "dimension-cardinality-having",
+      "oracle": "typed",
+      "sql": "SELECT region, category, COUNT(DISTINCT user_id) FROM events GROUP BY region, category HAVING COUNT(DISTINCT user_id) > 10 ORDER BY region, category"
+    }
+  ]
+}

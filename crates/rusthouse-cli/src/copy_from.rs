@@ -297,12 +297,15 @@ impl CsvRecords {
             if remaining == 0 {
                 return Err("COPY CSV record exceeds 8 MiB".into());
             }
-            let mut line = Vec::new();
+            // Append directly into the reusable record buffer. COPY can
+            // consume billions of short CSV records, so allocating a fresh
+            // line Vec for every single row is expensive.
+            let previous_len = self.buffer.len();
             let read = self
                 .reader
                 .by_ref()
                 .take((remaining + 1) as u64)
-                .read_until(b'\n', &mut line)
+                .read_until(b'\n', &mut self.buffer)
                 .map_err(|error| format!("cannot read COPY CSV record: {error}"))?;
             if read == 0 {
                 if self.buffer.is_empty() {
@@ -310,13 +313,13 @@ impl CsvRecords {
                 }
                 break;
             }
-            let finished_line = line.ends_with(b"\n");
-            for byte in &line {
-                if *byte == b'"' {
+            let added = &self.buffer[previous_len..];
+            let finished_line = added.ends_with(b"\n");
+            for &byte in added {
+                if byte == b'"' {
                     quoted = !quoted;
                 }
             }
-            self.buffer.extend_from_slice(&line);
             if self.buffer.len() > MAX_CSV_RECORD_BYTES {
                 return Err("COPY CSV record exceeds 8 MiB".into());
             }
@@ -564,5 +567,45 @@ mod copy_file_capacity_tests {
             first: true,
         };
         assert!(giant.next_record().unwrap_err().contains("8 MiB"));
+    }
+}
+
+#[cfg(test)]
+mod csv_large_ingest_allocation_tests {
+    use super::*;
+
+    #[test]
+    fn csv_reuses_record_allocation_across_large_stream() {
+        let input = b"42,region-01,10923\n".repeat(20_000);
+        let mut reader = CsvRecords {
+            reader: BufReader::new(Box::new(std::io::Cursor::new(input))),
+            buffer: Vec::new(),
+            first: true,
+        };
+        let first = reader.next_record().unwrap().unwrap();
+        assert_eq!(first[0], Some("42".to_string()));
+        let pointer = reader.buffer.as_ptr();
+        let capacity = reader.buffer.capacity();
+        for _ in 1..20_000 {
+            let row = reader.next_record().unwrap().unwrap();
+            assert_eq!(row[1].as_deref(), Some("region-01"));
+            assert_eq!(reader.buffer.capacity(), capacity);
+            assert_eq!(reader.buffer.as_ptr(), pointer);
+        }
+        assert!(reader.next_record().unwrap().is_none());
+    }
+
+    #[test]
+    fn shared_buffer_preserves_multiline_quote_boundaries() {
+        let input = b"1,\"alpha\nbeta\",9\n2,\"a\"\"b\",10\n";
+        let mut reader = CsvRecords {
+            reader: BufReader::new(Box::new(std::io::Cursor::new(input.to_vec()))),
+            buffer: Vec::new(),
+            first: true,
+        };
+        assert_eq!(reader.next_record().unwrap().unwrap(),
+            vec![Some("1".into()), Some("alpha\nbeta".into()), Some("9".into())]);
+        assert_eq!(reader.next_record().unwrap().unwrap(),
+            vec![Some("2".into()), Some("a\"b".into()), Some("10".into())]);
     }
 }
