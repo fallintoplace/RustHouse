@@ -172,13 +172,13 @@ pub(super) fn execute_grouped_part<W: Write>(
         let mut emitted = 0usize;
         let offset = query.offset.unwrap_or(0);
         let limit = query.limit.unwrap_or(usize::MAX);
-        sorter.finish(|key, count| {
+        sorter.finish_until(|key, count| {
             if let Some(having) = &query.having {
                 if !number_matches(
                     Number::Unsigned(u128::from(count)),
                     Number::Unsigned(u128::from(having.value)),
                     having.operator,
-                ) { return Ok(()); }
+                ) { return Ok(true); }
             }
             if seen >= offset && emitted < limit {
                 if signed {
@@ -190,7 +190,7 @@ pub(super) fn execute_grouped_part<W: Write>(
             }
             seen = seen.checked_add(1)
                 .ok_or_else(|| ExecutionError::Invalid("GROUP BY row count overflow".into()))?;
-            Ok(())
+            Ok(emitted < limit)
         })?;
         return Ok(());
     }
