@@ -35,14 +35,17 @@ impl<W: Write> HtmlWriter<W> {
             }
         }
 
-        let fields = decode_html_fields(text, header)?;
-
         if header {
             self.output.write_all(b"<table>\n<thead><tr>")?;
         } else {
             self.output.write_all(b"<tr>")?;
         }
-        write_cells(&mut self.output, &fields, header)?;
+        if header || !text.as_bytes().contains(&b'\\') {
+            write_plain_cells(&mut self.output, text, header)?;
+        } else {
+            let fields = decode_html_fields(text, header)?;
+            write_cells(&mut self.output, &fields, header)?;
+        }
         if header {
             self.output.write_all(b"</tr></thead>\n<tbody>\n")?;
             self.columns = Some(count);
@@ -79,6 +82,20 @@ fn decode_html_fields(line: &str, header: bool) -> io::Result<Vec<Cow<'_, str>>>
     line.split('\t')
         .map(|field| decode_html_field(field, header))
         .collect()
+}
+
+fn write_plain_cells<W: Write>(output: &mut W, line: &str, header: bool) -> io::Result<()> {
+    let (open, close): (&[u8], &[u8]) = if header {
+        (b"<th>", b"</th>")
+    } else {
+        (b"<td>", b"</td>")
+    };
+    for field in line.split('\t') {
+        output.write_all(open)?;
+        write_cell(output, field)?;
+        output.write_all(close)?;
+    }
+    Ok(())
 }
 
 fn write_cells<W: Write>(output: &mut W, fields: &[Cow<'_, str>], header: bool) -> io::Result<()> {
