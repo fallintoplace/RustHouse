@@ -528,6 +528,61 @@ fn generated_series_metrics(
     Some(results)
 }
 
+/// Evaluate aggregate arithmetic against an implicit generated-number column.
+fn eval_generated(
+    expr: &ScalarExpr,
+    value: Number,
+) -> Result<Option<Number>, ExecutionError> {
+    let both = |left: &ScalarExpr, right: &ScalarExpr| -> Result<Option<(Number, Number)>, ExecutionError> {
+        let Some(left) = eval_generated(left, value)? else {return Ok(None)};
+        let Some(right) = eval_generated(right, value)? else {return Ok(None)};
+        Ok(Some((left,right)))
+    };
+    match expr {
+        ScalarExpr::Column(name) if name == "number" => Ok(Some(value)),
+        ScalarExpr::Column(name) => Err(ExecutionError::Invalid(
+            format!("unknown generated aggregate column: {name}"))),
+        ScalarExpr::TextLength(_) => Err(ExecutionError::Invalid(
+            "generated numeric rows have no string columns".into())),
+        ScalarExpr::Integer(number) => Ok(Some(Number::Signed(i128::from(*number)))),
+        ScalarExpr::Add(left,right) => {
+            if let Some((a,b)) = both(left,right)? {checked_binary(a,b,false).map(Some)}
+            else {Ok(None)}
+        }
+        ScalarExpr::Subtract(left,right) => {
+            if let Some((a,b)) = both(left,right)? {checked_binary(a,b,true).map(Some)}
+            else {Ok(None)}
+        }
+        ScalarExpr::Multiply(left,right) => {
+            if let Some((a,b)) = both(left,right)? {checked_multiply(a,b).map(Some)}
+            else {Ok(None)}
+        }
+        ScalarExpr::Divide(left,right) => {
+            let Some((a,b)) = both(left,right)? else {return Ok(None)};
+            let float=|number:Number| match number {
+                Number::Unsigned(n)=>n as f64, Number::Signed(n)=>n as f64,
+                Number::Float(n)=>n,
+            };
+            let divisor=float(b);
+            if divisor==0.0 {return Err(ExecutionError::Invalid("division by zero in aggregate expression".into()));}
+            let result=float(a)/divisor;
+            if !result.is_finite() {return Err(ExecutionError::Invalid("non-finite aggregate division".into()));}
+            Ok(Some(Number::Float(result)))
+        }
+        ScalarExpr::Compare(left,operator,right) => {
+            let Some((a,b)) = both(left,right)? else {return Ok(None)};
+            let order=super::compare_numbers(a,b);
+            let matched=match operator {
+                crate::Operator::Eq=>order.is_eq(),crate::Operator::Ne=>order.is_ne(),
+                crate::Operator::Lt=>order.is_lt(),crate::Operator::Le=>order.is_le(),
+                crate::Operator::Gt=>order.is_gt(),crate::Operator::Ge=>order.is_ge(),
+                _=>return Err(ExecutionError::Invalid("unsupported comparison operator".into())),
+            };
+            Ok(Some(Number::Unsigned(u128::from(matched))))
+        }
+    }
+}
+
 /// Evaluate bounded generated-number aggregate projections without a stored part.
 pub(super) fn execute_numbers<W: Write>(
     query: &Select,
@@ -539,7 +594,9 @@ pub(super) fn execute_numbers<W: Write>(
 ) -> Result<(), ExecutionError> {
     for item in items {
         if let Some(argument) = &item.argument {
-            if !matches!(argument, ScalarExpr::Column(name) if name == "number") {
+            let mut columns = Vec::new();
+            argument.referenced_columns(&mut columns);
+            if columns.iter().any(|column| column != "number") {
                 return Err(ExecutionError::Invalid(
                     "generated aggregates support only the number column".into(),
                 ));
@@ -576,7 +633,13 @@ pub(super) fn execute_numbers<W: Write>(
         if !super::number_matches_all(value, &comparisons) {
             continue;
         }
-        for state in &mut states {
+        for (state, item) in states.iter_mut().zip(items) {
+            let argument = if let Some(expression) = &item.argument {
+                eval_generated(expression, value)?
+            } else {
+                Some(value)
+            };
+            let Some(argument) = argument else {continue};
             match state {
                 State::Count(count) => {
                     *count = count
@@ -584,9 +647,9 @@ pub(super) fn execute_numbers<W: Write>(
                         .ok_or_else(|| ExecutionError::Invalid("COUNT overflow".into()))?;
                 }
                 State::Distinct(seen) => {
-                    seen.insert_key(typed::Key::Numeric(NumberKey::from(value)))?;
+                    seen.insert_key(typed::Key::Numeric(NumberKey::from(argument)))?;
                 }
-                State::Numeric(state) => state.update(value)?,
+                State::Numeric(state) => state.update(argument)?,
             }
         }
     }
