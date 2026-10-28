@@ -143,6 +143,7 @@ mod tests {
             b"{\n    \"text\": \"a,{}\",\n    \"ok\": null\n  }"
         );
     }
+
     #[test]
     fn short_json_key_and_colon_use_one_write() {
         struct Calls(Vec<Vec<u8>>);
@@ -157,7 +158,7 @@ mod tests {
         }
         let mut output = Calls(Vec::new());
         write_pretty_json_row(&mut output, br#"{"a":1}"#).unwrap();
-        assert!(output.0.iter().any(|chunk| chunk == b"\"a\": "));
+        assert!(output.0.iter().any(|chunk| chunk.as_slice() == b"\"a\": "));
         assert_eq!(output.0.concat(), b"{\n    \"a\": 1\n  }");
     }
 
