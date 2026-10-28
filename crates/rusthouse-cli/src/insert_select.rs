@@ -4,7 +4,7 @@ use rusthouse_query::{Insert, InsertSelect, Source, execute};
 use std::io::{self, Write};
 use std::path::Path;
 
-const MAX_INSERT_ROWS: usize = 50_000;
+const MAX_INSERT_ROWS: usize = 100_000;
 const MAX_SINGLE_PART_ROWS: usize = 4096;
 const MAX_RESULT_BYTES: usize = 8 * 1024 * 1024;
 
@@ -128,6 +128,14 @@ pub(super) fn run(database: &Path, statement: &InsertSelect) -> Result<(), Strin
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn decodes_more_than_fifty_thousand_rows_but_rejects_over_the_new_cap() {
+        let data = format!("number\n{}", "1\n".repeat(50_001));
+        assert_eq!(decode_rows(data.as_bytes()).unwrap().len(), 50_001);
+        let excessive = format!("number\n{}", "1\n".repeat(MAX_INSERT_ROWS + 1));
+        assert!(decode_rows(excessive.as_bytes()).is_err());
+    }
 
     #[test]
     fn decoding_preserves_nulls_and_escaped_text() {
