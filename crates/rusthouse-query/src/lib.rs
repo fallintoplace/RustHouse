@@ -484,11 +484,21 @@ impl Parser {
                             .ok_or_else(|| ParseError("ORDER BY position is out of range".into()))?
                     }
                 }
-                Projection::GroupedMultiAggregates { columns, .. } => position
-                    .checked_sub(1)
-                    .and_then(|index| columns.get(index))
-                    .cloned()
-                    .ok_or_else(|| ParseError("ORDER BY position is out of range".into()))?,
+                Projection::GroupedMultiAggregates { columns, items } => {
+                    if position <= columns.len() {
+                        columns[position - 1].clone()
+                    } else {
+                        let index = position - columns.len() - 1;
+                        let (function, _) = items.get(index).ok_or_else(|| {
+                            ParseError("ORDER BY position is out of range".into())
+                        })?;
+                        if !matches!(function, AggregateFunction::Sum | AggregateFunction::Min |
+                            AggregateFunction::Max | AggregateFunction::Avg | AggregateFunction::Count) {
+                            return Err(ParseError("ORDER BY this aggregate is not supported".into()));
+                        }
+                        format!("#aggregate{index}")
+                    }
+                },
                 Projection::GroupedAggregate {
                     column, function, ..
                 } => match position {
@@ -510,12 +520,19 @@ impl Parser {
                         ));
                     }
                 },
-                Projection::GroupedAggregates { column, .. } => match position {
-                    1 => column.clone(),
-                    _ => {
-                        return Err(ParseError(
-                            "grouped numeric aggregates only support ORDER BY the group key".into(),
-                        ));
+                Projection::GroupedAggregates { column, items } => {
+                    if position == 1 {
+                        column.clone()
+                    } else {
+                        let index = position - 2;
+                        let (function, _) = items.get(index).ok_or_else(|| {
+                            ParseError("ORDER BY position is out of range".into())
+                        })?;
+                        if !matches!(function, AggregateFunction::Sum | AggregateFunction::Min |
+                            AggregateFunction::Max | AggregateFunction::Avg | AggregateFunction::Count) {
+                            return Err(ParseError("ORDER BY this aggregate is not supported".into()));
+                        }
+                        format!("#aggregate{index}")
                     }
                 },
                 Projection::All => {
@@ -546,6 +563,28 @@ impl Parser {
         ) && column.eq_ignore_ascii_case("count")
         {
             "count".to_string()
+        } else {
+            column
+        };
+        // Resolve ORDER BY sum(value) to the selected aggregate, not a column.
+        let column = if let Projection::GroupedAggregates { items, .. }
+            | Projection::GroupedMultiAggregates { items, .. } = projection
+        {
+            if self.take(Token::LParen) {
+                let argument = self.word()?;
+                if !self.take(Token::RParen) {
+                    return Err(ParseError("expected ')' in ORDER BY aggregate".into()));
+                }
+                let index = items.iter().position(|(function, name)| {
+                    function.name().eq_ignore_ascii_case(&column)
+                        && name == &argument
+                        && matches!(function, AggregateFunction::Sum | AggregateFunction::Min |
+                            AggregateFunction::Max | AggregateFunction::Avg | AggregateFunction::Count)
+                }).ok_or_else(|| ParseError("ORDER BY aggregate must match SELECT".into()))?;
+                format!("#aggregate{index}")
+            } else {
+                column
+            }
         } else {
             column
         };
@@ -1481,26 +1520,28 @@ fn parse_select_tokens(tokens: Vec<Token>) -> Result<Select, ParseError> {
             ));
         }
     }
-    if let Projection::GroupedAggregates { column, .. } = &projection {
-        if order_by
-            .iter()
-            .chain(order_by_extra.iter())
-            .any(|order| &order.column != column)
+    if let Projection::GroupedAggregates { column, items } = &projection {
+        let metric = |name: &str| name.strip_prefix("#aggregate")
+            .and_then(|number| number.parse::<usize>().ok())
+            .is_some_and(|index| index < items.len());
+        if order_by.iter().chain(order_by_extra.iter())
+            .any(|order| &order.column != column && !metric(&order.column))
         {
             return Err(ParseError(
-                "grouped numeric ORDER BY must use the group key".into(),
+                "grouped numeric ORDER BY must use the group key or a selected metric".into(),
             ));
         }
     }
 
-    if let Projection::GroupedMultiAggregates { columns, .. } = &projection {
-        if order_by
-            .iter()
-            .chain(order_by_extra.iter())
-            .any(|order| !columns.contains(&order.column))
+    if let Projection::GroupedMultiAggregates { columns, items } = &projection {
+        let metric = |name: &str| name.strip_prefix("#aggregate")
+            .and_then(|number| number.parse::<usize>().ok())
+            .is_some_and(|index| index < items.len());
+        if order_by.iter().chain(order_by_extra.iter())
+            .any(|order| !columns.contains(&order.column) && !metric(&order.column))
         {
             return Err(ParseError(
-                "grouped numeric ORDER BY must use the group keys".into(),
+                "grouped numeric ORDER BY must use the group keys or selected metrics".into(),
             ));
         }
     }

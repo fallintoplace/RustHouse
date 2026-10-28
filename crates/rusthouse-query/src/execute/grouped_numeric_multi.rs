@@ -238,9 +238,25 @@ pub(super) fn execute<W: Write>(
         }
     }
     let mut bounded_order = None;
-    if let Some(order) = &query.order_by {
+    if query.order_by.is_some() {
+        let terms = query.order_terms().map(|order| {
+            let metric = order.column.strip_prefix("#aggregate")
+                .and_then(|number| number.parse::<usize>().ok());
+            (metric, order.descending, order.nulls_first)
+        }).collect::<Vec<_>>();
         let compare = |left: &(Cell, Vec<AggregateState>), right: &(Cell, Vec<AggregateState>)| {
-            typed::compare_order_cells(&left.0, &right.0, order.descending, order.nulls_first)
+            for &(metric, descending, nulls_first) in &terms {
+                let ordering = if let Some(index) = metric {
+                    typed::compare_order_cells(&left.1[index].sort_cell(), &right.1[index].sort_cell(),
+                        descending, nulls_first)
+                } else {
+                    typed::compare_order_cells(&left.0, &right.0, descending, nulls_first)
+                };
+                if ordering != std::cmp::Ordering::Equal {
+                    return ordering;
+                }
+            }
+            std::cmp::Ordering::Equal
         };
         let end = query
             .limit
