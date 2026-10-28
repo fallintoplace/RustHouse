@@ -327,13 +327,33 @@ where
     F: FnMut(&[typed::Cell], &[typed::Cell]) -> Result<(), ExecutionError>,
 {
     if options.stop_after == Some(0) { return Ok(0); }
-    let mut reader = TypedQueryReader::open(right_path, right_names)?;
+    let mut retained = if options.materialize_rows {
+        (0..right_names.len()).collect::<Vec<_>>()
+    } else {
+        right_keys.to_vec()
+    };
+    if let Some((column, _)) = options.null_filter {
+        if let Some(local) = column.checked_sub(left_width)
+            .filter(|&local| local < right_names.len()) {
+            retained.push(local);
+        }
+    }
+    retained.sort_unstable();
+    retained.dedup();
+    if retained.is_empty() {
+        retained.push(0);
+    }
+    let selected = retained.iter().map(|&index| right_names[index].clone()).collect::<Vec<_>>();
+    let key_indices = right_keys.iter().map(|index| {
+        retained.binary_search(index).expect("join key retained")
+    }).collect::<Vec<_>>();
+    let mut reader = TypedQueryReader::open(right_path, &selected)?;
     let null_left = vec![typed::Cell::Null; left_width];
     let mut total = 0usize;
     let mut probe_key = Vec::with_capacity(right_keys.len());
     'scan: while let Some(batch) = reader.next_batch()? {
         for row in 0..batch[0].len() {
-            let candidates = if batch_key_into(&batch, row, right_keys, &mut probe_key) {
+            let candidates = if batch_key_into(&batch, row, &key_indices, &mut probe_key) {
                 hash.get(probe_key.as_slice())
             } else { None };
             let matched = candidates.is_some();
@@ -349,7 +369,10 @@ where
                     let is_null = if column < left_width {
                         matches!(&left[column], typed::Cell::Null)
                     } else {
-                        typed::is_null_at(&batch[column - left_width], row)
+                        typed::is_null_at(
+                            &batch[retained.binary_search(&(column - left_width)).expect("filter retained")],
+                            row,
+                        )
                     };
                     if is_null == not_null { continue; }
                 }
