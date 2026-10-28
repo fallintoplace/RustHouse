@@ -108,6 +108,50 @@ pub(super) fn execute_grouped_part<W: Write>(
         }
         return groups.write(query, column, output);
     }
+    // Keep 32-bit group hash keys compact instead of widening each input
+    // number into a NumberKey. Retain the first-seen group order.
+    if matches!(narrow, Some("UInt32" | "Int32")) {
+        let mut indices = HashMap::<u32, usize>::new();
+        while let Some(batch) = reader.next_batch()? {
+            for row in 0..batch[0].len() {
+                if !no_filters && !batch_matches(&batch, row, &comparisons) {
+                    continue;
+                }
+                let key = match &batch[0] {
+                    NumericColumn::UInt32(values) => values[row],
+                    NumericColumn::Int32(values) => values[row] as u32,
+                    _ => {
+                        return Err(ExecutionError::Invalid(
+                            "unexpected 32-bit GROUP BY type".into(),
+                        ));
+                    }
+                };
+                match indices.entry(key) {
+                    Entry::Occupied(entry) => {
+                        let count = &mut groups.rows[*entry.get()].1;
+                        *count = count
+                            .checked_add(1)
+                            .ok_or_else(|| ExecutionError::Invalid("group count overflow".into()))?;
+                    }
+                    Entry::Vacant(entry) => {
+                        if groups.rows.len() >= MAX_GROUPS {
+                            return Err(ExecutionError::Invalid(
+                                "GROUP BY supports at most 200000 groups".into(),
+                            ));
+                        }
+                        let value = if matches!(narrow, Some("Int32")) {
+                            Number::Signed(i128::from(key as i32))
+                        } else {
+                            Number::Unsigned(u128::from(key))
+                        };
+                        entry.insert(groups.rows.len());
+                        groups.rows.push((value, 1));
+                    }
+                }
+            }
+        }
+        return groups.write(query, column, output);
+    }
     while let Some(batch) = reader.next_batch()? {
         for row in 0..batch[0].len() {
             if no_filters || batch_matches(&batch, row, &comparisons) {
