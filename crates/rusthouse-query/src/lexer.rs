@@ -44,7 +44,7 @@ pub(super) fn tokenize(sql: &str) -> Result<Vec<Token>, ParseError> {
                 {
                     index += 1;
                 }
-                if index + 1 == bytes.len() {
+                if index + 1 >= bytes.len() {
                     return Err(ParseError("unterminated block comment".into()));
                 }
                 index += 2;
@@ -253,6 +253,7 @@ mod tests {
         );
         assert!(tokenize("/* standalone */").unwrap().is_empty());
         assert!(tokenize("SELECT /* never closed").is_err());
+        assert!(tokenize("/*").is_err());
     }
 
 }
