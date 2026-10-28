@@ -162,4 +162,18 @@ mod tests {
         assert!(replicas_for("shard", &["node".into()], 2).is_err());
         assert!(replicas_for("shard", &["../bad".into()], 1).is_err());
     }
+    #[test]
+    fn increasing_one_node_weight_cannot_demote_its_primary_placement() {
+        let baseline = [("a", 1u16), ("b", 1u16), ("c", 1u16)];
+        let heavier = [("a", 64u16), ("b", 1u16), ("c", 1u16)];
+        for shard in 0..512 {
+            let shard = format!("events_{shard}");
+            let original = weighted_replicas_for(&shard, &baseline, 1).unwrap();
+            let updated = weighted_replicas_for(&shard, &heavier, 1).unwrap();
+            if original[0] == "a" {
+                assert_eq!(updated[0], "a", "{shard}");
+            }
+        }
+    }
+
 }

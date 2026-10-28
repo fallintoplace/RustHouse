@@ -88,8 +88,13 @@ pub fn copy_frozen_snapshot(
                 if report.bytes > max_bytes {
                     return Err(PartError::InvalidScan("copy exceeds byte cap".into()));
                 }
-                fs::copy(&source_file, &destination_file)
+                let copied_bytes = fs::copy(&source_file, &destination_file)
                     .map_err(|error| io_error(&destination_file, error))?;
+                if copied_bytes != bytes {
+                    return Err(PartError::InvalidScan(
+                        "source size changed during snapshot copy".into(),
+                    ));
+                }
                 File::open(&destination_file)
                     .and_then(|file| file.sync_all())
                     .map_err(|error| io_error(&destination_file, error))?;
@@ -158,4 +163,25 @@ mod tests {
         assert!(copy_frozen_snapshot(&source, &target, 1, 1_000_000).is_err());
         fs::remove_dir_all(base).unwrap();
     }
+    #[test]
+    fn corrupted_snapshot_never_publishes_destination() {
+        let root = std::env::temp_dir().join(format!(
+            "rusthouse-copy-corrupt-{}", std::process::id()
+        ));
+        let _ = fs::remove_dir_all(&root);
+        let source = root.join("source");
+        let target = root.join("target");
+        fs::create_dir_all(&source).unwrap();
+        let part = source.join("all_0_0_0");
+        write_wide_part(
+            &part,
+            &[Column { name: "id".into(), data_type: "UInt64".into() }],
+            &[vec![Some("12".into())]],
+        ).unwrap();
+        fs::write(part.join("count.txt"), "100\n").unwrap();
+        assert!(copy_frozen_snapshot(&source, &target, 1, 1_000_000).is_err());
+        assert!(!target.exists());
+        fs::remove_dir_all(root).unwrap();
+    }
+
 }
