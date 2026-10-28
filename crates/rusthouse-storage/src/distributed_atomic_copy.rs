@@ -16,7 +16,10 @@ fn stream_bounded_copy(
     let mut total = 0u64;
     let mut buffer = [0u8; 32 * 1024];
     loop {
-        let len = input.read(&mut buffer)?;
+        let available = max_bytes.saturating_sub(total)
+            .saturating_add(1)
+            .min(buffer.len() as u64) as usize;
+        let len = input.read(&mut buffer[..available])?;
         if len == 0 {
             break;
         }
@@ -54,6 +57,10 @@ pub fn copy_immutable_file(source: &Path, destination: &Path, max_bytes: u64) ->
         NEXT_STAGE.fetch_add(1, Ordering::Relaxed)
     ));
     let mut input = File::open(source)?;
+    let opened = input.metadata()?;
+    if !opened.file_type().is_file() || opened.len() != source_meta.len() {
+        return Err(io::Error::other("source changed before immutable copy"));
+    }
     let mut output = OpenOptions::new()
         .write(true)
         .create_new(true)
@@ -81,6 +88,7 @@ pub fn copy_immutable_file(source: &Path, destination: &Path, max_bytes: u64) ->
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::io::Seek;
 
     #[test]
     fn copies_once_and_never_replaces_existing_data() {
@@ -99,4 +107,22 @@ mod tests {
         assert!(copy_immutable_file(&src, &dir.join("small"), 1).is_err());
         fs::remove_dir_all(dir).unwrap();
     }
+    #[test]
+    fn oversized_source_reads_only_one_byte_past_cap() {
+        let dir = std::env::temp_dir().join(format!(
+            "rusthouse-bounded-copy-{}", std::process::id()
+        ));
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir(&dir).unwrap();
+        let source = dir.join("source");
+        let target = dir.join("target");
+        fs::write(&source, vec![1u8; 64 * 1024]).unwrap();
+        let mut input = File::open(&source).unwrap();
+        let mut output = File::create(&target).unwrap();
+        assert!(stream_bounded_copy(&mut input, &mut output, 64 * 1024, 0).is_err());
+        assert_eq!(input.stream_position().unwrap(), 1);
+        assert_eq!(output.metadata().unwrap().len(), 0);
+        fs::remove_dir_all(dir).unwrap();
+    }
+
 }
