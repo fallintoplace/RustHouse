@@ -2,7 +2,7 @@
 use super::ExecutionError;
 use super::typed::{self, Cell, Key};
 use crate::Select;
-use rusthouse_storage::{TypedQueryReader, inspect_query_source};
+use rusthouse_storage::{TypedColumn, TypedQueryReader, inspect_query_source};
 use std::cmp::Ordering;
 use std::collections::{HashMap, HashSet, hash_map::Entry};
 use std::io::Write;
@@ -14,6 +14,13 @@ const MAX_GROUP_VALUE_PAIRS: usize = 100_000;
 struct Group {
     key: Cell,
     distinct: HashSet<Key>,
+    distinct_text: HashSet<Vec<u8>>,
+}
+
+impl Group {
+    fn distinct_len(&self) -> usize {
+        self.distinct.len() + self.distinct_text.len()
+    }
 }
 
 pub(super) fn execute<W: Write>(
@@ -74,6 +81,8 @@ pub(super) fn execute<W: Write>(
     let value_index = indices[value_column];
     let mut groups = Vec::<Group>::new();
     let mut by_key = HashMap::<Key, usize>::new();
+    // Repeated String group keys can be checked without owning row bytes.
+    let mut text_groups = HashMap::<Vec<u8>, usize>::new();
     let mut total_pairs = 0usize;
     let mut reader = TypedQueryReader::open(part, &names)?;
 
@@ -83,25 +92,69 @@ pub(super) fn execute<W: Write>(
                 continue;
             }
             // Register the group even when every aggregate value is NULL.
-            let group = typed::cell(&batch[group_index], row);
-            let id = match by_key.entry(group.key()) {
-                Entry::Occupied(entry) => *entry.get(),
-                Entry::Vacant(entry) => {
+            let group_text = match &batch[group_index] {
+                TypedColumn::Text(values) => values.get(row),
+                TypedColumn::NullableText { values, nulls } if nulls[row] == 0 => values.get(row),
+                _ => None,
+            };
+            let id = if let Some(text) = group_text {
+                if let Some(&id) = text_groups.get(text) {
+                    id
+                } else {
                     if groups.len() >= MAX_GROUPS {
                         return Err(ExecutionError::Invalid(
                             "GROUP BY supports at most 100000 groups".into(),
                         ));
                     }
                     let id = groups.len();
-                    entry.insert(id);
+                    text_groups.insert(text.to_vec(), id);
                     groups.push(Group {
-                        key: group,
+                        key: Cell::Text(text.to_vec()),
                         distinct: HashSet::new(),
+                        distinct_text: HashSet::new(),
                     });
                     id
                 }
+            } else {
+                let group = typed::cell(&batch[group_index], row);
+                match by_key.entry(group.key()) {
+                    Entry::Occupied(entry) => *entry.get(),
+                    Entry::Vacant(entry) => {
+                        if groups.len() >= MAX_GROUPS {
+                            return Err(ExecutionError::Invalid(
+                                "GROUP BY supports at most 100000 groups".into(),
+                            ));
+                        }
+                        let id = groups.len();
+                        entry.insert(id);
+                        groups.push(Group {
+                            key: group,
+                            distinct: HashSet::new(),
+                            distinct_text: HashSet::new(),
+                        });
+                        id
+                    }
+                }
             };
 
+            let value_text = match &batch[value_index] {
+                TypedColumn::Text(values) => values.get(row),
+                TypedColumn::NullableText { values, nulls } if nulls[row] == 0 => values.get(row),
+                _ => None,
+            };
+            if let Some(text) = value_text {
+                // Probe decoded bytes. Own them only for new distinct pairs.
+                if !groups[id].distinct_text.contains(text) {
+                    if total_pairs >= MAX_GROUP_VALUE_PAIRS {
+                        return Err(ExecutionError::Invalid(
+                            "grouped COUNT(DISTINCT) supports at most 100000 distinct pairs".into(),
+                        ));
+                    }
+                    groups[id].distinct_text.insert(text.to_vec());
+                    total_pairs += 1;
+                }
+                continue;
+            }
             let value = typed::cell(&batch[value_index], row);
             if matches!(&value, Cell::Null) {
                 continue;
@@ -123,7 +176,7 @@ pub(super) fn execute<W: Write>(
         groups.sort_by(|left, right| {
             for order in query.order_terms() {
                 let comparison = if order.column == "count" {
-                    let comparison = left.distinct.len().cmp(&right.distinct.len());
+                    let comparison = left.distinct_len().cmp(&right.distinct_len());
                     if order.descending {
                         comparison.reverse()
                     } else {
@@ -151,7 +204,7 @@ pub(super) fn execute<W: Write>(
         .take(query.limit.unwrap_or(usize::MAX))
     {
         typed::write_typed_value(output, &group.key, &types[column])?;
-        writeln!(output, "\t{}", group.distinct.len())?;
+        writeln!(output, "\t{}", group.distinct_len())?;
     }
     Ok(())
 }

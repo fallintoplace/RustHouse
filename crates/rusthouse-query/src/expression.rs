@@ -15,12 +15,7 @@ pub enum ScalarExpr {
 impl ScalarExpr {
     pub fn referenced_columns(&self, out: &mut Vec<String>) {
         match self {
-            Self::Column(name) => {
-                if !out.contains(name) {
-                    out.push(name.clone());
-                }
-            }
-            Self::TextLength(name) => {
+            Self::Column(name) | Self::TextLength(name) => {
                 if !out.contains(name) {
                     out.push(name.clone());
                 }
@@ -165,6 +160,10 @@ mod tests {
         expr.referenced_columns(&mut columns);
         assert_eq!(columns, ["URL"]);
         assert!(matches!(expr, ScalarExpr::Add(..)));
+        let repeated = parse_scalar_expression("length(URL) + URL").unwrap();
+        let mut columns = Vec::new();
+        repeated.referenced_columns(&mut columns);
+        assert_eq!(columns, ["URL"]);
         assert!(parse_scalar_expression("length(URL, Other)").is_err());
     }
 
