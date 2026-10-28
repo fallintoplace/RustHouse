@@ -4,7 +4,7 @@ use super::{AggregateState, ExecutionError};
 use crate::{AggregateFunction, Select};
 use rusthouse_storage::{TypedQueryReader, inspect_query_source};
 use std::cmp::Ordering;
-use std::collections::{HashMap, hash_map::Entry};
+use std::collections::HashMap;
 use std::io::Write;
 use std::path::Path;
 
@@ -83,35 +83,41 @@ pub(super) fn execute<W: Write>(
     let mut by_key = HashMap::<Vec<Key>, usize>::new();
     let mut groups = Vec::<(Vec<Cell>, Vec<AggregateState>)>::new();
     let mut reader = TypedQueryReader::open(part, &names)?;
+    // Reuse a probe buffer for existing groups instead of allocating a Vec
+    // of Cells and a Vec of Keys for every matching input row.
+    let mut probe_key = Vec::<Key>::with_capacity(group_indices.len());
     while let Some(batch) = reader.next_batch()? {
         for row in 0..batch[0].len() {
             if !typed::passes(&batch, row, &conditions) {
                 continue;
             }
-            let keys = group_indices
-                .iter()
-                .map(|&index| typed::cell(&batch[index], row))
-                .collect::<Vec<_>>();
-            let lookup = keys.iter().map(Cell::key).collect::<Vec<_>>();
-            let group = match by_key.entry(lookup) {
-                Entry::Occupied(entry) => *entry.get(),
-                Entry::Vacant(entry) => {
-                    if groups.len() >= MAX_GROUPS {
-                        return Err(ExecutionError::Invalid(
-                            "GROUP BY supports at most 100000 groups".into(),
-                        ));
-                    }
-                    let index = groups.len();
-                    entry.insert(index);
-                    groups.push((
-                        keys,
-                        items
-                            .iter()
-                            .map(|(function, _)| AggregateState::new(*function))
-                            .collect(),
+            probe_key.clear();
+            for &index in &group_indices {
+                probe_key.push(typed::cell(&batch[index], row).key());
+            }
+            let group = if let Some(&index) = by_key.get(probe_key.as_slice()) {
+                index
+            } else {
+                if groups.len() >= MAX_GROUPS {
+                    return Err(ExecutionError::Invalid(
+                        "GROUP BY supports at most 100000 groups".into(),
                     ));
-                    index
                 }
+                let index = groups.len();
+                let keys = group_indices
+                    .iter()
+                    .map(|&column| typed::cell(&batch[column], row))
+                    .collect::<Vec<_>>();
+                by_key.insert(std::mem::take(&mut probe_key), index);
+                probe_key = Vec::with_capacity(group_indices.len());
+                groups.push((
+                    keys,
+                    items
+                        .iter()
+                        .map(|(function, _)| AggregateState::new(*function))
+                        .collect(),
+                ));
+                index
             };
             for (&index, state) in item_indices.iter().zip(groups[group].1.iter_mut()) {
                 match typed::cell(&batch[index], row) {
