@@ -89,9 +89,9 @@ mod empty_batch_fast_path_tests {
                 panic!("unexpected read for an empty batch");
             }
         }
-        let decoded = read_fixed_width::<_, u64, 8>(
-            &mut NoReads, 0, "invalid width", u64::from_le_bytes
-        ).unwrap();
+        let decoded =
+            read_fixed_width::<_, u64, 8>(&mut NoReads, 0, "invalid width", u64::from_le_bytes)
+                .unwrap();
         assert!(decoded.is_empty());
     }
 }
