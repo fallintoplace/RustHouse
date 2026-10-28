@@ -60,7 +60,8 @@ pub fn replicas_for(
     if replicas == 1 {
         // Preserve the score-descending, node-ascending tie-break without
         // allocating and sorting an entire ranking for a single primary.
-        let best = nodes.iter()
+        let best = nodes
+            .iter()
             .map(|node| (score_with_seed(seed, node), node.as_str()))
             .max_by(|left, right| left.0.cmp(&right.0).then_with(|| right.1.cmp(left.1)))
             .expect("validated nonempty nodes");
