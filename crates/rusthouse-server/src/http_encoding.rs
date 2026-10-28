@@ -65,7 +65,11 @@ pub(super) fn write_json_string<W: Write>(writer: &mut W, value: &str) -> io::Re
             quoted[value.len() + 1] = b'"';
             return writer.write_all(&quoted[..value.len() + 2]);
         }
-        let mut buffer = [0u8; 4096];
+        writer.write_all(b"\"")?;
+        writer.write_all(value.as_bytes())?;
+        return writer.write_all(b"\"");
+    }
+    let mut buffer = [0u8; 4096];
     let mut used = 1;
     buffer[0] = b'"';
     const HEX: &[u8; 16] = b"0123456789abcdef";
@@ -187,7 +191,6 @@ mod tests {
         assert!(decode_url(&format!("{maximum}%41")).is_err());
         assert!(decode_url(&("a".repeat(MAX_QUERY_BYTES * 4))).is_err());
     }
-
     #[test]
     fn quote_heavy_json_uses_bounded_output_writes() {
         struct CountingWriter {
@@ -219,7 +222,8 @@ mod tests {
         assert!(output.calls <= 6);
         let mut control = Vec::new();
         write_json_string(&mut control, "a\n\t\u{0001}café").unwrap();
-        assert_eq!(control, br#""a\n\t\u0001café""#);
+        assert_eq!(control, r#""a\n\t\u0001café""#.as_bytes());
     }
+
 
 }
