@@ -91,6 +91,10 @@ pub(super) fn execute<W: Write>(
         Some("UInt8" | "Int8")
     )
     .then(|| [usize::MAX; 256]);
+    // Byte-sized grouped DISTINCT is optimized separately. This path
+    // specializes the larger 16-bit key domain.
+    let mut dense_groups = matches!(types[column].as_str(), "UInt16" | "Int16")
+        .then(|| vec![usize::MAX; 65_536]);
     let mut total_pairs = 0usize;
     let mut reader = TypedQueryReader::open_with_metadata(part, &names, &metadata)?;
     let no_filters = query.predicates.is_empty() && query.or_predicates.is_empty();
@@ -127,6 +131,34 @@ pub(super) fn execute<W: Write>(
                     });
                 }
                 *slot
+            } else if let Some(slots) = dense_groups.as_mut() {
+                let key = match &batch[group_index] {
+                    TypedColumn::Numeric(rusthouse_storage::NumericColumn::UInt16(values)) => {
+                        usize::from(values[row])
+                    }
+                    TypedColumn::Numeric(rusthouse_storage::NumericColumn::Int16(values)) => {
+                        usize::from(values[row] as u16)
+                    }
+                    _ => {
+                        return Err(ExecutionError::Invalid(
+                            "unexpected dense GROUP BY key type".into(),
+                        ));
+                    }
+                };
+                let slot = &mut slots[key];
+                if *slot != usize::MAX {
+                    *slot
+                } else {
+                    let id = groups.len();
+                    *slot = id;
+                    groups.push(Group {
+                        key: typed::cell(&batch[group_index], row),
+                        distinct: HashSet::new(),
+                        distinct_text: HashSet::new(),
+                        distinct_uuids: HashSet::new(),
+                    });
+                    id
+                }
             } else if let Some(text) = group_text {
                 if let Some(&id) = text_groups.get(text) {
                     id
