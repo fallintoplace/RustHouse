@@ -39,6 +39,7 @@ pub(super) fn is_function(name: &str) -> bool {
         || name.eq_ignore_ascii_case("BIT_WIDTH")
         || name.eq_ignore_ascii_case("DIV")
         || name.eq_ignore_ascii_case("MOD")
+        || name.eq_ignore_ascii_case("MODULOORZERO")
         || name.eq_ignore_ascii_case("ABS_DIFF")
         || name.eq_ignore_ascii_case("SIGN")
         || name.eq_ignore_ascii_case("DIGIT_COUNT")
@@ -196,6 +197,15 @@ fn parse_div_mod(parser: &mut Parser, depth: usize, divide: bool) -> Result<i64,
         left.checked_rem(right)
             .ok_or_else(|| ParseError("MOD divisor is zero or result overflows Int64".into()))
     }
+}
+
+fn parse_modulo_or_zero(parser: &mut Parser, depth: usize) -> Result<i64, ParseError> {
+    require_token(parser, Token::LParen, "moduloOrZero requires '('")?;
+    let left = expression(parser, depth + 1)?;
+    require_token(parser, Token::Comma, "moduloOrZero requires two arguments")?;
+    let right = expression(parser, depth + 1)?;
+    require_token(parser, Token::RParen, "expected ')' after moduloOrZero arguments")?;
+    Ok(left.checked_rem(right).unwrap_or(0))
 }
 
 fn parse_pmod(parser: &mut Parser, depth: usize) -> Result<i64, ParseError> {
@@ -939,6 +949,9 @@ fn factor(parser: &mut Parser, depth: usize) -> Result<i64, ParseError> {
     }
     if parser.keyword("DIV") {
         return parse_div_mod(parser, depth, true);
+    }
+    if parser.keyword("MODULOORZERO") {
+        return parse_modulo_or_zero(parser, depth);
     }
     if parser.keyword("MOD") {
         return parse_div_mod(parser, depth, false);
