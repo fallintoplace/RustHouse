@@ -33,6 +33,7 @@ pub(super) fn is_function(name: &str) -> bool {
         return true;
     }
     is_saturating(name)
+        || name.eq_ignore_ascii_case("POSITIVEMODULO")
         || name.eq_ignore_ascii_case("ABS")
         || name.eq_ignore_ascii_case("BIT_PARITY")
         || name.eq_ignore_ascii_case("BIT_MASK")
@@ -990,7 +991,7 @@ fn factor(parser: &mut Parser, depth: usize) -> Result<i64, ParseError> {
     if parser.keyword("ROUND_TO_MULTIPLE") {
         return parse_round_to_multiple(parser, depth);
     }
-    if parser.keyword("PMOD") {
+    if parser.keyword("PMOD") || parser.keyword("POSITIVEMODULO") {
         return parse_pmod(parser, depth);
     }
     if parser.keyword("FLOOR_TO_MULTIPLE") {
