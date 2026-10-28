@@ -8,10 +8,12 @@ MAX_RECORD_BYTES = 8 * 1024 * 1024
 
 
 def profile(path, *, columns=1, header=False, min_rows=1):
-    if not 1 <= columns <= 1024:
+    if type(columns) is not int or not 1 <= columns <= 1024:
         raise ValueError("columns must be in 1..1024")
-    if min_rows < 1:
+    if type(min_rows) is not int or min_rows < 1:
         raise ValueError("min_rows must be positive")
+    if type(header) is not bool:
+        raise ValueError("header must be a boolean")
     digest = hashlib.sha256()
     records = 0
     bytes_read = 0
