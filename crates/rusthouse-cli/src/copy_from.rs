@@ -48,8 +48,32 @@ fn push_record(
     Ok(())
 }
 
+fn parse_plain_csv(data: &str) -> Result<Vec<Vec<Option<String>>>, String> {
+    let mut records = Vec::new();
+    for line in data.split_terminator('\n') {
+        let mut row = Vec::new();
+        for field in line.split(',') {
+            if row.len() >= 128 {
+                return Err("CSV records support at most 128 columns".into());
+            }
+            row.push(if field.is_empty() || field == "\\N" {
+                None
+            } else {
+                Some(field.to_owned())
+            });
+        }
+        push_record(&mut records, &mut row)?;
+    }
+    Ok(records)
+}
+
 fn parse_csv(data: &str) -> Result<Vec<Vec<Option<String>>>, String> {
     let data = data.strip_prefix('\u{feff}').unwrap_or(data);
+    // Unquoted CSV needs neither a character state machine nor incremental
+    // String::push calls. Reuse the validated bounded record path.
+    if !data.as_bytes().iter().any(|&byte| byte == b'"' || byte == b'\r') {
+        return parse_plain_csv(data);
+    }
     let mut records = Vec::new();
     let mut row = Vec::new();
     let mut field = String::new();
@@ -352,6 +376,17 @@ mod tests {
             parse_csv("\"hello\nworld\",42\n").unwrap()[0][0],
             Some("hello\nworld".into())
         );
+    }
+
+    #[test]
+    fn plain_csv_fast_path_keeps_nulls_empty_lines_and_limits() {
+        let rows = parse_csv("id,value\n1,Ada\n2,\\N\n3,\n\n").unwrap();
+        assert_eq!(rows.len(), 5);
+        assert_eq!(rows[1], vec![Some("1".into()), Some("Ada".into())]);
+        assert_eq!(rows[2], vec![Some("2".into()), None]);
+        assert_eq!(rows[3], vec![Some("3".into()), None]);
+        assert_eq!(rows[4], vec![None]);
+        assert!(parse_csv(&"x,".repeat(129)).is_err());
     }
 
     #[test]
