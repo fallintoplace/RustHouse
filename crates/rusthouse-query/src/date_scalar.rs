@@ -27,6 +27,7 @@ pub(super) fn is_function(name: &str) -> bool {
             | "TOSTARTOFFIVEMINUTES"
             | "TOSTARTOFTENMINUTES"
             | "TOSTARTOFFIFTEENMINUTES"
+            | "TOUNIXTIMESTAMP"
     )
 }
 
@@ -54,6 +55,7 @@ pub(super) fn parse_after_open(
         "TOSTARTOFFIVEMINUTES" => bucket_minutes(parser, depth, 5),
         "TOSTARTOFTENMINUTES" => bucket_minutes(parser, depth, 10),
         "TOSTARTOFFIFTEENMINUTES" => bucket_minutes(parser, depth, 15),
+        "TOUNIXTIMESTAMP" => unix_timestamp(parser, depth),
         _ => Err(ParseError(format!("unsupported date function: {name}"))),
     }
 }
@@ -273,4 +275,19 @@ fn bucket_minutes(
     let bucket = bucket_minutes * 60;
     let seconds = value.seconds.div_euclid(bucket) * bucket;
     Ok(ConstantValue::Text(Temporal::render(seconds, true)?))
+}
+
+fn unix_timestamp(parser: &mut Parser, depth: usize) -> Result<ConstantValue, ParseError> {
+    let input = super::text_scalar::text_arg(parser, depth + 1)?;
+    if !parser.take(Token::RParen) {
+        return Err(ParseError("toUnixTimestamp requires one UTC argument".into()));
+    }
+    let Some(source) = input else {
+        return Ok(ConstantValue::Null);
+    };
+    let value = Temporal::parse(&source)?;
+    if !(0..=i64::from(u32::MAX)).contains(&value.seconds) {
+        return Err(ParseError("toUnixTimestamp result is outside UInt32".into()));
+    }
+    Ok(ConstantValue::Integer(value.seconds))
 }
