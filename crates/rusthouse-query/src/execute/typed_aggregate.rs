@@ -207,10 +207,11 @@ fn update_group_numeric(
 const MAX_GROUPS: usize = 100_000;
 
 
-/// Exact integer SUM over parallel physical parts. Keep both the group key
+/// Exact integer SUM, MIN and MAX over parallel physical parts. Keep the group key
 /// and an empty aggregate state for keys whose measures are entirely NULL.
-fn parallel_grouped_integer_sum(
+fn parallel_grouped_integer_aggregate(
     part: &Path,
+    function: AggregateFunction,
     names: &[String],
     group_index: usize,
     value_index: usize,
@@ -250,7 +251,7 @@ fn parallel_grouped_integer_sum(
                                     entry.insert(id);
                                     groups.push((
                                         typed::cell(&batch[group_index], row),
-                                        AggregateState::new(AggregateFunction::Sum),
+                                        AggregateState::new(function),
                                     ));
                                     id
                                 }
@@ -368,9 +369,12 @@ pub(super) fn execute_grouped_aggregate<W: Write>(
             | "Int8" | "Int16" | "Int32" | "Int64" | "Int128"
     );
     let group_is_narrow = matches!(group_type, "UInt8" | "Int8" | "UInt16" | "Int16");
-    let partial = if *function == AggregateFunction::Sum && exact_integer && group_is_narrow {
-        parallel_grouped_integer_sum(
-            part, &names, group_index, value_index, &conditions, no_filters,
+    let partial = if matches!(
+        function,
+        AggregateFunction::Sum | AggregateFunction::Min | AggregateFunction::Max
+    ) && exact_integer && group_is_narrow {
+        parallel_grouped_integer_aggregate(
+            part, *function, &names, group_index, value_index, &conditions, no_filters,
         )?
     } else {
         None
