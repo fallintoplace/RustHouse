@@ -6,6 +6,7 @@ mod database_lock;
 mod dates;
 mod decimal;
 mod enums;
+pub mod distributed_membership;
 mod file_sizes;
 mod fixed_strings;
 mod fixed_width;
