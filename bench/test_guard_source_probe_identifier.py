@@ -8,11 +8,11 @@ class SourceProbeIdentifierTests(unittest.TestCase):
     @patch("tools.source_probe.read_json")
     def test_rejects_unsafe_identifiers_before_schema_request(self, read):
         read.return_value = {"read_only": True, "source": "database"}
-        for name in ("events; DROP TABLE x", "events name", "a-b", "x" * 129,
-                     "", "å"):
+        for index, name in enumerate(("events; DROP TABLE x", "events name", "a-b",
+                                      "x" * 129, "", "å"), start=1):
             with self.subTest(name=name), self.assertRaisesRegex(ValueError, "invalid table"):
                 probe("http://127.0.0.1:8123", "database", name)
-            self.assertEqual(read.call_count % 1, 0)
+            self.assertEqual(read.call_count, index)
 
     @patch("tools.source_probe.read_json")
     def test_allows_safe_identifier(self, read):
