@@ -1046,19 +1046,23 @@ fn merge_grouped_distinct_pairs(
         });
     }
     let mut output = result_header.into_bytes();
+    let mut emitted = 0usize;
     for (key, count) in groups.into_iter()
         .skip(global.offset.unwrap_or(0))
         .take(global.limit.unwrap_or(usize::MAX))
     {
-        if output.len().checked_add(key.len() + 24).is_none_or(|n| n > MAX_RESPONSE_BYTES)
-            || (output.iter().filter(|&&b| b == b'\n').count() - 1) >= max_rows
+        let digits = count.to_string();
+        if emitted >= max_rows
+            || output.len().checked_add(key.len() + digits.len() + 2)
+                .is_none_or(|n| n > MAX_RESPONSE_BYTES)
         {
             return Err(MergeError::CoordinatorLimit);
         }
         output.extend_from_slice(key);
         output.push(b'\t');
-        output.extend_from_slice(count.to_string().as_bytes());
+        output.extend_from_slice(digits.as_bytes());
         output.push(b'\n');
+        emitted += 1;
     }
     Ok(output)
 }
