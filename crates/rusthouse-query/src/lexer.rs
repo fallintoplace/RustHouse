@@ -23,7 +23,7 @@ pub(super) enum Token {
 }
 
 pub(super) fn tokenize(sql: &str) -> Result<Vec<Token>, ParseError> {
-    tokenize_with_limit(sql, 4096)
+    tokenize_with_limit(sql, 64 * 1024)
 }
 
 pub(super) fn tokenize_insert(sql: &str) -> Result<Vec<Token>, ParseError> {
@@ -126,7 +126,8 @@ mod tests {
     #[test]
     fn rejects_non_ascii_and_oversized_statements() {
         assert!(tokenize("SELECT é").is_err());
-        assert!(tokenize(&" ".repeat(4097)).is_err());
+        assert!(tokenize(&" ".repeat(64 * 1024)).is_ok());
+        assert!(tokenize(&" ".repeat(64 * 1024 + 1)).is_err());
     }
 
     #[test]
