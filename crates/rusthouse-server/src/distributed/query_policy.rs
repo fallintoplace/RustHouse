@@ -49,6 +49,43 @@ pub(super) fn distinct_shard_sql(sql: &str, select: &Select) -> Option<String> {
     (parse_select(&rewritten).ok()? == expected).then_some(rewritten)
 }
 
+pub(super) fn is_safe_avg(select: &Select) -> bool {
+    matches!(
+        select.projection,
+        Projection::Aggregate {
+            function: AggregateFunction::Avg,
+            ..
+        }
+    ) && is_safe_unpaged_select(select)
+}
+
+/// A weighted global AVG needs each shard's exact SUM and count of non-NULL
+/// values. Reparse the transformed SQL and reject any changed WHERE predicates.
+pub(super) fn avg_shard_sql(sql: &str, select: &Select) -> Option<String> {
+    let (column, table) = match (&select.projection, &select.source) {
+        (
+            Projection::Aggregate {
+                function: AggregateFunction::Avg,
+                column,
+            },
+            Some(Source::Table(table)),
+        ) => (column, table),
+        _ => return None,
+    };
+    if !is_safe_avg(select) {
+        return None;
+    }
+    let from = sql.to_ascii_uppercase().find(" FROM ")?;
+    let rewritten = format!("SELECT sum({column}), count({column}){}", &sql[from..]);
+    let mut expected = select.clone();
+    expected.projection =
+        parse_select(&format!("SELECT sum({column}), count({column}) FROM {table}"))
+            .ok()?
+            .projection;
+    expected.alias = None;
+    (parse_select(&rewritten).ok()? == expected).then_some(rewritten)
+}
+
 pub(super) fn is_safe_sum(select: &Select) -> bool {
     matches!(
         select.projection,
