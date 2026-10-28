@@ -5,12 +5,19 @@ on:
     paths:
       - 'bench/latency/**'
       - 'bench/__main__.py'
+      - 'bench/common.py'
       - 'bench/test_suite.py'
       - '.github/workflows/sql-latency.yml'
   workflow_dispatch:
+  schedule:
+    - cron: '43 4 * * *'
 
 permissions:
   contents: read
+
+concurrency:
+  group: sql-latency-${{ github.event_name }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
   generated-queries:
@@ -38,6 +45,6 @@ jobs:
         if: always()
         uses: actions/upload-artifact@v7
         with:
-          name: rusthouse-sql-latency
+          name: rusthouse-sql-latency-${{ github.run_id }}-${{ github.run_attempt }}
           path: bench/results/sql-latency.json
           retention-days: 14
