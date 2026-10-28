@@ -54,7 +54,7 @@ struct Parser<'a> {
     offset: usize,
 }
 
-impl Parser<'_> {
+impl<'a> Parser<'a> {
     fn bytes(&self) -> &[u8] {
         self.text.as_bytes()
     }
@@ -182,7 +182,7 @@ impl Parser<'_> {
         Ok(())
     }
 
-    fn value(&mut self, depth: usize) -> Result<JsonValue<'_>, &'static str> {
+    fn value(&mut self, depth: usize) -> Result<JsonValue<'a>, &'static str> {
         if depth > MAX_JSON_DEPTH {
             return Err("JSON nesting is too deep");
         }
