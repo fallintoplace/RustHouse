@@ -54,6 +54,14 @@ fn nullable_filters_and_aggregates_match_reference_results() {
             "region\tsum(amount)\tcount(note)\neast\t5\t2\nnorth\t40\t2\nsouth\t30\t1\n",
         ),
         (
+            "SELECT region, count(note) FROM events GROUP BY region HAVING count(note) >= 2 ORDER BY region",
+            "region\tcount(note)\neast\t2\nnorth\t2\n",
+        ),
+        (
+            "SELECT region, count(note) FROM events GROUP BY region ORDER BY 2 DESC, region",
+            "region\tcount(note)\neast\t2\nnorth\t2\nsouth\t1\n",
+        ),
+        (
             "SELECT region, id, count(note) FROM events GROUP BY region, id ORDER BY region, id",
             "region\tid\tcount(note)\neast\t4\t1\neast\t6\t1\nnorth\t1\t1\nnorth\t3\t0\nnorth\t7\t1\nsouth\t2\t0\nsouth\t5\t1\nsouth\t8\t0\n",
         ),
