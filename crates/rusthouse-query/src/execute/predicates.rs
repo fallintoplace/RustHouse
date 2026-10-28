@@ -275,6 +275,37 @@ pub(super) fn count_monotonic_numbers(
     rows: u64,
     step: u64,
 ) -> Option<u64> {
+    // Each OR equality names at most one position in a generated sequence.
+    // Deduplicate positions so overlapping branches count only once.
+    if branches.len() > 1 {
+        if step == 0 {
+            return None;
+        }
+        let mut positions = HashSet::new();
+        for branch in branches {
+            let [predicate] = branch.as_slice() else {
+                return None;
+            };
+            let CompiledTest::Comparison {
+                operator: Operator::Eq,
+                target: Number::Unsigned(value),
+            } = &predicate.test else {
+                return None;
+            };
+            let first = u128::from(start);
+            let increment = u128::from(step);
+            if *value >= first {
+                let delta = *value - first;
+                if delta % increment == 0 {
+                    let index = delta / increment;
+                    if index < u128::from(rows) {
+                        positions.insert(index);
+                    }
+                }
+            }
+        }
+        return u64::try_from(positions.len()).ok();
+    }
     let [conjunction] = branches else {
         return None;
     };
@@ -727,6 +758,25 @@ mod generated_membership_count_tests {
             test: compile_in_test(set, true),
         }];
         assert_eq!(count_monotonic_numbers(&[large], 0, 1_000_000_000, 1), Some(999_999_968));
+    }
+}
+
+#[cfg(test)]
+mod generated_or_equality_tests {
+    use super::*;
+
+    #[test]
+    fn counts_unique_or_matches_on_a_billion_generated_rows() {
+        let branch = |value| vec![CompiledPredicate {
+            index: 0,
+            test: CompiledTest::Comparison {
+                operator: Operator::Eq,
+                target: Number::Unsigned(value),
+            },
+        }];
+        let branches = vec![branch(0), branch(4), branch(4), branch(999_999_999), branch(1_000_000_000)];
+        assert_eq!(count_monotonic_numbers(&branches, 0, 1_000_000_000, 1), Some(3));
+        assert_eq!(count_monotonic_numbers(&[branch(11), branch(15)], 1, 10, 2), Some(2));
     }
 }
 
