@@ -85,6 +85,7 @@ pub(super) fn is_function(name: &str) -> bool {
             | "BASE64_DECODE"
             | "APPENDTRAILINGCHARIFABSENT"
             | "RPAD"
+            | "CUTURLPARAMETER"
             | "SPACE"
     )
 }
@@ -1905,6 +1906,43 @@ fn parse_at_depth(parser: &mut Parser, depth: usize) -> Result<ConstantValue, Pa
                             return Err(ParseError("REPEAT result is too large".into()));
                         }
                         ConstantValue::Text(value.repeat(count))
+                    }
+                }
+                _ => ConstantValue::Null,
+            }
+        }
+        "CUTURLPARAMETER" => {
+            let input = text_arg(parser, depth + 1)?;
+            require(parser, Token::Comma, "cutURLParameter requires a name")?;
+            let name = text_arg(parser, depth + 1)?;
+            require(parser, Token::RParen, "expected ')' after cutURLParameter")?;
+            match (input, name) {
+                (Some(input), Some(name)) => {
+                    let (before_fragment, fragment) = input
+                        .split_once('#')
+                        .map_or((input.as_str(), ""), |(head, _)| {
+                            (head, &input[head.len()..])
+                        });
+                    let Some((prefix, query)) = before_fragment.split_once('?') else {
+                        return Ok(ConstantValue::Text(input));
+                    };
+                    let mut removed = false;
+                    let mut kept = Vec::new();
+                    for part in query.split('&') {
+                        if !removed
+                            && part
+                                .split_once('=')
+                                .is_some_and(|(key, _)| key == name)
+                        {
+                            removed = true;
+                        } else {
+                            kept.push(part);
+                        }
+                    }
+                    if !removed {
+                        ConstantValue::Text(input)
+                    } else {
+                        ConstantValue::Text(format!("{prefix}?{}{fragment}", kept.join("&")))
                     }
                 }
                 _ => ConstantValue::Null,
