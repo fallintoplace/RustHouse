@@ -97,8 +97,8 @@ pub fn parse_insert(sql: &str) -> Result<Option<Insert>, ParseError> {
     }
     let mut rows = Vec::new();
     loop {
-        if rows.len() >= 4096 {
-            return Err(ParseError("INSERT supports at most 4096 rows".into()));
+        if rows.len() >= 8192 {
+            return Err(ParseError("INSERT supports at most 8192 rows".into()));
         }
         if !parser.take(Token::LParen) {
             return Err(ParseError("expected '(' after VALUES".into()));
@@ -194,6 +194,15 @@ mod tests {
         ] {
             assert!(parse_insert(sql).is_err(), "{sql}");
         }
+    }
+
+    #[test]
+    fn parses_more_than_4096_values_rows_and_rejects_over_8192() {
+        let values = vec!["(1)"; 8192].join(", ");
+        let sql = format!("INSERT INTO events VALUES {values}");
+        assert_eq!(parse_insert(&sql).unwrap().unwrap().rows.len(), 8192);
+        let overflow = format!("{sql}, (1)");
+        assert!(parse_insert(&overflow).is_err());
     }
 
     #[test]

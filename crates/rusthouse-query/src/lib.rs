@@ -908,8 +908,8 @@ fn parse_select_tokens(tokens: Vec<Token>) -> Result<Select, ParseError> {
                 let count = count
                     .parse::<u64>()
                     .map_err(|_| ParseError("numbers row count is too large".into()))?;
-                if count > 1_000_000 {
-                    return Err(ParseError("numbers supports at most 1000000 rows".into()));
+                if count > 10_000_000 {
+                    return Err(ParseError("numbers supports at most 10000000 rows".into()));
                 }
                 if parser.take(Token::Comma) {
                     let step = parser
@@ -931,8 +931,8 @@ fn parse_select_tokens(tokens: Vec<Token>) -> Result<Select, ParseError> {
                     }
                 }
             } else {
-                if first > 1_000_000 {
-                    return Err(ParseError("numbers supports at most 1000000 rows".into()));
+                if first > 10_000_000 {
+                    return Err(ParseError("numbers supports at most 10000000 rows".into()));
                 }
                 Source::Numbers(first)
             };
@@ -991,12 +991,12 @@ fn parse_select_tokens(tokens: Vec<Token>) -> Result<Select, ParseError> {
                 0
             } else {
                 ((stop - start) / step).checked_add(1).ok_or_else(|| {
-                    ParseError("generate_series supports at most 1000000 rows".into())
+                    ParseError("generate_series supports at most 10000000 rows".into())
                 })?
             };
-            if count > 1_000_000 {
+            if count > 10_000_000 {
                 return Err(ParseError(
-                    "generate_series supports at most 1000000 rows".into(),
+                    "generate_series supports at most 10000000 rows".into(),
                 ));
             }
             Some(Source::GenerateSeries { start, count, step })
