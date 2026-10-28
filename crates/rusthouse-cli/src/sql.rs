@@ -15,7 +15,7 @@ use std::path::PathBuf;
 
 const MAX_SQL_BYTES: usize = 4096;
 const MAX_SCRIPT_BYTES: usize = 256 * 1024;
-const MAX_SCRIPT_STATEMENTS: usize = 128;
+const MAX_SCRIPT_STATEMENTS: usize = 512;
 
 #[derive(Clone, Copy)]
 pub(super) enum SqlOutputFormat {
@@ -514,6 +514,7 @@ mod tests {
         assert!(split_sql_script("-- only comment").is_err());
         assert!(split_sql_script("SELECT 'unfinished").is_err());
         assert!(split_sql_script(&"x".repeat(MAX_SQL_BYTES + 1)).is_err());
+        assert_eq!(split_sql_script(&"SELECT 1;".repeat(256)).unwrap().len(), 256);
         assert!(split_sql_script(&"SELECT 1;".repeat(MAX_SCRIPT_STATEMENTS + 1)).is_err());
     }
 
