@@ -2023,8 +2023,9 @@ mod pretty_json_select_parity_tests {
     use crate::{parse_select, ConstantValue, Projection};
     #[test]
     fn pretty_print_json_supports_constant_sql_select() {
-        let query = parse_select("SELECT prettyPrintJSON('{\"a\":1}')").unwrap();
+        let query = parse_select(r#"SELECT prettyPrintJSON('{"a":1}')"#).unwrap();
+        let expected = String::from("{\n  \"a\": 1\n}");
         assert!(matches!(query.projection, Projection::Constants(values)
-            if values.len() == 1 && values[0].value == ConstantValue::Text("{\\n  \\"a\\": 1\\n}".into())));
+            if values.len() == 1 && values[0].value == ConstantValue::Text(expected)));
     }
 }
