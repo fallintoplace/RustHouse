@@ -83,6 +83,28 @@ pub(super) struct CompiledPredicate {
     test: CompiledTest,
 }
 
+
+/** Evaluate a predicate tree that only depends on non-nullable column
+ * properties. A known-true OR branch dominates unknown branches, while
+ * false branches can be ignored. Unknown predicates require the normal scan. */
+pub(super) fn constant_predicate_result(branches: &[Vec<CompiledPredicate>]) -> Option<bool> {
+    let mut unknown_branch = false;
+    for branch in branches {
+        let mut unknown = false;
+        let mut impossible = false;
+        for predicate in branch {
+            match predicate.test {
+                CompiledTest::Always(false) => { impossible = true; break; }
+                CompiledTest::Always(true) => {}
+                _ => unknown = true,
+            }
+        }
+        if !impossible && !unknown { return Some(true); }
+        if !impossible && unknown { unknown_branch = true; }
+    }
+    if unknown_branch { None } else { Some(false) }
+}
+
 pub(super) fn batch_matches(
     batch: &[NumericColumn],
     row: usize,
@@ -108,7 +130,88 @@ pub(super) fn count_batch_matches(
             return batch.first().map_or(0, NumericColumn::len);
         }
         if let [predicate] = predicates.as_slice() {
+            if let CompiledTest::InSet { targets, negated } = &predicate.test {
+                macro_rules! count_hashed_in {
+                    ($values:expr, $variant:ident, $wide:ty) => {{
+                        return $values.iter().filter(|&&value| {
+                            let key = NumberKey::$variant(<$wide>::from(value));
+                            targets.contains(&key) != *negated
+                        }).count();
+                    }};
+                }
+                match &batch[predicate.index] {
+                    NumericColumn::UInt8(v) => count_hashed_in!(v, Unsigned, u128),
+                    NumericColumn::UInt16(v) => count_hashed_in!(v, Unsigned, u128),
+                    NumericColumn::UInt32(v) => count_hashed_in!(v, Unsigned, u128),
+                    NumericColumn::UInt64(v) => count_hashed_in!(v, Unsigned, u128),
+                    NumericColumn::UInt128(v) => count_hashed_in!(v, Unsigned, u128),
+                    NumericColumn::Int8(v) => count_hashed_in!(v, Signed, i128),
+                    NumericColumn::Int16(v) => count_hashed_in!(v, Signed, i128),
+                    NumericColumn::Int32(v) => count_hashed_in!(v, Signed, i128),
+                    NumericColumn::Int64(v) => count_hashed_in!(v, Signed, i128),
+                    NumericColumn::Int128(v) => count_hashed_in!(v, Signed, i128),
+                    NumericColumn::Float32(_) | NumericColumn::Float64(_) => {}
+                }
+            }
+            if let CompiledTest::NotBetween { lower, upper } = &predicate.test {
+                macro_rules! count_outside {
+                    ($values:expr, $lower:expr, $upper:expr, $wide:ty) => {{
+                        return $values.iter().filter(|&&value| {
+                            let value = <$wide>::from(value);
+                            !(value >= $lower && value <= $upper)
+                        }).count();
+                    }};
+                }
+                match (&batch[predicate.index], *lower, *upper) {
+                    (NumericColumn::UInt8(v), Number::Unsigned(a), Number::Unsigned(b)) => count_outside!(v, a, b, u128),
+                    (NumericColumn::UInt16(v), Number::Unsigned(a), Number::Unsigned(b)) => count_outside!(v, a, b, u128),
+                    (NumericColumn::UInt32(v), Number::Unsigned(a), Number::Unsigned(b)) => count_outside!(v, a, b, u128),
+                    (NumericColumn::UInt64(v), Number::Unsigned(a), Number::Unsigned(b)) => count_outside!(v, a, b, u128),
+                    (NumericColumn::UInt128(v), Number::Unsigned(a), Number::Unsigned(b)) => count_outside!(v, a, b, u128),
+                    (NumericColumn::Int8(v), Number::Signed(a), Number::Signed(b)) => count_outside!(v, a, b, i128),
+                    (NumericColumn::Int16(v), Number::Signed(a), Number::Signed(b)) => count_outside!(v, a, b, i128),
+                    (NumericColumn::Int32(v), Number::Signed(a), Number::Signed(b)) => count_outside!(v, a, b, i128),
+                    (NumericColumn::Int64(v), Number::Signed(a), Number::Signed(b)) => count_outside!(v, a, b, i128),
+                    (NumericColumn::Int128(v), Number::Signed(a), Number::Signed(b)) => count_outside!(v, a, b, i128),
+                    (NumericColumn::Float32(v), Number::Float(a), Number::Float(b)) => count_outside!(v, a, b, f64),
+                    (NumericColumn::Float64(v), Number::Float(a), Number::Float(b)) => count_outside!(v, a, b, f64),
+                    _ => {}
+                }
+            }
+            if let CompiledTest::Always(value) = &predicate.test {
+                return if *value {
+                    batch.first().map_or(0, NumericColumn::len)
+                } else {
+                    0
+                };
+            }
             if let CompiledTest::Comparison { operator, target } = &predicate.test {
+                if let Operator::Modulo(modulus) | Operator::ModuloNe(modulus) = *operator {
+                    let negated = matches!(operator, Operator::ModuloNe(_));
+                    if modulus != 0 {
+                        macro_rules! modulo_count {
+                            ($values:expr, $target:expr, $wide:ty) => {{
+                                let divisor = <$wide>::from(modulus);
+                                return $values.iter().filter(|&&value| {
+                                    ((<$wide>::from(value) % divisor) == $target) != negated
+                                }).count();
+                            }};
+                        }
+                        match (&batch[predicate.index], *target) {
+                            (NumericColumn::UInt8(v), Number::Unsigned(t)) => modulo_count!(v, t, u128),
+                            (NumericColumn::UInt16(v), Number::Unsigned(t)) => modulo_count!(v, t, u128),
+                            (NumericColumn::UInt32(v), Number::Unsigned(t)) => modulo_count!(v, t, u128),
+                            (NumericColumn::UInt64(v), Number::Unsigned(t)) => modulo_count!(v, t, u128),
+                            (NumericColumn::UInt128(v), Number::Unsigned(t)) => modulo_count!(v, t, u128),
+                            (NumericColumn::Int8(v), Number::Signed(t)) => modulo_count!(v, t, i128),
+                            (NumericColumn::Int16(v), Number::Signed(t)) => modulo_count!(v, t, i128),
+                            (NumericColumn::Int32(v), Number::Signed(t)) => modulo_count!(v, t, i128),
+                            (NumericColumn::Int64(v), Number::Signed(t)) => modulo_count!(v, t, i128),
+                            (NumericColumn::Int128(v), Number::Signed(t)) => modulo_count!(v, t, i128),
+                            _ => {}
+                        }
+                    }
+                }
                 if !matches!(operator, Operator::Modulo(_) | Operator::ModuloNe(_)) {
                     macro_rules! count_direct {
                         ($values:expr, $target:expr, $operator:expr, $wide:ty) => {
@@ -167,6 +270,20 @@ pub(super) fn count_batch_matches(
         .count()
 }
 
+fn order_numeric_conditions(conditions: &mut [CompiledPredicate]) {
+    conditions.sort_by_key(|condition| match &condition.test {
+        CompiledTest::Always(false) => 0,
+        CompiledTest::Comparison { operator: Operator::Modulo(_) | Operator::ModuloNe(_), .. } => 4,
+        CompiledTest::Comparison { .. }
+        | CompiledTest::DistinctFrom { .. }
+        | CompiledTest::NotBetween { .. } => 1,
+        CompiledTest::InSet { .. } => 2,
+        CompiledTest::In(values) | CompiledTest::NotIn(values) if values.len() <= 4 => 2,
+        CompiledTest::In(_) | CompiledTest::NotIn(_) => 3,
+        CompiledTest::Always(true) => 5,
+    });
+}
+
 pub(super) fn compile_part_where(
     query: &Select,
     scan_columns: &mut Vec<String>,
@@ -174,7 +291,11 @@ pub(super) fn compile_part_where(
 ) -> Result<Vec<Vec<CompiledPredicate>>, ExecutionError> {
     std::iter::once(query.predicates.as_slice())
         .chain(query.or_predicates.iter().map(Vec::as_slice))
-        .map(|predicates| compile_part_predicates(predicates, scan_columns, &mut convert))
+        .map(|predicates| {
+            let mut compiled = compile_part_predicates(predicates, scan_columns, &mut convert)?;
+            order_numeric_conditions(&mut compiled);
+            Ok(compiled)
+        })
         .collect()
 }
 
@@ -195,6 +316,58 @@ pub(super) fn compile_numbers_predicates(
 /// Count a single AND branch over an increasing generated UInt64 sequence
 /// without visiting its rows. Unsupported OR, IN and modulo predicates keep
 /// the normal row-wise executor. Arithmetic uses u128 at UInt64 boundaries.
+
+/* Return the matching row interval for a monotone generated UInt64 source.
+ * Only conjunctions of range/equality comparisons are safe to collapse.
+ * OR, NE, modulo, IN and other operators use the normal executor. */
+pub(super) fn monotonic_range_indices(
+    branches: &[Vec<CompiledPredicate>],
+    start: u64,
+    rows: u64,
+    step: u64,
+) -> Option<(u64, u64)> {
+    let [conjunction] = branches else { return None };
+    if step == 0 { return None; }
+    let first = u128::from(start);
+    let stride = u128::from(step);
+    let end = u128::from(rows);
+    let mut lower = 0u128;
+    let mut upper = end;
+    for predicate in conjunction {
+        let CompiledTest::Comparison {
+            operator,
+            target: Number::Unsigned(target),
+        } = &predicate.test else { return None };
+        match operator {
+            Operator::Eq => {
+                if *target >= first && (*target - first) % stride == 0 {
+                    let index = (*target - first) / stride;
+                    lower = lower.max(index);
+                    upper = upper.min(index.saturating_add(1));
+                } else {
+                    upper = 0;
+                }
+            }
+            Operator::Lt => {
+                upper = upper.min(if *target <= first { 0 } else { (*target - first).div_ceil(stride) });
+            }
+            Operator::Le => {
+                upper = upper.min(if *target < first { 0 } else { ((*target - first) / stride).saturating_add(1) });
+            }
+            Operator::Gt => {
+                lower = lower.max(if *target < first { 0 } else { ((*target - first) / stride).saturating_add(1) });
+            }
+            Operator::Ge => {
+                lower = lower.max(if *target <= first { 0 } else { (*target - first).div_ceil(stride) });
+            }
+            Operator::Ne | Operator::Modulo(_) | Operator::ModuloNe(_) => return None,
+        }
+    }
+    let lower = lower.min(end);
+    let upper = upper.min(end).max(lower);
+    Some((lower as u64, upper as u64))
+}
+
 /// Enumerate small finite matching sets across OR branches exactly.
 /// Each disjunct needs a positive equality or IN seed. Unbounded branches
 /// retain the normal executor rather than changing their semantics.
@@ -252,12 +425,139 @@ pub(super) fn count_monotonic_numbers(
     rows: u64,
     step: u64,
 ) -> Option<u64> {
+    // Each OR equality names at most one position in a generated sequence.
+    // Deduplicate positions so overlapping branches count only once.
+    if branches.len() > 1 {
+        if step == 0 {
+            return None;
+        }
+        let mut positions = HashSet::new();
+        for branch in branches {
+            let [predicate] = branch.as_slice() else {
+                return None;
+            };
+            let CompiledTest::Comparison {
+                operator: Operator::Eq,
+                target: Number::Unsigned(value),
+            } = &predicate.test else {
+                return None;
+            };
+            let first = u128::from(start);
+            let increment = u128::from(step);
+            if *value >= first {
+                let delta = *value - first;
+                if delta % increment == 0 {
+                    let index = delta / increment;
+                    if index < u128::from(rows) {
+                        positions.insert(index);
+                    }
+                }
+            }
+        }
+        return u64::try_from(positions.len()).ok();
+    }
     let [conjunction] = branches else {
         return None;
     };
     if step == 0 {
         return None;
     }
+    if let [predicate] = conjunction {
+        if let CompiledTest::DistinctFrom {
+            target: Number::Unsigned(target),
+            negated,
+        } = &predicate.test {
+            let first = u128::from(start);
+            let increment = u128::from(step);
+            let exists = if *target < first {
+                false
+            } else {
+                let delta = *target - first;
+                delta % increment == 0 && delta / increment < u128::from(rows)
+            };
+            let matching = u64::from(exists);
+            return Some(if *negated { matching } else { rows - matching });
+        }
+    }
+
+    if let [predicate] = conjunction {
+        if let CompiledTest::Always(value) = &predicate.test {
+            return Some(if *value { rows } else { 0 });
+        }
+    }
+
+    if let [predicate] = conjunction {
+        if let CompiledTest::NotBetween {
+            lower: Number::Unsigned(lower),
+            upper: Number::Unsigned(upper),
+        } = &predicate.test {
+            if lower > upper {
+                return Some(rows);
+            }
+            let first = u128::from(start);
+            let increment = u128::from(step);
+            let included_start = if *lower <= first {
+                0
+            } else {
+                (*lower - first).div_ceil(increment)
+            };
+            let included_end = if *upper < first {
+                0
+            } else {
+                ((*upper - first) / increment).saturating_add(1)
+            };
+            let hits = included_end
+                .min(u128::from(rows))
+                .saturating_sub(included_start.min(u128::from(rows)));
+            return u64::try_from(u128::from(rows) - hits).ok();
+        }
+    }
+
+    if let [predicate] = conjunction {
+        let membership = match &predicate.test {
+            CompiledTest::In(values) => Some((
+                values.iter().filter_map(|value| match value {
+                    Number::Unsigned(value) => Some(*value),
+                    _ => None,
+                }).collect::<Vec<_>>(),
+                false,
+            )),
+            CompiledTest::NotIn(values) => Some((
+                values.iter().filter_map(|value| match value {
+                    Number::Unsigned(value) => Some(*value),
+                    _ => None,
+                }).collect::<Vec<_>>(),
+                true,
+            )),
+            CompiledTest::InSet { targets, negated } => Some((
+                targets.iter().filter_map(|value| match value {
+                    NumberKey::Unsigned(value) => Some(*value),
+                    _ => None,
+                }).collect::<Vec<_>>(),
+                *negated,
+            )),
+            _ => None,
+        };
+        if let Some((targets, negated)) = membership {
+            let first = u128::from(start);
+            let increment = u128::from(step);
+            let mut selected = HashSet::new();
+            for value in targets {
+                if value >= first {
+                    let delta = value - first;
+                    if delta % increment == 0 {
+                        let index = delta / increment;
+                        if index < u128::from(rows) {
+                            selected.insert(index);
+                        }
+                    }
+                }
+            }
+            let hits = selected.len() as u64;
+            return Some(if negated { rows - hits } else { hits });
+        }
+    }
+
     let start = u128::from(start);
     let step = u128::from(step);
     // For consecutive generated rows, a modulo filter is a periodic
@@ -429,6 +729,18 @@ mod tests {
     use super::*;
 
     #[test]
+    fn compiles_fast_numeric_predicates_ahead_of_modulo() {
+        let query = crate::parse_select(
+            "SELECT number FROM numbers(100) WHERE number % 10 = 0 AND number < 50",
+        ).unwrap();
+        let branches = compile_numbers_predicates(&query).unwrap();
+        assert_eq!(branches.len(), 1);
+        assert!(matches!(&branches[0][0].test, CompiledTest::Comparison { operator: Operator::Lt, .. }));
+        assert!(number_matches_all(Number::Unsigned(40), &branches));
+        assert!(!number_matches_all(Number::Unsigned(60), &branches));
+    }
+
+    #[test]
     fn compiles_or_branches_using_the_same_numeric_conversion() {
         let query =
             crate::parse_select("SELECT number FROM numbers(10) WHERE number = 1 OR number = 3")
@@ -523,6 +835,214 @@ mod tests {
         let included = compile_in_test(values, false);
         assert!(included.matches(Number::Float(0.0)));
         assert!(!included.matches(Number::Float(f64::NAN)));
+    }
+}
+
+#[cfg(test)]
+mod stored_hashed_membership_count_tests {
+    use super::*;
+
+    #[test]
+    fn hashed_membership_matches_row_by_row_for_wide_integer_columns() {
+        let signed = vec![NumericColumn::Int64((-5_000..5_000).collect())];
+        let unsigned = vec![NumericColumn::UInt64((0..10_000).collect())];
+        for (batch, signed) in [(&signed, true), (&unsigned, false)] {
+            for negated in [false, true] {
+                let values: Vec<Number> = (0..32)
+                    .map(|index| if signed {
+                        Number::Signed(index - 12)
+                    } else {
+                        Number::Unsigned(index as u128)
+                    })
+                    .collect();
+                let branches = vec![vec![CompiledPredicate {
+                    index: 0,
+                    test: compile_in_test(values, negated),
+                }]];
+                let expected = (0..batch[0].len())
+                    .filter(|&row| batch_matches(batch, row, &branches))
+                    .count();
+                assert_eq!(count_batch_matches(batch, &branches), expected);
+            }
+        }
+    }
+}
+
+#[cfg(test)]
+mod stored_not_between_count_tests {
+    use super::*;
+
+    #[test]
+    fn matches_row_wise_not_between_for_signed_and_nan_values() {
+        let signed = vec![NumericColumn::Int64((-1_000..1_000).collect())];
+        let floats = vec![NumericColumn::Float64(vec![
+            f64::NAN, f64::NEG_INFINITY, -1.0, 0.0, 1.0, f64::INFINITY,
+        ])];
+        for (batch, lower, upper) in [
+            (&signed, Number::Signed(-10), Number::Signed(10)),
+            (&floats, Number::Float(-1.0), Number::Float(1.0)),
+            (&floats, Number::Float(1.0), Number::Float(-1.0)),
+        ] {
+            let branches = vec![vec![CompiledPredicate {
+                index: 0,
+                test: CompiledTest::NotBetween { lower, upper },
+            }]];
+            let expected = (0..batch[0].len())
+                .filter(|&row| batch_matches(batch, row, &branches))
+                .count();
+            assert_eq!(count_batch_matches(batch, &branches), expected);
+        }
+    }
+}
+
+#[cfg(test)]
+mod stored_modulo_count_tests {
+    use super::*;
+
+    #[test]
+    fn matches_signed_and_unsigned_modulo_counts() {
+        let unsigned = vec![NumericColumn::UInt64((0..10_000).collect())];
+        let signed = vec![NumericColumn::Int64((-5_000..5_000).collect())];
+        for (batch, target, modulus) in [
+            (&unsigned, Number::Unsigned(2), 7u64),
+            (&signed, Number::Signed(-2), 7u64),
+        ] {
+            for negated in [false, true] {
+                let branches = vec![vec![CompiledPredicate {
+                    index: 0,
+                    test: CompiledTest::Comparison {
+                        operator: if negated { Operator::ModuloNe(modulus) }
+                                  else { Operator::Modulo(modulus) },
+                        target,
+                    },
+                }]];
+                let expected = (0..batch[0].len())
+                    .filter(|&row| batch_matches(batch, row, &branches))
+                    .count();
+                assert_eq!(count_batch_matches(batch, &branches), expected);
+            }
+        }
+    }
+}
+
+#[cfg(test)]
+mod stored_constant_count_tests {
+    use super::*;
+
+    #[test]
+    fn counts_constant_predicates_without_per_row_dispatch() {
+        let values = vec![NumericColumn::UInt64((0..100_000).collect())];
+        for (value, expected) in [(true, 100_000), (false, 0)] {
+            let branches = vec![vec![CompiledPredicate {
+                index: 0,
+                test: CompiledTest::Always(value),
+            }]];
+            assert_eq!(count_batch_matches(&values, &branches), expected);
+        }
+    }
+}
+
+#[cfg(test)]
+mod generated_distinct_from_count_tests {
+    use super::*;
+
+    #[test]
+    fn distinct_and_not_distinct_match_sequence_membership() {
+        let count = |target, negated| count_monotonic_numbers(
+            &[vec![CompiledPredicate {
+                index: 0,
+                test: CompiledTest::DistinctFrom {
+                    target: Number::Unsigned(target),
+                    negated,
+                },
+            }]],
+            5, 1_000_000_000, 2,
+        );
+        assert_eq!(count(7, true), Some(1));
+        assert_eq!(count(7, false), Some(999_999_999));
+        assert_eq!(count(8, true), Some(0));
+        assert_eq!(count(8, false), Some(1_000_000_000));
+    }
+}
+
+#[cfg(test)]
+mod generated_constant_count_tests {
+    use super::*;
+
+    #[test]
+    fn constant_predicates_do_not_iterate_billions_of_rows() {
+        for (value, expected) in [(true, 1_000_000_000), (false, 0)] {
+            assert_eq!(
+                count_monotonic_numbers(&[vec![CompiledPredicate {
+                    index: 0,
+                    test: CompiledTest::Always(value),
+                }]], 0, 1_000_000_000, 1),
+                Some(expected),
+            );
+        }
+    }
+}
+
+#[cfg(test)]
+mod generated_not_between_count_tests {
+    use super::*;
+
+    #[test]
+    fn handles_billion_rows_step_and_reversed_bounds() {
+        let count = |low, high, start, rows, step| {
+            count_monotonic_numbers(&[vec![CompiledPredicate {
+                index: 0,
+                test: CompiledTest::NotBetween {
+                    lower: Number::Unsigned(low),
+                    upper: Number::Unsigned(high),
+                },
+            }]], start, rows, step)
+        };
+        assert_eq!(count(100, 899_999_999, 0, 1_000_000_000, 1), Some(100_000_100));
+        assert_eq!(count(3, 7, 1, 5, 2), Some(2));
+        assert_eq!(count(9, 4, 0, 1_000_000_000, 1), Some(1_000_000_000));
+    }
+}
+
+#[cfg(test)]
+mod generated_membership_count_tests {
+    use super::*;
+
+    #[test]
+    fn large_generated_membership_counts_only_the_list_values() {
+        let small = vec![CompiledPredicate {
+            index: 0,
+            test: CompiledTest::In(vec![
+                Number::Unsigned(1), Number::Unsigned(1),
+                Number::Unsigned(99), Number::Unsigned(1_000_000_000),
+            ]),
+        }];
+        assert_eq!(count_monotonic_numbers(&[small], 0, 1_000_000_000, 1), Some(2));
+        let set = (0..32).map(|i| Number::Unsigned(i)).collect();
+        let large = vec![CompiledPredicate {
+            index: 0,
+            test: compile_in_test(set, true),
+        }];
+        assert_eq!(count_monotonic_numbers(&[large], 0, 1_000_000_000, 1), Some(999_999_968));
+    }
+}
+
+#[cfg(test)]
+mod generated_or_equality_tests {
+    use super::*;
+
+    #[test]
+    fn counts_unique_or_matches_on_a_billion_generated_rows() {
+        let branch = |value| vec![CompiledPredicate {
+            index: 0,
+            test: CompiledTest::Comparison {
+                operator: Operator::Eq,
+                target: Number::Unsigned(value),
+            },
+        }];
+        let branches = vec![branch(0), branch(4), branch(4), branch(999_999_999), branch(1_000_000_000)];
+        assert_eq!(count_monotonic_numbers(&branches, 0, 1_000_000_000, 1), Some(3));
+        assert_eq!(count_monotonic_numbers(&[branch(11), branch(15)], 1, 10, 2), Some(2));
     }
 }
 
