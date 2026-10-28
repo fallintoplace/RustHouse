@@ -10,6 +10,7 @@ pub struct JsonlWriter<W: Write> {
     output: W,
     headers: Option<Vec<Vec<u8>>>,
     line: Vec<u8>,
+    encoded: Vec<u8>,
 }
 
 impl<W: Write> JsonlWriter<W> {
@@ -18,6 +19,7 @@ impl<W: Write> JsonlWriter<W> {
             output,
             headers: None,
             line: Vec::new(),
+            encoded: Vec::new(),
         }
     }
 
@@ -34,7 +36,7 @@ impl<W: Write> JsonlWriter<W> {
         }
 
         let headers = self.headers.as_ref().unwrap();
-        let result = write_json_row(&mut self.output, headers, &self.line);
+        let result = write_json_row_into(&mut self.output, headers, &self.line, &mut self.encoded);
         self.line.clear();
         result
     }
@@ -67,11 +69,17 @@ fn parse_headers(line: &[u8]) -> io::Result<Vec<Vec<u8>>> {
     Ok(headers)
 }
 
-fn write_json_row<W: Write>(output: &mut W, headers: &[Vec<u8>], line: &[u8]) -> io::Result<()> {
+fn write_json_row_into<W: Write>(
+    output: &mut W,
+    headers: &[Vec<u8>],
+    line: &[u8],
+    row: &mut Vec<u8>,
+) -> io::Result<()> {
     // Visit each TSV field once. Validate the shape in the local row buffer
     // so malformed records never partially write to the output stream.
     let mut fields = line.split(|byte| *byte == b'\t');
-    let mut row = Vec::with_capacity(line.len() + headers.len() * 8 + 3);
+    row.clear();
+    row.reserve(line.len() + headers.len() * 8 + 3);
     row.write_all(b"{")?;
     for (index, header) in headers.iter().enumerate() {
         let value = fields.next().ok_or_else(|| {
@@ -95,6 +103,11 @@ fn write_json_row<W: Write>(output: &mut W, headers: &[Vec<u8>], line: &[u8]) ->
     }
     row.write_all(b"}\n")?;
     output.write_all(&row)
+}
+
+#[cfg(test)]
+fn write_json_row<W: Write>(output: &mut W, headers: &[Vec<u8>], line: &[u8]) -> io::Result<()> {
+    write_json_row_into(output, headers, line, &mut Vec::new())
 }
 
 // Keep NULL marker handling in one place for every JSONL field.
@@ -185,6 +198,18 @@ impl<W: Write> Write for JsonlWriter<W> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn reuses_jsonl_output_allocation_for_shorter_rows() {
+        let mut writer = JsonlWriter::new(Vec::new());
+        writer.write_all(b"value\n").unwrap();
+        let large = format!("{}\n", "a".repeat(4096));
+        writer.write_all(large.as_bytes()).unwrap();
+        let capacity = writer.encoded.capacity();
+        writer.write_all(b"b\n").unwrap();
+        assert_eq!(writer.encoded.capacity(), capacity);
+        assert!(writer.output.ends_with(b"{\"value\":\"b\"}\n"));
+    }
 
     #[test]
     fn writes_short_ascii_json_strings_once() {
