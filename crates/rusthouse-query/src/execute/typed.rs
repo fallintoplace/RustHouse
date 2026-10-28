@@ -1924,8 +1924,8 @@ mod uuid_distinct_key_tests {
         let column = TypedColumn::Uuid(values);
         let first = key_at(&column, 0);
         let second = key_at(&column, 1);
-        assert!(matches!(first, Key::UuidBytes(_)));
-        assert_ne!(first, second);
-        assert_eq!(first, key_at(&column, 2));
+        assert!(matches!(&first, Key::UuidBytes(_)));
+        assert!(first != second);
+        assert!(first == key_at(&column, 2));
     }
 }
