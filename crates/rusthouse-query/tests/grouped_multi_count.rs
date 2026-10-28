@@ -56,6 +56,13 @@ fn groups_counts_by_two_keys_with_filter_having_and_sort() {
     );
     assert_eq!(
         run(
+            "SELECT region, event, count(*) FROM part GROUP BY region, event ORDER BY count(*) DESC, region ASC LIMIT 1 OFFSET 1"
+        ),
+        "region\tevent\tcount\n1\tclick\t1\n"
+    );
+
+    assert_eq!(
+        run(
             "SELECT region, event, count(*) AS c FROM part GROUP BY region, event HAVING c > 1 ORDER BY c DESC"
         ),
         "region\tevent\tc\n1\tview\t2\n"
@@ -63,5 +70,29 @@ fn groups_counts_by_two_keys_with_filter_having_and_sort() {
     assert!(
         parse_select("SELECT region, event, count(*) FROM part GROUP BY event, region").is_err()
     );
+    fs::remove_dir_all(part).unwrap();
+}
+
+#[test]
+fn repeated_multikey_groups_are_counted_after_many_hash_probes() {
+    let part = std::env::temp_dir().join(format!(
+        "rusthouse-multikey-many-{}-{}",
+        std::process::id(),
+        NEXT.fetch_add(1, Ordering::Relaxed)
+    ));
+    let cols = [
+        Column { name: "region".into(), data_type: "UInt16".into() },
+        Column { name: "event".into(), data_type: "String".into() },
+    ];
+    let rows = (0..240)
+        .map(|n| vec![Some((n % 2).to_string()), Some("scan".into())])
+        .collect::<Vec<_>>();
+    write_wide_part(&part, &cols, &rows).unwrap();
+    let query = parse_select(
+        "SELECT region, event, count(*) FROM part GROUP BY region, event ORDER BY region LIMIT 2"
+    ).unwrap();
+    let mut output = Vec::new();
+    execute(&query, Some(&part), &mut output).unwrap();
+    assert_eq!(output, b"region\tevent\tcount\n0\tscan\t120\n1\tscan\t120\n");
     fs::remove_dir_all(part).unwrap();
 }

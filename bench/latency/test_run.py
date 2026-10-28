@@ -37,7 +37,9 @@ class GeneratedQueryTests(unittest.TestCase):
             f"{7 * n}\n".encode() for n in range(50, 70)
         ))
         self.assertEqual(by_name["series-top-desc"].expected.splitlines()[0], b"504")
-        self.assertEqual(by_name["multi-aggregate"].expected, b"13260\t52\n")
+        self.assertEqual(by_name["sum-mod-10"].sql,
+                         "SELECT sum(number) FROM numbers(512) WHERE number % 10 = 0")
+        self.assertEqual(by_name["sum-mod-10"].expected, b"13260\n")
 
     def test_large_scale_stays_bounded_and_oracles_remain_exact(self):
         cases = {case.name: case for case in runner.make_cases(1_000_000)}

@@ -16,14 +16,22 @@ from schema import TABLES, create_sql, names
 
 
 def inspect_tsv(path, table):
-    with Path(path).open("r", encoding="utf-8", newline="") as stream:
-        header = stream.readline().rstrip("\n").rstrip("\r")
-        if header.split("\t") != names(table):
+    with Path(path).open("rb") as stream:
+        header = stream.readline().rstrip(b"\n").rstrip(b"\r")
+        if header != "\t".join(names(table)).encode("utf-8"):
             raise ValueError(f"{table}: header does not match expected dbgen columns")
         count = sum(1 for _ in stream)
     if count < 1:
         raise ValueError(f"{table}: dataset is empty")
     return count
+
+
+def copy_statement(table, source):
+    escaped = source.as_posix().replace("'", "''")
+    query = f"COPY {table} FROM '{escaped}' WITH (FORMAT TSV, HEADER TRUE)"
+    if len(query.encode("utf-8")) > 4096:
+        raise ValueError("COPY statement exceeds RustHouse SQL limit")
+    return query
 
 
 def load_tables(binary, database, input_dir, selected=None, timeout=3600, execute=None):
@@ -44,10 +52,7 @@ def load_tables(binary, database, input_dir, selected=None, timeout=3600, execut
     for table in selected:
         source, expected = sources[table]
         execute(create_sql(table))
-        escaped = source.as_posix().replace("'", "''")
-        query = f"COPY {table} FROM '{escaped}' WITH (FORMAT TSV, HEADER TRUE)"
-        if len(query.encode("utf-8")) > 4096:
-            raise ValueError("COPY statement exceeds RustHouse SQL limit")
+        query = copy_statement(table, source)
         started = time.perf_counter()
         execute(query)
         elapsed = time.perf_counter() - started

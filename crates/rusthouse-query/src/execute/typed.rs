@@ -10,6 +10,17 @@ use std::path::Path;
 
 const MAX_BUFFERED_ROWS: usize = 100_000;
 
+fn remember_distinct_text(seen: &mut HashSet<Vec<u8>>, value: &[u8]) -> Result<(), ExecutionError> {
+    if seen.contains(value) {
+        return Ok(());
+    }
+    if seen.len() >= MAX_BUFFERED_ROWS {
+        return Err(ExecutionError::Invalid("too many distinct rows".into()));
+    }
+    seen.insert(value.to_vec());
+    Ok(())
+}
+
 #[derive(Clone)]
 pub(super) enum Cell {
     Numeric(Number),
@@ -34,6 +45,15 @@ impl Cell {
             Self::Uuid(value) => Key::Uuid(value.clone()),
             Self::Null => Key::Null,
         }
+    }
+}
+
+/// Test the null bitmap without converting a value or allocating String/UUID cells.
+pub(super) fn is_null_at(column: &TypedColumn, row: usize) -> bool {
+    match column {
+        TypedColumn::NullableNumeric { nulls, .. }
+        | TypedColumn::NullableText { nulls, .. } => nulls[row] != 0,
+        _ => false,
     }
 }
 
@@ -315,8 +335,11 @@ fn like_matches_wildcards(value: &[u8], pattern: &[LikeToken], case_insensitive:
 enum Test {
     Compare(Operator, Cell),
     In(Vec<Cell>, bool),
+    TextInSet(HashSet<Vec<u8>>, bool),
+    NumericInSet(HashSet<NumberKey>, bool),
     NotBetween(Cell, Cell),
     IsNull(bool),
+    DistinctFrom(Cell, bool),
     Like {
         pattern: LikePattern,
         case_insensitive: bool,
@@ -327,6 +350,31 @@ enum Test {
 pub(super) struct Condition {
     index: usize,
     test: Test,
+}
+
+const HASHED_TYPED_IN_MIN_VALUES: usize = 16;
+
+fn compile_in(kind: &str, values: &[String], negated: bool) -> Result<Test, ExecutionError> {
+    let targets = parse_literals(kind, values)?;
+    if targets.len() < HASHED_TYPED_IN_MIN_VALUES || base_type(kind) == "UUID" {
+        return Ok(Test::In(targets, negated));
+    }
+    if base_type(kind) == "String" {
+        return Ok(Test::TextInSet(
+            targets.into_iter().filter_map(|cell| match cell {
+                Cell::Text(value) => Some(value),
+                _ => None,
+            }).collect(),
+            negated,
+        ));
+    }
+    Ok(Test::NumericInSet(
+        targets.into_iter().filter_map(|cell| match cell {
+            Cell::Numeric(value) => Some(NumberKey::from(value)),
+            _ => None,
+        }).collect(),
+        negated,
+    ))
 }
 
 pub(super) fn compile(
@@ -348,12 +396,15 @@ pub(super) fn compile(
                 Predicate::Comparison {
                     operator, value, ..
                 } => Test::Compare(*operator, parse_literal(kind, value)?),
-                Predicate::In { values, .. } => Test::In(parse_literals(kind, values)?, false),
-                Predicate::NotIn { values, .. } => Test::In(parse_literals(kind, values)?, true),
+                Predicate::In { values, .. } => compile_in(kind, values, false)?,
+                Predicate::NotIn { values, .. } => compile_in(kind, values, true)?,
                 Predicate::NotBetween { lower, upper, .. } => {
                     Test::NotBetween(parse_literal(kind, lower)?, parse_literal(kind, upper)?)
                 }
                 Predicate::IsNull { negated, .. } => Test::IsNull(*negated),
+                Predicate::DistinctFrom { value, negated, .. } => {
+                    Test::DistinctFrom(parse_literal(kind, value)?, *negated)
+                }
                 Predicate::Like {
                     pattern,
                     case_insensitive,
@@ -507,12 +558,7 @@ pub(super) fn passes(batch: &[TypedColumn], row: usize, branches: &[Vec<Conditio
             match &condition.test {
                 // Filtering should not copy String payloads just to check their null map.
                 Test::IsNull(negated) => {
-                    let is_null = match column {
-                        TypedColumn::NullableNumeric { nulls, .. }
-                        | TypedColumn::NullableText { nulls, .. } => nulls[row] != 0,
-                        _ => false,
-                    };
-                    is_null != *negated
+                    is_null_at(column, row) != *negated
                 }
                 // LIKE examines bytes in place. Nulls never match, even for NOT LIKE.
                 Test::Like {
@@ -534,14 +580,47 @@ pub(super) fn passes(batch: &[TypedColumn], row: usize, branches: &[Vec<Conditio
                 Test::Compare(operator, target) => {
                     matches_comparison_at(column, row, target, *operator)
                 }
+                Test::DistinctFrom(target, negated) => {
+                    let equal = if let Cell::Numeric(super::Number::Float(right)) = target {
+                        matches!(cell(column, row), Cell::Numeric(super::Number::Float(left)) if left.is_nan() && right.is_nan())
+                            || matches_comparison_at(column, row, target, Operator::Eq)
+                    } else {
+                        matches_comparison_at(column, row, target, Operator::Eq)
+                    };
+                    equal == *negated
+                }
                 Test::In(targets, negated) => {
                     matches_in_at(column, row, targets, *negated)
                 }
+                Test::TextInSet(targets, negated) => {
+                    let value = match column {
+                        TypedColumn::Text(values) => values.get(row),
+                        TypedColumn::NullableText { values, nulls } if nulls[row] == 0 => {
+                            values.get(row)
+                        }
+                        _ => None,
+                    };
+                    value.is_some_and(|bytes| targets.contains(bytes) != *negated)
+                }
+                Test::NumericInSet(targets, negated) => {
+                    match cell(column, row) {
+                        Cell::Numeric(value) => {
+                            let found = !matches!(value, Number::Float(n) if n.is_nan())
+                                && targets.contains(&NumberKey::from(value));
+                            found != *negated
+                        }
+                        _ => false,
+                    }
+                }
                 Test::NotBetween(lower, upper) => {
-                    let value = cell(column, row);
-                    !matches!(value, Cell::Null)
-                        && (!matches_comparison(&value, lower, Operator::Ge)
-                            || !matches_comparison(&value, upper, Operator::Le))
+                    let is_null = match column {
+                        TypedColumn::NullableNumeric { nulls, .. }
+                        | TypedColumn::NullableText { nulls, .. } => nulls[row] != 0,
+                        _ => false,
+                    };
+                    !is_null
+                        && (!matches_comparison_at(column, row, lower, Operator::Ge)
+                            || !matches_comparison_at(column, row, upper, Operator::Le))
                 }
             }
         })
@@ -802,6 +881,13 @@ pub(super) fn execute_typed<W: Write>(
     let is_grouped = matches!(query.projection, Projection::GroupedCount { .. });
     let mut count = 0u64;
     let mut distinct = HashSet::<Vec<Key>>::new();
+    // COUNT(DISTINCT column) has one key; avoid a Vec allocation per row.
+    let mut count_distinct_keys = HashSet::<Key>::new();
+    // Borrow decoded strings on duplicate probes. Own only new distinct values.
+    let mut count_distinct_text = HashSet::<Vec<u8>>::new();
+    // UUIDs have a fixed-size identity. Hash their bytes rather than allocating
+    // a formatted String for each scanned row.
+    let mut count_distinct_uuids = HashSet::<[u8; 16]>::new();
     let mut group_indices = HashMap::<Key, usize>::new();
     // String group probes can borrow the decoded input instead of cloning it.
     let mut text_group_indices = HashMap::<Vec<u8>, usize>::new();
@@ -842,7 +928,7 @@ pub(super) fn execute_typed<W: Write>(
                 continue;
             }
             if is_count || is_count_column {
-                if is_count || !matches!(cell(&batch[projection_indices[0]], index), Cell::Null) {
+                if is_count || !is_null_at(&batch[projection_indices[0]], index) {
                     count = count
                         .checked_add(1)
                         .ok_or_else(|| ExecutionError::Invalid("count overflow".into()))?;
@@ -850,10 +936,14 @@ pub(super) fn execute_typed<W: Write>(
                 continue;
             }
             if is_grouped {
-                if let TypedColumn::Text(strings) = &batch[projection_indices[0]] {
-                    let key = strings.get(index).ok_or_else(|| {
-                        ExecutionError::Invalid("invalid String row index".into())
-                    })?;
+                let text_key = match &batch[projection_indices[0]] {
+                    TypedColumn::Text(strings) => strings.get(index),
+                    TypedColumn::NullableText { values, nulls } if nulls[index] == 0 => {
+                        values.get(index)
+                    }
+                    _ => None,
+                };
+                if let Some(key) = text_key {
                     if let Some(&group) = text_group_indices.get(key) {
                         let count = &mut grouped_rows[group].1;
                         *count = count.checked_add(1).ok_or_else(|| {
@@ -923,14 +1013,51 @@ pub(super) fn execute_typed<W: Write>(
                 }
                 candidate_sort_keys = Some(keys);
             }
+            if is_count_distinct {
+                match &batch[projection_indices[0]] {
+                    TypedColumn::Text(strings) => {
+                        let value = strings.get(index).ok_or_else(|| {
+                            ExecutionError::Invalid("invalid String row index".into())
+                        })?;
+                        remember_distinct_text(&mut count_distinct_text, value)?;
+                    }
+                    TypedColumn::NullableText { values, nulls } => {
+                        if nulls[index] == 0 {
+                            let value = values.get(index).ok_or_else(|| {
+                                ExecutionError::Invalid("invalid String row index".into())
+                            })?;
+                            remember_distinct_text(&mut count_distinct_text, value)?;
+                        }
+                    }
+                    TypedColumn::Uuid(values) => {
+                        let key = *values[index].as_bytes();
+                        if count_distinct_uuids.len() >= MAX_BUFFERED_ROWS
+                            && !count_distinct_uuids.contains(&key)
+                        {
+                            return Err(ExecutionError::Invalid("too many distinct rows".into()));
+                        }
+                        count_distinct_uuids.insert(key);
+                    }
+                    column => {
+                        let value = cell(column, index);
+                        if !matches!(&value, Cell::Null) {
+                            let key = value.key();
+                            if count_distinct_keys.len() >= MAX_BUFFERED_ROWS
+                                && !count_distinct_keys.contains(&key)
+                            {
+                                return Err(ExecutionError::Invalid("too many distinct rows".into()));
+                            }
+                            count_distinct_keys.insert(key);
+                        }
+                    }
+                }
+                continue;
+            }
             let cells = projection_indices
                 .iter()
                 .map(|&idx| cell(&batch[idx], index))
                 .collect::<Vec<_>>();
-            if is_count_distinct && cells.iter().any(|value| matches!(value, Cell::Null)) {
-                continue;
-            }
-            if is_count_distinct || query.distinct {
+            if query.distinct {
                 let key = cells.iter().map(Cell::key).collect::<Vec<_>>();
                 if distinct.len() >= MAX_BUFFERED_ROWS && !distinct.contains(&key) {
                     return Err(ExecutionError::Invalid("too many distinct rows".into()));
@@ -938,9 +1065,6 @@ pub(super) fn execute_typed<W: Write>(
                 if !distinct.insert(key) {
                     continue;
                 }
-            }
-            if is_count_distinct {
-                continue;
             }
             if !sort_indices.is_empty() {
                 let row = Row {
@@ -1035,7 +1159,9 @@ pub(super) fn execute_typed<W: Write>(
             let result = if is_count || is_count_column {
                 count
             } else {
-                distinct.len() as u64
+                (count_distinct_keys.len()
+                    + count_distinct_text.len()
+                    + count_distinct_uuids.len()) as u64
             };
             writeln!(output, "{result}")?;
         }
@@ -1155,6 +1281,43 @@ mod like_tests {
     }
 
     #[test]
+    fn not_between_preserves_nullable_string_and_numeric_semantics() {
+        use super::Cell;
+
+        let mut encoded: &[u8] = b"\x03aaa\x03mmm\x03zzz";
+        let values = read_legacy_strings(&mut encoded, 3).unwrap();
+        let text = TypedColumn::NullableText {
+            values,
+            nulls: vec![0, 1, 0],
+        };
+        let number = TypedColumn::NullableNumeric {
+            values: NumericColumn::UInt64(vec![2, 10, 99]),
+            nulls: vec![0, 0, 1],
+        };
+        let rows = vec![text, number];
+        let outside_text = vec![vec![Condition {
+            index: 0,
+            test: Test::NotBetween(
+                Cell::Text(b"bbb".to_vec()),
+                Cell::Text(b"yyy".to_vec()),
+            ),
+        }]];
+        assert!(passes(&rows, 0, &outside_text));
+        assert!(!passes(&rows, 1, &outside_text));
+        assert!(passes(&rows, 2, &outside_text));
+        let outside_numbers = vec![vec![Condition {
+            index: 1,
+            test: Test::NotBetween(
+                Cell::Numeric(super::super::Number::Unsigned(2)),
+                Cell::Numeric(super::super::Number::Unsigned(10)),
+            ),
+        }]];
+        assert!(!passes(&rows, 0, &outside_numbers));
+        assert!(!passes(&rows, 1, &outside_numbers));
+        assert!(!passes(&rows, 2, &outside_numbers));
+    }
+
+    #[test]
     fn probes_string_in_lists_without_copying_and_preserves_null_semantics() {
         use super::{Cell, matches_in_at};
 
@@ -1175,6 +1338,42 @@ mod like_tests {
         assert!(!matches_in_at(&column, 1, &targets, true));
         assert!(!matches_in_at(&column, 2, &targets, false));
         assert!(matches_in_at(&column, 2, &targets, true));
+    }
+
+    #[test]
+    fn hashes_long_in_lists_without_changing_nullable_semantics() {
+        use super::{compile_in, Test};
+        let words = (0..32).map(|i| format!("word{i}")).collect::<Vec<_>>();
+        let text_test = compile_in("String", &words, false).unwrap();
+        assert!(matches!(text_test, Test::TextInSet(_, false)));
+        let not_text_test = compile_in("String", &words, true).unwrap();
+        let mut input: &[u8] = b"\x05word7\x05other\x05word0";
+        let strings = read_legacy_strings(&mut input, 3).unwrap();
+        let col = TypedColumn::NullableText {
+            values: strings,
+            nulls: vec![0, 0, 1],
+        };
+        let batch = vec![col];
+        let positive = vec![vec![Condition { index: 0, test: text_test }]];
+        let negative = vec![vec![Condition { index: 0, test: not_text_test }]];
+        assert!(passes(&batch, 0, &positive));
+        assert!(!passes(&batch, 1, &positive));
+        assert!(!passes(&batch, 2, &positive));
+        assert!(!passes(&batch, 0, &negative));
+        assert!(passes(&batch, 1, &negative));
+        assert!(!passes(&batch, 2, &negative));
+
+        let numbers = (0..32).map(|i| i.to_string()).collect::<Vec<_>>();
+        let in_test = compile_in("UInt64", &numbers, false).unwrap();
+        assert!(matches!(in_test, Test::NumericInSet(_, false)));
+        let numeric = vec![TypedColumn::NullableNumeric {
+            values: NumericColumn::UInt64(vec![7, 33, 0]),
+            nulls: vec![0, 0, 1],
+        }];
+        let branch = vec![vec![Condition { index: 0, test: in_test }]];
+        assert!(passes(&numeric, 0, &branch));
+        assert!(!passes(&numeric, 1, &branch));
+        assert!(!passes(&numeric, 2, &branch));
     }
 
     #[test]
@@ -1340,5 +1539,40 @@ mod topk_tests {
         execute(&query, Some(&path), &mut output).unwrap();
         assert_eq!(output, b"note\nfirst\nsecond\n");
         std::fs::remove_dir_all(path).unwrap();
+    }
+}
+
+#[cfg(test)]
+mod nullable_string_group_tests {
+    use crate::{execute, parse_select};
+    use rusthouse_storage::{Column, write_wide_part};
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
+    static NEXT: AtomicUsize = AtomicUsize::new(0);
+
+    #[test]
+    fn groups_nullable_text_with_borrowed_non_null_keys() {
+        let part = std::env::temp_dir().join(format!(
+            "rusthouse-null-text-group-{}-{}",
+            std::process::id(),
+            NEXT.fetch_add(1, Ordering::Relaxed)
+        ));
+        let columns = [Column {
+            name: "category".into(),
+            data_type: "Nullable(String)".into(),
+        }];
+        let rows = [
+            vec![Some("x".into())],
+            vec![None],
+            vec![Some("x".into())],
+            vec![Some("y".into())],
+            vec![None],
+        ];
+        write_wide_part(&part, &columns, &rows).unwrap();
+        let query = parse_select("SELECT category, count(*) FROM part GROUP BY category").unwrap();
+        let mut output = Vec::new();
+        execute(&query, Some(&part), &mut output).unwrap();
+        assert_eq!(output, b"category\tcount\nx\t2\n\\N\t2\ny\t1\n");
+        std::fs::remove_dir_all(part).unwrap();
     }
 }
