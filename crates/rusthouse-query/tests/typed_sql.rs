@@ -496,6 +496,37 @@ fn skips_end_of_file_terminal_zero_row_marks() {
 }
 
 #[test]
+fn uuid_comparisons_and_ranges_use_canonical_byte_order() {
+    let part = part();
+    let mut raw = [0u8; 48];
+    raw[0] = 1;
+    raw[16] = 2;
+    raw[32] = 3;
+    stream(&part, "uid", &raw, 3);
+    for (sql, expected) in [
+        (
+            "SELECT service FROM part WHERE uid = '00000000-0000-0002-0000-000000000000'",
+            "service\ndb\n",
+        ),
+        (
+            "SELECT count(*) FROM part WHERE uid >= '00000000-0000-0002-0000-000000000000'",
+            "count\n2\n",
+        ),
+        (
+            "SELECT count(*) FROM part WHERE uid NOT BETWEEN '00000000-0000-0001-0000-000000000000' AND '00000000-0000-0002-0000-000000000000'",
+            "count\n1\n",
+        ),
+        (
+            "SELECT count(*) FROM part WHERE uid != '00000000-0000-0003-0000-000000000000'",
+            "count\n2\n",
+        ),
+    ] {
+        assert_eq!(query(sql, &part), expected, "{sql}");
+    }
+    fs::remove_dir_all(part).unwrap();
+}
+
+#[test]
 fn filters_text_by_like_and_not_like_across_nullable_values() {
     let part = part();
     assert_eq!(
