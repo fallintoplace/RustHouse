@@ -16,7 +16,7 @@ import time
 def choose_ids(start, rows, count, seed):
     if type(start) is not int or type(rows) is not int or start < 0 or rows < 1:
         raise ValueError("invalid row domain")
-    if start + rows > 2**64 or not 1 <= count <= min(rows, 10_000):
+    if start + rows > 2**64 or type(count) is not int or not 1 <= count <= min(rows, 10_000):
         raise ValueError("invalid sample size or UInt64 overflow")
     return random.Random(seed).sample(range(start, start + rows), count)
 
@@ -42,8 +42,8 @@ def probe(binary, database, table, start, rows, count=50, seed=0, timeout=30,
           execute=None):
     if not re.fullmatch(r"[A-Za-z_][A-Za-z_0-9]*", table):
         raise ValueError("unsafe table identifier")
-    if timeout <= 0:
-        raise ValueError("timeout must be positive")
+    if type(timeout) not in (int, float) or not math.isfinite(timeout) or timeout <= 0:
+        raise ValueError("timeout must be finite and positive")
     execute = execute or (lambda sql: query(binary, database, sql, timeout))
     sampled = choose_ids(start, rows, count, seed)
     times = []
