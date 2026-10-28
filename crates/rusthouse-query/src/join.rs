@@ -377,7 +377,7 @@ pub fn explain_join(query: &JoinSelect) -> String {
         })
         .collect::<Vec<_>>()
         .join(" AND ");
-    format!(
+    let mut plan = format!(
         "Source: table {} AS {}\nSource: table {} AS {}\nJoin: {}{:?} ON {}\nProject: {}\nLimit: {}",
         query.left,
         query.left_alias,
@@ -396,12 +396,59 @@ pub fn explain_join(query: &JoinSelect) -> String {
         query
             .limit
             .map_or("unbounded".to_owned(), |n| n.to_string())
-    )
+    );
+    if !query.using_keys.is_empty() {
+        plan.push_str(&format!("\nUsing: {}", query.using_keys.join(", ")));
+    }
+    if let Some((column, not_null)) = &query.where_null {
+        plan.push_str(&format!(
+            "\nFilter: {}.{} IS {}NULL",
+            column.relation,
+            column.name,
+            if *not_null { "NOT " } else { "" }
+        ));
+    }
+    if let Some((column, descending, nulls_first)) = &query.order_by {
+        let placement = match nulls_first {
+            Some(true) => " NULLS FIRST",
+            Some(false) => " NULLS LAST",
+            None => "",
+        };
+        plan.push_str(&format!(
+            "\nOrder: {}.{} {}{}",
+            column.relation,
+            column.name,
+            if *descending { "DESC" } else { "ASC" },
+            placement
+        ));
+    }
+    if query.offset > 0 {
+        plan.push_str(&format!("\nOffset: {}", query.offset));
+    }
+    plan
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn explain_includes_using_filter_sort_and_offset() {
+        let query = parse_join(
+            "SELECT a.id FROM a FULL JOIN b USING (id) WHERE b.id IS NULL ORDER BY a.id DESC NULLS LAST LIMIT 5 OFFSET 2",
+        )
+        .unwrap()
+        .unwrap();
+        let plan = explain_join(&query);
+        for expected in [
+            "Using: id",
+            "Filter: b.id IS NULL",
+            "Order: a.id DESC NULLS LAST",
+            "Offset: 2",
+        ] {
+            assert!(plan.contains(expected), "{plan}");
+        }
+    }
 
     #[test]
     fn parses_inner_joins_with_aliases_and_bounds() {
