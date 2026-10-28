@@ -11,6 +11,23 @@ use std::path::Path;
 const MAX_GROUPS: usize = 200_000;
 const MAX_GROUP_VALUE_PAIRS: usize = 200_000;
 
+const MAX_TEXT_BYTES: usize = 64 * 1024 * 1024;
+
+fn charge_text(used: &mut usize, length: usize, copies: usize) -> Result<(), ExecutionError> {
+    let added = length.checked_mul(copies)
+        .ok_or_else(|| ExecutionError::Invalid("grouped DISTINCT String memory overflow".into()))?;
+    let next = used.checked_add(added)
+        .ok_or_else(|| ExecutionError::Invalid("grouped DISTINCT String memory overflow".into()))?;
+    if next > MAX_TEXT_BYTES {
+        return Err(ExecutionError::Invalid(
+            "grouped DISTINCT exceeds 64 MiB String payload budget".into(),
+        ));
+    }
+    *used = next;
+    Ok(())
+}
+
+
 struct Group {
     key: Cell,
     distinct: HashSet<Key>,
@@ -109,6 +126,7 @@ pub(super) fn execute<W: Write>(
         .then(|| vec![usize::MAX; 65_536]);
     let byte_distinct = matches!(typed::base_type(types[value_column].as_str()), "UInt8" | "Int8");
     let mut total_pairs = 0usize;
+    let mut retained_text_bytes = 0usize;
     let mut reader = TypedQueryReader::open_with_metadata(part, &names, &metadata)?;
     let no_filters = query.predicates.is_empty() && query.or_predicates.is_empty();
 
@@ -207,6 +225,7 @@ pub(super) fn execute<W: Write>(
                             "GROUP BY supports at most 200000 groups".into(),
                         ));
                     }
+                    charge_text(&mut retained_text_bytes, text.len(), 2)?;
                     let id = groups.len();
                     text_groups.insert(text.to_vec(), id);
                     groups.push(Group {
@@ -298,6 +317,7 @@ pub(super) fn execute<W: Write>(
                             "grouped COUNT(DISTINCT) supports at most 200000 distinct pairs".into(),
                         ));
                     }
+                    charge_text(&mut retained_text_bytes, text.len(), 1)?;
                     groups[id].distinct_text.insert(text.to_vec());
                     total_pairs += 1;
                 }
@@ -429,5 +449,20 @@ mod grouped_byte_distinct_tests {
         mark_distinct_byte(&mut group, 255);
         mark_distinct_byte(&mut group, 128);
         assert_eq!(group.distinct_len(), 3);
+    }
+}
+
+#[cfg(test)]
+mod wide_grouped_string_budget_tests {
+    use super::*;
+    #[test]
+    fn wide_group_and_distinct_value_budgets_fail_without_changing_state() {
+        let mut used = 0usize;
+        charge_text(&mut used, 8 * 1024 * 1024, 2).unwrap();
+        assert_eq!(used, 16 * 1024 * 1024);
+        assert!(charge_text(&mut used, 25 * 1024 * 1024, 2).is_err());
+        assert_eq!(used, 16 * 1024 * 1024);
+        charge_text(&mut used, 48 * 1024 * 1024, 1).unwrap();
+        assert_eq!(used, MAX_TEXT_BYTES);
     }
 }
