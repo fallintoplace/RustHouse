@@ -27,6 +27,7 @@ pub(super) fn is_function(name: &str) -> bool {
             | "INITCAP"
             | "CONCAT"
             | "QUOTE_LITERAL"
+            | "CUTQUERYSTRINGANDFRAGMENT"
             | "COALESCE"
             | "CONCAT_WS"
             | "URL_ENCODE"
@@ -280,6 +281,17 @@ fn parse_at_depth(parser: &mut Parser, depth: usize) -> Result<ConstantValue, Pa
                         }
                     }
                     ConstantValue::Text(result)
+                }
+                None => ConstantValue::Null,
+            }
+        }
+        "CUTQUERYSTRINGANDFRAGMENT" => {
+            let input = text_arg(parser, depth + 1)?;
+            require(parser, Token::RParen, "cutQueryStringAndFragment requires one argument")?;
+            match input {
+                Some(input) => {
+                    let end = input.find(['?', '#']).unwrap_or(input.len());
+                    ConstantValue::Text(input[..end].to_owned())
                 }
                 None => ConstantValue::Null,
             }
