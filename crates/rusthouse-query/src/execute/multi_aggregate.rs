@@ -245,8 +245,9 @@ pub(super) fn execute<W: Write>(
         .iter()
         .chain(query.or_predicates.iter().flatten())
     {
-        if !names.contains(&predicate.column().to_owned()) {
-            names.push(predicate.column().to_owned());
+        let name = predicate.column();
+        if !names.iter().any(|column| column == name) {
+            names.push(name.to_owned());
         }
     }
     if names.is_empty() {
