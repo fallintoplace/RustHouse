@@ -62,10 +62,12 @@ pub fn plan_missing_chunks(
         return Err("transfer batch chunk limit exceeds bound");
     }
     let chunk_count = checked_chunk_count(total_bytes, chunk_bytes, max_chunks)?;
-    if remaining_indices.iter().any(|&index| index >= chunk_count)
-        || remaining_indices.windows(2).any(|pair| pair[0] >= pair[1])
-    {
-        return Err("invalid or duplicate missing chunk index");
+    let mut previous = None;
+    for &index in remaining_indices {
+        if index >= chunk_count || previous.is_some_and(|last| index <= last) {
+            return Err("invalid or duplicate missing chunk index");
+        }
+        previous = Some(index);
     }
     let mut selected = Vec::with_capacity(remaining_indices.len().min(max_batch_chunks));
     let mut remaining_bytes = byte_budget;
@@ -149,6 +151,14 @@ mod tests {
             chunk: Chunk { offset: 32_768, length: 1 },
         });
         assert!(plan_missing_chunks(65_537, 1, 65_536, &[], 0, 1).is_err());
+    }
+
+    #[test]
+    fn validates_sparse_indexes_before_selecting_bounded_transfer_prefix() {
+        let selected = plan_missing_chunks(101, 1, 128, &[0, 2, 7, 63, 64, 100], 3, 3).unwrap();
+        assert_eq!(selected.iter().map(|part| part.index).collect::<Vec<_>>(), vec![0, 2, 7]);
+        assert!(plan_missing_chunks(101, 1, 128, &[0, 2, 7, 7], 4, 4).is_err());
+        assert!(plan_missing_chunks(101, 1, 128, &[0, 2, 101], 4, 4).is_err());
     }
 
 }
