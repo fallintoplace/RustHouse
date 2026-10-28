@@ -26,7 +26,14 @@ def expected_revenue_details(path):
     total = 0
     matched = 0
     with Path(path).open("r", encoding="utf-8", newline="") as stream:
-        for row in csv.DictReader(stream, delimiter="\t"):
+        reader = csv.DictReader(stream, delimiter="\t")
+        required = ("l_shipdate", "l_discount", "l_quantity", "l_extendedprice")
+        fields = reader.fieldnames or []
+        if len(set(fields)) != len(fields) or any(name not in fields for name in required):
+            raise ValueError("Q6 input has missing or duplicate required columns")
+        for row in reader:
+            if any(row[name] is None for name in required):
+                raise ValueError("Q6 input contains a truncated data row")
             if ("1994-01-01" <= row["l_shipdate"] < "1995-01-01"
                     and 500 <= int(row["l_discount"]) <= 700
                     and int(row["l_quantity"]) < 2400):
