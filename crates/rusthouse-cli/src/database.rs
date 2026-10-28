@@ -369,7 +369,6 @@ pub(super) fn insert(database: &Path, insert: &Insert) -> Result<(), String> {
 }
 
 /// Validate and append an input stream with one atomic snapshot publication.
-/// Validate and append an input stream with one atomic snapshot publication.
 pub(super) fn insert_stream(
     database: &Path,
     table: &str,
