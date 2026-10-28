@@ -54,6 +54,7 @@ pub(super) fn is_function(name: &str) -> bool {
             | "SUBSTRING_INDEX"
             | "SUBSTRINGINDEXUTF8"
             | "QUERYSTRINGANDFRAGMENT"
+            | "TODAYSINMONTH"
             | "TO_INT64"
             | "TRIM"
             | "LTRIM"
@@ -127,6 +128,28 @@ fn parse_at_depth(parser: &mut Parser, depth: usize) -> Result<ConstantValue, Pa
                     i64::try_from(value.chars().count())
                         .map_err(|_| ParseError("lengthUTF8 result exceeds Int64".into()))?,
                 ),
+                None => ConstantValue::Null,
+            }
+        }
+        "TODAYSINMONTH" => {
+            let input = text_arg(parser, depth + 1)?;
+            require(parser, Token::RParen, "toDaysInMonth requires one argument")?;
+            match input {
+                Some(value) => {
+                    if rusthouse_storage::parse_date(&value).is_none() {
+                        return Err(ParseError("invalid Date argument".into()));
+                    }
+                    let year: u32 = value[..4].parse().unwrap();
+                    let month: u32 = value[5..7].parse().unwrap();
+                    let leap = year % 4 == 0 && (year % 100 != 0 || year % 400 == 0);
+                    let days = match month {
+                        2 if leap => 29,
+                        2 => 28,
+                        4 | 6 | 9 | 11 => 30,
+                        _ => 31,
+                    };
+                    ConstantValue::Integer(days)
+                }
                 None => ConstantValue::Null,
             }
         }
@@ -2004,5 +2027,31 @@ fn text_arg(parser: &mut Parser, depth: usize) -> Result<Option<String>, ParseEr
         _ => Err(ParseError(
             "expected a string literal or string function".into(),
         )),
+    }
+}
+
+#[cfg(test)]
+mod parity_to_days_in_month_tests {
+    use crate::{parse_select, ConstantValue, Projection};
+    #[test]
+    fn clickhouse_date_constants_validate_calendar_values() {
+        for (expression, expected) in [
+            ("toDaysInMonth('2024-02-29')", 29_i64),
+            ("toDaysInMonth('2023-02-28')", 28_i64),
+            ("toDaysInMonth('2026-04-19')", 30_i64),
+            ("toDaysInMonth('2000-02-01')", 29_i64),
+            ("toDaysInMonth('1900-02-01')", 28_i64),
+        ] {
+            let sql = format!("SELECT {expression}");
+            assert!(matches!(parse_select(&sql).unwrap().projection, Projection::Constants(values)
+                if values.len() == 1 && values[0].value == ConstantValue::Integer(expected)), "{sql}");
+        }
+        for expression in [
+            "toDaysInMonth('2023-02-29')",
+            "toDaysInMonth('bad')",
+            "toDaysInMonth()",
+        ] {
+            assert!(parse_select(&format!("SELECT {expression}")).is_err(), "{expression}");
+        }
     }
 }
