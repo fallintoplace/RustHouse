@@ -50,8 +50,9 @@ fn push_record(
 
 fn parse_plain_csv(data: &str) -> Result<Vec<Vec<Option<String>>>, String> {
     let mut records = Vec::new();
+    let mut width_hint = 0;
     for line in data.split_terminator('\n') {
-        let mut row = Vec::new();
+        let mut row = Vec::with_capacity(width_hint);
         for field in line.split(',') {
             if row.len() >= 128 {
                 return Err("CSV records support at most 128 columns".into());
@@ -62,6 +63,7 @@ fn parse_plain_csv(data: &str) -> Result<Vec<Vec<Option<String>>>, String> {
                 Some(field.to_owned())
             });
         }
+        width_hint = row.len();
         push_record(&mut records, &mut row)?;
     }
     Ok(records)
