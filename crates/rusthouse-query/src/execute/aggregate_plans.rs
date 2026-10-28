@@ -144,6 +144,56 @@ pub(super) fn execute_grouped_part<W: Write>(
         return groups.write(query, column, output);
     }
     let no_filters = query.predicates.is_empty() && query.or_predicates.is_empty();
+    // High-cardinality 64-bit GROUP BY with ORDER BY key is exact even when
+    // the distinct group set cannot fit in memory. Sorted spill runs avoid
+    // the fixed 200k-group HashMap ceiling and preserve ORDER BY semantics.
+    let kind = metadata.columns.iter().find(|c| c.name == column)
+        .map(|c| c.data_type.as_str());
+    let ordering = query.order_by.as_ref().filter(|order|
+        order.column == column && query.order_by_extra.is_empty());
+    if let (Some(kind @ ("UInt64" | "Int64")), Some(order)) = (kind, ordering) {
+        let signed = kind == "Int64";
+        let mut sorter = ExternalGroupCount64::new(signed, order.descending);
+        while let Some(batch) = reader.next_batch()? {
+            for row in 0..batch[0].len() {
+                if !no_filters && !batch_matches(&batch, row, &comparisons) { continue; }
+                let value = match &batch[0] {
+                    NumericColumn::UInt64(values) => values[row],
+                    NumericColumn::Int64(values) => values[row] as u64,
+                    _ => return Err(ExecutionError::Invalid(
+                        "unexpected external GROUP BY key type".into())),
+                };
+                sorter.insert(value)?;
+            }
+        }
+        writeln!(output, "{column}\t{}",
+            query.alias.as_deref().unwrap_or("count"))?;
+        let mut seen = 0usize;
+        let mut emitted = 0usize;
+        let offset = query.offset.unwrap_or(0);
+        let limit = query.limit.unwrap_or(usize::MAX);
+        sorter.finish_until(|key, count| {
+            if let Some(having) = &query.having {
+                if !number_matches(
+                    Number::Unsigned(u128::from(count)),
+                    Number::Unsigned(u128::from(having.value)),
+                    having.operator,
+                ) { return Ok(true); }
+            }
+            if seen >= offset && emitted < limit {
+                if signed {
+                    writeln!(output, "{}\t{count}", key as i64)?;
+                } else {
+                    writeln!(output, "{key}\t{count}")?;
+                }
+                emitted += 1;
+            }
+            seen = seen.checked_add(1)
+                .ok_or_else(|| ExecutionError::Invalid("GROUP BY row count overflow".into()))?;
+            Ok(emitted < limit)
+        })?;
+        return Ok(());
+    }
     if no_filters {
         if let Some(kind) = metadata.columns.iter()
             .find(|candidate| candidate.name == column)
@@ -753,6 +803,20 @@ pub(super) fn execute_count_distinct_part<W: Write>(
     Ok(())
 }
 
+/// Update population/sample moments directly from a native numeric slot.
+/// Matches AggregateState's Welford update order but skips Number dispatch.
+fn update_native_moment(state: &mut AggregateState, numeric: f64) -> Result<(), ExecutionError> {
+    let next_count = state.count.checked_add(1)
+        .ok_or_else(|| ExecutionError::Invalid("aggregate row count overflow".into()))?;
+    let difference = numeric - state.mean;
+    state.mean += difference / next_count as f64;
+    if state.function != AggregateFunction::Avg {
+        state.squared_deviations += difference * (numeric - state.mean);
+    }
+    state.count = next_count;
+    Ok(())
+}
+
 pub(super) fn execute_aggregate_part<W: Write>(
     query: &Select,
     part: &Path,
@@ -778,6 +842,25 @@ pub(super) fn execute_aggregate_part<W: Write>(
         return Ok(());
     }
     let no_filters = query.predicates.is_empty() && query.or_predicates.is_empty();
+    // Exact radix selection needs only 256 counters per byte and a bounded
+    // number of repeated immutable scans, not a full materialized row array.
+    if function == AggregateFunction::Median {
+        if let Some(kind) = metadata.columns.iter().find(|candidate| candidate.name == column) {
+            if super::radix_median::supports_type(&kind.data_type) {
+                let median = if no_filters {
+                    super::radix_median::median(part, column, &metadata)?
+                } else {
+                    super::radix_median::median_filtered(
+                        part, column, &metadata, &scan_columns, &comparisons,
+                    )?
+                };
+                if query.offset.unwrap_or(0) == 0 {
+                    writeln!(output, "{}", median.unwrap_or_else(|| "NULL".into()))?;
+                }
+                return Ok(());
+            }
+        }
+    }
     // For plain integer SUM without WHERE, operate on contiguous typed arrays
     // and avoid AggregateState dispatch and Number conversion on every row.
     let native_integer = metadata.columns.iter().any(|candidate| {
@@ -917,6 +1000,46 @@ pub(super) fn execute_aggregate_part<W: Write>(
             } else {
                 writeln!(output, "NULL")?;
             }
+        }
+        return Ok(());
+    }
+    // AVG, variance and standard deviation on a billion non-nullable numeric
+    // rows still require stable Welford arithmetic, but not an enum dispatch
+    // or number conversion per row. Keep the exact update order.
+    if no_filters && matches!(
+        function,
+        AggregateFunction::Avg
+            | AggregateFunction::VarPop
+            | AggregateFunction::VarSamp
+            | AggregateFunction::StddevPop
+            | AggregateFunction::StddevSamp
+    ) {
+        let mut state = AggregateState::new(function);
+        macro_rules! fold_moments {
+            ($values:expr) => {
+                for &value in $values {
+                    update_native_moment(&mut state, value as f64)?;
+                }
+            };
+        }
+        while let Some(batch) = reader.next_batch()? {
+            match &batch[0] {
+                NumericColumn::UInt8(values) => fold_moments!(values),
+                NumericColumn::UInt16(values) => fold_moments!(values),
+                NumericColumn::UInt32(values) => fold_moments!(values),
+                NumericColumn::UInt64(values) => fold_moments!(values),
+                NumericColumn::UInt128(values) => fold_moments!(values),
+                NumericColumn::Int8(values) => fold_moments!(values),
+                NumericColumn::Int16(values) => fold_moments!(values),
+                NumericColumn::Int32(values) => fold_moments!(values),
+                NumericColumn::Int64(values) => fold_moments!(values),
+                NumericColumn::Int128(values) => fold_moments!(values),
+                NumericColumn::Float32(values) => fold_moments!(values),
+                NumericColumn::Float64(values) => fold_moments!(values),
+            }
+        }
+        if query.offset.unwrap_or(0) == 0 {
+            writeln!(output, "{}", state.render())?;
         }
         return Ok(());
     }
@@ -1093,4 +1216,42 @@ pub(super) fn execute_aggregate_numbers<W: Write>(
         writeln!(output, "{}", state.render())?;
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod native_moment_tests {
+    use super::*;
+
+    #[test]
+    fn native_welford_matches_generic_aggregates_for_large_signed_values() {
+        let inputs = [
+            Number::Signed(-91),
+            Number::Unsigned(u128::from(u64::MAX)),
+            Number::Float(1.75),
+            Number::Float(-2.5),
+            Number::Unsigned(7),
+        ];
+        for function in [
+            AggregateFunction::Avg,
+            AggregateFunction::VarPop,
+            AggregateFunction::VarSamp,
+            AggregateFunction::StddevPop,
+            AggregateFunction::StddevSamp,
+        ] {
+            let mut native = AggregateState::new(function);
+            let mut baseline = AggregateState::new(function);
+            for value in inputs {
+                let numeric = match value {
+                    Number::Signed(v) => v as f64,
+                    Number::Unsigned(v) => v as f64,
+                    Number::Float(v) => v,
+                };
+                update_native_moment(&mut native, numeric).unwrap();
+                baseline.update(value).unwrap();
+            }
+            assert_eq!(native.mean.to_bits(), baseline.mean.to_bits());
+            assert_eq!(native.squared_deviations.to_bits(), baseline.squared_deviations.to_bits());
+            assert_eq!(native.render(), baseline.render());
+        }
+    }
 }

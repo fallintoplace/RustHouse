@@ -81,6 +81,47 @@ impl HyperLogLog {
         Ok(())
     }
 
+    /// A portable, bounded shard state. Each register is two lowercase hex
+    /// characters, independent of byte order, architecture, and input rows.
+    pub(super) fn encode_state(&self) -> String {
+        const HEX: &[u8; 16] = b"0123456789abcdef";
+        let mut bytes = Vec::with_capacity(REGISTERS * 2);
+        for &register in self.registers.iter() {
+            bytes.push(HEX[(register >> 4) as usize]);
+            bytes.push(HEX[(register & 15) as usize]);
+        }
+        String::from_utf8(bytes).expect("ASCII hex bytes are valid UTF-8")
+    }
+
+    fn decode_state(value: &str) -> Result<Self, String> {
+        let bytes = value.as_bytes();
+        if bytes.len() != REGISTERS * 2 {
+            return Err("invalid HLL register count".into());
+        }
+        let digit = |value: u8| match value {
+            b'0'..=b'9' => Some(value - b'0'),
+            b'a'..=b'f' => Some(value - b'a' + 10),
+            _ => None,
+        };
+        let mut state = Self::default();
+        for (index, bytes) in bytes.chunks_exact(2).enumerate() {
+            let high = digit(bytes[0]).ok_or("invalid HLL hex state")?;
+            let low = digit(bytes[1]).ok_or("invalid HLL hex state")?;
+            let register = (high << 4) | low;
+            if register > 51 {
+                return Err("invalid HLL register rank".into());
+            }
+            state.registers[index] = register;
+        }
+        Ok(state)
+    }
+
+    pub(super) fn merge(&mut self, other: &Self) {
+        for (target, &register) in self.registers.iter_mut().zip(other.registers.iter()) {
+            *target = (*target).max(register);
+        }
+    }
+
     pub(super) fn estimate(&self) -> u64 {
         let m = REGISTERS as f64;
         let zero = self.registers.iter().filter(|&&rank| rank == 0).count();
@@ -137,5 +178,57 @@ mod tests {
         sketch.observe_number(Number::Float(f64::NAN));
         sketch.observe_number(Number::Float(-f64::NAN));
         assert_eq!(sketch.estimate(), 2);
+    }
+}
+
+
+/// Decode strict, fixed-size shard states and calculate the global union.
+pub(super) fn merge_state_hex_values(states: &[&str]) -> Result<u64, String> {
+    if states.is_empty() {
+        return Err("cannot merge zero HLL states".into());
+    }
+    let mut union = HyperLogLog::default();
+    for &state in states {
+        union.merge(&HyperLogLog::decode_state(state)?);
+    }
+    Ok(union.estimate())
+}
+
+#[cfg(test)]
+mod state_tests {
+    use super::*;
+
+    #[test]
+    fn serialized_partial_states_have_exact_global_union() {
+        let mut first = HyperLogLog::default();
+        let mut second = HyperLogLog::default();
+        let mut combined = HyperLogLog::default();
+        for index in 0..200_000 {
+            let value = Number::Unsigned(index % 125_000);
+            combined.observe_number(value);
+            if index % 2 == 0 {
+                first.observe_number(value);
+            } else {
+                second.observe_number(value);
+            }
+        }
+        let first = first.encode_state();
+        let second = second.encode_state();
+        assert_eq!(
+            merge_state_hex_values(&[&first, &second]).unwrap(),
+            combined.estimate()
+        );
+        let empty = HyperLogLog::default().encode_state();
+        assert_eq!(merge_state_hex_values(&[&empty]).unwrap(), 0);
+    }
+
+    #[test]
+    fn malformed_truncated_or_noncanonical_hll_states_are_rejected() {
+        let valid = HyperLogLog::default().encode_state();
+        assert!(merge_state_hex_values(&[]).is_err());
+        assert!(merge_state_hex_values(&[&valid[..valid.len()-2]]).is_err());
+        assert!(merge_state_hex_values(&[&format!("ff{}", &valid[2..])]).is_err());
+        assert!(merge_state_hex_values(&[&format!("zz{}", &valid[2..])]).is_err());
+        assert!(merge_state_hex_values(&[&format!("AA{}", &valid[2..])]).is_err());
     }
 }
