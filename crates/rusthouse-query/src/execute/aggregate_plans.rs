@@ -479,8 +479,56 @@ pub(super) fn execute_aggregate_part<W: Write>(
     if query.limit == Some(0) {
         return Ok(());
     }
-    let mut state = AggregateState::new(function);
     let no_filters = query.predicates.is_empty() && query.or_predicates.is_empty();
+    // For plain integer SUM without WHERE, operate on contiguous typed arrays
+    // and avoid AggregateState dispatch and Number conversion on every row.
+    let native_integer = metadata.columns.iter().any(|candidate| {
+        candidate.name == column && matches!(candidate.data_type.as_str(),
+            "UInt8" | "UInt16" | "UInt32" | "UInt64" | "UInt128"
+            | "Int8" | "Int16" | "Int32" | "Int64" | "Int128")
+    });
+    if function == AggregateFunction::Sum && no_filters && native_integer {
+        let mut total: Option<Number> = None;
+        macro_rules! fold_batch {
+            ($values:expr, $kind:ident, $wide:ty) => {{
+                for &value in $values {
+                    let value = <$wide>::from(value);
+                    total = Some(match total {
+                        None => Number::$kind(value),
+                        Some(Number::$kind(previous)) => Number::$kind(
+                            previous.checked_add(value).ok_or_else(|| {
+                                ExecutionError::Invalid(format!(
+                                    "{} SUM overflow", stringify!($kind).to_lowercase()
+                                ))
+                            })?
+                        ),
+                        _ => return Err(ExecutionError::Invalid("incompatible types in SUM".into())),
+                    });
+                }
+            }};
+        }
+        while let Some(batch) = reader.next_batch()? {
+            match &batch[0] {
+                NumericColumn::UInt8(values) => fold_batch!(values, Unsigned, u128),
+                NumericColumn::UInt16(values) => fold_batch!(values, Unsigned, u128),
+                NumericColumn::UInt32(values) => fold_batch!(values, Unsigned, u128),
+                NumericColumn::UInt64(values) => fold_batch!(values, Unsigned, u128),
+                NumericColumn::UInt128(values) => fold_batch!(values, Unsigned, u128),
+                NumericColumn::Int8(values) => fold_batch!(values, Signed, i128),
+                NumericColumn::Int16(values) => fold_batch!(values, Signed, i128),
+                NumericColumn::Int32(values) => fold_batch!(values, Signed, i128),
+                NumericColumn::Int64(values) => fold_batch!(values, Signed, i128),
+                NumericColumn::Int128(values) => fold_batch!(values, Signed, i128),
+                _ => return Err(ExecutionError::Invalid("unexpected numeric SUM column type".into())),
+            }
+        }
+        if query.offset.unwrap_or(0) == 0 {
+            if let Some(value) = total { writeln!(output, "{value}")?; }
+            else { writeln!(output, "NULL")?; }
+        }
+        return Ok(());
+    }
+    let mut state = AggregateState::new(function);
     while let Some(batch) = reader.next_batch()? {
         for row in 0..batch[0].len() {
             if !no_filters && !batch_matches(&batch, row, &comparisons) {
