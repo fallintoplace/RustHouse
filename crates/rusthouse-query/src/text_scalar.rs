@@ -7,6 +7,7 @@ pub(super) fn is_function(name: &str) -> bool {
     matches!(
         name.to_ascii_uppercase().as_str(),
         "LENGTH"
+            | "STARTSWITHUTF8"
             | "CHAR_LENGTH"
             | "OCTET_LENGTH"
             | "ASCII"
@@ -100,6 +101,19 @@ fn parse_at_depth(parser: &mut Parser, depth: usize) -> Result<ConstantValue, Pa
     let name = parser.word()?.to_ascii_uppercase();
     require(parser, Token::LParen, "string function requires '('")?;
     let value = match name.as_str() {
+
+        "STARTSWITHUTF8" => {
+            let input = text_arg(parser, depth + 1)?;
+            require(parser, Token::Comma, "STARTSWITHUTF8 requires two arguments")?;
+            let prefix = text_arg(parser, depth + 1)?;
+            require(parser, Token::RParen, "STARTSWITHUTF8 requires two arguments")?;
+            match (input, prefix) {
+                (Some(input), Some(prefix)) => {
+                    ConstantValue::Integer(i64::from(input.starts_with(&prefix)))
+                }
+                _ => ConstantValue::Null,
+            }
+        }
         "ASCII" => {
             let input = text_arg(parser, depth + 1)?;
             require(parser, Token::RParen, "ASCII requires one argument")?;
