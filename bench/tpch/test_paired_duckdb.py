@@ -27,6 +27,8 @@ class PairedDuckDbTests(unittest.TestCase):
         self.assertEqual(result["duckdb_over_rusthouse"], 0.5)
         self.assertEqual(len(result["rusthouse_samples_seconds"]), 4)
         self.assertEqual(len(result["duckdb_samples_seconds"]), 4)
+        self.assertEqual(result["rusthouse_p90_seconds"], 0.002)
+        self.assertEqual(result["duckdb_p90_seconds"], 0.001)
 
     def test_any_mismatch_invalidates_the_speed_comparison(self):
         with self.assertRaisesRegex(ValueError, "differs"):
