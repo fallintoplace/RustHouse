@@ -857,6 +857,23 @@ fn static_nonnullable_null_filter(
     if unknown_branch { None } else { Some(false) }
 }
 
+/// Map an 8/16-bit dimension directly to its exact dense group bucket.
+/// NULLs use the normal sparse key path and never alias integer zero.
+fn dense_group_bucket(column: &TypedColumn, row: usize) -> Option<usize> {
+    let values = match column {
+        TypedColumn::Numeric(values) => values,
+        TypedColumn::NullableNumeric { values, nulls } if nulls[row] == 0 => values,
+        _ => return None,
+    };
+    match values {
+        NumericColumn::UInt8(values) => Some(usize::from(values[row])),
+        NumericColumn::Int8(values) => Some(usize::from(values[row] as u8)),
+        NumericColumn::UInt16(values) => Some(usize::from(values[row])),
+        NumericColumn::Int16(values) => Some(usize::from(values[row] as u16)),
+        _ => None,
+    }
+}
+
 pub(super) fn execute_typed<W: Write>(
     query: &Select,
     part: &Path,
@@ -1075,6 +1092,19 @@ pub(super) fn execute_typed<W: Write>(
     // a formatted String for each scanned row.
     let mut count_distinct_uuids = HashSet::<[u8; 16]>::new();
     let mut group_indices = HashMap::<Key, usize>::new();
+    // For narrow integer dimensions a direct bucket array removes one hash
+    // lookup per matching fact row. Nullable keys still use the sparse path.
+    let mut dense_group_indices = if is_grouped {
+        match projection_types.first().copied() {
+            Some("UInt8" | "Int8" | "Nullable(UInt8)" | "Nullable(Int8)") =>
+                Some(vec![usize::MAX; 256]),
+            Some("UInt16" | "Int16" | "Nullable(UInt16)" | "Nullable(Int16)") =>
+                Some(vec![usize::MAX; 65_536]),
+            _ => None,
+        }
+    } else {
+        None
+    };
     // String group probes can borrow the decoded input instead of cloning it.
     let mut text_group_indices = HashMap::<Vec<u8>, usize>::new();
     let mut uuid_group_indices = HashMap::<[u8; 16], usize>::new();
@@ -1161,6 +1191,27 @@ pub(super) fn execute_typed<W: Write>(
                 continue;
             }
             if is_grouped {
+                if let Some(slots) = dense_group_indices.as_mut() {
+                    if let Some(bucket) = dense_group_bucket(&batch[projection_indices[0]], index) {
+                        let group = &mut slots[bucket];
+                        if *group != usize::MAX {
+                            let count = &mut grouped_rows[*group].1;
+                            *count = count.checked_add(1).ok_or_else(|| {
+                                ExecutionError::Invalid("group count overflow".into())
+                            })?;
+                        } else {
+                            let next = grouped_rows.len();
+                            if next >= MAX_BUFFERED_ROWS {
+                                return Err(ExecutionError::Invalid(
+                                    "GROUP BY supports at most 200000 groups".into(),
+                                ));
+                            }
+                            *group = next;
+                            grouped_rows.push((cell(&batch[projection_indices[0]], index), 1));
+                        }
+                        continue;
+                    }
+                }
                 let text_key = match &batch[projection_indices[0]] {
                     TypedColumn::Text(strings) => strings.get(index),
                     TypedColumn::NullableText { values, nulls } if nulls[index] == 0 => {
@@ -2167,5 +2218,32 @@ mod direct_numeric_comparison_tests {
         assert!(matches_comparison_at(&nullable, 0, &target, Operator::Eq));
         assert!(!matches_comparison_at(&nullable, 1, &target, Operator::Ne));
         assert!(matches_comparison_at(&nullable, 2, &target, Operator::Gt));
+    }
+}
+
+#[cfg(test)]
+mod narrow_group_bucket_tests {
+    use super::*;
+
+    #[test]
+    fn dense_numeric_buckets_preserve_exact_signed_values() {
+        let signed8 = TypedColumn::Numeric(NumericColumn::Int8(vec![i8::MIN, -1, 0, i8::MAX]));
+        assert_eq!((0..4).map(|row| dense_group_bucket(&signed8, row)).collect::<Vec<_>>(),
+            [Some(128), Some(255), Some(0), Some(127)]);
+        let signed16 = TypedColumn::Numeric(NumericColumn::Int16(vec![i16::MIN, -1, 0, i16::MAX]));
+        assert_eq!((0..4).map(|row| dense_group_bucket(&signed16, row)).collect::<Vec<_>>(),
+            [Some(32768), Some(65535), Some(0), Some(32767)]);
+    }
+
+    #[test]
+    fn nullable_and_wider_dimensions_never_share_group_ids() {
+        let nullable = TypedColumn::NullableNumeric {
+            values: NumericColumn::UInt16(vec![0, 0, u16::MAX, 1]),
+            nulls: vec![0, 1, 0, 0],
+        };
+        assert_eq!((0..4).map(|row| dense_group_bucket(&nullable, row)).collect::<Vec<_>>(),
+            [Some(0), None, Some(65535), Some(1)]);
+        let wide = TypedColumn::Numeric(NumericColumn::UInt32(vec![1]));
+        assert_eq!(dense_group_bucket(&wide, 0), None);
     }
 }
