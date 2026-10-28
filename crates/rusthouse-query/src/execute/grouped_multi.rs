@@ -74,6 +74,12 @@ pub(super) fn execute<W: Write>(
     let mut groups: Vec<(Vec<Cell>, u64)> = Vec::new();
     let mut by_key: HashMap<Vec<Key>, usize> = HashMap::new();
     let mut probe_key = Vec::with_capacity(group_indices.len());
+    // Probe repeated String dimensions without cloning their decoded bytes.
+    let has_text_key = columns
+        .iter()
+        .any(|column| matches!(typed::base_type(types[column].as_str()), "String"));
+    let mut encoded_groups = HashMap::<Vec<u8>, usize>::new();
+    let mut encoded_probe = Vec::new();
     let mut dense_groups = (columns.len() == 2
         && columns
             .iter()
@@ -108,6 +114,34 @@ pub(super) fn execute<W: Write>(
                             .collect(),
                         1,
                     ));
+                }
+                continue;
+            }
+            if has_text_key {
+                encoded_probe.clear();
+                for &index in &group_indices {
+                    super::grouped_numeric_keys::append_group_component(
+                        &batch[index], row, &mut encoded_probe
+                    );
+                }
+                if let Some(&index) = encoded_groups.get(encoded_probe.as_slice()) {
+                    groups[index].1 = groups[index]
+                        .1
+                        .checked_add(1)
+                        .ok_or_else(|| ExecutionError::Invalid("group count overflow".into()))?;
+                } else {
+                    if groups.len() >= MAX_GROUPS {
+                        return Err(ExecutionError::Invalid(
+                            "GROUP BY supports at most 200000 groups".into(),
+                        ));
+                    }
+                    let values: Vec<Cell> = group_indices
+                        .iter()
+                        .map(|&index| typed::cell(&batch[index], row))
+                        .collect();
+                    encoded_groups.insert(std::mem::take(&mut encoded_probe), groups.len());
+                    encoded_probe = Vec::with_capacity(group_indices.len() * 24);
+                    groups.push((values, 1));
                 }
                 continue;
             }
