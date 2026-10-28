@@ -155,7 +155,7 @@ pub(super) fn like_matches(value: &[u8], pattern: &LikePattern, case_insensitive
                 } else {
                     value
                         .windows(bytes.len())
-                        .any(|part| part[0] == bytes[0] && part[1..] == bytes[1..])
+                        .any(|part| part == bytes)
                 }
             } else if value.is_ascii() && bytes.is_ascii() {
                 value
