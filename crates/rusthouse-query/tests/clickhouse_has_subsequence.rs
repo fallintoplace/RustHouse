@@ -16,8 +16,13 @@ fn finds_ordered_noncontiguous_subsequences() {
         ("SELECT hasSubsequence('abc', '')", 1),
         ("SELECT hasSubsequence('', 'x')", 0),
         ("SELECT hasSubsequence('ABC', 'a')", 0),
-    ] { assert_eq!(value(sql), ConstantValue::Integer(expected), "{sql}"); }
-    assert_eq!(value("SELECT hasSubsequence(NULL, 'a')"), ConstantValue::Null);
+    ] {
+        assert_eq!(value(sql), ConstantValue::Integer(expected), "{sql}");
+    }
+    assert_eq!(
+        value("SELECT hasSubsequence(NULL, 'a')"),
+        ConstantValue::Null
+    );
 }
 #[test]
 fn requires_two_string_arguments() {
@@ -26,5 +31,7 @@ fn requires_two_string_arguments() {
         "SELECT hasSubsequence(1, 'a')",
         "SELECT hasSubsequence('a', 1)",
         "SELECT hasSubsequence('a', 'b', 'c')",
-    ] { assert!(parse_select(sql).is_err(), "{sql}"); }
+    ] {
+        assert!(parse_select(sql).is_err(), "{sql}");
+    }
 }

@@ -52,7 +52,7 @@ cargo run -p rusthouse-cli -- sql "SELECT id, count(*) FROM part GROUP BY id ORD
 - **Data:** `numbers()` and inclusive `generate_series(start, stop[, step])` without files, plus supported numeric, `String`, `UUID`, and `Nullable` part columns.
 - **Output:** TSV, CSV, JSON, JSON Lines, RFC 7464 JSON text sequences (`--format json-seq`), compact JSON row arrays (`--format json-compact-each-row`), Markdown, HTML, and vertical formats via `--format`; also `--output`, `--max-rows`, `--time`, `--show-ast`, `--explain`, `--file`, and `--stdin`.
 - **Inspection:** `verify-part`, `verify-file-sizes`, `inspect-marks`, `inspect-checksums`, `inspect-blocks`, and `inspect-primary-index`. Run `cargo run -p rusthouse-cli -- --help` for the full CLI.
-- **HTTP:** an optional [read-only localhost server](crates/rusthouse-server/README.md), with no authentication or remote access.
+- **HTTP:** an optional [read-only localhost server](crates/rusthouse-server/README.md), without built-in authentication; it binds to loopback by default and permits trusted private IPv4 networking only with explicit opt-in.
 
 ## Local SQL database (experimental)
 
@@ -71,7 +71,7 @@ INSERT ... SELECT reads up to 50,000 rows (8 MiB of TSV output) from another tab
 
 `--database` stores table schemas and **immutable wide parts** locally. Supported SQL includes `CREATE TABLE`, `INSERT ... VALUES`, `SELECT`, `SHOW TABLES`, `SHOW CREATE TABLE`, `DESCRIBE TABLE`, `CREATE TABLE ... LIKE`, `RENAME TABLE`, `DROP TABLE` and `TRUNCATE TABLE`. Queries support the existing `--format`, `--output`, `--max-rows` and `--explain` options. Database writes are single-writer, limited to supported numeric, String and Nullable columns, and **not transactional across statements**. This is for local experiments, not concurrent production workloads. Run a sequence of up to 128 statements (256 KiB total) with `rusthouse sql --script setup.sql --database ./mydb`. Scripts permit SQL line comments and stop on the first error; they are **not transactions**.
 
-**Current limits:** SQL statements are limited to 4 KiB, INSERT supports up to 4,096 rows per statement, and tables are limited to 16,384 immutable parts. There is no JOIN, background compaction, or cross-statement transaction. On Unix, the persistent `.rusthouse-write.lock` file uses a kernel advisory lock, automatically released when a process exits or crashes. Do not delete this file while the database is in use. Stop older RustHouse processes before upgrading. Other platforms retain create-new lock-file semantics. The localhost HTTP server shares the CLI database read lock for persistent table queries.
+**Current limits:** CLI SQL input is limited to 64 KiB (the tokenizer also has a token-count bound), INSERT supports up to 4,096 rows per statement, and tables are limited to 16,384 immutable parts. JOIN is supported in the bounded read-only modes described above; background compaction and cross-statement transactions are not supported. On Unix, the persistent `.rusthouse-write.lock` file uses a kernel advisory lock, automatically released when a process exits or crashes. Do not delete this file while the database is in use. Stop older RustHouse processes before upgrading. Other platforms retain create-new lock-file semantics. The localhost HTTP server shares the CLI database read lock for persistent table queries.
 
 `DELETE FROM events WHERE id = 1` removes matching rows from the active snapshot, preserving the previous generation for recovery. `DELETE FROM events` removes all rows, while `TRUNCATE TABLE events` is the faster option when there is no predicate. DELETE streams replacement parts in bounded batches. A single rewritten row is limited to 16 MiB of values; the 16,384-part snapshot limit still applies.
 
@@ -96,7 +96,7 @@ cargo run -p rusthouse-cli -- sql "SHOW TABLES" --catalog ./catalog
 
 ## Safety and limits
 
-**Only use frozen, offline snapshots.** Never read a live table directory while another process modifies it. RustHouse rejects overlapping part ranges, inconsistent schemas, and snapshots with more than 16,384 parts. Primary-index predicate pruning is not implemented.
+**Only use frozen, offline snapshots.** Never read a live table directory while another process modifies it. RustHouse rejects overlapping part ranges, inconsistent schemas, and snapshots with more than 16,384 parts. Primary-index range pruning exists for selected numeric predicates, but is not a general cost-based optimizer.
 
 ## Benchmarks
 

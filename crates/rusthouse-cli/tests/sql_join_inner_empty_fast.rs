@@ -12,10 +12,15 @@ fn sql(statement: &str, database: &Path) -> Output {
 
 #[test]
 fn join_inner_empty_fast() {
-    let database = std::env::temp_dir().join(format!("rusthouse-join_inner_empty_fast-{}", std::process::id()));
-    for statement in ["CREATE TABLE empty (id UInt64)",
+    let database = std::env::temp_dir().join(format!(
+        "rusthouse-join_inner_empty_fast-{}",
+        std::process::id()
+    ));
+    for statement in [
+        "CREATE TABLE empty (id UInt64)",
         "CREATE TABLE nonempty (id UInt64)",
-        "INSERT INTO nonempty VALUES (42)"] {
+        "INSERT INTO nonempty VALUES (42)",
+    ] {
         let result = sql(statement, &database);
         assert!(result.status.success(), "{statement}: {result:?}");
     }

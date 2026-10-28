@@ -13,7 +13,11 @@ pub(super) fn parse_max_rows(value: Option<OsString>) -> Result<usize, String> {
         .map_err(|_| "--max-rows is too large".into())
 }
 
-pub(super) fn read_sql_input(input: impl std::io::Read, source: &str, label: &str) -> Result<String, String> {
+pub(super) fn read_sql_input(
+    input: impl std::io::Read,
+    source: &str,
+    label: &str,
+) -> Result<String, String> {
     use std::io::Read;
 
     let mut bytes = Vec::new();
@@ -67,9 +71,7 @@ pub(super) fn split_sql_script(input: &str) -> Result<Vec<String>, String> {
             current.push_str(&input[segment..index]);
             current.push(' ');
             index += 2;
-            while index + 1 < bytes.len()
-                && !(bytes[index] == b'*' && bytes[index + 1] == b'/')
-            {
+            while index + 1 < bytes.len() && !(bytes[index] == b'*' && bytes[index + 1] == b'/') {
                 index += 1;
             }
             if index + 1 >= bytes.len() {
@@ -84,10 +86,14 @@ pub(super) fn split_sql_script(input: &str) -> Result<Vec<String>, String> {
             let statement = current.trim();
             if !statement.is_empty() {
                 if statement.len() > MAX_SQL_BYTES {
-                    return Err(format!("SQL script statement exceeds {MAX_SQL_BYTES} bytes"));
+                    return Err(format!(
+                        "SQL script statement exceeds {MAX_SQL_BYTES} bytes"
+                    ));
                 }
                 if statements.len() >= MAX_SCRIPT_STATEMENTS {
-                    return Err(format!("SQL script supports at most {MAX_SCRIPT_STATEMENTS} statements"));
+                    return Err(format!(
+                        "SQL script supports at most {MAX_SCRIPT_STATEMENTS} statements"
+                    ));
                 }
                 statements.push(statement.to_owned());
             }
@@ -105,10 +111,14 @@ pub(super) fn split_sql_script(input: &str) -> Result<Vec<String>, String> {
     let statement = current.trim();
     if !statement.is_empty() {
         if statement.len() > MAX_SQL_BYTES {
-            return Err(format!("SQL script statement exceeds {MAX_SQL_BYTES} bytes"));
+            return Err(format!(
+                "SQL script statement exceeds {MAX_SQL_BYTES} bytes"
+            ));
         }
         if statements.len() >= MAX_SCRIPT_STATEMENTS {
-            return Err(format!("SQL script supports at most {MAX_SCRIPT_STATEMENTS} statements"));
+            return Err(format!(
+                "SQL script supports at most {MAX_SCRIPT_STATEMENTS} statements"
+            ));
         }
         statements.push(statement.to_owned());
     }
@@ -166,7 +176,9 @@ mod script_size_limit_tests {
     #[test]
     fn reads_scripts_larger_than_the_old_256_kib_limit() {
         let path = std::env::temp_dir().join(format!(
-            "rusthouse-sql-script-size-{}-{}", std::process::id(), line!()
+            "rusthouse-sql-script-size-{}-{}",
+            std::process::id(),
+            line!()
         ));
         let script = format!("{};", "x".repeat(3500)).repeat(90);
         assert!(script.len() > 256 * 1024);

@@ -68,6 +68,28 @@ impl<W: Write> JsonArraySink<W> {
 
 impl<W: Write> Write for JsonArraySink<W> {
     fn write(&mut self, bytes: &[u8]) -> io::Result<usize> {
+        // JSONL already validates these rows. Forward complete objects
+        // without copying them into an intermediate Vec first.
+        if self.row.is_empty() {
+            if let Some(row) = bytes.strip_suffix(b"\n") {
+                if !row.contains(&b'\n') {
+                    if row.len() > MAX_JSON_ROW_BYTES {
+                        return Err(io::Error::new(
+                            io::ErrorKind::InvalidData,
+                            "JSON object exceeds 4 MiB",
+                        ));
+                    }
+                    self.output.write_all(array_prefix(self.first, self.pretty))?;
+                    if self.pretty {
+                        write_pretty_json_row(&mut self.output, row)?;
+                    } else {
+                        self.output.write_all(row)?;
+                    }
+                    self.first = false;
+                    return Ok(bytes.len());
+                }
+            }
+        }
         for chunk in bytes.split_inclusive(|&byte| byte == b'\n') {
             let complete = chunk.last() == Some(&b'\n');
             let fragment = if complete {
@@ -223,4 +245,13 @@ mod tests {
             format!("[{large_row},{{}}]\n").as_bytes()
         );
     }
+
+    #[test]
+    fn complete_json_object_avoids_intermediate_row_copy() {
+        let mut sink = JsonArraySink::new(Vec::new(), false);
+        sink.write_all(b"{\"key\":\"value\"}\n").unwrap();
+        assert_eq!(sink.row.capacity(), 0);
+        assert_eq!(sink.finish().unwrap(), b"[{\"key\":\"value\"}]\n");
+    }
+
 }

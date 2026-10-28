@@ -7,7 +7,10 @@ pub(super) fn checksums_io_error(path: &Path, source: io::Error) -> PartError {
     }
 }
 
-pub(super) fn parse_checksum_header<'a>(content: &'a [u8], path: &Path) -> Result<(u8, &'a [u8]), PartError> {
+pub(super) fn parse_checksum_header<'a>(
+    content: &'a [u8],
+    path: &Path,
+) -> Result<(u8, &'a [u8]), PartError> {
     let header = content
         .strip_prefix(HEADER)
         .ok_or_else(|| invalid(path, "missing format header"))?;
@@ -23,7 +26,10 @@ pub(super) fn parse_checksum_header<'a>(content: &'a [u8], path: &Path) -> Resul
     Ok((version, &header[end + 1..]))
 }
 
-pub(super) fn decode_compressed_checksums(payload: &[u8], path: &Path) -> Result<Vec<u8>, PartError> {
+pub(super) fn decode_compressed_checksums(
+    payload: &[u8],
+    path: &Path,
+) -> Result<Vec<u8>, PartError> {
     let mut decoded = Vec::new();
     let mut blocks = CompressedBlockReader::new(Cursor::new(payload), path)?;
     while let Some(block) = blocks.next_decoded() {

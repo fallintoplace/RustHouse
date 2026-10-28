@@ -62,11 +62,15 @@ impl ResumeMap {
 
     pub fn complete(&self) -> bool {
         let full_bytes = self.chunks / 8;
-        if !self.completed[..full_bytes].iter().all(|&byte| byte == u8::MAX) {
+        if !self.completed[..full_bytes]
+            .iter()
+            .all(|&byte| byte == u8::MAX)
+        {
             return false;
         }
         let remainder = self.chunks % 8;
-        remainder == 0 || self.completed[full_bytes] & ((1u8 << remainder) - 1) == (1u8 << remainder) - 1
+        remainder == 0
+            || self.completed[full_bytes] & ((1u8 << remainder) - 1) == (1u8 << remainder) - 1
     }
 
     /// Stable ASCII encoding for persisting transfer progress.
@@ -114,7 +118,7 @@ mod tests {
             }
             let restored = ResumeMap::decode(&progress.encode()).unwrap();
             assert_eq!(restored, progress);
-            assert_eq!(restored.remaining().len(), chunks - (chunks + 2) / 3);
+            assert_eq!(restored.remaining().len(), chunks - chunks.div_ceil(3));
             assert_eq!(restored.complete(), chunks == 0 || chunks == 1);
             for index in 0..chunks {
                 progress.mark_complete(index).unwrap();
@@ -162,5 +166,4 @@ mod tests {
         assert_eq!(decoded.encode(), input);
         assert_eq!(decoded.remaining().len(), 3 * 8192);
     }
-
 }

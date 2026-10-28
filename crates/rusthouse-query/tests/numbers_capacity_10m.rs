@@ -4,8 +4,14 @@ use rusthouse_query::{execute, parse_select};
 fn numbers_accepts_more_than_a_million_rows_without_materializing_them() {
     for (sql, expected) in [
         ("SELECT count(*) FROM numbers(8000000)", "count\n8000000\n"),
-        ("SELECT count(*) FROM numbers(10, 8000000)", "count\n8000000\n"),
-        ("SELECT count(*) FROM numbers(10, 8000000, 2)", "count\n4000000\n"),
+        (
+            "SELECT count(*) FROM numbers(10, 8000000)",
+            "count\n8000000\n",
+        ),
+        (
+            "SELECT count(*) FROM numbers(10, 8000000, 2)",
+            "count\n4000000\n",
+        ),
     ] {
         let query = parse_select(sql).unwrap();
         let mut output = Vec::new();
@@ -19,7 +25,10 @@ fn numbers_accepts_more_than_a_million_rows_without_materializing_them() {
 #[test]
 fn billion_row_virtual_count_requires_arithmetic_fast_path() {
     for (sql, expected) in [
-        ("SELECT count(*) FROM numbers(1000000000)", "count\n1000000000\n"),
+        (
+            "SELECT count(*) FROM numbers(1000000000)",
+            "count\n1000000000\n",
+        ),
         (
             "SELECT count(number) FROM numbers(1000000000) WHERE number >= 999999995",
             "count(number)\n5\n",
@@ -39,6 +48,9 @@ fn billion_row_virtual_count_requires_arithmetic_fast_path() {
         "SELECT sum(number) FROM numbers(1000000000)",
     ] {
         let mut output = Vec::new();
-        assert!(execute(&parse_select(sql).unwrap(), None, &mut output).is_err(), "{sql}");
+        assert!(
+            execute(&parse_select(sql).unwrap(), None, &mut output).is_err(),
+            "{sql}"
+        );
     }
 }

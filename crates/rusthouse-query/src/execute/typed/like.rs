@@ -11,7 +11,8 @@ pub(super) fn literal_bytes(tokens: &[LikeToken]) -> Option<Vec<u8>> {
 }
 
 pub(super) fn compile_like(pattern: &str) -> Result<LikePattern, ExecutionError> {
-    let mut tokens = Vec::new();
+    // Token count cannot exceed the pattern's byte length.
+    let mut tokens = Vec::with_capacity(pattern.len());
     let mut bytes = pattern.bytes();
     while let Some(byte) = bytes.next() {
         match byte {
@@ -152,9 +153,9 @@ pub(super) fn like_matches(value: &[u8], pattern: &LikePattern, case_insensitive
                 {
                     haystack.contains(needle)
                 } else {
-                    value.windows(bytes.len()).any(|part| {
-                        part[0] == bytes[0] && part[1..] == bytes[1..]
-                    })
+                    value
+                        .windows(bytes.len())
+                        .any(|part| part[0] == bytes[0] && part[1..] == bytes[1..])
                 }
             } else if value.is_ascii() && bytes.is_ascii() {
                 value
@@ -170,7 +171,11 @@ pub(super) fn like_matches(value: &[u8], pattern: &LikePattern, case_insensitive
     }
 }
 
-pub(super) fn like_matches_wildcards(value: &[u8], pattern: &[LikeToken], case_insensitive: bool) -> bool {
+pub(super) fn like_matches_wildcards(
+    value: &[u8],
+    pattern: &[LikeToken],
+    case_insensitive: bool,
+) -> bool {
     let (mut row, mut pat) = (0, 0);
     let mut last_any = None;
     let mut restart = 0;
@@ -277,7 +282,11 @@ mod perf_tests {
         let binary = compile_like("%a\\x00b%").unwrap();
         assert!(!like_matches(b"ab", &binary, false));
         assert!(like_matches(b"prefixababa", &pattern, false));
-        assert!(like_matches(b"anything", &compile_like("%%").unwrap(), false));
+        assert!(like_matches(
+            b"anything",
+            &compile_like("%%").unwrap(),
+            false
+        ));
     }
 
     #[test]
@@ -293,8 +302,29 @@ mod perf_tests {
     #[test]
     fn identical_unicode_like_bytes_need_no_folding() {
         assert!(equal_like_bytes("café".as_bytes(), "café".as_bytes(), true));
-        assert!(equal_like_bytes("café".as_bytes(), "café".as_bytes(), false));
-        assert!(!equal_like_bytes("café".as_bytes(), "cafe".as_bytes(), true));
+        assert!(equal_like_bytes(
+            "café".as_bytes(),
+            "café".as_bytes(),
+            false
+        ));
+        assert!(!equal_like_bytes(
+            "café".as_bytes(),
+            "cafe".as_bytes(),
+            true
+        ));
     }
 
+    #[test]
+    fn long_like_patterns_keep_prefix_and_escape_semantics() {
+        let prefix = "x".repeat(1024);
+        let pattern = compile_like(&format!("{prefix}%")).unwrap();
+        assert!(like_matches(
+            format!("{prefix}tail").as_bytes(),
+            &pattern,
+            false
+        ));
+        assert!(!like_matches(b"short", &pattern, false));
+        let escaped = compile_like(r"left\%right").unwrap();
+        assert!(like_matches(b"left%right", &escaped, false));
+    }
 }

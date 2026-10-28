@@ -14,7 +14,9 @@ fn returns_final_path_component() {
         ("SELECT basename('file')", "file"),
         ("SELECT basename('/tmp/')", ""),
         ("SELECT basename('')", ""),
-    ] { assert_eq!(value(sql), ConstantValue::Text(expected.into()), "{sql}"); }
+    ] {
+        assert_eq!(value(sql), ConstantValue::Text(expected.into()), "{sql}");
+    }
     assert_eq!(value("SELECT basename(NULL)"), ConstantValue::Null);
 }
 #[test]
@@ -23,5 +25,7 @@ fn rejects_invalid_basename_arguments() {
         "SELECT basename()",
         "SELECT basename(1)",
         "SELECT basename('a', 'b')",
-    ] { assert!(parse_select(sql).is_err(), "{sql}"); }
+    ] {
+        assert!(parse_select(sql).is_err(), "{sql}");
+    }
 }

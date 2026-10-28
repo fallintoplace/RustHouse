@@ -32,10 +32,7 @@ fn uuid_in_and_not_in_keep_exact_byte_semantics() {
     );
     assert!(excluded.status.success(), "{excluded:?}");
     assert_eq!(excluded.stdout, b"id\n2\n");
-    let invalid = sql(
-        "SELECT id FROM events WHERE user_id IN ('invalid')",
-        &db,
-    );
+    let invalid = sql("SELECT id FROM events WHERE user_id IN ('invalid')", &db);
     assert!(!invalid.status.success());
     fs::remove_dir_all(db).unwrap();
 }

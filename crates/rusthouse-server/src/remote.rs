@@ -168,14 +168,15 @@ mod tests {
         let listener = TcpListener::bind("127.0.0.1:0").unwrap();
         let address = listener.local_addr().unwrap();
         let (release, keep_open) = mpsc::channel::<()>();
-        let server = std::thread::spawn(move || {
-            let (mut stream, _) = listener.accept().unwrap();
-            stream.write_all(
+        let server =
+            std::thread::spawn(move || {
+                let (mut stream, _) = listener.accept().unwrap();
+                stream.write_all(
                 b"HTTP/1.1 200 OK\r\nContent-Length: 2\r\nContent-Type: text/plain\r\n\r\nOK"
             ).unwrap();
-            // The client must finish before the server closes the connection.
-            keep_open.recv_timeout(Duration::from_secs(3)).unwrap();
-        });
+                // The client must finish before the server closes the connection.
+                keep_open.recv_timeout(Duration::from_secs(3)).unwrap();
+            });
         let mut stream = TcpStream::connect(address).unwrap();
         let bytes = read_with_deadline(&mut stream, Duration::from_secs(2)).unwrap();
         assert_eq!(parse_response(&bytes).unwrap().body, b"OK");
@@ -186,7 +187,10 @@ mod tests {
     #[test]
     fn completed_response_still_rejects_invalid_size_and_duplicate_headers() {
         let missing = b"HTTP/1.1 200 OK\r\nContent-Length: 3\r\nContent-Type: text/plain\r\n\r\nOK";
-        assert_eq!(expected_wire_length(missing).unwrap(), Some(missing.len() + 1));
+        assert_eq!(
+            expected_wire_length(missing).unwrap(),
+            Some(missing.len() + 1)
+        );
         assert!(parse_response(missing).is_err());
         let duplicate = b"HTTP/1.1 200 OK\r\nContent-Length: 2\r\nContent-Length: 2\r\nContent-Type: text/plain\r\n\r\nOK";
         assert!(expected_wire_length(duplicate).is_err());
