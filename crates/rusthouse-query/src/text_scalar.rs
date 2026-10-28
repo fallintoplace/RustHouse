@@ -85,6 +85,7 @@ pub(super) fn is_function(name: &str) -> bool {
             | "BASE64_DECODE"
             | "APPENDTRAILINGCHARIFABSENT"
             | "RPAD"
+            | "LOWERUTF8"
             | "SPACE"
     )
 }
@@ -1908,6 +1909,20 @@ fn parse_at_depth(parser: &mut Parser, depth: usize) -> Result<ConstantValue, Pa
                     }
                 }
                 _ => ConstantValue::Null,
+            }
+        }
+        "LOWERUTF8" => {
+            let input = text_arg(parser, depth + 1)?;
+            require(parser, Token::RParen, "lowerUTF8 requires one argument")?;
+            match input {
+                Some(value) => {
+                    let result = value.to_lowercase();
+                    if result.len() > MAX_TEXT_BYTES {
+                        return Err(ParseError("lowerUTF8 result is too large".into()));
+                    }
+                    ConstantValue::Text(result)
+                }
+                None => ConstantValue::Null,
             }
         }
         _ => return Err(ParseError(format!("unsupported string function: {name}"))),
