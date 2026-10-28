@@ -1,0 +1,314 @@
+//! Bounded memory numeric histogram over immutable analytical fact parts.
+//! Two streaming passes find range then count equal-width bins. Memory scales
+//! with bin count and decoded granule size, not SELECT cardinality.
+use super::predicates::{
+    compile_numbers_predicates, monotonic_range_indices, number_matches_all,
+};
+use super::typed;
+use super::{ExecutionError, Number, number_at, write_header};
+use crate::{Projection, Select};
+use rusthouse_storage::{PartMetadata, TypedColumn, TypedQueryReader, inspect_query_source};
+use std::collections::HashMap;
+use std::io::Write;
+use std::path::Path;
+
+#[derive(Clone, Copy)]
+struct Bin {
+    min: f64,
+    max: f64,
+    count: u64,
+}
+
+fn number_as_float(value: Number) -> Result<f64, ExecutionError> {
+    let value = match value {
+        Number::Unsigned(value) => value as f64,
+        Number::Signed(value) => value as f64,
+        Number::Float(value) => value,
+    };
+    if value.is_finite() {
+        Ok(value)
+    } else {
+        Err(ExecutionError::Invalid(
+            "histogram does not support NaN or infinite values".into(),
+        ))
+    }
+}
+
+fn bucket(value: f64, min: f64, max: f64, bins: usize) -> usize {
+    if min == max {
+        return 0;
+    }
+    let fraction = ((value - min) / (max - min)).clamp(0.0, 1.0);
+    ((fraction * bins as f64) as usize).min(bins - 1)
+}
+
+fn to_bins(min: f64, max: f64, counts: &[u64]) -> Vec<Bin> {
+    if min == max {
+        return vec![Bin {
+            min,
+            max,
+            count: counts.iter().copied().sum(),
+        }];
+    }
+    let span = max - min;
+    counts
+        .iter()
+        .enumerate()
+        .map(|(index, &count)| Bin {
+            min: min + span * (index as f64 / counts.len() as f64),
+            max: if index + 1 == counts.len() {
+                max
+            } else {
+                min + span * ((index + 1) as f64 / counts.len() as f64)
+            },
+            count,
+        })
+        .collect()
+}
+
+fn output_bins<W: Write>(
+    query: &Select,
+    output: &mut W,
+    column: &str,
+    bins: usize,
+    result: &[Bin],
+) -> Result<(), ExecutionError> {
+    write_header(query, output, &format!("histogram({bins})({column})"))?;
+    if query.limit == Some(0) || query.offset.unwrap_or(0) > 0 {
+        return Ok(());
+    }
+    output.write_all(b"[")?;
+    for (index, bin) in result.iter().enumerate() {
+        if index > 0 {
+            output.write_all(b",")?;
+        }
+        write!(output, "({},{},{})", bin.min, bin.max, bin.count)?;
+    }
+    output.write_all(b"]\n")?;
+    Ok(())
+}
+
+/// Iterates a verified snapshot from the beginning, using identical compiled
+/// filters in both passes. No values or rows are retained between passes.
+fn visit_part(
+    query: &Select,
+    part: &Path,
+    metadata: &PartMetadata,
+    names: &[String],
+    indices: &HashMap<String, usize>,
+    types: &HashMap<String, String>,
+    column: &str,
+    mut observe: impl FnMut(f64) -> Result<(), ExecutionError>,
+) -> Result<(), ExecutionError> {
+    let mut conditions = vec![typed::compile(&query.predicates, indices, types)?];
+    for branch in &query.or_predicates {
+        conditions.push(typed::compile(branch, indices, types)?);
+    }
+    let no_filters = query.predicates.is_empty() && query.or_predicates.is_empty();
+    let selected = indices[column];
+    let mut reader = TypedQueryReader::open_with_metadata(part, names, metadata)?;
+    while let Some(batch) = reader.next_batch()? {
+        for row in 0..batch[0].len() {
+            if !no_filters && !typed::passes(&batch, row, &conditions) {
+                continue;
+            }
+            match &batch[selected] {
+                TypedColumn::Numeric(values) => {
+                    observe(number_as_float(number_at(values, row))?)?
+                }
+                TypedColumn::NullableNumeric { values, nulls } if nulls[row] == 0 => {
+                    observe(number_as_float(number_at(values, row))?)?
+                }
+                TypedColumn::NullableNumeric { .. } => {}
+                _ => return Err(ExecutionError::Invalid(
+                    "histogram requires numerical columns".into(),
+                )),
+            }
+        }
+    }
+    Ok(())
+}
+
+pub(super) fn execute_part<W: Write>(
+    query: &Select,
+    part: &Path,
+    output: &mut W,
+) -> Result<(), ExecutionError> {
+    let Projection::Histogram { column, bins } = &query.projection else {
+        unreachable!("histogram executor requires histogram projection");
+    };
+    let metadata = inspect_query_source(part)?;
+    let source_type = metadata
+        .columns
+        .iter()
+        .find(|candidate| candidate.name == *column)
+        .ok_or_else(|| ExecutionError::Invalid(format!("unknown histogram column: {column}")))?
+        .data_type
+        .as_str();
+    let base_type = typed::base_type(source_type);
+    if !(base_type.starts_with("UInt")
+        || base_type.starts_with("Int")
+        || base_type.starts_with("Float"))
+    {
+        return Err(ExecutionError::Invalid(
+            "histogram requires numeric column type".into(),
+        ));
+    }
+    if query.limit == Some(0) {
+        return output_bins(query, output, column, *bins, &[]);
+    }
+    let mut names = vec![column.clone()];
+    for predicate in query
+        .predicates
+        .iter()
+        .chain(query.or_predicates.iter().flatten())
+    {
+        if !names.iter().any(|candidate| candidate == predicate.column()) {
+            names.push(predicate.column().to_owned());
+        }
+    }
+    let indices = names
+        .iter()
+        .enumerate()
+        .map(|(index, name)| (name.clone(), index))
+        .collect::<HashMap<String, usize>>();
+    let types = metadata
+        .columns
+        .iter()
+        .map(|candidate| (candidate.name.clone(), candidate.data_type.clone()))
+        .collect::<HashMap<String, String>>();
+    let mut min = f64::INFINITY;
+    let mut max = f64::NEG_INFINITY;
+    let mut rows = 0u64;
+    visit_part(query, part, &metadata, &names, &indices, &types, column, |value| {
+        min = min.min(value);
+        max = max.max(value);
+        rows = rows
+            .checked_add(1)
+            .ok_or_else(|| ExecutionError::Invalid("histogram row count overflow".into()))?;
+        Ok(())
+    })?;
+    if rows == 0 {
+        return output_bins(query, output, column, *bins, &[]);
+    }
+    if !(max - min).is_finite() {
+        return Err(ExecutionError::Invalid(
+            "histogram numeric range exceeds Float64 precision".into(),
+        ));
+    }
+    let mut counts = vec![0u64; *bins];
+    visit_part(query, part, &metadata, &names, &indices, &types, column, |value| {
+        let index = bucket(value, min, max, *bins);
+        counts[index] = counts[index]
+            .checked_add(1)
+            .ok_or_else(|| ExecutionError::Invalid("histogram bin overflow".into()))?;
+        Ok(())
+    })?;
+    if counts.iter().copied().sum::<u64>() != rows {
+        return Err(ExecutionError::Invalid(
+            "histogram input changed between passes".into(),
+        ));
+    }
+    output_bins(query, output, column, *bins, &to_bins(min, max, &counts))
+}
+
+pub(super) fn execute_numbers<W: Write>(
+    query: &Select,
+    start: u64,
+    rows: u64,
+    step: u64,
+    output: &mut W,
+) -> Result<(), ExecutionError> {
+    let Projection::Histogram { column, bins } = &query.projection else {
+        unreachable!("generated histogram requires histogram projection");
+    };
+    if column != "number" {
+        return Err(ExecutionError::Invalid(
+            "numbers(N) exposes only the number column".into(),
+        ));
+    }
+    if query.limit == Some(0) {
+        return output_bins(query, output, column, *bins, &[]);
+    }
+    let conditions = compile_numbers_predicates(query)?;
+    let range = if query.predicates.is_empty() && query.or_predicates.is_empty() {
+        Some((0, rows))
+    } else {
+        monotonic_range_indices(&conditions, start, rows, step)
+    };
+    // A uniform arithmetic sequence has exact equal-width bucket counts.
+    // Calculate billion-row histograms without scanning every generated row.
+    if let Some((lower, upper)) = range {
+        let count = upper - lower;
+        if count == 0 {
+            return output_bins(query, output, column, *bins, &[]);
+        }
+        let mut result = Vec::with_capacity(*bins);
+        for index in 0..*bins {
+            let left = u128::from(count) * index as u128 / *bins as u128;
+            let right = u128::from(count) * (index + 1) as u128 / *bins as u128;
+            if right == left {
+                continue;
+            }
+            let from = u128::from(start) + (u128::from(lower) + left) * u128::from(step);
+            let to = u128::from(start) + (u128::from(lower) + right - 1) * u128::from(step);
+            result.push(Bin {
+                min: from as f64,
+                max: to as f64,
+                count: (right - left) as u64,
+            });
+        }
+        return output_bins(query, output, column, *bins, &result);
+    }
+    if rows > 10_000_000 {
+        return Err(ExecutionError::Invalid(
+            "large generated histogram requires monotonic WHERE predicates".into(),
+        ));
+    }
+    let mut min = f64::INFINITY;
+    let mut max = f64::NEG_INFINITY;
+    for index in 0..rows {
+        let number = u128::from(start) + u128::from(index) * u128::from(step);
+        if number_matches_all(Number::Unsigned(number), &conditions) {
+            let value = number as f64;
+            min = min.min(value);
+            max = max.max(value);
+        }
+    }
+    if min == f64::INFINITY {
+        return output_bins(query, output, column, *bins, &[]);
+    }
+    let mut counts = vec![0u64; *bins];
+    for index in 0..rows {
+        let number = u128::from(start) + u128::from(index) * u128::from(step);
+        if number_matches_all(Number::Unsigned(number), &conditions) {
+            counts[bucket(number as f64, min, max, *bins)] += 1;
+        }
+    }
+    output_bins(query, output, column, *bins, &to_bins(min, max, &counts))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn equal_width_boundaries_include_maximum_and_empty() {
+        let mut counts = vec![0u64; 8];
+        for index in 0..10_000 {
+            counts[bucket(index as f64, 0.0, 9999.0, 8)] += 1;
+        }
+        assert_eq!(counts.iter().sum::<u64>(), 10_000);
+        let mut uniform = vec![0u64; 4];
+        for _ in 0..1000 {
+            uniform[bucket(17.0, 17.0, 17.0, 4)] += 1;
+        }
+        assert_eq!(to_bins(17.0, 17.0, &uniform).len(), 1);
+    }
+
+    #[test]
+    fn numerically_invalid_inputs_rejected() {
+        assert!(number_as_float(Number::Float(f64::NAN)).is_err());
+        assert!(number_as_float(Number::Float(f64::INFINITY)).is_err());
+    }
+}

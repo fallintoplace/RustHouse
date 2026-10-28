@@ -18,12 +18,12 @@ mod update;
 pub use copy::{CopyFormat, CopyFrom, parse_copy_from};
 pub use ddl::{ColumnDef, Ddl, parse_ddl};
 pub use delete::parse_delete;
-pub use execute::{ExecutionError, RowPredicate, execute, execute_join, execute_multi_join};
+pub use execute::{ExecutionError, RowPredicate, execute, execute_join, execute_multi_join, merge_uniq_states};
 pub use explain::explain_select;
 pub use expression::{ScalarExpr, parse_scalar_expression};
 pub use insert::{Insert, parse_insert};
 pub use insert_select::{InsertSelect, parse_insert_select};
-pub use join::{JoinColumn, JoinSelect, JoinStep, JoinType, explain_join, parse_join};
+pub use join::{JoinAggregate, JoinColumn, JoinSelect, JoinStep, JoinType, explain_join, parse_join};
 pub use multi_aggregate::AggregateItem;
 pub use update::{Update, parse_update};
 
@@ -130,6 +130,15 @@ pub enum Projection {
     },
     /// Fixed-memory approximate cardinality (~0.81% RSE).
     ApproxDistinct {
+        column: String,
+    },
+    /// Bounded-memory histogram with a fixed number of numeric bins.
+    Histogram {
+        column: String,
+        bins: usize,
+    },
+    /// Stable hex-encoded HyperLogLog registers for partial global reductions.
+    ApproxDistinctState {
         column: String,
     },
     GroupedCount {
@@ -675,6 +684,16 @@ fn parse_select_tokens(tokens: Vec<Token>) -> Result<Select, ParseError> {
             }
             Projection::CountColumn { column }
         }
+    } else if matches!(parser.tokens.get(parser.index), Some(Token::Word(name)) if name.eq_ignore_ascii_case("UNIQSTATE"))
+        && parser.tokens.get(parser.index + 1) == Some(&Token::LParen)
+    {
+        parser.keyword("UNIQSTATE");
+        parser.take(Token::LParen);
+        let column = parser.word()?;
+        if !parser.take(Token::RParen) {
+            return Err(ParseError("expected ')' after uniqState(column)".into()));
+        }
+        Projection::ApproxDistinctState { column }
     } else if matches!(parser.tokens.get(parser.index), Some(Token::Word(name)) if name.eq_ignore_ascii_case("UNIQ"))
         && parser.tokens.get(parser.index + 1) == Some(&Token::LParen)
     {
@@ -685,6 +704,24 @@ fn parse_select_tokens(tokens: Vec<Token>) -> Result<Select, ParseError> {
             return Err(ParseError("expected ')' after uniq(column)".into()));
         }
         Projection::ApproxDistinct { column }
+    } else if matches!(parser.tokens.get(parser.index), Some(Token::Word(name)) if name.eq_ignore_ascii_case("HISTOGRAM"))
+        && parser.tokens.get(parser.index + 1) == Some(&Token::LParen)
+    {
+        parser.keyword("HISTOGRAM");
+        parser.take(Token::LParen);
+        let bins = parser.number()?.parse::<usize>()
+            .map_err(|_| ParseError("histogram bins must be an integer".into()))?;
+        if !(1..=256).contains(&bins) {
+            return Err(ParseError("histogram requires between 1 and 256 bins".into()));
+        }
+        if !parser.take(Token::RParen) || !parser.take(Token::LParen) {
+            return Err(ParseError("histogram requires histogram(bins)(column)".into()));
+        }
+        let column = parser.word()?;
+        if !parser.take(Token::RParen) {
+            return Err(ParseError("expected ')' after histogram column".into()));
+        }
+        Projection::Histogram { column, bins }
     } else if matches!(parser.tokens.get(parser.index + 1), Some(Token::LParen))
         && !matches!(parser.tokens.get(parser.index), Some(Token::Word(word)) if scalar::is_function(word) || text_scalar::is_function(word))
     {
@@ -1018,6 +1055,8 @@ fn parse_select_tokens(tokens: Vec<Token>) -> Result<Select, ParseError> {
                 | Projection::CountColumn { .. }
                 | Projection::CountDistinct { .. }
                 | Projection::ApproxDistinct { .. }
+                | Projection::Histogram { .. }
+                | Projection::ApproxDistinctState { .. }
                 | Projection::Aggregate { .. }
                 | Projection::GroupedCount { .. }
                 | Projection::GroupedDistinctCount { .. }
@@ -1550,6 +1589,8 @@ fn parse_select_tokens(tokens: Vec<Token>) -> Result<Select, ParseError> {
                 | Projection::CountColumn { .. }
                 | Projection::CountDistinct { .. }
                 | Projection::ApproxDistinct { .. }
+                | Projection::Histogram { .. }
+                | Projection::ApproxDistinctState { .. }
                 | Projection::Aggregate { .. }
                 | Projection::MultipleAggregates(_)
                 | Projection::StringLength { .. }
