@@ -23,6 +23,7 @@ pub mod distributed_atomic_copy;
 mod granules;
 pub mod distributed_range_read;
 mod ip;
+pub mod distributed_resume_map;
 mod mark_validation;
 mod marks;
 mod metadata;
