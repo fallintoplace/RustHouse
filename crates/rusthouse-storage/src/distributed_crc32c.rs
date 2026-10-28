@@ -23,9 +23,27 @@ const fn make_table() -> [u32; 256] {
     table
 }
 
+struct Checksum(u32);
+
+impl Checksum {
+    fn new() -> Self {
+        Self(!0)
+    }
+
+    fn append(&mut self, bytes: &[u8]) {
+        self.0 = update(self.0, bytes);
+    }
+
+    fn finish(self) -> u32 {
+        self.0 ^ !0
+    }
+}
+
 /// Compute CRC32C (Castagnoli) for one byte slice.
 pub fn crc32c(bytes: &[u8]) -> u32 {
-    update(!0, bytes) ^ !0
+    let mut checksum = Checksum::new();
+    checksum.append(bytes);
+    checksum.finish()
 }
 
 fn update(mut crc: u32, bytes: &[u8]) -> u32 {
@@ -38,7 +56,7 @@ fn update(mut crc: u32, bytes: &[u8]) -> u32 {
 
 /// Stream a file without reading beyond max_bytes. Returns (length, checksum).
 pub fn crc32c_reader(reader: &mut impl Read, max_bytes: u64) -> io::Result<(u64, u32)> {
-    let mut crc = !0u32;
+    let mut checksum = Checksum::new();
     let mut total = 0u64;
     let mut buffer = [0u8; 32 * 1024];
     loop {
@@ -52,9 +70,9 @@ pub fn crc32c_reader(reader: &mut impl Read, max_bytes: u64) -> io::Result<(u64,
         if total > max_bytes {
             return Err(io::Error::other("transfer exceeds configured byte cap"));
         }
-        crc = update(crc, &buffer[..count]);
+        checksum.append(&buffer[..count]);
     }
-    Ok((total, crc ^ !0))
+    Ok((total, checksum.finish()))
 }
 
 #[cfg(test)]
