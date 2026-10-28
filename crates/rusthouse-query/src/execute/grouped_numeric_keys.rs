@@ -76,7 +76,12 @@ pub(super) fn execute<W: Write>(
         conditions.push(typed::compile(branch, &indices, &types)?);
     }
 
-    write!(output, "{}", columns.join("\t"))?;
+    for (index, column) in columns.iter().enumerate() {
+        if index != 0 {
+            output.write_all(b"\t")?;
+        }
+        output.write_all(column.as_bytes())?;
+    }
     for (function, column) in items {
         write!(output, "\t{}({column})", function.name())?;
     }
