@@ -104,6 +104,17 @@ impl<W: Write> Write for JsonArraySink<W> {
                     "JSON object exceeds 4 MiB",
                 ));
             }
+            if complete && self.row.is_empty() {
+                self.output
+                    .write_all(array_prefix(self.first, self.pretty))?;
+                if self.pretty {
+                    write_pretty_json_row(&mut self.output, fragment)?;
+                } else {
+                    self.output.write_all(fragment)?;
+                }
+                self.first = false;
+                continue;
+            }
             self.row.extend_from_slice(fragment);
             if complete {
                 self.finish_row()?;
@@ -169,6 +180,14 @@ impl<W: Write> Write for JsonArrayWriter<W> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn batched_json_objects_skip_row_allocation() {
+        let mut sink = JsonArraySink::new(Vec::new(), false);
+        sink.write_all(b"{\"a\":1}\n{\"b\":2}\n").unwrap();
+        assert_eq!(sink.row.capacity(), 0);
+        assert_eq!(sink.finish().unwrap(), b"[{\"a\":1},{\"b\":2}]\n");
+    }
 
     #[test]
     fn framing_handles_empty_compact_and_pretty_arrays() {
