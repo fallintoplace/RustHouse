@@ -46,6 +46,7 @@ use std::path::Path;
 use std::sync::atomic::{AtomicUsize, Ordering as AtomicOrdering};
 
 mod grouped_distinct;
+mod grouped_generated;
 mod grouped_multi;
 mod grouped_multi_distinct;
 mod grouped_numeric_keys;
@@ -1510,6 +1511,9 @@ fn execute_numbers<W: Write>(
     }
     if let Projection::MultipleAggregates(items) = &query.projection {
         return multi_aggregate::execute_numbers(query, start, rows, step, items, output);
+    }
+    if let Projection::GroupedAggregates { column, items, aliases } = &query.projection {
+        return grouped_generated::execute(query, start, rows, step, column, items, aliases, output);
     }
     if matches!(
         query.projection,
