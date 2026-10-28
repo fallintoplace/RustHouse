@@ -280,7 +280,12 @@ pub(super) fn is_safe_grouped_multikey_sum(select: &Select) -> bool {
         if (2..=8).contains(&columns.len())
             && items.len() == 1
             && items[0].0 == AggregateFunction::Sum
-    ) && is_safe_unpaged_select(select)
+            && select.order_terms().all(|term| columns.contains(&term.column))
+    ) && matches!(select.source, Some(Source::Table(_)))
+        && !select.distinct
+        && select.rename.is_none()
+        && select.alias.is_none()
+        && select.having.is_none()
 }
 
 /// Multiple dimensions with one exact integer extremum may reduce per composite key.
