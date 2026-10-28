@@ -2,6 +2,7 @@ mod aggregate_plans;
 mod external_grouped;
 mod bitmap_distinct;
 mod hyperloglog;
+mod uniq_tuple;
 
 #[cfg(test)]
 mod dynamic_part_tests {
@@ -953,6 +954,9 @@ fn execute_into<W: Write>(
     let part = part.ok_or_else(|| {
         ExecutionError::Invalid("pass --part <directory> for table queries".into())
     })?;
+    if matches!(query.projection, Projection::ApproxDistinctTuple { .. }) {
+        return uniq_tuple::execute_part(query, part, output);
+    }
     // A single typed scan serves numeric and String columns with fixed 16 KiB state.
     if matches!(query.projection, Projection::ApproxDistinct { .. }) {
         return typed::execute_typed(query, part, output);
@@ -1057,6 +1061,7 @@ fn execute_into<W: Write>(
         | Projection::CountColumn { .. }
         | Projection::CountDistinct { .. }
         | Projection::ApproxDistinct { .. }
+        | Projection::ApproxDistinctTuple { .. }
         | Projection::GroupedCount { .. }
         | Projection::GroupedDistinctCount { .. }
         | Projection::GroupedMultiDistinctCount { .. }
@@ -1449,6 +1454,7 @@ fn execute_numbers<W: Write>(
             query.projection,
             Projection::Count | Projection::CountColumn { .. } | Projection::CountDistinct { .. }
                 | Projection::ApproxDistinct { .. }
+                | Projection::ApproxDistinctTuple { .. }
         );
         let simple_result = query.order_by.is_none()
             && query.order_by_extra.is_empty()
@@ -1562,6 +1568,9 @@ fn execute_numbers<W: Write>(
         }
         return Ok(());
     }
+    if let Projection::ApproxDistinctTuple { columns } = &query.projection {
+        return uniq_tuple::execute_numbers(query, start, rows, step, columns, output);
+    }
     if let Projection::CountDistinct { column } | Projection::ApproxDistinct { column } = &query.projection {
         if column != "number" {
             return Err(ExecutionError::Invalid(
@@ -1619,6 +1628,7 @@ fn execute_numbers<W: Write>(
         | Projection::CountColumn { .. }
         | Projection::CountDistinct { .. }
         | Projection::ApproxDistinct { .. }
+        | Projection::ApproxDistinctTuple { .. }
         | Projection::GroupedCount { .. }
         | Projection::GroupedDistinctCount { .. }
         | Projection::GroupedMultiDistinctCount { .. }
