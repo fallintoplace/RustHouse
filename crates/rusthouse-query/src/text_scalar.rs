@@ -23,6 +23,7 @@ pub(super) fn is_function(name: &str) -> bool {
             | "LOWER"
             | "HEX_ENCODE"
             | "IS_ASCII"
+            | "ISIPV4STRING"
             | "UPPER"
             | "URL_DECODE"
             | "IS_EMPTY"
@@ -312,6 +313,14 @@ fn parse_at_depth(parser: &mut Parser, depth: usize) -> Result<ConstantValue, Pa
                     }
                     ConstantValue::Text(result)
                 }
+                None => ConstantValue::Null,
+            }
+        }
+        "ISIPV4STRING" => {
+            let input = text_arg(parser, depth + 1)?;
+            require(parser, Token::RParen, "isIPv4String requires one argument")?;
+            match input {
+                Some(value) => ConstantValue::Integer(i64::from(value.parse::<std::net::Ipv4Addr>().is_ok())),
                 None => ConstantValue::Null,
             }
         }
