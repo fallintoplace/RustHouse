@@ -924,7 +924,7 @@ pub(super) fn count_monotonic_numbers(
     }
     let mut lower = 0u128;
     let mut upper = u128::from(rows);
-    let mut excluded = Vec::new();
+    let mut excluded = Vec::with_capacity(conjunction.len().min(32));
 
     for predicate in conjunction {
         let CompiledTest::Comparison {
