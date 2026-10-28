@@ -247,6 +247,7 @@ mod literal_null_marker_regressions {
         assert_eq!(writer.columns, Some(256));
         assert!(writer.write_all(b"one\tcolumn\n").is_err());
     }
+
     #[test]
     fn csv_plain_utf8_fields_skip_escape_decoding() {
         let mut output = Vec::new();
