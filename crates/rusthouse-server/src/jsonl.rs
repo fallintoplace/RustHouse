@@ -45,9 +45,15 @@ fn decoded_row_field(field: &[u8]) -> io::Result<Cow<'_, str>> {
     }
 }
 
-fn write_json_row<W: Write>(output: &mut W, headers: &[String], line: &[u8]) -> io::Result<()> {
+fn write_json_row_into<W: Write>(
+    output: &mut W,
+    headers: &[String],
+    line: &[u8],
+    row: &mut Vec<u8>,
+) -> io::Result<()> {
     let mut fields = line.split(|byte| *byte == b'\t');
-    let mut row = Vec::with_capacity(line.len() + headers.len() * 8 + 3);
+    row.clear();
+    row.reserve(line.len() + headers.len() * 8 + 3);
     row.write_all(b"{")?;
     for (index, header) in headers.iter().enumerate() {
         let field = fields
@@ -72,10 +78,16 @@ fn write_json_row<W: Write>(output: &mut W, headers: &[String], line: &[u8]) -> 
     output.write_all(&row)
 }
 
+#[cfg(test)]
+fn write_json_row<W: Write>(output: &mut W, headers: &[String], line: &[u8]) -> io::Result<()> {
+    write_json_row_into(output, headers, line, &mut Vec::new())
+}
+
 pub struct JsonlWriter<W: Write> {
     output: W,
     headers: Option<Vec<String>>,
     line: Vec<u8>,
+    encoded: Vec<u8>,
 }
 
 impl<W: Write> JsonlWriter<W> {
@@ -84,12 +96,13 @@ impl<W: Write> JsonlWriter<W> {
             output,
             headers: None,
             line: Vec::new(),
+            encoded: Vec::new(),
         }
     }
 
     fn finish_line(&mut self) -> io::Result<()> {
         if let Some(headers) = &self.headers {
-            let result = write_json_row(&mut self.output, headers, &self.line);
+            let result = write_json_row_into(&mut self.output, headers, &self.line, &mut self.encoded);
             self.line.clear();
             return result;
         }
@@ -128,6 +141,17 @@ impl<W: Write> Write for JsonlWriter<W> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn reuses_jsonl_response_buffer() {
+        let mut writer = JsonlWriter::new(Vec::new());
+        writer.write_all(b"value\n").unwrap();
+        let large = format!("{}\n", "a".repeat(4096));
+        writer.write_all(large.as_bytes()).unwrap();
+        let capacity = writer.encoded.capacity();
+        writer.write_all(b"b\n").unwrap();
+        assert_eq!(writer.encoded.capacity(), capacity);
+    }
 
     #[test]
     fn decodes_additional_tsv_control_escapes() {
