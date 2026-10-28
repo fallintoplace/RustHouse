@@ -13,7 +13,7 @@ use std::collections::{BinaryHeap, HashMap, HashSet, hash_map::Entry};
 use std::io::Write;
 use std::path::Path;
 
-const MAX_BUFFERED_ROWS: usize = 100_000;
+const MAX_BUFFERED_ROWS: usize = 200_000;
 
 fn remember_distinct_text(seen: &mut HashSet<Vec<u8>>, value: &[u8]) -> Result<(), ExecutionError> {
     if seen.contains(value) {
@@ -901,7 +901,7 @@ pub(super) fn execute_typed<W: Write>(
                     } else {
                         if grouped_rows.len() >= MAX_BUFFERED_ROWS {
                             return Err(ExecutionError::Invalid(
-                                "GROUP BY supports at most 100000 groups".into(),
+                                "GROUP BY supports at most 200000 groups".into(),
                             ));
                         }
                         let group = grouped_rows.len();
@@ -921,7 +921,7 @@ pub(super) fn execute_typed<W: Write>(
                     Entry::Vacant(entry) => {
                         if grouped_rows.len() >= MAX_BUFFERED_ROWS {
                             return Err(ExecutionError::Invalid(
-                                "GROUP BY supports at most 100000 groups".into(),
+                                "GROUP BY supports at most 200000 groups".into(),
                             ));
                         }
                         entry.insert(grouped_rows.len());

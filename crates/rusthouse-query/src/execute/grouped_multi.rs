@@ -7,7 +7,7 @@ use std::collections::HashMap;
 use std::io::Write;
 use std::path::Path;
 
-const MAX_GROUPS: usize = 100_000;
+const MAX_GROUPS: usize = 200_000;
 
 pub(super) fn execute<W: Write>(
     query: &Select,
@@ -81,7 +81,7 @@ pub(super) fn execute<W: Write>(
             } else {
                 if groups.len() >= MAX_GROUPS {
                     return Err(ExecutionError::Invalid(
-                        "GROUP BY supports at most 100000 groups".into(),
+                        "GROUP BY supports at most 200000 groups".into(),
                     ));
                 }
                 let values: Vec<Cell> = group_indices
