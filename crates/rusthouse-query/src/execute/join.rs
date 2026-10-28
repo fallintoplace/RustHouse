@@ -156,7 +156,7 @@ where
                     {
                         if let Some((column, not_null)) = options.null_filter {
                             let is_null = if column < left_names.len() {
-                                matches!(typed::cell(&batch[column], index), typed::Cell::Null)
+                                typed::is_null_at(&batch[column], index)
                             } else {
                                 matches!(
                                     &right_rows[right_index][column - left_names.len()],
@@ -379,10 +379,7 @@ where
                             let is_null = if column < left_width {
                                 matches!(&left_rows[left_index][column], typed::Cell::Null)
                             } else {
-                                matches!(
-                                    typed::cell(&batch[column - left_width], index),
-                                    typed::Cell::Null
-                                )
+                                typed::is_null_at(&batch[column - left_width], index)
                             };
                             if is_null == not_null {
                                 continue;
