@@ -320,16 +320,6 @@ fn map_numeric_text(values: &NumericColumn, index: usize) -> String {
     }
 }
 
-fn push_encoded_map_text(encoded: &mut Vec<u8>, value: &str) {
-    let mut length = value.len() as u64;
-    while length >= 128 {
-        encoded.push((length as u8 & 0x7f) | 0x80);
-        length >>= 7;
-    }
-    encoded.push(length as u8);
-    encoded.extend_from_slice(value.as_bytes());
-}
-
 fn read_string_key_map(
     keys_stream: &mut Stream,
     values_stream: &mut Stream,
@@ -365,7 +355,8 @@ fn read_string_key_map(
             ),
         )
     };
-    let mut encoded = Vec::new();
+    let mut decoded_rows = Vec::with_capacity(rows);
+    let mut decoded_bytes = 0usize;
     for row in 0..rows {
         let range = offsets
             .row_range(row)
@@ -393,12 +384,15 @@ fn read_string_key_map(
             }
         }
         output.push('}');
-        push_encoded_map_text(&mut encoded, &output);
-        if encoded.len() > 64 * 1024 * 1024 {
-            return Err(PartError::InvalidScan("Map batch exceeds 64 MiB".into()));
-        }
+        decoded_bytes = decoded_bytes
+            .checked_add(output.len())
+            .filter(|&bytes| bytes <= 64 * 1024 * 1024)
+            .ok_or_else(|| PartError::InvalidScan("Map batch exceeds 64 MiB".into()))?;
+        decoded_rows.push(output.into_bytes());
     }
-    read_legacy_strings(&mut encoded.as_slice(), rows)
+    // Avoid encoding Map text as legacy varints just to decode it back into
+    // the final StringColumn. The constructor still enforces the 64 MiB cap.
+    StringColumn::from_rows(decoded_rows)
         .map_err(|error| PartError::InvalidScan(error.to_string()))
 }
 
@@ -954,5 +948,23 @@ mod tests {
             Err(PartError::InvalidGranuleIndex { index: 4, marks: 3 })
         ));
         fs::remove_dir_all(root).unwrap();
+    }
+}
+
+#[cfg(test)]
+mod map_row_fast_path_tests {
+    use super::*;
+
+    #[test]
+    fn direct_map_rows_preserve_empty_and_escaped_values() {
+        let mut text = String::from("{");
+        quoted_map_text(&mut text, b"k\"x").unwrap();
+        text.push(':');
+        quoted_map_text(&mut text, "caf\u{e9}\n".as_bytes()).unwrap();
+        text.push('}');
+        let rows = StringColumn::from_rows(vec![text.as_bytes().to_vec(), b"{}".to_vec()])
+            .unwrap();
+        assert_eq!(rows.get(0), Some(text.as_bytes()));
+        assert_eq!(rows.get(1), Some(&b"{}"[..]));
     }
 }
