@@ -727,6 +727,28 @@ pub(super) fn execute_count_distinct_part<W: Write>(
         }
         return Ok(());
     }
+    // Exact high-cardinality 64-bit dimensions use external sorted runs.
+    if query.order_by.is_none() && query.order_by_extra.is_empty()
+        && metadata.columns.iter().any(|c| c.name == column
+            && matches!(c.data_type.as_str(), "UInt64" | "Int64"))
+    {
+        let mut distinct = ExternalDistinct64::new();
+        while let Some(batch) = reader.next_batch()? {
+            for row in 0..batch[0].len() {
+                if !no_filters && !batch_matches(&batch, row, &comparisons) { continue; }
+                let key = match &batch[0] {
+                    NumericColumn::UInt64(values) => values[row],
+                    NumericColumn::Int64(values) => values[row] as u64,
+                    _ => return Err(ExecutionError::Invalid(
+                        "unexpected exact 64-bit distinct column".into())),
+                };
+                distinct.insert(key)?;
+            }
+        }
+        let count = distinct.finish()?;
+        if query.offset.unwrap_or(0) == 0 { writeln!(output, "{count}")?; }
+        return Ok(());
+    }
     let mut seen = HashSet::new();
     while let Some(batch) = reader.next_batch()? {
         for row in 0..batch[0].len() {
