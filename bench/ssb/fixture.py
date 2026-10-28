@@ -9,7 +9,7 @@ import sqlite3
 from contextlib import closing
 from pathlib import Path
 
-MAX_FACTS = 12000
+MAX_FACTS = 1_000_000
 DATE_KEYS = tuple((year * 10000 + month * 100 + 1, year, month)
                   for year in range(1993, 1998) for month in range(1, 7))
 TABLES = {
@@ -39,21 +39,27 @@ def write_table(root, name, records):
     return path
 
 
+def fact_records(rows, seed):
+    """Stream reproducible fact rows without retaining the full table in RAM."""
+    rng = random.Random(seed)
+    for index in range(rows):
+        yield (
+            index + 1, 1, rng.choice(DATE_KEYS)[0],
+            rng.randint(100, 1000000), rng.randint(1, 50), rng.randint(0, 10)
+        )
+
+
 def generate(root, rows=2000, seed=42):
     if not 1 <= rows <= MAX_FACTS:
         raise ValueError(f"lineorder rows must be 1..{MAX_FACTS}")
     root = Path(root)
     root.mkdir(parents=True, exist_ok=True)
-    rng = random.Random(seed)
-    facts = [
-        (index + 1, 1, rng.choice(DATE_KEYS)[0],
-         rng.randint(100, 1000000), rng.randint(1, 50), rng.randint(0, 10))
-        for index in range(rows)
-    ]
     write_table(root, "date_dim", DATE_KEYS)
-    write_table(root, "lineorder", facts)
+    write_table(root, "lineorder", fact_records(rows, seed))
     with closing(sqlite3.connect(root / "reference.sqlite")) as connection, connection:
-        for table, records in (("date_dim", DATE_KEYS), ("lineorder", facts)):
+        for table, records in (
+            ("date_dim", DATE_KEYS), ("lineorder", fact_records(rows, seed))
+        ):
             connection.execute("DROP TABLE IF EXISTS " + table)
             connection.execute("CREATE TABLE " + table + " (" +
                                ", ".join(name + " INTEGER" for name, _ in TABLES[table]) + ")")
