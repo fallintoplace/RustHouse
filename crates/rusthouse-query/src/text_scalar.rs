@@ -74,6 +74,7 @@ pub(super) fn is_function(name: &str) -> bool {
             | "ENDS_WITH"
             | "PATHFULL"
             | "REPLACE_LAST"
+            | "NETLOC"
             | "STRIP_SUFFIX"
             | "REPEAT"
             | "BASE64_DECODE"
@@ -1398,6 +1399,21 @@ fn parse_at_depth(parser: &mut Parser, depth: usize) -> Result<ConstantValue, Pa
                         .to_owned(),
                 ),
                 _ => ConstantValue::Null,
+            }
+        }
+        "NETLOC" => {
+            let input = text_arg(parser, depth + 1)?;
+            require(parser, Token::RParen, "netloc requires one argument")?;
+            match input {
+                Some(input) => {
+                    let authority = input.split_once("://")
+                        .map_or("", |(_, rest)| {
+                            let end = rest.find(['/', '?', '#']).unwrap_or(rest.len());
+                            &rest[..end]
+                        });
+                    ConstantValue::Text(authority.to_owned())
+                }
+                None => ConstantValue::Null,
             }
         }
         "RIGHT" => {
