@@ -187,6 +187,9 @@ pub(super) fn execute_part<W: Write>(
     let mut moments = PairMoments::default();
     let mut reader = TypedQueryReader::open_with_metadata(part, &names, &metadata)?;
     while let Some(batch) = reader.next_batch()? {
+        // Keep a numerically stable partial for each decoded granule. Merging
+        // the partials exercises the same associative reduction as parallel scans.
+        let mut granule = PairMoments::default();
         for row in 0..batch[0].len() {
             if !no_filters && !typed::passes(&batch, row, &conditions) {
                 continue;
@@ -195,9 +198,10 @@ pub(super) fn execute_part<W: Write>(
                 numeric_at(&batch[indices[x]], row)?,
                 numeric_at(&batch[indices[y]], row)?,
             ) {
-                moments.observe(x, y)?;
+                granule.observe(x, y)?;
             }
         }
+        moments.merge(&granule)?;
     }
     write_result(query, output, *function, x, y, moments.value(*function))
 }
