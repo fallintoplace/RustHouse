@@ -12,7 +12,7 @@ pub fn retry_delay(
         return Err("invalid replica retry configuration");
     }
     let exponent = base_ms.saturating_mul(1u64 << attempt).min(max_ms);
-    let half = exponent / 2;
+    let half = exponent.div_ceil(2);
     let jitter = seed
         .wrapping_mul(0x9e37_79b9_7f4a_7c15)
         .rotate_left(attempt)
@@ -30,6 +30,16 @@ mod tests {
             let delay = retry_delay(attempt, 100, 5_000, 1234).unwrap();
             assert!(delay.as_millis() > 0);
             assert!(delay.as_millis() <= 5_000);
+        }
+    }
+
+    #[test]
+    fn one_millisecond_backoff_never_becomes_zero() {
+        for seed in [0, 1, u64::MAX] {
+            assert_eq!(
+                retry_delay(0, 1, 1, seed).unwrap(),
+                Duration::from_millis(1)
+            );
         }
     }
 
