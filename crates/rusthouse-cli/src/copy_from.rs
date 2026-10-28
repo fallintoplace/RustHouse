@@ -553,11 +553,9 @@ mod copy_file_capacity_tests {
         };
         assert!(bad.next_record().is_err());
 
+        let oversized = vec![b'a'; MAX_CSV_RECORD_BYTES + 1];
         let mut giant = CsvRecords {
-            reader: BufReader::new(Box::new(std::io::Cursor::new(vec![
-                b'a';
-                MAX_CSV_RECORD_BYTES + 1
-            ]))),
+            reader: BufReader::new(Box::new(std::io::Cursor::new(oversized))),
             buffer: Vec::new(),
             first: true,
         };
