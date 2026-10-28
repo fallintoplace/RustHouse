@@ -139,7 +139,10 @@ fn read_map_hex(input: &[u8], position: &mut usize) -> Result<u16, PartError> {
     Ok(number)
 }
 
-fn read_map_string(input: &str, position: &mut usize) -> Result<String, PartError> {
+fn read_map_string<'a>(
+    input: &'a str,
+    position: &mut usize,
+) -> Result<std::borrow::Cow<'a, str>, PartError> {
     let bytes = input.as_bytes();
     if bytes.get(*position) != Some(&b'"') {
         return Err(invalid("Map keys and String values require JSON quotes"));
@@ -147,11 +150,17 @@ fn read_map_string(input: &str, position: &mut usize) -> Result<String, PartErro
     *position += 1;
     let mut fragment = *position;
     let mut output = String::new();
+    let mut had_escape = false;
     while let Some(&byte) = bytes.get(*position) {
         if byte == b'"' {
-            output.push_str(&input[fragment..*position]);
+            if had_escape {
+                output.push_str(&input[fragment..*position]);
+                *position += 1;
+                return Ok(std::borrow::Cow::Owned(output));
+            }
+            let plain = &input[fragment..*position];
             *position += 1;
-            return Ok(output);
+            return Ok(std::borrow::Cow::Borrowed(plain));
         }
         if byte < 0x20 {
             return Err(invalid("unescaped control byte in Map string"));
@@ -160,6 +169,7 @@ fn read_map_string(input: &str, position: &mut usize) -> Result<String, PartErro
             *position += 1;
             continue;
         }
+        had_escape = true;
         output.push_str(&input[fragment..*position]);
         *position += 1;
         let escaped = *bytes
@@ -235,7 +245,7 @@ pub(super) fn push_string_key_map(
             cursor += 1;
             skip_map_ws(bytes, &mut cursor);
             let value: std::borrow::Cow<'_, str> = if value_type == "String" {
-                std::borrow::Cow::Owned(read_map_string(literal, &mut cursor)?)
+                read_map_string(literal, &mut cursor)?
             } else {
                 let begin = cursor;
                 while bytes
@@ -249,7 +259,7 @@ pub(super) fn push_string_key_map(
                 }
                 std::borrow::Cow::Borrowed(&literal[begin..cursor])
             };
-            push_cell("String", Some(&key), keys)?;
+            push_cell("String", Some(key.as_ref()), keys)?;
             push_cell(value_type, Some(value.as_ref()), values)?;
             pairs = pairs
                 .checked_add(1)
@@ -398,5 +408,33 @@ mod uuid_writer_tests {
             );
         }
         assert!(push_cell("UUID", None, &mut Vec::new()).is_err());
+    }
+}
+
+#[cfg(test)]
+mod borrow_map_string_tests {
+    use super::*;
+    use std::borrow::Cow;
+
+    #[test]
+    fn plain_map_text_borrows_and_escaped_values_own() {
+        let input = "\"café 東京\"";
+        let mut position = 0;
+        let value = read_map_string(input, &mut position).unwrap();
+        assert!(matches!(value, Cow::Borrowed("café 東京")));
+        assert_eq!(position, input.len());
+
+        let input = "\"line\\nnext\"";
+        let mut position = 0;
+        let value = read_map_string(input, &mut position).unwrap();
+        assert!(matches!(value, Cow::Owned(_)));
+        assert_eq!(value.as_ref(), "line\nnext");
+
+        let input = "\"\"";
+        let mut position = 0;
+        assert!(matches!(
+            read_map_string(input, &mut position).unwrap(),
+            Cow::Borrowed("")
+        ));
     }
 }
