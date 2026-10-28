@@ -85,6 +85,17 @@ fn supported(kind: &str) -> bool {
     )
 }
 
+fn fixed_width_bytes_per_row(data_type: &str) -> usize {
+    match base_type(data_type).0 {
+        "UInt8" | "Int8" => 1,
+        "UInt16" | "Int16" | "Date" => 2,
+        "UInt32" | "Int32" | "Float32" | "DateTime" => 4,
+        "UInt64" | "Int64" | "Float64" => 8,
+        "UInt128" | "Int128" => 16,
+        _ => 0,
+    }
+}
+
 fn write_file(path: &Path, bytes: &[u8]) -> Result<(), PartError> {
     let mut file = OpenOptions::new()
         .write(true)
@@ -245,8 +256,13 @@ pub fn write_wide_part_with_compression(
             let mut data_granules = Vec::with_capacity(granule_count);
             let mut null_granules = Vec::with_capacity(granule_count);
             for granule in rows.chunks(GRANULE_ROWS) {
-                let mut data = Vec::new();
-                let mut nulls = Vec::new();
+                // A fixed-width column's final granule size is known
+                // before encoding. Reserve it once instead of growing at
+                // every row; nullable maps have exactly one byte per row.
+                let mut data = Vec::with_capacity(
+                    granule.len() * fixed_width_bytes_per_row(&col.data_type),
+                );
+                let mut nulls = Vec::with_capacity(if nullable { granule.len() } else { 0 });
                 for row in granule {
                     let null = push_cell(&col.data_type, row[index].as_deref(), &mut data)?;
                     if nullable {
@@ -334,6 +350,21 @@ mod tests {
         ));
         fs::create_dir(&path).unwrap();
         path
+    }
+
+    #[test]
+    fn reserves_exact_numeric_granule_widths() {
+        for (kind, width) in [
+            ("UInt8", 1),
+            ("Nullable(Int16)", 2),
+            ("Date", 2),
+            ("DateTime", 4),
+            ("Float64", 8),
+            ("UInt128", 16),
+            ("Nullable(String)", 0),
+        ] {
+            assert_eq!(fixed_width_bytes_per_row(kind), width, "{kind}");
+        }
     }
 
     #[test]
