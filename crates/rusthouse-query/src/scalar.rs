@@ -1199,7 +1199,7 @@ fn parse_next_power_of_two(parser: &mut Parser, depth: usize) -> Result<i64, Par
 
 fn parse_clickhouse_isfinite(parser: &mut Parser, depth: usize) -> Result<i64, ParseError> {
     require_token(parser, Token::LParen, "ISFINITE requires '('")?;
-    let value = expression(parser, depth + 1)?;
+    let _value = expression(parser, depth + 1)?;
     require_token(parser, Token::RParen, "ISFINITE requires ')'")?;
     Ok(1)
 }
