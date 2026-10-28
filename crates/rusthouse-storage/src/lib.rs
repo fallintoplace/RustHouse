@@ -7,6 +7,7 @@ mod dates;
 mod decimal;
 mod enums;
 mod file_sizes;
+pub mod distributed_copy_diff;
 mod fixed_strings;
 mod fixed_width;
 mod granules;
