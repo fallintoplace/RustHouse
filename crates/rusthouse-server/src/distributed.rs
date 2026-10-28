@@ -1410,6 +1410,128 @@ fn merge_weighted_integer_avg(
     Ok(format!("avg({column})\n{value}\n").into_bytes())
 }
 
+
+/// AVG of groups must weight the per-shard sums by each non-NULL count.
+fn merge_grouped_weighted_avg(
+    shards: &[(usize, Vec<u8>)],
+    max_rows: usize,
+    kind: &str,
+    key_column: &str,
+    value_column: &str,
+    select: &Select,
+    group_kind: Option<&str>,
+) -> Result<Vec<u8>, MergeError> {
+    let items = vec![
+        (AggregateFunction::Sum, value_column.to_owned()),
+        (AggregateFunction::Count, value_column.to_owned()),
+    ];
+    let kinds = vec![kind.to_owned(), kind.to_owned()];
+    let merged = merge_grouped_fused_metrics(
+        shards, 250_000, &[key_column.to_owned()], &items, &kinds,
+    )?;
+    let header = format!("{key_column}\tsum({value_column})\tcount({value_column})\n");
+    if !merged.starts_with(header.as_bytes()) || !merged.ends_with(b"\n") {
+        return Err(MergeError::InvalidGroupedSum);
+    }
+    let mut groups = Vec::<(&[u8], Option<f64>)>::new();
+    let records = &merged[header.len()..];
+    if !records.is_empty() {
+        for row in records[..records.len() - 1].split(|&b| b == b'\n') {
+            let mut fields = row.rsplitn(3, |&b| b == b'\t');
+            let count_text = fields.next().ok_or(MergeError::InvalidGroupedSum)?;
+            let sum_text = fields.next().ok_or(MergeError::InvalidGroupedSum)?;
+            let key = fields.next().ok_or(MergeError::InvalidGroupedSum)?;
+            let count = std::str::from_utf8(count_text)
+                .map_err(|_| MergeError::InvalidGroupedSum)?
+                .parse::<u64>().map_err(|_| MergeError::InvalidGroupedSum)?;
+            let mean = if count == 0 {
+                if sum_text != b"NULL" { return Err(MergeError::InvalidGroupedSum); }
+                None
+            } else {
+                let sum = std::str::from_utf8(sum_text)
+                    .map_err(|_| MergeError::InvalidGroupedSum)?;
+                let value = if kind.strip_prefix("Nullable(").unwrap_or(kind).starts_with("UInt") {
+                    sum.parse::<u128>().map_err(|_| MergeError::InvalidGroupedSum)? as f64
+                } else {
+                    sum.parse::<i128>().map_err(|_| MergeError::InvalidGroupedSum)? as f64
+                };
+                Some(value / count as f64)
+            };
+            if let Some(having) = &select.having {
+                if !mean.is_some_and(|value| float_having_matches(value, having)) {
+                    continue;
+                }
+            }
+            groups.push((key, mean));
+        }
+    }
+    if select.order_by.is_some() {
+        let terms = select.order_terms().collect::<Vec<_>>();
+        let mut keys = groups.iter().map(|(key, _)| {
+            group_kind.map_or(Ok(None), |kind| parse_group_sort_key(key, kind).map(Some))
+        }).collect::<Result<Vec<_>, MergeError>>()?;
+        let mut indices = (0..groups.len()).collect::<Vec<_>>();
+        indices.sort_by(|&a, &b| {
+            for term in &terms {
+                let cmp = if term.column == "#aggregate" {
+                    let compare = groups[a].1.total_cmp(&groups[b].1);
+                    let a_null = groups[a].1.is_none();
+                    let b_null = groups[b].1.is_none();
+                    match (a_null, b_null, term.nulls_first) {
+                        (true, false, Some(true)) => std::cmp::Ordering::Less,
+                        (false, true, Some(true)) => std::cmp::Ordering::Greater,
+                        (true, false, Some(false)) => std::cmp::Ordering::Greater,
+                        (false, true, Some(false)) => std::cmp::Ordering::Less,
+                        _ => if term.descending { compare.reverse() } else { compare },
+                    }
+                } else {
+                    compare_group_sort_keys(
+                        keys[a].as_ref().expect("validated group type"),
+                        keys[b].as_ref().expect("validated group type"),
+                        term.descending, term.nulls_first,
+                    )
+                };
+                if cmp != std::cmp::Ordering::Equal { return cmp; }
+            }
+            std::cmp::Ordering::Equal
+        });
+        groups = indices.into_iter().map(|index| groups[index]).collect();
+        keys.clear();
+    }
+    let mut output = format!("{key_column}\tavg({value_column})\n").into_bytes();
+    let mut emitted = 0usize;
+    for (key, mean) in groups.into_iter().skip(select.offset.unwrap_or(0))
+        .take(select.limit.unwrap_or(usize::MAX))
+    {
+        let number = mean.map_or_else(|| "NULL".to_owned(), |value| value.to_string());
+        if emitted >= max_rows ||
+            output.len().checked_add(key.len() + number.len() + 2)
+                .is_none_or(|size| size > MAX_RESPONSE_BYTES) {
+            return Err(MergeError::CoordinatorLimit);
+        }
+        output.extend_from_slice(key);
+        output.push(b'\t');
+        output.extend_from_slice(number.as_bytes());
+        output.push(b'\n');
+        emitted += 1;
+    }
+    Ok(output)
+}
+
+fn float_having_matches(value: f64, having: &Having) -> bool {
+    let target = having.value as f64;
+    match having.operator {
+        Operator::Eq => value == target,
+        Operator::Ne => value != target,
+        Operator::Lt => value < target,
+        Operator::Le => value <= target,
+        Operator::Gt => value > target,
+        Operator::Ge => value >= target,
+        Operator::Modulo(divisor) => divisor != 0 && value % divisor as f64 == target,
+        Operator::ModuloNe(divisor) => divisor != 0 && value % divisor as f64 != target,
+    }
+}
+
 /// Reduce grouped COUNT results by their canonical TSV-encoded key.
 /// Preserve first-seen key order, reject malformed rows, and only emit a
 /// complete bounded result. Shards may hold overlapping group *keys*, but
@@ -1665,6 +1787,7 @@ pub fn handle(method: &str, body: &[u8], cluster: &Cluster, max_rows: usize) -> 
                 || is_safe_grouped_fused_metrics(&select)
                 || is_safe_grouped_distinct(&select)
                 || is_safe_weighted_avg(&select)
+                || is_safe_grouped_weighted_avg(&select)
                 || is_safe_sum(&select)
                 || is_safe_extremum(&select) =>
         {
@@ -1690,6 +1813,7 @@ pub fn handle(method: &str, body: &[u8], cluster: &Cluster, max_rows: usize) -> 
     let grouped_fused_query = is_safe_grouped_fused_metrics(&select);
     let grouped_distinct_query = is_safe_grouped_distinct(&select);
     let weighted_avg_query = is_safe_weighted_avg(&select);
+    let grouped_weighted_avg_query = is_safe_grouped_weighted_avg(&select);
     let sum_query = is_safe_sum(&select);
     let shard_sql = if is_safe_scan(&select) {
         match unpaged_scan_sql(sql, &select) {
@@ -1697,6 +1821,11 @@ pub fn handle(method: &str, body: &[u8], cluster: &Cluster, max_rows: usize) -> 
             None => {
                 return Response::text("400 Bad Request", "unsupported distributed pagination\n");
             }
+        }
+    } else if grouped_weighted_avg_query {
+        match grouped_weighted_avg_shard_sql(sql, &select) {
+            Some(query) => query,
+            None => return Response::text("400 Bad Request", "unsupported grouped AVG rewrite\n"),
         }
     } else if weighted_avg_query {
         match weighted_avg_shard_sql(sql, &select) {
@@ -1755,7 +1884,7 @@ pub fn handle(method: &str, body: &[u8], cluster: &Cluster, max_rows: usize) -> 
         (
             Some(Source::Table(table)),
             Projection::GroupedAggregate {
-                function: AggregateFunction::Sum | AggregateFunction::Min | AggregateFunction::Max,
+                function: AggregateFunction::Sum | AggregateFunction::Min | AggregateFunction::Max | AggregateFunction::Avg,
                 value_column,
                 ..
             },
@@ -1787,7 +1916,7 @@ pub fn handle(method: &str, body: &[u8], cluster: &Cluster, max_rows: usize) -> 
         (
             Some(Source::Table(table)),
             Projection::GroupedAggregate {
-                function: AggregateFunction::Sum | AggregateFunction::Min | AggregateFunction::Max,
+                function: AggregateFunction::Sum | AggregateFunction::Min | AggregateFunction::Max | AggregateFunction::Avg,
                 column,
                 ..
             },
@@ -1940,6 +2069,15 @@ pub fn handle(method: &str, body: &[u8], cluster: &Cluster, max_rows: usize) -> 
                     merge_grouped_integer_sums(&shards, limit, kind, key, value)
                 }
             }
+            _ => Err(MergeError::InvalidGroupedSum),
+        }
+    } else if grouped_weighted_avg_query {
+        match (sum_type.as_deref(), group_schema, sum_schema) {
+            (Some(kind), Some((_, key)), Some((_, value))) =>
+                merge_grouped_weighted_avg(
+                    &shards, max_rows.min(250_000), kind, key, value,
+                    &select, group_key_kind.as_deref(),
+                ),
             _ => Err(MergeError::InvalidGroupedSum),
         }
     } else if weighted_avg_query {
@@ -2557,6 +2695,27 @@ mod tests {
                 "UInt64", "amount",
             ),
             Err(MergeError::InvalidSum)
+        );
+    }
+
+    #[test]
+    fn distributed_grouped_avg_weights_each_group_across_shards() {
+        let sql = "SELECT region, avg(amount) FROM sales GROUP BY region HAVING avg(amount) >= 9 ORDER BY 2 DESC LIMIT 2";
+        let query = parse_select(sql).unwrap();
+        assert!(is_safe_grouped_weighted_avg(&query));
+        assert_eq!(
+            grouped_weighted_avg_shard_sql(sql, &query).as_deref(),
+            Some("SELECT region, sum(amount), count(amount) FROM sales GROUP BY region")
+        );
+        let shards = [
+            shard(10, "region\tsum(amount)\tcount(amount)\neast\t10\t2\nwest\tNULL\t0\n"),
+            shard(10, "region\tsum(amount)\tcount(amount)\neast\t90\t1\nwest\t8\t1\n"),
+        ];
+        assert_eq!(
+            merge_grouped_weighted_avg(
+                &shards, 2, "UInt64", "region", "amount", &query, Some("String"),
+            ).unwrap(),
+            format!("region\tavg(amount)\neast\t{}\n", 100f64 / 3.0).into_bytes()
         );
     }
     #[test]
