@@ -55,7 +55,12 @@ impl<W: Write> JsonCompactEachRowWriter<W> {
                 "JSON row width differs from header",
             ));
         }
-        let mut encoded = Vec::with_capacity(self.line.len() + 2);
+        // Quotes and separators expand plain TSV rows by about three
+        // bytes per field, so reserve that framing before serializing.
+        let capacity = self.line.len()
+            .saturating_add(columns.saturating_mul(3))
+            .saturating_add(3);
+        let mut encoded = Vec::with_capacity(capacity);
         encoded.write_all(b"[")?;
         for (index, value) in self.line.split(|byte| *byte == b'\t').enumerate() {
             if index != 0 {
@@ -161,4 +166,11 @@ mod tests {
             "[\"42\"]\n".repeat(1_000).as_bytes()
         );
     }
+    #[test]
+    fn compact_output_keeps_plain_row_field_boundaries() {
+        let mut writer = JsonCompactEachRowWriter::new(Vec::new());
+        writer.write_all(b"a\tb\tc\n1\t2\t3\n").unwrap();
+        assert_eq!(writer.finish().unwrap(), b"[\\\"1\\\",\\\"2\\\",\\\"3\\\"]\n");
+    }
+
 }
