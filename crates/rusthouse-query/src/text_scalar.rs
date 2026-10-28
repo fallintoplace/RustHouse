@@ -16,6 +16,7 @@ pub(super) fn is_function(name: &str) -> bool {
             | "CHR"
             | "STRINGBYTESUNIQ"
             | "BIT_LENGTH"
+            | "FROMUNIXTIMESTAMP"
             | "IS_INT64"
             | "BTRIM"
             | "TRIMBOTH"
@@ -295,6 +296,18 @@ fn parse_at_depth(parser: &mut Parser, depth: usize) -> Result<ConstantValue, Pa
                         seen[usize::from(byte)] = true;
                     }
                     ConstantValue::Integer(seen.iter().filter(|&&present| present).count() as i64)
+                }
+                None => ConstantValue::Null,
+            }
+        }
+        "FROMUNIXTIMESTAMP" => {
+            let input = integer_arg(parser, depth + 1)?;
+            require(parser, Token::RParen, "fromUnixTimestamp requires one argument")?;
+            match input {
+                Some(value) => {
+                    let seconds = u32::try_from(value)
+                        .map_err(|_| ParseError("Unix timestamp outside UInt32 range".into()))?;
+                    ConstantValue::Text(rusthouse_storage::format_datetime(seconds))
                 }
                 None => ConstantValue::Null,
             }
