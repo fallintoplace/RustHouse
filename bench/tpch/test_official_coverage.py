@@ -30,7 +30,7 @@ class CoverageTests(unittest.TestCase):
             observed = []
             def execute(sql):
                 observed.append(sql)
-                return b"1\\n"
+                return b"1\n"
             report = coverage("fake", "db", path, runs=1, warmups=0,
                               execute=execute)
             self.assertEqual(report["results"][0]["status"], "unverified")
