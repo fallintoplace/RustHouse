@@ -577,9 +577,29 @@ where
     if options.stop_after == Some(0) {
         return Ok(0);
     }
-    let mut reader = TypedQueryReader::open(right_path, right_names)?;
-    let mut matches = 0usize;
+    let mut retained = if options.materialize_rows {
+        (0..right_names.len()).collect::<Vec<_>>()
+    } else {
+        right_keys.to_vec()
+    };
     let left_width = left_rows.first().map_or(0, Vec::len);
+    if let Some((column, _)) = options.null_filter {
+        if let Some(local) = column.checked_sub(left_width)
+            .filter(|&local| local < right_names.len()) {
+            retained.push(local);
+        }
+    }
+    retained.sort_unstable();
+    retained.dedup();
+    if retained.is_empty() {
+        retained.push(0);
+    }
+    let selected = retained.iter().map(|&index| right_names[index].clone()).collect::<Vec<_>>();
+    let key_indices = right_keys.iter().map(|index| {
+        retained.binary_search(index).expect("join key retained")
+    }).collect::<Vec<_>>();
+    let mut reader = TypedQueryReader::open(right_path, &selected)?;
+    let mut matches = 0usize;
     // Each retained left row can match only its first right row.
     let mut seen_left = options.any.then(|| vec![false; left_rows.len()]);
     let mut remaining_left = seen_left.as_ref().map(|_| {
@@ -590,7 +610,7 @@ where
     let mut probe_key = Vec::with_capacity(right_keys.len());
     'scan: while let Some(batch) = reader.next_batch()? {
         for index in 0..batch[0].len() {
-            if batch_key_into(&batch, index, right_keys, &mut probe_key) {
+            if batch_key_into(&batch, index, &key_indices, &mut probe_key) {
                 if let Some(left_indices) = hash.get(probe_key.as_slice()) {
                     // Most matches may be filtered or already claimed by ANY.
                     // Decode the full probe row only when a match survives.
@@ -612,7 +632,10 @@ where
                             let is_null = if column < left_width {
                                 matches!(&left_rows[left_index][column], typed::Cell::Null)
                             } else {
-                                typed::is_null_at(&batch[column - left_width], index)
+                                typed::is_null_at(
+                                    &batch[retained.binary_search(&(column - left_width)).expect("filter retained")],
+                                    index,
+                                )
                             };
                             if is_null == not_null {
                                 continue;
