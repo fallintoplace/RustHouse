@@ -42,6 +42,7 @@ pub enum JoinAggregate {
     CountStar,
     Sum(JoinColumn),
     GroupCount(JoinColumn),
+    GroupSum { group: JoinColumn, value: JoinColumn },
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -110,15 +111,19 @@ pub fn parse_join(sql: &str) -> Result<Option<JoinSelect>, ParseError> {
     } else {
         let saved = parser.index;
         let grouped = if let Ok(column) = qualified(&mut parser) {
-            if parser.take(Token::Comma) && parser.keyword("COUNT")
-                && parser.take(Token::LParen)
-                && parser.take(Token::Star)
-                && parser.take(Token::RParen)
-            {
-                Some(JoinAggregate::GroupCount(column))
-            } else {
-                None
-            }
+            if parser.take(Token::Comma) {
+                if parser.keyword("COUNT") && parser.take(Token::LParen)
+                    && parser.take(Token::Star) && parser.take(Token::RParen)
+                {
+                    Some(JoinAggregate::GroupCount(column))
+                } else if parser.keyword("SUM") && parser.take(Token::LParen) {
+                    let value = qualified(&mut parser)?;
+                    if !parser.take(Token::RParen) {
+                        return Err(ParseError("JOIN grouped SUM requires ')'".into()));
+                    }
+                    Some(JoinAggregate::GroupSum { group: column, value })
+                } else { None }
+            } else { None }
         } else {
             None
         };
@@ -417,7 +422,8 @@ pub fn parse_join(sql: &str) -> Result<Option<JoinSelect>, ParseError> {
     };
     match &aggregate {
         Some(JoinAggregate::GroupCount(column)) if group_by.as_ref() == Some(column) => {},
-        Some(JoinAggregate::GroupCount(_)) => {
+        Some(JoinAggregate::GroupSum { group, .. }) if group_by.as_ref() == Some(group) => {},
+        Some(JoinAggregate::GroupCount(_)) | Some(JoinAggregate::GroupSum { .. }) => {
             return Err(ParseError("JOIN grouped COUNT requires matching GROUP BY key".into()));
         }
         _ if group_by.is_some() => {
@@ -614,6 +620,10 @@ pub fn explain_join(query: &JoinSelect) -> String {
                 JoinAggregate::GroupCount(col) => {
                     format!("{}.{}, count(*)", col.relation, col.name)
                 },
+                JoinAggregate::GroupSum { group, value } => format!(
+                    "{}.{}, sum({}.{})",
+                    group.relation, group.name, value.relation, value.name
+                ),
             }
         } else { query.columns.as_ref().map_or("*".to_owned(), |columns| {
             columns
