@@ -642,9 +642,11 @@ fn merge_integer_average(
         if rows.len() < 2 || rows[..rows.len() - 1].contains(&b'\n') {
             return Err(MergeError::InvalidAverage);
         }
-        let (value, count_text) = rows[..rows.len() - 1]
-            .split_once(|&byte| byte == b'\t')
+        let row = &rows[..rows.len() - 1];
+        let delimiter = row.iter().position(|&byte| byte == b'\t')
             .ok_or(MergeError::InvalidAverage)?;
+        let value = &row[..delimiter];
+        let count_text = &row[delimiter + 1..];
         let shard_count = std::str::from_utf8(count_text)
             .map_err(|_| MergeError::InvalidAverage)?
             .parse::<u64>()
