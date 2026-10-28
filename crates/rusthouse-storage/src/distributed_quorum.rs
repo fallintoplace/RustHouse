@@ -3,6 +3,14 @@
 
 use std::collections::HashSet;
 
+fn valid_member(member: &str) -> bool {
+    !member.is_empty()
+        && member.len() <= 64
+        && member
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'_' | b'-'))
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct QuorumObservation {
     pub distinct_acks: usize,
@@ -51,12 +59,7 @@ impl QuorumPolicy {
         }
         let mut membership = HashSet::new();
         for &member in members {
-            if member.is_empty()
-                || member.len() > 64
-                || !member.bytes().all(|byte| {
-                    byte.is_ascii_alphanumeric() || matches!(byte, b'_' | b'-')
-                })
-                || !membership.insert(member)
+            if !valid_member(member) || !membership.insert(member)
             {
                 return Err("invalid or duplicate quorum member");
             }
