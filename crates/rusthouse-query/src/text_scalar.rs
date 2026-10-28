@@ -41,6 +41,7 @@ pub(super) fn is_function(name: &str) -> bool {
             | "JSONHAS"
             | "JSONEXTRACTSTRING"
             | "JSONEXTRACTRAW"
+            | "JSONEXTRACTUINT"
             | "SUBSTRING"
             | "HASSUBSEQUENCECASEINSENSITIVE"
             | "OVERLAY"
@@ -1906,6 +1907,34 @@ fn parse_at_depth(parser: &mut Parser, depth: usize) -> Result<ConstantValue, Pa
                         }
                         ConstantValue::Text(value.repeat(count))
                     }
+                }
+                _ => ConstantValue::Null,
+            }
+        }
+        "JSONEXTRACTUINT" => {
+            let input = text_arg(parser, depth + 1)?;
+            let path = if parser.take(Token::Comma) {
+                Some(text_arg(parser, depth + 1)?)
+            } else {
+                None
+            };
+            require(parser, Token::RParen, "expected ')' after JSONExtractUInt")?;
+            match (input, path) {
+                (Some(input), path) => {
+                    let json = crate::json::parse_json(&input)
+                        .map_err(|error| ParseError(format!("invalid JSON: {error}")))?;
+                    let value = match path {
+                        None => Some(&json),
+                        Some(Some(path)) => json.at_path(&path),
+                        Some(None) => return Ok(ConstantValue::Null),
+                    };
+                    let number = match value.and_then(|value| value.raw().parse::<u64>().ok()) {
+                        Some(number) => i64::try_from(number).map_err(|_| {
+                            ParseError("JSONExtractUInt exceeds the supported Int64 range".into())
+                        })?,
+                        None => 0,
+                    };
+                    ConstantValue::Integer(number)
                 }
                 _ => ConstantValue::Null,
             }
