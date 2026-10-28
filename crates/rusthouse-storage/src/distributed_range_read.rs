@@ -19,13 +19,17 @@ pub fn read_object_range(
     if !meta.file_type().is_file() {
         return Err(io::Error::other("object is not a regular file"));
     }
+    let mut file = File::open(path)?;
+    let opened = file.metadata()?;
+    if !opened.file_type().is_file() || opened.len() != meta.len() {
+        return Err(io::Error::other("object changed before range read"));
+    }
     let end = offset
         .checked_add(length as u64)
         .ok_or_else(|| io::Error::other("object range overflow"))?;
-    if end > meta.len() {
+    if end > opened.len() {
         return Err(io::Error::other("object range exceeds file length"));
     }
-    let mut file = File::open(path)?;
     file.seek(SeekFrom::Start(offset))?;
     let mut bytes = vec![0; length];
     file.read_exact(&mut bytes)?;
@@ -50,4 +54,21 @@ mod tests {
         assert!(read_object_range(&path, 0, 9, 8).is_err());
         fs::remove_file(path).unwrap();
     }
+    #[cfg(unix)]
+    #[test]
+    fn refuses_symlinked_range_sources() {
+        use std::os::unix::fs::symlink;
+        let dir = std::env::temp_dir().join(format!(
+            "rusthouse-range-link-{}", std::process::id()
+        ));
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(&dir).unwrap();
+        let original = dir.join("object");
+        let link = dir.join("link");
+        fs::write(&original, b"abc").unwrap();
+        symlink(&original, &link).unwrap();
+        assert!(read_object_range(&link, 0, 1, 2).is_err());
+        fs::remove_dir_all(dir).unwrap();
+    }
+
 }

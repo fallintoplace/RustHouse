@@ -92,6 +92,30 @@ pub(super) fn read_rows(
 
 // Build the probe key directly from its batch columns so misses never
 // materialize the full row, which may contain wide String payloads.
+
+/// Avoid allocating a heap Vec for the common unique JOIN build key.
+/// Promote to a Vec only when the build side contains duplicate keys.
+enum Bucket {
+    One(usize),
+    Many(Vec<usize>),
+}
+
+impl Bucket {
+    fn push(&mut self, value: usize) {
+        match self {
+            Self::One(first) => *self = Self::Many(vec![*first, value]),
+            Self::Many(values) => values.push(value),
+        }
+    }
+
+    fn iter(&self) -> std::slice::Iter<'_, usize> {
+        match self {
+            Self::One(value) => std::slice::from_ref(value).iter(),
+            Self::Many(values) => values.iter(),
+        }
+    }
+}
+
 struct ProbeOptions {
     materialize_rows: bool,
     materialize_after: usize,
@@ -106,7 +130,7 @@ fn probe_inner<F>(
     left_names: &[String],
     left_keys: &[usize],
     right_rows: &[Vec<typed::Cell>],
-    hash: &HashMap<Vec<typed::Key>, Vec<usize>>,
+    hash: &HashMap<Vec<typed::Key>, Bucket>,
     options: ProbeOptions,
     mut emit: F,
 ) -> Result<usize, ExecutionError>
@@ -210,15 +234,15 @@ fn execute_streaming_inner<W: Write>(
         MAX_STREAM_BUILD_ROWS,
         MAX_STREAM_BUILD_BYTES,
     )?;
-    let mut hash: HashMap<Vec<typed::Key>, Vec<usize>> = HashMap::with_capacity(right_rows.len());
+    let mut hash: HashMap<Vec<typed::Key>, Bucket> = HashMap::with_capacity(right_rows.len());
     for (index, row) in right_rows.iter().enumerate() {
         if let Some(key) = row_key(row, right_keys) {
             // ANY keeps the first right match only, so duplicate indexes
             // never need to be retained in the hash table.
             if query.any {
-                hash.entry(key).or_insert_with(|| vec![index]);
+                hash.entry(key).or_insert(Bucket::One(index));
             } else {
-                hash.entry(key).or_default().push(index);
+                hash.entry(key).and_modify(|bucket| bucket.push(index)).or_insert(Bucket::One(index));
             }
         }
     }
@@ -312,7 +336,7 @@ fn probe_right<F>(
     right_names: &[String],
     right_keys: &[usize],
     left_rows: &[Vec<typed::Cell>],
-    hash: &HashMap<Vec<typed::Key>, Vec<usize>>,
+    hash: &HashMap<Vec<typed::Key>, Bucket>,
     options: ProbeOptions,
     mut emit: F,
 ) -> Result<usize, ExecutionError>
@@ -417,10 +441,10 @@ fn execute_streaming_right<W: Write>(
         MAX_STREAM_BUILD_ROWS,
         MAX_STREAM_BUILD_BYTES,
     )?;
-    let mut hash: HashMap<Vec<typed::Key>, Vec<usize>> = HashMap::with_capacity(left_rows.len());
+    let mut hash: HashMap<Vec<typed::Key>, Bucket> = HashMap::with_capacity(left_rows.len());
     for (index, row) in left_rows.iter().enumerate() {
         if let Some(key) = row_key(row, left_keys) {
-            hash.entry(key).or_default().push(index);
+            hash.entry(key).and_modify(|bucket| bucket.push(index)).or_insert(Bucket::One(index));
         }
     }
     if hash.is_empty() {
@@ -686,10 +710,10 @@ pub fn execute_join<W: Write>(
         MAX_INPUT_ROWS,
         MAX_STREAM_BUILD_BYTES,
     )?;
-    let mut hash: HashMap<Vec<typed::Key>, Vec<usize>> = HashMap::with_capacity(right_rows.len());
+    let mut hash: HashMap<Vec<typed::Key>, Bucket> = HashMap::with_capacity(right_rows.len());
     for (index, row) in right_rows.iter().enumerate() {
         if let Some(key) = row_key(row, &right_keys) {
-            hash.entry(key).or_default().push(index);
+            hash.entry(key).and_modify(|bucket| bucket.push(index)).or_insert(Bucket::One(index));
         }
     }
     let keep = |pair: &Pair| {
@@ -824,5 +848,20 @@ mod tests {
         assert!(reused.is_empty());
         assert!(!batch_key_into(&batch, 2, &[0, 1], &mut reused));
         assert!(reused.is_empty());
+    }
+}
+
+#[cfg(test)]
+mod inline_bucket_tests {
+    use super::Bucket;
+
+    #[test]
+    fn unique_keys_remain_inline_and_duplicates_keep_insertion_order() {
+        let mut bucket = Bucket::One(7);
+        assert_eq!(bucket.iter().copied().collect::<Vec<_>>(), vec![7]);
+        bucket.push(11);
+        bucket.push(13);
+        assert_eq!(bucket.iter().copied().collect::<Vec<_>>(), vec![7, 11, 13]);
+        assert_eq!(bucket.iter().take(1).copied().collect::<Vec<_>>(), vec![7]);
     }
 }
