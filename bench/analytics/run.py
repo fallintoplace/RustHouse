@@ -61,7 +61,9 @@ def execute_http(endpoint, sql, timeout):
 
 def verify_input(execute, sql, expected, timeout):
     output = execute(sql, timeout)
-    if output.rstrip(b"\r\n") != expected.encode("utf-8").rstrip(b"\r\n"):
+    actual = output.removesuffix(b"\r\n").removesuffix(b"\n")
+    reference = expected.encode("utf-8").removesuffix(b"\r\n").removesuffix(b"\n")
+    if actual != reference:
         raise ValueError("preflight result differs from the expected output")
 
 
