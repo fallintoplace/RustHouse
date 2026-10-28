@@ -13,6 +13,7 @@ pub(super) struct JsonCompactEachRowWriter<W: Write> {
     output: W,
     columns: Option<usize>,
     line: Vec<u8>,
+    encoded: Vec<u8>,
 }
 
 impl<W: Write> JsonCompactEachRowWriter<W> {
@@ -21,6 +22,7 @@ impl<W: Write> JsonCompactEachRowWriter<W> {
             output,
             columns: None,
             line: Vec::new(),
+            encoded: Vec::new(),
         }
     }
 
@@ -62,13 +64,15 @@ impl<W: Write> JsonCompactEachRowWriter<W> {
             .len()
             .saturating_add(columns.saturating_mul(3))
             .saturating_add(3);
-        let mut encoded = Vec::with_capacity(capacity);
+        self.encoded.clear();
+        self.encoded.reserve(capacity);
+        let encoded = &mut self.encoded;
         encoded.write_all(b"[")?;
         for (index, value) in self.line.split(|byte| *byte == b'\t').enumerate() {
             if index != 0 {
                 encoded.write_all(b",")?;
             }
-            write_json_value(&mut encoded, value)?;
+            write_json_value(&mut *encoded, value)?;
         }
         encoded.write_all(b"]\n")?;
         self.output.write_all(&encoded)?;
@@ -118,6 +122,15 @@ impl<W: Write> Write for JsonCompactEachRowWriter<W> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn reuses_output_allocation_across_shorter_rows() {
+        let mut writer = JsonCompactEachRowWriter::new(Vec::new());
+        writer.write_all(format!("value\n{}\n", "a".repeat(4096)).as_bytes()).unwrap();
+        let capacity = writer.encoded.capacity();
+        writer.write_all(b"b\n").unwrap();
+        assert_eq!(writer.encoded.capacity(), capacity);
+    }
 
     #[test]
     fn writes_compact_rows_with_escapes_nulls_and_duplicate_headers() {
