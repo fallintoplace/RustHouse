@@ -281,7 +281,7 @@ fn parse_at_depth(parser: &mut Parser, depth: usize) -> Result<ConstantValue, Pa
             require(parser, Token::RParen, "UPPER requires one argument")?;
             match input {
                 Some(value) => {
-                    let result = value.to_uppercase();
+                    let result = value.to_ascii_uppercase();
                     if result.len() > MAX_TEXT_BYTES {
                         return Err(ParseError("UPPER result is too large".into()));
                     }
