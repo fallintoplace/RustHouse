@@ -8,6 +8,7 @@ pub struct Member {
     pub weight: u16,
 }
 
+
 fn identifier(value: &str) -> bool {
     !value.is_empty()
         && value.len() <= 64
@@ -71,12 +72,21 @@ mod tests {
     fn round_trips_membership() {
         let parsed = parse_membership("node_a eu1 3\nnode_b eu2 1\n").unwrap();
         assert_eq!(parsed.len(), 2);
-        assert_eq!(format_membership(&parsed).unwrap(), "node_a eu1 3\nnode_b eu2 1\n");
+        assert_eq!(
+            format_membership(&parsed).unwrap(),
+            "node_a eu1 3\nnode_b eu2 1\n"
+        );
     }
 
     #[test]
     fn rejects_duplicates_and_bad_records() {
-        for input in ["", "a eu1 0\n", "a eu1 1\na eu2 2\n", "../etc eu 1\n", "a eu 1 extra\n"] {
+        for input in [
+            "",
+            "a eu1 0\n",
+            "a eu1 1\na eu2 2\n",
+            "../etc eu 1\n",
+            "a eu 1 extra\n",
+        ] {
             assert!(parse_membership(input).is_err(), "{input}");
         }
     }
