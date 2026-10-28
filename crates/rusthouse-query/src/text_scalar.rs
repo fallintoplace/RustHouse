@@ -47,6 +47,7 @@ pub(super) fn is_function(name: &str) -> bool {
             | "QUERYSTRING"
             | "SPLIT_PART"
             | "SUBSTRING_INDEX"
+            | "SUBSTRINGINDEX"
             | "QUERYSTRINGANDFRAGMENT"
             | "TO_INT64"
             | "TRIM"
@@ -557,7 +558,7 @@ fn parse_at_depth(parser: &mut Parser, depth: usize) -> Result<ConstantValue, Pa
                 None => ConstantValue::Null,
             }
         }
-        "SUBSTRING_INDEX" => {
+        "SUBSTRING_INDEX" | "SUBSTRINGINDEX" => {
             let input = text_arg(parser, depth + 1)?;
             require(parser, Token::Comma, "SUBSTRING_INDEX requires a delimiter")?;
             let delimiter = text_arg(parser, depth + 1)?;
