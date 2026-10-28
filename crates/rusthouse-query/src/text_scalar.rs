@@ -49,6 +49,7 @@ pub(super) fn is_function(name: &str) -> bool {
             | "SUBSTRING_INDEX"
             | "QUERYSTRINGANDFRAGMENT"
             | "TO_INT64"
+            | "TOINT8ORZERO"
             | "TRIM"
             | "LTRIM"
             | "BASENAME"
@@ -802,6 +803,17 @@ fn parse_at_depth(parser: &mut Parser, depth: usize) -> Result<ConstantValue, Pa
                     let decoded = String::from_utf8(bytes)
                         .map_err(|_| ParseError("HEX_DECODE result is not UTF-8".into()))?;
                     ConstantValue::Text(decoded)
+                }
+                None => ConstantValue::Null,
+            }
+        }
+        "TOINT8ORZERO" => {
+            let input = text_arg(parser, depth + 1)?;
+            require(parser, Token::RParen, "toInt8OrZero requires one string argument")?;
+            match input {
+                Some(input) => {
+                    let parsed = input.parse::<i64>().ok();
+                    ConstantValue::Integer(parsed.map_or(0, |value| value as i8 as i64))
                 }
                 None => ConstantValue::Null,
             }
