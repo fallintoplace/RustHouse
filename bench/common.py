@@ -10,11 +10,13 @@ from pathlib import Path
 
 def cli_sql(binary, database, statement, timeout):
     """Execute SQL via the CLI and return exact output bytes for verification."""
+    # --format is a SELECT-only option. DDL, COPY, and INSERT reject it.
+    command = [str(binary), "sql", statement, "--database", str(database)]
+    keyword = statement.split(maxsplit=1)[0].upper() if statement.strip() else ""
+    if keyword == "SELECT":
+        command.extend(["--format", "tsv-no-header"])
     completed = subprocess.run(
-        [
-            str(binary), "sql", statement, "--database", str(database),
-            "--format", "tsv-no-header",
-        ],
+        command,
         stdout=subprocess.PIPE,
         stderr=subprocess.PIPE,
         check=False,
