@@ -79,11 +79,13 @@ def benchmark_one(number, sql, execute, runs, warmups, reference=None, compariso
         except (OSError, RuntimeError, ValueError) as exc:
             status, error = "error", str(exc)
             break
+        # Stop the timer before expensive reference and multiset comparison.
+        finished = time.perf_counter() if started is not None else None
         if reference is not None and not compare_reference(output, reference, comparison):
             status, error = "mismatch", "output differs from reference bytes"
             break
-        if started is not None:
-            elapsed.append(time.perf_counter() - started)
+        if finished is not None:
+            elapsed.append(finished - started)
     # Do not publish incomplete latency distributions for failed queries.
     if status not in ("passed", "unverified"):
         elapsed = []
