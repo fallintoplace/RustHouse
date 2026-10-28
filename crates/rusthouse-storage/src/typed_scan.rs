@@ -420,6 +420,46 @@ struct ColumnReader {
     map_sizes: Option<Stream>,
 }
 
+// Stream initialization reads separate immutable files and can run on
+// independent workers. Layout checks run after all streams are opened.
+fn open_typed_column(
+    part: &Path,
+    name: &str,
+    data_type: &str,
+) -> Result<ColumnReader, PartError> {
+    let kind = StorageKind::from_data_type(data_type)?;
+    let data_name = if kind.needs_map_streams() {
+        format!("{name}.keys")
+    } else {
+        name.to_owned()
+    };
+    let data = Stream::open(part, &data_name)?;
+    let null_map = kind
+        .needs_null_map()
+        .then(|| Stream::open(part, &format!("{name}.null")))
+        .transpose()?;
+    let array_sizes = kind
+        .needs_array_sizes()
+        .then(|| Stream::open(part, &format!("{name}.size0")))
+        .transpose()?;
+    let map_values = kind
+        .needs_map_streams()
+        .then(|| Stream::open(part, &format!("{name}.values")))
+        .transpose()?;
+    let map_sizes = kind
+        .needs_map_streams()
+        .then(|| Stream::open(part, &format!("{name}.size0")))
+        .transpose()?;
+    Ok(ColumnReader {
+        kind,
+        data,
+        null_map,
+        array_sizes,
+        map_values,
+        map_sizes,
+    })
+}
+
 pub struct TypedPartReader {
     columns: Vec<ColumnReader>,
     marks: usize,
@@ -435,8 +475,9 @@ impl TypedPartReader {
                 "typed scan requires at least one column".into(),
             ));
         }
-        let mut columns = Vec::with_capacity(names.len());
-        let mut layout = ScanLayout::default();
+
+        // Bind and validate the schema before opening physical streams.
+        let mut types = Vec::with_capacity(names.len());
         for name in names {
             if !name.bytes().all(|v| v.is_ascii_alphanumeric() || v == b'_') {
                 return Err(PartError::InvalidScan("unsafe column filename".into()));
@@ -448,53 +489,86 @@ impl TypedPartReader {
                 .ok_or_else(|| PartError::InvalidScan(format!("unknown column: {name}")))?
                 .data_type
                 .as_str();
-            let kind = StorageKind::from_data_type(data_type)?;
-            if metadata.rows == 0 {
-                continue;
+            // An empty part still validates declared data types.
+            StorageKind::from_data_type(data_type)?;
+            types.push(data_type);
+        }
+
+        let mut columns = Vec::with_capacity(names.len());
+        if metadata.rows != 0 {
+            const PARALLEL_COLUMN_THRESHOLD: usize = 8;
+            const MAX_OPEN_WORKERS: usize = 4;
+            let workers = std::thread::available_parallelism()
+                .map_or(1, |parallelism| parallelism.get())
+                .min(MAX_OPEN_WORKERS);
+            if names.len() >= PARALLEL_COLUMN_THRESHOLD && workers > 1 {
+                use std::sync::atomic::{AtomicUsize, Ordering};
+                let cursor = AtomicUsize::new(0);
+                let mut slots: Vec<Option<Result<ColumnReader, PartError>>> =
+                    (0..names.len()).map(|_| None).collect();
+                std::thread::scope(|scope| -> Result<(), PartError> {
+                    let handles = (0..workers)
+                        .map(|_| {
+                            let cursor = &cursor;
+                            let types = &types;
+                            scope.spawn(move || {
+                                let mut completed = Vec::new();
+                                loop {
+                                    let index = cursor.fetch_add(1, Ordering::Relaxed);
+                                    if index >= names.len() {
+                                        break;
+                                    }
+                                    completed.push((
+                                        index,
+                                        open_typed_column(part, &names[index], types[index]),
+                                    ));
+                                }
+                                completed
+                            })
+                        })
+                        .collect::<Vec<_>>();
+                    for handle in handles {
+                        let completed = handle.join().map_err(|_| {
+                            PartError::InvalidScan("typed stream opener panicked".into())
+                        })?;
+                        for (index, column) in completed {
+                            slots[index] = Some(column);
+                        }
+                    }
+                    Ok(())
+                })?;
+                for result in slots {
+                    columns.push(result.expect("every stream was claimed once")?);
+                }
+            } else {
+                for (name, data_type) in names.iter().zip(&types) {
+                    columns.push(open_typed_column(part, name, data_type)?);
+                }
             }
-            let data_name = if kind.needs_map_streams() {
+        }
+
+        // Validate cross-column mark layouts in original projection order.
+        // Physical stream opens are independent, but their granules must match.
+        let mut layout = ScanLayout::default();
+        for (name, column) in names.iter().zip(&columns) {
+            let data_name = if column.kind.needs_map_streams() {
                 format!("{name}.keys")
             } else {
                 name.to_owned()
             };
-            let data = Stream::open(part, &data_name)?;
-            let null_map = kind
-                .needs_null_map()
-                .then(|| Stream::open(part, &format!("{name}.null")))
-                .transpose()?;
-            let array_sizes = kind
-                .needs_array_sizes()
-                .then(|| Stream::open(part, &format!("{name}.size0")))
-                .transpose()?;
-            let map_values = kind
-                .needs_map_streams()
-                .then(|| Stream::open(part, &format!("{name}.values")))
-                .transpose()?;
-            let map_sizes = kind
-                .needs_map_streams()
-                .then(|| Stream::open(part, &format!("{name}.size0")))
-                .transpose()?;
-            layout.validate(&data_name, &data.marks, metadata.rows)?;
-            if let Some(nulls) = &null_map {
+            layout.validate(&data_name, &column.data.marks, metadata.rows)?;
+            if let Some(nulls) = &column.null_map {
                 layout.validate(&format!("{name}.null"), &nulls.marks, metadata.rows)?;
             }
-            if let Some(sizes) = &array_sizes {
+            if let Some(sizes) = &column.array_sizes {
                 layout.validate(&format!("{name}.size0"), &sizes.marks, metadata.rows)?;
             }
-            if let Some(values) = &map_values {
+            if let Some(values) = &column.map_values {
                 layout.validate(&format!("{name}.values"), &values.marks, metadata.rows)?;
             }
-            if let Some(sizes) = &map_sizes {
+            if let Some(sizes) = &column.map_sizes {
                 layout.validate(&format!("{name}.size0"), &sizes.marks, metadata.rows)?;
             }
-            columns.push(ColumnReader {
-                kind,
-                data,
-                null_map,
-                array_sizes,
-                map_values,
-                map_sizes,
-            });
         }
         Ok(Self {
             columns,
@@ -1034,5 +1108,37 @@ mod direct_map_numeric_render_tests {
         append_map_numeric(&mut text, &NumericColumn::Float32(vec![1.5]), 0);
         text.push('}');
         assert_eq!(text, format!("{{{},-1234,1.5}}", u128::MAX));
+    }
+}
+
+#[cfg(test)]
+mod parallel_typed_open_tests {
+    use super::*;
+    use crate::{Column, write_wide_part};
+    use std::fs;
+
+    #[test]
+    fn wide_projection_opens_all_streams_in_order() {
+        let root = std::env::temp_dir().join(format!(
+            "rusthouse-typed-wide-open-{}", std::process::id()
+        ));
+        let _ = fs::remove_dir_all(&root);
+        let columns = (0..10)
+            .map(|index| Column {
+                name: format!("c{index}"),
+                data_type: "UInt64".into(),
+            })
+            .collect::<Vec<_>>();
+        let data = (0..10)
+            .map(|index| vec![Some(index.to_string()), Some((index + 100).to_string())])
+            .collect::<Vec<_>>();
+        write_wide_part(&root, &columns, &data).unwrap();
+        let names = columns.iter().map(|column| column.name.clone()).collect::<Vec<_>>();
+        let mut reader = TypedPartReader::open(&root, &names).unwrap();
+        let batch = reader.next_batch().unwrap().unwrap();
+        assert_eq!(batch.len(), 10);
+        assert!(batch.iter().all(|column| column.len() == 2));
+        assert!(reader.next_batch().unwrap().is_none());
+        fs::remove_dir_all(root).unwrap();
     }
 }
