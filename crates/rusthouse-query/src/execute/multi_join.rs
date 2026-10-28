@@ -171,6 +171,68 @@ fn step_keys(
     Ok((left_keys, right_keys))
 }
 
+/// Bind the output schema without opening or scanning any table rows.
+fn output_columns(
+    query: &JoinSelect,
+    relations: &[Relation],
+    initial_step: &JoinStep,
+) -> Result<Vec<(usize, String, Option<usize>)>, ExecutionError> {
+    // For unqualified *, the USING key appears once. With a RIGHT/FULL
+    // join, fall back to the newly joined value when the old side is NULL.
+    let mut omitted = HashMap::new();
+    for (index, step) in std::iter::once(&initial_step)
+        .chain(query.steps.iter())
+        .enumerate()
+    {
+        for name in &step.using_keys {
+            let (left, right) = using_column_pair(&relations[..=index + 1], name)?;
+            omitted.insert(right, left);
+        }
+    }
+    let mut selected: Vec<(usize, String, Option<usize>)> = Vec::new();
+    if let Some(columns) = &query.columns {
+        for column in columns {
+            if column.name == "*" {
+                let relation = relations
+                    .iter()
+                    .find(|relation| relation.alias == column.relation)
+                    .ok_or_else(|| {
+                        invalid(format!("unknown JOIN qualifier: {}", column.relation))
+                    })?;
+                for (index, name) in relation.names.iter().enumerate() {
+                    selected.push((
+                        relation.start + index,
+                        format!("{}.{}", relation.alias, name),
+                        None,
+                    ));
+                }
+            } else {
+                selected.push((
+                    column_index(&relations, column)?,
+                    format!("{}.{}", column.relation, column.name),
+                    None,
+                ));
+            }
+        }
+    } else {
+        for relation in &relations {
+            for (index, name) in relation.names.iter().enumerate() {
+                let absolute = relation.start + index;
+                if let Some(&left) = omitted.get(&absolute) {
+                    let existing = selected
+                        .iter_mut()
+                        .find(|(index, _, _)| *index == left)
+                        .ok_or_else(|| invalid("JOIN USING output key was not projected"))?;
+                    existing.2 = Some(absolute);
+                } else {
+                    selected.push((absolute, format!("{}.{}", relation.alias, name), None));
+                }
+            }
+        }
+    }
+    Ok(selected)
+}
+
 /// Execute a chain of three or more bounded joins. No output is written before
 /// all input validation, row-limit checks, and final ordering have succeeded.
 pub fn execute_multi_join<W: Write>(
@@ -214,14 +276,6 @@ pub fn execute_multi_join<W: Write>(
         });
     }
 
-    let first_meta = inspect_query_source(&paths[0])?;
-    let mut rows = read_rows(
-        &paths[0],
-        &relations[0].names,
-        first_meta.rows,
-        MAX_INPUT_ROWS,
-        MAX_STREAM_BUILD_BYTES,
-    )?;
     let initial_step = JoinStep {
         table: query.right.clone(),
         alias: query.right_alias.clone(),
@@ -230,6 +284,40 @@ pub fn execute_multi_join<W: Write>(
         keys: query.keys.clone(),
         using_keys: query.using_keys.clone(),
     };
+    // A zero-row result still binds every key, projection, filter, and sort,
+    // but must not scan inputs or enforce the normal materialized-row caps.
+    if query.limit == Some(0) {
+        for (index, join) in std::iter::once(&initial_step)
+            .chain(query.steps.iter())
+            .enumerate()
+        {
+            let width = relations[index + 1].start;
+            step_keys(join, &relations[..=index + 1], width)?;
+        }
+        if let Some((column, _)) = &query.where_null {
+            column_index(&relations, column)?;
+        }
+        for (column, _, _) in &query.order_by {
+            column_index(&relations, column)?;
+        }
+        let selected = output_columns(query, &relations, &initial_step)?;
+        let header = selected
+            .iter()
+            .map(|(_, name, _)| name.as_str())
+            .collect::<Vec<_>>()
+            .join("\t");
+        writeln!(output, "{header}")?;
+        return Ok(());
+    }
+
+    let first_meta = inspect_query_source(&paths[0])?;
+    let mut rows = read_rows(
+        &paths[0],
+        &relations[0].names,
+        first_meta.rows,
+        MAX_INPUT_ROWS,
+        MAX_STREAM_BUILD_BYTES,
+    )?;
     for (step_index, step) in std::iter::once(&initial_step)
         .chain(query.steps.iter())
         .enumerate()
@@ -309,59 +397,7 @@ pub fn execute_multi_join<W: Write>(
             std::cmp::Ordering::Equal
         });
     }
-    // For unqualified *, the USING key appears once. With a RIGHT/FULL
-    // join, fall back to the newly joined value when the old side is NULL.
-    let mut omitted = HashMap::new();
-    for (index, step) in std::iter::once(&initial_step)
-        .chain(query.steps.iter())
-        .enumerate()
-    {
-        for name in &step.using_keys {
-            let (left, right) = using_column_pair(&relations[..=index + 1], name)?;
-            omitted.insert(right, left);
-        }
-    }
-    let mut selected: Vec<(usize, String, Option<usize>)> = Vec::new();
-    if let Some(columns) = &query.columns {
-        for column in columns {
-            if column.name == "*" {
-                let relation = relations
-                    .iter()
-                    .find(|relation| relation.alias == column.relation)
-                    .ok_or_else(|| {
-                        invalid(format!("unknown JOIN qualifier: {}", column.relation))
-                    })?;
-                for (index, name) in relation.names.iter().enumerate() {
-                    selected.push((
-                        relation.start + index,
-                        format!("{}.{}", relation.alias, name),
-                        None,
-                    ));
-                }
-            } else {
-                selected.push((
-                    column_index(&relations, column)?,
-                    format!("{}.{}", column.relation, column.name),
-                    None,
-                ));
-            }
-        }
-    } else {
-        for relation in &relations {
-            for (index, name) in relation.names.iter().enumerate() {
-                let absolute = relation.start + index;
-                if let Some(&left) = omitted.get(&absolute) {
-                    let existing = selected
-                        .iter_mut()
-                        .find(|(index, _, _)| *index == left)
-                        .ok_or_else(|| invalid("JOIN USING output key was not projected"))?;
-                    existing.2 = Some(absolute);
-                } else {
-                    selected.push((absolute, format!("{}.{}", relation.alias, name), None));
-                }
-            }
-        }
-    }
+    let selected = output_columns(query, &relations, &initial_step)?;
     let header = selected
         .iter()
         .map(|(_, name, _)| name.as_str())
