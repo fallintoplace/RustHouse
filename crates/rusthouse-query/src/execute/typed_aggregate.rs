@@ -74,8 +74,27 @@ pub(super) fn execute_typed_aggregate<W: Write>(
     if query.limit == Some(0) {
         return Ok(());
     }
-    let mut reader = TypedQueryReader::open_with_metadata(part, &names, &metadata)?;
     let no_filters = query.predicates.is_empty() && query.or_predicates.is_empty();
+    if *function == AggregateFunction::Median {
+        if let Some(inner) = selected.data_type.strip_prefix("Nullable(")
+            .and_then(|name| name.strip_suffix(')'))
+        {
+            if super::radix_median::supports_type(inner) {
+                let value = if no_filters {
+                    super::radix_median::median_nullable(part, column, &metadata)?
+                } else {
+                    super::radix_median::median_nullable_filtered(
+                        part, column, &metadata, &names, &conditions,
+                    )?
+                };
+                if query.offset.unwrap_or(0) == 0 {
+                    writeln!(output, "{}", value.unwrap_or_else(|| "NULL".into()))?;
+                }
+                return Ok(());
+            }
+        }
+    }
+    let mut reader = TypedQueryReader::open_with_metadata(part, &names, &metadata)?;
 
     let mut state = AggregateState::new(*function);
     let mut ordered_value: Option<Cell> = None;
