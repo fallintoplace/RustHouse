@@ -35,14 +35,24 @@ impl<W: Write> HtmlWriter<W> {
             }
         }
 
-        let fields = decode_html_fields(text, header)?;
+        // Headers are literal and unescaped data can be emitted directly.
+        // Decode the whole row first only when it actually contains TSV escapes.
+        let decoded = if header || !text.as_bytes().contains(&b'\\') {
+            None
+        } else {
+            Some(decode_html_fields(text, header)?)
+        };
 
         if header {
             self.output.write_all(b"<table>\n<thead><tr>")?;
         } else {
             self.output.write_all(b"<tr>")?;
         }
-        write_cells(&mut self.output, &fields, header)?;
+        if let Some(fields) = decoded {
+            write_cells(&mut self.output, &fields, header)?;
+        } else {
+            write_plain_cells(&mut self.output, text, header)?;
+        }
         if header {
             self.output.write_all(b"</tr></thead>\n<tbody>\n")?;
             self.columns = Some(count);
@@ -88,6 +98,20 @@ fn write_cells<W: Write>(output: &mut W, fields: &[Cow<'_, str>], header: bool) 
         (b"<td>".as_slice(), b"</td>".as_slice())
     };
     for field in fields {
+        output.write_all(open)?;
+        write_cell(output, field)?;
+        output.write_all(close)?;
+    }
+    Ok(())
+}
+
+fn write_plain_cells<W: Write>(output: &mut W, line: &str, header: bool) -> io::Result<()> {
+    let (open, close) = if header {
+        (b"<th>".as_slice(), b"</th>".as_slice())
+    } else {
+        (b"<td>".as_slice(), b"</td>".as_slice())
+    };
+    for field in line.split('\t') {
         output.write_all(open)?;
         write_cell(output, field)?;
         output.write_all(close)?;
@@ -162,6 +186,13 @@ impl<W: Write> Write for HtmlWriter<W> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn plain_cells_keep_utf8_and_escape_html_without_field_collection() {
+        let mut output = Vec::new();
+        write_plain_cells(&mut output, "café\t<a>", false).unwrap();
+        assert_eq!(output, "<td>café</td><td>&lt;a&gt;</td>".as_bytes());
+    }
 
     #[test]
     fn processes_many_rows_from_one_bulk_write() {
