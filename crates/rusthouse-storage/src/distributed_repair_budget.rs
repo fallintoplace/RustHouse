@@ -43,8 +43,8 @@ pub fn plan_repairs(
             return Err("invalid or duplicate repair job");
         }
     }
-    let mut ranked = jobs.to_vec();
-    ranked.sort_unstable_by(repair_priority);
+    let mut ranked: Vec<&RepairJob> = jobs.iter().collect();
+    ranked.sort_unstable_by(|left, right| repair_priority(left, right));
     let mut selected = Vec::new();
     let mut remaining = byte_budget;
     for job in ranked {
@@ -53,7 +53,7 @@ pub fn plan_repairs(
         }
         if job.bytes <= remaining {
             remaining -= job.bytes;
-            selected.push(job);
+            selected.push((*job).clone());
         }
     }
     Ok(selected)
@@ -79,4 +79,17 @@ mod tests {
         let job = RepairJob { shard: "a".into(), bytes: 1, missing_replicas: 1 };
         assert!(plan_repairs(&[job.clone(), job], 10, 2).is_err());
     }
+    #[test]
+    fn skips_unschedulable_jobs_without_losing_lower_priority_work() {
+        let jobs = vec![
+            RepairJob { shard: "urgent".into(), bytes: 100, missing_replicas: 3 },
+            RepairJob { shard: "small".into(), bytes: 1, missing_replicas: 2 },
+            RepairJob { shard: "extra".into(), bytes: 1, missing_replicas: 1 },
+        ];
+        let plan = plan_repairs(&jobs, 1, 1).unwrap();
+        assert_eq!(plan[0].shard, "small");
+        assert_eq!(plan.len(), 1);
+        assert!(plan_repairs(&jobs, 1, 0).unwrap().is_empty());
+    }
+
 }
