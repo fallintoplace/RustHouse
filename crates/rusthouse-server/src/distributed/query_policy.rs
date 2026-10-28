@@ -366,3 +366,39 @@ pub(super) fn grouped_distinct_shard_sql(sql: &str, select: &Select) -> Option<S
     }
     None
 }
+
+/// AVG is decomposable only as SUM(value) and COUNT(value), not shard AVG.
+pub(super) fn is_safe_weighted_avg(select: &Select) -> bool {
+    matches!(
+        select.projection,
+        Projection::Aggregate { function: AggregateFunction::Avg, .. }
+    ) && is_safe_unpaged_select(select)
+        && select.alias.is_none()
+        && select.rename.is_none()
+}
+
+/// Rewrite an AVG into partial SUM and COUNT only after re-parsing exact SQL.
+pub(super) fn weighted_avg_shard_sql(sql: &str, select: &Select) -> Option<String> {
+    let column = match &select.projection {
+        Projection::Aggregate { function: AggregateFunction::Avg, column } => column,
+        _ => return None,
+    };
+    let mut expected = select.clone();
+    expected.projection = Projection::MultipleAggregates(vec![
+        (AggregateFunction::Sum, column.clone()),
+        (AggregateFunction::Count, column.clone()),
+    ]);
+    let upper = sql.to_ascii_uppercase();
+    for (index, _) in sql.char_indices() {
+        if !upper[index..].starts_with(" FROM ") {
+            continue;
+        }
+        let candidate = format!(
+            "SELECT sum({column}), count({column}){}", &sql[index..],
+        );
+        if parse_select(&candidate).is_ok_and(|parsed| parsed == expected) {
+            return Some(candidate);
+        }
+    }
+    None
+}
