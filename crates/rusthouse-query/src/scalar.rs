@@ -40,6 +40,7 @@ pub(super) fn is_function(name: &str) -> bool {
         || name.eq_ignore_ascii_case("DIV")
         || name.eq_ignore_ascii_case("MOD")
         || name.eq_ignore_ascii_case("ABS_DIFF")
+        || name.eq_ignore_ascii_case("PLUS")
         || name.eq_ignore_ascii_case("SIGN")
         || name.eq_ignore_ascii_case("DIGIT_COUNT")
         || name.eq_ignore_ascii_case("HAMMING_DISTANCE")
@@ -169,6 +170,15 @@ fn parse_saturating(parser: &mut Parser, depth: usize, name: &str) -> Result<i64
         "SATURATING_MUL" => left.saturating_mul(right),
         _ => unreachable!("only saturating functions reach this branch"),
     })
+}
+
+fn parse_plus_function(parser: &mut Parser, depth: usize) -> Result<i64, ParseError> {
+    require_token(parser, Token::LParen, "plus requires '('")?;
+    let left = expression(parser, depth + 1)?;
+    require_token(parser, Token::Comma, "plus requires two arguments")?;
+    let right = expression(parser, depth + 1)?;
+    require_token(parser, Token::RParen, "expected ')' after plus arguments")?;
+    left.checked_add(right).ok_or_else(overflow)
 }
 
 fn parse_power(parser: &mut Parser, depth: usize) -> Result<i64, ParseError> {
@@ -942,6 +952,9 @@ fn factor(parser: &mut Parser, depth: usize) -> Result<i64, ParseError> {
     }
     if parser.keyword("MOD") {
         return parse_div_mod(parser, depth, false);
+    }
+    if parser.keyword("PLUS") {
+        return parse_plus_function(parser, depth);
     }
     if parser.keyword("ABS_DIFF") {
         return parse_abs_diff(parser, depth);
