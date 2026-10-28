@@ -252,8 +252,10 @@ pub(super) fn execute_grouped_aggregate<W: Write>(
     if let Some(having) = &query.having {
         groups.retain(|(_, state)| state.passes_having(having));
     }
+    let mut bounded_order = None;
     if query.order_by.is_some() {
-        groups.sort_by(|(left_key, left_state), (right_key, right_state)| {
+        let compare = |(left_key, left_state): &(Cell, AggregateState),
+                       (right_key, right_state): &(Cell, AggregateState)| {
             for term in query.order_terms() {
                 let comparison = if term.column == "#aggregate" {
                     typed::compare_order_cells(
@@ -267,18 +269,46 @@ pub(super) fn execute_grouped_aggregate<W: Write>(
                         left_key, right_key, term.descending, term.nulls_first
                     )
                 };
-                if comparison != std::cmp::Ordering::Equal { return comparison; }
+                if comparison != std::cmp::Ordering::Equal {
+                    return comparison;
+                }
             }
             std::cmp::Ordering::Equal
-        });
+        };
+        let end = query
+            .limit
+            .and_then(|limit| query.offset.unwrap_or(0).checked_add(limit));
+        if let Some(end) = end.filter(|&end| end < groups.len()) {
+            let mut indices = (0..groups.len()).collect::<Vec<_>>();
+            let compare_index = |left: &usize, right: &usize| {
+                compare(&groups[*left], &groups[*right]).then_with(|| left.cmp(right))
+            };
+            indices.select_nth_unstable_by(end, &compare_index);
+            indices.truncate(end);
+            indices.sort_unstable_by(compare_index);
+            bounded_order = Some(indices);
+        } else {
+            groups.sort_by(compare);
+        }
     }
-    for (key, state) in groups
-        .into_iter()
-        .skip(query.offset.unwrap_or(0))
-        .take(query.limit.unwrap_or(usize::MAX))
-    {
-        typed::write_typed_value(output, &key, group_type)?;
+    let write_group = |key: &Cell, state: &AggregateState, output: &mut W|
+        -> Result<(), ExecutionError> {
+        typed::write_typed_value(output, key, group_type)?;
         writeln!(output, "\t{}", state.render())?;
+        Ok(())
+    };
+    if let Some(indices) = bounded_order {
+        for index in indices.into_iter().skip(query.offset.unwrap_or(0)) {
+            write_group(&groups[index].0, &groups[index].1, output)?;
+        }
+    } else {
+        for (key, state) in groups
+            .iter()
+            .skip(query.offset.unwrap_or(0))
+            .take(query.limit.unwrap_or(usize::MAX))
+        {
+            write_group(key, state, output)?;
+        }
     }
     Ok(())
 }
