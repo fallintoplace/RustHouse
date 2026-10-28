@@ -208,7 +208,7 @@ mod tests {
             "COPY events FROM '/tmp/a.csv' WITH (FORMAT JSON)",
             "COPY events FROM '/tmp/a.csv'; DROP TABLE events",
             "COPY events (id, id) FROM '/tmp/a.csv'",
-            "COPY events FROM '/tmp/a.csv' WITH (FORMAT CSV, HEADER)",
+            "COPY events FROM '/tmp/a.csv' WITH (FORMAT CSV, HEADER MAYBE)",
             "COPY events TO '/tmp/a.csv'",
         ] {
             assert!(parse_copy_from(sql).is_err(), "{sql}");
