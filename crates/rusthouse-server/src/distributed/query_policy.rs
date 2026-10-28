@@ -126,7 +126,14 @@ pub(super) fn is_safe_grouped_extremum(select: &Select) -> bool {
             function: AggregateFunction::Min | AggregateFunction::Max,
             ..
         }
-    ) && is_safe_unpaged_select(select)
+    )
+        && matches!(select.source, Some(Source::Table(_)))
+        && !select.distinct
+        && select.rename.is_none()
+        && select.alias.is_none()
+        && select.having.is_none()
+        && select.order_terms().count() <= 1
+        && select.order_terms().all(|term| term.column == "#aggregate")
 }
 
 pub(super) fn group_key_type(kind: &str) -> bool {

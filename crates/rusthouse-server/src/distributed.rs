@@ -562,7 +562,8 @@ fn merge_grouped_integer_sums(
             let index = if let Some(&index) = positions.get(key) {
                 index
             } else {
-                if groups.len() >= max_rows {
+                let max_groups = if global.is_some() { 250_000 } else { max_rows };
+                if groups.len() >= max_groups {
                     return Err(MergeError::CoordinatorLimit);
                 }
                 let index = groups.len();
@@ -632,6 +633,20 @@ fn merge_grouped_integer_extrema(
     value_column: &str,
     function: AggregateFunction,
 ) -> Result<Vec<u8>, MergeError> {
+    merge_grouped_integer_extrema_query(
+        shards, max_rows, kind, key_column, value_column, function, None,
+    )
+}
+
+fn merge_grouped_integer_extrema_query(
+    shards: &[(usize, Vec<u8>)],
+    max_rows: usize,
+    kind: &str,
+    key_column: &str,
+    value_column: &str,
+    function: AggregateFunction,
+    global: Option<&Select>,
+) -> Result<Vec<u8>, MergeError> {
     let header = format!("{key_column}\t{}({value_column})\n", function.name());
     let unsigned = kind.strip_prefix("Nullable(").unwrap_or(kind).starts_with("UInt");
     let mut positions = HashMap::<&[u8], usize>::new();
@@ -696,8 +711,59 @@ fn merge_grouped_integer_extrema(
             }
         }
     }
+    if let Some(select) = global {
+        if let Some(order) = select.order_terms().next() {
+            groups.sort_by(|left, right| {
+                let nulls_first = order.nulls_first.unwrap_or(!order.descending);
+                if unsigned {
+                    match (left.2, right.2) {
+                        (None, None) => std::cmp::Ordering::Equal,
+                        (None, Some(_)) => if nulls_first {
+                            std::cmp::Ordering::Less
+                        } else {
+                            std::cmp::Ordering::Greater
+                        },
+                        (Some(_), None) => if nulls_first {
+                            std::cmp::Ordering::Greater
+                        } else {
+                            std::cmp::Ordering::Less
+                        },
+                        (Some(a), Some(b)) => if order.descending {
+                            b.cmp(&a)
+                        } else {
+                            a.cmp(&b)
+                        },
+                    }
+                } else {
+                    match (left.1, right.1) {
+                        (None, None) => std::cmp::Ordering::Equal,
+                        (None, Some(_)) => if nulls_first {
+                            std::cmp::Ordering::Less
+                        } else {
+                            std::cmp::Ordering::Greater
+                        },
+                        (Some(_), None) => if nulls_first {
+                            std::cmp::Ordering::Greater
+                        } else {
+                            std::cmp::Ordering::Less
+                        },
+                        (Some(a), Some(b)) => if order.descending {
+                            b.cmp(&a)
+                        } else {
+                            a.cmp(&b)
+                        },
+                    }
+                }
+            });
+        }
+    }
+    let offset = global.and_then(|select| select.offset).unwrap_or(0);
+    let limit = global.and_then(|select| select.limit).unwrap_or(usize::MAX);
+    if groups.len().saturating_sub(offset).min(limit) > max_rows {
+        return Err(MergeError::CoordinatorLimit);
+    }
     let mut output = header.into_bytes();
-    for (key, signed, unsigned_value) in groups {
+    for (key, signed, unsigned_value) in groups.into_iter().skip(offset).take(limit) {
         let value = if unsigned {
             unsigned_value.map(|number| number.to_string())
         } else {
@@ -920,6 +986,13 @@ pub fn handle(method: &str, body: &[u8], cluster: &Cluster, max_rows: usize) -> 
                 return Response::text("400 Bad Request", "unsupported global grouped query\n");
             }
         }
+    } else if grouped_extremum_query {
+        match grouped_count_shard_sql(sql, &select) {
+            Some(query) => query,
+            None => return Response::text(
+                "400 Bad Request", "unsupported distributed grouped MIN/MAX pagination\n",
+            ),
+        }
     } else if distinct_count_column.is_some() {
         match distinct_shard_sql(sql, &select) {
             Some(query) => query,
@@ -1070,8 +1143,8 @@ pub fn handle(method: &str, body: &[u8], cluster: &Cluster, max_rows: usize) -> 
     } else if grouped_extremum_query {
         match (sum_type.as_deref(), group_schema, sum_schema, grouped_extremum_function) {
             (Some(kind), Some((_, key)), Some((_, value)), Some(function)) => {
-                merge_grouped_integer_extrema(
-                    &shards, max_rows.min(250_000), kind, key, value, function,
+                merge_grouped_integer_extrema_query(
+                    &shards, max_rows.min(250_000), kind, key, value, function, Some(&select),
                 )
             }
             _ => Err(MergeError::InvalidGroupedExtremum),
@@ -1526,6 +1599,28 @@ mod tests {
         );
     }
 
+
+
+    #[test]
+    fn distributed_grouped_extrema_are_ranked_after_all_shards_merge() {
+        let sql = "SELECT region, max(amount) FROM events GROUP BY region ORDER BY max(amount) DESC LIMIT 2";
+        let query = parse_select(sql).unwrap();
+        assert!(is_safe_grouped_extremum(&query));
+        assert_eq!(
+            grouped_count_shard_sql(sql, &query).as_deref(),
+            Some("SELECT region, max(amount) FROM events GROUP BY region")
+        );
+        let shards = [
+            shard(10, "region\tmax(amount)\na\t10\nb\t5\n"),
+            shard(10, "region\tmax(amount)\na\t9\nc\t8\n"),
+        ];
+        assert_eq!(
+            merge_grouped_integer_extrema_query(
+                &shards, 2, "Int64", "region", "amount", AggregateFunction::Max, Some(&query),
+            ).unwrap(),
+            b"region\tmax(amount)\na\t10\nc\t8\n"
+        );
+    }
 
     #[test]
     fn merges_exact_distributed_grouped_min_max_with_null_shards() {
