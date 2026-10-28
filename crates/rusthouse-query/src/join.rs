@@ -64,6 +64,8 @@ pub struct JoinSelect {
     pub where_null: Option<(JoinColumn, bool)>,
     /// Ordered key, descending flag, and optional explicit NULL placement.
     pub order_by: Vec<(JoinColumn, bool, Option<bool>)>,
+    /// Aggregate ORDER BY for grouped joined facts.
+    pub group_order_by: Option<(bool, Option<bool>)>,
     pub limit: Option<usize>,
     pub offset: usize,
     /// Additional JOIN steps after the first two-table join.
@@ -431,10 +433,49 @@ pub fn parse_join(sql: &str) -> Result<Option<JoinSelect>, ParseError> {
         }
         _ => {},
     }
+    let mut group_order_by = None;
     let order_by = if parser.keyword("ORDER") {
         if !parser.keyword("BY") {
             return Err(ParseError("ORDER requires BY".into()));
         }
+        if let Some(aggregate @ (JoinAggregate::GroupCount(_) |
+            JoinAggregate::GroupSum { .. })) = aggregate.as_ref() {
+            let position = matches!(parser.tokens.get(parser.index),
+                Some(Token::Number(value)) if value == "2");
+            if position {
+                parser.index += 1;
+            } else {
+                match aggregate {
+                    JoinAggregate::GroupCount(_) => {
+                        if !parser.keyword("COUNT") || !parser.take(Token::LParen)
+                            || !parser.take(Token::Star) || !parser.take(Token::RParen) {
+                            return Err(ParseError("JOIN grouped ORDER BY requires count(*)".into()));
+                        }
+                    }
+                    JoinAggregate::GroupSum { value, .. } => {
+                        if !parser.keyword("SUM") || !parser.take(Token::LParen) {
+                            return Err(ParseError("JOIN grouped ORDER BY requires sum(column)".into()));
+                        }
+                        let selected = qualified(&mut parser)?;
+                        if selected != *value || !parser.take(Token::RParen) {
+                            return Err(ParseError("JOIN ORDER BY must match selected SUM".into()));
+                        }
+                    }
+                    _ => unreachable!(),
+                }
+            }
+            let descending = if parser.keyword("DESC") { true } else {
+                parser.keyword("ASC");
+                false
+            };
+            let nulls_first = if parser.keyword("NULLS") {
+                if parser.keyword("FIRST") { Some(true) }
+                else if parser.keyword("LAST") { Some(false) }
+                else { return Err(ParseError("JOIN ORDER BY NULLS requires FIRST or LAST".into())); }
+            } else { None };
+            group_order_by = Some((descending, nulls_first));
+            Vec::new()
+        } else {
         let mut terms = Vec::new();
         loop {
             if terms.len() == 8 {
@@ -466,6 +507,7 @@ pub fn parse_join(sql: &str) -> Result<Option<JoinSelect>, ParseError> {
             }
         }
         terms
+        }
     } else {
         Vec::new()
     };
@@ -542,6 +584,7 @@ pub fn parse_join(sql: &str) -> Result<Option<JoinSelect>, ParseError> {
         using_keys,
         where_null,
         order_by,
+        group_order_by,
         limit,
         offset,
         steps,
@@ -668,6 +711,9 @@ pub fn explain_join(query: &JoinSelect) -> String {
             .collect::<Vec<_>>()
             .join(", ");
         plan.push_str(&format!("\nOrder: {terms}"));
+    }
+    if let Some((descending, _)) = query.group_order_by {
+        plan.push_str(&format!("\nAggregate order: {}", if descending { "DESC" } else { "ASC" }));
     }
     if query.offset > 0 {
         plan.push_str(&format!("\nOffset: {}", query.offset));
