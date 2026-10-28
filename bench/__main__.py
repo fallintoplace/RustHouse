@@ -166,6 +166,9 @@ def main(argv=None):
         return python_tests()
     if args.command == "workload":
         forwarded = args.args[1:] if args.args[:1] == ["--"] else args.args
+        # Execute analytics-suite as a package so bench.common resolves on CI.
+        if args.name == "analytics-suite":
+            return run_command(args.name, [sys.executable, "-m", "bench.analytics.suite_runner", *forwarded])
         return run_command(args.name, [sys.executable, str(ROOT / WORKLOADS[args.name]), *forwarded])
     suites = tuple(dict.fromkeys(args.suite or BENCHMARK_SUITES))
     if not 1 <= args.rows <= 1_000_000:
