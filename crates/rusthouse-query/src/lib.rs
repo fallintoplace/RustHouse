@@ -117,6 +117,24 @@ impl Constant {
     }
 }
 
+/// Streaming numerical relationship aggregates.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum BinaryStatFunction {
+    Corr,
+    CovarPop,
+    CovarSamp,
+}
+
+impl BinaryStatFunction {
+    pub fn name(self) -> &'static str {
+        match self {
+            Self::Corr => "corr",
+            Self::CovarPop => "covarPop",
+            Self::CovarSamp => "covarSamp",
+        }
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Projection {
     Literal(i64),
@@ -131,6 +149,12 @@ pub enum Projection {
     /// Fixed-memory approximate cardinality (~0.81% RSE).
     ApproxDistinct {
         column: String,
+    },
+    /// Pairwise NULL-aware streaming statistics, independent of input rows.
+    BinaryStat {
+        function: BinaryStatFunction,
+        x: String,
+        y: String,
     },
     GroupedCount {
         column: String,
@@ -685,6 +709,27 @@ fn parse_select_tokens(tokens: Vec<Token>) -> Result<Select, ParseError> {
             return Err(ParseError("expected ')' after uniq(column)".into()));
         }
         Projection::ApproxDistinct { column }
+    } else if matches!(parser.tokens.get(parser.index), Some(Token::Word(name)) if matches!(
+        name.to_ascii_uppercase().as_str(),
+        "CORR" | "COVARPOP" | "COVARSAMP"
+    )) && parser.tokens.get(parser.index + 1) == Some(&Token::LParen)
+    {
+        let function = match parser.word()?.to_ascii_uppercase().as_str() {
+            "CORR" => BinaryStatFunction::Corr,
+            "COVARPOP" => BinaryStatFunction::CovarPop,
+            "COVARSAMP" => BinaryStatFunction::CovarSamp,
+            _ => unreachable!(),
+        };
+        parser.take(Token::LParen);
+        let x = parser.word()?;
+        if !parser.take(Token::Comma) {
+            return Err(ParseError("binary statistic requires two columns".into()));
+        }
+        let y = parser.word()?;
+        if !parser.take(Token::RParen) {
+            return Err(ParseError("expected ')' after binary statistic".into()));
+        }
+        Projection::BinaryStat { function, x, y }
     } else if matches!(parser.tokens.get(parser.index + 1), Some(Token::LParen))
         && !matches!(parser.tokens.get(parser.index), Some(Token::Word(word)) if scalar::is_function(word) || text_scalar::is_function(word))
     {
@@ -1018,6 +1063,7 @@ fn parse_select_tokens(tokens: Vec<Token>) -> Result<Select, ParseError> {
                 | Projection::CountColumn { .. }
                 | Projection::CountDistinct { .. }
                 | Projection::ApproxDistinct { .. }
+                | Projection::BinaryStat { .. }
                 | Projection::Aggregate { .. }
                 | Projection::GroupedCount { .. }
                 | Projection::GroupedDistinctCount { .. }
@@ -1550,6 +1596,7 @@ fn parse_select_tokens(tokens: Vec<Token>) -> Result<Select, ParseError> {
                 | Projection::CountColumn { .. }
                 | Projection::CountDistinct { .. }
                 | Projection::ApproxDistinct { .. }
+                | Projection::BinaryStat { .. }
                 | Projection::Aggregate { .. }
                 | Projection::MultipleAggregates(_)
                 | Projection::StringLength { .. }
