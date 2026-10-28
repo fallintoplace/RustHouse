@@ -453,11 +453,15 @@ pub(super) fn execute<W: Write>(
 /// Expose the proven O(1) aggregate subset to virtual-source admission.
 pub(super) fn supports_generated_series_metrics(items: &[AggregateItem]) -> bool {
     items.iter().all(|item| {
-        !item.distinct
-            && item.argument.as_ref().is_none_or(|expression| {
-                matches!(expression, ScalarExpr::Column(name) if name == "number")
-            })
-            && matches!(item.function, None | Some(
+        let direct_number = item.argument.as_ref().is_none_or(|expression| {
+            matches!(expression, ScalarExpr::Column(name) if name == "number")
+        });
+        if item.distinct {
+            // Generated arithmetic series always contain unique values.
+            return item.function.is_none()
+                && matches!(&item.argument, Some(ScalarExpr::Column(name)) if name == "number");
+        }
+        direct_number && matches!(item.function, None | Some(
                 crate::AggregateFunction::Count
                     | crate::AggregateFunction::CountIf
                     | crate::AggregateFunction::Sum
@@ -509,6 +513,10 @@ fn generated_series_metrics(
     let variance = (step as f64).powi(2) * ((count_float - 1.0) * (count_float + 1.0)) / 12.0;
     let results = items.iter().map(|item| {
         use crate::AggregateFunction as A;
+        if item.distinct {
+            // The strided source is strictly increasing (step > 0).
+            return Ok(rows.to_string());
+        }
         Ok(match item.function {
             None | Some(A::Count) => rows.to_string(),
             Some(A::CountIf) => (rows - u64::from(rows > 0 && start == 0)).to_string(),
