@@ -85,6 +85,7 @@ pub(super) fn is_function(name: &str) -> bool {
             | "LAST_INDEX_OF"
             | "PATH"
             | "LEFT"
+            | "LEFTUTF8"
             | "REPLACE_FIRST"
             | "REPLACEONE"
             | "STARTS_WITH"
@@ -1470,7 +1471,7 @@ fn parse_at_depth(parser: &mut Parser, depth: usize) -> Result<ConstantValue, Pa
                 _ => ConstantValue::Null,
             }
         }
-        "LEFT" => {
+        "LEFT" | "LEFTUTF8" => {
             let input = text_arg(parser, depth + 1)?;
             require(parser, Token::Comma, "LEFT requires a character count")?;
             let count = integer_arg(parser, depth + 1)?;
