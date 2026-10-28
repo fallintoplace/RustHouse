@@ -158,6 +158,74 @@ pub(super) fn parse_response(raw: &[u8]) -> Result<PeerResponse, String> {
     })
 }
 
+/// Decode a response when the caller owns the network buffer. Plain bodies
+/// are shifted in place rather than cloning up to 16 MiB of uncompressed TSV.
+pub(super) fn parse_response_owned(mut raw: Vec<u8>) -> Result<PeerResponse, String> {
+    let head = response_head(&raw)?.ok_or("peer response has no header terminator")?;
+    if raw.len() != head.body_start + head.body_length {
+        return Err("peer response size mismatch or exceeds 8 MiB".into());
+    }
+    let body = if head.compressed {
+        let compressed = &raw[head.body_start..];
+        if compressed.len() < 4 {
+            return Err("truncated compressed peer response".into());
+        }
+        let size = u32::from_le_bytes(compressed[..4].try_into().unwrap()) as usize;
+        if size > MAX_RESPONSE_BYTES {
+            return Err("decompressed peer response exceeds 16 MiB".into());
+        }
+        lz4_flex::decompress_size_prepended(compressed)
+            .map_err(|_| "invalid compressed peer response".to_owned())?
+    } else {
+        raw.copy_within(head.body_start.., 0);
+        raw.truncate(head.body_length);
+        raw
+    };
+    Ok(PeerResponse {
+        status: head.status,
+        content_type: head.content_type,
+        body,
+    })
+}
+
+#[cfg(test)]
+mod owned_response_parser_tests {
+    use super::*;
+
+    #[test]
+    fn plain_peer_response_reuses_the_original_wire_allocation() {
+        let body = vec![b'q'; 1024 * 1024];
+        let mut wire = format!(
+            "HTTP/1.1 200 OK\r\nContent-Type: text/tab-separated-values; charset=utf-8\r\nContent-Length: {}\r\n\r\n",
+            body.len(),
+        ).into_bytes();
+        wire.extend_from_slice(&body);
+        let allocation = wire.as_ptr();
+        let parsed = parse_response_owned(wire).unwrap();
+        assert_eq!(parsed.body.as_ptr(), allocation);
+        assert_eq!(parsed.body, body);
+    }
+
+    #[test]
+    fn owned_and_borrowed_decoding_reject_truncated_bodies_equally() {
+        let wire = b"HTTP/1.1 200 OK\r\nContent-Type: text/plain\r\nContent-Length: 5\r\n\r\nabc";
+        assert!(parse_response(wire).is_err());
+        assert!(parse_response_owned(wire.to_vec()).is_err());
+    }
+
+    #[test]
+    fn owned_parser_preserves_lz4_decompression() {
+        let body = vec![b'a'; 9000];
+        let encoded = lz4_flex::compress_prepend_size(&body);
+        let mut wire = format!(
+            "HTTP/1.1 200 OK\r\nContent-Type: text/plain\r\nContent-Encoding: x-rusthouse-lz4\r\nContent-Length: {}\r\n\r\n",
+            encoded.len(),
+        ).into_bytes();
+        wire.extend_from_slice(&encoded);
+        assert_eq!(parse_response_owned(wire).unwrap().body, body);
+    }
+}
+
 #[cfg(test)]
 mod compressed_response_tests {
     use super::*;
