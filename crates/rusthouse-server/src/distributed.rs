@@ -1353,6 +1353,63 @@ fn compare_group_sort_keys(
     }
 }
 
+
+/// Compute a global AVG using checked integer SUM and non-NULL COUNT partials.
+/// Never average shard averages, which would weight each shard equally.
+fn merge_weighted_integer_avg(
+    shards: &[(usize, Vec<u8>)],
+    kind: &str,
+    column: &str,
+) -> Result<Vec<u8>, MergeError> {
+    let expected_header = format!("sum({column})\tcount({column})\n");
+    let unsigned = kind.strip_prefix("Nullable(").unwrap_or(kind).starts_with("UInt");
+    let mut signed_sum = 0i128;
+    let mut unsigned_sum = 0u128;
+    let mut total_count = 0u64;
+    for (cap, body) in shards {
+        if *cap <= 1 || !body.starts_with(expected_header.as_bytes()) || !body.ends_with(b"\n") {
+            return Err(MergeError::InvalidSum);
+        }
+        let row = &body[expected_header.len()..body.len() - 1];
+        if row.contains(&b'\n') {
+            return Err(MergeError::InvalidSum);
+        }
+        let split = row.iter().position(|&b| b == b'\t')
+            .ok_or(MergeError::InvalidSum)?;
+        let sum_text = &row[..split];
+        let count_text = &row[split + 1..];
+        let count = std::str::from_utf8(count_text)
+            .map_err(|_| MergeError::InvalidCount)?
+            .parse::<u64>().map_err(|_| MergeError::InvalidCount)?;
+        total_count = total_count.checked_add(count).ok_or(MergeError::CountOverflow)?;
+        if count == 0 {
+            if sum_text != b"NULL" {
+                return Err(MergeError::InvalidSum);
+            }
+            continue;
+        }
+        if unsigned {
+            let value = std::str::from_utf8(sum_text)
+                .map_err(|_| MergeError::InvalidSum)?
+                .parse::<u128>().map_err(|_| MergeError::InvalidSum)?;
+            unsigned_sum = unsigned_sum.checked_add(value).ok_or(MergeError::SumOverflow)?;
+        } else {
+            let value = std::str::from_utf8(sum_text)
+                .map_err(|_| MergeError::InvalidSum)?
+                .parse::<i128>().map_err(|_| MergeError::InvalidSum)?;
+            signed_sum = signed_sum.checked_add(value).ok_or(MergeError::SumOverflow)?;
+        }
+    }
+    let value = if total_count == 0 {
+        "NULL".to_owned()
+    } else if unsigned {
+        ((unsigned_sum as f64) / (total_count as f64)).to_string()
+    } else {
+        ((signed_sum as f64) / (total_count as f64)).to_string()
+    };
+    Ok(format!("avg({column})\n{value}\n").into_bytes())
+}
+
 /// Reduce grouped COUNT results by their canonical TSV-encoded key.
 /// Preserve first-seen key order, reject malformed rows, and only emit a
 /// complete bounded result. Shards may hold overlapping group *keys*, but
@@ -1607,6 +1664,7 @@ pub fn handle(method: &str, body: &[u8], cluster: &Cluster, max_rows: usize) -> 
                 || is_safe_grouped_multikey_extremum(&select)
                 || is_safe_grouped_fused_metrics(&select)
                 || is_safe_grouped_distinct(&select)
+                || is_safe_weighted_avg(&select)
                 || is_safe_sum(&select)
                 || is_safe_extremum(&select) =>
         {
@@ -1631,6 +1689,7 @@ pub fn handle(method: &str, body: &[u8], cluster: &Cluster, max_rows: usize) -> 
     let grouped_multikey_extremum_query = is_safe_grouped_multikey_extremum(&select);
     let grouped_fused_query = is_safe_grouped_fused_metrics(&select);
     let grouped_distinct_query = is_safe_grouped_distinct(&select);
+    let weighted_avg_query = is_safe_weighted_avg(&select);
     let sum_query = is_safe_sum(&select);
     let shard_sql = if is_safe_scan(&select) {
         match unpaged_scan_sql(sql, &select) {
@@ -1638,6 +1697,11 @@ pub fn handle(method: &str, body: &[u8], cluster: &Cluster, max_rows: usize) -> 
             None => {
                 return Response::text("400 Bad Request", "unsupported distributed pagination\n");
             }
+        }
+    } else if weighted_avg_query {
+        match weighted_avg_shard_sql(sql, &select) {
+            Some(query) => query,
+            None => return Response::text("400 Bad Request", "unsupported AVG shard rewrite\n"),
         }
     } else if grouped_distinct_query {
         match grouped_distinct_shard_sql(sql, &select) {
@@ -1684,7 +1748,7 @@ pub fn handle(method: &str, body: &[u8], cluster: &Cluster, max_rows: usize) -> 
         (
             Some(Source::Table(table)),
             Projection::Aggregate {
-                function: AggregateFunction::Sum | AggregateFunction::Min | AggregateFunction::Max,
+                function: AggregateFunction::Sum | AggregateFunction::Min | AggregateFunction::Max | AggregateFunction::Avg,
                 column,
             },
         ) => Some((table.as_str(), column.as_str())),
@@ -1877,6 +1941,12 @@ pub fn handle(method: &str, body: &[u8], cluster: &Cluster, max_rows: usize) -> 
                 }
             }
             _ => Err(MergeError::InvalidGroupedSum),
+        }
+    } else if weighted_avg_query {
+        match (sum_type.as_deref(), &select.projection) {
+            (Some(kind), Projection::Aggregate { column, .. }) =>
+                merge_weighted_integer_avg(&shards, kind, column),
+            _ => Err(MergeError::InvalidSum),
         }
     } else if grouped_distinct_query {
         match &select.projection {
@@ -2453,6 +2523,40 @@ mod tests {
                 Some(&query), None, Some(&["UInt64".into(), "String".into()]),
             ).unwrap(),
             b"region\tcategory\tmax(price)\n2\tb\t7\n2\ta\t3\n"
+        );
+    }
+
+    #[test]
+    fn distributed_weighted_avg_uses_partial_sum_and_nonnull_count() {
+        let sql = "SELECT avg(amount) FROM sales WHERE region = 1";
+        let query = parse_select(sql).unwrap();
+        assert!(is_safe_weighted_avg(&query));
+        assert_eq!(
+            weighted_avg_shard_sql(sql, &query).as_deref(),
+            Some("SELECT sum(amount), count(amount) FROM sales WHERE region = 1")
+        );
+        let shards = [
+            shard(10, "sum(amount)\tcount(amount)\n10\t2\n"),
+            shard(10, "sum(amount)\tcount(amount)\n90\t1\n"),
+            shard(10, "sum(amount)\tcount(amount)\nNULL\t0\n"),
+        ];
+        assert_eq!(
+            merge_weighted_integer_avg(&shards, "UInt64", "amount").unwrap(),
+            format!("avg(amount)\n{}\n", 100f64 / 3.0).into_bytes()
+        );
+        assert_eq!(
+            merge_weighted_integer_avg(
+                &[shard(10, "sum(amount)\tcount(amount)\nNULL\t0\n")],
+                "Int64", "amount",
+            ).unwrap(),
+            b"avg(amount)\nNULL\n"
+        );
+        assert_eq!(
+            merge_weighted_integer_avg(
+                &[shard(10, "sum(amount)\tcount(amount)\n7\t0\n")],
+                "UInt64", "amount",
+            ),
+            Err(MergeError::InvalidSum)
         );
     }
     #[test]
