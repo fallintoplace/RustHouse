@@ -205,6 +205,40 @@ fn update_group_numeric(
 }
 
 const MAX_GROUPS: usize = 100_000;
+ 
+/// Encode a narrow integer dimension directly into its dense bucket.
+/// Nullable dimensions reserve the final bucket for NULL rather than
+/// hashing a new typed key on every qualifying analytical fact row.
+fn narrow_group_bucket(
+    column: &TypedColumn,
+    row: usize,
+    null_bucket: usize,
+) -> Result<usize, ExecutionError> {
+    let values = match column {
+        TypedColumn::Numeric(values) => values,
+        TypedColumn::NullableNumeric { values, nulls } => {
+            if nulls[row] != 0 {
+                return Ok(null_bucket);
+            }
+            values
+        }
+        _ => return Err(ExecutionError::Invalid("unexpected dense GROUP BY column".into())),
+    };
+    let bucket = match values {
+        NumericColumn::UInt8(values) => usize::from(values[row]),
+        NumericColumn::Int8(values) => usize::from(values[row] as u8),
+        NumericColumn::UInt16(values) => usize::from(values[row]),
+        NumericColumn::Int16(values) => usize::from(values[row] as u16),
+        _ => return Err(ExecutionError::Invalid("unexpected dense GROUP BY column".into())),
+    };
+    if bucket >= null_bucket && null_bucket != 0 {
+        // The reserved bucket is strictly beyond the non-null key space.
+        // For non-nullable keys it is never addressable.
+        return Ok(bucket);
+    }
+    Ok(bucket)
+}
+
 
 
 /// Exact integer SUM over parallel physical parts. Keep both the group key
@@ -387,10 +421,13 @@ pub(super) fn execute_grouped_aggregate<W: Write>(
     let mut text_groups = HashMap::<Vec<u8>, usize>::new();
     let mut uuid_groups = HashMap::<[u8; 16], usize>::new();
     let mut groups = partial.unwrap_or_default();
-    // Non-nullable byte keys can be indexed directly rather than hashed.
+    // Direct numeric buckets also include nullable dimensions. Reserve a
+    // separate sentinel bucket so NULL never aliases integer zero.
     let mut dense_slots = match group_type {
         "UInt8" | "Int8" => Some(vec![usize::MAX; 256]),
         "UInt16" | "Int16" => Some(vec![usize::MAX; 65_536]),
+        "Nullable(UInt8)" | "Nullable(Int8)" => Some(vec![usize::MAX; 257]),
+        "Nullable(UInt16)" | "Nullable(Int16)" => Some(vec![usize::MAX; 65_537]),
         _ => None,
     };
     while let Some(batch) = reader.as_mut().map_or(Ok(None), TypedQueryReader::next_batch)? {
@@ -399,21 +436,11 @@ pub(super) fn execute_grouped_aggregate<W: Write>(
                 continue;
             }
             let group = if let Some(slots) = dense_slots.as_mut() {
-                let key = match &batch[group_index] {
-                    TypedColumn::Numeric(NumericColumn::UInt8(values)) => usize::from(values[row]),
-                    TypedColumn::Numeric(NumericColumn::Int8(values)) => {
-                        usize::from(values[row] as u8)
-                    }
-                    TypedColumn::Numeric(NumericColumn::UInt16(values)) => usize::from(values[row]),
-                    TypedColumn::Numeric(NumericColumn::Int16(values)) => {
-                        usize::from(values[row] as u16)
-                    }
-                    _ => {
-                        return Err(ExecutionError::Invalid(
-                            "unexpected dense GROUP BY column".into(),
-                        ));
-                    }
-                };
+                let key = narrow_group_bucket(
+                    &batch[group_index],
+                    row,
+                    slots.len() - 1,
+                )?;
                 let group = &mut slots[key];
                 if *group != usize::MAX {
                     *group
@@ -621,5 +648,54 @@ mod grouped_direct_numeric_aggregate_tests {
         let non_numeric = TypedColumn::Numeric(NumericColumn::UInt64(vec![4]));
         update_group_numeric(&mut aggregate, &non_numeric, 0).unwrap();
         assert_eq!(aggregate.render(), "10");
+    }
+}
+
+#[cfg(test)]
+mod nullable_numeric_aggregate_bucket_tests {
+    use super::*;
+
+    #[test]
+    fn null_is_separate_from_zero_and_all_signed_boundary_keys() {
+        let nullable = TypedColumn::NullableNumeric {
+            values: NumericColumn::Int8(vec![0, -1, i8::MIN, i8::MAX, 0]),
+            nulls: vec![1, 0, 0, 0, 0],
+        };
+        assert_eq!(
+            (0..5).map(|index| narrow_group_bucket(&nullable, index, 256).unwrap()).collect::<Vec<_>>(),
+            [256, 255, 128, 127, 0],
+        );
+        let nullable_16 = TypedColumn::NullableNumeric {
+            values: NumericColumn::UInt16(vec![0, 0, u16::MAX, 42]),
+            nulls: vec![0, 1, 0, 0],
+        };
+        assert_eq!(
+            (0..4).map(|index| narrow_group_bucket(&nullable_16, index, 65_536).unwrap()).collect::<Vec<_>>(),
+            [0, 65_536, 65_535, 42],
+        );
+    }
+
+    #[test]
+    fn same_dense_bucket_reuses_group_state_for_nullable_sum() {
+        let dimension = TypedColumn::NullableNumeric {
+            values: NumericColumn::UInt8(vec![1, 1, 2, 0, 0, 1]),
+            nulls: vec![0, 0, 0, 1, 1, 0],
+        };
+        let amounts = TypedColumn::Numeric(NumericColumn::UInt64(vec![10, 20, 30, 40, 50, 60]));
+        let mut slots = vec![usize::MAX; 257];
+        let mut groups = Vec::<(Cell, AggregateState)>::new();
+        for row in 0..6 {
+            let bucket = narrow_group_bucket(&dimension, row, 256).unwrap();
+            if slots[bucket] == usize::MAX {
+                slots[bucket] = groups.len();
+                groups.push((typed::cell(&dimension, row), AggregateState::new(AggregateFunction::Sum)));
+            }
+            update_group_numeric(&mut groups[slots[bucket]].1, &amounts, row).unwrap();
+        }
+        assert_eq!(groups.len(), 3);
+        assert_eq!(groups[slots[1]].1.render(), "90");
+        assert_eq!(groups[slots[2]].1.render(), "30");
+        assert_eq!(groups[slots[256]].1.render(), "90");
+        assert!(matches!(groups[slots[256]].0, Cell::Null));
     }
 }
