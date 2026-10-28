@@ -4,7 +4,12 @@ use std::io::{self, Write};
 
 const MAX_LINE_BYTES: usize = 1024 * 1024;
 
-fn write_compact_row<W: Write>(output: &mut W, line: &[u8], columns: usize) -> io::Result<()> {
+fn write_compact_row_into<W: Write>(
+    output: &mut W,
+    line: &[u8],
+    columns: usize,
+    row: &mut Vec<u8>,
+) -> io::Result<()> {
     let width = 1 + line.iter().filter(|&&byte| byte == b'\t').count();
     if width != columns {
         return Err(io::Error::new(
@@ -13,7 +18,8 @@ fn write_compact_row<W: Write>(output: &mut W, line: &[u8], columns: usize) -> i
         ));
     }
     // Reserve framing for common unescaped fields before writing quotes.
-    let mut row = Vec::with_capacity(
+    row.clear();
+    row.reserve(
         line.len()
             .saturating_add(columns.saturating_mul(3))
             .saturating_add(3),
@@ -27,12 +33,12 @@ fn write_compact_row<W: Write>(output: &mut W, line: &[u8], columns: usize) -> i
             row.write_all(b"null")?;
         } else {
             if value.contains(&b'\\') {
-                write_json_string(&mut row, &decode_tsv_value(value)?)?;
+                write_json_string(&mut *row, &decode_tsv_value(value)?)?;
             } else {
                 let text = std::str::from_utf8(value).map_err(|_| {
                     io::Error::new(io::ErrorKind::InvalidData, "invalid UTF-8 field")
                 })?;
-                write_json_string(&mut row, text)?;
+                write_json_string(&mut *row, text)?;
             }
         }
     }
@@ -40,10 +46,16 @@ fn write_compact_row<W: Write>(output: &mut W, line: &[u8], columns: usize) -> i
     output.write_all(&row)
 }
 
+#[cfg(test)]
+fn write_compact_row<W: Write>(output: &mut W, line: &[u8], columns: usize) -> io::Result<()> {
+    write_compact_row_into(output, line, columns, &mut Vec::new())
+}
+
 pub(super) struct JsonCompactEachRowWriter<W: Write> {
     output: W,
     columns: Option<usize>,
     line: Vec<u8>,
+    encoded: Vec<u8>,
 }
 
 impl<W: Write> JsonCompactEachRowWriter<W> {
@@ -52,6 +64,7 @@ impl<W: Write> JsonCompactEachRowWriter<W> {
             output,
             columns: None,
             line: Vec::new(),
+            encoded: Vec::new(),
         }
     }
 
@@ -70,7 +83,7 @@ impl<W: Write> JsonCompactEachRowWriter<W> {
             self.line.clear();
             return Ok(());
         };
-        write_compact_row(&mut self.output, &self.line, columns)?;
+        write_compact_row_into(&mut self.output, &self.line, columns, &mut self.encoded)?;
         self.line.clear();
         Ok(())
     }
@@ -118,6 +131,15 @@ impl<W: Write> Write for JsonCompactEachRowWriter<W> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn response_buffer_is_reused_for_shorter_rows() {
+        let mut writer = JsonCompactEachRowWriter::new(Vec::new());
+        writer.write_all(format!("value\n{}\n", "a".repeat(4096)).as_bytes()).unwrap();
+        let capacity = writer.encoded.capacity();
+        writer.write_all(b"b\n").unwrap();
+        assert_eq!(writer.encoded.capacity(), capacity);
+    }
 
     #[test]
     fn processes_many_rows_from_one_bulk_write() {
