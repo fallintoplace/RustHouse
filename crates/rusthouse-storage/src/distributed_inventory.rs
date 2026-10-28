@@ -26,7 +26,10 @@ pub fn inventory_snapshot(
 ) -> Result<Vec<InventoryEntry>, PartError> {
     let active = resolve_active_snapshot(root)?;
     let parts = query_parts(&active)?;
-    let mut files = Vec::new();
+    // A typical wide part has several streams plus its metadata files.
+    // Cap the estimate to avoid excessive allocations for sparse inventories.
+    let capacity = parts.len().saturating_mul(8).min(max_files).min(1024);
+    let mut files = Vec::with_capacity(capacity);
     let mut total_bytes = 0u64;
     for part in parts {
         let name = part
