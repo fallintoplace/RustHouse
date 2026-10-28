@@ -75,6 +75,7 @@ pub(super) fn is_function(name: &str) -> bool {
             | "STRIP_PREFIX"
             | "RIGHT"
             | "BASE64_ENCODE"
+            | "BASE64URLENCODE"
             | "HASTOKENCASEINSENSITIVE"
             | "ENDS_WITH"
             | "PATHFULL"
@@ -1516,7 +1517,7 @@ fn parse_at_depth(parser: &mut Parser, depth: usize) -> Result<ConstantValue, Pa
                 None => ConstantValue::Null,
             }
         }
-        "BASE64_ENCODE" => {
+        "BASE64_ENCODE" | "BASE64URLENCODE" => {
             let input = text_arg(parser, depth + 1)?;
             require(parser, Token::RParen, "BASE64_ENCODE requires one argument")?;
             match input {
@@ -1530,8 +1531,11 @@ fn parse_at_depth(parser: &mut Parser, depth: usize) -> Result<ConstantValue, Pa
                     if output_len > MAX_TEXT_BYTES {
                         return Err(ParseError("BASE64_ENCODE result is too large".into()));
                     }
-                    const ALPHABET: &[u8; 64] =
+                    const STANDARD: &[u8; 64] =
                         b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+                    const URL_SAFE: &[u8; 64] =
+                        b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_";
+                    let ALPHABET = if name == "BASE64URLENCODE" { URL_SAFE } else { STANDARD };
                     let mut result = String::with_capacity(output_len);
                     for chunk in value.as_bytes().chunks(3) {
                         let mut bits = u32::from(chunk[0]) << 16;
