@@ -49,6 +49,41 @@ pub(super) fn distinct_shard_sql(sql: &str, select: &Select) -> Option<String> {
     (parse_select(&rewritten).ok()? == expected).then_some(rewritten)
 }
 
+pub(super) fn is_safe_avg(select: &Select) -> bool {
+    matches!(select.projection,
+        Projection::Aggregate { function: AggregateFunction::Avg, .. })
+        && is_safe_unpaged_select(select)
+}
+
+/// Build both shard queries from a verified AST, preserving WHERE and alias.
+pub(super) fn avg_shard_sql(sql: &str, select: &Select) -> Option<(String, String)> {
+    let Projection::Aggregate { function: AggregateFunction::Avg, column } = &select.projection
+    else { return None };
+    let projection = |name: &str| match &select.alias {
+        Some(alias) => format!("{name}({column}) AS {alias}"),
+        None => format!("{name}({column})"),
+    };
+    for (index, _) in sql.char_indices() {
+        if index == 0 || !sql.as_bytes()[index-1].is_ascii_whitespace()
+            || !sql[index..].get(..5).is_some_and(|v| v.eq_ignore_ascii_case("FROM ")) {
+            continue;
+        }
+        let sum = format!("SELECT {} {}", projection("SUM"), &sql[index..]);
+        let count = format!("SELECT {} {}", projection("COUNT"), &sql[index..]);
+        let mut expected_sum = select.clone();
+        expected_sum.projection = Projection::Aggregate {
+            function: AggregateFunction::Sum, column: column.clone()
+        };
+        let mut expected_count = select.clone();
+        expected_count.projection = Projection::CountColumn { column: column.clone() };
+        if parse_select(&sum).ok()? == expected_sum &&
+            parse_select(&count).ok()? == expected_count {
+            return Some((sum, count));
+        }
+    }
+    None
+}
+
 pub(super) fn is_safe_sum(select: &Select) -> bool {
     matches!(
         select.projection,
