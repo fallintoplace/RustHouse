@@ -81,8 +81,14 @@ fn repeated_multikey_groups_are_counted_after_many_hash_probes() {
         NEXT.fetch_add(1, Ordering::Relaxed)
     ));
     let cols = [
-        Column { name: "region".into(), data_type: "UInt16".into() },
-        Column { name: "event".into(), data_type: "String".into() },
+        Column {
+            name: "region".into(),
+            data_type: "UInt16".into(),
+        },
+        Column {
+            name: "event".into(),
+            data_type: "String".into(),
+        },
     ];
     let rows = (0..240)
         .map(|n| vec![Some((n % 2).to_string()), Some("scan".into())])
