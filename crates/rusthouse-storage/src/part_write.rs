@@ -336,7 +336,11 @@ pub fn write_wide_part_with_compression(
     let mut files = Vec::new();
     let mut definitions = format!("columns format version: 1\n{} columns:\n", columns.len());
     for col in columns {
-        definitions.push_str(&format!("`{}` {}\n", col.name, col.data_type));
+        definitions.push('`');
+        definitions.push_str(&col.name);
+        definitions.push_str("` ");
+        definitions.push_str(&col.data_type);
+        definitions.push('\n');
     }
     write_tracked_file(
         part,
