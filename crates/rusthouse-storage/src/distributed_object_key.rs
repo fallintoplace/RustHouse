@@ -120,3 +120,60 @@ mod tests {
         assert!(ObjectKey::new("prod", "s1", 0, "all_0_0_0", "count.txt").is_err());
     }
 }
+
+
+impl ObjectKey {
+    /// Parse a generation-scoped key from five safe relative path components.
+    /// Reject noncanonical generation spellings and path traversal.
+    pub fn parse_relative(path: &std::path::Path) -> Result<Self, &'static str> {
+        use std::path::Component;
+        let segments = path.components().collect::<Vec<_>>();
+        if segments.len() != 5 {
+            return Err("distributed object key must have five components");
+        }
+        let mut fields = Vec::with_capacity(5);
+        for segment in segments {
+            let Component::Normal(value) = segment else {
+                return Err("distributed object key must be relative");
+            };
+            fields.push(value.to_str().ok_or("non-UTF8 distributed object key")?);
+        }
+        let generation_text = fields[2]
+            .strip_prefix('g')
+            .ok_or("missing distributed generation prefix")?;
+        let generation = generation_text
+            .parse::<u64>()
+            .map_err(|_| "invalid distributed generation")?;
+        if generation_text != generation.to_string() {
+            return Err("noncanonical distributed generation");
+        }
+        Self::new(fields[0], fields[1], generation, fields[3], fields[4])
+    }
+}
+
+#[cfg(test)]
+mod parse_relative_tests {
+    use super::*;
+
+    #[test]
+    fn round_trips_generation_scoped_paths() {
+        let key = ObjectKey::new("cluster", "s1", 42, "all_0_0_0", "data.bin").unwrap();
+        assert_eq!(ObjectKey::parse_relative(&key.relative_path()).unwrap(), key);
+    }
+
+    #[test]
+    fn rejects_unsafe_and_ambiguous_paths() {
+        for path in [
+            "/cluster/s1/g1/part/file",
+            "cluster/s1/g0/part/file",
+            "cluster/s1/g01/part/file",
+            "cluster/s1/gX/part/file",
+            "cluster/s1/g1/../file",
+            "cluster/s1/g1/.hidden/file",
+            "cluster/s1/g1/part",
+            "cluster/s1/g1/part/file/extra",
+        ] {
+            assert!(ObjectKey::parse_relative(PathBuf::from(path).as_path()).is_err(), "{path}");
+        }
+    }
+}
