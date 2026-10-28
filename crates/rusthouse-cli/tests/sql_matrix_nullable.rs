@@ -71,7 +71,7 @@ fn nullable_filters_and_aggregates_match_reference_results() {
         ),
         (
             "SELECT count(DISTINCT region), count(note) FROM events WHERE amount >= 10",
-            "countDistinct(region)\tcount(note)\n2\t2\n",
+            "count(DISTINCT region)\tcount(note)\n2\t2\n",
         ),
     ] {
         assert_eq!(run(&db, statement), expected, "{statement}");
