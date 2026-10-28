@@ -166,19 +166,14 @@ pub(super) fn execute_count_column_part<W: Write>(
     let mut count = 0u64;
     let no_filters = query.predicates.is_empty() && query.or_predicates.is_empty();
     while let Some(batch) = reader.next_batch()? {
-        if no_filters {
-            count = count
-                .checked_add(batch[0].len() as u64)
-                .ok_or_else(|| ExecutionError::Invalid("count overflow".into()))?;
-            continue;
-        }
-        for row in 0..batch[0].len() {
-            if batch_matches(&batch, row, &comparisons) {
-                count = count
-                    .checked_add(1)
-                    .ok_or_else(|| ExecutionError::Invalid("count overflow".into()))?;
-            }
-        }
+        let matches = if no_filters {
+            batch[0].len()
+        } else {
+            count_batch_matches(&batch, &comparisons)
+        };
+        count = count
+            .checked_add(matches as u64)
+            .ok_or_else(|| ExecutionError::Invalid("count overflow".into()))?;
     }
     if query.offset.unwrap_or(0) == 0 {
         writeln!(output, "{count}")?;
