@@ -24,6 +24,22 @@ class StarFixtureTests(unittest.TestCase):
             self.assertFalse(report["official_ssb"])
             self.assertIn("CREATE TABLE", (path / "date_dim.sql").read_text())
 
+    def test_regenerating_fixture_replaces_old_reference_rows(self):
+        with tempfile.TemporaryDirectory() as root:
+            generate(root, 20, 2)
+            generate(root, 4, 3)
+            with closing(sqlite3.connect(Path(root) / "reference.sqlite")) as db:
+                self.assertEqual(
+                    db.execute("SELECT COUNT(*) FROM lineorder").fetchone()[0], 4
+                )
+                self.assertEqual(
+                    db.execute("SELECT COUNT(*) FROM date_dim").fetchone()[0],
+                    len(DATE_KEYS)
+                )
+            self.assertEqual(
+                len((Path(root) / "lineorder.tsv").read_text().splitlines()), 5
+            )
+
     def test_seed_is_deterministic_and_input_bounded(self):
         with tempfile.TemporaryDirectory() as a, tempfile.TemporaryDirectory() as b:
             generate(a, 70, 14)
