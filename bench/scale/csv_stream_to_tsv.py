@@ -88,9 +88,3 @@ def main(argv=None):
 
 if __name__ == "__main__":
     raise SystemExit(main())
-
-
-def _escape_field_reference(value):
-    replacements = {"\\": r"\\", "\t": r"\t", "\n": r"\n", "\r": r"\r",
-                    "\x00": r"\0", "\b": r"\b", "\f": r"\f", "\v": r"\v"}
-    return "".join(replacements.get(char, char) for char in value)
