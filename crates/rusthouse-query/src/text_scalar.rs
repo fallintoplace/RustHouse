@@ -60,6 +60,7 @@ pub(super) fn is_function(name: &str) -> bool {
             | "QUERYSTRINGANDFRAGMENT"
             | "FORMATREADABLETIMEDELTA"
             | "TO_INT64"
+            | "TOSTRING"
             | "TRIM"
             | "LTRIM"
             | "TRIMLEFT"
@@ -900,6 +901,21 @@ fn parse_at_depth(parser: &mut Parser, depth: usize) -> Result<ConstantValue, Pa
                 }
                 None => ConstantValue::Null,
             }
+        }
+        "TOSTRING" => {
+            let value = match parser.tokens.get(parser.index) {
+                Some(Token::String(_)) => text_arg(parser, depth + 1)?,
+                Some(Token::Word(name)) if is_function(name) => {
+                    match parse_at_depth(parser, depth + 1)? {
+                        ConstantValue::Text(value) => Some(value),
+                        ConstantValue::Integer(value) => Some(value.to_string()),
+                        ConstantValue::Null => None,
+                    }
+                }
+                _ => integer_arg(parser, depth + 1)?.map(|value| value.to_string()),
+            };
+            require(parser, Token::RParen, "toString requires one argument")?;
+            value.map_or(ConstantValue::Null, ConstantValue::Text)
         }
         "TO_INT64" => {
             let input = text_arg(parser, depth + 1)?;
