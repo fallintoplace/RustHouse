@@ -6,15 +6,15 @@ import math
 
 def plan(rows, *, rows_per_part=65536, max_parts=16384, bytes_per_row=16,
          disk_budget_bytes=None):
-    if not 1 <= rows <= (1 << 64) - 1:
+    if type(rows) is not int or not 1 <= rows <= (1 << 64) - 1:
         raise ValueError("rows must be positive UInt64")
-    if not 1 <= rows_per_part <= 1_000_000:
+    if type(rows_per_part) is not int or not 1 <= rows_per_part <= 1_000_000:
         raise ValueError("rows_per_part must be in 1..1000000")
-    if not 1 <= max_parts <= 16384:
+    if type(max_parts) is not int or not 1 <= max_parts <= 16384:
         raise ValueError("max_parts must be in 1..16384")
-    if not isinstance(bytes_per_row, int) or bytes_per_row < 1:
+    if type(bytes_per_row) is not int or bytes_per_row < 1:
         raise ValueError("bytes_per_row must be a positive integer")
-    if disk_budget_bytes is not None and disk_budget_bytes < 1:
+    if disk_budget_bytes is not None and (type(disk_budget_bytes) is not int or disk_budget_bytes < 1):
         raise ValueError("disk_budget_bytes must be positive")
     required_parts = (rows - 1) // rows_per_part + 1
     minimum_rows = (rows - 1) // max_parts + 1
