@@ -105,6 +105,7 @@ pub(super) fn is_function(name: &str) -> bool {
             | "BASE64ENCODE"
             | "HASTOKENCASEINSENSITIVE"
             | "ENDS_WITH"
+            | "ENDSWITHUTF8"
             | "ENDSWITH"
             | "PATHFULL"
             | "REPLACE_LAST"
@@ -1661,7 +1662,7 @@ fn parse_at_depth(parser: &mut Parser, depth: usize) -> Result<ConstantValue, Pa
                 _ => ConstantValue::Null,
             }
         }
-        "ENDS_WITH" | "ENDSWITH" => {
+        "ENDS_WITH" | "ENDSWITH" | "ENDSWITHUTF8" => {
             let input = text_arg(parser, depth + 1)?;
             require(parser, Token::Comma, "ENDS_WITH requires a suffix")?;
             let suffix = text_arg(parser, depth + 1)?;
