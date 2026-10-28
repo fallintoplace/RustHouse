@@ -64,9 +64,8 @@ pub(super) fn execute_grouped_part<W: Write>(
             } else {
                 Number::Unsigned(u128::from(byte))
             };
-            groups
-                .by_key
-                .insert(NumberKey::from(value), groups.rows.len());
+            // Dense keys were already deduplicated by their slot.
+            // The final writer consumes only rows, not the hash index.
             groups.rows.push((value, counts[byte as usize]));
         }
         return groups.write(query, column, output);
@@ -105,9 +104,6 @@ pub(super) fn execute_grouped_part<W: Write>(
             } else {
                 Number::Unsigned(u128::from(key))
             };
-            groups
-                .by_key
-                .insert(NumberKey::from(value), groups.rows.len());
             groups.rows.push((value, counts[usize::from(key)]));
         }
         return groups.write(query, column, output);
