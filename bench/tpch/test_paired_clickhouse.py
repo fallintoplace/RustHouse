@@ -2,7 +2,7 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from bench.tpch.paired_clickhouse import ABBA, benchmark_pair, command, compare
+from bench.tpch.paired_clickhouse import ABBA, BAAB, benchmark_pair, command, compare
 
 
 class PairedClickHouseTests(unittest.TestCase):
@@ -23,10 +23,12 @@ class PairedClickHouseTests(unittest.TestCase):
             calls.append(engine)
             return b"1\n", {"rusthouse": 0.002, "clickhouse": 0.001}[engine]
         result = benchmark_pair("SELECT 1", b"1\n", execute, runs=2, warmups=1)
-        self.assertEqual(calls, ["rusthouse", "clickhouse", *ABBA, *ABBA])
+        self.assertEqual(calls, ["rusthouse", "clickhouse", *ABBA, *BAAB])
         self.assertEqual(result["clickhouse_over_rusthouse"], 0.5)
         self.assertEqual(len(result["rusthouse_samples_seconds"]), 4)
         self.assertEqual(len(result["clickhouse_samples_seconds"]), 4)
+        self.assertEqual(result["rusthouse_p90_seconds"], 0.002)
+        self.assertEqual(result["clickhouse_p90_seconds"], 0.001)
 
     def test_any_mismatch_invalidates_the_speed_comparison(self):
         with self.assertRaisesRegex(ValueError, "differs"):
