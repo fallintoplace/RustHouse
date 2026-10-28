@@ -35,9 +35,7 @@ impl NumericPartReader {
         }
         let part = part.as_ref();
         let metadata = inspect_part(part)?;
-        let mut streams = Vec::with_capacity(columns.len());
-        let mut layout = ScanLayout::default();
-
+        let mut types = Vec::with_capacity(columns.len());
         for name in columns {
             let column = metadata
                 .columns
@@ -58,19 +56,67 @@ impl NumericPartReader {
                     column.name, column.data_type
                 )));
             }
-
-            if metadata.rows == 0 {
-                continue;
-            }
-            streams.push(open_numeric_stream(
-                part,
-                name,
-                &column.data_type,
-                metadata.rows,
-                &mut layout,
-            )?);
+            types.push(column.data_type.as_str());
         }
 
+        let mut streams = Vec::with_capacity(columns.len());
+        if metadata.rows != 0 {
+            const PARALLEL_COLUMN_THRESHOLD: usize = 8;
+            const MAX_OPEN_WORKERS: usize = 4;
+            let workers = std::thread::available_parallelism()
+                .map_or(1, |parallelism| parallelism.get())
+                .min(MAX_OPEN_WORKERS);
+            if columns.len() >= PARALLEL_COLUMN_THRESHOLD && workers > 1 {
+                use std::sync::atomic::{AtomicUsize, Ordering};
+                let cursor = AtomicUsize::new(0);
+                let mut slots: Vec<Option<Result<ColumnStream, PartError>>> =
+                    (0..columns.len()).map(|_| None).collect();
+                std::thread::scope(|scope| -> Result<(), PartError> {
+                    let handles = (0..workers)
+                        .map(|_| {
+                            let cursor = &cursor;
+                            let types = &types;
+                            scope.spawn(move || {
+                                let mut completed = Vec::new();
+                                loop {
+                                    let index = cursor.fetch_add(1, Ordering::Relaxed);
+                                    if index >= columns.len() {
+                                        break;
+                                    }
+                                    completed.push((
+                                        index,
+                                        open_numeric_stream(part, &columns[index], types[index]),
+                                    ));
+                                }
+                                completed
+                            })
+                        })
+                        .collect::<Vec<_>>();
+                    for handle in handles {
+                        let completed = handle.join().map_err(|_| {
+                            PartError::InvalidScan("numeric stream opener panicked".into())
+                        })?;
+                        for (index, result) in completed {
+                            slots[index] = Some(result);
+                        }
+                    }
+                    Ok(())
+                })?;
+                for result in slots {
+                    streams.push(result.expect("each stream is claimed once")?);
+                }
+            } else {
+                for (name, data_type) in columns.iter().zip(&types) {
+                    streams.push(open_numeric_stream(part, name, data_type)?);
+                }
+            }
+        }
+        // Stream contents can open concurrently, but corresponding mark
+        // granules must be validated against one shared scan layout.
+        let mut layout = ScanLayout::default();
+        for (name, stream) in columns.iter().zip(&streams) {
+            layout.validate(name, &stream.marks, metadata.rows)?;
+        }
         Ok(Self {
             streams,
             rows: metadata.rows,
@@ -467,5 +513,37 @@ mod tests {
         assert_eq!(reader.rows(), 0);
         assert!(reader.next_batch().unwrap().is_none());
         fs::remove_dir_all(dir).unwrap();
+    }
+}
+
+#[cfg(test)]
+mod parallel_numeric_open_tests {
+    use super::*;
+    use crate::{Column, write_wide_part};
+    use std::fs;
+
+    #[test]
+    fn wide_numeric_projection_matches_all_column_mark_layouts() {
+        let part = std::env::temp_dir().join(format!(
+            "rusthouse-numeric-wide-open-{}", std::process::id()
+        ));
+        let _ = fs::remove_dir_all(&part);
+        let columns = (0..10)
+            .map(|index| Column {
+                name: format!("n{index}"),
+                data_type: "UInt64".into(),
+            })
+            .collect::<Vec<_>>();
+        let data = (0..10)
+            .map(|index| vec![Some(index.to_string()), Some((index + 200).to_string())])
+            .collect::<Vec<_>>();
+        write_wide_part(&part, &columns, &data).unwrap();
+        let names = columns.iter().map(|column| column.name.clone()).collect::<Vec<_>>();
+        let mut reader = NumericPartReader::open(&part, &names).unwrap();
+        let batch = reader.next_batch().unwrap().unwrap();
+        assert_eq!(batch.len(), 10);
+        assert!(batch.iter().all(|column| column.len() == 2));
+        assert!(reader.next_batch().unwrap().is_none());
+        fs::remove_dir_all(part).unwrap();
     }
 }
