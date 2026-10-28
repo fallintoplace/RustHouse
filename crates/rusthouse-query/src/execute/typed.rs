@@ -4,8 +4,9 @@
 mod like;
 
 use self::like::*;
+use super::hyperloglog::HyperLogLog;
 
-use super::{ExecutionError, Number, NumberKey, compare_numbers, number_at};
+use super::{BitmapDistinct32, ExecutionError, Number, NumberKey, compare_numbers, number_at};
 use crate::{Operator, Predicate, Projection, Select};
 use rusthouse_storage::{NumericColumn, TypedColumn, TypedQueryReader, inspect_query_source};
 use std::cmp::Ordering;
@@ -126,6 +127,8 @@ pub(super) fn requires_typed_scan(query: &Select, path: &Path) -> Result<bool, E
         Projection::Aggregate { column, .. }
         | Projection::CountColumn { column }
         | Projection::CountDistinct { column }
+        | Projection::ApproxDistinct { column }
+        | Projection::ApproxDistinctState { column }
         | Projection::GroupedCount { column } => names.push(column),
         _ => {}
     }
@@ -646,14 +649,20 @@ pub(super) fn passes(batch: &[TypedColumn], row: usize, branches: &[Vec<Conditio
                     value.is_some_and(|bytes| targets.contains(bytes) != *negated)
                 }
                 Test::NumericInSet(targets, negated) => {
-                    match cell(column, row) {
-                        Cell::Numeric(value) => {
-                            let found = !matches!(value, Number::Float(n) if n.is_nan())
-                                && targets.contains(&NumberKey::from(value));
-                            found != *negated
+                    // Probe decoded native numeric vectors directly. A NULL
+                    // never matches IN or NOT IN, including large hash sets.
+                    let value = match column {
+                        TypedColumn::Numeric(values) => Some(number_at(values, row)),
+                        TypedColumn::NullableNumeric { values, nulls } if nulls[row] == 0 => {
+                            Some(number_at(values, row))
                         }
-                        _ => false,
-                    }
+                        _ => None,
+                    };
+                    value.is_some_and(|value| {
+                        let found = !matches!(value, Number::Float(n) if n.is_nan())
+                            && targets.contains(&NumberKey::from(value));
+                        found != *negated
+                    })
                 }
                 Test::UuidNotBetween(lower, upper) => match column {
                     TypedColumn::Uuid(values) => {
@@ -854,6 +863,23 @@ fn static_nonnullable_null_filter(
     if unknown_branch { None } else { Some(false) }
 }
 
+/// Map an 8/16-bit dimension directly to its exact dense group bucket.
+/// NULLs use the normal sparse key path and never alias integer zero.
+fn dense_group_bucket(column: &TypedColumn, row: usize) -> Option<usize> {
+    let values = match column {
+        TypedColumn::Numeric(values) => values,
+        TypedColumn::NullableNumeric { values, nulls } if nulls[row] == 0 => values,
+        _ => return None,
+    };
+    match values {
+        NumericColumn::UInt8(values) => Some(usize::from(values[row])),
+        NumericColumn::Int8(values) => Some(usize::from(values[row] as u8)),
+        NumericColumn::UInt16(values) => Some(usize::from(values[row])),
+        NumericColumn::Int16(values) => Some(usize::from(values[row] as u16)),
+        _ => None,
+    }
+}
+
 pub(super) fn execute_typed<W: Write>(
     query: &Select,
     part: &Path,
@@ -870,6 +896,8 @@ pub(super) fn execute_typed<W: Write>(
         Projection::Count => Vec::new(),
         Projection::CountColumn { column }
         | Projection::CountDistinct { column }
+        | Projection::ApproxDistinct { column }
+        | Projection::ApproxDistinctState { column }
         | Projection::GroupedCount { column } => {
             vec![column.clone()]
         }
@@ -944,6 +972,8 @@ pub(super) fn execute_typed<W: Write>(
         Projection::Count => "count".to_string(),
         Projection::CountColumn { column } => format!("count({column})"),
         Projection::CountDistinct { column } => format!("countDistinct({column})"),
+        Projection::ApproxDistinct { column } => format!("uniq({column})"),
+        Projection::ApproxDistinctState { column } => format!("uniqState({column})"),
         Projection::GroupedCount { column } => {
             format!("{column}\t{}", query.alias.as_deref().unwrap_or("count"))
         }
@@ -1018,6 +1048,9 @@ pub(super) fn execute_typed<W: Write>(
     let is_count = matches!(query.projection, Projection::Count);
     let is_count_column = matches!(query.projection, Projection::CountColumn { .. });
     let is_count_distinct = matches!(query.projection, Projection::CountDistinct { .. });
+    let is_approx_distinct = matches!(query.projection, Projection::ApproxDistinct { .. } | Projection::ApproxDistinctState { .. });
+    let is_approx_state = matches!(query.projection, Projection::ApproxDistinctState { .. });
+    let mut sketch = HyperLogLog::default();
     let is_grouped = matches!(query.projection, Projection::GroupedCount { .. });
     let mut count = 0u64;
     let mut distinct = HashSet::<Vec<Key>>::new();
@@ -1048,12 +1081,36 @@ pub(super) fn execute_typed<W: Write>(
     } else {
         None
     };
+    // A dense, exact 32-bit bitmap handles high-cardinality nullable IDs.
+    let mut count_distinct_thirty_two = if is_count_distinct
+        && matches!(
+            projection_types.first().copied(),
+            Some("UInt32" | "Int32" | "Nullable(UInt32)" | "Nullable(Int32)")
+        )
+    {
+        Some(BitmapDistinct32::new())
+    } else {
+        None
+    };
     // Borrow decoded strings on duplicate probes. Own only new distinct values.
     let mut count_distinct_text = HashSet::<Vec<u8>>::new();
     // UUIDs have a fixed-size identity. Hash their bytes rather than allocating
     // a formatted String for each scanned row.
     let mut count_distinct_uuids = HashSet::<[u8; 16]>::new();
     let mut group_indices = HashMap::<Key, usize>::new();
+    // For narrow integer dimensions a direct bucket array removes one hash
+    // lookup per matching fact row. Nullable keys still use the sparse path.
+    let mut dense_group_indices = if is_grouped {
+        match projection_types.first().copied() {
+            Some("UInt8" | "Int8" | "Nullable(UInt8)" | "Nullable(Int8)") =>
+                Some(vec![usize::MAX; 256]),
+            Some("UInt16" | "Int16" | "Nullable(UInt16)" | "Nullable(Int16)") =>
+                Some(vec![usize::MAX; 65_536]),
+            _ => None,
+        }
+    } else {
+        None
+    };
     // String group probes can borrow the decoded input instead of cloning it.
     let mut text_group_indices = HashMap::<Vec<u8>, usize>::new();
     let mut uuid_group_indices = HashMap::<[u8; 16], usize>::new();
@@ -1098,6 +1155,7 @@ pub(super) fn execute_typed<W: Write>(
         && !is_count
         && !is_count_column
         && !is_count_distinct
+        && !is_approx_distinct
         && !is_grouped
         && !query.distinct
         && sort_indices.is_empty()
@@ -1134,7 +1192,32 @@ pub(super) fn execute_typed<W: Write>(
                 }
                 continue;
             }
+            if is_approx_distinct {
+                sketch.observe(&batch[projection_indices[0]], index)?;
+                continue;
+            }
             if is_grouped {
+                if let Some(slots) = dense_group_indices.as_mut() {
+                    if let Some(bucket) = dense_group_bucket(&batch[projection_indices[0]], index) {
+                        let group = &mut slots[bucket];
+                        if *group != usize::MAX {
+                            let count = &mut grouped_rows[*group].1;
+                            *count = count.checked_add(1).ok_or_else(|| {
+                                ExecutionError::Invalid("group count overflow".into())
+                            })?;
+                        } else {
+                            let next = grouped_rows.len();
+                            if next >= MAX_BUFFERED_ROWS {
+                                return Err(ExecutionError::Invalid(
+                                    "GROUP BY supports at most 200000 groups".into(),
+                                ));
+                            }
+                            *group = next;
+                            grouped_rows.push((cell(&batch[projection_indices[0]], index), 1));
+                        }
+                        continue;
+                    }
+                }
                 let text_key = match &batch[projection_indices[0]] {
                     TypedColumn::Text(strings) => strings.get(index),
                     TypedColumn::NullableText { values, nulls } if nulls[index] == 0 => {
@@ -1232,6 +1315,23 @@ pub(super) fn execute_typed<W: Write>(
                 candidate_sort_keys = Some(keys);
             }
             if is_count_distinct {
+                if let Some(bitmap) = count_distinct_thirty_two.as_mut() {
+                    let column = &batch[projection_indices[0]];
+                    if is_null_at(column, index) {
+                        continue;
+                    }
+                    let value = match column {
+                        TypedColumn::Numeric(NumericColumn::UInt32(values))
+                        | TypedColumn::NullableNumeric { values: NumericColumn::UInt32(values), .. } => values[index],
+                        TypedColumn::Numeric(NumericColumn::Int32(values))
+                        | TypedColumn::NullableNumeric { values: NumericColumn::Int32(values), .. } => values[index] as u32,
+                        _ => return Err(ExecutionError::Invalid(
+                            "unexpected 32-bit COUNT(DISTINCT) column type".into()
+                        )),
+                    };
+                    bitmap.insert(value)?;
+                    continue;
+                }
                 if let Some(bitmap) = count_distinct_sixteen.as_mut() {
                     let column = &batch[projection_indices[0]];
                     if is_null_at(column, index) {
@@ -1499,14 +1599,21 @@ pub(super) fn execute_typed<W: Write>(
         }
         return Ok(());
     }
-    if is_count || is_count_column || is_count_distinct {
+    if is_count || is_count_column || is_count_distinct || is_approx_distinct {
         if offset == 0 {
-            let result = if is_count || is_count_column {
+            if is_approx_state {
+                writeln!(output, "{}", sketch.encode_state())?;
+                return Ok(());
+            }
+            let result = if is_approx_distinct {
+                sketch.estimate()
+            } else if is_count || is_count_column {
                 count
             } else {
                 (count_distinct_keys.len()
                     + count_distinct_text.len()
                     + count_distinct_uuids.len()
+                    + count_distinct_thirty_two.as_ref().map_or(0, |bitmap| bitmap.len() as usize)
                     + count_distinct_sixteen.as_ref().map_or(0, |bitmap| {
                         bitmap.iter().map(|bits| bits.count_ones() as usize).sum::<usize>()
                     })) as u64
@@ -2070,6 +2177,42 @@ mod single_uuid_membership_tests {
 }
 
 #[cfg(test)]
+mod direct_numeric_set_probe_tests {
+    use super::{Condition, Test, passes};
+    use super::{Number, NumberKey};
+    use rusthouse_storage::{NumericColumn, TypedColumn};
+    use std::collections::HashSet;
+
+    #[test]
+    fn native_numeric_membership_respects_null_nan_and_negation() {
+        let targets = HashSet::from([NumberKey::from(Number::Signed(-3))]);
+        let batch = [TypedColumn::NullableNumeric {
+            values: NumericColumn::Int64(vec![-3, 2, -3]),
+            nulls: vec![0, 1, 0],
+        }];
+        let includes = [vec![Condition {
+            index: 0, test: Test::NumericInSet(HashSet::from([NumberKey::from(Number::Signed(-3))]), false),
+        }]];
+        let excludes = [vec![Condition {
+            index: 0, test: Test::NumericInSet(targets, true),
+        }]];
+        assert!(passes(&batch, 0, &includes));
+        assert!(!passes(&batch, 1, &includes));
+        assert!(!passes(&batch, 1, &excludes));
+        assert!(!passes(&batch, 2, &excludes));
+        let floats = [TypedColumn::Numeric(NumericColumn::Float64(vec![f64::NAN]))];
+        let float_set = [vec![Condition {
+            index: 0,
+            test: Test::NumericInSet(
+                HashSet::from([NumberKey::from(Number::Float(f64::NAN))]),
+                false,
+            ),
+        }]];
+        assert!(!passes(&floats, 0, &float_set));
+    }
+}
+
+#[cfg(test)]
 mod uuid_literal_byte_parse_tests {
     use super::uuid_literal_bytes;
 
@@ -2117,5 +2260,32 @@ mod direct_numeric_comparison_tests {
         assert!(matches_comparison_at(&nullable, 0, &target, Operator::Eq));
         assert!(!matches_comparison_at(&nullable, 1, &target, Operator::Ne));
         assert!(matches_comparison_at(&nullable, 2, &target, Operator::Gt));
+    }
+}
+
+#[cfg(test)]
+mod narrow_group_bucket_tests {
+    use super::*;
+
+    #[test]
+    fn dense_numeric_buckets_preserve_exact_signed_values() {
+        let signed8 = TypedColumn::Numeric(NumericColumn::Int8(vec![i8::MIN, -1, 0, i8::MAX]));
+        assert_eq!((0..4).map(|row| dense_group_bucket(&signed8, row)).collect::<Vec<_>>(),
+            [Some(128), Some(255), Some(0), Some(127)]);
+        let signed16 = TypedColumn::Numeric(NumericColumn::Int16(vec![i16::MIN, -1, 0, i16::MAX]));
+        assert_eq!((0..4).map(|row| dense_group_bucket(&signed16, row)).collect::<Vec<_>>(),
+            [Some(32768), Some(65535), Some(0), Some(32767)]);
+    }
+
+    #[test]
+    fn nullable_and_wider_dimensions_never_share_group_ids() {
+        let nullable = TypedColumn::NullableNumeric {
+            values: NumericColumn::UInt16(vec![0, 0, u16::MAX, 1]),
+            nulls: vec![0, 1, 0, 0],
+        };
+        assert_eq!((0..4).map(|row| dense_group_bucket(&nullable, row)).collect::<Vec<_>>(),
+            [Some(0), None, Some(65535), Some(1)]);
+        let wide = TypedColumn::Numeric(NumericColumn::UInt32(vec![1]));
+        assert_eq!(dense_group_bucket(&wide, 0), None);
     }
 }

@@ -25,6 +25,28 @@ pub(super) fn is_safe_count(select: &Select) -> bool {
     ) && is_safe_unpaged_select(select)
 }
 
+pub(super) fn is_safe_uniq(select: &Select) -> bool {
+    matches!(select.projection, Projection::ApproxDistinct { .. }) && is_safe_unpaged_select(select)
+}
+
+/// Build a shard-local HLL state, not a shard-local estimate. Merging local
+/// estimates cannot recover the global union when shard keys overlap.
+pub(super) fn uniq_state_shard_sql(sql: &str, select: &Select) -> Option<String> {
+    let column = match (&select.projection, &select.source) {
+        (Projection::ApproxDistinct { column }, Some(Source::Table(_))) => column,
+        _ => return None,
+    };
+    if !is_safe_uniq(select) {
+        return None;
+    }
+    let start = sql.to_ascii_uppercase().find(" FROM ")?;
+    let rewritten = format!("SELECT uniqState({column}){}", &sql[start..]);
+    let mut expected = select.clone();
+    expected.projection = Projection::ApproxDistinctState { column: column.clone() };
+    expected.alias = None;
+    (parse_select(&rewritten).ok()? == expected).then_some(rewritten)
+}
+
 pub(super) fn is_safe_count_distinct(select: &Select) -> bool {
     matches!(select.projection, Projection::CountDistinct { .. }) && is_safe_unpaged_select(select)
 }
@@ -116,7 +138,19 @@ pub(super) fn is_safe_grouped_sum(select: &Select) -> bool {
             function: AggregateFunction::Sum,
             ..
         }
-    ) && is_safe_unpaged_select(select)
+    )
+        && matches!(select.source, Some(Source::Table(_)))
+        && !select.distinct
+        && select.rename.is_none()
+        && select.alias.is_none()
+        // The coordinator sorts merged SUMs, not shard-local partials.
+        && select.order_terms().all(|order| order.column == "#aggregate")
+        && select.having.as_ref().is_none_or(|having| matches!(
+            having.operator,
+            rusthouse_query::Operator::Eq | rusthouse_query::Operator::Ne
+                | rusthouse_query::Operator::Lt | rusthouse_query::Operator::Le
+                | rusthouse_query::Operator::Gt | rusthouse_query::Operator::Ge
+        ))
 }
 
 pub(super) fn group_key_type(kind: &str) -> bool {

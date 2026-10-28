@@ -15,6 +15,7 @@ pub(super) fn execute<W: Write>(
     column: &str,
     items: &[(AggregateFunction, String)],
     aliases: &[Option<String>],
+    filters: &[Option<String>],
     output: &mut W,
 ) -> Result<(), ExecutionError> {
     let metadata = inspect_query_source(part)?;
@@ -36,6 +37,16 @@ pub(super) fn execute<W: Write>(
             return Err(ExecutionError::Invalid(
                 "numeric aggregates require numeric columns".into(),
             ));
+        }
+    }
+    for filter in filters.iter().flatten() {
+        if !names.contains(filter) {
+            names.push(filter.clone());
+        }
+        let column_type = metadata.columns.iter().find(|column| &column.name == filter)
+            .ok_or_else(|| ExecutionError::Invalid(format!("unknown filter column: {filter}")))?;
+        if matches!(typed::base_type(&column_type.data_type), "String" | "UUID") {
+            return Err(ExecutionError::Invalid("conditional metric filters must be numeric".into()));
         }
     }
     for predicate in query
@@ -70,7 +81,11 @@ pub(super) fn execute<W: Write>(
         if let Some(alias) = aliases.get(index).and_then(Option::as_deref) {
             write!(output, "\t{alias}")?;
         } else {
+            if let Some(filter) = filters.get(index).and_then(Option::as_deref) {
+                write!(output, "\t{}If({value_column}, {filter})", function.name())?;
+            } else {
             write!(output, "\t{}({value_column})", function.name())?;
+            }
         }
     }
     writeln!(output)?;
@@ -82,6 +97,9 @@ pub(super) fn execute<W: Write>(
     let item_indices = items
         .iter()
         .map(|(_, name)| indices[name])
+        .collect::<Vec<_>>();
+    let filter_indices = filters.iter()
+        .map(|value| value.as_ref().map(|column| indices[column]))
         .collect::<Vec<_>>();
     let mut groups = Vec::<(Cell, Vec<AggregateState>)>::new();
     // Direct slots avoid repeated hashing on compact grouping columns.
@@ -208,10 +226,21 @@ pub(super) fn execute<W: Write>(
                     }
                 }
             };
-            for ((function, _), (&column_index, state)) in items
+            for (metric, ((function, _), (&column_index, state))) in items
                 .iter()
                 .zip(item_indices.iter().zip(groups[index].1.iter_mut()))
+                .enumerate()
             {
+                if let Some(&filter_index) = filter_indices.get(metric).and_then(Option::as_ref) {
+                    let enabled = match typed::cell(&batch[filter_index], row) {
+                        Cell::Numeric(Number::Unsigned(value)) => value != 0,
+                        Cell::Numeric(Number::Signed(value)) => value != 0,
+                        Cell::Numeric(Number::Float(value)) => value != 0.0,
+                        Cell::Null => false,
+                        _ => return Err(ExecutionError::Invalid("conditional metric filter must be numeric".into())),
+                    };
+                    if !enabled {continue;}
+                }
                 if *function == AggregateFunction::Count {
                     if !typed::is_null_at(&batch[column_index], row) {
                         state.update(Number::Unsigned(1))?;
@@ -241,6 +270,13 @@ pub(super) fn execute<W: Write>(
                 }
             }
         }
+    }
+    if let Some(having) = &query.having {
+        let index = having.aggregate_index.ok_or_else(|| {
+            ExecutionError::Invalid("HAVING metric index is required".into())
+        })?;
+        groups.retain(|(_, states)| states.get(index)
+            .is_some_and(|state| state.passes_having(having)));
     }
     let mut bounded_order = None;
     if query.order_by.is_some() {

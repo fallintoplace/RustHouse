@@ -799,6 +799,7 @@ fn parses_having_counts_after_grouping() {
         Some(Having {
             operator: Operator::Ge,
             value: 2,
+            aggregate_index: None,
         })
     );
     for sql in [

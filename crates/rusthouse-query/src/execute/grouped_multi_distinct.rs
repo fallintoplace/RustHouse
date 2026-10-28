@@ -2,7 +2,7 @@
 use super::typed::{self, Cell, Key};
 use super::{ExecutionError, Number};
 use crate::Select;
-use rusthouse_storage::{TypedQueryReader, inspect_query_source};
+use rusthouse_storage::{NumericColumn, TypedColumn, TypedQueryReader, inspect_query_source};
 use std::cmp::Ordering;
 use std::collections::{HashMap, HashSet};
 use std::io::Write;
@@ -14,6 +14,27 @@ const MAX_PAIRS: usize = 200_000;
 struct Group {
     keys: Vec<Cell>,
     values: HashSet<Key>,
+    // Exact cardinality of a byte-wide column needs only 256 bits per group.
+    byte_values: [u64; 4],
+}
+
+impl Group {
+    fn cardinality(&self) -> usize {
+        self.values.len()
+            + self.byte_values.iter().map(|word| word.count_ones() as usize).sum::<usize>()
+    }
+}
+
+fn numeric_byte_at(column: &TypedColumn, row: usize) -> Option<u8> {
+    let values = match column {
+        TypedColumn::Numeric(values) | TypedColumn::NullableNumeric { values, .. } => values,
+        _ => return None,
+    };
+    match values {
+        NumericColumn::UInt8(values) => Some(values[row]),
+        NumericColumn::Int8(values) => Some(values[row] as u8),
+        _ => None,
+    }
 }
 
 pub(super) fn execute<W: Write>(
@@ -51,6 +72,7 @@ pub(super) fn execute<W: Write>(
     if query.limit==Some(0) { return Ok(()); }
     let group_indices=columns.iter().map(|name|indices[name]).collect::<Vec<_>>();
     let value_index=indices[value_column];
+    let byte_values=matches!(typed::base_type(types[value_column].as_str()), "UInt8" | "Int8");
     let mut reader=TypedQueryReader::open_with_metadata(part,&names,&metadata)?;
     let mut groups=Vec::<Group>::new();
     let mut lookup=HashMap::<Vec<Key>,usize>::new();
@@ -77,10 +99,18 @@ pub(super) fn execute<W: Write>(
                 groups.push(Group {
                     keys:group_indices.iter().map(|&i|typed::cell(&batch[i],row)).collect(),
                     values:HashSet::new(),
+                    byte_values: [0; 4],
                 });
                 index
             };
             if typed::is_null_at(&batch[value_index],row) { continue; }
+            if byte_values {
+                let byte = numeric_byte_at(&batch[value_index], row)
+                    .ok_or_else(|| ExecutionError::Invalid("expected byte-width DISTINCT value".into()))?;
+                groups[group].byte_values[usize::from(byte) / 64] |=
+                    1u64 << (usize::from(byte) % 64);
+                continue;
+            }
             let value=typed::key_at(&batch[value_index],row);
             if !groups[group].values.contains(&value) {
                 if total_pairs>=MAX_PAIRS {
@@ -95,7 +125,7 @@ pub(super) fn execute<W: Write>(
     if let Some(having)=&query.having {
         groups.retain(|group| {
             super::predicates::number_matches(
-                Number::Unsigned(group.values.len() as u128),
+                Number::Unsigned(group.cardinality() as u128),
                 Number::Unsigned(having.value as u128),
                 having.operator,
             )
@@ -111,7 +141,7 @@ pub(super) fn execute<W: Write>(
                 let comparison=if let Some(index)=index {
                     typed::compare_order_cells(&a.keys[index],&b.keys[index],desc,nulls_first)
                 } else {
-                    let order=a.values.len().cmp(&b.values.len());
+                    let order=a.cardinality().cmp(&b.cardinality());
                     if desc {order.reverse()} else {order}
                 };
                 if comparison!=Ordering::Equal {return comparison;}
@@ -126,7 +156,7 @@ pub(super) fn execute<W: Write>(
             if index>0 {write!(output,"\t")?;}
             typed::write_typed_value(output,cell,output_types[index])?;
         }
-        writeln!(output,"\t{}",group.values.len())?;
+        writeln!(output,"\t{}",group.cardinality())?;
     }
     Ok(())
 }
