@@ -29,6 +29,10 @@ class NoiseReportTests(unittest.TestCase):
                 })
                 self.assertEqual(row["state"], "invalid_samples")
 
+    def test_rejects_empty_reports_that_would_bypass_the_gate(self):
+        with self.assertRaisesRegex(ValueError, "invalid TPC-H report"):
+            assess_report({"results": []})
+
     def test_rejects_invalid_thresholds_and_samples(self):
         with self.assertRaises(ValueError):
             assess_query({"query": 1}, min_samples=1)
