@@ -41,6 +41,7 @@ pub(super) fn is_function(name: &str) -> bool {
             | "TRIM_WHITESPACE"
             | "TRY_TO_INT64"
             | "LPAD"
+            | "COUNTSUBSTRINGSCASEINSENSITIVE"
             | "HEX_DECODE"
             | "REPLACE"
             | "TRANSLATE"
@@ -652,6 +653,41 @@ fn parse_at_depth(parser: &mut Parser, depth: usize) -> Result<ConstantValue, Pa
             match input {
                 Some(value) => ConstantValue::Text(value.trim_matches(' ').to_owned()),
                 None => ConstantValue::Null,
+            }
+        }
+        "COUNTSUBSTRINGSCASEINSENSITIVE" => {
+            let input = text_arg(parser, depth + 1)?;
+            require(parser, Token::Comma, "countSubstringsCaseInsensitive requires a needle")?;
+            let needle = text_arg(parser, depth + 1)?;
+            let start = if parser.take(Token::Comma) {
+                integer_arg(parser, depth + 1)?
+            } else {
+                Some(1)
+            };
+            require(parser, Token::RParen, "expected ')' after countSubstringsCaseInsensitive")?;
+            match (input, needle, start) {
+                (Some(input), Some(needle), Some(start)) => {
+                    if start < 0 {
+                        return Err(ParseError("countSubstringsCaseInsensitive start must be nonnegative".into()));
+                    }
+                    let offset = usize::try_from(start.max(1) - 1).unwrap_or(usize::MAX);
+                    let bytes = input.as_bytes().get(offset..).unwrap_or_default();
+                    let needle = needle.as_bytes();
+                    let mut count = 0_i64;
+                    if !needle.is_empty() && needle.len() <= bytes.len() {
+                        let mut cursor = 0;
+                        while cursor <= bytes.len() - needle.len() {
+                            if bytes[cursor..cursor + needle.len()].eq_ignore_ascii_case(needle) {
+                                count += 1;
+                                cursor += needle.len();
+                            } else {
+                                cursor += 1;
+                            }
+                        }
+                    }
+                    ConstantValue::Integer(count)
+                }
+                _ => ConstantValue::Null,
             }
         }
         "COUNT_SUBSTRING" => {
