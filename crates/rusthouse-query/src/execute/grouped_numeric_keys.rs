@@ -10,6 +10,33 @@ use std::path::Path;
 
 const MAX_GROUPS: usize = 200_000;
 
+const MAX_RETAINED_GROUP_BYTES: usize = 64 * 1024 * 1024;
+
+fn charge_group(
+    total: &mut usize,
+    dimensions: usize,
+    metrics: usize,
+    payload_bytes: usize,
+) -> Result<(), ExecutionError> {
+    let per_key = std::mem::size_of::<Key>() + std::mem::size_of::<Cell>();
+    let fixed = dimensions.checked_mul(per_key)
+        .and_then(|keys| metrics.checked_mul(std::mem::size_of::<AggregateState>())
+            .and_then(|states| keys.checked_add(states)))
+        .ok_or_else(|| ExecutionError::Invalid("grouped metric memory overflow".into()))?;
+    let used = payload_bytes.checked_mul(2)
+        .and_then(|payload| fixed.checked_add(payload))
+        .and_then(|bytes| total.checked_add(bytes))
+        .ok_or_else(|| ExecutionError::Invalid("grouped metric memory overflow".into()))?;
+    if used > MAX_RETAINED_GROUP_BYTES {
+        return Err(ExecutionError::Invalid(
+            "multi-key GROUP BY exceeds 64 MiB retained budget".into(),
+        ));
+    }
+    *total = used;
+    Ok(())
+}
+
+
 // Convert a non-nullable 8-bit numeric key into a compact slot index.
 fn byte_group_key(column: &TypedColumn, row: usize) -> Option<u8> {
     match column {
@@ -196,6 +223,7 @@ pub(super) fn execute<W: Write>(
         .collect::<Vec<_>>();
     let mut by_key = HashMap::<Vec<Key>, usize>::new();
     let mut groups = Vec::<(Vec<Cell>, Vec<AggregateState>)>::new();
+    let mut retained_group_bytes = 0usize;
     let mut dense_slots = (columns.len() == 2
         && columns
             .iter()
@@ -223,6 +251,7 @@ pub(super) fn execute<W: Write>(
                 if *index != usize::MAX {
                     *index
                 } else {
+                    charge_group(&mut retained_group_bytes, group_indices.len(), items.len(), 0)?;
                     *index = groups.len();
                     groups.push((
                         group_indices
@@ -254,6 +283,10 @@ pub(super) fn execute<W: Write>(
                         .iter()
                         .map(|&column| typed::cell(&batch[column], row))
                         .collect::<Vec<_>>();
+                    charge_group(
+                        &mut retained_group_bytes, group_indices.len(),
+                        items.len(), encoded_probe.len(),
+                    )?;
                     encoded_groups.insert(std::mem::take(&mut encoded_probe), index);
                     encoded_probe = Vec::with_capacity(group_indices.len() * 24);
                     groups.push((
@@ -283,6 +316,7 @@ pub(super) fn execute<W: Write>(
                         .iter()
                         .map(|&column| typed::cell(&batch[column], row))
                         .collect::<Vec<_>>();
+                    charge_group(&mut retained_group_bytes, group_indices.len(), items.len(), 0)?;
                     by_key.insert(std::mem::take(&mut probe_key), index);
                     probe_key = Vec::with_capacity(group_indices.len());
                     groups.push((
@@ -468,5 +502,19 @@ mod direct_grouped_numeric_tests {
             Some(Number::Signed(-8))
         ));
         assert!(numeric_value_at(&nullable, 1).unwrap().is_none());
+    }
+}
+
+#[cfg(test)]
+mod keyed_aggregate_group_memory_tests {
+    use super::*;
+    #[test]
+    fn multi_dimension_budget_checks_overflow_before_retention() {
+        let mut used = 0usize;
+        charge_group(&mut used, 8, 6, 500).unwrap();
+        let before = used;
+        assert!(charge_group(&mut used, usize::MAX, 1, 0).is_err());
+        assert_eq!(used, before);
+        assert!(charge_group(&mut used, 8, 6, MAX_RETAINED_GROUP_BYTES).is_err());
     }
 }

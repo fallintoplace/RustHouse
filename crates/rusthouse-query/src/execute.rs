@@ -1533,7 +1533,14 @@ fn execute_numbers<W: Write>(
     if let Projection::MultipleAggregates(items) = &query.projection {
         return multi_aggregate::execute_numbers(query, start, rows, step, items, output);
     }
-    if let Projection::GroupedAggregates { column, items, aliases } = &query.projection {
+    if let Projection::GroupedAggregates { column, items, aliases, filters } = &query.projection {
+        // Generated metrics do not yet implement per-metric FILTER. Never
+        // silently ignore a parsed predicate and return incorrect results.
+        if filters.iter().any(Option::is_some) {
+            return Err(ExecutionError::Invalid(
+                "generated grouped FILTER metrics require a stored table".into(),
+            ));
+        }
         return grouped_generated::execute(query, start, rows, step, column, items, aliases, output);
     }
     if matches!(

@@ -1,15 +1,22 @@
 //! Exact, bounded-memory DISTINCT for 32-bit dimensions.
-//! Dense groups use one 8 KiB bitmap per observed high 16-bit prefix.
+//! Sparse prefixes store exact keys; dense prefixes use 8 KiB bitmaps.
 
 use super::ExecutionError;
 use std::collections::HashMap;
 
 const WORDS_PER_BLOCK: usize = 1024;
-const MAX_BLOCKS: usize = 32_768; // 256 MiB for dense bitmap payloads.
+const MAX_BLOCKS: usize = 32_768; // Limit occupied prefixes independently of representation.
+
+enum Block {
+    Sparse(std::collections::HashSet<u16>),
+    Dense(Box<[u64; WORDS_PER_BLOCK]>),
+}
+
+const DENSE_THRESHOLD: usize = 4096;
 
 #[derive(Default)]
 pub(super) struct BitmapDistinct32 {
-    blocks: HashMap<u16, Box<[u64; WORDS_PER_BLOCK]>>,
+    blocks: HashMap<u16, Block>,
     count: u64,
 }
 
@@ -22,16 +29,35 @@ impl BitmapDistinct32 {
         let prefix = (key >> 16) as u16;
         if self.blocks.len() >= MAX_BLOCKS && !self.blocks.contains_key(&prefix) {
             return Err(ExecutionError::Invalid(
-                "COUNT(DISTINCT) exceeded the 256 MiB bitmap budget".into(),
+                "COUNT(DISTINCT) exceeded its 32768-prefix budget".into(),
             ));
         }
+        let suffix = (key & 0xffff) as u16;
         let block = self.blocks.entry(prefix)
-            .or_insert_with(|| Box::new([0u64; WORDS_PER_BLOCK]));
-        let low = (key & 0xffff) as usize;
-        let bit = 1u64 << (low & 63);
-        let word = &mut block[low >> 6];
-        if *word & bit == 0 {
-            *word |= bit;
+            .or_insert_with(|| Block::Sparse(std::collections::HashSet::new()));
+        let inserted = match block {
+            Block::Sparse(values) => {
+                let fresh = values.insert(suffix);
+                if fresh && values.len() == DENSE_THRESHOLD {
+                    let mut bitmap = Box::new([0u64; WORDS_PER_BLOCK]);
+                    for &value in values.iter() {
+                        let index = usize::from(value);
+                        bitmap[index / 64] |= 1u64 << (index % 64);
+                    }
+                    *block = Block::Dense(bitmap);
+                }
+                fresh
+            }
+            Block::Dense(bitmap) => {
+                let index = usize::from(suffix);
+                let mask = 1u64 << (index % 64);
+                let word = &mut bitmap[index / 64];
+                let fresh = *word & mask == 0;
+                *word |= mask;
+                fresh
+            }
+        };
+        if inserted {
             self.count = self.count.checked_add(1)
                 .ok_or_else(|| ExecutionError::Invalid("distinct count overflow".into()))?;
         }
@@ -69,5 +95,33 @@ mod tests {
         }
         bitmap.insert((-1i32) as u32).unwrap();
         assert_eq!(bitmap.len(), 5);
+    }
+}
+
+#[cfg(test)]
+mod adaptive_large_keyspace_tests {
+    use super::BitmapDistinct32;
+
+    #[test]
+    fn stores_sparse_32_bit_prefixes_without_dense_blocks() {
+        let mut state = BitmapDistinct32::new();
+        for prefix in 0..32_768u32 {
+            state.insert(prefix << 16).unwrap();
+        }
+        assert_eq!(state.len(), 32_768);
+        assert!(state.insert(0).is_ok());
+        assert_eq!(state.len(), 32_768);
+    }
+
+    #[test]
+    fn converts_dense_prefixes_without_losing_keys() {
+        let mut state = BitmapDistinct32::new();
+        for low in 0..5000u32 {
+            state.insert((77 << 16) | low).unwrap();
+        }
+        for low in 0..5000u32 {
+            state.insert((77 << 16) | low).unwrap();
+        }
+        assert_eq!(state.len(), 5000);
     }
 }

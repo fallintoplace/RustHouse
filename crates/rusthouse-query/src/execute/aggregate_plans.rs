@@ -36,7 +36,7 @@ fn parallel_dense_grouped_count(
                     let mut counts = vec![0u64; slots];
                     let mut order = Vec::new();
                     for path in paths {
-                        let mut reader = rusthouse_storage::NumericPartReader::open(path, &names)?;
+                        let mut reader = rusthouse_storage::NumericPartReader::open(path, names)?;
                         while let Some(batch) = reader.next_batch()? {
                             match &batch[0] {
                                 NumericColumn::UInt8(values) => {
