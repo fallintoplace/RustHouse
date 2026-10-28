@@ -104,7 +104,7 @@ fn push_row(
     retained: &mut usize,
 ) -> Result<(), ExecutionError> {
     if rows.len() >= MAX_RESULT_ROWS {
-        return Err(invalid("JOIN produces more than 65536 rows"));
+        return Err(invalid("JOIN produces more than 131072 rows"));
     }
     *retained = retained
         .checked_add(retained_row_bytes(&row)?)
