@@ -11,6 +11,16 @@ fn valid_member(member: &str) -> bool {
             .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'_' | b'-'))
 }
 
+fn member_index<'a>(members: &[&'a str]) -> Result<HashMap<&'a str, usize>, &'static str> {
+    let mut membership = HashMap::with_capacity(members.len());
+    for (index, &member) in members.iter().enumerate() {
+        if !valid_member(member) || membership.insert(member, index).is_some() {
+            return Err("invalid or duplicate quorum member");
+        }
+    }
+    Ok(membership)
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct QuorumObservation {
     pub distinct_acks: usize,
@@ -57,12 +67,7 @@ impl QuorumPolicy {
         if members.len() != self.replicas || acknowledgements.len() > 256 {
             return Err("quorum membership or acknowledgement count mismatch");
         }
-        let mut membership = HashMap::with_capacity(members.len());
-        for (index, &member) in members.iter().enumerate() {
-            if !valid_member(member) || membership.insert(member, index).is_some() {
-                return Err("invalid or duplicate quorum member");
-            }
-        }
+        let membership = member_index(members)?;
         let mut received = 0u16;
         for &replica in acknowledgements {
             let Some(&index) = membership.get(replica) else {
