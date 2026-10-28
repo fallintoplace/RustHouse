@@ -1931,7 +1931,7 @@ fn parse_at_depth(parser: &mut Parser, depth: usize) -> Result<ConstantValue, Pa
                     let position = if offset > input.chars().count() {
                         0
                     } else {
-                        suffix.find(&needle).map_or(0, |byte_index| {
+                        suffix.find(needle.as_str()).map_or(0, |byte_index| {
                             offset + suffix[..byte_index].chars().count() + 1
                         })
                     };
