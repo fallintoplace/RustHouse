@@ -1276,9 +1276,17 @@ pub(super) fn execute_typed<W: Write>(
                         }
                     }
                     column => {
-                        let value = cell(column, index);
-                        if !matches!(&value, Cell::Null) {
-                            let key = value.key();
+                        let value = match column {
+                            TypedColumn::Numeric(values) => Some(number_at(values, index)),
+                            TypedColumn::NullableNumeric { values, nulls }
+                                if nulls[index] == 0 =>
+                            {
+                                Some(number_at(values, index))
+                            }
+                            _ => None,
+                        };
+                        if let Some(value) = value {
+                            let key = Key::Numeric(NumberKey::from(value));
                             if count_distinct_keys.len() >= MAX_BUFFERED_ROWS {
                                 if !count_distinct_keys.contains(&key) {
                                     return Err(ExecutionError::Invalid(
@@ -2065,5 +2073,29 @@ mod uuid_literal_byte_parse_tests {
         ] {
             assert!(uuid_literal_bytes(invalid).is_err(), "{invalid}");
         }
+    }
+}
+
+#[cfg(test)]
+mod direct_numeric_count_distinct_tests {
+    use super::{Key, Number, NumberKey, number_at};
+    use rusthouse_storage::NumericColumn;
+    use std::collections::HashSet;
+
+    #[test]
+    fn numeric_distinct_keys_preserve_nan_and_signed_zero_rules() {
+        let values = NumericColumn::Float64(vec![0.0, -0.0, f64::NAN, f64::NAN, 4.0]);
+        let mut distinct = HashSet::<Key>::new();
+        for row in 0..values.len() {
+            distinct.insert(Key::Numeric(NumberKey::from(number_at(&values, row))));
+        }
+        // SQL scan semantics retain one canonical NaN and one zero.
+        assert_eq!(distinct.len(), 3);
+        let signed = NumericColumn::Int64(vec![-1, -1, 1]);
+        let distinct_signed = (0..signed.len())
+            .map(|row| Key::Numeric(NumberKey::from(number_at(&signed, row))))
+            .collect::<HashSet<_>>();
+        assert_eq!(distinct_signed.len(), 2);
+        assert!(distinct_signed.contains(&Key::Numeric(NumberKey::from(Number::Signed(-1)))));
     }
 }
