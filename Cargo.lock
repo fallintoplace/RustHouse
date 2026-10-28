@@ -84,6 +84,7 @@ dependencies = [
 name = "rusthouse-server"
 version = "0.1.0"
 dependencies = [
+ "lz4_flex",
  "rusthouse-format",
  "rusthouse-query",
  "rusthouse-storage",

@@ -14,8 +14,10 @@ const MAX_PART_BUFFER_BYTES: usize = 4 * 1024 * 1024;
 const MAX_STREAMED_PART_BYTES: usize = 64 * 1024 * 1024;
 const MAX_STREAMED_COLUMN_BYTES: usize = 7 * 1024 * 1024;
 const MAX_REWRITE_PARTS: u64 = 16_384;
-// The writer accepts 65,536 rows. Rewrites also retain a 4 MiB value budget.
+// Retain the original row chunk bound for ordinary rewrites and INSERTs.
+// COPY uses larger parts but remains bounded by its per-column byte budget.
 const PART_ROWS: usize = 65_536;
+const STREAMED_PART_ROWS: usize = 262_144;
 
 // Debug-only simulated publication errors allow integration tests to exercise
 // cleanup and recovery without relying on platform-dependent permissions.
@@ -254,82 +256,6 @@ fn stage_existing_parts_with_workers(
     workers: usize,
 ) -> Result<(), String> {
     if workers <= 1 || existing.len() < 16 {
-        for source in existing {
-            stage_existing_part(source, staging)?;
-        }
-        return Ok(());
-    }
-    use std::sync::atomic::{AtomicUsize, Ordering};
-    let next = AtomicUsize::new(0);
-    let completed = std::thread::scope(|scope| {
-        let handles = (0..workers).map(|_| {
-            let next = &next;
-            scope.spawn(move || -> Result<(), String> {
-                loop {
-                    let index = next.fetch_add(1, Ordering::Relaxed);
-                    if index >= existing.len() {
-                        return Ok(());
-                    }
-                    stage_existing_part(&existing[index], staging)?;
-                }
-            })
-        }).collect::<Vec<_>>();
-        handles.into_iter().map(|handle| handle.join().unwrap_or_else(|_| {
-            Err("immutable part staging worker panicked".into())
-        })).collect::<Vec<_>>()
-    });
-    for result in completed {
-        result?;
-    }
-    Ok(())
-}
-
-fn stage_existing_parts(
-    existing: &[std::path::PathBuf],
-    staging: &Path,
-) -> Result<(), String> {
-    let workers = std::thread::available_parallelism()
-        .map_or(1, |available| available.get()).min(4);
-    stage_existing_parts_with_workers(existing, staging, workers)
-}
-
-/// Append multiple new parts as one snapshot generation. Reuse immutable
-/// existing part files through checked hard links, never partial live renames.
-pub(super) fn append_parts(
-    database: &Path,
-    table: &str,
-    cols: &[Column],
-    existing: &[std::path::PathBuf],
-    rows: &[Vec<Option<String>>],
-) -> Result<(), String> {
-    let count = rows.len().div_ceil(PART_ROWS);
-    if existing
-        .len()
-        .checked_add(count)
-        .is_none_or(|parts| parts > 16_384)
-    {
-        return Err("database table would exceed its 16384-part limit".into());
-    }
-    let mut last = 0u64;
-    for part in existing {
-        let name = part
-            .file_name()
-            .and_then(|name| name.to_str())
-            .ok_or("invalid stored part filename")?;
-        let (first, second) = name
-            .strip_prefix("all_")
-            .and_then(|name| name.strip_suffix("_0"))
-            .and_then(|name| name.split_once('_'))
-            .ok_or_else(|| format!("unexpected stored part name: {name}"))?;
-        let first = first.parse::<u64>().map_err(|_| "invalid part number")?;
-        let second = second.parse::<u64>().map_err(|_| "invalid part number")?;
-        if first != second {
-            return Err("non-local part block ranges cannot be appended".into());
-        }
-        last = last.max(first);
-    }
-
-    publish_snapshot_with(database, table, |staging| {
         stage_existing_parts(existing, staging)?;
         for (index, chunk) in rows.chunks(PART_ROWS).enumerate() {
             let next = last
@@ -342,6 +268,27 @@ pub(super) fn append_parts(
         }
         Ok(())
     })
+}
+
+/// Estimate retained COPY row sizes once. A reusable scratch vector avoids
+/// per-record allocations and repeated String length/accounting passes.
+fn estimate_streamed_row(
+    row: &[Option<String>],
+    scratch: &mut [usize],
+) -> Result<(usize, bool), String> {
+    if row.len() != scratch.len() {
+        return Err("COPY row estimate width mismatch".into());
+    }
+    let mut total = 0usize;
+    let mut oversized_column = false;
+    for (cell, size) in row.iter().zip(scratch.iter_mut()) {
+        *size = cell
+            .as_ref()
+            .map_or(16, |value| value.len().saturating_add(16));
+        total = total.checked_add(*size).ok_or("COPY record size overflow")?;
+        oversized_column |= *size > MAX_STREAMED_COLUMN_BYTES;
+    }
+    Ok((total, oversized_column))
 }
 
 /// Append a stream of schema-ordered rows as one verified snapshot.
@@ -375,9 +322,10 @@ pub(super) fn append_parts_stream(
     let mut count = 0usize;
     publish_snapshot_with(database, table, |staging| {
         stage_existing_parts(existing, staging)?;
-        let mut buffer: StoredRows = Vec::with_capacity(PART_ROWS);
+        let mut buffer: StoredRows = Vec::with_capacity(PART_ROWS.min(65_536));
         let mut buffered_bytes = 0usize;
         let mut column_bytes = vec![0usize; cols.len()];
+        let mut row_size_scratch = vec![0usize; cols.len()];
         let mut part_index = 0usize;
         let mut flush = |rows: &mut StoredRows,
                          bytes: &mut usize,
@@ -409,28 +357,17 @@ pub(super) fn append_parts_stream(
             if row.len() != cols.len() {
                 return Err("COPY row width does not match table schema".into());
             }
-            let estimate = |value: &Option<String>| {
-                value
-                    .as_ref()
-                    .map_or(16, |value| value.len().saturating_add(16))
-            };
-            let row_bytes = row.iter().try_fold(0usize, |size, value| {
-                size.checked_add(estimate(value))
-                    .ok_or_else(|| "COPY record size overflow".to_string())
-            })?;
-            if row_bytes > MAX_STREAMED_PART_BYTES
-                || row
-                    .iter()
-                    .any(|value| estimate(value) > MAX_STREAMED_COLUMN_BYTES)
-            {
+            let (row_bytes, oversized_column) =
+                estimate_streamed_row(&row, &mut row_size_scratch)?;
+            if row_bytes > MAX_STREAMED_PART_BYTES || oversized_column {
                 return Err("COPY row exceeds streaming part budget".into());
             }
-            let column_overflow = row.iter().zip(&column_bytes).any(|(value, used)| {
-                used.checked_add(estimate(value))
-                    .is_none_or(|size| size > MAX_STREAMED_COLUMN_BYTES)
+            let column_overflow = row_size_scratch.iter().zip(&column_bytes).any(|(&size, &used)| {
+                used.checked_add(size)
+                    .is_none_or(|total| total > MAX_STREAMED_COLUMN_BYTES)
             });
             if !buffer.is_empty()
-                && (buffer.len() >= PART_ROWS
+                && (buffer.len() >= STREAMED_PART_ROWS
                     || buffered_bytes
                         .checked_add(row_bytes)
                         .is_none_or(|size| size > MAX_STREAMED_PART_BYTES)
@@ -441,9 +378,9 @@ pub(super) fn append_parts_stream(
             buffered_bytes = buffered_bytes
                 .checked_add(row_bytes)
                 .ok_or("COPY batch size overflow")?;
-            for (value, used) in row.iter().zip(&mut column_bytes) {
+            for (&size, used) in row_size_scratch.iter().zip(&mut column_bytes) {
                 *used = used
-                    .checked_add(estimate(value))
+                    .checked_add(size)
                     .ok_or("COPY column size overflow")?;
             }
             buffer.push(row);
@@ -630,6 +567,46 @@ pub(super) fn compact_table(database: &Path, table: &str) -> Result<(), String> 
     })?;
     println!("Optimized table {table}: read {scanned} rows, retained {scanned}");
     Ok(())
+}
+
+#[cfg(test)]
+mod streaming_budget_single_pass_tests {
+    use super::*;
+
+    #[test]
+    fn row_estimates_preserve_null_and_wide_column_budgets() {
+        let values = vec![
+            Some("3".into()),
+            None,
+            Some("hello".into()),
+            Some("x".repeat(1000)),
+        ];
+        let mut scratch = vec![usize::MAX; values.len()];
+        let (total, oversized) = estimate_streamed_row(&values, &mut scratch).unwrap();
+        assert_eq!(scratch, vec![17, 16, 21, 1016]);
+        assert_eq!(total, 1070);
+        assert!(!oversized);
+        let huge = vec![Some("x".repeat(MAX_STREAMED_COLUMN_BYTES))];
+        let mut scratch = [0];
+        let (size, oversized) = estimate_streamed_row(&huge, &mut scratch).unwrap();
+        assert_eq!(size, MAX_STREAMED_COLUMN_BYTES + 16);
+        assert!(oversized);
+    }
+
+    #[test]
+    fn million_row_estimation_reuses_one_scratch_allocation() {
+        let row = vec![Some("100000".into()), Some("EU".into()), None, Some("42".into())];
+        let mut scratch = vec![0; row.len()];
+        let pointer = scratch.as_ptr();
+        let mut total = 0u64;
+        for _ in 0..100_000 {
+            let (bytes, oversized) = estimate_streamed_row(&row, &mut scratch).unwrap();
+            assert!(!oversized);
+            total += bytes as u64;
+        }
+        assert_eq!(pointer, scratch.as_ptr());
+        assert_eq!(total, 100_000u64 * (22 + 18 + 16 + 18));
+    }
 }
 
 #[cfg(test)]

@@ -368,6 +368,25 @@ pub(super) fn insert(database: &Path, insert: &Insert) -> Result<(), String> {
     with_write_lock(database, || insert_locked(database, insert))
 }
 
+/// Avoid a second Vec allocation on every COPY row when the source already
+/// follows the table schema. Column-remapped and partial inserts keep their
+/// existing null-fill semantics.
+fn order_stream_row(
+    source: Vec<Option<String>>,
+    indices: &[usize],
+    width: usize,
+    identical_layout: bool,
+) -> Vec<Option<String>> {
+    if identical_layout {
+        return source;
+    }
+    let mut values = vec![None; width];
+    for (value, &index) in source.into_iter().zip(indices) {
+        values[index] = value;
+    }
+    values
+}
+
 /// Validate and append an input stream with one atomic snapshot publication.
 pub(super) fn insert_stream(
     database: &Path,
@@ -407,6 +426,8 @@ pub(super) fn insert_stream_locked(
         println!("Inserted 0 rows into {table}");
         return Ok(());
     }
+    let identical_layout = indices.len() == cols.len()
+        && indices.iter().copied().eq(0..cols.len());
     let count = rewrite::append_parts_stream(database, table, &cols, &parts, || {
         let next = match first.take() {
             Some(row) => Some(row),
@@ -418,10 +439,7 @@ pub(super) fn insert_stream_locked(
         if source.len() != indices.len() {
             return Err("INSERT row width does not match table schema".into());
         }
-        let mut values = vec![None; cols.len()];
-        for (value, &index) in source.into_iter().zip(&indices) {
-            values[index] = value;
-        }
+        let values = order_stream_row(source, &indices, cols.len(), identical_layout);
         for (column, value) in cols.iter().zip(&values) {
             if value.is_none() && !column.data_type.starts_with("Nullable(") {
                 return Err(format!("missing or NULL value for {}", column.name));
@@ -614,5 +632,31 @@ mod lock_tests {
         assert!(lock(&directory).is_err());
         assert_eq!(fs::read(target).unwrap(), b"untouched");
         fs::remove_dir_all(directory).unwrap();
+    }
+}
+
+#[cfg(test)]
+mod large_copy_row_layout_tests {
+    use super::*;
+
+    #[test]
+    fn matching_schema_preserves_input_allocation_for_streamed_billions() {
+        let source = vec![Some("1".into()), Some("west".into()), Some("2500".into())];
+        let ptr = source.as_ptr();
+        let direct = order_stream_row(source, &[0, 1, 2], 3, true);
+        assert_eq!(ptr, direct.as_ptr());
+        assert_eq!(direct[1].as_deref(), Some("west"));
+    }
+
+    #[test]
+    fn mapped_and_partial_streamed_records_still_fill_missing_columns() {
+        let source = vec![Some("west".into()), Some("77".into())];
+        let result = order_stream_row(source, &[2, 0], 4, false);
+        assert_eq!(result, [
+            Some("77".into()), None, Some("west".into()), None,
+        ]);
+        let source = vec![Some("replaced".into()), Some("final".into())];
+        let result = order_stream_row(source, &[1, 1], 3, false);
+        assert_eq!(result, [None, Some("final".into()), None]);
     }
 }
