@@ -183,6 +183,7 @@ mod tests {
         assert_eq!(output, "[\"1\",\"café\"]\n[\"2\",\"a\\tb\"]\n".as_bytes());
         assert!(write_compact_row(&mut Vec::new(), &[0xff], 1).is_err());
     }
+
     #[test]
     fn plain_multi_column_rows_fit_the_reserved_framing() {
         let mut output = Vec::new();
