@@ -289,7 +289,13 @@ fn quoted_map_text(output: &mut String, bytes: &[u8]) -> Result<(), PartError> {
             '\n' => output.push_str("\\n"),
             '\r' => output.push_str("\\r"),
             '\t' => output.push_str("\\t"),
-            ch if ch < '\u{0020}' => output.push_str(&format!("\\u{:04x}", ch as u32)),
+            ch if ch < '\u{0020}' => {
+                const HEX: &[u8; 16] = b"0123456789abcdef";
+                let byte = ch as u8;
+                output.push_str("\\u00");
+                output.push(char::from(HEX[usize::from(byte >> 4)]));
+                output.push(char::from(HEX[usize::from(byte & 0x0f)]));
+            },
             ch => output.push(ch),
         }
     }
