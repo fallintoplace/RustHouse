@@ -51,6 +51,7 @@ pub(super) fn is_function(name: &str) -> bool {
             | "SUBSTRING_INDEX"
             | "QUERYSTRINGANDFRAGMENT"
             | "TO_INT64"
+            | "TOINT64ORDEFAULT"
             | "TRIM"
             | "LTRIM"
             | "BASENAME"
@@ -823,6 +824,21 @@ fn parse_at_depth(parser: &mut Parser, depth: usize) -> Result<ConstantValue, Pa
                     ConstantValue::Text(decoded)
                 }
                 None => ConstantValue::Null,
+            }
+        }
+        "TOINT64ORDEFAULT" => {
+            let input = text_arg(parser, depth + 1)?;
+            let fallback = if parser.take(Token::Comma) {
+                integer_arg(parser, depth + 1)?
+            } else {
+                Some(0)
+            };
+            require(parser, Token::RParen, "expected ')' after toInt64OrDefault")?;
+            match (input, fallback) {
+                (Some(value), Some(fallback)) => {
+                    ConstantValue::Integer(value.parse::<i64>().unwrap_or(fallback))
+                }
+                _ => ConstantValue::Null,
             }
         }
         "TO_INT64" => {
