@@ -5,7 +5,7 @@ use crate::cluster::{Cluster, Peer};
 use crate::remote;
 use crate::{MAX_QUERY_BYTES, MAX_RESPONSE_BYTES, Response};
 use rusthouse_query::{AggregateFunction, Projection, Select, Source, parse_select};
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 #[derive(Debug, PartialEq, Eq)]
 enum MergeError {
@@ -14,6 +14,7 @@ enum MergeError {
     ShardRowLimit,
     CoordinatorLimit,
     InvalidCount,
+    InvalidDistinctCount,
     InvalidGroupedCount,
     InvalidGroupedSum,
     InvalidSum,
@@ -45,6 +46,71 @@ fn is_safe_count(select: &Select) -> bool {
         && select.having.is_none()
         && select.limit.is_none()
         && select.offset.is_none()
+}
+
+/// DISTINCT cannot be reduced by adding per-shard counts. Ask each shard
+/// for distinct values, then de-duplicate their encoded TSV values globally.
+fn is_safe_count_distinct(select: &Select) -> bool {
+    matches!(select.projection, Projection::CountDistinct { .. })
+        && matches!(select.source, Some(Source::Table(_)))
+        && !select.distinct
+        && select.rename.is_none()
+        && select.order_by.is_none()
+        && select.order_by_extra.is_empty()
+        && select.having.is_none()
+        && select.limit.is_none()
+        && select.offset.is_none()
+}
+
+/// Rebuild only the projection while keeping an exactly verified WHERE clause.
+/// A failed round trip must not accidentally turn a filtered count into a full scan.
+fn distinct_shard_sql(sql: &str, select: &Select) -> Option<String> {
+    let (column, table) = match (&select.projection, &select.source) {
+        (Projection::CountDistinct { column }, Some(Source::Table(table))) => (column, table),
+        _ => return None,
+    };
+    let mut rewritten = format!("SELECT DISTINCT {column} FROM {table}");
+    let upper = sql.to_ascii_uppercase();
+    if let Some(where_start) = upper.find(" WHERE ") {
+        rewritten.push_str(&sql[where_start..]);
+    } else if !select.predicates.is_empty() || !select.or_predicates.is_empty() {
+        return None;
+    }
+    let mut expected = select.clone();
+    expected.projection = Projection::Columns(vec![column.to_owned()]);
+    expected.distinct = true;
+    (parse_select(&rewritten).ok()? == expected).then_some(rewritten)
+}
+
+/// Count distinct scalar rows globally, including repeated values across shards.
+/// A TSV NULL marker is not a distinct value. Reject capped or malformed results.
+fn merge_distinct_counts(
+    shards: &[(usize, Vec<u8>)],
+    column: &str,
+) -> Result<Vec<u8>, MergeError> {
+    const MAX_KEYS: usize = 100_000;
+    let expected_header = format!("{column}\n");
+    let mut values: HashSet<&[u8]> = HashSet::new();
+    for (cap, body) in shards {
+        if !body.ends_with(b"\n") || !body.starts_with(expected_header.as_bytes()) {
+            return Err(MergeError::InvalidDistinctCount);
+        }
+        let rows = &body[expected_header.len()..];
+        let mut shard_rows = 0usize;
+        for value in rows.split_terminator(|&b| b == b'\n') {
+            shard_rows = shard_rows.checked_add(1).ok_or(MergeError::CoordinatorLimit)?;
+            if *cap == 0 || shard_rows >= *cap {
+                return Err(MergeError::ShardRowLimit);
+            }
+            if value != b"\\N" {
+                if values.len() >= MAX_KEYS && !values.contains(value) {
+                    return Err(MergeError::CoordinatorLimit);
+                }
+                values.insert(value);
+            }
+        }
+    }
+    Ok(format!("count(DISTINCT {column})\n{}\n", values.len()).into_bytes())
 }
 
 /// Only exact integer SUM is decomposable without changing the result type.
@@ -857,6 +923,7 @@ pub fn handle(method: &str, body: &[u8], cluster: &Cluster, max_rows: usize) -> 
         Ok(select)
             if is_safe_scan(&select)
                 || is_safe_count(&select)
+                || is_safe_count_distinct(&select)
                 || is_safe_count_if(&select)
                 || is_safe_grouped_count(&select)
                 || is_safe_grouped_sum(&select)
@@ -868,11 +935,15 @@ pub fn handle(method: &str, body: &[u8], cluster: &Cluster, max_rows: usize) -> 
         _ => {
             return Response::text(
                 "400 Bad Request",
-                "distributed queries require unordered SELECT, COUNT, COUNTIF, integer SUM, MIN, MAX, grouped COUNT, or grouped integer SUM without global clauses\n",
+                "distributed queries require unordered SELECT, COUNT, COUNT(DISTINCT), COUNTIF, integer SUM, MIN, MAX, grouped COUNT, or grouped integer SUM without global clauses\n",
             );
         }
     };
     let count_query = is_safe_count(&select) || is_safe_count_if(&select);
+    let distinct_count_column = match &select.projection {
+        Projection::CountDistinct { column } => Some(column.as_str()),
+        _ => None,
+    };
     let grouped_count_query = is_safe_grouped_count(&select);
     let grouped_sum_query = is_safe_grouped_sum(&select);
     let sum_query = is_safe_sum(&select);
@@ -881,6 +952,13 @@ pub fn handle(method: &str, body: &[u8], cluster: &Cluster, max_rows: usize) -> 
             Some(query) => query,
             None => {
                 return Response::text("400 Bad Request", "unsupported distributed pagination\n");
+            }
+        }
+    } else if distinct_count_column.is_some() {
+        match distinct_shard_sql(sql, &select) {
+            Some(query) => query,
+            None => {
+                return Response::text("400 Bad Request", "unsupported distributed DISTINCT query\n");
             }
         }
     } else {
@@ -1006,6 +1084,8 @@ pub fn handle(method: &str, body: &[u8], cluster: &Cluster, max_rows: usize) -> 
     }
     let merged = if count_query {
         sum_shard_counts(&shards)
+    } else if let Some(column) = distinct_count_column {
+        merge_distinct_counts(&shards, column)
     } else if sum_query {
         sum_type
             .as_deref()
@@ -1060,6 +1140,9 @@ pub fn handle(method: &str, body: &[u8], cluster: &Cluster, max_rows: usize) -> 
         Err(MergeError::InvalidCount) => {
             Response::text("502 Bad Gateway", "malformed shard COUNT response\n")
         }
+        Err(MergeError::InvalidDistinctCount) => {
+            Response::text("502 Bad Gateway", "malformed shard DISTINCT response\n")
+        }
         Err(MergeError::InvalidGroupedCount) => {
             Response::text("502 Bad Gateway", "malformed shard GROUP BY response\n")
         }
@@ -1100,6 +1183,41 @@ mod tests {
 
     fn shard(cap: usize, data: &str) -> (usize, Vec<u8>) {
         (cap, data.as_bytes().to_vec())
+    }
+
+    #[test]
+    fn distributed_count_distinct_uses_global_unique_values() {
+        let query = "SELECT count(DISTINCT category) FROM events WHERE id >= 5";
+        let parsed = parse_select(query).unwrap();
+        assert!(is_safe_count_distinct(&parsed));
+        assert_eq!(
+            distinct_shard_sql(query, &parsed).as_deref(),
+            Some("SELECT DISTINCT category FROM events WHERE id >= 5")
+        );
+        assert!(!is_safe_count_distinct(&parse_select(
+            "SELECT count(DISTINCT category) FROM events LIMIT 1"
+        ).unwrap()));
+        let shards = [
+            shard(10, "category\nred\nblue\n\\N\n"),
+            shard(10, "category\nblue\ngreen\n"),
+            shard(10, "category\nred\n"),
+        ];
+        assert_eq!(
+            merge_distinct_counts(&shards, "category").unwrap(),
+            b"count(DISTINCT category)\n3\n"
+        );
+        assert_eq!(
+            merge_distinct_counts(&[shard(2, "category\na\nb\n")], "category"),
+            Err(MergeError::ShardRowLimit)
+        );
+        assert_eq!(
+            merge_distinct_counts(&[shard(10, "other\na\n")], "category"),
+            Err(MergeError::InvalidDistinctCount)
+        );
+        assert_eq!(
+            merge_distinct_counts(&[shard(10, "category\na")], "category"),
+            Err(MergeError::InvalidDistinctCount)
+        );
     }
 
     #[test]
