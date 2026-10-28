@@ -48,6 +48,19 @@ pub(super) fn row_key(row: &[typed::Cell], indices: &[usize]) -> Option<Vec<type
     Some(indices.iter().map(|&index| row[index].key()).collect())
 }
 
+pub(super) fn row_key_into(
+    row: &[typed::Cell],
+    indices: &[usize],
+    result: &mut Vec<typed::Key>,
+) -> bool {
+    result.clear();
+    if indices.iter().any(|&index| !key_eligible(&row[index])) {
+        return false;
+    }
+    result.extend(indices.iter().map(|&index| row[index].key()));
+    true
+}
+
 pub(super) fn batch_key_into(
     batch: &[TypedColumn],
     row: usize,
@@ -109,6 +122,23 @@ pub(super) fn add_pair(pairs: &mut Vec<Pair>, pair: Pair) -> Result<(), Executio
 mod tests {
     use super::*;
     use rusthouse_storage::read_legacy_strings;
+
+    #[test]
+    fn row_key_probe_reuses_storage_and_rejects_null_keys() {
+        let row = [
+            typed::Cell::Numeric(Number::Unsigned(7)),
+            typed::Cell::Text(b"abc".to_vec()),
+        ];
+        let mut probe = Vec::with_capacity(2);
+        assert!(row_key_into(&row, &[0, 1], &mut probe));
+        let capacity = probe.capacity();
+        assert!(row_key_into(&row, &[0, 1], &mut probe));
+        assert_eq!(probe.capacity(), capacity);
+        assert_eq!(probe, row_key(&row, &[0, 1]).unwrap());
+        let invalid = [typed::Cell::Null, typed::Cell::Text(b"abc".to_vec())];
+        assert!(!row_key_into(&invalid, &[0, 1], &mut probe));
+        assert!(probe.is_empty());
+    }
 
     #[test]
     fn composite_probe_reserves_all_key_slots() {
