@@ -99,7 +99,7 @@ pub(super) fn candidate_mark_ranges<T: Ord + Copy>(
         .filter(|range| !range.is_empty())
         .collect();
     ranges.sort_unstable_by_key(|range| range.start);
-    let mut merged: Vec<Range<usize>> = Vec::new();
+    let mut merged: Vec<Range<usize>> = Vec::with_capacity(ranges.len());
     for range in ranges {
         if let Some(previous) = merged.last_mut() {
             if range.start <= previous.end {
