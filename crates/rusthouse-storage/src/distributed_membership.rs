@@ -28,19 +28,24 @@ pub fn parse_membership(text: &str) -> Result<Vec<Member>, &'static str> {
         if line.is_empty() {
             return Err("empty membership record");
         }
-        let fields: Vec<&str> = line.split_whitespace().collect();
-        if fields.len() != 3 || !identifier(fields[0]) || !identifier(fields[1]) {
+        let mut fields = line.split_whitespace();
+        let (Some(node), Some(zone), Some(weight_text), None) =
+            (fields.next(), fields.next(), fields.next(), fields.next())
+        else {
+            return Err("invalid membership record");
+        };
+        if !identifier(node) || !identifier(zone) {
             return Err("invalid membership record");
         }
-        let weight = fields[2]
+        let weight = weight_text
             .parse::<u16>()
             .map_err(|_| "invalid member weight")?;
-        if !(1..=1000).contains(&weight) || !seen.insert(fields[0]) {
+        if !(1..=1000).contains(&weight) || !seen.insert(node) {
             return Err("duplicate member or invalid weight");
         }
         members.push(Member {
-            node: fields[0].to_owned(),
-            zone: fields[1].to_owned(),
+            node: node.to_owned(),
+            zone: zone.to_owned(),
             weight,
         });
         if members.len() > 64 {
