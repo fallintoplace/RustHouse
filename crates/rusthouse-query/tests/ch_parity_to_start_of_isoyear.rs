@@ -10,9 +10,9 @@ fn value(sql: &str) -> ConstantValue {
 #[test]
 fn matches_bounded_clickhouse_calendar_behavior() {
     for (sql, expected) in [
-        ("SELECT toStartOfISOYear('2021-01-01')", ConstantValue::Text('2019-12-30'.into())),
-        ("SELECT toStartOfISOYear('2021-01-04')", ConstantValue::Text('2021-01-04'.into())),
-        ("SELECT toStartOfISOYear('2020-12-31')", ConstantValue::Text('2019-12-30'.into())),
+        ("SELECT toStartOfISOYear('2021-01-01')", ConstantValue::Text("2019-12-30".into())),
+        ("SELECT toStartOfISOYear('2021-01-04')", ConstantValue::Text("2021-01-04".into())),
+        ("SELECT toStartOfISOYear('2020-12-31')", ConstantValue::Text("2019-12-30".into())),
     ] {
         assert_eq!(value(sql), expected, "{sql}");
     }
