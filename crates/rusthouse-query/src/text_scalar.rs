@@ -33,6 +33,7 @@ pub(super) fn is_function(name: &str) -> bool {
             | "REVERSE"
             | "REVERSEUTF8"
             | "INITCAP"
+            | "INITCAPUTF8"
             | "CONCAT"
             | "QUOTE_LITERAL"
             | "CUTQUERYSTRINGANDFRAGMENT"
@@ -320,7 +321,7 @@ fn parse_at_depth(parser: &mut Parser, depth: usize) -> Result<ConstantValue, Pa
                 None => ConstantValue::Null,
             }
         }
-        "INITCAP" => {
+        "INITCAP" | "INITCAPUTF8" => {
             let input = text_arg(parser, depth + 1)?;
             require(parser, Token::RParen, "INITCAP requires one argument")?;
             match input {
@@ -2004,5 +2005,41 @@ fn text_arg(parser: &mut Parser, depth: usize) -> Result<Option<String>, ParseEr
         _ => Err(ParseError(
             "expected a string literal or string function".into(),
         )),
+    }
+}
+
+#[cfg(test)]
+mod clickhouse_initcap_utf8_tests {
+    use crate::{ConstantValue, Projection, parse_select};
+
+    fn value(sql: &str) -> ConstantValue {
+        match parse_select(sql).unwrap().projection {
+            Projection::Constants(columns) if columns.len() == 1 => columns[0].value.clone(),
+            Projection::Literal(number) => ConstantValue::Integer(number),
+            other => panic!("unexpected projection: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn valid_calls() {
+        for (sql, expected) in [
+            ("SELECT initcapUTF8('не тормозит')", ConstantValue::Text("Не Тормозит".into())),
+            ("SELECT initcapUTF8('hello WORLD')", ConstantValue::Text("Hello World".into())),
+            ("SELECT initcapUTF8('')", ConstantValue::Text("".into())),
+            ("SELECT initcapUTF8(NULL)", ConstantValue::Null),
+        ] {
+            assert_eq!(value(sql), expected, "{sql}");
+        }
+    }
+
+    #[test]
+    fn invalid_calls() {
+        for sql in [
+            "SELECT initcapUTF8()",
+            "SELECT initcapUTF8(3)",
+            "SELECT initcapUTF8('x','y')",
+        ] {
+            assert!(parse_select(sql).is_err(), "{sql}");
+        }
     }
 }
