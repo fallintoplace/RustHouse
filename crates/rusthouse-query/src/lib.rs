@@ -132,6 +132,11 @@ pub enum Projection {
     ApproxDistinct {
         column: String,
     },
+    /// Fixed-memory sampling quantile, probability in millionths.
+    ApproxQuantile {
+        column: String,
+        probability_ppm: u32,
+    },
     GroupedCount {
         column: String,
     },
@@ -685,6 +690,27 @@ fn parse_select_tokens(tokens: Vec<Token>) -> Result<Select, ParseError> {
             return Err(ParseError("expected ')' after uniq(column)".into()));
         }
         Projection::ApproxDistinct { column }
+    } else if matches!(parser.tokens.get(parser.index), Some(Token::Word(name)) if name.eq_ignore_ascii_case("QUANTILE"))
+        && parser.tokens.get(parser.index + 1) == Some(&Token::LParen)
+    {
+        parser.keyword("QUANTILE");
+        parser.take(Token::LParen);
+        let probability = parser.number()?.parse::<f64>()
+            .map_err(|_| ParseError("quantile probability must be numeric".into()))?;
+        if !probability.is_finite() || !(0.0..=1.0).contains(&probability) {
+            return Err(ParseError("quantile probability must be between 0 and 1".into()));
+        }
+        if !parser.take(Token::RParen) || !parser.take(Token::LParen) {
+            return Err(ParseError("quantile requires quantile(p)(column)".into()));
+        }
+        let column = parser.word()?;
+        if !parser.take(Token::RParen) {
+            return Err(ParseError("expected ')' after quantile column".into()));
+        }
+        Projection::ApproxQuantile {
+            column,
+            probability_ppm: (probability * 1_000_000.0).round() as u32,
+        }
     } else if matches!(parser.tokens.get(parser.index + 1), Some(Token::LParen))
         && !matches!(parser.tokens.get(parser.index), Some(Token::Word(word)) if scalar::is_function(word) || text_scalar::is_function(word))
     {
@@ -1018,6 +1044,7 @@ fn parse_select_tokens(tokens: Vec<Token>) -> Result<Select, ParseError> {
                 | Projection::CountColumn { .. }
                 | Projection::CountDistinct { .. }
                 | Projection::ApproxDistinct { .. }
+                | Projection::ApproxQuantile { .. }
                 | Projection::Aggregate { .. }
                 | Projection::GroupedCount { .. }
                 | Projection::GroupedDistinctCount { .. }
@@ -1550,6 +1577,7 @@ fn parse_select_tokens(tokens: Vec<Token>) -> Result<Select, ParseError> {
                 | Projection::CountColumn { .. }
                 | Projection::CountDistinct { .. }
                 | Projection::ApproxDistinct { .. }
+                | Projection::ApproxQuantile { .. }
                 | Projection::Aggregate { .. }
                 | Projection::MultipleAggregates(_)
                 | Projection::StringLength { .. }
