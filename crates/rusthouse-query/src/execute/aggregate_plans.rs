@@ -120,6 +120,80 @@ fn parallel_dense_grouped_count(
 }
 
 
+
+/// Parallelize 32/64-bit GROUP BY counts across immutable parts. Each worker
+/// retains an ordered hash aggregation. Merge chunks in input-part order so
+/// unordered query output still follows the serial first-seen key contract.
+fn parallel_hash_grouped_count(
+    part: &Path,
+    column: &str,
+) -> Result<Option<GroupedCounts>, ExecutionError> {
+    let parts = rusthouse_storage::query_parts(part)?;
+    let workers = std::thread::available_parallelism()
+        .map_or(1, |count| count.get())
+        .min(4);
+    if workers < 2 || parts.len() < 16 {
+        return Ok(None);
+    }
+    let names = [column.to_owned()];
+    let chunk_size = parts.len().div_ceil(workers);
+    let chunks = std::thread::scope(|scope| {
+        let names = &names;
+        let handles = parts
+            .chunks(chunk_size)
+            .map(|paths| {
+                scope.spawn(move || -> Result<GroupedCounts, ExecutionError> {
+                    let mut groups = GroupedCounts::default();
+                    for path in paths {
+                        let mut reader = rusthouse_storage::NumericPartReader::open(path, names)?;
+                        while let Some(batch) = reader.next_batch()? {
+                            let values = &batch[0];
+                            for row in 0..values.len() {
+                                let number = match values {
+                                    NumericColumn::UInt32(values) => Number::Unsigned(u128::from(values[row])),
+                                    NumericColumn::Int32(values) => Number::Signed(i128::from(values[row])),
+                                    NumericColumn::UInt64(values) => Number::Unsigned(u128::from(values[row])),
+                                    NumericColumn::Int64(values) => Number::Signed(i128::from(values[row])),
+                                    _ => return Err(ExecutionError::Invalid("unexpected grouped key type".into())),
+                                };
+                                groups.push(number)?;
+                            }
+                        }
+                    }
+                    Ok(groups)
+                })
+            })
+            .collect::<Vec<_>>();
+        handles.into_iter().map(|handle| {
+            handle.join().unwrap_or_else(|_| {
+                Err(ExecutionError::Invalid("grouped hash worker panicked".into()))
+            })
+        }).collect::<Vec<_>>()
+    });
+    let mut merged = GroupedCounts::default();
+    for chunk in chunks {
+        for (key, count) in chunk?.rows {
+            match merged.by_key.entry(NumberKey::from(key)) {
+                Entry::Occupied(entry) => {
+                    let total = &mut merged.rows[*entry.get()].1;
+                    *total = total.checked_add(count)
+                        .ok_or_else(|| ExecutionError::Invalid("group count overflow".into()))?;
+                }
+                Entry::Vacant(entry) => {
+                    if merged.rows.len() >= MAX_GROUPS {
+                        return Err(ExecutionError::Invalid(
+                            "GROUP BY supports at most 200000 groups".into(),
+                        ));
+                    }
+                    entry.insert(merged.rows.len());
+                    merged.rows.push((key, count));
+                }
+            }
+        }
+    }
+    Ok(Some(merged))
+}
+
 pub(super) fn execute_grouped_part<W: Write>(
     query: &Select,
     part: &Path,
@@ -153,6 +227,14 @@ pub(super) fn execute_grouped_part<W: Write>(
             if let Some(groups) = parallel_dense_grouped_count(part, column, kind)? {
                 return groups.write(query, column, output);
             }
+        }
+    }
+    if no_filters && metadata.columns.iter().any(|candidate| {
+        candidate.name == column
+            && matches!(candidate.data_type.as_str(), "UInt32" | "Int32" | "UInt64" | "Int64")
+    }) {
+        if let Some(groups) = parallel_hash_grouped_count(part, column)? {
+            return groups.write(query, column, output);
         }
     }
     // A single-byte group key has only 256 possible values. Accumulate in a
