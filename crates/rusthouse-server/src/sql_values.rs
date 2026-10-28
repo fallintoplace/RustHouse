@@ -40,7 +40,7 @@ fn append_literal(output: &mut Vec<u8>, field: &[u8]) -> io::Result<()> {
 }
 
 fn encode_values_row(line: &[u8], columns: usize) -> io::Result<Vec<u8>> {
-    let mut values = Vec::new();
+    let mut values = Vec::with_capacity(line.len().saturating_add(columns.saturating_mul(4)).saturating_add(2));
     let mut count = 0;
     values.push(b'(');
     for field in line.split(|&byte| byte == b'\t') {
