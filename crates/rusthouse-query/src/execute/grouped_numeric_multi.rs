@@ -14,6 +14,7 @@ pub(super) fn execute<W: Write>(
     part: &Path,
     column: &str,
     items: &[(AggregateFunction, String)],
+    aliases: &[Option<String>],
     output: &mut W,
 ) -> Result<(), ExecutionError> {
     let metadata = inspect_query_source(part)?;
@@ -65,8 +66,12 @@ pub(super) fn execute<W: Write>(
         conditions.push(typed::compile(branch, &indices, &types)?);
     }
     write!(output, "{column}")?;
-    for (function, value_column) in items {
-        write!(output, "\t{}({value_column})", function.name())?;
+    for (index, (function, value_column)) in items.iter().enumerate() {
+        if let Some(alias) = aliases.get(index).and_then(Option::as_deref) {
+            write!(output, "\t{alias}")?;
+        } else {
+            write!(output, "\t{}({value_column})", function.name())?;
+        }
     }
     writeln!(output)?;
     if query.limit == Some(0) {
