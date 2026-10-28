@@ -49,8 +49,22 @@ fn base_type(kind: &str) -> (&str, bool) {
     }
 }
 
+fn map_string_value_type(kind: &str) -> Option<&str> {
+    let value = kind.strip_prefix("Map(String, ")?.strip_suffix(')')?;
+    matches!(
+        value,
+        "String" | "UInt8" | "UInt16" | "UInt32" | "UInt64" | "UInt128"
+            | "Int8" | "Int16" | "Int32" | "Int64" | "Int128"
+            | "Float32" | "Float64"
+    )
+    .then_some(value)
+}
+
 fn supported(kind: &str) -> bool {
-    let (base, _) = base_type(kind);
+    let (base, nullable) = base_type(kind);
+    if map_string_value_type(base).is_some() {
+        return !nullable;
+    }
     matches!(
         base,
         "String"
@@ -202,6 +216,32 @@ pub fn write_wide_part_with_compression(
     if !rows.is_empty() {
         for (index, col) in columns.iter().enumerate() {
             let (_, nullable) = base_type(&col.data_type);
+            if let Some(value_type) = map_string_value_type(&col.data_type) {
+                let mut key_granules = Vec::with_capacity(granule_count);
+                let mut value_granules = Vec::with_capacity(granule_count);
+                let mut size_granules = Vec::with_capacity(granule_count);
+                for granule in rows.chunks(GRANULE_ROWS) {
+                    let mut keys = Vec::new();
+                    let mut values = Vec::new();
+                    let mut sizes = Vec::with_capacity(granule.len() * size_of::<u64>());
+                    for row in granule {
+                        push_string_key_map(
+                            value_type,
+                            row[index].as_deref(),
+                            &mut keys,
+                            &mut values,
+                            &mut sizes,
+                        )?;
+                    }
+                    key_granules.push(keys);
+                    value_granules.push(values);
+                    size_granules.push(sizes);
+                }
+                streams.push((format!("{}.keys", col.name), key_granules));
+                streams.push((format!("{}.values", col.name), value_granules));
+                streams.push((format!("{}.size0", col.name), size_granules));
+                continue;
+            }
             let mut data_granules = Vec::with_capacity(granule_count);
             let mut null_granules = Vec::with_capacity(granule_count);
             for granule in rows.chunks(GRANULE_ROWS) {
@@ -651,5 +691,100 @@ mod tests {
         assert!(!root.join("null").exists());
         assert!(write_wide_part(&empty, &cols, &[]).is_err());
         fs::remove_dir_all(root).unwrap();
+    }
+}
+
+#[cfg(test)]
+mod map_writer_tests {
+    use super::*;
+    use crate::{ArrayOffsetsEncoding, NumericColumn, read_array_offsets, read_legacy_strings, read_numeric_column};
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
+    static NEXT: AtomicUsize = AtomicUsize::new(0);
+
+    fn decoded(path: &Path) -> Vec<u8> {
+        crate::CompressedBlockReader::open(path)
+            .unwrap()
+            .next_decoded()
+            .unwrap()
+            .unwrap()
+            .data
+    }
+
+    #[test]
+    fn writes_native_unbucketed_map_streams_and_preserves_duplicate_keys() {
+        let root = std::env::temp_dir().join(format!(
+            "rusthouse-map-writer-{}-{}",
+            std::process::id(),
+            NEXT.fetch_add(1, Ordering::Relaxed)
+        ));
+        std::fs::create_dir_all(&root).unwrap();
+        let part = root.join("all_1_1_0");
+        let columns = [Column {
+            name: "labels".into(),
+            data_type: "Map(String, UInt16)".into(),
+        }];
+        let rows = [
+            vec![Some(r#"{"a":1,"a":2,"b":65535}"#.into())],
+            vec![Some("{}".into())],
+            vec![Some(r#"{"unicode\\u0020key":7}"#.into())],
+        ];
+        write_wide_part(&part, &columns, &rows).unwrap();
+        crate::verify_wide_part(&part).unwrap();
+        let sizes = decoded(&part.join("labels.size0.bin"));
+        let keys = decoded(&part.join("labels.keys.bin"));
+        let values = decoded(&part.join("labels.values.bin"));
+        let offsets = read_array_offsets(
+            &mut sizes.as_slice(),
+            rows.len(),
+            ArrayOffsetsEncoding::Sizes,
+        )
+        .unwrap();
+        assert_eq!(offsets.offsets(), &[0, 3, 3, 4]);
+        let keys = read_legacy_strings(&mut keys.as_slice(), offsets.element_count()).unwrap();
+        assert_eq!(keys.get(0), Some(&b"a"[..]));
+        assert_eq!(keys.get(1), Some(&b"a"[..]));
+        assert_eq!(keys.get(3), Some(&b"unicode key"[..]));
+        let values = read_numeric_column(
+            &mut values.as_slice(),
+            "UInt16",
+            offsets.element_count(),
+        )
+        .unwrap();
+        assert_eq!(values, NumericColumn::UInt16(vec![1, 2, 65535, 7]));
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn rejects_malformed_maps_without_publishing_parts() {
+        let root = std::env::temp_dir().join(format!(
+            "rusthouse-map-invalid-{}-{}",
+            std::process::id(),
+            NEXT.fetch_add(1, Ordering::Relaxed)
+        ));
+        std::fs::create_dir_all(&root).unwrap();
+        let columns = [Column {
+            name: "labels".into(),
+            data_type: "Map(String, UInt8)".into(),
+        }];
+        for literal in [
+            r#"{"a":256}"#,
+            r#"{"a":1,}"#,
+            r#"{"a":1"#,
+            r#"{"a" 1}"#,
+            r#"{"a":"not a number"}"#,
+            r#"{"bad\\uD800":1}"#,
+            r#"{"bad\\uDC00":1}"#,
+            r#"{"a":1} trailing"#,
+        ] {
+            let path = root.join("reject");
+            assert!(
+                write_wide_part(&path, &columns, &[vec![Some(literal.into())]]).is_err(),
+                "{literal}"
+            );
+            assert!(!path.exists(), "{literal}");
+        }
+        assert!(write_wide_part(&root.join("null"), &columns, &[vec![None]]).is_err());
+        std::fs::remove_dir_all(root).unwrap();
     }
 }
