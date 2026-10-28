@@ -4,6 +4,7 @@ The Rust harness checks output correctness before reporting each median.
 """
 
 import argparse
+import math
 import re
 import sys
 from pathlib import Path
@@ -29,9 +30,14 @@ def parse_benchmark(text):
             name, median, _throughput = match.groups()
             if name in medians:
                 raise ValueError(f"duplicate workload: {name}")
-            medians[name] = float(median)
+            value = float(median)
+            if not math.isfinite(value) or value < 0:
+                raise ValueError(f"invalid benchmark median: {name}")
+            medians[name] = value
     if settings is None:
         raise ValueError("missing numbers() benchmark settings")
+    if settings[0] < 1 or settings[1] < 1:
+        raise ValueError("benchmark rows and samples must be positive")
     if set(medians) != set(WORKLOADS):
         raise ValueError(f"missing or unexpected workloads: {sorted(set(WORKLOADS) ^ set(medians))}")
     return settings, medians
