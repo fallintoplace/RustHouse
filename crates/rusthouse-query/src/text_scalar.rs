@@ -26,6 +26,7 @@ pub(super) fn is_function(name: &str) -> bool {
             | "HEX_ENCODE"
             | "HEX"
             | "IS_ASCII"
+            | "ENCODEQUOTEDPRINTABLE"
             | "UPPER"
             | "URL_DECODE"
             | "IS_EMPTY"
@@ -1894,6 +1895,53 @@ fn parse_at_depth(parser: &mut Parser, depth: usize) -> Result<ConstantValue, Pa
                     ConstantValue::Text(value.to_owned())
                 }
                 _ => ConstantValue::Null,
+            }
+        }
+        "ENCODEQUOTEDPRINTABLE" => {
+            let input = text_arg(parser, depth + 1)?;
+            require(parser, Token::RParen, "encodeQuotedPrintable requires one argument")?;
+            match input {
+                Some(input) => {
+                    const HEX: &[u8; 16] = b"0123456789ABCDEF";
+                    let bytes = input.as_bytes();
+                    let mut output = String::new();
+                    let mut column = 0_usize;
+                    let mut index = 0_usize;
+                    while index < bytes.len() {
+                        if bytes[index] == b'\r' && bytes.get(index + 1) == Some(&b'\n') {
+                            output.push_str("\r\n");
+                            column = 0;
+                            index += 2;
+                            continue;
+                        }
+                        let byte = bytes[index];
+                        let at_line_end = index + 1 == bytes.len()
+                            || (bytes.get(index + 1) == Some(&b'\r')
+                                && bytes.get(index + 2) == Some(&b'\n'));
+                        let safe = (33..=60).contains(&byte)
+                            || (62..=126).contains(&byte)
+                            || ((byte == b' ' || byte == b'\t') && !at_line_end);
+                        let size = if safe { 1 } else { 3 };
+                        if column + size > 75 {
+                            output.push_str("=\r\n");
+                            column = 0;
+                        }
+                        if safe {
+                            output.push(char::from(byte));
+                        } else {
+                            output.push('=');
+                            output.push(char::from(HEX[usize::from(byte >> 4)]));
+                            output.push(char::from(HEX[usize::from(byte & 15)]));
+                        }
+                        if output.len() > MAX_TEXT_BYTES {
+                            return Err(ParseError("encodeQuotedPrintable result is too large".into()));
+                        }
+                        column += size;
+                        index += 1;
+                    }
+                    ConstantValue::Text(output)
+                }
+                None => ConstantValue::Null,
             }
         }
         "ISVALIDJSON" => {
