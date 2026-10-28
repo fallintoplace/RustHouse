@@ -137,6 +137,11 @@ pub enum Projection {
         column: String,
         k: usize,
     },
+    GroupedTopK {
+        column: String,
+        value_column: String,
+        k: usize,
+    },
     GroupedCount {
         column: String,
     },
@@ -491,6 +496,10 @@ impl Parser {
                     2 => "count".into(),
                     _ => return Err(ParseError("ORDER BY position is out of range".into())),
                 },
+                Projection::GroupedTopK { column, .. } => match position {
+                    1 => column.clone(),
+                    _ => return Err(ParseError("grouped topK ORDER BY supports group key only".into())),
+                },
                 Projection::GroupedMultiCount { columns }
                 | Projection::GroupedMultiDistinctCount { columns, .. } => {
                     if position == columns.len() + 1 {
@@ -805,9 +814,30 @@ fn parse_select_tokens(tokens: Vec<Token>) -> Result<Select, ParseError> {
         let mut columns = vec![parser.word()?];
         let mut grouped_count = false;
         let mut grouped_distinct = None;
+        let mut grouped_topk = None;
         let mut grouped_aggregate = None;
         let mut grouped_aggregates = None;
         while parser.take(Token::Comma) {
+            if matches!(parser.tokens.get(parser.index), Some(Token::Word(word)) if word.eq_ignore_ascii_case("TOPK"))
+                && parser.tokens.get(parser.index + 1) == Some(&Token::LParen)
+            {
+                parser.keyword("TOPK");
+                parser.take(Token::LParen);
+                let k = parser.number()?.parse::<usize>()
+                    .map_err(|_| ParseError("grouped topK size must be an integer".into()))?;
+                if !(1..=32).contains(&k) {
+                    return Err(ParseError("grouped topK supports 1 to 32 keys".into()));
+                }
+                if !parser.take(Token::RParen) || !parser.take(Token::LParen) {
+                    return Err(ParseError("grouped topK requires topK(k)(column)".into()));
+                }
+                let value_column = parser.word()?;
+                if !parser.take(Token::RParen) {
+                    return Err(ParseError("expected ')' after grouped topK".into()));
+                }
+                grouped_topk = Some((value_column, k));
+                break;
+            }
             if matches!(parser.tokens.get(parser.index), Some(Token::Word(word)) if word.eq_ignore_ascii_case("COUNT"))
                 && parser.tokens.get(parser.index + 1) == Some(&Token::LParen)
                 && !matches!(
@@ -989,6 +1019,15 @@ fn parse_select_tokens(tokens: Vec<Token>) -> Result<Select, ParseError> {
                 }
             } else {
                 Projection::GroupedMultiDistinctCount { columns, value_column }
+            }
+        } else if let Some((value_column, k)) = grouped_topk {
+            if columns.len() != 1 {
+                return Err(ParseError("grouped topK supports one GROUP BY key".into()));
+            }
+            Projection::GroupedTopK {
+                column: columns.remove(0),
+                value_column,
+                k,
             }
         } else if let Some((function, value_column)) = grouped_aggregate {
             Projection::GroupedAggregate {
@@ -1384,6 +1423,7 @@ fn parse_select_tokens(tokens: Vec<Token>) -> Result<Select, ParseError> {
             match &projection {
                 Projection::GroupedCount { column }
                 | Projection::GroupedDistinctCount { column, .. }
+                | Projection::GroupedTopK { column, .. }
                 | Projection::GroupedAggregate { column, .. }
                 | Projection::GroupedAggregates { column, .. }
                     if position == 1 =>
@@ -1415,11 +1455,13 @@ fn parse_select_tokens(tokens: Vec<Token>) -> Result<Select, ParseError> {
                 if columns == &group_columns => {}
             Projection::GroupedCount { column }
             | Projection::GroupedDistinctCount { column, .. }
+            | Projection::GroupedTopK { column, .. }
             | Projection::GroupedAggregate { column, .. }
             | Projection::GroupedAggregates { column, .. }
                 if group_columns.len() == 1 && column == &group_columns[0] => {}
             Projection::GroupedCount { .. }
             | Projection::GroupedDistinctCount { .. }
+            | Projection::GroupedTopK { .. }
             | Projection::GroupedMultiDistinctCount { .. }
             | Projection::GroupedMultiCount { .. }
             | Projection::GroupedAggregate { .. }
@@ -1439,6 +1481,7 @@ fn parse_select_tokens(tokens: Vec<Token>) -> Result<Select, ParseError> {
         projection,
         Projection::GroupedCount { .. }
             | Projection::GroupedDistinctCount { .. }
+            | Projection::GroupedTopK { .. }
             | Projection::GroupedMultiDistinctCount { .. }
             | Projection::GroupedMultiCount { .. }
             | Projection::GroupedAggregate { .. }
@@ -1556,6 +1599,7 @@ fn parse_select_tokens(tokens: Vec<Token>) -> Result<Select, ParseError> {
         projection,
         Projection::GroupedCount { .. }
             | Projection::GroupedDistinctCount { .. }
+            | Projection::GroupedTopK { .. }
             | Projection::GroupedMultiDistinctCount { .. }
             | Projection::GroupedMultiCount { .. }
     ) {
@@ -1593,6 +1637,15 @@ fn parse_select_tokens(tokens: Vec<Token>) -> Result<Select, ParseError> {
             .any(|order| &order.column != column && order.column != "count")
         {
             return Err(ParseError("grouped ORDER BY must use the group key".into()));
+        }
+    }
+    if let Projection::GroupedTopK { column, .. } = &projection {
+        if order_by
+            .iter()
+            .chain(order_by_extra.iter())
+            .any(|term| &term.column != column)
+        {
+            return Err(ParseError("grouped topK ORDER BY requires GROUP BY key".into()));
         }
     }
     if let Projection::GroupedMultiCount { columns }

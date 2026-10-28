@@ -18,7 +18,7 @@ const MAX_CAPACITY: usize = 2048;
 const MAX_TEXT_BYTES: usize = 4096;
 
 #[derive(Debug, Clone, Eq, PartialEq, Ord, PartialOrd)]
-enum Key {
+pub(super) enum Key {
     Unsigned(u128),
     Signed(i128),
     Float(u64),
@@ -26,7 +26,7 @@ enum Key {
     Uuid([u8; 16]),
 }
 
-enum View<'a> {
+pub(super) enum View<'a> {
     Unsigned(u128),
     Signed(i128),
     Float(u64),
@@ -95,7 +95,7 @@ fn fingerprint_bytes(tag: u64, value: &[u8]) -> u64 {
     hash ^ (hash >> 33)
 }
 
-fn view_at(column: &TypedColumn, row: usize) -> Result<Option<View<'_>>, ExecutionError> {
+pub(super) fn view_at(column: &TypedColumn, row: usize) -> Result<Option<View<'_>>, ExecutionError> {
     match column {
         TypedColumn::Numeric(values) => Ok(Some(View::from_number(number_at(values, row)))),
         TypedColumn::NullableNumeric { values, nulls } if nulls[row] == 0 => {
@@ -120,7 +120,7 @@ struct Slot {
     frequency: u64,
 }
 
-struct SpaceSaving {
+pub(super) struct SpaceSaving {
     k: usize,
     capacity: usize,
     slots: Vec<Slot>,
@@ -130,7 +130,7 @@ struct SpaceSaving {
 }
 
 impl SpaceSaving {
-    fn new(k: usize) -> Self {
+    pub(super) fn new(k: usize) -> Self {
         let capacity = (k * 16).clamp(MIN_CAPACITY, MAX_CAPACITY);
         Self {
             k,
@@ -186,7 +186,7 @@ impl SpaceSaving {
         }
     }
 
-    fn observe(&mut self, key: View<'_>) -> Result<(), ExecutionError> {
+    pub(super) fn observe(&mut self, key: View<'_>) -> Result<(), ExecutionError> {
         if matches!(&key, View::Text(value) if value.len() > MAX_TEXT_BYTES) {
             return Err(ExecutionError::Invalid(
                 "topK String key exceeds 4096-byte budget".into(),
@@ -245,7 +245,7 @@ impl SpaceSaving {
         Ok(())
     }
 
-    fn ranked(&self) -> Vec<&Key> {
+    pub(super) fn ranked(&self) -> Vec<&Key> {
         let mut slots = self.slots.iter().collect::<Vec<_>>();
         slots.sort_unstable_by(|left, right| {
             right
@@ -257,7 +257,7 @@ impl SpaceSaving {
     }
 }
 
-fn write_key<W: Write>(output: &mut W, key: &Key) -> Result<(), ExecutionError> {
+pub(super) fn write_key<W: Write>(output: &mut W, key: &Key) -> Result<(), ExecutionError> {
     match key {
         Key::Unsigned(value) => write!(output, "{value}")?,
         Key::Signed(value) => write!(output, "{value}")?,
