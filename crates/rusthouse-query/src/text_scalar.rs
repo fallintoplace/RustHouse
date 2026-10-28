@@ -85,6 +85,7 @@ pub(super) fn is_function(name: &str) -> bool {
             | "BASE64_DECODE"
             | "APPENDTRAILINGCHARIFABSENT"
             | "RPAD"
+            | "LEFTUTF8"
             | "SPACE"
     )
 }
@@ -1906,6 +1907,26 @@ fn parse_at_depth(parser: &mut Parser, depth: usize) -> Result<ConstantValue, Pa
                         }
                         ConstantValue::Text(value.repeat(count))
                     }
+                }
+                _ => ConstantValue::Null,
+            }
+        }
+        "LEFTUTF8" => {
+            let input = text_arg(parser, depth + 1)?;
+            require(parser, Token::Comma, "leftUTF8 requires an offset")?;
+            let count = integer_arg(parser, depth + 1)?;
+            require(parser, Token::RParen, "expected ')' after leftUTF8 arguments")?;
+            match (input, count) {
+                (Some(value), Some(count)) => {
+                    let total = value.chars().count();
+                    let count = if count < 0 {
+                        total.saturating_sub(
+                            usize::try_from(count.unsigned_abs()).unwrap_or(usize::MAX),
+                        )
+                    } else {
+                        usize::try_from(count).unwrap_or(usize::MAX)
+                    };
+                    ConstantValue::Text(value.chars().take(count).collect())
                 }
                 _ => ConstantValue::Null,
             }
