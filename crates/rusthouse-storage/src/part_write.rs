@@ -357,20 +357,31 @@ pub fn write_wide_part_with_compression(
             let mut encoded = Vec::new();
             let mut uncompressed = Vec::new();
             let mut marks = Vec::with_capacity(24 * granules.len());
+            // Pack adjacent marks into larger compressed blocks, while each
+            // mark retains its exact intra-block decompressed byte offset.
+            const PACKED_BLOCK_BYTES: usize = 64 * 1024;
+            let mut pending = Vec::new();
             for (index, data) in granules.iter().enumerate() {
-                // Empty Array and Map element streams still need a readable block
-                // for each adaptive mark. Offsets record zero logical elements;
-                // the single padding byte is never exposed as a cell.
+                // Empty Array and Map streams retain an unexposed pad byte.
                 let data: &[u8] = if data.is_empty() { &[0] } else { data };
                 if data.len() > MAX_STREAM_BYTES - uncompressed.len() {
                     return Err(invalid("part column exceeds 8 MiB"));
                 }
+                if !pending.is_empty()
+                    && data.len() > PACKED_BLOCK_BYTES.saturating_sub(pending.len())
+                {
+                    encoded.extend_from_slice(&block(&pending, compression)?);
+                    pending.clear();
+                }
                 marks.extend_from_slice(&(encoded.len() as u64).to_le_bytes());
-                marks.extend_from_slice(&0u64.to_le_bytes());
+                marks.extend_from_slice(&(pending.len() as u64).to_le_bytes());
                 let row_count = (rows.len() - index * GRANULE_ROWS).min(GRANULE_ROWS);
                 marks.extend_from_slice(&(row_count as u64).to_le_bytes());
-                encoded.extend_from_slice(&block(data, compression)?);
+                pending.extend_from_slice(data);
                 uncompressed.extend_from_slice(data);
+            }
+            if !pending.is_empty() {
+                encoded.extend_from_slice(&block(&pending, compression)?);
             }
             write_tracked_file(
                 part,
@@ -727,7 +738,8 @@ mod tests {
             marks.marks.iter().map(|mark| mark.rows).collect::<Vec<_>>(),
             vec![Some(1024), Some(1024), Some(52)]
         );
-        assert!(marks.marks[0].compressed_offset < marks.marks[1].compressed_offset);
+        assert_eq!(marks.marks[0].compressed_offset, marks.marks[1].compressed_offset);
+        assert!(marks.marks[1].decompressed_offset > marks.marks[0].decompressed_offset);
         let note_marks = read_wide_marks(part.join("note.null.mrk2")).unwrap();
         assert_eq!(
             note_marks
