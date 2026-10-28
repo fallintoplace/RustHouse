@@ -1,0 +1,19 @@
+{
+  "name": "join-key-direction",
+  "description": "Compare fact-side and dimension-side hash-build directions",
+  "queries": [
+    {
+      "name": "fact-build",
+      "sql": "SELECT e.event_id, a.tier FROM events e JOIN accounts a ON e.user_id = a.user_id ORDER BY e.event_id LIMIT 20"
+    },
+    {
+      "name": "reverse-build",
+      "sql": "SELECT e.event_id, a.tier FROM accounts a JOIN events e ON a.user_id = e.user_id ORDER BY e.event_id LIMIT 20"
+    },
+    {
+      "name": "reverse-key-order",
+      "sql": "SELECT e.event_id, a.tier FROM events e INNER JOIN accounts a ON a.user_id = e.user_id ORDER BY e.event_id LIMIT 20"
+    }
+  ],
+  "max_rows": 16000
+}
