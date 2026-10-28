@@ -71,7 +71,7 @@ pub(super) fn execute<W: Write>(
             // cells are materialized once, when a new group is discovered.
             probe_key.clear();
             for &column in &group_indices {
-                probe_key.push(typed::cell(&batch[column], row).key());
+                probe_key.push(typed::key_at(&batch[column], row));
             }
             if let Some(&index) = by_key.get(probe_key.as_slice()) {
                 let count = &mut groups[index].1;
