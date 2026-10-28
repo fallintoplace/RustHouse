@@ -38,6 +38,17 @@ impl StringColumn {
         &self.offsets
     }
 
+    pub(crate) fn from_rows(rows: Vec<Vec<u8>>) -> Result<Self, StringReadError> {
+        checked_rows(rows.len())?;
+        let mut column = Self::new(rows.len());
+        for row in rows {
+            let end = checked_end(column.data.len(), row.len() as u64)?;
+            column.data.extend_from_slice(&row);
+            column.offsets.push(end);
+        }
+        Ok(column)
+    }
+
     pub fn get(&self, row: usize) -> Option<&[u8]> {
         let begin = *self.offsets.get(row)?;
         let end = *self.offsets.get(row.checked_add(1)?)?;
