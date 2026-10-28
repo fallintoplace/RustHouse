@@ -47,9 +47,7 @@ pub fn replicas_for(
         .iter()
         .map(|node| (score(shard, node), node.as_str()))
         .collect();
-    ranked.sort_unstable_by(|left, right| {
-        right.0.cmp(&left.0).then_with(|| left.1.cmp(right.1))
-    });
+    ranked.sort_unstable_by(|left, right| right.0.cmp(&left.0).then_with(|| left.1.cmp(right.1)));
     Ok(ranked
         .into_iter()
         .take(replicas)
