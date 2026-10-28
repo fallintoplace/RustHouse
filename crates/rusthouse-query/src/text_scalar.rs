@@ -41,6 +41,7 @@ pub(super) fn is_function(name: &str) -> bool {
             | "JSONHAS"
             | "JSONEXTRACTSTRING"
             | "JSONEXTRACTRAW"
+            | "JSONEXTRACTBOOL"
             | "SUBSTRING"
             | "HASSUBSEQUENCECASEINSENSITIVE"
             | "OVERLAY"
@@ -1906,6 +1907,33 @@ fn parse_at_depth(parser: &mut Parser, depth: usize) -> Result<ConstantValue, Pa
                         }
                         ConstantValue::Text(value.repeat(count))
                     }
+                }
+                _ => ConstantValue::Null,
+            }
+        }
+        "JSONEXTRACTBOOL" => {
+            let input = text_arg(parser, depth + 1)?;
+            let path = if parser.take(Token::Comma) {
+                Some(text_arg(parser, depth + 1)?)
+            } else {
+                None
+            };
+            require(parser, Token::RParen, "expected ')' after JSON extraction")?;
+            match (input, path) {
+                (Some(input), path) => {
+                    let json = crate::json::parse_json(&input)
+                        .map_err(|error| ParseError(format!("invalid JSON: {error}")))?;
+                    let found = match path {
+                        None => Some(&json),
+                        Some(Some(path)) => json.at_path(&path),
+                        Some(None) => return Ok(ConstantValue::Null),
+                    };
+                    let number = if name == "JSONEXTRACTINT" {
+                        found.and_then(|value| value.raw().parse::<i64>().ok()).unwrap_or(0)
+                    } else {
+                        i64::from(found.is_some_and(|value| value.raw() == "true"))
+                    };
+                    ConstantValue::Integer(number)
                 }
                 _ => ConstantValue::Null,
             }
