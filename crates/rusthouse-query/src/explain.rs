@@ -45,6 +45,9 @@ fn describe_projection(projection: &Projection) -> String {
         Projection::ApproxDistinct { column } => {
             format!("Aggregate: uniq({column}) [HyperLogLog, 16384 registers]")
         }
+        Projection::TopK { column, k } => {
+            format!("Aggregate: topK({k})({column}) [bounded SpaceSaving]")
+        }
         Projection::GroupedCount { column } => {
             format!("Aggregate: GROUP BY {column}, count(*)")
         }
