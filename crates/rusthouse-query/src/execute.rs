@@ -2,6 +2,7 @@ mod aggregate_plans;
 mod radix_median;
 mod external_grouped;
 mod bitmap_distinct;
+mod histogram;
 mod hyperloglog;
 
 pub fn merge_uniq_states(states: &[&str]) -> Result<u64, String> {
@@ -958,6 +959,9 @@ fn execute_into<W: Write>(
     let part = part.ok_or_else(|| {
         ExecutionError::Invalid("pass --part <directory> for table queries".into())
     })?;
+    if matches!(query.projection, Projection::Histogram { .. }) {
+        return histogram::execute_part(query, part, output);
+    }
     // A single typed scan serves numeric and String columns with fixed 16 KiB state.
     if matches!(query.projection, Projection::ApproxDistinct { .. } | Projection::ApproxDistinctState { .. }) {
         return typed::execute_typed(query, part, output);
@@ -1062,6 +1066,7 @@ fn execute_into<W: Write>(
         | Projection::CountColumn { .. }
         | Projection::CountDistinct { .. }
         | Projection::ApproxDistinct { .. }
+        | Projection::Histogram { .. }
         | Projection::ApproxDistinctState { .. }
         | Projection::GroupedCount { .. }
         | Projection::GroupedDistinctCount { .. }
@@ -1455,6 +1460,7 @@ fn execute_numbers<W: Write>(
             query.projection,
             Projection::Count | Projection::CountColumn { .. } | Projection::CountDistinct { .. }
                 | Projection::ApproxDistinct { .. }
+                | Projection::Histogram { .. }
         );
         let simple_result = query.order_by.is_none()
             && query.order_by_extra.is_empty()
@@ -1605,6 +1611,9 @@ fn execute_numbers<W: Write>(
             writeln!(output, "{count}")?;
         }
         return Ok(());
+    }
+    if matches!(query.projection, Projection::Histogram { .. }) {
+        return histogram::execute_numbers(query, start, rows, step, output);
     }
     if let Projection::Aggregate { function, column } = &query.projection {
         return execute_aggregate_numbers(query, start, rows, step, *function, column, output);
