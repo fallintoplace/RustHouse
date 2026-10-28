@@ -67,6 +67,7 @@ pub(super) fn is_function(name: &str) -> bool {
             | "REPLACE"
             | "REPLACEALL"
             | "PROTOCOL"
+            | "PORTRFC"
             | "TRANSLATE"
             | "POSITIONCASEINSENSITIVE"
             | "STRPOS"
@@ -878,6 +879,39 @@ fn parse_at_depth(parser: &mut Parser, depth: usize) -> Result<ConstantValue, Pa
                     }
                     result.push_str(&tail);
                     ConstantValue::Text(result)
+                }
+                _ => ConstantValue::Null,
+            }
+        }
+        "PORTRFC" => {
+            let input = text_arg(parser, depth + 1)?;
+            let default = if parser.take(Token::Comma) {
+                integer_arg(parser, depth + 1)?
+            } else {
+                Some(0)
+            };
+            require(parser, Token::RParen, "expected ')' after portRFC")?;
+            match (input, default) {
+                (Some(url), Some(default)) => {
+                    let default = u16::try_from(default).map_err(|_| {
+                        ParseError("portRFC default must fit UInt16".into())
+                    })?;
+                    let suffix = url
+                        .split_once("://")
+                        .map_or(url.as_str(), |(_, rest)| rest);
+                    let authority = suffix.split(['/', '?', '#']).next().unwrap_or("");
+                    let host_port = authority.rsplit('@').next().unwrap_or("");
+                    let candidate = if host_port.starts_with('[') {
+                        host_port
+                            .split_once(']')
+                            .and_then(|(_, rest)| rest.strip_prefix(':'))
+                    } else {
+                        host_port.rsplit_once(':').map(|(_, port)| port)
+                    };
+                    let port = candidate
+                        .and_then(|value| value.parse::<u16>().ok())
+                        .unwrap_or(default);
+                    ConstantValue::Integer(i64::from(port))
                 }
                 _ => ConstantValue::Null,
             }
@@ -2000,5 +2034,43 @@ fn text_arg(parser: &mut Parser, depth: usize) -> Result<Option<String>, ParseEr
         _ => Err(ParseError(
             "expected a string literal or string function".into(),
         )),
+    }
+}
+
+#[cfg(test)]
+mod clickhouse_port_rfc_tests {
+    use crate::{ConstantValue, Projection, parse_select};
+
+    fn value(sql: &str) -> ConstantValue {
+        match parse_select(sql).unwrap().projection {
+            Projection::Constants(columns) if columns.len() == 1 => columns[0].value.clone(),
+            Projection::Literal(number) => ConstantValue::Integer(number),
+            other => panic!("unexpected projection: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn example_values() {
+        for (sql, expected) in [
+            ("SELECT portRFC('http://user:password@example.com:8080/path')", ConstantValue::Integer(8080)),
+            ("SELECT portRFC('https://example.com/',443)", ConstantValue::Integer(443)),
+            ("SELECT portRFC('http://example.com:443/')", ConstantValue::Integer(443)),
+            ("SELECT portRFC('https://example.com:bad',9999)", ConstantValue::Integer(9999)),
+            ("SELECT portRFC(NULL)", ConstantValue::Null),
+        ] {
+            assert_eq!(value(sql), expected, "{sql}");
+        }
+    }
+
+    #[test]
+    fn invalid_arity_and_types() {
+        for sql in [
+            "SELECT portRFC()",
+            "SELECT portRFC('http://x', -1)",
+            "SELECT portRFC('http://x', 65536)",
+            "SELECT portRFC('http://x','bad')",
+        ] {
+            assert!(parse_select(sql).is_err(), "{sql}");
+        }
     }
 }
