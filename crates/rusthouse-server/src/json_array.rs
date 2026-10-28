@@ -123,6 +123,27 @@ impl<W: Write> Write for JsonArraySink<W> {
             } else {
                 chunk
             };
+            if complete && self.row.is_empty() {
+                if fragment.len() > MAX_RESPONSE_BYTES {
+                    return Err(io::Error::new(
+                        io::ErrorKind::InvalidData,
+                        "JSON array row exceeds 8 MiB",
+                    ));
+                }
+                if !fragment.starts_with(b"{") || !fragment.ends_with(b"}") {
+                    return Err(io::Error::new(
+                        io::ErrorKind::InvalidData,
+                        "expected a complete JSON object",
+                    ));
+                }
+                self.write_row_prefix()?;
+                if self.pretty {
+                    write_pretty_json_row(&mut self.output, fragment)?;
+                } else {
+                    self.output.write_all(fragment)?;
+                }
+                continue;
+            }
             self.append_row_fragment(fragment)?;
             if complete {
                 self.finish_row()?;
@@ -139,6 +160,14 @@ impl<W: Write> Write for JsonArraySink<W> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn complete_multirow_writes_do_not_allocate_a_row_buffer() {
+        let mut sink = JsonArraySink::new(Vec::new());
+        sink.write_all(b"{\"a\":1}\n{\"b\":2}\n").unwrap();
+        assert_eq!(sink.row.capacity(), 0);
+        assert_eq!(sink.finish().unwrap(), b"[{\"a\":1},{\"b\":2}]\n");
+    }
 
     #[test]
     fn pretty_json_streams_fragmented_objects_and_handles_escaped_punctuation() {
