@@ -599,7 +599,7 @@ fn execute_into<W: Write>(
         };
         extra_sort_indices.push(index);
     }
-    let mut reader = NumericQueryReader::open(part, &scan_columns)?;
+    let mut reader = NumericQueryReader::open_with_metadata(part, &scan_columns, &metadata)?;
     let no_filters = query.predicates.is_empty() && query.or_predicates.is_empty();
     let mut distinct: Option<HashSet<Vec<NumberKey>>> = query.distinct.then(HashSet::new);
 
