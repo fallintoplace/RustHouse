@@ -250,10 +250,7 @@ mod tests {
             parse_insert(&sql).unwrap().unwrap().rows,
             vec![vec![Some(text)]]
         );
-        let oversized = format!(
-            "INSERT INTO events VALUES ('{}')",
-            "x".repeat(1024 * 1024)
-        );
+        let oversized = format!("INSERT INTO events VALUES ('{}')", "x".repeat(1024 * 1024));
         assert!(parse_insert(&oversized).is_err());
     }
 
@@ -262,10 +259,7 @@ mod tests {
         let parsed = parse_insert("INSERT INTO events VALUES (+3, -4)")
             .unwrap()
             .unwrap();
-        assert_eq!(
-            parsed.rows,
-            vec![vec![Some("3".into()), Some("-4".into())]]
-        );
+        assert_eq!(parsed.rows, vec![vec![Some("3".into()), Some("-4".into())]]);
         for invalid in [
             "INSERT INTO events VALUES (+NULL)",
             "INSERT INTO events VALUES (+'text')",

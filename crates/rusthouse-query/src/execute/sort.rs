@@ -175,7 +175,9 @@ impl SortedRows {
             .checked_add(1)
             .ok_or_else(|| ExecutionError::Invalid("too many rows to sort".into()))?;
         let retained = self.requested.min(MAX_SORTED_ROWS);
-        if retained == 0 || (self.rows.len() == retained && self.would_discard(key, extra_keys.iter().copied())) {
+        if retained == 0
+            || (self.rows.len() == retained && self.would_discard(key, extra_keys.iter().copied()))
+        {
             return Ok(());
         }
         let row = SortedRow {
@@ -236,7 +238,9 @@ mod tests {
     fn heap_retains_more_than_one_hundred_thousand_rows() {
         let mut sorted = SortedRows::new(Some(100_001), false);
         for value in 0..100_001u128 {
-            sorted.push(Number::Unsigned(value), vec![Number::Unsigned(value)]).unwrap();
+            sorted
+                .push(Number::Unsigned(value), vec![Number::Unsigned(value)])
+                .unwrap();
         }
         assert_eq!(sorted.rows.len(), 100_001);
         assert_eq!(sorted.seen, 100_001);
@@ -335,9 +339,15 @@ mod tests {
     #[test]
     fn rejected_topk_candidates_still_advance_stable_sequence() {
         let mut sorted = SortedRows::new(Some(1), false);
-        sorted.push(Number::Unsigned(2), vec![Number::Unsigned(2)]).unwrap();
-        sorted.push(Number::Unsigned(3), vec![Number::Unsigned(3)]).unwrap();
-        sorted.push(Number::Unsigned(2), vec![Number::Unsigned(99)]).unwrap();
+        sorted
+            .push(Number::Unsigned(2), vec![Number::Unsigned(2)])
+            .unwrap();
+        sorted
+            .push(Number::Unsigned(3), vec![Number::Unsigned(3)])
+            .unwrap();
+        sorted
+            .push(Number::Unsigned(2), vec![Number::Unsigned(99)])
+            .unwrap();
         assert_eq!(sorted.seen, 3);
         assert_eq!(sorted.rows.len(), 1);
         let mut output = Vec::new();

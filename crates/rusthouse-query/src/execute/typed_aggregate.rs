@@ -87,7 +87,9 @@ pub(super) fn execute_typed_aggregate<W: Write>(
             if ordered_text {
                 match &batch[projected_index] {
                     TypedColumn::Text(strings)
-                    | TypedColumn::NullableText { values: strings, .. } => {
+                    | TypedColumn::NullableText {
+                        values: strings, ..
+                    } => {
                         if typed::is_null_at(&batch[projected_index], row) {
                             continue;
                         }
@@ -230,8 +232,7 @@ pub(super) fn execute_grouped_aggregate<W: Write>(
     let mut text_groups = HashMap::<Vec<u8>, usize>::new();
     let mut groups = Vec::<(Cell, AggregateState)>::new();
     // Non-nullable byte keys can be indexed directly rather than hashed.
-    let mut dense_slots = matches!(group_type, "UInt8" | "Int8")
-        .then(|| vec![usize::MAX; 256]);
+    let mut dense_slots = matches!(group_type, "UInt8" | "Int8").then(|| vec![usize::MAX; 256]);
     let no_filters = query.predicates.is_empty() && query.or_predicates.is_empty();
     while let Some(batch) = reader.next_batch()? {
         for row in 0..batch[0].len() {
@@ -242,7 +243,11 @@ pub(super) fn execute_grouped_aggregate<W: Write>(
                 let byte = match &batch[group_index] {
                     TypedColumn::Numeric(NumericColumn::UInt8(values)) => values[row],
                     TypedColumn::Numeric(NumericColumn::Int8(values)) => values[row] as u8,
-                    _ => return Err(ExecutionError::Invalid("unexpected byte GROUP BY column".into())),
+                    _ => {
+                        return Err(ExecutionError::Invalid(
+                            "unexpected byte GROUP BY column".into(),
+                        ));
+                    }
                 };
                 let group = &mut slots[usize::from(byte)];
                 if *group != usize::MAX {
@@ -250,45 +255,50 @@ pub(super) fn execute_grouped_aggregate<W: Write>(
                 } else {
                     let index = groups.len();
                     *group = index;
-                    groups.push((typed::cell(&batch[group_index], row), AggregateState::new(*function)));
+                    groups.push((
+                        typed::cell(&batch[group_index], row),
+                        AggregateState::new(*function),
+                    ));
                     index
                 }
             } else {
-            let borrowed_text = match &batch[group_index] {
-                TypedColumn::Text(strings) => strings.get(row),
-                TypedColumn::NullableText { values, nulls } if nulls[row] == 0 => values.get(row),
-                _ => None,
-            };
-            let group = if let Some(key) = borrowed_text {
-                if let Some(&existing) = text_groups.get(key) {
-                    existing
-                } else {
-                    if groups.len() >= MAX_GROUPS {
-                        return Err(ExecutionError::Invalid(
-                            "GROUP BY supports at most 100000 groups".into(),
-                        ));
+                let borrowed_text = match &batch[group_index] {
+                    TypedColumn::Text(strings) => strings.get(row),
+                    TypedColumn::NullableText { values, nulls } if nulls[row] == 0 => {
+                        values.get(row)
                     }
-                    let index = groups.len();
-                    text_groups.insert(key.to_vec(), index);
-                    groups.push((Cell::Text(key.to_vec()), AggregateState::new(*function)));
-                    index
-                }
-            } else {
-                let key = typed::cell(&batch[group_index], row);
-                match by_key.entry(key.key()) {
-                    Entry::Occupied(entry) => *entry.get(),
-                    Entry::Vacant(entry) => {
+                    _ => None,
+                };
+                let group = if let Some(key) = borrowed_text {
+                    if let Some(&existing) = text_groups.get(key) {
+                        existing
+                    } else {
                         if groups.len() >= MAX_GROUPS {
                             return Err(ExecutionError::Invalid(
                                 "GROUP BY supports at most 100000 groups".into(),
                             ));
                         }
-                        entry.insert(groups.len());
-                        groups.push((key, AggregateState::new(*function)));
-                        groups.len() - 1
+                        let index = groups.len();
+                        text_groups.insert(key.to_vec(), index);
+                        groups.push((Cell::Text(key.to_vec()), AggregateState::new(*function)));
+                        index
                     }
-                }
-            };
+                } else {
+                    let key = typed::cell(&batch[group_index], row);
+                    match by_key.entry(key.key()) {
+                        Entry::Occupied(entry) => *entry.get(),
+                        Entry::Vacant(entry) => {
+                            if groups.len() >= MAX_GROUPS {
+                                return Err(ExecutionError::Invalid(
+                                    "GROUP BY supports at most 100000 groups".into(),
+                                ));
+                            }
+                            entry.insert(groups.len());
+                            groups.push((key, AggregateState::new(*function)));
+                            groups.len() - 1
+                        }
+                    }
+                };
                 group
             };
             let value = typed::cell(&batch[value_index], row);
@@ -320,7 +330,10 @@ pub(super) fn execute_grouped_aggregate<W: Write>(
                     )
                 } else {
                     typed::compare_order_cells(
-                        left_key, right_key, term.descending, term.nulls_first
+                        left_key,
+                        right_key,
+                        term.descending,
+                        term.nulls_first,
                     )
                 };
                 if comparison != std::cmp::Ordering::Equal {
@@ -345,12 +358,12 @@ pub(super) fn execute_grouped_aggregate<W: Write>(
             groups.sort_by(compare);
         }
     }
-    let write_group = |key: &Cell, state: &AggregateState, output: &mut W|
-        -> Result<(), ExecutionError> {
-        typed::write_typed_value(output, key, group_type)?;
-        writeln!(output, "\t{}", state.render())?;
-        Ok(())
-    };
+    let write_group =
+        |key: &Cell, state: &AggregateState, output: &mut W| -> Result<(), ExecutionError> {
+            typed::write_typed_value(output, key, group_type)?;
+            writeln!(output, "\t{}", state.render())?;
+            Ok(())
+        };
     if let Some(indices) = bounded_order {
         for index in indices.into_iter().skip(query.offset.unwrap_or(0)) {
             write_group(&groups[index].0, &groups[index].1, output)?;
@@ -374,10 +387,26 @@ mod borrowed_text_extrema_tests {
     #[test]
     fn compares_borrowed_text_without_replacing_ties() {
         let incumbent = Cell::Text(b"beta".to_vec());
-        assert!(replaces_text_extreme(b"alpha", Some(&incumbent), AggregateFunction::Min));
-        assert!(!replaces_text_extreme(b"beta", Some(&incumbent), AggregateFunction::Min));
-        assert!(!replaces_text_extreme(b"alpha", Some(&incumbent), AggregateFunction::Max));
-        assert!(replaces_text_extreme(b"gamma", Some(&incumbent), AggregateFunction::Max));
+        assert!(replaces_text_extreme(
+            b"alpha",
+            Some(&incumbent),
+            AggregateFunction::Min
+        ));
+        assert!(!replaces_text_extreme(
+            b"beta",
+            Some(&incumbent),
+            AggregateFunction::Min
+        ));
+        assert!(!replaces_text_extreme(
+            b"alpha",
+            Some(&incumbent),
+            AggregateFunction::Max
+        ));
+        assert!(replaces_text_extreme(
+            b"gamma",
+            Some(&incumbent),
+            AggregateFunction::Max
+        ));
         assert!(replaces_text_extreme(b"beta", None, AggregateFunction::Min));
     }
 }

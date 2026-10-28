@@ -249,7 +249,9 @@ pub fn parse_join(sql: &str) -> Result<Option<JoinSelect>, ParseError> {
         let table = parser.word()?;
         let alias = alias(&mut parser, &table)?;
         if table.len() > 128 || alias.len() > 128 {
-            return Err(ParseError("table identifiers cannot exceed 128 bytes".into()));
+            return Err(ParseError(
+                "table identifiers cannot exceed 128 bytes".into(),
+            ));
         }
         if alias == left_alias
             || alias == right_alias
@@ -257,7 +259,11 @@ pub fn parse_join(sql: &str) -> Result<Option<JoinSelect>, ParseError> {
         {
             return Err(ParseError("joined tables require distinct aliases".into()));
         }
-        if (step_any && !matches!(step_kind, JoinType::Inner | JoinType::Left | JoinType::Right))
+        if (step_any
+            && !matches!(
+                step_kind,
+                JoinType::Inner | JoinType::Left | JoinType::Right
+            ))
             || (any && !matches!(kind, JoinType::Inner | JoinType::Left | JoinType::Right))
         {
             return Err(ParseError(
@@ -313,8 +319,7 @@ pub fn parse_join(sql: &str) -> Result<Option<JoinSelect>, ParseError> {
                     ));
                 }
                 if !keys.iter().any(|(left, right)| {
-                    (left == &first && right == &second)
-                        || (left == &second && right == &first)
+                    (left == &first && right == &second) || (left == &second && right == &first)
                 }) {
                     keys.push((first, second));
                 }
@@ -327,7 +332,12 @@ pub fn parse_join(sql: &str) -> Result<Option<JoinSelect>, ParseError> {
             return Err(ParseError("JOIN requires ON or USING".into()));
         };
         steps.push(JoinStep {
-            table, alias, kind: step_kind, any: step_any, keys: step_keys, using_keys: step_using,
+            table,
+            alias,
+            kind: step_kind,
+            any: step_any,
+            keys: step_keys,
+            using_keys: step_using,
         });
     }
     let where_null = if parser.keyword("WHERE") {
@@ -386,7 +396,8 @@ pub fn parse_join(sql: &str) -> Result<Option<JoinSelect>, ParseError> {
         Vec::new()
     };
     let known_qualifier = |relation: &str| {
-        relation == left_alias || relation == right_alias
+        relation == left_alias
+            || relation == right_alias
             || steps.iter().any(|step| step.alias == relation)
     };
     if let Some(columns) = &columns {
@@ -401,12 +412,18 @@ pub fn parse_join(sql: &str) -> Result<Option<JoinSelect>, ParseError> {
     }
     if let Some((column, _)) = &where_null {
         if !known_qualifier(&column.relation) {
-            return Err(ParseError(format!("unknown JOIN qualifier: {}", column.relation)));
+            return Err(ParseError(format!(
+                "unknown JOIN qualifier: {}",
+                column.relation
+            )));
         }
     }
     for (column, _, _) in &order_by {
         if !known_qualifier(&column.relation) {
-            return Err(ParseError(format!("unknown JOIN qualifier: {}", column.relation)));
+            return Err(ParseError(format!(
+                "unknown JOIN qualifier: {}",
+                column.relation
+            )));
         }
     }
     let (limit, comma_offset) = if parser.keyword("LIMIT") {
@@ -483,9 +500,17 @@ pub fn explain_join(query: &JoinSelect) -> String {
         predicate,
     );
     for step in &query.steps {
-        let conditions = step.keys.iter()
-            .map(|(left, right)| format!("{}.{} = {}.{}", left.relation, left.name, right.relation, right.name))
-            .collect::<Vec<_>>().join(" AND ");
+        let conditions = step
+            .keys
+            .iter()
+            .map(|(left, right)| {
+                format!(
+                    "{}.{} = {}.{}",
+                    left.relation, left.name, right.relation, right.name
+                )
+            })
+            .collect::<Vec<_>>()
+            .join(" AND ");
         let predicate = if step.keys.is_empty() && step.using_keys.is_empty() {
             "cartesian product".to_owned()
         } else if step.using_keys.is_empty() {
@@ -495,7 +520,8 @@ pub fn explain_join(query: &JoinSelect) -> String {
         };
         plan.push_str(&format!(
             "\nSource: table {} AS {}\nJoin: {} {}",
-            step.table, step.alias,
+            step.table,
+            step.alias,
             if step.keys.is_empty() && step.using_keys.is_empty() {
                 "Cross".to_owned()
             } else {
@@ -585,10 +611,10 @@ mod tests {
         ] {
             assert!(parse_join(statement).is_err(), "{statement}");
         }
-        assert!(parse_join(
-            "SELECT * FROM a x JOIN b y ON x.id = y.id JOIN c z ON y.id = z.id",
-        )
-        .is_ok());
+        assert!(
+            parse_join("SELECT * FROM a x JOIN b y ON x.id = y.id JOIN c z ON y.id = z.id",)
+                .is_ok()
+        );
     }
 
     #[test]
@@ -609,10 +635,10 @@ mod tests {
         ] {
             assert!(parse_join(statement).is_err(), "{statement}");
         }
-        assert!(parse_join(
-            "SELECT * FROM a x JOIN b y ON x.id = y.id JOIN c z ON x.id = z.id",
-        )
-        .is_ok());
+        assert!(
+            parse_join("SELECT * FROM a x JOIN b y ON x.id = y.id JOIN c z ON x.id = z.id",)
+                .is_ok()
+        );
     }
 
     #[test]
@@ -675,7 +701,10 @@ mod tests {
         .unwrap()
         .unwrap();
         let plan = explain_join(&query);
-        assert!(plan.contains("Order: a.id ASC, b.name DESC NULLS LAST"), "{plan}");
+        assert!(
+            plan.contains("Order: a.id ASC, b.name DESC NULLS LAST"),
+            "{plan}"
+        );
     }
 
     #[test]
@@ -703,16 +732,24 @@ mod tests {
     fn parses_chained_any_join_strictness() {
         let query = parse_join(
             "SELECT * FROM a x LEFT ANY JOIN b y ON x.id = y.id ANY LEFT JOIN c z ON y.id = z.id",
-        ).unwrap().unwrap();
+        )
+        .unwrap()
+        .unwrap();
         assert!(query.any);
         assert!(query.steps[0].any);
         assert_eq!(query.steps[0].kind, JoinType::Left);
-        assert!(parse_join(
-            "SELECT * FROM a x JOIN b y ON x.id = y.id FULL ANY JOIN c z ON y.id = z.id"
-        ).is_err());
-        assert!(parse_join(
-            "SELECT * FROM a x RIGHT ANY JOIN b y ON x.id = y.id LEFT JOIN c z ON y.id = z.id"
-        ).is_err());
+        assert!(
+            parse_join(
+                "SELECT * FROM a x JOIN b y ON x.id = y.id FULL ANY JOIN c z ON y.id = z.id"
+            )
+            .is_err()
+        );
+        assert!(
+            parse_join(
+                "SELECT * FROM a x RIGHT ANY JOIN b y ON x.id = y.id LEFT JOIN c z ON y.id = z.id"
+            )
+            .is_err()
+        );
     }
 
     #[test]
@@ -759,18 +796,33 @@ mod tests {
         assert_eq!(query.steps[0].table, "regions");
         assert_eq!(query.steps[0].keys[0].0.relation, "c");
         assert_eq!(query.order_by[0].0.relation, "o");
-        assert!(parse_join("SELECT * FROM a x JOIN b y ON x.id = y.id JOIN c x ON y.id = x.id").is_err());
-        assert!(parse_join("SELECT * FROM a x JOIN b y ON x.id = y.id RIGHT ANY JOIN c z ON y.id = z.id").is_ok());
+        assert!(
+            parse_join("SELECT * FROM a x JOIN b y ON x.id = y.id JOIN c x ON y.id = x.id")
+                .is_err()
+        );
+        assert!(
+            parse_join(
+                "SELECT * FROM a x JOIN b y ON x.id = y.id RIGHT ANY JOIN c z ON y.id = z.id"
+            )
+            .is_ok()
+        );
     }
 
     #[test]
     fn repeated_on_predicates_do_not_exhaust_unique_key_limit() {
         let repeated = (0..12)
-            .map(|i| if i % 2 == 0 { "a.id = b.id" } else { "b.id = a.id" })
+            .map(|i| {
+                if i % 2 == 0 {
+                    "a.id = b.id"
+                } else {
+                    "b.id = a.id"
+                }
+            })
             .collect::<Vec<_>>()
             .join(" AND ");
         let query = parse_join(&format!("SELECT * FROM l a JOIN r b ON {repeated}"))
-            .unwrap().unwrap();
+            .unwrap()
+            .unwrap();
         assert_eq!(query.keys.len(), 1);
         let distinct = (0..9)
             .map(|i| format!("a.k{i} = b.k{i}"))
@@ -788,8 +840,18 @@ mod tests {
         ] {
             assert!(parse_join(statement).is_err(), "{statement}");
         }
-        assert!(parse_join("SELECT * FROM l a JOIN r b ON a.id = b.id WHERE b.id IS NOT NULL ORDER BY a.id").is_ok());
-        assert!(parse_join("SELECT * FROM l a JOIN r b ON a.id = b.id JOIN x c ON b.id = c.id ORDER BY c.id").is_ok());
+        assert!(
+            parse_join(
+                "SELECT * FROM l a JOIN r b ON a.id = b.id WHERE b.id IS NOT NULL ORDER BY a.id"
+            )
+            .is_ok()
+        );
+        assert!(
+            parse_join(
+                "SELECT * FROM l a JOIN r b ON a.id = b.id JOIN x c ON b.id = c.id ORDER BY c.id"
+            )
+            .is_ok()
+        );
     }
 
     #[test]
@@ -984,9 +1046,7 @@ mod tests {
             .unwrap()
             .unwrap();
         assert!(!ordinary.any);
-        for statement in [
-            "SELECT * FROM a ANY FULL JOIN b ON a.id = b.id",
-        ] {
+        for statement in ["SELECT * FROM a ANY FULL JOIN b ON a.id = b.id"] {
             assert!(parse_join(statement).is_err(), "{statement}");
         }
     }
