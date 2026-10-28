@@ -1961,7 +1961,8 @@ fn parse_at_depth(parser: &mut Parser, depth: usize) -> Result<ConstantValue, Pa
                         return Err(ParseError("invalid Date argument".into()));
                     }
                     let day = rusthouse_storage::parse_date(&value).unwrap();
-                    let january = rusthouse_storage::parse_date(&format!("{}-01-01", &value[..4])).unwrap();
+                    let january =
+                        rusthouse_storage::parse_date(&format!("{}-01-01", &value[..4])).unwrap();
                     ConstantValue::Integer(i64::from(day - january + 1))
                 }
                 None => ConstantValue::Null,
