@@ -33,6 +33,7 @@ pub(super) fn is_function(name: &str) -> bool {
         return true;
     }
     is_saturating(name)
+        || name.eq_ignore_ascii_case("IF")
         || name.eq_ignore_ascii_case("ABS")
         || name.eq_ignore_ascii_case("BIT_PARITY")
         || name.eq_ignore_ascii_case("BIT_MASK")
@@ -936,6 +937,16 @@ fn factor(parser: &mut Parser, depth: usize) -> Result<i64, ParseError> {
         return factor(parser, depth + 1)?
             .checked_neg()
             .ok_or_else(overflow);
+    }
+    if parser.keyword("IF") {
+        require_token(parser, Token::LParen, "if requires '('")?;
+        let condition = expression(parser, depth + 1)?;
+        require_token(parser, Token::Comma, "if requires three arguments")?;
+        let when_true = expression(parser, depth + 1)?;
+        require_token(parser, Token::Comma, "if requires three arguments")?;
+        let when_false = expression(parser, depth + 1)?;
+        require_token(parser, Token::RParen, "expected ')' after if arguments")?;
+        return Ok(if condition != 0 { when_true } else { when_false });
     }
     if parser.keyword("DIV") {
         return parse_div_mod(parser, depth, true);
