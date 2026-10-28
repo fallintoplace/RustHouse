@@ -92,7 +92,11 @@ fn generated_rows_and_empty_inserts_use_existing_publish_path() {
     ok("INSERT INTO target (id) SELECT number FROM numbers(100001)", &db);
     assert_eq!(fs::read_to_string(&pointer).unwrap(), "g2\n");
     assert_eq!(ok("SELECT count(*) FROM target", &db), "count\n150004\n");
-    assert!(!db.join(".rusthouse-insert-select-0.tmp").exists());
+    assert!(
+        !fs::read_dir(&db)
+            .unwrap()
+            .any(|entry| entry.unwrap().file_name().to_string_lossy().starts_with(".rusthouse-insert-select-"))
+    );
     fs::remove_dir_all(db).unwrap();
 }
 
