@@ -631,12 +631,18 @@ impl TypedPartReader {
                         ArrayOffsetsEncoding::Sizes,
                     )
                     .map_err(|error| PartError::InvalidScan(error.to_string()))?;
-                    let mut rendered = Vec::with_capacity(rows);
+                    // Build one contiguous StringColumn as rows are rendered.
+                    // Keep one expandable scratch String instead of allocating
+                    // both a String and a Vec<u8> for every Array row.
+                    let mut decoded = StringColumn::builder(rows)
+                        .map_err(|error| PartError::InvalidScan(error.to_string()))?;
+                    let mut text = String::new();
                     for row in 0..rows {
                         let range = arrays.row_range(row).ok_or_else(|| {
                             PartError::InvalidScan("invalid Array row range".into())
                         })?;
-                        let mut text = String::from("[");
+                        text.clear();
+                        text.push('[');
                         for element in range {
                             if text.len() != 1 {
                                 text.push(',');
@@ -644,12 +650,11 @@ impl TypedPartReader {
                             text.push_str(&numeric_array_element(arrays.values(), element));
                         }
                         text.push(']');
-                        rendered.push(text.into_bytes());
+                        decoded
+                            .push_row(text.as_bytes())
+                            .map_err(|error| PartError::InvalidScan(error.to_string()))?;
                     }
-                    TypedColumn::Text(
-                        StringColumn::from_rows(rendered)
-                            .map_err(|error| PartError::InvalidScan(error.to_string()))?,
-                    )
+                    TypedColumn::Text(decoded)
                 }
                 StorageKind::StringMap(value_type) => {
                     let values = column.map_values.as_mut().ok_or_else(|| {
