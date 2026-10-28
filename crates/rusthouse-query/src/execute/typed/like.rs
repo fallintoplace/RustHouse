@@ -11,8 +11,7 @@ pub(super) fn literal_bytes(tokens: &[LikeToken]) -> Option<Vec<u8>> {
 }
 
 pub(super) fn compile_like(pattern: &str) -> Result<LikePattern, ExecutionError> {
-    // Escape handling can expand a token by at most one byte, so the
-    // pattern byte length is an upper bound on compiled token count.
+    // Token count cannot exceed the pattern's byte length.
     let mut tokens = Vec::with_capacity(pattern.len());
     let mut bytes = pattern.bytes();
     while let Some(byte) = bytes.next() {
@@ -79,8 +78,12 @@ pub(super) fn next_utf8_boundary(value: &[u8], index: usize) -> Option<usize> {
 }
 
 pub(super) fn equal_like_bytes(left: &[u8], right: &[u8], case_insensitive: bool) -> bool {
+    // Identical bytes have identical Unicode folds without allocations.
+    if left == right {
+        return true;
+    }
     if !case_insensitive {
-        return left == right;
+        return false;
     }
     if left.is_ascii() && right.is_ascii() {
         return left.eq_ignore_ascii_case(right);
@@ -141,6 +144,9 @@ pub(super) fn like_matches(value: &[u8], pattern: &LikePattern, case_insensitive
             }
             if bytes.is_empty() {
                 true
+            } else if bytes.len() == 1 && !case_insensitive {
+                // Avoid a substring search for the common LIKE '%x%' case.
+                value.contains(&bytes[0])
             } else if !case_insensitive {
                 if let (Ok(haystack), Ok(needle)) =
                     (std::str::from_utf8(value), std::str::from_utf8(bytes))
@@ -273,6 +279,23 @@ mod perf_tests {
         assert!(!like_matches(b"ab", &binary, false));
         assert!(like_matches(b"prefixababa", &pattern, false));
         assert!(like_matches(b"anything", &compile_like("%%").unwrap(), false));
+    }
+
+    #[test]
+    fn single_byte_contains_checks_every_position_in_binary_rows() {
+        let pattern = compile_like("%x%").unwrap();
+        assert!(like_matches(b"x", &pattern, false));
+        assert!(like_matches(b"\0x\xff", &pattern, false));
+        assert!(!like_matches(b"\0y\xff", &pattern, false));
+        assert!(!like_matches(b"", &pattern, false));
+        assert!(like_matches(b"X", &pattern, true));
+    }
+
+    #[test]
+    fn identical_unicode_like_bytes_need_no_folding() {
+        assert!(equal_like_bytes("café".as_bytes(), "café".as_bytes(), true));
+        assert!(equal_like_bytes("café".as_bytes(), "café".as_bytes(), false));
+        assert!(!equal_like_bytes("café".as_bytes(), "cafe".as_bytes(), true));
     }
 
     #[test]

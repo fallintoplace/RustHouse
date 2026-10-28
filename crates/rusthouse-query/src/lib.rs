@@ -7,6 +7,7 @@ mod expression;
 mod insert;
 mod insert_select;
 mod join;
+mod json;
 mod lexer;
 mod literal;
 mod multi_aggregate;

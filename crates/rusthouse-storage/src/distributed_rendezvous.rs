@@ -135,6 +135,13 @@ pub fn weighted_replicas_for(
     if replicas == 1 {
         return Ok(vec![winner.expect("valid nonempty nodes").1.to_owned()]);
     }
+    if replicas < ranked.len() {
+        // Partition first; sorting just the selected replica prefix is enough.
+        ranked.select_nth_unstable_by(replicas, |left, right| {
+            left.0.total_cmp(&right.0).then_with(|| left.1.cmp(right.1))
+        });
+        ranked.truncate(replicas);
+    }
     ranked.sort_unstable_by(|left, right| {
         left.0.total_cmp(&right.0).then_with(|| left.1.cmp(right.1))
     });
@@ -218,6 +225,23 @@ mod tests {
             if original[0] == "a" {
                 assert_eq!(updated[0], "a", "{shard}");
             }
+        }
+    }
+
+    #[test]
+    fn weighted_primary_matches_full_ranking_on_many_shards() {
+        let nodes = (0..64)
+            .map(|index| (format!("node_{index}"), 1 + index as u16))
+            .collect::<Vec<_>>();
+        let weighted = nodes
+            .iter()
+            .map(|(node, weight)| (node.as_str(), *weight))
+            .collect::<Vec<_>>();
+        for index in 0..32 {
+            let shard = format!("weighted_{index}");
+            let first = weighted_replicas_for(&shard, &weighted, 1).unwrap();
+            let all = weighted_replicas_for(&shard, &weighted, weighted.len()).unwrap();
+            assert_eq!(first[0], all[0]);
         }
     }
 

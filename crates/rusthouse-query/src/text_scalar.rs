@@ -37,6 +37,10 @@ pub(super) fn is_function(name: &str) -> bool {
             | "URL_ENCODE"
             | "FRAGMENT"
             | "JSON_QUOTE"
+            | "ISVALIDJSON"
+            | "JSONHAS"
+            | "JSONEXTRACTSTRING"
+            | "JSONEXTRACTRAW"
             | "SUBSTRING"
             | "HASSUBSEQUENCECASEINSENSITIVE"
             | "OVERLAY"
@@ -1604,6 +1608,42 @@ fn parse_at_depth(parser: &mut Parser, depth: usize) -> Result<ConstantValue, Pa
                         }
                     }).unwrap_or("");
                     ConstantValue::Text(value.to_owned())
+                }
+                _ => ConstantValue::Null,
+            }
+        }
+        "ISVALIDJSON" => {
+            let input = text_arg(parser, depth + 1)?;
+            require(parser, Token::RParen, "isValidJSON requires one argument")?;
+            match input {
+                Some(input) => {
+                    ConstantValue::Integer(i64::from(crate::json::parse_json(&input).is_ok()))
+                }
+                None => ConstantValue::Null,
+            }
+        }
+        "JSONHAS" | "JSONEXTRACTSTRING" | "JSONEXTRACTRAW" => {
+            let input = text_arg(parser, depth + 1)?;
+            require(parser, Token::Comma, "JSON function requires a key")?;
+            let path = text_arg(parser, depth + 1)?;
+            require(parser, Token::RParen, "JSON function requires two arguments")?;
+            match (input, path) {
+                (Some(input), Some(path)) => {
+                    let json = crate::json::parse_json(&input)
+                        .map_err(|error| ParseError(format!("invalid JSON: {error}")))?;
+                    let found = json.at_path(&path);
+                    match name.as_str() {
+                        "JSONHAS" => ConstantValue::Integer(i64::from(found.is_some())),
+                        "JSONEXTRACTSTRING" => ConstantValue::Text(
+                            found
+                                .and_then(|value| value.as_string())
+                                .unwrap_or("")
+                                .to_owned(),
+                        ),
+                        _ => ConstantValue::Text(
+                            found.map(|value| value.raw()).unwrap_or("").to_owned(),
+                        ),
+                    }
                 }
                 _ => ConstantValue::Null,
             }
