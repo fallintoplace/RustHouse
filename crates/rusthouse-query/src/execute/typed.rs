@@ -39,6 +39,7 @@ pub(super) enum Key {
     Numeric(NumberKey),
     Text(Vec<u8>),
     Uuid(String),
+    UuidBytes([u8; 16]),
     Null,
 }
 

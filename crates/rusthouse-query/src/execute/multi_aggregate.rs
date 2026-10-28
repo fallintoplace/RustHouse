@@ -211,7 +211,9 @@ fn distinct_argument(
             TypedColumn::Text(values) => values
                 .get(row)
                 .map(|value| typed::Key::Text(value.to_vec())),
-            TypedColumn::Uuid(values) => Some(typed::Key::Uuid(values[row].to_string())),
+            TypedColumn::Uuid(values) => {
+                Some(typed::Key::UuidBytes(*values[row].as_bytes()))
+            },
             TypedColumn::NullableNumeric { values, nulls } => (nulls[row] == 0)
                 .then(|| typed::Key::Numeric(NumberKey::from(number_at(values, row)))),
             TypedColumn::NullableText { values, nulls } => {
