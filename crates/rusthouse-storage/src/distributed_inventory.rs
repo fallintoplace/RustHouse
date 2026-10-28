@@ -91,9 +91,11 @@ mod tests {
         )
         .unwrap();
         let files = inventory_snapshot(&root, 32, 1_000_000).unwrap();
-        assert!(files
-            .iter()
-            .any(|entry| entry.relative_path == Path::new("all_0_0_0/count.txt")));
+        assert!(
+            files
+                .iter()
+                .any(|entry| entry.relative_path == Path::new("all_0_0_0/count.txt"))
+        );
         assert!(files.iter().all(|entry| entry.bytes <= 1_000_000));
         assert!(inventory_snapshot(&root, 1, 1_000_000).is_err());
         assert!(inventory_snapshot(&root, 32, 1).is_err());
