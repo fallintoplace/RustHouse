@@ -2,9 +2,15 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from run import main, verify_result, write_fixture
+from run import logical_probe_throughput, main, verify_result, write_fixture
 
 class JoinWorkloadTests(unittest.TestCase):
+    def test_join_throughput_rejects_invalid_medians(self):
+        self.assertEqual(logical_probe_throughput(20, 2.0), 10.0)
+        for median in [0, -1.0, float("nan"), float("inf")]:
+            with self.assertRaises(ValueError):
+                logical_probe_throughput(20, median)
+
     def test_nonfinite_timeouts_are_rejected_before_launch(self):
         for value in ["nan", "inf", "-inf"]:
             with self.assertRaises(SystemExit) as raised:

@@ -68,6 +68,12 @@ def verify_result(output, expected_labels):
     if ids != expected_labels.keys():
         raise ValueError("join result IDs differ from expected matches")
 
+def logical_probe_throughput(probe_rows, median_seconds):
+    if not math.isfinite(median_seconds) or median_seconds <= 0:
+        raise ValueError("median JOIN latency must be positive and finite")
+    return probe_rows / median_seconds
+
+
 def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--binary", type=Path, required=True)
@@ -119,7 +125,7 @@ def main(argv=None):
         "runs": args.runs, "warmups": args.warmups,
         "median_seconds": median,
         "p90_seconds": latency["p90_seconds"],
-        "logical_probe_rows_per_second": args.probe_rows / median,
+        "logical_probe_rows_per_second": logical_probe_throughput(args.probe_rows, median),
         "samples_seconds": elapsed,
     }
     emit_json(report, args.output)
