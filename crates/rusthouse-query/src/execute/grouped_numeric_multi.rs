@@ -7,7 +7,7 @@ use std::collections::{HashMap, hash_map::Entry};
 use std::io::Write;
 use std::path::Path;
 
-const MAX_GROUPS: usize = 100_000;
+const MAX_GROUPS: usize = 200_000;
 
 pub(super) fn execute<W: Write>(
     query: &Select,
@@ -82,7 +82,7 @@ pub(super) fn execute<W: Write>(
                     group
                 } else {
                     if groups.len() >= MAX_GROUPS {
-                        return Err(ExecutionError::Invalid("GROUP BY supports at most 100000 groups".into()));
+                        return Err(ExecutionError::Invalid("GROUP BY supports at most 200000 groups".into()));
                     }
                     let group = groups.len();
                     by_text.insert(key.to_vec(), group);
@@ -95,7 +95,7 @@ pub(super) fn execute<W: Write>(
                     Entry::Occupied(entry) => *entry.get(),
                     Entry::Vacant(entry) => {
                         if groups.len() >= MAX_GROUPS {
-                            return Err(ExecutionError::Invalid("GROUP BY supports at most 100000 groups".into()));
+                            return Err(ExecutionError::Invalid("GROUP BY supports at most 200000 groups".into()));
                         }
                         entry.insert(groups.len());
                         groups.push((key, items.iter().map(|(function, _)| AggregateState::new(*function)).collect()));
