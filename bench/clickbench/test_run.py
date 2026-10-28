@@ -97,6 +97,20 @@ class ClickBenchRunnerTests(unittest.TestCase):
         self.assertEqual(wrong["status"], "mismatch")
         self.assertFalse(wrong["timings_seconds"])
 
+    def test_validation_time_is_excluded_from_query_latency(self):
+        clock = [10.0]
+        def execute(_sql):
+            clock[0] += 0.02
+            return b"ok\n"
+        def validate(_output, _reference):
+            clock[0] += 4.0
+            return True
+        with mock.patch("run.time.perf_counter", side_effect=lambda: clock[0]), \
+             mock.patch("run.matches_reference", side_effect=validate):
+            result = benchmark_one(1, "SELECT 1", execute, 1, 0, b"ok\n")
+        self.assertEqual(result["status"], "passed")
+        self.assertAlmostEqual(result["timings_seconds"][0], 0.02, places=6)
+
     def test_late_reference_mismatch_discards_all_timings(self):
         calls = 0
 
