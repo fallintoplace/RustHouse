@@ -237,10 +237,17 @@ mod tuple_tests {
 
     #[test]
     fn tuple_field_boundaries_are_not_ambiguous() {
-        let first = TypedColumn::Text(vec![b"ab".to_vec(), b"a".to_vec()]);
-        let second = TypedColumn::Text(vec![b"c".to_vec(), b"bc".to_vec()]);
+        let first = TypedColumn::Text(
+            rusthouse_storage::read_legacy_strings(&mut &b"\x02ab\x01a"[..], 2).unwrap(),
+        );
+        let second = TypedColumn::Text(
+            rusthouse_storage::read_legacy_strings(&mut &b"\x01c\x02bc"[..], 2).unwrap(),
+        );
         let mut sketch = HyperLogLog::default();
-        sketch.observe_tuple(&[first, second], 0).unwrap_err();
+        let fields = [first, second];
+        sketch.observe_tuple(&fields, 0).unwrap();
+        sketch.observe_tuple(&fields, 1).unwrap();
+        assert_eq!(sketch.estimate(), 2);
     }
 
     #[test]
