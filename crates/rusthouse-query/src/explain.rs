@@ -68,6 +68,15 @@ fn describe_projection(projection: &Projection) -> String {
                     .map(|(function, value)| format!("{}({value})", function.name()))
             )
         ),
+        Projection::GroupedMultiAggregates { columns, items } => format!(
+            "Aggregate: GROUP BY {}, {}",
+            columns.join(", "),
+            join_labels(
+                items
+                    .iter()
+                    .map(|(function, value)| format!("{}({value})", function.name()))
+            )
+        ),
         Projection::Aggregate { function, column } => {
             format!("Aggregate: {}({column})", function.name())
         }

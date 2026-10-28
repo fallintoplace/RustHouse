@@ -143,6 +143,10 @@ pub enum Projection {
         column: String,
         items: Vec<(AggregateFunction, String)>,
     },
+    GroupedMultiAggregates {
+        columns: Vec<String>,
+        items: Vec<(AggregateFunction, String)>,
+    },
     Aggregate {
         function: AggregateFunction,
         column: String,
@@ -475,6 +479,11 @@ impl Parser {
                             .ok_or_else(|| ParseError("ORDER BY position is out of range".into()))?
                     }
                 }
+                Projection::GroupedMultiAggregates { columns, .. } => position
+                    .checked_sub(1)
+                    .and_then(|index| columns.get(index))
+                    .cloned()
+                    .ok_or_else(|| ParseError("ORDER BY position is out of range".into()))?,
                 Projection::GroupedAggregate { column, .. }
                 | Projection::GroupedAggregates { column, .. } => match position {
                     1 => column.clone(),
@@ -717,7 +726,7 @@ fn parse_select_tokens(tokens: Vec<Token>) -> Result<Select, ParseError> {
                 }
                 break;
             }
-            if columns.len() == 1 && parser.tokens.get(parser.index + 1) == Some(&Token::LParen) {
+            if parser.tokens.get(parser.index + 1) == Some(&Token::LParen) {
                 let function = match parser.tokens.get(parser.index) {
                     Some(Token::Word(name)) => match name.to_ascii_uppercase().as_str() {
                         "GROUPBITXOR" => Some(AggregateFunction::GroupBitXor),
@@ -778,7 +787,7 @@ fn parse_select_tokens(tokens: Vec<Token>) -> Result<Select, ParseError> {
                         }
                         items.push((function, value_column));
                     }
-                    if items.len() == 1 {
+                    if items.len() == 1 && columns.len() == 1 {
                         grouped_aggregate = items.pop();
                     } else {
                         grouped_aggregates = Some(items);
@@ -811,9 +820,16 @@ fn parse_select_tokens(tokens: Vec<Token>) -> Result<Select, ParseError> {
                 value_column,
             }
         } else if let Some(items) = grouped_aggregates {
-            Projection::GroupedAggregates {
-                column: columns.remove(0),
-                items,
+            if columns.len() == 1 {
+                Projection::GroupedAggregates {
+                    column: columns.remove(0),
+                    items,
+                }
+            } else {
+                if columns.len() > 8 {
+                    return Err(ParseError("GROUP BY supports at most 8 keys".into()));
+                }
+                Projection::GroupedMultiAggregates { columns, items }
             }
         } else {
             Projection::Columns(columns)
@@ -1186,6 +1202,11 @@ fn parse_select_tokens(tokens: Vec<Token>) -> Result<Select, ParseError> {
                 {
                     column.clone()
                 }
+                Projection::GroupedMultiAggregates { columns, .. } => position
+                    .checked_sub(1)
+                    .and_then(|index| columns.get(index))
+                    .cloned()
+                    .ok_or_else(|| ParseError("GROUP BY position is out of range".into()))?,
                 _ => return Err(ParseError("GROUP BY position is out of range".into())),
             }
         } else {
@@ -1200,6 +1221,8 @@ fn parse_select_tokens(tokens: Vec<Token>) -> Result<Select, ParseError> {
         }
         match &projection {
             Projection::GroupedMultiCount { columns } if columns == &group_columns => {}
+            Projection::GroupedMultiAggregates { columns, .. }
+                if columns == &group_columns => {}
             Projection::GroupedCount { column }
             | Projection::GroupedDistinctCount { column, .. }
             | Projection::GroupedAggregate { column, .. }
@@ -1209,7 +1232,8 @@ fn parse_select_tokens(tokens: Vec<Token>) -> Result<Select, ParseError> {
             | Projection::GroupedDistinctCount { .. }
             | Projection::GroupedMultiCount { .. }
             | Projection::GroupedAggregate { .. }
-            | Projection::GroupedAggregates { .. } => {
+            | Projection::GroupedAggregates { .. }
+            | Projection::GroupedMultiAggregates { .. } => {
                 return Err(ParseError("GROUP BY must match selected grouping keys".into()));
             }
             _ => {
@@ -1225,6 +1249,7 @@ fn parse_select_tokens(tokens: Vec<Token>) -> Result<Select, ParseError> {
             | Projection::GroupedMultiCount { .. }
             | Projection::GroupedAggregate { .. }
             | Projection::GroupedAggregates { .. }
+            | Projection::GroupedMultiAggregates { .. }
     ) {
         return Err(ParseError("grouped aggregates require GROUP BY".into()));
     }
@@ -1338,6 +1363,18 @@ fn parse_select_tokens(tokens: Vec<Token>) -> Result<Select, ParseError> {
         {
             return Err(ParseError(
                 "grouped numeric ORDER BY must use the group key".into(),
+            ));
+        }
+    }
+
+    if let Projection::GroupedMultiAggregates { columns, .. } = &projection {
+        if order_by
+            .iter()
+            .chain(order_by_extra.iter())
+            .any(|order| !columns.contains(&order.column))
+        {
+            return Err(ParseError(
+                "grouped numeric ORDER BY must use the group keys".into(),
             ));
         }
     }
