@@ -9,6 +9,27 @@ use std::path::Path;
 
 const MAX_GROUPS: usize = 200_000;
 
+const MAX_GROUP_KEY_BYTES: usize = 64 * 1024 * 1024;
+
+fn charge_group_memory(
+    used: &mut usize,
+    dimensions: usize,
+    encoded_bytes: usize,
+) -> Result<(), ExecutionError> {
+    let bytes = dimensions.checked_mul(
+        std::mem::size_of::<Key>() + std::mem::size_of::<Cell>()
+    ).and_then(|fixed| encoded_bytes.checked_mul(2)
+        .and_then(|variable| fixed.checked_add(variable)))
+        .and_then(|total| used.checked_add(total))
+        .ok_or_else(|| ExecutionError::Invalid("group key memory overflow".into()))?;
+    if bytes > MAX_GROUP_KEY_BYTES {
+        return Err(ExecutionError::Invalid("GROUP BY exceeds 64 MiB retained key budget".into()));
+    }
+    *used = bytes;
+    Ok(())
+}
+
+
 // Reinterpret signed 8-bit keys as indices, retaining the original signed
 // values in result cells. A two-byte tuple needs at most 65,536 slots.
 fn byte_group_key(column: &TypedColumn, row: usize) -> Option<u8> {
@@ -165,6 +186,20 @@ pub(super) fn execute<W: Write>(
         None
     };
     let mut groups: Vec<(Vec<Cell>, u64)> = partial.unwrap_or_default();
+    let mut retained_group_bytes = 0usize;
+    // A parallel scan can return groups without entering the serial loop.
+    for (keys, _) in &groups {
+        let payload = keys.iter().try_fold(0usize, |total, cell| {
+            let variable = match cell {
+                Cell::Text(bytes) => bytes.len(),
+                Cell::Uuid(text) => text.len(),
+                _ => 0,
+            };
+            total.checked_add(variable)
+                .ok_or_else(|| ExecutionError::Invalid("group key memory overflow".into()))
+        })?;
+        charge_group_memory(&mut retained_group_bytes, keys.len(), payload)?;
+    }
     let mut by_key: HashMap<Vec<Key>, usize> = HashMap::new();
     let mut probe_key = Vec::with_capacity(group_indices.len());
     // Probe repeated String dimensions without cloning their decoded bytes.
@@ -199,6 +234,7 @@ pub(super) fn execute<W: Write>(
                         .checked_add(1)
                         .ok_or_else(|| ExecutionError::Invalid("group count overflow".into()))?;
                 } else {
+                    charge_group_memory(&mut retained_group_bytes, group_indices.len(), 0)?;
                     *index = groups.len();
                     groups.push((
                         group_indices
@@ -232,6 +268,9 @@ pub(super) fn execute<W: Write>(
                         .iter()
                         .map(|&index| typed::cell(&batch[index], row))
                         .collect();
+                    charge_group_memory(
+                        &mut retained_group_bytes, group_indices.len(), encoded_probe.len(),
+                    )?;
                     encoded_groups.insert(std::mem::take(&mut encoded_probe), groups.len());
                     encoded_probe = Vec::with_capacity(group_indices.len() * 24);
                     groups.push((values, 1));
@@ -259,6 +298,7 @@ pub(super) fn execute<W: Write>(
                     .iter()
                     .map(|&index| typed::cell(&batch[index], row))
                     .collect();
+                charge_group_memory(&mut retained_group_bytes, group_indices.len(), 0)?;
                 by_key.insert(std::mem::take(&mut probe_key), groups.len());
                 probe_key = Vec::with_capacity(group_indices.len());
                 groups.push((values, 1));
@@ -358,4 +398,18 @@ pub(super) fn execute<W: Write>(
         }
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod grouped_count_memory_budget_tests {
+    use super::*;
+    #[test]
+    fn key_budget_rejects_wide_tuples_without_mutating_accounting() {
+        let mut allocated = 0usize;
+        charge_group_memory(&mut allocated, 8, 256).unwrap();
+        let before = allocated;
+        assert!(charge_group_memory(&mut allocated, 8, MAX_GROUP_KEY_BYTES).is_err());
+        assert_eq!(allocated, before);
+        assert!(charge_group_memory(&mut allocated, usize::MAX, 0).is_err());
+    }
 }
