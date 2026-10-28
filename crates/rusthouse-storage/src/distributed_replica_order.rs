@@ -26,7 +26,7 @@ fn newest_first(left: &ReplicaStatus, right: &ReplicaStatus) -> std::cmp::Orderi
 }
 
 fn validate_replica_nodes(replicas: &[ReplicaStatus]) -> Result<(), &'static str> {
-    let mut seen = HashSet::new();
+    let mut seen = HashSet::with_capacity(replicas.len());
     for replica in replicas {
         if !valid_node(&replica.node) || !seen.insert(replica.node.as_str()) {
             return Err("invalid or duplicate replica node");
