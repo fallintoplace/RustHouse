@@ -54,6 +54,7 @@ pub(super) fn is_function(name: &str) -> bool {
             | "QUOTE_LITERAL"
             | "CUTQUERYSTRINGANDFRAGMENT"
             | "COALESCE"
+            | "SUBTRACTHOURS"
             | "CONCAT_WS"
             | "CONCATWITHSEPARATOR"
             | "CUTFRAGMENT"
@@ -658,6 +659,27 @@ fn parse_at_depth(parser: &mut Parser, depth: usize) -> Result<ConstantValue, Pa
                         .to_owned(),
                 ),
                 None => ConstantValue::Null,
+            }
+        }
+        "SUBTRACTHOURS" => {
+            let input = text_arg(parser, depth + 1)?;
+            require(parser, Token::Comma, "subtractHours requires an offset")?;
+            let amount = integer_arg(parser, depth + 1)?;
+            require(parser, Token::RParen, "subtractHours requires two arguments")?;
+            match (input, amount) {
+                (Some(value), Some(amount)) => {
+                    let seconds = rusthouse_storage::parse_datetime(&value)
+                        .ok_or_else(|| ParseError("invalid UTC DateTime argument".into()))?;
+                    let delta = amount
+                        .checked_mul(3600)
+                        .ok_or_else(|| ParseError("subtractHours offset overflow".into()))?;
+                    let shifted = i64::from(seconds)
+                        .checked_sub(delta)
+                        .and_then(|value| u32::try_from(value).ok())
+                        .ok_or_else(|| ParseError("subtractHours result outside UTC DateTime range".into()))?;
+                    ConstantValue::Text(rusthouse_storage::format_datetime(shifted))
+                }
+                _ => ConstantValue::Null,
             }
         }
         "URL_ENCODE" => {
