@@ -14,6 +14,7 @@ mod ip;
 mod mark_validation;
 mod marks;
 mod metadata;
+pub mod distributed_retention;
 mod nested_arrays;
 mod nullable;
 mod nullable_arrays;
