@@ -227,6 +227,72 @@ pub(super) fn publish_snapshot(
     })
 }
 
+/// Existing immutable parts remain verified before being hard-linked into a
+/// new private generation. Work on independent parts can run concurrently.
+fn stage_existing_part(source: &Path, staging: &Path) -> Result<(), String> {
+    verify_wide_part(source).map_err(|error| error.to_string())?;
+    let name = source.file_name().ok_or("invalid stored part filename")?;
+    let destination = staging.join(name);
+    fs::create_dir(&destination)
+        .map_err(|error| format!("cannot stage existing part: {error}"))?;
+    for entry in fs::read_dir(source).map_err(|error| error.to_string())? {
+        let entry = entry.map_err(|error| error.to_string())?;
+        let kind = entry.file_type().map_err(|error| error.to_string())?;
+        if !kind.is_file() {
+            return Err("cannot hard-link a non-regular part entry".into());
+        }
+        fs::hard_link(entry.path(), destination.join(entry.file_name()))
+            .map_err(|error| format!("cannot stage immutable part file: {error}"))?;
+    }
+    sync_directory(&destination)?;
+    Ok(())
+}
+
+fn stage_existing_parts_with_workers(
+    existing: &[std::path::PathBuf],
+    staging: &Path,
+    workers: usize,
+) -> Result<(), String> {
+    if workers <= 1 || existing.len() < 16 {
+        for source in existing {
+            stage_existing_part(source, staging)?;
+        }
+        return Ok(());
+    }
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    let next = AtomicUsize::new(0);
+    let completed = std::thread::scope(|scope| {
+        let handles = (0..workers).map(|_| {
+            let next = &next;
+            scope.spawn(move || -> Result<(), String> {
+                loop {
+                    let index = next.fetch_add(1, Ordering::Relaxed);
+                    if index >= existing.len() {
+                        return Ok(());
+                    }
+                    stage_existing_part(&existing[index], staging)?;
+                }
+            })
+        }).collect::<Vec<_>>();
+        handles.into_iter().map(|handle| handle.join().unwrap_or_else(|_| {
+            Err("immutable part staging worker panicked".into())
+        })).collect::<Vec<_>>()
+    });
+    for result in completed {
+        result?;
+    }
+    Ok(())
+}
+
+fn stage_existing_parts(
+    existing: &[std::path::PathBuf],
+    staging: &Path,
+) -> Result<(), String> {
+    let workers = std::thread::available_parallelism()
+        .map_or(1, |available| available.get()).min(4);
+    stage_existing_parts_with_workers(existing, staging, workers)
+}
+
 /// Append multiple new parts as one snapshot generation. Reuse immutable
 /// existing part files through checked hard links, never partial live renames.
 pub(super) fn append_parts(
@@ -264,23 +330,7 @@ pub(super) fn append_parts(
     }
 
     publish_snapshot_with(database, table, |staging| {
-        for source in existing {
-            verify_wide_part(source).map_err(|error| error.to_string())?;
-            let name = source.file_name().ok_or("invalid stored part filename")?;
-            let destination = staging.join(name);
-            fs::create_dir(&destination)
-                .map_err(|error| format!("cannot stage existing part: {error}"))?;
-            for entry in fs::read_dir(source).map_err(|error| error.to_string())? {
-                let entry = entry.map_err(|error| error.to_string())?;
-                let kind = entry.file_type().map_err(|error| error.to_string())?;
-                if !kind.is_file() {
-                    return Err("cannot hard-link a non-regular part entry".into());
-                }
-                fs::hard_link(entry.path(), destination.join(entry.file_name()))
-                    .map_err(|error| format!("cannot stage immutable part file: {error}"))?;
-            }
-            sync_directory(&destination)?;
-        }
+        stage_existing_parts(existing, staging)?;
         for (index, chunk) in rows.chunks(PART_ROWS).enumerate() {
             let next = last
                 .checked_add(u64::try_from(index).map_err(|_| "part index overflow")?)
@@ -324,26 +374,7 @@ pub(super) fn append_parts_stream(
 
     let mut count = 0usize;
     publish_snapshot_with(database, table, |staging| {
-        for source in existing {
-            verify_wide_part(source).map_err(|error| error.to_string())?;
-            let name = source.file_name().ok_or("invalid stored part filename")?;
-            let destination = staging.join(name);
-            fs::create_dir(&destination)
-                .map_err(|error| format!("cannot stage existing part: {error}"))?;
-            for entry in fs::read_dir(source).map_err(|error| error.to_string())? {
-                let entry = entry.map_err(|error| error.to_string())?;
-                if !entry
-                    .file_type()
-                    .map_err(|error| error.to_string())?
-                    .is_file()
-                {
-                    return Err("cannot hard-link a non-regular part entry".into());
-                }
-                fs::hard_link(entry.path(), destination.join(entry.file_name()))
-                    .map_err(|error| format!("cannot stage immutable part file: {error}"))?;
-            }
-            sync_directory(&destination)?;
-        }
+        stage_existing_parts(existing, staging)?;
         let mut buffer: StoredRows = Vec::with_capacity(PART_ROWS);
         let mut buffered_bytes = 0usize;
         let mut column_bytes = vec![0usize; cols.len()];
@@ -599,4 +630,36 @@ pub(super) fn compact_table(database: &Path, table: &str) -> Result<(), String> 
     })?;
     println!("Optimized table {table}: read {scanned} rows, retained {scanned}");
     Ok(())
+}
+
+#[cfg(test)]
+mod parallel_snapshot_staging_tests {
+    use super::*;
+    use crate::database::Column;
+
+    #[test]
+    fn wide_snapshot_parts_are_verified_and_hard_linked_with_bounded_workers() {
+        let root = std::env::temp_dir().join(format!(
+            "rusthouse-part-staging-workers-{}", std::process::id()
+        ));
+        let _ = fs::remove_dir_all(&root);
+        fs::create_dir_all(&root).unwrap();
+        let schema = [Column { name: "value".into(), data_type: "UInt64".into() }];
+        let mut sources = Vec::new();
+        for index in 0..24 {
+            let path = root.join(format!("all_{index}_{index}_0"));
+            write_wide_part(&path, &schema, &[vec![Some(index.to_string())]]).unwrap();
+            sources.push(path);
+        }
+        let staged = root.join("staging");
+        fs::create_dir_all(&staged).unwrap();
+        stage_existing_parts_with_workers(&sources, &staged, 4).unwrap();
+        for source in &sources {
+            let copied = staged.join(source.file_name().unwrap());
+            verify_wide_part(&copied).unwrap();
+            let original = fs::read(source.join("count.txt")).unwrap();
+            assert_eq!(fs::read(copied.join("count.txt")).unwrap(), original);
+        }
+        fs::remove_dir_all(root).unwrap();
+    }
 }
