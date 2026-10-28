@@ -22,6 +22,7 @@ enum MergeError {
     InvalidGroupedCount,
     InvalidGroupedSum,
     InvalidSum,
+    InvalidAvg,
     InvalidExtremum,
     CountOverflow,
     SumOverflow,
@@ -161,6 +162,7 @@ fn schema_signature(response: &remote::PeerResponse) -> Result<Vec<u8>, String> 
 struct ShardResponse {
     cap: usize,
     body: Vec<u8>,
+    avg_count: Option<Vec<u8>>,
     kind: Option<String>,
     key_kind: Option<String>,
     schema: Vec<u8>,
@@ -172,6 +174,7 @@ fn read_shard(
     sum_schema: Option<(&str, &str)>,
     group_schema: Option<(&str, &str)>,
     table: &str,
+    avg_count_sql: Option<&str>,
 ) -> Result<ShardResponse, String> {
     let cap = shard_row_cap(peer)?;
     let schema_response = remote::schema(peer, table)?;
@@ -195,12 +198,16 @@ fn read_shard(
     if result.content_type != "text/tab-separated-values; charset=utf-8" {
         return Err("peer did not return TSV".into());
     }
+    let avg_count = avg_count_sql.map(|sql| {
+        let response = remote::query(peer, sql)?;
+        if response.status != 200 ||
+           response.content_type != "text/tab-separated-values; charset=utf-8" {
+            return Err("peer did not return valid AVG count TSV".into());
+        }
+        Ok::<_, String>(response.body)
+    }).transpose()?;
     Ok(ShardResponse {
-        cap,
-        body: result.body,
-        kind,
-        key_kind,
-        schema,
+        cap, body: result.body, avg_count, kind, key_kind, schema,
     })
 }
 
@@ -433,6 +440,35 @@ fn merge_integer_sums(shards: &[(usize, Vec<u8>)], kind: &str) -> Result<Vec<u8>
     output.extend_from_slice(result.as_bytes());
     output.push(b'\n');
     Ok(output)
+}
+
+/// Combine exact integer sums with non-NULL counts from every shard.
+fn merge_integer_avg(
+    sums: &[(usize, Vec<u8>)], counts: &[(usize, Vec<u8>)],
+    kind: &str, column: &str, alias: Option<&str>,
+) -> Result<Vec<u8>, MergeError> {
+    if sums.len() != counts.len() { return Err(MergeError::InvalidAvg); }
+    let summed = merge_integer_sums(sums, kind)?;
+    let counted = sum_shard_counts(counts)?;
+    let number = summed.split(|&b| b == b'\n').nth(1).ok_or(MergeError::InvalidAvg)?;
+    let rows = counted.split(|&b| b == b'\n').nth(1).ok_or(MergeError::InvalidAvg)?;
+    let rows = std::str::from_utf8(rows).map_err(|_| MergeError::InvalidAvg)?
+        .parse::<u64>().map_err(|_| MergeError::InvalidAvg)?;
+    let value = if rows == 0 {
+        if number != b"NULL" { return Err(MergeError::InvalidAvg); }
+        "NULL".to_owned()
+    } else {
+        if number == b"NULL" { return Err(MergeError::InvalidAvg); }
+        let number = std::str::from_utf8(number).map_err(|_| MergeError::InvalidAvg)?;
+        let total = if kind.strip_prefix("Nullable(").unwrap_or(kind).starts_with("UInt") {
+            number.parse::<u128>().map_err(|_| MergeError::InvalidAvg)? as f64
+        } else {
+            number.parse::<i128>().map_err(|_| MergeError::InvalidAvg)? as f64
+        };
+        (total / rows as f64).to_string()
+    };
+    Ok(format!("{}\n{value}\n",
+        alias.map_or_else(|| format!("avg({column})"), str::to_owned)).into_bytes())
 }
 
 fn merge_integer_extrema(
@@ -783,6 +819,7 @@ pub fn handle(method: &str, body: &[u8], cluster: &Cluster, max_rows: usize) -> 
                 || is_safe_grouped_count(&select)
                 || is_safe_grouped_sum(&select)
                 || is_safe_sum(&select)
+                || is_safe_avg(&select)
                 || is_safe_extremum(&select) =>
         {
             select
@@ -802,6 +839,13 @@ pub fn handle(method: &str, body: &[u8], cluster: &Cluster, max_rows: usize) -> 
     let grouped_count_query = is_safe_grouped_count(&select);
     let grouped_sum_query = is_safe_grouped_sum(&select);
     let sum_query = is_safe_sum(&select);
+    let avg_query = is_safe_avg(&select);
+    let avg_sql = if avg_query {
+        match avg_shard_sql(sql, &select) {
+            Some(pair) => Some(pair),
+            None => return Response::text("400 Bad Request", "unsupported distributed AVG rewrite\n"),
+        }
+    } else { None };
     let shard_sql = if is_safe_scan(&select) {
         match unpaged_scan_sql(sql, &select) {
             Some(query) => query,
@@ -826,6 +870,8 @@ pub fn handle(method: &str, body: &[u8], cluster: &Cluster, max_rows: usize) -> 
                 );
             }
         }
+    } else if let Some((sum_sql, _)) = &avg_sql {
+        sum_sql.clone()
     } else {
         sql.to_owned()
     };
@@ -840,7 +886,7 @@ pub fn handle(method: &str, body: &[u8], cluster: &Cluster, max_rows: usize) -> 
         (
             Some(Source::Table(table)),
             Projection::Aggregate {
-                function: AggregateFunction::Sum | AggregateFunction::Min | AggregateFunction::Max,
+                function: AggregateFunction::Sum | AggregateFunction::Min | AggregateFunction::Max | AggregateFunction::Avg,
                 column,
             },
         ) => Some((table.as_str(), column.as_str())),
@@ -878,11 +924,12 @@ pub fn handle(method: &str, body: &[u8], cluster: &Cluster, max_rows: usize) -> 
     };
     let results = std::thread::scope(|scope| {
         let shard_query = shard_sql.as_str();
+        let avg_count_query = avg_sql.as_ref().map(|(_, count)| count.as_str());
         let handles = cluster
             .peers()
             .iter()
             .map(|&peer| {
-                scope.spawn(move || read_shard(peer, shard_query, sum_schema, group_schema, table))
+                scope.spawn(move || read_shard(peer, shard_query, sum_schema, group_schema, table, avg_count_query))
             })
             .collect::<Vec<_>>();
         handles
@@ -895,6 +942,7 @@ pub fn handle(method: &str, body: &[u8], cluster: &Cluster, max_rows: usize) -> 
             .collect::<Vec<_>>()
     });
     let mut shards = Vec::with_capacity(results.len());
+    let mut avg_counts = Vec::new();
     let mut sum_type: Option<String> = None;
     let mut group_key_kind: Option<String> = None;
     let mut expected_schema: Option<Vec<u8>> = None;
@@ -903,6 +951,7 @@ pub fn handle(method: &str, body: &[u8], cluster: &Cluster, max_rows: usize) -> 
             Ok(ShardResponse {
                 cap,
                 body,
+                avg_count,
                 kind,
                 key_kind,
                 schema,
@@ -940,6 +989,7 @@ pub fn handle(method: &str, body: &[u8], cluster: &Cluster, max_rows: usize) -> 
                     }
                     group_key_kind = Some(key_kind);
                 }
+                if let Some(count) = avg_count { avg_counts.push((cap, count)); }
                 shards.push((cap, body));
             }
             Err(message) => {
@@ -957,6 +1007,12 @@ pub fn handle(method: &str, body: &[u8], cluster: &Cluster, max_rows: usize) -> 
             .map_or(Err(MergeError::InvalidSum), |kind| {
                 merge_integer_sums(&shards, kind)
             })
+    } else if avg_query {
+        match (&select.projection, sum_type.as_deref()) {
+            (Projection::Aggregate { column, .. }, Some(kind)) =>
+                merge_integer_avg(&shards, &avg_counts, kind, column, select.alias.as_deref()),
+            _ => Err(MergeError::InvalidAvg),
+        }
     } else if let Some(function) = extrema_function {
         sum_type
             .as_deref()
@@ -1026,6 +1082,9 @@ pub fn handle(method: &str, body: &[u8], cluster: &Cluster, max_rows: usize) -> 
         Err(MergeError::InvalidSum) => {
             Response::text("502 Bad Gateway", "malformed shard SUM response\n")
         }
+        Err(MergeError::InvalidAvg) => {
+            Response::text("502 Bad Gateway", "malformed shard AVG partial response\n")
+        }
         Err(MergeError::InvalidExtremum) => {
             Response::text("502 Bad Gateway", "malformed shard MIN/MAX response\n")
         }
@@ -1041,6 +1100,32 @@ pub fn handle(method: &str, body: &[u8], cluster: &Cluster, max_rows: usize) -> 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn averages_weight_by_non_null_rows_not_shard_count() {
+        let sums = vec![shard(10, "sum(amount)\n10\n"),
+            shard(10, "sum(amount)\n90\n"), shard(10, "sum(amount)\nNULL\n")];
+        let counts = vec![shard(10, "count(amount)\n1\n"),
+            shard(10, "count(amount)\n9\n"), shard(10, "count(amount)\n0\n")];
+        assert_eq!(
+            merge_integer_avg(&sums, &counts, "Int64", "amount", None).unwrap(),
+            b"avg(amount)\n10\n"
+        );
+        assert_eq!(
+            merge_integer_avg(&[shard(2, "sum(x)\nNULL\n")],
+                &[shard(2, "count(x)\n0\n")], "UInt64", "x", None).unwrap(),
+            b"avg(x)\nNULL\n"
+        );
+    }
+
+    #[test]
+    fn rewrites_avg_to_sum_and_count_without_losing_filters() {
+        let sql = "SELECT avg(amount) FROM sales WHERE id > 3";
+        let parsed = parse_select(sql).unwrap();
+        let (sum, count) = avg_shard_sql(sql, &parsed).unwrap();
+        assert_eq!(sum, "SELECT SUM(amount) FROM sales WHERE id > 3");
+        assert_eq!(count, "SELECT COUNT(amount) FROM sales WHERE id > 3");
+    }
 
     #[test]
     fn extracts_column_types_from_one_validated_schema_response() {
