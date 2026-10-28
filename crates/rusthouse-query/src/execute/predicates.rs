@@ -207,6 +207,51 @@ pub(super) fn count_monotonic_numbers(
     if step == 0 {
         return None;
     }
+    if let [predicate] = conjunction {
+        let membership = match &predicate.test {
+            CompiledTest::In(values) => Some((
+                values.iter().filter_map(|value| match value {
+                    Number::Unsigned(value) => Some(*value),
+                    _ => None,
+                }).collect::<Vec<_>>(),
+                false,
+            )),
+            CompiledTest::NotIn(values) => Some((
+                values.iter().filter_map(|value| match value {
+                    Number::Unsigned(value) => Some(*value),
+                    _ => None,
+                }).collect::<Vec<_>>(),
+                true,
+            )),
+            CompiledTest::InSet { targets, negated } => Some((
+                targets.iter().filter_map(|value| match value {
+                    NumberKey::Unsigned(value) => Some(*value),
+                    _ => None,
+                }).collect::<Vec<_>>(),
+                *negated,
+            )),
+            _ => None,
+        };
+        if let Some((targets, negated)) = membership {
+            let first = u128::from(start);
+            let increment = u128::from(step);
+            let mut selected = HashSet::new();
+            for value in targets {
+                if value >= first {
+                    let delta = value - first;
+                    if delta % increment == 0 {
+                        let index = delta / increment;
+                        if index < u128::from(rows) {
+                            selected.insert(index);
+                        }
+                    }
+                }
+            }
+            let hits = selected.len() as u64;
+            return Some(if negated { rows - hits } else { hits });
+        }
+    }
+
     let start = u128::from(start);
     let step = u128::from(step);
     let mut lower = 0u128;
@@ -442,5 +487,28 @@ mod tests {
         let included = compile_in_test(values, false);
         assert!(included.matches(Number::Float(0.0)));
         assert!(!included.matches(Number::Float(f64::NAN)));
+    }
+}
+
+#[cfg(test)]
+mod generated_membership_count_tests {
+    use super::*;
+
+    #[test]
+    fn large_generated_membership_counts_only_the_list_values() {
+        let small = vec![CompiledPredicate {
+            index: 0,
+            test: CompiledTest::In(vec![
+                Number::Unsigned(1), Number::Unsigned(1),
+                Number::Unsigned(99), Number::Unsigned(1_000_000_000),
+            ]),
+        }];
+        assert_eq!(count_monotonic_numbers(&[small], 0, 1_000_000_000, 1), Some(2));
+        let set = (0..32).map(|i| Number::Unsigned(i)).collect();
+        let large = vec![CompiledPredicate {
+            index: 0,
+            test: compile_in_test(set, true),
+        }];
+        assert_eq!(count_monotonic_numbers(&[large], 0, 1_000_000_000, 1), Some(999_999_968));
     }
 }
