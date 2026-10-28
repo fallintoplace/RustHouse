@@ -132,3 +132,53 @@ pub(super) fn parse_response(raw: &[u8]) -> Result<PeerResponse, String> {
         body: raw[head.body_start..].to_vec(),
     })
 }
+
+/// Consume a validated peer response without allocating a second body buffer.
+/// On large distributed reads, copying each 16 MiB response doubles peak
+/// in-flight receive allocations per peer.
+pub(super) fn parse_response_owned(mut raw: Vec<u8>) -> Result<PeerResponse, String> {
+    let head = response_head(&raw)?.ok_or("peer response has no header terminator")?;
+    if raw.len() != head.body_start + head.body_length {
+        return Err("peer response size mismatch or exceeds 8 MiB".into());
+    }
+    raw.copy_within(head.body_start.., 0);
+    raw.truncate(head.body_length);
+    Ok(PeerResponse {
+        status: head.status,
+        content_type: head.content_type,
+        body: raw,
+    })
+}
+
+#[cfg(test)]
+mod owned_response_tests {
+    use super::*;
+
+    #[test]
+    fn moves_large_body_into_existing_allocation_without_new_buffer() {
+        let payload = vec![b'x'; 2 * 1024 * 1024];
+        let mut raw = format!(
+            "HTTP/1.1 200 OK\r\nContent-Length: {}\r\nContent-Type: text/plain\r\n\r\n",
+            payload.len()
+        ).into_bytes();
+        raw.extend_from_slice(&payload);
+        let pointer = raw.as_ptr();
+        let parsed = parse_response_owned(raw).unwrap();
+        assert_eq!(parsed.body.as_ptr(), pointer);
+        assert_eq!(parsed.body, payload);
+        assert_eq!(parsed.content_type, "text/plain");
+    }
+
+    #[test]
+    fn owned_and_borrowed_parsing_share_validation() {
+        let valid = b"HTTP/1.1 200 OK\r\nContent-Length: 2\r\nContent-Type: text/plain\r\n\r\nOK";
+        assert_eq!(parse_response_owned(valid.to_vec()).unwrap(), parse_response(valid).unwrap());
+        for bad in [
+            b"HTTP/1.1 200 OK\r\nContent-Length: 3\r\nContent-Type: text/plain\r\n\r\nOK".as_slice(),
+            b"HTTP/1.1 200 OK\r\nContent-Length: 2\r\nContent-Length: 2\r\nContent-Type: text/plain\r\n\r\nOK",
+            b"HTTP/1.1 200 OK\r\nContent-Length: 2\r\nContent-Type: text/plain\r\n\r\nOKX",
+        ] {
+            assert!(parse_response_owned(bad.to_vec()).is_err());
+        }
+    }
+}
