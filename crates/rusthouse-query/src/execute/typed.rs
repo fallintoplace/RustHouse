@@ -303,6 +303,12 @@ fn uuid_key(value: &str) -> [u8; 16] {
 fn compile_in(kind: &str, values: &[String], negated: bool) -> Result<Test, ExecutionError> {
     let targets = parse_literals(kind, values)?;
     if base_type(kind) == "UUID" {
+        if let [Cell::Uuid(text)] = targets.as_slice() {
+            return Ok(Test::UuidCompare(
+                if negated { Operator::Ne } else { Operator::Eq },
+                uuid_key(text),
+            ));
+        }
         return Ok(Test::UuidInSet(
             targets
                 .into_iter()
@@ -1908,5 +1914,30 @@ mod single_column_distinct_perf_tests {
         execute(&query, Some(&part), &mut output).unwrap();
         assert_eq!(output, b"word\nalpha\nbeta\ngamma\n");
         std::fs::remove_dir_all(part).unwrap();
+    }
+}
+
+#[cfg(test)]
+mod single_uuid_membership_tests {
+    use super::{Test, compile_in};
+    use crate::Operator;
+
+    #[test]
+    fn one_uuid_member_uses_binary_comparison() {
+        let value = "61f0c404-5cb3-11e7-907b-a6006ad3dba0".to_owned();
+        for negated in [false, true] {
+            let compiled = compile_in("UUID", &[value.clone()], negated).unwrap();
+            match compiled {
+                Test::UuidCompare(operator, bytes) => {
+                    assert!(matches!(
+                        (operator, negated),
+                        (Operator::Eq, false) | (Operator::Ne, true)
+                    ));
+                    assert_eq!(bytes[0], 0x61);
+                    assert_eq!(bytes[15], 0xa0);
+                }
+                _ => panic!("single UUID IN should use fixed-width comparison"),
+            }
+        }
     }
 }
