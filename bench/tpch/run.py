@@ -16,7 +16,9 @@ QUERY_NAME = re.compile(r"q(\d{1,2})\.sql$", re.IGNORECASE)
 
 def load_queries(directory):
     queries = []
-    for path in directory.glob("q*.sql"):
+    for path in directory.iterdir():
+        if not path.is_file():
+            continue
         match = QUERY_NAME.fullmatch(path.name)
         if match is None:
             continue
