@@ -42,6 +42,7 @@ pub enum JoinAggregate {
     CountStar,
     Sum(JoinColumn),
     GroupCount(JoinColumn),
+    GroupMultiCount(Vec<JoinColumn>),
     GroupSum { group: JoinColumn, value: JoinColumn },
 }
 
@@ -113,23 +114,39 @@ pub fn parse_join(sql: &str) -> Result<Option<JoinSelect>, ParseError> {
         Some(JoinAggregate::Sum(column))
     } else {
         let saved = parser.index;
-        let grouped = if let Ok(column) = qualified(&mut parser) {
-            if parser.take(Token::Comma) {
+        let grouped = if let Ok(first) = qualified(&mut parser) {
+            let mut keys = vec![first];
+            let mut result = None;
+            while parser.take(Token::Comma) {
                 if parser.keyword("COUNT") && parser.take(Token::LParen)
                     && parser.take(Token::Star) && parser.take(Token::RParen)
                 {
-                    Some(JoinAggregate::GroupCount(column))
-                } else if parser.keyword("SUM") && parser.take(Token::LParen) {
+                    result = Some(if keys.len() == 1 {
+                        JoinAggregate::GroupCount(keys.remove(0))
+                    } else {
+                        JoinAggregate::GroupMultiCount(keys)
+                    });
+                    break;
+                }
+                if parser.keyword("SUM") && parser.take(Token::LParen) {
                     let value = qualified(&mut parser)?;
                     if !parser.take(Token::RParen) {
                         return Err(ParseError("JOIN grouped SUM requires ')'".into()));
                     }
-                    Some(JoinAggregate::GroupSum { group: column, value })
-                } else { None }
-            } else { None }
-        } else {
-            None
-        };
+                    if keys.len() != 1 {
+                        return Err(ParseError("multi-key JOIN SUM is not yet supported".into()));
+                    }
+                    result = Some(JoinAggregate::GroupSum { group: keys.remove(0), value });
+                    break;
+                }
+                if keys.len() == 8 {
+                    return Err(ParseError("JOIN GROUP BY supports at most eight dimensions".into()));
+                }
+                let Ok(next) = qualified(&mut parser) else { break };
+                keys.push(next);
+            }
+            result
+        } else { None };
         if grouped.is_none() { parser.index = saved; }
         grouped
     };
@@ -419,24 +436,29 @@ pub fn parse_join(sql: &str) -> Result<Option<JoinSelect>, ParseError> {
         if !parser.keyword("BY") {
             return Err(ParseError("JOIN GROUP requires BY".into()));
         }
-        Some(qualified(&mut parser)?)
-    } else {
-        None
+        let mut keys = vec![qualified(&mut parser)?];
+        while parser.take(Token::Comma) {
+            if keys.len() >= 8 {
+                return Err(ParseError("JOIN GROUP BY supports at most eight dimensions".into()));
+            }
+            keys.push(qualified(&mut parser)?);
+        }
+        keys
+    } else { Vec::new() };
+    let group_matches = match &aggregate {
+        Some(JoinAggregate::GroupCount(key)) =>
+            group_by.as_slice() == std::slice::from_ref(key),
+        Some(JoinAggregate::GroupSum { group, .. }) =>
+            group_by.as_slice() == std::slice::from_ref(group),
+        Some(JoinAggregate::GroupMultiCount(keys)) => group_by == *keys,
+        _ => group_by.is_empty(),
     };
-    match &aggregate {
-        Some(JoinAggregate::GroupCount(column)) if group_by.as_ref() == Some(column) => {},
-        Some(JoinAggregate::GroupSum { group, .. }) if group_by.as_ref() == Some(group) => {},
-        Some(JoinAggregate::GroupCount(_)) | Some(JoinAggregate::GroupSum { .. }) => {
-            return Err(ParseError("JOIN grouped COUNT requires matching GROUP BY key".into()));
-        }
-        _ if group_by.is_some() => {
-            return Err(ParseError("JOIN GROUP BY requires a grouped aggregate".into()));
-        }
-        _ => {},
+    if !group_matches {
+        return Err(ParseError("JOIN GROUP BY must match the selected dimensions".into()));
     }
     let group_having = if parser.keyword("HAVING") {
         match &aggregate {
-            Some(JoinAggregate::GroupCount(_)) => {
+            Some(JoinAggregate::GroupCount(_) | JoinAggregate::GroupMultiCount(_)) => {
                 if !parser.keyword("COUNT") || !parser.take(Token::LParen)
                     || !parser.take(Token::Star) || !parser.take(Token::RParen) {
                     return Err(ParseError("JOIN HAVING requires count(*)".into()));
@@ -464,14 +486,14 @@ pub fn parse_join(sql: &str) -> Result<Option<JoinSelect>, ParseError> {
             return Err(ParseError("ORDER requires BY".into()));
         }
         if let Some(aggregate @ (JoinAggregate::GroupCount(_) |
-            JoinAggregate::GroupSum { .. })) = aggregate.as_ref() {
+            JoinAggregate::GroupMultiCount(_) | JoinAggregate::GroupSum { .. })) = aggregate.as_ref() {
             let position = matches!(parser.tokens.get(parser.index),
                 Some(Token::Number(value)) if value == "2");
             if position {
                 parser.index += 1;
             } else {
                 match aggregate {
-                    JoinAggregate::GroupCount(_) => {
+                    JoinAggregate::GroupCount(_) | JoinAggregate::GroupMultiCount(_) => {
                         if !parser.keyword("COUNT") || !parser.take(Token::LParen)
                             || !parser.take(Token::Star) || !parser.take(Token::RParen) {
                             return Err(ParseError("JOIN grouped ORDER BY requires count(*)".into()));
@@ -688,6 +710,12 @@ pub fn explain_join(query: &JoinSelect) -> String {
                 JoinAggregate::Sum(col) => format!("sum({}.{})", col.relation, col.name),
                 JoinAggregate::GroupCount(col) => {
                     format!("{}.{}, count(*)", col.relation, col.name)
+                },
+                JoinAggregate::GroupMultiCount(keys) => {
+                    let columns = keys.iter().map(|key|
+                        format!("{}.{}", key.relation, key.name)
+                    ).collect::<Vec<_>>().join(", ");
+                    format!("{columns}, count(*)")
                 },
                 JoinAggregate::GroupSum { group, value } => format!(
                     "{}.{}, sum({}.{})",
