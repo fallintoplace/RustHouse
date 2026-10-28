@@ -32,6 +32,9 @@ fn chained_right_any_keeps_only_first_left_match_per_right_row() {
     let query = "SELECT x.id, y.id, z.id FROM a x RIGHT ANY JOIN b y ON x.k = y.k RIGHT ANY JOIN c z ON y.k = z.k ORDER BY z.id";
     let result = sql(query);
     assert!(result.status.success(), "{result:?}");
-    assert_eq!(result.stdout, b"x.id\ty.id\tz.id\n1\t7\t99\n\\N\t\\N\t100\n");
+    assert_eq!(
+        result.stdout,
+        b"x.id\ty.id\tz.id\n1\t7\t99\n\\N\t\\N\t100\n"
+    );
     fs::remove_dir_all(db).unwrap();
 }

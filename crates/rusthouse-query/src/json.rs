@@ -79,7 +79,9 @@ impl<'a> Parser<'a> {
     }
 
     fn expect(&mut self, expected: u8) -> Result<(), &'static str> {
-        self.take(expected).then_some(()).ok_or("unexpected JSON character")
+        self.take(expected)
+            .then_some(())
+            .ok_or("unexpected JSON character")
     }
 
     fn unicode_hex(&mut self) -> Result<u16, &'static str> {
@@ -135,8 +137,7 @@ impl<'a> Parser<'a> {
                         if !(0xDC00..=0xDFFF).contains(&low) {
                             return Err("invalid Unicode surrogate pair");
                         }
-                        0x10000 + (u32::from(first - 0xD800) << 10)
-                            + u32::from(low - 0xDC00)
+                        0x10000 + (u32::from(first - 0xD800) << 10) + u32::from(low - 0xDC00)
                     } else {
                         if (0xDC00..=0xDFFF).contains(&first) {
                             return Err("isolated low Unicode surrogate");
@@ -285,10 +286,23 @@ mod tests {
     #[test]
     fn rejects_invalid_json_numbers_strings_and_structure() {
         for input in [
-            "", "{", "true false", "01", "+1", "1.", "1e", "--1",
-            r#"{"bad":}"#, r#"{"a":1,}"#, "[1,]", r#""bad\q""#,
-            r#""\uD800""#, r#""\uDC00""#, r#"{"a":1} trailing"#,
-            "{'single':1}", "NaN",
+            "",
+            "{",
+            "true false",
+            "01",
+            "+1",
+            "1.",
+            "1e",
+            "--1",
+            r#"{"bad":}"#,
+            r#"{"a":1,}"#,
+            "[1,]",
+            r#""bad\q""#,
+            r#""\uD800""#,
+            r#""\uDC00""#,
+            r#"{"a":1} trailing"#,
+            "{'single':1}",
+            "NaN",
         ] {
             assert!(parse_json(input).is_err(), "{input}");
         }

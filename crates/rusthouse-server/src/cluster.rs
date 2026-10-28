@@ -19,8 +19,7 @@ pub fn is_private_address(address: Ipv4Addr) -> bool {
 }
 
 fn permitted_peer(address: Ipv4Addr, allow_private_network: bool) -> bool {
-    address == Ipv4Addr::LOCALHOST
-        || (allow_private_network && is_private_address(address))
+    address == Ipv4Addr::LOCALHOST || (allow_private_network && is_private_address(address))
 }
 
 fn validate_peer_address(

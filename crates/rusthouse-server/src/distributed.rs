@@ -34,10 +34,7 @@ enum MergeError {
 /// Remove pagination before sending a scan to shards. Sending the original
 /// LIMIT/OFFSET would drop rows on each shard and produce incorrect results.
 /// Accept only a prefix that reparses to the exact unpaged query AST.
-fn merge_distinct_counts(
-    shards: &[(usize, Vec<u8>)],
-    column: &str,
-) -> Result<Vec<u8>, MergeError> {
+fn merge_distinct_counts(shards: &[(usize, Vec<u8>)], column: &str) -> Result<Vec<u8>, MergeError> {
     const MAX_KEYS: usize = 100_000;
     let expected_header = format!("{column}\n");
     let mut values: HashSet<&[u8]> = HashSet::new();
@@ -52,22 +49,23 @@ fn merge_distinct_counts(
         if !rows.is_empty() {
             let rows = &rows[..rows.len() - 1];
             for value in rows.split(|&b| b == b'\n') {
-            shard_rows = shard_rows.checked_add(1).ok_or(MergeError::CoordinatorLimit)?;
-            if *cap == 0 || shard_rows >= *cap {
-                return Err(MergeError::ShardRowLimit);
-            }
-            if value != b"\\N" {
-                if values.len() >= MAX_KEYS && !values.contains(value) {
-                    return Err(MergeError::CoordinatorLimit);
+                shard_rows = shard_rows
+                    .checked_add(1)
+                    .ok_or(MergeError::CoordinatorLimit)?;
+                if *cap == 0 || shard_rows >= *cap {
+                    return Err(MergeError::ShardRowLimit);
                 }
-                values.insert(value);
-            }
+                if value != b"\\N" {
+                    if values.len() >= MAX_KEYS && !values.contains(value) {
+                        return Err(MergeError::CoordinatorLimit);
+                    }
+                    values.insert(value);
+                }
             }
         }
     }
     Ok(format!("count(DISTINCT {column})\n{}\n", values.len()).into_bytes())
 }
-
 
 fn shard_row_cap(peer: Peer) -> Result<usize, String> {
     let response = remote::capabilities(peer)?;
@@ -771,7 +769,10 @@ pub fn handle(method: &str, body: &[u8], cluster: &Cluster, max_rows: usize) -> 
         match distinct_shard_sql(sql, &select) {
             Some(query) => query,
             None => {
-                return Response::text("400 Bad Request", "unsupported distributed DISTINCT query\n");
+                return Response::text(
+                    "400 Bad Request",
+                    "unsupported distributed DISTINCT query\n",
+                );
             }
         }
     } else {
@@ -1007,9 +1008,9 @@ mod tests {
             distinct_shard_sql(query, &parsed).as_deref(),
             Some("SELECT DISTINCT category FROM events WHERE id >= 5")
         );
-        assert!(!is_safe_count_distinct(&parse_select(
-            "SELECT count(DISTINCT category) FROM events LIMIT 1"
-        ).unwrap()));
+        assert!(!is_safe_count_distinct(
+            &parse_select("SELECT count(DISTINCT category) FROM events LIMIT 1").unwrap()
+        ));
         let shards = [
             shard(10, "category\nred\nblue\n\\N\n"),
             shard(10, "category\nblue\ngreen\n"),

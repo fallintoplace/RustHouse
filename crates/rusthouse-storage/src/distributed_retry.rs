@@ -56,9 +56,11 @@ mod tests {
                 let delay = retry_delay(attempt, u64::MAX, u64::MAX, seed).unwrap();
                 assert!(delay >= Duration::from_millis(1));
                 assert!(delay.as_millis() <= u128::from(u64::MAX));
-                assert_eq!(delay, retry_delay(attempt, u64::MAX, u64::MAX, seed).unwrap());
+                assert_eq!(
+                    delay,
+                    retry_delay(attempt, u64::MAX, u64::MAX, seed).unwrap()
+                );
             }
         }
     }
-
 }
