@@ -283,7 +283,7 @@ pub(super) struct Condition {
 const HASHED_TYPED_IN_MIN_VALUES: usize = 16;
 
 /// Convert already-validated canonical UUID literals into fixed-width hash keys.
-fn uuid_key(value: &str) -> [u8; 16] {
+pub(super) fn uuid_key(value: &str) -> [u8; 16] {
     let mut digits = value.bytes().filter(|&byte| byte != b'-');
     let nibble = |byte: u8| match byte {
         b'0'..=b'9' => byte - b'0',
