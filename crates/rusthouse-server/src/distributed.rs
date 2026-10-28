@@ -888,8 +888,9 @@ pub fn handle(method: &str, body: &[u8], cluster: &Cluster, max_rows: usize) -> 
     }
 
     let results = std::thread::scope(|scope| {
+        let query = shard_sql.as_str();
         let handles = cluster.peers().iter().copied().zip(metadata).map(|(peer, metadata)| {
-            scope.spawn(move || query_prepared_shard(peer, &shard_sql, metadata))
+            scope.spawn(move || query_prepared_shard(peer, query, metadata))
         }).collect::<Vec<_>>();
         handles.into_iter().map(|handle| {
             handle.join().unwrap_or_else(|_| Err("peer query panicked".into()))
