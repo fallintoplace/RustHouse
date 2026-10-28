@@ -9,6 +9,7 @@ pub(super) fn is_function(name: &str) -> bool {
         "LENGTH"
             | "LENGTHUTF8"
             | "CHAR_LENGTH"
+            | "TOSTARTOFWEEK"
             | "OCTET_LENGTH"
             | "ASCII"
             | "UTF16_LENGTH"
@@ -218,6 +219,34 @@ fn parse_at_depth(parser: &mut Parser, depth: usize) -> Result<ConstantValue, Pa
                     )
                 }
                 None => ConstantValue::Null,
+            }
+        }
+        "TOSTARTOFWEEK" => {
+            let input = text_arg(parser, depth + 1)?;
+            let mode = if parser.take(Token::Comma) {
+                integer_arg(parser, depth + 1)?
+            } else {
+                Some(0)
+            };
+            require(parser, Token::RParen, "toStartOfWeek requires one or two arguments")?;
+            match (input, mode) {
+                (Some(value), Some(mode)) => {
+                    if !matches!(mode, 0 | 1) {
+                        return Err(ParseError("toStartOfWeek only supports week modes 0 and 1".into()));
+                    }
+                    let days = rusthouse_storage::parse_date(&value).map(u32::from)
+                        .or_else(|| rusthouse_storage::parse_datetime(&value).map(|seconds| seconds / 86_400))
+                        .ok_or_else(|| ParseError("toStartOfWeek requires a valid UTC Date or DateTime".into()))?;
+                    let weekday = (days + if mode == 1 { 3 } else { 4 }) % 7;
+                    let days = days.checked_sub(weekday).ok_or_else(|| {
+                        ParseError("toStartOfWeek result precedes the Date epoch".into())
+                    })?;
+                    let days = u16::try_from(days).map_err(|_| {
+                        ParseError("toStartOfWeek result exceeds the Date range".into())
+                    })?;
+                    ConstantValue::Text(rusthouse_storage::format_date(days))
+                }
+                _ => ConstantValue::Null,
             }
         }
         "CUTQUERYSTRING" => {
