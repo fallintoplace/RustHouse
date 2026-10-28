@@ -64,7 +64,11 @@ fn update_is_visible_either_entirely_before_or_after_pointer_switch() {
             "UPDATE events SET name = 'after' WHERE id = 1",
             Some(point),
         );
-        assert_eq!(interrupted.status.code(), Some(86), "{point}: {interrupted:?}");
+        assert_eq!(
+            interrupted.status.code(),
+            Some(86),
+            "{point}: {interrupted:?}"
+        );
         assert_eq!(
             ok(&dir, "SELECT id, name FROM events ORDER BY id"),
             format!("id\tname\n1\t{visible_name}\n2\tkeep\n"),
@@ -90,7 +94,11 @@ fn optimize_preserves_all_rows_across_each_publication_boundary() {
         ok(&dir, "INSERT INTO events VALUES (1), (2)");
         ok(&dir, "INSERT INTO events VALUES (3), (4)");
         let interrupted = sql(&dir, "OPTIMIZE TABLE events", Some(point));
-        assert_eq!(interrupted.status.code(), Some(86), "{point}: {interrupted:?}");
+        assert_eq!(
+            interrupted.status.code(),
+            Some(86),
+            "{point}: {interrupted:?}"
+        );
         assert_eq!(
             ok(&dir, "SELECT id FROM events ORDER BY id"),
             "id\n1\n2\n3\n4\n",

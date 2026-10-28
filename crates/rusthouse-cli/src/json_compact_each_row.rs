@@ -175,5 +175,4 @@ mod tests {
         writer.write_all(b"a\tb\tc\n1\t2\t3\n").unwrap();
         assert_eq!(writer.finish().unwrap(), b"[\"1\",\"2\",\"3\"]\n");
     }
-
 }

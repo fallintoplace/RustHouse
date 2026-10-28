@@ -615,14 +615,16 @@ mod tests {
             .unwrap();
         let plan = explain_join(&query);
         assert!(plan.contains("buffered input <= 32768 rows/side"), "{plan}");
-        assert!(plan.contains("streaming INNER build <= 65536 rows"), "{plan}");
+        assert!(
+            plan.contains("streaming INNER build <= 65536 rows"),
+            "{plan}"
+        );
         assert!(plan.contains("build budget 32 MiB"), "{plan}");
 
-        let chained = parse_join(
-            "SELECT * FROM a x JOIN b y ON x.id = y.id JOIN c z ON y.id = z.id",
-        )
-        .unwrap()
-        .unwrap();
+        let chained =
+            parse_join("SELECT * FROM a x JOIN b y ON x.id = y.id JOIN c z ON y.id = z.id")
+                .unwrap()
+                .unwrap();
         let chain_plan = explain_join(&chained);
         assert!(
             chain_plan.contains("chained intermediate <= 131072 rows and 64 MiB"),

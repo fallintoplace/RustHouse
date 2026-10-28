@@ -79,7 +79,8 @@ impl<W: Write> Write for JsonArraySink<W> {
                             "JSON object exceeds 4 MiB",
                         ));
                     }
-                    self.output.write_all(array_prefix(self.first, self.pretty))?;
+                    self.output
+                        .write_all(array_prefix(self.first, self.pretty))?;
                     if self.pretty {
                         write_pretty_json_row(&mut self.output, row)?;
                     } else {
@@ -253,5 +254,4 @@ mod tests {
         assert_eq!(sink.row.capacity(), 0);
         assert_eq!(sink.finish().unwrap(), b"[{\"key\":\"value\"}]\n");
     }
-
 }
