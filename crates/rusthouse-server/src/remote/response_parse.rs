@@ -130,6 +130,7 @@ pub(super) fn expected_wire_length(raw: &[u8]) -> Result<Option<usize>, String> 
         .transpose()
 }
 
+#[cfg(test)]
 pub(super) fn parse_response(raw: &[u8]) -> Result<PeerResponse, String> {
     let head = response_head(raw)?.ok_or("peer response has no header terminator")?;
     if raw.len() != head.body_start + head.body_length {
