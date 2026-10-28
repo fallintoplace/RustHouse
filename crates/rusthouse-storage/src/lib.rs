@@ -5,6 +5,7 @@ mod compression;
 mod database_lock;
 mod dates;
 mod decimal;
+pub mod distributed_replica_order;
 mod enums;
 mod file_sizes;
 mod fixed_strings;
