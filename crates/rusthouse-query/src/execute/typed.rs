@@ -1019,14 +1019,18 @@ pub(super) fn execute_typed<W: Write>(
     let mut distinct_probe = Vec::<Key>::new();
     // COUNT(DISTINCT column) has one key; avoid a Vec allocation per row.
     let mut count_distinct_keys = HashSet::<Key>::new();
-    // A nullable 16-bit domain fits into 8 KiB, independent of scan length.
-    let mut count_distinct_sixteen = if is_count_distinct
-        && matches!(
-            projection_types.first().copied(),
-            Some("UInt8" | "Int8" | "UInt16" | "Int16" | "Nullable(UInt8)" | "Nullable(Int8)" | "Nullable(UInt16)" | "Nullable(Int16)")
-        )
-    {
-        Some(vec![0u64; 1024])
+    // Decode the domain once. 8-bit keys need 32 bytes rather than
+    // allocating the 8 KiB table reserved for 16-bit keys.
+    let mut count_distinct_sixteen = if is_count_distinct {
+        match projection_types.first().copied() {
+            Some("UInt8" | "Int8" | "Nullable(UInt8)" | "Nullable(Int8)") => {
+                Some(vec![0u64; 4])
+            }
+            Some("UInt16" | "Int16" | "Nullable(UInt16)" | "Nullable(Int16)") => {
+                Some(vec![0u64; 1024])
+            }
+            _ => None,
+        }
     } else {
         None
     };
@@ -1239,7 +1243,7 @@ pub(super) fn execute_typed<W: Write>(
                         | TypedColumn::NullableNumeric {
                             values: NumericColumn::Int8(values),
                             ..
-                        } => values[index] as u16,
+                        } => u16::from(values[index] as u8),
                         _ => {
                             return Err(ExecutionError::Invalid(
                                 "unexpected 8-bit or 16-bit DISTINCT column type".into(),
@@ -2065,5 +2069,21 @@ mod uuid_literal_byte_parse_tests {
         ] {
             assert!(uuid_literal_bytes(invalid).is_err(), "{invalid}");
         }
+    }
+}
+
+#[cfg(test)]
+mod compact_byte_distinct_bitmap_tests {
+    #[test]
+    fn negative_signed_byte_keys_use_the_256_value_domain() {
+        let keys = [-128i8, -1, 0, 127];
+        let mut bitmap = [0u64; 4];
+        for value in keys {
+            let key = usize::from(value as u8);
+            bitmap[key / 64] |= 1u64 << (key % 64);
+        }
+        assert_eq!(bitmap.iter().map(|word| word.count_ones()).sum::<u32>(), 4);
+        assert_ne!(bitmap[2], 0);
+        assert_ne!(bitmap[3], 0);
     }
 }
