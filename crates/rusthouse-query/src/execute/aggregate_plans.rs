@@ -71,6 +71,27 @@ pub(super) fn execute_grouped_numbers<W: Write>(
             return Ok(());
         }
     }
+    // For a filtered monotone range, unique groups can be addressed by
+    // their source indices. Skip directly to OFFSET and emit LIMIT groups.
+    if (!query.predicates.is_empty() || !query.or_predicates.is_empty())
+        && query.having.is_none()
+        && query.order_by.is_none()
+        && query.order_by_extra.is_empty()
+    {
+        if let Some(limit) = query.limit {
+            if let Some((lower, upper)) = monotonic_range_indices(&comparisons, start, rows, step) {
+                let available = upper - lower;
+                let skip = (query.offset.unwrap_or(0) as u64).min(available);
+                let length = (limit as u64).min(available - skip);
+                writeln!(output, "{column}\t{}", query.alias.as_deref().unwrap_or("count"))?;
+                for index in lower + skip..lower + skip + length {
+                    let number = u128::from(start) + u128::from(index) * u128::from(step);
+                    writeln!(output, "{number}\t1")?;
+                }
+                return Ok(());
+            }
+        }
+    }
     for index in 0..rows {
         let number = start + index * step;
         let value = Number::Unsigned(u128::from(number));
