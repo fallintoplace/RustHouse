@@ -94,8 +94,11 @@ fn options() -> (usize, usize, usize) {
             other => panic!("unknown benchmark argument: {other}"),
         }
     }
-    assert!((1..=65_536).contains(&rows), "rows must be 1..65536");
-    assert!(match_percent <= 100, "match-percent must be 0..100");
+    assert!((100..=65_536).contains(&rows), "rows must be 100..65536");
+    assert!(
+        (1..=100).contains(&match_percent),
+        "match-percent must be 1..100"
+    );
     assert!(samples > 0 && samples % 2 == 1, "samples must be positive and odd");
     (rows, match_percent, samples)
 }
