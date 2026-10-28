@@ -24,6 +24,38 @@ pub(super) fn is_safe_count(select: &Select) -> bool {
         && select.offset.is_none()
 }
 
+pub(super) fn is_safe_count_distinct(select: &Select) -> bool {
+    matches!(select.projection, Projection::CountDistinct { .. })
+        && matches!(select.source, Some(Source::Table(_)))
+        && !select.distinct
+        && select.rename.is_none()
+        && select.order_by.is_none()
+        && select.order_by_extra.is_empty()
+        && select.having.is_none()
+        && select.limit.is_none()
+        && select.offset.is_none()
+}
+
+/// Rebuild only the projection while keeping an exactly verified WHERE clause.
+/// A failed round trip must not accidentally turn a filtered count into a full scan.
+pub(super) fn distinct_shard_sql(sql: &str, select: &Select) -> Option<String> {
+    let (column, table) = match (&select.projection, &select.source) {
+        (Projection::CountDistinct { column }, Some(Source::Table(table))) => (column, table),
+        _ => return None,
+    };
+    let mut rewritten = format!("SELECT DISTINCT {column} FROM {table}");
+    let upper = sql.to_ascii_uppercase();
+    if let Some(where_start) = upper.find(" WHERE ") {
+        rewritten.push_str(&sql[where_start..]);
+    } else if !select.predicates.is_empty() || !select.or_predicates.is_empty() {
+        return None;
+    }
+    let mut expected = select.clone();
+    expected.projection = Projection::Columns(vec![column.to_owned()]);
+    expected.distinct = true;
+    (parse_select(&rewritten).ok()? == expected).then_some(rewritten)
+}
+
 pub(super) fn is_safe_sum(select: &Select) -> bool {
     matches!(
         select.projection,
