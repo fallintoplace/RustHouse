@@ -64,6 +64,21 @@ jobs:
           save-if: ${{ github.ref == 'refs/heads/main' }}
           cache-on-failure: true
       - run: cargo test --workspace --locked --no-fail-fast
+  sql-smoke:
+    name: SQL smoke (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 20
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+    steps:
+      - uses: actions/checkout@v7
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: sql-smoke
+          save-if: ${{ github.ref == 'refs/heads/main' }}
+          cache-on-failure: true
       - run: cargo build --workspace --locked
       - name: Verify 20 generated SQL queries
         run: |
@@ -83,6 +98,7 @@ jobs:
             --binary target/debug/rusthouse \
             --workload bench/analytics/workloads/baseline.json \
             --rows 512 --runs 1 --warmups 0 --timeout 60
+
 
   windows-smoke:
     name: Windows compile and CLI unit smoke
@@ -157,7 +173,7 @@ jobs:
   integration-gate:
     name: Integration gate
     if: ${{ always() }}
-    needs: [format, lint, rustdoc, test, windows-smoke, analytics-harness, msrv]
+    needs: [format, lint, rustdoc, test, sql-smoke, windows-smoke, analytics-harness, msrv]
     runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:
@@ -167,12 +183,13 @@ jobs:
           LINT: ${{ needs.lint.result }}
           RUSTDOC: ${{ needs.rustdoc.result }}
           TEST: ${{ needs.test.result }}
+          SQL_SMOKE: ${{ needs.sql-smoke.result }}
           WINDOWS: ${{ needs.windows-smoke.result }}
           ANALYTICS: ${{ needs.analytics-harness.result }}
           MSRV: ${{ needs.msrv.result }}
         shell: bash
         run: |
-          for result in "$FORMAT" "$LINT" "$RUSTDOC" "$TEST" "$WINDOWS" "$ANALYTICS" "$MSRV"; do
+          for result in "$FORMAT" "$LINT" "$RUSTDOC" "$TEST" "$SQL_SMOKE" "$WINDOWS" "$ANALYTICS" "$MSRV"; do
             if [ "$result" != "success" ]; then
               echo "::error::Integration gate blocked: required job concluded $result"
               exit 1
