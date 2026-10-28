@@ -8,7 +8,7 @@ use self::query_policy::*;
 use crate::cluster::{Cluster, Peer};
 use crate::remote;
 use crate::{MAX_QUERY_BYTES, MAX_RESPONSE_BYTES, Response};
-use rusthouse_query::{AggregateFunction, Having, Operator, Projection, Select, Source, parse_select};
+use rusthouse_query::{AggregateFunction, AggregateItem, Having, Operator, Projection, ScalarExpr, Select, Source, parse_select};
 use std::collections::{HashMap, HashSet};
 
 #[derive(Debug, PartialEq, Eq)]
