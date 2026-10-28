@@ -75,7 +75,7 @@ fn write_json_row_into<W: Write>(
         return Err(invalid("JSONL row does not match header column count"));
     }
     row.write_all(b"}\n")?;
-    output.write_all(&row)
+    output.write_all(row)
 }
 
 #[cfg(test)]
@@ -102,7 +102,8 @@ impl<W: Write> JsonlWriter<W> {
 
     fn finish_line(&mut self) -> io::Result<()> {
         if let Some(headers) = &self.headers {
-            let result = write_json_row_into(&mut self.output, headers, &self.line, &mut self.encoded);
+            let result =
+                write_json_row_into(&mut self.output, headers, &self.line, &mut self.encoded);
             self.line.clear();
             return result;
         }

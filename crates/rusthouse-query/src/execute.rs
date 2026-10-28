@@ -1426,8 +1426,8 @@ fn execute_numbers<W: Write>(
             "--part cannot be used with numbers(N)".into(),
         ));
     }
-    // Large virtual sources are safe only when COUNT can be computed
-    // directly from the sequence. Preserve the old scan bound otherwise.
+    // Protect large virtual sources from full scans while allowing exact
+    // arithmetic aggregates and direct pages over generated unique keys.
     if rows > 10_000_000 {
         let scalar_count = matches!(
             query.projection,
@@ -1455,16 +1455,58 @@ fn execute_numbers<W: Write>(
             && ((query.predicates.is_empty() && query.or_predicates.is_empty())
                 || monotonic_range_indices(&compile_numbers_predicates(query)?, start, rows, step)
                     .is_some());
-        if !(scalar_count && simple_result && arithmetic_count) && !bounded_page {
+        // A GROUP BY number page has one row per key and can jump directly
+        // to the requested offset without materializing earlier groups.
+        let grouped_page = (matches!(
+            &query.projection,
+            Projection::GroupedCount { column } if column == "number"
+        ) || matches!(
+            &query.projection,
+            Projection::GroupedAggregate { column, value_column, .. }
+                if column == "number" && value_column == "number"
+        )) && query.limit.is_some_and(|limit| limit <= MAX_SORTED_ROWS)
+            && query.order_by.is_none()
+            && simple_result
+            && ((query.predicates.is_empty() && query.or_predicates.is_empty())
+                || monotonic_range_indices(&compile_numbers_predicates(query)?, start, rows, step)
+                    .is_some());
+        // Only admit aggregates with proven O(1) or bounded sparse fast paths.
+        // Other aggregate functions still require the normal scan bound.
+        let direct_aggregate = if let Projection::Aggregate { function, column } = &query.projection
+        {
+            column == "number"
+                && matches!(
+                    function,
+                    AggregateFunction::Sum | AggregateFunction::Min | AggregateFunction::Max
+                )
+                && simple_result
+                && (if query.predicates.is_empty() && query.or_predicates.is_empty() {
+                    true
+                } else {
+                    let compiled = compile_numbers_predicates(query)?;
+                    monotonic_range_indices(&compiled, start, rows, step).is_some()
+                        || sparse_generated_positions(&compiled, start, rows, step).is_some()
+                        || excluded_generated_positions(&compiled, start, rows, step).is_some()
+                })
+        } else {
+            false
+        };
+        if !(scalar_count && simple_result && arithmetic_count)
+            && !bounded_page
+            && !grouped_page
+            && !direct_aggregate
+        {
             return Err(ExecutionError::Invalid(
-                "virtual inputs over 10000000 rows require an arithmetic COUNT or bounded page query".into(),
+                "virtual inputs over 10000000 rows require an exact aggregate or bounded page query".into(),
             ));
         }
     }
+    if let Projection::MultipleAggregates(items) = &query.projection {
+        return multi_aggregate::execute_numbers(query, start, rows, step, items, output);
+    }
     if matches!(
         query.projection,
-        Projection::MultipleAggregates(_)
-            | Projection::GroupedAggregates { .. }
+        Projection::GroupedAggregates { .. }
             | Projection::GroupedMultiAggregates { .. }
             | Projection::GroupedDistinctCount { .. }
     ) {
@@ -1842,6 +1884,7 @@ impl AggregateState {
                     self.value = Some(value);
                 }
             }
+            AggregateFunction::Count => {}
             AggregateFunction::CountIf => {
                 let truthy = match value {
                     Number::Unsigned(n) => n != 0,
@@ -1994,6 +2037,7 @@ impl AggregateState {
         let value = match self.function {
             AggregateFunction::Sum | AggregateFunction::Min | AggregateFunction::Max => self.value,
             AggregateFunction::Avg if self.count > 0 => Some(Number::Float(self.mean)),
+            AggregateFunction::Count => Some(Number::Unsigned(u128::from(self.count))),
             _ => None,
         };
         let Some(value) = value else {
@@ -2013,12 +2057,16 @@ impl AggregateState {
         let value = match self.function {
             AggregateFunction::Sum | AggregateFunction::Min | AggregateFunction::Max => self.value,
             AggregateFunction::Avg if self.count > 0 => Some(Number::Float(self.mean)),
+            AggregateFunction::Count => Some(Number::Unsigned(u128::from(self.count))),
             _ => None,
         };
         value.map_or(typed::Cell::Null, typed::Cell::Numeric)
     }
 
     fn render(&self) -> String {
+        if self.function == AggregateFunction::Count {
+            return self.count.to_string();
+        }
         if self.function == AggregateFunction::CountIf {
             return self
                 .value

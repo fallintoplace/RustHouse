@@ -160,7 +160,7 @@ mod tests {
     fn plain_markdown_rows_stream_without_escape_decoding() {
         let mut output = Vec::new();
         write_markdown_row(&mut output, "café\t42".as_bytes(), true).unwrap();
-        assert_eq!(output, b"| café | 42 |\n");
+        assert_eq!(output, "| café | 42 |\n".as_bytes());
     }
 
     #[test]

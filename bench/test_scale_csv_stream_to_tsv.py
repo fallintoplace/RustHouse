@@ -10,11 +10,20 @@ class CsvToTsvTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as temp:
             source = Path(temp) / "in.csv"
             target = Path(temp) / "out.tsv"
-            source.write_text('id,value\n1,"a,b"\n2,"line\nnext"\n3,"a\tb"\n4,"\\N"\n')
+            source.write_bytes('id,value\n1,"a,b"\n2,"line\nnext"\n3,"a\tb"\n4,"\\N"\n'.encode("utf-8"))
             stats = convert(source, target, header=True)
             self.assertEqual(stats["data_rows"], 4)
             self.assertEqual(target.read_bytes(),
                              b"id\tvalue\n1\ta,b\n2\tline\\nnext\n3\ta\\tb\n4\t\\\\N\n")
+
+    def test_preserves_real_crlf_inside_quoted_fields(self):
+        with tempfile.TemporaryDirectory() as temp:
+            source = Path(temp) / "in.csv"
+            target = Path(temp) / "out.tsv"
+            source.write_bytes(b'id,value\r\n1,"first\r\nsecond"\r\n')
+            stats = convert(source, target, header=True)
+            self.assertEqual(stats["data_rows"], 1)
+            self.assertEqual(target.read_bytes(), b"id\tvalue\n1\tfirst\\r\\nsecond\n")
 
     def test_explicit_null_mode_and_empty_strings(self):
         self.assertEqual(escape_field("", False), "")

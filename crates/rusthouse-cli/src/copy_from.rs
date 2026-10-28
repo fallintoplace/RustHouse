@@ -340,7 +340,7 @@ impl CsvRecords {
         if rows.len() != 1 {
             return Err("COPY CSV record is empty or malformed".into());
         }
-        Ok(rows.remove(0))
+        Ok(Some(rows.remove(0)))
     }
 }
 
@@ -360,7 +360,9 @@ fn run_csv(database: &Path, statement: &CopyFrom) -> Result<(), String> {
     };
     let mut columns = statement.columns.clone();
     if statement.header {
-        let headings = input.next_record()?.ok_or("COPY file is missing its header")?;
+        let headings = input
+            .next_record()?
+            .ok_or("COPY file is missing its header")?;
         let names = headings
             .into_iter()
             .map(|value| value.ok_or("COPY header cannot contain empty columns"))

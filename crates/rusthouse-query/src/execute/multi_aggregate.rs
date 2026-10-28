@@ -365,6 +365,90 @@ pub(super) fn execute<W: Write>(
     Ok(())
 }
 
+/// Evaluate bounded generated-number aggregate projections without a stored part.
+pub(super) fn execute_numbers<W: Write>(
+    query: &Select,
+    start: u64,
+    rows: u64,
+    step: u64,
+    items: &[AggregateItem],
+    output: &mut W,
+) -> Result<(), ExecutionError> {
+    for item in items {
+        if let Some(argument) = &item.argument {
+            if !matches!(argument, ScalarExpr::Column(name) if name == "number") {
+                return Err(ExecutionError::Invalid(
+                    "generated aggregates support only the number column".into(),
+                ));
+            }
+        } else if item.function.is_some() || item.distinct {
+            return Err(ExecutionError::Invalid(
+                "generated numeric aggregates require the number column".into(),
+            ));
+        }
+    }
+    let comparisons = super::compile_numbers_predicates(query)?;
+    writeln!(
+        output,
+        "{}",
+        items
+            .iter()
+            .map(AggregateItem::header)
+            .collect::<Vec<_>>()
+            .join("\t")
+    )?;
+    if query.limit == Some(0) {
+        return Ok(());
+    }
+    let mut states = items
+        .iter()
+        .map(|item| match item.function {
+            Some(function) => State::Numeric(AggregateState::new(function)),
+            None if item.distinct => State::Distinct(HashSet::new()),
+            None => State::Count(0),
+        })
+        .collect::<Vec<_>>();
+    for index in 0..rows {
+        let value = Number::Unsigned(u128::from(start) + u128::from(index) * u128::from(step));
+        if !super::number_matches_all(value, &comparisons) {
+            continue;
+        }
+        for state in &mut states {
+            match state {
+                State::Count(count) => {
+                    *count = count
+                        .checked_add(1)
+                        .ok_or_else(|| ExecutionError::Invalid("COUNT overflow".into()))?;
+                }
+                State::Distinct(seen) => {
+                    let key = typed::Key::Numeric(NumberKey::from(value));
+                    if seen.len() >= 100_000 && !seen.contains(&key) {
+                        return Err(ExecutionError::Invalid(
+                            "COUNT(DISTINCT) supports at most 100000 values".into(),
+                        ));
+                    }
+                    seen.insert(key);
+                }
+                State::Numeric(state) => state.update(value)?,
+            }
+        }
+    }
+    if query.offset.unwrap_or(0) == 0 {
+        for (index, state) in states.iter().enumerate() {
+            if index > 0 {
+                output.write_all(b"\t")?;
+            }
+            match state {
+                State::Count(count) => write!(output, "{count}")?,
+                State::Distinct(seen) => write!(output, "{}", seen.len())?,
+                State::Numeric(state) => write!(output, "{}", state.render())?,
+            }
+        }
+        output.write_all(b"\n")?;
+    }
+    Ok(())
+}
+
 #[cfg(test)]
 mod affine_tests {
     use super::*;

@@ -34,6 +34,23 @@ class SharedWorkloadTests(unittest.TestCase):
             stdout=subprocess.PIPE, stderr=subprocess.PIPE, check=False, timeout=5,
         )
 
+    def test_cli_mutations_omit_select_only_format(self):
+        for statement in (
+            "CREATE TABLE events (id UInt64)",
+            "COPY events FROM 'events.tsv' WITH (FORMAT TSV)",
+            "INSERT INTO events VALUES (1)",
+        ):
+            with self.subTest(statement=statement):
+                with mock.patch(
+                    "bench.common.subprocess.run",
+                    return_value=subprocess.CompletedProcess([], 0, b"", b""),
+                ) as execute:
+                    self.assertEqual(cli_sql("rusthouse", "db", statement, 5), b"")
+                self.assertEqual(
+                    execute.call_args.args[0],
+                    ["rusthouse", "sql", statement, "--database", "db"],
+                )
+
     def test_cli_error_and_timeout_are_not_swallowed(self):
         with mock.patch("bench.common.subprocess.run", return_value=subprocess.CompletedProcess([], 2, b"", b"failure")):
             with self.assertRaisesRegex(RuntimeError, "exit 2: failure"):

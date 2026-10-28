@@ -50,20 +50,38 @@ jobs:
         run: cargo doc --workspace --no-deps --locked
 
   test:
-    name: Rust (${{ matrix.os }})
+    name: Rust (${{ matrix.os }}, ${{ matrix.shard }} shard)
     runs-on: ${{ matrix.os }}
     timeout-minutes: 20
     strategy:
       fail-fast: false
       matrix:
         os: [ubuntu-latest, macos-latest]
+        shard: [query, rest]
     steps:
       - uses: actions/checkout@v7
       - uses: Swatinem/rust-cache@v2
         with:
+          key: rust-tests-${{ matrix.os }}-${{ matrix.shard }}
           save-if: ${{ github.ref == 'refs/heads/main' }}
           cache-on-failure: true
-      - run: cargo test --workspace --locked --no-fail-fast
+      - name: Run all Rust tests in the shard
+        shell: bash
+        env:
+          RUST_TEST_SHARD: ${{ matrix.shard }}
+        run: |
+          case "$RUST_TEST_SHARD" in
+            query)
+              cargo test -p rusthouse-query --locked --no-fail-fast
+              ;;
+            rest)
+              cargo test --workspace --exclude rusthouse-query --locked --no-fail-fast
+              ;;
+            *)
+              echo "::error::Unknown Rust test shard: $RUST_TEST_SHARD"
+              exit 1
+              ;;
+          esac
   sql-smoke:
     name: SQL smoke (${{ matrix.os }})
     runs-on: ${{ matrix.os }}
@@ -79,7 +97,16 @@ jobs:
           key: sql-smoke
           save-if: ${{ github.ref == 'refs/heads/main' }}
           cache-on-failure: true
-      - run: cargo build --workspace --locked
+      - name: Build the binaries used by SQL smoke
+        shell: bash
+        env:
+          RUNNER_OS_MATRIX: ${{ matrix.os }}
+        run: |
+          if [ "$RUNNER_OS_MATRIX" = "ubuntu-latest" ]; then
+            cargo build --locked -p rusthouse-cli -p rusthouse-server
+          else
+            cargo build --locked -p rusthouse-cli
+          fi
       - name: Verify 20 generated SQL queries
         run: |
           python3 -m bench workload latency -- \

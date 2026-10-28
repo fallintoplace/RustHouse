@@ -39,6 +39,7 @@ pub enum AggregateFunction {
     AnyLast,
     Any,
     CountIf,
+    Count,
     Sum,
     Product,
     Avg,
@@ -63,6 +64,7 @@ impl AggregateFunction {
             Self::AnyLast => "anyLast",
             Self::Any => "any",
             Self::CountIf => "countIf",
+            Self::Count => "count",
             Self::Sum => "sum",
             Self::Product => "product",
             Self::Avg => "avg",
@@ -497,13 +499,14 @@ impl Parser {
                             | AggregateFunction::Min
                             | AggregateFunction::Max
                             | AggregateFunction::Avg
+                            | AggregateFunction::Count
                     ) =>
                     {
                         "#aggregate".into()
                     }
                     _ => {
                         return Err(ParseError(
-                            "ORDER BY aggregate output requires SUM, MIN, MAX or AVG".into(),
+                            "ORDER BY aggregate output requires SUM, MIN, MAX, AVG or COUNT".into(),
                         ));
                     }
                 },
@@ -728,6 +731,10 @@ fn parse_select_tokens(tokens: Vec<Token>) -> Result<Select, ParseError> {
         while parser.take(Token::Comma) {
             if matches!(parser.tokens.get(parser.index), Some(Token::Word(word)) if word.eq_ignore_ascii_case("COUNT"))
                 && parser.tokens.get(parser.index + 1) == Some(&Token::LParen)
+                && !matches!(
+                    parser.tokens.get(parser.index + 2),
+                    Some(Token::Word(word)) if !word.eq_ignore_ascii_case("DISTINCT")
+                )
             {
                 parser.keyword("COUNT");
                 if !parser.take(Token::LParen) {
@@ -765,6 +772,7 @@ fn parse_select_tokens(tokens: Vec<Token>) -> Result<Select, ParseError> {
                         "ANYLAST" => Some(AggregateFunction::AnyLast),
                         "ANY" => Some(AggregateFunction::Any),
                         "COUNTIF" => Some(AggregateFunction::CountIf),
+                        "COUNT" => Some(AggregateFunction::Count),
                         "SUM" => Some(AggregateFunction::Sum),
                         "PRODUCT" => Some(AggregateFunction::Product),
                         "AVG" => Some(AggregateFunction::Avg),
@@ -802,6 +810,7 @@ fn parse_select_tokens(tokens: Vec<Token>) -> Result<Select, ParseError> {
                             "MAX" => AggregateFunction::Max,
                             "AVG" => AggregateFunction::Avg,
                             "SUM" => AggregateFunction::Sum,
+                            "COUNT" => AggregateFunction::Count,
                             _ => {
                                 return Err(ParseError(format!(
                                     "unsupported grouped aggregate: {name}"
@@ -1324,6 +1333,7 @@ fn parse_select_tokens(tokens: Vec<Token>) -> Result<Select, ParseError> {
                     | AggregateFunction::Min
                     | AggregateFunction::Max
                     | AggregateFunction::Avg
+                    | AggregateFunction::Count
             ) {
                 return Err(ParseError("HAVING does not support this aggregate".into()));
             }
