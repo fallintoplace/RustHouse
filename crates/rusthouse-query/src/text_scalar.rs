@@ -32,6 +32,7 @@ pub(super) fn is_function(name: &str) -> bool {
             | "EMPTY"
             | "REVERSE"
             | "REVERSEUTF8"
+            | "ADDSECONDS"
             | "INITCAP"
             | "CONCAT"
             | "QUOTE_LITERAL"
@@ -362,6 +363,27 @@ fn parse_at_depth(parser: &mut Parser, depth: usize) -> Result<ConstantValue, Pa
                     ConstantValue::Text(character.to_string())
                 }
                 None => ConstantValue::Null,
+            }
+        }
+        "ADDSECONDS" => {
+            let input = text_arg(parser, depth + 1)?;
+            require(parser, Token::Comma, "addSeconds requires an offset")?;
+            let amount = integer_arg(parser, depth + 1)?;
+            require(parser, Token::RParen, "addSeconds requires two arguments")?;
+            match (input, amount) {
+                (Some(value), Some(amount)) => {
+                    let seconds = rusthouse_storage::parse_datetime(&value)
+                        .ok_or_else(|| ParseError("invalid UTC DateTime argument".into()))?;
+                    let delta = amount
+                        .checked_mul(1)
+                        .ok_or_else(|| ParseError("addSeconds offset overflow".into()))?;
+                    let shifted = i64::from(seconds)
+                        .checked_add(delta)
+                        .and_then(|value| u32::try_from(value).ok())
+                        .ok_or_else(|| ParseError("addSeconds result outside UTC DateTime range".into()))?;
+                    ConstantValue::Text(rusthouse_storage::format_datetime(shifted))
+                }
+                _ => ConstantValue::Null,
             }
         }
         "UPPER" => {
