@@ -37,6 +37,19 @@ pub(super) fn tokenize(sql: &str) -> Result<Vec<Token>, ParseError> {
                 continue;
             }
             b'\'' => scan_string(sql, &mut index)?,
+            b'/' if bytes.get(index + 1) == Some(&b'*') => {
+                index += 2;
+                while index + 1 < bytes.len()
+                    && !(bytes[index] == b'*' && bytes[index + 1] == b'/')
+                {
+                    index += 1;
+                }
+                if index + 1 == bytes.len() {
+                    return Err(ParseError("unterminated block comment".into()));
+                }
+                index += 2;
+                continue;
+            }
             b'*' | b'/' | b'%' | b'+' | b',' | b'.' | b'(' | b')' | b';' => {
                 index += 1;
                 punctuation_token(byte)
@@ -232,4 +245,14 @@ mod tests {
         }
         assert!(tokenize(&" ".repeat(4096)).is_ok());
     }
+    #[test]
+    fn skips_block_comments_and_rejects_unterminated_blocks() {
+        assert_eq!(
+            tokenize("SELECT/* hidden */1").unwrap(),
+            vec![Token::Word("SELECT".into()), Token::Number("1".into())]
+        );
+        assert!(tokenize("/* standalone */").unwrap().is_empty());
+        assert!(tokenize("SELECT /* never closed").is_err());
+    }
+
 }
