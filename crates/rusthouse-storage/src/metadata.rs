@@ -30,8 +30,7 @@ fn invalid_metadata(path: &Path, reason: &'static str) -> PartError {
     io_error(path, io::Error::new(io::ErrorKind::InvalidData, reason))
 }
 
-pub fn inspect_part(path: impl AsRef<Path>) -> Result<PartMetadata, PartError> {
-    let path = path.as_ref();
+fn validate_part_directory(path: &Path) -> Result<(), PartError> {
     match fs::symlink_metadata(path) {
         Ok(metadata) if !metadata.file_type().is_dir() => {
             return Err(invalid_metadata(path, "part path must be a real directory"));
@@ -40,6 +39,12 @@ pub fn inspect_part(path: impl AsRef<Path>) -> Result<PartMetadata, PartError> {
         Err(source) if source.kind() == io::ErrorKind::NotFound => {}
         Err(source) => return Err(io_error(path, source)),
     }
+    Ok(())
+}
+
+pub fn inspect_part(path: impl AsRef<Path>) -> Result<PartMetadata, PartError> {
+    let path = path.as_ref();
+    validate_part_directory(path)?;
     let rows = parse_count(&read_metadata(&path.join("count.txt"), MAX_COUNT_BYTES)?)?;
     let columns = parse_columns(&read_metadata(
         &path.join("columns.txt"),
