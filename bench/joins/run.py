@@ -11,6 +11,20 @@ from common import cli_sql, emit_json, latency_summary
 
 QUERY = "SELECT f.id, d.label FROM facts f JOIN dimensions d ON f.id = d.id"
 
+def write_facts(path, probe_rows):
+    with path.open("w", encoding="utf-8") as facts:
+        facts.write("id\tamount\n")
+        for index in range(probe_rows):
+            facts.write(f"{index}\t{index % 100}\n")
+
+
+def write_dimensions(path, build_rows, step):
+    with path.open("w", encoding="utf-8") as dimensions:
+        dimensions.write("id\tlabel\n")
+        for index in range(build_rows):
+            dimensions.write(f"{index * step}\tgroup-{index % 10}\n")
+
+
 def write_fixture(directory, probe_rows, build_rows):
     if probe_rows < 1 or not 1 <= build_rows <= 32768:
         raise ValueError("probe rows must be positive; build rows must be in 1..32768")
@@ -21,14 +35,8 @@ def write_fixture(directory, probe_rows, build_rows):
         n * step: f"group-{n % 10}"
         for n in range(build_rows) if n * step < probe_rows
     }
-    with (directory / "facts.tsv").open("w", encoding="utf-8") as facts:
-        facts.write("id\tamount\n")
-        for index in range(probe_rows):
-            facts.write(f"{index}\t{index % 100}\n")
-    with (directory / "dimensions.tsv").open("w", encoding="utf-8") as dimensions:
-        dimensions.write("id\tlabel\n")
-        for index in range(build_rows):
-            dimensions.write(f"{index * step}\tgroup-{index % 10}\n")
+    write_facts(directory / "facts.tsv", probe_rows)
+    write_dimensions(directory / "dimensions.tsv", build_rows, step)
     return expected_labels
 
 def execute(binary, database, sql, timeout):

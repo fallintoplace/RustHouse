@@ -2,6 +2,14 @@ name: RustHouse release candidates
 
 on:
   workflow_dispatch:
+  pull_request:
+    paths:
+      - '.github/workflows/release-candidates.yml'
+      - 'Cargo.toml'
+      - 'Cargo.lock'
+      - 'rust-toolchain.toml'
+      - 'crates/rusthouse-cli/**'
+      - 'crates/rusthouse-server/**'
   push:
     tags:
       - 'v[0-9]*'
@@ -11,7 +19,7 @@ permissions:
 
 concurrency:
   group: rusthouse-release-${{ github.ref }}
-  cancel-in-progress: false
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
   package:
@@ -29,8 +37,10 @@ jobs:
           key: release-candidate
           save-if: false
       - name: Check formatting
+        if: github.event_name != 'pull_request'
         run: cargo fmt --all -- --check
       - name: Run core tests
+        if: github.event_name != 'pull_request'
         run: cargo test --workspace --locked
       - name: Build release binaries
         run: cargo build --release --locked -p rusthouse-cli -p rusthouse-server
@@ -64,7 +74,7 @@ jobs:
           fi
           rm -rf dist/bin
       - name: Upload candidate archive and checksum
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: rusthouse-${{ matrix.os }}-${{ github.sha }}
           path: |

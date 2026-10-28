@@ -68,6 +68,15 @@ fn describe_projection(projection: &Projection) -> String {
                     .map(|(function, value)| format!("{}({value})", function.name()))
             )
         ),
+        Projection::GroupedMultiAggregates { columns, items } => format!(
+            "Aggregate: GROUP BY {}, {}",
+            columns.join(", "),
+            join_labels(
+                items
+                    .iter()
+                    .map(|(function, value)| format!("{}({value})", function.name()))
+            )
+        ),
         Projection::Aggregate { function, column } => {
             format!("Aggregate: {}({column})", function.name())
         }
@@ -101,12 +110,7 @@ fn describe_sort(query: &Select) -> String {
         .order_terms()
         .map(|order| {
             let label = if order.column == "#aggregate" {
-                if let Projection::GroupedAggregate {
-                    function,
-                    value_column,
-                    ..
-                } = &query.projection
-                {
+                if let Projection::GroupedAggregate { function, value_column, .. } = &query.projection {
                     format!("{}({value_column})", function.name())
                 } else {
                     order.column.clone()
@@ -153,8 +157,16 @@ pub fn explain_select(query: &Select) -> String {
         steps.push(format!("Alias: {alias}"));
     }
     if let Some(having) = &query.having {
+        let aggregate = match &query.projection {
+            Projection::GroupedAggregate {
+                function,
+                value_column,
+                ..
+            } => format!("{}({value_column})", function.name()),
+            _ => "count(*)".into(),
+        };
         steps.push(format!(
-            "Having: count(*) {:?} {}",
+            "Having: {aggregate} {:?} {}",
             having.operator, having.value
         ));
     }

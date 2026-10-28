@@ -51,8 +51,11 @@ fn decode_escape(field: &[u8], index: &mut usize) -> io::Result<u8> {
 }
 
 pub fn decode_tsv_field(field: &[u8]) -> io::Result<Vec<u8>> {
+    let Some(first_escape) = field.iter().position(|&byte| byte == b'\\') else {
+        return Ok(field.to_vec());
+    };
     let mut output = Vec::with_capacity(field.len());
-    let mut index = 0;
+    let mut index = first_escape;
     let mut start = 0;
     while index < field.len() {
         if field[index] != b'\\' {
@@ -105,6 +108,13 @@ mod tests {
         assert_eq!(decoded[16 * 1024], b'\t');
         assert!(decoded[..16 * 1024].iter().all(|&byte| byte == b'a'));
         assert!(decoded[16 * 1024 + 1..].iter().all(|&byte| byte == b'b'));
+    }
+
+    #[test]
+    fn plain_tsv_fields_keep_binary_bytes() {
+        let input = [b'a', b'\t', b'\0', 0xff];
+        assert_eq!(decode_tsv_field(&input).unwrap(), input);
+        assert_eq!(decode_tsv_field(b"").unwrap(), b"");
     }
 
     #[test]

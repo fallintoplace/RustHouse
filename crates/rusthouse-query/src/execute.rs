@@ -1,3 +1,7 @@
+mod aggregate_plans;
+
+use self::aggregate_plans::*;
+
 use crate::{AggregateFunction, Projection, Select, Source};
 use rusthouse_storage::{NumericColumn, NumericQueryReader, PartError, inspect_query_source};
 use std::cmp::Ordering;
@@ -11,11 +15,14 @@ use std::path::Path;
 mod grouped_distinct;
 mod grouped_multi;
 mod grouped_numeric_multi;
+mod grouped_numeric_keys;
 mod join;
+mod multi_join;
 mod predicates;
 mod sort;
 mod typed;
 pub use join::execute_join;
+pub use multi_join::execute_multi_join;
 use sort::{MAX_SORTED_ROWS, SortedRows};
 mod multi_aggregate;
 mod string_length;
@@ -282,6 +289,105 @@ fn parallel_filtered_count(query: &Select, source: &Path) -> Result<Option<u64>,
     Ok(Some(total))
 }
 
+/// Merge partial integer SUM values with the same overflow behavior as
+/// AggregateState. NULL partials represent shards with no matching rows.
+fn add_integer_partial(
+    total: Option<Number>,
+    next: Option<Number>,
+) -> Result<Option<Number>, ExecutionError> {
+    match (total, next) {
+        (None, value) | (value, None) => Ok(value),
+        (Some(Number::Signed(a)), Some(Number::Signed(b))) => {
+            Ok(Some(Number::Signed(a.checked_add(b).ok_or_else(|| {
+                ExecutionError::Invalid("parallel signed SUM overflow".into())
+            })?)))
+        }
+        (Some(Number::Unsigned(a)), Some(Number::Unsigned(b))) => {
+            Ok(Some(Number::Unsigned(a.checked_add(b).ok_or_else(|| {
+                ExecutionError::Invalid("parallel unsigned SUM overflow".into())
+            })?)))
+        }
+        _ => Err(ExecutionError::Invalid("parallel SUM type mismatch".into())),
+    }
+}
+
+/// Process independent frozen parts concurrently for exact integer SUM.
+/// Unsupported types and small inputs stay on the existing executor path.
+fn parallel_integer_sum(
+    query: &Select,
+    source: &Path,
+) -> Result<Option<Option<Number>>, ExecutionError> {
+    let Projection::Aggregate { function: AggregateFunction::Sum, column } = &query.projection else {
+        return Ok(None);
+    };
+    if query.distinct
+        || query.limit.is_some()
+        || query.offset.is_some()
+        || query.order_by.is_some()
+        || !query.order_by_extra.is_empty()
+        || query.having.is_some()
+    {
+        return Ok(None);
+    }
+    let parts = rusthouse_storage::query_parts(source)?;
+    let workers = std::thread::available_parallelism()
+        .map_or(1, |parallelism| parallelism.get()).min(4);
+    if parts.len() < 32 || workers < 2 {
+        return Ok(None);
+    }
+    let metadata = inspect_query_source(source)?;
+    let kind = metadata.columns.iter().find(|candidate| candidate.name == *column)
+        .map(|candidate| candidate.data_type.as_str());
+    let signed = match kind {
+        Some("Int8" | "Int16" | "Int32" | "Int64" | "Int128") => true,
+        Some("UInt8" | "UInt16" | "UInt32" | "UInt64" | "UInt128") => false,
+        _ => return Ok(None),
+    };
+    let chunk_size = parts.len().div_ceil(workers);
+    let sum = std::thread::scope(|scope| -> Result<Option<Number>, ExecutionError> {
+        let handles = parts.chunks(chunk_size).map(|chunk| {
+            scope.spawn(move || -> Result<Option<Number>, ExecutionError> {
+                let mut result = None;
+                let mut bytes = Vec::new();
+                for part in chunk {
+                    bytes.clear();
+                    // A single part does not re-enter the parallel path.
+                    execute(query, Some(part), &mut bytes)?;
+                    let end = bytes.iter().position(|&byte| byte == b'\n')
+                        .ok_or_else(|| ExecutionError::Invalid("missing partial SUM header".into()))?;
+                    let value = bytes.get(end + 1..)
+                        .and_then(|bytes| bytes.strip_suffix(b"\n"))
+                        .ok_or_else(|| ExecutionError::Invalid("malformed partial SUM".into()))?;
+                    let next = if value == b"NULL" {
+                        None
+                    } else {
+                        let text = std::str::from_utf8(value)
+                            .map_err(|_| ExecutionError::Invalid("invalid partial SUM".into()))?;
+                        Some(if signed {
+                            Number::Signed(text.parse::<i128>()
+                                .map_err(|_| ExecutionError::Invalid("invalid signed SUM".into()))?)
+                        } else {
+                            Number::Unsigned(text.parse::<u128>()
+                                .map_err(|_| ExecutionError::Invalid("invalid unsigned SUM".into()))?)
+                        })
+                    };
+                    result = add_integer_partial(result, next)?;
+                }
+                Ok(result)
+            })
+        }).collect::<Vec<_>>();
+        let mut total = None;
+        for handle in handles {
+            let partial = handle.join().map_err(|_| {
+                ExecutionError::Invalid("parallel SUM worker panicked".into())
+            })??;
+            total = add_integer_partial(total, partial)?;
+        }
+        Ok(total)
+    })?;
+    Ok(Some(sum))
+}
+
 fn execute_into<W: Write>(
     query: &Select,
     part: Option<&Path>,
@@ -349,6 +455,18 @@ fn execute_into<W: Write>(
         writeln!(output, "{count}")?;
         return Ok(());
     }
+    if let Some(sum) = parallel_integer_sum(query, part)? {
+        let Projection::Aggregate { column, .. } = &query.projection else {
+            unreachable!("parallel_integer_sum only accepts SUM projections");
+        };
+        write_header(query, output, &format!("sum({column})"))?;
+        if let Some(value) = sum {
+            writeln!(output, "{value}")?;
+        } else {
+            writeln!(output, "NULL")?;
+        }
+        return Ok(());
+    }
     if let Projection::GroupedMultiCount { columns } = &query.projection {
         return grouped_multi::execute(query, part, columns, output);
     }
@@ -370,6 +488,9 @@ fn execute_into<W: Write>(
     }
     if let Projection::GroupedAggregates { column, items } = &query.projection {
         return grouped_numeric_multi::execute(query, part, column, items, output);
+    }
+    if let Projection::GroupedMultiAggregates { columns, items } = &query.projection {
+        return grouped_numeric_keys::execute(query, part, columns, items, output);
     }
     if typed::requires_typed_scan(query, part)? {
         if matches!(query.projection, Projection::Aggregate { .. }) {
@@ -418,6 +539,7 @@ fn execute_into<W: Write>(
         | Projection::GroupedMultiCount { .. }
         | Projection::GroupedAggregate { .. }
         | Projection::GroupedAggregates { .. }
+        | Projection::GroupedMultiAggregates { .. }
         | Projection::MultipleAggregates(_)
         | Projection::StringLength { .. }
         | Projection::Literal(_)
@@ -478,6 +600,7 @@ fn execute_into<W: Write>(
         extra_sort_indices.push(index);
     }
     let mut reader = NumericQueryReader::open(part, &scan_columns)?;
+    let no_filters = query.predicates.is_empty() && query.or_predicates.is_empty();
     let mut distinct: Option<HashSet<Vec<NumberKey>>> = query.distinct.then(HashSet::new);
 
     if let (Some(order), Some(index)) = (&query.order_by, sort_index) {
@@ -490,7 +613,7 @@ fn execute_into<W: Write>(
         }
         while let Some(batch) = reader.next_batch()? {
             for row in 0..batch[0].len() {
-                if !batch_matches(&batch, row, &comparisons) {
+                if !no_filters && !batch_matches(&batch, row, &comparisons) {
                     continue;
                 }
                 let key = number_at(&batch[index], row);
@@ -550,7 +673,7 @@ fn execute_into<W: Write>(
         }
         let rows = batch[0].len();
         for row in 0..rows {
-            if !batch_matches(&batch, row, &comparisons) {
+            if !no_filters && !batch_matches(&batch, row, &comparisons) {
                 continue;
             }
             if is_count {
@@ -598,6 +721,25 @@ fn execute_into<W: Write>(
 }
 
 const MAX_GROUPS: usize = 100_000;
+
+// Select just the first N ordered groups without sorting all groups.
+// The original index breaks ties in the same order as stable sort.
+fn sorted_group_positions<T>(
+    values: &[T],
+    end: usize,
+    cmp: impl Fn(&T, &T) -> Ordering,
+) -> Vec<usize> {
+    let mut positions = (0..values.len()).collect::<Vec<_>>();
+    let compare = |left: &usize, right: &usize| {
+        cmp(&values[*left], &values[*right]).then_with(|| left.cmp(right))
+    };
+    if end < positions.len() {
+        positions.select_nth_unstable_by(end, &compare);
+        positions.truncate(end);
+    }
+    positions.sort_unstable_by(compare);
+    positions
+}
 
 #[derive(Default)]
 struct GroupedCounts {
@@ -651,26 +793,44 @@ impl GroupedCounts {
                 ));
             }
         }
-        if !terms.is_empty() {
-            self.rows
-                .sort_by(|(left_key, left_count), (right_key, right_count)| {
-                    for order in &terms {
-                        let comparison = if order.column == "count" {
-                            left_count.cmp(right_count)
-                        } else {
-                            compare_numbers(*left_key, *right_key)
-                        };
-                        let comparison = if order.descending {
-                            comparison.reverse()
-                        } else {
-                            comparison
-                        };
-                        if comparison != Ordering::Equal {
-                            return comparison;
-                        }
-                    }
+        let compare = |(left_key, left_count): &(Number, u64),
+                       (right_key, right_count): &(Number, u64)| {
+            for order in &terms {
+                let comparison = if order.column == "count" {
+                    left_count.cmp(right_count)
+                } else {
                     compare_numbers(*left_key, *right_key)
-                });
+                };
+                let comparison = if order.descending {
+                    comparison.reverse()
+                } else {
+                    comparison
+                };
+                if comparison != Ordering::Equal {
+                    return comparison;
+                }
+            }
+            compare_numbers(*left_key, *right_key)
+        };
+        if !terms.is_empty() {
+            if let Some(end) = query
+                .limit
+                .and_then(|limit| query.offset.unwrap_or(0).checked_add(limit))
+                .filter(|&end| end < self.rows.len())
+            {
+                let positions = sorted_group_positions(&self.rows, end, &compare);
+                writeln!(
+                    output,
+                    "{column}\t{}",
+                    query.alias.as_deref().unwrap_or("count")
+                )?;
+                for index in positions.into_iter().skip(query.offset.unwrap_or(0)) {
+                    let (value, count) = self.rows[index];
+                    writeln!(output, "{value}\t{count}")?;
+                }
+                return Ok(());
+            }
+            self.rows.sort_by(compare);
         }
         writeln!(
             output,
@@ -689,328 +849,25 @@ impl GroupedCounts {
     }
 }
 
-fn execute_grouped_part<W: Write>(
-    query: &Select,
-    part: &Path,
-    column: &str,
-    output: &mut W,
-) -> Result<(), ExecutionError> {
-    let metadata = inspect_query_source(part)?;
-    let mut scan_columns = vec![column.to_owned()];
-    let comparisons = compile_part_where(query, &mut scan_columns, |column_name, literal| {
-        let metadata_column = metadata
-            .columns
-            .iter()
-            .find(|candidate| candidate.name == column_name)
-            .ok_or_else(|| {
-                ExecutionError::Invalid(format!("unknown WHERE column: {column_name}"))
-            })?;
-        parse_numeric(&metadata_column.data_type, literal)
-    })?;
-    let mut reader = NumericQueryReader::open(part, &scan_columns)?;
-    let mut groups = GroupedCounts::default();
-    if query.limit == Some(0) {
-        return groups.write(query, column, output);
-    }
-    while let Some(batch) = reader.next_batch()? {
-        for row in 0..batch[0].len() {
-            if batch_matches(&batch, row, &comparisons) {
-                groups.push(number_at(&batch[0], row))?;
-            }
-        }
-    }
-    groups.write(query, column, output)
-}
+#[cfg(test)]
+mod grouped_topk_tests {
+    use super::sorted_group_positions;
 
-fn execute_grouped_numbers<W: Write>(
-    query: &Select,
-    start: u64,
-    rows: u64,
-    step: u64,
-    column: &str,
-    output: &mut W,
-) -> Result<(), ExecutionError> {
-    if column != "number" {
-        return Err(ExecutionError::Invalid(
-            "numbers(N) exposes only the number column".into(),
-        ));
+    #[test]
+    fn keeps_stable_ties_and_offset_candidates() {
+        let groups = [(10, 2), (11, 2), (12, 1), (13, 3), (14, 2)];
+        let positions = sorted_group_positions(&groups, 3, |a, b| b.1.cmp(&a.1));
+        assert_eq!(positions, vec![3, 0, 1]);
+        let page = positions.into_iter().skip(1).map(|i| groups[i].0).collect::<Vec<_>>();
+        assert_eq!(page, vec![10, 11]);
     }
-    let comparisons = compile_numbers_predicates(query)?;
-    let mut groups = GroupedCounts::default();
-    if query.limit == Some(0) {
-        return groups.write(query, column, output);
-    }
-    for index in 0..rows {
-        let number = start + index * step;
-        let value = Number::Unsigned(u128::from(number));
-        if number_matches_all(value, &comparisons) {
-            groups.push(value)?;
-        }
-    }
-    groups.write(query, column, output)
-}
 
-fn execute_grouped_aggregate_numbers<W: Write>(
-    query: &Select,
-    start: u64,
-    rows: u64,
-    step: u64,
-    output: &mut W,
-) -> Result<(), ExecutionError> {
-    let Projection::GroupedAggregate {
-        column,
-        function,
-        value_column,
-    } = &query.projection
-    else {
-        unreachable!("grouped aggregate source requires a grouped projection")
-    };
-    if column != "number" || value_column != "number" {
-        return Err(ExecutionError::Invalid(
-            "numbers(N) exposes only the number column".into(),
-        ));
+    #[test]
+    fn handles_empty_page_and_full_sort() {
+        let values = [3, 1, 2];
+        assert!(sorted_group_positions(&values, 0, |a, b| a.cmp(b)).is_empty());
+        assert_eq!(sorted_group_positions(&values, 3, |a, b| a.cmp(b)), vec![1, 2, 0]);
     }
-    let comparisons = compile_numbers_predicates(query)?;
-    writeln!(output, "{column}\t{}({value_column})", function.name())?;
-    if query.limit == Some(0) {
-        return Ok(());
-    }
-    let mut by_key = HashMap::<NumberKey, usize>::new();
-    let mut groups = Vec::<(Number, AggregateState)>::new();
-    for index in 0..rows {
-        let number = start + index * step;
-        let value = Number::Unsigned(u128::from(number));
-        if !number_matches_all(value, &comparisons) {
-            continue;
-        }
-        match by_key.entry(NumberKey::from(value)) {
-            Entry::Occupied(entry) => groups[*entry.get()].1.update(value)?,
-            Entry::Vacant(entry) => {
-                if groups.len() >= MAX_GROUPS {
-                    return Err(ExecutionError::Invalid(
-                        "GROUP BY supports at most 100000 groups".into(),
-                    ));
-                }
-                entry.insert(groups.len());
-                let mut state = AggregateState::new(*function);
-                state.update(value)?;
-                groups.push((value, state));
-            }
-        }
-    }
-    if query.order_by.is_some() {
-        groups.sort_by(|(left_key, left_state), (right_key, right_state)| {
-            for term in query.order_terms() {
-                let comparison = if term.column == "#aggregate" {
-                    typed::compare_order_cells(
-                        &left_state.sort_cell(),
-                        &right_state.sort_cell(),
-                        term.descending,
-                        term.nulls_first,
-                    )
-                } else {
-                    let ordering = compare_numbers(*left_key, *right_key);
-                    if term.descending {
-                        ordering.reverse()
-                    } else {
-                        ordering
-                    }
-                };
-                if comparison != Ordering::Equal {
-                    return comparison;
-                }
-            }
-            Ordering::Equal
-        });
-    }
-    for (key, state) in groups
-        .into_iter()
-        .skip(query.offset.unwrap_or(0))
-        .take(query.limit.unwrap_or(usize::MAX))
-    {
-        writeln!(output, "{key}\t{}", state.render())?;
-    }
-    Ok(())
-}
-
-fn execute_count_column_part<W: Write>(
-    query: &Select,
-    part: &Path,
-    column: &str,
-    output: &mut W,
-) -> Result<(), ExecutionError> {
-    let metadata = inspect_query_source(part)?;
-    let mut scan_columns = vec![column.to_owned()];
-    let comparisons = compile_part_where(query, &mut scan_columns, |name, literal| {
-        let col = metadata
-            .columns
-            .iter()
-            .find(|candidate| candidate.name == name)
-            .ok_or_else(|| ExecutionError::Invalid(format!("unknown WHERE column: {name}")))?;
-        parse_numeric(&col.data_type, literal)
-    })?;
-    let mut reader = NumericQueryReader::open(part, &scan_columns)?;
-    write_header(query, output, &format!("count({column})"))?;
-    if query.limit == Some(0) {
-        return Ok(());
-    }
-    let mut count = 0u64;
-    while let Some(batch) = reader.next_batch()? {
-        for row in 0..batch[0].len() {
-            if batch_matches(&batch, row, &comparisons) {
-                count = count
-                    .checked_add(1)
-                    .ok_or_else(|| ExecutionError::Invalid("count overflow".into()))?;
-            }
-        }
-    }
-    if query.offset.unwrap_or(0) == 0 {
-        writeln!(output, "{count}")?;
-    }
-    Ok(())
-}
-
-fn execute_count_distinct_part<W: Write>(
-    query: &Select,
-    part: &Path,
-    column: &str,
-    output: &mut W,
-) -> Result<(), ExecutionError> {
-    let metadata = inspect_query_source(part)?;
-    let mut scan_columns = vec![column.to_owned()];
-    let comparisons = compile_part_where(query, &mut scan_columns, |column_name, literal| {
-        let metadata_column = metadata
-            .columns
-            .iter()
-            .find(|candidate| candidate.name == column_name)
-            .ok_or_else(|| {
-                ExecutionError::Invalid(format!("unknown WHERE column: {column_name}"))
-            })?;
-        parse_numeric(&metadata_column.data_type, literal)
-    })?;
-    let mut reader = NumericQueryReader::open(part, &scan_columns)?;
-    write_header(query, output, &format!("countDistinct({column})"))?;
-    if query.limit == Some(0) {
-        return Ok(());
-    }
-    let mut seen = HashSet::new();
-    while let Some(batch) = reader.next_batch()? {
-        for row in 0..batch[0].len() {
-            if !batch_matches(&batch, row, &comparisons) {
-                continue;
-            }
-            let key = NumberKey::from(number_at(&batch[0], row));
-            if seen.len() >= MAX_DISTINCT_ROWS && !seen.contains(&key) {
-                return Err(ExecutionError::Invalid(
-                    "COUNT(DISTINCT) supports at most 100000 unique values".into(),
-                ));
-            }
-            seen.insert(key);
-        }
-    }
-    if query.offset.unwrap_or(0) == 0 {
-        writeln!(output, "{}", seen.len())?;
-    }
-    Ok(())
-}
-
-fn execute_aggregate_part<W: Write>(
-    query: &Select,
-    part: &Path,
-    function: AggregateFunction,
-    column: &str,
-    output: &mut W,
-) -> Result<(), ExecutionError> {
-    let metadata = inspect_query_source(part)?;
-    let mut scan_columns = vec![column.to_owned()];
-    let comparisons = compile_part_where(query, &mut scan_columns, |column_name, literal| {
-        let metadata_column = metadata
-            .columns
-            .iter()
-            .find(|candidate| candidate.name == column_name)
-            .ok_or_else(|| {
-                ExecutionError::Invalid(format!("unknown WHERE column: {column_name}"))
-            })?;
-        parse_numeric(&metadata_column.data_type, literal)
-    })?;
-    let mut reader = NumericQueryReader::open(part, &scan_columns)?;
-    write_header(query, output, &format!("{}({column})", function.name()))?;
-    if query.limit == Some(0) {
-        return Ok(());
-    }
-    let mut state = AggregateState::new(function);
-    while let Some(batch) = reader.next_batch()? {
-        for row in 0..batch[0].len() {
-            if !batch_matches(&batch, row, &comparisons) {
-                continue;
-            }
-            state.update(number_at(&batch[0], row))?;
-        }
-    }
-    if query.offset.unwrap_or(0) == 0 {
-        writeln!(output, "{}", state.render())?;
-    }
-    Ok(())
-}
-
-fn execute_aggregate_numbers<W: Write>(
-    query: &Select,
-    start: u64,
-    rows: u64,
-    step: u64,
-    function: AggregateFunction,
-    column: &str,
-    output: &mut W,
-) -> Result<(), ExecutionError> {
-    if column != "number" {
-        return Err(ExecutionError::Invalid(
-            "numbers(N) exposes only the number column".into(),
-        ));
-    }
-    let comparisons = compile_numbers_predicates(query)?;
-    write_header(query, output, &format!("{}(number)", function.name()))?;
-    if query.limit == Some(0) {
-        return Ok(());
-    }
-    // For an unfiltered arithmetic progression, these aggregates are exact
-    // without visiting every row. Keep AVG iterative to preserve its rounding.
-    if query.predicates.is_empty()
-        && query.or_predicates.is_empty()
-        && matches!(
-            function,
-            AggregateFunction::Sum | AggregateFunction::Min | AggregateFunction::Max
-        )
-    {
-        if query.offset.unwrap_or(0) == 0 {
-            let result = if rows == 0 {
-                "NULL".to_string()
-            } else {
-                let first = u128::from(start);
-                let last = first + u128::from(rows - 1) * u128::from(step);
-                match function {
-                    AggregateFunction::Sum => ((first + last) * u128::from(rows) / 2).to_string(),
-                    AggregateFunction::Min => first.to_string(),
-                    AggregateFunction::Max => last.to_string(),
-                    _ => unreachable!(),
-                }
-            };
-            writeln!(output, "{result}")?;
-        }
-        return Ok(());
-    }
-    let mut state = AggregateState::new(function);
-    for index in 0..rows {
-        let number = start + index * step;
-        let value = Number::Unsigned(u128::from(number));
-        if !number_matches_all(value, &comparisons) {
-            continue;
-        }
-        state.update(value)?;
-    }
-    if query.offset.unwrap_or(0) == 0 {
-        writeln!(output, "{}", state.render())?;
-    }
-    Ok(())
 }
 
 fn execute_numbers<W: Write>(
@@ -1030,6 +887,7 @@ fn execute_numbers<W: Write>(
         query.projection,
         Projection::MultipleAggregates(_)
             | Projection::GroupedAggregates { .. }
+            | Projection::GroupedMultiAggregates { .. }
             | Projection::GroupedDistinctCount { .. }
     ) {
         return Err(ExecutionError::Invalid(
@@ -1119,6 +977,7 @@ fn execute_numbers<W: Write>(
         | Projection::GroupedMultiCount { .. }
         | Projection::GroupedAggregate { .. }
         | Projection::GroupedAggregates { .. }
+        | Projection::GroupedMultiAggregates { .. }
         | Projection::MultipleAggregates(_)
         | Projection::StringLength { .. }
         | Projection::Literal(_)
@@ -1482,6 +1341,25 @@ impl AggregateState {
         Ok(())
     }
 
+    /// Compare supported numeric aggregate values without rounding to text.
+    fn passes_having(&self, having: &crate::Having) -> bool {
+        let value = match self.function {
+            AggregateFunction::Sum | AggregateFunction::Min | AggregateFunction::Max => self.value,
+            AggregateFunction::Avg if self.count > 0 => Some(Number::Float(self.mean)),
+            _ => None,
+        };
+        let Some(value) = value else {
+            // SQL HAVING removes groups whose aggregate is NULL.
+            return false;
+        };
+        let threshold = match value {
+            Number::Unsigned(_) => Number::Unsigned(u128::from(having.value)),
+            Number::Signed(_) => Number::Signed(i128::from(having.value)),
+            Number::Float(_) => Number::Float(having.value as f64),
+        };
+        number_matches(value, threshold, having.operator)
+    }
+
     /// Exact numeric ORDER BY key for supported grouped aggregates.
     fn sort_cell(&self) -> typed::Cell {
         let value = match self.function {
@@ -1585,3 +1463,32 @@ fn number_at(column: &NumericColumn, row: usize) -> Number {
 
 #[cfg(test)]
 mod tests;
+
+#[cfg(test)]
+mod parallel_sum_tests {
+    use super::*;
+
+    #[test]
+    fn partial_sum_reduction_handles_null_signed_unsigned_and_overflow() {
+        let signed = add_integer_partial(None, Some(Number::Signed(-7))).unwrap();
+        let signed = add_integer_partial(signed, Some(Number::Signed(10))).unwrap();
+        assert_eq!(signed.unwrap().to_string(), "3");
+        assert_eq!(add_integer_partial(signed, None).unwrap().unwrap().to_string(), "3");
+
+        let unsigned = add_integer_partial(
+            Some(Number::Unsigned(u128::MAX - 1)),
+            Some(Number::Unsigned(1)),
+        ).unwrap();
+        assert_eq!(unsigned.unwrap().to_string(), u128::MAX.to_string());
+        assert!(add_integer_partial(unsigned, Some(Number::Unsigned(1))).is_err());
+        assert!(add_integer_partial(
+            Some(Number::Signed(i128::MAX)),
+            Some(Number::Signed(1)),
+        ).is_err());
+        assert!(add_integer_partial(
+            Some(Number::Signed(1)),
+            Some(Number::Unsigned(1)),
+        ).is_err());
+    }
+}
+

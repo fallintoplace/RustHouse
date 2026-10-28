@@ -3,7 +3,7 @@ use super::typed::{self, Cell, Key};
 use crate::Select;
 use rusthouse_storage::{TypedQueryReader, inspect_query_source};
 use std::cmp::Ordering;
-use std::collections::{HashMap, hash_map::Entry};
+use std::collections::HashMap;
 use std::io::Write;
 use std::path::Path;
 
@@ -60,32 +60,37 @@ pub(super) fn execute<W: Write>(
     let mut reader = TypedQueryReader::open(part, &names)?;
     let mut groups: Vec<(Vec<Cell>, u64)> = Vec::new();
     let mut by_key: HashMap<Vec<Key>, usize> = HashMap::new();
+    let mut probe_key = Vec::with_capacity(group_indices.len());
+    let no_filters = query.predicates.is_empty() && query.or_predicates.is_empty();
     while let Some(batch) = reader.next_batch()? {
         for row in 0..batch[0].len() {
-            if !typed::passes(&batch, row, &conditions) {
+            if !no_filters && !typed::passes(&batch, row, &conditions) {
                 continue;
             }
-            let values: Vec<_> = group_indices
-                .iter()
-                .map(|&index| typed::cell(&batch[index], row))
-                .collect();
-            let key: Vec<_> = values.iter().map(Cell::key).collect();
-            match by_key.entry(key) {
-                Entry::Occupied(entry) => {
-                    let count = &mut groups[*entry.get()].1;
-                    *count = count
-                        .checked_add(1)
-                        .ok_or_else(|| ExecutionError::Invalid("group count overflow".into()))?;
+            // Build only the probe key for existing groups. Wide projection
+            // cells are materialized once, when a new group is discovered.
+            probe_key.clear();
+            for &column in &group_indices {
+                probe_key.push(typed::cell(&batch[column], row).key());
+            }
+            if let Some(&index) = by_key.get(probe_key.as_slice()) {
+                let count = &mut groups[index].1;
+                *count = count
+                    .checked_add(1)
+                    .ok_or_else(|| ExecutionError::Invalid("group count overflow".into()))?;
+            } else {
+                if groups.len() >= MAX_GROUPS {
+                    return Err(ExecutionError::Invalid(
+                        "GROUP BY supports at most 100000 groups".into(),
+                    ));
                 }
-                Entry::Vacant(entry) => {
-                    if groups.len() >= MAX_GROUPS {
-                        return Err(ExecutionError::Invalid(
-                            "GROUP BY supports at most 100000 groups".into(),
-                        ));
-                    }
-                    entry.insert(groups.len());
-                    groups.push((values, 1));
-                }
+                let values: Vec<Cell> = group_indices
+                    .iter()
+                    .map(|&index| typed::cell(&batch[index], row))
+                    .collect();
+                by_key.insert(std::mem::take(&mut probe_key), groups.len());
+                probe_key = Vec::with_capacity(group_indices.len());
+                groups.push((values, 1));
             }
         }
     }
@@ -98,6 +103,7 @@ pub(super) fn execute<W: Write>(
             )
         });
     }
+    let mut bounded_order = None;
     if query.order_by.is_some() {
         let sort_terms = query
             .order_terms()
@@ -111,7 +117,8 @@ pub(super) fn execute<W: Write>(
                 (index, order.descending, order.nulls_first)
             })
             .collect::<Vec<_>>();
-        groups.sort_by(|(left_keys, left_count), (right_keys, right_count)| {
+        let compare = |(left_keys, left_count): &(Vec<Cell>, u64),
+                       (right_keys, right_count): &(Vec<Cell>, u64)| {
             for &(index, descending, nulls_first) in &sort_terms {
                 let cmp = if let Some(index) = index {
                     typed::compare_order_cells(
@@ -133,13 +140,24 @@ pub(super) fn execute<W: Write>(
                 }
             }
             Ordering::Equal
-        });
+        };
+        let end = query.limit
+            .and_then(|limit| query.offset.unwrap_or(0).checked_add(limit));
+        if let Some(end) = end.filter(|&end| end < groups.len()) {
+            let mut indices = (0..groups.len()).collect::<Vec<_>>();
+            // The original index preserves stable sort behavior on ties.
+            let compare_index = |left: &usize, right: &usize| {
+                compare(&groups[*left], &groups[*right]).then_with(|| left.cmp(right))
+            };
+            indices.select_nth_unstable_by(end, &compare_index);
+            indices.truncate(end);
+            indices.sort_unstable_by(compare_index);
+            bounded_order = Some(indices);
+        } else {
+            groups.sort_by(compare);
+        }
     }
-    for (keys, count) in groups
-        .into_iter()
-        .skip(query.offset.unwrap_or(0))
-        .take(query.limit.unwrap_or(usize::MAX))
-    {
+    let write_group = |keys: &[Cell], count: u64, output: &mut W| -> Result<(), ExecutionError> {
         for (index, value) in keys.iter().enumerate() {
             if index != 0 {
                 output.write_all(b"\t")?;
@@ -147,6 +165,20 @@ pub(super) fn execute<W: Write>(
             typed::write_typed_value(output, value, &types[&columns[index]])?;
         }
         writeln!(output, "\t{count}")?;
+        Ok(())
+    };
+    if let Some(indices) = bounded_order {
+        for index in indices.into_iter().skip(query.offset.unwrap_or(0)) {
+            write_group(&groups[index].0, groups[index].1, output)?;
+        }
+    } else {
+        for (keys, count) in groups
+            .into_iter()
+            .skip(query.offset.unwrap_or(0))
+            .take(query.limit.unwrap_or(usize::MAX))
+        {
+            write_group(&keys, count, output)?;
+        }
     }
     Ok(())
 }
