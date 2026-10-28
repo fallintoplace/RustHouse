@@ -718,6 +718,39 @@ impl Ord for TopRow {
     }
 }
 
+/// Resolve IS NULL on non-nullable columns before opening typed streams.
+/// A known-true disjunct dominates unknowns; false conjuncts are discarded.
+fn static_nonnullable_null_filter(
+    branches: &[Vec<Condition>],
+    names: &[String],
+    types: &HashMap<String, String>,
+) -> Option<bool> {
+    let mut unknown_branch = false;
+    for branch in branches {
+        let mut impossible = false;
+        let mut unknown = false;
+        for condition in branch {
+            let kind = types.get(&names[condition.index])?;
+            match &condition.test {
+                Test::IsNull(negated) if !kind.starts_with("Nullable(") => {
+                    if !negated {
+                        impossible = true;
+                        break;
+                    }
+                }
+                _ => unknown = true,
+            }
+        }
+        if !impossible && !unknown {
+            return Some(true);
+        }
+        if !impossible && unknown {
+            unknown_branch = true;
+        }
+    }
+    if unknown_branch { None } else { Some(false) }
+}
+
 pub(super) fn execute_typed<W: Write>(
     query: &Select,
     part: &Path,
@@ -820,6 +853,20 @@ pub(super) fn execute_typed<W: Write>(
     }
     if query.limit == Some(0) {
         return Ok(());
+    }
+    // A constant NULL test needs only the validated schema and row count.
+    if matches!(query.projection, Projection::Count)
+        && !query.distinct
+        && query.order_by.is_none()
+        && query.order_by_extra.is_empty()
+        && query.having.is_none()
+    {
+        if let Some(all_rows) = static_nonnullable_null_filter(&conditions, &names, &types) {
+            if query.offset.unwrap_or(0) == 0 {
+                writeln!(output, "{}", if all_rows { metadata.rows } else { 0 })?;
+            }
+            return Ok(());
+        }
     }
     let mut scan = TypedQueryReader::open(part, &names)?;
     let is_count = matches!(query.projection, Projection::Count);
