@@ -1501,10 +1501,12 @@ fn execute_numbers<W: Write>(
             ));
         }
     }
+    if let Projection::MultipleAggregates(items) = &query.projection {
+        return multi_aggregate::execute_numbers(query, start, rows, step, items, output);
+    }
     if matches!(
         query.projection,
-        Projection::MultipleAggregates(_)
-            | Projection::GroupedAggregates { .. }
+        Projection::GroupedAggregates { .. }
             | Projection::GroupedMultiAggregates { .. }
             | Projection::GroupedDistinctCount { .. }
     ) {
