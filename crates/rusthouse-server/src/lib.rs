@@ -178,6 +178,7 @@ impl QueryFormat {
             "csv-no-header" => Self::CsvNoHeader,
             "CSV" => Self::CsvNoHeader,
             "jsonl" => Self::Jsonl,
+            "JSONStringsEachRow" => Self::Jsonl,
             "json" => Self::Json,
             "json-pretty" => Self::JsonPretty,
             "json-compact-each-row" => Self::JsonCompactEachRow,
