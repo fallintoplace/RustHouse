@@ -437,40 +437,58 @@ fn parallel_integer_sum(
     let metadata = inspect_query_source(source)?;
     let kind = metadata.columns.iter().find(|candidate| candidate.name == *column)
         .map(|candidate| candidate.data_type.as_str());
-    let signed = match kind {
-        Some("Int8" | "Int16" | "Int32" | "Int64" | "Int128") => true,
-        Some("UInt8" | "UInt16" | "UInt32" | "UInt64" | "UInt128") => false,
-        _ => return Ok(None),
-    };
+    if !matches!(
+        kind,
+        Some("Int8" | "Int16" | "Int32" | "Int64" | "Int128"
+            | "UInt8" | "UInt16" | "UInt32" | "UInt64" | "UInt128")
+    ) {
+        return Ok(None);
+    }
+    // Only native numeric predicates can be handled by the direct part reader.
+    // Other filters retain the existing typed executor.
+    for predicate in query.predicates.iter().chain(query.or_predicates.iter().flatten()) {
+        let Some(selected) = metadata.columns.iter().find(|item| item.name == predicate.column()) else {
+            return Err(ExecutionError::Invalid(format!(
+                "unknown WHERE column: {}",
+                predicate.column()
+            )));
+        };
+        if !matches!(
+            selected.data_type.as_str(),
+            "Int8" | "Int16" | "Int32" | "Int64" | "Int128"
+                | "UInt8" | "UInt16" | "UInt32" | "UInt64" | "UInt128"
+                | "Float32" | "Float64"
+        ) {
+            return Ok(None);
+        }
+    }
+    let mut scan_columns = vec![column.clone()];
+    let comparisons = compile_part_where(query, &mut scan_columns, |name, literal| {
+        let selected = metadata.columns.iter().find(|item| item.name == name)
+            .ok_or_else(|| ExecutionError::Invalid(format!("unknown WHERE column: {name}")))?;
+        parse_numeric(&selected.data_type, literal)
+    })?;
+    let no_filters = query.predicates.is_empty() && query.or_predicates.is_empty();
     let chunk_size = parts.len().div_ceil(workers);
     let sum = std::thread::scope(|scope| -> Result<Option<Number>, ExecutionError> {
         let handles = parts.chunks(chunk_size).map(|chunk| {
+            let scan_columns = &scan_columns;
+            let comparisons = &comparisons;
             scope.spawn(move || -> Result<Option<Number>, ExecutionError> {
                 let mut result = None;
-                let mut bytes = Vec::new();
                 for part in chunk {
-                    bytes.clear();
-                    // A single part does not re-enter the parallel path.
-                    execute(query, Some(part), &mut bytes)?;
-                    let end = bytes.iter().position(|&byte| byte == b'\n')
-                        .ok_or_else(|| ExecutionError::Invalid("missing partial SUM header".into()))?;
-                    let value = bytes.get(end + 1..)
-                        .and_then(|bytes| bytes.strip_suffix(b"\n"))
-                        .ok_or_else(|| ExecutionError::Invalid("malformed partial SUM".into()))?;
-                    let next = if value == b"NULL" {
-                        None
-                    } else {
-                        let text = std::str::from_utf8(value)
-                            .map_err(|_| ExecutionError::Invalid("invalid partial SUM".into()))?;
-                        Some(if signed {
-                            Number::Signed(text.parse::<i128>()
-                                .map_err(|_| ExecutionError::Invalid("invalid signed SUM".into()))?)
-                        } else {
-                            Number::Unsigned(text.parse::<u128>()
-                                .map_err(|_| ExecutionError::Invalid("invalid unsigned SUM".into()))?)
-                        })
-                    };
-                    result = add_integer_partial(result, next)?;
+                    // Scan compressed numeric columns directly, without
+                    // recursive SQL execution or TSV serialization.
+                    let mut reader = rusthouse_storage::NumericPartReader::open(part, scan_columns)?;
+                    let mut state = AggregateState::new(AggregateFunction::Sum);
+                    while let Some(batch) = reader.next_batch()? {
+                        for row in 0..batch[0].len() {
+                            if no_filters || batch_matches(&batch, row, comparisons) {
+                                state.update(number_at(&batch[0], row))?;
+                            }
+                        }
+                    }
+                    result = add_integer_partial(result, state.value)?;
                 }
                 Ok(result)
             })
