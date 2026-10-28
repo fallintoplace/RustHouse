@@ -135,12 +135,12 @@ pub fn weighted_replicas_for(
     if replicas == 1 {
         return Ok(vec![winner.expect("valid nonempty nodes").1.to_owned()]);
     }
-    if replicas == 1 {
-        let best = ranked
-            .iter()
-            .min_by(|left, right| left.0.total_cmp(&right.0).then_with(|| left.1.cmp(right.1)))
-            .expect("validated nonempty weighted nodes");
-        return Ok(vec![best.1.to_owned()]);
+    if replicas < ranked.len() {
+        // Partition first; sorting just the selected replica prefix is enough.
+        ranked.select_nth_unstable_by(replicas, |left, right| {
+            left.0.total_cmp(&right.0).then_with(|| left.1.cmp(right.1))
+        });
+        ranked.truncate(replicas);
     }
     ranked.sort_unstable_by(|left, right| {
         left.0.total_cmp(&right.0).then_with(|| left.1.cmp(right.1))
