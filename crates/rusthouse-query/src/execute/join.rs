@@ -933,11 +933,41 @@ fn execute_streaming_inner_grouped<W: Write>(
             )?;
         }
     }
+    let mut bounded_order = None;
+    if let Some((descending, nulls_first)) = query.group_order_by {
+        let compare = |left: &(typed::Cell, AggregateState),
+                       right: &(typed::Cell, AggregateState)| {
+            typed::compare_order_cells(
+                &left.1.sort_cell(), &right.1.sort_cell(),
+                descending, nulls_first
+            )
+        };
+        let end = query.limit.and_then(|limit| query.offset.checked_add(limit));
+        if let Some(end) = end.filter(|&end| end < groups.len()) {
+            let mut indices = (0..groups.len()).collect::<Vec<_>>();
+            let compare_index = |left: &usize, right: &usize| {
+                compare(&groups[*left], &groups[*right]).then_with(|| left.cmp(right))
+            };
+            indices.select_nth_unstable_by(end, &compare_index);
+            indices.truncate(end);
+            indices.sort_unstable_by(compare_index);
+            bounded_order = Some(indices);
+        } else {
+            groups.sort_by(compare);
+        }
+    }
     writeln!(output, "{header}")?;
-    for (key, state) in groups.into_iter()
-        .skip(query.offset).take(query.limit.unwrap_or(usize::MAX)) {
-        typed::write_value(output, &key)?;
-        writeln!(output, "\t{}", state.render())?;
+    if let Some(indices) = bounded_order {
+        for index in indices.into_iter().skip(query.offset) {
+            typed::write_value(output, &groups[index].0)?;
+            writeln!(output, "\t{}", groups[index].1.render())?;
+        }
+    } else {
+        for (key, state) in groups.into_iter()
+            .skip(query.offset).take(query.limit.unwrap_or(usize::MAX)) {
+            typed::write_value(output, &key)?;
+            writeln!(output, "\t{}", state.render())?;
+        }
     }
     Ok(())
 }
