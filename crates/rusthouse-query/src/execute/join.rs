@@ -211,6 +211,30 @@ struct InnerJoinColumns<'a> {
     null_filter: Option<(usize, bool)>,
 }
 
+/// Buffer a bounded JOIN page before writing the header. The caller enforces
+/// a byte budget and falls back to streaming if the page is too wide.
+fn append_join_projection(
+    output: &mut Vec<u8>,
+    selected: &[(usize, String, Option<usize>)],
+    left_width: usize,
+    left: &[typed::Cell],
+    right: &[typed::Cell],
+) -> Result<(), ExecutionError> {
+    for (position, (column, _, _)) in selected.iter().enumerate() {
+        if position != 0 {
+            output.push(b'\t');
+        }
+        let cell = if *column < left_width {
+            &left[*column]
+        } else {
+            &right[*column - left_width]
+        };
+        typed::write_value(output, cell)?;
+    }
+    output.push(b'\n');
+    Ok(())
+}
+
 fn execute_streaming_inner<W: Write>(
     query: &JoinSelect,
     left_path: &Path,
@@ -266,6 +290,14 @@ fn execute_streaming_inner<W: Write>(
         .limit
         .filter(|&limit| limit <= MAX_RESULT_ROWS)
         .and_then(|limit| query.offset.checked_add(limit));
+    // For a bounded page, retain only the projected bytes while probing.
+    // A page that exceeds the memory budget falls back to the original
+    // validating first pass and streaming second pass.
+    let buffer_page = stop_after.is_some() && query.limit.is_some();
+    let left_width = left_names.len();
+    let mut page_bytes = Vec::new();
+    let mut page_too_wide = false;
+    let mut page_position = 0usize;
     let preflight_matches = probe_inner(
         left_path,
         left_names,
@@ -273,13 +305,25 @@ fn execute_streaming_inner<W: Write>(
         &right_rows,
         &hash,
         ProbeOptions {
-            materialize_rows: false,
-            materialize_after: 0,
+            materialize_rows: buffer_page,
+            materialize_after: query.offset,
             stop_after,
             any: query.any,
             null_filter,
         },
-        |_, _| Ok(()),
+        |left, right| {
+            if buffer_page && !page_too_wide && page_position >= query.offset {
+                append_join_projection(&mut page_bytes, selected, left_width, left, right)?;
+                if page_bytes.len() > MAX_STREAM_BUILD_BYTES {
+                    page_bytes.clear();
+                    page_too_wide = true;
+                }
+            }
+            page_position = page_position
+                .checked_add(1)
+                .ok_or_else(|| invalid("JOIN result count overflow"))?;
+            Ok(())
+        },
     )?;
 
     let header = selected
@@ -289,6 +333,10 @@ fn execute_streaming_inner<W: Write>(
         .join("\t");
     writeln!(output, "{header}")?;
     if preflight_matches <= query.offset {
+        return Ok(());
+    }
+    if buffer_page && !page_too_wide {
+        output.write_all(&page_bytes)?;
         return Ok(());
     }
 
@@ -465,6 +513,11 @@ fn execute_streaming_right<W: Write>(
         .filter(|&limit| limit <= MAX_RESULT_ROWS)
         .and_then(|limit| query.offset.checked_add(limit));
     // Validate cardinality before sending a header or output rows.
+    let buffer_page = stop_after.is_some() && query.limit.is_some();
+    let left_width = left_names.len();
+    let mut page_bytes = Vec::new();
+    let mut page_too_wide = false;
+    let mut page_position = 0usize;
     let preflight_matches = probe_right(
         right_path,
         right_names,
@@ -472,13 +525,25 @@ fn execute_streaming_right<W: Write>(
         &left_rows,
         &hash,
         ProbeOptions {
-            materialize_rows: false,
-            materialize_after: 0,
+            materialize_rows: buffer_page,
+            materialize_after: query.offset,
             stop_after,
             any: query.any,
             null_filter,
         },
-        |_, _| Ok(()),
+        |left, right| {
+            if buffer_page && !page_too_wide && page_position >= query.offset {
+                append_join_projection(&mut page_bytes, selected, left_width, left, right)?;
+                if page_bytes.len() > MAX_STREAM_BUILD_BYTES {
+                    page_bytes.clear();
+                    page_too_wide = true;
+                }
+            }
+            page_position = page_position
+                .checked_add(1)
+                .ok_or_else(|| invalid("JOIN result count overflow"))?;
+            Ok(())
+        },
     )?;
     let header = selected
         .iter()
@@ -487,6 +552,10 @@ fn execute_streaming_right<W: Write>(
         .join("\t");
     writeln!(output, "{header}")?;
     if preflight_matches <= query.offset {
+        return Ok(());
+    }
+    if buffer_page && !page_too_wide {
+        output.write_all(&page_bytes)?;
         return Ok(());
     }
 
@@ -833,6 +902,23 @@ pub fn execute_join<W: Write>(
 mod tests {
     use super::*;
     use rusthouse_storage::NumericColumn;
+
+    #[test]
+    fn bounded_join_page_projects_original_column_order() {
+        let left = [
+            typed::Cell::Numeric(Number::Unsigned(42)),
+            typed::Cell::Text(b"fact".to_vec()),
+        ];
+        let right = [typed::Cell::Text(b"dimension".to_vec())];
+        let selected = vec![
+            (2, "dimension.value".into(), None),
+            (0, "fact.id".into(), None),
+            (1, "fact.label".into(), None),
+        ];
+        let mut page = Vec::new();
+        append_join_projection(&mut page, &selected, left.len(), &left, &right).unwrap();
+        assert_eq!(page, b"dimension\t42\tfact\n");
+    }
 
     #[test]
     fn probe_keys_match_materialized_keys_and_skip_invalid_values() {
