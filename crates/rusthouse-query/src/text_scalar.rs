@@ -7,6 +7,7 @@ pub(super) fn is_function(name: &str) -> bool {
     matches!(
         name.to_ascii_uppercase().as_str(),
         "LENGTH"
+            | "TOISOWEEK"
             | "LENGTHUTF8"
             | "CHAR_LENGTH"
             | "OCTET_LENGTH"
@@ -1950,6 +1951,26 @@ fn parse_at_depth(parser: &mut Parser, depth: usize) -> Result<ConstantValue, Pa
                         return Err(ParseError("lowerUTF8 result is too large".into()));
                     }
                     ConstantValue::Text(result)
+                }
+                None => ConstantValue::Null,
+            }
+        }
+        "TOISOWEEK" => {
+            let input = text_arg(parser, depth + 1)?;
+            require(parser, Token::RParen, "toISOWeek requires one argument")?;
+            match input {
+                Some(value) => {
+                    if rusthouse_storage::parse_date(&value).is_none() {
+                        return Err(ParseError("invalid Date argument".into()));
+                    }
+                    let day = i64::from(rusthouse_storage::parse_date(&value).unwrap());
+                    let thursday = day + 3 - (day + 3).rem_euclid(7);
+                    let thursday = u16::try_from(thursday)
+                        .map_err(|_| ParseError("ISO week is outside the Date range".into()))?;
+                    let date = rusthouse_storage::format_date(thursday);
+                    let january = rusthouse_storage::parse_date(&format!("{}-01-01", &date[..4]))
+                        .ok_or_else(|| ParseError("ISO year is outside the Date range".into()))?;
+                    ConstantValue::Integer((i64::from(thursday) - i64::from(january)) / 7 + 1)
                 }
                 None => ConstantValue::Null,
             }
