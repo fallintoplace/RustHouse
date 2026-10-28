@@ -12,6 +12,7 @@ pub(super) fn is_function(name: &str) -> bool {
             | "OCTET_LENGTH"
             | "ASCII"
             | "UTF16_LENGTH"
+            | "MACSTRINGTONUM"
             | "HASSUBSEQUENCE"
             | "CHR"
             | "STRINGBYTESUNIQ"
@@ -207,6 +208,29 @@ fn parse_at_depth(parser: &mut Parser, depth: usize) -> Result<ConstantValue, Pa
                         output.push(char::from(DIGITS[usize::from(byte & 15)]));
                     }
                     ConstantValue::Text(output)
+                }
+                None => ConstantValue::Null,
+            }
+        }
+        "MACSTRINGTONUM" => {
+            let input = text_arg(parser, depth + 1)?;
+            require(parser, Token::RParen, "MACStringToNum requires one string")?;
+            match input {
+                Some(value) => {
+                    let bytes = value.as_bytes();
+                    if bytes.len() != 17 {
+                        ConstantValue::Integer(0)
+                    } else {
+                        let positions = [0usize, 1, 3, 4, 6, 7, 9, 10, 12, 13, 15, 16];
+                        let mut numeric = 0u64;
+                        for index in positions {
+                            let Some(nibble) = char::from(bytes[index]).to_digit(16) else {
+                                return Ok(ConstantValue::Integer(0));
+                            };
+                            numeric = (numeric << 4) | u64::from(nibble);
+                        }
+                        ConstantValue::Integer(numeric as i64)
+                    }
                 }
                 None => ConstantValue::Null,
             }
@@ -2004,5 +2028,41 @@ fn text_arg(parser: &mut Parser, depth: usize) -> Result<Option<String>, ParseEr
         _ => Err(ParseError(
             "expected a string literal or string function".into(),
         )),
+    }
+}
+
+#[cfg(test)]
+mod clickhouse_mac_string_to_num_tests {
+    use crate::{ConstantValue, Projection, parse_select};
+
+    fn value(sql: &str) -> ConstantValue {
+        match parse_select(sql).unwrap().projection {
+            Projection::Constants(columns) if columns.len() == 1 => columns[0].value.clone(),
+            Projection::Literal(number) => ConstantValue::Integer(number),
+            other => panic!("unexpected projection: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn reference_inputs() {
+        for (sql, expected) in [
+            ("SELECT MACStringToNum('01:02:03:04:05:06')", ConstantValue::Integer(1108152157446)),
+            ("SELECT MACStringToNum('ff:ff:ff:ff:ff:ff')", ConstantValue::Integer(281474976710655)),
+            ("SELECT MACStringToNum('invalid')", ConstantValue::Integer(0)),
+            ("SELECT MACStringToNum(NULL)", ConstantValue::Null),
+        ] {
+            assert_eq!(value(sql), expected, "{sql}");
+        }
+    }
+
+    #[test]
+    fn invalid_calls() {
+        for sql in [
+            "SELECT MACStringToNum()",
+            "SELECT MACStringToNum(1)",
+            "SELECT MACStringToNum('01:02:03:04:05:06','x')",
+        ] {
+            assert!(parse_select(sql).is_err(), "{sql}");
+        }
     }
 }
