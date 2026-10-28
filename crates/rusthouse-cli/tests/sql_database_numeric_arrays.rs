@@ -31,7 +31,10 @@ fn numeric_arrays_round_trip_through_named_database_tables() {
         NEXT.fetch_add(1, Ordering::Relaxed)
     ));
     fs::create_dir_all(&db).unwrap();
-    ok(&db, "CREATE TABLE events (id UInt64, numbers Array(UInt16))");
+    ok(
+        &db,
+        "CREATE TABLE events (id UInt64, numbers Array(UInt16))",
+    );
     ok(
         &db,
         "INSERT INTO events VALUES (2, '[]'), (1, '[2, 65535]'), (3, '[0, 7]')",

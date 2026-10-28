@@ -3,10 +3,7 @@ use std::process::Command;
 
 #[test]
 fn join_limit_zero_skips_large_builds_but_validates_columns() {
-    let db = std::env::temp_dir().join(format!(
-        "rusthouse-join-zero-fast-{}",
-        std::process::id()
-    ));
+    let db = std::env::temp_dir().join(format!("rusthouse-join-zero-fast-{}", std::process::id()));
     let sql = |statement: &str| {
         Command::new(env!("CARGO_BIN_EXE_rusthouse"))
             .args(["sql", statement, "--database"])
@@ -29,9 +26,7 @@ fn join_limit_zero_skips_large_builds_but_validates_columns() {
     assert!(result.status.success(), "{result:?}");
     assert_eq!(result.stdout, b"f.id\td.id\n");
 
-    let wrong = sql(
-        "SELECT f.id FROM facts f JOIN dimensions d ON f.missing = d.id LIMIT 0",
-    );
+    let wrong = sql("SELECT f.id FROM facts f JOIN dimensions d ON f.missing = d.id LIMIT 0");
     assert!(!wrong.status.success());
     assert!(String::from_utf8_lossy(&wrong.stderr).contains("unknown JOIN column"));
     fs::remove_dir_all(db).unwrap();

@@ -443,18 +443,31 @@ fn rejects_overlapping_parts_and_mismatched_schemas() {
 #[test]
 fn skips_rows_without_requiring_a_limit() {
     for (query, expected) in [
-        ("SELECT number FROM numbers(5) OFFSET 2", "number\n2\n3\n4\n"),
-        ("SELECT number FROM numbers(5) ORDER BY number DESC OFFSET 2", "number\n2\n1\n0\n"),
+        (
+            "SELECT number FROM numbers(5) OFFSET 2",
+            "number\n2\n3\n4\n",
+        ),
+        (
+            "SELECT number FROM numbers(5) ORDER BY number DESC OFFSET 2",
+            "number\n2\n1\n0\n",
+        ),
         ("SELECT number FROM numbers(5) OFFSET 10 ROWS", "number\n"),
     ] {
         let output = sql(query, None);
         assert!(output.status.success(), "{query}: {output:?}");
-        assert_eq!(String::from_utf8(output.stdout).unwrap(), expected, "{query}");
+        assert_eq!(
+            String::from_utf8(output.stdout).unwrap(),
+            expected,
+            "{query}"
+        );
     }
     let dir = sample_part();
     let result = sql("SELECT id FROM part OFFSET 8 ROWS", Some(&dir));
     assert!(result.status.success(), "{result:?}");
     let id = u64::from_le_bytes(*b"aaaaaaaa");
-    assert_eq!(String::from_utf8(result.stdout).unwrap(), format!("id\n{id}\n{id}\n"));
+    assert_eq!(
+        String::from_utf8(result.stdout).unwrap(),
+        format!("id\n{id}\n{id}\n")
+    );
     fs::remove_dir_all(dir).unwrap();
 }

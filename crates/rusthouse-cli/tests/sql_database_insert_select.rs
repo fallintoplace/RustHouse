@@ -88,9 +88,9 @@ fn generated_rows_and_empty_inserts_use_existing_publish_path() {
     let pointer = db.join("target.parts/.rusthouse-active");
     assert_eq!(fs::read_to_string(&pointer).unwrap(), "g1\n");
 
-    // The extra row must be rejected, not silently truncated or published.
+    // The 100,001st row must be rejected, not silently truncated or published.
     let too_many = sql(
-        "INSERT INTO target (id) SELECT number FROM numbers(50001)",
+        "INSERT INTO target (id) SELECT number FROM numbers(100001)",
         &db,
     );
     assert!(!too_many.status.success());

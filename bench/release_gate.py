@@ -42,9 +42,13 @@ def validate_samples(samples, runs, number):
         raise ValueError(f"query {number} has invalid timing samples")
 
 
-def verify(report, required):
+def verify(report, required, expected_revision=None):
     if not isinstance(report, dict) or report.get("reference_checked") is not True:
         raise ValueError("benchmark report must confirm reference comparisons")
+    if expected_revision is not None:
+        revision = report.get("revision")
+        if not expected_revision or not isinstance(revision, str) or revision != expected_revision:
+            raise ValueError("benchmark revision differs from the required commit")
     runs = report.get("runs")
     if type(runs) is not int or runs < 1:
         raise ValueError("benchmark report must include a positive runs count")
@@ -76,6 +80,10 @@ def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("report", type=Path, help="JSON emitted by a RustHouse benchmark runner")
     parser.add_argument(
+        "--expected-revision",
+        help="Require an exact Git commit SHA in the benchmark report",
+    )
+    parser.add_argument(
         "--queries", required=True,
         help="required query IDs, e.g. 1-43 or 1,6,12",
     )
@@ -83,7 +91,7 @@ def main(argv=None):
     try:
         required = parse_query_ids(args.queries)
         report = json.loads(args.report.read_text(encoding="utf-8"))
-        count = verify(report, required)
+        count = verify(report, required, args.expected_revision)
     except (OSError, ValueError, json.JSONDecodeError) as error:
         print(f"release SQL gate failed: {error}", file=sys.stderr)
         return 1
