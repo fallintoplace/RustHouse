@@ -7,6 +7,7 @@ pub(super) fn is_function(name: &str) -> bool {
     matches!(
         name.to_ascii_uppercase().as_str(),
         "LENGTH"
+            | "TOMONDAY"
             | "LENGTHUTF8"
             | "CHAR_LENGTH"
             | "OCTET_LENGTH"
@@ -1950,6 +1951,23 @@ fn parse_at_depth(parser: &mut Parser, depth: usize) -> Result<ConstantValue, Pa
                         return Err(ParseError("lowerUTF8 result is too large".into()));
                     }
                     ConstantValue::Text(result)
+                }
+                None => ConstantValue::Null,
+            }
+        }
+        "TOMONDAY" => {
+            let input = text_arg(parser, depth + 1)?;
+            require(parser, Token::RParen, "toMonday requires one argument")?;
+            match input {
+                Some(value) => {
+                    if rusthouse_storage::parse_date(&value).is_none() {
+                        return Err(ParseError("invalid Date argument".into()));
+                    }
+                    let day = i64::from(rusthouse_storage::parse_date(&value).unwrap());
+                    let monday = day - (day + 3).rem_euclid(7);
+                    let monday = u16::try_from(monday)
+                        .map_err(|_| ParseError("Monday is outside the Date range".into()))?;
+                    ConstantValue::Text(rusthouse_storage::format_date(monday))
                 }
                 None => ConstantValue::Null,
             }
