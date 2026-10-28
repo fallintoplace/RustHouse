@@ -12,9 +12,8 @@ fn sql(statement: &str, database: &Path) -> Output {
 
 #[test]
 fn dense_sixteen_bit_single_grouped_aggregates_preserve_signed_values() {
-    let db = std::env::temp_dir().join(format!(
-        "rusthouse-dense-u16-single-{}", std::process::id()
-    ));
+    let db =
+        std::env::temp_dir().join(format!("rusthouse-dense-u16-single-{}", std::process::id()));
     for statement in [
         "CREATE TABLE values_by_key (category UInt16, signed_category Int16, amount UInt64)",
         "INSERT INTO values_by_key VALUES (65535, -32768, 6), (0, 32767, 3), (42, -1, 7)",
@@ -35,7 +34,11 @@ fn dense_sixteen_bit_single_grouped_aggregates_preserve_signed_values() {
     ] {
         let result = sql(statement, &db);
         assert!(result.status.success(), "{statement}: {result:?}");
-        assert_eq!(String::from_utf8(result.stdout).unwrap(), expected, "{statement}");
+        assert_eq!(
+            String::from_utf8(result.stdout).unwrap(),
+            expected,
+            "{statement}"
+        );
     }
     fs::remove_dir_all(db).unwrap();
 }
