@@ -460,6 +460,7 @@ mod tests {
             NumericColumn::UInt8(vec![])
         );
     }
+
     #[test]
     fn direct_fixed_width_decode_keeps_signed_endian_bytes() {
         let numbers = [i64::MIN, -1, 0, i64::MAX];
