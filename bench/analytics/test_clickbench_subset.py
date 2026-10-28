@@ -13,6 +13,26 @@ class VerifiedClickBenchTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "within"):
             parse_ids("10")
 
+    def test_late_mismatch_discards_previous_timing_samples(self):
+        with tempfile.TemporaryDirectory() as root:
+            generate(root, 100, 5)
+            database = Path(root) / "hits.sqlite"
+            first = sqlite_query(database, load_queries(DEFAULT_QUERIES)[0])
+            expected = "".join("\t".join(map(str, row)) + "\n" for row in first).encode()
+            calls = 0
+
+            def changing(_sql):
+                nonlocal calls
+                calls += 1
+                return expected if calls == 1 else b"wrong\n"
+
+            report = run_subset("fake", "db", database, only="1", runs=2,
+                                warmups=0, execute=changing)
+            item = report["results"][0]
+            self.assertEqual(item["status"], "mismatch")
+            self.assertEqual(item["timings_seconds"], [])
+            self.assertIsNone(item["latency"])
+
     def test_subset_requires_sqlite_verified_outputs(self):
         with tempfile.TemporaryDirectory() as root:
             generate(root, 300, 2)
