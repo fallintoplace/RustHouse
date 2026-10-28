@@ -962,6 +962,8 @@ pub(super) fn execute_typed<W: Write>(
     let is_grouped = matches!(query.projection, Projection::GroupedCount { .. });
     let mut count = 0u64;
     let mut distinct = HashSet::<Vec<Key>>::new();
+    // A one-column DISTINCT key does not need a heap-allocated Vec<Key>.
+    let mut single_distinct = HashSet::<Key>::new();
     let mut distinct_probe = Vec::<Key>::new();
     // COUNT(DISTINCT column) has one key; avoid a Vec allocation per row.
     let mut count_distinct_keys = HashSet::<Key>::new();
@@ -1173,20 +1175,30 @@ pub(super) fn execute_typed<W: Write>(
                 continue;
             }
             if query.distinct {
-                // Probe with just the hash key. Duplicate rows should never
-                // materialize a second set of projected String/UUID cells.
-                distinct_probe.clear();
-                for &idx in &projection_indices {
-                    distinct_probe.push(key_at(&batch[idx], index));
+                if projection_indices.len() == 1 {
+                    // Avoid a second heap container around a single typed key.
+                    if !single_distinct.insert(key_at(&batch[projection_indices[0]], index)) {
+                        continue;
+                    }
+                    if single_distinct.len() > MAX_BUFFERED_ROWS {
+                        return Err(ExecutionError::Invalid("too many distinct rows".into()));
+                    }
+                } else {
+                    // Probe with just the hash key. Duplicate rows should never
+                    // materialize a second set of projected String/UUID cells.
+                    distinct_probe.clear();
+                    for &idx in &projection_indices {
+                        distinct_probe.push(key_at(&batch[idx], index));
+                    }
+                    if distinct.contains(distinct_probe.as_slice()) {
+                        continue;
+                    }
+                    if distinct.len() >= MAX_BUFFERED_ROWS {
+                        return Err(ExecutionError::Invalid("too many distinct rows".into()));
+                    }
+                    distinct.insert(std::mem::take(&mut distinct_probe));
+                    distinct_probe = Vec::with_capacity(projection_indices.len());
                 }
-                if distinct.contains(distinct_probe.as_slice()) {
-                    continue;
-                }
-                if distinct.len() >= MAX_BUFFERED_ROWS {
-                    return Err(ExecutionError::Invalid("too many distinct rows".into()));
-                }
-                distinct.insert(std::mem::take(&mut distinct_probe));
-                distinct_probe = Vec::with_capacity(projection_indices.len());
             }
             let cells = projection_indices
                 .iter()
@@ -1789,6 +1801,41 @@ mod nullable_string_group_tests {
         let mut output = Vec::new();
         execute(&query, Some(&part), &mut output).unwrap();
         assert_eq!(output, b"category\tcount\nx\t2\n\\N\t2\ny\t1\n");
+        std::fs::remove_dir_all(part).unwrap();
+    }
+}
+
+#[cfg(test)]
+mod single_column_distinct_perf_tests {
+    use crate::{execute, parse_select};
+    use rusthouse_storage::{Column, write_wide_part};
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
+    static NEXT: AtomicUsize = AtomicUsize::new(0);
+
+    #[test]
+    fn single_string_distinct_preserves_first_seen_order() {
+        let part = std::env::temp_dir().join(format!(
+            "rusthouse-single-distinct-{}-{}",
+            std::process::id(),
+            NEXT.fetch_add(1, Ordering::Relaxed),
+        ));
+        let columns = [Column {
+            name: "word".into(),
+            data_type: "String".into(),
+        }];
+        let rows = [
+            vec![Some("alpha".into())],
+            vec![Some("beta".into())],
+            vec![Some("alpha".into())],
+            vec![Some("gamma".into())],
+            vec![Some("beta".into())],
+        ];
+        write_wide_part(&part, &columns, &rows).unwrap();
+        let query = parse_select("SELECT DISTINCT word FROM part").unwrap();
+        let mut output = Vec::new();
+        execute(&query, Some(&part), &mut output).unwrap();
+        assert_eq!(output, b"word\nalpha\nbeta\ngamma\n");
         std::fs::remove_dir_all(part).unwrap();
     }
 }
