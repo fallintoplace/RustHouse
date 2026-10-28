@@ -8,6 +8,24 @@ pub struct RepairJob {
     pub missing_replicas: u8,
 }
 
+fn valid_repair_job(job: &RepairJob) -> bool {
+    !job.shard.is_empty()
+        && job.shard.len() <= 128
+        && job.missing_replicas != 0
+        && job
+            .shard
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'_' | b'-'))
+}
+
+fn repair_priority(left: &RepairJob, right: &RepairJob) -> std::cmp::Ordering {
+    right
+        .missing_replicas
+        .cmp(&left.missing_replicas)
+        .then_with(|| left.bytes.cmp(&right.bytes))
+        .then_with(|| left.shard.cmp(&right.shard))
+}
+
 /// Prioritize severe under-replication, then smaller objects, then shard ID.
 /// The result is a schedule only; a transfer engine must execute it.
 pub fn plan_repairs(
@@ -20,26 +38,13 @@ pub fn plan_repairs(
     }
     let mut unique = HashSet::new();
     for job in jobs {
-        if job.shard.is_empty()
-            || job.shard.len() > 128
-            || job.missing_replicas == 0
-            || !job
-                .shard
-                .bytes()
-                .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'_' | b'-'))
-            || !unique.insert(job.shard.as_str())
+        if !valid_repair_job(job) || !unique.insert(job.shard.as_str())
         {
             return Err("invalid or duplicate repair job");
         }
     }
     let mut ranked = jobs.to_vec();
-    ranked.sort_unstable_by(|left, right| {
-        right
-            .missing_replicas
-            .cmp(&left.missing_replicas)
-            .then_with(|| left.bytes.cmp(&right.bytes))
-            .then_with(|| left.shard.cmp(&right.shard))
-    });
+    ranked.sort_unstable_by(repair_priority);
     let mut selected = Vec::new();
     let mut remaining = byte_budget;
     for job in ranked {
