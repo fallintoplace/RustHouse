@@ -281,7 +281,7 @@ mod perf_tests {
         let pattern = compile_like(&format!("{prefix}%")).unwrap();
         assert!(like_matches(format!("{prefix}tail").as_bytes(), &pattern, false));
         assert!(!like_matches(b"short", &pattern, false));
-        let escaped = compile_like(r"left\\%right").unwrap();
+        let escaped = compile_like(r"left\%right").unwrap();
         assert!(like_matches(b"left%right", &escaped, false));
     }
 
