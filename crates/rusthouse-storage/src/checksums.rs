@@ -74,12 +74,16 @@ impl PartChecksums {
     }
 }
 
-pub fn read_checksums(path: impl AsRef<Path>) -> Result<PartChecksums, PartError> {
-    let path = path.as_ref();
-    let metadata = fs::symlink_metadata(path).map_err(|source| PartError::Io {
+fn checksums_io_error(path: &Path, source: io::Error) -> PartError {
+    PartError::Io {
         path: path.to_path_buf(),
         source,
-    })?;
+    }
+}
+
+pub fn read_checksums(path: impl AsRef<Path>) -> Result<PartChecksums, PartError> {
+    let path = path.as_ref();
+    let metadata = fs::symlink_metadata(path).map_err(|source| checksums_io_error(path, source))?;
     if !metadata.file_type().is_file() {
         return Err(PartError::Io {
             path: path.to_path_buf(),
@@ -89,16 +93,10 @@ pub fn read_checksums(path: impl AsRef<Path>) -> Result<PartChecksums, PartError
             ),
         });
     }
-    let file = File::open(path).map_err(|source| PartError::Io {
-        path: path.to_path_buf(),
-        source,
-    })?;
+    let file = File::open(path).map_err(|source| checksums_io_error(path, source))?;
     let size = file
         .metadata()
-        .map_err(|source| PartError::Io {
-            path: path.to_path_buf(),
-            source,
-        })?
+        .map_err(|source| checksums_io_error(path, source))?
         .len();
     if size > MAX_CHECKSUMS_BYTES {
         return Err(invalid(path, "checksums file exceeds 64 MiB"));
@@ -107,10 +105,7 @@ pub fn read_checksums(path: impl AsRef<Path>) -> Result<PartChecksums, PartError
     let mut content = Vec::with_capacity(size as usize);
     file.take(MAX_CHECKSUMS_BYTES + 1)
         .read_to_end(&mut content)
-        .map_err(|source| PartError::Io {
-            path: path.to_path_buf(),
-            source,
-        })?;
+        .map_err(|source| checksums_io_error(path, source))?;
     if content.len() as u64 > MAX_CHECKSUMS_BYTES {
         return Err(invalid(path, "checksums file exceeds 64 MiB"));
     }
