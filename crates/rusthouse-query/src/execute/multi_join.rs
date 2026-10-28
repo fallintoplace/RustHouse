@@ -238,6 +238,16 @@ pub fn execute_multi_join<W: Write>(
         let right_relation = &relations[step_index + 1];
         let left_width = right_relation.start;
         let (left_keys, right_keys) = step_keys(step, &relations[..=step_index + 1], left_width)?;
+        // INNER and LEFT cannot create rows from an empty intermediate.
+        // Keep the source row limit even when its payload is not needed.
+        if rows.is_empty() && matches!(step.kind, JoinType::Inner | JoinType::Left) {
+            if right_relation.rows > MAX_INPUT_ROWS {
+                return Err(invalid(format!(
+                    "JOIN supports at most {MAX_INPUT_ROWS} input rows per table"
+                )));
+            }
+            continue;
+        }
         let right_rows = read_rows(
             &paths[step_index + 1],
             &right_relation.names,
