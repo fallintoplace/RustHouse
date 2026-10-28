@@ -37,6 +37,8 @@ fn canonical_type(name: &str) -> Option<&'static str> {
         "BOOL" => "Bool",
         "NULLABLE" => "Nullable",
         "ARRAY" => "Array",
+        "MAP" => "Map",
+        "JSON" => "JSON",
         _ => return None,
     })
 }
@@ -45,18 +47,34 @@ pub(super) fn data_type(parser: &mut Parser, nesting: usize) -> Result<String, P
     let name = parser.word()?;
     let canonical = canonical_type(&name)
         .ok_or_else(|| ParseError(format!("unsupported DDL column type: {name}")))?;
-    if canonical == "Nullable" || canonical == "Array" {
+    if matches!(canonical, "Nullable" | "Array" | "Map") {
         if nesting >= 4 {
             return Err(ParseError("DDL type nesting exceeds 4 levels".into()));
         }
         if !parser.take(Token::LParen) {
-            return Err(ParseError(format!("{canonical} requires a type argument")));
+            return Err(ParseError(format!("{canonical} requires type arguments")));
         }
-        let child = data_type(parser, nesting + 1)?;
+        let first = data_type(parser, nesting + 1)?;
+        let result = if canonical == "Map" {
+            if !matches!(
+                first.as_str(),
+                "String" | "Int8" | "Int16" | "Int32" | "Int64" | "Int128"
+                    | "UInt8" | "UInt16" | "UInt32" | "UInt64" | "UInt128"
+            ) {
+                return Err(ParseError("Map keys must be non-nullable String or integer types".into()));
+            }
+            if !parser.take(Token::Comma) {
+                return Err(ParseError("Map requires a key and value type".into()));
+            }
+            let value = data_type(parser, nesting + 1)?;
+            format!("Map({first}, {value})")
+        } else {
+            format!("{canonical}({first})")
+        };
         if !parser.take(Token::RParen) {
             return Err(ParseError("expected ')' after column type".into()));
         }
-        Ok(format!("{canonical}({child})"))
+        Ok(result)
     } else {
         Ok(canonical.into())
     }
@@ -144,5 +162,59 @@ mod varchar_alias_tests {
         };
         assert_eq!(columns[0].data_type, "String");
         assert_eq!(columns[1].data_type, "String");
+    }
+}
+
+#[cfg(test)]
+mod complex_type_tests {
+    use crate::ddl::{Ddl, parse_ddl};
+
+    fn types(sql: &str) -> Vec<String> {
+        let Some(Ddl::CreateTable { columns, .. }) = parse_ddl(sql).unwrap() else {
+            panic!("expected CREATE TABLE");
+        };
+        columns.into_iter().map(|column| column.data_type).collect()
+    }
+
+    #[test]
+    fn parses_map_array_and_json_type_declarations() {
+        assert_eq!(
+            types("CREATE TABLE data (attrs map(varchar, uint64), tags array(string), doc json)"),
+            ["Map(String, UInt64)", "Array(String)", "JSON"]
+        );
+        assert_eq!(
+            types("CREATE TABLE t (nested Array(Map(String, Array(Nullable(Int32)))))"),
+            ["Array(Map(String, Array(Nullable(Int32))))"]
+        );
+    }
+
+    #[test]
+    fn parses_complex_types_in_alter_column() {
+        assert!(matches!(
+            parse_ddl("ALTER TABLE data ADD COLUMN meta Map(UInt64, JSON)").unwrap(),
+            Some(Ddl::AddColumn { column, .. }) if column.data_type == "Map(UInt64, JSON)"
+        ));
+        assert!(matches!(
+            parse_ddl("ALTER TABLE data MODIFY COLUMN meta JSON").unwrap(),
+            Some(Ddl::ModifyColumn { column, .. }) if column.data_type == "JSON"
+        ));
+    }
+
+    #[test]
+    fn rejects_incomplete_or_unsafe_map_types() {
+        for sql in [
+            "CREATE TABLE t (m Map)",
+            "CREATE TABLE t (m Map())",
+            "CREATE TABLE t (m Map(String))",
+            "CREATE TABLE t (m Map(String,))",
+            "CREATE TABLE t (m Map(String, UInt64, UInt8))",
+            "CREATE TABLE t (m Map(Nullable(String), UInt8))",
+            "CREATE TABLE t (m Map(Array(String), UInt8))",
+            "CREATE TABLE t (m Map(Map(String, Int8), String))",
+            "CREATE TABLE t (m Map(String, Array(Array(Array(Array(UInt8))))))",
+            "CREATE TABLE t (j JSON(UInt8))",
+        ] {
+            assert!(parse_ddl(sql).is_err(), "{sql}");
+        }
     }
 }
