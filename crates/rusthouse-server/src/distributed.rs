@@ -695,7 +695,7 @@ fn merge_grouped_integer_sums_query(
             });
         }
         if let Some(order) = &query.order_by {
-            selected.sort_unstable_by(|&left, &right| {
+            let compare = |&left: &usize, &right: &usize| {
                 let comparison = if unsigned {
                     groups[left].2.cmp(&groups[right].2)
                 } else {
@@ -711,7 +711,18 @@ fn merge_grouped_integer_sums_query(
                     _ => if order.descending { comparison.reverse() } else { comparison },
                 };
                 comparison.then_with(|| left.cmp(&right))
+            };
+            // Large distributed GROUP BY reports often request only the
+            // highest few metric groups. Partition first, then sort the small
+            // winning prefix rather than fully ranking every group.
+            let prefix = query.limit.and_then(|limit| {
+                query.offset.unwrap_or(0).checked_add(limit)
             });
+            if let Some(end) = prefix.filter(|&end| end < selected.len()) {
+                selected.select_nth_unstable_by(end, &compare);
+                selected.truncate(end);
+            }
+            selected.sort_unstable_by(compare);
         }
     }
     let offset = global.and_then(|query| query.offset).unwrap_or(0);
@@ -1984,5 +1995,47 @@ mod bounded_grouped_count_topk_tests {
         ).unwrap();
         let merged = merge_grouped_counts_query(&shards, 1, Some(&sql)).unwrap();
         assert_eq!(merged, b"dim\tcount\n");
+    }
+}
+
+#[cfg(test)]
+mod distributed_grouped_sum_selection_tests {
+    use super::*;
+
+    #[test]
+    fn partial_rank_matches_stable_global_sum_sort_at_scale() {
+        let mut first = b"dimension\tsum(metric)\n".to_vec();
+        let mut second = b"dimension\tsum(metric)\n".to_vec();
+        let mut canonical = Vec::new();
+        for shard in 0..2 {
+            for i in (shard..3000).step_by(2) {
+                let value = (i * 379 % 997) as u64;
+                let row = format!("g{i:04}\t{value}\n");
+                if shard == 0 { first.extend_from_slice(row.as_bytes()); }
+                else { second.extend_from_slice(row.as_bytes()); }
+                canonical.push((i, value));
+            }
+        }
+        let shards = [(4000usize, first), (4000usize, second)];
+        for descending in [true, false] {
+            let mut order = canonical.clone();
+            if descending { order.sort_by(|a, b| b.1.cmp(&a.1)); }
+            else { order.sort_by(|a, b| a.1.cmp(&b.1)); }
+            for offset in [0, 1, 25, 2999, 3000] {
+                for limit in [0, 1, 7, 100, 3000] {
+                    let direction = if descending { "DESC" } else { "ASC" };
+                    let sql = format!("SELECT dimension, sum(metric) FROM events GROUP BY dimension ORDER BY 2 {direction} LIMIT {limit} OFFSET {offset}");
+                    let select = rusthouse_query::parse_select(&sql).unwrap();
+                    let actual = merge_grouped_integer_sums_query(
+                        &shards, 4000, "UInt64", "dimension", "metric", Some(&select)
+                    ).unwrap();
+                    let mut expected = "dimension\tsum(metric)\n".to_string();
+                    for (i, amount) in order.iter().skip(offset).take(limit) {
+                        expected.push_str(&format!("g{i:04}\t{amount}\n"));
+                    }
+                    assert_eq!(actual, expected.as_bytes(), "{sql}");
+                }
+            }
+        }
     }
 }
