@@ -39,6 +39,53 @@ fn numeric_value_at(column: &TypedColumn, row: usize) -> Result<Option<Number>, 
     }
 }
 
+// Encode a composite GROUP BY key into reusable storage. String components
+// borrow the column's decoded bytes; only the first occurrence of a group
+// needs to own an encoded key. Tags and lengths preserve tuple boundaries.
+fn append_group_component(column: &TypedColumn, row: usize, buffer: &mut Vec<u8>) {
+    if typed::is_null_at(column, row) {
+        buffer.push(0);
+        return;
+    }
+    match column {
+        TypedColumn::Text(values) | TypedColumn::NullableText { values, .. } => {
+            let bytes = values.get(row).expect("validated typed batch row");
+            buffer.push(1);
+            buffer.extend_from_slice(&(bytes.len() as u64).to_le_bytes());
+            buffer.extend_from_slice(bytes);
+        }
+        TypedColumn::Uuid(values) => {
+            buffer.push(2);
+            buffer.extend_from_slice(values[row].as_bytes());
+        }
+        TypedColumn::Numeric(values) | TypedColumn::NullableNumeric { values, .. } => {
+            match super::number_at(values, row) {
+                Number::Unsigned(value) => {
+                    buffer.push(3);
+                    buffer.extend_from_slice(&value.to_le_bytes());
+                }
+                Number::Signed(value) => {
+                    buffer.push(4);
+                    buffer.extend_from_slice(&value.to_le_bytes());
+                }
+                Number::Float(value) => {
+                    buffer.push(5);
+                    // Match NumberKey: -0 and +0 are one group; all NaNs
+                    // also share the same GROUP BY key.
+                    let bits = if value == 0.0 {
+                        0
+                    } else if value.is_nan() {
+                        f64::NAN.to_bits()
+                    } else {
+                        value.to_bits()
+                    };
+                    buffer.extend_from_slice(&bits.to_le_bytes());
+                }
+            }
+        }
+    }
+}
+
 pub(super) fn execute<W: Write>(
     query: &Select,
     part: &Path,
@@ -118,6 +165,12 @@ pub(super) fn execute<W: Write>(
         .iter()
         .map(|(_, column)| indices[column])
         .collect::<Vec<_>>();
+    // Composite text GROUP BY otherwise clones every string key on each row.
+    let has_text_key = columns.iter().any(|column| {
+        matches!(typed::base_type(types[column].as_str()), "String")
+    });
+    let mut encoded_groups = HashMap::<Vec<u8>, usize>::new();
+    let mut encoded_probe = Vec::<u8>::new();
     let mut by_key = HashMap::<Vec<Key>, usize>::new();
     let mut groups = Vec::<(Vec<Cell>, Vec<AggregateState>)>::new();
     let mut dense_slots = (columns.len() == 2
@@ -159,6 +212,35 @@ pub(super) fn execute<W: Write>(
                             .collect(),
                     ));
                     *index
+                }
+            } else if has_text_key {
+                encoded_probe.clear();
+                for &index in &group_indices {
+                    append_group_component(&batch[index], row, &mut encoded_probe);
+                }
+                if let Some(&index) = encoded_groups.get(encoded_probe.as_slice()) {
+                    index
+                } else {
+                    if groups.len() >= MAX_GROUPS {
+                        return Err(ExecutionError::Invalid(
+                            "GROUP BY supports at most 200000 groups".into(),
+                        ));
+                    }
+                    let index = groups.len();
+                    let keys = group_indices
+                        .iter()
+                        .map(|&column| typed::cell(&batch[column], row))
+                        .collect::<Vec<_>>();
+                    encoded_groups.insert(std::mem::take(&mut encoded_probe), index);
+                    encoded_probe = Vec::with_capacity(group_indices.len() * 24);
+                    groups.push((
+                        keys,
+                        items
+                            .iter()
+                            .map(|(function, _)| AggregateState::new(*function))
+                            .collect(),
+                    ));
+                    index
                 }
             } else {
                 probe_key.clear();
@@ -285,6 +367,49 @@ pub(super) fn execute<W: Write>(
 #[cfg(test)]
 mod direct_grouped_numeric_tests {
     use super::*;
+
+    #[test]
+    fn compact_composite_keys_preserve_boundaries_nulls_and_float_normalization() {
+        use rusthouse_storage::read_legacy_strings;
+        let mut source = b"\x02ab\x01a\x02ab".as_slice();
+        let strings = TypedColumn::Text(read_legacy_strings(&mut source, 3).unwrap());
+        let numbers = TypedColumn::Numeric(NumericColumn::UInt64(vec![12, 12, 13]));
+        let mut scratch = Vec::new();
+        let key = |row, scratch: &mut Vec<u8>| {
+            scratch.clear();
+            append_group_component(&strings, row, scratch);
+            append_group_component(&numbers, row, scratch);
+            scratch.clone()
+        };
+        let first = key(0, &mut scratch);
+        let second = key(1, &mut scratch);
+        let third = key(2, &mut scratch);
+        assert_ne!(first, second);
+        assert_ne!(first, third);
+        let zeroes = TypedColumn::Numeric(NumericColumn::Float64(vec![-0.0, 0.0, f64::NAN, f64::NAN]));
+        scratch.clear();
+        append_group_component(&zeroes, 0, &mut scratch);
+        let positive_zero = scratch.clone();
+        scratch.clear();
+        append_group_component(&zeroes, 1, &mut scratch);
+        assert_eq!(scratch, positive_zero);
+        scratch.clear();
+        append_group_component(&zeroes, 2, &mut scratch);
+        let nan = scratch.clone();
+        scratch.clear();
+        append_group_component(&zeroes, 3, &mut scratch);
+        assert_eq!(scratch, nan);
+        let nulls = TypedColumn::NullableNumeric {
+            values: NumericColumn::UInt64(vec![7, 7]),
+            nulls: vec![1, 0],
+        };
+        scratch.clear();
+        append_group_component(&nulls, 0, &mut scratch);
+        assert_eq!(scratch, vec![0]);
+        scratch.clear();
+        append_group_component(&nulls, 1, &mut scratch);
+        assert_ne!(scratch, vec![0]);
+    }
 
     #[test]
     fn reads_grouped_aggregate_values_and_skips_nulls() {
