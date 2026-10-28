@@ -43,7 +43,10 @@ fn billion_row_virtual_count_requires_arithmetic_fast_path() {
         assert_eq!(output, expected.as_bytes(), "{sql}");
     }
     for (sql, expected) in [
-        ("SELECT number FROM numbers(1000000000) LIMIT 1", "number\n0\n"),
+        (
+            "SELECT number FROM numbers(1000000000) LIMIT 1",
+            "number\n0\n",
+        ),
         (
             "SELECT sum(number) FROM numbers(1000000000)",
             "sum(number)\n499999999500000000\n",

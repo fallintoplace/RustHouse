@@ -126,7 +126,9 @@ mod tests {
     #[test]
     fn reuses_output_allocation_across_shorter_rows() {
         let mut writer = JsonCompactEachRowWriter::new(Vec::new());
-        writer.write_all(format!("value\n{}\n", "a".repeat(4096)).as_bytes()).unwrap();
+        writer
+            .write_all(format!("value\n{}\n", "a".repeat(4096)).as_bytes())
+            .unwrap();
         let capacity = writer.encoded.capacity();
         writer.write_all(b"b\n").unwrap();
         assert_eq!(writer.encoded.capacity(), capacity);

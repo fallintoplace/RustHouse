@@ -97,7 +97,16 @@ jobs:
           key: sql-smoke
           save-if: ${{ github.ref == 'refs/heads/main' }}
           cache-on-failure: true
-      - run: cargo build --workspace --locked
+      - name: Build the binaries used by SQL smoke
+        shell: bash
+        env:
+          RUNNER_OS_MATRIX: ${{ matrix.os }}
+        run: |
+          if [ "$RUNNER_OS_MATRIX" = "ubuntu-latest" ]; then
+            cargo build --locked -p rusthouse-cli -p rusthouse-server
+          else
+            cargo build --locked -p rusthouse-cli
+          fi
       - name: Verify 20 generated SQL queries
         run: |
           python3 -m bench workload latency -- \
@@ -175,13 +184,9 @@ jobs:
         run: python -m bench python-tests
 
   msrv:
-    name: Rust MSRV (ubuntu-latest, ${{ matrix.shard }} shard)
+    name: Rust MSRV (ubuntu-latest)
     runs-on: ubuntu-latest
     timeout-minutes: 15
-    strategy:
-      fail-fast: false
-      matrix:
-        shard: [query, rest]
     steps:
       - uses: actions/checkout@v7
       - name: Install minimum Rust toolchain
@@ -192,26 +197,11 @@ jobs:
           echo "RUSTUP_TOOLCHAIN=$msrv" >> "$GITHUB_ENV"
       - uses: Swatinem/rust-cache@v2
         with:
-          key: msrv-${{ matrix.shard }}
+          key: msrv
           save-if: ${{ github.ref == 'refs/heads/main' }}
           cache-on-failure: true
       - name: Test minimum Rust version
-        shell: bash
-        env:
-          RUST_TEST_SHARD: ${{ matrix.shard }}
-        run: |
-          case "$RUST_TEST_SHARD" in
-            query)
-              cargo test -p rusthouse-query --locked --no-fail-fast
-              ;;
-            rest)
-              cargo test --workspace --exclude rusthouse-query --locked --no-fail-fast
-              ;;
-            *)
-              echo "::error::Unknown Rust test shard: $RUST_TEST_SHARD"
-              exit 1
-              ;;
-          esac
+        run: cargo test --workspace --locked --no-fail-fast
 
   integration-gate:
     name: Integration gate

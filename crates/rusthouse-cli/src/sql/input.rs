@@ -30,8 +30,7 @@ pub(super) fn read_sql_input(
             "{label} exceeds the {MAX_SQL_BYTES}-byte statement limit"
         ));
     }
-    let input = String::from_utf8(bytes)
-        .map_err(|_| format!("{label} must be valid UTF-8"))?;
+    let input = String::from_utf8(bytes).map_err(|_| format!("{label} must be valid UTF-8"))?;
     if let Some(without_bom) = input.strip_prefix('\u{feff}') {
         Ok(without_bom.to_owned())
     } else {

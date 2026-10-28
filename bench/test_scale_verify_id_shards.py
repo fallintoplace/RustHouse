@@ -13,7 +13,7 @@ class VerifyShardsTests(unittest.TestCase):
             root = Path(temp)
             start = 2**64 - 3
             source = root / "last.tsv"
-            source.write_text(f"{start}\n{start + 1}\n{start + 2}\n")
+            source.write_bytes(f"{start}\n{start + 1}\n{start + 2}\n".encode("ascii"))
             manifest = root / "manifest.json"
             manifest.write_text(json.dumps({
                 "schema_version": 1, "start": start, "rows": 3,
@@ -21,7 +21,7 @@ class VerifyShardsTests(unittest.TestCase):
                             "sha256": hashlib.sha256(source.read_bytes()).hexdigest()}],
             }))
             self.assertEqual(verify(manifest)["rows"], 3)
-            source.write_text(f"{start}\n{start + 2}\n{start + 1}\n")
+            source.write_bytes(f"{start}\n{start + 2}\n{start + 1}\n".encode("ascii"))
             with self.assertRaisesRegex(ValueError, "incorrect"):
                 verify(manifest)
 

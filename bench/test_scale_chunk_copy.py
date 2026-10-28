@@ -18,7 +18,7 @@ class ChunkCopyTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as root:
             path = Path(root)
             for name in ("part-000000.tsv", "part-000001.tsv"):
-                (path / name).write_text("1\n")
+                (path / name).write_bytes(b"1\n")
             digest = hashlib.sha256(b"1\n").hexdigest()
             shards = [
                 {"path": name, "rows": 1, "bytes": 2, "sha256": digest}

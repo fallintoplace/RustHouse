@@ -175,7 +175,10 @@ mod tests {
 
     #[test]
     fn plus_only_queries_keep_utf8_without_percent_decoding() {
-        assert_eq!(decode_url("SELECT+café+FROM+items").unwrap(), "SELECT café FROM items");
+        assert_eq!(
+            decode_url("SELECT+café+FROM+items").unwrap(),
+            "SELECT café FROM items"
+        );
         assert_eq!(decode_url("a+b%2Bc").unwrap(), "a b+c");
         assert!(decode_url(&"a+".repeat(MAX_QUERY_BYTES)).is_err());
     }

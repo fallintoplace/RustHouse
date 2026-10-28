@@ -102,7 +102,8 @@ impl<W: Write> JsonlWriter<W> {
 
     fn finish_line(&mut self) -> io::Result<()> {
         if let Some(headers) = &self.headers {
-            let result = write_json_row_into(&mut self.output, headers, &self.line, &mut self.encoded);
+            let result =
+                write_json_row_into(&mut self.output, headers, &self.line, &mut self.encoded);
             self.line.clear();
             return result;
         }

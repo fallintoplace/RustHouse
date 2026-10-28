@@ -250,7 +250,10 @@ mod tests {
             }
         }
         let sizes = vec![0u8; 8192 * SIZE_ENTRY_BYTES];
-        let mut source = Counting { bytes: &sizes, reads: 0 };
+        let mut source = Counting {
+            bytes: &sizes,
+            reads: 0,
+        };
         let strings = read_sized_strings(&mut source, &mut io::empty(), 8192).unwrap();
         assert_eq!(strings.len(), 8192);
         assert_eq!(source.reads, 1);

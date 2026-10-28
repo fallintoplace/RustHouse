@@ -16,7 +16,7 @@ class TopKProbeTests(unittest.TestCase):
 
     def test_rejects_bad_identifiers_and_limits(self):
         with self.assertRaisesRegex(ValueError, "identifier"):
-            probe("rusthouse", "part", 5, column="id;DROP")
+            probe("rusthouse", "part", 5, column="id;DROP", limit=2)
         with self.assertRaisesRegex(ValueError, "limit"):
             probe("rusthouse", "part", 5, limit=6)
 
