@@ -22,6 +22,22 @@ class ShardTests(unittest.TestCase):
                                  shard["sha256"])
             self.assertTrue((target / "manifest.json").is_file())
 
+    def test_large_shard_batches_preserve_hashes_across_flushes(self):
+        with tempfile.TemporaryDirectory() as root:
+            source = Path(root) / "big.tsv"
+            records = [f"{i:08d},".encode() + b"x" * 1024 + b"\n"
+                       for i in range(700)]
+            source.write_bytes(b"".join(records))
+            target = Path(root) / "shards"
+            report = split_tsv(source, target, rows_per_chunk=350)
+            self.assertEqual([part["rows"] for part in report["shards"]], [350, 350])
+            for part in report["shards"]:
+                content = (target / part["path"]).read_bytes()
+                self.assertEqual(hashlib.sha256(content).hexdigest(), part["sha256"])
+                self.assertEqual(len(content), part["bytes"])
+            self.assertEqual(b"".join((target / p["path"]).read_bytes()
+                                      for p in report["shards"]), source.read_bytes())
+
     def test_does_not_publish_malformed_source(self):
         with tempfile.TemporaryDirectory() as root:
             source = Path(root) / "input.tsv"
