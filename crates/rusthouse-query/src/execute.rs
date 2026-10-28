@@ -1453,13 +1453,8 @@ fn execute_numbers<W: Write>(
             && !query.distinct
             && query.order_by_extra.is_empty()
             && ((query.predicates.is_empty() && query.or_predicates.is_empty())
-                || monotonic_range_indices(
-                    &compile_numbers_predicates(query)?,
-                    start,
-                    rows,
-                    step,
-                )
-                .is_some());
+                || monotonic_range_indices(&compile_numbers_predicates(query)?, start, rows, step)
+                    .is_some());
         if !(scalar_count && simple_result && arithmetic_count) && !bounded_page {
             return Err(ExecutionError::Invalid(
                 "virtual inputs over 10000000 rows require an arithmetic COUNT or bounded page query".into(),
