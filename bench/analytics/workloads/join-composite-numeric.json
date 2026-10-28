@@ -1,0 +1,19 @@
+{
+  "name": "join-composite-numeric",
+  "description": "Measure two and three numeric equality key hash joins",
+  "queries": [
+    {
+      "name": "two-key-facts",
+      "sql": "SELECT e.event_id, f.amount FROM events e JOIN events f ON e.event_id = f.event_id AND e.user_id = f.user_id ORDER BY e.event_id LIMIT 20"
+    },
+    {
+      "name": "reverse-two-keys",
+      "sql": "SELECT e.event_id, f.quantity FROM events e JOIN events f ON e.user_id = f.user_id AND f.event_id = e.event_id ORDER BY e.event_id DESC LIMIT 20"
+    },
+    {
+      "name": "three-key-facts",
+      "sql": "SELECT e.event_id, f.category FROM events e JOIN events f ON e.event_id = f.event_id AND e.user_id = f.user_id AND e.quantity = f.quantity ORDER BY e.event_id LIMIT 20"
+    }
+  ],
+  "max_rows": 16000
+}
