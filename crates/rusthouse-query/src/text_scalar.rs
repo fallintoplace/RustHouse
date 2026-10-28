@@ -54,6 +54,7 @@ pub(super) fn is_function(name: &str) -> bool {
             | "SUBSTRING_INDEX"
             | "SUBSTRINGINDEXUTF8"
             | "QUERYSTRINGANDFRAGMENT"
+            | "TOFIXEDSTRING"
             | "TO_INT64"
             | "TRIM"
             | "LTRIM"
@@ -128,6 +129,24 @@ fn parse_at_depth(parser: &mut Parser, depth: usize) -> Result<ConstantValue, Pa
                         .map_err(|_| ParseError("lengthUTF8 result exceeds Int64".into()))?,
                 ),
                 None => ConstantValue::Null,
+            }
+        }
+        "TOFIXEDSTRING" => {
+            let input = text_arg(parser, depth + 1)?;
+            require(parser, Token::Comma, "toFixedString requires a size")?;
+            let length = integer_arg(parser, depth + 1)?;
+            require(parser, Token::RParen, "toFixedString requires two arguments")?;
+            match (input, length) {
+                (Some(mut input), Some(length)) => {
+                    let size = usize::try_from(length)
+                        .map_err(|_| ParseError("toFixedString size must be nonnegative".into()))?;
+                    if size > MAX_TEXT_BYTES || input.len() > size {
+                        return Err(ParseError("toFixedString size is invalid".into()));
+                    }
+                    input.extend(std::iter::repeat_n('\\0', size - input.len()));
+                    ConstantValue::Text(input)
+                }
+                _ => ConstantValue::Null,
             }
         }
         "ASCII" => {
@@ -2004,5 +2023,30 @@ fn text_arg(parser: &mut Parser, depth: usize) -> Result<Option<String>, ParseEr
         _ => Err(ParseError(
             "expected a string literal or string function".into(),
         )),
+    }
+}
+
+#[cfg(test)]
+mod clickhouse_fixedstring_scalar_tests {
+    use crate::{ConstantValue, Projection, parse_select};
+    #[test]
+    fn to_fixed_string_zero_pads_exact_utf8_byte_width() {
+        for (sql, expected) in [
+            ("SELECT toFixedString('abc', 5)", "abc\\0\\0"),
+            ("SELECT toFixedString('é', 3)", "é\\0"),
+            ("SELECT toFixedString('', 0)", ""),
+        ] {
+            let result = parse_select(sql).unwrap();
+            assert!(matches!(result.projection, Projection::Constants(values)
+                if values.len() == 1 && values[0].value == ConstantValue::Text(expected.into())), "{sql}");
+        }
+        for sql in [
+            "SELECT toFixedString('hello', 4)",
+            "SELECT toFixedString('abc', -1)",
+            "SELECT toFixedString('abc', 1048577)",
+            "SELECT toFixedString('abc')",
+        ] {
+            assert!(parse_select(sql).is_err(), "{sql}");
+        }
     }
 }
