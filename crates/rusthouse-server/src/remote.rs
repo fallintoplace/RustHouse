@@ -141,6 +141,15 @@ fn parse_peer_header(line: &str) -> Result<(&str, &str), String> {
     Ok((name, value.trim()))
 }
 
+fn parse_content_length(value: &str) -> Result<usize, String> {
+    if value.is_empty() || !value.bytes().all(|byte| byte.is_ascii_digit()) {
+        return Err("invalid peer Content-Length".into());
+    }
+    value
+        .parse::<usize>()
+        .map_err(|_| "invalid peer Content-Length".into())
+}
+
 fn parse_response(raw: &[u8]) -> Result<PeerResponse, String> {
     let head_end = raw
         .windows(4)
@@ -157,14 +166,10 @@ fn parse_response(raw: &[u8]) -> Result<PeerResponse, String> {
     for line in lines {
         let (name, value) = parse_peer_header(line)?;
         if name.eq_ignore_ascii_case("content-length") {
-            if length.is_some() || !value.bytes().all(|b| b.is_ascii_digit()) || value.is_empty() {
+            if length.is_some() {
                 return Err("invalid peer Content-Length".into());
             }
-            length = Some(
-                value
-                    .parse::<usize>()
-                    .map_err(|_| "invalid peer Content-Length")?,
-            );
+            length = Some(parse_content_length(value)?);
         } else if name.eq_ignore_ascii_case("content-type") {
             if content_type.is_some() {
                 return Err("duplicate peer Content-Type".into());

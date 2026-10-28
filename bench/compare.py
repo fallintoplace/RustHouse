@@ -36,14 +36,18 @@ def elapsed(record):
     return value
 
 
-def compare(baseline, candidate, slowdown_threshold_percent=10):
-    if not math.isfinite(slowdown_threshold_percent) or slowdown_threshold_percent < 0:
-        raise ValueError("slowdown threshold must be nonnegative and finite")
+def ensure_compatible_reports(baseline, candidate):
     for field in ("workload", "engine", "rows", "seed", "timing_scope"):
         old = baseline.get(field)
         new = candidate.get(field)
         if old is not None and new is not None and old != new:
             raise ValueError(f"cannot compare different {field} values")
+
+
+def compare(baseline, candidate, slowdown_threshold_percent=10):
+    if not math.isfinite(slowdown_threshold_percent) or slowdown_threshold_percent < 0:
+        raise ValueError("slowdown threshold must be nonnegative and finite")
+    ensure_compatible_reports(baseline, candidate)
     left = index(baseline.get("results"))
     right = index(candidate.get("results"))
     if left.keys() != right.keys():
