@@ -570,34 +570,39 @@ pub fn execute_join<W: Write>(
         }
         selected
     } else {
-        left_names
-            .iter()
-            .enumerate()
-            .map(|(index, name)| {
-                // A USING key appears once in SELECT *. For unmatched right
-                // rows, its value comes from the right side.
-                let fallback = if query.using_keys.contains(name) {
-                    right_names
-                        .iter()
-                        .position(|right| right == name)
-                        .map(|right| width + right)
-                } else {
-                    None
-                };
-                (index, format!("{}.{}", query.left_alias, name), fallback)
-            })
-            .chain(right_names.iter().enumerate().filter_map(|(index, name)| {
-                if query.using_keys.contains(name) {
-                    None
-                } else {
-                    Some((
-                        width + index,
-                        format!("{}.{}", query.right_alias, name),
-                        None,
-                    ))
-                }
-            }))
-            .collect::<Vec<_>>()
+        let mut selected = Vec::new();
+        // SQL USING projects shared keys first, in USING list order.
+        // The fallback preserves unmatched right keys for RIGHT/FULL joins.
+        for name in &query.using_keys {
+            let left_index = left_names
+                .iter()
+                .position(|column| column == name)
+                .ok_or_else(|| {
+                    invalid(format!("unknown JOIN column: {}.{name}", query.left_alias))
+                })?;
+            let right_index = right_names
+                .iter()
+                .position(|column| column == name)
+                .ok_or_else(|| {
+                    invalid(format!("unknown JOIN column: {}.{name}", query.right_alias))
+                })?;
+            selected.push((
+                left_index,
+                format!("{}.{}", query.left_alias, name),
+                Some(width + right_index),
+            ));
+        }
+        for (index, name) in left_names.iter().enumerate() {
+            if !query.using_keys.contains(name) {
+                selected.push((index, format!("{}.{}", query.left_alias, name), None));
+            }
+        }
+        for (index, name) in right_names.iter().enumerate() {
+            if !query.using_keys.contains(name) {
+                selected.push((width + index, format!("{}.{}", query.right_alias, name), None));
+            }
+        }
+        selected
     };
     let order = query
         .order_by
