@@ -105,8 +105,12 @@ pub(super) fn is_safe_grouped_count(select: &Select) -> bool {
         && !select.distinct
         && select.rename.is_none()
         && select.alias.is_none()
-        // The coordinator can rank merged counts, but not local shard keys.
-        && select.order_terms().all(|term| term.column == "count")
+        && match &select.projection {
+            Projection::GroupedCount { column } => {
+                select.order_terms().all(|term| term.column == "count" || term.column == *column)
+            }
+            _ => select.order_terms().all(|term| term.column == "count"),
+        }
 }
 
 pub(super) fn is_safe_grouped_sum(select: &Select) -> bool {
