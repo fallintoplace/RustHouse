@@ -12,6 +12,7 @@ pub(super) fn is_function(name: &str) -> bool {
             | "ASCII"
             | "UTF16_LENGTH"
             | "HASSUBSEQUENCE"
+            | "COMPARESUBSTRINGS"
             | "CHR"
             | "STRINGBYTESUNIQ"
             | "BIT_LENGTH"
@@ -238,6 +239,38 @@ fn parse_at_depth(parser: &mut Parser, depth: usize) -> Result<ConstantValue, Pa
                     ConstantValue::Text(result)
                 }
                 None => ConstantValue::Null,
+            }
+        }
+        "COMPARESUBSTRINGS" => {
+            let first = text_arg(parser, depth + 1)?;
+            require(parser, Token::Comma, "compareSubstrings requires five arguments")?;
+            let second = text_arg(parser, depth + 1)?;
+            require(parser, Token::Comma, "compareSubstrings requires five arguments")?;
+            let first_offset = integer_arg(parser, depth + 1)?;
+            require(parser, Token::Comma, "compareSubstrings requires five arguments")?;
+            let second_offset = integer_arg(parser, depth + 1)?;
+            require(parser, Token::Comma, "compareSubstrings requires five arguments")?;
+            let count = integer_arg(parser, depth + 1)?;
+            require(parser, Token::RParen, "expected ')' after compareSubstrings")?;
+            match (first, second, first_offset, second_offset, count) {
+                (Some(first), Some(second), Some(a), Some(b), Some(count)) => {
+                    let a = usize::try_from(a)
+                        .map_err(|_| ParseError("compareSubstrings offsets must be nonnegative".into()))?;
+                    let b = usize::try_from(b)
+                        .map_err(|_| ParseError("compareSubstrings offsets must be nonnegative".into()))?;
+                    let count = usize::try_from(count)
+                        .map_err(|_| ParseError("compareSubstrings byte count must be nonnegative".into()))?;
+                    let first = &first.as_bytes()[a.min(first.len())..];
+                    let second = &second.as_bytes()[b.min(second.len())..];
+                    let result = first.iter().take(count).cmp(second.iter().take(count));
+                    let value = match result {
+                        std::cmp::Ordering::Less => -1,
+                        std::cmp::Ordering::Equal => 0,
+                        std::cmp::Ordering::Greater => 1,
+                    };
+                    ConstantValue::Integer(value)
+                }
+                _ => ConstantValue::Null,
             }
         }
         "HASSUBSEQUENCE" => {
@@ -1960,5 +1993,43 @@ fn text_arg(parser: &mut Parser, depth: usize) -> Result<Option<String>, ParseEr
         _ => Err(ParseError(
             "expected a string literal or string function".into(),
         )),
+    }
+}
+
+#[cfg(test)]
+mod clickhouse_compare_substrings_tests {
+    use crate::{ConstantValue, Projection, parse_select};
+
+    fn value(sql: &str) -> ConstantValue {
+        match parse_select(sql).unwrap().projection {
+            Projection::Constants(columns) if columns.len() == 1 => columns[0].value.clone(),
+            Projection::Literal(number) => ConstantValue::Integer(number),
+            other => panic!("unexpected projection: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn handles_values_and_null() {
+        for (sql, expected) in [
+            ("SELECT compareSubstrings('Saxony','Anglo-Saxon',0,6,5)", ConstantValue::Integer(0)),
+            ("SELECT compareSubstrings('abc','abd',0,0,3)", ConstantValue::Integer(-1)),
+            ("SELECT compareSubstrings('abd','abc',0,0,3)", ConstantValue::Integer(1)),
+            ("SELECT compareSubstrings('x','y',0,0,0)", ConstantValue::Integer(0)),
+            ("SELECT compareSubstrings(NULL,'a',0,0,1)", ConstantValue::Null),
+        ] {
+            assert_eq!(value(sql), expected, "{sql}");
+        }
+    }
+
+    #[test]
+    fn rejects_bad_calls() {
+        for sql in [
+            "SELECT compareSubstrings('a','a',0,0)",
+            "SELECT compareSubstrings('a','a',-1,0,1)",
+            "SELECT compareSubstrings('a','a',0,0,-1)",
+            "SELECT compareSubstrings('a','a',0,0,1,2)",
+        ] {
+            assert!(parse_select(sql).is_err(), "{sql}");
+        }
     }
 }
