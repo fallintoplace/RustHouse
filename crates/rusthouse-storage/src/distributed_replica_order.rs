@@ -42,8 +42,8 @@ pub fn rank_read_replicas(replicas: &[ReplicaStatus]) -> Result<Vec<String>, &'s
         return Err("invalid replica status set");
     }
     validate_replica_nodes(replicas)?;
-    let mut healthy: Vec<&ReplicaStatus> =
-        replicas.iter().filter(|replica| replica.healthy).collect();
+    let mut healthy = Vec::with_capacity(replicas.len());
+    healthy.extend(replicas.iter().filter(|replica| replica.healthy));
     if healthy.is_empty() {
         return Err("no healthy storage replica");
     }
