@@ -248,3 +248,14 @@ pub(super) fn is_safe_grouped_extremum(select: &Select) -> bool {
         && select.alias.is_none()
         && select.order_terms().all(|term| term.column == "#aggregate")
 }
+
+/// A single exact SUM over several dimensions reduces by composite key.
+pub(super) fn is_safe_grouped_multikey_sum(select: &Select) -> bool {
+    matches!(
+        &select.projection,
+        Projection::GroupedMultiAggregates { columns, items }
+        if (2..=8).contains(&columns.len())
+            && items.len() == 1
+            && items[0].0 == AggregateFunction::Sum
+    ) && is_safe_unpaged_select(select)
+}
