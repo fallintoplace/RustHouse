@@ -454,7 +454,6 @@ pub fn handle_request(method: &str, target: &str, body: &[u8], config: &Config) 
 mod tests {
     use super::*;
     use std::fs;
-    use std::path::Path;
 
     fn config() -> Config {
         Config {
