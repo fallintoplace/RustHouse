@@ -24,6 +24,7 @@ pub(super) fn is_function(name: &str) -> bool {
             | "COLLAPSE_WHITESPACE"
             | "LOWER"
             | "HEX_ENCODE"
+            | "ENCODEXMLCOMPONENT"
             | "HEX"
             | "IS_ASCII"
             | "UPPER"
@@ -184,6 +185,40 @@ fn parse_at_depth(parser: &mut Parser, depth: usize) -> Result<ConstantValue, Pa
                         output.push_str(fragment);
                     }
                     ConstantValue::Text(output)
+                }
+                None => ConstantValue::Null,
+            }
+        }
+        "ENCODEXMLCOMPONENT" => {
+            let input = text_arg(parser, depth + 1)?;
+            require(parser, Token::RParen, "encodeXMLComponent requires one string")?;
+            match input {
+                Some(input) => {
+                    let mut result = String::new();
+                    for character in input.chars() {
+                        let escaped = match character {
+                            '&' => "&amp;",
+                            '<' => "&lt;",
+                            '>' => "&gt;",
+                            '"' => "&quot;",
+                            '\'' => "&apos;",
+                            _ => "",
+                        };
+                        let increase = if escaped.is_empty() {
+                            character.len_utf8()
+                        } else {
+                            escaped.len()
+                        };
+                        if result.len() + increase > MAX_TEXT_BYTES {
+                            return Err(ParseError("encodeXMLComponent result is too large".into()));
+                        }
+                        if escaped.is_empty() {
+                            result.push(character);
+                        } else {
+                            result.push_str(escaped);
+                        }
+                    }
+                    ConstantValue::Text(result)
                 }
                 None => ConstantValue::Null,
             }
