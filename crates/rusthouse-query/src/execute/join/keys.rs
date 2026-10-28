@@ -35,12 +35,14 @@ pub(super) fn resolve(
         })
 }
 
+fn key_eligible(value: &typed::Cell) -> bool {
+    !matches!(value, typed::Cell::Null)
+        && !matches!(value, typed::Cell::Numeric(Number::Float(number)) if number.is_nan())
+}
+
 pub(super) fn row_key(row: &[typed::Cell], indices: &[usize]) -> Option<Vec<typed::Key>> {
     // Reject invalid later components before cloning any variable-width keys.
-    if indices.iter().any(|&index| {
-        matches!(&row[index], typed::Cell::Null)
-            || matches!(&row[index], typed::Cell::Numeric(Number::Float(value)) if value.is_nan())
-    }) {
+    if indices.iter().any(|&index| !key_eligible(&row[index])) {
         return None;
     }
     Some(indices.iter().map(|&index| row[index].key()).collect())
@@ -55,9 +57,7 @@ pub(super) fn batch_key_into(
     result.clear();
     for &index in indices {
         let value = typed::cell(&batch[index], row);
-        if matches!(value, typed::Cell::Null)
-            || matches!(value, typed::Cell::Numeric(Number::Float(number)) if number.is_nan())
-        {
+        if !key_eligible(&value) {
             result.clear();
             return false;
         }
