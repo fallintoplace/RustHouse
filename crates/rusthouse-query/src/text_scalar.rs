@@ -7,6 +7,7 @@ pub(super) fn is_function(name: &str) -> bool {
     matches!(
         name.to_ascii_uppercase().as_str(),
         "LENGTH"
+            | "BYTEHAMMINGDISTANCE"
             | "CHAR_LENGTH"
             | "OCTET_LENGTH"
             | "ASCII"
@@ -100,6 +101,21 @@ fn parse_at_depth(parser: &mut Parser, depth: usize) -> Result<ConstantValue, Pa
     let name = parser.word()?.to_ascii_uppercase();
     require(parser, Token::LParen, "string function requires '('")?;
     let value = match name.as_str() {
+
+        "BYTEHAMMINGDISTANCE" => {
+            let left = text_arg(parser, depth + 1)?;
+            require(parser, Token::Comma, "BYTEHAMMINGDISTANCE requires two arguments")?;
+            let right = text_arg(parser, depth + 1)?;
+            require(parser, Token::RParen, "BYTEHAMMINGDISTANCE requires two arguments")?;
+            match (left, right) {
+                (Some(left), Some(right)) => {
+                    let mismatches = left.bytes().zip(right.bytes()).filter(|(a, b)| a != b).count();
+                    let distance = mismatches + left.len().abs_diff(right.len());
+                    ConstantValue::Integer(distance as i64)
+                }
+                _ => ConstantValue::Null,
+            }
+        }
         "ASCII" => {
             let input = text_arg(parser, depth + 1)?;
             require(parser, Token::RParen, "ASCII requires one argument")?;
