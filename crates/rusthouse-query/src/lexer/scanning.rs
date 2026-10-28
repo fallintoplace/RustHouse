@@ -109,7 +109,9 @@ pub(super) fn scan_comparison(bytes: &[u8], index: &mut usize) -> Operator {
 
 pub(super) fn follows_binary_minus_context(tokens: &[Token]) -> bool {
     matches!(tokens.last(), Some(Token::Number(_) | Token::RParen))
-        || matches!(tokens.last(), Some(Token::Word(word)) if !word.eq_ignore_ascii_case("SELECT"))
+        || matches!(tokens.last(), Some(Token::Word(word)) if !["SELECT", "BETWEEN", "AND", "OR", "WHERE", "NOT", "IN"]
+            .iter()
+            .any(|keyword| word.eq_ignore_ascii_case(keyword)))
 }
 
 pub(super) fn punctuation_token(byte: u8) -> Token {
