@@ -670,9 +670,12 @@ fn merge_grouped_integer_sums_query(
     }
     let offset = global.and_then(|select| select.offset).unwrap_or(0);
     let limit = global.and_then(|select| select.limit).unwrap_or(usize::MAX);
+    if groups.len().saturating_sub(offset).min(limit) > max_rows {
+        return Err(MergeError::CoordinatorLimit);
+    }
     let mut output = Vec::with_capacity(header.len());
     output.extend_from_slice(header.as_bytes());
-    for (key, signed, unsigned_value) in groups.into_iter().skip(offset).take(limit).take(max_rows) {
+    for (key, signed, unsigned_value) in groups.into_iter().skip(offset).take(limit) {
         let rendered = if unsigned {
             unsigned_value.map(|value| value.to_string())
         } else {
