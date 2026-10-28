@@ -450,6 +450,20 @@ pub(super) fn execute<W: Write>(
     Ok(())
 }
 
+/// Only these generated arithmetic-series metrics have a provable constant-time
+/// implementation; the source guard uses the same predicate as the executor.
+pub(super) fn supports_generated_series_metrics(items: &[AggregateItem]) -> bool {
+    items.iter().all(|item| {
+        !item.distinct
+            && item.argument.as_ref().is_none_or(|expression| {
+                matches!(expression, ScalarExpr::Column(name) if name == "number")
+            })
+            && matches!(item.function, None | Some(crate::AggregateFunction::Count
+                | crate::AggregateFunction::Sum | crate::AggregateFunction::Min
+                | crate::AggregateFunction::Max | crate::AggregateFunction::Avg))
+    })
+}
+
 /// Compute exact arithmetic-series metrics in O(number of aggregates) instead
 /// of iterating a billion generated rows. Predicated or DISTINCT inputs keep the
 /// existing streaming path.
@@ -459,15 +473,7 @@ fn generated_series_metrics(
     step: u64,
     items: &[AggregateItem],
 ) -> Option<Result<Vec<String>, ExecutionError>> {
-    if !items.iter().all(|item| {
-        !item.distinct
-            && item.argument.as_ref().is_none_or(|expression| {
-                matches!(expression, ScalarExpr::Column(name) if name == "number")
-            })
-            && matches!(item.function, None | Some(crate::AggregateFunction::Count
-                | crate::AggregateFunction::Sum | crate::AggregateFunction::Min
-                | crate::AggregateFunction::Max | crate::AggregateFunction::Avg))
-    }) {
+    if !supports_generated_series_metrics(items) {
         return None;
     }
     let first = u128::from(start);
