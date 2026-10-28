@@ -369,57 +369,69 @@ pub(super) fn insert(database: &Path, insert: &Insert) -> Result<(), String> {
 }
 
 /// Validate and append an input stream with one atomic snapshot publication.
+/// Validate and append an input stream with one atomic snapshot publication.
 pub(super) fn insert_stream(
+    database: &Path,
+    table: &str,
+    requested_columns: Option<Vec<String>>,
+    next_row: impl FnMut() -> Result<Option<Vec<Option<String>>>, String>,
+) -> Result<(), String> {
+    with_write_lock(database, || {
+        insert_stream_locked(database, table, requested_columns, next_row)
+    })
+}
+
+/// Caller holds the database write lock while reading the source table.
+/// The snapshot is published only after the complete stream validates.
+pub(super) fn insert_stream_locked(
     database: &Path,
     table: &str,
     requested_columns: Option<Vec<String>>,
     mut next_row: impl FnMut() -> Result<Option<Vec<Option<String>>>, String>,
 ) -> Result<(), String> {
-    with_write_lock(database, || {
-        let cols = columns(database, table)?;
-        let (_, parts) = validated_parts(database, table, &cols)?;
-        let indices = match requested_columns {
-            Some(names) => names
-                .iter()
-                .map(|name| {
-                    cols.iter()
-                        .position(|col| col.name == *name)
-                        .ok_or_else(|| format!("unknown INSERT column: {name}"))
-                })
-                .collect::<Result<Vec<_>, _>>()?,
-            None => (0..cols.len()).collect::<Vec<_>>(),
+    let cols = columns(database, table)?;
+    let (_, parts) = validated_parts(database, table, &cols)?;
+    let indices = match requested_columns {
+        Some(names) => names
+            .iter()
+            .map(|name| {
+                cols.iter()
+                    .position(|col| col.name == *name)
+                    .ok_or_else(|| format!("unknown INSERT column: {name}"))
+            })
+            .collect::<Result<Vec<_>, _>>()?,
+        None => (0..cols.len()).collect::<Vec<_>>(),
+    };
+    // Empty imports should not create a new generation.
+    let mut first = next_row()?;
+    if first.is_none() {
+        println!("Inserted 0 rows into {table}");
+        return Ok(());
+    }
+    let count = rewrite::append_parts_stream(database, table, &cols, &parts, || {
+        let next = match first.take() {
+            Some(row) => Some(row),
+            None => next_row()?,
         };
-        // Empty imports should not create a new generation.
-        let mut first = next_row()?;
-        if first.is_none() {
-            println!("Inserted 0 rows into {table}");
-            return Ok(());
+        let Some(source) = next else {
+            return Ok(None);
+        };
+        if source.len() != indices.len() {
+            return Err("INSERT row width does not match table schema".into());
         }
-        let count = rewrite::append_parts_stream(database, table, &cols, &parts, || {
-            let next = match first.take() {
-                Some(row) => Some(row),
-                None => next_row()?,
-            };
-            let Some(source) = next else {
-                return Ok(None);
-            };
-            if source.len() != indices.len() {
-                return Err("INSERT row width does not match table schema".into());
+        let mut values = vec![None; cols.len()];
+        for (value, &index) in source.into_iter().zip(&indices) {
+            values[index] = value;
+        }
+        for (column, value) in cols.iter().zip(&values) {
+            if value.is_none() && !column.data_type.starts_with("Nullable(") {
+                return Err(format!("missing or NULL value for {}", column.name));
             }
-            let mut values = vec![None; cols.len()];
-            for (value, &index) in source.into_iter().zip(&indices) {
-                values[index] = value;
-            }
-            for (column, value) in cols.iter().zip(&values) {
-                if value.is_none() && !column.data_type.starts_with("Nullable(") {
-                    return Err(format!("missing or NULL value for {}", column.name));
-                }
-            }
-            Ok(Some(values))
-        })?;
-        println!("Inserted {count} rows into {table}");
-        Ok(())
-    })
+        }
+        Ok(Some(values))
+    })?;
+    println!("Inserted {count} rows into {table}");
+    Ok(())
 }
 
 /// The caller must already own the exclusive database write lock.
