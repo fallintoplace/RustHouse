@@ -76,7 +76,7 @@ pub fn format_membership(members: &[Member]) -> Result<String, &'static str> {
     }
     let mut text = String::with_capacity((members.len() * 64).min(8192));
     for member in members {
-        write!(&mut text, "{} {} {}\n", member.node, member.zone, member.weight)
+        writeln!(&mut text, "{} {} {}", member.node, member.zone, member.weight)
             .expect("writing to String is infallible");
         if text.len() > 8192 {
             return Err("membership manifest too large");
