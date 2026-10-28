@@ -85,6 +85,7 @@ pub(super) fn is_function(name: &str) -> bool {
             | "BASE64_DECODE"
             | "APPENDTRAILINGCHARIFABSENT"
             | "RPAD"
+            | "RIGHTPAD"
             | "SPACE"
     )
 }
@@ -1663,6 +1664,41 @@ fn parse_at_depth(parser: &mut Parser, depth: usize) -> Result<ConstantValue, Pa
                         input.push_str(&ending);
                     }
                     ConstantValue::Text(input)
+                }
+                _ => ConstantValue::Null,
+            }
+        }
+        "RIGHTPAD" => {
+            let input = text_arg(parser, depth + 1)?;
+            require(parser, Token::Comma, "rightPad requires a width")?;
+            let width = integer_arg(parser, depth + 1)?;
+            let padding = if parser.take(Token::Comma) {
+                text_arg(parser, depth + 1)?
+            } else {
+                Some(" ".to_owned())
+            };
+            require(parser, Token::RParen, "expected ')' after rightPad")?;
+            match (input, width, padding) {
+                (Some(input), Some(width), Some(padding)) => {
+                    let width = usize::try_from(width)
+                        .map_err(|_| ParseError("rightPad width must be nonnegative".into()))?;
+                    if width > MAX_TEXT_BYTES {
+                        return Err(ParseError("rightPad result exceeds byte limit".into()));
+                    }
+                    let bytes = if width <= input.len() {
+                        input.into_bytes()[..width].to_vec()
+                    } else {
+                        if padding.is_empty() {
+                            return Err(ParseError("rightPad padding cannot be empty".into()));
+                        }
+                        let mut result = Vec::with_capacity(width);
+                        result.extend_from_slice(input.as_bytes());
+                        result.extend(padding.bytes().cycle().take(width - input.len()));
+                        result
+                    };
+                    ConstantValue::Text(String::from_utf8(bytes).map_err(|_| {
+                        ParseError("rightPad result cannot be represented as UTF-8".into())
+                    })?)
                 }
                 _ => ConstantValue::Null,
             }
