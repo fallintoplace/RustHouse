@@ -1,0 +1,95 @@
+//! Copy a frozen local file into replica storage without overwriting an object.
+//! This is a filesystem transport, not an authenticated network protocol.
+use std::fs::{self, File, OpenOptions};
+use std::io::{self, Read, Write};
+use std::path::Path;
+use std::sync::atomic::{AtomicU64, Ordering};
+
+static NEXT_STAGE: AtomicU64 = AtomicU64::new(0);
+
+/// Stage, sync, and hard-link an immutable destination file.
+/// Both paths must be on a trusted local filesystem. Existing objects are never replaced.
+pub fn copy_immutable_file(source: &Path, destination: &Path, max_bytes: u64) -> io::Result<u64> {
+    let source_meta = fs::symlink_metadata(source)?;
+    if !source_meta.file_type().is_file() || source_meta.len() > max_bytes {
+        return Err(io::Error::other("source is not a bounded regular file"));
+    }
+    let parent = destination
+        .parent()
+        .ok_or_else(|| io::Error::other("destination has no parent directory"))?;
+    if !fs::symlink_metadata(parent)?.file_type().is_dir() {
+        return Err(io::Error::other("destination parent is not a real directory"));
+    }
+    let staging = parent.join(format!(
+        ".rusthouse-replica-{}-{}",
+        std::process::id(),
+        NEXT_STAGE.fetch_add(1, Ordering::Relaxed)
+    ));
+    let mut input = File::open(source)?;
+    let mut output = OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(&staging)?;
+    let copied = (|| -> io::Result<u64> {
+        let mut total = 0u64;
+        let mut buffer = [0u8; 32 * 1024];
+        loop {
+            let len = input.read(&mut buffer)?;
+            if len == 0 {
+                break;
+            }
+            total = total
+                .checked_add(len as u64)
+                .ok_or_else(|| io::Error::other("replica size overflow"))?;
+            if total > max_bytes {
+                return Err(io::Error::other("replica file exceeds byte cap"));
+            }
+            output.write_all(&buffer[..len])?;
+        }
+        if total != source_meta.len() {
+            return Err(io::Error::other("source changed during immutable copy"));
+        }
+        output.sync_all()?;
+        Ok(total)
+    })();
+    drop(output);
+    let total = match copied {
+        Ok(total) => total,
+        Err(error) => {
+            let _ = fs::remove_file(&staging);
+            return Err(error);
+        }
+    };
+    // hard_link fails if the destination already exists, unlike an overwriting rename.
+    if let Err(error) = fs::hard_link(&staging, destination) {
+        let _ = fs::remove_file(&staging);
+        return Err(error);
+    }
+    fs::remove_file(&staging)?;
+    #[cfg(unix)]
+    File::open(parent)?.sync_all()?;
+    Ok(total)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn copies_once_and_never_replaces_existing_data() {
+        let dir = std::env::temp_dir().join(format!(
+            "rusthouse-atomic-copy-{}",
+            std::process::id()
+        ));
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir(&dir).unwrap();
+        let src = dir.join("source");
+        let dst = dir.join("replica");
+        fs::write(&src, b"immutable data").unwrap();
+        assert_eq!(copy_immutable_file(&src, &dst, 100).unwrap(), 14);
+        assert_eq!(fs::read(&dst).unwrap(), b"immutable data");
+        assert!(copy_immutable_file(&src, &dst, 100).is_err());
+        assert!(copy_immutable_file(&src, &dir.join("small"), 1).is_err());
+        fs::remove_dir_all(dir).unwrap();
+    }
+}

@@ -64,7 +64,7 @@ jobs:
           fi
           rm -rf dist/bin
       - name: Upload candidate archive and checksum
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: rusthouse-${{ matrix.os }}-${{ github.sha }}
           path: |
