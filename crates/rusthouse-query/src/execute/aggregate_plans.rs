@@ -404,19 +404,27 @@ pub(super) fn execute_count_distinct_part<W: Write>(
             "UInt16" | "Int16" => Some(65536usize),
             _ => None,
         });
-    if no_filters && query.order_by.is_none() && query.order_by_extra.is_empty() {
+    if query.order_by.is_none() && query.order_by_extra.is_empty() {
         if let Some(domain) = domain {
             let mut bits = vec![0u64; domain / 64];
             while let Some(batch) = reader.next_batch()? {
-                let mut record = |value: usize| {
+                // Narrow values remain in their native array. Apply WHERE
+                // before setting the bit, without constructing NumberKey or
+                // probing a hash table for each qualifying row.
+                for row in 0..batch[0].len() {
+                    if !no_filters && !batch_matches(&batch, row, &comparisons) {
+                        continue;
+                    }
+                    let value = match &batch[0] {
+                        NumericColumn::UInt8(values) => usize::from(values[row]),
+                        NumericColumn::Int8(values) => usize::from(values[row] as u8),
+                        NumericColumn::UInt16(values) => usize::from(values[row]),
+                        NumericColumn::Int16(values) => usize::from(values[row] as u16),
+                        _ => return Err(ExecutionError::Invalid(
+                            "unexpected COUNT(DISTINCT) narrow column type".into(),
+                        )),
+                    };
                     bits[value / 64] |= 1u64 << (value % 64);
-                };
-                match &batch[0] {
-                    NumericColumn::UInt8(values) => values.iter().for_each(|&value| record(value as usize)),
-                    NumericColumn::Int8(values) => values.iter().for_each(|&value| record((value as u8) as usize)),
-                    NumericColumn::UInt16(values) => values.iter().for_each(|&value| record(value as usize)),
-                    NumericColumn::Int16(values) => values.iter().for_each(|&value| record((value as u16) as usize)),
-                    _ => return Err(ExecutionError::Invalid("unexpected COUNT(DISTINCT) narrow column type".into())),
                 }
             }
             if query.offset.unwrap_or(0) == 0 {
