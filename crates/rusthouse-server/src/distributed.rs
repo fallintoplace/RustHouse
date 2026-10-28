@@ -1067,6 +1067,77 @@ fn merge_grouped_distinct_pairs(
     Ok(output)
 }
 
+
+/// Parsed GROUP BY key sort values retain numeric SQL ordering.
+enum GroupSortKey {
+    Null,
+    Signed(i128),
+    Unsigned(u128),
+    Bytes(Vec<u8>),
+}
+
+fn parse_group_sort_key(field: &[u8], kind: &str) -> Result<GroupSortKey, MergeError> {
+    if field == b"\\N" {
+        return Ok(GroupSortKey::Null);
+    }
+    let kind = kind.strip_prefix("Nullable(").and_then(|s| s.strip_suffix(')'))
+        .unwrap_or(kind);
+    if kind.starts_with("UInt") {
+        return Ok(GroupSortKey::Unsigned(
+            std::str::from_utf8(field).map_err(|_| MergeError::InvalidGroupedCount)?
+                .parse::<u128>().map_err(|_| MergeError::InvalidGroupedCount)?,
+        ));
+    }
+    if kind.starts_with("Int") {
+        return Ok(GroupSortKey::Signed(
+            std::str::from_utf8(field).map_err(|_| MergeError::InvalidGroupedCount)?
+                .parse::<i128>().map_err(|_| MergeError::InvalidGroupedCount)?,
+        ));
+    }
+    if matches!(kind, "String" | "UUID") {
+        return Ok(GroupSortKey::Bytes(
+            rusthouse_format::decode_tsv_field(field)
+                .map_err(|_| MergeError::InvalidGroupedCount)?,
+        ));
+    }
+    Err(MergeError::InvalidGroupedCount)
+}
+
+fn compare_group_sort_keys(
+    left: &GroupSortKey,
+    right: &GroupSortKey,
+    descending: bool,
+    nulls_first: Option<bool>,
+) -> std::cmp::Ordering {
+    use std::cmp::Ordering;
+    match (left, right) {
+        (GroupSortKey::Null, GroupSortKey::Null) => Ordering::Equal,
+        (GroupSortKey::Null, _) => {
+            if nulls_first == Some(true) || (nulls_first.is_none() && !descending) {
+                Ordering::Less
+            } else {
+                Ordering::Greater
+            }
+        }
+        (_, GroupSortKey::Null) => {
+            if nulls_first == Some(true) || (nulls_first.is_none() && !descending) {
+                Ordering::Greater
+            } else {
+                Ordering::Less
+            }
+        }
+        _ => {
+            let ordering = match (left, right) {
+                (GroupSortKey::Signed(a), GroupSortKey::Signed(b)) => a.cmp(b),
+                (GroupSortKey::Unsigned(a), GroupSortKey::Unsigned(b)) => a.cmp(b),
+                (GroupSortKey::Bytes(a), GroupSortKey::Bytes(b)) => a.cmp(b),
+                _ => Ordering::Equal,
+            };
+            if descending { ordering.reverse() } else { ordering }
+        }
+    }
+}
+
 /// Reduce grouped COUNT results by their canonical TSV-encoded key.
 /// Preserve first-seen key order, reject malformed rows, and only emit a
 /// complete bounded result. Shards may hold overlapping group *keys*, but
@@ -1098,6 +1169,15 @@ fn merge_grouped_counts_query(
     shards: &[(usize, Vec<u8>)],
     max_rows: usize,
     global: Option<&Select>,
+) -> Result<Vec<u8>, MergeError> {
+    merge_grouped_counts_typed(shards, max_rows, global, None)
+}
+
+fn merge_grouped_counts_typed(
+    shards: &[(usize, Vec<u8>)],
+    max_rows: usize,
+    global: Option<&Select>,
+    key_kind: Option<&str>,
 ) -> Result<Vec<u8>, MergeError> {
     let group_width = match global.map(|query| &query.projection) {
         Some(Projection::GroupedMultiCount { columns }) => columns.len(),
@@ -1184,11 +1264,45 @@ fn merge_grouped_counts_query(
         if let Some(having) = &select.having {
             groups.retain(|(_, count)| passes_count_having(*count, having));
         }
-        if let Some(order) = &select.order_by {
-            groups.sort_by(|left, right| {
-                let cmp = left.1.cmp(&right.1);
-                if order.descending { cmp.reverse() } else { cmp }
-            });
+        if select.order_by.is_some() {
+            let terms = select.order_terms().collect::<Vec<_>>();
+            if terms.iter().all(|order| order.column == "count") {
+                groups.sort_by(|left, right| {
+                    for order in &terms {
+                        let cmp = left.1.cmp(&right.1);
+                        let cmp = if order.descending { cmp.reverse() } else { cmp };
+                        if cmp != std::cmp::Ordering::Equal { return cmp; }
+                    }
+                    std::cmp::Ordering::Equal
+                });
+            } else {
+                if group_width != 1 {
+                    return Err(MergeError::InvalidGroupedCount);
+                }
+                let kind = key_kind.ok_or(MergeError::InvalidGroupedCount)?;
+                let mut indices = groups.iter().enumerate()
+                    .map(|(index, (key, _))| {
+                        parse_group_sort_key(key, kind).map(|parsed| (index, parsed))
+                    })
+                    .collect::<Result<Vec<_>, _>>()?;
+                indices.sort_by(|(a, a_key), (b, b_key)| {
+                    for order in &terms {
+                        let cmp = if order.column == "count" {
+                            groups[*a].1.cmp(&groups[*b].1)
+                        } else {
+                            compare_group_sort_keys(a_key, b_key, order.descending, order.nulls_first)
+                        };
+                        let cmp = if order.column == "count" && order.descending {
+                            cmp.reverse()
+                        } else {
+                            cmp
+                        };
+                        if cmp != std::cmp::Ordering::Equal { return cmp; }
+                    }
+                    std::cmp::Ordering::Equal
+                });
+                groups = indices.into_iter().map(|(index, _)| groups[index]).collect();
+            }
         }
         groups = groups
             .into_iter()
@@ -1355,6 +1469,11 @@ pub fn handle(method: &str, body: &[u8], cluster: &Cluster, max_rows: usize) -> 
                 ..
             },
         ) => Some((table.as_str(), column.as_str())),
+        (
+            Some(Source::Table(table)),
+            Projection::GroupedCount { column },
+        ) if select.order_terms().any(|term| term.column == *column) =>
+            Some((table.as_str(), column.as_str())),
         _ => None,
     };
     // Verify that only a named database table can be scanned.
@@ -1537,7 +1656,7 @@ pub fn handle(method: &str, body: &[u8], cluster: &Cluster, max_rows: usize) -> 
             || select.limit.is_some()
             || select.offset.is_some()
         {
-            merge_grouped_counts_query(&shards, limit, Some(&select))
+            merge_grouped_counts_typed(&shards, limit, Some(&select), group_key_kind.as_deref())
         } else {
             merge_grouped_counts(&shards, limit)
         }
@@ -1872,6 +1991,44 @@ mod tests {
                 10, "region", "customer", &query,
             ),
             Err(MergeError::ShardRowLimit)
+        );
+    }
+
+    #[test]
+    fn distributed_numeric_group_order_uses_numeric_values_not_text() {
+        let query = parse_select(
+            "SELECT customer, count(*) FROM events GROUP BY customer ORDER BY customer ASC LIMIT 2",
+        ).unwrap();
+        assert!(is_safe_grouped_count(&query));
+        let shards = [shard(10, "customer\tcount\n10\t2\n2\t1\n1\t4\n")];
+        assert_eq!(
+            merge_grouped_counts_typed(&shards, 2, Some(&query), Some("UInt64")).unwrap(),
+            b"customer\tcount\n1\t4\n2\t1\n"
+        );
+        let descending = parse_select(
+            "SELECT customer, count(*) FROM events GROUP BY customer ORDER BY count DESC, customer ASC LIMIT 2",
+        ).unwrap();
+        let shards = [shard(10, "customer\tcount\n10\t2\n2\t2\n1\t4\n")];
+        assert_eq!(
+            merge_grouped_counts_typed(&shards, 2, Some(&descending), Some("UInt64")).unwrap(),
+            b"customer\tcount\n1\t4\n2\t2\n"
+        );
+    }
+
+    #[test]
+    fn distributed_text_group_order_decodes_escape_sequences() {
+        let query = parse_select(
+            "SELECT category, count(*) FROM events GROUP BY category ORDER BY category ASC",
+        ).unwrap();
+        let shards = [shard(10, "category\tcount\na\\tb\t1\na0\t2\n")];
+        assert_eq!(
+            merge_grouped_counts_typed(&shards, 10, Some(&query), Some("String")).unwrap(),
+            b"category\tcount\na\\tb\t1\na0\t2\n"
+        );
+        assert_eq!(
+            merge_grouped_counts_typed(&[shard(10, "category\tcount\n\\q\t1\n")], 10,
+                Some(&query), Some("String")),
+            Err(MergeError::InvalidGroupedCount)
         );
     }
     #[test]
