@@ -8,6 +8,9 @@ on:
       - 'crates/rusthouse-query/benches/queries.rs'
       - 'bench/pr_bench_compare.py'
       - 'bench/test_pr_bench_compare.py'
+      - 'crates/rusthouse-query/benches/grouped.rs'
+      - 'bench/pr_grouped_compare.py'
+      - 'bench/test_pr_grouped_compare.py'
       - '.github/workflows/pr-performance.yml'
 
 permissions:
@@ -40,14 +43,18 @@ jobs:
           git checkout --detach "$BASE_SHA"
           cargo bench -p rusthouse-query --bench queries --locked -- --rows 200000 --samples 21 \
             | tee "$RUNNER_TEMP/rusthouse-base-bench.txt"
+          cargo bench -p rusthouse-query --bench grouped --locked -- --rows 65536 --samples 11 \
+            | tee "$RUNNER_TEMP/rusthouse-base-grouped.txt"
       - name: Benchmark PR commit
         shell: bash
         run: |
           git checkout --detach "$HEAD_SHA"
           cargo bench -p rusthouse-query --bench queries --locked -- --rows 200000 --samples 21 \
             | tee "$RUNNER_TEMP/rusthouse-pr-bench.txt"
+          cargo bench -p rusthouse-query --bench grouped --locked -- --rows 65536 --samples 11 \
+            | tee "$RUNNER_TEMP/rusthouse-pr-grouped.txt"
       - name: Test comparison formatter
-        run: python3 -m unittest bench.test_pr_bench_compare
+        run: python3 -m unittest bench.test_pr_bench_compare bench.test_pr_grouped_compare
       - name: Show base vs PR numbers in job summary
         shell: bash
         run: |
@@ -56,6 +63,11 @@ jobs:
             --candidate "$RUNNER_TEMP/rusthouse-pr-bench.txt" \
             --summary "$RUNNER_TEMP/rusthouse-bench-summary.md"
           cat "$RUNNER_TEMP/rusthouse-bench-summary.md" >> "$GITHUB_STEP_SUMMARY"
+          python3 -m bench.pr_grouped_compare \
+            --baseline "$RUNNER_TEMP/rusthouse-base-grouped.txt" \
+            --candidate "$RUNNER_TEMP/rusthouse-pr-grouped.txt" \
+            --summary "$RUNNER_TEMP/rusthouse-grouped-summary.md"
+          cat "$RUNNER_TEMP/rusthouse-grouped-summary.md" >> "$GITHUB_STEP_SUMMARY"
       - name: Upload raw benchmark results
         if: always()
         uses: actions/upload-artifact@v7
@@ -65,5 +77,8 @@ jobs:
             ${{ runner.temp }}/rusthouse-base-bench.txt
             ${{ runner.temp }}/rusthouse-pr-bench.txt
             ${{ runner.temp }}/rusthouse-bench-summary.md
+            ${{ runner.temp }}/rusthouse-base-grouped.txt
+            ${{ runner.temp }}/rusthouse-pr-grouped.txt
+            ${{ runner.temp }}/rusthouse-grouped-summary.md
           if-no-files-found: warn
           retention-days: 14
