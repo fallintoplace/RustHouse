@@ -20,6 +20,7 @@ from bench.tpch.run import compare_reference, load_queries, query_fingerprint
 
 ENGINES = ("rusthouse", "clickhouse")
 ABBA = ("rusthouse", "clickhouse", "clickhouse", "rusthouse")
+BAAB = ("clickhouse", "rusthouse", "rusthouse", "clickhouse")
 
 
 def command(engine, binary, database, sql):
@@ -62,8 +63,11 @@ def benchmark_pair(sql, reference, execute, runs=5, warmups=2, comparison="exact
     for _ in range(warmups):
         for engine in ENGINES:
             checked(engine)
-    for _ in range(runs):
-        for engine in ABBA:
+    for round_index in range(runs):
+        # Alternate the engine starting first across runs to reduce warm-cache
+        # and CPU-frequency order effects without unbalancing sample counts.
+        order = ABBA if round_index % 2 == 0 else BAAB
+        for engine in order:
             samples[engine].append(checked(engine))
 
     medians = {name: statistics.median(times) for name, times in samples.items()}
