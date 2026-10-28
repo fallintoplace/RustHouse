@@ -55,6 +55,7 @@ pub(super) fn is_function(name: &str) -> bool {
             | "SUBSTRINGINDEXUTF8"
             | "QUERYSTRINGANDFRAGMENT"
             | "TO_INT64"
+            | "TOINT64"
             | "TRIM"
             | "LTRIM"
             | "TRIMLEFT"
@@ -836,7 +837,7 @@ fn parse_at_depth(parser: &mut Parser, depth: usize) -> Result<ConstantValue, Pa
                 None => ConstantValue::Null,
             }
         }
-        "TO_INT64" => {
+        "TO_INT64" | "TOINT64" => {
             let input = text_arg(parser, depth + 1)?;
             require(parser, Token::RParen, "TO_INT64 requires one argument")?;
             match input {
@@ -2004,5 +2005,26 @@ fn text_arg(parser: &mut Parser, depth: usize) -> Result<Option<String>, ParseEr
         _ => Err(ParseError(
             "expected a string literal or string function".into(),
         )),
+    }
+}
+
+#[cfg(test)]
+mod clickhouse_toint64_alias_tests {
+    use super::*;
+    use crate::{Projection, parse_select};
+    #[test]
+    fn parses_bounded_clickhouse_toint64() {
+        for (sql, expected) in [
+            ("SELECT toInt64('42')", 42),
+            ("SELECT toInt64('-100')", -100),
+            ("SELECT toInt64('0')", 0),
+        ] {
+            let query = parse_select(sql).unwrap();
+            assert!(matches!(query.projection, Projection::Constants(values)
+                if values.len() == 1 && values[0].value == ConstantValue::Integer(expected)), "{sql}");
+        }
+        assert!(parse_select("SELECT toInt64('invalid')").is_err());
+        assert!(parse_select("SELECT toInt64('9223372036854775808')").is_err());
+        assert!(parse_select("SELECT toInt64()").is_err());
     }
 }
