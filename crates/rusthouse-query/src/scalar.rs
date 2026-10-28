@@ -46,6 +46,7 @@ pub(super) fn is_function(name: &str) -> bool {
         || name.eq_ignore_ascii_case("SIGN")
         || name.eq_ignore_ascii_case("DIGIT_COUNT")
         || name.eq_ignore_ascii_case("HAMMING_DISTANCE")
+        || name.eq_ignore_ascii_case("BITHAMMINGDISTANCE")
         || is_extrema(name)
         || name.eq_ignore_ascii_case("IS_POWER_OF_TWO")
         || name.eq_ignore_ascii_case("BIT_REVERSE")
@@ -978,7 +979,7 @@ fn factor(parser: &mut Parser, depth: usize) -> Result<i64, ParseError> {
     if parser.keyword("NEXT_POWER_OF_TWO") {
         return parse_next_power_of_two(parser, depth);
     }
-    if parser.keyword("HAMMING_DISTANCE") {
+    if parser.keyword("HAMMING_DISTANCE") || parser.keyword("BITHAMMINGDISTANCE") {
         return parse_hamming_distance(parser, depth);
     }
     if parser.keyword("POWER") || parser.keyword("POW") {
