@@ -214,12 +214,18 @@ pub(super) fn count_batch_matches(
                 }
                 if !matches!(operator, Operator::Modulo(_) | Operator::ModuloNe(_)) {
                     macro_rules! count_direct {
-                        ($values:expr, $target:expr, $operator:expr, $wide:ty) => {
-                            $values
-                                .iter()
-                                .filter(|&&value| compare(<$wide>::from(value), $target, $operator))
-                                .count()
-                        };
+                        ($values:expr, $target:expr, $operator:expr, $wide:ty) => {{
+                            let target: $wide = $target;
+                            match $operator {
+                                Operator::Eq => $values.iter().filter(|&&value| <$wide>::from(value) == target).count(),
+                                Operator::Ne => $values.iter().filter(|&&value| <$wide>::from(value) != target).count(),
+                                Operator::Lt => $values.iter().filter(|&&value| <$wide>::from(value) < target).count(),
+                                Operator::Le => $values.iter().filter(|&&value| <$wide>::from(value) <= target).count(),
+                                Operator::Gt => $values.iter().filter(|&&value| <$wide>::from(value) > target).count(),
+                                Operator::Ge => $values.iter().filter(|&&value| <$wide>::from(value) >= target).count(),
+                                Operator::Modulo(_) | Operator::ModuloNe(_) => unreachable!("modulo is handled separately"),
+                            }
+                        }};
                     }
                     match (&batch[predicate.index], *target) {
                         (NumericColumn::UInt8(values), Number::Unsigned(target)) => {
