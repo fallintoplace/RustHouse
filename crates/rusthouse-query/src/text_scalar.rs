@@ -41,6 +41,7 @@ pub(super) fn is_function(name: &str) -> bool {
             | "JSONHAS"
             | "JSONEXTRACTSTRING"
             | "JSONEXTRACTRAW"
+            | "JSON_VALUE"
             | "SUBSTRING"
             | "HASSUBSEQUENCECASEINSENSITIVE"
             | "OVERLAY"
@@ -1906,6 +1907,31 @@ fn parse_at_depth(parser: &mut Parser, depth: usize) -> Result<ConstantValue, Pa
                         }
                         ConstantValue::Text(value.repeat(count))
                     }
+                }
+                _ => ConstantValue::Null,
+            }
+        }
+        "JSON_VALUE" => {
+            let input = text_arg(parser, depth + 1)?;
+            require(parser, Token::Comma, "JSON_VALUE requires a JSONPath")?;
+            let path = text_arg(parser, depth + 1)?;
+            require(parser, Token::RParen, "expected ')' after JSON_VALUE")?;
+            match (input, path) {
+                (Some(input), Some(path)) => {
+                    let key = crate::json::exact_json_path(&path)
+                        .map_err(|error| ParseError(error.into()))?;
+                    let json = crate::json::parse_json(&input)
+                        .map_err(|error| ParseError(format!("invalid JSON: {error}")))?;
+                    let found = if key.is_empty() { Some(&json) } else { json.at_path(&key) };
+                    let output = found.map_or("", |value| {
+                        let raw = value.raw();
+                        if raw == "null" || raw.starts_with(['{', '[']) {
+                            ""
+                        } else {
+                            value.as_string().unwrap_or(raw)
+                        }
+                    });
+                    ConstantValue::Text(output.to_owned())
                 }
                 _ => ConstantValue::Null,
             }
