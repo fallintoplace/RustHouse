@@ -45,21 +45,9 @@ pub(super) fn parse_content_length(value: &str) -> Result<usize, String> {
         .map_err(|_| "invalid peer Content-Length".into())
 }
 
-/// Parse a complete HTTP response head without waiting for the peer to close
-/// its connection. The advertised body length is untrusted and remains bounded.
-fn response_head(raw: &[u8]) -> Result<Option<(usize, u16, String, usize)>, String> {
-    let Some(head_end) = raw.windows(4).position(|bytes| bytes == b"\r\n\r\n") else {
-        if raw.len() >= MAX_HEADER_BYTES {
-            return Err("peer headers exceed 8 KiB".into());
-        }
-        return Ok(None);
-    };
-    if head_end + 4 > MAX_HEADER_BYTES {
-        return Err("peer headers exceed 8 KiB".into());
-    }
-    let head = std::str::from_utf8(&raw[..head_end]).map_err(|_| "peer headers are not UTF-8")?;
-    let mut lines = head.split("\r\n");
-    let status = parse_http_status(lines.next().ok_or("missing peer status")?)?;
+fn parse_required_headers<'a>(
+    lines: impl Iterator<Item = &'a str>,
+) -> Result<(usize, String), String> {
     let mut length = None;
     let mut content_type = None;
     for line in lines {
@@ -85,6 +73,25 @@ fn response_head(raw: &[u8]) -> Result<Option<(usize, u16, String, usize)>, Stri
     }
     let length = length.ok_or("missing peer Content-Length")?;
     let content_type = content_type.ok_or("missing peer Content-Type")?;
+    Ok((length, content_type))
+}
+
+/// Parse a complete HTTP response head without waiting for the peer to close
+/// its connection. The advertised body length is untrusted and remains bounded.
+fn response_head(raw: &[u8]) -> Result<Option<(usize, u16, String, usize)>, String> {
+    let Some(head_end) = raw.windows(4).position(|bytes| bytes == b"\r\n\r\n") else {
+        if raw.len() >= MAX_HEADER_BYTES {
+            return Err("peer headers exceed 8 KiB".into());
+        }
+        return Ok(None);
+    };
+    if head_end + 4 > MAX_HEADER_BYTES {
+        return Err("peer headers exceed 8 KiB".into());
+    }
+    let head = std::str::from_utf8(&raw[..head_end]).map_err(|_| "peer headers are not UTF-8")?;
+    let mut lines = head.split("\r\n");
+    let status = parse_http_status(lines.next().ok_or("missing peer status")?)?;
+    let (length, content_type) = parse_required_headers(lines)?;
     if length > MAX_RESPONSE_BYTES {
         return Err("peer response size mismatch or exceeds 8 MiB".into());
     }
