@@ -88,6 +88,7 @@ pub fn copy_immutable_file(source: &Path, destination: &Path, max_bytes: u64) ->
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::io::Seek;
 
     #[test]
     fn copies_once_and_never_replaces_existing_data() {
