@@ -19,6 +19,7 @@ pub mod distributed_copy_diff;
 mod fixed_strings;
 pub mod distributed_capacity;
 mod fixed_width;
+pub mod distributed_atomic_copy;
 mod granules;
 mod ip;
 mod mark_validation;
