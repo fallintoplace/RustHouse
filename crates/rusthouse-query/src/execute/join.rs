@@ -635,7 +635,17 @@ pub fn execute_join<W: Write>(
         let mut matched = false;
         if let Some(key) = row_key(row, &left_keys) {
             if let Some(matches) = hash.get(&key) {
-                for &right_index in matches.iter().take(if query.any { 1 } else { usize::MAX }) {
+                for &right_index in matches
+                    .iter()
+                    .take(if query.any && query.kind != JoinType::Right {
+                        1
+                    } else {
+                        usize::MAX
+                    })
+                {
+                    if query.any && query.kind == JoinType::Right && matched_right[right_index] {
+                        continue;
+                    }
                     matched = true;
                     matched_right[right_index] = true;
                     let pair = (Some(left_index), Some(right_index));
