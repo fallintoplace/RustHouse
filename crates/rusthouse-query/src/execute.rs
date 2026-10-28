@@ -1,5 +1,31 @@
 mod aggregate_plans;
 
+#[cfg(test)]
+mod dynamic_part_tests {
+    use super::*;
+
+    #[test]
+    fn workers_claim_every_part_once_even_for_uneven_shares() {
+        let cursor = AtomicUsize::new(0);
+        let mut indices = std::thread::scope(|scope| {
+            let handles = (0..4)
+                .map(|_| scope.spawn(|| {
+                    let mut claimed = Vec::new();
+                    while let Some(index) = next_part_index(&cursor, 257) {
+                        claimed.push(index);
+                    }
+                    claimed
+                }))
+                .collect::<Vec<_>>();
+            handles.into_iter().flat_map(|handle| handle.join().unwrap()).collect::<Vec<_>>()
+        });
+        indices.sort_unstable();
+        assert_eq!(indices, (0..257).collect::<Vec<_>>());
+        assert_eq!(next_part_index(&cursor, 257), None);
+    }
+}
+
+
 use self::aggregate_plans::*;
 
 use crate::{AggregateFunction, Projection, Select, Source};
@@ -11,6 +37,7 @@ use std::error::Error;
 use std::fmt;
 use std::io::{self, BufWriter, Write};
 use std::path::Path;
+use std::sync::atomic::{AtomicUsize, Ordering as AtomicOrdering};
 
 mod grouped_distinct;
 mod grouped_multi;
@@ -207,6 +234,13 @@ pub fn execute<W: Write>(
     Ok(())
 }
 
+/// Atomically hand out independent part indices to workers. This avoids
+/// stranding a worker on one large immutable part while other workers finish.
+fn next_part_index(cursor: &AtomicUsize, part_count: usize) -> Option<usize> {
+    let index = cursor.fetch_add(1, AtomicOrdering::Relaxed);
+    (index < part_count).then_some(index)
+}
+
 /// Evaluate filtered COUNT independently on immutable parts, then reduce the
 /// partial counts. Skip small snapshots where thread startup costs dominate.
 /// An unfiltered COUNT already has a cheaper metadata-only path.
@@ -241,15 +275,16 @@ fn parallel_numeric_filtered_count(
     if columns.is_empty() {
         return Ok(None);
     }
-    let chunk_size = parts.len().div_ceil(workers);
+    let next = AtomicUsize::new(0);
     let count = std::thread::scope(|scope| -> Result<u64, ExecutionError> {
-        let handles = parts.chunks(chunk_size).map(|chunk| {
+        let handles = (0..workers).map(|_| {
             let columns = &columns;
             let branches = &branches;
+            let next = &next;
             scope.spawn(move || -> Result<u64, ExecutionError> {
                 let mut partial = 0u64;
-                for part in chunk {
-                    let mut reader = rusthouse_storage::NumericPartReader::open(part, columns)?;
+                while let Some(index) = next_part_index(next, parts.len()) {
+                    let mut reader = rusthouse_storage::NumericPartReader::open(&parts[index], columns)?;
                     while let Some(batch) = reader.next_batch()? {
                         partial = partial.checked_add(count_batch_matches(&batch, branches) as u64)
                             .ok_or_else(|| ExecutionError::Invalid("parallel COUNT overflow".into()))?;
