@@ -496,6 +496,7 @@ pub(super) fn execute_numbers<W: Write>(
             match state {
                 State::Count(count) => write!(output, "{count}")?,
                 State::Distinct(seen) => write!(output, "{}", seen.len())?,
+                State::DistinctNumeric { aggregate, .. } => write!(output, "{}", aggregate.render())?,
                 State::Numeric(state) => write!(output, "{}", state.render())?,
             }
         }
