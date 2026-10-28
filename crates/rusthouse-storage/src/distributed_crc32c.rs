@@ -28,7 +28,7 @@ const fn make_slicing_tables() -> [[u32; 256]; 8] {
     let mut tables = [[0u32; 256]; 8];
     tables[0] = TABLE;
     let mut row = 1;
-    while row < 4 {
+    while row < tables.len() {
         let mut index = 0;
         while index < 256 {
             let previous = tables[row - 1][index];
