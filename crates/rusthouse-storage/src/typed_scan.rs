@@ -784,7 +784,17 @@ impl TypedQueryReader {
         }
         let mut skipped = 0usize;
         while skipped < max_rows && self.next_part < self.parts.len() {
-            let mut reader = TypedPartReader::open(&self.parts[self.next_part], &self.columns)?;
+            let part = &self.parts[self.next_part];
+            let metadata = inspect_part(part)?;
+            if let Ok(rows) = usize::try_from(metadata.rows) {
+                if rows <= max_rows - skipped {
+                    skipped += rows;
+                    self.next_part += 1;
+                    continue;
+                }
+            }
+            // The final partially skipped part still validates aligned marks.
+            let mut reader = TypedPartReader::open(part, &self.columns)?;
             self.next_part += 1;
             skipped += reader.skip_complete_marks(max_rows - skipped);
             if reader.next_mark != reader.mark_count() {
@@ -973,6 +983,35 @@ mod tests {
             Err(PartError::InvalidGranuleIndex { index: 4, marks: 3 })
         ));
         fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn typed_offset_skips_complete_snapshot_parts_before_decoding() {
+        use crate::{Column, write_wide_part};
+        use std::fs;
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        static NEXT: AtomicUsize = AtomicUsize::new(0);
+        let root = std::env::temp_dir().join(format!(
+            "rusthouse-typed-page-part-skip-{}-{}",
+            std::process::id(), NEXT.fetch_add(1, Ordering::Relaxed)
+        ));
+        fs::create_dir(&root).unwrap();
+        let columns = vec![Column { name: "text".into(), data_type: "String".into() }];
+        for i in 0..4 {
+            write_wide_part(
+                &root.join(format!("all_{i}_{i}_0")),
+                &columns,
+                &[vec![Some(format!("row-{i}"))]],
+            ).unwrap();
+        }
+        let metadata = crate::inspect_query_source(&root).unwrap();
+        let mut scan =
+            TypedQueryReader::open_with_metadata(&root, &["text".into()], &metadata).unwrap();
+        assert_eq!(scan.skip_prefix_rows(3).unwrap(), 3);
+        let tail = scan.next_batch().unwrap().unwrap();
+        assert!(matches!(&tail[0], TypedColumn::Text(values) if values.get(0) == Some(b"row-3".as_slice())));
+        assert!(scan.next_batch().unwrap().is_none());
+        fs::remove_dir_all(&root).unwrap();
     }
 
     #[test]
