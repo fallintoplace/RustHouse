@@ -33,6 +33,7 @@ pub(super) fn is_function(name: &str) -> bool {
         return true;
     }
     is_saturating(name)
+        || name.eq_ignore_ascii_case("BITHAMMINGDISTANCE")
         || name.eq_ignore_ascii_case("ABS")
         || name.eq_ignore_ascii_case("NEGATE")
         || name.eq_ignore_ascii_case("BIT_PARITY")
