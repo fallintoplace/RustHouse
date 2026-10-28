@@ -259,7 +259,14 @@ pub fn execute_multi_join<W: Write>(
             let mut matched = false;
             if let Some(key) = row_key(row, &left_keys) {
                 if let Some(matches) = hash.get(&key) {
-                    for &match_index in matches.iter().take(if step.any && step.kind != JoinType::Right { 1 } else { usize::MAX }) {
+                    for &match_index in matches
+                        .iter()
+                        .take(if step.any && step.kind != JoinType::Right {
+                            1
+                        } else {
+                            usize::MAX
+                        })
+                    {
                         if step.any && step.kind == JoinType::Right && matched_right[match_index] {
                             continue;
                         }
