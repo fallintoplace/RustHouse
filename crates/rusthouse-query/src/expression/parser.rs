@@ -1,5 +1,23 @@
 use super::*;
 
+fn parse_length_column(parser: &mut Parser) -> Result<ScalarExpr, ParseError> {
+    parser.index += 2;
+    let column = parser.word()?;
+    if !parser.take(Token::RParen) {
+        return Err(ParseError("length requires a single column".into()));
+    }
+    Ok(ScalarExpr::TextLength(column))
+}
+
+fn parse_parenthesized(parser: &mut Parser) -> Result<ScalarExpr, ParseError> {
+    parser.index += 1;
+    let result = parse_expression_tokens(parser)?;
+    if !parser.take(Token::RParen) {
+        return Err(ParseError("expected ')' in scalar expression".into()));
+    }
+    Ok(result)
+}
+
 pub(super) fn primary(parser: &mut Parser) -> Result<ScalarExpr, ParseError> {
     match parser.tokens.get(parser.index) {
         Some(Token::Plus) => {
@@ -17,12 +35,7 @@ pub(super) fn primary(parser: &mut Parser) -> Result<ScalarExpr, ParseError> {
             if name.eq_ignore_ascii_case("length")
                 && parser.tokens.get(parser.index + 1) == Some(&Token::LParen) =>
         {
-            parser.index += 2;
-            let column = parser.word()?;
-            if !parser.take(Token::RParen) {
-                return Err(ParseError("length requires a single column".into()));
-            }
-            Ok(ScalarExpr::TextLength(column))
+            parse_length_column(parser)
         }
         Some(Token::Word(_)) => Ok(ScalarExpr::Column(parser.word()?)),
         Some(Token::Number(number)) => {
@@ -32,14 +45,7 @@ pub(super) fn primary(parser: &mut Parser) -> Result<ScalarExpr, ParseError> {
             parser.index += 1;
             Ok(ScalarExpr::Integer(number))
         }
-        Some(Token::LParen) => {
-            parser.index += 1;
-            let result = parse_expression_tokens(parser)?;
-            if !parser.take(Token::RParen) {
-                return Err(ParseError("expected ')' in scalar expression".into()));
-            }
-            Ok(result)
-        }
+        Some(Token::LParen) => parse_parenthesized(parser),
         _ => Err(ParseError(
             "expected column, integer, or '(' in expression".into(),
         )),

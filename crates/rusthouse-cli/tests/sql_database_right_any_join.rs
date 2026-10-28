@@ -3,10 +3,7 @@ use std::process::Command;
 
 #[test]
 fn right_any_join_keeps_first_left_match_for_each_right_row() {
-    let db = std::env::temp_dir().join(format!(
-        "rusthouse-right-any-{}",
-        std::process::id()
-    ));
+    let db = std::env::temp_dir().join(format!("rusthouse-right-any-{}", std::process::id()));
     let sql = |statement: &str| {
         Command::new(env!("CARGO_BIN_EXE_rusthouse"))
             .args(["sql", statement, "--database"])

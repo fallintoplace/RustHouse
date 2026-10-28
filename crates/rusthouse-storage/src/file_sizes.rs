@@ -104,10 +104,7 @@ fn verify_stored_hash(
 
 /// Hash the logical byte stream, not the individual compressed block boundaries.
 /// ClickHouse's HashingWriteBuffer uses a continuous 2048-byte chunk sequence.
-fn verify_uncompressed_hash(
-    path: &Path,
-    expected: &UncompressedChecksum,
-) -> Result<(), PartError> {
+fn verify_uncompressed_hash(path: &Path, expected: &UncompressedChecksum) -> Result<(), PartError> {
     const BLOCK_BYTES: usize = 2048;
     let mut reader = CompressedBlockReader::open(path)?;
     let mut hash = U128::new(0, 0);
@@ -120,7 +117,10 @@ fn verify_uncompressed_hash(
             .checked_add(data.len() as u64)
             .ok_or_else(|| invalid(path, "uncompressed file size overflows u64"))?;
         if total_bytes > expected.size {
-            return Err(invalid(path, "uncompressed file size differs from checksums.txt"));
+            return Err(invalid(
+                path,
+                "uncompressed file size differs from checksums.txt",
+            ));
         }
         let mut remaining = data.as_slice();
         while !remaining.is_empty() {
@@ -135,13 +135,19 @@ fn verify_uncompressed_hash(
         }
     }
     if total_bytes != expected.size {
-        return Err(invalid(path, "uncompressed file size differs from checksums.txt"));
+        return Err(invalid(
+            path,
+            "uncompressed file size differs from checksums.txt",
+        ));
     }
     if filled > 0 {
         hash = cityhash128_with_seed(&chunk[..filled], hash);
     }
     if u128::from(hash) != expected.hash {
-        return Err(invalid(path, "uncompressed file hash differs from checksums.txt"));
+        return Err(invalid(
+            path,
+            "uncompressed file hash differs from checksums.txt",
+        ));
     }
     Ok(())
 }

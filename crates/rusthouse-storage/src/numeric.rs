@@ -179,9 +179,7 @@ fn read_fixed<R: Read, T, const WIDTH: usize>(
         reader.read_exact(&mut buffer[..size])?;
 
         values.extend(buffer[..size].chunks_exact(WIDTH).map(|bytes| {
-            let mut value = [0u8; WIDTH];
-            value.copy_from_slice(bytes);
-            parse(value)
+            parse(bytes.try_into().expect("exact fixed-width numeric chunk"))
         }));
     }
 
@@ -462,4 +460,15 @@ mod tests {
             NumericColumn::UInt8(vec![])
         );
     }
+
+    #[test]
+    fn direct_fixed_width_decode_keeps_signed_endian_bytes() {
+        let numbers = [i64::MIN, -1, 0, i64::MAX];
+        let raw = numbers.iter().flat_map(|value| value.to_le_bytes()).collect::<Vec<_>>();
+        assert_eq!(
+            read_numeric_column(&mut raw.as_slice(), "Int64", numbers.len()).unwrap(),
+            NumericColumn::Int64(numbers.to_vec())
+        );
+    }
+
 }

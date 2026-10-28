@@ -92,9 +92,11 @@ fn expected_fixed_stream_bytes(
         return Ok(None);
     };
     let width = if let Some(name) = name.strip_suffix(".null") {
-        if metadata.columns.iter().any(|column| {
-            column.name == name && column.data_type.starts_with("Nullable(")
-        }) {
+        if metadata
+            .columns
+            .iter()
+            .any(|column| column.name == name && column.data_type.starts_with("Nullable("))
+        {
             Some(1)
         } else {
             None

@@ -18,7 +18,10 @@ fn collapse_whitespace_preserves_text_semantics() {
     ] {
         assert_eq!(value(sql), ConstantValue::Text(expected.into()), "{sql}");
     }
-    assert_eq!(value("SELECT COLLAPSE_WHITESPACE(NULL)"), ConstantValue::Null);
+    assert_eq!(
+        value("SELECT COLLAPSE_WHITESPACE(NULL)"),
+        ConstantValue::Null
+    );
 }
 
 #[test]
