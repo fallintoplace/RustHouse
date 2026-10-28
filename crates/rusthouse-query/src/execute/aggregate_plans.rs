@@ -677,6 +677,58 @@ pub(super) fn execute_aggregate_numbers<W: Write>(
         }
         return Ok(());
     }
+    // Exclude a small finite set from an arithmetic progression in O(k).
+    if matches!(
+        function,
+        AggregateFunction::Sum | AggregateFunction::Min | AggregateFunction::Max
+    ) {
+        if let Some(excluded) = excluded_generated_positions(&comparisons, start, rows, step) {
+            if query.offset.unwrap_or(0) == 0 {
+                let remaining = rows - excluded.len() as u64;
+                if remaining == 0 {
+                    writeln!(output, "NULL")?;
+                } else {
+                    let first = u128::from(start);
+                    let stride = u128::from(step);
+                    let last = first + u128::from(rows - 1) * stride;
+                    let result = match function {
+                        AggregateFunction::Sum => {
+                            let endpoints = first + last;
+                            let baseline = if rows % 2 == 0 {
+                                u128::from(rows / 2) * endpoints
+                            } else {
+                                u128::from(rows) * (endpoints / 2)
+                            };
+                            let removed = excluded
+                                .iter()
+                                .map(|&index| first + u128::from(index) * stride)
+                                .sum::<u128>();
+                            baseline.checked_sub(removed).ok_or_else(|| {
+                                ExecutionError::Invalid("excluded SUM underflow".into())
+                            })?
+                        }
+                        AggregateFunction::Min => {
+                            let mut index = 0u64;
+                            while excluded.binary_search(&index).is_ok() {
+                                index += 1;
+                            }
+                            first + u128::from(index) * stride
+                        }
+                        AggregateFunction::Max => {
+                            let mut index = rows - 1;
+                            while excluded.binary_search(&index).is_ok() {
+                                index -= 1;
+                            }
+                            first + u128::from(index) * stride
+                        }
+                        _ => unreachable!(),
+                    };
+                    writeln!(output, "{result}")?;
+                }
+            }
+            return Ok(());
+        }
+    }
     let mut state = AggregateState::new(function);
     for index in 0..rows {
         let number = start + index * step;

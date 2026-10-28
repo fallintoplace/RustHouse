@@ -490,6 +490,39 @@ pub(super) fn sparse_generated_positions(
     Some(indices)
 }
 
+/// Return excluded positions for one bounded NOT IN predicate on generated rows.
+pub(super) fn excluded_generated_positions(
+    branches: &[Vec<CompiledPredicate>],
+    start: u64,
+    rows: u64,
+    step: u64,
+) -> Option<Vec<u64>> {
+    let [branch] = branches else { return None; };
+    let [predicate] = branch.as_slice() else { return None; };
+    if step == 0 { return None; }
+    let values: Vec<u128> = match &predicate.test {
+        CompiledTest::NotIn(items) => items.iter().filter_map(|value| {
+            if let Number::Unsigned(value) = value { Some(*value) } else { None }
+        }).collect(),
+        CompiledTest::InSet { targets, negated: true } => targets.iter().filter_map(|key| {
+            if let NumberKey::Unsigned(value) = key { Some(*value) } else { None }
+        }).collect(),
+        _ => return None,
+    };
+    if values.len() > 4096 { return None; }
+    let (start, step, rows) = (u128::from(start), u128::from(step), u128::from(rows));
+    let mut indices = Vec::new();
+    for value in values {
+        if value >= start && (value - start) % step == 0 {
+            let index = (value - start) / step;
+            if index < rows { indices.push(index as u64); }
+        }
+    }
+    indices.sort_unstable();
+    indices.dedup();
+    Some(indices)
+}
+
 pub(super) fn count_monotonic_numbers(
     branches: &[Vec<CompiledPredicate>],
     start: u64,
