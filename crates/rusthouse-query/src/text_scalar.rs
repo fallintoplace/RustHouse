@@ -29,6 +29,7 @@ pub(super) fn is_function(name: &str) -> bool {
             | "QUOTE_LITERAL"
             | "COALESCE"
             | "CONCAT_WS"
+            | "CUTFRAGMENT"
             | "URL_ENCODE"
             | "JSON_QUOTE"
             | "SUBSTRING"
@@ -249,6 +250,18 @@ fn parse_at_depth(parser: &mut Parser, depth: usize) -> Result<ConstantValue, Pa
             require(parser, Token::RParen, "REVERSE requires one argument")?;
             match input {
                 Some(value) => ConstantValue::Text(value.chars().rev().collect()),
+                None => ConstantValue::Null,
+            }
+        }
+        "CUTFRAGMENT" => {
+            let input = text_arg(parser, depth + 1)?;
+            require(parser, Token::RParen, "cutFragment requires one argument")?;
+            match input {
+                Some(input) => ConstantValue::Text(
+                    input.split_once('#')
+                        .map_or(input.as_str(), |(prefix, _)| prefix)
+                        .to_owned(),
+                ),
                 None => ConstantValue::Null,
             }
         }
