@@ -247,6 +247,7 @@ pub struct OrderBy {
 pub struct Having {
     pub operator: Operator,
     pub value: u64,
+    pub aggregate_index: Option<usize>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -1356,6 +1357,7 @@ fn parse_select_tokens(tokens: Vec<Token>) -> Result<Select, ParseError> {
     }
 
     let having = if parser.keyword("HAVING") {
+        let mut aggregate_index = None;
         if matches!(
             projection,
             Projection::GroupedCount { .. } | Projection::GroupedMultiCount { .. }
@@ -1418,6 +1420,24 @@ fn parse_select_tokens(tokens: Vec<Token>) -> Result<Select, ParseError> {
                     "HAVING must match the selected aggregate".into(),
                 ));
             }
+        } else if let Projection::GroupedAggregates { items, .. }
+        | Projection::GroupedMultiAggregates { items, .. } = &projection {
+            let name = parser.word()?;
+            if !parser.take(Token::LParen) {
+                return Err(ParseError("HAVING requires a selected metric".into()));
+            }
+            let column = parser.word()?;
+            if !parser.take(Token::RParen) {
+                return Err(ParseError("expected ')' after HAVING metric".into()));
+            }
+            aggregate_index = Some(items.iter().position(|(function, argument)| {
+                function.name().eq_ignore_ascii_case(&name)
+                    && argument == &column
+                    && matches!(function,
+                        AggregateFunction::Sum | AggregateFunction::Avg
+                        | AggregateFunction::Min | AggregateFunction::Max
+                        | AggregateFunction::Count)
+            }).ok_or_else(|| ParseError("HAVING metric must match SELECT".into()))?);
         } else if let Projection::GroupedDistinctCount { value_column, .. } = &projection {
             if !parser.keyword("COUNT")
                 || !parser.take(Token::LParen)
@@ -1437,7 +1457,7 @@ fn parse_select_tokens(tokens: Vec<Token>) -> Result<Select, ParseError> {
             .number()?
             .parse::<u64>()
             .map_err(|_| ParseError("HAVING threshold must be a UInt64".into()))?;
-        Some(Having { operator, value })
+        Some(Having { operator, value, aggregate_index })
     } else {
         None
     };
