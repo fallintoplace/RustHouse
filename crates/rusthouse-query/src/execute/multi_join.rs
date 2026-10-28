@@ -228,7 +228,7 @@ fn output_columns(
                 }
             } else {
                 selected.push((
-                    column_index(&relations, column)?,
+                    column_index(relations, column)?,
                     format!("{}.{}", column.relation, column.name),
                     None,
                 ));

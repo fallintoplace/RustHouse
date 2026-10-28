@@ -1046,9 +1046,8 @@ mod tests {
             .unwrap()
             .unwrap();
         assert!(!ordinary.any);
-        for statement in ["SELECT * FROM a ANY FULL JOIN b ON a.id = b.id"] {
-            assert!(parse_join(statement).is_err(), "{statement}");
-        }
+        let statement = "SELECT * FROM a ANY FULL JOIN b ON a.id = b.id";
+        assert!(parse_join(statement).is_err(), "{statement}");
     }
 
     #[test]

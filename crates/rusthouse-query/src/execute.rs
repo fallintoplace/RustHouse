@@ -1354,7 +1354,7 @@ impl GroupedCounts {
                 .and_then(|limit| query.offset.unwrap_or(0).checked_add(limit))
                 .filter(|&end| end < self.rows.len())
             {
-                let positions = sorted_group_positions(&self.rows, end, &compare);
+                let positions = sorted_group_positions(&self.rows, end, compare);
                 writeln!(
                     output,
                     "{column}\t{}",

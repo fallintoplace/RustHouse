@@ -523,10 +523,6 @@ pub(super) fn compile_numbers_predicates(
 /// Count a single AND branch over an increasing generated UInt64 sequence
 /// without visiting its rows. Unsupported OR, IN and modulo predicates keep
 /// the normal row-wise executor. Arithmetic uses u128 at UInt64 boundaries.
-
-/* Return the matching row interval for a monotone generated UInt64 source.
- * Only conjunctions of range/equality comparisons are safe to collapse.
- * OR, NE, modulo, IN and other operators use the normal executor. */
 pub(super) fn monotonic_range_indices(
     branches: &[Vec<CompiledPredicate>],
     start: u64,
@@ -1435,7 +1431,7 @@ mod generated_membership_count_tests {
             count_monotonic_numbers(&[small], 0, 1_000_000_000, 1),
             Some(2)
         );
-        let set = (0..32).map(|i| Number::Unsigned(i)).collect();
+        let set = (0..32).map(Number::Unsigned).collect();
         let large = vec![CompiledPredicate {
             index: 0,
             test: compile_in_test(set, true),

@@ -76,7 +76,11 @@ pub(super) fn candidate_mark_ranges<T: Ord + Copy>(
     if intervals.iter().any(|(lower, upper)| {
         matches!(lower, Bound::Unbounded) && matches!(upper, Bound::Unbounded)
     }) {
-        return Some(if len == 0 { Vec::new() } else { std::iter::once(0..len).collect() });
+        return Some(if len == 0 {
+            Vec::new()
+        } else {
+            std::iter::once(0..len).collect()
+        });
     }
     if !monotonic_mark_keys(len, &key_at) {
         return None;
@@ -91,9 +95,7 @@ pub(super) fn candidate_mark_ranges<T: Ord + Copy>(
     }
     let mut ranges: Vec<_> = intervals
         .iter()
-        .map(|(lower, upper)| {
-            candidate_mark_range_sorted(len, &key_at, *lower, *upper)
-        })
+        .map(|(lower, upper)| candidate_mark_range_sorted(len, &key_at, *lower, *upper))
         .filter(|range| !range.is_empty())
         .collect();
     ranges.sort_unstable_by_key(|range| range.start);

@@ -269,7 +269,7 @@ pub(super) fn execute_grouped_aggregate<W: Write>(
                     }
                     _ => None,
                 };
-                let group = if let Some(key) = borrowed_text {
+                if let Some(key) = borrowed_text {
                     if let Some(&existing) = text_groups.get(key) {
                         existing
                     } else {
@@ -298,8 +298,7 @@ pub(super) fn execute_grouped_aggregate<W: Write>(
                             groups.len() - 1
                         }
                     }
-                };
-                group
+                }
             };
             let value = typed::cell(&batch[value_index], row);
             match value {

@@ -124,7 +124,7 @@ pub(super) fn execute<W: Write>(
                     }
                     _ => None,
                 };
-                let index = if let Some(key) = borrowed_text {
+                if let Some(key) = borrowed_text {
                     if let Some(&group) = by_text.get(key) {
                         group
                     } else {
@@ -165,8 +165,7 @@ pub(super) fn execute<W: Write>(
                             groups.len() - 1
                         }
                     }
-                };
-                index
+                }
             };
             for (&column_index, state) in item_indices.iter().zip(groups[index].1.iter_mut()) {
                 match typed::cell(&batch[column_index], row) {

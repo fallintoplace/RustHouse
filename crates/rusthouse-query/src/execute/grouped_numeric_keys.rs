@@ -140,7 +140,7 @@ pub(super) fn execute<W: Write>(
                 for &index in &group_indices {
                     probe_key.push(typed::key_at(&batch[index], row));
                 }
-                let group = if let Some(&index) = by_key.get(probe_key.as_slice()) {
+                if let Some(&index) = by_key.get(probe_key.as_slice()) {
                     index
                 } else {
                     if groups.len() >= MAX_GROUPS {
@@ -163,8 +163,7 @@ pub(super) fn execute<W: Write>(
                             .collect(),
                     ));
                     index
-                };
-                group
+                }
             };
             for (&index, state) in item_indices.iter().zip(groups[group].1.iter_mut()) {
                 match typed::cell(&batch[index], row) {

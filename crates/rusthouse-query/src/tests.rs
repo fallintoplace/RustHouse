@@ -1116,4 +1116,3 @@ fn allows_grouped_numeric_ordering_by_aggregate_position() {
         assert!(parse_select(invalid).is_err(), "{invalid}");
     }
 }
-

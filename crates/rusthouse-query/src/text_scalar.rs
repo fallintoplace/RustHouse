@@ -900,7 +900,7 @@ fn parse_at_depth(parser: &mut Parser, depth: usize) -> Result<ConstantValue, Pa
             match input {
                 Some(input) => ConstantValue::Text(
                     input
-                        .rsplit(|ch| ch == '/' || ch == '\\')
+                        .rsplit(['/', '\\'])
                         .next()
                         .unwrap_or("")
                         .to_owned(),
@@ -1354,7 +1354,7 @@ fn parse_at_depth(parser: &mut Parser, depth: usize) -> Result<ConstantValue, Pa
                         ConstantValue::Text(input)
                     } else {
                         let length = input.len() - needle.len();
-                        if length.checked_add(replacement.len()).unwrap_or(usize::MAX)
+                        if length.saturating_add(replacement.len())
                             > MAX_TEXT_BYTES
                         {
                             return Err(ParseError("REPLACE_FIRST result is too large".into()));
@@ -1661,7 +1661,7 @@ fn parse_at_depth(parser: &mut Parser, depth: usize) -> Result<ConstantValue, Pa
                         ));
                     }
                     if !input.is_empty() && !input.ends_with(&ending) {
-                        if input.len().checked_add(ending.len()).unwrap_or(usize::MAX)
+                        if input.len().saturating_add(ending.len())
                             > MAX_TEXT_BYTES
                         {
                             return Err(ParseError(
