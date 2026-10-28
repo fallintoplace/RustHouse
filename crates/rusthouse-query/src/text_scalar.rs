@@ -21,6 +21,7 @@ pub(super) fn is_function(name: &str) -> bool {
             | "HASSUBSEQUENCE"
             | "BYTEHAMMINGDISTANCE"
             | "CHR"
+            | "TOUNIXTIMESTAMP"
             | "STRINGBYTESUNIQ"
             | "BIT_LENGTH"
             | "BITMASKTOLIST"
@@ -388,6 +389,18 @@ fn parse_at_depth(parser: &mut Parser, depth: usize) -> Result<ConstantValue, Pa
                     let length = i64::try_from(value.encode_utf16().count())
                         .map_err(|_| ParseError("UTF16_LENGTH result exceeds Int64".into()))?;
                     ConstantValue::Integer(length)
+                }
+                None => ConstantValue::Null,
+            }
+        }
+        "TOUNIXTIMESTAMP" => {
+            let input = text_arg(parser, depth + 1)?;
+            require(parser, Token::RParen, "toUnixTimestamp requires one argument")?;
+            match input {
+                Some(value) => {
+                    let seconds = rusthouse_storage::parse_datetime(&value)
+                        .ok_or_else(|| ParseError("invalid UTC DateTime argument".into()))?;
+                    ConstantValue::Integer(i64::from(seconds))
                 }
                 None => ConstantValue::Null,
             }
