@@ -52,6 +52,25 @@ pub(super) fn execute_grouped_numbers<W: Write>(
     if query.limit == Some(0) {
         return groups.write(query, column, output);
     }
+    // GROUP BY number contains exactly one row per generated key. If the
+    // client requests a bounded unordered page, jump directly to its keys.
+    if query.predicates.is_empty()
+        && query.or_predicates.is_empty()
+        && query.having.is_none()
+        && query.order_by.is_none()
+        && query.order_by_extra.is_empty()
+    {
+        if let Some(limit) = query.limit {
+            let begin = (query.offset.unwrap_or(0) as u64).min(rows);
+            let length = (limit as u64).min(rows - begin);
+            writeln!(output, "{column}\t{}", query.alias.as_deref().unwrap_or("count"))?;
+            for index in begin..begin + length {
+                let number = u128::from(start) + u128::from(index) * u128::from(step);
+                writeln!(output, "{number}\t1")?;
+            }
+            return Ok(());
+        }
+    }
     for index in 0..rows {
         let number = start + index * step;
         let value = Number::Unsigned(u128::from(number));
