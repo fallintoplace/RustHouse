@@ -55,6 +55,7 @@ pub(super) fn is_function(name: &str) -> bool {
             | "TRIM_WHITESPACE"
             | "TRY_TO_INT64"
             | "LPAD"
+            | "LEFTPADUTF8"
             | "COUNTSUBSTRINGSCASEINSENSITIVE"
             | "HEX_DECODE"
             | "REPLACE"
@@ -818,7 +819,7 @@ fn parse_at_depth(parser: &mut Parser, depth: usize) -> Result<ConstantValue, Pa
                 None => ConstantValue::Null,
             }
         }
-        "LPAD" => {
+        "LPAD" | "LEFTPADUTF8" => {
             let input = text_arg(parser, depth + 1)?;
             require(parser, Token::Comma, "LPAD requires a width")?;
             let width = integer_arg(parser, depth + 1)?;
