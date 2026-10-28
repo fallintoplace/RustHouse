@@ -980,6 +980,93 @@ fn merge_grouped_fused_metrics(
     Ok(output)
 }
 
+
+/// Global exact distinct by a single group key. A shared (key, value) pair
+/// contributes to its group once even when the same value occurs on many peers.
+fn merge_grouped_distinct_pairs(
+    shards: &[(usize, Vec<u8>)],
+    max_rows: usize,
+    column: &str,
+    value_column: &str,
+    global: &Select,
+) -> Result<Vec<u8>, MergeError> {
+    const MAX_GROUP_VALUE_PAIRS: usize = 250_000;
+    let shard_header = format!("{column}\t{value_column}\n");
+    let result_header = format!("{column}\tcountDistinct({value_column})\n");
+    let mut positions = HashMap::<&[u8], usize>::new();
+    let mut groups = Vec::<(&[u8], u64)>::new();
+    let mut pairs = HashSet::<(&[u8], &[u8])>::new();
+    for (cap, body) in shards {
+        if *cap == 0 || !body.ends_with(b"\n") || !body.starts_with(shard_header.as_bytes()) {
+            return Err(MergeError::InvalidDistinctCount);
+        }
+        let records = &body[shard_header.len()..];
+        if records.is_empty() { continue; }
+        let mut shard_rows = 0usize;
+        for row in records[..records.len() - 1].split(|&b| b == b'\n') {
+            shard_rows = shard_rows.checked_add(1).ok_or(MergeError::CoordinatorLimit)?;
+            if shard_rows >= *cap { return Err(MergeError::ShardRowLimit); }
+            let split = row.iter().position(|&b| b == b'\t')
+                .ok_or(MergeError::InvalidDistinctCount)?;
+            let key = &row[..split];
+            let value = &row[split + 1..];
+            if value.iter().any(|&b| b == b'\t') {
+                return Err(MergeError::InvalidDistinctCount);
+            }
+            let index = if let Some(&index) = positions.get(key) {
+                index
+            } else {
+                if groups.len() >= 250_000 {
+                    return Err(MergeError::CoordinatorLimit);
+                }
+                let index = groups.len();
+                positions.insert(key, index);
+                groups.push((key, 0));
+                index
+            };
+            // COUNT(DISTINCT) excludes NULL, but NULL-only groups still emit 0.
+            if value != b"\\N" {
+                if pairs.len() >= MAX_GROUP_VALUE_PAIRS && !pairs.contains(&(key, value)) {
+                    return Err(MergeError::CoordinatorLimit);
+                }
+                if pairs.insert((key, value)) {
+                    groups[index].1 = groups[index].1.checked_add(1)
+                        .ok_or(MergeError::CountOverflow)?;
+                }
+            }
+        }
+    }
+    if let Some(having) = &global.having {
+        groups.retain(|(_, count)| passes_count_having(*count, having));
+    }
+    if let Some(order) = &global.order_by {
+        groups.sort_by(|left, right| {
+            let cmp = left.1.cmp(&right.1);
+            if order.descending { cmp.reverse() } else { cmp }
+        });
+    }
+    let mut output = result_header.into_bytes();
+    let mut emitted = 0usize;
+    for (key, count) in groups.into_iter()
+        .skip(global.offset.unwrap_or(0))
+        .take(global.limit.unwrap_or(usize::MAX))
+    {
+        let digits = count.to_string();
+        if emitted >= max_rows
+            || output.len().checked_add(key.len() + digits.len() + 2)
+                .is_none_or(|n| n > MAX_RESPONSE_BYTES)
+        {
+            return Err(MergeError::CoordinatorLimit);
+        }
+        output.extend_from_slice(key);
+        output.push(b'\t');
+        output.extend_from_slice(digits.as_bytes());
+        output.push(b'\n');
+        emitted += 1;
+    }
+    Ok(output)
+}
+
 /// Reduce grouped COUNT results by their canonical TSV-encoded key.
 /// Preserve first-seen key order, reject malformed rows, and only emit a
 /// complete bounded result. Shards may hold overlapping group *keys*, but
@@ -1157,6 +1244,7 @@ pub fn handle(method: &str, body: &[u8], cluster: &Cluster, max_rows: usize) -> 
                 || is_safe_grouped_multikey_sum(&select)
                 || is_safe_grouped_multikey_extremum(&select)
                 || is_safe_grouped_fused_metrics(&select)
+                || is_safe_grouped_distinct(&select)
                 || is_safe_sum(&select)
                 || is_safe_extremum(&select) =>
         {
@@ -1180,6 +1268,7 @@ pub fn handle(method: &str, body: &[u8], cluster: &Cluster, max_rows: usize) -> 
     let grouped_multikey_sum_query = is_safe_grouped_multikey_sum(&select);
     let grouped_multikey_extremum_query = is_safe_grouped_multikey_extremum(&select);
     let grouped_fused_query = is_safe_grouped_fused_metrics(&select);
+    let grouped_distinct_query = is_safe_grouped_distinct(&select);
     let sum_query = is_safe_sum(&select);
     let shard_sql = if is_safe_scan(&select) {
         match unpaged_scan_sql(sql, &select) {
@@ -1187,6 +1276,12 @@ pub fn handle(method: &str, body: &[u8], cluster: &Cluster, max_rows: usize) -> 
             None => {
                 return Response::text("400 Bad Request", "unsupported distributed pagination\n");
             }
+        }
+    } else if grouped_distinct_query {
+        match grouped_distinct_shard_sql(sql, &select) {
+            Some(query) => query,
+            None => return Response::text("400 Bad Request", "unsupported grouped DISTINCT rewrite
+"),
         }
     } else if grouped_sum_query || grouped_extremum_query {
         match grouped_aggregate_shard_sql(sql, &select) {
@@ -1384,6 +1479,15 @@ pub fn handle(method: &str, body: &[u8], cluster: &Cluster, max_rows: usize) -> 
                 }
             }
             _ => Err(MergeError::InvalidGroupedSum),
+        }
+    } else if grouped_distinct_query {
+        match &select.projection {
+            Projection::GroupedDistinctCount { column, value_column } => {
+                merge_grouped_distinct_pairs(
+                    &shards, max_rows.min(250_000), column, value_column, &select,
+                )
+            }
+            _ => Err(MergeError::InvalidDistinctCount),
         }
     } else if grouped_fused_query {
         let (keys, items) = match &select.projection {
@@ -1741,6 +1845,33 @@ mod tests {
                 10, &["region".into(), "category".into()],
                 &items, &["UInt64".into(), "UInt64".into()]),
             Err(MergeError::InvalidGroupedSum)
+        );
+    }
+
+    #[test]
+    fn distributed_grouped_distinct_deduplicates_cross_shard_pairs() {
+        let sql = "SELECT region, count(DISTINCT customer) FROM sales GROUP BY region HAVING count(DISTINCT customer) >= 2 ORDER BY count DESC LIMIT 2";
+        let query = parse_select(sql).unwrap();
+        assert!(is_safe_grouped_distinct(&query));
+        assert_eq!(
+            grouped_distinct_shard_sql(sql, &query).as_deref(),
+            Some("SELECT DISTINCT region, customer FROM sales")
+        );
+        let shards = [
+            shard(10, "region\tcustomer\neu\talice\neu\tbob\nus\t\\N\n"),
+            shard(10, "region\tcustomer\neu\tbob\neu\tcharlie\nus\ttaylor\n"),
+            shard(10, "region\tcustomer\nus\ttaylor\nus\talex\n"),
+        ];
+        assert_eq!(
+            merge_grouped_distinct_pairs(&shards, 2, "region", "customer", &query).unwrap(),
+            b"region\tcountDistinct(customer)\neu\t3\nus\t2\n"
+        );
+        assert_eq!(
+            merge_grouped_distinct_pairs(
+                &[shard(2, "region\tcustomer\neu\talice\neu\tbob\n")],
+                10, "region", "customer", &query,
+            ),
+            Err(MergeError::ShardRowLimit)
         );
     }
     #[test]

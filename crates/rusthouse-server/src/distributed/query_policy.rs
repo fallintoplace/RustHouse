@@ -288,3 +288,44 @@ pub(super) fn is_safe_grouped_fused_metrics(select: &Select) -> bool {
         ))
         && is_safe_unpaged_select(select)
 }
+
+/// Exact grouped distinct requires shipping unique (group, value) pairs,
+/// never summing independent shard-level distinct counts.
+pub(super) fn is_safe_grouped_distinct(select: &Select) -> bool {
+    matches!(select.projection, Projection::GroupedDistinctCount { .. })
+        && matches!(select.source, Some(Source::Table(_)))
+        && !select.distinct
+        && select.alias.is_none()
+        && select.rename.is_none()
+        && select.order_terms().all(|term| term.column == "count")
+}
+
+/// Build a DISTINCT pair projection while preserving a fully parsed WHERE.
+/// WHERE text is retained only if the candidate AST matches the expected AST.
+pub(super) fn grouped_distinct_shard_sql(sql: &str, select: &Select) -> Option<String> {
+    let (column, value_column) = match &select.projection {
+        Projection::GroupedDistinctCount { column, value_column } => (column, value_column),
+        _ => return None,
+    };
+    let mut expected = select.clone();
+    expected.projection = Projection::Columns(vec![column.clone(), value_column.clone()]);
+    expected.distinct = true;
+    expected.having = None;
+    expected.order_by = None;
+    expected.order_by_extra.clear();
+    expected.limit = None;
+    expected.offset = None;
+    let upper = sql.to_ascii_uppercase();
+    let from_start = upper.find(" FROM ")?;
+    for (group_start, _) in sql.char_indices() {
+        if group_start <= from_start || !upper[group_start..].starts_with(" GROUP BY ") {
+            continue;
+        }
+        let mut candidate = format!("SELECT DISTINCT {column}, {value_column}");
+        candidate.push_str(&sql[from_start..group_start]);
+        if parse_select(&candidate).is_ok_and(|parsed| parsed == expected) {
+            return Some(candidate);
+        }
+    }
+    None
+}
