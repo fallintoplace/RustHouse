@@ -12,6 +12,9 @@ pub(super) fn is_function(name: &str) -> bool {
             | "OCTET_LENGTH"
             | "ASCII"
             | "UTF16_LENGTH"
+            | "DATEDIFF"
+            | "DATE_DIFF"
+            | "TIMESTAMPDIFF"
             | "HASSUBSEQUENCE"
             | "CHR"
             | "STRINGBYTESUNIQ"
@@ -267,6 +270,44 @@ fn parse_at_depth(parser: &mut Parser, depth: usize) -> Result<ConstantValue, Pa
                     ConstantValue::Text(output)
                 }
                 None => ConstantValue::Null,
+            }
+        }
+        "DATEDIFF" | "DATE_DIFF" | "TIMESTAMPDIFF" => {
+            let unit = text_arg(parser, depth + 1)?;
+            require(parser, Token::Comma, "dateDiff requires start date")?;
+            let start = text_arg(parser, depth + 1)?;
+            require(parser, Token::Comma, "dateDiff requires end date")?;
+            let end = text_arg(parser, depth + 1)?;
+            require(parser, Token::RParen, "dateDiff requires three arguments")?;
+            match (unit, start, end) {
+                (Some(unit), Some(start), Some(end)) => {
+                    let first = i64::from(rusthouse_storage::parse_date(&start)
+                        .ok_or_else(|| ParseError("invalid start Date".into()))?);
+                    let last = i64::from(rusthouse_storage::parse_date(&end)
+                        .ok_or_else(|| ParseError("invalid end Date".into()))?);
+                    let components = |text: &str| -> (i64, i64) {
+                        let year = text[..4].parse::<i64>().unwrap();
+                        let month = text[5..7].parse::<i64>().unwrap();
+                        (year, month)
+                    };
+                    let (first_year, first_month) = components(&start);
+                    let (last_year, last_month) = components(&end);
+                    let result = match unit.to_ascii_lowercase().as_str() {
+                        "day" | "days" | "d" | "dd" => last - first,
+                        "week" | "weeks" | "wk" | "ww" =>
+                            (last + 3).div_euclid(7) - (first + 3).div_euclid(7),
+                        "month" | "months" | "mm" | "m" =>
+                            (last_year - first_year) * 12 + last_month - first_month,
+                        "quarter" | "quarters" | "q" | "qq" =>
+                            (last_year - first_year) * 4 +
+                            (last_month - 1).div_euclid(3) -
+                            (first_month - 1).div_euclid(3),
+                        "year" | "years" | "yy" | "yyyy" => last_year - first_year,
+                        _ => return Err(ParseError("unsupported dateDiff unit for Date".into())),
+                    };
+                    ConstantValue::Integer(result)
+                }
+                _ => ConstantValue::Null,
             }
         }
         "UTF16_LENGTH" => {
