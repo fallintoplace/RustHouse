@@ -208,5 +208,4 @@ mod tests {
         assert_eq!(remaining[0], 1);
         assert_eq!(*remaining.last().unwrap(), 65_535);
     }
-
 }
