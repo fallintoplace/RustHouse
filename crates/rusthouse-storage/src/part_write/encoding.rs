@@ -231,8 +231,8 @@ pub(super) fn push_string_key_map(
             }
             cursor += 1;
             skip_map_ws(bytes, &mut cursor);
-            let value = if value_type == "String" {
-                read_map_string(literal, &mut cursor)?
+            let value: std::borrow::Cow<'_, str> = if value_type == "String" {
+                std::borrow::Cow::Owned(read_map_string(literal, &mut cursor)?)
             } else {
                 let begin = cursor;
                 while bytes
@@ -244,10 +244,10 @@ pub(super) fn push_string_key_map(
                 if cursor == begin {
                     return Err(invalid("Map numeric value is missing"));
                 }
-                literal[begin..cursor].to_owned()
+                std::borrow::Cow::Borrowed(&literal[begin..cursor])
             };
             push_cell("String", Some(&key), keys)?;
-            push_cell(value_type, Some(&value), values)?;
+            push_cell(value_type, Some(value.as_ref()), values)?;
             pairs = pairs
                 .checked_add(1)
                 .ok_or_else(|| invalid("Map has too many pairs"))?;
