@@ -10,6 +10,8 @@ use std::path::Path;
 
 const MAX_GROUPS: usize = 200_000;
 const MAX_GROUP_VALUE_PAIRS: usize = 200_000;
+const WIDE_BITMAP_THRESHOLD: usize = 512;
+const MAX_DENSE_GROUPS: usize = 8192; // 64 MiB of exact 16-bit bitmap payloads.
 
 struct Group {
     key: Cell,
@@ -19,6 +21,8 @@ struct Group {
     // Exact bounded 8-bit cardinality uses 32 bytes per group, regardless
     // of the number of rows or repeated distinct pairs.
     byte_values: [u64; 4],
+    wide_distinct: HashSet<u16>,
+    wide_bitmap: Option<Box<[u64; 1024]>>,
 }
 
 impl Group {
@@ -27,12 +31,55 @@ impl Group {
             + self.distinct_text.len()
             + self.distinct_uuids.len()
             + self.byte_values.iter().map(|word| word.count_ones() as usize).sum::<usize>()
+            + self.wide_distinct.len()
+            + self.wide_bitmap.as_ref().map_or(0, |bitmap| {
+                bitmap.iter().map(|word| word.count_ones() as usize).sum::<usize>()
+            })
     }
 }
 
 fn mark_distinct_byte(group: &mut Group, value: u8) {
     let slot = usize::from(value) / 64;
     group.byte_values[slot] |= 1u64 << (usize::from(value) % 64);
+}
+
+fn register_word_distinct(
+    group: &mut Group,
+    value: u16,
+    total_pairs: &mut usize,
+    dense_groups: &mut usize,
+) -> Result<(), ExecutionError> {
+    let slot = usize::from(value);
+    if let Some(bitmap) = group.wide_bitmap.as_mut() {
+        bitmap[slot / 64] |= 1u64 << (slot % 64);
+        return Ok(());
+    }
+    if group.wide_distinct.contains(&value) {
+        return Ok(());
+    }
+    if group.wide_distinct.len() >= WIDE_BITMAP_THRESHOLD && *dense_groups < MAX_DENSE_GROUPS {
+        let mut bitmap = Box::new([0u64; 1024]);
+        // A sparse key converted to a bitmap no longer consumes one of the
+        // generic hash-pair slots. This permits exact dense high-cardinality
+        // groups without raising the general memory budget.
+        for old in group.wide_distinct.drain() {
+            let index = usize::from(old);
+            bitmap[index / 64] |= 1u64 << (index % 64);
+            *total_pairs -= 1;
+        }
+        bitmap[slot / 64] |= 1u64 << (slot % 64);
+        group.wide_bitmap = Some(bitmap);
+        *dense_groups += 1;
+    } else {
+        if *total_pairs >= MAX_GROUP_VALUE_PAIRS {
+            return Err(ExecutionError::Invalid(
+                "grouped COUNT(DISTINCT) supports at most 200000 distinct pairs".into(),
+            ));
+        }
+        group.wide_distinct.insert(value);
+        *total_pairs += 1;
+    }
+    Ok(())
 }
 
 pub(super) fn execute<W: Write>(
@@ -108,6 +155,11 @@ pub(super) fn execute<W: Write>(
     let mut dense_groups = matches!(types[column].as_str(), "UInt16" | "Int16")
         .then(|| vec![usize::MAX; 65_536]);
     let byte_distinct = matches!(typed::base_type(types[value_column].as_str()), "UInt8" | "Int8");
+    let word_distinct = matches!(
+        typed::base_type(types[value_column].as_str()),
+        "UInt16" | "Int16"
+    );
+    let mut dense_word_groups = 0usize;
     let mut total_pairs = 0usize;
     let mut reader = TypedQueryReader::open_with_metadata(part, &names, &metadata)?;
     let no_filters = query.predicates.is_empty() && query.or_predicates.is_empty();
@@ -146,6 +198,8 @@ pub(super) fn execute<W: Write>(
                         distinct_text: HashSet::new(),
                         distinct_uuids: HashSet::new(),
                         byte_values: [0; 4],
+                        wide_distinct: HashSet::new(),
+                        wide_bitmap: None,
                     });
                 }
                 *slot
@@ -175,6 +229,8 @@ pub(super) fn execute<W: Write>(
                         distinct_text: HashSet::new(),
                         distinct_uuids: HashSet::new(),
                         byte_values: [0; 4],
+                        wide_distinct: HashSet::new(),
+                        wide_bitmap: None,
                     });
                     id
                 }
@@ -195,6 +251,8 @@ pub(super) fn execute<W: Write>(
                         distinct_text: HashSet::new(),
                         distinct_uuids: HashSet::new(),
                         byte_values: [0; 4],
+                        wide_distinct: HashSet::new(),
+                        wide_bitmap: None,
                     });
                     id
                 }
@@ -215,6 +273,8 @@ pub(super) fn execute<W: Write>(
                         distinct_text: HashSet::new(),
                         distinct_uuids: HashSet::new(),
                         byte_values: [0; 4],
+                        wide_distinct: HashSet::new(),
+                        wide_bitmap: None,
                     });
                     id
                 }
@@ -236,6 +296,8 @@ pub(super) fn execute<W: Write>(
                             distinct_text: HashSet::new(),
                             distinct_uuids: HashSet::new(),
                         byte_values: [0; 4],
+                        wide_distinct: HashSet::new(),
+                        wide_bitmap: None,
                         });
                         id
                     }
@@ -266,6 +328,32 @@ pub(super) fn execute<W: Write>(
                 };
                 if let Some(value) = value {
                     mark_distinct_byte(&mut groups[id], value);
+                }
+                continue;
+            }
+
+            if word_distinct {
+                let value = match &batch[value_index] {
+                    TypedColumn::Numeric(NumericColumn::UInt16(values)) => Some(values[row]),
+                    TypedColumn::Numeric(NumericColumn::Int16(values)) => Some(values[row] as u16),
+                    TypedColumn::NullableNumeric { values: NumericColumn::UInt16(values), nulls }
+                        if nulls[row] == 0 => Some(values[row]),
+                    TypedColumn::NullableNumeric { values: NumericColumn::Int16(values), nulls }
+                        if nulls[row] == 0 => Some(values[row] as u16),
+                    TypedColumn::NullableNumeric { nulls, .. } if nulls[row] != 0 => None,
+                    _ => {
+                        return Err(ExecutionError::Invalid(
+                            "unexpected 16-bit COUNT(DISTINCT) type".into(),
+                        ));
+                    }
+                };
+                if let Some(value) = value {
+                    register_word_distinct(
+                        &mut groups[id],
+                        value,
+                        &mut total_pairs,
+                        &mut dense_word_groups,
+                    )?;
                 }
                 continue;
             }
@@ -405,6 +493,8 @@ mod grouped_byte_distinct_tests {
             distinct_text: HashSet::new(),
             distinct_uuids: HashSet::new(),
             byte_values: [0; 4],
+                        wide_distinct: HashSet::new(),
+                        wide_bitmap: None,
         };
         for value in 0u8..=255 {
             mark_distinct_byte(&mut group, value);
@@ -423,11 +513,55 @@ mod grouped_byte_distinct_tests {
             distinct_text: HashSet::new(),
             distinct_uuids: HashSet::new(),
             byte_values: [0; 4],
+                        wide_distinct: HashSet::new(),
+                        wide_bitmap: None,
         };
         mark_distinct_byte(&mut group, 0);
         mark_distinct_byte(&mut group, 128);
         mark_distinct_byte(&mut group, 255);
         mark_distinct_byte(&mut group, 128);
         assert_eq!(group.distinct_len(), 3);
+    }
+}
+
+#[cfg(test)]
+mod adaptive_grouped_word_distinct_tests {
+    use super::*;
+
+    fn new_group() -> Group {
+        Group {
+            key: Cell::Null,
+            distinct: HashSet::new(),
+            distinct_text: HashSet::new(),
+            distinct_uuids: HashSet::new(),
+            byte_values: [0; 4],
+            wide_distinct: HashSet::new(),
+            wide_bitmap: None,
+        }
+    }
+
+    #[test]
+    fn promotes_dense_u16_groups_and_keeps_exact_cardinality() {
+        let mut group = new_group();
+        let mut sparse_pairs = 0;
+        let mut dense_groups = 0;
+        for value in 0..=u16::MAX {
+            register_word_distinct(&mut group, value, &mut sparse_pairs, &mut dense_groups).unwrap();
+            register_word_distinct(&mut group, value, &mut sparse_pairs, &mut dense_groups).unwrap();
+        }
+        assert_eq!(group.distinct_len(), 65_536);
+        assert_eq!(sparse_pairs, 0);
+        assert_eq!(dense_groups, 1);
+        assert!(group.wide_distinct.is_empty());
+        assert!(group.wide_bitmap.is_some());
+    }
+
+    #[test]
+    fn sparse_groups_count_towards_existing_pair_limit() {
+        let mut group = new_group();
+        let mut pairs = MAX_GROUP_VALUE_PAIRS;
+        let mut dense = 0;
+        assert!(register_word_distinct(&mut group, 3, &mut pairs, &mut dense).is_err());
+        assert_eq!(pairs, MAX_GROUP_VALUE_PAIRS);
     }
 }
