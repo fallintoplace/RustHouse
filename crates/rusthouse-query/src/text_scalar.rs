@@ -65,6 +65,7 @@ pub(super) fn is_function(name: &str) -> bool {
             | "LPAD"
             | "LEFTPADUTF8"
             | "COUNTSUBSTRINGSCASEINSENSITIVE"
+            | "UNHEX"
             | "HEX_DECODE"
             | "REPLACE"
             | "REPLACEALL"
@@ -809,6 +810,33 @@ fn parse_at_depth(parser: &mut Parser, depth: usize) -> Result<ConstantValue, Pa
                     ConstantValue::Text(value.chars().skip(start).take(count).collect())
                 }
                 _ => ConstantValue::Null,
+            }
+        }
+        "UNHEX" => {
+            let input = text_arg(parser, depth + 1)?;
+            require(parser, Token::RParen, "unhex requires one argument")?;
+            match input {
+                Some(input) => {
+                    let raw = input.as_bytes();
+                    if !raw.iter().all(u8::is_ascii_hexdigit) {
+                        return Err(ParseError("unhex requires hexadecimal digits".into()));
+                    }
+                    let mut bytes = Vec::with_capacity(raw.len().div_ceil(2));
+                    for pair in raw.chunks_exact(2) {
+                        let text = std::str::from_utf8(pair)
+                            .map_err(|_| ParseError("unhex requires ASCII digits".into()))?;
+                        bytes.push(u8::from_str_radix(text, 16)
+                            .map_err(|_| ParseError("unhex requires hexadecimal digits".into()))?);
+                    }
+                    if raw.len() % 2 != 0 {
+                        let digit = raw[raw.len() - 1] as char;
+                        bytes.push(digit.to_digit(16).expect("validated ASCII hex") as u8);
+                    }
+                    let decoded = String::from_utf8(bytes)
+                        .map_err(|_| ParseError("unhex output is not UTF-8".into()))?;
+                    ConstantValue::Text(decoded)
+                }
+                None => ConstantValue::Null,
             }
         }
         "HEX_DECODE" => {
@@ -2004,5 +2032,25 @@ fn text_arg(parser: &mut Parser, depth: usize) -> Result<Option<String>, ParseEr
         _ => Err(ParseError(
             "expected a string literal or string function".into(),
         )),
+    }
+}
+
+#[cfg(test)]
+mod clickhouse_unhex_parity_tests {
+    use crate::{parse_select, ConstantValue, Projection};
+    #[test]
+    fn unhex_decodes_even_and_odd_width_hex_utf8() {
+        for (sql, expected) in [
+            ("SELECT unhex('4142')", "AB"),
+            ("SELECT unhex('41')", "A"),
+            ("SELECT unhex('')", ""),
+            ("SELECT unhex('414')", "A\u{0004}"),
+        ] {
+            assert!(matches!(parse_select(sql).unwrap().projection, Projection::Constants(values)
+                if values.len() == 1 && values[0].value == ConstantValue::Text(expected.into())), "{sql}");
+        }
+        assert!(parse_select("SELECT unhex('4g')").is_err());
+        assert!(parse_select("SELECT unhex('FF')").is_err());
+        assert!(parse_select("SELECT unhex()").is_err());
     }
 }
