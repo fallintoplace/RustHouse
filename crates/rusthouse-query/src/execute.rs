@@ -1,6 +1,7 @@
 mod aggregate_plans;
 mod external_grouped;
 mod bitmap_distinct;
+mod grouped_quantile;
 mod quantile_sample;
 mod hyperloglog;
 
@@ -954,6 +955,9 @@ fn execute_into<W: Write>(
     let part = part.ok_or_else(|| {
         ExecutionError::Invalid("pass --part <directory> for table queries".into())
     })?;
+    if matches!(query.projection, Projection::GroupedQuantile { .. }) {
+        return grouped_quantile::execute(query, part, output);
+    }
     if matches!(query.projection, Projection::ApproxQuantile { .. }) {
         return quantile_sample::execute_part(query, part, output);
     }
@@ -1062,6 +1066,7 @@ fn execute_into<W: Write>(
         | Projection::CountDistinct { .. }
         | Projection::ApproxDistinct { .. }
         | Projection::ApproxQuantile { .. }
+        | Projection::GroupedQuantile { .. }
         | Projection::GroupedCount { .. }
         | Projection::GroupedDistinctCount { .. }
         | Projection::GroupedMultiDistinctCount { .. }
@@ -1629,6 +1634,7 @@ fn execute_numbers<W: Write>(
         | Projection::CountDistinct { .. }
         | Projection::ApproxDistinct { .. }
         | Projection::ApproxQuantile { .. }
+        | Projection::GroupedQuantile { .. }
         | Projection::GroupedCount { .. }
         | Projection::GroupedDistinctCount { .. }
         | Projection::GroupedMultiDistinctCount { .. }
