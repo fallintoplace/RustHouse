@@ -70,8 +70,16 @@ pub fn write_pretty_json_row<W: Write>(output: &mut W, row: &[u8]) -> io::Result
                 start = index + 1;
             }
             b':' => {
-                output.write_all(&row[start..=index])?;
-                output.write_all(b" ")?;
+                let span = &row[start..=index];
+                if span.len() < 64 {
+                    let mut buffer = [0u8; 64];
+                    buffer[..span.len()].copy_from_slice(span);
+                    buffer[span.len()] = b' ';
+                    output.write_all(&buffer[..span.len() + 1])?;
+                } else {
+                    output.write_all(span)?;
+                    output.write_all(b" ")?;
+                }
                 start = index + 1;
             }
             _ => {}
@@ -133,4 +141,23 @@ mod tests {
         write_pretty_json_row(&mut output, br#"{"text":"a,{}","ok":null}"#).unwrap();
         assert_eq!(output, b"{\n    \"text\": \"a,{}\",\n    \"ok\": null\n  }");
     }
+
+    #[test]
+    fn short_json_key_and_colon_use_one_write() {
+        struct Calls(Vec<Vec<u8>>);
+        impl Write for Calls {
+            fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
+                self.0.push(buf.to_vec());
+                Ok(buf.len())
+            }
+            fn flush(&mut self) -> io::Result<()> {
+                Ok(())
+            }
+        }
+        let mut output = Calls(Vec::new());
+        write_pretty_json_row(&mut output, br#"{"a":1}"#).unwrap();
+        assert!(output.0.iter().any(|chunk| chunk.as_slice() == b"\"a\": "));
+        assert_eq!(output.0.concat(), b"{\n    \"a\": 1\n  }");
+    }
+
 }
