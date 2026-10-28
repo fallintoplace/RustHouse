@@ -63,6 +63,8 @@ pub(super) fn batch_key_into(
     {
         return false;
     }
+    // The same vector is reused across batches and rows.
+    result.reserve(indices.len());
     for &index in indices {
         let value = typed::cell(&batch[index], row);
         if !key_eligible(&value) {
@@ -107,6 +109,19 @@ pub(super) fn add_pair(pairs: &mut Vec<Pair>, pair: Pair) -> Result<(), Executio
 mod tests {
     use super::*;
     use rusthouse_storage::read_legacy_strings;
+
+    #[test]
+    fn composite_probe_reserves_all_key_slots() {
+        let values = vec![
+            TypedColumn::Numeric(rusthouse_storage::NumericColumn::UInt8(vec![1])),
+            TypedColumn::Numeric(rusthouse_storage::NumericColumn::UInt8(vec![2])),
+            TypedColumn::Numeric(rusthouse_storage::NumericColumn::UInt8(vec![3])),
+        ];
+        let mut key = Vec::new();
+        assert!(batch_key_into(&values, 0, &[0, 1, 2], &mut key));
+        assert_eq!(key.len(), 3);
+        assert!(key.capacity() >= 3);
+    }
 
     #[test]
     fn probe_key_moves_text_and_rejects_nullable_text() {
