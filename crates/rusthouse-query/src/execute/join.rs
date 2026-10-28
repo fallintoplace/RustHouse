@@ -4,8 +4,8 @@ mod keys;
 
 use self::keys::*;
 
-use super::{ExecutionError, Number, typed};
-use crate::{JoinAggregate, JoinColumn, JoinSelect, JoinType};
+use super::{AggregateState, ExecutionError, Number, typed};
+use crate::{AggregateFunction, JoinAggregate, JoinColumn, JoinSelect, JoinType};
 use rusthouse_storage::{TypedColumn, TypedQueryReader, inspect_query_source};
 use std::cmp::Ordering;
 use std::collections::{BinaryHeap, HashMap};
@@ -808,6 +808,96 @@ fn execute_streaming_ordered_inner<W: Write>(
 }
 
 
+
+fn execute_streaming_inner_sum<W: Write>(
+    query: &JoinSelect,
+    left_path: &Path,
+    right_path: &Path,
+    columns: InnerJoinColumns<'_>,
+    left_count: u64,
+    right_count: u64,
+    metric: usize,
+    header: &str,
+    output: &mut W,
+) -> Result<(), ExecutionError> {
+    let InnerJoinColumns {
+        left_names, right_names, left_keys, right_keys, null_filter, ..
+    } = columns;
+    let mut total = AggregateState::new(AggregateFunction::Sum);
+    if query.limit == Some(0) || query.offset > 0 {
+        writeln!(output, "{header}")?;
+        return Ok(());
+    }
+    let left_width = left_names.len();
+    let mut accept = |left: &[typed::Cell], right: &[typed::Cell]| {
+        let value = if metric < left_width {
+            &left[metric]
+        } else {
+            &right[metric - left_width]
+        };
+        match value {
+            typed::Cell::Numeric(number) => total.update(*number),
+            typed::Cell::Null => Ok(()),
+            _ => Err(invalid("JOIN SUM requires numeric values")),
+        }
+    };
+    if left_count != 0 && right_count != 0 {
+        if right_count <= MAX_STREAM_BUILD_ROWS &&
+            (right_count <= left_count || left_count > MAX_STREAM_BUILD_ROWS) {
+            let right_rows = read_rows(
+                right_path, right_names, right_count,
+                MAX_STREAM_BUILD_ROWS, MAX_STREAM_BUILD_BYTES
+            )?;
+            let mut hash = HashMap::<Vec<typed::Key>, Bucket>::with_capacity(right_rows.len());
+            for (index, row) in right_rows.iter().enumerate() {
+                if let Some(key) = row_key(row, right_keys) {
+                    if query.any {
+                        hash.entry(key).or_insert(Bucket::One(index));
+                    } else {
+                        hash.entry(key)
+                            .and_modify(|bucket| bucket.push(index))
+                            .or_insert(Bucket::One(index));
+                    }
+                }
+            }
+            probe_inner(
+                left_path, left_names, left_keys, &right_rows, &hash,
+                ProbeOptions {
+                    materialize_rows: metric < left_width,
+                    materialize_after: 0,
+                    stop_after: Some(usize::MAX), any: query.any, null_filter,
+                },
+                &mut accept
+            )?;
+        } else {
+            let left_rows = read_rows(
+                left_path, left_names, left_count,
+                MAX_STREAM_BUILD_ROWS, MAX_STREAM_BUILD_BYTES
+            )?;
+            let mut hash = HashMap::<Vec<typed::Key>, Bucket>::with_capacity(left_rows.len());
+            for (index, row) in left_rows.iter().enumerate() {
+                if let Some(key) = row_key(row, left_keys) {
+                    hash.entry(key)
+                        .and_modify(|bucket| bucket.push(index))
+                        .or_insert(Bucket::One(index));
+                }
+            }
+            probe_right(
+                right_path, right_names, right_keys, &left_rows, &hash,
+                ProbeOptions {
+                    materialize_rows: metric >= left_width,
+                    materialize_after: 0,
+                    stop_after: Some(usize::MAX), any: query.any, null_filter,
+                },
+                &mut accept
+            )?;
+        }
+    }
+    writeln!(output, "{header}")?;
+    writeln!(output, "{}", total.render())?;
+    Ok(())
+}
+
 fn execute_streaming_inner_count<W: Write>(
     query: &JoinSelect,
     left_path: &Path,
@@ -995,16 +1085,37 @@ pub fn execute_join<W: Write>(
         right_keys.push(right_index);
     }
 
-    if query.aggregate == Some(JoinAggregate::CountStar) {
-        return execute_streaming_inner_count(
-            query, left_path, right_path,
-            InnerJoinColumns {
-                left_names: &left_names, right_names: &right_names,
-                selected: &selected, left_keys: &left_keys, right_keys: &right_keys,
-                null_filter,
-            },
-            left_meta.rows, right_meta.rows, output
-        );
+    if let Some(aggregate) = &query.aggregate {
+        let columns = InnerJoinColumns {
+            left_names: &left_names, right_names: &right_names,
+            selected: &selected, left_keys: &left_keys, right_keys: &right_keys,
+            null_filter,
+        };
+        return match aggregate {
+            JoinAggregate::CountStar => execute_streaming_inner_count(
+                query, left_path, right_path, columns,
+                left_meta.rows, right_meta.rows, output
+            ),
+            JoinAggregate::Sum(column) => {
+                let metric = resolve(query, column, &left_names, &right_names)?;
+                let data_type = if metric < width {
+                    &left_meta.columns[metric].data_type
+                } else {
+                    &right_meta.columns[metric - width].data_type
+                };
+                if !matches!(base_type(data_type),
+                    "UInt8" | "UInt16" | "UInt32" | "UInt64" | "UInt128" |
+                    "Int8" | "Int16" | "Int32" | "Int64" | "Int128")
+                {
+                    return Err(invalid("streaming JOIN SUM requires an exact integer column"));
+                }
+                let header = format!("sum({}.{})", column.relation, column.name);
+                execute_streaming_inner_sum(
+                    query, left_path, right_path, columns,
+                    left_meta.rows, right_meta.rows, metric, &header, output
+                )
+            }
+        };
     }
 
     // LIMIT 0 needs the validated output schema, but not either input scan.
