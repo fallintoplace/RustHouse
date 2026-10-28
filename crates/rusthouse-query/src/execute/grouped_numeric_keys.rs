@@ -144,28 +144,42 @@ pub(super) fn execute<W: Write>(
             (index, term.descending, term.nulls_first)
         })
         .collect::<Vec<_>>();
-    if !terms.is_empty() {
-        groups.sort_by(|(left, _), (right, _)| {
-            for &(index, descending, nulls_first) in &terms {
-                let order = typed::compare_order_cells(
-                    &left[index],
-                    &right[index],
-                    descending,
-                    nulls_first,
-                );
-                if order != Ordering::Equal {
-                    return order;
-                }
+    let compare = |(left, _): &(Vec<Cell>, Vec<AggregateState>),
+                   (right, _): &(Vec<Cell>, Vec<AggregateState>)| {
+        for &(index, descending, nulls_first) in &terms {
+            let order = typed::compare_order_cells(
+                &left[index],
+                &right[index],
+                descending,
+                nulls_first,
+            );
+            if order != Ordering::Equal {
+                return order;
             }
-            Ordering::Equal
-        });
+        }
+        Ordering::Equal
+    };
+    let mut bounded_order = None;
+    if !terms.is_empty() {
+        let end = query
+            .limit
+            .and_then(|limit| query.offset.unwrap_or(0).checked_add(limit));
+        if let Some(end) = end.filter(|&end| end < groups.len()) {
+            let mut indices = (0..groups.len()).collect::<Vec<_>>();
+            let compare_index = |left: &usize, right: &usize| {
+                compare(&groups[*left], &groups[*right]).then_with(|| left.cmp(right))
+            };
+            indices.select_nth_unstable_by(end, &compare_index);
+            indices.truncate(end);
+            indices.sort_unstable_by(compare_index);
+            bounded_order = Some(indices);
+        } else {
+            groups.sort_by(compare);
+        }
     }
 
-    for (keys, states) in groups
-        .into_iter()
-        .skip(query.offset.unwrap_or(0))
-        .take(query.limit.unwrap_or(usize::MAX))
-    {
+    let write_group = |keys: &[Cell], states: &[AggregateState], output: &mut W|
+        -> Result<(), ExecutionError> {
         for (index, key) in keys.iter().enumerate() {
             if index != 0 {
                 output.write_all(b"\t")?;
@@ -176,6 +190,20 @@ pub(super) fn execute<W: Write>(
             write!(output, "\t{}", state.render())?;
         }
         writeln!(output)?;
+        Ok(())
+    };
+    if let Some(indices) = bounded_order {
+        for index in indices.into_iter().skip(query.offset.unwrap_or(0)) {
+            write_group(&groups[index].0, &groups[index].1, output)?;
+        }
+    } else {
+        for (keys, states) in groups
+            .into_iter()
+            .skip(query.offset.unwrap_or(0))
+            .take(query.limit.unwrap_or(usize::MAX))
+        {
+            write_group(&keys, &states, output)?;
+        }
     }
     Ok(())
 }
