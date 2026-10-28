@@ -132,6 +132,11 @@ pub enum Projection {
     ApproxDistinct {
         column: String,
     },
+    /// Bounded SpaceSaving frequent-key sketch with up to 128 output keys.
+    TopK {
+        column: String,
+        k: usize,
+    },
     GroupedCount {
         column: String,
     },
@@ -685,6 +690,24 @@ fn parse_select_tokens(tokens: Vec<Token>) -> Result<Select, ParseError> {
             return Err(ParseError("expected ')' after uniq(column)".into()));
         }
         Projection::ApproxDistinct { column }
+    } else if matches!(parser.tokens.get(parser.index), Some(Token::Word(name)) if name.eq_ignore_ascii_case("TOPK"))
+        && parser.tokens.get(parser.index + 1) == Some(&Token::LParen)
+    {
+        parser.keyword("TOPK");
+        parser.take(Token::LParen);
+        let k = parser.number()?.parse::<usize>()
+            .map_err(|_| ParseError("topK size must be an integer".into()))?;
+        if k == 0 || k > 128 {
+            return Err(ParseError("topK requires 1 to 128 keys".into()));
+        }
+        if !parser.take(Token::RParen) || !parser.take(Token::LParen) {
+            return Err(ParseError("topK requires topK(k)(column)".into()));
+        }
+        let column = parser.word()?;
+        if !parser.take(Token::RParen) {
+            return Err(ParseError("expected ')' after topK column".into()));
+        }
+        Projection::TopK { column, k }
     } else if matches!(parser.tokens.get(parser.index + 1), Some(Token::LParen))
         && !matches!(parser.tokens.get(parser.index), Some(Token::Word(word)) if scalar::is_function(word) || text_scalar::is_function(word))
     {
@@ -1018,6 +1041,7 @@ fn parse_select_tokens(tokens: Vec<Token>) -> Result<Select, ParseError> {
                 | Projection::CountColumn { .. }
                 | Projection::CountDistinct { .. }
                 | Projection::ApproxDistinct { .. }
+                | Projection::TopK { .. }
                 | Projection::Aggregate { .. }
                 | Projection::GroupedCount { .. }
                 | Projection::GroupedDistinctCount { .. }
@@ -1550,6 +1574,7 @@ fn parse_select_tokens(tokens: Vec<Token>) -> Result<Select, ParseError> {
                 | Projection::CountColumn { .. }
                 | Projection::CountDistinct { .. }
                 | Projection::ApproxDistinct { .. }
+                | Projection::TopK { .. }
                 | Projection::Aggregate { .. }
                 | Projection::MultipleAggregates(_)
                 | Projection::StringLength { .. }
