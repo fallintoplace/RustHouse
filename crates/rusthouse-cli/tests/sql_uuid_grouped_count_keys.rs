@@ -21,6 +21,9 @@ fn uuid_group_counts_use_exact_byte_keys_across_parts() {
     }
     let result = sql("SELECT user_id, count(*) FROM events GROUP BY user_id ORDER BY user_id");
     assert!(result.status.success(), "{result:?}");
-    assert_eq!(result.stdout, b"user_id\tcount\n00000000-0000-0000-0000-000000000001\t3\n00000000-0000-0000-0000-000000000002\t1\n");
+    assert_eq!(
+        result.stdout,
+        b"user_id\tcount\n00000000-0000-0000-0000-000000000001\t3\n00000000-0000-0000-0000-000000000002\t1\n"
+    );
     fs::remove_dir_all(db).unwrap();
 }
