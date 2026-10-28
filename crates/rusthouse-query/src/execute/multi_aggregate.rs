@@ -17,11 +17,19 @@ struct DistinctValues {
     other: HashSet<typed::Key>,
     text: HashSet<Vec<u8>>,
     uuids: HashSet<[u8; 16]>,
+    byte_values: [u64; 4],
+    word_values: Option<Box<[u64; 1024]>>,
 }
 
 impl DistinctValues {
     fn len(&self) -> usize {
-        self.other.len() + self.text.len() + self.uuids.len()
+        self.other.len()
+            + self.text.len()
+            + self.uuids.len()
+            + self.byte_values.iter().map(|word| word.count_ones() as usize).sum::<usize>()
+            + self.word_values.as_ref().map_or(0, |bitmap| {
+                bitmap.iter().map(|word| word.count_ones() as usize).sum::<usize>()
+            })
     }
 
     fn insert_key(&mut self, key: typed::Key) -> Result<(), ExecutionError> {
@@ -59,6 +67,50 @@ impl DistinctValues {
     }
 
     fn insert_column(&mut self, column: &TypedColumn, row: usize) -> Result<bool, ExecutionError> {
+        // Low-cardinality numeric dimensions use exact bitsets. Billions of
+        // fact rows never grow a hash set or hit the generic distinct limit.
+        let narrow: Option<(Option<u16>, bool)> = match column {
+            TypedColumn::Numeric(rusthouse_storage::NumericColumn::UInt8(values)) => {
+                Some((Some(u16::from(values[row])), false))
+            }
+            TypedColumn::Numeric(rusthouse_storage::NumericColumn::Int8(values)) => {
+                Some((Some(u16::from(values[row] as u8)), false))
+            }
+            TypedColumn::Numeric(rusthouse_storage::NumericColumn::UInt16(values)) => {
+                Some((Some(values[row]), true))
+            }
+            TypedColumn::Numeric(rusthouse_storage::NumericColumn::Int16(values)) => {
+                Some((Some(values[row] as u16), true))
+            }
+            TypedColumn::NullableNumeric { values, nulls } => match values {
+                rusthouse_storage::NumericColumn::UInt8(values) => {
+                    Some(((nulls[row] == 0).then_some(u16::from(values[row])), false))
+                }
+                rusthouse_storage::NumericColumn::Int8(values) => {
+                    Some(((nulls[row] == 0).then_some(u16::from(values[row] as u8)), false))
+                }
+                rusthouse_storage::NumericColumn::UInt16(values) => {
+                    Some(((nulls[row] == 0).then_some(values[row]), true))
+                }
+                rusthouse_storage::NumericColumn::Int16(values) => {
+                    Some(((nulls[row] == 0).then_some(values[row] as u16), true))
+                }
+                _ => None,
+            },
+            _ => None,
+        };
+        if let Some((value, wide)) = narrow {
+            if let Some(value) = value {
+                let slot = usize::from(value);
+                if wide {
+                    let bitmap = self.word_values.get_or_insert_with(|| Box::new([0u64; 1024]));
+                    bitmap[slot / 64] |= 1u64 << (slot % 64);
+                } else {
+                    self.byte_values[slot / 64] |= 1u64 << (slot % 64);
+                }
+            }
+            return Ok(true);
+        }
         match column {
             TypedColumn::Text(values) => {
                 if let Some(value) = values.get(row) {
@@ -570,6 +622,31 @@ mod affine_tests {
 mod distinct_key_tests {
     use super::*;
     use rusthouse_storage::read_legacy_strings;
+
+    #[test]
+    fn narrow_distinct_metrics_handle_full_u16_and_signed_byte_domains() {
+        let mut narrow = DistinctValues::default();
+        let bytes = TypedColumn::Numeric(rusthouse_storage::NumericColumn::Int8(
+            (-128i16..=127).map(|value| value as i8).collect(),
+        ));
+        for row in 0..256 {
+            assert!(narrow.insert_column(&bytes, row).unwrap());
+            assert!(narrow.insert_column(&bytes, row).unwrap());
+        }
+        assert_eq!(narrow.len(), 256);
+        assert!(narrow.other.is_empty());
+
+        let mut words = DistinctValues::default();
+        let values = TypedColumn::Numeric(rusthouse_storage::NumericColumn::UInt16(
+            (0..=u16::MAX).collect(),
+        ));
+        for row in 0..=u16::MAX as usize {
+            assert!(words.insert_column(&values, row).unwrap());
+        }
+        assert_eq!(words.len(), 65_536);
+        assert_eq!(words.word_values.as_ref().unwrap().len(), 1024);
+        assert!(words.other.is_empty());
+    }
 
     #[test]
     fn distinct_state_uses_borrowed_text_and_fixed_width_uuid_keys() {
