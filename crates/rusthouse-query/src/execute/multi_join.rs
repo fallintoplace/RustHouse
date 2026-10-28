@@ -254,14 +254,17 @@ pub fn execute_multi_join<W: Write>(
         }
         let mut next = Vec::new();
         let mut retained = 0usize;
-        let mut matched_right = vec![false; right_rows.len()];
+        let mut matched_right = matches!(step.kind, JoinType::Right | JoinType::Full)
+            .then(|| vec![false; right_rows.len()]);
         for row in &rows {
             let mut matched = false;
             if let Some(key) = row_key(row, &left_keys) {
                 if let Some(matches) = hash.get(&key) {
                     for &match_index in matches.iter().take(if step.any { 1 } else { usize::MAX }) {
                         matched = true;
-                        matched_right[match_index] = true;
+                        if let Some(flags) = matched_right.as_mut() {
+                            flags[match_index] = true;
+                        }
                         let mut joined =
                             Vec::with_capacity(left_width + right_relation.names.len());
                         joined.extend_from_slice(row);
@@ -277,7 +280,7 @@ pub fn execute_multi_join<W: Write>(
                 push_row(&mut next, joined, &mut retained)?;
             }
         }
-        if matches!(step.kind, JoinType::Right | JoinType::Full) {
+        if let Some(matched_right) = matched_right {
             for (right_index, matched) in matched_right.into_iter().enumerate() {
                 if !matched {
                     let mut joined = vec![typed::Cell::Null; left_width];
