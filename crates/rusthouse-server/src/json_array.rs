@@ -199,6 +199,7 @@ mod tests {
             format!("[{large_row},{{}}]\n").as_bytes()
         );
     }
+
     #[test]
     fn complete_json_row_skips_temporary_buffering() {
         let input = format!("{{\"label\":\"{}\"}}\n", "x".repeat(4096));
