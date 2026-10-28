@@ -15,7 +15,7 @@ def assess_query(result, min_samples=5, max_cv_percent=10.0):
         return {"query": number, "state": "not_verified", "cv_percent": None,
                 "mad_seconds": None, "samples": 0}
     samples = result.get("timings_seconds") or []
-    if any(not isinstance(x, (int, float)) or not math.isfinite(x) or x < 0
+    if any(type(x) not in (int, float) or not math.isfinite(x) or x <= 0
            for x in samples):
         return {"query": number, "state": "invalid_samples", "cv_percent": None,
                 "mad_seconds": None, "samples": len(samples)}
