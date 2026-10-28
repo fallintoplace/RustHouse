@@ -359,7 +359,9 @@ where
                         if options.stop_after.is_none() && matches >= MAX_RESULT_ROWS {
                             return Err(invalid("JOIN produces more than 65536 rows"));
                         }
-                        let projection = if options.materialize_rows {
+                        let projection = if options.materialize_rows
+                            && matches >= options.materialize_after
+                        {
                             right_row
                                 .get_or_insert_with(|| {
                                     batch
@@ -465,7 +467,7 @@ fn execute_streaming_right<W: Write>(
         &hash,
         ProbeOptions {
             materialize_rows: true,
-            materialize_after: 0,
+            materialize_after: query.offset,
             stop_after,
             any: query.any,
             null_filter,
