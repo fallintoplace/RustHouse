@@ -34,6 +34,18 @@ class BenchmarkComparisonTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "query ID sets"):
             compare(one, other)
 
+    def test_rejects_missing_metadata_and_different_sql_fingerprints(self):
+        baseline = {"engine": "rusthouse-cli", "query_sha256": "abc",
+                    "results": [result(1, "passed", 0.01)]}
+        candidate = {"engine": "rusthouse-cli", "query_sha256": "def",
+                     "results": [result(1, "passed", 0.01)]}
+        with self.assertRaisesRegex(ValueError, "query_sha256"):
+            compare(baseline, candidate)
+        candidate["query_sha256"] = "abc"
+        del candidate["engine"]
+        with self.assertRaisesRegex(ValueError, "engine"):
+            compare(baseline, candidate)
+
     def test_invalid_medians_are_not_measured(self):
         self.assertIsNone(elapsed(result(1, "passed", 0)))
         report = compare({"results": [result(1, "passed", 0)]},
