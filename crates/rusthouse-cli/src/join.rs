@@ -37,6 +37,7 @@ fn execute_formatted_join(
     mut output: &mut dyn std::io::Write,
 ) -> Result<(), rusthouse_query::ExecutionError> {
     match format {
+        SqlOutputFormat::Null => execute_selected_join(query, paths, &mut std::io::sink()),
         SqlOutputFormat::Tsv => execute_selected_join(query, paths, &mut output),
         SqlOutputFormat::TsvNoHeader => execute_selected_join(
             query,
