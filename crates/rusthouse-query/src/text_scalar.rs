@@ -544,7 +544,21 @@ fn parse_at_depth(parser: &mut Parser, depth: usize) -> Result<ConstantValue, Pa
                 None => ConstantValue::Null,
             }
         }
-        "UPPER" | "UPPERUTF8" => {
+        "UPPERUTF8" => {
+            let input = text_arg(parser, depth + 1)?;
+            require(parser, Token::RParen, "UPPERUTF8 requires one argument")?;
+            match input {
+                Some(input) => {
+                    let output = input.to_uppercase();
+                    if output.len() > MAX_TEXT_BYTES {
+                        return Err(ParseError("upperUTF8 result is too large".into()));
+                    }
+                    ConstantValue::Text(output)
+                }
+                None => ConstantValue::Null,
+            }
+        }
+        "UPPER" => {
             let input = text_arg(parser, depth + 1)?;
             require(parser, Token::RParen, "UPPER requires one argument")?;
             match input {
