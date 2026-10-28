@@ -5,7 +5,7 @@ use std::fs::File;
 use std::io::{BufRead, BufReader, Read};
 use std::path::Path;
 
-const MAX_COPY_BYTES: usize = 8 * 1024 * 1024;
+const MAX_COPY_BYTES: usize = 16 * 1024 * 1024;
 const MAX_CSV_DATA_RECORDS: usize = 100_000;
 const MAX_CSV_RECORDS: usize = MAX_CSV_DATA_RECORDS + 1;
 #[cfg(test)]
@@ -277,6 +277,19 @@ fn run_tsv(database: &Path, statement: &CopyFrom) -> Result<(), String> {
     crate::database::insert_stream(database, &statement.table, columns, || input.next_record())
 }
 
+fn read_csv_copy_file(path: &str) -> Result<Vec<u8>, String> {
+    let mut data = Vec::new();
+    File::open(path)
+        .map_err(|error| format!("cannot open COPY file {path}: {error}"))?
+        .take((MAX_COPY_BYTES + 1) as u64)
+        .read_to_end(&mut data)
+        .map_err(|error| format!("cannot read COPY file {path}: {error}"))?;
+    if data.len() > MAX_COPY_BYTES {
+        return Err("COPY file exceeds 16 MiB".into());
+    }
+    Ok(data)
+}
+
 pub(super) fn run(database: &Path, statement: &CopyFrom) -> Result<(), String> {
     if matches!(statement.format, CopyFormat::Tsv | CopyFormat::Ssv) {
         return run_tsv(database, statement);
@@ -284,15 +297,7 @@ pub(super) fn run(database: &Path, statement: &CopyFrom) -> Result<(), String> {
     if statement.path == "-" {
         return Err("COPY FROM '-' requires TSV format".into());
     }
-    let mut data = Vec::new();
-    File::open(&statement.path)
-        .map_err(|error| format!("cannot open COPY file {}: {error}", statement.path))?
-        .take((MAX_COPY_BYTES + 1) as u64)
-        .read_to_end(&mut data)
-        .map_err(|error| format!("cannot read COPY file {}: {error}", statement.path))?;
-    if data.len() > MAX_COPY_BYTES {
-        return Err("COPY file exceeds 8 MiB".into());
-    }
+    let data = read_csv_copy_file(&statement.path)?;
     let input = std::str::from_utf8(&data).map_err(|_| "COPY requires UTF-8 data")?;
     let mut records = parse_csv(input)?;
     let mut columns = statement.columns.clone();
@@ -450,5 +455,23 @@ mod utf8_bom_regressions {
             parse_csv("id,\u{feff}name\n").unwrap()[0][1],
             Some("\u{feff}name".to_owned())
         );
+    }
+}
+
+#[cfg(test)]
+mod copy_file_capacity_tests {
+    use super::*;
+    use std::fs;
+
+    #[test]
+    fn reads_csv_past_eight_mib_and_rejects_past_sixteen_mib() {
+        let path = std::env::temp_dir().join(format!(
+            "rusthouse-copy-csv-capacity-{}-{}", std::process::id(), line!()
+        ));
+        fs::write(&path, vec![b'1'; 8 * 1024 * 1024 + 1]).unwrap();
+        assert_eq!(read_csv_copy_file(path.to_str().unwrap()).unwrap().len(), 8 * 1024 * 1024 + 1);
+        fs::write(&path, vec![b'1'; MAX_COPY_BYTES + 1]).unwrap();
+        assert!(read_csv_copy_file(path.to_str().unwrap()).is_err());
+        fs::remove_file(path).unwrap();
     }
 }
