@@ -48,6 +48,13 @@ pub(super) fn tokenize(sql: &str) -> Result<Vec<Token>, ParseError> {
                 }
                 continue;
             }
+            b'-' if bytes.get(index + 1) == Some(&b'-') => {
+                index += 2;
+                while index < bytes.len() && !matches!(bytes[index], b'\r' | b'\n') {
+                    index += 1;
+                }
+                continue;
+            }
             b'-' if follows_binary_minus_context(&tokens) => {
                 index += 1;
                 Token::Minus
@@ -251,6 +258,20 @@ mod tests {
             ]
         );
         assert!(tokenize("# only a comment").unwrap().is_empty());
+    }
+
+    #[test]
+    fn skips_double_dash_line_comments() {
+        assert_eq!(
+            tokenize("SELECT 1-- ignore the rest\n + 2").unwrap(),
+            vec![
+                Token::Word("SELECT".into()),
+                Token::Number("1".into()),
+                Token::Plus,
+                Token::Number("2".into()),
+            ]
+        );
+        assert!(tokenize("-- only a comment").unwrap().is_empty());
     }
 
 }
