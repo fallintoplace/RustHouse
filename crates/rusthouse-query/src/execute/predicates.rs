@@ -282,6 +282,24 @@ pub(super) fn count_monotonic_numbers(
         return None;
     }
     if let [predicate] = conjunction {
+        if let CompiledTest::DistinctFrom {
+            target: Number::Unsigned(target),
+            negated,
+        } = &predicate.test {
+            let first = u128::from(start);
+            let increment = u128::from(step);
+            let exists = if *target < first {
+                false
+            } else {
+                let delta = *target - first;
+                delta % increment == 0 && delta / increment < u128::from(rows)
+            };
+            let matching = u64::from(exists);
+            return Some(if *negated { matching } else { rows - matching });
+        }
+    }
+
+    if let [predicate] = conjunction {
         if let CompiledTest::Always(value) = &predicate.test {
             return Some(if *value { rows } else { 0 });
         }
@@ -624,6 +642,29 @@ mod tests {
         let included = compile_in_test(values, false);
         assert!(included.matches(Number::Float(0.0)));
         assert!(!included.matches(Number::Float(f64::NAN)));
+    }
+}
+
+#[cfg(test)]
+mod generated_distinct_from_count_tests {
+    use super::*;
+
+    #[test]
+    fn distinct_and_not_distinct_match_sequence_membership() {
+        let count = |target, negated| count_monotonic_numbers(
+            &[vec![CompiledPredicate {
+                index: 0,
+                test: CompiledTest::DistinctFrom {
+                    target: Number::Unsigned(target),
+                    negated,
+                },
+            }]],
+            5, 1_000_000_000, 2,
+        );
+        assert_eq!(count(7, true), Some(1));
+        assert_eq!(count(7, false), Some(999_999_999));
+        assert_eq!(count(8, true), Some(0));
+        assert_eq!(count(8, false), Some(1_000_000_000));
     }
 }
 
