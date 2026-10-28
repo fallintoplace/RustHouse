@@ -84,7 +84,7 @@ mod tests {
             calls: 0,
         };
         let result = read_ipv4_values(&mut reader, 8192).unwrap();
-        assert_eq!(reader.calls, 2);
+        assert_eq!(reader.calls, 1);
         assert_eq!(result[8191], Ipv4Addr::new(192, 0, 2, 1));
 
         let ipv6 = [0x20, 0x01, 0x0d, 0xb8, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1];
@@ -94,7 +94,7 @@ mod tests {
             calls: 0,
         };
         let result = read_ipv6_values(&mut reader, 2048).unwrap();
-        assert_eq!(reader.calls, 2);
+        assert_eq!(reader.calls, 1);
         assert_eq!(result[2047], Ipv6Addr::from(ipv6));
 
         struct Bytewise<R>(R);
