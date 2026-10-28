@@ -55,6 +55,14 @@ pub(super) fn batch_key_into(
     result: &mut Vec<typed::Key>,
 ) -> bool {
     result.clear();
+    // A later NULL must not force us to clone an earlier String/UUID key.
+    if indices.len() > 1
+        && indices
+            .iter()
+            .any(|&index| typed::is_null_at(&batch[index], row))
+    {
+        return false;
+    }
     for &index in indices {
         let value = typed::cell(&batch[index], row);
         if !key_eligible(&value) {

@@ -201,4 +201,19 @@ mod tests {
         let actual = scan(blocks).collect::<Result<Vec<_>, _>>().unwrap();
         assert_eq!(actual, expected);
     }
+    #[test]
+    fn reconstructs_uint64_values_at_every_interior_split() {
+        let expected = [0x0102030405060708u64, u64::MAX];
+        let bytes = expected
+            .iter()
+            .flat_map(|value| value.to_le_bytes())
+            .collect::<Vec<_>>();
+        for split in 1..8 {
+            let mut blocks = none_block(&bytes[..split]);
+            blocks.extend(none_block(&bytes[split..]));
+            let values = scan(blocks).collect::<Result<Vec<_>, _>>().unwrap();
+            assert_eq!(values, expected, "split {split}");
+        }
+    }
+
 }
