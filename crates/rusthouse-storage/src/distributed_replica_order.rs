@@ -142,7 +142,7 @@ mod tests {
 }
 
 /// Rank healthy replicas at or above a required snapshot version.
-/// A newer epoch supersedes the requested generation floor.
+/// A different epoch is a different lineage and is never considered fresh.
 pub fn rank_read_replicas_at_least(
     replicas: &[ReplicaStatus],
     minimum_epoch: u64,
@@ -153,9 +153,8 @@ pub fn rank_read_replicas_at_least(
         .iter()
         .filter(|replica| {
             replica.healthy
-                && (replica.epoch > minimum_epoch
-                    || (replica.epoch == minimum_epoch
-                        && replica.generation >= minimum_generation))
+                && replica.epoch == minimum_epoch
+                && replica.generation >= minimum_generation
         })
         .cloned()
         .collect::<Vec<_>>();
@@ -178,7 +177,7 @@ mod freshness_floor_tests {
         ];
         assert_eq!(
             rank_read_replicas_at_least(&replicas, 4, 10).unwrap(),
-            vec!["next", "new"]
+            vec!["new"]
         );
         assert!(rank_read_replicas_at_least(&replicas, 5, 2).is_err());
         assert!(rank_read_replicas_at_least(&replicas, 6, 0).is_err());
