@@ -26,6 +26,7 @@ pub(super) fn is_function(name: &str) -> bool {
             | "UPPER"
             | "URL_DECODE"
             | "IS_EMPTY"
+            | "NOTEMPTY"
             | "REVERSE"
             | "INITCAP"
             | "CONCAT"
@@ -319,6 +320,14 @@ fn parse_at_depth(parser: &mut Parser, depth: usize) -> Result<ConstantValue, Pa
             require(parser, Token::RParen, "IS_ASCII requires one argument")?;
             match input {
                 Some(value) => ConstantValue::Integer(i64::from(value.is_ascii())),
+                None => ConstantValue::Null,
+            }
+        }
+        "NOTEMPTY" => {
+            let input = text_arg(parser, depth + 1)?;
+            require(parser, Token::RParen, "notEmpty requires one argument")?;
+            match input {
+                Some(value) => ConstantValue::Integer(i64::from(!value.is_empty())),
                 None => ConstantValue::Null,
             }
         }
