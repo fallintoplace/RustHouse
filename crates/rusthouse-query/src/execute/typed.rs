@@ -228,6 +228,7 @@ enum Test {
     Compare(Operator, Cell),
     UuidCompare(Operator, [u8; 16]),
     In(Vec<Cell>, bool),
+    UuidInSet(HashSet<[u8; 16]>, bool),
     TextInSet(HashSet<Vec<u8>>, bool),
     NumericInSet(HashSet<NumberKey>, bool),
     NotBetween(Cell, Cell),
@@ -248,9 +249,32 @@ pub(super) struct Condition {
 
 const HASHED_TYPED_IN_MIN_VALUES: usize = 16;
 
+/// Convert already-validated canonical UUID literals into fixed-width hash keys.
+fn uuid_key(value: &str) -> [u8; 16] {
+    let hex = value.replace('-', "");
+    let mut bytes = [0u8; 16];
+    for (index, byte) in bytes.iter_mut().enumerate() {
+        *byte = u8::from_str_radix(&hex[index * 2..index * 2 + 2], 16)
+            .expect("UUID literal was validated during predicate compilation");
+    }
+    bytes
+}
+
 fn compile_in(kind: &str, values: &[String], negated: bool) -> Result<Test, ExecutionError> {
     let targets = parse_literals(kind, values)?;
-    if targets.len() < HASHED_TYPED_IN_MIN_VALUES || base_type(kind) == "UUID" {
+    if base_type(kind) == "UUID" {
+        return Ok(Test::UuidInSet(
+            targets
+                .into_iter()
+                .filter_map(|value| match value {
+                    Cell::Uuid(text) => Some(uuid_key(&text)),
+                    _ => None,
+                })
+                .collect(),
+            negated,
+        ));
+    }
+    if targets.len() < HASHED_TYPED_IN_MIN_VALUES {
         return Ok(Test::In(targets, negated));
     }
     if base_type(kind) == "String" {
@@ -499,6 +523,14 @@ pub(super) fn passes(batch: &[TypedColumn], row: usize, branches: &[Vec<Conditio
                 }
                 Test::In(targets, negated) => {
                     matches_in_at(column, row, targets, *negated)
+                }
+                Test::UuidInSet(targets, negated) => {
+                    match column {
+                        TypedColumn::Uuid(values) => {
+                            targets.contains(values[row].as_bytes()) != *negated
+                        }
+                        _ => false,
+                    }
                 }
                 Test::TextInSet(targets, negated) => {
                     let value = match column {
