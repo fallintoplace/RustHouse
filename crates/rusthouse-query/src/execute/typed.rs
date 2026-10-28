@@ -302,6 +302,13 @@ fn uuid_key(value: &str) -> [u8; 16] {
 
 fn compile_in(kind: &str, values: &[String], negated: bool) -> Result<Test, ExecutionError> {
     let targets = parse_literals(kind, values)?;
+    // A single String member needs only one direct borrowed-byte comparison.
+    if targets.len() == 1 && base_type(kind) == "String" {
+        return Ok(Test::Compare(
+            if negated { Operator::Ne } else { Operator::Eq },
+            targets.into_iter().next().expect("one target"),
+        ));
+    }
     if base_type(kind) == "UUID" {
         return Ok(Test::UuidInSet(
             targets
