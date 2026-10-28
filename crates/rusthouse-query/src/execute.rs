@@ -49,6 +49,7 @@ use std::path::Path;
 use std::sync::atomic::{AtomicUsize, Ordering as AtomicOrdering};
 
 mod grouped_distinct;
+mod grouped_approx_distinct;
 mod grouped_generated;
 mod grouped_multi;
 mod grouped_multi_distinct;
@@ -989,6 +990,9 @@ fn execute_into<W: Write>(
     if let Projection::GroupedMultiCount { columns } = &query.projection {
         return grouped_multi::execute(query, part, columns, output);
     }
+    if matches!(query.projection, Projection::GroupedApproxDistinct { .. }) {
+        return grouped_approx_distinct::execute(query, part, output);
+    }
     if let Projection::GroupedDistinctCount {
         column,
         value_column,
@@ -1057,6 +1061,7 @@ fn execute_into<W: Write>(
         | Projection::CountColumn { .. }
         | Projection::CountDistinct { .. }
         | Projection::ApproxDistinct { .. }
+        | Projection::GroupedApproxDistinct { .. }
         | Projection::GroupedCount { .. }
         | Projection::GroupedDistinctCount { .. }
         | Projection::GroupedMultiDistinctCount { .. }
@@ -1619,6 +1624,7 @@ fn execute_numbers<W: Write>(
         | Projection::CountColumn { .. }
         | Projection::CountDistinct { .. }
         | Projection::ApproxDistinct { .. }
+        | Projection::GroupedApproxDistinct { .. }
         | Projection::GroupedCount { .. }
         | Projection::GroupedDistinctCount { .. }
         | Projection::GroupedMultiDistinctCount { .. }
