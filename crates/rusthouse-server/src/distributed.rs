@@ -1581,6 +1581,32 @@ fn float_having_matches(value: f64, having: &Having) -> bool {
     }
 }
 
+
+/// Partially select the global first OFFSET + LIMIT groups before sorting.
+/// The original ordinal breaks equal-key ties deterministically, so an
+/// unstable nth-element selection retains the same rows as a stable full sort.
+/// Typical work is O(groups + top_k * log(top_k)), not O(groups * log(groups)).
+fn globally_rank_group_ids(
+    row_count: usize,
+    query: &Select,
+    mut compare: impl FnMut(usize, usize) -> std::cmp::Ordering,
+) -> Vec<usize> {
+    let mut indices = (0..row_count).collect::<Vec<_>>();
+    let mut compare_ids = |left: &usize, right: &usize| {
+        compare(*left, *right).then_with(|| left.cmp(right))
+    };
+    if let Some(bound) = query.limit
+        .and_then(|limit| query.offset.unwrap_or(0).checked_add(limit))
+    {
+        if bound < indices.len() {
+            indices.select_nth_unstable_by(bound, &mut compare_ids);
+            indices.truncate(bound);
+        }
+    }
+    indices.sort_unstable_by(compare_ids);
+    indices
+}
+
 /// Reduce grouped COUNT results by their canonical TSV-encoded key.
 /// Preserve first-seen key order, reject malformed rows, and only emit a
 /// complete bounded result. Shards may hold overlapping group *keys*, but
@@ -1720,7 +1746,9 @@ fn merge_grouped_counts_multi_typed(
         if select.order_by.is_some() {
             let terms = select.order_terms().collect::<Vec<_>>();
             if terms.iter().all(|order| order.column == "count") {
-                groups.sort_by(|left, right| {
+                let ranked = globally_rank_group_ids(groups.len(), select, |a, b| {
+                    let left = &groups[a];
+                    let right = &groups[b];
                     for order in &terms {
                         let cmp = left.1.cmp(&right.1);
                         let cmp = if order.descending { cmp.reverse() } else { cmp };
@@ -1728,6 +1756,7 @@ fn merge_grouped_counts_multi_typed(
                     }
                     std::cmp::Ordering::Equal
                 });
+                groups = ranked.into_iter().map(|index| groups[index]).collect();
             } else {
                 let kinds = if group_width == 1 {
                     vec![key_kind.ok_or(MergeError::InvalidGroupedCount)?]
@@ -1743,7 +1772,7 @@ fn merge_grouped_counts_multi_typed(
                     Projection::GroupedMultiCount { columns } => columns.clone(),
                     _ => return Err(MergeError::InvalidGroupedCount),
                 };
-                let mut indices = groups.iter().enumerate()
+                let candidates = groups.iter().enumerate()
                     .map(|(index, (key, _))| {
                         let fields = key.split(|&byte| byte == b'\t').collect::<Vec<_>>();
                         if fields.len() != kinds.len() {
@@ -1755,7 +1784,9 @@ fn merge_grouped_counts_multi_typed(
                         Ok((index, parsed))
                     })
                     .collect::<Result<Vec<_>, MergeError>>()?;
-                indices.sort_by(|(a, a_keys), (b, b_keys)| {
+                let ranked = globally_rank_group_ids(candidates.len(), select, |left, right| {
+                    let (a, a_keys) = &candidates[left];
+                    let (b, b_keys) = &candidates[right];
                     for order in &terms {
                         let cmp = if order.column == "count" {
                             groups[*a].1.cmp(&groups[*b].1)
@@ -1777,7 +1808,7 @@ fn merge_grouped_counts_multi_typed(
                     }
                     std::cmp::Ordering::Equal
                 });
-                groups = indices.into_iter().map(|(index, _)| groups[index]).collect();
+                groups = ranked.into_iter().map(|index| groups[candidates[index].0]).collect();
             }
         }
         groups = groups
@@ -2806,6 +2837,39 @@ mod tests {
             ).unwrap(),
             b"region\tcategory\tavg(price)\n2\tbooks\t5\n10\ttools\t6.666666666666667\n"
         );
+    }
+
+    #[test]
+    fn bounded_global_group_topk_keeps_stable_ties_after_selection() {
+        let query = parse_select(
+            "SELECT region, count(*) FROM events GROUP BY region ORDER BY count DESC LIMIT 1 OFFSET 1",
+        ).unwrap();
+        let shards = [
+            shard(20, "region\tcount\na\t3\nb\t7\nc\t7\nd\t5\ne\t7\n"),
+            shard(20, "region\tcount\nf\t1\n"),
+        ];
+        assert_eq!(
+            merge_grouped_counts_typed(&shards, 1, Some(&query), None).unwrap(),
+            b"region\tcount\nc\t7\n"
+        );
+    }
+
+    #[test]
+    fn bounded_global_group_topk_avoids_full_sort_of_large_group_sets() {
+        let query = parse_select(
+            "SELECT region, count(*) FROM events GROUP BY region ORDER BY count DESC LIMIT 10",
+        ).unwrap();
+        let values = (0..100_000u64).rev().collect::<Vec<_>>();
+        let sorted = globally_rank_group_ids(values.len(), &query, |left, right| {
+            values[right].cmp(&values[left])
+        });
+        assert_eq!(sorted.len(), 10);
+        assert_eq!(sorted, (0..10).collect::<Vec<_>>());
+        let tied = vec![5u64; 100_000];
+        let sorted = globally_rank_group_ids(tied.len(), &query, |left, right| {
+            tied[left].cmp(&tied[right])
+        });
+        assert_eq!(sorted, (0..10).collect::<Vec<_>>());
     }
     #[test]
     fn distributed_count_distinct_uses_global_unique_values() {
