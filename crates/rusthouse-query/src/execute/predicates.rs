@@ -154,6 +154,15 @@ pub(super) fn count_batch_matches(
                 // each input element.
                 match &batch[predicate.index] {
                     NumericColumn::UInt8(values) => {
+                        if values.len() < 512 {
+                            return values
+                                .iter()
+                                .filter(|&&value| {
+                                    targets.contains(&NumberKey::Unsigned(u128::from(value)))
+                                        != *negated
+                                })
+                                .count();
+                        }
                         let mut matches = [false; 256];
                         for (byte, result) in matches.iter_mut().enumerate() {
                             *result = targets.contains(&NumberKey::Unsigned(byte as u128));
@@ -164,9 +173,18 @@ pub(super) fn count_batch_matches(
                             .count();
                     }
                     NumericColumn::Int8(values) => {
+                        if values.len() < 512 {
+                            return values
+                                .iter()
+                                .filter(|&&value| {
+                                    targets.contains(&NumberKey::Signed(i128::from(value)))
+                                        != *negated
+                                })
+                                .count();
+                        }
                         let mut matches = [false; 256];
                         for (byte, result) in matches.iter_mut().enumerate() {
-                            *result = targets.contains(&NumberKey::Signed(i128::from(byte as u8 as i8)));
+                            *result = targets.contains(&NumberKey::Signed(i128::from(byte as i8)));
                         }
                         return values
                             .iter()
@@ -1549,9 +1567,11 @@ mod byte_in_dense_lookup_tests {
                 };
                 let test = CompiledTest::InSet { targets, negated };
                 let batch = if signed {
-                    vec![NumericColumn::Int8((-128i16..=127).map(|i| i as i8).collect())]
+                    vec![NumericColumn::Int8(
+                        (-128i16..=127).map(|i| i as i8).collect::<Vec<_>>().repeat(4)
+                    )]
                 } else {
-                    vec![NumericColumn::UInt8((0..=255).collect())]
+                    vec![NumericColumn::UInt8((0..=255).collect::<Vec<u8>>().repeat(4))]
                 };
                 let expected = (0..batch[0].len())
                     .filter(|&row| test.matches(super::super::number_at(&batch[0], row)))
