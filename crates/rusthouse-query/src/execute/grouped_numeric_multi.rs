@@ -63,7 +63,7 @@ pub(super) fn execute<W: Write>(
     let mut groups = Vec::<(Cell, Vec<AggregateState>)>::new();
     let mut by_key = HashMap::<typed::Key, usize>::new();
     let mut by_text = HashMap::<Vec<u8>, usize>::new();
-    let mut reader = TypedQueryReader::open(part, &names)?;
+    let mut reader = TypedQueryReader::open_with_metadata(part, &names, &metadata)?;
     let no_filters = query.predicates.is_empty() && query.or_predicates.is_empty();
     while let Some(batch) = reader.next_batch()? {
         for row in 0..batch[0].len() {
