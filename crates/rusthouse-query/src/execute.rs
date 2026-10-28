@@ -720,7 +720,7 @@ fn execute_into<W: Write>(
     Ok(())
 }
 
-const MAX_GROUPS: usize = 100_000;
+const MAX_GROUPS: usize = 200_000;
 
 // Select just the first N ordered groups without sorting all groups.
 // The original index breaks ties in the same order as stable sort.
@@ -760,7 +760,7 @@ impl GroupedCounts {
             Entry::Vacant(entry) => {
                 if self.rows.len() >= MAX_GROUPS {
                     return Err(ExecutionError::Invalid(
-                        "GROUP BY supports at most 100000 groups".into(),
+                        "GROUP BY supports at most 200000 groups".into(),
                     ));
                 }
                 entry.insert(self.rows.len());
@@ -1492,3 +1492,17 @@ mod parallel_sum_tests {
     }
 }
 
+
+#[cfg(test)]
+mod numeric_group_capacity_tests {
+    use super::*;
+
+    #[test]
+    fn accepts_more_than_old_group_count_limit() {
+        let mut groups = GroupedCounts::default();
+        for value in 0..100_001u64 {
+            groups.push(Number::Unsigned(u128::from(value))).unwrap();
+        }
+        assert_eq!(groups.rows.len(), 100_001);
+    }
+}
