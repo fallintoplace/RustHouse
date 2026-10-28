@@ -45,7 +45,7 @@ pub fn rank_read_replicas(replicas: &[ReplicaStatus]) -> Result<Vec<String>, &'s
     if healthy.is_empty() {
         return Err("no healthy storage replica");
     }
-    healthy.sort_unstable_by(newest_first);
+    healthy.sort_unstable_by(|left, right| newest_first(left, right));
     Ok(healthy.into_iter().map(|replica| replica.node.clone()).collect())
 }
 
