@@ -109,7 +109,7 @@ impl From<Number> for NumberKey {
     }
 }
 
-const MAX_DISTINCT_ROWS: usize = 100_000;
+const MAX_DISTINCT_ROWS: usize = 200_000;
 const MAX_MEDIAN_ROWS: usize = 100_000;
 
 fn remember_distinct(
@@ -123,7 +123,7 @@ fn remember_distinct(
             return Ok(false);
         }
         return Err(ExecutionError::Invalid(
-            "DISTINCT supports at most 100000 unique rows".into(),
+            "DISTINCT supports at most 200000 unique rows".into(),
         ));
     }
     Ok(seen.insert(key))
@@ -1492,3 +1492,22 @@ mod parallel_sum_tests {
     }
 }
 
+
+#[cfg(test)]
+mod numeric_distinct_capacity_tests {
+    use super::*;
+
+    #[test]
+    fn accepts_more_than_old_distinct_limit_and_rejects_new_excess() {
+        let mut seen = HashSet::new();
+        for value in 0..MAX_DISTINCT_ROWS {
+            assert!(remember_distinct(
+                &mut seen, &[Number::Unsigned(value as u128)]
+            ).unwrap());
+        }
+        assert!(!remember_distinct(&mut seen, &[Number::Unsigned(0)]).unwrap());
+        assert!(remember_distinct(
+            &mut seen, &[Number::Unsigned(MAX_DISTINCT_ROWS as u128)]
+        ).is_err());
+    }
+}
