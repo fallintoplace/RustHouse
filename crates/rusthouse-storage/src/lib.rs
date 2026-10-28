@@ -12,6 +12,7 @@ mod fixed_width;
 mod granules;
 mod ip;
 mod mark_validation;
+pub mod distributed_scrub;
 mod marks;
 mod metadata;
 mod nested_arrays;
