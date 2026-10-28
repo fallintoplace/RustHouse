@@ -104,6 +104,7 @@ pub(super) fn is_function(name: &str) -> bool {
             | "REPLACE_LAST"
             | "NETLOC"
             | "STRIP_SUFFIX"
+            | "TOSTRINGCUTTOZERO"
             | "REPEAT"
             | "BASE64_DECODE"
             | "BASE64DECODE"
@@ -1973,6 +1974,17 @@ fn parse_at_depth(parser: &mut Parser, depth: usize) -> Result<ConstantValue, Pa
                     }
                     result.push('"');
                     ConstantValue::Text(result)
+                }
+                None => ConstantValue::Null,
+            }
+        }
+        "TOSTRINGCUTTOZERO" => {
+            let input = text_arg(parser, depth + 1)?;
+            require(parser, Token::RParen, "toStringCutToZero requires one argument")?;
+            match input {
+                Some(input) => {
+                    let before_nul = input.split('\0').next().unwrap_or("");
+                    ConstantValue::Text(before_nul.to_owned())
                 }
                 None => ConstantValue::Null,
             }
