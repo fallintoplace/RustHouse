@@ -318,6 +318,22 @@ pub fn parse_join(sql: &str) -> Result<Option<JoinSelect>, ParseError> {
     } else {
         Vec::new()
     };
+    if let Some((column, _)) = &where_null {
+        if column.relation != left_alias && column.relation != right_alias {
+            return Err(ParseError(format!(
+                "unknown JOIN qualifier: {}",
+                column.relation
+            )));
+        }
+    }
+    for (column, _, _) in &order_by {
+        if column.relation != left_alias && column.relation != right_alias {
+            return Err(ParseError(format!(
+                "unknown JOIN qualifier: {}",
+                column.relation
+            )));
+        }
+    }
     let (limit, comma_offset) = if parser.keyword("LIMIT") {
         let first = bound(&mut parser, "LIMIT")?;
         if parser.take(Token::Comma) {
@@ -767,4 +783,16 @@ mod tests {
             assert!(parse_join(sql).is_err(), "{sql}");
         }
     }
+    #[test]
+    fn rejects_unknown_filter_and_sort_qualifiers_during_parse() {
+        for statement in [
+            "SELECT * FROM l a JOIN r b ON a.id = b.id WHERE c.id IS NULL",
+            "SELECT * FROM l a JOIN r b ON a.id = b.id ORDER BY c.id",
+            "SELECT * FROM l a JOIN r b ON a.id = b.id ORDER BY a.id, c.id DESC",
+        ] {
+            assert!(parse_join(statement).is_err(), "{statement}");
+        }
+        assert!(parse_join("SELECT * FROM l a JOIN r b ON a.id = b.id WHERE b.id IS NOT NULL ORDER BY a.id").is_ok());
+    }
+
 }
