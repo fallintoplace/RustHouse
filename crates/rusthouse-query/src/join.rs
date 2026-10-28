@@ -281,6 +281,18 @@ pub fn parse_join(sql: &str) -> Result<Option<JoinSelect>, ParseError> {
                     ));
                 }
                 let second = qualified(&mut parser)?;
+                for column in [&first, &second] {
+                    if column.relation != left_alias
+                        && column.relation != right_alias
+                        && column.relation != alias
+                        && !steps.iter().any(|step| step.alias == column.relation)
+                    {
+                        return Err(ParseError(format!(
+                            "unknown JOIN qualifier: {}",
+                            column.relation
+                        )));
+                    }
+                }
                 keys.push((first, second));
                 if !parser.keyword("AND") {
                     break;
@@ -505,6 +517,20 @@ pub fn explain_join(query: &JoinSelect) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn chained_join_rejects_unknown_on_qualifiers_at_parse_time() {
+        for statement in [
+            "SELECT * FROM a x JOIN b y ON x.id = y.id JOIN c z ON missing.id = z.id",
+            "SELECT * FROM a x JOIN b y ON x.id = y.id JOIN c z ON z.id = missing.id",
+        ] {
+            assert!(parse_join(statement).is_err(), "{statement}");
+        }
+        assert!(parse_join(
+            "SELECT * FROM a x JOIN b y ON x.id = y.id JOIN c z ON x.id = z.id",
+        )
+        .is_ok());
+    }
 
     #[test]
     fn explain_lists_chained_sources_before_project_and_limit() {
