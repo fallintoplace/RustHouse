@@ -56,6 +56,13 @@ fn groups_counts_by_two_keys_with_filter_having_and_sort() {
     );
     assert_eq!(
         run(
+            "SELECT region, event, count(*) FROM part GROUP BY region, event ORDER BY count(*) DESC, region ASC LIMIT 1 OFFSET 1"
+        ),
+        "region\tevent\tcount\n1\tclick\t1\n"
+    );
+
+    assert_eq!(
+        run(
             "SELECT region, event, count(*) AS c FROM part GROUP BY region, event HAVING c > 1 ORDER BY c DESC"
         ),
         "region\tevent\tc\n1\tview\t2\n"
