@@ -124,7 +124,11 @@ impl SortedRows {
     /// A later candidate tied with the worst row loses the stable tie-break.
     /// Only bounded heaps can prune: unbounded scans must still enforce
     /// the maximum unsorted-input row count in push_with_extra.
-    pub(super) fn would_discard(&self, key: Number, extra_keys: &[Number]) -> bool {
+    pub(super) fn would_discard(
+        &self,
+        key: Number,
+        extra_keys: impl IntoIterator<Item = Number>,
+    ) -> bool {
         if self.requested > MAX_SORTED_ROWS || self.rows.len() < self.requested {
             return false;
         }
@@ -136,11 +140,11 @@ impl SortedRows {
             return primary == Ordering::Greater;
         }
         for ((left, right), descending) in extra_keys
-            .iter()
+            .into_iter()
             .zip(&worst.extra_keys)
             .zip(self.extra_descending.iter())
         {
-            let comparison = compare_with_direction(*left, *right, *descending);
+            let comparison = compare_with_direction(left, *right, *descending);
             if comparison != Ordering::Equal {
                 return comparison == Ordering::Greater;
             }
@@ -164,6 +168,10 @@ impl SortedRows {
             .seen
             .checked_add(1)
             .ok_or_else(|| ExecutionError::Invalid("too many rows to sort".into()))?;
+        let retained = self.requested.min(MAX_SORTED_ROWS);
+        if retained == 0 || (self.rows.len() == retained && self.would_discard(key, &extra_keys)) {
+            return Ok(());
+        }
         let row = SortedRow {
             key,
             extra_keys,
@@ -172,7 +180,6 @@ impl SortedRows {
             descending: self.descending,
             extra_descending: self.extra_descending.clone(),
         };
-        let retained = self.requested.min(MAX_SORTED_ROWS);
         if self.rows.len() < retained {
             self.rows.push(row);
         } else if self.rows.peek().is_some_and(|worst| row < *worst) {
@@ -261,9 +268,9 @@ mod tests {
             )
             .unwrap();
 
-        assert!(sorted.would_discard(Number::Unsigned(2), &[Number::Unsigned(8)]));
-        assert!(sorted.would_discard(Number::Unsigned(1), &[Number::Unsigned(3)]));
-        assert!(!sorted.would_discard(Number::Unsigned(1), &[Number::Unsigned(7)]));
+        assert!(sorted.would_discard(Number::Unsigned(2), [Number::Unsigned(8)]));
+        assert!(sorted.would_discard(Number::Unsigned(1), [Number::Unsigned(3)]));
+        assert!(!sorted.would_discard(Number::Unsigned(1), [Number::Unsigned(7)]));
         sorted
             .push_with_extra(
                 Number::Unsigned(1),
@@ -276,7 +283,50 @@ mod tests {
         assert_eq!(output, b"17\n15\n");
 
         let unlimited = SortedRows::new(None, false);
-        assert!(!unlimited.would_discard(Number::Unsigned(1), &[]));
+        assert!(!unlimited.would_discard(Number::Unsigned(1), []));
+    }
+
+    #[test]
+    fn losing_primary_keys_do_not_evaluate_secondary_keys() {
+        let mut sorted = SortedRows::new(Some(1), false);
+        sorted.set_extra_directions([false]);
+        sorted
+            .push_with_extra(
+                Number::Unsigned(5),
+                vec![Number::Unsigned(10)],
+                vec![Number::Unsigned(5)],
+            )
+            .unwrap();
+        let mut visited = 0;
+        assert!(sorted.would_discard(
+            Number::Unsigned(6),
+            std::iter::once_with(|| {
+                visited += 1;
+                Number::Unsigned(1)
+            })
+        ));
+        assert_eq!(visited, 0);
+        assert!(!sorted.would_discard(
+            Number::Unsigned(5),
+            std::iter::once_with(|| {
+                visited += 1;
+                Number::Unsigned(9)
+            })
+        ));
+        assert_eq!(visited, 1);
+    }
+
+    #[test]
+    fn rejected_topk_candidates_still_advance_stable_sequence() {
+        let mut sorted = SortedRows::new(Some(1), false);
+        sorted.push(Number::Unsigned(2), vec![Number::Unsigned(2)]).unwrap();
+        sorted.push(Number::Unsigned(3), vec![Number::Unsigned(3)]).unwrap();
+        sorted.push(Number::Unsigned(2), vec![Number::Unsigned(99)]).unwrap();
+        assert_eq!(sorted.seen, 3);
+        assert_eq!(sorted.rows.len(), 1);
+        let mut output = Vec::new();
+        sorted.write(&mut output).unwrap();
+        assert_eq!(output, b"2\n");
     }
 
     #[test]

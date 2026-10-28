@@ -868,7 +868,47 @@ pub(super) fn execute_typed<W: Write>(
             return Ok(());
         }
     }
-    let mut scan = TypedQueryReader::open(part, &names)?;
+    // COUNT(nullable_column) only needs the per-row NULL bit. Decode its
+    // small null-map stream instead of materializing possibly huge payloads.
+    if let Projection::CountColumn { column } = &query.projection {
+        if query.predicates.is_empty()
+            && query.or_predicates.is_empty()
+            && !query.distinct
+            && query.order_by.is_none()
+            && query.order_by_extra.is_empty()
+            && types.get(column).is_some_and(|kind| kind.starts_with("Nullable("))
+        {
+            let mut reader = TypedQueryReader::open(part, std::slice::from_ref(column))?;
+            let mut count = 0u64;
+            while let Some(nulls) = reader.next_null_batch()? {
+                count = count
+                    .checked_add(nulls.iter().filter(|&&byte| byte == 0).count() as u64)
+                    .ok_or_else(|| ExecutionError::Invalid("count overflow".into()))?;
+            }
+            if query.offset.unwrap_or(0) == 0 {
+                writeln!(output, "{count}")?;
+            }
+            return Ok(());
+        }
+    }
+    // COUNT(non-nullable column) is identical to COUNT(*). Read the
+    // snapshot row count rather than decoding String/UUID/numeric streams.
+    if let Projection::CountColumn { column } = &query.projection {
+        if query.predicates.is_empty() && query.or_predicates.is_empty()
+            && !query.distinct
+            && query.order_by.is_none()
+            && query.order_by_extra.is_empty()
+            && metadata.columns.iter().any(|candidate| {
+                candidate.name == *column && !candidate.data_type.starts_with("Nullable(")
+            })
+        {
+            if query.offset.unwrap_or(0) == 0 {
+                writeln!(output, "{}", metadata.rows)?;
+            }
+            return Ok(());
+        }
+    }
+    let mut scan = TypedQueryReader::open_with_metadata(part, &names, &metadata)?;
     let is_count = matches!(query.projection, Projection::Count);
     let is_count_column = matches!(query.projection, Projection::CountColumn { .. });
     let is_count_distinct = matches!(query.projection, Projection::CountDistinct { .. });
@@ -918,7 +958,28 @@ pub(super) fn execute_typed<W: Write>(
             .filter(|count| *count <= MAX_BUFFERED_ROWS)
     };
     let no_filters = query.predicates.is_empty() && query.or_predicates.is_empty();
+    if no_filters && !is_count && !is_count_column && !is_count_distinct
+        && !is_grouped && !query.distinct && sort_indices.is_empty() {
+        skipped = scan.skip_prefix_rows(offset)?;
+    }
     while let Some(batch) = scan.next_batch()? {
+        if no_filters && (is_count || is_count_column) {
+            let matches = if is_count {
+                batch[0].len()
+            } else {
+                match &batch[projection_indices[0]] {
+                    TypedColumn::NullableNumeric { nulls, .. }
+                    | TypedColumn::NullableText { nulls, .. } => {
+                        nulls.iter().filter(|&&null| null == 0).count()
+                    }
+                    _ => batch[0].len(),
+                }
+            };
+            count = count
+                .checked_add(matches as u64)
+                .ok_or_else(|| ExecutionError::Invalid("count overflow".into()))?;
+            continue;
+        }
         for index in 0..batch[0].len() {
             if !no_filters && !passes(&batch, index, &conditions) {
                 continue;
