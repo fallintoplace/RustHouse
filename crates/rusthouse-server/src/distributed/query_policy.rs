@@ -59,6 +59,42 @@ pub(super) fn is_safe_sum(select: &Select) -> bool {
     ) && is_safe_unpaged_select(select)
 }
 
+pub(super) fn is_safe_avg(select: &Select) -> bool {
+    matches!(
+        select.projection,
+        Projection::Aggregate {
+            function: AggregateFunction::Avg,
+            ..
+        }
+    ) && is_safe_unpaged_select(select)
+}
+
+/// A distributed AVG must be weighted by the number of non-NULL values.
+/// Never average shard averages directly. Verify that the rewritten SQL
+/// retains the original WHERE expression through an AST round-trip.
+pub(super) fn avg_shard_sql(sql: &str, select: &Select) -> Option<String> {
+    let (column, table) = match (&select.projection, &select.source) {
+        (
+            Projection::Aggregate { function: AggregateFunction::Avg, column },
+            Some(Source::Table(table)),
+        ) => (column, table),
+        _ => return None,
+    };
+    let mut rewritten = format!(
+        "SELECT sum({column}), count({column}) FROM {table}"
+    );
+    let upper = sql.to_ascii_uppercase();
+    if let Some(where_start) = upper.find(" WHERE ") {
+        rewritten.push_str(&sql[where_start..]);
+    } else if !select.predicates.is_empty() || !select.or_predicates.is_empty() {
+        return None;
+    }
+    let parsed = parse_select(&rewritten).ok()?;
+    let mut expected = select.clone();
+    expected.projection = parsed.projection.clone();
+    (parsed == expected).then_some(rewritten)
+}
+
 pub(super) fn is_safe_count_if(select: &Select) -> bool {
     matches!(
         select.projection,
