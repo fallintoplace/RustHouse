@@ -1,4 +1,5 @@
 mod aggregate_plans;
+mod narrow_median;
 
 #[cfg(test)]
 mod dynamic_part_tests {
@@ -31,6 +32,7 @@ mod dynamic_part_tests {
 }
 
 use self::aggregate_plans::*;
+use narrow_median::NarrowMedian;
 
 use crate::{AggregateFunction, Projection, Select, Source};
 use rusthouse_storage::{NumericColumn, NumericQueryReader, PartError, inspect_query_source};
