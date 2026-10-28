@@ -11,22 +11,10 @@ fn value(sql: &str) -> ConstantValue {
 #[test]
 fn clickhouse_compatibility_cases() {
     for (sql, expected) in [
-        (
-            "SELECT substringUTF8('Привет', 2, 3)",
-            ConstantValue::Text("рив".into()),
-        ),
-        (
-            "SELECT substringUTF8('Привет', -4, 2)",
-            ConstantValue::Text("ив".into()),
-        ),
-        (
-            "SELECT substringUTF8('abcd', 3)",
-            ConstantValue::Text("cd".into()),
-        ),
-        (
-            "SELECT substringUTF8(NULL, 1)",
-            ConstantValue::Null,
-        ),
+        ("SELECT substringUTF8('Привет', 2, 3)", ConstantValue::Text("рив".into())),
+        ("SELECT substringUTF8('Привет', -4, 2)", ConstantValue::Text("ив".into())),
+        ("SELECT substringUTF8('abcd', 3)", ConstantValue::Text("cd".into())),
+        ("SELECT substringUTF8(NULL, 1)", ConstantValue::Null),
     ] {
         assert_eq!(value(sql), expected, "{sql}");
     }
