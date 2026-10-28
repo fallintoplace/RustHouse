@@ -57,6 +57,15 @@ pub fn replicas_for(
         }
     }
     let seed = shard_seed(shard);
+    if replicas == 1 {
+        // Preserve the score-descending, node-ascending tie-break without
+        // allocating and sorting an entire ranking for a single primary.
+        let best = nodes.iter()
+            .map(|node| (score_with_seed(seed, node), node.as_str()))
+            .max_by(|left, right| left.0.cmp(&right.0).then_with(|| right.1.cmp(left.1)))
+            .expect("validated nonempty nodes");
+        return Ok(vec![best.1.to_owned()]);
+    }
     let mut ranked: Vec<(u64, &str)> = nodes
         .iter()
         .map(|node| (score_with_seed(seed, node), node.as_str()))
@@ -178,6 +187,17 @@ mod tests {
             if original[0] == "a" {
                 assert_eq!(updated[0], "a", "{shard}");
             }
+        }
+    }
+
+    #[test]
+    fn one_pass_primary_matches_full_rendezvous_ranking() {
+        let nodes = (0..64).map(|index| format!("node_{index}")).collect::<Vec<_>>();
+        for index in 0..64 {
+            let shard = format!("shard_{index}");
+            let first = replicas_for(&shard, &nodes, 1).unwrap();
+            let all = replicas_for(&shard, &nodes, nodes.len()).unwrap();
+            assert_eq!(first[0], all[0]);
         }
     }
 
