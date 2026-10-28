@@ -11,8 +11,8 @@ class KeysetExportTests(unittest.TestCase):
             seen = []
             def run(sql):
                 seen.append(sql)
-                start = 5 if len(seen) == 1 else 7
-                end = 7 if len(seen) == 1 else 10
+                start = {1: 5, 2: 7, 3: 9}[len(seen)]
+                end = min(start + 2, 10)
                 return b"".join(f"{number}\n".encode() for number in range(start, end))
             path = Path(temp) / "out.tsv"
             report = export("unused", "unused", "events", path, 5, 5, 2,
