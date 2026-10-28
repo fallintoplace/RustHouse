@@ -1,0 +1,19 @@
+{
+  "name": "join-using-projections",
+  "description": "Benchmark USING, coalesced shared keys and wildcard projections",
+  "queries": [
+    {
+      "name": "using-event-id",
+      "sql": "SELECT e.event_id, a.tier FROM events e JOIN accounts a USING (user_id) ORDER BY e.event_id LIMIT 20"
+    },
+    {
+      "name": "using-qualified-stars",
+      "sql": "SELECT a.*, b.* FROM accounts a JOIN accounts b USING (user_id) ORDER BY a.user_id LIMIT 20"
+    },
+    {
+      "name": "using-shared-star",
+      "sql": "SELECT * FROM accounts a JOIN accounts b USING (user_id, tier) ORDER BY a.user_id LIMIT 20"
+    }
+  ],
+  "max_rows": 16000
+}
