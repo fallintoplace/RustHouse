@@ -85,11 +85,10 @@ pub(super) fn execute<W: Write>(
     // Repeated String group keys can be checked without owning row bytes.
     let mut text_groups = HashMap::<Vec<u8>, usize>::new();
     let mut total_pairs = 0usize;
-    let mut dense_groups = match types[column].as_str() {
-        "UInt8" | "Int8" => Some(vec![usize::MAX; 256]),
-        "UInt16" | "Int16" => Some(vec![usize::MAX; 65_536]),
-        _ => None,
-    };
+    // Byte-sized grouped DISTINCT is optimized separately. This path
+    // specializes the larger 16-bit key domain.
+    let mut dense_groups = matches!(types[column].as_str(), "UInt16" | "Int16")
+        .then(|| vec![usize::MAX; 65_536]);
     let mut reader = TypedQueryReader::open_with_metadata(part, &names, &metadata)?;
     let no_filters = query.predicates.is_empty() && query.or_predicates.is_empty();
 
@@ -106,12 +105,6 @@ pub(super) fn execute<W: Write>(
             };
             let id = if let Some(slots) = dense_groups.as_mut() {
                 let key = match &batch[group_index] {
-                    TypedColumn::Numeric(rusthouse_storage::NumericColumn::UInt8(values)) => {
-                        usize::from(values[row])
-                    }
-                    TypedColumn::Numeric(rusthouse_storage::NumericColumn::Int8(values)) => {
-                        usize::from(values[row] as u8)
-                    }
                     TypedColumn::Numeric(rusthouse_storage::NumericColumn::UInt16(values)) => {
                         usize::from(values[row])
                     }
