@@ -114,10 +114,7 @@ mod tests {
         fs::write(part.join("count.txt"), "0\n").unwrap();
         fs::write(
             part.join("columns.txt"),
-            "columns format version: 1\
-1 columns:\
-`id` UInt64\
-",
+            "columns format version: 1\n1 columns:\n`id` UInt64\n",
         )
         .unwrap();
         symlink(part.join("count.txt"), part.join("shadow.txt")).unwrap();
