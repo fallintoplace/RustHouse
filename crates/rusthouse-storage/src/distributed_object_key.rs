@@ -11,13 +11,21 @@ pub struct ObjectKey {
 }
 
 fn component(value: &str) -> bool {
-    !value.is_empty()
-        && value.len() <= 128
-        && value.as_bytes()[0].is_ascii_alphanumeric()
-        && !value.contains("..")
-        && value
-            .bytes()
-            .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'_' | b'-' | b'.'))
+    let bytes = value.as_bytes();
+    if bytes.is_empty() || bytes.len() > 128 || !bytes[0].is_ascii_alphanumeric() {
+        return false;
+    }
+    let mut previous_dot = false;
+    for &byte in bytes {
+        if !byte.is_ascii_alphanumeric() && !matches!(byte, b'_' | b'-' | b'.') {
+            return false;
+        }
+        if byte == b'.' && previous_dot {
+            return false;
+        }
+        previous_dot = byte == b'.';
+    }
+    true
 }
 
 impl ObjectKey {
