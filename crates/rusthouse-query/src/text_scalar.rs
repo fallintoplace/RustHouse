@@ -24,6 +24,7 @@ pub(super) fn is_function(name: &str) -> bool {
             | "CUTQUERYSTRING"
             | "COLLAPSE_WHITESPACE"
             | "LOWER"
+            | "LOWERUTF8"
             | "HEX_ENCODE"
             | "HEX"
             | "IS_ASCII"
@@ -315,7 +316,7 @@ fn parse_at_depth(parser: &mut Parser, depth: usize) -> Result<ConstantValue, Pa
                 None => ConstantValue::Null,
             }
         }
-        "LOWER" => {
+        "LOWER" | "LOWERUTF8" => {
             let input = text_arg(parser, depth + 1)?;
             require(parser, Token::RParen, "LOWER requires one argument")?;
             match input {
