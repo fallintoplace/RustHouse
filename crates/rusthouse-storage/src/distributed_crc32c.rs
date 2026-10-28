@@ -99,7 +99,7 @@ fn update(mut crc: u32, bytes: &[u8]) -> u32 {
 pub fn crc32c_reader(reader: &mut impl Read, max_bytes: u64) -> io::Result<(u64, u32)> {
     let mut checksum = Checksum::new();
     let mut total = 0u64;
-    let mut buffer = [0u8; 32 * 1024];
+    let mut buffer = [0u8; 64 * 1024];
     loop {
         let available = (max_bytes - total)
             .saturating_add(1)
@@ -191,6 +191,21 @@ mod tests {
         };
         assert!(crc32c_reader(&mut reader, 5).is_err());
         assert_eq!(reader.consumed, 6);
+    }
+
+    #[test]
+    fn large_replica_checksums_use_64k_reads() {
+        struct Counting<'a> { input: &'a [u8], calls: usize }
+        impl Read for Counting<'_> {
+            fn read(&mut self, out: &mut [u8]) -> io::Result<usize> {
+                self.calls += 1;
+                self.input.read(out)
+            }
+        }
+        let bytes = vec![42; 128 * 1024];
+        let mut source = Counting { input: &bytes, calls: 0 };
+        assert_eq!(crc32c_reader(&mut source, bytes.len() as u64).unwrap(), (bytes.len() as u64, crc32c(&bytes)));
+        assert_eq!(source.calls, 3); // two data reads and one EOF check
     }
 
     #[test]
