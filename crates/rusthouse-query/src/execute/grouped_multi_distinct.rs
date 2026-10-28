@@ -11,6 +11,19 @@ use std::path::Path;
 const MAX_GROUPS: usize = 200_000;
 const MAX_PAIRS: usize = 200_000;
 
+const MAX_RETAINED_BYTES: usize = 64 * 1024 * 1024;
+
+fn charge_bytes(used: &mut usize, bytes: usize) -> Result<(), ExecutionError> {
+    let next = used.checked_add(bytes)
+        .ok_or_else(|| ExecutionError::Invalid("grouped DISTINCT memory overflow".into()))?;
+    if next > MAX_RETAINED_BYTES {
+        return Err(ExecutionError::Invalid("grouped DISTINCT exceeds 64 MiB retained budget".into()));
+    }
+    *used = next;
+    Ok(())
+}
+
+
 struct Group {
     keys: Vec<Cell>,
     values: HashSet<Key>,
@@ -78,6 +91,7 @@ pub(super) fn execute<W: Write>(
     let mut lookup=HashMap::<Vec<Key>,usize>::new();
     let mut probes=Vec::<Key>::with_capacity(columns.len());
     let mut total_pairs=0usize;
+    let mut retained_bytes = 0usize;
     let no_filters=query.predicates.is_empty()&&query.or_predicates.is_empty();
     while let Some(batch)=reader.next_batch()? {
         for row in 0..batch[0].len() {
@@ -93,6 +107,20 @@ pub(super) fn execute<W: Write>(
                     return Err(ExecutionError::Invalid(
                         "GROUP BY supports at most 200000 groups".into()));
                 }
+                // Hash keys and projected group cells each own variable-width data.
+                let fixed = columns.len()
+                    .checked_mul(std::mem::size_of::<Key>() + std::mem::size_of::<Cell>())
+                    .ok_or_else(|| ExecutionError::Invalid("grouped DISTINCT memory overflow".into()))?;
+                let bytes = probes.iter().try_fold(fixed, |total, key| {
+                    let dynamic = match key {
+                        Key::Text(text) => text.len().checked_mul(2),
+                        Key::Uuid(text) => text.len().checked_mul(2),
+                        _ => Some(0),
+                    }.ok_or_else(|| ExecutionError::Invalid("grouped DISTINCT memory overflow".into()))?;
+                    total.checked_add(dynamic)
+                        .ok_or_else(|| ExecutionError::Invalid("grouped DISTINCT memory overflow".into()))
+                })?;
+                charge_bytes(&mut retained_bytes, bytes)?;
                 let index=groups.len();
                 lookup.insert(std::mem::take(&mut probes),index);
                 probes=Vec::with_capacity(columns.len());
@@ -117,6 +145,14 @@ pub(super) fn execute<W: Write>(
                     return Err(ExecutionError::Invalid(
                         "grouped COUNT(DISTINCT) supports at most 200000 distinct pairs".into()));
                 }
+                let dynamic = match &value {
+                    Key::Text(text) => text.len(),
+                    Key::Uuid(text) => text.len(),
+                    _ => 0,
+                };
+                charge_bytes(&mut retained_bytes, std::mem::size_of::<Key>()
+                    .checked_add(dynamic)
+                    .ok_or_else(|| ExecutionError::Invalid("grouped DISTINCT memory overflow".into()))?)?;
                 groups[group].values.insert(value);
                 total_pairs+=1;
             }
@@ -159,4 +195,18 @@ pub(super) fn execute<W: Write>(
         writeln!(output,"\t{}",group.cardinality())?;
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod bounded_payload_tests {
+    use super::*;
+    #[test]
+    fn rejects_capacity_crossings_without_charging_failed_reservations() {
+        let mut retained = 0usize;
+        charge_bytes(&mut retained, MAX_RETAINED_BYTES - 17).unwrap();
+        assert!(charge_bytes(&mut retained, 18).is_err());
+        assert_eq!(retained, MAX_RETAINED_BYTES - 17);
+        charge_bytes(&mut retained, 17).unwrap();
+        assert_eq!(retained, MAX_RETAINED_BYTES);
+    }
 }

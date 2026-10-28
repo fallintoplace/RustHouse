@@ -11,7 +11,6 @@ pub(super) fn is_function(name: &str) -> bool {
             | "LENGTHUTF8"
             | "TOSTARTOFFIVEMINUTES"
             | "CHAR_LENGTH"
-            | "LENGTHUTF8"
             | "OCTET_LENGTH"
             | "TOSTARTOFFIFTEENMINUTES"
             | "ASCII"
@@ -90,7 +89,6 @@ pub(super) fn is_function(name: &str) -> bool {
             | "TRY_TO_INT64"
             | "TOINT64ORNULL"
             | "LPAD"
-            | "TOSTARTOFFIFTEENMINUTES"
             | "LEFTPADUTF8"
             | "COUNTSUBSTRINGSCASEINSENSITIVE"
             | "HEX_DECODE"
@@ -145,7 +143,6 @@ pub(super) fn is_function(name: &str) -> bool {
             | "APPENDTRAILINGCHARIFABSENT"
             | "ADDMONTHS"
             | "RPAD"
-            | "LOWERUTF8"
             | "NOTEMPTY"
             | "SPACE"
             | "ENCODEURLFORMCOMPONENT"
@@ -274,12 +271,12 @@ fn parse_at_depth(parser: &mut Parser, depth: usize) -> Result<ConstantValue, Pa
                 None => ConstantValue::Null,
             }
         }
-        "LENGTH" | "CHAR_LENGTH" | "LENGTHUTF8" | "OCTET_LENGTH" => {
+        "LENGTH" | "CHAR_LENGTH" | "OCTET_LENGTH" => {
             let input = text_arg(parser, depth + 1)?;
             require(parser, Token::RParen, "LENGTH requires one argument")?;
             match input {
                 Some(value) => {
-                    let length = if name == "CHAR_LENGTH" || name == "LENGTHUTF8" {
+                    let length = if name == "CHAR_LENGTH" {
                         value.chars().count()
                     } else {
                         value.len()
@@ -1463,19 +1460,6 @@ fn parse_at_depth(parser: &mut Parser, depth: usize) -> Result<ConstantValue, Pa
                         .parse::<i64>()
                         .map_err(|_| ParseError("TO_INT64 requires an Int64 string".into()))?,
                 ),
-                None => ConstantValue::Null,
-            }
-        }
-        "TOSTARTOFFIFTEENMINUTES" => {
-            let input = text_arg(parser, depth + 1)?;
-            require(parser, Token::RParen, "toStartOfFifteenMinutes requires one argument")?;
-            match input {
-                Some(value) => {
-                    let seconds = rusthouse_storage::parse_datetime(&value).ok_or_else(|| {
-                        ParseError("toStartOfFifteenMinutes requires a valid UTC DateTime".into())
-                    })?;
-                    ConstantValue::Text(rusthouse_storage::format_datetime(seconds - seconds % 900))
-                }
                 None => ConstantValue::Null,
             }
         }

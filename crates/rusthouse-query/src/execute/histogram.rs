@@ -212,6 +212,44 @@ pub(super) fn execute_part<W: Write>(
     output_bins(query, output, column, *bins, &to_bins(min, max, &counts))
 }
 
+/// Find exact bucket boundaries using the same floating-point placement as
+/// the physical two-pass histogram. Binary search keeps O(bins * log(rows))
+/// work even when the generated source contains billions of values.
+fn uniform_generated_bins(start: u64, lower: u64, count: u64, step: u64, bins: usize) -> Vec<Bin> {
+    let value = |relative: u64| -> f64 {
+        let index = u128::from(lower) + u128::from(relative);
+        (u128::from(start) + index * u128::from(step)) as f64
+    };
+    let min = value(0);
+    let max = value(count - 1);
+    let mut selected = Vec::with_capacity(bins);
+    let mut start_row = 0u64;
+    for bin in 0..bins {
+        if start_row == count {
+            break;
+        }
+        let mut lo = start_row;
+        let mut hi = count;
+        while lo < hi {
+            let middle = lo + (hi - lo) / 2;
+            if bucket(value(middle), min, max, bins) <= bin {
+                lo = middle + 1;
+            } else {
+                hi = middle;
+            }
+        }
+        if lo > start_row {
+            selected.push(Bin {
+                min: value(start_row),
+                max: value(lo - 1),
+                count: lo - start_row,
+            });
+        }
+        start_row = lo;
+    }
+    selected
+}
+
 pub(super) fn execute_numbers<W: Write>(
     query: &Select,
     start: u64,
@@ -243,21 +281,7 @@ pub(super) fn execute_numbers<W: Write>(
         if count == 0 {
             return output_bins(query, output, column, *bins, &[]);
         }
-        let mut result = Vec::with_capacity(*bins);
-        for index in 0..*bins {
-            let left = u128::from(count) * index as u128 / *bins as u128;
-            let right = u128::from(count) * (index + 1) as u128 / *bins as u128;
-            if right == left {
-                continue;
-            }
-            let from = u128::from(start) + (u128::from(lower) + left) * u128::from(step);
-            let to = u128::from(start) + (u128::from(lower) + right - 1) * u128::from(step);
-            result.push(Bin {
-                min: from as f64,
-                max: to as f64,
-                count: (right - left) as u64,
-            });
-        }
+        let result = uniform_generated_bins(start, lower, count, step, *bins);
         return output_bins(query, output, column, *bins, &result);
     }
     if rows > 10_000_000 {
@@ -310,5 +334,47 @@ mod tests {
     fn numerically_invalid_inputs_rejected() {
         assert!(number_as_float(Number::Float(f64::NAN)).is_err());
         assert!(number_as_float(Number::Float(f64::INFINITY)).is_err());
+    }
+}
+
+#[cfg(test)]
+mod generated_histogram_boundary_regression_tests {
+    use super::*;
+
+    #[test]
+    fn fast_path_agrees_with_two_pass_bucket_assignment_for_uneven_ranges() {
+        for count in 1..128u64 {
+            for bins in 1..12usize {
+                let expected = {
+                    let mut counts = vec![0u64; bins];
+                    for value in 0..count {
+                        counts[bucket(value as f64, 0.0, (count - 1) as f64, bins)] += 1;
+                    }
+                    counts.into_iter().filter(|&count| count != 0).collect::<Vec<_>>()
+                };
+                let computed = uniform_generated_bins(0, 0, count, 1, bins);
+                assert_eq!(computed.iter().map(|bin| bin.count).collect::<Vec<_>>(),
+                    expected, "rows={count} bins={bins}");
+                assert_eq!(computed.iter().map(|bin| bin.count).sum::<u64>(), count);
+            }
+        }
+    }
+
+    #[test]
+    fn respects_floating_point_bucket_placement_for_large_start_and_step() {
+        let start = 9_007_199_254_740_992u64;
+        let count = 87u64;
+        let step = 3u64;
+        let bins = 11usize;
+        let low = start as f64;
+        let high = (u128::from(start) + u128::from(count - 1) * u128::from(step)) as f64;
+        let mut expected = vec![0u64; bins];
+        for i in 0..count {
+            let value = (u128::from(start) + u128::from(i) * u128::from(step)) as f64;
+            expected[bucket(value, low, high, bins)] += 1;
+        }
+        let actual = uniform_generated_bins(start, 0, count, step, bins);
+        assert_eq!(actual.iter().map(|bin| bin.count).collect::<Vec<_>>(),
+            expected.into_iter().filter(|&count| count != 0).collect::<Vec<_>>());
     }
 }
