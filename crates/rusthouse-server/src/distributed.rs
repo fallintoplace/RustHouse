@@ -8,7 +8,7 @@ use self::query_policy::*;
 use crate::cluster::{Cluster, Peer};
 use crate::remote;
 use crate::{MAX_QUERY_BYTES, MAX_RESPONSE_BYTES, Response};
-use rusthouse_query::{AggregateFunction, Projection, Select, Source, parse_select};
+use rusthouse_query::{AggregateFunction, Having, Operator, Projection, Select, Source, parse_select};
 use std::collections::{HashMap, HashSet};
 
 #[derive(Debug, PartialEq, Eq)]
@@ -628,6 +628,30 @@ fn merge_grouped_counts(
     shards: &[(usize, Vec<u8>)],
     max_rows: usize,
 ) -> Result<Vec<u8>, MergeError> {
+    merge_grouped_counts_query(shards, max_rows, None)
+}
+
+fn passes_count_having(count: u64, having: &Having) -> bool {
+    match having.operator {
+        Operator::Eq => count == having.value,
+        Operator::Ne => count != having.value,
+        Operator::Lt => count < having.value,
+        Operator::Le => count <= having.value,
+        Operator::Gt => count > having.value,
+        Operator::Ge => count >= having.value,
+        Operator::Modulo(divisor) => divisor != 0 && count % divisor == having.value,
+        Operator::ModuloNe(divisor) => divisor != 0 && count % divisor != having.value,
+    }
+}
+
+/// Fully merge shard counts before applying HAVING, ORDER BY and LIMIT.
+/// Retain up to the peer protocol's maximum number of distinct group keys,
+/// while enforcing the coordinator's output row and byte budgets afterward.
+fn merge_grouped_counts_query(
+    shards: &[(usize, Vec<u8>)],
+    max_rows: usize,
+    global: Option<&Select>,
+) -> Result<Vec<u8>, MergeError> {
     let mut expected_header: Option<&[u8]> = None;
     let mut positions = HashMap::<&[u8], usize>::new();
     let mut groups = Vec::<(&[u8], u64)>::new();
@@ -688,7 +712,8 @@ fn merge_grouped_counts(
                     .checked_add(count)
                     .ok_or(MergeError::CountOverflow)?;
             } else {
-                if groups.len() >= max_rows {
+                let max_groups = if global.is_some() { 250_000 } else { max_rows };
+                if groups.len() >= max_groups {
                     return Err(MergeError::CoordinatorLimit);
                 }
                 positions.insert(key, groups.len());
@@ -697,6 +722,25 @@ fn merge_grouped_counts(
         }
     }
     let header = expected_header.ok_or(MergeError::InvalidGroupedCount)?;
+    if let Some(select) = global {
+        if let Some(having) = &select.having {
+            groups.retain(|(_, count)| passes_count_having(*count, having));
+        }
+        if let Some(order) = &select.order_by {
+            groups.sort_by(|left, right| {
+                let cmp = left.1.cmp(&right.1);
+                if order.descending { cmp.reverse() } else { cmp }
+            });
+        }
+        groups = groups
+            .into_iter()
+            .skip(select.offset.unwrap_or(0))
+            .take(select.limit.unwrap_or(usize::MAX))
+            .collect();
+    }
+    if groups.len() > max_rows {
+        return Err(MergeError::CoordinatorLimit);
+    }
     let mut output = Vec::with_capacity(header.len());
     output.extend_from_slice(header);
     for (key, count) in groups {
@@ -763,6 +807,13 @@ pub fn handle(method: &str, body: &[u8], cluster: &Cluster, max_rows: usize) -> 
             Some(query) => query,
             None => {
                 return Response::text("400 Bad Request", "unsupported distributed pagination\n");
+            }
+        }
+    } else if grouped_count_query {
+        match grouped_count_shard_sql(sql, &select) {
+            Some(query) => query,
+            None => {
+                return Response::text("400 Bad Request", "unsupported global grouped query\n");
             }
         }
     } else if distinct_count_column.is_some() {
@@ -920,7 +971,16 @@ pub fn handle(method: &str, body: &[u8], cluster: &Cluster, max_rows: usize) -> 
             _ => Err(MergeError::InvalidGroupedSum),
         }
     } else if grouped_count_query {
-        merge_grouped_counts(&shards, max_rows.min(250_000))
+        let limit = max_rows.min(250_000);
+        if select.having.is_some()
+            || select.order_by.is_some()
+            || select.limit.is_some()
+            || select.offset.is_some()
+        {
+            merge_grouped_counts_query(&shards, limit, Some(&select))
+        } else {
+            merge_grouped_counts(&shards, limit)
+        }
     } else if select.limit.is_some() || select.offset.is_some() {
         merge_tsv_page(
             &shards,
@@ -997,6 +1057,49 @@ mod tests {
 
     fn shard(cap: usize, data: &str) -> (usize, Vec<u8>) {
         (cap, data.as_bytes().to_vec())
+    }
+
+
+    #[test]
+    fn globally_ranks_grouped_counts_after_reducing_shards() {
+        let sql = "SELECT region, count(*) FROM events GROUP BY region HAVING count(*) >= 3 ORDER BY count DESC LIMIT 2 OFFSET 1";
+        let select = parse_select(sql).unwrap();
+        assert!(is_safe_grouped_count(&select));
+        assert_eq!(
+            grouped_count_shard_sql(sql, &select).as_deref(),
+            Some("SELECT region, count(*) FROM events GROUP BY region")
+        );
+        let shards = [
+            shard(10, "region\tcount\nwest\t2\neast\t5\nsouth\t1\n"),
+            shard(10, "region\tcount\neast\t1\nwest\t4\nnorth\t9\n"),
+        ];
+        // Global counts: north=9, west=6, east=6, south=1.
+        // HAVING excludes south, stable ties keep west ahead of east,
+        // OFFSET discards north and LIMIT returns the two remaining groups.
+        assert_eq!(
+            merge_grouped_counts_query(&shards, 2, Some(&select)).unwrap(),
+            b"region\tcount\nwest\t6\neast\t6\n"
+        );
+        // Never push a local top-k to shards: it may remove a global winner.
+        assert!(!is_safe_grouped_count(
+            &parse_select("SELECT region, count(*) FROM events GROUP BY region ORDER BY region LIMIT 2").unwrap()
+        ));
+    }
+
+    #[test]
+    fn grouped_global_having_rejects_capped_and_malformed_shards() {
+        let query = parse_select(
+            "SELECT region, count(*) FROM events GROUP BY region HAVING count(*) > 0 LIMIT 1",
+        )
+        .unwrap();
+        assert_eq!(
+            merge_grouped_counts_query(&[shard(2, "region\tcount\na\t1\nb\t2\n")], 1, Some(&query)),
+            Err(MergeError::ShardRowLimit)
+        );
+        assert_eq!(
+            merge_grouped_counts_query(&[shard(10, "region\tcount\na\tnot-a-number\n")], 1, Some(&query)),
+            Err(MergeError::InvalidGroupedCount)
+        );
     }
 
     #[test]
