@@ -1,9 +1,11 @@
 //! Experimental read-only scatter/gather SELECT against distinct local shards.
 //! Unordered row projections and global pagination preserve configured peer order.
 
+mod avg;
 mod query_policy;
 mod sorted_merge;
 
+use self::avg::merge_integer_averages;
 use self::query_policy::*;
 use self::sorted_merge::*;
 
@@ -25,6 +27,7 @@ enum MergeError {
     InvalidGroupedSum,
     InvalidSortedScan,
     InvalidSum,
+    InvalidAverage,
     InvalidExtremum,
     CountOverflow,
     SumOverflow,
@@ -796,6 +799,7 @@ pub fn handle(method: &str, body: &[u8], cluster: &Cluster, max_rows: usize) -> 
                 || is_safe_grouped_count(&select)
                 || is_safe_grouped_sum(&select)
                 || is_safe_sum(&select)
+                || is_safe_avg(&select)
                 || is_safe_extremum(&select) =>
         {
             select
@@ -803,7 +807,7 @@ pub fn handle(method: &str, body: &[u8], cluster: &Cluster, max_rows: usize) -> 
         _ => {
             return Response::text(
                 "400 Bad Request",
-                "distributed queries require unordered SELECT, bounded integer top-K SELECT, COUNT, COUNT(DISTINCT), COUNTIF, integer SUM, MIN, MAX, or grouped aggregates\n",
+                "distributed queries require unordered SELECT, bounded integer top-K SELECT, COUNT, COUNT(DISTINCT), COUNTIF, integer SUM, weighted AVG, MIN, MAX, or grouped aggregates\n",
             );
         }
     };
@@ -819,6 +823,7 @@ pub fn handle(method: &str, body: &[u8], cluster: &Cluster, max_rows: usize) -> 
     let grouped_count_query = is_safe_grouped_count(&select);
     let grouped_sum_query = is_safe_grouped_sum(&select);
     let sum_query = is_safe_sum(&select);
+    let avg_query = is_safe_avg(&select);
     let shard_sql = if sorted_query {
         match sorted_scan_sql(sql, &select) {
             Some(query) => query,
@@ -837,6 +842,11 @@ pub fn handle(method: &str, body: &[u8], cluster: &Cluster, max_rows: usize) -> 
             None => {
                 return Response::text("400 Bad Request", "unsupported global grouped query\n");
             }
+        }
+    } else if avg_query {
+        match avg_shard_sql(sql, &select) {
+            Some(query) => query,
+            None => return Response::text("400 Bad Request", "unsupported distributed AVG query\n"),
         }
     } else if distinct_count_column.is_some() {
         match distinct_shard_sql(sql, &select) {
@@ -862,7 +872,7 @@ pub fn handle(method: &str, body: &[u8], cluster: &Cluster, max_rows: usize) -> 
         (
             Some(Source::Table(table)),
             Projection::Aggregate {
-                function: AggregateFunction::Sum | AggregateFunction::Min | AggregateFunction::Max,
+                function: AggregateFunction::Sum | AggregateFunction::Min | AggregateFunction::Max | AggregateFunction::Avg,
                 column,
             },
         ) => Some((table.as_str(), column.as_str())),
@@ -978,6 +988,13 @@ pub fn handle(method: &str, body: &[u8], cluster: &Cluster, max_rows: usize) -> 
         sum_shard_counts(&shards)
     } else if let Some(column) = distinct_count_column {
         merge_distinct_counts(&shards, column)
+    } else if avg_query {
+        match (sum_type.as_deref(), &select.projection) {
+            (Some(kind), Projection::Aggregate { column, .. }) => {
+                merge_integer_averages(&shards, kind, column, select.alias.as_deref())
+            }
+            _ => Err(MergeError::InvalidAverage),
+        }
     } else if sum_query {
         sum_type
             .as_deref()
@@ -1068,6 +1085,9 @@ pub fn handle(method: &str, body: &[u8], cluster: &Cluster, max_rows: usize) -> 
         }
         Err(MergeError::InvalidSortedScan) => {
             Response::text("502 Bad Gateway", "malformed shard sorted integer response\n")
+        }
+        Err(MergeError::InvalidAverage) => {
+            Response::text("502 Bad Gateway", "malformed shard AVG response\n")
         }
         Err(MergeError::InvalidSum) => {
             Response::text("502 Bad Gateway", "malformed shard SUM response\n")
