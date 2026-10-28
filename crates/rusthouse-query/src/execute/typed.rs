@@ -141,10 +141,19 @@ pub(super) fn requires_typed_scan(query: &Select, path: &Path) -> Result<bool, E
     for order in query.order_terms() {
         names.push(query.order_source_column(&order.column));
     }
+    // Most queries reference just a few columns. Keep the cheaper linear
+    // probe for them, but use hashed membership for wide SELECT * plans.
+    if names.len() < 16 {
+        return Ok(metadata
+            .columns
+            .iter()
+            .any(|column| is_typed(&column.data_type) && names.contains(&column.name.as_str())));
+    }
+    let referenced: HashSet<&str> = names.into_iter().collect();
     Ok(metadata
         .columns
         .iter()
-        .any(|column| is_typed(&column.data_type) && names.contains(&column.name.as_str())))
+        .any(|column| is_typed(&column.data_type) && referenced.contains(column.name.as_str())))
 }
 
 pub(super) fn base_type(data_type: &str) -> &str {
