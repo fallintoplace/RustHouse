@@ -166,5 +166,4 @@ mod tests {
         assert_eq!(decoded.encode(), input);
         assert_eq!(decoded.remaining().len(), 3 * 8192);
     }
-
 }

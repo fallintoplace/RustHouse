@@ -17,8 +17,8 @@ pub fn retry_delay(
         .wrapping_mul(0x9e37_79b9_7f4a_7c15)
         .rotate_left(attempt)
         % (exponent - half + 1);
-    Ok(Duration::from_millis(half + jitter))}
-
+    Ok(Duration::from_millis(half + jitter))
+}
 
 #[cfg(test)]
 mod tests {
@@ -63,5 +63,4 @@ mod tests {
             }
         }
     }
-
 }

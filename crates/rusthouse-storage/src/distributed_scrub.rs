@@ -101,5 +101,4 @@ mod tests {
         assert!(scrub_snapshot(&root, 1).is_err());
         fs::remove_dir_all(root).unwrap();
     }
-
 }

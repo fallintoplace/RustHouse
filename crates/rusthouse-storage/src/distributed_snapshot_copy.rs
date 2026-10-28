@@ -202,5 +202,4 @@ mod tests {
         assert!(!target.exists());
         fs::remove_dir_all(root).unwrap();
     }
-
 }

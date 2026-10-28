@@ -66,5 +66,4 @@ mod tests {
         );
         assert!(retention_candidates(&[3, 1, 3], 1, 1).is_err());
     }
-
 }
