@@ -13,6 +13,7 @@ use std::io::Write;
 use std::sync::Arc;
 
 pub(super) const MAX_SORTED_ROWS: usize = 200_000;
+const MAX_SORT_BUFFER_BYTES: usize = 64 * 1024 * 1024;
 #[cfg(test)]
 const SORT_RUN_ROWS: usize = 128;
 #[cfg(not(test))]
@@ -189,6 +190,25 @@ impl Ord for SortedRow {
     }
 }
 
+/// Include the row itself and retained numeric vectors, not just row counts.
+fn retained_row_size(row: &SortedRow) -> Result<usize, ExecutionError> {
+    let numbers = row.extra_keys.capacity().checked_add(row.values.capacity())
+        .and_then(|count| count.checked_mul(std::mem::size_of::<Number>()))
+        .ok_or_else(|| invalid("SORT memory estimate overflow"))?;
+    std::mem::size_of::<SortedRow>().checked_add(numbers)
+        .ok_or_else(|| invalid("SORT memory estimate overflow"))
+}
+
+fn updated_sort_bytes(current: usize, release: usize, added: usize) -> Result<usize, ExecutionError> {
+    let next = current.checked_sub(release)
+        .and_then(|previous| previous.checked_add(added))
+        .ok_or_else(|| invalid("SORT retained memory accounting overflow"))?;
+    if next > MAX_SORT_BUFFER_BYTES {
+        return Err(invalid("SORT exceeds 64 MiB retained-row budget"));
+    }
+    Ok(next)
+}
+
 pub(super) struct SortedRows {
     rows: BinaryHeap<SortedRow>,
     requested: usize,
@@ -200,6 +220,7 @@ pub(super) struct SortedRows {
     run_paths: Vec<PathBuf>,
     next_run: usize,
     temp_bytes: u64,
+    retained_bytes: usize,
 }
 
 impl SortedRows {
@@ -217,6 +238,7 @@ impl SortedRows {
             run_paths: Vec::new(),
             next_run: 0,
             temp_bytes: 0,
+            retained_bytes: 0,
         }
     }
 
@@ -285,6 +307,7 @@ impl SortedRows {
         writer.flush()?;
         self.charge_temp(&path)?;
         self.run_paths.push(path);
+        self.retained_bytes = 0;
         Ok(())
     }
 
@@ -359,14 +382,22 @@ impl SortedRows {
             descending: self.descending,
             extra_descending: self.extra_descending.clone(),
         };
+        let bytes = retained_row_size(&row)?;
+        if self.requested > MAX_SORTED_ROWS && !self.rows.is_empty()
+            && self.retained_bytes.checked_add(bytes)
+                .is_none_or(|total| total > MAX_SORT_BUFFER_BYTES) {
+            self.flush_run()?;
+        }
         if self.rows.len() < retained {
+            self.retained_bytes = updated_sort_bytes(self.retained_bytes, 0, bytes)?;
             self.rows.push(row);
         } else if self.requested <= MAX_SORTED_ROWS
             && self.rows.peek().is_some_and(|worst| row < *worst)
         {
-            // would_discard already checked bounded candidates. Unbounded
-            // scans still require the comparison before replacement.
-            *self.rows.peek_mut().unwrap() = row;
+            // Preserve the exact live budget when replacing the losing row.
+            let discarded = retained_row_size(self.rows.peek().expect("nonempty sort heap"))?;
+            self.retained_bytes = updated_sort_bytes(self.retained_bytes, discarded, bytes)?;
+            *self.rows.peek_mut().expect("nonempty sort heap") = row;
         }
         Ok(())
     }
@@ -624,5 +655,39 @@ mod tests {
         let mut output = Vec::new();
         sorted.write(&mut output).unwrap();
         assert_eq!(output, b"30\n20\n10\n");
+    }
+}
+
+#[cfg(test)]
+mod sort_memory_budget_tests {
+    use super::*;
+
+    #[test]
+    fn rejects_bounded_row_overcommit_without_modifying_accounting() {
+        let old = 20;
+        assert_eq!(updated_sort_bytes(old, 10, 12).unwrap(), 22);
+        assert!(updated_sort_bytes(MAX_SORT_BUFFER_BYTES, 0, 1).is_err());
+        assert!(updated_sort_bytes(0, 1, 0).is_err());
+        let mut sorted = SortedRows::new(Some(2), false);
+        sorted.push(Number::Unsigned(1), vec![Number::Unsigned(1); 4]).unwrap();
+        sorted.push(Number::Unsigned(2), vec![Number::Unsigned(2); 4]).unwrap();
+        assert!(sorted.retained_bytes > 0);
+        let previous = sorted.retained_bytes;
+        sorted.push(Number::Unsigned(99), vec![Number::Unsigned(9); 4]).unwrap();
+        assert_eq!(sorted.retained_bytes, previous);
+    }
+
+    #[test]
+    fn numeric_row_estimate_includes_extra_sort_keys() {
+        let row = SortedRow {
+            key: Number::Unsigned(1),
+            extra_keys: vec![Number::Unsigned(2)],
+            values: vec![Number::Unsigned(3); 4],
+            sequence: 0,
+            descending: false,
+            extra_descending: Arc::from(Vec::<bool>::new()),
+        };
+        assert!(retained_row_size(&row).unwrap() >= std::mem::size_of::<SortedRow>()
+            + 5 * std::mem::size_of::<Number>());
     }
 }
