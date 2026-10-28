@@ -251,11 +251,18 @@ const HASHED_TYPED_IN_MIN_VALUES: usize = 16;
 
 /// Convert already-validated canonical UUID literals into fixed-width hash keys.
 fn uuid_key(value: &str) -> [u8; 16] {
-    let hex = value.replace('-', "");
+    let mut digits = value.bytes().filter(|&byte| byte != b'-');
+    let nibble = |byte: u8| match byte {
+        b'0'..=b'9' => byte - b'0',
+        b'a'..=b'f' => byte - b'a' + 10,
+        b'A'..=b'F' => byte - b'A' + 10,
+        _ => unreachable!("UUID literal validated during compilation"),
+    };
     let mut bytes = [0u8; 16];
-    for (index, byte) in bytes.iter_mut().enumerate() {
-        *byte = u8::from_str_radix(&hex[index * 2..index * 2 + 2], 16)
-            .expect("UUID literal was validated during predicate compilation");
+    for byte in &mut bytes {
+        let high = digits.next().expect("validated UUID hex digits");
+        let low = digits.next().expect("validated UUID hex digits");
+        *byte = (nibble(high) << 4) | nibble(low);
     }
     bytes
 }
@@ -295,12 +302,18 @@ fn compile_in(kind: &str, values: &[String], negated: bool) -> Result<Test, Exec
     ))
 }
 
+fn order_compiled_conditions(conditions: &mut [Condition]) {
+    // Reordering AND predicates is safe after compilation, and lets cheap
+    // comparisons reject rows before expensive wildcard matching.
+    conditions.sort_by_key(|condition| matches!(&condition.test, Test::Like { .. }));
+}
+
 pub(super) fn compile(
     predicates: &[Predicate],
     indices: &HashMap<String, usize>,
     types: &HashMap<String, String>,
 ) -> Result<Vec<Condition>, ExecutionError> {
-    predicates
+    let mut conditions = predicates
         .iter()
         .map(|pred| {
             let name = pred.column();
@@ -351,7 +364,9 @@ pub(super) fn compile(
             };
             Ok(Condition { index, test })
         })
-        .collect()
+        .collect::<Result<Vec<_>, _>>()?;
+    order_compiled_conditions(&mut conditions);
+    Ok(conditions)
 }
 
 pub(super) fn cmp(left: &Cell, right: &Cell) -> Ordering {
@@ -718,6 +733,39 @@ impl Ord for TopRow {
     }
 }
 
+/// Resolve IS NULL on non-nullable columns before opening typed streams.
+/// A known-true disjunct dominates unknowns; false conjuncts are discarded.
+fn static_nonnullable_null_filter(
+    branches: &[Vec<Condition>],
+    names: &[String],
+    types: &HashMap<String, String>,
+) -> Option<bool> {
+    let mut unknown_branch = false;
+    for branch in branches {
+        let mut impossible = false;
+        let mut unknown = false;
+        for condition in branch {
+            let kind = types.get(&names[condition.index])?;
+            match &condition.test {
+                Test::IsNull(negated) if !kind.starts_with("Nullable(") => {
+                    if !*negated {
+                        impossible = true;
+                        break;
+                    }
+                }
+                _ => unknown = true,
+            }
+        }
+        if !impossible && !unknown {
+            return Some(true);
+        }
+        if !impossible && unknown {
+            unknown_branch = true;
+        }
+    }
+    if unknown_branch { None } else { Some(false) }
+}
+
 pub(super) fn execute_typed<W: Write>(
     query: &Select,
     part: &Path,
@@ -820,6 +868,60 @@ pub(super) fn execute_typed<W: Write>(
     }
     if query.limit == Some(0) {
         return Ok(());
+    }
+    // A constant NULL test needs only the validated schema and row count.
+    if matches!(query.projection, Projection::Count)
+        && !query.distinct
+        && query.order_by.is_none()
+        && query.order_by_extra.is_empty()
+        && query.having.is_none()
+    {
+        if let Some(all_rows) = static_nonnullable_null_filter(&conditions, &names, &types) {
+            if query.offset.unwrap_or(0) == 0 {
+                writeln!(output, "{}", if all_rows { metadata.rows } else { 0 })?;
+            }
+            return Ok(());
+        }
+    }
+    // COUNT(nullable_column) only needs the per-row NULL bit. Decode its
+    // small null-map stream instead of materializing possibly huge payloads.
+    if let Projection::CountColumn { column } = &query.projection {
+        if query.predicates.is_empty()
+            && query.or_predicates.is_empty()
+            && !query.distinct
+            && query.order_by.is_none()
+            && query.order_by_extra.is_empty()
+            && types.get(column).is_some_and(|kind| kind.starts_with("Nullable("))
+        {
+            let mut reader = TypedQueryReader::open(part, std::slice::from_ref(column))?;
+            let mut count = 0u64;
+            while let Some(nulls) = reader.next_null_batch()? {
+                count = count
+                    .checked_add(nulls.iter().filter(|&&byte| byte == 0).count() as u64)
+                    .ok_or_else(|| ExecutionError::Invalid("count overflow".into()))?;
+            }
+            if query.offset.unwrap_or(0) == 0 {
+                writeln!(output, "{count}")?;
+            }
+            return Ok(());
+        }
+    }
+    // COUNT(non-nullable column) is identical to COUNT(*). Read the
+    // snapshot row count rather than decoding String/UUID/numeric streams.
+    if let Projection::CountColumn { column } = &query.projection {
+        if query.predicates.is_empty() && query.or_predicates.is_empty()
+            && !query.distinct
+            && query.order_by.is_none()
+            && query.order_by_extra.is_empty()
+            && metadata.columns.iter().any(|candidate| {
+                candidate.name == *column && !candidate.data_type.starts_with("Nullable(")
+            })
+        {
+            if query.offset.unwrap_or(0) == 0 {
+                writeln!(output, "{}", metadata.rows)?;
+            }
+            return Ok(());
+        }
     }
     let mut scan = TypedQueryReader::open_with_metadata(part, &names, &metadata)?;
     let is_count = matches!(query.projection, Projection::Count);
@@ -1100,8 +1202,10 @@ pub(super) fn execute_typed<W: Write>(
                 )
             });
         }
+        let mut bounded_order = None;
         if query.order_by.is_some() {
-            grouped_rows.sort_by(|(left_key, left_count), (right_key, right_count)| {
+            let compare = |(left_key, left_count): &(Cell, u64),
+                           (right_key, right_count): &(Cell, u64)| {
                 for order in query.order_terms() {
                     let comparison = if order.column == "count" {
                         let comparison = left_count.cmp(right_count);
@@ -1123,11 +1227,36 @@ pub(super) fn execute_typed<W: Write>(
                     }
                 }
                 cmp(left_key, right_key)
-            });
+            };
+            let end = query.limit.and_then(|page| offset.checked_add(page));
+            if let Some(end) = end.filter(|&end| end < grouped_rows.len()) {
+                let mut indices = (0..grouped_rows.len()).collect::<Vec<_>>();
+                let compare_index = |left: &usize, right: &usize| {
+                    compare(&grouped_rows[*left], &grouped_rows[*right])
+                        .then_with(|| left.cmp(right))
+                };
+                indices.select_nth_unstable_by(end, &compare_index);
+                indices.truncate(end);
+                indices.sort_unstable_by(compare_index);
+                bounded_order = Some(indices);
+            } else {
+                grouped_rows.sort_by(compare);
+            }
         }
-        for (key, count) in grouped_rows.into_iter().skip(offset).take(limit) {
-            write_typed_value(output, &key, projection_types[0])?;
+        let write_group = |key: &Cell, count: u64, output: &mut W|
+            -> Result<(), ExecutionError> {
+            write_typed_value(output, key, projection_types[0])?;
             writeln!(output, "\t{count}")?;
+            Ok(())
+        };
+        if let Some(indices) = bounded_order {
+            for index in indices.into_iter().skip(offset) {
+                write_group(&grouped_rows[index].0, grouped_rows[index].1, output)?;
+            }
+        } else {
+            for (key, count) in grouped_rows.iter().skip(offset).take(limit) {
+                write_group(key, *count, output)?;
+            }
         }
         return Ok(());
     }
@@ -1165,6 +1294,29 @@ pub(super) fn execute_typed<W: Write>(
         }
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod predicate_order_tests {
+    use super::*;
+
+    #[test]
+    fn cheap_conditions_run_before_expensive_like_conditions() {
+        let mut conditions = vec![
+            Condition {
+                index: 0,
+                test: Test::Like {
+                    pattern: LikePattern::Exact(b"match".to_vec()),
+                    case_insensitive: false,
+                    negated: false,
+                },
+            },
+            Condition { index: 1, test: Test::IsNull(false) },
+        ];
+        order_compiled_conditions(&mut conditions);
+        assert_eq!(conditions[0].index, 1);
+        assert_eq!(conditions[1].index, 0);
+    }
 }
 
 #[cfg(test)]

@@ -201,8 +201,9 @@ pub(super) fn execute<W: Write>(
         });
     }
 
+    let mut bounded_order = None;
     if query.order_by.is_some() {
-        groups.sort_by(|left, right| {
+        let compare = |left: &Group, right: &Group| {
             for order in query.order_terms() {
                 let comparison = if order.column == "count" {
                     let comparison = left.distinct_len().cmp(&right.distinct_len());
@@ -224,16 +225,41 @@ pub(super) fn execute<W: Write>(
                 }
             }
             typed::cmp(&left.key, &right.key)
-        });
+        };
+        let end = query
+            .limit
+            .and_then(|limit| query.offset.unwrap_or(0).checked_add(limit));
+        if let Some(end) = end.filter(|&end| end < groups.len()) {
+            let mut indices = (0..groups.len()).collect::<Vec<_>>();
+            let compare_index = |left: &usize, right: &usize| {
+                compare(&groups[*left], &groups[*right]).then_with(|| left.cmp(right))
+            };
+            indices.select_nth_unstable_by(end, &compare_index);
+            indices.truncate(end);
+            indices.sort_unstable_by(compare_index);
+            bounded_order = Some(indices);
+        } else {
+            groups.sort_by(compare);
+        }
     }
 
-    for group in groups
-        .into_iter()
-        .skip(query.offset.unwrap_or(0))
-        .take(query.limit.unwrap_or(usize::MAX))
-    {
+    let write_group = |group: &Group, output: &mut W| -> Result<(), ExecutionError> {
         typed::write_typed_value(output, &group.key, &types[column])?;
         writeln!(output, "\t{}", group.distinct_len())?;
+        Ok(())
+    };
+    if let Some(indices) = bounded_order {
+        for index in indices.into_iter().skip(query.offset.unwrap_or(0)) {
+            write_group(&groups[index], output)?;
+        }
+    } else {
+        for group in groups
+            .iter()
+            .skip(query.offset.unwrap_or(0))
+            .take(query.limit.unwrap_or(usize::MAX))
+        {
+            write_group(group, output)?;
+        }
     }
     Ok(())
 }
