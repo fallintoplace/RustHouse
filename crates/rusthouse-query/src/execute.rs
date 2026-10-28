@@ -1,7 +1,13 @@
 mod aggregate_plans;
+mod radix_median;
 mod external_grouped;
 mod bitmap_distinct;
+mod histogram;
 mod hyperloglog;
+
+pub fn merge_uniq_states(states: &[&str]) -> Result<u64, String> {
+    hyperloglog::merge_state_hex_values(states)
+}
 
 #[cfg(test)]
 mod dynamic_part_tests {
@@ -953,8 +959,11 @@ fn execute_into<W: Write>(
     let part = part.ok_or_else(|| {
         ExecutionError::Invalid("pass --part <directory> for table queries".into())
     })?;
+    if matches!(query.projection, Projection::Histogram { .. }) {
+        return histogram::execute_part(query, part, output);
+    }
     // A single typed scan serves numeric and String columns with fixed 16 KiB state.
-    if matches!(query.projection, Projection::ApproxDistinct { .. }) {
+    if matches!(query.projection, Projection::ApproxDistinct { .. } | Projection::ApproxDistinctState { .. }) {
         return typed::execute_typed(query, part, output);
     }
     if let Some(count) = parallel_filtered_count(query, part)? {
@@ -1057,6 +1066,8 @@ fn execute_into<W: Write>(
         | Projection::CountColumn { .. }
         | Projection::CountDistinct { .. }
         | Projection::ApproxDistinct { .. }
+        | Projection::Histogram { .. }
+        | Projection::ApproxDistinctState { .. }
         | Projection::GroupedCount { .. }
         | Projection::GroupedDistinctCount { .. }
         | Projection::GroupedMultiDistinctCount { .. }
@@ -1449,6 +1460,7 @@ fn execute_numbers<W: Write>(
             query.projection,
             Projection::Count | Projection::CountColumn { .. } | Projection::CountDistinct { .. }
                 | Projection::ApproxDistinct { .. }
+                | Projection::Histogram { .. }
         );
         let simple_result = query.order_by.is_none()
             && query.order_by_extra.is_empty()
@@ -1562,6 +1574,11 @@ fn execute_numbers<W: Write>(
         }
         return Ok(());
     }
+    if matches!(query.projection, Projection::ApproxDistinctState { .. }) {
+        return Err(ExecutionError::Invalid(
+            "uniqState requires a physical table snapshot".into(),
+        ));
+    }
     if let Projection::CountDistinct { column } | Projection::ApproxDistinct { column } = &query.projection {
         if column != "number" {
             return Err(ExecutionError::Invalid(
@@ -1595,6 +1612,9 @@ fn execute_numbers<W: Write>(
         }
         return Ok(());
     }
+    if matches!(query.projection, Projection::Histogram { .. }) {
+        return histogram::execute_numbers(query, start, rows, step, output);
+    }
     if let Projection::Aggregate { function, column } = &query.projection {
         return execute_aggregate_numbers(query, start, rows, step, *function, column, output);
     }
@@ -1619,6 +1639,8 @@ fn execute_numbers<W: Write>(
         | Projection::CountColumn { .. }
         | Projection::CountDistinct { .. }
         | Projection::ApproxDistinct { .. }
+        | Projection::Histogram { .. }
+        | Projection::ApproxDistinctState { .. }
         | Projection::GroupedCount { .. }
         | Projection::GroupedDistinctCount { .. }
         | Projection::GroupedMultiDistinctCount { .. }
@@ -2088,19 +2110,27 @@ impl AggregateState {
         if self.median_values.is_empty() {
             return None;
         }
+        // SELECT median from up to 100k analytical values in expected linear
+        // time instead of sorting the entire vector for every finalization.
         let mut values = self.median_values.clone();
-        values.sort_unstable_by(|left, right| compare_numbers(*left, *right));
+        let odd = values.len() % 2 == 1;
         let middle = values.len() / 2;
-        if values.len() % 2 == 1 {
-            return Some(values[middle]);
+        let (lower, selected, _) = values.select_nth_unstable_by(middle, |left, right| {
+            compare_numbers(*left, *right)
+        });
+        if odd {
+            return Some(*selected);
         }
+        let previous = *lower.iter().max_by(|left, right| {
+            compare_numbers(**left, **right)
+        }).expect("even-length median has a lower element");
         let as_float = |value: Number| match value {
             Number::Unsigned(value) => value as f64,
             Number::Signed(value) => value as f64,
             Number::Float(value) => value,
         };
         Some(Number::Float(
-            as_float(values[middle - 1]) / 2.0 + as_float(values[middle]) / 2.0
+            as_float(previous) / 2.0 + as_float(*selected) / 2.0
         ))
     }
 
@@ -2187,23 +2217,10 @@ impl AggregateState {
                 (Some(Number::Float(low)), Some(Number::Float(high))) => (high - low).to_string(),
                 _ => unreachable!("nonempty RANGE has both extrema"),
             },
-            AggregateFunction::Median => {
-                let mut values = self.median_values.clone();
-                values.sort_unstable_by(|left, right| compare_numbers(*left, *right));
-                let middle = values.len() / 2;
-                if values.len() & 1 == 1 {
-                    values[middle].to_string()
-                } else {
-                    // Even-length interpolation uses Float64, as AVG already does.
-                    // Divide before adding to avoid overflow for very large values.
-                    let as_f64 = |number: Number| match number {
-                        Number::Unsigned(value) => value as f64,
-                        Number::Signed(value) => value as f64,
-                        Number::Float(value) => value,
-                    };
-                    (as_f64(values[middle - 1]) / 2.0 + as_f64(values[middle]) / 2.0).to_string()
-                }
-            }
+            AggregateFunction::Median => self
+                .median_number()
+                .expect("nonempty median has a selected value")
+                .to_string(),
             _ => self
                 .value
                 .map_or_else(String::new, |value| value.to_string()),
@@ -2302,5 +2319,55 @@ mod numeric_group_capacity_tests {
             groups.push(Number::Unsigned(u128::from(value))).unwrap();
         }
         assert_eq!(groups.rows.len(), 100_001);
+    }
+}
+
+#[cfg(test)]
+mod median_selection_tests {
+    use super::*;
+
+    fn reference(mut items: Vec<Number>) -> Number {
+        items.sort_unstable_by(|a, b| compare_numbers(*a, *b));
+        let middle = items.len() / 2;
+        if items.len() % 2 == 1 {
+            items[middle]
+        } else {
+            let float = |n: Number| match n {
+                Number::Unsigned(n) => n as f64,
+                Number::Signed(n) => n as f64,
+                Number::Float(n) => n,
+            };
+            Number::Float(float(items[middle - 1]) / 2.0 + float(items[middle]) / 2.0)
+        }
+    }
+
+    #[test]
+    fn median_selection_matches_full_sort_for_large_skewed_distributions() {
+        for size in [1, 2, 3, 7, 1023, 10_000, 99_999, 100_000] {
+            let values = (0..size).map(|i| {
+                Number::Signed(((i * 17_351 + 11) % 1013) as i128 - 506)
+            }).collect::<Vec<_>>();
+            let mut state = AggregateState::new(AggregateFunction::Median);
+            for &value in &values {
+                state.update(value).unwrap();
+            }
+            assert_eq!(state.median_number().unwrap().to_string(), reference(values.clone()).to_string());
+            assert_eq!(state.render(), reference(values.clone()).to_string());
+        }
+    }
+
+    #[test]
+    fn median_selection_keeps_128_bit_values_and_float_ordering() {
+        for values in [
+            vec![Number::Unsigned(u128::MAX), Number::Unsigned(u128::MAX - 1), Number::Unsigned(0)],
+            vec![Number::Signed(i128::MIN), Number::Signed(0), Number::Signed(i128::MAX)],
+            vec![Number::Float(-0.0), Number::Float(0.0), Number::Float(5.0), Number::Float(-8.0)],
+        ] {
+            let mut state = AggregateState::new(AggregateFunction::Median);
+            for &value in &values {
+                state.update(value).unwrap();
+            }
+            assert_eq!(state.median_number().unwrap().to_string(), reference(values).to_string());
+        }
     }
 }

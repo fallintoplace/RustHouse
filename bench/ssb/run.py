@@ -15,22 +15,37 @@ from fixture import DATE_KEYS, MAX_FACTS, generate
 SQL = ("SELECT l.lo_orderkey, d.d_year FROM lineorder l "
        "JOIN date_dim d ON l.lo_orderdate = d.d_datekey "
        "ORDER BY l.lo_orderkey LIMIT 20")
+COUNT_SQL = ("SELECT COUNT(*) FROM lineorder l "
+             "JOIN date_dim d ON l.lo_orderdate = d.d_datekey")
+GROUPED_SQL = ("SELECT d.d_year, SUM(l.lo_revenue), COUNT(*) FROM lineorder l "
+               "JOIN date_dim d ON l.lo_orderdate = d.d_datekey "
+               "GROUP BY d.d_year ORDER BY SUM(l.lo_revenue) DESC LIMIT 10")
+QUERY_SQL = {
+    "sorted-topk": SQL,
+    "count-join": COUNT_SQL,
+    "grouped-revenue": GROUPED_SQL,
+}
 
 
-def expected_rows(reference):
+def expected_rows(reference, statement=SQL):
     with closing(sqlite3.connect(reference)) as db:
-        rows = db.execute(SQL).fetchall()
-    return "".join(f"{order}\t{year}\n" for order, year in rows).encode()
+        rows = db.execute(statement).fetchall()
+    return "".join(
+        "\t".join("NULL" if value is None else str(value) for value in row) + "\n"
+        for row in rows
+    ).encode()
 
 
 def benchmark(binary, rows=2000, seed=42, runs=3, warmups=1,
-              timeout=120, execute=None):
-    if not 1 <= rows <= MAX_FACTS or runs < 1 or warmups < 0 or timeout <= 0:
+              timeout=120, execute=None, query="sorted-topk"):
+    if (not 1 <= rows <= MAX_FACTS or runs < 1 or warmups < 0
+            or timeout <= 0 or query not in QUERY_SQL):
         raise ValueError("invalid row count or timing parameters")
     with tempfile.TemporaryDirectory(prefix="rusthouse-star-bench-") as dirname:
         root = Path(dirname)
         fixture = generate(root, rows=rows, seed=seed)
-        reference = expected_rows(root / "reference.sqlite")
+        statement = QUERY_SQL[query]
+        reference = expected_rows(root / "reference.sqlite", statement)
         database = root / "db"
         if execute is None:
             execute = lambda sql: cli_sql(binary, database, sql, timeout)
@@ -46,7 +61,7 @@ def benchmark(binary, rows=2000, seed=42, runs=3, warmups=1,
         status, error = "passed", None
         for iteration in range(-warmups, runs):
             started = time.perf_counter() if iteration >= 0 else None
-            output = execute(SQL)
+            output = execute(statement)
             if output != reference:
                 status, error = "mismatch", "joined rows differ from SQLite"
                 break
@@ -56,6 +71,7 @@ def benchmark(binary, rows=2000, seed=42, runs=3, warmups=1,
             samples = []
         return {
             "workload": "ssb-inspired-two-table-join",
+            "query": query,
             "official_ssb": False,
             "rows": rows, "seed": seed, "date_dimension_rows": len(DATE_KEYS),
             "runs": runs, "warmups": warmups, "status": status,
@@ -72,11 +88,12 @@ def main(argv=None):
     parser.add_argument("--runs", type=int, default=3)
     parser.add_argument("--warmups", type=int, default=1)
     parser.add_argument("--timeout", type=float, default=120)
+    parser.add_argument("--query", choices=tuple(QUERY_SQL), default="sorted-topk")
     parser.add_argument("--output", type=Path)
     args = parser.parse_args(argv)
     try:
         result = benchmark(args.binary, args.rows, args.seed, args.runs,
-                           args.warmups, args.timeout)
+                           args.warmups, args.timeout, query=args.query)
     except (OSError, RuntimeError, ValueError, sqlite3.Error,
             subprocess.TimeoutExpired) as error:
         parser.exit(1, f"SSB workload failed: {error}\n")

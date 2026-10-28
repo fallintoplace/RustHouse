@@ -487,6 +487,82 @@ pub(super) fn execute<W: Write>(
     if query.limit == Some(0) {
         return Ok(());
     }
+    // Non-nullable COUNT columns have exactly the snapshot's validated row
+    // count. Answer any number of these metrics from metadata, without
+    // opening or decompressing a single column stream.
+    let metadata_counts = query.predicates.is_empty()
+        && query.or_predicates.is_empty()
+        && items.iter().all(|item| {
+            item.function.is_none()
+                && !item.distinct
+                && item.argument.as_ref().is_none_or(|expression| {
+                    matches!(expression, ScalarExpr::Column(column)
+                        if types.get(column).is_some_and(|kind|
+                            !kind.starts_with("Nullable(")))
+                })
+        });
+    if metadata_counts {
+        if query.offset.unwrap_or(0) == 0 {
+            for (index, _) in items.iter().enumerate() {
+                if index > 0 {
+                    output.write_all(b"\t")?;
+                }
+                write!(output, "{}", metadata.rows)?;
+            }
+            output.write_all(b"\n")?;
+        }
+        return Ok(());
+    }
+    // Mixed nullable COUNTs only need their compact null maps. A full
+    // typed value scan decodes every numeric or String payload needlessly.
+    // De-duplicate repeated nullable columns across up to 128 metrics.
+    let nullmap_counts = query.predicates.is_empty()
+        && query.or_predicates.is_empty()
+        && items.iter().all(|item| {
+            item.function.is_none()
+                && !item.distinct
+                && item.argument.as_ref().is_none_or(|expression| {
+                    matches!(expression, ScalarExpr::Column(column)
+                        if types.contains_key(column))
+                })
+        });
+    if nullmap_counts {
+        let mut cached = HashMap::<String, u64>::new();
+        for item in items {
+            let Some(ScalarExpr::Column(column)) = &item.argument else {
+                continue;
+            };
+            if !types[column].starts_with("Nullable(") || cached.contains_key(column) {
+                continue;
+            }
+            let mut reader = TypedQueryReader::open_with_metadata(
+                part, std::slice::from_ref(column), &metadata
+            )?;
+            let mut nonnull = 0u64;
+            while let Some(nulls) = reader.next_null_batch()? {
+                let count = nulls.iter().filter(|&&value| value == 0).count() as u64;
+                nonnull = nonnull.checked_add(count).ok_or_else(|| {
+                    ExecutionError::Invalid("COUNT overflow".into())
+                })?;
+            }
+            cached.insert(column.clone(), nonnull);
+        }
+        if query.offset.unwrap_or(0) == 0 {
+            for (index, item) in items.iter().enumerate() {
+                if index > 0 {
+                    output.write_all(b"\t")?;
+                }
+                let count = match &item.argument {
+                    Some(ScalarExpr::Column(column)) if types[column].starts_with("Nullable(") =>
+                        cached[column],
+                    _ => metadata.rows,
+                };
+                write!(output, "{count}")?;
+            }
+            output.write_all(b"\n")?;
+        }
+        return Ok(());
+    }
     let mut states = items
         .iter()
         .map(|item| match item.function {
