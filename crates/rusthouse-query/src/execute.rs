@@ -1445,9 +1445,24 @@ fn execute_numbers<W: Write>(
         } else {
             false
         };
-        if !scalar_count || !simple_result || !arithmetic_count {
+        // Bounded pages are also safe when we can jump directly to the
+        // requested generated values instead of scanning the full input.
+        let bounded_page = matches!(query.projection, Projection::All | Projection::Columns(_))
+            && query.limit.is_some_and(|limit| limit <= MAX_SORTED_ROWS)
+            && query.having.is_none()
+            && !query.distinct
+            && query.order_by_extra.is_empty()
+            && ((query.predicates.is_empty() && query.or_predicates.is_empty())
+                || monotonic_range_indices(
+                    &compile_numbers_predicates(query)?,
+                    start,
+                    rows,
+                    step,
+                )
+                .is_some());
+        if !(scalar_count && simple_result && arithmetic_count) && !bounded_page {
             return Err(ExecutionError::Invalid(
-                "virtual inputs over 10000000 rows require an arithmetic COUNT query".into(),
+                "virtual inputs over 10000000 rows require an arithmetic COUNT or bounded page query".into(),
             ));
         }
     }
