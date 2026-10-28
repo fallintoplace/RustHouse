@@ -469,17 +469,20 @@ fn parallel_integer_sum(
         parse_numeric(&selected.data_type, literal)
     })?;
     let no_filters = query.predicates.is_empty() && query.or_predicates.is_empty();
-    let chunk_size = parts.len().div_ceil(workers);
+    // Unequal part sizes should not leave idle workers waiting for a single
+    // large chunk. Claim one part at a time, as in filtered COUNT.
+    let next = AtomicUsize::new(0);
     let sum = std::thread::scope(|scope| -> Result<Option<Number>, ExecutionError> {
-        let handles = parts.chunks(chunk_size).map(|chunk| {
+        let handles = (0..workers).map(|_| {
             let scan_columns = &scan_columns;
             let comparisons = &comparisons;
+            let next = &next;
             scope.spawn(move || -> Result<Option<Number>, ExecutionError> {
                 let mut result = None;
-                for part in chunk {
+                while let Some(index) = next_part_index(next, parts.len()) {
                     // Scan compressed numeric columns directly, without
                     // recursive SQL execution or TSV serialization.
-                    let mut reader = rusthouse_storage::NumericPartReader::open(part, scan_columns)?;
+                    let mut reader = rusthouse_storage::NumericPartReader::open(&parts[index], scan_columns)?;
                     let mut state = AggregateState::new(AggregateFunction::Sum);
                     while let Some(batch) = reader.next_batch()? {
                         for row in 0..batch[0].len() {
