@@ -277,6 +277,10 @@ fn merge_tsv(shards: &[(usize, Vec<u8>)], max_rows: usize) -> Result<Vec<u8>, Me
 
 /// Apply LIMIT/OFFSET only after validating every shard's full result and
 /// advertised cap. Rows are paged in stable configured-peer order.
+/// Page complete shard TSV results in a single row-boundary pass per shard.
+/// Retain one contiguous byte slice per shard rather than splitting and
+/// copying each matching row. All shard rows and caps are still validated,
+/// even after the global page is full.
 fn merge_tsv_page(
     shards: &[(usize, Vec<u8>)],
     max_rows: usize,
@@ -307,32 +311,54 @@ fn merge_tsv_page(
             header = Some(shard_header);
             output.extend_from_slice(shard_header);
         }
+
         let rows = &body[header_end + 1..];
-        let shard_rows = rows.iter().filter(|&&b| b == b'\n').count();
+        let local_skip = offset.saturating_sub(seen_rows);
+        let remaining = limit
+            .map(|limit| limit.saturating_sub(returned_rows))
+            .unwrap_or(usize::MAX);
+        let mut shard_rows = 0usize;
+        let mut row_start = 0usize;
+        let mut selected_start = None;
+        let mut selected_end = 0usize;
+        for (position, &byte) in rows.iter().enumerate() {
+            if byte != b'\n' {
+                continue;
+            }
+            // TSV data encodes embedded newlines as escapes, so all literal
+            // newlines delimit rows. The selected page is a contiguous range.
+            if shard_rows >= local_skip && shard_rows - local_skip < remaining {
+                if selected_start.is_none() {
+                    selected_start = Some(row_start);
+                }
+                selected_end = position + 1;
+            }
+            shard_rows = shard_rows
+                .checked_add(1)
+                .ok_or(MergeError::CoordinatorLimit)?;
+            row_start = position + 1;
+        }
         if *cap == 0 || shard_rows >= *cap {
             return Err(MergeError::ShardRowLimit);
         }
-        for row in rows.split_inclusive(|&b| b == b'\n') {
-            if row.is_empty() {
-                continue;
-            }
-            let in_page = seen_rows >= offset && limit.is_none_or(|limit| returned_rows < limit);
-            seen_rows = seen_rows
-                .checked_add(1)
+        seen_rows = seen_rows
+            .checked_add(shard_rows)
+            .ok_or(MergeError::CoordinatorLimit)?;
+        if let Some(start) = selected_start {
+            let appended = shard_rows.saturating_sub(local_skip).min(remaining);
+            returned_rows = returned_rows
+                .checked_add(appended)
+                .filter(|&count| count <= max_rows)
                 .ok_or(MergeError::CoordinatorLimit)?;
-            if !in_page {
-                continue;
-            }
-            if returned_rows >= max_rows
-                || output
-                    .len()
-                    .checked_add(row.len())
-                    .is_none_or(|n| n > MAX_RESPONSE_BYTES)
+            let bytes = &rows[start..selected_end];
+            if output
+                .len()
+                .checked_add(bytes.len())
+                .is_none_or(|len| len > MAX_RESPONSE_BYTES)
             {
                 return Err(MergeError::CoordinatorLimit);
             }
-            output.extend_from_slice(row);
-            returned_rows += 1;
+            output.extend_from_slice(bytes);
         }
     }
     if header.is_none() {
@@ -1768,5 +1794,53 @@ mod tests {
             handle("POST", b"SELECT id FROM events", &cluster, 10).status,
             "400 Bad Request"
         );
+    }
+}
+
+#[cfg(test)]
+mod single_pass_page_tests {
+    use super::*;
+
+    #[test]
+    fn pages_across_many_shards_match_stable_global_row_order() {
+        let shards = (0..16)
+            .map(|shard| {
+                let mut body = b"value\n".to_vec();
+                for row in 0..25 {
+                    body.extend_from_slice(format!("{}\n", shard * 25 + row).as_bytes());
+                }
+                (100, body)
+            })
+            .collect::<Vec<_>>();
+        let expected_rows = (0..400).map(|row| format!("{row}\n")).collect::<Vec<_>>();
+        for offset in [0, 1, 24, 25, 249, 399, 400, 900] {
+            for limit in [None, Some(0), Some(1), Some(7), Some(100), Some(1000)] {
+                let selected = expected_rows.iter()
+                    .skip(offset)
+                    .take(limit.unwrap_or(usize::MAX))
+                    .cloned()
+                    .collect::<String>();
+                let expected = format!("value\n{selected}");
+                assert_eq!(
+                    merge_tsv_page(&shards, 500, offset, limit).unwrap(),
+                    expected.into_bytes(),
+                    "offset={offset} limit={limit:?}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn late_shard_corruption_is_rejected_even_after_page_is_full() {
+        let shards = vec![
+            (10, b"x\na\nb\n".to_vec()),
+            (10, b"x\nc\nd\n".to_vec()),
+        ];
+        assert_eq!(merge_tsv_page(&shards, 1, 2, Some(1)).unwrap(), b"x\nc\n");
+        assert!(matches!(merge_tsv_page(&shards, 0, 0, Some(1)), Err(MergeError::CoordinatorLimit)));
+        let capped = vec![(10, b"x\na\n".to_vec()), (1, b"x\nb\n".to_vec())];
+        assert!(matches!(merge_tsv_page(&capped, 2, 0, Some(1)), Err(MergeError::ShardRowLimit)));
+        let mismatched = vec![(10, b"x\na\n".to_vec()), (10, b"y\nb\n".to_vec())];
+        assert!(matches!(merge_tsv_page(&mismatched, 2, 0, Some(1)), Err(MergeError::SchemaMismatch)));
     }
 }
