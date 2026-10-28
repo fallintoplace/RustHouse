@@ -487,6 +487,32 @@ pub(super) fn execute<W: Write>(
     if query.limit == Some(0) {
         return Ok(());
     }
+    // Non-nullable COUNT columns have exactly the snapshot's validated row
+    // count. Answer any number of these metrics from metadata, without
+    // opening or decompressing a single column stream.
+    let metadata_counts = query.predicates.is_empty()
+        && query.or_predicates.is_empty()
+        && items.iter().all(|item| {
+            item.function.is_none()
+                && !item.distinct
+                && item.argument.as_ref().is_none_or(|expression| {
+                    matches!(expression, ScalarExpr::Column(column)
+                        if types.get(column).is_some_and(|kind|
+                            !kind.starts_with("Nullable(")))
+                })
+        });
+    if metadata_counts {
+        if query.offset.unwrap_or(0) == 0 {
+            for (index, _) in items.iter().enumerate() {
+                if index > 0 {
+                    output.write_all(b"\t")?;
+                }
+                write!(output, "{}", metadata.rows)?;
+            }
+            output.write_all(b"\n")?;
+        }
+        return Ok(());
+    }
     let mut states = items
         .iter()
         .map(|item| match item.function {
