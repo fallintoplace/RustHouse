@@ -1,4 +1,5 @@
 use super::ExecutionError;
+use super::grouped_numeric_keys::append_group_component;
 use super::typed::{self, Cell, Key};
 use crate::Select;
 use rusthouse_storage::{NumericColumn, TypedColumn, TypedQueryReader, inspect_query_source};
@@ -72,6 +73,16 @@ pub(super) fn execute<W: Write>(
     let group_indices = columns.iter().map(|name| indices[name]).collect::<Vec<_>>();
     let mut reader = TypedQueryReader::open_with_metadata(part, &names, &metadata)?;
     let mut groups: Vec<(Vec<Cell>, u64)> = Vec::new();
+    // Count-only multi-column GROUP BY shares the allocation-free text-key
+    // path with multi-metric grouped aggregates.
+    let has_text_key = columns.iter().any(|name| {
+        matches!(
+            types.get(name).map(String::as_str),
+            Some("String" | "Nullable(String)")
+        )
+    });
+    let mut encoded_groups: HashMap<Vec<u8>, usize> = HashMap::new();
+    let mut encoded_probe = Vec::<u8>::new();
     let mut by_key: HashMap<Vec<Key>, usize> = HashMap::new();
     let mut probe_key = Vec::with_capacity(group_indices.len());
     let mut dense_groups = (columns.len() == 2
@@ -111,6 +122,31 @@ pub(super) fn execute<W: Write>(
                 }
                 continue;
             }
+            if has_text_key {
+                encoded_probe.clear();
+                for &column in &group_indices {
+                    append_group_component(&batch[column], row, &mut encoded_probe);
+                }
+                if let Some(&index) = encoded_groups.get(encoded_probe.as_slice()) {
+                    groups[index].1 = groups[index].1.checked_add(1)
+                        .ok_or_else(|| ExecutionError::Invalid("group count overflow".into()))?;
+                } else {
+                    if groups.len() >= MAX_GROUPS {
+                        return Err(ExecutionError::Invalid(
+                            "GROUP BY supports at most 200000 groups".into(),
+                        ));
+                    }
+                    let values = group_indices
+                        .iter()
+                        .map(|&column| typed::cell(&batch[column], row))
+                        .collect();
+                    encoded_groups.insert(std::mem::take(&mut encoded_probe), groups.len());
+                    encoded_probe = Vec::with_capacity(group_indices.len() * 24);
+                    groups.push((values, 1));
+                }
+                continue;
+            }
+
             // Build only the probe key for existing groups. Wide projection
             // cells are materialized once, when a new group is discovered.
             probe_key.clear();
