@@ -50,6 +50,13 @@ pub(super) fn write_json_string<W: Write>(writer: &mut W, value: &str) -> io::Re
         .iter()
         .any(|byte| *byte < 0x20 || *byte == b'\"' || *byte == b'\\')
     {
+        if value.len() <= 64 {
+            let mut quoted = [0u8; 66];
+            quoted[0] = b'"';
+            quoted[1..value.len() + 1].copy_from_slice(value.as_bytes());
+            quoted[value.len() + 1] = b'"';
+            return writer.write_all(&quoted[..value.len() + 2]);
+        }
         writer.write_all(b"\"")?;
         writer.write_all(value.as_bytes())?;
         return writer.write_all(b"\"");
@@ -92,6 +99,34 @@ pub(super) fn write_json_string<W: Write>(writer: &mut W, value: &str) -> io::Re
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn short_plain_json_fields_use_one_write() {
+        struct CountingWriter {
+            calls: usize,
+            bytes: Vec<u8>,
+        }
+
+        impl Write for CountingWriter {
+            fn write(&mut self, bytes: &[u8]) -> io::Result<usize> {
+                self.calls += 1;
+                self.bytes.extend_from_slice(bytes);
+                Ok(bytes.len())
+            }
+
+            fn flush(&mut self) -> io::Result<()> {
+                Ok(())
+            }
+        }
+
+        let mut writer = CountingWriter {
+            calls: 0,
+            bytes: Vec::new(),
+        };
+        write_json_string(&mut writer, "hello").unwrap();
+        assert_eq!(writer.calls, 1);
+        assert_eq!(writer.bytes, br#""hello""#);
+    }
 
     #[test]
     fn parses_only_ascii_hex_digits() {
