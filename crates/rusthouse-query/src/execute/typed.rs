@@ -4,6 +4,7 @@
 mod like;
 
 use self::like::*;
+use super::hyperloglog::HyperLogLog;
 
 use super::{BitmapDistinct32, ExecutionError, Number, NumberKey, compare_numbers, number_at};
 use crate::{Operator, Predicate, Projection, Select};
@@ -126,6 +127,7 @@ pub(super) fn requires_typed_scan(query: &Select, path: &Path) -> Result<bool, E
         Projection::Aggregate { column, .. }
         | Projection::CountColumn { column }
         | Projection::CountDistinct { column }
+        | Projection::ApproxDistinct { column }
         | Projection::GroupedCount { column } => names.push(column),
         _ => {}
     }
@@ -870,6 +872,7 @@ pub(super) fn execute_typed<W: Write>(
         Projection::Count => Vec::new(),
         Projection::CountColumn { column }
         | Projection::CountDistinct { column }
+        | Projection::ApproxDistinct { column }
         | Projection::GroupedCount { column } => {
             vec![column.clone()]
         }
@@ -944,6 +947,7 @@ pub(super) fn execute_typed<W: Write>(
         Projection::Count => "count".to_string(),
         Projection::CountColumn { column } => format!("count({column})"),
         Projection::CountDistinct { column } => format!("countDistinct({column})"),
+        Projection::ApproxDistinct { column } => format!("uniq({column})"),
         Projection::GroupedCount { column } => {
             format!("{column}\t{}", query.alias.as_deref().unwrap_or("count"))
         }
@@ -1018,6 +1022,8 @@ pub(super) fn execute_typed<W: Write>(
     let is_count = matches!(query.projection, Projection::Count);
     let is_count_column = matches!(query.projection, Projection::CountColumn { .. });
     let is_count_distinct = matches!(query.projection, Projection::CountDistinct { .. });
+    let is_approx_distinct = matches!(query.projection, Projection::ApproxDistinct { .. });
+    let mut sketch = HyperLogLog::default();
     let is_grouped = matches!(query.projection, Projection::GroupedCount { .. });
     let mut count = 0u64;
     let mut distinct = HashSet::<Vec<Key>>::new();
@@ -1109,6 +1115,7 @@ pub(super) fn execute_typed<W: Write>(
         && !is_count
         && !is_count_column
         && !is_count_distinct
+        && !is_approx_distinct
         && !is_grouped
         && !query.distinct
         && sort_indices.is_empty()
@@ -1143,6 +1150,10 @@ pub(super) fn execute_typed<W: Write>(
                         .checked_add(1)
                         .ok_or_else(|| ExecutionError::Invalid("count overflow".into()))?;
                 }
+                continue;
+            }
+            if is_approx_distinct {
+                sketch.observe(&batch[projection_indices[0]], index)?;
                 continue;
             }
             if is_grouped {
@@ -1527,9 +1538,11 @@ pub(super) fn execute_typed<W: Write>(
         }
         return Ok(());
     }
-    if is_count || is_count_column || is_count_distinct {
+    if is_count || is_count_column || is_count_distinct || is_approx_distinct {
         if offset == 0 {
-            let result = if is_count || is_count_column {
+            let result = if is_approx_distinct {
+                sketch.estimate()
+            } else if is_count || is_count_column {
                 count
             } else {
                 (count_distinct_keys.len()
