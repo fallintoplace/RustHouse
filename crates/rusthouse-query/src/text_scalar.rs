@@ -119,6 +119,7 @@ pub(super) fn is_function(name: &str) -> bool {
             | "RPAD"
             | "LOWERUTF8"
             | "SPACE"
+            | "ENCODEURLFORMCOMPONENT"
     )
 }
 
@@ -543,6 +544,32 @@ fn parse_at_depth(parser: &mut Parser, depth: usize) -> Result<ConstantValue, Pa
                         }
                     }
                     ConstantValue::Text(result)
+                }
+                None => ConstantValue::Null,
+            }
+        }
+        "ENCODEURLFORMCOMPONENT" => {
+            let input = text_arg(parser, depth + 1)?;
+            require(parser, Token::RParen, "encodeURLFormComponent requires one argument")?;
+            match input {
+                Some(input) => {
+                    const DIGITS: &[u8; 16] = b"0123456789ABCDEF";
+                    let mut output = String::new();
+                    for byte in input.bytes() {
+                        if byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'.' | b'_' | b'~') {
+                            output.push(char::from(byte));
+                        } else if byte == b' ' {
+                            output.push('+');
+                        } else {
+                            output.push('%');
+                            output.push(char::from(DIGITS[usize::from(byte >> 4)]));
+                            output.push(char::from(DIGITS[usize::from(byte & 15)]));
+                        }
+                        if output.len() > MAX_TEXT_BYTES {
+                            return Err(ParseError("encodeURLFormComponent result is too large".into()));
+                        }
+                    }
+                    ConstantValue::Text(output)
                 }
                 None => ConstantValue::Null,
             }
