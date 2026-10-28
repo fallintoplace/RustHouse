@@ -40,11 +40,13 @@ fn accepts_streamed_tsv_without_a_temporary_file() {
     let count = run(&dir, "SELECT count(*) FROM events", None);
     assert!(count.status.success(), "{count:?}");
     assert_eq!(count.stdout, b"count\n2\n");
-    let rejected = run(
+    let imported_csv = run(
         &dir,
         "COPY events FROM '-' WITH (FORMAT CSV)",
         Some(b"3,third\n"),
     );
-    assert!(!rejected.status.success());
+    assert!(imported_csv.status.success(), "{imported_csv:?}");
+    let after = run(&dir, "SELECT count(*) FROM events", None);
+    assert_eq!(after.stdout, b"count\n3\n");
     std::fs::remove_dir_all(dir).unwrap();
 }
