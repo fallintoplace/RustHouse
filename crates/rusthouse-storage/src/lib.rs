@@ -35,6 +35,7 @@ pub mod distributed_repair_budget;
 mod nullable;
 pub mod distributed_lineage;
 mod nullable_arrays;
+pub mod distributed_retry;
 mod numeric;
 mod part_scan;
 mod part_verify;
