@@ -53,7 +53,10 @@ def verify_result(output, expected_labels):
         columns = row.decode("utf-8").split("\t")
         if len(columns) != 2:
             raise ValueError(f"unexpected join row: {row!r}")
-        identifier = int(columns[0])
+        identifier_text = columns[0]
+        identifier = int(identifier_text)
+        if identifier_text != str(identifier):
+            raise ValueError(f"noncanonical join key: {identifier_text!r}")
         if identifier in ids:
             raise ValueError(f"duplicate join key: {identifier}")
         if expected_labels.get(identifier) != columns[1]:
