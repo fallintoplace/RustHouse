@@ -184,6 +184,28 @@ fn read_projected_build_rows(
     Ok(rows)
 }
 
+/// JOIN COUNT keeps no projected payloads. Both build orientations
+/// still need equi-keys and whichever side supplies the IS NULL filter.
+fn count_build_columns(
+    keys: &[usize],
+    null_filter: Option<(usize, bool)>,
+    base: usize,
+    width: usize,
+) -> Vec<usize> {
+    let mut columns = keys.to_vec();
+    if let Some((column, _)) = null_filter {
+        if let Some(local) = column.checked_sub(base).filter(|&i| i < width) {
+            columns.push(local);
+        }
+    }
+    columns.sort_unstable();
+    columns.dedup();
+    if columns.is_empty() && width > 0 {
+        columns.push(0);
+    }
+    columns
+}
+
 /// Avoid allocating a heap Vec for the common unique JOIN build key.
 /// Promote to a Vec only when the build side contains duplicate keys.
 enum Bucket {
@@ -918,9 +940,12 @@ fn execute_streaming_inner_count<W: Write>(
     }
     let count = if right_count <= MAX_STREAM_BUILD_ROWS &&
         (right_count <= left_count || left_count > MAX_STREAM_BUILD_ROWS) {
-        let right_rows = read_rows(
-            right_path, right_names, right_count,
-            MAX_STREAM_BUILD_ROWS, MAX_STREAM_BUILD_BYTES
+        let keep = count_build_columns(
+            right_keys, null_filter, left_names.len(), right_names.len(),
+        );
+        let right_rows = read_projected_build_rows(
+            right_path, right_names, &keep, right_count,
+            MAX_STREAM_BUILD_ROWS, MAX_STREAM_BUILD_BYTES,
         )?;
         let mut hash = HashMap::<Vec<typed::Key>, Bucket>::with_capacity(right_rows.len());
         for (index, row) in right_rows.iter().enumerate() {
@@ -942,9 +967,12 @@ fn execute_streaming_inner_count<W: Write>(
             }, |_, _| Ok(())
         )?
     } else {
-        let left_rows = read_rows(
-            left_path, left_names, left_count,
-            MAX_STREAM_BUILD_ROWS, MAX_STREAM_BUILD_BYTES
+        let keep = count_build_columns(
+            left_keys, null_filter, 0, left_names.len(),
+        );
+        let left_rows = read_projected_build_rows(
+            left_path, left_names, &keep, left_count,
+            MAX_STREAM_BUILD_ROWS, MAX_STREAM_BUILD_BYTES,
         )?;
         let mut hash = HashMap::<Vec<typed::Key>, Bucket>::with_capacity(left_rows.len());
         for (index, row) in left_rows.iter().enumerate() {
@@ -1440,5 +1468,18 @@ mod inline_bucket_tests {
         bucket.push(13);
         assert_eq!(bucket.iter().copied().collect::<Vec<_>>(), vec![7, 11, 13]);
         assert_eq!(bucket.iter().take(1).copied().collect::<Vec<_>>(), vec![7]);
+    }
+}
+
+#[cfg(test)]
+mod projected_count_build_tests {
+    use super::*;
+
+    #[test]
+    fn keeps_keys_filters_and_cross_row_counter_only() {
+        assert_eq!(count_build_columns(&[2, 0, 2], Some((4, true)), 3, 5), vec![0, 1, 2]);
+        assert_eq!(count_build_columns(&[0], Some((7, false)), 3, 5), vec![0, 4]);
+        assert_eq!(count_build_columns(&[], None, 0, 4), vec![0]);
+        assert!(count_build_columns(&[], None, 0, 0).is_empty());
     }
 }
