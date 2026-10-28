@@ -132,6 +132,11 @@ pub enum Projection {
     ApproxDistinct {
         column: String,
     },
+    /// Bounded-memory histogram with a fixed number of numeric bins.
+    Histogram {
+        column: String,
+        bins: usize,
+    },
     GroupedCount {
         column: String,
     },
@@ -685,6 +690,24 @@ fn parse_select_tokens(tokens: Vec<Token>) -> Result<Select, ParseError> {
             return Err(ParseError("expected ')' after uniq(column)".into()));
         }
         Projection::ApproxDistinct { column }
+    } else if matches!(parser.tokens.get(parser.index), Some(Token::Word(name)) if name.eq_ignore_ascii_case("HISTOGRAM"))
+        && parser.tokens.get(parser.index + 1) == Some(&Token::LParen)
+    {
+        parser.keyword("HISTOGRAM");
+        parser.take(Token::LParen);
+        let bins = parser.number()?.parse::<usize>()
+            .map_err(|_| ParseError("histogram bins must be an integer".into()))?;
+        if !(1..=256).contains(&bins) {
+            return Err(ParseError("histogram requires between 1 and 256 bins".into()));
+        }
+        if !parser.take(Token::RParen) || !parser.take(Token::LParen) {
+            return Err(ParseError("histogram requires histogram(bins)(column)".into()));
+        }
+        let column = parser.word()?;
+        if !parser.take(Token::RParen) {
+            return Err(ParseError("expected ')' after histogram column".into()));
+        }
+        Projection::Histogram { column, bins }
     } else if matches!(parser.tokens.get(parser.index + 1), Some(Token::LParen))
         && !matches!(parser.tokens.get(parser.index), Some(Token::Word(word)) if scalar::is_function(word) || text_scalar::is_function(word))
     {
@@ -1018,6 +1041,7 @@ fn parse_select_tokens(tokens: Vec<Token>) -> Result<Select, ParseError> {
                 | Projection::CountColumn { .. }
                 | Projection::CountDistinct { .. }
                 | Projection::ApproxDistinct { .. }
+                | Projection::Histogram { .. }
                 | Projection::Aggregate { .. }
                 | Projection::GroupedCount { .. }
                 | Projection::GroupedDistinctCount { .. }
@@ -1550,6 +1574,7 @@ fn parse_select_tokens(tokens: Vec<Token>) -> Result<Select, ParseError> {
                 | Projection::CountColumn { .. }
                 | Projection::CountDistinct { .. }
                 | Projection::ApproxDistinct { .. }
+                | Projection::Histogram { .. }
                 | Projection::Aggregate { .. }
                 | Projection::MultipleAggregates(_)
                 | Projection::StringLength { .. }
