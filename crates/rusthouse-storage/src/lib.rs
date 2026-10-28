@@ -15,6 +15,7 @@ pub mod distributed_replica_order;
 mod enums;
 pub mod distributed_membership;
 mod file_sizes;
+pub mod distributed_copy_diff;
 mod fixed_strings;
 mod fixed_width;
 mod granules;
