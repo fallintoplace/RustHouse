@@ -39,6 +39,22 @@ when comparing results. Query execution benchmarks exclude SQL parsing
 and fixture generation; part scans include normal OS cache effects.
 These are not certified cross-engine benchmark results.
 
+## Real persisted-data scale workload
+
+Generate, COPY and query a physical dataset with strict COUNT and SUM references:
+
+```sh
+python3 -m bench workload physical-scan -- \
+  --binary target/release/rusthouse --rows 1000000 \
+  --runs 5 --warmups 2 --output bench/results/physical-scan.json
+```
+
+For one billion rows, explicitly set `--rows 1000000000` and provision sufficient
+local storage, ingest time and memory. The benchmark writes immutable parts,
+runs filtered numeric scans and verifies every result. Generated `numbers()`
+row counts do not qualify as physical scans. The default small run is a smoke
+check, not evidence of billion-row latency.
+
 ## Projection-aware ClickBench smoke checks
 
 Run the upstream ClickBench SQL against a local projected table. Pass an explicit

@@ -25,6 +25,7 @@ WORKLOADS = {
     "measurements": "bench/measurements/ingest.py",
     "ssb": "bench/ssb/run.py",
     "tpch": "bench/tpch/run.py",
+    "physical-scan": "bench/scale/physical_scan.py",
 }
 
 
