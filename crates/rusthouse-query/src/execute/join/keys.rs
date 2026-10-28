@@ -60,11 +60,20 @@ pub(super) fn row_key_into(
     indices: &[usize],
     result: &mut Vec<typed::Key>,
 ) -> bool {
-    result.clear();
     if indices.iter().any(|&index| !key_eligible(&row[index])) {
+        result.clear();
         return false;
     }
-    result.extend(indices.iter().map(|&index| join_key(&row[index])));
+    for (position, &index) in indices.iter().enumerate() {
+        match &row[index] {
+            typed::Cell::Text(bytes) => put_text_key(result, position, bytes),
+            typed::Cell::Uuid(text) => {
+                put_key(result, position, typed::Key::UuidBytes(typed::uuid_key(text)));
+            }
+            other => put_key(result, position, other.key()),
+        }
+    }
+    result.truncate(indices.len());
     true
 }
 
