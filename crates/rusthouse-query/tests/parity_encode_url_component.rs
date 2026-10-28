@@ -11,22 +11,10 @@ fn value(sql: &str) -> ConstantValue {
 #[test]
 fn clickhouse_compatibility_cases() {
     for (sql, expected) in [
-        (
-            "SELECT encodeURLComponent('hello world')",
-            ConstantValue::Text("hello%20world".into()),
-        ),
-        (
-            "SELECT encodeURLComponent('é')",
-            ConstantValue::Text("%C3%A9".into()),
-        ),
-        (
-            "SELECT encodeURLComponent('a/b?c=d')",
-            ConstantValue::Text("a%2Fb%3Fc%3Dd".into()),
-        ),
-        (
-            "SELECT encodeURLComponent(NULL)",
-            ConstantValue::Null,
-        ),
+        ("SELECT encodeURLComponent('hello world')", ConstantValue::Text("hello%20world".into())),
+        ("SELECT encodeURLComponent('é')", ConstantValue::Text("%C3%A9".into())),
+        ("SELECT encodeURLComponent('a/b?c=d')", ConstantValue::Text("a%2Fb%3Fc%3Dd".into())),
+        ("SELECT encodeURLComponent(NULL)", ConstantValue::Null),
     ] {
         assert_eq!(value(sql), expected, "{sql}");
     }
