@@ -87,6 +87,8 @@ pub(super) fn is_function(name: &str) -> bool {
             | "RPAD"
             | "LOWERUTF8"
             | "SPACE"
+            | "IPV4NUMTOSTRING"
+            | "INET_NTOA"
             | "IPV4STRINGTONUMORNULL"
             | "IPV4STRINGTONUMORDEFAULT"
             | "IPV4STRINGTONUM"
@@ -1962,6 +1964,19 @@ fn parse_at_depth(parser: &mut Parser, depth: usize) -> Result<ConstantValue, Pa
                     Ok(address) => ConstantValue::Integer(i64::from(u32::from(address))),
                     Err(_) => ConstantValue::Null,
                 },
+                None => ConstantValue::Null,
+            }
+        }
+        "IPV4NUMTOSTRING" | "INET_NTOA" => {
+            let input = integer_arg(parser, depth + 1)?;
+            require(parser, Token::RParen, "IPv4NumToString requires one argument")?;
+            match input {
+                Some(input) => {
+                    let number = u32::try_from(input).map_err(|_| {
+                        ParseError("IPv4NumToString input must fit UInt32".into())
+                    })?;
+                    ConstantValue::Text(std::net::Ipv4Addr::from(number).to_string())
+                }
                 None => ConstantValue::Null,
             }
         }
