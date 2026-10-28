@@ -431,7 +431,7 @@ fn parallel_integer_sum(
     let parts = rusthouse_storage::query_parts(source)?;
     let workers = std::thread::available_parallelism()
         .map_or(1, |parallelism| parallelism.get()).min(4);
-    if parts.len() < 32 || workers < 2 {
+    if workers < 2 || (parts.len() < 32 && parts.len() != 1) {
         return Ok(None);
     }
     let metadata = inspect_query_source(source)?;
@@ -469,6 +469,44 @@ fn parallel_integer_sum(
         parse_numeric(&selected.data_type, literal)
     })?;
     let no_filters = query.predicates.is_empty() && query.or_predicates.is_empty();
+    if parts.len() == 1 {
+        let single_part = &parts[0];
+        let reference = rusthouse_storage::NumericPartReader::open(single_part, &scan_columns)?;
+        let marks = reference.mark_count();
+        const MIN_PARALLEL_MARKS: usize = 64;
+        if marks < MIN_PARALLEL_MARKS { return Ok(None); }
+        let chunk = marks.div_ceil(workers);
+        let sum = std::thread::scope(|scope| -> Result<Option<Number>, ExecutionError> {
+            let handles = (0..marks).step_by(chunk).map(|begin| {
+                let end = (begin + chunk).min(marks);
+                let scan_columns = &scan_columns;
+                let comparisons = &comparisons;
+                scope.spawn(move || -> Result<Option<Number>, ExecutionError> {
+                    let mut reader = rusthouse_storage::NumericPartReader::open(single_part, scan_columns)?;
+                    reader.seek_to_mark(begin)?;
+                    let mut state = AggregateState::new(AggregateFunction::Sum);
+                    for _ in begin..end {
+                        if let Some(batch) = reader.next_batch()? {
+                            for row in 0..batch[0].len() {
+                                if no_filters || batch_matches(&batch, row, comparisons) {
+                                    state.update(number_at(&batch[0], row))?;
+                                }
+                            }
+                        }
+                    }
+                    Ok(state.value)
+                })
+            }).collect::<Vec<_>>();
+            let mut total = None;
+            for handle in handles {
+                let partial = handle.join()
+                    .map_err(|_| ExecutionError::Invalid("parallel SUM worker panicked".into()))??;
+                total = add_integer_partial(total, partial)?;
+            }
+            Ok(total)
+        })?;
+        return Ok(Some(sum));
+    }
     let chunk_size = parts.len().div_ceil(workers);
     let sum = std::thread::scope(|scope| -> Result<Option<Number>, ExecutionError> {
         let handles = parts.chunks(chunk_size).map(|chunk| {
