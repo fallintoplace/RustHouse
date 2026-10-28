@@ -172,13 +172,11 @@ pub(super) fn execute_count_column_part<W: Write>(
                 .ok_or_else(|| ExecutionError::Invalid("count overflow".into()))?;
             continue;
         }
-        for row in 0..batch[0].len() {
-            if batch_matches(&batch, row, &comparisons) {
-                count = count
-                    .checked_add(1)
-                    .ok_or_else(|| ExecutionError::Invalid("count overflow".into()))?;
-            }
-        }
+        // The batch counter evaluates simple typed comparisons directly
+        // without boxing each numeric value or rechecking the predicate tree.
+        count = count
+            .checked_add(count_batch_matches(&batch, &comparisons) as u64)
+            .ok_or_else(|| ExecutionError::Invalid("count overflow".into()))?;
     }
     if query.offset.unwrap_or(0) == 0 {
         writeln!(output, "{count}")?;
