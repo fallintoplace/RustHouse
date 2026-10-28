@@ -828,6 +828,7 @@ pub(super) fn execute_typed<W: Write>(
     let is_grouped = matches!(query.projection, Projection::GroupedCount { .. });
     let mut count = 0u64;
     let mut distinct = HashSet::<Vec<Key>>::new();
+    let mut distinct_probe = Vec::<Key>::new();
     // COUNT(DISTINCT column) has one key; avoid a Vec allocation per row.
     let mut count_distinct_keys = HashSet::<Key>::new();
     // Borrow decoded strings on duplicate probes. Own only new distinct values.
@@ -1000,19 +1001,26 @@ pub(super) fn execute_typed<W: Write>(
                 }
                 continue;
             }
+            if query.distinct {
+                // Probe with just the hash key. Duplicate rows should never
+                // materialize a second set of projected String/UUID cells.
+                distinct_probe.clear();
+                for &idx in &projection_indices {
+                    distinct_probe.push(cell(&batch[idx], index).key());
+                }
+                if distinct.contains(distinct_probe.as_slice()) {
+                    continue;
+                }
+                if distinct.len() >= MAX_BUFFERED_ROWS {
+                    return Err(ExecutionError::Invalid("too many distinct rows".into()));
+                }
+                distinct.insert(std::mem::take(&mut distinct_probe));
+                distinct_probe = Vec::with_capacity(projection_indices.len());
+            }
             let cells = projection_indices
                 .iter()
                 .map(|&idx| cell(&batch[idx], index))
                 .collect::<Vec<_>>();
-            if query.distinct {
-                let key = cells.iter().map(Cell::key).collect::<Vec<_>>();
-                if distinct.len() >= MAX_BUFFERED_ROWS && !distinct.contains(&key) {
-                    return Err(ExecutionError::Invalid("too many distinct rows".into()));
-                }
-                if !distinct.insert(key) {
-                    continue;
-                }
-            }
             if !sort_indices.is_empty() {
                 let row = Row {
                     values: cells,
