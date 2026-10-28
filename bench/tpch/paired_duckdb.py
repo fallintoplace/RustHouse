@@ -65,12 +65,17 @@ def benchmark_pair(sql, reference, execute, runs=5, warmups=2, comparison="exact
             samples[engine].append(checked(engine))
 
     medians = {name: statistics.median(times) for name, times in samples.items()}
+    # Nearest-rank p90 exposes tail regressions hidden by median alone.
+    p90 = {name: sorted(times)[math.ceil(len(times) * 0.9) - 1]
+           for name, times in samples.items()}
     ratio = medians["duckdb"] / medians["rusthouse"]
     if not math.isfinite(ratio) or ratio <= 0:
         raise ValueError("paired speed ratio is not finite and positive")
     return {
         "rusthouse_median_seconds": medians["rusthouse"],
         "duckdb_median_seconds": medians["duckdb"],
+        "rusthouse_p90_seconds": p90["rusthouse"],
+        "duckdb_p90_seconds": p90["duckdb"],
         "duckdb_over_rusthouse": ratio,
         "rusthouse_samples_seconds": samples["rusthouse"],
         "duckdb_samples_seconds": samples["duckdb"],
