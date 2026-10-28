@@ -3,22 +3,23 @@ use rusthouse_query::{ConstantValue, Projection, execute, parse_select};
 #[test]
 fn length_counts_literal_bytes_and_propagates_null() {
     for (sql, expected) in [
-        ("SELECT LENGTH('abc')", Projection::Literal(3)),
-        ("SELECT char_length('')", Projection::Literal(0)),
-        ("SELECT LENGTH('a''b')", Projection::Literal(3)),
-        ("SELECT LENGTH('é')", Projection::Literal(2)),
-        ("SELECT CHAR_LENGTH('é')", Projection::Literal(1)),
-        ("SELECT LENGTH('😀')", Projection::Literal(4)),
-        ("SELECT CHAR_LENGTH('😀')", Projection::Literal(1)),
-        (
-            "SELECT LENGTH(NULL)",
+        ("SELECT LENGTH('abc')", ConstantValue::Integer(3)),
+        ("SELECT char_length('')", ConstantValue::Integer(0)),
+        ("SELECT LENGTH('a''b')", ConstantValue::Integer(3)),
+        ("SELECT LENGTH('é')", ConstantValue::Integer(2)),
+        ("SELECT CHAR_LENGTH('é')", ConstantValue::Integer(1)),
+        ("SELECT LENGTH('😀')", ConstantValue::Integer(4)),
+        ("SELECT CHAR_LENGTH('😀')", ConstantValue::Integer(1)),
+        ("SELECT LENGTH(NULL)", ConstantValue::Null),
+    ] {
+        assert_eq!(
+            parse_select(sql).unwrap().projection,
             Projection::Constants(vec![rusthouse_query::Constant {
-                value: ConstantValue::Null,
+                value: expected,
                 alias: None,
             }]),
-        ),
-    ] {
-        assert_eq!(parse_select(sql).unwrap().projection, expected, "{sql}");
+            "{sql}"
+        );
     }
 }
 
