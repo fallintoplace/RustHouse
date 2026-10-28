@@ -44,7 +44,11 @@ fn append_quoted_text(output: &mut Vec<u8>, value: &str) {
 }
 
 fn encode_values_row(line: &[u8], columns: usize) -> io::Result<Vec<u8>> {
-    let mut values = Vec::new();
+    let mut values = Vec::with_capacity(
+        line.len()
+            .saturating_add(columns.saturating_mul(3))
+            .saturating_add(2),
+    );
     let mut count = 0;
     values.push(b'(');
     for field in line.split(|&byte| byte == b'\t') {
@@ -224,6 +228,15 @@ mod tests {
             render(b"one\ttwo\n\\N\t\\N\n").unwrap(),
             "VALUES (NULL, NULL);\n"
         );
+    }
+
+    #[test]
+    fn row_capacity_covers_plain_large_values() {
+        let row = vec![b'a'; 16 * 1024];
+        let encoded = encode_values_row(&row, 1).unwrap();
+        assert_eq!(encoded.len(), row.len() + 4);
+        assert_eq!(encoded[0], b'(');
+        assert_eq!(*encoded.last().unwrap(), b')');
     }
 
     #[test]
