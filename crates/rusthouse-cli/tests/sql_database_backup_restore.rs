@@ -68,6 +68,13 @@ fn populate(database: &Path) {
     must_succeed(sql(database, "OPTIMIZE TABLE events"));
 }
 
+fn active_generation(database: &Path) -> PathBuf {
+    let parts = database.join("events.parts");
+    let label = fs::read_to_string(parts.join(".rusthouse-active")).unwrap();
+    let label = label.strip_suffix('\n').expect("snapshot pointer ends with a newline");
+    parts.join(".rusthouse-versions").join(label)
+}
+
 #[test]
 fn complete_offline_copy_restores_active_rows_and_accepts_new_writes() {
     let base = root();
@@ -89,9 +96,8 @@ fn complete_offline_copy_restores_active_rows_and_accepts_new_writes() {
     copy_directory(&source, &backup);
     assert!(backup.join("events.schema").is_file());
     assert!(backup.join("events.parts/.rusthouse-active").is_file());
-    assert!(backup.join("events.parts/.rusthouse-versions/g1").is_dir());
-    assert!(backup.join("events.parts/.rusthouse-versions/g2").is_dir());
-    assert!(backup.join("events.parts/.rusthouse-versions/g3").is_dir());
+    assert!(active_generation(&source).is_dir());
+    assert!(active_generation(&backup).is_dir());
     assert_eq!(
         fs::read(backup.join("events.parts/.rusthouse-active")).unwrap(),
         fs::read(source.join("events.parts/.rusthouse-active")).unwrap()
@@ -124,7 +130,11 @@ fn corrupted_restored_copy_is_rejected_without_damaging_source() {
     populate(&source);
     copy_directory(&source, &backup);
 
-    let stream = backup.join("events.parts/.rusthouse-versions/g3/all_1_1_0/id.bin");
+    let stream = fs::read_dir(active_generation(&backup))
+        .unwrap()
+        .map(|entry| entry.unwrap().path().join("id.bin"))
+        .find(|path| path.is_file())
+        .expect("active snapshot should contain a readable id stream");
     let mut data = fs::read(&stream).unwrap();
     assert!(!data.is_empty());
     let last = data.len() - 1;
