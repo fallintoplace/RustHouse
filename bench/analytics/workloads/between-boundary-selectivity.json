@@ -1,0 +1,18 @@
+{
+  "name": "between-boundary-selectivity",
+  "description": "inclusive and exclusive numeric boundary predicates",
+  "queries": [
+    {
+      "name": "first-100",
+      "sql": "SELECT COUNT(*) FROM events WHERE event_id BETWEEN 1 AND 100"
+    },
+    {
+      "name": "midrange-volume",
+      "sql": "SELECT SUM(quantity) FROM events WHERE amount BETWEEN 1000 AND 9000"
+    },
+    {
+      "name": "outside-midrange",
+      "sql": "SELECT COUNT(*) FROM events WHERE amount NOT BETWEEN 2000 AND 8000"
+    }
+  ]
+}

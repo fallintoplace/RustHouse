@@ -17,14 +17,18 @@ impl<W: Write> WithoutHeader<W> {
 
 impl<W: Write> Write for WithoutHeader<W> {
     fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
-        if self.skipping_header {
-            if let Some(index) = buf.iter().position(|byte| *byte == b'\n') {
-                self.skipping_header = false;
-                self.output.write_all(&buf[index + 1..])?;
+        let payload = if self.skipping_header {
+            match buf.iter().position(|byte| *byte == b'\n') {
+                Some(index) => {
+                    self.skipping_header = false;
+                    &buf[index + 1..]
+                }
+                None => return Ok(buf.len()),
             }
         } else {
-            self.output.write_all(buf)?;
-        }
+            buf
+        };
+        self.output.write_all(payload)?;
         Ok(buf.len())
     }
 

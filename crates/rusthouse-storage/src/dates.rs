@@ -93,19 +93,23 @@ pub fn parse_datetime(text: &str) -> Option<u32> {
     u32::try_from(seconds).ok()
 }
 
-pub fn format_date(days: u16) -> String {
-    let (year, month, day) = from_days(i64::from(days));
+fn format_calendar_day(days: i64) -> String {
+    let (year, month, day) = from_days(days);
     format!("{year:04}-{month:02}-{day:02}")
+}
+
+pub fn format_date(days: u16) -> String {
+    format_calendar_day(i64::from(days))
 }
 
 pub fn format_datetime(seconds: u32) -> String {
     let days = seconds / 86_400;
     let remainder = seconds % 86_400;
-    let (year, month, day) = from_days(i64::from(days));
+    let date = format_calendar_day(i64::from(days));
     let hour = remainder / 3_600;
     let minute = remainder / 60 % 60;
     let second = remainder % 60;
-    format!("{year:04}-{month:02}-{day:02} {hour:02}:{minute:02}:{second:02}")
+    format!("{date} {hour:02}:{minute:02}:{second:02}")
 }
 
 #[cfg(test)]

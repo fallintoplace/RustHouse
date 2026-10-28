@@ -1,6 +1,7 @@
 //! Shared local database lock protocol for CLI and HTTP reads.
 //! Keep the lock inode in place: unlinking it could admit a second writer.
 use std::fs::{self, OpenOptions};
+use std::io;
 use std::path::Path;
 #[cfg(not(unix))]
 use std::path::PathBuf;
@@ -66,6 +67,10 @@ fn validate_lock_identity(path: &Path, file: &fs::File) -> Result<(), String> {
     Ok(())
 }
 
+fn lock_error(action: &str, kind: &str, path: &Path, error: io::Error) -> String {
+    format!("cannot {action} database {kind} lock {}: {error}", path.display())
+}
+
 /// Exclusive for writes, shared for reads. Unix locks are released after crashes.
 /// A read never creates the database directory; both modes use the same inode.
 pub fn acquire_database_lock(database: &Path, exclusive: bool) -> Result<DatabaseLock, String> {
@@ -83,22 +88,13 @@ pub fn acquire_database_lock(database: &Path, exclusive: bool) -> Result<Databas
         .create(true)
         .truncate(false)
         .open(&path)
-        .map_err(|error| {
-            format!(
-                "cannot open database {kind} lock {}: {error}",
-                path.display()
-            )
-        })?;
+        .map_err(|error| lock_error("open", kind, &path, error))?;
 
     #[cfg(unix)]
     {
         validate_lock_identity(&path, &file)?;
-        advisory::try_lock(&file, exclusive).map_err(|error| {
-            format!(
-                "cannot acquire database {kind} lock {}: {error}",
-                path.display()
-            )
-        })?;
+        advisory::try_lock(&file, exclusive)
+            .map_err(|error| lock_error("acquire", kind, &path, error))?;
     }
 
     #[cfg(not(unix))]
@@ -106,12 +102,7 @@ pub fn acquire_database_lock(database: &Path, exclusive: bool) -> Result<Databas
         .write(true)
         .create_new(true)
         .open(&path)
-        .map_err(|error| {
-            format!(
-                "cannot acquire database {kind} lock {}: {error}",
-                path.display()
-            )
-        })?;
+        .map_err(|error| lock_error("acquire", kind, &path, error))?;
 
     Ok(DatabaseLock {
         _file: file,
