@@ -8,6 +8,7 @@ pub(super) fn is_function(name: &str) -> bool {
         name.to_ascii_uppercase().as_str(),
         "LENGTH"
             | "CHAR_LENGTH"
+            | "LENGTHUTF8"
             | "OCTET_LENGTH"
             | "ASCII"
             | "UTF16_LENGTH"
@@ -114,12 +115,12 @@ fn parse_at_depth(parser: &mut Parser, depth: usize) -> Result<ConstantValue, Pa
                 None => ConstantValue::Null,
             }
         }
-        "LENGTH" | "CHAR_LENGTH" | "OCTET_LENGTH" => {
+        "LENGTH" | "CHAR_LENGTH" | "OCTET_LENGTH" | "LENGTHUTF8" => {
             let input = text_arg(parser, depth + 1)?;
             require(parser, Token::RParen, "LENGTH requires one argument")?;
             match input {
                 Some(value) => {
-                    let length = if name == "CHAR_LENGTH" {
+                    let length = if name == "CHAR_LENGTH" || name == "LENGTHUTF8" {
                         value.chars().count()
                     } else {
                         value.len()
