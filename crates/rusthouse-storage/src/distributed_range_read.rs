@@ -5,6 +5,19 @@ use std::path::Path;
 
 const ABSOLUTE_MAX_RANGE: usize = 8 * 1024 * 1024;
 
+fn open_verified_object(path: &Path) -> io::Result<(File, u64)> {
+    let meta = fs::symlink_metadata(path)?;
+    if !meta.file_type().is_file() {
+        return Err(io::Error::other("object is not a regular file"));
+    }
+    let file = File::open(path)?;
+    let opened = file.metadata()?;
+    if !opened.file_type().is_file() || opened.len() != meta.len() {
+        return Err(io::Error::other("object changed before range read"));
+    }
+    Ok((file, opened.len()))
+}
+
 /// Read an exact byte range from a frozen regular file, rejecting short reads.
 pub fn read_object_range(
     path: &Path,
@@ -15,19 +28,11 @@ pub fn read_object_range(
     if length > max_length || length > ABSOLUTE_MAX_RANGE {
         return Err(io::Error::other("object byte range exceeds limit"));
     }
-    let meta = fs::symlink_metadata(path)?;
-    if !meta.file_type().is_file() {
-        return Err(io::Error::other("object is not a regular file"));
-    }
-    let mut file = File::open(path)?;
-    let opened = file.metadata()?;
-    if !opened.file_type().is_file() || opened.len() != meta.len() {
-        return Err(io::Error::other("object changed before range read"));
-    }
+    let (mut file, file_length) = open_verified_object(path)?;
     let end = offset
         .checked_add(length as u64)
         .ok_or_else(|| io::Error::other("object range overflow"))?;
-    if end > opened.len() {
+    if end > file_length {
         return Err(io::Error::other("object range exceeds file length"));
     }
     file.seek(SeekFrom::Start(offset))?;
