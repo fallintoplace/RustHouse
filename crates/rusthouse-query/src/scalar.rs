@@ -33,6 +33,7 @@ pub(super) fn is_function(name: &str) -> bool {
         return true;
     }
     is_saturating(name)
+        || name.eq_ignore_ascii_case("BITHAMMINGDISTANCE")
         || name.eq_ignore_ascii_case("ABS")
         || name.eq_ignore_ascii_case("NEGATE")
         || name.eq_ignore_ascii_case("BIT_PARITY")
@@ -41,10 +42,14 @@ pub(super) fn is_function(name: &str) -> bool {
         || name.eq_ignore_ascii_case("DIV")
         || name.eq_ignore_ascii_case("INTDIV")
         || name.eq_ignore_ascii_case("MOD")
+        || name.eq_ignore_ascii_case("MODULO")
         || name.eq_ignore_ascii_case("ABS_DIFF")
+        || name.eq_ignore_ascii_case("MULTIPLY")
         || name.eq_ignore_ascii_case("SIGN")
+        || name.eq_ignore_ascii_case("TOBOOL")
         || name.eq_ignore_ascii_case("DIGIT_COUNT")
         || name.eq_ignore_ascii_case("HAMMING_DISTANCE")
+        || name.eq_ignore_ascii_case("BITHAMMINGDISTANCE")
         || is_extrema(name)
         || name.eq_ignore_ascii_case("IS_POWER_OF_TWO")
         || name.eq_ignore_ascii_case("BIT_REVERSE")
@@ -90,6 +95,7 @@ pub(super) fn is_function(name: &str) -> bool {
         || name.eq_ignore_ascii_case("ROUND_TO_MULTIPLE")
         || name.eq_ignore_ascii_case("PMOD")
         || name.eq_ignore_ascii_case("TRAILING_ONES")
+        || name.eq_ignore_ascii_case("TOINT8")
 }
 
 pub(super) fn parse(parser: &mut Parser) -> Result<i64, ParseError> {
@@ -217,6 +223,15 @@ fn parse_pmod(parser: &mut Parser, depth: usize) -> Result<i64, ParseError> {
         return Err(ParseError("PMOD divisor must be positive".into()));
     }
     Ok(value.rem_euclid(divisor))
+}
+
+fn parse_multiply_function(parser: &mut Parser, depth: usize) -> Result<i64, ParseError> {
+    require_token(parser, Token::LParen, "multiply requires '('")?;
+    let left = expression(parser, depth + 1)?;
+    require_token(parser, Token::Comma, "multiply requires two arguments")?;
+    let right = expression(parser, depth + 1)?;
+    require_token(parser, Token::RParen, "expected ')' after multiply arguments")?;
+    left.checked_mul(right).ok_or_else(overflow)
 }
 
 fn parse_abs_diff(parser: &mut Parser, depth: usize) -> Result<i64, ParseError> {
@@ -949,10 +964,16 @@ fn factor(parser: &mut Parser, depth: usize) -> Result<i64, ParseError> {
             .checked_neg()
             .ok_or_else(overflow);
     }
+    if parser.keyword("TOBOOL") {
+        require_token(parser, Token::LParen, "toBool requires '('")?;
+        let value = expression(parser, depth + 1)?;
+        require_token(parser, Token::RParen, "toBool requires ')'")?;
+        return Ok(i64::from(value != 0));
+    }
     if parser.keyword("DIV") || parser.keyword("INTDIV") {
         return parse_div_mod(parser, depth, true);
     }
-    if parser.keyword("MOD") {
+    if parser.keyword("MOD") || parser.keyword("MODULO") {
         return parse_div_mod(parser, depth, false);
     }
     if parser.keyword("ABS_DIFF") {
@@ -961,10 +982,13 @@ fn factor(parser: &mut Parser, depth: usize) -> Result<i64, ParseError> {
     if parser.take(Token::Plus) {
         return factor(parser, depth + 1);
     }
+    if parser.keyword("MULTIPLY") {
+        return parse_multiply_function(parser, depth);
+    }
     if parser.keyword("NEXT_POWER_OF_TWO") {
         return parse_next_power_of_two(parser, depth);
     }
-    if parser.keyword("HAMMING_DISTANCE") {
+    if parser.keyword("HAMMING_DISTANCE") || parser.keyword("BITHAMMINGDISTANCE") {
         return parse_hamming_distance(parser, depth);
     }
     if parser.keyword("POWER") || parser.keyword("POW") {
@@ -1154,6 +1178,7 @@ fn factor(parser: &mut Parser, depth: usize) -> Result<i64, ParseError> {
         } else {
             match name.to_ascii_uppercase().as_str() {
                 "TRAILING_ONES" => i64::from(first.trailing_ones()),
+                "TOINT8" => first as i8 as i64,
                 _ => first.signum(),
             }
         };
@@ -1195,4 +1220,24 @@ fn parse_next_power_of_two(parser: &mut Parser, depth: usize) -> Result<i64, Par
 
 fn overflow() -> ParseError {
     ParseError("signed 64-bit scalar expression overflow".into())
+}
+
+#[cfg(test)]
+mod clickhouse_tobool_int64_tests {
+    use crate::{parse_select, Projection};
+    #[test]
+    fn boolean_cast_is_zero_or_one_for_int64() {
+        for (sql, expected) in [
+            ("SELECT toBool(0)", 0),
+            ("SELECT toBool(1)", 1),
+            ("SELECT toBool(-1)", 1),
+            ("SELECT toBool(400)", 1),
+            ("SELECT toBool(1 - 1)", 0),
+        ] {
+            assert_eq!(parse_select(sql).unwrap().projection, Projection::Literal(expected), "{sql}");
+        }
+        for sql in ["SELECT toBool()", "SELECT toBool(1, 2)"] {
+            assert!(parse_select(sql).is_err(), "{sql}");
+        }
+    }
 }
