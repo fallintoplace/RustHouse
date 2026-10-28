@@ -7,6 +7,7 @@ pub(super) fn is_function(name: &str) -> bool {
     matches!(
         name.to_ascii_uppercase().as_str(),
         "LENGTH"
+            | "EDITDISTANCE"
             | "CHAR_LENGTH"
             | "OCTET_LENGTH"
             | "ASCII"
@@ -100,6 +101,36 @@ fn parse_at_depth(parser: &mut Parser, depth: usize) -> Result<ConstantValue, Pa
     let name = parser.word()?.to_ascii_uppercase();
     require(parser, Token::LParen, "string function requires '('")?;
     let value = match name.as_str() {
+
+        "EDITDISTANCE" => {
+            let left = text_arg(parser, depth + 1)?;
+            require(parser, Token::Comma, "EDITDISTANCE requires two arguments")?;
+            let right = text_arg(parser, depth + 1)?;
+            require(parser, Token::RParen, "EDITDISTANCE requires two arguments")?;
+            match (left, right) {
+                (Some(left), Some(right)) => {
+                    let left: Vec<_> = left.as_bytes().iter().copied().collect();
+                    let right: Vec<_> = right.as_bytes().iter().copied().collect();
+                    if left.len() > 4096 || right.len() > 4096 {
+                        return Err(ParseError("editDistance arguments exceed 4096 symbols".into()));
+                    }
+                    let mut distances: Vec<usize> = (0..=right.len()).collect();
+                    for (i, a) in left.iter().enumerate() {
+                        let mut diagonal = distances[0];
+                        distances[0] = i + 1;
+                        for (j, b) in right.iter().enumerate() {
+                            let previous = distances[j + 1];
+                            distances[j + 1] = (distances[j + 1] + 1)
+                                .min(distances[j] + 1)
+                                .min(diagonal + usize::from(a != b));
+                            diagonal = previous;
+                        }
+                    }
+                    ConstantValue::Integer(distances[right.len()] as i64)
+                }
+                _ => ConstantValue::Null,
+            }
+        }
         "ASCII" => {
             let input = text_arg(parser, depth + 1)?;
             require(parser, Token::RParen, "ASCII requires one argument")?;
