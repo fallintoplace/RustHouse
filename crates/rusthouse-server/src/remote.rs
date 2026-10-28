@@ -85,6 +85,13 @@ fn read_with_deadline(stream: &mut TcpStream, timeout: Duration) -> Result<Vec<u
             break;
         }
         raw.extend_from_slice(&buffer[..size]);
+        if let Some(expected) = expected_wire_length(&raw)? {
+            // Content-Length is authoritative for this restricted peer protocol.
+            // Never block waiting for EOF on a valid, complete response.
+            if raw.len() >= expected {
+                break;
+            }
+        }
     }
     Ok(raw)
 }
@@ -149,6 +156,36 @@ mod tests {
         assert_eq!(result.status, 200);
         assert_eq!(result.body, b"1\n1\n");
         server.join().unwrap();
+    }
+
+    #[test]
+    fn complete_content_length_does_not_wait_for_peer_disconnect() {
+        use std::sync::mpsc;
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let address = listener.local_addr().unwrap();
+        let (release, keep_open) = mpsc::channel::<()>();
+        let server = std::thread::spawn(move || {
+            let (mut stream, _) = listener.accept().unwrap();
+            stream.write_all(
+                b"HTTP/1.1 200 OK\r\nContent-Length: 2\r\nContent-Type: text/plain\r\n\r\nOK"
+            ).unwrap();
+            // The client must finish before the server closes the connection.
+            keep_open.recv_timeout(Duration::from_secs(3)).unwrap();
+        });
+        let mut stream = TcpStream::connect(address).unwrap();
+        let bytes = read_with_deadline(&mut stream, Duration::from_secs(2)).unwrap();
+        assert_eq!(parse_response(&bytes).unwrap().body, b"OK");
+        release.send(()).unwrap();
+        server.join().unwrap();
+    }
+
+    #[test]
+    fn completed_response_still_rejects_invalid_size_and_duplicate_headers() {
+        let missing = b"HTTP/1.1 200 OK\r\nContent-Length: 3\r\nContent-Type: text/plain\r\n\r\nOK";
+        assert_eq!(expected_wire_length(missing).unwrap(), Some(missing.len() + 1));
+        assert!(parse_response(missing).is_err());
+        let duplicate = b"HTTP/1.1 200 OK\r\nContent-Length: 2\r\nContent-Length: 2\r\nContent-Type: text/plain\r\n\r\nOK";
+        assert!(expected_wire_length(duplicate).is_err());
     }
 
     #[test]
