@@ -145,6 +145,16 @@ pub(super) fn run_sql_args(mut args: impl Iterator<Item = OsString>) -> Result<(
             database = Some(PathBuf::from(
                 args.next().ok_or("missing --database directory")?,
             ));
+        } else if arg.to_str() == Some("--query") || arg.to_str() == Some("-q") {
+            if query.is_some() || file.is_some() || script.is_some() {
+                return Err("provide SQL text or --query, not both".into());
+            }
+            query = Some(
+                args.next()
+                    .ok_or("missing --query SQL text")?
+                    .into_string()
+                    .map_err(|_| "--query must be valid UTF-8")?,
+            );
         } else if arg.to_str() == Some("--file") {
             if file.is_some() || query.is_some() || script.is_some() {
                 return Err("provide SQL text or --file, not both".into());
@@ -646,5 +656,22 @@ mod utf8_bom_regressions {
             split_sql_script("SELECT '\u{feff}value';").unwrap(),
             vec!["SELECT '\u{feff}value'"]
         );
+    }
+}
+
+#[cfg(test)]
+mod clickhouse_query_flag_parity_tests {
+    use super::*;
+    #[test]
+    fn supports_clickhouse_query_flag_and_short_alias() {
+        assert!(run_sql_args(["--query", "SELECT 42"].into_iter().map(OsString::from)).is_ok());
+        assert!(run_sql_args(["-q", "SELECT 42"].into_iter().map(OsString::from)).is_ok());
+    }
+    #[test]
+    fn rejects_conflicting_and_missing_query_values() {
+        assert_eq!(run_sql_args(["--query"].into_iter().map(OsString::from)).unwrap_err(), "missing --query SQL text");
+        assert!(run_sql_args(["--query", "SELECT 1", "-q", "SELECT 2"].into_iter().map(OsString::from)).is_err());
+        assert!(run_sql_args(["SELECT 1", "--query", "SELECT 2"].into_iter().map(OsString::from)).is_err());
+        assert!(run_sql_args(["--query", "SELECT 1", "--file", "query.sql"].into_iter().map(OsString::from)).is_err());
     }
 }
