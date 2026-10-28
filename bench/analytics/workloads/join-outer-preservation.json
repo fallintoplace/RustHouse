@@ -1,0 +1,19 @@
+{
+  "name": "join-outer-preservation",
+  "description": "Measure LEFT, RIGHT and FULL join preservation with nonnull projections",
+  "queries": [
+    {
+      "name": "left-outer",
+      "sql": "SELECT e.event_id, a.country FROM events e LEFT JOIN accounts a ON e.user_id = a.user_id ORDER BY e.event_id LIMIT 20"
+    },
+    {
+      "name": "right-outer",
+      "sql": "SELECT a.user_id, a.tier FROM events e RIGHT JOIN accounts a ON e.user_id = a.user_id ORDER BY a.user_id LIMIT 20"
+    },
+    {
+      "name": "full-outer",
+      "sql": "SELECT a.user_id, a.country FROM events e FULL JOIN accounts a ON e.user_id = a.user_id ORDER BY a.user_id LIMIT 20"
+    }
+  ],
+  "max_rows": 16000
+}

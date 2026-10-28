@@ -31,9 +31,9 @@ use std::fs;
 use std::io::{self, Read, Write};
 use std::path::{Path, PathBuf};
 
-pub const MAX_QUERY_BYTES: usize = 4096;
+pub const MAX_QUERY_BYTES: usize = 64 * 1024;
 pub const MAX_HEADER_BYTES: usize = 8192;
-pub const MAX_RESPONSE_BYTES: usize = 8 * 1024 * 1024;
+pub const MAX_RESPONSE_BYTES: usize = 16 * 1024 * 1024;
 pub const MAX_CONNECTIONS: usize = 16;
 
 #[derive(Clone, Debug, Default)]
@@ -83,7 +83,7 @@ impl Write for LimitedWriter {
             self.exceeded = true;
             return Err(io::Error::new(
                 io::ErrorKind::InvalidData,
-                "SQL response exceeds 8 MiB",
+                "SQL response exceeds 16 MiB",
             ));
         }
         self.data.extend_from_slice(bytes);
@@ -216,7 +216,7 @@ fn schema_response(config: &Config, table: Option<&str>) -> Response {
             content_type: "application/json; charset=utf-8",
             body: output.data,
         },
-        Err(_) => Response::text("413 Payload Too Large", "schema response exceeds 8 MiB\n"),
+        Err(_) => Response::text("413 Payload Too Large", "schema response exceeds 16 MiB\n"),
     }
 }
 
@@ -300,7 +300,7 @@ fn capabilities_response(config: &Config) -> Response {
     let body = format!(
         "{{\"name\":\"RustHouse\",\"version\":\"{}\",\"source\":\"{source}\",\"read_only\":true,\"max_query_bytes\":{MAX_QUERY_BYTES},\"max_response_bytes\":{MAX_RESPONSE_BYTES},\"max_rows\":{}}}\n",
         env!("CARGO_PKG_VERSION"),
-        config.max_rows.min(100_000),
+        config.max_rows.min(250_000),
     );
     Response {
         status: "200 OK",
@@ -399,7 +399,7 @@ pub fn handle_request(method: &str, target: &str, body: &[u8], config: &Config) 
         Ok(query) => query,
         Err(error) => return Response::text("400 Bad Request", &format!("{error}\n")),
     };
-    let cap = config.max_rows.min(100_000);
+    let cap = config.max_rows.min(250_000);
     select.limit = Some(select.limit.map_or(cap, |limit| limit.min(cap)));
     if path == "/explain" {
         return Response::text(
@@ -512,7 +512,7 @@ pub fn handle_request(method: &str, target: &str, body: &[u8], config: &Config) 
             body: writer.data,
         },
         Err(_) if writer.exceeded => {
-            Response::text("413 Payload Too Large", "SQL response exceeds 8 MiB\n")
+            Response::text("413 Payload Too Large", "SQL response exceeds 16 MiB\n")
         }
         Err(error) => Response::text("400 Bad Request", &format!("{error}\n")),
     }
@@ -711,6 +711,19 @@ mod tests {
     }
 
     #[test]
+    fn accepts_post_sql_above_four_kib_but_rejects_oversized_bodies() {
+        let statement = format!("SELECT number FROM numbers(1){}", " ".repeat(5000));
+        let response = handle_request("POST", "/", statement.as_bytes(), &config());
+        assert_eq!(response.status, "200 OK");
+        assert_eq!(response.body, b"number\n0\n");
+        let too_large = format!("SELECT 1{}", " ".repeat(MAX_QUERY_BYTES));
+        assert_eq!(
+            handle_request("POST", "/", too_large.as_bytes(), &config()).status,
+            "413 Payload Too Large"
+        );
+    }
+
+    #[test]
     fn serves_health_and_bounded_select() {
         assert_eq!(
             handle_request("GET", "/ping", b"", &config()).body,
@@ -727,6 +740,16 @@ mod tests {
     }
 
     #[test]
+    fn can_return_more_than_one_hundred_thousand_rows() {
+        let config = Config { max_rows: 100_001, ..config() };
+        let response = handle_request(
+            "POST", "/", b"SELECT number FROM numbers(100001)", &config
+        );
+        assert_eq!(response.status, "200 OK");
+        assert_eq!(response.body.iter().filter(|&&byte| byte == b'\n').count(), 100_002);
+    }
+
+    #[test]
     fn advertises_capabilities_without_opening_source_files() {
         let default = handle_request("GET", "/capabilities", b"", &config());
         assert_eq!(default.status, "200 OK");
@@ -734,19 +757,19 @@ mod tests {
         let body = String::from_utf8(default.body).unwrap();
         assert!(body.contains("\"source\":\"generated\""));
         assert!(body.contains("\"read_only\":true"));
-        assert!(body.contains("\"max_query_bytes\":4096"));
+        assert!(body.contains("\"max_query_bytes\":65536"));
         assert!(body.contains("\"max_rows\":3"));
         assert!(!body.contains("/tmp/"));
 
         let part = Config {
             part: Some(PathBuf::from("/does/not/exist")),
             database: None,
-            max_rows: 200_000,
+            max_rows: 300_000,
         };
         let body = handle_request("GET", "/capabilities", b"", &part).body;
         let body = String::from_utf8(body).unwrap();
         assert!(body.contains("\"source\":\"part\""));
-        assert!(body.contains("\"max_rows\":100000"));
+        assert!(body.contains("\"max_rows\":250000"));
 
         for (method, target, body, expected) in [
             (
@@ -784,6 +807,14 @@ mod tests {
                 "400 Bad Request"
             );
         }
+    }
+
+    #[test]
+    fn response_writer_accepts_above_eight_mib() {
+        let mut writer = LimitedWriter::new();
+        writer.write_all(&vec![b'x'; 8 * 1024 * 1024 + 1]).unwrap();
+        assert_eq!(writer.data.len(), 8 * 1024 * 1024 + 1);
+        assert!(!writer.exceeded);
     }
 
     #[test]

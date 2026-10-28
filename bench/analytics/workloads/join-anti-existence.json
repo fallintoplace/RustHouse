@@ -1,0 +1,19 @@
+{
+  "name": "join-anti-existence",
+  "description": "Measure anti-existence and post-join null filtering",
+  "queries": [
+    {
+      "name": "anti-sparse",
+      "sql": "SELECT a.user_id, a.tier FROM accounts a LEFT JOIN events e ON a.user_id = e.event_id WHERE e.event_id IS NULL ORDER BY a.user_id LIMIT 20"
+    },
+    {
+      "name": "anti-sparse-desc",
+      "sql": "SELECT a.user_id, a.country FROM accounts a LEFT JOIN events e ON a.user_id = e.event_id WHERE e.event_id IS NULL ORDER BY a.user_id DESC LIMIT 10"
+    },
+    {
+      "name": "semi-filter",
+      "sql": "SELECT e.event_id, a.tier FROM events e LEFT JOIN accounts a ON e.user_id = a.user_id WHERE a.user_id IS NOT NULL ORDER BY e.event_id LIMIT 20"
+    }
+  ],
+  "max_rows": 16000
+}

@@ -89,7 +89,7 @@ fn shard_row_cap(peer: Peer) -> Result<usize, String> {
     let cap = cap_text[..digits]
         .parse::<usize>()
         .map_err(|_| "invalid peer row limit")?;
-    if cap == 0 || cap > 100_000 {
+    if cap == 0 || cap > 250_000 {
         return Err("unsupported peer row limit".into());
     }
     Ok(cap)
@@ -914,21 +914,21 @@ pub fn handle(method: &str, body: &[u8], cluster: &Cluster, max_rows: usize) -> 
     } else if grouped_sum_query {
         match (sum_type.as_deref(), group_schema, sum_schema) {
             (Some(kind), Some((_, key)), Some((_, value))) => {
-                merge_grouped_integer_sums(&shards, max_rows.min(100_000), kind, key, value)
+                merge_grouped_integer_sums(&shards, max_rows.min(250_000), kind, key, value)
             }
             _ => Err(MergeError::InvalidGroupedSum),
         }
     } else if grouped_count_query {
-        merge_grouped_counts(&shards, max_rows.min(100_000))
+        merge_grouped_counts(&shards, max_rows.min(250_000))
     } else if select.limit.is_some() || select.offset.is_some() {
         merge_tsv_page(
             &shards,
-            max_rows.min(100_000),
+            max_rows.min(250_000),
             select.offset.unwrap_or(0),
             select.limit,
         )
     } else {
-        merge_tsv(&shards, max_rows.min(100_000))
+        merge_tsv(&shards, max_rows.min(250_000))
     };
     match merged {
         Ok(body) => Response {

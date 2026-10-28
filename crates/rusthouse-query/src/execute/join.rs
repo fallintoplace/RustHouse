@@ -12,11 +12,11 @@ use std::io::Write;
 use std::path::Path;
 
 // Ordered and outer joins retain both inputs, bounded by row count and bytes.
-pub(super) const MAX_INPUT_ROWS: u64 = 16_384;
+pub(super) const MAX_INPUT_ROWS: u64 = 32_768;
 pub(super) const MAX_RESULT_ROWS: usize = 131_072;
 // Unordered INNER joins can build a larger hash side than sorted/outer joins.
 // Bound retained cells as well as row count to protect against wide String rows.
-const MAX_STREAM_BUILD_ROWS: u64 = 32_768;
+const MAX_STREAM_BUILD_ROWS: u64 = 65_536;
 pub(super) const MAX_STREAM_BUILD_BYTES: usize = 32 * 1024 * 1024;
 
 type Pair = (Option<usize>, Option<usize>);
@@ -213,7 +213,13 @@ fn execute_streaming_inner<W: Write>(
     let mut hash: HashMap<Vec<typed::Key>, Vec<usize>> = HashMap::with_capacity(right_rows.len());
     for (index, row) in right_rows.iter().enumerate() {
         if let Some(key) = row_key(row, right_keys) {
-            hash.entry(key).or_default().push(index);
+            // ANY keeps the first right match only, so duplicate indexes
+            // never need to be retained in the hash table.
+            if query.any {
+                hash.entry(key).or_insert_with(|| vec![index]);
+            } else {
+                hash.entry(key).or_default().push(index);
+            }
         }
     }
     if hash.is_empty() {

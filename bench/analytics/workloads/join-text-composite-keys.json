@@ -1,0 +1,19 @@
+{
+  "name": "join-text-composite-keys",
+  "description": "Benchmark String and numeric composite join keys",
+  "queries": [
+    {
+      "name": "tier-and-id",
+      "sql": "SELECT a.user_id, b.country FROM accounts a JOIN accounts b ON a.tier = b.tier AND a.user_id = b.user_id ORDER BY a.user_id LIMIT 20"
+    },
+    {
+      "name": "country-and-id",
+      "sql": "SELECT a.user_id, b.tier FROM accounts a JOIN accounts b ON a.country = b.country AND a.user_id = b.user_id ORDER BY a.user_id LIMIT 20"
+    },
+    {
+      "name": "three-part-text",
+      "sql": "SELECT a.user_id, b.country FROM accounts a JOIN accounts b ON a.tier = b.tier AND a.country = b.country AND a.user_id = b.user_id ORDER BY a.user_id LIMIT 20"
+    }
+  ],
+  "max_rows": 16000
+}

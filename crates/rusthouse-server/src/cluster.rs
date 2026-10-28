@@ -5,7 +5,7 @@ use crate::Response;
 use std::fmt::Write as _;
 use std::net::{Ipv4Addr, SocketAddrV4};
 
-pub const MAX_PEERS: usize = 16;
+pub const MAX_PEERS: usize = 32;
 
 /// Accept only the private IPv4 ranges used by LANs and overlay networks.
 pub fn is_private_address(address: Ipv4Addr) -> bool {
@@ -74,7 +74,7 @@ pub struct Cluster {
 impl Cluster {
     pub fn new(peers: Vec<Peer>) -> Result<Self, &'static str> {
         if peers.len() > MAX_PEERS {
-            return Err("too many peers (maximum 16)");
+            return Err("too many peers (maximum 32)");
         }
         for (index, peer) in peers.iter().enumerate() {
             if peers[..index].contains(peer) {
@@ -165,6 +165,15 @@ mod tests {
                 "{address}"
             );
         }
+    }
+
+    #[test]
+    fn supports_thirty_two_explicit_peers() {
+        let peers = (1..=MAX_PEERS)
+            .map(|port| Peer::parse(&format!("127.0.0.1:{port}")).unwrap())
+            .collect();
+        let cluster = Cluster::new(peers).unwrap();
+        assert_eq!(cluster.peers().len(), 32);
     }
 
     #[test]

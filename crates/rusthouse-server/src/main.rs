@@ -223,8 +223,8 @@ fn main() -> io::Result<()> {
                     .ok_or_else(|| io::Error::other("missing row cap"))?
                     .parse::<usize>()
                     .map_err(|_| io::Error::other("invalid row cap"))?;
-                if max_rows > 100_000 {
-                    return Err(io::Error::other("--max-rows exceeds 100000"));
+                if max_rows > 250_000 {
+                    return Err(io::Error::other("--max-rows exceeds 250000"));
                 }
             }
             other => {
