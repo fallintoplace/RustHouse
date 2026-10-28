@@ -26,6 +26,7 @@ pub(super) fn is_function(name: &str) -> bool {
             | "HEX_ENCODE"
             | "HEX"
             | "IS_ASCII"
+            | "ISVALIDUTF8"
             | "UPPER"
             | "URL_DECODE"
             | "IS_EMPTY"
@@ -1894,6 +1895,14 @@ fn parse_at_depth(parser: &mut Parser, depth: usize) -> Result<ConstantValue, Pa
                     ConstantValue::Text(value.to_owned())
                 }
                 _ => ConstantValue::Null,
+            }
+        }
+        "ISVALIDUTF8" => {
+            let input = text_arg(parser, depth + 1)?;
+            require(parser, Token::RParen, "isValidUTF8 requires one argument")?;
+            match input {
+                Some(_) => ConstantValue::Integer(1),
+                None => ConstantValue::Null,
             }
         }
         "ISVALIDJSON" => {
