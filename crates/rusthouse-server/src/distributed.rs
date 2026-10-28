@@ -514,6 +514,52 @@ fn merge_grouped_integer_sums(
     key_column: &str,
     value_column: &str,
 ) -> Result<Vec<u8>, MergeError> {
+    merge_grouped_integer_sums_query(shards, max_rows, kind, key_column, value_column, None)
+}
+
+fn sum_satisfies_having(value: Option<i128>, having: &Having) -> bool {
+    let Some(value) = value else {
+        return false;
+    };
+    let target = i128::from(having.value);
+    match having.operator {
+        Operator::Eq => value == target,
+        Operator::Ne => value != target,
+        Operator::Lt => value < target,
+        Operator::Le => value <= target,
+        Operator::Gt => value > target,
+        Operator::Ge => value >= target,
+        Operator::Modulo(divisor) => divisor != 0 && value % i128::from(divisor) == target,
+        Operator::ModuloNe(divisor) => divisor != 0 && value % i128::from(divisor) != target,
+    }
+}
+
+fn unsigned_sum_satisfies_having(value: Option<u128>, having: &Having) -> bool {
+    let Some(value) = value else {
+        return false;
+    };
+    let target = u128::from(having.value);
+    match having.operator {
+        Operator::Eq => value == target,
+        Operator::Ne => value != target,
+        Operator::Lt => value < target,
+        Operator::Le => value <= target,
+        Operator::Gt => value > target,
+        Operator::Ge => value >= target,
+        Operator::Modulo(divisor) => divisor != 0 && value % u128::from(divisor) == target,
+        Operator::ModuloNe(divisor) => divisor != 0 && value % u128::from(divisor) != target,
+    }
+}
+
+/// Merge exact partial values first, then apply global HAVING, ranking and paging.
+fn merge_grouped_integer_sums_query(
+    shards: &[(usize, Vec<u8>)],
+    max_rows: usize,
+    kind: &str,
+    key_column: &str,
+    value_column: &str,
+    global: Option<&Select>,
+) -> Result<Vec<u8>, MergeError> {
     let header = format!("{key_column}\tsum({value_column})\n");
     let unsigned = kind
         .strip_prefix("Nullable(")
@@ -561,7 +607,8 @@ fn merge_grouped_integer_sums(
             let index = if let Some(&index) = positions.get(key) {
                 index
             } else {
-                if groups.len() >= max_rows {
+                let max_groups = if global.is_some() { 250_000 } else { max_rows };
+                if groups.len() >= max_groups {
                     return Err(MergeError::CoordinatorLimit);
                 }
                 let index = groups.len();
@@ -595,6 +642,37 @@ fn merge_grouped_integer_sums(
                 }
             }
         }
+    }
+    if let Some(select) = global {
+        if let Some(having) = &select.having {
+            groups.retain(|(_, signed, unsigned_value)| {
+                if unsigned {
+                    unsigned_sum_satisfies_having(*unsigned_value, having)
+                } else {
+                    sum_satisfies_having(*signed, having)
+                }
+            });
+        }
+        if let Some(order) = &select.order_by {
+            groups.sort_by(|left, right| {
+                let cmp = if unsigned { left.2.cmp(&right.2) } else { left.1.cmp(&right.1) };
+                match (left.1.is_none(), right.1.is_none(), order.nulls_first) {
+                    (true, false, Some(true)) => std::cmp::Ordering::Less,
+                    (false, true, Some(true)) => std::cmp::Ordering::Greater,
+                    (true, false, Some(false)) => std::cmp::Ordering::Greater,
+                    (false, true, Some(false)) => std::cmp::Ordering::Less,
+                    _ => if order.descending { cmp.reverse() } else { cmp },
+                }
+            });
+        }
+        groups = groups
+            .into_iter()
+            .skip(select.offset.unwrap_or(0))
+            .take(select.limit.unwrap_or(usize::MAX))
+            .collect();
+    }
+    if groups.len() > max_rows {
+        return Err(MergeError::CoordinatorLimit);
     }
     let mut output = Vec::with_capacity(header.len());
     output.extend_from_slice(header.as_bytes());
@@ -809,6 +887,13 @@ pub fn handle(method: &str, body: &[u8], cluster: &Cluster, max_rows: usize) -> 
                 return Response::text("400 Bad Request", "unsupported distributed pagination\n");
             }
         }
+    } else if grouped_sum_query {
+        match grouped_aggregate_shard_sql(sql, &select) {
+            Some(query) => query,
+            None => {
+                return Response::text("400 Bad Request", "unsupported global grouped aggregate\n");
+            }
+        }
     } else if grouped_count_query {
         match grouped_count_shard_sql(sql, &select) {
             Some(query) => query,
@@ -966,7 +1051,14 @@ pub fn handle(method: &str, body: &[u8], cluster: &Cluster, max_rows: usize) -> 
     } else if grouped_sum_query {
         match (sum_type.as_deref(), group_schema, sum_schema) {
             (Some(kind), Some((_, key)), Some((_, value))) => {
-                merge_grouped_integer_sums(&shards, max_rows.min(250_000), kind, key, value)
+                let limit = max_rows.min(250_000);
+                if select.having.is_some() || select.order_by.is_some()
+                    || select.limit.is_some() || select.offset.is_some()
+                {
+                    merge_grouped_integer_sums_query(&shards, limit, kind, key, value, Some(&select))
+                } else {
+                    merge_grouped_integer_sums(&shards, limit, kind, key, value)
+                }
             }
             _ => Err(MergeError::InvalidGroupedSum),
         }
@@ -1102,6 +1194,44 @@ mod tests {
         );
     }
 
+
+    #[test]
+    fn distributed_global_grouped_sum_ranks_exact_combined_partials() {
+        let sql = "SELECT region, sum(amount) FROM events GROUP BY region HAVING sum(amount) >= 5 ORDER BY 2 DESC LIMIT 2 OFFSET 1";
+        let select = parse_select(sql).unwrap();
+        assert!(is_safe_grouped_sum(&select));
+        assert_eq!(
+            grouped_aggregate_shard_sql(sql, &select).as_deref(),
+            Some("SELECT region, sum(amount) FROM events GROUP BY region")
+        );
+        let shards = [
+            shard(10, "region\tsum(amount)\na\t4\nb\t10\nc\t3\n"),
+            shard(10, "region\tsum(amount)\na\t8\nb\t0\nc\t2\nd\t20\n"),
+        ];
+        // d=20, a=12, b=10, c=5. Sort globally, then offset and limit.
+        assert_eq!(
+            merge_grouped_integer_sums_query(&shards, 2, "UInt64", "region", "amount", Some(&select)).unwrap(),
+            b"region\tsum(amount)\na\t12\nb\t10\n"
+        );
+        assert!(!is_safe_grouped_sum(
+            &parse_select("SELECT region, sum(amount) FROM events GROUP BY region ORDER BY region").unwrap()
+        ));
+    }
+
+    #[test]
+    fn distributed_grouped_sum_keeps_null_and_checks_capped_shards() {
+        let query = parse_select("SELECT region, sum(amount) FROM events GROUP BY region ORDER BY 2 DESC").unwrap();
+        let shards = [shard(10, "region\tsum(amount)\na\tNULL\nb\t-12\n"),
+                      shard(10, "region\tsum(amount)\na\tNULL\nb\t5\n")];
+        assert_eq!(
+            merge_grouped_integer_sums_query(&shards, 10, "Int64", "region", "amount", Some(&query)).unwrap(),
+            b"region\tsum(amount)\nb\t-7\na\tNULL\n"
+        );
+        assert_eq!(
+            merge_grouped_integer_sums_query(&[shard(2, "region\tsum(amount)\na\t1\nb\t2\n")], 1, "Int64", "region", "amount", Some(&query)),
+            Err(MergeError::ShardRowLimit)
+        );
+    }
     #[test]
     fn distributed_count_distinct_uses_global_unique_values() {
         let query = "SELECT count(DISTINCT category) FROM events WHERE id >= 5";
