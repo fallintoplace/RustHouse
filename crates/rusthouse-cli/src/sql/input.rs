@@ -128,7 +128,7 @@ pub(super) fn read_script(path: &std::path::Path) -> Result<Vec<String>, String>
         .read_to_end(&mut bytes)
         .map_err(|error| format!("cannot read SQL script {}: {error}", path.display()))?;
     if bytes.len() > MAX_SCRIPT_BYTES {
-        return Err("SQL script exceeds the 256 KiB limit".into());
+        return Err("SQL script exceeds the 1 MiB limit".into());
     }
     let input =
         String::from_utf8(bytes).map_err(|_| "SQL script must be valid UTF-8".to_string())?;
@@ -155,5 +155,24 @@ mod block_comment_tests {
     fn rejects_unterminated_sql_block_comments() {
         assert!(split_sql_script("SELECT 1; /* unterminated").is_err());
         assert!(split_sql_script("/* comment only */").is_err());
+    }
+}
+
+#[cfg(test)]
+mod script_size_limit_tests {
+    use super::read_script;
+    use std::fs;
+
+    #[test]
+    fn reads_scripts_larger_than_the_old_256_kib_limit() {
+        let path = std::env::temp_dir().join(format!(
+            "rusthouse-sql-script-size-{}-{}", std::process::id(), line!()
+        ));
+        let script = format!("{};", "x".repeat(3500)).repeat(90);
+        assert!(script.len() > 256 * 1024);
+        fs::write(&path, script).unwrap();
+        let result = read_script(&path);
+        fs::remove_file(path).unwrap();
+        assert_eq!(result.unwrap().len(), 90);
     }
 }
