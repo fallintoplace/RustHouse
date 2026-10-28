@@ -24,6 +24,12 @@ class InputProfileTests(unittest.TestCase):
             self.assertEqual(result["sha256"], hashlib.sha256(text.encode()).hexdigest())
             self.assertEqual(profile_directory(root, ["lineitem"])["total_rows"], 1)
 
+    def test_rejects_empty_duplicate_and_unknown_selections(self):
+        for selected in ([], ["region", "region"], ["not_a_table"]):
+            with self.subTest(selected=selected):
+                with self.assertRaisesRegex(ValueError, "unique"):
+                    profile_directory("/nonexistent", selected)
+
     def test_rejects_wrong_schema(self):
         with tempfile.TemporaryDirectory() as root:
             path = Path(root) / "region.tsv"
