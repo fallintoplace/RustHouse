@@ -2,7 +2,7 @@
 use super::typed::{self, Cell};
 use super::{AggregateState, ExecutionError};
 use crate::{AggregateFunction, Select};
-use rusthouse_storage::{TypedColumn, TypedQueryReader, inspect_query_source};
+use rusthouse_storage::{NumericColumn, TypedColumn, TypedQueryReader, inspect_query_source};
 use std::collections::{HashMap, hash_map::Entry};
 use std::io::Write;
 use std::path::Path;
@@ -61,9 +61,13 @@ pub(super) fn execute<W: Write>(
     let group_index = indices[column];
     let item_indices = items.iter().map(|(_, name)| indices[name]).collect::<Vec<_>>();
     let mut groups = Vec::<(Cell, Vec<AggregateState>)>::new();
+    // Two hundred and fifty-six fixed slots replace per-row hashing for
+    // non-nullable 8-bit grouping dimensions.
+    let mut dense_slots = matches!(group_type.as_str(), "UInt8" | "Int8")
+        .then(|| vec![usize::MAX; 256]);
     let mut by_key = HashMap::<typed::Key, usize>::new();
     let mut by_text = HashMap::<Vec<u8>, usize>::new();
-    let mut reader = TypedQueryReader::open(part, &names)?;
+    let mut reader = TypedQueryReader::open_with_metadata(part, &names, &metadata)?;
     let no_filters = query.predicates.is_empty() && query.or_predicates.is_empty();
     while let Some(batch) = reader.next_batch()? {
         for row in 0..batch[0].len() {
@@ -72,6 +76,25 @@ pub(super) fn execute<W: Write>(
             }
             // Nullable String keys can use the same borrowed-byte lookup as String.
             // Only new groups need to own the decoded bytes.
+            let index = if let Some(slots) = dense_slots.as_mut() {
+                let byte = match &batch[group_index] {
+                    TypedColumn::Numeric(NumericColumn::UInt8(values)) => values[row],
+                    TypedColumn::Numeric(NumericColumn::Int8(values)) => values[row] as u8,
+                    _ => return Err(ExecutionError::Invalid("unexpected byte GROUP BY type".into())),
+                };
+                let slot = &mut slots[usize::from(byte)];
+                if *slot != usize::MAX {
+                    *slot
+                } else {
+                    let index = groups.len();
+                    *slot = index;
+                    groups.push((
+                        typed::cell(&batch[group_index], row),
+                        items.iter().map(|(function, _)| AggregateState::new(*function)).collect(),
+                    ));
+                    index
+                }
+            } else {
             let borrowed_text = match &batch[group_index] {
                 TypedColumn::Text(values) => values.get(row),
                 TypedColumn::NullableText { values, nulls } if nulls[row] == 0 => values.get(row),
@@ -103,6 +126,8 @@ pub(super) fn execute<W: Write>(
                     }
                 }
             };
+                index
+            };
             for (&column_index, state) in item_indices.iter().zip(groups[index].1.iter_mut()) {
                 match typed::cell(&batch[column_index], row) {
                     Cell::Numeric(value) => state.update(value)?,
@@ -114,20 +139,49 @@ pub(super) fn execute<W: Write>(
             }
         }
     }
+    let mut bounded_order = None;
     if let Some(order) = &query.order_by {
-        groups.sort_by(|(left, _), (right, _)| {
-            typed::compare_order_cells(left, right, order.descending, order.nulls_first)
-        });
+        let compare = |left: &(Cell, Vec<AggregateState>),
+                       right: &(Cell, Vec<AggregateState>)| {
+            typed::compare_order_cells(&left.0, &right.0, order.descending, order.nulls_first)
+        };
+        let end = query
+            .limit
+            .and_then(|limit| query.offset.unwrap_or(0).checked_add(limit));
+        if let Some(end) = end.filter(|&end| end < groups.len()) {
+            let mut indices = (0..groups.len()).collect::<Vec<_>>();
+            let compare_index = |left: &usize, right: &usize| {
+                compare(&groups[*left], &groups[*right]).then_with(|| left.cmp(right))
+            };
+            indices.select_nth_unstable_by(end, &compare_index);
+            indices.truncate(end);
+            indices.sort_unstable_by(compare_index);
+            bounded_order = Some(indices);
+        } else {
+            groups.sort_by(compare);
+        }
     }
-    for (key, states) in groups.into_iter()
-        .skip(query.offset.unwrap_or(0))
-        .take(query.limit.unwrap_or(usize::MAX))
-    {
-        typed::write_typed_value(output, &key, group_type)?;
+    let write_group = |key: &Cell, states: &[AggregateState], output: &mut W|
+        -> Result<(), ExecutionError> {
+        typed::write_typed_value(output, key, group_type)?;
         for state in states {
             write!(output, "\t{}", state.render())?;
         }
         writeln!(output)?;
+        Ok(())
+    };
+    if let Some(indices) = bounded_order {
+        for index in indices.into_iter().skip(query.offset.unwrap_or(0)) {
+            write_group(&groups[index].0, &groups[index].1, output)?;
+        }
+    } else {
+        for (key, states) in groups
+            .into_iter()
+            .skip(query.offset.unwrap_or(0))
+            .take(query.limit.unwrap_or(usize::MAX))
+        {
+            write_group(&key, &states, output)?;
+        }
     }
     Ok(())
 }

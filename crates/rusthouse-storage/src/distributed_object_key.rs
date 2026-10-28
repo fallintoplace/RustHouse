@@ -3,24 +3,52 @@ use std::path::PathBuf;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ObjectKey {
-    pub cluster: String,
-    pub shard: String,
-    pub generation: u64,
-    pub part: String,
-    pub file: String,
+    cluster: String,
+    shard: String,
+    generation: u64,
+    part: String,
+    file: String,
 }
 
 fn component(value: &str) -> bool {
-    !value.is_empty()
-        && value.len() <= 128
-        && value.as_bytes()[0].is_ascii_alphanumeric()
-        && !value.contains("..")
-        && value
-            .bytes()
-            .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'_' | b'-' | b'.'))
+    let bytes = value.as_bytes();
+    if bytes.is_empty() || bytes.len() > 128 || !bytes[0].is_ascii_alphanumeric() {
+        return false;
+    }
+    let mut previous_dot = false;
+    for &byte in bytes {
+        if !byte.is_ascii_alphanumeric() && !matches!(byte, b'_' | b'-' | b'.') {
+            return false;
+        }
+        if byte == b'.' && previous_dot {
+            return false;
+        }
+        previous_dot = byte == b'.';
+    }
+    true
 }
 
 impl ObjectKey {
+    pub fn cluster(&self) -> &str {
+        &self.cluster
+    }
+
+    pub fn shard(&self) -> &str {
+        &self.shard
+    }
+
+    pub fn generation(&self) -> u64 {
+        self.generation
+    }
+
+    pub fn part(&self) -> &str {
+        &self.part
+    }
+
+    pub fn file(&self) -> &str {
+        &self.file
+    }
+
     /// Build a key without admitting path separators, traversal or control bytes.
     pub fn new(
         cluster: &str,
@@ -61,6 +89,11 @@ mod tests {
     #[test]
     fn constructs_stable_generation_scoped_keys() {
         let key = ObjectKey::new("prod", "shard_03", 12, "all_4_4_0", "checksums.txt").unwrap();
+        assert_eq!(key.cluster(), "prod");
+        assert_eq!(key.shard(), "shard_03");
+        assert_eq!(key.generation(), 12);
+        assert_eq!(key.part(), "all_4_4_0");
+        assert_eq!(key.file(), "checksums.txt");
         assert_eq!(
             key.relative_path(),
             PathBuf::from("prod/shard_03/g12/all_4_4_0/checksums.txt")

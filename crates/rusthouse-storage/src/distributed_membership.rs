@@ -1,5 +1,6 @@
 //! Strict, explicit membership file for experimental storage clusters.
 use std::collections::HashSet;
+use std::fmt::Write;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Member {
@@ -60,11 +61,27 @@ pub fn parse_membership(text: &str) -> Result<Vec<Member>, &'static str> {
 
 /// Stable on-disk representation of an already validated member set.
 pub fn format_membership(members: &[Member]) -> Result<String, &'static str> {
-    let text = members
-        .iter()
-        .map(|member| format!("{} {} {}\n", member.node, member.zone, member.weight))
-        .collect::<String>();
-    parse_membership(&text)?;
+    if members.is_empty() || members.len() > 64 {
+        return Err("invalid membership record count");
+    }
+    let mut seen = HashSet::new();
+    for member in members {
+        if !identifier(&member.node)
+            || !identifier(&member.zone)
+            || !(1..=1000).contains(&member.weight)
+            || !seen.insert(member.node.as_str())
+        {
+            return Err("invalid or duplicate membership record");
+        }
+    }
+    let mut text = String::with_capacity((members.len() * 64).min(8192));
+    for member in members {
+        write!(&mut text, "{} {} {}\n", member.node, member.zone, member.weight)
+            .expect("writing to String is infallible");
+        if text.len() > 8192 {
+            return Err("membership manifest too large");
+        }
+    }
     Ok(text)
 }
 
@@ -85,4 +102,13 @@ mod tests {
             assert!(parse_membership(input).is_err(), "{input}");
         }
     }
+    #[test]
+    fn formatting_rejects_oversized_and_duplicate_records() {
+        let huge = Member { node: "x".repeat(1_000_000), zone: "z".into(), weight: 1 };
+        assert!(format_membership(&[huge]).is_err());
+        let member = Member { node: "n".into(), zone: "z".into(), weight: 1 };
+        assert!(format_membership(&[member.clone(), member]).is_err());
+        assert!(format_membership(&[]).is_err());
+    }
+
 }

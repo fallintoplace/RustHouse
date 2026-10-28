@@ -2,13 +2,23 @@
 use super::typed::{self, Cell, Key};
 use super::{AggregateState, ExecutionError};
 use crate::{AggregateFunction, Select};
-use rusthouse_storage::{TypedQueryReader, inspect_query_source};
+use rusthouse_storage::{NumericColumn, TypedColumn, TypedQueryReader, inspect_query_source};
 use std::cmp::Ordering;
 use std::collections::HashMap;
 use std::io::Write;
 use std::path::Path;
 
 const MAX_GROUPS: usize = 200_000;
+
+// Convert a non-nullable 8-bit numeric key into a compact slot index.
+fn byte_group_key(column: &TypedColumn, row: usize) -> Option<u8> {
+    match column {
+        TypedColumn::Numeric(NumericColumn::UInt8(values)) => values.get(row).copied(),
+        TypedColumn::Numeric(NumericColumn::Int8(values)) => values.get(row).map(|value| *value as u8),
+        _ => None,
+    }
+}
+
 
 pub(super) fn execute<W: Write>(
     query: &Select,
@@ -82,7 +92,13 @@ pub(super) fn execute<W: Write>(
         .collect::<Vec<_>>();
     let mut by_key = HashMap::<Vec<Key>, usize>::new();
     let mut groups = Vec::<(Vec<Cell>, Vec<AggregateState>)>::new();
-    let mut reader = TypedQueryReader::open(part, &names)?;
+    let mut dense_slots = (columns.len() == 2
+        && columns.iter().all(|key| matches!(
+            types.get(key).map(String::as_str),
+            Some("UInt8" | "Int8")
+        )))
+        .then(|| vec![usize::MAX; 1 << 16]);
+    let mut reader = TypedQueryReader::open_with_metadata(part, &names, &metadata)?;
     // Reuse a probe buffer for existing groups instead of allocating a Vec
     // of Cells and a Vec of Keys for every matching input row.
     let mut probe_key = Vec::<Key>::with_capacity(group_indices.len());
@@ -92,9 +108,27 @@ pub(super) fn execute<W: Write>(
             if !no_filters && !typed::passes(&batch, row, &conditions) {
                 continue;
             }
+            let group = if let Some(slots) = dense_slots.as_mut() {
+                let first = byte_group_key(&batch[group_indices[0]], row)
+                    .ok_or_else(|| ExecutionError::Invalid("unexpected first byte GROUP BY type".into()))?;
+                let second = byte_group_key(&batch[group_indices[1]], row)
+                    .ok_or_else(|| ExecutionError::Invalid("unexpected second byte GROUP BY type".into()))?;
+                let slot = (usize::from(first) << 8) | usize::from(second);
+                let index = &mut slots[slot];
+                if *index != usize::MAX {
+                    *index
+                } else {
+                    *index = groups.len();
+                    groups.push((
+                        group_indices.iter().map(|&column| typed::cell(&batch[column], row)).collect(),
+                        items.iter().map(|(function, _)| AggregateState::new(*function)).collect(),
+                    ));
+                    *index
+                }
+            } else {
             probe_key.clear();
             for &index in &group_indices {
-                probe_key.push(typed::cell(&batch[index], row).key());
+                probe_key.push(typed::key_at(&batch[index], row));
             }
             let group = if let Some(&index) = by_key.get(probe_key.as_slice()) {
                 index
@@ -120,6 +154,8 @@ pub(super) fn execute<W: Write>(
                 ));
                 index
             };
+                group
+            };
             for (&index, state) in item_indices.iter().zip(groups[group].1.iter_mut()) {
                 match typed::cell(&batch[index], row) {
                     Cell::Numeric(value) => state.update(value)?,
@@ -144,28 +180,42 @@ pub(super) fn execute<W: Write>(
             (index, term.descending, term.nulls_first)
         })
         .collect::<Vec<_>>();
-    if !terms.is_empty() {
-        groups.sort_by(|(left, _), (right, _)| {
-            for &(index, descending, nulls_first) in &terms {
-                let order = typed::compare_order_cells(
-                    &left[index],
-                    &right[index],
-                    descending,
-                    nulls_first,
-                );
-                if order != Ordering::Equal {
-                    return order;
-                }
+    let compare = |(left, _): &(Vec<Cell>, Vec<AggregateState>),
+                   (right, _): &(Vec<Cell>, Vec<AggregateState>)| {
+        for &(index, descending, nulls_first) in &terms {
+            let order = typed::compare_order_cells(
+                &left[index],
+                &right[index],
+                descending,
+                nulls_first,
+            );
+            if order != Ordering::Equal {
+                return order;
             }
-            Ordering::Equal
-        });
+        }
+        Ordering::Equal
+    };
+    let mut bounded_order = None;
+    if !terms.is_empty() {
+        let end = query
+            .limit
+            .and_then(|limit| query.offset.unwrap_or(0).checked_add(limit));
+        if let Some(end) = end.filter(|&end| end < groups.len()) {
+            let mut indices = (0..groups.len()).collect::<Vec<_>>();
+            let compare_index = |left: &usize, right: &usize| {
+                compare(&groups[*left], &groups[*right]).then_with(|| left.cmp(right))
+            };
+            indices.select_nth_unstable_by(end, &compare_index);
+            indices.truncate(end);
+            indices.sort_unstable_by(compare_index);
+            bounded_order = Some(indices);
+        } else {
+            groups.sort_by(compare);
+        }
     }
 
-    for (keys, states) in groups
-        .into_iter()
-        .skip(query.offset.unwrap_or(0))
-        .take(query.limit.unwrap_or(usize::MAX))
-    {
+    let write_group = |keys: &[Cell], states: &[AggregateState], output: &mut W|
+        -> Result<(), ExecutionError> {
         for (index, key) in keys.iter().enumerate() {
             if index != 0 {
                 output.write_all(b"\t")?;
@@ -176,6 +226,20 @@ pub(super) fn execute<W: Write>(
             write!(output, "\t{}", state.render())?;
         }
         writeln!(output)?;
+        Ok(())
+    };
+    if let Some(indices) = bounded_order {
+        for index in indices.into_iter().skip(query.offset.unwrap_or(0)) {
+            write_group(&groups[index].0, &groups[index].1, output)?;
+        }
+    } else {
+        for (keys, states) in groups
+            .into_iter()
+            .skip(query.offset.unwrap_or(0))
+            .take(query.limit.unwrap_or(usize::MAX))
+        {
+            write_group(&keys, &states, output)?;
+        }
     }
     Ok(())
 }

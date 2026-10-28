@@ -9,22 +9,25 @@ fn valid_node(node: &str) -> bool {
             .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'_' | b'-'))
 }
 
-fn score(shard: &str, node: &str) -> u64 {
-    const OFFSET: u64 = 0xcbf2_9ce4_8422_2325;
-    const PRIME: u64 = 0x0000_0100_0000_01b3;
-    let shard_length = (shard.len() as u64).to_le_bytes();
-    let node_length = (node.len() as u64).to_le_bytes();
-    let mut hash = OFFSET;
-    for byte in shard_length
-        .iter()
-        .chain(shard.as_bytes())
-        .chain(node_length.iter())
-        .chain(node.as_bytes())
-    {
-        hash ^= u64::from(*byte);
+const OFFSET: u64 = 0xcbf2_9ce4_8422_2325;
+const PRIME: u64 = 0x0000_0100_0000_01b3;
+
+fn hash_bytes(mut hash: u64, bytes: &[u8]) -> u64 {
+    for &byte in bytes {
+        hash ^= u64::from(byte);
         hash = hash.wrapping_mul(PRIME);
     }
     hash
+}
+
+fn shard_seed(shard: &str) -> u64 {
+    let length = (shard.len() as u64).to_le_bytes();
+    hash_bytes(hash_bytes(OFFSET, &length), shard.as_bytes())
+}
+
+fn score_with_seed(seed: u64, node: &str) -> u64 {
+    let length = (node.len() as u64).to_le_bytes();
+    hash_bytes(hash_bytes(seed, &length), node.as_bytes())
 }
 
 /// Rank up to 64 distinct nodes for one shard. This is placement, not membership consensus.
@@ -53,9 +56,10 @@ pub fn replicas_for(
             return Err("invalid or duplicate replica node");
         }
     }
+    let seed = shard_seed(shard);
     let mut ranked: Vec<(u64, &str)> = nodes
         .iter()
-        .map(|node| (score(shard, node), node.as_str()))
+        .map(|node| (score_with_seed(seed, node), node.as_str()))
         .collect();
     ranked.sort_unstable_by(|left, right| {
         right.0.cmp(&left.0).then_with(|| left.1.cmp(right.1))
@@ -93,6 +97,7 @@ pub fn weighted_replicas_for(
     }
     let mut seen = HashSet::new();
     let mut ranked = Vec::with_capacity(nodes.len());
+    let seed = shard_seed(shard);
     for &(node, weight) in nodes {
         if !valid_node(node) || !(1..=1024).contains(&weight) || !seen.insert(node)
         {
@@ -100,7 +105,7 @@ pub fn weighted_replicas_for(
         }
         // Keep U strictly inside (0, 1). Using the top 53 bits avoids
         // rounding a 64-bit hash to 1.0 in f64.
-        let uniform = ((score(shard, node) >> 11) as f64 + 0.5)
+        let uniform = ((score_with_seed(seed, node) >> 11) as f64 + 0.5)
             / ((1u64 << 53) as f64);
         let priority = -uniform.ln() / f64::from(weight);
         ranked.push((priority, node));
@@ -162,4 +167,18 @@ mod tests {
         assert!(replicas_for("shard", &["node".into()], 2).is_err());
         assert!(replicas_for("shard", &["../bad".into()], 1).is_err());
     }
+    #[test]
+    fn increasing_one_node_weight_cannot_demote_its_primary_placement() {
+        let baseline = [("a", 1u16), ("b", 1u16), ("c", 1u16)];
+        let heavier = [("a", 64u16), ("b", 1u16), ("c", 1u16)];
+        for shard in 0..512 {
+            let shard = format!("events_{shard}");
+            let original = weighted_replicas_for(&shard, &baseline, 1).unwrap();
+            let updated = weighted_replicas_for(&shard, &heavier, 1).unwrap();
+            if original[0] == "a" {
+                assert_eq!(updated[0], "a", "{shard}");
+            }
+        }
+    }
+
 }

@@ -6,12 +6,11 @@ pub struct Chunk {
     pub length: u64,
 }
 
-/// Plan nonoverlapping ranges. Empty files have no data chunks.
-pub fn plan_chunks(
+fn checked_chunk_count(
     total_bytes: u64,
     chunk_bytes: u64,
     max_chunks: usize,
-) -> Result<Vec<Chunk>, &'static str> {
+) -> Result<usize, &'static str> {
     if chunk_bytes == 0 || max_chunks == 0 || max_chunks > 65_536 {
         return Err("invalid transfer chunk limits");
     }
@@ -19,7 +18,17 @@ pub fn plan_chunks(
     if count > max_chunks as u64 {
         return Err("transfer exceeds chunk count limit");
     }
-    let mut chunks = Vec::with_capacity(count as usize);
+    Ok(count as usize)
+}
+
+/// Plan nonoverlapping ranges. Empty files have no data chunks.
+pub fn plan_chunks(
+    total_bytes: u64,
+    chunk_bytes: u64,
+    max_chunks: usize,
+) -> Result<Vec<Chunk>, &'static str> {
+    let count = checked_chunk_count(total_bytes, chunk_bytes, max_chunks)?;
+    let mut chunks = Vec::with_capacity(count);
     let mut offset = 0u64;
     while offset < total_bytes {
         let length = (total_bytes - offset).min(chunk_bytes);
@@ -52,20 +61,25 @@ pub fn plan_missing_chunks(
     if max_batch_chunks > 65_536 {
         return Err("transfer batch chunk limit exceeds bound");
     }
-    let chunks = plan_chunks(total_bytes, chunk_bytes, max_chunks)?;
-    if remaining_indices.iter().any(|&index| index >= chunks.len())
+    let chunk_count = checked_chunk_count(total_bytes, chunk_bytes, max_chunks)?;
+    if remaining_indices.iter().any(|&index| index >= chunk_count)
         || remaining_indices.windows(2).any(|pair| pair[0] >= pair[1])
     {
         return Err("invalid or duplicate missing chunk index");
     }
-    let mut selected = Vec::new();
+    let mut selected = Vec::with_capacity(remaining_indices.len().min(max_batch_chunks));
     let mut remaining_bytes = byte_budget;
     for &index in remaining_indices {
-        if selected.len() >= max_batch_chunks || chunks[index].length > remaining_bytes {
+        if selected.len() >= max_batch_chunks {
             break;
         }
-        let chunk = chunks[index];
-        remaining_bytes -= chunk.length;
+        let offset = (index as u64) * chunk_bytes;
+        let length = (total_bytes - offset).min(chunk_bytes);
+        if length > remaining_bytes {
+            break;
+        }
+        let chunk = Chunk { offset, length };
+        remaining_bytes -= length;
         selected.push(IndexedChunk { index, chunk });
     }
     Ok(selected)
@@ -125,4 +139,16 @@ mod tests {
             vec![Chunk { offset: 0, length: u64::MAX }]
         );
     }
+    #[test]
+    fn sparse_resume_uses_stable_indexes_at_maximum_chunk_count() {
+        let selected = plan_missing_chunks(65_536, 1, 65_536, &[0, 32_768, 65_535], 2, 3).unwrap();
+        assert_eq!(selected.len(), 2);
+        assert_eq!(selected[0].chunk, Chunk { offset: 0, length: 1 });
+        assert_eq!(selected[1], IndexedChunk {
+            index: 32_768,
+            chunk: Chunk { offset: 32_768, length: 1 },
+        });
+        assert!(plan_missing_chunks(65_537, 1, 65_536, &[], 0, 1).is_err());
+    }
+
 }

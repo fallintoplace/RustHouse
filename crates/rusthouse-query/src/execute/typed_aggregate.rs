@@ -2,10 +2,25 @@
 use super::typed::{self, Cell};
 use super::{AggregateState, ExecutionError};
 use crate::{AggregateFunction, Projection, Select};
-use rusthouse_storage::{TypedColumn, TypedQueryReader, inspect_query_source};
+use rusthouse_storage::{NumericColumn, TypedColumn, TypedQueryReader, inspect_query_source};
 use std::collections::{HashMap, hash_map::Entry};
 use std::io::Write;
 use std::path::Path;
+
+fn replaces_text_extreme(
+    value: &[u8],
+    current: Option<&Cell>,
+    function: AggregateFunction,
+) -> bool {
+    let Some(Cell::Text(best)) = current else {
+        return current.is_none();
+    };
+    match function {
+        AggregateFunction::Min => value < best.as_slice(),
+        AggregateFunction::Max => value > best.as_slice(),
+        _ => false,
+    }
+}
 
 pub(super) fn execute_typed_aggregate<W: Write>(
     query: &Select,
@@ -59,7 +74,7 @@ pub(super) fn execute_typed_aggregate<W: Write>(
     if query.limit == Some(0) {
         return Ok(());
     }
-    let mut reader = TypedQueryReader::open(part, &names)?;
+    let mut reader = TypedQueryReader::open_with_metadata(part, &names, &metadata)?;
     let no_filters = query.predicates.is_empty() && query.or_predicates.is_empty();
 
     let mut state = AggregateState::new(*function);
@@ -68,6 +83,24 @@ pub(super) fn execute_typed_aggregate<W: Write>(
         for row in 0..batch[0].len() {
             if !no_filters && !typed::passes(&batch, row, &conditions) {
                 continue;
+            }
+            if ordered_text {
+                match &batch[projected_index] {
+                    TypedColumn::Text(strings)
+                    | TypedColumn::NullableText { values: strings, .. } => {
+                        if typed::is_null_at(&batch[projected_index], row) {
+                            continue;
+                        }
+                        let value = strings.get(row).ok_or_else(|| {
+                            ExecutionError::Invalid("missing String value in aggregate".into())
+                        })?;
+                        if replaces_text_extreme(value, ordered_value.as_ref(), *function) {
+                            ordered_value = Some(Cell::Text(value.to_vec()));
+                        }
+                        continue;
+                    }
+                    _ => {}
+                }
             }
             match typed::cell(&batch[projected_index], row) {
                 Cell::Numeric(value) => state.update(value)?,
@@ -122,8 +155,7 @@ pub(super) fn execute_typed_aggregate<W: Write>(
 
 const MAX_GROUPS: usize = 100_000;
 
-/// Group filtered rows by a typed key and evaluate a numeric aggregate on each group.
-pub(super) fn execute_grouped_aggregate<W: Write>(
+/// Group filtered rows by a typed key and evaluate a numeric aggregate pub(super) fn execute_grouped_aggregate<W: Write>(
     query: &Select,
     part: &Path,
     output: &mut W,
@@ -189,19 +221,38 @@ pub(super) fn execute_grouped_aggregate<W: Write>(
     if query.limit == Some(0) {
         return Ok(());
     }
-    let mut reader = TypedQueryReader::open(part, &names)?;
+    let mut reader = TypedQueryReader::open_with_metadata(part, &names, &metadata)?;
 
     let mut by_key = HashMap::<typed::Key, usize>::new();
     // Keep String keys in an owned map and probe with borrowed bytes.
     // Repeated station names no longer allocate a new key on every row.
     let mut text_groups = HashMap::<Vec<u8>, usize>::new();
     let mut groups = Vec::<(Cell, AggregateState)>::new();
+    // Non-nullable byte keys can be indexed directly rather than hashed.
+    let mut dense_slots = matches!(group_type, "UInt8" | "Int8")
+        .then(|| vec![usize::MAX; 256]);
     let no_filters = query.predicates.is_empty() && query.or_predicates.is_empty();
     while let Some(batch) = reader.next_batch()? {
         for row in 0..batch[0].len() {
             if !no_filters && !typed::passes(&batch, row, &conditions) {
                 continue;
             }
+            let group = if let Some(slots) = dense_slots.as_mut() {
+                let byte = match &batch[group_index] {
+                    TypedColumn::Numeric(NumericColumn::UInt8(values)) => values[row],
+                    TypedColumn::Numeric(NumericColumn::Int8(values)) => values[row] as u8,
+                    _ => return Err(ExecutionError::Invalid("unexpected byte GROUP BY column".into())),
+                };
+                let group = &mut slots[usize::from(byte)];
+                if *group != usize::MAX {
+                    *group
+                } else {
+                    let index = groups.len();
+                    *group = index;
+                    groups.push((typed::cell(&batch[group_index], row), AggregateState::new(*function)));
+                    index
+                }
+            } else {
             let borrowed_text = match &batch[group_index] {
                 TypedColumn::Text(strings) => strings.get(row),
                 TypedColumn::NullableText { values, nulls } if nulls[row] == 0 => values.get(row),
@@ -237,6 +288,8 @@ pub(super) fn execute_grouped_aggregate<W: Write>(
                     }
                 }
             };
+                group
+            };
             let value = typed::cell(&batch[value_index], row);
             match value {
                 Cell::Numeric(value) => groups[group].1.update(value)?,
@@ -252,8 +305,10 @@ pub(super) fn execute_grouped_aggregate<W: Write>(
     if let Some(having) = &query.having {
         groups.retain(|(_, state)| state.passes_having(having));
     }
+    let mut bounded_order = None;
     if query.order_by.is_some() {
-        groups.sort_by(|(left_key, left_state), (right_key, right_state)| {
+        let compare = |(left_key, left_state): &(Cell, AggregateState),
+                       (right_key, right_state): &(Cell, AggregateState)| {
             for term in query.order_terms() {
                 let comparison = if term.column == "#aggregate" {
                     typed::compare_order_cells(
@@ -267,18 +322,61 @@ pub(super) fn execute_grouped_aggregate<W: Write>(
                         left_key, right_key, term.descending, term.nulls_first
                     )
                 };
-                if comparison != std::cmp::Ordering::Equal { return comparison; }
+                if comparison != std::cmp::Ordering::Equal {
+                    return comparison;
+                }
             }
             std::cmp::Ordering::Equal
-        });
+        };
+        let end = query
+            .limit
+            .and_then(|limit| query.offset.unwrap_or(0).checked_add(limit));
+        if let Some(end) = end.filter(|&end| end < groups.len()) {
+            let mut indices = (0..groups.len()).collect::<Vec<_>>();
+            let compare_index = |left: &usize, right: &usize| {
+                compare(&groups[*left], &groups[*right]).then_with(|| left.cmp(right))
+            };
+            indices.select_nth_unstable_by(end, &compare_index);
+            indices.truncate(end);
+            indices.sort_unstable_by(compare_index);
+            bounded_order = Some(indices);
+        } else {
+            groups.sort_by(compare);
+        }
     }
-    for (key, state) in groups
-        .into_iter()
-        .skip(query.offset.unwrap_or(0))
-        .take(query.limit.unwrap_or(usize::MAX))
-    {
-        typed::write_typed_value(output, &key, group_type)?;
+    let write_group = |key: &Cell, state: &AggregateState, output: &mut W|
+        -> Result<(), ExecutionError> {
+        typed::write_typed_value(output, key, group_type)?;
         writeln!(output, "\t{}", state.render())?;
+        Ok(())
+    };
+    if let Some(indices) = bounded_order {
+        for index in indices.into_iter().skip(query.offset.unwrap_or(0)) {
+            write_group(&groups[index].0, &groups[index].1, output)?;
+        }
+    } else {
+        for (key, state) in groups
+            .iter()
+            .skip(query.offset.unwrap_or(0))
+            .take(query.limit.unwrap_or(usize::MAX))
+        {
+            write_group(key, state, output)?;
+        }
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod borrowed_text_extrema_tests {
+    use super::*;
+
+    #[test]
+    fn compares_borrowed_text_without_replacing_ties() {
+        let incumbent = Cell::Text(b"beta".to_vec());
+        assert!(replaces_text_extreme(b"alpha", Some(&incumbent), AggregateFunction::Min));
+        assert!(!replaces_text_extreme(b"beta", Some(&incumbent), AggregateFunction::Min));
+        assert!(!replaces_text_extreme(b"alpha", Some(&incumbent), AggregateFunction::Max));
+        assert!(replaces_text_extreme(b"gamma", Some(&incumbent), AggregateFunction::Max));
+        assert!(replaces_text_extreme(b"beta", None, AggregateFunction::Min));
+    }
 }

@@ -135,3 +135,33 @@ fn multi_part_queries_match_independent_generated_source() {
     }
     fs::remove_dir_all(root).unwrap();
 }
+
+#[test]
+fn count_nonnullable_column_uses_exact_snapshot_row_count() {
+    let root = test_multi_parts(8201);
+    for (sql, expected) in [
+        ("SELECT count(number) FROM part", "count(number)\n8201\n"),
+        ("SELECT count(number) FROM part LIMIT 0", "count(number)\n"),
+        ("SELECT count(number) FROM part LIMIT 1 OFFSET 1", "count(number)\n"),
+        ("SELECT count(number) FROM part WHERE number >= 8200", "count(number)\n1\n"),
+    ] {
+        assert_eq!(run(sql, Some(&root)), expected, "{sql}");
+    }
+    fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
+fn stored_count_column_uses_the_same_filter_semantics_as_generated_count() {
+    let root = test_multi_parts(8201);
+    for predicate in [
+        "WHERE number >= 4096",
+        "WHERE number % 7 = 0",
+        "WHERE number < 25 OR number >= 8190",
+        "WHERE number BETWEEN 100 AND 200",
+    ] {
+        let stored = format!("SELECT count(number) FROM part {predicate}");
+        let generated = format!("SELECT count(number) FROM numbers(8201) {predicate}");
+        assert_eq!(run(&stored, Some(&root)), run(&generated, None), "{stored}");
+    }
+    fs::remove_dir_all(root).unwrap();
+}

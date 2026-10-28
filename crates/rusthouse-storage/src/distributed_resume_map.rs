@@ -46,11 +46,27 @@ impl ResumeMap {
     }
 
     pub fn remaining(&self) -> Vec<usize> {
-        (0..self.chunks).filter(|&index| !self.is_complete(index)).collect()
+        let mut missing = Vec::new();
+        for (byte_index, &completed) in self.completed.iter().enumerate() {
+            let mut bits = !completed;
+            if byte_index == self.completed.len() - 1 && self.chunks % 8 != 0 {
+                bits &= ((1u16 << (self.chunks % 8)) - 1) as u8;
+            }
+            while bits != 0 {
+                missing.push(byte_index * 8 + bits.trailing_zeros() as usize);
+                bits &= bits - 1;
+            }
+        }
+        missing
     }
 
     pub fn complete(&self) -> bool {
-        (0..self.chunks).all(|index| self.is_complete(index))
+        let full_bytes = self.chunks / 8;
+        if !self.completed[..full_bytes].iter().all(|&byte| byte == u8::MAX) {
+            return false;
+        }
+        let remainder = self.chunks % 8;
+        remainder == 0 || self.completed[full_bytes] & ((1u8 << remainder) - 1) == (1u8 << remainder) - 1
     }
 
     /// Stable ASCII encoding for persisting transfer progress.
@@ -114,4 +130,28 @@ mod tests {
         assert!(ResumeMap::decode("10x01").is_err());
         assert!(ResumeMap::new(1).unwrap().mark_complete(2).is_err());
     }
+    #[test]
+    fn completion_checks_only_used_bits_in_partial_tail() {
+        let mut progress = ResumeMap::new(9).unwrap();
+        for index in 0..8 {
+            progress.mark_complete(index).unwrap();
+        }
+        assert!(!progress.complete());
+        progress.mark_complete(8).unwrap();
+        assert!(progress.complete());
+        assert!(ResumeMap::new(0).unwrap().complete());
+    }
+
+    #[test]
+    fn remaining_ignores_unused_tail_bits() {
+        for len in [1, 2, 7, 8, 9, 10, 15, 16, 17] {
+            let mut progress = ResumeMap::new(len).unwrap();
+            for index in (0..len).step_by(2) {
+                progress.mark_complete(index).unwrap();
+            }
+            let expected = (0..len).filter(|index| index % 2 == 1).collect::<Vec<_>>();
+            assert_eq!(progress.remaining(), expected);
+        }
+    }
+
 }

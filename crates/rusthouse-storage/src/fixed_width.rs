@@ -2,7 +2,8 @@ use std::io::{self, Read};
 
 pub(crate) const MAX_BATCH_BYTES: usize = 64 * 1024 * 1024;
 
-const READ_BUFFER_BYTES: usize = 16 * 1024;
+const READ_BUFFER_BYTES: usize = 64 * 1024;
+const MAX_ELEMENT_WIDTH: usize = 16 * 1024;
 
 pub(crate) fn read_fixed_width<R: Read, T, const WIDTH: usize>(
     reader: &mut R,
@@ -10,7 +11,7 @@ pub(crate) fn read_fixed_width<R: Read, T, const WIDTH: usize>(
     error_message: &'static str,
     decode: impl Fn([u8; WIDTH]) -> T,
 ) -> io::Result<Vec<T>> {
-    if rows > MAX_BATCH_BYTES / WIDTH {
+    if WIDTH == 0 || WIDTH > MAX_ELEMENT_WIDTH || rows > MAX_BATCH_BYTES / WIDTH {
         return Err(io::Error::new(io::ErrorKind::InvalidInput, error_message));
     }
     let mut result = Vec::with_capacity(rows);
@@ -24,4 +25,55 @@ pub(crate) fn read_fixed_width<R: Read, T, const WIDTH: usize>(
         }));
     }
     Ok(result)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn reads_large_fixed_width_batches_in_one_chunk() {
+        struct Counting<R> {
+            inner: R,
+            calls: usize,
+        }
+        impl<R: Read> Read for Counting<R> {
+            fn read(&mut self, bytes: &mut [u8]) -> io::Result<usize> {
+                self.calls += 1;
+                self.inner.read(bytes)
+            }
+        }
+
+        let mut input = Counting {
+            inner: io::Cursor::new(vec![7u8; 32 * 1024]),
+            calls: 0,
+        };
+        let values = read_fixed_width::<_, u64, 8>(
+            &mut input,
+            4096,
+            "invalid fixed-width input",
+            u64::from_le_bytes,
+        )
+        .unwrap();
+        assert_eq!(values.len(), 4096);
+        assert_eq!(input.calls, 1);
+    }
+
+    #[test]
+    fn refuses_invalid_element_widths_without_panicking() {
+        let zero = read_fixed_width::<_, u8, 0>(
+            &mut io::empty(),
+            1,
+            "invalid element width",
+            |_| 0,
+        );
+        assert_eq!(zero.unwrap_err().kind(), io::ErrorKind::InvalidInput);
+        let oversized = read_fixed_width::<_, u8, 16385>(
+            &mut io::empty(),
+            1,
+            "invalid element width",
+            |_| 0,
+        );
+        assert_eq!(oversized.unwrap_err().kind(), io::ErrorKind::InvalidInput);
+    }
 }

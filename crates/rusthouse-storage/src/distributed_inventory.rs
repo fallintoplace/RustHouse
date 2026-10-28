@@ -35,17 +35,16 @@ pub fn inventory_snapshot(
         for entry in fs::read_dir(&part).map_err(|error| io_error(&part, error))? {
             let entry = entry.map_err(|error| io_error(&part, error))?;
             let path = entry.path();
-            let kind = entry.file_type().map_err(|error| io_error(&path, error))?;
-            if !kind.is_file() {
+            // A single no-follow stat checks both file type and byte length.
+            let metadata = fs::symlink_metadata(&path)
+                .map_err(|error| io_error(&path, error))?;
+            if !metadata.file_type().is_file() {
                 return Err(PartError::InvalidScan(format!(
                     "replication inventory requires regular files: {}",
                     path.display()
                 )));
             }
-            let bytes = entry
-                .metadata()
-                .map_err(|error| io_error(&path, error))?
-                .len();
+            let bytes = metadata.len();
             total_bytes = total_bytes
                 .checked_add(bytes)
                 .ok_or_else(|| PartError::InvalidScan("inventory size overflow".into()))?;
@@ -121,4 +120,22 @@ mod tests {
         assert!(inventory_snapshot(&root, 32, 1_000_000).is_err());
         fs::remove_dir_all(root).unwrap();
     }
+    #[test]
+    fn rejects_unexpected_directories_inside_parts() {
+        let root = std::env::temp_dir().join(format!(
+            "rusthouse-inventory-dir-{}", std::process::id()
+        ));
+        let _ = fs::remove_dir_all(&root);
+        fs::create_dir_all(&root).unwrap();
+        let part = root.join("all_0_0_0");
+        write_wide_part(
+            &part,
+            &[Column { name: "id".into(), data_type: "UInt64".into() }],
+            &[vec![Some("7".into())]],
+        ).unwrap();
+        fs::create_dir(part.join("unexpected")).unwrap();
+        assert!(inventory_snapshot(&root, 32, 1_000_000).is_err());
+        fs::remove_dir_all(root).unwrap();
+    }
+
 }

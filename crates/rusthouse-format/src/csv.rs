@@ -5,6 +5,20 @@ pub fn write_quoted_csv_field<W: Write>(output: &mut W, field: &[u8]) -> io::Res
     if field.is_empty() {
         return output.write_all(b"\"\"");
     }
+    // Short quote-free fields dominate tabular output. Emit both quotes and
+    // the payload in a single write without a heap allocation.
+    if field.len() <= 64 && !field.contains(&b'"') {
+        let mut buffer = [0u8; 66];
+        buffer[0] = b'"';
+        buffer[1..field.len() + 1].copy_from_slice(field);
+        buffer[field.len() + 1] = b'"';
+        return output.write_all(&buffer[..field.len() + 2]);
+    }
+    if !field.contains(&b'"') {
+        output.write_all(b"\"")?;
+        output.write_all(field)?;
+        return output.write_all(b"\"");
+    }
     output.write_all(b"\"")?;
     let mut segments = field.split(|&byte| byte == b'"');
     output.write_all(segments.next().unwrap_or_default())?;
@@ -42,6 +56,34 @@ mod tests {
         let mut sink = Calls(0);
         write_quoted_csv_field(&mut sink, b"").unwrap();
         assert_eq!(sink.0, 1);
+    }
+
+    #[test]
+    fn short_unescaped_field_is_emitted_with_one_write() {
+        struct Calls {
+            count: usize,
+            data: Vec<u8>,
+        }
+
+        impl Write for Calls {
+            fn write(&mut self, bytes: &[u8]) -> io::Result<usize> {
+                self.count += 1;
+                self.data.extend_from_slice(bytes);
+                Ok(bytes.len())
+            }
+
+            fn flush(&mut self) -> io::Result<()> {
+                Ok(())
+            }
+        }
+
+        let mut sink = Calls {
+            count: 0,
+            data: Vec::new(),
+        };
+        write_quoted_csv_field(&mut sink, b"hello").unwrap();
+        assert_eq!(sink.count, 1);
+        assert_eq!(sink.data, b"\"hello\"");
     }
 
     #[test]

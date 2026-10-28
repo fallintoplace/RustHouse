@@ -6,6 +6,7 @@ const POLYNOMIAL: u32 = 0x82f6_3b78;
 // Build the Castagnoli lookup table at compile time. Replication verifies every
 // copied byte, so avoid an eight-iteration bit loop for every input byte.
 const TABLE: [u32; 256] = make_table();
+const SLICING_TABLES: [[u32; 256]; 4] = make_slicing_tables();
 
 const fn make_table() -> [u32; 256] {
     let mut table = [0u32; 256];
@@ -21,6 +22,22 @@ const fn make_table() -> [u32; 256] {
         index += 1;
     }
     table
+}
+
+const fn make_slicing_tables() -> [[u32; 256]; 4] {
+    let mut tables = [[0u32; 256]; 4];
+    tables[0] = TABLE;
+    let mut row = 1;
+    while row < 4 {
+        let mut index = 0;
+        while index < 256 {
+            let previous = tables[row - 1][index];
+            tables[row][index] = (previous >> 8) ^ TABLE[(previous & 0xff) as usize];
+            index += 1;
+        }
+        row += 1;
+    }
+    tables
 }
 
 struct Checksum(u32);
@@ -47,7 +64,16 @@ pub fn crc32c(bytes: &[u8]) -> u32 {
 }
 
 fn update(mut crc: u32, bytes: &[u8]) -> u32 {
-    for &byte in bytes {
+    let mut chunks = bytes.chunks_exact(4);
+    for bytes in &mut chunks {
+        let word = u32::from_le_bytes(bytes.try_into().expect("four-byte chunk"));
+        let value = crc ^ word;
+        crc = SLICING_TABLES[3][(value & 0xff) as usize]
+            ^ SLICING_TABLES[2][((value >> 8) & 0xff) as usize]
+            ^ SLICING_TABLES[1][((value >> 16) & 0xff) as usize]
+            ^ SLICING_TABLES[0][(value >> 24) as usize];
+    }
+    for &byte in chunks.remainder() {
         let index = ((crc ^ u32::from(byte)) & 0xff) as usize;
         crc = (crc >> 8) ^ TABLE[index];
     }
@@ -64,7 +90,11 @@ pub fn crc32c_reader(reader: &mut impl Read, max_bytes: u64) -> io::Result<(u64,
         let available = (max_bytes - total)
             .saturating_add(1)
             .min(buffer.len() as u64) as usize;
-        let count = reader.read(&mut buffer[..available])?;
+        let count = match reader.read(&mut buffer[..available]) {
+            Ok(count) => count,
+            Err(error) if error.kind() == io::ErrorKind::Interrupted => continue,
+            Err(error) => return Err(error),
+        };
         if count == 0 {
             break;
         }
@@ -145,4 +175,25 @@ mod tests {
         );
         assert!(crc32c_reader(&mut Cursor::new(data), 74_999).is_err());
     }
+    #[test]
+    fn interrupted_read_does_not_abort_streaming_checksum() {
+        struct Once<'a> {
+            cursor: Cursor<&'a [u8]>,
+            interrupt: bool,
+        }
+        impl Read for Once<'_> {
+            fn read(&mut self, buf: &mut [u8]) -> io::Result<usize> {
+                if self.interrupt {
+                    self.interrupt = false;
+                    return Err(io::ErrorKind::Interrupted.into());
+                }
+                self.cursor.read(buf)
+            }
+        }
+        let data = b"retry safe replica bytes";
+        let mut reader = Once { cursor: Cursor::new(data.as_slice()), interrupt: true };
+        assert_eq!(crc32c_reader(&mut reader, data.len() as u64).unwrap(),
+            (data.len() as u64, crc32c(data)));
+    }
+
 }

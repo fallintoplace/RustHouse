@@ -60,8 +60,12 @@ pub(super) fn compile_like(pattern: &str) -> Result<LikePattern, ExecutionError>
 }
 
 pub(super) fn next_utf8_boundary(value: &[u8], index: usize) -> Option<usize> {
-    let width = match *value.get(index)? {
-        0x00..=0x7f => 1,
+    let first = *value.get(index)?;
+    // ASCII bytes are already valid one-byte codepoints.
+    if first.is_ascii() {
+        return Some(index + 1);
+    }
+    let width = match first {
         0xc2..=0xdf => 2,
         0xe0..=0xef => 3,
         0xf0..=0xf4 => 4,
@@ -136,9 +140,15 @@ pub(super) fn like_matches(value: &[u8], pattern: &LikePattern, case_insensitive
             if bytes.is_empty() {
                 true
             } else if !case_insensitive {
-                value
-                    .windows(bytes.len())
-                    .any(|part| part == bytes.as_slice())
+                if let (Ok(haystack), Ok(needle)) =
+                    (std::str::from_utf8(value), std::str::from_utf8(bytes))
+                {
+                    haystack.contains(needle)
+                } else {
+                    value.windows(bytes.len()).any(|part| {
+                        part[0] == bytes[0] && part[1..] == bytes[1..]
+                    })
+                }
             } else if value.is_ascii() && bytes.is_ascii() {
                 value
                     .windows(bytes.len())
@@ -202,6 +212,30 @@ mod perf_tests {
     use super::*;
 
     #[test]
+    fn ascii_wildcard_steps_skip_unicode_validation() {
+        assert_eq!(next_utf8_boundary(b"ascii", 0), Some(1));
+        assert_eq!(next_utf8_boundary(b"ascii", 4), Some(5));
+        assert_eq!(next_utf8_boundary(b"ascii", 5), None);
+        assert_eq!(next_utf8_boundary("é".as_bytes(), 0), Some(2));
+        assert_eq!(next_utf8_boundary(b"\xff", 0), None);
+    }
+
+    #[test]
+    fn case_sensitive_contains_matches_utf8_and_raw_bytes() {
+        let pattern = compile_like("%needle%").unwrap();
+        let mut large = "haystack".repeat(512);
+        large.push_str("needle");
+        assert!(like_matches(large.as_bytes(), &pattern, false));
+        assert!(!like_matches(b"haystack", &pattern, false));
+
+        let raw = b"\xffneedle\xfe";
+        assert!(like_matches(raw, &pattern, false));
+
+        let accented = compile_like("%f\u{e9}%").unwrap();
+        assert!(like_matches("caf\u{e9}".as_bytes(), &accented, false));
+    }
+
+    #[test]
     fn ascii_contains_preserves_case_sensitivity() {
         let pattern = compile_like("%Needle%").unwrap();
         assert!(like_matches(b"hayNEEDLEstack", &pattern, true));
@@ -228,4 +262,15 @@ mod perf_tests {
         assert!(like_matches("préfixe".as_bytes(), &pattern, true));
         assert!(!like_matches("préfixe".as_bytes(), &pattern, false));
     }
+    #[test]
+    fn contains_literal_handles_binary_boundaries_and_repeated_prefixes() {
+        let pattern = compile_like("%ababa%").unwrap();
+        assert!(like_matches(b"zzabababa", &pattern, false));
+        assert!(!like_matches(b"zzababab", &pattern, false));
+        let binary = compile_like("%a\\x00b%").unwrap();
+        assert!(!like_matches(b"ab", &binary, false));
+        assert!(like_matches(b"prefixababa", &pattern, false));
+        assert!(like_matches(b"anything", &compile_like("%%").unwrap(), false));
+    }
+
 }
