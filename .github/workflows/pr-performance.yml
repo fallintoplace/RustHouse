@@ -1,0 +1,69 @@
+name: Pull request SQL performance
+
+on:
+  pull_request:
+    paths:
+      - 'crates/rusthouse-query/src/execute.rs'
+      - 'crates/rusthouse-query/src/execute/**'
+      - 'crates/rusthouse-query/benches/queries.rs'
+      - 'bench/pr_bench_compare.py'
+      - 'bench/test_pr_bench_compare.py'
+      - '.github/workflows/pr-performance.yml'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: sql-pr-performance-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+jobs:
+  numbers-sql:
+    name: numbers() SQL base vs PR (ubuntu-24.04)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 25
+    env:
+      BASE_SHA: ${{ github.event.pull_request.base.sha }}
+      HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: sql-pr-comparison
+          save-if: false
+      - name: Benchmark base commit
+        shell: bash
+        run: |
+          git checkout --detach "$BASE_SHA"
+          cargo bench -p rusthouse-query --bench queries --locked -- --rows 200000 --samples 21 \
+            | tee "$RUNNER_TEMP/rusthouse-base-bench.txt"
+      - name: Benchmark PR commit
+        shell: bash
+        run: |
+          git checkout --detach "$HEAD_SHA"
+          cargo bench -p rusthouse-query --bench queries --locked -- --rows 200000 --samples 21 \
+            | tee "$RUNNER_TEMP/rusthouse-pr-bench.txt"
+      - name: Test comparison formatter
+        run: python3 -m unittest bench.test_pr_bench_compare
+      - name: Show base vs PR numbers in job summary
+        shell: bash
+        run: |
+          python3 -m bench.pr_bench_compare \
+            --baseline "$RUNNER_TEMP/rusthouse-base-bench.txt" \
+            --candidate "$RUNNER_TEMP/rusthouse-pr-bench.txt" \
+            --summary "$RUNNER_TEMP/rusthouse-bench-summary.md"
+          cat "$RUNNER_TEMP/rusthouse-bench-summary.md" >> "$GITHUB_STEP_SUMMARY"
+      - name: Upload raw benchmark results
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: rusthouse-pr-perf-${{ github.event.pull_request.number }}-${{ github.run_attempt }}
+          path: |
+            ${{ runner.temp }}/rusthouse-base-bench.txt
+            ${{ runner.temp }}/rusthouse-pr-bench.txt
+            ${{ runner.temp }}/rusthouse-bench-summary.md
+          if-no-files-found: warn
+          retention-days: 14

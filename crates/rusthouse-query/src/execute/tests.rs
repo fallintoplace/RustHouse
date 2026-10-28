@@ -169,6 +169,66 @@ fn runs_generated_numbers_with_projection_filter_count_and_limit() {
 }
 
 #[test]
+fn filters_ordered_numbers_in_input_order_without_building_a_topk_heap() {
+    assert_eq!(
+        run(
+            "SELECT number FROM numbers(100) WHERE number % 7 = 0 ORDER BY number DESC LIMIT 3",
+            None
+        )
+        .unwrap(),
+        "number\n98\n91\n84\n"
+    );
+    assert_eq!(
+        run(
+            "SELECT number FROM numbers(100) WHERE number % 7 = 0 ORDER BY number DESC LIMIT 2 OFFSET 1",
+            None
+        )
+        .unwrap(),
+        "number\n91\n84\n"
+    );
+    assert_eq!(
+        run(
+            "SELECT number AS n FROM numbers(40) WHERE number % 5 = 0 ORDER BY n LIMIT 2 OFFSET 2",
+            None
+        )
+        .unwrap(),
+        "n\n10\n15\n"
+    );
+    assert_eq!(
+        run(
+            "SELECT number, number FROM numbers(12) WHERE number % 4 = 0 ORDER BY number DESC LIMIT 2",
+            None
+        )
+        .unwrap(),
+        "number\tnumber\n8\t8\n4\t4\n"
+    );
+    assert_eq!(
+        run(
+            "SELECT number FROM numbers(3, 20, 4) WHERE number % 3 = 1 ORDER BY number DESC LIMIT 1 OFFSET 1",
+            None
+        )
+        .unwrap(),
+        "number\n7\n"
+    );
+    assert_eq!(
+        run(
+            "SELECT number FROM numbers(30) WHERE number = 3 OR number = 23 ORDER BY number DESC LIMIT 1",
+            None
+        )
+        .unwrap(),
+        "number\n23\n"
+    );
+    assert_eq!(
+        run(
+            "SELECT number FROM numbers(5) WHERE number % 7 = 6 ORDER BY number DESC LIMIT 2",
+            None
+        )
+        .unwrap(),
+        "number\n"
+    );
+}
+
+#[test]
 fn queries_numbers_with_start_and_count() {
     assert_eq!(
         run(

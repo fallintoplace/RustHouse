@@ -1672,6 +1672,46 @@ fn execute_numbers<W: Write>(
         return Ok(());
     }
 
+    // A filtered generated sequence is still ordered by number. For a
+    // bounded ORDER BY page, scan in the requested direction and stop after
+    // the page is full instead of building a heap from every matching row.
+    // Keep the existing bounded-sort limit and unbounded-sort behavior.
+    if !is_count {
+        if let (Some(sorted), Some(limit)) = (sorting.as_ref(), query.limit) {
+            if sorted.requested() <= MAX_SORTED_ROWS {
+                let mut remaining_offset = sorted.offset();
+                let mut emitted = 0usize;
+                for position in 0..rows {
+                    let index = if sorted.descending() {
+                        rows - 1 - position
+                    } else {
+                        position
+                    };
+                    let number = start + index * step;
+                    if !number_matches_all(Number::Unsigned(u128::from(number)), &comparisons) {
+                        continue;
+                    }
+                    if remaining_offset > 0 {
+                        remaining_offset -= 1;
+                        continue;
+                    }
+                    for column in 0..projected.len() {
+                        if column > 0 {
+                            output.write_all(b"\t")?;
+                        }
+                        write!(output, "{number}")?;
+                    }
+                    writeln!(output)?;
+                    emitted += 1;
+                    if emitted == limit {
+                        break;
+                    }
+                }
+                return Ok(());
+            }
+        }
+    }
+
     let mut matched = 0u64;
     let mut emitted = 0usize;
     let offset = query.offset.unwrap_or(0);
