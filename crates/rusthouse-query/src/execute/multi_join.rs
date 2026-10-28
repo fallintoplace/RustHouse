@@ -8,7 +8,7 @@ use std::path::PathBuf;
 
 use super::join::{MAX_INPUT_ROWS, MAX_RESULT_ROWS, MAX_STREAM_BUILD_BYTES, multi_join_row_key as row_key, read_rows};
 
-const MAX_CHAIN_BYTES: usize = 64 * 1024 * 1024;
+const MAX_CHAIN_BYTES: usize = crate::join::MAX_JOIN_CHAIN_BYTES;
 const MAX_CHAIN_COLUMNS: usize = 128;
 
 fn invalid(message: impl Into<String>) -> ExecutionError {
