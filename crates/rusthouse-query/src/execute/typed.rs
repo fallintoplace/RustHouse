@@ -74,7 +74,7 @@ pub(super) fn key_at(column: &TypedColumn, row: usize) -> Key {
                 Key::Text(values.get(row).unwrap().to_vec())
             }
         }
-        TypedColumn::Uuid(values) => Key::Uuid(values[row].to_string()),
+        TypedColumn::Uuid(values) => Key::UuidBytes(*values[row].as_bytes()),
     }
 }
 
@@ -1908,5 +1908,24 @@ mod single_column_distinct_perf_tests {
         execute(&query, Some(&part), &mut output).unwrap();
         assert_eq!(output, b"word\nalpha\nbeta\ngamma\n");
         std::fs::remove_dir_all(part).unwrap();
+    }
+}
+
+#[cfg(test)]
+mod uuid_distinct_key_tests {
+    use super::{Key, key_at};
+    use rusthouse_storage::{TypedColumn, read_uuid_values};
+
+    #[test]
+    fn distinct_probe_uses_canonical_uuid_bytes_without_formatting() {
+        let mut disk = [0u8; 48];
+        disk[16] = 1;
+        let values = read_uuid_values(&mut disk.as_slice(), 3).unwrap();
+        let column = TypedColumn::Uuid(values);
+        let first = key_at(&column, 0);
+        let second = key_at(&column, 1);
+        assert!(matches!(first, Key::UuidBytes(_)));
+        assert_ne!(first, second);
+        assert_eq!(first, key_at(&column, 2));
     }
 }
