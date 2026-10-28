@@ -36,7 +36,15 @@ pub fn verify_wide_part(path: impl AsRef<Path>) -> Result<PartVerification, Part
         validate_adaptive_stream(&data, &marks, metadata.rows, &mut layout)?;
         validate_wide_marks(&marks, CompressedBlockReader::open(&data)?)?;
 
-        account_decoded_blocks(&data, &mut report)?;
+        let decoded_size = account_decoded_blocks(&data, &mut report)?;
+        if let Some(expected) = expected_fixed_stream_bytes(&data, &metadata)? {
+            if decoded_size != expected {
+                return Err(invalid(
+                    &data,
+                    "fixed-width stream byte count differs from count.txt",
+                ));
+            }
+        }
         report.marks = report
             .marks
             .checked_add(marks.marks.len())
@@ -64,20 +72,82 @@ fn validate_stream_pairs(
     Ok(())
 }
 
-fn account_decoded_blocks(data: &Path, report: &mut PartVerification) -> Result<(), PartError> {
+fn account_decoded_blocks(data: &Path, report: &mut PartVerification) -> Result<u64, PartError> {
     let mut reader = CompressedBlockReader::open(data)?;
+    let mut decoded_size = 0u64;
     while let Some(block) = reader.next_decoded() {
         let block = block?;
         report.blocks = report
             .blocks
             .checked_add(1)
             .ok_or_else(|| invalid(data, "block count overflows"))?;
+        decoded_size = decoded_size
+            .checked_add(block.data.len() as u64)
+            .ok_or_else(|| invalid(data, "decoded byte count overflows"))?;
         report.decompressed_bytes = report
             .decompressed_bytes
             .checked_add(block.data.len() as u64)
             .ok_or_else(|| invalid(data, "decoded byte count overflows"))?;
     }
-    Ok(())
+    Ok(decoded_size)
+}
+
+/// Validate only streams with an unambiguous fixed-width on-disk representation.
+/// Variable-length and nested types still rely on their dedicated readers.
+fn fixed_stream_width(kind: &str) -> Option<u64> {
+    let kind = kind
+        .strip_prefix("Nullable(")
+        .and_then(|base| base.strip_suffix(')'))
+        .unwrap_or(kind);
+    match kind {
+        "Bool" | "UInt8" | "Int8" => Some(1),
+        "Date" | "UInt16" | "Int16" | "BFloat16" => Some(2),
+        "DateTime" | "UInt32" | "Int32" | "Float32" | "IPv4" => Some(4),
+        "UInt64" | "Int64" | "Float64" => Some(8),
+        "UInt128" | "Int128" | "UUID" | "IPv6" => Some(16),
+        "UInt256" | "Int256" => Some(32),
+        _ => kind
+            .strip_prefix("FixedString(")
+            .and_then(|width| width.strip_suffix(')'))
+            .and_then(|width| width.parse::<u64>().ok())
+            .filter(|width| *width > 0),
+    }
+}
+
+fn expected_fixed_stream_bytes(
+    data: &Path,
+    metadata: &crate::PartMetadata,
+) -> Result<Option<u64>, PartError> {
+    let Some(name) = data
+        .file_name()
+        .and_then(|name| name.to_str())
+        .and_then(|name| name.strip_suffix(".bin"))
+    else {
+        return Ok(None);
+    };
+    let width = if let Some(name) = name.strip_suffix(".null") {
+        if metadata.columns.iter().any(|column| {
+            column.name == name && column.data_type.starts_with("Nullable(")
+        }) {
+            Some(1)
+        } else {
+            None
+        }
+    } else {
+        metadata
+            .columns
+            .iter()
+            .find(|column| column.name == name)
+            .and_then(|column| fixed_stream_width(&column.data_type))
+    };
+    width
+        .map(|width| {
+            metadata
+                .rows
+                .checked_mul(width)
+                .ok_or_else(|| invalid(data, "fixed-width stream byte count overflows"))
+        })
+        .transpose()
 }
 
 fn validate_adaptive_stream(
@@ -212,6 +282,85 @@ mod tests {
                 decompressed_bytes: 16,
             }
         );
+        fs::remove_dir_all(dir).unwrap();
+    }
+
+    fn checked_plain_block(data: &[u8]) -> Vec<u8> {
+        let mut encoded = vec![0x02];
+        encoded.extend_from_slice(&(9 + data.len() as u32).to_le_bytes());
+        encoded.extend_from_slice(&(data.len() as u32).to_le_bytes());
+        encoded.extend_from_slice(data);
+        let mut block = u128::from(cityhash128(&encoded)).to_le_bytes().to_vec();
+        block.extend_from_slice(&encoded);
+        block
+    }
+
+    #[test]
+    fn checks_fixed_width_stream_sizes_against_row_counts() {
+        let dir = fixture();
+        for values in [vec![10u64], vec![10, 20, 30]] {
+            let bytes: Vec<_> = values.into_iter().flat_map(u64::to_le_bytes).collect();
+            fs::write(dir.join("id.bin"), checked_plain_block(&bytes)).unwrap();
+            assert!(matches!(
+                verify_wide_part(&dir),
+                Err(PartError::InvalidPart {
+                    reason: "fixed-width stream byte count differs from count.txt",
+                    ..
+                })
+            ));
+        }
+        fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn checks_nullable_null_maps_and_fixed_string_widths() {
+        let dir = fixture();
+        fs::write(
+            dir.join("columns.txt"),
+            "columns format version: 1\n1 columns:\n`id` Nullable(UInt64)\n",
+        )
+        .unwrap();
+        fs::write(dir.join("id.null.bin"), checked_plain_block(&[0, 1])).unwrap();
+        fs::copy(dir.join("id.mrk2"), dir.join("id.null.mrk2")).unwrap();
+        assert!(verify_wide_part(&dir).is_ok());
+        fs::write(dir.join("id.null.bin"), checked_plain_block(&[0])).unwrap();
+        assert!(matches!(
+            verify_wide_part(&dir),
+            Err(PartError::InvalidPart {
+                reason: "fixed-width stream byte count differs from count.txt",
+                ..
+            })
+        ));
+        fs::remove_file(dir.join("id.null.bin")).unwrap();
+        fs::remove_file(dir.join("id.null.mrk2")).unwrap();
+
+        fs::write(
+            dir.join("columns.txt"),
+            "columns format version: 1\n1 columns:\n`id` FixedString(6)\n",
+        )
+        .unwrap();
+        fs::write(dir.join("id.bin"), checked_plain_block(b"abcdefghijkl")).unwrap();
+        assert!(verify_wide_part(&dir).is_ok());
+        fs::write(dir.join("id.bin"), checked_plain_block(b"abcdefghijk")).unwrap();
+        assert!(matches!(
+            verify_wide_part(&dir),
+            Err(PartError::InvalidPart {
+                reason: "fixed-width stream byte count differs from count.txt",
+                ..
+            })
+        ));
+        fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn variable_width_streams_are_not_mistaken_for_fixed_width() {
+        let dir = fixture();
+        fs::write(
+            dir.join("columns.txt"),
+            "columns format version: 1\n1 columns:\n`id` String\n",
+        )
+        .unwrap();
+        assert!(verify_wide_part(&dir).is_ok());
         fs::remove_dir_all(dir).unwrap();
     }
 
