@@ -85,6 +85,12 @@ jobs:
           python3 -m bench workload latency -- \
             --binary target/debug/rusthouse \
             --rows 512 --runs 1 --warmups 0
+      - name: Verify persisted physical scans against exact references
+        if: matrix.os == 'ubuntu-latest'
+        run: |
+          python3 -m bench workload physical-scan -- \\
+            --binary target/debug/rusthouse --rows 2048 \\
+            --runs 1 --warmups 0 --timeout 60
       - name: Verify CLI and HTTP query parity
         if: matrix.os == 'ubuntu-latest'
         run: |

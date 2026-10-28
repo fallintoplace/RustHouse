@@ -79,6 +79,19 @@ class BenchmarkEntryPointTests(unittest.TestCase):
              "--binary", "target/release/rusthouse", "--runs", "3"],
         )
 
+    def test_physical_scan_workload_forwards_to_existing_scale_runner(self):
+        with mock.patch.object(runner, "run_command", return_value=0) as invoke:
+            result = runner.main([
+                "workload", "physical-scan", "--",
+                "--binary", "target/debug/rusthouse", "--rows", "2048",
+            ])
+        self.assertEqual(result, 0)
+        self.assertEqual(
+            invoke.call_args.args[1],
+            [sys.executable, str(runner.ROOT / "bench/scale/physical_scan.py"),
+             "--binary", "target/debug/rusthouse", "--rows", "2048"],
+        )
+
     def test_python_tests_keep_running_after_a_failure(self):
         with mock.patch.object(
             runner, "run_command", side_effect=[0, 1] + [0] * (len(runner.PYTHON_SUITES) - 2)
