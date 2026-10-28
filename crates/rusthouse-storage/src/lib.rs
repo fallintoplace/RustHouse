@@ -33,6 +33,7 @@ pub mod distributed_retention;
 mod nested_arrays;
 pub mod distributed_repair_budget;
 mod nullable;
+pub mod distributed_lineage;
 mod nullable_arrays;
 mod numeric;
 mod part_scan;
