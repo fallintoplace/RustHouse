@@ -6,6 +6,7 @@ This is synthetic data with seven columns, NOT the official hits dataset.
 import argparse
 import random
 import sqlite3
+from contextlib import closing
 from datetime import date, timedelta
 from pathlib import Path
 
@@ -48,7 +49,7 @@ def generate(directory, rows=10000, seed=42):
     names = [name for name, _, _ in FIELDS]
     tsv = directory / "hits.tsv"
     db = directory / "hits.sqlite"
-    with sqlite3.connect(db) as connection, tsv.open("w", encoding="utf-8", newline="\n") as stream:
+    with closing(sqlite3.connect(db)) as connection, connection, tsv.open("w", encoding="utf-8", newline="\n") as stream:
         connection.execute("DROP TABLE IF EXISTS hits")
         connection.execute("CREATE TABLE hits (" +
                            ", ".join(f"{name} {kind}" for name, _, kind in FIELDS) + ")")

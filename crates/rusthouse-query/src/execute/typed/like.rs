@@ -95,10 +95,19 @@ pub(super) fn like_matches(value: &[u8], pattern: &LikePattern, case_insensitive
             .get(value.len().saturating_sub(bytes.len())..)
             .is_some_and(|suffix| equal_like_bytes(suffix, bytes, case_insensitive)),
         LikePattern::Contains(bytes) => {
-            bytes.is_empty()
-                || value
+            if bytes.is_empty() {
+                true
+            } else if !case_insensitive {
+                value.windows(bytes.len()).any(|part| part == bytes.as_slice())
+            } else if value.is_ascii() && bytes.is_ascii() {
+                value
                     .windows(bytes.len())
-                    .any(|part| equal_like_bytes(part, bytes, case_insensitive))
+                    .any(|part| part.eq_ignore_ascii_case(bytes))
+            } else {
+                value
+                    .windows(bytes.len())
+                    .any(|part| equal_like_bytes(part, bytes, true))
+            }
         }
         LikePattern::Wildcard(tokens) => like_matches_wildcards(value, tokens, case_insensitive),
     }
@@ -146,4 +155,24 @@ pub(super) fn like_matches_wildcards(value: &[u8], pattern: &[LikeToken], case_i
         pat += 1;
     }
     pat == pattern.len()
+}
+
+#[cfg(test)]
+mod perf_tests {
+    use super::*;
+
+    #[test]
+    fn ascii_contains_preserves_case_sensitivity() {
+        let pattern = compile_like("%Needle%").unwrap();
+        assert!(like_matches(b"hayNEEDLEstack", &pattern, true));
+        assert!(!like_matches(b"hayNEEDLEstack", &pattern, false));
+        assert!(!like_matches(b"haystack", &pattern, true));
+    }
+
+    #[test]
+    fn unicode_contains_keeps_case_insensitive_semantics() {
+        let pattern = compile_like("%Éf%").unwrap();
+        assert!(like_matches("préfixe".as_bytes(), &pattern, true));
+        assert!(!like_matches("préfixe".as_bytes(), &pattern, false));
+    }
 }

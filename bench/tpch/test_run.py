@@ -15,6 +15,13 @@ class RunnerTests(unittest.TestCase):
                 load_queries(directory), [(2, "SELECT 2"), (10, "SELECT 10")]
             )
 
+    def test_query_discovery_accepts_uppercase_names(self):
+        with tempfile.TemporaryDirectory() as root:
+            directory = Path(root)
+            (directory / "Q03.SQL").write_text("SELECT 3;\n")
+            (directory / "q01.sql").write_text("SELECT 1;\n")
+            self.assertEqual(load_queries(directory), [(1, "SELECT 1"), (3, "SELECT 3")])
+
     def test_rejects_zero_query_ids(self):
         for filename in ("q0.sql", "q00.sql"):
             with tempfile.TemporaryDirectory() as root:

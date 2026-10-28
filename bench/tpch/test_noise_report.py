@@ -19,6 +19,16 @@ class NoiseReportTests(unittest.TestCase):
         self.assertEqual([q["state"] for q in report["queries"]],
                          ["noisy", "insufficient_samples", "not_verified"])
 
+    def test_zero_negative_and_boolean_timings_are_invalid(self):
+        for bad in (0.0, -0.1, True, float("inf")):
+            with self.subTest(sample=bad):
+                row = assess_query({
+                    "query": 6,
+                    "status": "passed",
+                    "timings_seconds": [1.0, 1.0, bad, 1.0, 1.0],
+                })
+                self.assertEqual(row["state"], "invalid_samples")
+
     def test_rejects_invalid_thresholds_and_samples(self):
         with self.assertRaises(ValueError):
             assess_query({"query": 1}, min_samples=1)

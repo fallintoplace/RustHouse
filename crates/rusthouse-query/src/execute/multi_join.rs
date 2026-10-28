@@ -92,14 +92,61 @@ fn push_row(
     Ok(())
 }
 
+/// Resolve USING only when exactly one existing input supplies that key.
+/// Ambiguous names must use qualified ON instead.
+fn using_column_pair(
+    relations: &[Relation],
+    name: &str,
+) -> Result<(usize, usize), ExecutionError> {
+    let (right, earlier) = relations
+        .split_last()
+        .ok_or_else(|| invalid("JOIN USING has no relations"))?;
+    let mut previous = None;
+    for relation in earlier {
+        if let Some(index) = relation.names.iter().position(|column| column == name) {
+            if previous.replace(relation.start + index).is_some() {
+                return Err(invalid(format!("ambiguous JOIN USING column: {name}")));
+            }
+        }
+    }
+    let left = previous.ok_or_else(|| invalid(format!("unknown JOIN USING column: {name}")))?;
+    let right_index = right
+        .names
+        .iter()
+        .position(|column| column == name)
+        .ok_or_else(|| invalid(format!("unknown JOIN USING column: {name}")))?;
+    Ok((left, right.start + right_index))
+}
+
 fn step_keys(
     step: &JoinStep,
     relations: &[Relation],
     left_width: usize,
 ) -> Result<(Vec<usize>, Vec<usize>), ExecutionError> {
-    let mut left_keys = Vec::with_capacity(step.keys.len());
-    let mut right_keys = Vec::with_capacity(step.keys.len());
-    for (first, second) in &step.keys {
+    let count = step.keys.len() + step.using_keys.len();
+    let mut left_keys = Vec::with_capacity(count);
+    let mut right_keys = Vec::with_capacity(count);
+    for name in &step.using_keys {
+        let (left, right) = using_column_pair(relations, name)?;
+        let left_type = column_type(relations, left);
+        let right_type = column_type(relations, right);
+        if base_type(left_type) != base_type(right_type) {
+            return Err(invalid(format!(
+                "JOIN key types differ: {left_type} and {right_type}"
+            )));
+        }
+        left_keys.push(left);
+        right_keys.push(right - left_width);
+    }
+    for (first, second) in step
+        .keys
+        .iter()
+        .take(if step.using_keys.is_empty() {
+            usize::MAX
+        } else {
+            0
+        })
+    {
         let first_index = column_index(relations, first)?;
         let second_index = column_index(relations, second)?;
         let (left, right) = if first_index < left_width && second_index >= left_width {
@@ -124,7 +171,7 @@ fn step_keys(
     Ok((left_keys, right_keys))
 }
 
-/// Execute a chain of three or more INNER joins. No output is written before
+/// Execute a chain of three or more bounded joins. No output is written before
 /// all input validation, row-limit checks, and final ordering have succeeded.
 pub fn execute_multi_join<W: Write>(
     query: &JoinSelect,
@@ -187,9 +234,6 @@ pub fn execute_multi_join<W: Write>(
         .chain(query.steps.iter())
         .enumerate()
     {
-        if step.kind != JoinType::Inner || step.any || !step.using_keys.is_empty() {
-            return Err(invalid("chained JOIN currently supports only INNER JOIN ON"));
-        }
         let right_relation = &relations[step_index + 1];
         let left_width = right_relation.start;
         let (left_keys, right_keys) = step_keys(step, &relations[..=step_index + 1], left_width)?;
@@ -210,16 +254,35 @@ pub fn execute_multi_join<W: Write>(
         }
         let mut next = Vec::new();
         let mut retained = 0usize;
+        let mut matched_right = vec![false; right_rows.len()];
         for row in &rows {
+            let mut matched = false;
             if let Some(key) = row_key(row, &left_keys) {
                 if let Some(matches) = hash.get(&key) {
-                    for &match_index in matches {
+                    for &match_index in matches.iter().take(if step.any { 1 } else { usize::MAX }) {
+                        matched = true;
+                        matched_right[match_index] = true;
                         let mut joined =
                             Vec::with_capacity(left_width + right_relation.names.len());
                         joined.extend_from_slice(row);
                         joined.extend_from_slice(&right_rows[match_index]);
                         push_row(&mut next, joined, &mut retained)?;
                     }
+                }
+            }
+            if !matched && matches!(step.kind, JoinType::Left | JoinType::Full) {
+                let mut joined = Vec::with_capacity(left_width + right_relation.names.len());
+                joined.extend_from_slice(row);
+                joined.resize(left_width + right_relation.names.len(), typed::Cell::Null);
+                push_row(&mut next, joined, &mut retained)?;
+            }
+        }
+        if matches!(step.kind, JoinType::Right | JoinType::Full) {
+            for (right_index, matched) in matched_right.into_iter().enumerate() {
+                if !matched {
+                    let mut joined = vec![typed::Cell::Null; left_width];
+                    joined.extend_from_slice(&right_rows[right_index]);
+                    push_row(&mut next, joined, &mut retained)?;
                 }
             }
         }
@@ -246,7 +309,19 @@ pub fn execute_multi_join<W: Write>(
             std::cmp::Ordering::Equal
         });
     }
-    let mut selected = Vec::new();
+    // For unqualified *, the USING key appears once. With a RIGHT/FULL
+    // join, fall back to the newly joined value when the old side is NULL.
+    let mut omitted = HashMap::new();
+    for (index, step) in std::iter::once(&initial_step)
+        .chain(query.steps.iter())
+        .enumerate()
+    {
+        for name in &step.using_keys {
+            let (left, right) = using_column_pair(&relations[..=index + 1], name)?;
+            omitted.insert(right, left);
+        }
+    }
+    let mut selected: Vec<(usize, String, Option<usize>)> = Vec::new();
     if let Some(columns) = &query.columns {
         for column in columns {
             if column.name == "*" {
@@ -260,28 +335,36 @@ pub fn execute_multi_join<W: Write>(
                     selected.push((
                         relation.start + index,
                         format!("{}.{}", relation.alias, name),
+                        None,
                     ));
                 }
             } else {
                 selected.push((
                     column_index(&relations, column)?,
                     format!("{}.{}", column.relation, column.name),
+                    None,
                 ));
             }
         }
     } else {
         for relation in &relations {
             for (index, name) in relation.names.iter().enumerate() {
-                selected.push((
-                    relation.start + index,
-                    format!("{}.{}", relation.alias, name),
-                ));
+                let absolute = relation.start + index;
+                if let Some(&left) = omitted.get(&absolute) {
+                    let existing = selected
+                        .iter_mut()
+                        .find(|(index, _, _)| *index == left)
+                        .ok_or_else(|| invalid("JOIN USING output key was not projected"))?;
+                    existing.2 = Some(absolute);
+                } else {
+                    selected.push((absolute, format!("{}.{}", relation.alias, name), None));
+                }
             }
         }
     }
     let header = selected
         .iter()
-        .map(|(_, name)| name.as_str())
+        .map(|(_, name, _)| name.as_str())
         .collect::<Vec<_>>()
         .join("\t");
     writeln!(output, "{header}")?;
@@ -290,11 +373,16 @@ pub fn execute_multi_join<W: Write>(
         .skip(query.offset)
         .take(query.limit.unwrap_or(usize::MAX))
     {
-        for (position, (index, _)) in selected.iter().enumerate() {
+        for (position, (index, _, fallback)) in selected.iter().enumerate() {
             if position != 0 {
                 output.write_all(b"\t")?;
             }
-            typed::write_value(output, &row[*index])?;
+            let value = if matches!(row[*index], typed::Cell::Null) {
+                fallback.map_or(&row[*index], |right| &row[right])
+            } else {
+                &row[*index]
+            };
+            typed::write_value(output, value)?;
         }
         output.write_all(b"\n")?;
     }

@@ -36,17 +36,14 @@ pub(super) fn resolve(
 }
 
 pub(super) fn row_key(row: &[typed::Cell], indices: &[usize]) -> Option<Vec<typed::Key>> {
-    let mut result = Vec::with_capacity(indices.len());
-    for &index in indices {
-        let cell = &row[index];
-        if matches!(cell, typed::Cell::Null)
-            || matches!(cell, typed::Cell::Numeric(Number::Float(value)) if value.is_nan())
-        {
-            return None;
-        }
-        result.push(cell.key());
+    // Reject invalid later components before cloning any variable-width keys.
+    if indices.iter().any(|&index| {
+        matches!(&row[index], typed::Cell::Null)
+            || matches!(&row[index], typed::Cell::Numeric(Number::Float(value)) if value.is_nan())
+    }) {
+        return None;
     }
-    Some(result)
+    Some(indices.iter().map(|&index| row[index].key()).collect())
 }
 
 pub(super) fn batch_key_into(

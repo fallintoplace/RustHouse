@@ -86,6 +86,7 @@ pub(super) fn execute<W: Write>(
     let mut written = 0usize;
     let offset = query.offset.unwrap_or(0);
     let limit = query.limit.unwrap_or(usize::MAX);
+    let no_filters = query.predicates.is_empty() && query.or_predicates.is_empty();
     while let Some(batch) = reader.next_batch()? {
         let rows = batch
             .first()
@@ -95,7 +96,7 @@ pub(super) fn execute<W: Write>(
             .get(indices[column])
             .ok_or_else(|| ExecutionError::Invalid("missing LENGTH input column".into()))?;
         for row in 0..rows {
-            if !typed::passes(&batch, row, &conditions) {
+            if !no_filters && !typed::passes(&batch, row, &conditions) {
                 continue;
             }
             if skipped < offset {

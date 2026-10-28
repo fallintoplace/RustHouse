@@ -37,6 +37,7 @@ impl Capacity {
         if bytes > self.reserved {
             return Err("cannot commit unreserved bytes");
         }
+        self.available()?;
         Ok(Self {
             used: self.used.checked_add(bytes).ok_or("replica usage overflow")?,
             reserved: self.reserved - bytes,
@@ -68,6 +69,17 @@ mod tests {
         assert_eq!(committed.used, 50);
         assert_eq!(committed.reserved, 30);
         assert_eq!(committed.release(30).unwrap().available().unwrap(), 50);
+    }
+
+    #[test]
+    fn refuses_to_commit_existing_overcommit() {
+        let invalid = Capacity {
+            total: 10,
+            used: 9,
+            reserved: 2,
+        };
+        assert!(invalid.commit(1).is_err());
+        assert_eq!(invalid.release(1).unwrap().available().unwrap(), 0);
     }
 
     #[test]

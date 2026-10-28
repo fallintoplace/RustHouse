@@ -1,4 +1,5 @@
 import sqlite3
+from contextlib import closing
 import tempfile
 import unittest
 from pathlib import Path
@@ -10,7 +11,7 @@ class StarFixtureTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as root:
             report = generate(root, 123, 7)
             path = Path(root)
-            with sqlite3.connect(path / "reference.sqlite") as db:
+            with closing(sqlite3.connect(path / "reference.sqlite")) as db:
                 self.assertEqual(db.execute("SELECT COUNT(*) FROM lineorder").fetchone()[0], 123)
                 self.assertEqual(db.execute("SELECT COUNT(*) FROM date_dim").fetchone()[0],
                                  len(DATE_KEYS))

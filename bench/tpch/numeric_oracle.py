@@ -18,7 +18,10 @@ def parse_tolerance(value):
 def numeric_equal(left, right, tolerance=Decimal("0")):
     tolerance = parse_tolerance(tolerance)
     if left == right:
-        return True
+        try:
+            return Decimal(left.decode("ascii")).is_finite()
+        except (UnicodeDecodeError, InvalidOperation):
+            return True
     try:
         lhs = Decimal(left.decode("ascii"))
         rhs = Decimal(right.decode("ascii"))

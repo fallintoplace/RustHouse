@@ -45,3 +45,7 @@ These are local cold-process observations, not warm engine times or official
 TPC-H numbers. Filesystem caches may be warm. Use identical SQL, data rows,
 types, CPU and power settings. The tool does not prove that the supplied
 databases contain identical data beyond the verified query outputs.
+
+When the SQL does not specify row order, use `--comparison unordered` to
+compare output rows as a multiset (including duplicate counts). The default
+is exact ordered TSV comparison. Both engines still must match the reference.
