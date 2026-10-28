@@ -1284,6 +1284,19 @@ pub(super) fn execute_typed<W: Write>(
                     distinct_probe = Vec::with_capacity(projection_indices.len());
                 }
             }
+            // Unordered single-UUID projections can write the canonical
+            // representation directly. Avoid a temporary String and Vec<Cell>
+            // for each output row after predicates and OFFSET are applied.
+            if !query.distinct && sort_indices.is_empty() && projection_indices.len() == 1 {
+                if let TypedColumn::Uuid(values) = &batch[projection_indices[0]] {
+                    writeln!(output, "{}", values[index])?;
+                    emitted += 1;
+                    if emitted == limit {
+                        return Ok(());
+                    }
+                    continue;
+                }
+            }
             let cells = projection_indices
                 .iter()
                 .map(|&idx| cell(&batch[idx], index))
