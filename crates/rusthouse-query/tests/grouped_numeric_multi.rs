@@ -73,3 +73,28 @@ fn groups_several_numeric_aggregates_in_one_scan() {
     assert!(parse_select("SELECT station, min(temperature), max(temperature) FROM part").is_err());
     fs::remove_dir_all(root).unwrap();
 }
+
+#[test]
+fn grouped_mixed_count_and_sum_keep_nullable_numeric_semantics() {
+    let root = std::env::temp_dir().join(format!(
+        "rusthouse-grouped-nullable-multi-{}-{}",
+        std::process::id(),
+        NEXT.fetch_add(1, Ordering::Relaxed),
+    ));
+    let columns = [
+        Column { name: "station".into(), data_type: "String".into() },
+        Column { name: "temperature".into(), data_type: "Nullable(UInt64)".into() },
+    ];
+    let rows = [
+        vec![Some("west".into()), Some("3".into())],
+        vec![Some("east".into()), None],
+        vec![Some("west".into()), Some("5".into())],
+        vec![Some("east".into()), Some("7".into())],
+    ];
+    write_wide_part(&root, &columns, &rows).unwrap();
+    assert_eq!(
+        run("SELECT station, sum(temperature), count(temperature) FROM part GROUP BY station ORDER BY station", &root),
+        "station\tsum(temperature)\tcount(temperature)\neast\t7\t1\nwest\t8\t2\n"
+    );
+    fs::remove_dir_all(root).unwrap();
+}
