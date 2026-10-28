@@ -16,7 +16,9 @@ fn matches_complete_tokens_not_substrings() {
         ("SELECT hasToken('testing test2', 'test')", 0),
         ("SELECT hasToken('Hello world', 'hello')", 0),
         ("SELECT hasToken('a,b!', 'b')", 1),
-    ] { assert_eq!(value(sql), ConstantValue::Integer(expected), "{sql}"); }
+    ] {
+        assert_eq!(value(sql), ConstantValue::Integer(expected), "{sql}");
+    }
     assert_eq!(value("SELECT hasToken(NULL, 'a')"), ConstantValue::Null);
 }
 #[test]
