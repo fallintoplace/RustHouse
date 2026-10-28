@@ -77,8 +77,12 @@ pub(super) fn next_utf8_boundary(value: &[u8], index: usize) -> Option<usize> {
 }
 
 pub(super) fn equal_like_bytes(left: &[u8], right: &[u8], case_insensitive: bool) -> bool {
+    // Identical bytes have identical Unicode folds without allocations.
+    if left == right {
+        return true;
+    }
     if !case_insensitive {
-        return left == right;
+        return false;
     }
     if left.is_ascii() && right.is_ascii() {
         return left.eq_ignore_ascii_case(right);
@@ -284,6 +288,13 @@ mod perf_tests {
         assert!(!like_matches(b"\0y\xff", &pattern, false));
         assert!(!like_matches(b"", &pattern, false));
         assert!(like_matches(b"X", &pattern, true));
+    }
+
+    #[test]
+    fn identical_unicode_like_bytes_need_no_folding() {
+        assert!(equal_like_bytes("café".as_bytes(), "café".as_bytes(), true));
+        assert!(equal_like_bytes("café".as_bytes(), "café".as_bytes(), false));
+        assert!(!equal_like_bytes("café".as_bytes(), "cafe".as_bytes(), true));
     }
 
 }
