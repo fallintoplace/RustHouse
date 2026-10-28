@@ -184,6 +184,28 @@ fn read_projected_build_rows(
     Ok(rows)
 }
 
+/// JOIN COUNT keeps no projected payloads. Both build orientations
+/// still need equi-keys and whichever side supplies the IS NULL filter.
+fn count_build_columns(
+    keys: &[usize],
+    null_filter: Option<(usize, bool)>,
+    base: usize,
+    width: usize,
+) -> Vec<usize> {
+    let mut columns = keys.to_vec();
+    if let Some((column, _)) = null_filter {
+        if let Some(local) = column.checked_sub(base).filter(|&i| i < width) {
+            columns.push(local);
+        }
+    }
+    columns.sort_unstable();
+    columns.dedup();
+    if columns.is_empty() && width > 0 {
+        columns.push(0);
+    }
+    columns
+}
+
 /// Avoid allocating a heap Vec for the common unique JOIN build key.
 /// Promote to a Vec only when the build side contains duplicate keys.
 enum Bucket {
@@ -231,12 +253,33 @@ where
     if options.stop_after == Some(0) {
         return Ok(0);
     }
-    let mut reader = TypedQueryReader::open(left_path, left_names)?;
+    // A COUNT or preflight probe needs join keys and filters only. Keep
+    // original slot positions when actual output rows must be materialized.
+    let mut retained = if options.materialize_rows {
+        (0..left_names.len()).collect::<Vec<_>>()
+    } else {
+        left_keys.to_vec()
+    };
+    if let Some((column, _)) = options.null_filter {
+        if column < left_names.len() {
+            retained.push(column);
+        }
+    }
+    retained.sort_unstable();
+    retained.dedup();
+    if retained.is_empty() {
+        retained.push(0); // CROSS JOIN still needs a row-count source.
+    }
+    let selected = retained.iter().map(|&index| left_names[index].clone()).collect::<Vec<_>>();
+    let key_indices = left_keys.iter().map(|index| {
+        retained.binary_search(index).expect("join key retained")
+    }).collect::<Vec<_>>();
+    let mut reader = TypedQueryReader::open(left_path, &selected)?;
     let mut matches = 0usize;
     let mut probe_key = Vec::with_capacity(left_keys.len());
     'scan: while let Some(batch) = reader.next_batch()? {
         for index in 0..batch[0].len() {
-            if batch_key_into(&batch, index, left_keys, &mut probe_key) {
+            if batch_key_into(&batch, index, &key_indices, &mut probe_key) {
                 if let Some(right_indices) = hash.get(probe_key.as_slice()) {
                     // Materialize only after a row survives the join filter.
                     let mut left_row: Option<Vec<typed::Cell>> = None;
@@ -247,7 +290,10 @@ where
                     {
                         if let Some((column, not_null)) = options.null_filter {
                             let is_null = if column < left_names.len() {
-                                typed::is_null_at(&batch[column], index)
+                                typed::is_null_at(
+                                    &batch[retained.binary_search(&column).expect("filter retained")],
+                                    index,
+                                )
                             } else {
                                 matches!(
                                     &right_rows[right_index][column - left_names.len()],
@@ -303,13 +349,33 @@ where
     F: FnMut(&[typed::Cell], &[typed::Cell]) -> Result<(), ExecutionError>,
 {
     if options.stop_after == Some(0) { return Ok(0); }
-    let mut reader = TypedQueryReader::open(right_path, right_names)?;
+    let mut retained = if options.materialize_rows {
+        (0..right_names.len()).collect::<Vec<_>>()
+    } else {
+        right_keys.to_vec()
+    };
+    if let Some((column, _)) = options.null_filter {
+        if let Some(local) = column.checked_sub(left_width)
+            .filter(|&local| local < right_names.len()) {
+            retained.push(local);
+        }
+    }
+    retained.sort_unstable();
+    retained.dedup();
+    if retained.is_empty() {
+        retained.push(0);
+    }
+    let selected = retained.iter().map(|&index| right_names[index].clone()).collect::<Vec<_>>();
+    let key_indices = right_keys.iter().map(|index| {
+        retained.binary_search(index).expect("join key retained")
+    }).collect::<Vec<_>>();
+    let mut reader = TypedQueryReader::open(right_path, &selected)?;
     let null_left = vec![typed::Cell::Null; left_width];
     let mut total = 0usize;
     let mut probe_key = Vec::with_capacity(right_keys.len());
     'scan: while let Some(batch) = reader.next_batch()? {
         for row in 0..batch[0].len() {
-            let candidates = if batch_key_into(&batch, row, right_keys, &mut probe_key) {
+            let candidates = if batch_key_into(&batch, row, &key_indices, &mut probe_key) {
                 hash.get(probe_key.as_slice())
             } else { None };
             let matched = candidates.is_some();
@@ -325,7 +391,10 @@ where
                     let is_null = if column < left_width {
                         matches!(&left[column], typed::Cell::Null)
                     } else {
-                        typed::is_null_at(&batch[column - left_width], row)
+                        typed::is_null_at(
+                            &batch[retained.binary_search(&(column - left_width)).expect("filter retained")],
+                            row,
+                        )
                     };
                     if is_null == not_null { continue; }
                 }
@@ -360,8 +429,9 @@ fn execute_streaming_right_outer<W: Write>(
         left_names, right_names, selected, left_keys, right_keys, null_filter,
     } = columns;
     let left_meta = inspect_query_source(left_path)?;
-    let left_rows = read_rows(
-        left_path, left_names, left_meta.rows,
+    let keep = retained_build_columns(left_names, left_keys, selected, null_filter, 0);
+    let left_rows = read_projected_build_rows(
+        left_path, left_names, &keep, left_meta.rows,
         MAX_STREAM_BUILD_ROWS, MAX_STREAM_BUILD_BYTES,
     )?;
     let mut hash = HashMap::<Vec<typed::Key>, Bucket>::with_capacity(left_rows.len());
@@ -577,9 +647,29 @@ where
     if options.stop_after == Some(0) {
         return Ok(0);
     }
-    let mut reader = TypedQueryReader::open(right_path, right_names)?;
-    let mut matches = 0usize;
+    let mut retained = if options.materialize_rows {
+        (0..right_names.len()).collect::<Vec<_>>()
+    } else {
+        right_keys.to_vec()
+    };
     let left_width = left_rows.first().map_or(0, Vec::len);
+    if let Some((column, _)) = options.null_filter {
+        if let Some(local) = column.checked_sub(left_width)
+            .filter(|&local| local < right_names.len()) {
+            retained.push(local);
+        }
+    }
+    retained.sort_unstable();
+    retained.dedup();
+    if retained.is_empty() {
+        retained.push(0);
+    }
+    let selected = retained.iter().map(|&index| right_names[index].clone()).collect::<Vec<_>>();
+    let key_indices = right_keys.iter().map(|index| {
+        retained.binary_search(index).expect("join key retained")
+    }).collect::<Vec<_>>();
+    let mut reader = TypedQueryReader::open(right_path, &selected)?;
+    let mut matches = 0usize;
     // Each retained left row can match only its first right row.
     let mut seen_left = options.any.then(|| vec![false; left_rows.len()]);
     let mut remaining_left = seen_left.as_ref().map(|_| {
@@ -590,7 +680,7 @@ where
     let mut probe_key = Vec::with_capacity(right_keys.len());
     'scan: while let Some(batch) = reader.next_batch()? {
         for index in 0..batch[0].len() {
-            if batch_key_into(&batch, index, right_keys, &mut probe_key) {
+            if batch_key_into(&batch, index, &key_indices, &mut probe_key) {
                 if let Some(left_indices) = hash.get(probe_key.as_slice()) {
                     // Most matches may be filtered or already claimed by ANY.
                     // Decode the full probe row only when a match survives.
@@ -612,7 +702,10 @@ where
                             let is_null = if column < left_width {
                                 matches!(&left_rows[left_index][column], typed::Cell::Null)
                             } else {
-                                typed::is_null_at(&batch[column - left_width], index)
+                                typed::is_null_at(
+                                    &batch[retained.binary_search(&(column - left_width)).expect("filter retained")],
+                                    index,
+                                )
                             };
                             if is_null == not_null {
                                 continue;
@@ -812,9 +905,22 @@ fn execute_streaming_ordered_inner<W: Write>(
         left_names, right_names, selected, left_keys, right_keys, null_filter
     } = columns;
     let right_metadata = inspect_query_source(right_path)?;
-    let right_rows = read_rows(
-        right_path, right_names, right_metadata.rows,
-        MAX_STREAM_BUILD_ROWS, MAX_STREAM_BUILD_BYTES
+    let mut keep = retained_build_columns(
+        right_names, right_keys, selected, null_filter, left_names.len(),
+    );
+    // An ORDER BY column can be absent from SELECT but is still needed
+    // when comparing the streamed joined rows.
+    for &(index, _, _) in order {
+        if let Some(local) = index.checked_sub(left_names.len())
+            .filter(|&index| index < right_names.len()) {
+            keep.push(local);
+        }
+    }
+    keep.sort_unstable();
+    keep.dedup();
+    let right_rows = read_projected_build_rows(
+        right_path, right_names, &keep, right_metadata.rows,
+        MAX_STREAM_BUILD_ROWS, MAX_STREAM_BUILD_BYTES,
     )?;
     let mut hash = HashMap::<Vec<typed::Key>, Bucket>::with_capacity(right_rows.len());
     for (index, row) in right_rows.iter().enumerate() {
@@ -849,7 +955,7 @@ fn execute_streaming_ordered_inner<W: Write>(
             let at = |index: usize| -> &typed::Cell {
                 if index < width { &left[index] } else { &right[index - width] }
             };
-            let keys = order.iter().map(|(index, _, _)| at(*index).clone()).collect();
+            let keys: Vec<typed::Cell> = order.iter().map(|(index, _, _)| at(*index).clone()).collect();
             let values: Vec<typed::Cell> = selected
                 .iter().map(|(index, _, _)| at(*index).clone()).collect();
             let bytes = ordered_join_retained_bytes(&keys)?
@@ -918,9 +1024,12 @@ fn execute_streaming_inner_count<W: Write>(
     }
     let count = if right_count <= MAX_STREAM_BUILD_ROWS &&
         (right_count <= left_count || left_count > MAX_STREAM_BUILD_ROWS) {
-        let right_rows = read_rows(
-            right_path, right_names, right_count,
-            MAX_STREAM_BUILD_ROWS, MAX_STREAM_BUILD_BYTES
+        let keep = count_build_columns(
+            right_keys, null_filter, left_names.len(), right_names.len(),
+        );
+        let right_rows = read_projected_build_rows(
+            right_path, right_names, &keep, right_count,
+            MAX_STREAM_BUILD_ROWS, MAX_STREAM_BUILD_BYTES,
         )?;
         let mut hash = HashMap::<Vec<typed::Key>, Bucket>::with_capacity(right_rows.len());
         for (index, row) in right_rows.iter().enumerate() {
@@ -942,9 +1051,12 @@ fn execute_streaming_inner_count<W: Write>(
             }, |_, _| Ok(())
         )?
     } else {
-        let left_rows = read_rows(
-            left_path, left_names, left_count,
-            MAX_STREAM_BUILD_ROWS, MAX_STREAM_BUILD_BYTES
+        let keep = count_build_columns(
+            left_keys, null_filter, 0, left_names.len(),
+        );
+        let left_rows = read_projected_build_rows(
+            left_path, left_names, &keep, left_count,
+            MAX_STREAM_BUILD_ROWS, MAX_STREAM_BUILD_BYTES,
         )?;
         let mut hash = HashMap::<Vec<typed::Key>, Bucket>::with_capacity(left_rows.len());
         for (index, row) in left_rows.iter().enumerate() {
@@ -1440,5 +1552,18 @@ mod inline_bucket_tests {
         bucket.push(13);
         assert_eq!(bucket.iter().copied().collect::<Vec<_>>(), vec![7, 11, 13]);
         assert_eq!(bucket.iter().take(1).copied().collect::<Vec<_>>(), vec![7]);
+    }
+}
+
+#[cfg(test)]
+mod projected_count_build_tests {
+    use super::*;
+
+    #[test]
+    fn keeps_keys_filters_and_cross_row_counter_only() {
+        assert_eq!(count_build_columns(&[2, 0, 2], Some((4, true)), 3, 5), vec![0, 1, 2]);
+        assert_eq!(count_build_columns(&[0], Some((7, false)), 3, 5), vec![0, 4]);
+        assert_eq!(count_build_columns(&[], None, 0, 4), vec![0]);
+        assert!(count_build_columns(&[], None, 0, 0).is_empty());
     }
 }

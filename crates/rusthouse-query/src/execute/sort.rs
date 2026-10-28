@@ -274,6 +274,14 @@ impl SortedRows {
         Ok(())
     }
 
+    fn delete_run(&mut self, path: &Path) -> Result<(), ExecutionError> {
+        let bytes = fs::metadata(path)?.len();
+        fs::remove_file(path)?;
+        self.temp_bytes = self.temp_bytes.checked_sub(bytes)
+            .ok_or_else(|| invalid("external sort temporary accounting underflow"))?;
+        Ok(())
+    }
+
     /// Merging run files only changes row ordering. Their serialized row
     /// bytes remain identical, so input lengths predict output disk usage.
     fn preflight_merge_run(&self, inputs: &[PathBuf]) -> Result<(), ExecutionError> {
@@ -402,7 +410,9 @@ impl SortedRows {
                     writer.flush()?;
                     self.charge_temp(&path)?;
                     reduced.push(path);
-                    for old in group { fs::remove_file(old)?; }
+                    for old in group {
+                        self.delete_run(old)?;
+                    }
                 }
                 self.run_paths = reduced;
             }
@@ -639,6 +649,23 @@ mod tests {
         let mut output = Vec::new();
         sorted.write(&mut output).unwrap();
         assert_eq!(output, b"30\n20\n10\n");
+    }
+}
+
+#[cfg(test)]
+mod spill_live_bytes_accounting_tests {
+    use super::*;
+
+    #[test]
+    fn deleting_superseded_runs_returns_their_disk_budget() {
+        let mut sorted = SortedRows::new(None, false);
+        let run = sorted.next_path().unwrap();
+        fs::write(&run, vec![7u8; 4096]).unwrap();
+        sorted.charge_temp(&run).unwrap();
+        assert_eq!(sorted.temp_bytes, 4096);
+        sorted.delete_run(&run).unwrap();
+        assert_eq!(sorted.temp_bytes, 0);
+        assert!(!run.exists());
     }
 }
 
