@@ -11,6 +11,7 @@ mod fixed_strings;
 mod fixed_width;
 mod granules;
 mod ip;
+pub mod distributed_resume_map;
 mod mark_validation;
 mod marks;
 mod metadata;
