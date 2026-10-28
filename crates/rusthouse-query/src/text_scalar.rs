@@ -30,6 +30,7 @@ pub(super) fn is_function(name: &str) -> bool {
             | "URL_DECODE"
             | "IS_EMPTY"
             | "EMPTY"
+            | "TOSTARTOFISOYEAR"
             | "REVERSE"
             | "REVERSEUTF8"
             | "INITCAP"
@@ -374,6 +375,31 @@ fn parse_at_depth(parser: &mut Parser, depth: usize) -> Result<ConstantValue, Pa
                         return Err(ParseError("UPPER result is too large".into()));
                     }
                     ConstantValue::Text(result)
+                }
+                None => ConstantValue::Null,
+            }
+        }
+        "TOSTARTOFISOYEAR" => {
+            let input = text_arg(parser, depth + 1)?;
+            require(parser, Token::RParen, "toStartOfISOYear requires one argument")?;
+            match input {
+                Some(value) => {
+                    let days = rusthouse_storage::parse_date(&value)
+                        .ok_or_else(|| ParseError("invalid Date argument".into()))?;
+                    let weekday = (i64::from(days) + 3).rem_euclid(7);
+                    let thursday = i64::from(days) + 3 - weekday;
+                    let thursday = u16::try_from(thursday)
+                        .map_err(|_| ParseError("ISO year is outside Date range".into()))?;
+                    let thursday_date = rusthouse_storage::format_date(thursday);
+                    let iso_year = &thursday_date[..4];
+                    let january_four = rusthouse_storage::parse_date(
+                        &format!("{iso_year}-01-04"),
+                    ).ok_or_else(|| ParseError("invalid ISO calendar year".into()))?;
+                    let monday = i64::from(january_four)
+                        - (i64::from(january_four) + 3).rem_euclid(7);
+                    let monday = u16::try_from(monday)
+                        .map_err(|_| ParseError("ISO year starts outside Date range".into()))?;
+                    ConstantValue::Text(rusthouse_storage::format_date(monday))
                 }
                 None => ConstantValue::Null,
             }
