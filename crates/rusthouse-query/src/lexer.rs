@@ -28,7 +28,7 @@ pub(super) fn tokenize(sql: &str) -> Result<Vec<Token>, ParseError> {
     }
     let bytes = sql.as_bytes();
     let mut tokens = Vec::new();
-    let mut index = 0;
+    let mut index = if sql.starts_with('\u{feff}') { 3 } else { 0 };
     while index < bytes.len() {
         let byte = bytes[index];
         let token = match byte {
@@ -259,6 +259,15 @@ mod tests {
         }
         assert!(tokenize(&" ".repeat(4096)).is_ok());
     }
+    #[test]
+    fn ignores_only_a_leading_utf8_bom() {
+        assert_eq!(
+            tokenize("\u{feff}SELECT 1").unwrap(),
+            vec![Token::Word("SELECT".into()), Token::Number("1".into())]
+        );
+        assert!(tokenize("SELECT \u{feff}1").is_err());
+    }
+
     #[test]
     fn accepts_ascii_vertical_tab_and_form_feed_separators() {
         assert_eq!(
