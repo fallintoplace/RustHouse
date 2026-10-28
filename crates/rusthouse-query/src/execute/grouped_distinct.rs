@@ -15,11 +15,12 @@ struct Group {
     key: Cell,
     distinct: HashSet<Key>,
     distinct_text: HashSet<Vec<u8>>,
+    distinct_uuids: HashSet<[u8; 16]>,
 }
 
 impl Group {
     fn distinct_len(&self) -> usize {
-        self.distinct.len() + self.distinct_text.len()
+        self.distinct.len() + self.distinct_text.len() + self.distinct_uuids.len()
     }
 }
 
@@ -112,6 +113,7 @@ pub(super) fn execute<W: Write>(
                         key: Cell::Text(text.to_vec()),
                         distinct: HashSet::new(),
                         distinct_text: HashSet::new(),
+                        distinct_uuids: HashSet::new(),
                     });
                     id
                 }
@@ -131,12 +133,28 @@ pub(super) fn execute<W: Write>(
                             key: group,
                             distinct: HashSet::new(),
                             distinct_text: HashSet::new(),
+                        distinct_uuids: HashSet::new(),
                         });
                         id
                     }
                 }
             };
 
+            // UUIDs are fixed-width values; avoid formatting every row to
+            // a 36-byte String before hashing the distinct key.
+            if let TypedColumn::Uuid(values) = &batch[value_index] {
+                let key = *values[row].as_bytes();
+                if !groups[id].distinct_uuids.contains(&key) {
+                    if total_pairs >= MAX_GROUP_VALUE_PAIRS {
+                        return Err(ExecutionError::Invalid(
+                            "grouped COUNT(DISTINCT) supports at most 100000 distinct pairs".into(),
+                        ));
+                    }
+                    groups[id].distinct_uuids.insert(key);
+                    total_pairs += 1;
+                }
+                continue;
+            }
             let value_text = match &batch[value_index] {
                 TypedColumn::Text(values) => values.get(row),
                 TypedColumn::NullableText { values, nulls } if nulls[row] == 0 => values.get(row),
