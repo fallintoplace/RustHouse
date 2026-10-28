@@ -662,7 +662,8 @@ pub fn execute_join<W: Write>(
         })
     };
     let mut pairs: Vec<Pair> = Vec::new();
-    let mut matched_right = vec![false; right_rows.len()];
+    let mut matched_right = matches!(query.kind, JoinType::Right | JoinType::Full)
+        .then(|| vec![false; right_rows.len()]);
     for (left_index, row) in left_rows.iter().enumerate() {
         let mut matched = false;
         if let Some(key) = row_key(row, &left_keys) {
@@ -675,11 +676,16 @@ pub fn execute_join<W: Write>(
                         usize::MAX
                     })
                 {
-                    if query.any && query.kind == JoinType::Right && matched_right[right_index] {
+                    if query.any
+                        && query.kind == JoinType::Right
+                        && matched_right.as_ref().is_some_and(|flags| flags[right_index])
+                    {
                         continue;
                     }
                     matched = true;
-                    matched_right[right_index] = true;
+                    if let Some(flags) = matched_right.as_mut() {
+                        flags[right_index] = true;
+                    }
                     let pair = (Some(left_index), Some(right_index));
                     if keep(&pair) {
                         add_pair(&mut pairs, pair)?;
@@ -694,7 +700,7 @@ pub fn execute_join<W: Write>(
             }
         }
     }
-    if matches!(query.kind, JoinType::Right | JoinType::Full) {
+    if let Some(matched_right) = matched_right {
         for (right_index, matched) in matched_right.into_iter().enumerate() {
             if !matched {
                 let pair = (None, Some(right_index));
