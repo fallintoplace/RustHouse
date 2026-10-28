@@ -23,6 +23,7 @@ pub(super) fn is_function(name: &str) -> bool {
             | "SUBTRACTMONTHS"
             | "ADDYEARS"
             | "SUBTRACTYEARS"
+            | "TOSTARTOFMINUTE"
     )
 }
 
@@ -46,6 +47,7 @@ pub(super) fn parse_after_open(
         "SUBTRACTMONTHS" => offset_months(parser, depth, 1, true),
         "ADDYEARS" => offset_months(parser, depth, 12, false),
         "SUBTRACTYEARS" => offset_months(parser, depth, 12, true),
+        "TOSTARTOFMINUTE" => bucket_minutes(parser, depth, 1),
         _ => Err(ParseError(format!("unsupported date function: {name}"))),
     }
 }
@@ -244,4 +246,25 @@ fn offset_months(
     let seconds = days_from_civil(year, month, day) * DAY_SECONDS
         + value.seconds.rem_euclid(DAY_SECONDS);
     Ok(ConstantValue::Text(Temporal::render(seconds, value.has_time)?))
+}
+
+fn bucket_minutes(
+    parser: &mut Parser,
+    depth: usize,
+    bucket_minutes: i64,
+) -> Result<ConstantValue, ParseError> {
+    let input = super::text_scalar::text_arg(parser, depth + 1)?;
+    if !parser.take(Token::RParen) {
+        return Err(ParseError("time bucket requires one DateTime argument".into()));
+    }
+    let Some(source) = input else {
+        return Ok(ConstantValue::Null);
+    };
+    let value = Temporal::parse(&source)?;
+    if !value.has_time {
+        return Err(ParseError("time bucket requires a DateTime value".into()));
+    }
+    let bucket = bucket_minutes * 60;
+    let seconds = value.seconds.div_euclid(bucket) * bucket;
+    Ok(ConstantValue::Text(Temporal::render(seconds, true)?))
 }
