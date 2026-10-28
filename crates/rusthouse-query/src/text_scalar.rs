@@ -54,6 +54,8 @@ pub(super) fn is_function(name: &str) -> bool {
             | "SUBSTRING_INDEX"
             | "SUBSTRINGINDEXUTF8"
             | "QUERYSTRINGANDFRAGMENT"
+            | "FORMATREADABLESIZE"
+            | "FORMAT_BYTES"
             | "TO_INT64"
             | "TRIM"
             | "LTRIM"
@@ -128,6 +130,33 @@ fn parse_at_depth(parser: &mut Parser, depth: usize) -> Result<ConstantValue, Pa
                         .map_err(|_| ParseError("lengthUTF8 result exceeds Int64".into()))?,
                 ),
                 None => ConstantValue::Null,
+            }
+        }
+        "FORMATREADABLESIZE" | "FORMAT_BYTES" => {
+            let value = integer_arg(parser, depth + 1)?;
+            let precision = if parser.take(Token::Comma) {
+                integer_arg(parser, depth + 1)?
+            } else {
+                Some(2)
+            };
+            require(parser, Token::RParen, "FORMATREADABLESIZE requires ')'")?;
+            match (value, precision) {
+                (Some(value), Some(precision)) => {
+                    let precision = usize::try_from(precision)
+                        .map_err(|_| ParseError("precision must be between 0 and 12".into()))?;
+                    if precision > 12 {
+                        return Err(ParseError("precision must be between 0 and 12".into()));
+                    }
+                    const UNITS: &[&str] = &[" B"," KiB"," MiB"," GiB"," TiB"," PiB"," EiB"];
+                    let mut scaled = value as f64;
+                    let mut unit = 0;
+                    while scaled.abs() >= 1024.0 && unit + 1 < UNITS.len() {
+                        scaled /= 1024.0;
+                        unit += 1;
+                    }
+                    ConstantValue::Text(format!("{scaled:.precision$}{}", UNITS[unit]))
+                }
+                _ => ConstantValue::Null,
             }
         }
         "ASCII" => {
@@ -2004,5 +2033,25 @@ fn text_arg(parser: &mut Parser, depth: usize) -> Result<Option<String>, ParseEr
         _ => Err(ParseError(
             "expected a string literal or string function".into(),
         )),
+    }
+}
+
+#[cfg(test)]
+mod parity_format_readable_size_tests {
+    use crate::{parse_select, ConstantValue, Projection};
+    #[test]
+    fn formats_bounded_integer_values() {
+        for (expression, expected) in [
+            ("formatReadableSize(0)", "0.00 B"),
+            ("formatReadableSize(1024)", "1.00 KiB"),
+            ("formatReadableSize(1048576)", "1.00 MiB"),
+            ("formatReadableSize(192851925)", "183.92 MiB"),
+        ] {
+            let sql = format!("SELECT {expression}");
+            assert!(matches!(parse_select(&sql).unwrap().projection, Projection::Constants(values)
+                if values.len() == 1 && values[0].value == ConstantValue::Text(expected.into())), "{sql}");
+        }
+        assert!(parse_select("SELECT FORMATREADABLESIZE(1, -1)").is_err());
+        assert!(parse_select("SELECT FORMATREADABLESIZE(1, 13)").is_err());
     }
 }
