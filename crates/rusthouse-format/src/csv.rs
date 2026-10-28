@@ -113,17 +113,25 @@ mod tests {
 
     #[test]
     fn medium_plain_field_uses_one_write() {
-        struct Count { calls: usize, bytes: Vec<u8> }
+        struct Count {
+            calls: usize,
+            bytes: Vec<u8>,
+        }
         impl Write for Count {
             fn write(&mut self, bytes: &[u8]) -> io::Result<usize> {
                 self.calls += 1;
                 self.bytes.extend_from_slice(bytes);
                 Ok(bytes.len())
             }
-            fn flush(&mut self) -> io::Result<()> { Ok(()) }
+            fn flush(&mut self) -> io::Result<()> {
+                Ok(())
+            }
         }
         let plain = vec![b'x'; 200];
-        let mut sink = Count { calls: 0, bytes: Vec::new() };
+        let mut sink = Count {
+            calls: 0,
+            bytes: Vec::new(),
+        };
         write_quoted_csv_field(&mut sink, &plain).unwrap();
         assert_eq!(sink.calls, 1);
         assert_eq!(sink.bytes.len(), 202);
