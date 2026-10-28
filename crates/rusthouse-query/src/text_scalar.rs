@@ -41,6 +41,7 @@ pub(super) fn is_function(name: &str) -> bool {
             | "JSONHAS"
             | "JSONEXTRACTSTRING"
             | "JSONEXTRACTRAW"
+            | "JSONEXTRACTRAWCASEINSENSITIVE"
             | "JSONEXTRACTSTRINGCASEINSENSITIVE"
             | "SUBSTRING"
             | "HASSUBSEQUENCECASEINSENSITIVE"
@@ -1920,6 +1921,19 @@ fn parse_at_depth(parser: &mut Parser, depth: usize) -> Result<ConstantValue, Pa
                         .map_err(|error| ParseError(format!("invalid JSON: {error}")))?;
                     let value = json.at_case_path(&steps).and_then(|value| value.as_string());
                     ConstantValue::Text(value.unwrap_or("").to_owned())
+                }
+                _ => ConstantValue::Null,
+            }
+        }
+        "JSONEXTRACTRAWCASEINSENSITIVE" => {
+            let input = text_arg(parser, depth + 1)?;
+            let path = case_json_path(parser, depth + 1)?;
+            match (input, path) {
+                (Some(input), Some(steps)) => {
+                    let json = crate::json::parse_json(&input)
+                        .map_err(|error| ParseError(format!("invalid JSON: {error}")))?;
+                    let raw = json.at_case_path(&steps).map_or("", |value| value.raw());
+                    ConstantValue::Text(raw.to_owned())
                 }
                 _ => ConstantValue::Null,
             }
