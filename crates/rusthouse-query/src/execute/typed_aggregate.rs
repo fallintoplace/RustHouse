@@ -232,6 +232,7 @@ pub(super) fn execute_grouped_aggregate<W: Write>(
     // Keep String keys in an owned map and probe with borrowed bytes.
     // Repeated station names no longer allocate a new key on every row.
     let mut text_groups = HashMap::<Vec<u8>, usize>::new();
+    let mut uuid_groups = HashMap::<[u8; 16], usize>::new();
     let mut groups = Vec::<(Cell, AggregateState)>::new();
     // Non-nullable byte keys can be indexed directly rather than hashed.
     let mut dense_slots = match group_type {
@@ -281,7 +282,28 @@ pub(super) fn execute_grouped_aggregate<W: Write>(
                     }
                     _ => None,
                 };
-                if let Some(key) = borrowed_text {
+                let borrowed_uuid = match &batch[group_index] {
+                    TypedColumn::Uuid(values) => Some(*values[row].as_bytes()),
+                    _ => None,
+                };
+                if let Some(key) = borrowed_uuid {
+                    if let Some(&existing) = uuid_groups.get(&key) {
+                        existing
+                    } else {
+                        if groups.len() >= MAX_GROUPS {
+                            return Err(ExecutionError::Invalid(
+                                "GROUP BY supports at most 100000 groups".into(),
+                            ));
+                        }
+                        let index = groups.len();
+                        uuid_groups.insert(key, index);
+                        groups.push((
+                            typed::cell(&batch[group_index], row),
+                            AggregateState::new(*function),
+                        ));
+                        index
+                    }
+                } else if let Some(key) = borrowed_text {
                     if let Some(&existing) = text_groups.get(key) {
                         existing
                     } else {
