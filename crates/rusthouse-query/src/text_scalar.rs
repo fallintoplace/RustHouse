@@ -143,7 +143,7 @@ fn parse_at_depth(parser: &mut Parser, depth: usize) -> Result<ConstantValue, Pa
                     if size > MAX_TEXT_BYTES || input.len() > size {
                         return Err(ParseError("toFixedString size is invalid".into()));
                     }
-                    input.extend(std::iter::repeat_n('\\0', size - input.len()));
+                    input.extend(std::iter::repeat_n('\0', size - input.len()));
                     ConstantValue::Text(input)
                 }
                 _ => ConstantValue::Null,
@@ -2032,8 +2032,8 @@ mod clickhouse_fixedstring_scalar_tests {
     #[test]
     fn to_fixed_string_zero_pads_exact_utf8_byte_width() {
         for (sql, expected) in [
-            ("SELECT toFixedString('abc', 5)", "abc\\0\\0"),
-            ("SELECT toFixedString('é', 3)", "é\\0"),
+            ("SELECT toFixedString('abc', 5)", "abc\0\0"),
+            ("SELECT toFixedString('é', 3)", "é\0"),
             ("SELECT toFixedString('', 0)", ""),
         ] {
             let result = parse_select(sql).unwrap();
