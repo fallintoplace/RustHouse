@@ -493,7 +493,15 @@ pub(super) fn execute<W: Write>(
     let no_filters = query.predicates.is_empty() && query.or_predicates.is_empty();
     let parallel_safe = items.iter().all(|item| match (&item.function, &item.argument, item.distinct) {
         (None, _, false) => true,
-        (Some(crate::AggregateFunction::Sum), Some(crate::ScalarExpr::Column(column)), false) => {
+        (
+            Some(
+                crate::AggregateFunction::Sum
+                | crate::AggregateFunction::Min
+                | crate::AggregateFunction::Max
+            ),
+            Some(crate::ScalarExpr::Column(column)),
+            false,
+        ) => {
             types.get(column).is_some_and(|kind| matches!(
                 typed::base_type(kind),
                 "UInt8" | "UInt16" | "UInt32" | "UInt64" | "UInt128"
