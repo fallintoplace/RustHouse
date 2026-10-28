@@ -7,6 +7,7 @@ modified. Results, not just execution success, determine parity.
 import argparse
 import json
 import re
+import statistics
 import subprocess
 import tempfile
 import time
@@ -90,8 +91,41 @@ def clickhouse_create_table(schema):
     return schema + " ENGINE = Memory"
 
 
+def paired_query(query, rust, clickhouse, *, runs=5, warmups=2,
+                 unordered=False, clock=time.perf_counter_ns):
+    """Alternate engine order and verify every paired sample before reporting timings."""
+    if runs < 1 or warmups < 0:
+        raise ValueError("paired runs must be positive and warmups nonnegative")
+    samples = {"clickhouse": [], "rusthouse": []}
+    verified_rows = 0
+    for iteration in range(-warmups, runs):
+        # Alternation reduces systematic first/second-engine cache advantage.
+        engines = ("clickhouse", "rusthouse") if iteration % 2 == 0 else ("rusthouse", "clickhouse")
+        outputs = {}
+        for engine in engines:
+            started = clock()
+            outputs[engine] = clickhouse(query + " FORMAT TabSeparated") if engine == "clickhouse" else rust(query)
+            milliseconds = (clock() - started) / 1e6
+            if iteration >= 0:
+                samples[engine].append(milliseconds)
+        verified_rows = assert_clickhouse_parity(
+            outputs["rusthouse"], outputs["clickhouse"], unordered=unordered
+        )
+    clickhouse_ms = statistics.median(samples["clickhouse"])
+    rusthouse_ms = statistics.median(samples["rusthouse"])
+    return {
+        "status": "passed",
+        "rows": verified_rows,
+        "rusthouse_ms": rusthouse_ms,
+        "clickhouse_ms": clickhouse_ms,
+        "rusthouse_samples_ms": samples["rusthouse"],
+        "clickhouse_samples_ms": samples["clickhouse"],
+        "clickhouse_over_rusthouse": clickhouse_ms / rusthouse_ms if rusthouse_ms else None,
+    }
+
+
 def run_parity(binary, client, workload, rows=10_000, timeout=120,
-               host="localhost", port=9000):
+               host="localhost", port=9000, runs=5, warmups=2):
     if not 1 <= rows <= min(200_000, workload.get("max_rows", 200_000)):
         raise ValueError("fixture rows exceed workload range")
     if timeout <= 0 or not 1 <= port <= 65535:
@@ -131,21 +165,14 @@ def run_parity(binary, client, workload, rows=10_000, timeout=120,
                     if actual != str(expected).encode():
                         raise ValueError(f"{engine} fixture {name} count mismatch: {actual!r}")
             for case in workload["queries"]:
-                started = time.perf_counter_ns()
                 try:
-                    query = case["sql"]
-                    clickhouse = ch(query + " FORMAT TabSeparated", database_name=db_name)
-                    clickhouse_ms = (time.perf_counter_ns() - started) / 1e6
-                    started = time.perf_counter_ns()
-                    rusthouse = rust(query)
-                    rusthouse_ms = (time.perf_counter_ns() - started) / 1e6
-                    count = assert_clickhouse_parity(
-                        rusthouse, clickhouse, unordered=case.get("unordered", False)
+                    measured = paired_query(
+                        case["sql"], rust,
+                        lambda query: ch(query, database_name=db_name),
+                        runs=runs, warmups=warmups,
+                        unordered=case.get("unordered", False),
                     )
-                    results.append({
-                        "name": case["name"], "status": "passed", "rows": count,
-                        "rusthouse_ms": rusthouse_ms, "clickhouse_ms": clickhouse_ms,
-                    })
+                    results.append({"name": case["name"], **measured})
                 except (OSError, ValueError, RuntimeError, subprocess.TimeoutExpired) as error:
                     results.append({
                         "name": case["name"], "status": "failed",
@@ -157,7 +184,9 @@ def run_parity(binary, client, workload, rows=10_000, timeout=120,
     verified = sum(item["status"] == "passed" for item in results)
     return {
         "suite": workload["name"], "engines": ["rusthouse", "clickhouse"],
-        "rows": rows, "official_benchmark": False,
+        "rows": rows, "runs": runs, "warmups": warmups,
+        "timing": "paired interleaved runs, median wall clock including CLI overhead",
+        "official_benchmark": False,
         "fixture": "deterministic identical JSONEachRow and TSV data",
         "coverage": {
             "total_queries": len(results), "verified_queries": verified,
@@ -176,11 +205,13 @@ def main(argv=None):
     parser.add_argument("--workload", required=True, type=Path)
     parser.add_argument("--rows", type=int, default=10_000)
     parser.add_argument("--timeout", type=float, default=120)
+    parser.add_argument("--runs", type=int, default=5)
+    parser.add_argument("--warmups", type=int, default=2)
     parser.add_argument("--output", type=Path)
     args = parser.parse_args(argv)
     workload = load_workload(args.workload)
     report = run_parity(args.binary, args.client, workload, args.rows,
-                        args.timeout, args.host, args.port)
+                        args.timeout, args.host, args.port, args.runs, args.warmups)
     emit_json(report, args.output)
     return int(report["coverage"]["failed_queries"] != 0)
 

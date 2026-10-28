@@ -27,6 +27,7 @@ struct Cursor {
     key: IntegerKey,
     shard: usize,
     position: usize,
+    next_position: usize,
     descending: bool,
 }
 impl Ord for Cursor {
@@ -92,7 +93,7 @@ pub(super) fn merge_sorted_integer_page(
                 return Err(MergeError::InvalidSortedScan);
             }
             if first.is_none() {
-                first = Some(key);
+                first = Some((key, next));
             }
             previous = Some(key);
             rows += 1;
@@ -108,8 +109,10 @@ pub(super) fn merge_sorted_integer_page(
     }
     let mut heap = BinaryHeap::new();
     for (shard, first) in first_keys.into_iter().enumerate() {
-        if let Some(key) = first {
-            heap.push(Cursor { key, shard, position: 0, descending });
+        if let Some((key, next_position)) = first {
+            heap.push(Cursor {
+                key, shard, position: 0, next_position, descending,
+            });
         }
     }
     let mut output = header.into_bytes();
@@ -117,8 +120,8 @@ pub(super) fn merge_sorted_integer_page(
     let mut returned = 0usize;
     while let Some(cursor) = heap.pop() {
         let body = &shards[cursor.shard].1[output_header_len(column)..];
-        let (_, end) = next_row(body, cursor.position, unsigned)?
-            .ok_or(MergeError::InvalidSortedScan)?;
+        // The complete peer stream was already validated before heap merging.
+        let end = cursor.next_position;
         if seen >= offset && returned < limit {
             let row = &body[cursor.position..end];
             if returned >= max_rows || output.len().checked_add(row.len())
@@ -133,11 +136,12 @@ pub(super) fn merge_sorted_integer_page(
         if returned >= limit {
             break;
         }
-        if let Some((key, _)) = next_row(body, end, unsigned)? {
+        if let Some((key, next_position)) = next_row(body, end, unsigned)? {
             heap.push(Cursor {
                 key,
                 shard: cursor.shard,
                 position: end,
+                next_position,
                 descending,
             });
         }
@@ -227,6 +231,28 @@ mod large_sorted_merge_tests {
         assert_eq!(
             merge_sorted_integer_page(&bad, "id", "UInt64", false, 0, 0, 100),
             Err(MergeError::InvalidSortedScan)
+        );
+    }
+}
+
+#[cfg(test)]
+mod cursor_boundary_regression_tests {
+    use super::*;
+
+    #[test]
+    fn preserves_signed_duplicate_pages_across_shard_boundaries() {
+        let shards = [
+            (12, b"id\n-9\n-2\n-2\n7\n".to_vec()),
+            (12, b"id\n-12\n-2\n0\n8\n".to_vec()),
+            (12, b"id\n-10\n-2\n1\n99\n".to_vec()),
+        ];
+        assert_eq!(
+            merge_sorted_integer_page(&shards, "id", "Int64", false, 2, 5, 5).unwrap(),
+            b"id\n-9\n-2\n-2\n-2\n-2\n"
+        );
+        assert_eq!(
+            merge_sorted_integer_page(&shards, "id", "Int64", false, 1, 0, 5).unwrap(),
+            b"id\n"
         );
     }
 }
