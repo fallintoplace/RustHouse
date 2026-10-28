@@ -12,7 +12,12 @@ fn write_compact_row<W: Write>(output: &mut W, line: &[u8], columns: usize) -> i
             "JSON row width differs from header",
         ));
     }
-    let mut row = Vec::with_capacity(line.len() + 2);
+    // Reserve framing for common unescaped fields before writing quotes.
+    let mut row = Vec::with_capacity(
+        line.len()
+            .saturating_add(columns.saturating_mul(3))
+            .saturating_add(3),
+    );
     row.write_all(b"[")?;
     for (index, value) in line.split(|byte| *byte == b'\t').enumerate() {
         if index > 0 {
@@ -178,4 +183,11 @@ mod tests {
         assert_eq!(output, "[\"1\",\"café\"]\n[\"2\",\"a\\tb\"]\n".as_bytes());
         assert!(write_compact_row(&mut Vec::new(), &[0xff], 1).is_err());
     }
+    #[test]
+    fn plain_multi_column_rows_fit_the_reserved_framing() {
+        let mut output = Vec::new();
+        write_compact_row(&mut output, b"a\tb\tc", 3).unwrap();
+        assert_eq!(output, b"[\"a\",\"b\",\"c\"]\n");
+    }
+
 }
