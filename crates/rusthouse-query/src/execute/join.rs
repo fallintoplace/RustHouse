@@ -819,6 +819,7 @@ fn execute_streaming_inner_multi_grouped<W: Write>(
     left_count: u64,
     right_count: u64,
     indices: &[usize],
+    value_index: Option<usize>,
     header: &str,
     output: &mut W,
 ) -> Result<(), ExecutionError> {
@@ -832,6 +833,11 @@ fn execute_streaming_inner_multi_grouped<W: Write>(
         return Ok(());
     }
     let mut groups = Vec::<(Vec<typed::Cell>, AggregateState)>::new();
+    let function = if value_index.is_some() {
+        AggregateFunction::Sum
+    } else {
+        AggregateFunction::Count
+    };
     let mut lookup = HashMap::<Vec<typed::Key>, usize>::new();
     let width = left_names.len();
     let mut used_bytes = 0usize;
@@ -865,11 +871,19 @@ fn execute_streaming_inner_multi_grouped<W: Write>(
                     return Err(invalid("JOIN GROUP BY exceeds retained group memory budget"));
                 }
                 entry.insert(groups.len());
-                groups.push((values, AggregateState::new(AggregateFunction::Count)));
+                groups.push((values, AggregateState::new(function)));
                 groups.len() - 1
             }
         };
-        groups[group].1.increment_count()
+        if let Some(index) = value_index {
+            match at(index) {
+                typed::Cell::Numeric(number) => groups[group].1.update(*number),
+                typed::Cell::Null => Ok(()),
+                _ => Err(invalid("JOIN grouped SUM requires exact integer values")),
+            }
+        } else {
+            groups[group].1.increment_count()
+        }
     };
     if left_count != 0 && right_count != 0 {
         if right_count <= MAX_STREAM_BUILD_ROWS &&
@@ -889,7 +903,8 @@ fn execute_streaming_inner_multi_grouped<W: Write>(
             }
             probe_inner(left_path, left_names, left_keys, &right_rows, &hash,
                 ProbeOptions {
-                    materialize_rows: indices.iter().any(|&i| i < width),
+                    materialize_rows: indices.iter().any(|&i| i < width) ||
+                        value_index.is_some_and(|i| i < width),
                     materialize_after: 0, stop_after: Some(usize::MAX),
                     any: query.any, null_filter,
                 }, &mut accept)?;
@@ -905,7 +920,8 @@ fn execute_streaming_inner_multi_grouped<W: Write>(
             }
             probe_right(right_path, right_names, right_keys, &left_rows, &hash,
                 ProbeOptions {
-                    materialize_rows: indices.iter().any(|&i| i >= width),
+                    materialize_rows: indices.iter().any(|&i| i >= width) ||
+                        value_index.is_some_and(|i| i >= width),
                     materialize_after: 0, stop_after: Some(usize::MAX),
                     any: query.any, null_filter,
                 }, &mut accept)?;
@@ -1438,7 +1454,31 @@ pub fn execute_join<W: Write>(
                 ).collect::<Vec<_>>().join("\t") + "\tcount";
                 execute_streaming_inner_multi_grouped(
                     query, left_path, right_path, columns,
-                    left_meta.rows, right_meta.rows, &indices, &header, output
+                    left_meta.rows, right_meta.rows, &indices, None, &header, output
+                )
+            }
+            JoinAggregate::GroupMultiSum { keys, value } => {
+                let indices = keys.iter().map(|column|
+                    resolve(query, column, &left_names, &right_names)
+                ).collect::<Result<Vec<_>, _>>()?;
+                let metric = resolve(query, value, &left_names, &right_names)?;
+                let data_type = if metric < width {
+                    &left_meta.columns[metric].data_type
+                } else {
+                    &right_meta.columns[metric - width].data_type
+                };
+                if !matches!(base_type(data_type),
+                    "UInt8" | "UInt16" | "UInt32" | "UInt64" | "UInt128" |
+                    "Int8" | "Int16" | "Int32" | "Int64" | "Int128") {
+                    return Err(invalid("JOIN grouped SUM requires an exact integer column"));
+                }
+                let header = keys.iter().map(|key|
+                    format!("{}.{}", key.relation, key.name)
+                ).collect::<Vec<_>>().join("\t") +
+                    &format!("\tsum({}.{})", value.relation, value.name);
+                execute_streaming_inner_multi_grouped(
+                    query, left_path, right_path, columns,
+                    left_meta.rows, right_meta.rows, &indices, Some(metric), &header, output
                 )
             }
             JoinAggregate::GroupCount(column) => {
