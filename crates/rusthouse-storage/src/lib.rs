@@ -18,6 +18,7 @@ mod nested_arrays;
 mod nullable;
 mod nullable_arrays;
 mod numeric;
+pub mod distributed_snapshot_copy;
 mod part_scan;
 mod part_verify;
 mod part_write;
