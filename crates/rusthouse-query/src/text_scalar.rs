@@ -12,6 +12,7 @@ pub(super) fn is_function(name: &str) -> bool {
             | "OCTET_LENGTH"
             | "ASCII"
             | "UTF16_LENGTH"
+            | "TOLASTDAYOFWEEK"
             | "HASSUBSEQUENCE"
             | "CHR"
             | "STRINGBYTESUNIQ"
@@ -267,6 +268,31 @@ fn parse_at_depth(parser: &mut Parser, depth: usize) -> Result<ConstantValue, Pa
                     ConstantValue::Text(output)
                 }
                 None => ConstantValue::Null,
+            }
+        }
+        "TOLASTDAYOFWEEK" => {
+            let input = text_arg(parser, depth + 1)?;
+            let mode = if parser.take(Token::Comma) {
+                integer_arg(parser, depth + 1)?
+            } else {
+                Some(0)
+            };
+            require(parser, Token::RParen, "toLastDayOfWeek requires ')'")?;
+            match (input, mode) {
+                (Some(value), Some(mode)) => {
+                    if mode != 0 && mode != 1 {
+                        return Err(ParseError("only week modes 0 and 1 are supported".into()));
+                    }
+                    let days = rusthouse_storage::parse_date(&value)
+                        .ok_or_else(|| ParseError("invalid Date argument".into()))?;
+                    let weekday = (i64::from(days) + if mode == 0 { 4 } else { 3 })
+                        .rem_euclid(7);
+                    let target = i64::from(days) + 6 - weekday;
+                    let target = u16::try_from(target)
+                        .map_err(|_| ParseError("week boundary is outside Date range".into()))?;
+                    ConstantValue::Text(rusthouse_storage::format_date(target))
+                }
+                _ => ConstantValue::Null,
             }
         }
         "UTF16_LENGTH" => {
