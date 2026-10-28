@@ -41,6 +41,13 @@ pub(super) fn tokenize(sql: &str) -> Result<Vec<Token>, ParseError> {
                 index += 1;
                 punctuation_token(byte)
             }
+            b'#' => {
+                index += 1;
+                while index < bytes.len() && !matches!(bytes[index], b'\r' | b'\n') {
+                    index += 1;
+                }
+                continue;
+            }
             b'-' if bytes.get(index + 1) == Some(&b'-') => {
                 index += 2;
                 while index < bytes.len() && !matches!(bytes[index], b'\r' | b'\n') {
@@ -239,6 +246,20 @@ mod tests {
         }
         assert!(tokenize(&" ".repeat(4096)).is_ok());
     }
+    #[test]
+    fn skips_clickhouse_hash_line_comments() {
+        assert_eq!(
+            tokenize("SELECT 1 # comment\n + 2").unwrap(),
+            vec![
+                Token::Word("SELECT".into()),
+                Token::Number("1".into()),
+                Token::Plus,
+                Token::Number("2".into()),
+            ]
+        );
+        assert!(tokenize("# only a comment").unwrap().is_empty());
+    }
+
     #[test]
     fn skips_double_dash_line_comments() {
         assert_eq!(
