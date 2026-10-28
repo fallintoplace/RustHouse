@@ -60,7 +60,7 @@ fn describe_projection(projection: &Projection) -> String {
             "Aggregate: GROUP BY {column}, {}({value_column})",
             function.name()
         ),
-        Projection::GroupedAggregates { column, items } => format!(
+        Projection::GroupedAggregates { column, items, .. } => format!(
             "Aggregate: GROUP BY {column}, {}",
             join_labels(
                 items
@@ -68,7 +68,7 @@ fn describe_projection(projection: &Projection) -> String {
                     .map(|(function, value)| format!("{}({value})", function.name()))
             )
         ),
-        Projection::GroupedMultiAggregates { columns, items } => format!(
+        Projection::GroupedMultiAggregates { columns, items, .. } => format!(
             "Aggregate: GROUP BY {}, {}",
             columns.join(", "),
             join_labels(

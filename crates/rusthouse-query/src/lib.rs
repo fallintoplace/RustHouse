@@ -145,10 +145,12 @@ pub enum Projection {
     GroupedAggregates {
         column: String,
         items: Vec<(AggregateFunction, String)>,
+        aliases: Vec<Option<String>>,
     },
     GroupedMultiAggregates {
         columns: Vec<String>,
         items: Vec<(AggregateFunction, String)>,
+        aliases: Vec<Option<String>>,
     },
     Aggregate {
         function: AggregateFunction,
@@ -837,6 +839,11 @@ fn parse_select_tokens(tokens: Vec<Token>) -> Result<Select, ParseError> {
                         return Err(ParseError("expected ')' after grouped aggregate".into()));
                     }
                     let mut items = vec![(function, value_column)];
+                    let mut aliases = vec![if parser.keyword("AS") {
+                        Some(parser.word()?)
+                    } else {
+                        None
+                    }];
                     while parser.take(Token::Comma) {
                         if items.len() >= 16 {
                             return Err(ParseError(
@@ -879,11 +886,24 @@ fn parse_select_tokens(tokens: Vec<Token>) -> Result<Select, ParseError> {
                             return Err(ParseError("expected ')' after grouped aggregate".into()));
                         }
                         items.push((function, value_column));
+                        aliases.push(if parser.keyword("AS") {
+                            Some(parser.word()?)
+                        } else {
+                            None
+                        });
                     }
-                    if items.len() == 1 && columns.len() == 1 {
+                    let mut seen = std::collections::HashSet::new();
+                    for alias in aliases.iter().flatten() {
+                        if columns.iter().any(|column| column.eq_ignore_ascii_case(alias))
+                            || !seen.insert(alias.to_ascii_lowercase())
+                        {
+                            return Err(ParseError("duplicate or ambiguous aggregate alias".into()));
+                        }
+                    }
+                    if items.len() == 1 && columns.len() == 1 && aliases[0].is_none() {
                         grouped_aggregate = items.pop();
                     } else {
-                        grouped_aggregates = Some(items);
+                        grouped_aggregates = Some((items, aliases));
                     }
                     break;
                 }
@@ -912,17 +932,18 @@ fn parse_select_tokens(tokens: Vec<Token>) -> Result<Select, ParseError> {
                 function,
                 value_column,
             }
-        } else if let Some(items) = grouped_aggregates {
+        } else if let Some((items, aliases)) = grouped_aggregates {
             if columns.len() == 1 {
                 Projection::GroupedAggregates {
                     column: columns.remove(0),
                     items,
+                    aliases,
                 }
             } else {
                 if columns.len() > 8 {
                     return Err(ParseError("GROUP BY supports at most 8 keys".into()));
                 }
-                Projection::GroupedMultiAggregates { columns, items }
+                Projection::GroupedMultiAggregates { columns, items, aliases }
             }
         } else {
             Projection::Columns(columns)
