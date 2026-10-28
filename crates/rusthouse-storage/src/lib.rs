@@ -1,4 +1,5 @@
 mod arrays;
+pub mod distributed_inventory;
 mod checksums;
 mod columns;
 mod compression;
