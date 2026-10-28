@@ -43,7 +43,7 @@ fn write_compact_row_into<W: Write>(
         }
     }
     row.write_all(b"]\n")?;
-    output.write_all(&row)
+    output.write_all(row)
 }
 
 #[cfg(test)]
