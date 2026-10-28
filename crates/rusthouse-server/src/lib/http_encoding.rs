@@ -6,6 +6,9 @@ pub(super) fn hex_digit(value: u8) -> Option<u8> {
 
 pub(super) fn decode_url(value: &str) -> Result<String, &'static str> {
     let bytes = value.as_bytes();
+    if bytes.len() > MAX_QUERY_BYTES * 3 {
+        return Err("URL-encoded SQL statement exceeds 12288 bytes");
+    }
     if !bytes.contains(&b'%') && !bytes.contains(&b'+') {
         if bytes.len() > MAX_QUERY_BYTES {
             return Err("SQL statement exceeds 4096 bytes");
@@ -79,4 +82,17 @@ pub(super) fn write_json_string<W: Write>(writer: &mut W, value: &str) -> io::Re
         writer.write_all(&value.as_bytes()[start..])?;
     }
     writer.write_all(b"\"")
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn bounds_encoded_query_size_before_allocation() {
+        let maximum = "%41".repeat(MAX_QUERY_BYTES);
+        assert_eq!(decode_url(&maximum).unwrap().len(), MAX_QUERY_BYTES);
+        assert!(decode_url(&format!("{maximum}%41")).is_err());
+        assert!(decode_url(&("a".repeat(MAX_QUERY_BYTES * 4))).is_err());
+    }
 }
