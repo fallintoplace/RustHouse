@@ -41,7 +41,30 @@ impl PartialOrd for Cursor {
     fn partial_cmp(&self, other: &Self) -> Option<Ordering> { Some(self.cmp(other)) }
 }
 
-/// Validate every shard before emitting output, then keep one cursor per peer.
+/// Locate and parse only the next wire row. Positions are byte offsets in
+/// the immutable shard body, not offsets into a materialized row array.
+fn next_row(
+    data: &[u8],
+    start: usize,
+    unsigned: bool,
+) -> Result<Option<(IntegerKey, usize)>, MergeError> {
+    if start == data.len() {
+        return Ok(None);
+    }
+    let newline = data[start..].iter()
+        .position(|&byte| byte == b'\n')
+        .ok_or(MergeError::InvalidSortedScan)?;
+    let end = start + newline + 1;
+    let value = &data[start..end - 1];
+    if value.contains(&b'\t') || value == b"NULL" {
+        return Err(MergeError::InvalidSortedScan);
+    }
+    Ok(Some((parse_key(value, unsigned)?, end)))
+}
+
+/// Validate the full sorted shard streams before returning any rows.
+/// Retain only one integer key and byte cursor per peer, rather than
+/// materializing every shard row at the coordinator.
 pub(super) fn merge_sorted_integer_page(
     shards: &[(usize, Vec<u8>)],
     column: &str,
@@ -54,35 +77,38 @@ pub(super) fn merge_sorted_integer_page(
     let header = format!("{column}\n");
     let unsigned = kind.starts_with("UInt");
     let prefix = offset.checked_add(limit).ok_or(MergeError::CoordinatorLimit)?;
-    let mut parsed = Vec::with_capacity(shards.len());
+    let mut first_keys = Vec::with_capacity(shards.len());
     for (cap, body) in shards {
         if *cap <= prefix || !body.ends_with(b"\n") || !body.starts_with(header.as_bytes()) {
             return Err(MergeError::InvalidSortedScan);
         }
-        let mut rows = Vec::<(IntegerKey, &[u8])>::new();
+        let data = &body[header.len()..];
+        let mut cursor = 0usize;
+        let mut rows = 0usize;
         let mut previous = None;
-        for line in body[header.len()..].split_inclusive(|&byte| byte == b'\n') {
-            if line.is_empty() { continue; }
-            let value = line.strip_suffix(b"\n").ok_or(MergeError::InvalidSortedScan)?;
-            if value.contains(&b'\t') || value == b"NULL" {
-                return Err(MergeError::InvalidSortedScan);
-            }
-            let key = parse_key(value, unsigned)?;
+        let mut first = None;
+        while let Some((key, next)) = next_row(data, cursor, unsigned)? {
             if previous.is_some_and(|prior| if descending { prior < key } else { prior > key }) {
                 return Err(MergeError::InvalidSortedScan);
             }
+            if first.is_none() {
+                first = Some(key);
+            }
             previous = Some(key);
-            rows.push((key, line));
-            if rows.len() > prefix || rows.len() >= *cap {
+            rows += 1;
+            if rows > prefix || rows >= *cap {
                 return Err(MergeError::ShardRowLimit);
             }
+            cursor = next;
         }
-        parsed.push(rows);
+        first_keys.push(first);
     }
-    if parsed.is_empty() { return Err(MergeError::InvalidSortedScan); }
+    if shards.is_empty() {
+        return Err(MergeError::InvalidSortedScan);
+    }
     let mut heap = BinaryHeap::new();
-    for (shard, rows) in parsed.iter().enumerate() {
-        if let Some(&(key, _)) = rows.first() {
+    for (shard, first) in first_keys.into_iter().enumerate() {
+        if let Some(key) = first {
             heap.push(Cursor { key, shard, position: 0, descending });
         }
     }
@@ -90,8 +116,11 @@ pub(super) fn merge_sorted_integer_page(
     let mut seen = 0usize;
     let mut returned = 0usize;
     while let Some(cursor) = heap.pop() {
+        let body = &shards[cursor.shard].1[output_header_len(column)..];
+        let (_, end) = next_row(body, cursor.position, unsigned)?
+            .ok_or(MergeError::InvalidSortedScan)?;
         if seen >= offset && returned < limit {
-            let row = parsed[cursor.shard][cursor.position].1;
+            let row = &body[cursor.position..end];
             if returned >= max_rows || output.len().checked_add(row.len())
                 .is_none_or(|size| size > MAX_RESPONSE_BYTES)
             {
@@ -101,13 +130,24 @@ pub(super) fn merge_sorted_integer_page(
             returned += 1;
         }
         seen += 1;
-        if returned >= limit { break; }
-        let position = cursor.position + 1;
-        if let Some(&(key, _)) = parsed[cursor.shard].get(position) {
-            heap.push(Cursor { key, shard: cursor.shard, position, descending });
+        if returned >= limit {
+            break;
+        }
+        if let Some((key, _)) = next_row(body, end, unsigned)? {
+            heap.push(Cursor {
+                key,
+                shard: cursor.shard,
+                position: end,
+                descending,
+            });
         }
     }
     Ok(output)
+}
+
+// The header is a validated single integer column and one newline.
+fn output_header_len(column: &str) -> usize {
+    column.len() + 1
 }
 
 #[cfg(test)]
@@ -156,6 +196,37 @@ mod tests {
         assert_eq!(
             merge_sorted_integer_page(&shards, "id", "UInt128", true, 0, 2, 10).unwrap(),
             b"id\n340282366920938463463374607431768211455\n340282366920938463463374607431768211454\n"
+        );
+    }
+}
+
+#[cfg(test)]
+mod large_sorted_merge_tests {
+    use super::*;
+
+    #[test]
+    fn merges_large_high_fanout_prefixes_without_row_materialization() {
+        let shards = (0..24).map(|shard| {
+            let mut output = b"id\n".to_vec();
+            for row in 0..2048 {
+                output.extend_from_slice(format!("{}\n", row * 24 + shard).as_bytes());
+            }
+            (4096, output)
+        }).collect::<Vec<_>>();
+        let actual = merge_sorted_integer_page(&shards, "id", "UInt64", false, 97, 27, 27).unwrap();
+        let mut expected = b"id\n".to_vec();
+        for value in 97..124 {
+            expected.extend_from_slice(format!("{value}\n").as_bytes());
+        }
+        assert_eq!(actual, expected);
+    }
+
+    #[test]
+    fn validates_all_shards_before_returning_even_when_page_is_empty() {
+        let bad = [(5, b"id\n1\n".to_vec()), (5, b"id\n9\n3\n".to_vec())];
+        assert_eq!(
+            merge_sorted_integer_page(&bad, "id", "UInt64", false, 0, 0, 100),
+            Err(MergeError::InvalidSortedScan)
         );
     }
 }
