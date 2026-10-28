@@ -116,7 +116,11 @@ pub(super) fn is_safe_grouped_sum(select: &Select) -> bool {
             function: AggregateFunction::Sum,
             ..
         }
-    ) && is_safe_unpaged_select(select)
+    ) && matches!(select.source, Some(Source::Table(_)))
+        && !select.distinct
+        && select.rename.is_none()
+        && select.alias.is_none()
+        && select.order_terms().all(|term| term.column == "#aggregate")
 }
 
 pub(super) fn group_key_type(kind: &str) -> bool {
@@ -189,6 +193,42 @@ pub(super) fn grouped_count_shard_sql(sql: &str, select: &Select) -> Option<Stri
         let candidate = sql[..index].trim_end();
         if parse_select(candidate).is_ok_and(|parsed| parsed == expected) {
             return Some(candidate.to_owned());
+        }
+    }
+    None
+}
+
+/// Strip coordinator-only clauses before shard-level grouped numeric aggregation.
+/// The candidate must parse to an identical query minus the global clauses.
+pub(super) fn grouped_aggregate_shard_sql(sql: &str, select: &Select) -> Option<String> {
+    let mut expected = select.clone();
+    expected.having = None;
+    expected.order_by = None;
+    expected.order_by_extra.clear();
+    expected.limit = None;
+    expected.offset = None;
+    if expected == *select {
+        return Some(sql.to_owned());
+    }
+    for (index, _) in sql.char_indices() {
+        if index == 0 || !sql.as_bytes()[index - 1].is_ascii_whitespace() {
+            continue;
+        }
+        let suffix = &sql[index..];
+        let boundary = ["HAVING", "ORDER", "LIMIT", "OFFSET"].iter().any(|word| {
+            suffix
+                .get(..word.len())
+                .is_some_and(|prefix| prefix.eq_ignore_ascii_case(word))
+                && suffix
+                    .as_bytes()
+                    .get(word.len())
+                    .is_some_and(u8::is_ascii_whitespace)
+        });
+        if boundary {
+            let candidate = sql[..index].trim_end();
+            if parse_select(candidate).is_ok_and(|parsed| parsed == expected) {
+                return Some(candidate.to_owned());
+            }
         }
     }
     None
