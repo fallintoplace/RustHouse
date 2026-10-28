@@ -41,6 +41,7 @@ pub(super) fn is_function(name: &str) -> bool {
             | "TO_INT64"
             | "TRIM"
             | "LTRIM"
+            | "BASENAME"
             | "TRIM_WHITESPACE"
             | "TRY_TO_INT64"
             | "LPAD"
@@ -696,6 +697,19 @@ fn parse_at_depth(parser: &mut Parser, depth: usize) -> Result<ConstantValue, Pa
                     input.trim_start_matches(|ch| characters.contains(ch)).to_owned(),
                 ),
                 _ => ConstantValue::Null,
+            }
+        }
+        "BASENAME" => {
+            let input = text_arg(parser, depth + 1)?;
+            require(parser, Token::RParen, "basename requires one argument")?;
+            match input {
+                Some(input) => ConstantValue::Text(
+                    input.rsplit(|ch| ch == '/' || ch == '\\')
+                        .next()
+                        .unwrap_or("")
+                        .to_owned(),
+                ),
+                None => ConstantValue::Null,
             }
         }
         "TRIM_WHITESPACE" => {
