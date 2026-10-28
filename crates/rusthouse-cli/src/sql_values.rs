@@ -124,7 +124,11 @@ impl<W: Write> Write for SqlValuesWriter<W> {
         }
         for chunk in bytes.split_inclusive(|&byte| byte == b'\n') {
             let complete = chunk.last() == Some(&b'\n');
-            let fragment = if complete { &chunk[..chunk.len() - 1] } else { chunk };
+            let fragment = if complete {
+                &chunk[..chunk.len() - 1]
+            } else {
+                chunk
+            };
             if fragment.len() > MAX_LINE_BYTES.saturating_sub(self.line.len()) {
                 return Err(invalid("SQL VALUES input line exceeds 1 MiB"));
             }
