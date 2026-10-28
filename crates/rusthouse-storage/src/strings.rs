@@ -40,7 +40,12 @@ impl StringColumn {
 
     pub(crate) fn from_rows(rows: Vec<Vec<u8>>) -> Result<Self, StringReadError> {
         checked_rows(rows.len())?;
+        // Validate and size the payload before moving the input rows.
+        let bytes = rows.iter().try_fold(0usize, |used, row| {
+            checked_end(used, row.len() as u64)
+        })?;
         let mut column = Self::new(rows.len());
+        column.data.reserve_exact(bytes);
         for row in rows {
             let end = checked_end(column.data.len(), row.len() as u64)?;
             column.data.extend_from_slice(&row);
