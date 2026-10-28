@@ -49,6 +49,10 @@ fn describe_projection(projection: &Projection) -> String {
             let p = f64::from(*probability_ppm) / 1_000_000.0;
             format!("Aggregate: quantile({p})({column}) [8192-row reservoir]")
         }
+        Projection::GroupedQuantile { column, value_column, probability_ppm } => {
+            let p = f64::from(*probability_ppm) / 1_000_000.0;
+            format!("Aggregate: GROUP BY {column}, quantile({p})({value_column}) [bounded per-group reservoir]")
+        }
         Projection::GroupedCount { column } => {
             format!("Aggregate: GROUP BY {column}, count(*)")
         }
