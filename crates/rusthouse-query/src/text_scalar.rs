@@ -46,6 +46,7 @@ pub(super) fn is_function(name: &str) -> bool {
             | "REVERSE"
             | "REVERSEUTF8"
             | "INITCAP"
+            | "TOSTARTOFTENMINUTES"
             | "CONCAT"
             | "CONCATASSUMEINJECTIVE"
             | "QUOTE_LITERAL"
@@ -524,6 +525,19 @@ fn parse_at_depth(parser: &mut Parser, depth: usize) -> Result<ConstantValue, Pa
                         return Err(ParseError("UPPER result is too large".into()));
                     }
                     ConstantValue::Text(result)
+                }
+                None => ConstantValue::Null,
+            }
+        }
+        "TOSTARTOFTENMINUTES" => {
+            let input = text_arg(parser, depth + 1)?;
+            require(parser, Token::RParen, "toStartOfTenMinutes requires one argument")?;
+            match input {
+                Some(value) => {
+                    let seconds = rusthouse_storage::parse_datetime(&value).ok_or_else(|| {
+                        ParseError("toStartOfTenMinutes requires a valid UTC DateTime".into())
+                    })?;
+                    ConstantValue::Text(rusthouse_storage::format_datetime(seconds - seconds % 600))
                 }
                 None => ConstantValue::Null,
             }
