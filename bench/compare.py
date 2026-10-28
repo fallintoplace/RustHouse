@@ -9,7 +9,7 @@ import math
 from pathlib import Path
 
 
-VALID = {"passed", "unverified"}
+VALID = {"passed"}
 
 
 def index(results):
