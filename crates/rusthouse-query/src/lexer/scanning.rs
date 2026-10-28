@@ -22,7 +22,9 @@ pub(super) fn scan_number(sql: &str, index: &mut usize) -> Result<Token, ParseEr
     let start = *index;
     if bytes[*index] == b'-' {
         *index += 1;
-        require_digit(bytes, *index, "expected digits after '-'")?;
+        if bytes.get(*index) != Some(&b'.') {
+            require_digit(bytes, *index, "expected digits after '-'")?;
+        }
     }
     advance_ascii_digits(bytes, index);
     if bytes.get(*index) == Some(&b'.') {

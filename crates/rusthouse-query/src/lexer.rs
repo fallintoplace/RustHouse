@@ -37,6 +37,7 @@ pub(super) fn tokenize(sql: &str) -> Result<Vec<Token>, ParseError> {
                 continue;
             }
             b'\'' => scan_string(sql, &mut index)?,
+            b'.' if is_ascii_digit_at(bytes, index + 1) => scan_number(sql, &mut index)?,
             b'/' if bytes.get(index + 1) == Some(&b'*') => {
                 index += 2;
                 while index + 1 < bytes.len()
@@ -73,7 +74,11 @@ pub(super) fn tokenize(sql: &str) -> Result<Vec<Token>, ParseError> {
                 Token::Minus
             }
             b'-' if bytes.get(index + 1) == Some(&b'.') => {
-                return Err(ParseError("expected digits after '-'".into()));
+                if is_ascii_digit_at(bytes, index + 2) {
+                    scan_number(sql, &mut index)?
+                } else {
+                    return Err(ParseError("expected digits after '-'".into()));
+                }
             }
             b'-' if !is_ascii_digit_at(bytes, index + 1) => {
                 index += 1;
@@ -259,6 +264,22 @@ mod tests {
         }
         assert!(tokenize(&" ".repeat(4096)).is_ok());
     }
+    #[test]
+    fn accepts_leading_dot_decimals_and_preserves_subtraction() {
+        assert_eq!(
+            tokenize(".5, -.25 2-.75").unwrap(),
+            vec![
+                Token::Number(".5".into()),
+                Token::Comma,
+                Token::Number("-.25".into()),
+                Token::Number("2".into()),
+                Token::Minus,
+                Token::Number(".75".into()),
+            ]
+        );
+        assert!(tokenize("-.").is_err());
+    }
+
     #[test]
     fn preserves_utf8_strings_around_escaped_delimiters() {
         assert_eq!(
