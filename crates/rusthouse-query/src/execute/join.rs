@@ -231,12 +231,33 @@ where
     if options.stop_after == Some(0) {
         return Ok(0);
     }
-    let mut reader = TypedQueryReader::open(left_path, left_names)?;
+    // A COUNT or preflight probe needs join keys and filters only. Keep
+    // original slot positions when actual output rows must be materialized.
+    let mut retained = if options.materialize_rows {
+        (0..left_names.len()).collect::<Vec<_>>()
+    } else {
+        left_keys.to_vec()
+    };
+    if let Some((column, _)) = options.null_filter {
+        if column < left_names.len() {
+            retained.push(column);
+        }
+    }
+    retained.sort_unstable();
+    retained.dedup();
+    if retained.is_empty() {
+        retained.push(0); // CROSS JOIN still needs a row-count source.
+    }
+    let selected = retained.iter().map(|&index| left_names[index].clone()).collect::<Vec<_>>();
+    let key_indices = left_keys.iter().map(|index| {
+        retained.binary_search(index).expect("join key retained")
+    }).collect::<Vec<_>>();
+    let mut reader = TypedQueryReader::open(left_path, &selected)?;
     let mut matches = 0usize;
     let mut probe_key = Vec::with_capacity(left_keys.len());
     'scan: while let Some(batch) = reader.next_batch()? {
         for index in 0..batch[0].len() {
-            if batch_key_into(&batch, index, left_keys, &mut probe_key) {
+            if batch_key_into(&batch, index, &key_indices, &mut probe_key) {
                 if let Some(right_indices) = hash.get(probe_key.as_slice()) {
                     // Materialize only after a row survives the join filter.
                     let mut left_row: Option<Vec<typed::Cell>> = None;
@@ -247,7 +268,10 @@ where
                     {
                         if let Some((column, not_null)) = options.null_filter {
                             let is_null = if column < left_names.len() {
-                                typed::is_null_at(&batch[column], index)
+                                typed::is_null_at(
+                                    &batch[retained.binary_search(&column).expect("filter retained")],
+                                    index,
+                                )
                             } else {
                                 matches!(
                                     &right_rows[right_index][column - left_names.len()],
