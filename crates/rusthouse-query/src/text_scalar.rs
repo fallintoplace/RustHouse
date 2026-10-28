@@ -54,6 +54,7 @@ pub(super) fn is_function(name: &str) -> bool {
             | "SUBSTRING_INDEX"
             | "SUBSTRINGINDEXUTF8"
             | "QUERYSTRINGANDFRAGMENT"
+            | "FORMATREADABLEQUANTITY"
             | "TO_INT64"
             | "TRIM"
             | "LTRIM"
@@ -128,6 +129,33 @@ fn parse_at_depth(parser: &mut Parser, depth: usize) -> Result<ConstantValue, Pa
                         .map_err(|_| ParseError("lengthUTF8 result exceeds Int64".into()))?,
                 ),
                 None => ConstantValue::Null,
+            }
+        }
+        "FORMATREADABLEQUANTITY" => {
+            let value = integer_arg(parser, depth + 1)?;
+            let precision = if parser.take(Token::Comma) {
+                integer_arg(parser, depth + 1)?
+            } else {
+                Some(2)
+            };
+            require(parser, Token::RParen, "FORMATREADABLEQUANTITY requires ')'")?;
+            match (value, precision) {
+                (Some(value), Some(precision)) => {
+                    let precision = usize::try_from(precision)
+                        .map_err(|_| ParseError("precision must be between 0 and 12".into()))?;
+                    if precision > 12 {
+                        return Err(ParseError("precision must be between 0 and 12".into()));
+                    }
+                    const UNITS: &[&str] = &[""," thousand"," million"," billion"," trillion"," quadrillion"," quintillion"];
+                    let mut scaled = value as f64;
+                    let mut unit = 0;
+                    while scaled.abs() >= 1000.0 && unit + 1 < UNITS.len() {
+                        scaled /= 1000.0;
+                        unit += 1;
+                    }
+                    ConstantValue::Text(format!("{scaled:.precision$}{}", UNITS[unit]))
+                }
+                _ => ConstantValue::Null,
             }
         }
         "ASCII" => {
@@ -2004,5 +2032,25 @@ fn text_arg(parser: &mut Parser, depth: usize) -> Result<Option<String>, ParseEr
         _ => Err(ParseError(
             "expected a string literal or string function".into(),
         )),
+    }
+}
+
+#[cfg(test)]
+mod parity_format_readable_quantity_tests {
+    use crate::{parse_select, ConstantValue, Projection};
+    #[test]
+    fn formats_bounded_integer_values() {
+        for (expression, expected) in [
+            ("formatReadableQuantity(0)", "0.00"),
+            ("formatReadableQuantity(1024)", "1.02 thousand"),
+            ("formatReadableQuantity(1234000)", "1.23 million"),
+            ("formatReadableQuantity(-1500, 1)", "-1.5 thousand"),
+        ] {
+            let sql = format!("SELECT {expression}");
+            assert!(matches!(parse_select(&sql).unwrap().projection, Projection::Constants(values)
+                if values.len() == 1 && values[0].value == ConstantValue::Text(expected.into())), "{sql}");
+        }
+        assert!(parse_select("SELECT FORMATREADABLEQUANTITY(1, -1)").is_err());
+        assert!(parse_select("SELECT FORMATREADABLEQUANTITY(1, 13)").is_err());
     }
 }
