@@ -104,6 +104,21 @@ pub(super) fn execute_typed_aggregate<W: Write>(
                     _ => {}
                 }
             }
+            // Avoid constructing Cell enums on the common numeric batch path.
+            // NULLs remain skipped, and checked AggregateState math is shared.
+            match &batch[projected_index] {
+                TypedColumn::Numeric(values) => {
+                    state.update(super::number_at(values, row))?;
+                    continue;
+                }
+                TypedColumn::NullableNumeric { values, nulls } => {
+                    if nulls[row] == 0 {
+                        state.update(super::number_at(values, row))?;
+                    }
+                    continue;
+                }
+                _ => {}
+            }
             match typed::cell(&batch[projected_index], row) {
                 Cell::Numeric(value) => state.update(value)?,
                 Cell::Null => {}
