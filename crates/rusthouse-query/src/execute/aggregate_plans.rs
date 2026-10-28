@@ -200,9 +200,10 @@ pub(super) fn execute_count_distinct_part<W: Write>(
         return Ok(());
     }
     let mut seen = HashSet::new();
+    let no_filters = query.predicates.is_empty() && query.or_predicates.is_empty();
     while let Some(batch) = reader.next_batch()? {
         for row in 0..batch[0].len() {
-            if !batch_matches(&batch, row, &comparisons) {
+            if !no_filters && !batch_matches(&batch, row, &comparisons) {
                 continue;
             }
             let key = NumberKey::from(number_at(&batch[0], row));
