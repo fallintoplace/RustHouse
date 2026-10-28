@@ -202,12 +202,17 @@ pub(super) fn execute<W: Write>(
             groups.sort_by(compare);
         }
     }
+    // Resolve output schema once before serializing many grouped rows.
+    let output_types = columns
+        .iter()
+        .map(|column| types[column].as_str())
+        .collect::<Vec<_>>();
     let write_group = |keys: &[Cell], count: u64, output: &mut W| -> Result<(), ExecutionError> {
         for (index, value) in keys.iter().enumerate() {
             if index != 0 {
                 output.write_all(b"\t")?;
             }
-            typed::write_typed_value(output, value, &types[&columns[index]])?;
+            typed::write_typed_value(output, value, output_types[index])?;
         }
         writeln!(output, "\t{count}")?;
         Ok(())
