@@ -849,7 +849,7 @@ fn execute_streaming_ordered_inner<W: Write>(
             let at = |index: usize| -> &typed::Cell {
                 if index < width { &left[index] } else { &right[index - width] }
             };
-            let keys = order.iter().map(|(index, _, _)| at(*index).clone()).collect();
+            let keys: Vec<typed::Cell> = order.iter().map(|(index, _, _)| at(*index).clone()).collect();
             let values: Vec<typed::Cell> = selected
                 .iter().map(|(index, _, _)| at(*index).clone()).collect();
             let bytes = ordered_join_retained_bytes(&keys)?
