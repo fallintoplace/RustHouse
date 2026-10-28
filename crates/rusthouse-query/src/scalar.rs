@@ -40,6 +40,7 @@ pub(super) fn is_function(name: &str) -> bool {
         || name.eq_ignore_ascii_case("DIV")
         || name.eq_ignore_ascii_case("MOD")
         || name.eq_ignore_ascii_case("ABS_DIFF")
+        || name.eq_ignore_ascii_case("MULTIPLY")
         || name.eq_ignore_ascii_case("SIGN")
         || name.eq_ignore_ascii_case("DIGIT_COUNT")
         || name.eq_ignore_ascii_case("HAMMING_DISTANCE")
@@ -208,6 +209,15 @@ fn parse_pmod(parser: &mut Parser, depth: usize) -> Result<i64, ParseError> {
         return Err(ParseError("PMOD divisor must be positive".into()));
     }
     Ok(value.rem_euclid(divisor))
+}
+
+fn parse_multiply_function(parser: &mut Parser, depth: usize) -> Result<i64, ParseError> {
+    require_token(parser, Token::LParen, "multiply requires '('")?;
+    let left = expression(parser, depth + 1)?;
+    require_token(parser, Token::Comma, "multiply requires two arguments")?;
+    let right = expression(parser, depth + 1)?;
+    require_token(parser, Token::RParen, "expected ')' after multiply arguments")?;
+    left.checked_mul(right).ok_or_else(overflow)
 }
 
 fn parse_abs_diff(parser: &mut Parser, depth: usize) -> Result<i64, ParseError> {
@@ -948,6 +958,9 @@ fn factor(parser: &mut Parser, depth: usize) -> Result<i64, ParseError> {
     }
     if parser.take(Token::Plus) {
         return factor(parser, depth + 1);
+    }
+    if parser.keyword("MULTIPLY") {
+        return parse_multiply_function(parser, depth);
     }
     if parser.keyword("NEXT_POWER_OF_TWO") {
         return parse_next_power_of_two(parser, depth);
