@@ -9,14 +9,6 @@ pub struct InsertSelect {
     pub select: Select,
 }
 
-fn parse_bounded_identifier(parser: &mut Parser) -> Result<String, ParseError> {
-    let name = parser.word()?;
-    if name.len() > 128 {
-        return Err(ParseError("identifiers cannot exceed 128 bytes".into()));
-    }
-    Ok(name)
-}
-
 fn parse_columns(parser: &mut Parser) -> Result<Option<Vec<String>>, ParseError> {
     if !parser.take(Token::LParen) {
         return Ok(None);
@@ -27,7 +19,7 @@ fn parse_columns(parser: &mut Parser) -> Result<Option<Vec<String>>, ParseError>
         if columns.len() >= 64 {
             return Err(ParseError("INSERT supports at most 64 columns".into()));
         }
-        let name = parse_bounded_identifier(parser)?;
+        let name = parser.bounded_word()?;
         if !seen.insert(name.clone()) {
             return Err(ParseError(format!("duplicate INSERT column: {name}")));
         }
@@ -61,7 +53,7 @@ pub fn parse_insert_select(sql: &str) -> Result<Option<InsertSelect>, ParseError
     if !parser.keyword("INTO") {
         return Err(ParseError("expected INTO after INSERT".into()));
     }
-    let table = parse_bounded_identifier(&mut parser)?;
+    let table = parser.bounded_word()?;
     let columns = parse_columns(&mut parser)?;
     let Some(select) = parse_select_suffix(&mut parser)? else {
         return Ok(None);

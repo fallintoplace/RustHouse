@@ -21,7 +21,8 @@ pub(super) fn execute_typed_aggregate<W: Write>(
         .iter()
         .find(|candidate| candidate.name == *column)
         .ok_or_else(|| ExecutionError::Invalid(format!("unknown aggregate column: {column}")))?;
-    if matches!(typed::base_type(&selected.data_type), "String" | "UUID") {
+    let ordered_text = matches!(typed::base_type(&selected.data_type), "String" | "UUID");
+    if ordered_text && !matches!(function, AggregateFunction::Min | AggregateFunction::Max) {
         return Err(ExecutionError::Invalid(
             "numeric aggregates require a numeric column".into(),
         ));
@@ -59,16 +60,31 @@ pub(super) fn execute_typed_aggregate<W: Write>(
         return Ok(());
     }
     let mut reader = TypedQueryReader::open(part, &names)?;
+    let no_filters = query.predicates.is_empty() && query.or_predicates.is_empty();
 
     let mut state = AggregateState::new(*function);
+    let mut ordered_value: Option<Cell> = None;
     while let Some(batch) = reader.next_batch()? {
         for row in 0..batch[0].len() {
-            if !typed::passes(&batch, row, &conditions) {
+            if !no_filters && !typed::passes(&batch, row, &conditions) {
                 continue;
             }
             match typed::cell(&batch[projected_index], row) {
                 Cell::Numeric(value) => state.update(value)?,
                 Cell::Null => {}
+                value @ (Cell::Text(_) | Cell::Uuid(_)) if ordered_text => {
+                    let replace = ordered_value.as_ref().is_none_or(|current| {
+                        let ordering = typed::cmp(&value, current);
+                        match function {
+                            AggregateFunction::Min => ordering.is_lt(),
+                            AggregateFunction::Max => ordering.is_gt(),
+                            _ => false,
+                        }
+                    });
+                    if replace {
+                        ordered_value = Some(value);
+                    }
+                }
                 Cell::Text(_) | Cell::Uuid(_) => {
                     return Err(ExecutionError::Invalid(
                         "numeric aggregates require a numeric column".into(),
@@ -78,6 +94,15 @@ pub(super) fn execute_typed_aggregate<W: Write>(
         }
     }
     if query.offset.unwrap_or(0) == 0 {
+        if ordered_text {
+            if let Some(value) = ordered_value {
+                typed::write_typed_value(output, &value, &selected.data_type)?;
+                writeln!(output)?;
+            } else {
+                writeln!(output, "NULL")?;
+            }
+            return Ok(());
+        }
         let rendered = state.render();
         let rendered = match (function, selected.data_type.as_str()) {
             (AggregateFunction::Min | AggregateFunction::Max, "Date") => rendered
@@ -220,6 +245,9 @@ pub(super) fn execute_grouped_aggregate<W: Write>(
                 }
             }
         }
+    }
+    if let Some(having) = &query.having {
+        groups.retain(|(_, state)| state.passes_having(having));
     }
     if let Some(order) = &query.order_by {
         groups.sort_by(|(left, _), (right, _)| {

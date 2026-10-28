@@ -8,8 +8,10 @@ use std::fmt;
 use std::io::{self, BufWriter, Write};
 use std::path::Path;
 
+mod grouped_distinct;
 mod grouped_multi;
 mod grouped_numeric_multi;
+mod grouped_numeric_keys;
 mod join;
 mod predicates;
 mod sort;
@@ -351,6 +353,13 @@ fn execute_into<W: Write>(
     if let Projection::GroupedMultiCount { columns } = &query.projection {
         return grouped_multi::execute(query, part, columns, output);
     }
+    if let Projection::GroupedDistinctCount {
+        column,
+        value_column,
+    } = &query.projection
+    {
+        return grouped_distinct::execute(query, part, column, value_column, output);
+    }
     if let Projection::StringLength { column } = &query.projection {
         return string_length::execute(query, part, column, output);
     }
@@ -362,6 +371,9 @@ fn execute_into<W: Write>(
     }
     if let Projection::GroupedAggregates { column, items } = &query.projection {
         return grouped_numeric_multi::execute(query, part, column, items, output);
+    }
+    if let Projection::GroupedMultiAggregates { columns, items } = &query.projection {
+        return grouped_numeric_keys::execute(query, part, columns, items, output);
     }
     if typed::requires_typed_scan(query, part)? {
         if matches!(query.projection, Projection::Aggregate { .. }) {
@@ -406,9 +418,11 @@ fn execute_into<W: Write>(
         | Projection::CountColumn { .. }
         | Projection::CountDistinct { .. }
         | Projection::GroupedCount { .. }
+        | Projection::GroupedDistinctCount { .. }
         | Projection::GroupedMultiCount { .. }
         | Projection::GroupedAggregate { .. }
         | Projection::GroupedAggregates { .. }
+        | Projection::GroupedMultiAggregates { .. }
         | Projection::MultipleAggregates(_)
         | Projection::StringLength { .. }
         | Projection::Literal(_)
@@ -590,6 +604,25 @@ fn execute_into<W: Write>(
 
 const MAX_GROUPS: usize = 100_000;
 
+// Select just the first N ordered groups without sorting all groups.
+// The original index breaks ties in the same order as stable sort.
+fn sorted_group_positions<T>(
+    values: &[T],
+    end: usize,
+    cmp: impl Fn(&T, &T) -> Ordering,
+) -> Vec<usize> {
+    let mut positions = (0..values.len()).collect::<Vec<_>>();
+    let compare = |left: &usize, right: &usize| {
+        cmp(&values[*left], &values[*right]).then_with(|| left.cmp(right))
+    };
+    if end < positions.len() {
+        positions.select_nth_unstable_by(end, &compare);
+        positions.truncate(end);
+    }
+    positions.sort_unstable_by(compare);
+    positions
+}
+
 #[derive(Default)]
 struct GroupedCounts {
     by_key: HashMap<NumberKey, usize>,
@@ -642,26 +675,44 @@ impl GroupedCounts {
                 ));
             }
         }
-        if !terms.is_empty() {
-            self.rows
-                .sort_by(|(left_key, left_count), (right_key, right_count)| {
-                    for order in &terms {
-                        let comparison = if order.column == "count" {
-                            left_count.cmp(right_count)
-                        } else {
-                            compare_numbers(*left_key, *right_key)
-                        };
-                        let comparison = if order.descending {
-                            comparison.reverse()
-                        } else {
-                            comparison
-                        };
-                        if comparison != Ordering::Equal {
-                            return comparison;
-                        }
-                    }
+        let compare = |(left_key, left_count): &(Number, u64),
+                       (right_key, right_count): &(Number, u64)| {
+            for order in &terms {
+                let comparison = if order.column == "count" {
+                    left_count.cmp(right_count)
+                } else {
                     compare_numbers(*left_key, *right_key)
-                });
+                };
+                let comparison = if order.descending {
+                    comparison.reverse()
+                } else {
+                    comparison
+                };
+                if comparison != Ordering::Equal {
+                    return comparison;
+                }
+            }
+            compare_numbers(*left_key, *right_key)
+        };
+        if !terms.is_empty() {
+            if let Some(end) = query
+                .limit
+                .and_then(|limit| query.offset.unwrap_or(0).checked_add(limit))
+                .filter(|&end| end < self.rows.len())
+            {
+                let positions = sorted_group_positions(&self.rows, end, &compare);
+                writeln!(
+                    output,
+                    "{column}\t{}",
+                    query.alias.as_deref().unwrap_or("count")
+                )?;
+                for index in positions.into_iter().skip(query.offset.unwrap_or(0)) {
+                    let (value, count) = self.rows[index];
+                    writeln!(output, "{value}\t{count}")?;
+                }
+                return Ok(());
+            }
+            self.rows.sort_by(compare);
         }
         writeln!(
             output,
@@ -677,6 +728,27 @@ impl GroupedCounts {
             writeln!(output, "{value}\t{count}")?;
         }
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod grouped_topk_tests {
+    use super::sorted_group_positions;
+
+    #[test]
+    fn keeps_stable_ties_and_offset_candidates() {
+        let groups = [(10, 2), (11, 2), (12, 1), (13, 3), (14, 2)];
+        let positions = sorted_group_positions(&groups, 3, |a, b| b.1.cmp(&a.1));
+        assert_eq!(positions, vec![3, 0, 1]);
+        let page = positions.into_iter().skip(1).map(|i| groups[i].0).collect::<Vec<_>>();
+        assert_eq!(page, vec![10, 11]);
+    }
+
+    #[test]
+    fn handles_empty_page_and_full_sort() {
+        let values = [3, 1, 2];
+        assert!(sorted_group_positions(&values, 0, |a, b| a.cmp(b)).is_empty());
+        assert_eq!(sorted_group_positions(&values, 3, |a, b| a.cmp(b)), vec![1, 2, 0]);
     }
 }
 
@@ -788,6 +860,9 @@ fn execute_grouped_aggregate_numbers<W: Write>(
                 groups.push((value, state));
             }
         }
+    }
+    if let Some(having) = &query.having {
+        groups.retain(|(_, state)| state.passes_having(having));
     }
     if let Some(order) = &query.order_by {
         groups.sort_by(|(left, _), (right, _)| {
@@ -1004,7 +1079,10 @@ fn execute_numbers<W: Write>(
     }
     if matches!(
         query.projection,
-        Projection::MultipleAggregates(_) | Projection::GroupedAggregates { .. }
+        Projection::MultipleAggregates(_)
+            | Projection::GroupedAggregates { .. }
+            | Projection::GroupedMultiAggregates { .. }
+            | Projection::GroupedDistinctCount { .. }
     ) {
         return Err(ExecutionError::Invalid(
             "multiple aggregates require a stored table".into(),
@@ -1089,9 +1167,11 @@ fn execute_numbers<W: Write>(
         | Projection::CountColumn { .. }
         | Projection::CountDistinct { .. }
         | Projection::GroupedCount { .. }
+        | Projection::GroupedDistinctCount { .. }
         | Projection::GroupedMultiCount { .. }
         | Projection::GroupedAggregate { .. }
         | Projection::GroupedAggregates { .. }
+        | Projection::GroupedMultiAggregates { .. }
         | Projection::MultipleAggregates(_)
         | Projection::StringLength { .. }
         | Projection::Literal(_)
@@ -1453,6 +1533,25 @@ impl AggregateState {
         }
         self.count = next_count;
         Ok(())
+    }
+
+    /// Compare supported numeric aggregate values without rounding to text.
+    fn passes_having(&self, having: &crate::Having) -> bool {
+        let value = match self.function {
+            AggregateFunction::Sum | AggregateFunction::Min | AggregateFunction::Max => self.value,
+            AggregateFunction::Avg if self.count > 0 => Some(Number::Float(self.mean)),
+            _ => None,
+        };
+        let Some(value) = value else {
+            // SQL HAVING removes groups whose aggregate is NULL.
+            return false;
+        };
+        let threshold = match value {
+            Number::Unsigned(_) => Number::Unsigned(u128::from(having.value)),
+            Number::Signed(_) => Number::Signed(i128::from(having.value)),
+            Number::Float(_) => Number::Float(having.value as f64),
+        };
+        number_matches(value, threshold, having.operator)
     }
 
     fn render(&self) -> String {

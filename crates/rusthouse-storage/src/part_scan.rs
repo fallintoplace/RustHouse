@@ -11,16 +11,13 @@ use std::path::{Path, PathBuf};
 fn numeric_marks_path(part: &Path, name: &str) -> Result<PathBuf, PartError> {
     let plain_marks = part.join(format!("{name}.mrk2"));
     let compressed_marks = part.join(format!("{name}.cmrk2"));
-    if plain_marks.exists() && compressed_marks.exists() {
-        return Err(PartError::InvalidScan(format!(
+    match (plain_marks.exists(), compressed_marks.exists()) {
+        (true, true) => Err(PartError::InvalidScan(format!(
             "multiple mark files for {name}"
-        )));
+        ))),
+        (_, true) => Ok(compressed_marks),
+        _ => Ok(plain_marks),
     }
-    Ok(if plain_marks.exists() || !compressed_marks.exists() {
-        plain_marks
-    } else {
-        compressed_marks
-    })
 }
 
 struct ColumnStream {

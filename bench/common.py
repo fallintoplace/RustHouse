@@ -45,6 +45,8 @@ def emit_json(report, path=None):
     """Write a report to stdout and, if requested, an identical JSON file."""
     rendered = json.dumps(report, indent=2) + "\n"
     if path is not None:
-        Path(path).write_text(rendered, encoding="utf-8")
+        target = Path(path)
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_text(rendered, encoding="utf-8")
     sys.stdout.write(rendered)
 

@@ -1,0 +1,14 @@
+{
+  "name": "top-spend-events",
+  "description": "top-K spending events and deterministic tie ordering",
+  "queries": [
+    {
+      "name": "expensive-events",
+      "sql": "SELECT event_id, amount FROM events ORDER BY amount DESC, event_id DESC LIMIT 20"
+    },
+    {
+      "name": "paid-top-events",
+      "sql": "SELECT event_id, amount FROM events WHERE status = 'paid' ORDER BY amount DESC, event_id ASC LIMIT 20"
+    }
+  ]
+}

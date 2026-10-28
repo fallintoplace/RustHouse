@@ -1,8 +1,13 @@
 mod arrays;
+pub mod distributed_inventory;
 mod checksums;
+pub mod distributed_object_key;
 mod columns;
+pub mod distributed_crc32c;
 mod compression;
+pub mod distributed_chunk_plan;
 mod database_lock;
+pub mod distributed_rendezvous;
 mod dates;
 mod decimal;
 mod enums;
@@ -43,7 +48,10 @@ pub use database_lock::{DatabaseLock, acquire_database_lock};
 pub use dates::{format_date, format_datetime, parse_date, parse_datetime};
 pub use decimal::{DecimalColumn, DecimalReadError, read_decimal_column};
 pub use enums::{EnumColumn, EnumReadError, read_enum_column};
-pub use file_sizes::{FileSizeVerification, verify_part_file_hashes, verify_part_file_sizes};
+pub use file_sizes::{
+    FileSizeVerification, verify_part_file_hashes, verify_part_file_hashes_full,
+    verify_part_file_sizes,
+};
 pub use fixed_strings::{
     FixedStringColumn, FixedStringReadError, read_fixed_string_granule, read_fixed_strings,
 };
@@ -66,7 +74,9 @@ pub use numeric::{NumericColumn, NumericReadError, read_numeric_column};
 pub use part_scan::NumericPartReader;
 pub use part_verify::{PartVerification, verify_wide_part};
 pub use part_write::{PartCompression, write_wide_part, write_wide_part_with_compression};
-pub use primary_index::{FixedPrimaryIndex, candidate_u64_mark_range, read_fixed_primary_index};
+pub use primary_index::{
+    FixedPrimaryIndex, candidate_i64_mark_range, candidate_u64_mark_range, read_fixed_primary_index,
+};
 pub use query_source::{
     NumericQueryReader, inspect_query_source, query_parts, resolve_active_snapshot,
 };

@@ -24,16 +24,16 @@ fn describe_source(source: Option<&Source>) -> String {
     }
 }
 
+fn join_labels(labels: impl Iterator<Item = String>) -> String {
+    labels.collect::<Vec<_>>().join(", ")
+}
+
 fn describe_projection(projection: &Projection) -> String {
     match projection {
         Projection::Literal(value) => format!("Project: {value}"),
         Projection::Constants(columns) => format!(
             "Project: {}",
-            columns
-                .iter()
-                .map(crate::Constant::header)
-                .collect::<Vec<_>>()
-                .join(", ")
+            join_labels(columns.iter().map(crate::Constant::header))
         ),
         Projection::All => "Project: *".to_owned(),
         Projection::Columns(columns) => format!("Project: {}", columns.join(", ")),
@@ -45,6 +45,10 @@ fn describe_projection(projection: &Projection) -> String {
         Projection::GroupedCount { column } => {
             format!("Aggregate: GROUP BY {column}, count(*)")
         }
+        Projection::GroupedDistinctCount {
+            column,
+            value_column,
+        } => format!("Aggregate: GROUP BY {column}, count(DISTINCT {value_column})"),
         Projection::GroupedMultiCount { columns } => {
             format!("Aggregate: GROUP BY {}, count(*)", columns.join(", "))
         }
@@ -58,11 +62,20 @@ fn describe_projection(projection: &Projection) -> String {
         ),
         Projection::GroupedAggregates { column, items } => format!(
             "Aggregate: GROUP BY {column}, {}",
-            items
-                .iter()
-                .map(|(function, value)| format!("{}({value})", function.name()))
-                .collect::<Vec<_>>()
-                .join(", ")
+            join_labels(
+                items
+                    .iter()
+                    .map(|(function, value)| format!("{}({value})", function.name()))
+            )
+        ),
+        Projection::GroupedMultiAggregates { columns, items } => format!(
+            "Aggregate: GROUP BY {}, {}",
+            columns.join(", "),
+            join_labels(
+                items
+                    .iter()
+                    .map(|(function, value)| format!("{}({value})", function.name()))
+            )
         ),
         Projection::Aggregate { function, column } => {
             format!("Aggregate: {}({column})", function.name())
@@ -73,11 +86,7 @@ fn describe_projection(projection: &Projection) -> String {
         Projection::MultipleAggregates(items) => {
             format!(
                 "Aggregate: {}",
-                items
-                    .iter()
-                    .map(AggregateItem::header)
-                    .collect::<Vec<_>>()
-                    .join(", ")
+                join_labels(items.iter().map(AggregateItem::header))
             )
         }
     }
@@ -137,8 +146,16 @@ pub fn explain_select(query: &Select) -> String {
         steps.push(format!("Alias: {alias}"));
     }
     if let Some(having) = &query.having {
+        let aggregate = match &query.projection {
+            Projection::GroupedAggregate {
+                function,
+                value_column,
+                ..
+            } => format!("{}({value_column})", function.name()),
+            _ => "count(*)".into(),
+        };
         steps.push(format!(
-            "Having: count(*) {:?} {}",
+            "Having: {aggregate} {:?} {}",
             having.operator, having.value
         ));
     }
