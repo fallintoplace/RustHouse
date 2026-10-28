@@ -85,6 +85,11 @@ pub(super) fn execute<W: Write>(
     // Repeated String group keys can be checked without owning row bytes.
     let mut text_groups = HashMap::<Vec<u8>, usize>::new();
     let mut total_pairs = 0usize;
+    let mut dense_groups = match types[column].as_str() {
+        "UInt8" | "Int8" => Some(vec![usize::MAX; 256]),
+        "UInt16" | "Int16" => Some(vec![usize::MAX; 65_536]),
+        _ => None,
+    };
     let mut reader = TypedQueryReader::open_with_metadata(part, &names, &metadata)?;
     let no_filters = query.predicates.is_empty() && query.or_predicates.is_empty();
 
@@ -99,7 +104,41 @@ pub(super) fn execute<W: Write>(
                 TypedColumn::NullableText { values, nulls } if nulls[row] == 0 => values.get(row),
                 _ => None,
             };
-            let id = if let Some(text) = group_text {
+            let id = if let Some(slots) = dense_groups.as_mut() {
+                let key = match &batch[group_index] {
+                    TypedColumn::Numeric(rusthouse_storage::NumericColumn::UInt8(values)) => {
+                        usize::from(values[row])
+                    }
+                    TypedColumn::Numeric(rusthouse_storage::NumericColumn::Int8(values)) => {
+                        usize::from(values[row] as u8)
+                    }
+                    TypedColumn::Numeric(rusthouse_storage::NumericColumn::UInt16(values)) => {
+                        usize::from(values[row])
+                    }
+                    TypedColumn::Numeric(rusthouse_storage::NumericColumn::Int16(values)) => {
+                        usize::from(values[row] as u16)
+                    }
+                    _ => {
+                        return Err(ExecutionError::Invalid(
+                            "unexpected dense GROUP BY key type".into(),
+                        ));
+                    }
+                };
+                let slot = &mut slots[key];
+                if *slot != usize::MAX {
+                    *slot
+                } else {
+                    let id = groups.len();
+                    *slot = id;
+                    groups.push(Group {
+                        key: typed::cell(&batch[group_index], row),
+                        distinct: HashSet::new(),
+                        distinct_text: HashSet::new(),
+                        distinct_uuids: HashSet::new(),
+                    });
+                    id
+                }
+            } else if let Some(text) = group_text {
                 if let Some(&id) = text_groups.get(text) {
                     id
                 } else {
