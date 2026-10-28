@@ -13,6 +13,10 @@ def compare(baseline, candidate, *, max_slowdown_percent=10):
     expected = "rusthouse-persisted-wide-part-full-scans"
     if baseline.get("workload") != expected or candidate.get("workload") != expected:
         raise ValueError("reports must be persisted physical scan workloads")
+    for field in ("runs", "warmups", "platform", "cpu_count", "source", "note"):
+        old, new = baseline.get(field), candidate.get(field)
+        if (old is None) != (new is None) or (old is not None and old != new):
+            raise ValueError(f"physical benchmark {field} settings do not match")
     rows = baseline.get("rows_written_and_verified")
     if type(rows) is not int or rows < 1 or candidate.get("rows_written_and_verified") != rows:
         raise ValueError("reports must cover the same positive physical row count")
