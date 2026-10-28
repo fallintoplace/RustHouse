@@ -651,7 +651,7 @@ fn parse_select_tokens(tokens: Vec<Token>) -> Result<Select, ParseError> {
             "VARPOP" => AggregateFunction::VarPop,
             "STDDEVPOP" => AggregateFunction::StddevPop,
             "VARSAMP" => AggregateFunction::VarSamp,
-            "STDDEVSAMP" => AggregateFunction::StddevSamp,
+            "STDDEVSAMP" | "STDDEV" => AggregateFunction::StddevSamp,
             "MEDIAN" => AggregateFunction::Median,
             _ => return Err(ParseError(format!("unsupported aggregate: {name}"))),
         };
@@ -784,7 +784,7 @@ fn parse_select_tokens(tokens: Vec<Token>) -> Result<Select, ParseError> {
                         "VARPOP" => Some(AggregateFunction::VarPop),
                         "STDDEVPOP" => Some(AggregateFunction::StddevPop),
                         "VARSAMP" => Some(AggregateFunction::VarSamp),
-                        "STDDEVSAMP" => Some(AggregateFunction::StddevSamp),
+                        "STDDEVSAMP" | "STDDEV" => Some(AggregateFunction::StddevSamp),
                         "MEDIAN" => Some(AggregateFunction::Median),
                         _ => None,
                     },
@@ -1629,5 +1629,21 @@ mod generated_numbers_boundary_regressions {
         ] {
             assert!(parse_select(sql).is_err(), "{sql}");
         }
+    }
+}
+
+#[cfg(test)]
+mod stddev_clickhouse_parity_tests {
+    use super::*;
+    #[test]
+    fn stddev_alias_matches_sample_standard_deviation() {
+        for input in [
+            "SELECT stddev(number) FROM numbers(3)",
+            "SELECT number, STDDEV(number) FROM numbers(3) GROUP BY number",
+        ] {
+            let canonical = input.replace("stddev(", "stddevSamp(").replace("STDDEV(", "stddevSamp(");
+            assert_eq!(parse_select(input).unwrap().projection, parse_select(&canonical).unwrap().projection);
+        }
+        assert!(parse_select("SELECT stddev() FROM numbers(3)").is_err());
     }
 }
