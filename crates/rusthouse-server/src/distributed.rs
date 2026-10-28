@@ -1081,6 +1081,19 @@ fn merge_grouped_distinct_pairs(
     value_column: &str,
     global: &Select,
 ) -> Result<Vec<u8>, MergeError> {
+    merge_grouped_distinct_pairs_typed(
+        shards, max_rows, column, value_column, global, None,
+    )
+}
+
+fn merge_grouped_distinct_pairs_typed(
+    shards: &[(usize, Vec<u8>)],
+    max_rows: usize,
+    column: &str,
+    value_column: &str,
+    global: &Select,
+    key_kind: Option<&str>,
+) -> Result<Vec<u8>, MergeError> {
     const MAX_GROUP_VALUE_PAIRS: usize = 250_000;
     let shard_header = format!("{column}\t{value_column}\n");
     let result_header = format!("{column}\tcountDistinct({value_column})\n");
@@ -1130,11 +1143,42 @@ fn merge_grouped_distinct_pairs(
     if let Some(having) = &global.having {
         groups.retain(|(_, count)| passes_count_having(*count, having));
     }
-    if let Some(order) = &global.order_by {
-        groups.sort_by(|left, right| {
-            let cmp = left.1.cmp(&right.1);
-            if order.descending { cmp.reverse() } else { cmp }
-        });
+    if global.order_by.is_some() {
+        let terms = global.order_terms().collect::<Vec<_>>();
+        if terms.iter().all(|term| term.column == "count") {
+            groups.sort_by(|left, right| {
+                for term in &terms {
+                    let cmp = left.1.cmp(&right.1);
+                    let cmp = if term.descending { cmp.reverse() } else { cmp };
+                    if cmp != std::cmp::Ordering::Equal { return cmp; }
+                }
+                std::cmp::Ordering::Equal
+            });
+        } else {
+            let kind = key_kind.ok_or(MergeError::InvalidDistinctCount)?;
+            let mut indices = groups.iter().enumerate()
+                .map(|(index, (key, _))| {
+                    parse_group_sort_key(key, kind).map(|key| (index, key))
+                })
+                .collect::<Result<Vec<_>, _>>()?;
+            indices.sort_by(|(left, left_key), (right, right_key)| {
+                for term in &terms {
+                    let cmp = if term.column == "count" {
+                        groups[*left].1.cmp(&groups[*right].1)
+                    } else {
+                        compare_group_sort_keys(
+                            left_key, right_key, term.descending, term.nulls_first,
+                        )
+                    };
+                    let cmp = if term.column == "count" && term.descending {
+                        cmp.reverse()
+                    } else { cmp };
+                    if cmp != std::cmp::Ordering::Equal { return cmp; }
+                }
+                std::cmp::Ordering::Equal
+            });
+            groups = indices.into_iter().map(|(index, _)| groups[index]).collect();
+        }
     }
     let mut output = result_header.into_bytes();
     let mut emitted = 0usize;
@@ -1565,6 +1609,11 @@ pub fn handle(method: &str, body: &[u8], cluster: &Cluster, max_rows: usize) -> 
             Projection::GroupedCount { column },
         ) if select.order_terms().any(|term| term.column == *column) =>
             Some((table.as_str(), column.as_str())),
+        (
+            Some(Source::Table(table)),
+            Projection::GroupedDistinctCount { column, .. },
+        ) if select.order_terms().any(|term| term.column == *column) =>
+            Some((table.as_str(), column.as_str())),
         _ => None,
     };
     // Verify that only a named database table can be scanned.
@@ -1695,8 +1744,9 @@ pub fn handle(method: &str, body: &[u8], cluster: &Cluster, max_rows: usize) -> 
     } else if grouped_distinct_query {
         match &select.projection {
             Projection::GroupedDistinctCount { column, value_column } => {
-                merge_grouped_distinct_pairs(
+                merge_grouped_distinct_pairs_typed(
                     &shards, max_rows.min(250_000), column, value_column, &select,
+                    group_key_kind.as_deref(),
                 )
             }
             _ => Err(MergeError::InvalidDistinctCount),
@@ -2172,6 +2222,32 @@ mod tests {
             "SELECT city, min(amount) FROM events GROUP BY city ORDER BY city DESC LIMIT 1",
         ).unwrap();
         assert!(is_safe_grouped_extremum(&key_only));
+    }
+
+    #[test]
+    fn global_grouped_distinct_can_sort_by_typed_key_with_count_tiebreak() {
+        let sql = "SELECT customer, count(DISTINCT product) FROM sales GROUP BY customer ORDER BY customer ASC LIMIT 2";
+        let query = parse_select(sql).unwrap();
+        assert!(is_safe_grouped_distinct(&query));
+        assert_eq!(grouped_distinct_shard_sql(sql, &query).as_deref(),
+                   Some("SELECT DISTINCT customer, product FROM sales"));
+        let shards = [
+            shard(10, "customer\tproduct\n10\tx\n2\tx\n1\ty\n"),
+            shard(10, "customer\tproduct\n10\ty\n2\tx\n1\tz\n"),
+        ];
+        assert_eq!(
+            merge_grouped_distinct_pairs_typed(&shards, 2, "customer", "product",
+                &query, Some("UInt64")).unwrap(),
+            b"customer\tcountDistinct(product)\n1\t2\n2\t1\n"
+        );
+        let count_first = parse_select(
+            "SELECT customer, count(DISTINCT product) FROM sales GROUP BY customer ORDER BY count DESC, customer ASC LIMIT 2",
+        ).unwrap();
+        assert_eq!(
+            merge_grouped_distinct_pairs_typed(&shards, 2, "customer", "product",
+                &count_first, Some("UInt64")).unwrap(),
+            b"customer\tcountDistinct(product)\n1\t2\n10\t2\n"
+        );
     }
     #[test]
     fn distributed_count_distinct_uses_global_unique_values() {

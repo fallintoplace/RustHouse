@@ -315,7 +315,11 @@ pub(super) fn is_safe_grouped_distinct(select: &Select) -> bool {
         && !select.distinct
         && select.alias.is_none()
         && select.rename.is_none()
-        && select.order_terms().all(|term| term.column == "count")
+        && match &select.projection {
+            Projection::GroupedDistinctCount { column, .. } =>
+                select.order_terms().all(|term| term.column == "count" || term.column == *column),
+            _ => false,
+        }
 }
 
 /// Build a DISTINCT pair projection while preserving a fully parsed WHERE.
