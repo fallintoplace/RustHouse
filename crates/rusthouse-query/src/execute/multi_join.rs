@@ -20,6 +20,7 @@ struct Relation {
     names: Vec<String>,
     types: Vec<String>,
     start: usize,
+    rows: u64,
 }
 
 fn base_type(value: &str) -> &str {
@@ -211,14 +212,14 @@ pub fn execute_multi_join<W: Write>(
             names,
             types,
             start: width - metadata.columns.len(),
+            rows: metadata.rows,
         });
     }
 
-    let first_meta = inspect_query_source(&paths[0])?;
     let mut rows = read_rows(
         &paths[0],
         &relations[0].names,
-        first_meta.rows,
+        relations[0].rows,
         MAX_INPUT_ROWS,
         MAX_STREAM_BUILD_BYTES,
     )?;
@@ -237,11 +238,10 @@ pub fn execute_multi_join<W: Write>(
         let right_relation = &relations[step_index + 1];
         let left_width = right_relation.start;
         let (left_keys, right_keys) = step_keys(step, &relations[..=step_index + 1], left_width)?;
-        let metadata = inspect_query_source(&paths[step_index + 1])?;
         let right_rows = read_rows(
             &paths[step_index + 1],
             &right_relation.names,
-            metadata.rows,
+            right_relation.rows,
             MAX_INPUT_ROWS,
             MAX_STREAM_BUILD_BYTES,
         )?;
