@@ -72,7 +72,7 @@ fn equal_group(
     for (expected, &index) in stored.iter().zip(columns) {
         let same = match (expected, borrowed(&batch[index], row)?) {
             (Key::Numeric(expected), Borrowed::Number(actual)) => *expected == actual,
-            (Key::Text(expected), Borrowed::Text(actual)) => expected == actual,
+            (Key::Text(expected), Borrowed::Text(actual)) => expected.as_slice() == actual,
             (Key::UuidBytes(expected), Borrowed::Uuid(actual)) => expected == actual,
             (Key::Null, Borrowed::Null) => true,
             _ => false,
