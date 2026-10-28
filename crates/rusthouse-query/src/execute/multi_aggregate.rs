@@ -276,7 +276,7 @@ fn count_argument(
 ) -> Result<bool, ExecutionError> {
     match argument {
         None => Ok(true),
-        Some(BoundExpr::Column(index)) => Ok(!matches!(typed::cell(&batch[*index], row), Cell::Null)),
+        Some(BoundExpr::Column(index)) => Ok(!typed::is_null_at(&batch[*index], row)),
         Some(expression) => Ok(eval_number(expression, batch, row)?.is_some()),
     }
 }
