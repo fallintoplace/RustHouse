@@ -1146,25 +1146,27 @@ pub(super) fn execute_typed<W: Write>(
                     }
                     TypedColumn::Uuid(values) => {
                         let key = *values[index].as_bytes();
-                        if count_distinct_uuids.len() >= MAX_BUFFERED_ROWS
-                            && !count_distinct_uuids.contains(&key)
-                        {
-                            return Err(ExecutionError::Invalid("too many distinct rows".into()));
+                        if count_distinct_uuids.len() >= MAX_BUFFERED_ROWS {
+                            if !count_distinct_uuids.contains(&key) {
+                                return Err(ExecutionError::Invalid("too many distinct rows".into()));
+                            }
+                        } else {
+                            count_distinct_uuids.insert(key);
                         }
-                        count_distinct_uuids.insert(key);
                     }
                     column => {
                         let value = cell(column, index);
                         if !matches!(&value, Cell::Null) {
                             let key = value.key();
-                            if count_distinct_keys.len() >= MAX_BUFFERED_ROWS
-                                && !count_distinct_keys.contains(&key)
-                            {
-                                return Err(ExecutionError::Invalid(
-                                    "too many distinct rows".into(),
-                                ));
+                            if count_distinct_keys.len() >= MAX_BUFFERED_ROWS {
+                                if !count_distinct_keys.contains(&key) {
+                                    return Err(ExecutionError::Invalid(
+                                        "too many distinct rows".into(),
+                                    ));
+                                }
+                            } else {
+                                count_distinct_keys.insert(key);
                             }
-                            count_distinct_keys.insert(key);
                         }
                     }
                 }
