@@ -9,6 +9,7 @@ pub(super) fn is_function(name: &str) -> bool {
         "LENGTH"
             | "LENGTHUTF8"
             | "CHAR_LENGTH"
+            | "TOSTARTOFTENMINUTES"
             | "OCTET_LENGTH"
             | "ASCII"
             | "UTF16_LENGTH"
@@ -186,6 +187,20 @@ fn parse_at_depth(parser: &mut Parser, depth: usize) -> Result<ConstantValue, Pa
                     formatted.insert(0, '-');
                 }
                 ConstantValue::Text(formatted)
+            }
+        }
+        "TOSTARTOFTENMINUTES" => {
+            let input = text_arg(parser, depth + 1)?;
+            require(parser, Token::RParen, "toStartOfTenMinutes requires one argument")?;
+            match input {
+                Some(value) => {
+                    let seconds = rusthouse_storage::parse_datetime(&value)
+                        .ok_or_else(|| ParseError("invalid UTC DateTime argument".into()))?;
+                    ConstantValue::Text(rusthouse_storage::format_datetime(
+                        seconds / 600 * 600,
+                    ))
+                }
+                None => ConstantValue::Null,
             }
         }
         "ASCII" => {
