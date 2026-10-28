@@ -174,6 +174,7 @@ impl QueryFormat {
             "tsv-no-header" => Self::TsvNoHeader,
             "TabSeparated" => Self::TsvNoHeader,
             "csv" => Self::Csv,
+            "CSVWithNames" => Self::Csv,
             "csv-no-header" => Self::CsvNoHeader,
             "CSV" => Self::CsvNoHeader,
             "jsonl" => Self::Jsonl,
