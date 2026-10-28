@@ -118,12 +118,12 @@ fn write_json_string<W: Write>(writer: &mut W, input: &[u8]) -> io::Result<()> {
     // The common short ASCII field needs no JSON escaping. Pack it into a
     // stack buffer and make only one write call per field.
     let bytes = input.as_bytes();
-    if bytes.len() <= 64
+    if bytes.len() <= 256
         && bytes
             .iter()
             .all(|&byte| (b' '..=b'~').contains(&byte) && byte != b'"' && byte != b'\\')
     {
-        let mut quoted = [0u8; 66];
+        let mut quoted = [0u8; 258];
         quoted[0] = b'"';
         quoted[1..bytes.len() + 1].copy_from_slice(bytes);
         quoted[bytes.len() + 1] = b'"';
@@ -185,6 +185,24 @@ impl<W: Write> Write for JsonlWriter<W> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn writes_medium_ascii_json_strings_once() {
+        struct Counting { calls: usize, bytes: Vec<u8> }
+        impl Write for Counting {
+            fn write(&mut self, bytes: &[u8]) -> io::Result<usize> {
+                self.calls += 1;
+                self.bytes.extend_from_slice(bytes);
+                Ok(bytes.len())
+            }
+            fn flush(&mut self) -> io::Result<()> { Ok(()) }
+        }
+        let plain = vec![b'x'; 200];
+        let mut sink = Counting { calls: 0, bytes: Vec::new() };
+        write_json_string(&mut sink, &plain).unwrap();
+        assert_eq!(sink.calls, 1);
+        assert_eq!(sink.bytes.len(), 202);
+    }
 
     #[test]
     fn writes_short_ascii_json_strings_once() {
