@@ -15,18 +15,9 @@ fn clickhouse_compatibility_cases() {
             "SELECT cutWWW('https://www.example.com/a?x=1#f')",
             ConstantValue::Text("https://example.com/a?x=1#f".into()),
         ),
-        (
-            "SELECT cutWWW('www.www.example.com/')",
-            ConstantValue::Text("www.example.com/".into()),
-        ),
-        (
-            "SELECT cutWWW('https://example.com')",
-            ConstantValue::Text("https://example.com".into()),
-        ),
-        (
-            "SELECT cutWWW(NULL)",
-            ConstantValue::Null,
-        ),
+        ("SELECT cutWWW('www.www.example.com/')", ConstantValue::Text("www.example.com/".into())),
+        ("SELECT cutWWW('https://example.com')", ConstantValue::Text("https://example.com".into())),
+        ("SELECT cutWWW(NULL)", ConstantValue::Null),
     ] {
         assert_eq!(value(sql), expected, "{sql}");
     }
