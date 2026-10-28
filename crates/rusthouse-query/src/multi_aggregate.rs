@@ -45,10 +45,22 @@ fn render_expr(expr: &ScalarExpr) -> String {
         ScalarExpr::Divide(left, right) => {
             format!("({}) / ({})", render_expr(left), render_expr(right))
         }
+        ScalarExpr::Compare(left, operator, right) => {
+            let symbol = match operator {
+                crate::Operator::Eq => "=",
+                crate::Operator::Ne => "!=",
+                crate::Operator::Lt => "<",
+                crate::Operator::Le => "<=",
+                crate::Operator::Gt => ">",
+                crate::Operator::Ge => ">=",
+                _ => unreachable!("comparisons only accept comparison operators"),
+            };
+            format!("{} {symbol} {}", render_expr(left), render_expr(right))
+        }
         ScalarExpr::Multiply(left, right) => {
             let operand = |value: &ScalarExpr| {
                 let rendered = render_expr(value);
-                if matches!(value, ScalarExpr::Add(..) | ScalarExpr::Subtract(..)) {
+                if matches!(value, ScalarExpr::Add(..) | ScalarExpr::Subtract(..) | ScalarExpr::Compare(..)) {
                     format!("({rendered})")
                 } else {
                     rendered

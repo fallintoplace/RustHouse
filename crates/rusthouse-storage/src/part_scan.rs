@@ -19,6 +19,47 @@ struct ColumnStream {
     cached: Option<DecodedBlock>,
 }
 
+/// Numeric streams are independent after cross-column mark validation.
+/// Decode large wide projections on bounded scoped workers in column order.
+fn decode_numeric_stream(
+    stream: &mut ColumnStream,
+    index: usize,
+) -> Result<NumericColumn, PartError> {
+    read_numeric_granule_cached(
+        &mut stream.reader,
+        &stream.marks[index],
+        &stream.data_type,
+        &mut stream.cached,
+    )
+}
+
+fn decode_numeric_streams(
+    streams: &mut [ColumnStream],
+    index: usize,
+    workers: usize,
+) -> Result<Vec<NumericColumn>, PartError> {
+    if workers <= 1 || streams.len() < 2 {
+        return streams.iter_mut().map(|stream| decode_numeric_stream(stream, index)).collect();
+    }
+    let width = streams.len().div_ceil(workers);
+    let pieces = std::thread::scope(|scope| {
+        let handles = streams.chunks_mut(width)
+            .map(|chunk| scope.spawn(move || {
+                chunk.iter_mut()
+                    .map(|stream| decode_numeric_stream(stream, index))
+                    .collect::<Result<Vec<_>, PartError>>()
+            })).collect::<Vec<_>>();
+        handles.into_iter().map(|handle| handle.join().unwrap_or_else(|_| {
+            Err(PartError::InvalidScan("numeric granule decoder panicked".into()))
+        })).collect::<Vec<_>>()
+    });
+    let mut columns = Vec::with_capacity(streams.len());
+    for piece in pieces {
+        columns.extend(piece?);
+    }
+    Ok(columns)
+}
+
 pub struct NumericPartReader {
     streams: Vec<ColumnStream>,
     rows: u64,
@@ -35,9 +76,7 @@ impl NumericPartReader {
         }
         let part = part.as_ref();
         let metadata = inspect_part(part)?;
-        let mut streams = Vec::with_capacity(columns.len());
-        let mut layout = ScanLayout::default();
-
+        let mut types = Vec::with_capacity(columns.len());
         for name in columns {
             let column = metadata
                 .columns
@@ -58,19 +97,67 @@ impl NumericPartReader {
                     column.name, column.data_type
                 )));
             }
-
-            if metadata.rows == 0 {
-                continue;
-            }
-            streams.push(open_numeric_stream(
-                part,
-                name,
-                &column.data_type,
-                metadata.rows,
-                &mut layout,
-            )?);
+            types.push(column.data_type.as_str());
         }
 
+        let mut streams = Vec::with_capacity(columns.len());
+        if metadata.rows != 0 {
+            const PARALLEL_COLUMN_THRESHOLD: usize = 8;
+            const MAX_OPEN_WORKERS: usize = 4;
+            let workers = std::thread::available_parallelism()
+                .map_or(1, |parallelism| parallelism.get())
+                .min(MAX_OPEN_WORKERS);
+            if columns.len() >= PARALLEL_COLUMN_THRESHOLD && workers > 1 {
+                use std::sync::atomic::{AtomicUsize, Ordering};
+                let cursor = AtomicUsize::new(0);
+                let mut slots: Vec<Option<Result<ColumnStream, PartError>>> =
+                    (0..columns.len()).map(|_| None).collect();
+                std::thread::scope(|scope| -> Result<(), PartError> {
+                    let handles = (0..workers)
+                        .map(|_| {
+                            let cursor = &cursor;
+                            let types = &types;
+                            scope.spawn(move || {
+                                let mut completed = Vec::new();
+                                loop {
+                                    let index = cursor.fetch_add(1, Ordering::Relaxed);
+                                    if index >= columns.len() {
+                                        break;
+                                    }
+                                    completed.push((
+                                        index,
+                                        open_numeric_stream(part, &columns[index], types[index]),
+                                    ));
+                                }
+                                completed
+                            })
+                        })
+                        .collect::<Vec<_>>();
+                    for handle in handles {
+                        let completed = handle.join().map_err(|_| {
+                            PartError::InvalidScan("numeric stream opener panicked".into())
+                        })?;
+                        for (index, result) in completed {
+                            slots[index] = Some(result);
+                        }
+                    }
+                    Ok(())
+                })?;
+                for result in slots {
+                    streams.push(result.expect("each stream is claimed once")?);
+                }
+            } else {
+                for (name, data_type) in columns.iter().zip(&types) {
+                    streams.push(open_numeric_stream(part, name, data_type)?);
+                }
+            }
+        }
+        // Stream contents can open concurrently, but corresponding mark
+        // granules must be validated against one shared scan layout.
+        let mut layout = ScanLayout::default();
+        for (name, stream) in columns.iter().zip(&streams) {
+            layout.validate(name, &stream.marks, metadata.rows)?;
+        }
         Ok(Self {
             streams,
             rows: metadata.rows,
@@ -128,15 +215,25 @@ impl NumericPartReader {
         if self.next_mark == self.marks {
             return Ok(None);
         }
-        let mut columns = Vec::with_capacity(self.streams.len());
-        for stream in &mut self.streams {
-            columns.push(read_numeric_granule_cached(
-                &mut stream.reader,
-                &stream.marks[self.next_mark],
-                &stream.data_type,
-                &mut stream.cached,
-            )?);
+        let index = self.next_mark;
+        // Legacy marks have no adaptive row count and must remain readable.
+        // Only an explicit terminal zero-row mark is an end sentinel.
+        let row_count = self.streams.first()
+            .and_then(|stream| stream.marks[index].rows);
+        if row_count == Some(0) {
+            self.next_mark = self.marks;
+            return Ok(None);
         }
+        // Small or legacy marks remain serial: worker setup is worthwhile only
+        // for large adaptive analytical projections.
+        let workers = if row_count.is_some_and(|rows| rows >= 4096)
+            && self.streams.len() >= 8
+        {
+            std::thread::available_parallelism().map_or(1, |n| n.get()).min(4)
+        } else {
+            1
+        };
+        let columns = decode_numeric_streams(&mut self.streams, index, workers)?;
         self.next_mark += 1;
         Ok(Some(columns))
     }
@@ -467,5 +564,68 @@ mod tests {
         assert_eq!(reader.rows(), 0);
         assert!(reader.next_batch().unwrap().is_none());
         fs::remove_dir_all(dir).unwrap();
+    }
+}
+
+#[cfg(test)]
+mod parallel_numeric_open_tests {
+    use super::*;
+    use crate::{Column, write_wide_part};
+    use std::fs;
+
+    #[test]
+    fn wide_numeric_projection_matches_all_column_mark_layouts() {
+        let part = std::env::temp_dir().join(format!(
+            "rusthouse-numeric-wide-open-{}", std::process::id()
+        ));
+        let _ = fs::remove_dir_all(&part);
+        let columns = (0..10)
+            .map(|index| Column {
+                name: format!("n{index}"),
+                data_type: "UInt64".into(),
+            })
+            .collect::<Vec<_>>();
+        let data = (0..10)
+            .map(|index| vec![Some(index.to_string()), Some((index + 200).to_string())])
+            .collect::<Vec<_>>();
+        write_wide_part(&part, &columns, &data).unwrap();
+        let names = columns.iter().map(|column| column.name.clone()).collect::<Vec<_>>();
+        let mut reader = NumericPartReader::open(&part, &names).unwrap();
+        let batch = reader.next_batch().unwrap().unwrap();
+        assert_eq!(batch.len(), 10);
+        assert!(batch.iter().all(|column| column.len() == 2));
+        assert!(reader.next_batch().unwrap().is_none());
+        fs::remove_dir_all(part).unwrap();
+    }
+}
+
+#[cfg(test)]
+mod parallel_numeric_decode_tests {
+    use super::*;
+    use crate::{Column, write_wide_part};
+    use std::fs;
+
+    #[test]
+    fn bounded_parallel_numeric_decompress_preserves_all_column_values() {
+        let root = std::env::temp_dir().join(format!(
+            "rusthouse-parallel-numeric-decode-{}", std::process::id()
+        ));
+        let _ = fs::remove_dir_all(&root);
+        let schema = (0..12).map(|n| Column {
+            name: format!("measure{n}"), data_type: "UInt64".into(),
+        }).collect::<Vec<_>>();
+        let rows = (0..1024).map(|row| (0..12)
+            .map(|column| Some((row * 100 + column).to_string()))
+            .collect::<Vec<_>>()).collect::<Vec<_>>();
+        write_wide_part(&root, &schema, &rows).unwrap();
+        let projection = schema.iter().map(|c| c.name.clone()).collect::<Vec<_>>();
+        let mut serial = NumericPartReader::open(&root, &projection).unwrap();
+        let mut parallel = NumericPartReader::open(&root, &projection).unwrap();
+        let expected = decode_numeric_streams(&mut serial.streams, 0, 1).unwrap();
+        let actual = decode_numeric_streams(&mut parallel.streams, 0, 4).unwrap();
+        assert_eq!(expected, actual);
+        assert_eq!(actual.len(), 12);
+        assert_eq!(actual[0].len(), 1024);
+        fs::remove_dir_all(root).unwrap();
     }
 }

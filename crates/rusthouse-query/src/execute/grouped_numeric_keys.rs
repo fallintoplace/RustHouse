@@ -42,7 +42,7 @@ fn numeric_value_at(column: &TypedColumn, row: usize) -> Result<Option<Number>, 
 // Encode a composite GROUP BY key into reusable storage. String components
 // borrow the column's decoded bytes; only the first occurrence of a group
 // needs to own an encoded key. Tags and lengths preserve tuple boundaries.
-fn append_group_component(column: &TypedColumn, row: usize, buffer: &mut Vec<u8>) {
+pub(super) fn append_group_component(column: &TypedColumn, row: usize, buffer: &mut Vec<u8>) {
     if typed::is_null_at(column, row) {
         buffer.push(0);
         return;
@@ -91,6 +91,8 @@ pub(super) fn execute<W: Write>(
     part: &Path,
     columns: &[String],
     items: &[(AggregateFunction, String)],
+    aliases: &[Option<String>],
+    filters: &[Option<String>],
     output: &mut W,
 ) -> Result<(), ExecutionError> {
     let metadata = inspect_query_source(part)?;
@@ -123,6 +125,16 @@ pub(super) fn execute<W: Write>(
             names.push(column.clone());
         }
     }
+    for filter in filters.iter().flatten() {
+        if !names.contains(filter) {
+            names.push(filter.clone());
+        }
+        let column_type = metadata.columns.iter().find(|column| &column.name == filter)
+            .ok_or_else(|| ExecutionError::Invalid(format!("unknown filter column: {filter}")))?;
+        if matches!(typed::base_type(&column_type.data_type), "String" | "UUID") {
+            return Err(ExecutionError::Invalid("conditional metric filters must be numeric".into()));
+        }
+    }
     for predicate in query
         .predicates
         .iter()
@@ -149,8 +161,16 @@ pub(super) fn execute<W: Write>(
         }
         output.write_all(column.as_bytes())?;
     }
-    for (function, column) in items {
-        write!(output, "\t{}({column})", function.name())?;
+    for (index, (function, column)) in items.iter().enumerate() {
+        if let Some(alias) = aliases.get(index).and_then(Option::as_deref) {
+            write!(output, "\t{alias}")?;
+        } else {
+            if let Some(filter) = filters.get(index).and_then(Option::as_deref) {
+                write!(output, "\t{}If({column}, {filter})", function.name())?;
+            } else {
+            write!(output, "\t{}({column})", function.name())?;
+            }
+        }
     }
     writeln!(output)?;
     if query.limit == Some(0) {
@@ -171,6 +191,9 @@ pub(super) fn execute<W: Write>(
     });
     let mut encoded_groups = HashMap::<Vec<u8>, usize>::new();
     let mut encoded_probe = Vec::<u8>::new();
+    let filter_indices = filters.iter()
+        .map(|value| value.as_ref().map(|column| indices[column]))
+        .collect::<Vec<_>>();
     let mut by_key = HashMap::<Vec<Key>, usize>::new();
     let mut groups = Vec::<(Vec<Cell>, Vec<AggregateState>)>::new();
     let mut dense_slots = (columns.len() == 2
@@ -272,10 +295,20 @@ pub(super) fn execute<W: Write>(
                     index
                 }
             };
-            for ((function, _), (&index, state)) in items
+            for (metric, ((function, _), (&index, state))) in items
                 .iter()
                 .zip(item_indices.iter().zip(groups[group].1.iter_mut()))
+                .enumerate()
             {
+                if let Some(&filter_index) = filter_indices.get(metric).and_then(Option::as_ref) {
+                    let enabled = match numeric_value_at(&batch[filter_index], row)? {
+                        Some(Number::Unsigned(value)) => value != 0,
+                        Some(Number::Signed(value)) => value != 0,
+                        Some(Number::Float(value)) => value != 0.0,
+                        None => false,
+                    };
+                    if !enabled {continue;}
+                }
                 if *function == AggregateFunction::Count {
                     if !typed::is_null_at(&batch[index], row) {
                         state.update(Number::Unsigned(1))?;

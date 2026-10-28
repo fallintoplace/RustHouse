@@ -4,7 +4,7 @@ const MAX_DEPTH: usize = 16;
 const MAX_TEXT_BYTES: usize = 1_048_576;
 
 pub(super) fn is_function(name: &str) -> bool {
-    matches!(
+    super::date_scalar::is_function(name) || matches!(
         name.to_ascii_uppercase().as_str(),
         "LENGTH"
             | "TOYEAR"
@@ -137,6 +137,7 @@ pub(super) fn is_function(name: &str) -> bool {
             | "NETLOC"
             | "DOMAIN"
             | "STRIP_SUFFIX"
+            | "SUBTRACTMONTHS"
             | "TOSTRINGCUTTOZERO"
             | "REPEAT"
             | "BASE64_DECODE"
@@ -145,6 +146,7 @@ pub(super) fn is_function(name: &str) -> bool {
             | "ADDMONTHS"
             | "RPAD"
             | "LOWERUTF8"
+            | "NOTEMPTY"
             | "SPACE"
             | "ENCODEURLFORMCOMPONENT"
     )
@@ -160,6 +162,9 @@ fn parse_at_depth(parser: &mut Parser, depth: usize) -> Result<ConstantValue, Pa
     }
     let name = parser.word()?.to_ascii_uppercase();
     require(parser, Token::LParen, "string function requires '('")?;
+    if super::date_scalar::is_function(&name) {
+        return super::date_scalar::parse_after_open(parser, &name, depth);
+    }
     let value = match name.as_str() {
 
         "LENGTHUTF8" => {
@@ -471,7 +476,7 @@ fn parse_at_depth(parser: &mut Parser, depth: usize) -> Result<ConstantValue, Pa
                 None => ConstantValue::Null,
             }
         }
-        "LOWER" | "LOWERUTF8" => {
+        "LOWER" => {
             let input = text_arg(parser, depth + 1)?;
             require(parser, Token::RParen, "LOWER requires one argument")?;
             match input {
@@ -540,7 +545,21 @@ fn parse_at_depth(parser: &mut Parser, depth: usize) -> Result<ConstantValue, Pa
                 None => ConstantValue::Null,
             }
         }
-        "UPPER" | "UPPERUTF8" => {
+        "UPPERUTF8" => {
+            let input = text_arg(parser, depth + 1)?;
+            require(parser, Token::RParen, "UPPERUTF8 requires one argument")?;
+            match input {
+                Some(input) => {
+                    let output = input.to_uppercase();
+                    if output.len() > MAX_TEXT_BYTES {
+                        return Err(ParseError("upperUTF8 result is too large".into()));
+                    }
+                    ConstantValue::Text(output)
+                }
+                None => ConstantValue::Null,
+            }
+        }
+        "UPPER" => {
             let input = text_arg(parser, depth + 1)?;
             require(parser, Token::RParen, "UPPER requires one argument")?;
             match input {
@@ -1148,6 +1167,62 @@ fn parse_at_depth(parser: &mut Parser, depth: usize) -> Result<ConstantValue, Pa
                     ConstantValue::Text(query.to_owned())
                 }
                 None => ConstantValue::Null,
+            }
+        }
+        "SUBTRACTMONTHS" => {
+            let input = text_arg(parser, depth + 1)?;
+            require(parser, Token::Comma, "subtractMonths requires a month count")?;
+            let amount = integer_arg(parser, depth + 1)?;
+            require(parser, Token::RParen, "subtractMonths requires two arguments")?;
+            match (input, amount) {
+                (Some(value), Some(amount)) => {
+                    let (calendar, clock) = if let Some(days) = rusthouse_storage::parse_date(&value) {
+                        (rusthouse_storage::format_date(days), None)
+                    } else if let Some(seconds) = rusthouse_storage::parse_datetime(&value) {
+                        let datetime = rusthouse_storage::format_datetime(seconds);
+                        (datetime[..10].to_owned(), Some(datetime[10..].to_owned()))
+                    } else {
+                        return Err(ParseError("invalid UTC Date or DateTime argument".into()));
+                    };
+                    let year = calendar[..4]
+                        .parse::<i64>()
+                        .map_err(|_| ParseError("invalid calendar year".into()))?;
+                    let month = calendar[5..7]
+                        .parse::<i64>()
+                        .map_err(|_| ParseError("invalid calendar month".into()))?;
+                    let day = calendar[8..10]
+                        .parse::<u32>()
+                        .map_err(|_| ParseError("invalid calendar day".into()))?;
+                    let offset = amount.checked_neg()
+                        .ok_or_else(|| ParseError("subtractMonths offset overflow".into()))?;
+                    let target = (year * 12 + month - 1)
+                        .checked_add(offset)
+                        .ok_or_else(|| ParseError("subtractMonths offset overflow".into()))?;
+                    let target_year = target.div_euclid(12);
+                    let target_month = target.rem_euclid(12) + 1;
+                    if !(1970..=2149).contains(&target_year) {
+                        return Err(ParseError("subtractMonths result outside Date range".into()));
+                    }
+                    let mut candidate = None;
+                    for target_day in (1..=day).rev() {
+                        let date = format!("{target_year:04}-{target_month:02}-{target_day:02}");
+                        if let Some(days) = rusthouse_storage::parse_date(&date) {
+                            candidate = Some((date, days));
+                            break;
+                        }
+                    }
+                    let (date, days) = candidate
+                        .ok_or_else(|| ParseError("subtractMonths result outside Date range".into()))?;
+                    if let Some(clock) = clock {
+                        let datetime = format!("{date}{clock}");
+                        let seconds = rusthouse_storage::parse_datetime(&datetime)
+                            .ok_or_else(|| ParseError("subtractMonths result outside DateTime range".into()))?;
+                        ConstantValue::Text(rusthouse_storage::format_datetime(seconds))
+                    } else {
+                        ConstantValue::Text(rusthouse_storage::format_date(days))
+                    }
+                }
+                _ => ConstantValue::Null,
             }
         }
         "SPLIT_PART" => {
@@ -2675,6 +2750,14 @@ fn parse_at_depth(parser: &mut Parser, depth: usize) -> Result<ConstantValue, Pa
                 None => ConstantValue::Null,
             }
         }
+        "NOTEMPTY" => {
+            let input = text_arg(parser, depth + 1)?;
+            require(parser, Token::RParen, "notEmpty requires one argument")?;
+            match input {
+                Some(value) => ConstantValue::Integer(i64::from(!value.is_empty())),
+                None => ConstantValue::Null,
+            }
+        }
         _ => return Err(ParseError(format!("unsupported string function: {name}"))),
     };
     Ok(value)
@@ -2704,7 +2787,7 @@ fn require(parser: &mut Parser, token: Token, message: &str) -> Result<(), Parse
     }
 }
 
-fn integer_arg(parser: &mut Parser, depth: usize) -> Result<Option<i64>, ParseError> {
+pub(super) fn integer_arg(parser: &mut Parser, depth: usize) -> Result<Option<i64>, ParseError> {
     if matches!(
         parser.tokens.get(parser.index),
         Some(Token::Word(word)) if word.eq_ignore_ascii_case("NULL")
@@ -2722,7 +2805,7 @@ fn integer_arg(parser: &mut Parser, depth: usize) -> Result<Option<i64>, ParseEr
     Ok(Some(super::scalar::parse(parser)?))
 }
 
-fn text_arg(parser: &mut Parser, depth: usize) -> Result<Option<String>, ParseError> {
+pub(super) fn text_arg(parser: &mut Parser, depth: usize) -> Result<Option<String>, ParseError> {
     match parser.tokens.get(parser.index) {
         Some(Token::String(value)) => {
             let result = value.clone();

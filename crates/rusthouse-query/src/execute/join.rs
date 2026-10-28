@@ -5,10 +5,12 @@ mod keys;
 use self::keys::*;
 
 use super::{ExecutionError, Number, typed};
-use crate::{JoinColumn, JoinSelect, JoinType};
+use crate::{JoinAggregate, JoinColumn, JoinSelect, JoinType};
 use rusthouse_storage::{TypedColumn, TypedQueryReader, inspect_query_source};
-use std::collections::HashMap;
+use std::cmp::Ordering;
+use std::collections::{BinaryHeap, HashMap};
 use std::io::Write;
+use std::sync::Arc;
 use std::path::Path;
 
 // Ordered and outer joins retain both inputs, bounded by row count and bytes.
@@ -48,8 +50,10 @@ pub(super) fn read_rows(
         return Err(invalid("JOIN requires nonempty table schemas"));
     }
     let mut reader = TypedQueryReader::open(path, names)?;
-    // expected_rows is already bounded by row_limit, so reserve once for the build.
-    let mut rows = Vec::with_capacity(expected_rows as usize);
+    // Byte-budget validation, not the uncompressed row-count estimate,
+    // should determine retained capacity. Avoid eagerly allocating hundreds
+    // of thousands of row slots for wide tables that will fail the byte cap.
+    let mut rows = Vec::with_capacity(expected_rows.min(4096) as usize);
     let mut retained_bytes = 0usize;
     while let Some(batch) = reader.next_batch()? {
         for row_index in 0..batch[0].len() {
@@ -95,6 +99,90 @@ pub(super) fn read_rows(
 
 // Build the probe key directly from its batch columns so misses never
 // materialize the full row, which may contain wide String payloads.
+
+/// Retain only join keys, projected build-side columns and the optional
+/// post-join filter. All other columns are read neither from disk nor into
+/// the hash build. Slot indices remain in the full table schema.
+fn retained_build_columns(
+    names: &[String],
+    keys: &[usize],
+    selected: &[(usize, String, Option<usize>)],
+    null_filter: Option<(usize, bool)>,
+    base: usize,
+) -> Vec<usize> {
+    let mut keep = vec![false; names.len()];
+    for &key in keys {
+        keep[key] = true;
+    }
+    for &(column, _, _) in selected {
+        if let Some(local) = column.checked_sub(base).filter(|&local| local < names.len()) {
+            keep[local] = true;
+        }
+    }
+    if let Some((column, _)) = null_filter {
+        if let Some(local) = column.checked_sub(base).filter(|&local| local < names.len()) {
+            keep[local] = true;
+        }
+    }
+    keep.iter().enumerate().filter_map(|(i, &used)| used.then_some(i)).collect()
+}
+
+/// Keep full-column positions for existing JOIN key/projection code, but only
+/// decode retained physical streams. This is especially useful for wide
+/// dimensions with many String payload columns.
+fn read_projected_build_rows(
+    path: &Path,
+    names: &[String],
+    indices: &[usize],
+    expected_rows: u64,
+    row_limit: u64,
+    byte_limit: usize,
+) -> Result<Vec<Vec<typed::Cell>>, ExecutionError> {
+    if expected_rows > row_limit {
+        return Err(invalid(format!("JOIN supports at most {row_limit} input rows per table")));
+    }
+    if indices.is_empty() || names.is_empty() {
+        return Err(invalid("JOIN requires nonempty build columns"));
+    }
+    let projected = indices.iter().map(|&i| names[i].clone()).collect::<Vec<_>>();
+    let mut reader = TypedQueryReader::open(path, &projected)?;
+    let mut rows = Vec::with_capacity(expected_rows as usize);
+    let mut retained_bytes = 0usize;
+    while let Some(batch) = reader.next_batch()? {
+        for row_index in 0..batch[0].len() {
+            if rows.len() >= row_limit as usize {
+                return Err(invalid("JOIN input row limit exceeded"));
+            }
+            let mut cells = vec![typed::Cell::Null; names.len()];
+            for (column, &full_index) in indices.iter().enumerate() {
+                cells[full_index] = typed::cell(&batch[column], row_index);
+            }
+            let bytes = cells
+                .len()
+                .checked_mul(std::mem::size_of::<typed::Cell>())
+                .and_then(|bytes| bytes.checked_add(std::mem::size_of::<Vec<typed::Cell>>()))
+                .and_then(|bytes| cells.iter().try_fold(bytes, |sum, cell| {
+                    let added = match cell {
+                        typed::Cell::Text(value) => value.len(),
+                        typed::Cell::Uuid(value) => value.len(),
+                        _ => 0,
+                    };
+                    sum.checked_add(added)
+                }))
+                .ok_or_else(|| invalid("JOIN build size overflow"))?;
+            retained_bytes = retained_bytes.checked_add(bytes)
+                .ok_or_else(|| invalid("JOIN build size overflow"))?;
+            if retained_bytes > byte_limit {
+                return Err(invalid("JOIN exceeds its retained-row memory budget"));
+            }
+            rows.push(cells);
+        }
+    }
+    if rows.len() as u64 != expected_rows {
+        return Err(invalid("JOIN input row count changed during scan"));
+    }
+    Ok(rows)
+}
 
 /// Avoid allocating a heap Vec for the common unique JOIN build key.
 /// Promote to a Vec only when the build side contains duplicate keys.
@@ -199,6 +287,143 @@ where
     Ok(matches)
 }
 
+/// Stream the right side of an unordered RIGHT OUTER JOIN, retaining only
+/// a bounded left hash build and the row currently being probed.
+fn probe_right_outer<F>(
+    right_path: &Path,
+    right_names: &[String],
+    right_keys: &[usize],
+    left_rows: &[Vec<typed::Cell>],
+    left_width: usize,
+    hash: &HashMap<Vec<typed::Key>, Bucket>,
+    options: ProbeOptions,
+    mut emit: F,
+) -> Result<usize, ExecutionError>
+where
+    F: FnMut(&[typed::Cell], &[typed::Cell]) -> Result<(), ExecutionError>,
+{
+    if options.stop_after == Some(0) { return Ok(0); }
+    let mut reader = TypedQueryReader::open(right_path, right_names)?;
+    let null_left = vec![typed::Cell::Null; left_width];
+    let mut total = 0usize;
+    let mut probe_key = Vec::with_capacity(right_keys.len());
+    'scan: while let Some(batch) = reader.next_batch()? {
+        for row in 0..batch[0].len() {
+            let candidates = if batch_key_into(&batch, row, right_keys, &mut probe_key) {
+                hash.get(probe_key.as_slice())
+            } else { None };
+            let matched = candidates.is_some();
+            let mut right_row: Option<Vec<typed::Cell>> = None;
+            let matches = candidates.into_iter().flat_map(|bucket| {
+                bucket.iter().take(if options.any { 1 } else { usize::MAX })
+                    .map(Some)
+            });
+            for left_index in matches.chain((!matched).then_some(None)) {
+                let left = left_index.map_or(null_left.as_slice(),
+                    |&index| left_rows[index].as_slice());
+                if let Some((column, not_null)) = options.null_filter {
+                    let is_null = if column < left_width {
+                        matches!(&left[column], typed::Cell::Null)
+                    } else {
+                        typed::is_null_at(&batch[column - left_width], row)
+                    };
+                    if is_null == not_null { continue; }
+                }
+                if options.stop_after.is_some_and(|end| total >= end) {
+                    break 'scan;
+                }
+                if options.stop_after.is_none() && total >= MAX_RESULT_ROWS {
+                    return Err(invalid("JOIN produces more than 131072 rows"));
+                }
+                let right = if options.materialize_rows
+                    && total >= options.materialize_after {
+                    right_row.get_or_insert_with(|| {
+                        batch.iter().map(|column| typed::cell(column, row)).collect()
+                    }).as_slice()
+                } else { &[] };
+                emit(left, right)?;
+                total += 1;
+            }
+        }
+    }
+    Ok(total)
+}
+
+fn execute_streaming_right_outer<W: Write>(
+    query: &JoinSelect,
+    left_path: &Path,
+    right_path: &Path,
+    columns: InnerJoinColumns<'_>,
+    output: &mut W,
+) -> Result<(), ExecutionError> {
+    let InnerJoinColumns {
+        left_names, right_names, selected, left_keys, right_keys, null_filter,
+    } = columns;
+    let left_meta = inspect_query_source(left_path)?;
+    let left_rows = read_rows(
+        left_path, left_names, left_meta.rows,
+        MAX_STREAM_BUILD_ROWS, MAX_STREAM_BUILD_BYTES,
+    )?;
+    let mut hash = HashMap::<Vec<typed::Key>, Bucket>::with_capacity(left_rows.len());
+    for (index, row) in left_rows.iter().enumerate() {
+        if let Some(key) = row_key(row, left_keys) {
+            if query.any {
+                hash.entry(key).or_insert(Bucket::One(index));
+            } else {
+                hash.entry(key).and_modify(|bucket| bucket.push(index))
+                    .or_insert(Bucket::One(index));
+            }
+        }
+    }
+    let stop_after = query.limit.filter(|&limit| limit <= MAX_RESULT_ROWS)
+        .and_then(|limit| query.offset.checked_add(limit));
+    let preflight = probe_right_outer(
+        right_path, right_names, right_keys, &left_rows, left_names.len(), &hash,
+        ProbeOptions {
+            materialize_rows: false, materialize_after: 0, stop_after,
+            any: query.any, null_filter,
+        }, |_, _| Ok(()),
+    )?;
+    let header = selected.iter().map(|(_, name, _)| name.as_str())
+        .collect::<Vec<_>>().join("\t");
+    writeln!(output, "{header}")?;
+    if preflight <= query.offset { return Ok(()); }
+    let end = query.offset.saturating_add(query.limit.unwrap_or(usize::MAX));
+    let mut seen = 0usize;
+    probe_right_outer(
+        right_path, right_names, right_keys, &left_rows, left_names.len(), &hash,
+        ProbeOptions {
+            materialize_rows: selected.iter().any(|(column, _, fallback)| {
+                *column >= left_names.len() || fallback.is_some()
+            }),
+            materialize_after: query.offset, stop_after, any: query.any, null_filter,
+        },
+        |left, right| {
+            if seen >= query.offset && seen < end {
+                for (pos, (column, _, fallback)) in selected.iter().enumerate() {
+                    if pos > 0 { output.write_all(b"\t")?; }
+                    let value = if *column < left_names.len() {
+                        &left[*column]
+                    } else {
+                        &right[*column - left_names.len()]
+                    };
+                    let value = if matches!(value, typed::Cell::Null) {
+                        fallback.and_then(|index| {
+                            index.checked_sub(left_names.len())
+                                .and_then(|index| right.get(index))
+                        }).unwrap_or(value)
+                    } else { value };
+                    typed::write_value(output, value)?;
+                }
+                output.write_all(b"\n")?;
+            }
+            seen += 1;
+            Ok(())
+        },
+    )?;
+    Ok(())
+}
+
 /// For unordered INNER joins, build only the small right side and stream the
 /// left side twice. A bounded page needs only its prefix; unbounded or
 /// oversized requests still validate the 131,072-result limit before output.
@@ -229,9 +454,11 @@ fn execute_streaming_inner<W: Write>(
     // The probe side is scanned in batches and never retained. Keep the
     // hash-build and matched-output limits, not an artificial probe-row cap.
     let right_meta = inspect_query_source(right_path)?;
-    let right_rows = read_rows(
+    let keep = retained_build_columns(right_names, right_keys, selected, null_filter, left_names.len());
+    let right_rows = read_projected_build_rows(
         right_path,
         right_names,
+        &keep,
         right_meta.rows,
         MAX_STREAM_BUILD_ROWS,
         MAX_STREAM_BUILD_BYTES,
@@ -436,9 +663,11 @@ fn execute_streaming_right<W: Write>(
         null_filter,
     } = columns;
     let left_meta = inspect_query_source(left_path)?;
-    let left_rows = read_rows(
+    let keep = retained_build_columns(left_names, left_keys, selected, null_filter, 0);
+    let left_rows = read_projected_build_rows(
         left_path,
         left_names,
+        &keep,
         left_meta.rows,
         MAX_STREAM_BUILD_ROWS,
         MAX_STREAM_BUILD_BYTES,
@@ -527,6 +756,213 @@ fn execute_streaming_right<W: Write>(
             Ok(())
         },
     )?;
+    Ok(())
+}
+
+
+struct OrderedJoinRow {
+    values: Vec<typed::Cell>,
+    keys: Vec<typed::Cell>,
+    directions: Arc<[(bool, Option<bool>)]>,
+    sequence: usize,
+    retained_bytes: usize,
+}
+
+impl PartialEq for OrderedJoinRow {
+    fn eq(&self, other: &Self) -> bool { self.cmp(other) == Ordering::Equal }
+}
+impl Eq for OrderedJoinRow {}
+impl PartialOrd for OrderedJoinRow {
+    fn partial_cmp(&self, other: &Self) -> Option<Ordering> { Some(self.cmp(other)) }
+}
+impl Ord for OrderedJoinRow {
+    fn cmp(&self, other: &Self) -> Ordering {
+        for ((left, right), &(descending, nulls_first)) in self.keys.iter()
+            .zip(&other.keys).zip(self.directions.iter()) {
+            let ordering = typed::compare_order_cells(left, right, descending, nulls_first);
+            if ordering != Ordering::Equal { return ordering; }
+        }
+        self.sequence.cmp(&other.sequence)
+    }
+}
+
+fn ordered_join_retained_bytes(cells: &[typed::Cell]) -> Result<usize, ExecutionError> {
+    cells.iter().try_fold(
+        std::mem::size_of_val(cells),
+        |total, cell| total.checked_add(match cell {
+            typed::Cell::Text(bytes) => bytes.len(),
+            typed::Cell::Uuid(value) => value.len(),
+            _ => 0,
+        }).ok_or_else(|| invalid("ordered JOIN output size overflow"))
+    )
+}
+
+/// Scan an arbitrarily large fact side while retaining only the requested
+/// globally ordered page. The bounded dimension hash build is unchanged.
+fn execute_streaming_ordered_inner<W: Write>(
+    query: &JoinSelect,
+    left_path: &Path,
+    right_path: &Path,
+    columns: InnerJoinColumns<'_>,
+    order: &[(usize, bool, Option<bool>)],
+    requested: usize,
+    output: &mut W,
+) -> Result<(), ExecutionError> {
+    let InnerJoinColumns {
+        left_names, right_names, selected, left_keys, right_keys, null_filter
+    } = columns;
+    let right_metadata = inspect_query_source(right_path)?;
+    let right_rows = read_rows(
+        right_path, right_names, right_metadata.rows,
+        MAX_STREAM_BUILD_ROWS, MAX_STREAM_BUILD_BYTES
+    )?;
+    let mut hash = HashMap::<Vec<typed::Key>, Bucket>::with_capacity(right_rows.len());
+    for (index, row) in right_rows.iter().enumerate() {
+        if let Some(key) = row_key(row, right_keys) {
+            if query.any {
+                hash.entry(key).or_insert(Bucket::One(index));
+            } else {
+                hash.entry(key)
+                    .and_modify(|bucket| bucket.push(index))
+                    .or_insert(Bucket::One(index));
+            }
+        }
+    }
+    let mut heap = BinaryHeap::<OrderedJoinRow>::with_capacity(requested.min(1024));
+    let directions: Arc<[(bool, Option<bool>)]> =
+        order.iter().map(|(_, desc, nulls)| (*desc, *nulls)).collect::<Vec<_>>().into();
+    let mut retained = 0usize;
+    let mut sequence = 0usize;
+    let width = left_names.len();
+    probe_inner(
+        left_path, left_names, left_keys, &right_rows, &hash,
+        ProbeOptions {
+            materialize_rows: true,
+            materialize_after: 0,
+            // A small ordered result still needs to inspect every qualifying
+            // match, without the unordered 131072-output limit.
+            stop_after: Some(usize::MAX),
+            any: query.any,
+            null_filter,
+        },
+        |left, right| {
+            let at = |index: usize| -> &typed::Cell {
+                if index < width { &left[index] } else { &right[index - width] }
+            };
+            let keys = order.iter().map(|(index, _, _)| at(*index).clone()).collect();
+            let values: Vec<typed::Cell> = selected
+                .iter().map(|(index, _, _)| at(*index).clone()).collect();
+            let bytes = ordered_join_retained_bytes(&keys)?
+                .checked_add(ordered_join_retained_bytes(&values)?)
+                .ok_or_else(|| invalid("ordered JOIN output size overflow"))?;
+            let candidate = OrderedJoinRow {
+                values, keys, directions: directions.clone(), sequence,
+                retained_bytes: bytes,
+            };
+            sequence = sequence.checked_add(1)
+                .ok_or_else(|| invalid("ordered JOIN row count overflow"))?;
+            if heap.len() == requested &&
+                heap.peek().is_some_and(|worst| candidate >= *worst) {
+                return Ok(());
+            }
+            let removed = if heap.len() == requested {
+                heap.peek().map_or(0, |row| row.retained_bytes)
+            } else { 0 };
+            let total = retained.checked_sub(removed)
+                .and_then(|value| value.checked_add(bytes))
+                .ok_or_else(|| invalid("ordered JOIN output size overflow"))?;
+            if total > MAX_STREAM_BUILD_BYTES {
+                return Err(invalid("ordered JOIN exceeds its retained-row memory budget"));
+            }
+            retained = total;
+            if heap.len() < requested {
+                heap.push(candidate);
+            } else {
+                *heap.peek_mut().expect("nonempty ordered JOIN heap") = candidate;
+            }
+            Ok(())
+        },
+    )?;
+    let header = selected.iter().map(|(_, name, _)| name.as_str()).collect::<Vec<_>>().join("\t");
+    writeln!(output, "{header}")?;
+    for row in heap.into_sorted_vec().into_iter().skip(query.offset) {
+        for (index, value) in row.values.iter().enumerate() {
+            if index != 0 { output.write_all(b"\t")?; }
+            typed::write_value(output, value)?;
+        }
+        output.write_all(b"\n")?;
+    }
+    Ok(())
+}
+
+
+fn execute_streaming_inner_count<W: Write>(
+    query: &JoinSelect,
+    left_path: &Path,
+    right_path: &Path,
+    columns: InnerJoinColumns<'_>,
+    left_count: u64,
+    right_count: u64,
+    output: &mut W,
+) -> Result<(), ExecutionError> {
+    let InnerJoinColumns {
+        left_names, right_names, left_keys, right_keys, null_filter, ..
+    } = columns;
+    if query.limit == Some(0) || query.offset > 0 {
+        output.write_all(b"count\n")?;
+        return Ok(());
+    }
+    if left_count == 0 || right_count == 0 {
+        output.write_all(b"count\n0\n")?;
+        return Ok(());
+    }
+    let count = if right_count <= MAX_STREAM_BUILD_ROWS &&
+        (right_count <= left_count || left_count > MAX_STREAM_BUILD_ROWS) {
+        let right_rows = read_rows(
+            right_path, right_names, right_count,
+            MAX_STREAM_BUILD_ROWS, MAX_STREAM_BUILD_BYTES
+        )?;
+        let mut hash = HashMap::<Vec<typed::Key>, Bucket>::with_capacity(right_rows.len());
+        for (index, row) in right_rows.iter().enumerate() {
+            if let Some(key) = row_key(row, right_keys) {
+                if query.any {
+                    hash.entry(key).or_insert(Bucket::One(index));
+                } else {
+                    hash.entry(key)
+                        .and_modify(|bucket| bucket.push(index))
+                        .or_insert(Bucket::One(index));
+                }
+            }
+        }
+        probe_inner(
+            left_path, left_names, left_keys, &right_rows, &hash,
+            ProbeOptions {
+                materialize_rows: false, materialize_after: 0,
+                stop_after: Some(usize::MAX), any: query.any, null_filter,
+            }, |_, _| Ok(())
+        )?
+    } else {
+        let left_rows = read_rows(
+            left_path, left_names, left_count,
+            MAX_STREAM_BUILD_ROWS, MAX_STREAM_BUILD_BYTES
+        )?;
+        let mut hash = HashMap::<Vec<typed::Key>, Bucket>::with_capacity(left_rows.len());
+        for (index, row) in left_rows.iter().enumerate() {
+            if let Some(key) = row_key(row, left_keys) {
+                hash.entry(key)
+                    .and_modify(|bucket| bucket.push(index))
+                    .or_insert(Bucket::One(index));
+            }
+        }
+        probe_right(
+            right_path, right_names, right_keys, &left_rows, &hash,
+            ProbeOptions {
+                materialize_rows: false, materialize_after: 0,
+                stop_after: Some(usize::MAX), any: query.any, null_filter,
+            }, |_, _| Ok(())
+        )?
+    };
+    write!(output, "count\n{count}\n")?;
     Ok(())
 }
 
@@ -647,6 +1083,18 @@ pub fn execute_join<W: Write>(
         right_keys.push(right_index);
     }
 
+    if query.aggregate == Some(JoinAggregate::CountStar) {
+        return execute_streaming_inner_count(
+            query, left_path, right_path,
+            InnerJoinColumns {
+                left_names: &left_names, right_names: &right_names,
+                selected: &selected, left_keys: &left_keys, right_keys: &right_keys,
+                null_filter,
+            },
+            left_meta.rows, right_meta.rows, output
+        );
+    }
+
     // LIMIT 0 needs the validated output schema, but not either input scan.
     if query.limit == Some(0) {
         let header = selected
@@ -667,6 +1115,24 @@ pub fn execute_join<W: Write>(
             .join("\t");
         writeln!(output, "{header}")?;
         return Ok(());
+    }
+
+    if query.kind == JoinType::Right && order.is_empty()
+        && left_meta.rows <= MAX_STREAM_BUILD_ROWS
+        && right_meta.rows > MAX_INPUT_ROWS
+    {
+        return execute_streaming_right_outer(
+            query, left_path, right_path,
+            InnerJoinColumns {
+                left_names: &left_names,
+                right_names: &right_names,
+                selected: &selected,
+                left_keys: &left_keys,
+                right_keys: &right_keys,
+                null_filter,
+            },
+            output,
+        );
     }
 
     if query.kind == JoinType::Inner && order.is_empty() {
@@ -702,6 +1168,29 @@ pub fn execute_join<W: Write>(
             },
             output,
         );
+    }
+
+    if query.kind == JoinType::Inner
+        && !order.is_empty()
+        && left_meta.rows > MAX_INPUT_ROWS
+        && right_meta.rows <= MAX_STREAM_BUILD_ROWS
+    {
+        if let Some(requested) = query.limit
+            .and_then(|limit| query.offset.checked_add(limit))
+            .filter(|&requested| requested <= MAX_RESULT_ROWS) {
+            return execute_streaming_ordered_inner(
+                query, left_path, right_path,
+                InnerJoinColumns {
+                    left_names: &left_names,
+                    right_names: &right_names,
+                    selected: &selected,
+                    left_keys: &left_keys,
+                    right_keys: &right_keys,
+                    null_filter,
+                },
+                &order, requested, output
+            );
+        }
     }
 
     let left_rows = read_rows(
@@ -833,6 +1322,79 @@ pub fn execute_join<W: Write>(
 mod tests {
     use super::*;
     use rusthouse_storage::NumericColumn;
+
+    #[test]
+    fn streaming_right_preserves_unmatched_rows_and_key_fallbacks() {
+        use rusthouse_storage::{Column, write_wide_part};
+        use std::fs;
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        static NEXT: AtomicUsize = AtomicUsize::new(0);
+        let root = std::env::temp_dir().join(format!(
+            "rusthouse-right-stream-test-{}-{}",
+            std::process::id(), NEXT.fetch_add(1, Ordering::Relaxed)
+        ));
+        let right = root.join("right");
+        let schema = [Column { name: "id".into(), data_type: "UInt64".into() }];
+        write_wide_part(&right, &schema, &[
+            vec![Some("1".into())], vec![Some("3".into())],
+            vec![Some("2".into())],
+        ]).unwrap();
+        let left_rows = vec![
+            vec![typed::Cell::Numeric(Number::Unsigned(1))],
+            vec![typed::Cell::Numeric(Number::Unsigned(1))],
+        ];
+        let mut hash = HashMap::new();
+        hash.insert(vec![typed::Cell::Numeric(Number::Unsigned(1)).key()],
+            Bucket::Many(vec![0, 1]));
+        let mut seen = Vec::new();
+        let count = probe_right_outer(
+            &right, &["id".into()], &[0], &left_rows, 1, &hash,
+            ProbeOptions { materialize_rows: true, materialize_after: 0,
+                stop_after: None, any: false, null_filter: None },
+            |left, right| {
+                let id = match &right[0] {
+                    typed::Cell::Numeric(Number::Unsigned(id)) => *id,
+                    _ => panic!("expected right id"),
+                };
+                seen.push((id, matches!(&left[0], typed::Cell::Null)));
+                Ok(())
+            },
+        ).unwrap();
+        assert_eq!(count, 4);
+        assert_eq!(seen, vec![(1, false), (1, false), (3, true), (2, true)]);
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn projected_hash_build_only_reads_referenced_wide_columns() {
+        use rusthouse_storage::{Column, write_wide_part};
+        use std::fs;
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        static NEXT: AtomicUsize = AtomicUsize::new(0);
+        let root = std::env::temp_dir().join(format!(
+            "rusthouse-join-build-pruning-{}-{}",
+            std::process::id(), NEXT.fetch_add(1, Ordering::Relaxed)
+        ));
+        let names = vec!["id".into(), "unused".into(), "label".into()];
+        let schema = vec![
+            Column { name: names[0].clone(), data_type: "UInt64".into() },
+            Column { name: names[1].clone(), data_type: "String".into() },
+            Column { name: names[2].clone(), data_type: "String".into() },
+        ];
+        write_wide_part(
+            &root, &schema, &[
+                vec![Some("5".into()), Some("unneeded-heavy-payload".repeat(100)), Some("ok".into())],
+            ],
+        ).unwrap();
+        let selected = vec![(3, "fact.id".into(), None), (5, "dimension.label".into(), None)];
+        let keep = retained_build_columns(&names, &[0], &selected, None, 3);
+        assert_eq!(keep, vec![0, 2]);
+        let rows = read_projected_build_rows(&root, &names, &keep, 1, 10, 4_096).unwrap();
+        assert_eq!(rows.len(), 1);
+        assert!(matches!(&rows[0][1], typed::Cell::Null));
+        assert!(matches!(&rows[0][2], typed::Cell::Text(value) if value == b"ok"));
+        fs::remove_dir_all(root).unwrap();
+    }
 
     #[test]
     fn probe_keys_match_materialized_keys_and_skip_invalid_values() {
