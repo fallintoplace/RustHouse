@@ -12,6 +12,7 @@ use crate::remote;
 use crate::{MAX_QUERY_BYTES, MAX_RESPONSE_BYTES, Response};
 use rusthouse_query::{AggregateFunction, Having, Operator, Projection, Select, Source, parse_select};
 use std::collections::{HashMap, HashSet};
+use std::sync::atomic::{AtomicUsize, Ordering as AtomicOrdering};
 
 #[derive(Debug, PartialEq, Eq)]
 enum MergeError {
@@ -320,6 +321,16 @@ struct ShardResponse {
     schema: Vec<u8>,
 }
 
+// Count retained peer bodies across one coordinator query, not per peer.
+// A failed reservation never raises the accounted total.
+const MAX_SHARD_INPUT_BYTES: usize = 64 * 1024 * 1024;
+
+fn reserve_shard_bytes(used: &AtomicUsize, amount: usize) -> Result<(), String> {
+    used.fetch_update(AtomicOrdering::AcqRel, AtomicOrdering::Acquire, |current| {
+        current.checked_add(amount).filter(|&total| total <= MAX_SHARD_INPUT_BYTES)
+    }).map(|_| ()).map_err(|_| "distributed shard input exceeds 64 MiB".into())
+}
+
 fn read_shard(
     peer: Peer,
     sql: &str,
@@ -327,6 +338,7 @@ fn read_shard(
     group_schema: Option<(&str, &str)>,
     table: &str,
     sorted_prefix_cap: Option<usize>,
+    used_bytes: &AtomicUsize,
 ) -> Result<ShardResponse, String> {
     let (cap, schema_response) = preflight_shard(peer, table)?;
     if sorted_prefix_cap.is_some_and(|prefix| prefix >= cap) {
@@ -357,6 +369,7 @@ fn read_shard(
     if result.content_type != "text/tab-separated-values; charset=utf-8" {
         return Err("peer did not return TSV".into());
     }
+    reserve_shard_bytes(used_bytes, result.body.len())?;
     Ok(ShardResponse {
         cap,
         body: result.body,
@@ -1232,14 +1245,16 @@ pub fn handle(method: &str, body: &[u8], cluster: &Cluster, max_rows: usize) -> 
         Some(Source::Table(table)) => table.as_str(),
         _ => unreachable!("validated named table"),
     };
+    let retained_input = AtomicUsize::new(0);
     let results = std::thread::scope(|scope| {
         let shard_query = shard_sql.as_str();
+        let used_bytes = &retained_input;
         let handles = cluster
             .peers()
             .iter()
             .map(|&peer| {
                 scope.spawn(move || {
-                    read_shard(peer, shard_query, sum_schema, group_schema, table, sorted_prefix)
+                    read_shard(peer, shard_query, sum_schema, group_schema, table, sorted_prefix, used_bytes)
                 })
             })
             .collect::<Vec<_>>();
@@ -2374,5 +2389,33 @@ mod distributed_uniq_state_tests {
         );
         let unsafe_query = parse_select("SELECT uniq(uid) FROM events ORDER BY uid").unwrap();
         assert!(!is_safe_uniq(&unsafe_query));
+    }
+}
+
+#[cfg(test)]
+mod coordinator_input_budget_tests {
+    use super::*;
+
+    #[test]
+    fn reserves_only_within_query_budget_and_does_not_overcount_failures() {
+        let bytes = AtomicUsize::new(0);
+        assert!(reserve_shard_bytes(&bytes, MAX_SHARD_INPUT_BYTES - 10).is_ok());
+        assert!(reserve_shard_bytes(&bytes, 11).is_err());
+        assert_eq!(bytes.load(AtomicOrdering::Relaxed), MAX_SHARD_INPUT_BYTES - 10);
+        assert!(reserve_shard_bytes(&bytes, 10).is_ok());
+        assert_eq!(bytes.load(AtomicOrdering::Relaxed), MAX_SHARD_INPUT_BYTES);
+    }
+
+    #[test]
+    fn reservations_cannot_exceed_budget_under_contention() {
+        let bytes = AtomicUsize::new(0);
+        let succeeded = std::thread::scope(|scope| {
+            let tasks: Vec<_> = (0..16).map(|_| {
+                scope.spawn(|| reserve_shard_bytes(&bytes, 8 * 1024 * 1024).is_ok())
+            }).collect();
+            tasks.into_iter().filter(|task| task.join().unwrap()).count()
+        });
+        assert_eq!(succeeded, 8);
+        assert_eq!(bytes.load(AtomicOrdering::Relaxed), MAX_SHARD_INPUT_BYTES);
     }
 }
