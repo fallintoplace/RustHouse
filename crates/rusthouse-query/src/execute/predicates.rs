@@ -207,6 +207,33 @@ pub(super) fn count_monotonic_numbers(
     if step == 0 {
         return None;
     }
+    if let [predicate] = conjunction {
+        if let CompiledTest::NotBetween {
+            lower: Number::Unsigned(lower),
+            upper: Number::Unsigned(upper),
+        } = &predicate.test {
+            if lower > upper {
+                return Some(rows);
+            }
+            let first = u128::from(start);
+            let increment = u128::from(step);
+            let included_start = if *lower <= first {
+                0
+            } else {
+                (*lower - first).div_ceil(increment)
+            };
+            let included_end = if *upper < first {
+                0
+            } else {
+                ((*upper - first) / increment).saturating_add(1)
+            };
+            let hits = included_end
+                .min(u128::from(rows))
+                .saturating_sub(included_start.min(u128::from(rows)));
+            return u64::try_from(u128::from(rows) - hits).ok();
+        }
+    }
+
     let start = u128::from(start);
     let step = u128::from(step);
     let mut lower = 0u128;
@@ -442,5 +469,26 @@ mod tests {
         let included = compile_in_test(values, false);
         assert!(included.matches(Number::Float(0.0)));
         assert!(!included.matches(Number::Float(f64::NAN)));
+    }
+}
+
+#[cfg(test)]
+mod generated_not_between_count_tests {
+    use super::*;
+
+    #[test]
+    fn handles_billion_rows_step_and_reversed_bounds() {
+        let count = |low, high, start, rows, step| {
+            count_monotonic_numbers(&[vec![CompiledPredicate {
+                index: 0,
+                test: CompiledTest::NotBetween {
+                    lower: Number::Unsigned(low),
+                    upper: Number::Unsigned(high),
+                },
+            }]], start, rows, step)
+        };
+        assert_eq!(count(100, 899_999_999, 0, 1_000_000_000, 1), Some(100_000_100));
+        assert_eq!(count(3, 7, 1, 5, 2), Some(2));
+        assert_eq!(count(9, 4, 0, 1_000_000_000, 1), Some(1_000_000_000));
     }
 }
