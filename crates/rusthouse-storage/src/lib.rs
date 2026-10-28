@@ -8,6 +8,7 @@ mod decimal;
 mod enums;
 mod file_sizes;
 mod fixed_strings;
+pub mod distributed_capacity;
 mod fixed_width;
 mod granules;
 mod ip;
