@@ -48,6 +48,12 @@ class DbgenConversionTests(unittest.TestCase):
                 convert_table(path / "region.tbl", path / "region.tsv", "region")
             self.assertFalse((path / "region.tsv").exists())
 
+    def test_rejects_ascii_control_bytes_in_string_fields(self):
+        for value in ("a\x00b", "a\x1fb", "a\x7fb"):
+            with self.subTest(value=value):
+                with self.assertRaisesRegex(ValueError, "control-character"):
+                    convert_value(value, "String", 1)
+
     def test_rejects_invalid_utf8_without_publishing(self):
         with tempfile.TemporaryDirectory() as root:
             source = Path(root) / "region.tbl"

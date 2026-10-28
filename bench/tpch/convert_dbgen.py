@@ -31,7 +31,7 @@ def parse_scaled_number(raw, scale):
 
 def convert_value(raw, kind, scale):
     if kind == "String":
-        if not raw or raw == r"\N" or any(c in raw for c in ("\t", "\r", "\n")):
+        if not raw or raw == r"\N" or any(ord(char) < 32 or ord(char) == 127 for char in raw):
             raise ValueError("empty, NULL-marker, or control-character string")
         return raw.replace("\\", "\\\\")
     if kind == "Date":
