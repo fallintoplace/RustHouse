@@ -5,9 +5,9 @@ use crate::numeric::numeric_storage_type;
 use crate::query_parts;
 use crate::scan_layout::ScanLayout;
 use crate::{
-    ArrayOffsetsEncoding, CompressedBlockReader, DecodedBlock, NumericColumn, PartError,
-    PartMetadata, StringColumn, UuidValue, WideMark, inspect_part, read_array_offsets,
-    read_legacy_strings, read_numeric_column, read_uuid_values, read_wide_marks,
+    ArrayOffsetsEncoding, CompressedBlockReader, DecodedBlock, NumericColumn, PartError, PartMetadata, StringColumn, UuidValue,
+    WideMark, inspect_part, read_array_offsets, read_legacy_strings, read_numeric_array_column,
+    read_numeric_column, read_uuid_values, read_wide_marks,
 };
 use crate::mark_validation::validate_wide_marks_reader;
 use std::fs::File;
@@ -26,6 +26,23 @@ pub enum TypedColumn {
         values: StringColumn,
         nulls: Vec<u8>,
     },
+}
+
+fn numeric_array_element(values: &NumericColumn, index: usize) -> String {
+    match values {
+        NumericColumn::UInt8(values) => values[index].to_string(),
+        NumericColumn::UInt16(values) => values[index].to_string(),
+        NumericColumn::UInt32(values) => values[index].to_string(),
+        NumericColumn::UInt64(values) => values[index].to_string(),
+        NumericColumn::UInt128(values) => values[index].to_string(),
+        NumericColumn::Int8(values) => values[index].to_string(),
+        NumericColumn::Int16(values) => values[index].to_string(),
+        NumericColumn::Int32(values) => values[index].to_string(),
+        NumericColumn::Int64(values) => values[index].to_string(),
+        NumericColumn::Int128(values) => values[index].to_string(),
+        NumericColumn::Float32(values) => values[index].to_string(),
+        NumericColumn::Float64(values) => values[index].to_string(),
+    }
 }
 
 impl TypedColumn {
@@ -165,6 +182,7 @@ enum StorageKind {
     Uuid,
     NullableNumeric(String),
     NullableString,
+    NumericArray(String),
     StringMap(String),
 }
 
@@ -181,6 +199,19 @@ impl StorageKind {
                     | "Float32" | "Float64"
             ) {
                 return Ok(Self::StringMap(value_type.to_owned()));
+            }
+        }
+        if let Some(inner) = data_type
+            .strip_prefix("Array(")
+            .and_then(|type_name| type_name.strip_suffix(')'))
+        {
+            if matches!(
+                inner,
+                "UInt8" | "UInt16" | "UInt32" | "UInt64" | "UInt128"
+                    | "Int8" | "Int16" | "Int32" | "Int64" | "Int128"
+                    | "Float32" | "Float64"
+            ) {
+                return Ok(Self::NumericArray(data_type.to_owned()));
             }
         }
         match data_type {
@@ -205,6 +236,10 @@ impl StorageKind {
 
     fn needs_null_map(&self) -> bool {
         matches!(self, Self::NullableNumeric(_) | Self::NullableString)
+    }
+
+    fn needs_array_sizes(&self) -> bool {
+        matches!(self, Self::NumericArray(_))
     }
 
     fn needs_map_streams(&self) -> bool {
@@ -340,6 +375,7 @@ struct ColumnReader {
     kind: StorageKind,
     data: Stream,
     null_map: Option<Stream>,
+    array_sizes: Option<Stream>,
     map_values: Option<Stream>,
     map_sizes: Option<Stream>,
 }
@@ -386,6 +422,10 @@ impl TypedPartReader {
                 .needs_null_map()
                 .then(|| Stream::open(part, &format!("{name}.null")))
                 .transpose()?;
+            let array_sizes = kind
+                .needs_array_sizes()
+                .then(|| Stream::open(part, &format!("{name}.size0")))
+                .transpose()?;
             let map_values = kind
                 .needs_map_streams()
                 .then(|| Stream::open(part, &format!("{name}.values")))
@@ -398,6 +438,9 @@ impl TypedPartReader {
             if let Some(nulls) = &null_map {
                 layout.validate(&format!("{name}.null"), &nulls.marks, metadata.rows)?;
             }
+            if let Some(sizes) = &array_sizes {
+                layout.validate(&format!("{name}.size0"), &sizes.marks, metadata.rows)?;
+            }
             if let Some(values) = &map_values {
                 layout.validate(&format!("{name}.values"), &values.marks, metadata.rows)?;
             }
@@ -408,6 +451,7 @@ impl TypedPartReader {
                 kind,
                 data,
                 null_map,
+                array_sizes,
                 map_values,
                 map_sizes,
             });
@@ -525,6 +569,40 @@ impl TypedPartReader {
                     let mut stream = MarkStream::open(&mut column.data, index)?;
                     TypedColumn::Text(
                         read_legacy_strings(&mut stream, rows)
+                            .map_err(|error| PartError::InvalidScan(error.to_string()))?,
+                    )
+                }
+                StorageKind::NumericArray(kind) => {
+                    let sizes = column.array_sizes.as_mut().ok_or_else(|| {
+                        PartError::InvalidScan("missing Array size stream".into())
+                    })?;
+                    let mut sizes_stream = MarkStream::open(sizes, index)?;
+                    let mut data_stream = MarkStream::open(&mut column.data, index)?;
+                    let arrays = read_numeric_array_column(
+                        &mut sizes_stream,
+                        &mut data_stream,
+                        kind,
+                        rows,
+                        ArrayOffsetsEncoding::Sizes,
+                    )
+                    .map_err(|error| PartError::InvalidScan(error.to_string()))?;
+                    let mut rendered = Vec::with_capacity(rows);
+                    for row in 0..rows {
+                        let range = arrays.row_range(row).ok_or_else(|| {
+                            PartError::InvalidScan("invalid Array row range".into())
+                        })?;
+                        let mut text = String::from("[");
+                        for element in range {
+                            if text.len() != 1 {
+                                text.push(',');
+                            }
+                            text.push_str(&numeric_array_element(arrays.values(), element));
+                        }
+                        text.push(']');
+                        rendered.push(text.into_bytes());
+                    }
+                    TypedColumn::Text(
+                        StringColumn::from_rows(rendered)
                             .map_err(|error| PartError::InvalidScan(error.to_string()))?,
                     )
                 }

@@ -19,6 +19,22 @@ pub fn write_quoted_csv_field<W: Write>(output: &mut W, field: &[u8]) -> io::Res
         output.write_all(field)?;
         return output.write_all(b"\"");
     }
+    if field.len() <= 64 {
+        // Worst case: every byte is a doubled quote plus two delimiters.
+        let mut buffer = [0u8; 130];
+        let mut used = 1;
+        buffer[0] = b'"';
+        for &byte in field {
+            buffer[used] = byte;
+            used += 1;
+            if byte == b'"' {
+                buffer[used] = b'"';
+                used += 1;
+            }
+        }
+        buffer[used] = b'"';
+        return output.write_all(&buffer[..used + 1]);
+    }
     output.write_all(b"\"")?;
     let mut segments = field.split(|&byte| byte == b'"');
     output.write_all(segments.next().unwrap_or_default())?;
@@ -93,4 +109,26 @@ mod tests {
         write_quoted_csv_field(&mut output, b"plain").unwrap();
         assert_eq!(output, b"\"\"\"plain\"");
     }
+    #[test]
+    fn short_quote_heavy_fields_need_only_one_writer_call() {
+        struct CountWrites {
+            writes: usize,
+            bytes: Vec<u8>,
+        }
+        impl Write for CountWrites {
+            fn write(&mut self, bytes: &[u8]) -> io::Result<usize> {
+                self.writes += 1;
+                self.bytes.extend_from_slice(bytes);
+                Ok(bytes.len())
+            }
+            fn flush(&mut self) -> io::Result<()> {
+                Ok(())
+            }
+        }
+        let mut output = CountWrites { writes: 0, bytes: Vec::new() };
+        write_quoted_csv_field(&mut output, b"a\"\"b").unwrap();
+        assert_eq!(output.writes, 1);
+        assert_eq!(output.bytes, b"\"a\"\"\"\"b\"");
+    }
+
 }

@@ -270,6 +270,71 @@ pub(super) fn count_batch_matches(
             }
         }
     }
+    // WHERE key >= lower AND key < upper is a common billion-row COUNT.
+    // On one numeric column, evaluate both comparisons on the native values
+    // instead of boxing each element and dispatching the predicate tree twice.
+    if let [predicates] = branches {
+        if let [first, second] = predicates.as_slice() {
+            if first.index == second.index {
+                if let (
+                    CompiledTest::Comparison { operator: first_op, target: first_target },
+                    CompiledTest::Comparison { operator: second_op, target: second_target },
+                ) = (&first.test, &second.test) {
+                    if !matches!(first_op, Operator::Modulo(_) | Operator::ModuloNe(_))
+                        && !matches!(second_op, Operator::Modulo(_) | Operator::ModuloNe(_))
+                    {
+                        macro_rules! count_pair {
+                            ($values:expr, $a:expr, $b:expr, $first:expr, $second:expr, $wide:ty) => {
+                                $values.iter().filter(|&&value| {
+                                    let value = <$wide>::from(value);
+                                    compare(value, $a, $first) && compare(value, $b, $second)
+                                }).count()
+                            };
+                        }
+                        match (&batch[first.index], *first_target, *second_target) {
+                        (NumericColumn::UInt8(values), Number::Unsigned(a), Number::Unsigned(b)) => {
+                            return count_pair!(values, a, b, *first_op, *second_op, u128);
+                        }
+                        (NumericColumn::UInt16(values), Number::Unsigned(a), Number::Unsigned(b)) => {
+                            return count_pair!(values, a, b, *first_op, *second_op, u128);
+                        }
+                        (NumericColumn::UInt32(values), Number::Unsigned(a), Number::Unsigned(b)) => {
+                            return count_pair!(values, a, b, *first_op, *second_op, u128);
+                        }
+                        (NumericColumn::UInt64(values), Number::Unsigned(a), Number::Unsigned(b)) => {
+                            return count_pair!(values, a, b, *first_op, *second_op, u128);
+                        }
+                        (NumericColumn::UInt128(values), Number::Unsigned(a), Number::Unsigned(b)) => {
+                            return count_pair!(values, a, b, *first_op, *second_op, u128);
+                        }
+                        (NumericColumn::Int8(values), Number::Signed(a), Number::Signed(b)) => {
+                            return count_pair!(values, a, b, *first_op, *second_op, i128);
+                        }
+                        (NumericColumn::Int16(values), Number::Signed(a), Number::Signed(b)) => {
+                            return count_pair!(values, a, b, *first_op, *second_op, i128);
+                        }
+                        (NumericColumn::Int32(values), Number::Signed(a), Number::Signed(b)) => {
+                            return count_pair!(values, a, b, *first_op, *second_op, i128);
+                        }
+                        (NumericColumn::Int64(values), Number::Signed(a), Number::Signed(b)) => {
+                            return count_pair!(values, a, b, *first_op, *second_op, i128);
+                        }
+                        (NumericColumn::Int128(values), Number::Signed(a), Number::Signed(b)) => {
+                            return count_pair!(values, a, b, *first_op, *second_op, i128);
+                        }
+                        (NumericColumn::Float32(values), Number::Float(a), Number::Float(b)) => {
+                            return count_pair!(values, a, b, *first_op, *second_op, f64);
+                        }
+                        (NumericColumn::Float64(values), Number::Float(a), Number::Float(b)) => {
+                            return count_pair!(values, a, b, *first_op, *second_op, f64);
+                        }
+                            _ => {}
+                        }
+                    }
+                }
+            }
+        }
+    }
     // Compound OR/AND, IN and modulo retain the original semantics.
     (0..batch.first().map_or(0, NumericColumn::len))
         .filter(|&row| batch_matches(batch, row, branches))
@@ -418,6 +483,39 @@ pub(super) fn sparse_generated_positions(
             }) {
                 indices.push(index as u64);
             }
+        }
+    }
+    indices.sort_unstable();
+    indices.dedup();
+    Some(indices)
+}
+
+/// Return excluded positions for one bounded NOT IN predicate on generated rows.
+pub(super) fn excluded_generated_positions(
+    branches: &[Vec<CompiledPredicate>],
+    start: u64,
+    rows: u64,
+    step: u64,
+) -> Option<Vec<u64>> {
+    let [branch] = branches else { return None; };
+    let [predicate] = branch.as_slice() else { return None; };
+    if step == 0 { return None; }
+    let values: Vec<u128> = match &predicate.test {
+        CompiledTest::NotIn(items) => items.iter().filter_map(|value| {
+            if let Number::Unsigned(value) = value { Some(*value) } else { None }
+        }).collect(),
+        CompiledTest::InSet { targets, negated: true } => targets.iter().filter_map(|key| {
+            if let NumberKey::Unsigned(value) = key { Some(*value) } else { None }
+        }).collect(),
+        _ => return None,
+    };
+    if values.len() > 4096 { return None; }
+    let (start, step, rows) = (u128::from(start), u128::from(step), u128::from(rows));
+    let mut indices = Vec::new();
+    for value in values {
+        if value >= start && (value - start) % step == 0 {
+            let index = (value - start) / step;
+            if index < rows { indices.push(index as u64); }
         }
     }
     indices.sort_unstable();
@@ -744,6 +842,24 @@ mod tests {
         assert!(matches!(&branches[0][0].test, CompiledTest::Comparison { operator: Operator::Lt, .. }));
         assert!(number_matches_all(Number::Unsigned(40), &branches));
         assert!(!number_matches_all(Number::Unsigned(60), &branches));
+    }
+
+    #[test]
+    fn direct_pair_counts_match_rowwise_across_numeric_types() {
+        for (values, target_a, target_b) in [
+            (NumericColumn::UInt16(vec![0, 1, 5, 10, 65535]), Number::Unsigned(1), Number::Unsigned(11)),
+            (NumericColumn::Int16(vec![-10, -1, 0, 5, 32767]), Number::Signed(-1), Number::Signed(6)),
+            (NumericColumn::Float32(vec![-1.0, 0.0, 0.5, 6.0, f32::NAN]), Number::Float(0.0), Number::Float(6.0)),
+        ] {
+            let predicates = vec![vec![
+                CompiledPredicate { index: 0, test: CompiledTest::Comparison { operator: Operator::Ge, target: target_a } },
+                CompiledPredicate { index: 0, test: CompiledTest::Comparison { operator: Operator::Lt, target: target_b } },
+            ]];
+            let expected = (0..values.len())
+                .filter(|&row| batch_matches(std::slice::from_ref(&values), row, &predicates))
+                .count();
+            assert_eq!(count_batch_matches(&[values], &predicates), expected);
+        }
     }
 
     #[test]

@@ -155,7 +155,8 @@ pub(super) fn execute_typed_aggregate<W: Write>(
 
 const MAX_GROUPS: usize = 100_000;
 
-/// Group filtered rows by a typed key and evaluate a numeric aggregate pub(super) fn execute_grouped_aggregate<W: Write>(
+/// Group filtered rows by a typed key and evaluate a numeric aggregate.
+pub(super) fn execute_grouped_aggregate<W: Write>(
     query: &Select,
     part: &Path,
     output: &mut W,

@@ -42,7 +42,8 @@ impl FixedPrimaryIndex {
 /// matching mark can also contain matching rows, so range selection must
 /// retain it. Callers still apply the exact row predicate.
 /// Returns a conservative mark range for an ascending UInt64 key.
-/// An invalid, unsorted or non-UInt64 index returns None.
+/// Invalid or unsorted bounded indexes return None. Fully unbounded scans
+/// return every granule without reading or validating individual keys.
 pub fn candidate_u64_mark_range(
     index: &FixedPrimaryIndex,
     field: usize,

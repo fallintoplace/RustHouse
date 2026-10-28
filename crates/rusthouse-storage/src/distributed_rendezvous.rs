@@ -57,10 +57,30 @@ pub fn replicas_for(
         }
     }
     let seed = shard_seed(shard);
+    // A single winner does not need sorting all candidate replicas.
+    if replicas == 1 {
+        let mut winner = nodes[0].as_str();
+        let mut winner_score = score_with_seed(seed, winner);
+        for node in nodes.iter().skip(1) {
+            let score = score_with_seed(seed, node);
+            if score > winner_score || (score == winner_score && node.as_str() < winner) {
+                winner = node;
+                winner_score = score;
+            }
+        }
+        return Ok(vec![winner.to_owned()]);
+    }
     let mut ranked: Vec<(u64, &str)> = nodes
         .iter()
         .map(|node| (score_with_seed(seed, node), node.as_str()))
         .collect();
+    if replicas < ranked.len() {
+        // Partition the ranking when only a prefix is requested.
+        ranked.select_nth_unstable_by(replicas, |left, right| {
+            right.0.cmp(&left.0).then_with(|| left.1.cmp(right.1))
+        });
+        ranked.truncate(replicas);
+    }
     ranked.sort_unstable_by(|left, right| {
         right.0.cmp(&left.0).then_with(|| left.1.cmp(right.1))
     });
@@ -96,8 +116,9 @@ pub fn weighted_replicas_for(
         return Err("invalid weighted replica placement configuration");
     }
     let mut seen = HashSet::new();
-    let mut ranked = Vec::with_capacity(nodes.len());
+    let mut ranked = Vec::with_capacity(if replicas == 1 { 0 } else { nodes.len() });
     let seed = shard_seed(shard);
+    let mut winner: Option<(f64, &str)> = None;
     for &(node, weight) in nodes {
         if !valid_node(node) || !(1..=1024).contains(&weight) || !seen.insert(node)
         {
@@ -108,7 +129,25 @@ pub fn weighted_replicas_for(
         let uniform = ((score_with_seed(seed, node) >> 11) as f64 + 0.5)
             / ((1u64 << 53) as f64);
         let priority = -uniform.ln() / f64::from(weight);
-        ranked.push((priority, node));
+        if replicas == 1 {
+            if winner.is_none_or(|(best, best_node)| {
+                priority.total_cmp(&best).then_with(|| node.cmp(best_node)).is_lt()
+            }) {
+                winner = Some((priority, node));
+            }
+        } else {
+            ranked.push((priority, node));
+        }
+    }
+    if replicas == 1 {
+        return Ok(vec![winner.expect("valid nonempty nodes").1.to_owned()]);
+    }
+    if replicas < ranked.len() {
+        // Partition first; sorting just the selected replica prefix is enough.
+        ranked.select_nth_unstable_by(replicas, |left, right| {
+            left.0.total_cmp(&right.0).then_with(|| left.1.cmp(right.1))
+        });
+        ranked.truncate(replicas);
     }
     ranked.sort_unstable_by(|left, right| {
         left.0.total_cmp(&right.0).then_with(|| left.1.cmp(right.1))
@@ -129,6 +168,21 @@ mod tests {
         assert_eq!(expected, replicas_for("events-2026", &reversed, 2).unwrap());
         assert_eq!(expected.len(), 2);
         assert_ne!(expected[0], expected[1]);
+    }
+
+    #[test]
+    fn single_replica_path_matches_full_ranking_for_many_shards() {
+        let nodes = vec!["node_c".into(), "node_a".into(), "node_b".into()];
+        let weighted = [("node_c", 8u16), ("node_a", 2), ("node_b", 1)];
+        for index in 0..128 {
+            let shard = format!("shard_{index}");
+            let best = replicas_for(&shard, &nodes, 1).unwrap();
+            let ranked = replicas_for(&shard, &nodes, nodes.len()).unwrap();
+            assert_eq!(best[0], ranked[0]);
+            let best = weighted_replicas_for(&shard, &weighted, 1).unwrap();
+            let ranked = weighted_replicas_for(&shard, &weighted, weighted.len()).unwrap();
+            assert_eq!(best[0], ranked[0]);
+        }
     }
 
     #[test]
@@ -178,6 +232,34 @@ mod tests {
             if original[0] == "a" {
                 assert_eq!(updated[0], "a", "{shard}");
             }
+        }
+    }
+
+    #[test]
+    fn weighted_primary_matches_full_ranking_on_many_shards() {
+        let nodes = (0..64)
+            .map(|index| (format!("node_{index}"), 1 + index as u16))
+            .collect::<Vec<_>>();
+        let weighted = nodes
+            .iter()
+            .map(|(node, weight)| (node.as_str(), *weight))
+            .collect::<Vec<_>>();
+        for index in 0..32 {
+            let shard = format!("weighted_{index}");
+            let first = weighted_replicas_for(&shard, &weighted, 1).unwrap();
+            let all = weighted_replicas_for(&shard, &weighted, weighted.len()).unwrap();
+            assert_eq!(first[0], all[0]);
+        }
+    }
+
+    #[test]
+    fn one_pass_primary_matches_full_rendezvous_ranking() {
+        let nodes = (0..64).map(|index| format!("node_{index}")).collect::<Vec<_>>();
+        for index in 0..64 {
+            let shard = format!("shard_{index}");
+            let first = replicas_for(&shard, &nodes, 1).unwrap();
+            let all = replicas_for(&shard, &nodes, nodes.len()).unwrap();
+            assert_eq!(first[0], all[0]);
         }
     }
 

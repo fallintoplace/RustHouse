@@ -46,16 +46,13 @@ fn decoded_row_field(field: &[u8]) -> io::Result<Cow<'_, str>> {
 }
 
 fn write_json_row<W: Write>(output: &mut W, headers: &[String], line: &[u8]) -> io::Result<()> {
-    if 1 + line.iter().filter(|byte| **byte == b'\t').count() != headers.len() {
-        return Err(invalid("JSONL row does not match header column count"));
-    }
+    let mut fields = line.split(|byte| *byte == b'\t');
     let mut row = Vec::with_capacity(line.len() + headers.len() * 8 + 3);
     row.write_all(b"{")?;
-    for (index, (header, field)) in headers
-        .iter()
-        .zip(line.split(|byte| *byte == b'\t'))
-        .enumerate()
-    {
+    for (index, header) in headers.iter().enumerate() {
+        let field = fields
+            .next()
+            .ok_or_else(|| invalid("JSONL row does not match header column count"))?;
         if index != 0 {
             row.write_all(b",")?;
         }
@@ -67,6 +64,9 @@ fn write_json_row<W: Write>(output: &mut W, headers: &[String], line: &[u8]) -> 
             let text = decoded_row_field(field)?;
             write_json_string(&mut row, &text)?;
         }
+    }
+    if fields.next().is_some() {
+        return Err(invalid("JSONL row does not match header column count"));
     }
     row.write_all(b"}\n")?;
     output.write_all(&row)
@@ -228,6 +228,19 @@ mod tests {
             decode_tsv_value(b"quoted\\x22word").unwrap(),
             "quoted\"word"
         );
+    }
+
+    #[test]
+    fn missing_and_extra_fields_do_not_emit_partial_json() {
+        let headers = vec!["id".to_owned(), "value".to_owned()];
+        for invalid in [b"one".as_slice(), b"one\ttwo\tthree".as_slice()] {
+            let mut output = Vec::new();
+            assert_eq!(
+                write_json_row(&mut output, &headers, invalid).unwrap_err().kind(),
+                io::ErrorKind::InvalidData
+            );
+            assert!(output.is_empty());
+        }
     }
 
     #[test]

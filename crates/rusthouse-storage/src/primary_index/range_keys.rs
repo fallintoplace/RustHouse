@@ -54,6 +54,11 @@ pub(super) fn candidate_mark_range<T: Ord + Copy>(
     lower: Bound<T>,
     upper: Bound<T>,
 ) -> Option<Range<usize>> {
+    // Full-range scans cannot accidentally omit a matching granule.
+    // Avoid validating every key when no index boundary will be applied.
+    if matches!(lower, Bound::Unbounded) && matches!(upper, Bound::Unbounded) {
+        return Some(0..len);
+    }
     monotonic_mark_keys(len, &key_at)
         .then(|| candidate_mark_range_sorted(len, &key_at, lower, upper))
 }
@@ -67,6 +72,12 @@ pub(super) fn candidate_mark_ranges<T: Ord + Copy>(
 ) -> Option<Vec<Range<usize>>> {
     if intervals.is_empty() {
         return Some(Vec::new());
+    }
+    // A disjunct that includes every value dominates all narrower intervals.
+    if intervals.iter().any(|(lower, upper)| {
+        matches!(lower, Bound::Unbounded) && matches!(upper, Bound::Unbounded)
+    }) {
+        return Some(if len == 0 { Vec::new() } else { vec![0..len] });
     }
     if !monotonic_mark_keys(len, &key_at) {
         return None;
@@ -103,4 +114,31 @@ pub(super) fn u64_mark_key(index: &FixedPrimaryIndex, mark: usize, field: usize)
 pub(super) fn i64_mark_key(index: &FixedPrimaryIndex, mark: usize, field: usize) -> Option<i64> {
     let bytes: [u8; 8] = index.field(mark, field)?.try_into().ok()?;
     Some(i64::from_le_bytes(bytes))
+}
+
+#[cfg(test)]
+mod unbounded_range_tests {
+    use super::*;
+
+    #[test]
+    fn full_scan_needs_no_primary_index_decoding() {
+        let complete = candidate_mark_range::<u64>(
+            17,
+            |_| panic!("unbounded scan must not inspect mark keys"),
+            Bound::Unbounded,
+            Bound::Unbounded,
+        );
+        assert_eq!(complete, Some(0..17));
+
+        let intervals = [
+            (Bound::Included(4u64), Bound::Included(7u64)),
+            (Bound::Unbounded, Bound::Unbounded),
+        ];
+        let merged = candidate_mark_ranges(
+            17,
+            |_| panic!("full-range OR must not inspect mark keys"),
+            &intervals,
+        );
+        assert_eq!(merged, Some(vec![0..17]));
+    }
 }

@@ -6,7 +6,7 @@ const POLYNOMIAL: u32 = 0x82f6_3b78;
 // Build the Castagnoli lookup table at compile time. Replication verifies every
 // copied byte, so avoid an eight-iteration bit loop for every input byte.
 const TABLE: [u32; 256] = make_table();
-const SLICING_TABLES: [[u32; 256]; 4] = make_slicing_tables();
+const SLICING_TABLES: [[u32; 256]; 8] = make_slicing_tables();
 
 const fn make_table() -> [u32; 256] {
     let mut table = [0u32; 256];
@@ -24,8 +24,8 @@ const fn make_table() -> [u32; 256] {
     table
 }
 
-const fn make_slicing_tables() -> [[u32; 256]; 4] {
-    let mut tables = [[0u32; 256]; 4];
+const fn make_slicing_tables() -> [[u32; 256]; 8] {
+    let mut tables = [[0u32; 256]; 8];
     tables[0] = TABLE;
     let mut row = 1;
     while row < 4 {
@@ -64,22 +64,36 @@ pub fn crc32c(bytes: &[u8]) -> u32 {
 }
 
 fn update(mut crc: u32, bytes: &[u8]) -> u32 {
-    let mut chunks = bytes.chunks_exact(4);
-    for bytes in &mut chunks {
-        let word = u32::from_le_bytes(bytes.try_into().expect("four-byte chunk"));
+    // A slicing-by-eight lookup processes two UInt32 words per iteration
+    // without platform-specific instructions.
+    let mut wide_chunks = bytes.chunks_exact(8);
+    for chunk in &mut wide_chunks {
+        let word = u64::from_le_bytes(chunk.try_into().expect("eight-byte chunk"));
+        let value = u64::from(crc) ^ word;
+        crc = SLICING_TABLES[7][(value & 0xff) as usize]
+            ^ SLICING_TABLES[6][((value >> 8) & 0xff) as usize]
+            ^ SLICING_TABLES[5][((value >> 16) & 0xff) as usize]
+            ^ SLICING_TABLES[4][((value >> 24) & 0xff) as usize]
+            ^ SLICING_TABLES[3][((value >> 32) & 0xff) as usize]
+            ^ SLICING_TABLES[2][((value >> 40) & 0xff) as usize]
+            ^ SLICING_TABLES[1][((value >> 48) & 0xff) as usize]
+            ^ SLICING_TABLES[0][(value >> 56) as usize];
+    }
+    let mut four_chunks = wide_chunks.remainder().chunks_exact(4);
+    for chunk in &mut four_chunks {
+        let word = u32::from_le_bytes(chunk.try_into().expect("four-byte chunk"));
         let value = crc ^ word;
         crc = SLICING_TABLES[3][(value & 0xff) as usize]
             ^ SLICING_TABLES[2][((value >> 8) & 0xff) as usize]
             ^ SLICING_TABLES[1][((value >> 16) & 0xff) as usize]
             ^ SLICING_TABLES[0][(value >> 24) as usize];
     }
-    for &byte in chunks.remainder() {
+    for &byte in four_chunks.remainder() {
         let index = ((crc ^ u32::from(byte)) & 0xff) as usize;
         crc = (crc >> 8) ^ TABLE[index];
     }
     crc
 }
-
 /// Stream a file, reading at most one byte past max_bytes to detect oversized input.
 /// Returns (length, checksum).
 pub fn crc32c_reader(reader: &mut impl Read, max_bytes: u64) -> io::Result<(u64, u32)> {
@@ -139,6 +153,19 @@ mod tests {
             crc = update(crc, &bytes[..split]);
             crc = update(crc, &bytes[split..]);
             assert_eq!(crc ^ !0, bitwise(&bytes));
+        }
+    }
+
+    #[test]
+    fn slicing_by_eight_matches_reference_at_every_short_length() {
+        let bytes = (0..128).map(|index| (index * 37) as u8).collect::<Vec<_>>();
+        let mut crc = !0u32;
+        for (index, &byte) in bytes.iter().enumerate() {
+            crc ^= u32::from(byte);
+            for _ in 0..8 {
+                crc = (crc >> 1) ^ if crc & 1 == 1 { POLYNOMIAL } else { 0 };
+            }
+            assert_eq!(crc32c(&bytes[..=index]), crc ^ !0, "prefix {index}");
         }
     }
 
