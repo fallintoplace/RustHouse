@@ -100,6 +100,7 @@ enum BoundExpr {
     Subtract(Box<Self>, Box<Self>),
     Multiply(Box<Self>, Box<Self>),
     Divide(Box<Self>, Box<Self>),
+    Compare(Box<Self>, crate::Operator, Box<Self>),
 }
 
 impl BoundExpr {
@@ -157,6 +158,11 @@ impl BoundExpr {
                 Box::new(Self::bind(left, indices)?),
                 Box::new(Self::bind(right, indices)?),
             ),
+            ScalarExpr::Compare(left, operator, right) => Self::Compare(
+                Box::new(Self::bind(left, indices)?),
+                *operator,
+                Box::new(Self::bind(right, indices)?),
+            ),
         })
     }
 }
@@ -189,6 +195,22 @@ fn eval_number(
 ) -> Result<Option<Number>, ExecutionError> {
     match expression {
         BoundExpr::Column(index) => numeric_argument_at(batch, *index, row),
+        BoundExpr::Compare(left, operator, right) => {
+            let Some(left) = eval_number(left, batch, row)? else {return Ok(None)};
+            let Some(right) = eval_number(right, batch, row)? else {return Ok(None)};
+            let order = super::compare_numbers(left, right);
+            let matched = match operator {
+                crate::Operator::Eq => order.is_eq(),
+                crate::Operator::Ne => order.is_ne(),
+                crate::Operator::Lt => order.is_lt(),
+                crate::Operator::Le => order.is_le(),
+                crate::Operator::Gt => order.is_gt(),
+                crate::Operator::Ge => order.is_ge(),
+                _ => return Err(ExecutionError::Invalid(
+                    "unsupported numeric comparison operator".into())),
+            };
+            Ok(Some(Number::Unsigned(u128::from(matched))))
+        },
         BoundExpr::Integer(value) => Ok(Some(Number::Signed(i128::from(*value)))),
         BoundExpr::AffineColumn {
             index,
