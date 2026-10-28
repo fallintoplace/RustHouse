@@ -51,6 +51,7 @@ pub(super) fn is_function(name: &str) -> bool {
             | "SUBSTRING_INDEX"
             | "QUERYSTRINGANDFRAGMENT"
             | "TO_INT64"
+            | "TOINT16ORNULL"
             | "TRIM"
             | "LTRIM"
             | "BASENAME"
@@ -822,6 +823,17 @@ fn parse_at_depth(parser: &mut Parser, depth: usize) -> Result<ConstantValue, Pa
                         .map_err(|_| ParseError("HEX_DECODE result is not UTF-8".into()))?;
                     ConstantValue::Text(decoded)
                 }
+                None => ConstantValue::Null,
+            }
+        }
+        "TOINT16ORNULL" => {
+            let input = text_arg(parser, depth + 1)?;
+            require(parser, Token::RParen, "toInt16OrNull requires one string argument")?;
+            match input {
+                Some(input) => input
+                    .parse::<i64>()
+                    .ok()
+                    .map_or(ConstantValue::Null, |value| ConstantValue::Integer(value as i16 as i64)),
                 None => ConstantValue::Null,
             }
         }
