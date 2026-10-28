@@ -44,6 +44,14 @@ impl StringColumn {
         self.data.get(begin..end)
     }
 
+    /// Return a string's byte length without touching its payload.
+    /// The decoder validates monotone offsets when building the column.
+    pub fn byte_length(&self, row: usize) -> Option<usize> {
+        let begin = *self.offsets.get(row)?;
+        let end = *self.offsets.get(row.checked_add(1)?)?;
+        end.checked_sub(begin)
+    }
+
     fn push<R: Read>(&mut self, reader: &mut R, length: u64) -> Result<(), StringReadError> {
         let next = checked_end(self.data.len(), length)?;
         let begin = self.data.len();
@@ -192,6 +200,16 @@ mod tests {
         assert_eq!(column.get(2), Some(&[b'z'; 128][..]));
         assert_eq!(column.get(3), None);
         assert_eq!(column.get(usize::MAX), None);
+    }
+
+    #[test]
+    fn string_byte_lengths_only_read_offset_boundaries() {
+        let strings = read_legacy_strings(&mut &[0, 3, b'f', b'o', b'o', 1, b'z'][..], 3).unwrap();
+        assert_eq!(strings.byte_length(0), Some(0));
+        assert_eq!(strings.byte_length(1), Some(3));
+        assert_eq!(strings.byte_length(2), Some(1));
+        assert_eq!(strings.byte_length(3), None);
+        assert_eq!(strings.byte_length(usize::MAX), None);
     }
 
     #[test]

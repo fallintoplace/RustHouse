@@ -1,5 +1,6 @@
 //! Deliberately narrow INSERT ... VALUES parser for local writable tables.
-use super::{ParseError, Parser, Token, tokenize};
+use super::{ParseError, Parser, Token};
+use crate::lexer::tokenize_insert;
 use std::collections::HashSet;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -26,6 +27,17 @@ fn value(parser: &mut Parser) -> Result<Option<String>, ParseError> {
         Some(Token::Word(word)) if word.eq_ignore_ascii_case("NULL") => {
             parser.index += 1;
             Ok(None)
+        }
+        Some(Token::Plus) => {
+            parser.index += 1;
+            match parser.tokens.get(parser.index) {
+                Some(Token::Number(value)) if !value.starts_with('-') => {
+                    let value = value.clone();
+                    parser.index += 1;
+                    Ok(Some(value))
+                }
+                _ => Err(ParseError("INSERT + requires a numeric literal".into())),
+            }
         }
         _ => Err(ParseError("INSERT values must be literals or NULL".into())),
     }
@@ -60,7 +72,7 @@ fn parse_insert_columns(parser: &mut Parser) -> Result<Option<Vec<String>>, Pars
 /// Only literal rows are accepted, with no expressions or implicit casts.
 pub fn parse_insert(sql: &str) -> Result<Option<Insert>, ParseError> {
     let mut parser = Parser {
-        tokens: tokenize(sql)?,
+        tokens: tokenize_insert(sql)?,
         index: 0,
     };
     if !parser.keyword("INSERT") {
@@ -230,4 +242,36 @@ mod tests {
             assert!(parse_insert(input).is_err(), "{input}");
         }
     }
+    #[test]
+    fn accepts_large_insert_batches_but_keeps_a_bounded_budget() {
+        let text = "x".repeat(5000);
+        let sql = format!("INSERT INTO events VALUES ('{text}')");
+        assert_eq!(
+            parse_insert(&sql).unwrap().unwrap().rows,
+            vec![vec![Some(text)]]
+        );
+        let oversized = format!(
+            "INSERT INTO events VALUES ('{}')",
+            "x".repeat(1024 * 1024)
+        );
+        assert!(parse_insert(&oversized).is_err());
+    }
+
+    #[test]
+    fn accepts_unary_plus_only_before_insert_numbers() {
+        let parsed = parse_insert("INSERT INTO events VALUES (+3, -4)")
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            parsed.rows,
+            vec![vec![Some("3".into()), Some("-4".into())]]
+        );
+        for invalid in [
+            "INSERT INTO events VALUES (+NULL)",
+            "INSERT INTO events VALUES (+'text')",
+        ] {
+            assert!(parse_insert(invalid).is_err(), "{invalid}");
+        }
+    }
+
 }
