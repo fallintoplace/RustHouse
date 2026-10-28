@@ -17,7 +17,7 @@ const MIN_CAPACITY: usize = 256;
 const MAX_CAPACITY: usize = 2048;
 const MAX_TEXT_BYTES: usize = 4096;
 
-#[derive(Clone, Eq, PartialEq, Ord, PartialOrd)]
+#[derive(Debug, Clone, Eq, PartialEq, Ord, PartialOrd)]
 enum Key {
     Unsigned(u128),
     Signed(i128),
@@ -187,7 +187,7 @@ impl SpaceSaving {
     }
 
     fn observe(&mut self, key: View<'_>) -> Result<(), ExecutionError> {
-        if matches!(key, View::Text(value) if value.len() > MAX_TEXT_BYTES) {
+        if matches!(&key, View::Text(value) if value.len() > MAX_TEXT_BYTES) {
             return Err(ExecutionError::Invalid(
                 "topK String key exceeds 4096-byte budget".into(),
             ));
@@ -265,7 +265,7 @@ fn write_key<W: Write>(output: &mut W, key: &Key) -> Result<(), ExecutionError> 
         Key::Text(value) => {
             output.write_all(b"'")?;
             for byte in value {
-                match byte {
+                match *byte {
                     b'\n' => output.write_all(b"\\n")?,
                     b'\r' => output.write_all(b"\\r")?,
                     b'\t' => output.write_all(b"\\t")?,
