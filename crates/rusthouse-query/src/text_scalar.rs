@@ -93,6 +93,7 @@ pub(super) fn is_function(name: &str) -> bool {
             | "PATHFULL"
             | "REPLACE_LAST"
             | "NETLOC"
+            | "DOMAINRFC"
             | "STRIP_SUFFIX"
             | "REPEAT"
             | "BASE64_DECODE"
@@ -1604,6 +1605,35 @@ fn parse_at_depth(parser: &mut Parser, depth: usize) -> Result<ConstantValue, Pa
                 _ => ConstantValue::Null,
             }
         }
+        "DOMAINRFC" => {
+            let input = text_arg(parser, depth + 1)?;
+            require(parser, Token::RParen, "domainRFC requires one string")?;
+            match input {
+                Some(url) => {
+                    let suffix = url
+                        .split_once("://")
+                        .map_or(url.as_str(), |(_, rest)| rest);
+                    let authority = suffix.split(['/', '?', '#']).next().unwrap_or("");
+                    let host_port = authority.rsplit('@').next().unwrap_or("");
+                    let host = if host_port.starts_with('[') {
+                        host_port
+                            .find(']')
+                            .map_or("", |end| &host_port[1..end])
+                    } else if let Some((host, port)) = host_port.rsplit_once(':') {
+                        if port.bytes().all(|byte| byte.is_ascii_digit()) {
+                            host
+                        } else {
+                            host_port
+                        }
+                    } else {
+                        host_port
+                    };
+                    let host = if host.contains([' ', '@']) { "" } else { host };
+                    ConstantValue::Text(host.to_owned())
+                }
+                None => ConstantValue::Null,
+            }
+        }
         "NETLOC" => {
             let input = text_arg(parser, depth + 1)?;
             require(parser, Token::RParen, "netloc requires one argument")?;
@@ -2000,5 +2030,41 @@ fn text_arg(parser: &mut Parser, depth: usize) -> Result<Option<String>, ParseEr
         _ => Err(ParseError(
             "expected a string literal or string function".into(),
         )),
+    }
+}
+
+#[cfg(test)]
+mod clickhouse_domain_rfc_tests {
+    use crate::{ConstantValue, Projection, parse_select};
+
+    fn value(sql: &str) -> ConstantValue {
+        match parse_select(sql).unwrap().projection {
+            Projection::Constants(columns) if columns.len() == 1 => columns[0].value.clone(),
+            Projection::Literal(number) => ConstantValue::Integer(number),
+            other => panic!("unexpected projection: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn example_values() {
+        for (sql, expected) in [
+            ("SELECT domainRFC('http://user:password@example.com:8080/path')", ConstantValue::Text("example.com".into())),
+            ("SELECT domainRFC('https://www.example.org/a')", ConstantValue::Text("www.example.org".into())),
+            ("SELECT domainRFC('https://example.com')", ConstantValue::Text("example.com".into())),
+            ("SELECT domainRFC(NULL)", ConstantValue::Null),
+        ] {
+            assert_eq!(value(sql), expected, "{sql}");
+        }
+    }
+
+    #[test]
+    fn invalid_arity_and_types() {
+        for sql in [
+            "SELECT domainRFC()",
+            "SELECT domainRFC(1)",
+            "SELECT domainRFC('x','y')",
+        ] {
+            assert!(parse_select(sql).is_err(), "{sql}");
+        }
     }
 }
