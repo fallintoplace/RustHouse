@@ -80,6 +80,7 @@ pub(super) fn is_function(name: &str) -> bool {
             | "LEFTPADUTF8"
             | "COUNTSUBSTRINGSCASEINSENSITIVE"
             | "HEX_DECODE"
+            | "UNBIN"
             | "REPLACE"
             | "REPLACEALL"
             | "PROTOCOL"
@@ -1010,6 +1011,33 @@ fn parse_at_depth(parser: &mut Parser, depth: usize) -> Result<ConstantValue, Pa
                     ConstantValue::Text(value.chars().skip(start).take(count).collect())
                 }
                 _ => ConstantValue::Null,
+            }
+        }
+        "UNBIN" => {
+            let input = text_arg(parser, depth + 1)?;
+            require(parser, Token::RParen, "unbin requires one argument")?;
+            match input {
+                Some(input) => {
+                    let bits = input.as_bytes();
+                    if bits.len() % 8 != 0 {
+                        return Err(ParseError("unbin requires complete byte groups".into()));
+                    }
+                    let mut decoded = Vec::with_capacity(bits.len() / 8);
+                    for group in bits.chunks_exact(8) {
+                        let mut value = 0u8;
+                        for &bit in group {
+                            value = (value << 1) | match bit {
+                                b'0' => 0,
+                                b'1' => 1,
+                                _ => return Err(ParseError("unbin requires binary digits".into())),
+                            };
+                        }
+                        decoded.push(value);
+                    }
+                    ConstantValue::Text(String::from_utf8(decoded)
+                        .map_err(|_| ParseError("unbin result is not UTF-8".into()))?)
+                }
+                None => ConstantValue::Null,
             }
         }
         "HEX_DECODE" => {
