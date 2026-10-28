@@ -207,21 +207,22 @@ pub(super) fn execute<W: Write>(
         }
     }
 
-    let terms = query
-        .order_terms()
-        .map(|term| {
-            let index = columns
-                .iter()
-                .position(|column| column == &term.column)
-                .expect("GROUP BY ORDER BY validated by parser");
-            (index, term.descending, term.nulls_first)
-        })
-        .collect::<Vec<_>>();
-    let compare = |(left, _): &(Vec<Cell>, Vec<AggregateState>),
-                   (right, _): &(Vec<Cell>, Vec<AggregateState>)| {
-        for &(index, descending, nulls_first) in &terms {
-            let order =
-                typed::compare_order_cells(&left[index], &right[index], descending, nulls_first);
+    let terms = query.order_terms().map(|term| {
+        let metric = term.column.strip_prefix("#aggregate")
+            .and_then(|number| number.parse::<usize>().ok());
+        let group = columns.iter().position(|column| column == &term.column);
+        (group, metric, term.descending, term.nulls_first)
+    }).collect::<Vec<_>>();
+    let compare = |(left_keys, left_states): &(Vec<Cell>, Vec<AggregateState>),
+                   (right_keys, right_states): &(Vec<Cell>, Vec<AggregateState>)| {
+        for &(group, metric, descending, nulls_first) in &terms {
+            let order = if let Some(index) = metric {
+                typed::compare_order_cells(&left_states[index].sort_cell(),
+                    &right_states[index].sort_cell(), descending, nulls_first)
+            } else {
+                let index = group.expect("GROUP BY ORDER BY validated by parser");
+                typed::compare_order_cells(&left_keys[index], &right_keys[index], descending, nulls_first)
+            };
             if order != Ordering::Equal {
                 return order;
             }
