@@ -1,11 +1,11 @@
-//! Bounded CSV loader and streaming TSV loader for COPY FROM local files.
-use rusthouse_query::{CopyFormat, CopyFrom, Insert};
+//! Bounded streaming CSV and TSV loaders for COPY FROM local files.
+use rusthouse_query::{CopyFormat, CopyFrom};
 use std::collections::HashSet;
 use std::fs::File;
 use std::io::{BufRead, BufReader, Read};
 use std::path::Path;
 
-const MAX_COPY_BYTES: usize = 16 * 1024 * 1024;
+const MAX_CSV_RECORD_BYTES: usize = 8 * 1024 * 1024;
 const MAX_CSV_DATA_RECORDS: usize = 100_000;
 const MAX_CSV_RECORDS: usize = MAX_CSV_DATA_RECORDS + 1;
 #[cfg(test)]
@@ -276,35 +276,89 @@ fn run_tsv(database: &Path, statement: &CopyFrom) -> Result<(), String> {
     crate::database::insert_stream(database, &statement.table, columns, || input.next_record())
 }
 
-fn read_csv_copy_file(path: &str) -> Result<Vec<u8>, String> {
-    let mut data = Vec::new();
-    File::open(path)
-        .map_err(|error| format!("cannot open COPY file {path}: {error}"))?
-        .take((MAX_COPY_BYTES + 1) as u64)
-        .read_to_end(&mut data)
-        .map_err(|error| format!("cannot read COPY file {path}: {error}"))?;
-    if data.len() > MAX_COPY_BYTES {
-        return Err("COPY file exceeds 16 MiB".into());
-    }
-    Ok(data)
+/// A quoted CSV record may span many physical lines. Buffer only that record,
+/// never the full input, and let the existing parser preserve quoted NULL rules.
+struct CsvRecords {
+    reader: BufReader<Box<dyn Read>>,
+    buffer: Vec<u8>,
+    first: bool,
 }
 
-pub(super) fn run(database: &Path, statement: &CopyFrom) -> Result<(), String> {
-    if matches!(statement.format, CopyFormat::Tsv | CopyFormat::Ssv) {
-        return run_tsv(database, statement);
+impl CsvRecords {
+    fn next_record(&mut self) -> Result<Option<Vec<Option<String>>>, String> {
+        self.buffer.clear();
+        let mut quoted = false;
+        loop {
+            let remaining = MAX_CSV_RECORD_BYTES
+                .checked_sub(self.buffer.len())
+                .ok_or("COPY CSV record exceeds 8 MiB")?;
+            if remaining == 0 {
+                return Err("COPY CSV record exceeds 8 MiB".into());
+            }
+            let mut line = Vec::new();
+            let read = self
+                .reader
+                .by_ref()
+                .take((remaining + 1) as u64)
+                .read_until(b'\n', &mut line)
+                .map_err(|error| format!("cannot read COPY CSV record: {error}"))?;
+            if read == 0 {
+                if self.buffer.is_empty() {
+                    return Ok(None);
+                }
+                break;
+            }
+            let finished_line = line.ends_with(b"\n");
+            for byte in &line {
+                if *byte == b'"' {
+                    quoted = !quoted;
+                }
+            }
+            self.buffer.extend_from_slice(&line);
+            if self.buffer.len() > MAX_CSV_RECORD_BYTES {
+                return Err("COPY CSV record exceeds 8 MiB".into());
+            }
+            if finished_line && !quoted {
+                break;
+            }
+        }
+        let text = std::str::from_utf8(&self.buffer).map_err(|_| "COPY requires UTF-8 data")?;
+        let text = if self.first {
+            text.strip_prefix('\u{feff}').unwrap_or(text)
+        } else {
+            text
+        };
+        self.first = false;
+        // The parser may strip a BOM at the beginning of a record. Only the
+        // first physical CSV record may have a BOM; reject later BOMs instead.
+        if text.starts_with('\u{feff}') {
+            return Err("COPY CSV BOM is only allowed at the beginning".into());
+        }
+        let mut rows = parse_csv(text)?;
+        if rows.len() != 1 {
+            return Err("COPY CSV record is empty or malformed".into());
+        }
+        Ok(rows.remove(0))
     }
-    if statement.path == "-" {
-        return Err("COPY FROM '-' requires TSV format".into());
-    }
-    let data = read_csv_copy_file(&statement.path)?;
-    let input = std::str::from_utf8(&data).map_err(|_| "COPY requires UTF-8 data")?;
-    let mut records = parse_csv(input)?;
+}
+
+fn run_csv(database: &Path, statement: &CopyFrom) -> Result<(), String> {
+    let reader: Box<dyn Read> = if statement.path == "-" {
+        Box::new(std::io::stdin())
+    } else {
+        Box::new(
+            File::open(&statement.path)
+                .map_err(|error| format!("cannot open COPY file {}: {error}", statement.path))?,
+        )
+    };
+    let mut input = CsvRecords {
+        reader: BufReader::new(reader),
+        buffer: Vec::new(),
+        first: true,
+    };
     let mut columns = statement.columns.clone();
     if statement.header {
-        if records.is_empty() {
-            return Err("COPY file is missing its header".into());
-        }
-        let headings = records.remove(0);
+        let headings = input.next_record()?.ok_or("COPY file is missing its header")?;
         let names = headings
             .into_iter()
             .map(|value| value.ok_or("COPY header cannot contain empty columns"))
@@ -321,27 +375,14 @@ pub(super) fn run(database: &Path, statement: &CopyFrom) -> Result<(), String> {
             columns = Some(names);
         }
     }
-    let max_data_records = MAX_CSV_DATA_RECORDS;
-    if records.len() > max_data_records {
-        return Err(format!(
-            "COPY supports at most {max_data_records} data rows"
-        ));
-    }
-    if records.is_empty() {
-        // Empty imports should not create needless immutable parts.
-        crate::database::select_source(database, &statement.table)?;
-        println!("Inserted 0 rows into {}", statement.table);
-        return Ok(());
-    }
-    let insert = Insert {
-        table: statement.table.clone(),
-        columns,
-        rows: records,
-    };
-    if insert.rows.len() > 4096 {
-        crate::database::insert_many(database, &insert)
+    crate::database::insert_stream(database, &statement.table, columns, || input.next_record())
+}
+
+pub(super) fn run(database: &Path, statement: &CopyFrom) -> Result<(), String> {
+    if matches!(statement.format, CopyFormat::Tsv | CopyFormat::Ssv) {
+        run_tsv(database, statement)
     } else {
-        crate::database::insert(database, &insert)
+        run_csv(database, statement)
     }
 }
 
@@ -478,19 +519,48 @@ mod copy_file_capacity_tests {
     use std::fs;
 
     #[test]
-    fn reads_csv_past_eight_mib_and_rejects_past_sixteen_mib() {
-        let path = std::env::temp_dir().join(format!(
-            "rusthouse-copy-csv-capacity-{}-{}",
-            std::process::id(),
-            line!()
-        ));
-        fs::write(&path, vec![b'1'; 8 * 1024 * 1024 + 1]).unwrap();
+    fn csv_streams_quoted_newlines_and_preserves_null_semantics() {
+        let input = b"id,value\n1,\"hello\nworld\"\n2,\n3,\"\"\n";
+        let mut reader = CsvRecords {
+            reader: BufReader::new(Box::new(std::io::Cursor::new(input.to_vec()))),
+            buffer: Vec::new(),
+            first: true,
+        };
         assert_eq!(
-            read_csv_copy_file(path.to_str().unwrap()).unwrap().len(),
-            8 * 1024 * 1024 + 1
+            reader.next_record().unwrap().unwrap(),
+            vec![Some("id".into()), Some("value".into())]
         );
-        fs::write(&path, vec![b'1'; MAX_COPY_BYTES + 1]).unwrap();
-        assert!(read_csv_copy_file(path.to_str().unwrap()).is_err());
-        fs::remove_file(path).unwrap();
+        assert_eq!(
+            reader.next_record().unwrap().unwrap(),
+            vec![Some("1".into()), Some("hello\nworld".into())]
+        );
+        assert_eq!(
+            reader.next_record().unwrap().unwrap(),
+            vec![Some("2".into()), None]
+        );
+        assert_eq!(
+            reader.next_record().unwrap().unwrap(),
+            vec![Some("3".into()), Some("".into())]
+        );
+        assert!(reader.next_record().unwrap().is_none());
     }
+
+    #[test]
+    fn csv_rejects_truncated_record_and_per_record_oversize() {
+        let mut bad = CsvRecords {
+            reader: BufReader::new(Box::new(std::io::Cursor::new(b"\"unterminated\n".to_vec()))),
+            buffer: Vec::new(),
+            first: true,
+        };
+        assert!(bad.next_record().is_err());
+
+        let mut giant = CsvRecords {
+            reader: BufReader::new(Box::new(std::io::Cursor::new(vec![b'a'; MAX_CSV_RECORD_BYTES + 1]))),
+            buffer: Vec::new(),
+            first: true,
+        };
+        assert!(giant.next_record().unwrap_err().contains("8 MiB"));
+    }
+
+
 }
