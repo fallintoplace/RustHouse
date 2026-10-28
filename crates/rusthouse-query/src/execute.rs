@@ -1500,9 +1500,14 @@ fn execute_numbers<W: Write>(
             &query.projection,
             Projection::MultipleAggregates(items)
                 if simple_result
-                    && query.predicates.is_empty()
-                    && query.or_predicates.is_empty()
                     && multi_aggregate::supports_generated_series_metrics(items)
+                    && (if query.predicates.is_empty() && query.or_predicates.is_empty() {
+                        true
+                    } else {
+                        monotonic_range_indices(
+                            &compile_numbers_predicates(query)?, start, rows, step
+                        ).is_some()
+                    })
         );
         if !(scalar_count && simple_result && arithmetic_count)
             && !bounded_page

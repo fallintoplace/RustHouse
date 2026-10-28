@@ -579,12 +579,29 @@ pub(super) fn execute_numbers<W: Write>(
     if query.limit == Some(0) {
         return Ok(());
     }
-    if query.predicates.is_empty() && query.or_predicates.is_empty() {
-        if let Some(results) = generated_series_metrics(start, rows, step, items) {
-            if query.offset.unwrap_or(0) == 0 {
-                writeln!(output, "{}", results?.join("\t"))?;
+    // Restrict filtered generated metrics to a single proven contiguous
+    // index interval. OR, modulo, and sparse predicates stay on the bounded
+    // row scan rather than silently using an incorrect range.
+    if supports_generated_series_metrics(items) {
+        let interval = if query.predicates.is_empty() && query.or_predicates.is_empty() {
+            Some((0, rows))
+        } else {
+            super::monotonic_range_indices(&comparisons, start, rows, step)
+        };
+        if let Some((lower, upper)) = interval {
+            let matched = upper - lower;
+            let first = if matched == 0 {
+                start
+            } else {
+                u64::try_from(u128::from(start) + u128::from(lower) * u128::from(step))
+                    .map_err(|_| ExecutionError::Invalid("generated range overflow".into()))?
+            };
+            if let Some(results) = generated_series_metrics(first, matched, step, items) {
+                if query.offset.unwrap_or(0) == 0 {
+                    writeln!(output, "{}", results?.join("\t"))?;
+                }
+                return Ok(());
             }
-            return Ok(());
         }
     }
     let mut states = items
