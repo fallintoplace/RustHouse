@@ -1,4 +1,5 @@
 mod aggregate_plans;
+mod bitmap_distinct;
 
 #[cfg(test)]
 mod dynamic_part_tests {
@@ -31,6 +32,7 @@ mod dynamic_part_tests {
 }
 
 use self::aggregate_plans::*;
+use bitmap_distinct::BitmapDistinct32;
 
 use crate::{AggregateFunction, Projection, Select, Source};
 use rusthouse_storage::{NumericColumn, NumericQueryReader, PartError, inspect_query_source};
