@@ -73,6 +73,7 @@ pub(super) fn is_function(name: &str) -> bool {
             | "LEFT"
             | "REPLACE_FIRST"
             | "STARTS_WITH"
+            | "STARTSWITH"
             | "HASTOKEN"
             | "CONTAINS"
             | "STRIP_PREFIX"
@@ -1329,7 +1330,7 @@ fn parse_at_depth(parser: &mut Parser, depth: usize) -> Result<ConstantValue, Pa
                 _ => ConstantValue::Null,
             }
         }
-        "STARTS_WITH" => {
+        "STARTS_WITH" | "STARTSWITH" => {
             let input = text_arg(parser, depth + 1)?;
             require(parser, Token::Comma, "STARTS_WITH requires a prefix")?;
             let prefix = text_arg(parser, depth + 1)?;
