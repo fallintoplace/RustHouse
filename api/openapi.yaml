@@ -1,0 +1,192 @@
+openapi: 3.0.3
+info:
+  title: RustHouse experimental read-only HTTP API
+  version: 0.1.0
+  description: |
+    This documents the limited RustHouse HTTP surface, not a ClickHouse-compatible
+    driver. The built-in server has no TLS or authentication. Bind to loopback,
+    or use a trusted private encrypted overlay with restrictive ACLs.
+servers:
+  - url: http://127.0.0.1:8123
+paths:
+  /ping:
+    get:
+      summary: Process liveness only, not storage readiness
+      responses:
+        '200':
+          description: Plain text Ok.
+          content:
+            text/plain:
+              schema: {type: string}
+  /capabilities:
+    get:
+      summary: Discover version, source mode, and configured limits
+      responses:
+        '200':
+          description: Read-only capability metadata
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [name, version, source, read_only, max_query_bytes, max_response_bytes, max_rows]
+                properties:
+                  name: {type: string}
+                  version: {type: string}
+                  source: {type: string, enum: [generated, part, database, invalid]}
+                  read_only: {type: boolean}
+                  max_query_bytes: {type: integer}
+                  max_response_bytes: {type: integer}
+                  max_rows: {type: integer}
+  /tables:
+    get:
+      summary: List catalog-visible local database tables
+      responses:
+        '200':
+          description: Server's JSON table listing
+          content:
+            application/json:
+              schema: {type: object}
+        '400':
+          $ref: '#/components/responses/BadRequest'
+  /schema:
+    get:
+      summary: Describe frozen part or named database table
+      parameters:
+        - name: table
+          in: query
+          required: false
+          description: Required in database mode; unavailable in part mode
+          schema: {type: string, maxLength: 128}
+      responses:
+        '200':
+          description: Schema and row count
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  rows: {type: integer}
+                  columns:
+                    type: array
+                    items:
+                      type: object
+                      properties:
+                        name: {type: string}
+                        type: {type: string}
+        '400':
+          $ref: '#/components/responses/BadRequest'
+  /:
+    get:
+      summary: Execute a bounded read-only SELECT
+      parameters:
+        - $ref: '#/components/parameters/Query'
+        - $ref: '#/components/parameters/Format'
+      responses:
+        '200':
+          $ref: '#/components/responses/Query'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+    post:
+      summary: Execute a bounded read-only SELECT from raw UTF-8 body
+      parameters:
+        - $ref: '#/components/parameters/Format'
+      requestBody:
+        required: true
+        content:
+          text/plain:
+            schema: {type: string, maxLength: 4096}
+      responses:
+        '200':
+          $ref: '#/components/responses/Query'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '413':
+          $ref: '#/components/responses/TooLarge'
+  /explain:
+    get:
+      summary: Logical plan without reading data
+      parameters:
+        - $ref: '#/components/parameters/Query'
+      responses:
+        '200':
+          description: Bounded plain-text logical plan
+          content:
+            text/plain:
+              schema: {type: string}
+    post:
+      summary: Logical plan from raw UTF-8 SELECT
+      requestBody:
+        required: true
+        content:
+          text/plain:
+            schema: {type: string, maxLength: 4096}
+      responses:
+        '200':
+          description: Plain-text logical plan
+          content:
+            text/plain:
+              schema: {type: string}
+  /cluster/health:
+    get:
+      summary: Probe explicitly configured peers
+      responses:
+        '200':
+          description: All peers responded to /ping
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/PeerHealth'}
+        '503':
+          description: At least one peer did not answer as expected
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/PeerHealth'}
+components:
+  schemas:
+    PeerHealth:
+      type: object
+      properties:
+        total: {type: integer}
+        healthy: {type: integer}
+        peers:
+          type: array
+          items:
+            type: object
+            properties:
+              address: {type: string}
+              healthy: {type: boolean}
+  parameters:
+    Query:
+      name: query
+      in: query
+      required: true
+      schema: {type: string}
+    Format:
+      name: format
+      in: query
+      required: false
+      description: Numeric JSON output is encoded as strings to preserve precision
+      schema:
+        type: string
+        enum: [tsv, tsv-no-header, csv, csv-no-header, jsonl, json, json-pretty, json-compact-each-row, sql-values, markdown]
+  responses:
+    BadRequest:
+      description: Invalid SQL, source mode, or request
+      content:
+        text/plain:
+          schema: {type: string}
+    TooLarge:
+      description: Query or output limit exceeded
+      content:
+        text/plain:
+          schema: {type: string}
+    Query:
+      description: Bounded selected format; default TSV
+      content:
+        text/tab-separated-values:
+          schema: {type: string}
+        application/json:
+          schema: {type: array, items: {type: object}}
+        application/x-ndjson:
+          schema: {type: string}
+        text/csv:
+          schema: {type: string}

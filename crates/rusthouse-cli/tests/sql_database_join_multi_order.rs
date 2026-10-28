@@ -3,10 +3,8 @@ use std::process::Command;
 
 #[test]
 fn join_order_by_uses_secondary_columns_to_break_ties() {
-    let db = std::env::temp_dir().join(format!(
-        "rusthouse-join-multi-order-{}",
-        std::process::id()
-    ));
+    let db =
+        std::env::temp_dir().join(format!("rusthouse-join-multi-order-{}", std::process::id()));
     let sql = |statement: &str| {
         Command::new(env!("CARGO_BIN_EXE_rusthouse"))
             .args(["sql", statement, "--database"])

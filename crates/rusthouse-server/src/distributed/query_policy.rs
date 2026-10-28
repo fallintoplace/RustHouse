@@ -1,39 +1,33 @@
 use super::*;
 
-pub(super) fn is_safe_scan(select: &Select) -> bool {
+fn is_safe_table_select(select: &Select) -> bool {
     matches!(select.source, Some(Source::Table(_)))
-        && matches!(select.projection, Projection::All | Projection::Columns(_))
         && !select.distinct
         && select.rename.is_none()
         && select.order_by.is_none()
         && select.order_by_extra.is_empty()
         && select.having.is_none()
+}
+
+fn is_safe_unpaged_select(select: &Select) -> bool {
+    is_safe_table_select(select) && select.limit.is_none() && select.offset.is_none()
+}
+
+pub(super) fn is_safe_scan(select: &Select) -> bool {
+    matches!(select.projection, Projection::All | Projection::Columns(_))
+        && is_safe_table_select(select)
 }
 
 pub(super) fn is_safe_count(select: &Select) -> bool {
     matches!(
         select.projection,
         Projection::Count | Projection::CountColumn { .. }
-    ) && matches!(select.source, Some(Source::Table(_)))
-        && !select.distinct
-        && select.rename.is_none()
-        && select.order_by.is_none()
-        && select.order_by_extra.is_empty()
-        && select.having.is_none()
-        && select.limit.is_none()
-        && select.offset.is_none()
+    ) && is_safe_unpaged_select(select)
 }
 
 pub(super) fn is_safe_count_distinct(select: &Select) -> bool {
     matches!(select.projection, Projection::CountDistinct { .. })
-        && matches!(select.source, Some(Source::Table(_)))
-        && !select.distinct
-        && select.rename.is_none()
-        && select.order_by.is_none()
-        && select.order_by_extra.is_empty()
-        && select.having.is_none()
-        && select.limit.is_none()
-        && select.offset.is_none()
+        && is_safe_unpaged_select(select)
 }
 
 /// Rebuild only the projection while keeping an exactly verified WHERE clause.
@@ -63,14 +57,7 @@ pub(super) fn is_safe_sum(select: &Select) -> bool {
             function: AggregateFunction::Sum,
             ..
         }
-    ) && matches!(select.source, Some(Source::Table(_)))
-        && !select.distinct
-        && select.rename.is_none()
-        && select.order_by.is_none()
-        && select.order_by_extra.is_empty()
-        && select.having.is_none()
-        && select.limit.is_none()
-        && select.offset.is_none()
+    ) && is_safe_unpaged_select(select)
 }
 
 pub(super) fn is_safe_count_if(select: &Select) -> bool {
@@ -80,14 +67,7 @@ pub(super) fn is_safe_count_if(select: &Select) -> bool {
             function: AggregateFunction::CountIf,
             ..
         }
-    ) && matches!(select.source, Some(Source::Table(_)))
-        && !select.distinct
-        && select.rename.is_none()
-        && select.order_by.is_none()
-        && select.order_by_extra.is_empty()
-        && select.having.is_none()
-        && select.limit.is_none()
-        && select.offset.is_none()
+    ) && is_safe_unpaged_select(select)
 }
 
 pub(super) fn is_safe_extremum(select: &Select) -> bool {
@@ -97,14 +77,7 @@ pub(super) fn is_safe_extremum(select: &Select) -> bool {
             function: AggregateFunction::Min | AggregateFunction::Max,
             ..
         }
-    ) && matches!(select.source, Some(Source::Table(_)))
-        && !select.distinct
-        && select.rename.is_none()
-        && select.order_by.is_none()
-        && select.order_by_extra.is_empty()
-        && select.having.is_none()
-        && select.limit.is_none()
-        && select.offset.is_none()
+    ) && is_safe_unpaged_select(select)
 }
 
 pub(super) fn integer_type(kind: &str) -> bool {
@@ -128,15 +101,8 @@ pub(super) fn integer_type(kind: &str) -> bool {
 }
 
 pub(super) fn is_safe_grouped_count(select: &Select) -> bool {
-    matches!(select.source, Some(Source::Table(_)))
-        && matches!(select.projection, Projection::GroupedCount { .. })
-        && !select.distinct
-        && select.rename.is_none()
-        && select.order_by.is_none()
-        && select.order_by_extra.is_empty()
-        && select.having.is_none()
-        && select.limit.is_none()
-        && select.offset.is_none()
+    matches!(select.projection, Projection::GroupedCount { .. })
+        && is_safe_unpaged_select(select)
 }
 
 pub(super) fn is_safe_grouped_sum(select: &Select) -> bool {
@@ -146,14 +112,7 @@ pub(super) fn is_safe_grouped_sum(select: &Select) -> bool {
             function: AggregateFunction::Sum,
             ..
         }
-    ) && matches!(select.source, Some(Source::Table(_)))
-        && !select.distinct
-        && select.rename.is_none()
-        && select.order_by.is_none()
-        && select.order_by_extra.is_empty()
-        && select.having.is_none()
-        && select.limit.is_none()
-        && select.offset.is_none()
+    ) && is_safe_unpaged_select(select)
 }
 
 pub(super) fn group_key_type(kind: &str) -> bool {

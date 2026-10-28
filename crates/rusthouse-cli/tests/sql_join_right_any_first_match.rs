@@ -33,7 +33,16 @@ fn right_any_first_match() {
     successful(&db, "CREATE TABLE lefts (id UInt64, k UInt64)");
     successful(&db, "CREATE TABLE rights (id UInt64, k UInt64)");
     successful(&db, "INSERT INTO lefts VALUES (1, 10), (2, 10), (3, 20)");
-    successful(&db, "INSERT INTO rights VALUES (50, 10), (60, 20), (70, 30)");
-    assert_eq!(successful(&db, "SELECT l.id, r.id FROM lefts l RIGHT ANY JOIN rights r ON l.k = r.k ORDER BY r.id"), b"l.id\tr.id\n1\t50\n3\t60\n\\N\t70\n");
+    successful(
+        &db,
+        "INSERT INTO rights VALUES (50, 10), (60, 20), (70, 30)",
+    );
+    assert_eq!(
+        successful(
+            &db,
+            "SELECT l.id, r.id FROM lefts l RIGHT ANY JOIN rights r ON l.k = r.k ORDER BY r.id"
+        ),
+        b"l.id\tr.id\n1\t50\n3\t60\n\\N\t70\n"
+    );
     fs::remove_dir_all(db).unwrap();
 }

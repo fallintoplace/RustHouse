@@ -50,13 +50,20 @@ fn pages_and_returns_joined_pairs_across_old_65536_limit() {
     );
     assert!(unbounded.status.success(), "{unbounded:?}");
     assert_eq!(
-        unbounded.stdout.iter().filter(|&&byte| byte == b'\n').count(),
+        unbounded
+            .stdout
+            .iter()
+            .filter(|&&byte| byte == b'\n')
+            .count(),
         73_729
     );
 
     // Another three copies of the dimension create 147,456 matched pairs.
     for _ in 0..3 {
-        let appended = sql("INSERT INTO dimension SELECT number FROM numbers(8192)", &db);
+        let appended = sql(
+            "INSERT INTO dimension SELECT number FROM numbers(8192)",
+            &db,
+        );
         assert!(appended.status.success(), "{appended:?}");
     }
     let rejected = sql(

@@ -33,6 +33,17 @@ class ReleaseGateTests(unittest.TestCase):
             required,
         )
 
+    def test_required_commit_revision_rejects_stale_benchmark_data(self):
+        sample = report([(1, "passed")])
+        sample["revision"] = "0123456789abcdef"
+        gate.verify(sample, {1}, expected_revision="0123456789abcdef")
+        for revision in ("old-sha", "", None):
+            with self.subTest(revision=revision):
+                stale = dict(sample)
+                stale["revision"] = revision
+                with self.assertRaisesRegex(ValueError, "revision differs"):
+                    gate.verify(stale, {1}, expected_revision="0123456789abcdef")
+
     def test_parses_exact_required_ids_and_ranges(self):
         self.assertEqual(gate.parse_query_ids("1-3,6,10-11"), {1, 2, 3, 6, 10, 11})
         for specification in ["", "0", "4-2", "1,1", "2-4,3", "abc", "1--2"]:

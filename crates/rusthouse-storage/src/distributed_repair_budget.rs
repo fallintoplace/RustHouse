@@ -26,6 +26,16 @@ fn repair_priority(left: &RepairJob, right: &RepairJob) -> std::cmp::Ordering {
         .then_with(|| left.shard.cmp(&right.shard))
 }
 
+fn validate_repair_jobs(jobs: &[RepairJob]) -> Result<(), &'static str> {
+    let mut unique = HashSet::with_capacity(jobs.len());
+    for job in jobs {
+        if !valid_repair_job(job) || !unique.insert(job.shard.as_str()) {
+            return Err("invalid or duplicate repair job");
+        }
+    }
+    Ok(())
+}
+
 /// Prioritize severe under-replication, then smaller objects, then shard ID.
 /// The result is a schedule only; a transfer engine must execute it.
 pub fn plan_repairs(
@@ -36,13 +46,7 @@ pub fn plan_repairs(
     if jobs.len() > 4096 || job_limit > 4096 {
         return Err("repair job count exceeds bound");
     }
-    let mut unique = HashSet::with_capacity(jobs.len());
-    for job in jobs {
-        if !valid_repair_job(job) || !unique.insert(job.shard.as_str())
-        {
-            return Err("invalid or duplicate repair job");
-        }
-    }
+    validate_repair_jobs(jobs)?;
     if job_limit == 0 {
         return Ok(Vec::new());
     }
@@ -69,30 +73,62 @@ mod tests {
     #[test]
     fn schedules_urgent_repair_without_exceeding_budget() {
         let jobs = vec![
-            RepairJob { shard: "a".into(), bytes: 40, missing_replicas: 1 },
-            RepairJob { shard: "b".into(), bytes: 60, missing_replicas: 3 },
-            RepairJob { shard: "c".into(), bytes: 20, missing_replicas: 2 },
+            RepairJob {
+                shard: "a".into(),
+                bytes: 40,
+                missing_replicas: 1,
+            },
+            RepairJob {
+                shard: "b".into(),
+                bytes: 60,
+                missing_replicas: 3,
+            },
+            RepairJob {
+                shard: "c".into(),
+                bytes: 20,
+                missing_replicas: 2,
+            },
         ];
         let plan = plan_repairs(&jobs, 80, 2).unwrap();
-        assert_eq!(plan.iter().map(|job| job.shard.as_str()).collect::<Vec<_>>(), vec!["b", "c"]);
+        assert_eq!(
+            plan.iter()
+                .map(|job| job.shard.as_str())
+                .collect::<Vec<_>>(),
+            vec!["b", "c"]
+        );
     }
 
     #[test]
     fn rejects_ambiguous_jobs() {
-        let job = RepairJob { shard: "a".into(), bytes: 1, missing_replicas: 1 };
+        let job = RepairJob {
+            shard: "a".into(),
+            bytes: 1,
+            missing_replicas: 1,
+        };
         assert!(plan_repairs(&[job.clone(), job], 10, 2).is_err());
     }
     #[test]
     fn skips_unschedulable_jobs_without_losing_lower_priority_work() {
         let jobs = vec![
-            RepairJob { shard: "urgent".into(), bytes: 100, missing_replicas: 3 },
-            RepairJob { shard: "small".into(), bytes: 1, missing_replicas: 2 },
-            RepairJob { shard: "extra".into(), bytes: 1, missing_replicas: 1 },
+            RepairJob {
+                shard: "urgent".into(),
+                bytes: 100,
+                missing_replicas: 3,
+            },
+            RepairJob {
+                shard: "small".into(),
+                bytes: 1,
+                missing_replicas: 2,
+            },
+            RepairJob {
+                shard: "extra".into(),
+                bytes: 1,
+                missing_replicas: 1,
+            },
         ];
         let plan = plan_repairs(&jobs, 1, 1).unwrap();
         assert_eq!(plan[0].shard, "small");
         assert_eq!(plan.len(), 1);
         assert!(plan_repairs(&jobs, 1, 0).unwrap().is_empty());
     }
-
 }

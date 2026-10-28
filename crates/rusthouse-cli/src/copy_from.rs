@@ -71,7 +71,11 @@ fn parse_csv(data: &str) -> Result<Vec<Vec<Option<String>>>, String> {
     let data = data.strip_prefix('\u{feff}').unwrap_or(data);
     // Unquoted CSV needs neither a character state machine nor incremental
     // String::push calls. Reuse the validated bounded record path.
-    if !data.as_bytes().iter().any(|&byte| byte == b'"' || byte == b'\r') {
+    if !data
+        .as_bytes()
+        .iter()
+        .any(|&byte| byte == b'"' || byte == b'\r')
+    {
         return parse_plain_csv(data);
     }
     let mut records = Vec::new();
@@ -145,8 +149,8 @@ fn decode_tsv_cell(field: &str) -> Result<String, String> {
     }
     // Decode plain UTF-8 spans in bulk rather than encoding each character
     // again. The shared decoder rejects unsupported or truncated escapes.
-    let decoded = crate::tsv_escape::decode_tsv_field(field.as_bytes())
-        .map_err(|error| error.to_string())?;
+    let decoded =
+        crate::tsv_escape::decode_tsv_field(field.as_bytes()).map_err(|error| error.to_string())?;
     String::from_utf8(decoded).map_err(|_| "invalid UTF-8 in TSV field".into())
 }
 
@@ -476,10 +480,15 @@ mod copy_file_capacity_tests {
     #[test]
     fn reads_csv_past_eight_mib_and_rejects_past_sixteen_mib() {
         let path = std::env::temp_dir().join(format!(
-            "rusthouse-copy-csv-capacity-{}-{}", std::process::id(), line!()
+            "rusthouse-copy-csv-capacity-{}-{}",
+            std::process::id(),
+            line!()
         ));
         fs::write(&path, vec![b'1'; 8 * 1024 * 1024 + 1]).unwrap();
-        assert_eq!(read_csv_copy_file(path.to_str().unwrap()).unwrap().len(), 8 * 1024 * 1024 + 1);
+        assert_eq!(
+            read_csv_copy_file(path.to_str().unwrap()).unwrap().len(),
+            8 * 1024 * 1024 + 1
+        );
         fs::write(&path, vec![b'1'; MAX_COPY_BYTES + 1]).unwrap();
         assert!(read_csv_copy_file(path.to_str().unwrap()).is_err());
         fs::remove_file(path).unwrap();

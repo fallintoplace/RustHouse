@@ -7,6 +7,7 @@ mod expression;
 mod insert;
 mod insert_select;
 mod join;
+mod json;
 mod lexer;
 mod literal;
 mod multi_aggregate;
@@ -383,18 +384,20 @@ impl Parser {
                     if !self.keyword("INTERVAL") {
                         return Err(ParseError("DATE arithmetic requires INTERVAL".into()));
                     }
-                    let years = match self.tokens.get(self.index) {
-                        Some(Token::Number(value) | Token::String(value)) => value
-                            .parse::<i64>()
-                            .map_err(|_| ParseError("invalid INTERVAL year count".into()))?,
-                        _ => return Err(ParseError("INTERVAL requires a year count".into())),
-                    };
+                    let years =
+                        match self.tokens.get(self.index) {
+                            Some(Token::Number(value) | Token::String(value)) => value
+                                .parse::<i64>()
+                                .map_err(|_| ParseError("invalid INTERVAL year count".into()))?,
+                            _ => return Err(ParseError("INTERVAL requires a year count".into())),
+                        };
                     self.index += 1;
                     if !self.keyword("YEAR") {
                         return Err(ParseError("only INTERVAL YEAR is supported".into()));
                     }
                     let years = if subtract {
-                        years.checked_neg()
+                        years
+                            .checked_neg()
                             .ok_or_else(|| ParseError("INTERVAL year count overflow".into()))?
                     } else {
                         years
@@ -484,13 +487,20 @@ impl Parser {
                     .and_then(|index| columns.get(index))
                     .cloned()
                     .ok_or_else(|| ParseError("ORDER BY position is out of range".into()))?,
-                Projection::GroupedAggregate { column, function, .. } => match position {
+                Projection::GroupedAggregate {
+                    column, function, ..
+                } => match position {
                     1 => column.clone(),
                     2 if matches!(
                         function,
-                        AggregateFunction::Sum | AggregateFunction::Min
-                            | AggregateFunction::Max | AggregateFunction::Avg
-                    ) => "#aggregate".into(),
+                        AggregateFunction::Sum
+                            | AggregateFunction::Min
+                            | AggregateFunction::Max
+                            | AggregateFunction::Avg
+                    ) =>
+                    {
+                        "#aggregate".into()
+                    }
                     _ => {
                         return Err(ParseError(
                             "ORDER BY aggregate output requires SUM, MIN, MAX or AVG".into(),
@@ -725,7 +735,9 @@ fn parse_select_tokens(tokens: Vec<Token>) -> Result<Select, ParseError> {
                     }
                     let value_column = parser.word()?;
                     if !parser.take(Token::RParen) {
-                        return Err(ParseError("expected ')' after COUNT(DISTINCT column)".into()));
+                        return Err(ParseError(
+                            "expected ')' after COUNT(DISTINCT column)".into(),
+                        ));
                     }
                     grouped_distinct = Some(value_column);
                 } else {
@@ -909,7 +921,9 @@ fn parse_select_tokens(tokens: Vec<Token>) -> Result<Select, ParseError> {
                     .parse::<u64>()
                     .map_err(|_| ParseError("numbers row count is too large".into()))?;
                 if count > 1_000_000_000 {
-                    return Err(ParseError("numbers supports at most 1000000000 rows".into()));
+                    return Err(ParseError(
+                        "numbers supports at most 1000000000 rows".into(),
+                    ));
                 }
                 if parser.take(Token::Comma) {
                     let step = parser
@@ -932,7 +946,9 @@ fn parse_select_tokens(tokens: Vec<Token>) -> Result<Select, ParseError> {
                 }
             } else {
                 if first > 1_000_000_000 {
-                    return Err(ParseError("numbers supports at most 1000000000 rows".into()));
+                    return Err(ParseError(
+                        "numbers supports at most 1000000000 rows".into(),
+                    ));
                 }
                 Source::Numbers(first)
             };
@@ -1048,7 +1064,10 @@ fn parse_select_tokens(tokens: Vec<Token>) -> Result<Select, ParseError> {
                     }
                     if parser.keyword("NULL") {
                         // x IS DISTINCT FROM NULL is x IS NOT NULL.
-                        Predicate::IsNull { column, negated: !negated }
+                        Predicate::IsNull {
+                            column,
+                            negated: !negated,
+                        }
                     } else {
                         Predicate::DistinctFrom {
                             column,
@@ -1233,8 +1252,7 @@ fn parse_select_tokens(tokens: Vec<Token>) -> Result<Select, ParseError> {
         }
         match &projection {
             Projection::GroupedMultiCount { columns } if columns == &group_columns => {}
-            Projection::GroupedMultiAggregates { columns, .. }
-                if columns == &group_columns => {}
+            Projection::GroupedMultiAggregates { columns, .. } if columns == &group_columns => {}
             Projection::GroupedCount { column }
             | Projection::GroupedDistinctCount { column, .. }
             | Projection::GroupedAggregate { column, .. }
@@ -1246,7 +1264,9 @@ fn parse_select_tokens(tokens: Vec<Token>) -> Result<Select, ParseError> {
             | Projection::GroupedAggregate { .. }
             | Projection::GroupedAggregates { .. }
             | Projection::GroupedMultiAggregates { .. } => {
-                return Err(ParseError("GROUP BY must match selected grouping keys".into()));
+                return Err(ParseError(
+                    "GROUP BY must match selected grouping keys".into(),
+                ));
             }
             _ => {
                 return Err(ParseError(
@@ -1380,8 +1400,8 @@ fn parse_select_tokens(tokens: Vec<Token>) -> Result<Select, ParseError> {
         return Err(ParseError("ORDER BY requires column projections".into()));
     }
 
-    if let Projection::GroupedCount { column }
-    | Projection::GroupedDistinctCount { column, .. } = &projection
+    if let Projection::GroupedCount { column } | Projection::GroupedDistinctCount { column, .. } =
+        &projection
     {
         if order_by
             .iter()

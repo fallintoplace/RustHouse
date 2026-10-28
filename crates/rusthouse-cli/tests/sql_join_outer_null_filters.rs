@@ -34,8 +34,26 @@ fn outer_null_filters() {
     successful(&db, "CREATE TABLE rights (id UInt64)");
     successful(&db, "INSERT INTO lefts VALUES (1), (2), (3)");
     successful(&db, "INSERT INTO rights VALUES (2), (4)");
-    assert_eq!(successful(&db, "SELECT l.id FROM lefts l LEFT JOIN rights r ON l.id = r.id WHERE r.id IS NULL ORDER BY l.id"), b"l.id\n1\n3\n");
-    assert_eq!(successful(&db, "SELECT l.id FROM lefts l LEFT JOIN rights r ON l.id = r.id WHERE r.id IS NOT NULL ORDER BY l.id"), b"l.id\n2\n");
-    assert_eq!(successful(&db, "SELECT r.id FROM lefts l FULL JOIN rights r ON l.id = r.id WHERE l.id IS NULL ORDER BY r.id"), b"r.id\n4\n");
+    assert_eq!(
+        successful(
+            &db,
+            "SELECT l.id FROM lefts l LEFT JOIN rights r ON l.id = r.id WHERE r.id IS NULL ORDER BY l.id"
+        ),
+        b"l.id\n1\n3\n"
+    );
+    assert_eq!(
+        successful(
+            &db,
+            "SELECT l.id FROM lefts l LEFT JOIN rights r ON l.id = r.id WHERE r.id IS NOT NULL ORDER BY l.id"
+        ),
+        b"l.id\n2\n"
+    );
+    assert_eq!(
+        successful(
+            &db,
+            "SELECT r.id FROM lefts l FULL JOIN rights r ON l.id = r.id WHERE l.id IS NULL ORDER BY r.id"
+        ),
+        b"r.id\n4\n"
+    );
     fs::remove_dir_all(db).unwrap();
 }

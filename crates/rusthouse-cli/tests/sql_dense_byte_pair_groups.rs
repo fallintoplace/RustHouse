@@ -33,7 +33,11 @@ fn groups_two_byte_dimensions_with_and_without_filters() {
     ] {
         let output = sql(query, &db);
         assert!(output.status.success(), "{query}: {output:?}");
-        assert_eq!(String::from_utf8(output.stdout).unwrap(), expected, "{query}");
+        assert_eq!(
+            String::from_utf8(output.stdout).unwrap(),
+            expected,
+            "{query}"
+        );
     }
     fs::remove_dir_all(db).unwrap();
 }

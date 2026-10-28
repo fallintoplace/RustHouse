@@ -12,7 +12,8 @@ fn write_spaces<W: Write>(output: &mut W, mut remaining: usize) -> io::Result<()
 }
 
 fn write_indent<W: Write>(output: &mut W, depth: usize) -> io::Result<()> {
-    const SHORT_INDENT: &[u8; 65] = b"\n                                                                ";
+    const SHORT_INDENT: &[u8; 65] =
+        b"\n                                                                ";
     let spaces = (depth + 1) * 2;
     if spaces <= 64 {
         output.write_all(&SHORT_INDENT[..spaces + 1])
@@ -20,6 +21,10 @@ fn write_indent<W: Write>(output: &mut W, depth: usize) -> io::Result<()> {
         output.write_all(b"\n")?;
         write_spaces(output, spaces)
     }
+}
+
+fn is_empty_pair(open: u8, close: u8) -> bool {
+    matches!((open, close), (b'{', b'}') | (b'[', b']'))
 }
 
 /// Pretty-print a validated JSON row, preserving punctuation inside strings.
@@ -44,8 +49,9 @@ pub fn write_pretty_json_row<W: Write>(output: &mut W, row: &[u8]) -> io::Result
             b'{' | b'[' => {
                 output.write_all(&row[start..=index])?;
                 depth += 1;
-                let empty = (byte == b'{' && row.get(index + 1) == Some(&b'}'))
-                    || (byte == b'[' && row.get(index + 1) == Some(&b']'));
+                let empty = row
+                    .get(index + 1)
+                    .is_some_and(|&next| is_empty_pair(byte, next));
                 if !empty {
                     write_indent(output, depth)?;
                 }
@@ -54,9 +60,7 @@ pub fn write_pretty_json_row<W: Write>(output: &mut W, row: &[u8]) -> io::Result
             b'}' | b']' => {
                 output.write_all(&row[start..index])?;
                 depth = depth.saturating_sub(1);
-                let empty = index > 0
-                    && ((byte == b'}' && row[index - 1] == b'{')
-                        || (byte == b']' && row[index - 1] == b'['));
+                let empty = index > 0 && is_empty_pair(row[index - 1], byte);
                 if !empty {
                     write_indent(output, depth)?;
                 }
@@ -69,8 +73,16 @@ pub fn write_pretty_json_row<W: Write>(output: &mut W, row: &[u8]) -> io::Result
                 start = index + 1;
             }
             b':' => {
-                output.write_all(&row[start..=index])?;
-                output.write_all(b" ")?;
+                let span = &row[start..=index];
+                if span.len() < 64 {
+                    let mut buffer = [0u8; 64];
+                    buffer[..span.len()].copy_from_slice(span);
+                    buffer[span.len()] = b' ';
+                    output.write_all(&buffer[..span.len() + 1])?;
+                } else {
+                    output.write_all(span)?;
+                    output.write_all(b" ")?;
+                }
                 start = index + 1;
             }
             _ => {}
@@ -130,9 +142,25 @@ mod tests {
     fn leaves_json_string_punctuation_unchanged() {
         let mut output = Vec::new();
         write_pretty_json_row(&mut output, br#"{"text":"a,{}","ok":null}"#).unwrap();
-        assert_eq!(
-            output,
-            b"{\n    \"text\": \"a,{}\",\n    \"ok\": null\n  }"
-        );
+        assert_eq!(output, b"{\n    \"text\": \"a,{}\",\n    \"ok\": null\n  }");
     }
+
+    #[test]
+    fn short_json_key_and_colon_use_one_write() {
+        struct Calls(Vec<Vec<u8>>);
+        impl Write for Calls {
+            fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
+                self.0.push(buf.to_vec());
+                Ok(buf.len())
+            }
+            fn flush(&mut self) -> io::Result<()> {
+                Ok(())
+            }
+        }
+        let mut output = Calls(Vec::new());
+        write_pretty_json_row(&mut output, br#"{"a":1}"#).unwrap();
+        assert!(output.0.iter().any(|chunk| chunk.as_slice() == b"\"a\": "));
+        assert_eq!(output.0.concat(), b"{\n    \"a\": 1\n  }");
+    }
+
 }
