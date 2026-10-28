@@ -1,0 +1,19 @@
+{
+  "name": "join-four-table-chain",
+  "description": "Benchmark four-table chained joins and cross references to earlier aliases",
+  "queries": [
+    {
+      "name": "four-inner",
+      "sql": "SELECT e.event_id, a.tier, b.country, c.tier FROM events e JOIN accounts a ON e.user_id = a.user_id JOIN accounts b ON a.user_id = b.user_id JOIN accounts c ON b.user_id = c.user_id ORDER BY e.event_id LIMIT 20"
+    },
+    {
+      "name": "four-left",
+      "sql": "SELECT e.event_id, a.tier, b.country, c.tier FROM events e JOIN accounts a ON e.user_id = a.user_id LEFT JOIN accounts b ON a.user_id = b.user_id LEFT JOIN accounts c ON b.user_id = c.user_id ORDER BY e.event_id LIMIT 20"
+    },
+    {
+      "name": "four-cross-reference",
+      "sql": "SELECT e.event_id, a.tier, b.country, c.country FROM events e JOIN accounts a ON e.user_id = a.user_id JOIN accounts b ON b.user_id = e.user_id JOIN accounts c ON c.user_id = a.user_id ORDER BY e.event_id LIMIT 20"
+    }
+  ],
+  "max_rows": 16000
+}

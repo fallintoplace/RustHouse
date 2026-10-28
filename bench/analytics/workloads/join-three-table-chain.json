@@ -1,0 +1,19 @@
+{
+  "name": "join-three-table-chain",
+  "description": "Benchmark three-table INNER and LEFT chains with prior aliases",
+  "queries": [
+    {
+      "name": "three-inner",
+      "sql": "SELECT e.event_id, a.tier, b.country FROM events e JOIN accounts a ON e.user_id = a.user_id JOIN accounts b ON a.user_id = b.user_id ORDER BY e.event_id LIMIT 20"
+    },
+    {
+      "name": "three-left",
+      "sql": "SELECT e.event_id, a.tier, b.country FROM events e JOIN accounts a ON e.user_id = a.user_id LEFT JOIN accounts b ON a.user_id = b.user_id ORDER BY e.event_id LIMIT 20"
+    },
+    {
+      "name": "three-cross-reference",
+      "sql": "SELECT e.event_id, a.country, b.tier FROM events e JOIN accounts a ON e.user_id = a.user_id JOIN accounts b ON b.user_id = e.user_id ORDER BY e.event_id LIMIT 20"
+    }
+  ],
+  "max_rows": 16000
+}

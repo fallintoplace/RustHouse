@@ -14,7 +14,7 @@ fn sql(query: &str, database: &Path) -> Output {
 }
 
 #[test]
-fn pages_more_than_65536_joined_pairs_without_materializing_them() {
+fn pages_and_returns_joined_pairs_across_old_65536_limit() {
     let db = std::env::temp_dir().join(format!(
         "rusthouse-join-large-page-{}-{}",
         std::process::id(),
@@ -43,13 +43,28 @@ fn pages_more_than_65536_joined_pairs_without_materializing_them() {
     assert!(page.status.success(), "{page:?}");
     assert_eq!(page.stdout, b"f.id\n5461\n5461\n");
 
-    // Queries without a bounded page still reject excessive result cardinality.
+    // The 73,728 matched rows now fit without requiring a LIMIT.
     let unbounded = sql(
         "SELECT f.id FROM facts f JOIN dimension d ON f.id = d.id",
         &db,
     );
-    assert!(!unbounded.status.success());
-    assert!(unbounded.stdout.is_empty());
-    assert!(String::from_utf8_lossy(&unbounded.stderr).contains("65536"));
+    assert!(unbounded.status.success(), "{unbounded:?}");
+    assert_eq!(
+        unbounded.stdout.iter().filter(|&&byte| byte == b'\n').count(),
+        73_729
+    );
+
+    // Another three copies of the dimension create 147,456 matched pairs.
+    for _ in 0..3 {
+        let appended = sql("INSERT INTO dimension SELECT number FROM numbers(8192)", &db);
+        assert!(appended.status.success(), "{appended:?}");
+    }
+    let rejected = sql(
+        "SELECT f.id FROM facts f JOIN dimension d ON f.id = d.id",
+        &db,
+    );
+    assert!(!rejected.status.success());
+    assert!(rejected.stdout.is_empty());
+    assert!(String::from_utf8_lossy(&rejected.stderr).contains("131072"));
     fs::remove_dir_all(db).unwrap();
 }

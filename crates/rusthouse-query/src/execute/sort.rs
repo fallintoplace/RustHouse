@@ -7,7 +7,7 @@ use std::collections::BinaryHeap;
 use std::io::Write;
 use std::sync::Arc;
 
-pub(super) const MAX_SORTED_ROWS: usize = 100_000;
+pub(super) const MAX_SORTED_ROWS: usize = 200_000;
 
 struct SortedRow {
     key: Number,
@@ -156,7 +156,7 @@ impl SortedRows {
     ) -> Result<(), ExecutionError> {
         if self.requested > MAX_SORTED_ROWS && self.seen >= MAX_SORTED_ROWS {
             return Err(ExecutionError::Invalid(
-                "ORDER BY requires LIMIT <= 100000 for large results".into(),
+                "ORDER BY requires LIMIT <= 200000 for large results".into(),
             ));
         }
         let sequence = self.seen;
@@ -207,6 +207,16 @@ mod tests {
         assert_eq!(compare_with_direction(one, two, false), Ordering::Less);
         assert_eq!(compare_with_direction(one, two, true), Ordering::Greater);
         assert_eq!(compare_with_direction(one, one, true), Ordering::Equal);
+    }
+
+    #[test]
+    fn heap_retains_more_than_one_hundred_thousand_rows() {
+        let mut sorted = SortedRows::new(Some(100_001), false);
+        for value in 0..100_001u128 {
+            sorted.push(Number::Unsigned(value), vec![Number::Unsigned(value)]).unwrap();
+        }
+        assert_eq!(sorted.rows.len(), 100_001);
+        assert_eq!(sorted.seen, 100_001);
     }
 
     #[test]

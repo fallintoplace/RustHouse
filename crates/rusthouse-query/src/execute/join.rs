@@ -13,10 +13,10 @@ use std::path::Path;
 
 // Ordered and outer joins retain both inputs, bounded by row count and bytes.
 pub(super) const MAX_INPUT_ROWS: u64 = 32_768;
-pub(super) const MAX_RESULT_ROWS: usize = 65_536;
+pub(super) const MAX_RESULT_ROWS: usize = 131_072;
 // Unordered INNER joins can build a larger hash side than sorted/outer joins.
 // Bound retained cells as well as row count to protect against wide String rows.
-const MAX_STREAM_BUILD_ROWS: u64 = 32_768;
+const MAX_STREAM_BUILD_ROWS: u64 = 65_536;
 pub(super) const MAX_STREAM_BUILD_BYTES: usize = 32 * 1024 * 1024;
 
 type Pair = (Option<usize>, Option<usize>);
@@ -147,7 +147,7 @@ where
                             break 'scan;
                         }
                         if options.stop_after.is_none() && matches >= MAX_RESULT_ROWS {
-                            return Err(invalid("JOIN produces more than 65536 rows"));
+                            return Err(invalid("JOIN produces more than 131072 rows"));
                         }
                         let projection = if options.materialize_rows
                             && matches >= options.materialize_after
@@ -175,7 +175,7 @@ where
 
 /// For unordered INNER joins, build only the small right side and stream the
 /// left side twice. A bounded page needs only its prefix; unbounded or
-/// oversized requests still validate the 65,536-result limit before output.
+/// oversized requests still validate the 131,072-result limit before output.
 struct InnerJoinColumns<'a> {
     left_names: &'a [String],
     right_names: &'a [String],
@@ -232,7 +232,7 @@ fn execute_streaming_inner<W: Write>(
         return Ok(());
     }
     // A LIMIT that fits the output budget can page through more than
-    // 65,536 matched pairs without retaining them all. Without such a LIMIT,
+    // 131,072 matched pairs without retaining them all. Without such a LIMIT,
     // continue to reject oversized results before emitting the header.
     let stop_after = query
         .limit
@@ -365,7 +365,7 @@ where
                             }
                         }
                         if options.stop_after.is_none() && matches >= MAX_RESULT_ROWS {
-                            return Err(invalid("JOIN produces more than 65536 rows"));
+                            return Err(invalid("JOIN produces more than 131072 rows"));
                         }
                         let projection = if options.materialize_rows
                             && matches >= options.materialize_after
