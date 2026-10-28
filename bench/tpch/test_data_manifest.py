@@ -24,6 +24,16 @@ class DataManifestTests(unittest.TestCase):
             self.assertNotEqual(build_manifest(root, ["region"])["tables"][0]["sha256"],
                                 table["sha256"])
 
+    def test_rejects_malformed_rows_and_missing_line_terminators(self):
+        with tempfile.TemporaryDirectory() as root:
+            path = Path(root) / "region.tsv"
+            header = "\t".join(names("region")) + "\n"
+            for row in ("1\tEUROPE\n", "1\tEUROPE\tcomment"):
+                with self.subTest(row=row):
+                    path.write_text(header + row)
+                    with self.assertRaisesRegex(ValueError, "malformed"):
+                        build_manifest(root, ["region"])
+
     def test_rejects_missing_bad_header_and_duplicates(self):
         with tempfile.TemporaryDirectory() as root:
             with self.assertRaisesRegex(ValueError, "does not exist"):
