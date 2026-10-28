@@ -26,7 +26,7 @@ fn push_uuid(value: &str, output: &mut Vec<u8>) -> Result<(), PartError> {
             _ => return Err(invalid(format!("invalid UUID value: {value}"))),
         };
         let slot = &mut canonical[digit_index / 2];
-        if digit_index.is_multiple_of(2) {
+        if digit_index % 2 == 0 {
             *slot = digit << 4;
         } else {
             *slot |= digit;
@@ -351,8 +351,8 @@ mod uuid_writer_tests {
         assert_eq!(
             output,
             [
-                0xe7, 0x11, 0xb3, 0x5c, 0x04, 0xc4, 0xf0, 0x61, 0xa0, 0xdb, 0xd3,
-                0x6a, 0x00, 0xa6, 0x7b, 0x90,
+                0xe7, 0x11, 0xb3, 0x5c, 0x04, 0xc4, 0xf0, 0x61, 0xa0, 0xdb, 0xd3, 0x6a, 0x00, 0xa6,
+                0x7b, 0x90,
             ]
         );
         for bad in [
@@ -361,7 +361,10 @@ mod uuid_writer_tests {
             "000000000000-0000-0000-000000000000",
             "00000000-0000-0000-0000-0000000000000",
         ] {
-            assert!(push_cell("UUID", Some(bad), &mut Vec::new()).is_err(), "{bad}");
+            assert!(
+                push_cell("UUID", Some(bad), &mut Vec::new()).is_err(),
+                "{bad}"
+            );
         }
         assert!(push_cell("UUID", None, &mut Vec::new()).is_err());
     }
