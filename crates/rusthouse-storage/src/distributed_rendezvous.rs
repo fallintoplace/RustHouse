@@ -57,6 +57,50 @@ pub fn replicas_for(
         .collect())
 }
 
+/// Capacity-weighted rendezvous selection for heterogeneous replica nodes.
+///
+/// Uses exponential-race priorities (-ln(U)/weight), so a node with twice the
+/// weight receives roughly twice the primary-placement probability. The
+/// weights affect only placement; this does not establish replica consistency.
+pub fn weighted_replicas_for(
+    shard: &str,
+    nodes: &[(&str, u16)],
+    replicas: usize,
+) -> Result<Vec<String>, &'static str> {
+    if shard.is_empty() || shard.len() > 128
+        || nodes.is_empty() || nodes.len() > 64
+        || replicas == 0 || replicas > nodes.len()
+    {
+        return Err("invalid weighted replica placement configuration");
+    }
+    let mut seen = HashSet::new();
+    let mut ranked = Vec::with_capacity(nodes.len());
+    for &(node, weight) in nodes {
+        if node.is_empty()
+            || node.len() > 64
+            || weight == 0
+            || weight > 1024
+            || !node.bytes().all(|byte| {
+                byte.is_ascii_alphanumeric() || matches!(byte, b'_' | b'-')
+            })
+            || !seen.insert(node)
+        {
+            return Err("invalid weighted replica node or weight");
+        }
+        // Keep U strictly inside (0, 1). Using the top 53 bits avoids
+        // rounding a 64-bit hash to 1.0 in f64.
+        let uniform = ((score(shard, node) >> 11) as f64 + 0.5)
+            / ((1u64 << 53) as f64);
+        let priority = -uniform.ln() / f64::from(weight);
+        ranked.push((priority, node));
+    }
+    ranked.sort_unstable_by(|left, right| {
+        left.0.total_cmp(&right.0).then_with(|| left.1.cmp(right.1))
+    });
+    Ok(ranked.into_iter().take(replicas)
+        .map(|(_, node)| node.to_owned()).collect())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -69,6 +113,23 @@ mod tests {
         assert_eq!(expected, replicas_for("events-2026", &reversed, 2).unwrap());
         assert_eq!(expected.len(), 2);
         assert_ne!(expected[0], expected[1]);
+    }
+
+    #[test]
+    fn weighted_placement_is_stable_and_prefers_more_capacity() {
+        let nodes = [("small", 1u16), ("large", 16u16)];
+        assert_eq!(
+            weighted_replicas_for("example", &nodes, 2).unwrap(),
+            weighted_replicas_for("example", &nodes.iter().rev().copied().collect::<Vec<_>>(), 2).unwrap()
+        );
+        let selected = (0..256).filter(|i| {
+            weighted_replicas_for(&format!("shard_{i}"), &nodes, 1).unwrap()[0] == "large"
+        }).count();
+        assert!(selected > 128, "weighted placement did not favor larger node: {selected}");
+        assert!(weighted_replicas_for("s", &[("n", 0)], 1).is_err());
+        assert!(weighted_replicas_for("s", &[("n", 1025)], 1).is_err());
+        assert!(weighted_replicas_for("s", &[("n", 1), ("n", 2)], 1).is_err());
+        assert!(weighted_replicas_for("s", &nodes, 3).is_err());
     }
 
     #[test]
