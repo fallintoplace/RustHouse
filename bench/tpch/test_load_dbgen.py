@@ -54,6 +54,10 @@ class DbgenLoadTests(unittest.TestCase):
             path.write_bytes(header + b"\r\n" + b"1\tEUROPE\tname\r\n" + b"2\tASIA\tname\n")
             self.assertEqual(inspect_tsv(path, "region"), 2)
 
+    def test_disallows_empty_table_selection(self):
+        with self.assertRaisesRegex(ValueError, "nonempty"):
+            load_tables(Path("fake"), Path("db"), Path("input"), [])
+
     def test_disallows_duplicate_table_selection(self):
         with self.assertRaisesRegex(ValueError, "unique"):
             load_tables(Path("fake"), Path("db"), Path("input"), ["part", "part"])

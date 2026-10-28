@@ -28,8 +28,16 @@ def load_fixture(binary, database, fixture_dir, timeout=120, execute=None):
         raise ValueError("SQLite fixture reference is missing")
     with closing(sqlite3.connect(reference_path)) as reference:
         sqlite_rows = reference.execute("SELECT COUNT(*) FROM hits").fetchone()[0]
-    if expected < 1 or sqlite_rows != expected:
-        raise ValueError(f"source row count {expected} differs from SQLite {sqlite_rows}")
+        if expected < 1 or sqlite_rows != expected:
+            raise ValueError(f"source row count {expected} differs from SQLite {sqlite_rows}")
+        columns = ", ".join(name for name, _, _ in FIELDS)
+        with tsv.open(encoding="utf-8") as source:
+            source.readline()
+            rows = reference.execute(f"SELECT {columns} FROM hits ORDER BY rowid")
+            for number, (record, values) in enumerate(zip(source, rows, strict=True), 1):
+                actual = record.rstrip("\r\n").split("\t")
+                if actual != [str(value) for value in values]:
+                    raise ValueError(f"hits TSV row {number} differs from SQLite reference")
     if execute is None:
         execute = lambda sql: cli_sql(binary, database, sql, timeout)
     create = (root / "create.sql").read_text().strip().rstrip(";")

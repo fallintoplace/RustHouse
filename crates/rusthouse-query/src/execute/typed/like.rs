@@ -85,20 +85,60 @@ pub(super) fn equal_like_bytes(left: &[u8], right: &[u8], case_insensitive: bool
     }
 }
 
+fn unicode_folded_match(
+    value: &[u8],
+    literal: &[u8],
+    compare: impl FnOnce(&str, &str) -> bool,
+) -> Option<bool> {
+    if value.is_ascii() && literal.is_ascii() {
+        return None;
+    }
+    let value = std::str::from_utf8(value).ok()?;
+    let literal = std::str::from_utf8(literal).ok()?;
+    Some(compare(&value.to_lowercase(), &literal.to_lowercase()))
+}
+
 pub(super) fn like_matches(value: &[u8], pattern: &LikePattern, case_insensitive: bool) -> bool {
     match pattern {
         LikePattern::Exact(bytes) => equal_like_bytes(value, bytes, case_insensitive),
-        LikePattern::Prefix(bytes) => value
-            .get(..bytes.len())
-            .is_some_and(|prefix| equal_like_bytes(prefix, bytes, case_insensitive)),
-        LikePattern::Suffix(bytes) => value
-            .get(value.len().saturating_sub(bytes.len())..)
-            .is_some_and(|suffix| equal_like_bytes(suffix, bytes, case_insensitive)),
+        LikePattern::Prefix(bytes) => {
+            if case_insensitive {
+                if let Some(matches) =
+                    unicode_folded_match(value, bytes, |input, prefix| input.starts_with(prefix))
+                {
+                    return matches;
+                }
+            }
+            value
+                .get(..bytes.len())
+                .is_some_and(|prefix| equal_like_bytes(prefix, bytes, case_insensitive))
+        }
+        LikePattern::Suffix(bytes) => {
+            if case_insensitive {
+                if let Some(matches) =
+                    unicode_folded_match(value, bytes, |input, suffix| input.ends_with(suffix))
+                {
+                    return matches;
+                }
+            }
+            value
+                .get(value.len().saturating_sub(bytes.len())..)
+                .is_some_and(|suffix| equal_like_bytes(suffix, bytes, case_insensitive))
+        }
         LikePattern::Contains(bytes) => {
+            if case_insensitive {
+                if let Some(matches) =
+                    unicode_folded_match(value, bytes, |input, needle| input.contains(needle))
+                {
+                    return matches;
+                }
+            }
             if bytes.is_empty() {
                 true
             } else if !case_insensitive {
-                value.windows(bytes.len()).any(|part| part == bytes.as_slice())
+                value
+                    .windows(bytes.len())
+                    .any(|part| part == bytes.as_slice())
             } else if value.is_ascii() && bytes.is_ascii() {
                 value
                     .windows(bytes.len())
@@ -167,6 +207,19 @@ mod perf_tests {
         assert!(like_matches(b"hayNEEDLEstack", &pattern, true));
         assert!(!like_matches(b"hayNEEDLEstack", &pattern, false));
         assert!(!like_matches(b"haystack", &pattern, true));
+    }
+
+    #[test]
+    fn optimized_patterns_support_expanding_unicode_case_folds() {
+        for (pattern, input) in [
+            ("İ%", "i\u{307}stanbul"),
+            ("%İ", "city i\u{307}"),
+            ("%İ%", "city i\u{307}stanbul"),
+        ] {
+            let compiled = compile_like(pattern).unwrap();
+            assert!(like_matches(input.as_bytes(), &compiled, true));
+            assert!(!like_matches(input.as_bytes(), &compiled, false));
+        }
     }
 
     #[test]

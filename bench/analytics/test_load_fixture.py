@@ -30,6 +30,21 @@ class ClickBenchLoadTests(unittest.TestCase):
                              execute=lambda sql: called.append(sql))
             self.assertEqual(called, [])
 
+    def test_rejects_same_count_with_corrupted_tsv_value(self):
+        with tempfile.TemporaryDirectory() as root:
+            generate(root, rows=12, seed=3)
+            fixture = Path(root) / "hits.tsv"
+            lines = fixture.read_text().splitlines()
+            fields = lines[1].split("\t")
+            fields[3] = "tampered"
+            lines[1] = "\t".join(fields)
+            fixture.write_text("\n".join(lines) + "\n")
+            called = []
+            with self.assertRaisesRegex(ValueError, "differs from SQLite"):
+                load_fixture(Path("fake"), Path(root) / "db", root,
+                             execute=lambda sql: called.append(sql))
+            self.assertEqual(called, [])
+
     def test_detects_wrong_engine_count(self):
         with tempfile.TemporaryDirectory() as root:
             generate(root, rows=12, seed=3)

@@ -36,6 +36,13 @@ class PairedDuckDbTests(unittest.TestCase):
             benchmark_pair("SELECT 1", b"1\n",
                            lambda engine, sql: (b"1\n", float("nan")), 1, 0)
 
+    def test_ratio_overflow_does_not_create_nonstandard_json(self):
+        def extreme(engine, _sql):
+            return b"1\n", 1e-320 if engine == "rusthouse" else 1e100
+
+        with self.assertRaisesRegex(ValueError, "ratio"):
+            benchmark_pair("SELECT 1", b"1\n", extreme, runs=1, warmups=0)
+
     def test_unordered_results_preserve_duplicate_counts(self):
         reference = b"A\nB\nB\n"
         def shuffled(engine, statement):

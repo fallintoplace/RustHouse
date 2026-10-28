@@ -21,6 +21,11 @@ class NumericOracleTests(unittest.TestCase):
         self.assertFalse(compare_tsv(b"1", b"1\n"))
         self.assertFalse(compare_tsv(b"NULL\n", b"0\n"))
 
+    def test_control_line_breaks_cannot_fake_matching_rows(self):
+        self.assertFalse(compare_tsv(b"1\r2\n", b"1\n2\n"))
+        self.assertFalse(compare_tsv(b"1\v2\n", b"1\n2\n"))
+        self.assertTrue(compare_tsv(b"1\r\n2\r\n", b"1\n2\n"))
+
     def test_rejects_nan_infinity_and_bad_tolerances(self):
         self.assertFalse(numeric_equal(b"NaN", b"nan"))
         self.assertFalse(numeric_equal(b"NaN", b"NaN"))

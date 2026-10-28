@@ -42,7 +42,7 @@ def copy_statement(table, source):
 
 
 def load_tables(binary, database, input_dir, selected=None, timeout=3600, execute=None):
-    selected = tuple(selected or TABLES)
+    selected = tuple(TABLES if selected is None else selected)
     if not selected or len(set(selected)) != len(selected):
         raise ValueError("tables must be a nonempty unique selection")
     if any(table not in TABLES for table in selected):
