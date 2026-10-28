@@ -3,9 +3,8 @@ use std::process::Command;
 
 #[test]
 fn nullable_sixteen_bit_distinct_uses_exact_bitmap_with_filters() {
-    let db = std::env::temp_dir().join(format!(
-        "rusthouse-nullable-u16-distinct-{}", std::process::id()
-    ));
+    let db =
+        std::env::temp_dir().join(format!("rusthouse-nullable-u16-distinct-{}", std::process::id()));
     let sql = |statement: &str| {
         Command::new(env!("CARGO_BIN_EXE_rusthouse"))
             .args(["sql", statement, "--database"])
@@ -22,10 +21,22 @@ fn nullable_sixteen_bit_distinct_uses_exact_bitmap_with_filters() {
         assert!(result.status.success(), "{statement}: {result:?}");
     }
     for (statement, expected) in [
-        ("SELECT count(DISTINCT signed_key) FROM events", b"countDistinct(signed_key)\n3\n".as_slice()),
-        ("SELECT count(DISTINCT signed_key) FROM events WHERE flag = 1", b"countDistinct(signed_key)\n3\n".as_slice()),
-        ("SELECT count(DISTINCT positive_key) FROM events", b"countDistinct(positive_key)\n3\n".as_slice()),
-        ("SELECT count(DISTINCT positive_key) FROM events WHERE flag = 0", b"countDistinct(positive_key)\n1\n".as_slice()),
+        (
+            "SELECT count(DISTINCT signed_key) FROM events",
+            b"countDistinct(signed_key)\n3\n".as_slice(),
+        ),
+        (
+            "SELECT count(DISTINCT signed_key) FROM events WHERE flag = 1",
+            b"countDistinct(signed_key)\n3\n".as_slice(),
+        ),
+        (
+            "SELECT count(DISTINCT positive_key) FROM events",
+            b"countDistinct(positive_key)\n3\n".as_slice(),
+        ),
+        (
+            "SELECT count(DISTINCT positive_key) FROM events WHERE flag = 0",
+            b"countDistinct(positive_key)\n1\n".as_slice(),
+        ),
     ] {
         let result = sql(statement);
         assert!(result.status.success(), "{statement}: {result:?}");
