@@ -99,6 +99,32 @@ pub(super) fn integer_type(kind: &str) -> bool {
     )
 }
 
+pub(super) fn is_safe_narrow_median(select: &Select) -> bool {
+    matches!(select.projection,
+        Projection::Aggregate { function: AggregateFunction::Median, .. })
+        && select.alias.is_none() && is_safe_unpaged_select(select)
+}
+
+/// Shards export a complete narrow-key frequency table, not partial medians.
+/// The coordinator can then select the exact weighted central ranks.
+pub(super) fn median_shard_sql(sql: &str, select: &Select) -> Option<String> {
+    let Projection::Aggregate { function: AggregateFunction::Median, column } = &select.projection
+    else { return None };
+    for (index, _) in sql.char_indices() {
+        if index == 0 || !sql.as_bytes()[index - 1].is_ascii_whitespace()
+            || !sql[index..].get(..5).is_some_and(|s| s.eq_ignore_ascii_case("FROM ")) {
+            continue;
+        }
+        let rewrite = format!("SELECT {column}, count(*) {} GROUP BY {column}", &sql[index..]);
+        let mut expected = select.clone();
+        expected.projection = Projection::GroupedCount { column: column.clone() };
+        if parse_select(&rewrite).ok()? == expected {
+            return Some(rewrite);
+        }
+    }
+    None
+}
+
 pub(super) fn is_safe_grouped_count(select: &Select) -> bool {
     matches!(select.projection, Projection::GroupedCount { .. })
         && matches!(select.source, Some(Source::Table(_)))
