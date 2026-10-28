@@ -500,6 +500,66 @@ pub(super) fn execute_count_column_part<W: Write>(
     Ok(())
 }
 
+
+/// Parallel hash deduplication for high-cardinality numeric dimensions.
+/// Worker tables are bounded independently and merged with the global exact
+/// distinct budget. Do not approximate or silently truncate unique keys.
+fn parallel_wide_numeric_distinct(
+    part: &Path,
+    scan_columns: &[String],
+    comparisons: &[Vec<super::predicates::CompiledPredicate>],
+    no_filters: bool,
+) -> Result<Option<usize>, ExecutionError> {
+    let parts = rusthouse_storage::query_parts(part)?;
+    let workers = std::thread::available_parallelism()
+        .map_or(1, |count| count.get())
+        .min(4);
+    if workers < 2 || parts.len() < 16 {
+        return Ok(None);
+    }
+    let chunk_size = parts.len().div_ceil(workers);
+    let chunks = std::thread::scope(|scope| {
+        let handles = parts.chunks(chunk_size).map(|paths| {
+            scope.spawn(move || -> Result<HashSet<NumberKey>, ExecutionError> {
+                let mut seen = HashSet::<NumberKey>::new();
+                for path in paths {
+                    let mut reader = rusthouse_storage::NumericPartReader::open(path, scan_columns)?;
+                    while let Some(batch) = reader.next_batch()? {
+                        for row in 0..batch[0].len() {
+                            if !no_filters && !batch_matches(&batch, row, comparisons) {
+                                continue;
+                            }
+                            let key = NumberKey::from(number_at(&batch[0], row));
+                            if seen.len() >= MAX_DISTINCT_ROWS && !seen.contains(&key) {
+                                return Err(ExecutionError::Invalid(
+                                    "COUNT(DISTINCT) supports at most 200000 unique values".into(),
+                                ));
+                            }
+                            seen.insert(key);
+                        }
+                    }
+                }
+                Ok(seen)
+            })
+        }).collect::<Vec<_>>();
+        handles.into_iter().map(|handle| handle.join().unwrap_or_else(|_| {
+            Err(ExecutionError::Invalid("parallel distinct worker panicked".into()))
+        })).collect::<Vec<_>>()
+    });
+    let mut merged = HashSet::<NumberKey>::new();
+    for chunk in chunks {
+        for key in chunk? {
+            if merged.len() >= MAX_DISTINCT_ROWS && !merged.contains(&key) {
+                return Err(ExecutionError::Invalid(
+                    "COUNT(DISTINCT) supports at most 200000 unique values".into(),
+                ));
+            }
+            merged.insert(key);
+        }
+    }
+    Ok(Some(merged.len()))
+}
+
 pub(super) fn execute_count_distinct_part<W: Write>(
     query: &Select,
     part: &Path,
@@ -563,6 +623,16 @@ pub(super) fn execute_count_distinct_part<W: Write>(
             if query.offset.unwrap_or(0) == 0 {
                 let total: u64 = bits.iter().map(|word| u64::from(word.count_ones())).sum();
                 writeln!(output, "{total}")?;
+            }
+            return Ok(());
+        }
+    }
+    if domain.is_none() {
+        if let Some(count) = parallel_wide_numeric_distinct(
+            part, &scan_columns, &comparisons, no_filters,
+        )? {
+            if query.offset.unwrap_or(0) == 0 {
+                writeln!(output, "{count}")?;
             }
             return Ok(());
         }
