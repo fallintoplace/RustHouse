@@ -18,6 +18,7 @@ pub(super) fn is_function(name: &str) -> bool {
             | "CHR"
             | "STRINGBYTESUNIQ"
             | "BIT_LENGTH"
+            | "BITMASKTOLIST"
             | "IS_INT64"
             | "BTRIM"
             | "TRIMBOTH"
@@ -346,6 +347,27 @@ fn parse_at_depth(parser: &mut Parser, depth: usize) -> Result<ConstantValue, Pa
                         seen[usize::from(byte)] = true;
                     }
                     ConstantValue::Integer(seen.iter().filter(|&&present| present).count() as i64)
+                }
+                None => ConstantValue::Null,
+            }
+        }
+        "BITMASKTOLIST" => {
+            let input = integer_arg(parser, depth + 1)?;
+            require(parser, Token::RParen, "bitmaskToList requires one argument")?;
+            match input {
+                Some(input) => {
+                    let mut bits = input as u64;
+                    let mut result = String::new();
+                    while bits != 0 {
+                        let bit = bits.trailing_zeros();
+                        let magnitude = 1u64 << bit;
+                        if !result.is_empty() {
+                            result.push(',');
+                        }
+                        result.push_str(&magnitude.to_string());
+                        bits &= bits - 1;
+                    }
+                    ConstantValue::Text(result)
                 }
                 None => ConstantValue::Null,
             }
