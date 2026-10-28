@@ -283,5 +283,4 @@ mod tests {
             assert_eq!(first[0], all[0]);
         }
     }
-
 }

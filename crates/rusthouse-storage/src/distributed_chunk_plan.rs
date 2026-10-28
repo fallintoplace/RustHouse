@@ -186,12 +186,23 @@ mod tests {
     fn sparse_resume_uses_stable_indexes_at_maximum_chunk_count() {
         let selected = plan_missing_chunks(65_536, 1, 65_536, &[0, 32_768, 65_535], 2, 3).unwrap();
         assert_eq!(selected.len(), 2);
-        assert_eq!(selected[0].chunk, Chunk { offset: 0, length: 1 });
-        assert_eq!(selected[1], IndexedChunk {
-            index: 32_768,
-            chunk: Chunk { offset: 32_768, length: 1 },
-        });
+        assert_eq!(
+            selected[0].chunk,
+            Chunk {
+                offset: 0,
+                length: 1
+            }
+        );
+        assert_eq!(
+            selected[1],
+            IndexedChunk {
+                index: 32_768,
+                chunk: Chunk {
+                    offset: 32_768,
+                    length: 1
+                },
+            }
+        );
         assert!(plan_missing_chunks(65_537, 1, 65_536, &[], 0, 1).is_err());
     }
-
 }

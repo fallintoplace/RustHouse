@@ -126,5 +126,4 @@ mod tests {
         assert_eq!(plan.len(), 1);
         assert!(plan_repairs(&jobs, 1, 0).unwrap().is_empty());
     }
-
 }

@@ -176,8 +176,11 @@ mod tests {
         ];
         let destination = vec![source[0].clone()];
         let plan = plan_replica_copies(&source, &destination).unwrap();
-        assert_eq!(plan.iter().map(|item| item.key.as_str()).collect::<Vec<_>>(),
-            vec!["a/file", "m/file"]);
+        assert_eq!(
+            plan.iter()
+                .map(|item| item.key.as_str())
+                .collect::<Vec<_>>(),
+            vec!["a/file", "m/file"]
+        );
     }
-
 }

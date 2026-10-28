@@ -131,5 +131,4 @@ mod tests {
         assert!(format_membership(&[member.clone(), member]).is_err());
         assert!(format_membership(&[]).is_err());
     }
-
 }

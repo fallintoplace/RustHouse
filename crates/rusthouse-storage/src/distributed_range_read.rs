@@ -65,5 +65,4 @@ mod tests {
         assert!(read_object_range(&link, 0, 1, 2).is_err());
         fs::remove_dir_all(dir).unwrap();
     }
-
 }

@@ -126,5 +126,4 @@ mod tests {
         assert_eq!(output.metadata().unwrap().len(), 0);
         fs::remove_dir_all(dir).unwrap();
     }
-
 }

@@ -141,5 +141,4 @@ mod tests {
         assert!(inventory_snapshot(&root, 32, 1_000_000).is_err());
         fs::remove_dir_all(root).unwrap();
     }
-
 }
