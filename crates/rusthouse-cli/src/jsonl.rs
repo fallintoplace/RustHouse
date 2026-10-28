@@ -425,6 +425,6 @@ mod single_pass_row_tests {
         }
         let mut output = Vec::new();
         write_json_row(&mut output, &headers, b"one\ttwo").unwrap();
-        assert_eq!(output, br#"{"id":"one","value":"two"}"#.iter().copied().chain([b'\n']).collect::<Vec<_>>());
+        assert_eq!(output, b"{\"id\":\"one\",\"value\":\"two\"}\n");
     }
 }
