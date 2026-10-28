@@ -790,12 +790,15 @@ mod tests {
             )
             .is_err()
         );
-        assert!(
-            parse_join(
-                "SELECT * FROM a x RIGHT ANY JOIN b y ON x.id = y.id LEFT JOIN c z ON y.id = z.id"
-            )
-            .is_err()
-        );
+        let right_any = parse_join(
+            "SELECT * FROM a x RIGHT ANY JOIN b y ON x.id = y.id LEFT JOIN c z ON y.id = z.id",
+        )
+        .unwrap()
+        .unwrap();
+        assert_eq!(right_any.kind, JoinType::Right);
+        assert!(right_any.any);
+        assert_eq!(right_any.steps.len(), 1);
+        assert!(!right_any.steps[0].any);
     }
 
     #[test]
