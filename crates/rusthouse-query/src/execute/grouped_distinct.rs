@@ -16,12 +16,23 @@ struct Group {
     distinct: HashSet<Key>,
     distinct_text: HashSet<Vec<u8>>,
     distinct_uuids: HashSet<[u8; 16]>,
+    // Exact bounded 8-bit cardinality uses 32 bytes per group, regardless
+    // of the number of rows or repeated distinct pairs.
+    byte_values: [u64; 4],
 }
 
 impl Group {
     fn distinct_len(&self) -> usize {
-        self.distinct.len() + self.distinct_text.len() + self.distinct_uuids.len()
+        self.distinct.len()
+            + self.distinct_text.len()
+            + self.distinct_uuids.len()
+            + self.byte_values.iter().map(|word| word.count_ones() as usize).sum::<usize>()
     }
+}
+
+fn mark_distinct_byte(group: &mut Group, value: u8) {
+    let slot = usize::from(value) / 64;
+    group.byte_values[slot] |= 1u64 << (usize::from(value) % 64);
 }
 
 pub(super) fn execute<W: Write>(
@@ -96,6 +107,7 @@ pub(super) fn execute<W: Write>(
     // specializes the larger 16-bit key domain.
     let mut dense_groups = matches!(types[column].as_str(), "UInt16" | "Int16")
         .then(|| vec![usize::MAX; 65_536]);
+    let byte_distinct = matches!(typed::base_type(types[value_column].as_str()), "UInt8" | "Int8");
     let mut total_pairs = 0usize;
     let mut reader = TypedQueryReader::open_with_metadata(part, &names, &metadata)?;
     let no_filters = query.predicates.is_empty() && query.or_predicates.is_empty();
@@ -133,6 +145,7 @@ pub(super) fn execute<W: Write>(
                         distinct: HashSet::new(),
                         distinct_text: HashSet::new(),
                         distinct_uuids: HashSet::new(),
+                        byte_values: [0; 4],
                     });
                 }
                 *slot
@@ -161,6 +174,7 @@ pub(super) fn execute<W: Write>(
                         distinct: HashSet::new(),
                         distinct_text: HashSet::new(),
                         distinct_uuids: HashSet::new(),
+                        byte_values: [0; 4],
                     });
                     id
                 }
@@ -180,6 +194,7 @@ pub(super) fn execute<W: Write>(
                         distinct: HashSet::new(),
                         distinct_text: HashSet::new(),
                         distinct_uuids: HashSet::new(),
+                        byte_values: [0; 4],
                     });
                     id
                 }
@@ -199,6 +214,7 @@ pub(super) fn execute<W: Write>(
                         distinct: HashSet::new(),
                         distinct_text: HashSet::new(),
                         distinct_uuids: HashSet::new(),
+                        byte_values: [0; 4],
                     });
                     id
                 }
@@ -219,11 +235,40 @@ pub(super) fn execute<W: Write>(
                             distinct: HashSet::new(),
                             distinct_text: HashSet::new(),
                             distinct_uuids: HashSet::new(),
+                        byte_values: [0; 4],
                         });
                         id
                     }
                 }
             };
+
+            // This is an exact UInt8/Int8 COUNT(DISTINCT) fast path.
+            // Unlike a hash set, 256 possible values take constant memory.
+            // Do not apply the generic 200k-pair cap to these fixed bitmaps.
+            if byte_distinct {
+                let value = match &batch[value_index] {
+                    TypedColumn::Numeric(NumericColumn::UInt8(values)) => Some(values[row]),
+                    TypedColumn::Numeric(NumericColumn::Int8(values)) => Some(values[row] as u8),
+                    TypedColumn::NullableNumeric {
+                        values: NumericColumn::UInt8(values),
+                        nulls,
+                    } if nulls[row] == 0 => Some(values[row]),
+                    TypedColumn::NullableNumeric {
+                        values: NumericColumn::Int8(values),
+                        nulls,
+                    } if nulls[row] == 0 => Some(values[row] as u8),
+                    TypedColumn::NullableNumeric { nulls, .. } if nulls[row] != 0 => None,
+                    _ => {
+                        return Err(ExecutionError::Invalid(
+                            "unexpected byte-width COUNT(DISTINCT) type".into(),
+                        ));
+                    }
+                };
+                if let Some(value) = value {
+                    mark_distinct_byte(&mut groups[id], value);
+                }
+                continue;
+            }
 
             // UUIDs are fixed-width values; avoid formatting every row to
             // a 36-byte String before hashing the distinct key.
@@ -346,4 +391,43 @@ pub(super) fn execute<W: Write>(
         }
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod grouped_byte_distinct_tests {
+    use super::*;
+
+    #[test]
+    fn fixed_bitmap_counts_full_unsigned_and_signed_byte_domains() {
+        let mut group = Group {
+            key: Cell::Null,
+            distinct: HashSet::new(),
+            distinct_text: HashSet::new(),
+            distinct_uuids: HashSet::new(),
+            byte_values: [0; 4],
+        };
+        for value in 0u8..=255 {
+            mark_distinct_byte(&mut group, value);
+            mark_distinct_byte(&mut group, value);
+        }
+        assert_eq!(group.distinct_len(), 256);
+        assert_eq!(group.byte_values, [u64::MAX; 4]);
+        assert_eq!(std::mem::size_of_val(&group.byte_values), 32);
+    }
+
+    #[test]
+    fn bitmap_keeps_high_bit_and_zero_in_separate_slots() {
+        let mut group = Group {
+            key: Cell::Null,
+            distinct: HashSet::new(),
+            distinct_text: HashSet::new(),
+            distinct_uuids: HashSet::new(),
+            byte_values: [0; 4],
+        };
+        mark_distinct_byte(&mut group, 0);
+        mark_distinct_byte(&mut group, 128);
+        mark_distinct_byte(&mut group, 255);
+        mark_distinct_byte(&mut group, 128);
+        assert_eq!(group.distinct_len(), 3);
+    }
 }

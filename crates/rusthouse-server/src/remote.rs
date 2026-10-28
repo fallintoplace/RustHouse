@@ -12,7 +12,14 @@ use std::net::{SocketAddr, TcpStream};
 use std::time::{Duration, Instant};
 
 const CONNECT_TIMEOUT: Duration = Duration::from_millis(750);
+// Control-plane calls must fail fast. Data-plane scans over frozen billion-row
+// parts may legitimately take longer than the three-second metadata deadline.
 const IO_TIMEOUT: Duration = Duration::from_secs(3);
+const QUERY_IO_TIMEOUT: Duration = Duration::from_secs(120);
+
+fn response_timeout(method: &str, path: &str) -> Duration {
+    if method == "POST" && path == "/" { QUERY_IO_TIMEOUT } else { IO_TIMEOUT }
+}
 
 #[derive(Debug, PartialEq, Eq)]
 pub struct PeerResponse {
@@ -108,15 +115,20 @@ fn request(peer: Peer, method: &str, path: &str, body: &[u8]) -> Result<PeerResp
     stream
         .set_write_timeout(Some(IO_TIMEOUT))
         .map_err(|error| error.to_string())?;
+    let accept_encoding = if method == "POST" && path == "/" {
+        "Accept-Encoding: x-rusthouse-lz4\r\n"
+    } else {
+        ""
+    };
     write!(
         stream,
-        "{method} {path} HTTP/1.1\r\nHost: {}\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+        "{method} {path} HTTP/1.1\r\nHost: {}\r\nContent-Length: {}\r\n{accept_encoding}Connection: close\r\n\r\n",
         peer.address().ip(),
         body.len()
     )
     .map_err(|error| error.to_string())?;
     stream.write_all(body).map_err(|error| error.to_string())?;
-    let raw = read_with_deadline(&mut stream, IO_TIMEOUT)?;
+    let raw = read_with_deadline(&mut stream, response_timeout(method, path))?;
     parse_response(&raw)
 }
 
@@ -259,5 +271,20 @@ mod tests {
         let peer = Peer::parse("127.0.0.1:9").unwrap();
         assert!(query(peer, "").is_err());
         assert!(query(peer, &"x".repeat(MAX_QUERY_BYTES + 1)).is_err());
+    }
+}
+
+#[cfg(test)]
+mod data_plane_deadline_tests {
+    use super::*;
+    #[test]
+    fn scan_requests_get_longer_bounded_deadline_than_metadata() {
+        assert_eq!(response_timeout("POST", "/"), Duration::from_secs(120));
+        for (method, path) in [
+            ("GET", "/capabilities"), ("GET", "/schema?table=facts"),
+            ("GET", "/"), ("POST", "/unrelated"),
+        ] {
+            assert_eq!(response_timeout(method, path), Duration::from_secs(3));
+        }
     }
 }

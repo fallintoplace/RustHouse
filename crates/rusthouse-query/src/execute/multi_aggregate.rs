@@ -10,9 +10,78 @@ use std::collections::{HashMap, HashSet};
 use std::io::Write;
 use std::path::Path;
 
+const MAX_DISTINCT_VALUES: usize = 100_000;
+
+#[derive(Default)]
+struct DistinctValues {
+    other: HashSet<typed::Key>,
+    text: HashSet<Vec<u8>>,
+    uuids: HashSet<[u8; 16]>,
+}
+
+impl DistinctValues {
+    fn len(&self) -> usize {
+        self.other.len() + self.text.len() + self.uuids.len()
+    }
+
+    fn insert_key(&mut self, key: typed::Key) -> Result<(), ExecutionError> {
+        if self.len() >= MAX_DISTINCT_VALUES && !self.other.contains(&key) {
+            return Err(ExecutionError::Invalid(
+                "COUNT(DISTINCT) supports at most 100000 values".into(),
+            ));
+        }
+        self.other.insert(key);
+        Ok(())
+    }
+
+    fn insert_text(&mut self, value: &[u8]) -> Result<(), ExecutionError> {
+        // Avoid allocating for duplicate String keys across millions of rows.
+        if self.text.contains(value) {
+            return Ok(());
+        }
+        if self.len() >= MAX_DISTINCT_VALUES {
+            return Err(ExecutionError::Invalid(
+                "COUNT(DISTINCT) supports at most 100000 values".into(),
+            ));
+        }
+        self.text.insert(value.to_vec());
+        Ok(())
+    }
+
+    fn insert_uuid(&mut self, value: [u8; 16]) -> Result<(), ExecutionError> {
+        if self.len() >= MAX_DISTINCT_VALUES && !self.uuids.contains(&value) {
+            return Err(ExecutionError::Invalid(
+                "COUNT(DISTINCT) supports at most 100000 values".into(),
+            ));
+        }
+        self.uuids.insert(value);
+        Ok(())
+    }
+
+    fn insert_column(&mut self, column: &TypedColumn, row: usize) -> Result<bool, ExecutionError> {
+        match column {
+            TypedColumn::Text(values) => {
+                if let Some(value) = values.get(row) {
+                    self.insert_text(value)?;
+                }
+            }
+            TypedColumn::NullableText { values, nulls } => {
+                if nulls[row] == 0 {
+                    if let Some(value) = values.get(row) {
+                        self.insert_text(value)?;
+                    }
+                }
+            }
+            TypedColumn::Uuid(values) => self.insert_uuid(*values[row].as_bytes())?,
+            _ => return Ok(false),
+        }
+        Ok(true)
+    }
+}
+
 enum State {
     Count(u64),
-    Distinct(HashSet<typed::Key>),
+    Distinct(DistinctValues),
     Numeric(AggregateState),
 }
 
@@ -31,6 +100,7 @@ enum BoundExpr {
     Subtract(Box<Self>, Box<Self>),
     Multiply(Box<Self>, Box<Self>),
     Divide(Box<Self>, Box<Self>),
+    Compare(Box<Self>, crate::Operator, Box<Self>),
 }
 
 impl BoundExpr {
@@ -88,6 +158,11 @@ impl BoundExpr {
                 Box::new(Self::bind(left, indices)?),
                 Box::new(Self::bind(right, indices)?),
             ),
+            ScalarExpr::Compare(left, operator, right) => Self::Compare(
+                Box::new(Self::bind(left, indices)?),
+                *operator,
+                Box::new(Self::bind(right, indices)?),
+            ),
         })
     }
 }
@@ -120,6 +195,22 @@ fn eval_number(
 ) -> Result<Option<Number>, ExecutionError> {
     match expression {
         BoundExpr::Column(index) => numeric_argument_at(batch, *index, row),
+        BoundExpr::Compare(left, operator, right) => {
+            let Some(left) = eval_number(left, batch, row)? else {return Ok(None)};
+            let Some(right) = eval_number(right, batch, row)? else {return Ok(None)};
+            let order = super::compare_numbers(left, right);
+            let matched = match operator {
+                crate::Operator::Eq => order.is_eq(),
+                crate::Operator::Ne => order.is_ne(),
+                crate::Operator::Lt => order.is_lt(),
+                crate::Operator::Le => order.is_le(),
+                crate::Operator::Gt => order.is_gt(),
+                crate::Operator::Ge => order.is_ge(),
+                _ => return Err(ExecutionError::Invalid(
+                    "unsupported numeric comparison operator".into())),
+            };
+            Ok(Some(Number::Unsigned(u128::from(matched))))
+        },
         BoundExpr::Integer(value) => Ok(Some(Number::Signed(i128::from(*value)))),
         BoundExpr::AffineColumn {
             index,
@@ -243,6 +334,95 @@ fn count_argument(
     }
 }
 
+
+/// Compute independent exact multi-aggregate partials over physical parts,
+/// then merge the checked integer SUM and COUNT states. Other aggregate types
+/// retain serial ordering to avoid changing floating-point semantics.
+fn parallel_exact_multi_aggregates(
+    part: &Path,
+    names: &[String],
+    items: &[AggregateItem],
+    arguments: &[Option<BoundExpr>],
+    conditions: &[Vec<typed::Condition>],
+    no_filters: bool,
+) -> Result<Option<Vec<State>>, ExecutionError> {
+    let parts = rusthouse_storage::query_parts(part)?;
+    let workers = std::thread::available_parallelism()
+        .map_or(1, |count| count.get())
+        .min(4);
+    if workers < 2 || parts.len() < 16 {
+        return Ok(None);
+    }
+    let chunk_size = parts.len().div_ceil(workers);
+    let chunks = std::thread::scope(|scope| {
+        let handles = parts.chunks(chunk_size).map(|paths| {
+            scope.spawn(move || -> Result<Vec<State>, ExecutionError> {
+                let mut states = items.iter().map(|item| match item.function {
+                    Some(function) => State::Numeric(AggregateState::new(function)),
+                    None => State::Count(0),
+                }).collect::<Vec<_>>();
+                for path in paths {
+                    let mut reader = rusthouse_storage::TypedPartReader::open(path, names)?;
+                    while let Some(batch) = reader.next_batch()? {
+                        for row in 0..batch[0].len() {
+                            if !no_filters && !typed::passes(&batch, row, conditions) {
+                                continue;
+                            }
+                            for (state, argument) in states.iter_mut().zip(arguments) {
+                                match state {
+                                    State::Count(value) => {
+                                        if count_argument(argument.as_ref(), &batch, row)? {
+                                            *value = value.checked_add(1).ok_or_else(|| {
+                                                ExecutionError::Invalid("COUNT overflow".into())
+                                            })?;
+                                        }
+                                    }
+                                    State::Numeric(value) => {
+                                        let expr = argument.as_ref().ok_or_else(|| {
+                                            ExecutionError::Invalid("aggregate argument missing".into())
+                                        })?;
+                                        if let Some(next) = eval_number(expr, &batch, row)? {
+                                            value.update(next)?;
+                                        }
+                                    }
+                                    State::Distinct(_) => unreachable!("only exact SUM and COUNT selected"),
+                                }
+                            }
+                        }
+                    }
+                }
+                Ok(states)
+            })
+        }).collect::<Vec<_>>();
+        handles.into_iter().map(|handle| handle.join().unwrap_or_else(|_| {
+            Err(ExecutionError::Invalid("parallel multi-aggregate worker panicked".into()))
+        })).collect::<Vec<_>>()
+    });
+    let mut totals = items.iter().map(|item| match item.function {
+        Some(function) => State::Numeric(AggregateState::new(function)),
+        None => State::Count(0),
+    }).collect::<Vec<_>>();
+    for chunk in chunks {
+        for (total, partial) in totals.iter_mut().zip(chunk?) {
+            match (total, partial) {
+                (State::Count(total), State::Count(partial)) => {
+                    *total = total.checked_add(partial)
+                        .ok_or_else(|| ExecutionError::Invalid("COUNT overflow".into()))?;
+                }
+                (State::Numeric(total), State::Numeric(partial)) => {
+                    if let Some(value) = partial.value {
+                        total.update(value)?;
+                    }
+                }
+                _ => return Err(ExecutionError::Invalid(
+                    "invalid parallel multi-aggregate state".into(),
+                )),
+            }
+        }
+    }
+    Ok(Some(totals))
+}
+
 pub(super) fn execute<W: Write>(
     query: &Select,
     part: &Path,
@@ -307,11 +487,87 @@ pub(super) fn execute<W: Write>(
     if query.limit == Some(0) {
         return Ok(());
     }
+    // Non-nullable COUNT columns have exactly the snapshot's validated row
+    // count. Answer any number of these metrics from metadata, without
+    // opening or decompressing a single column stream.
+    let metadata_counts = query.predicates.is_empty()
+        && query.or_predicates.is_empty()
+        && items.iter().all(|item| {
+            item.function.is_none()
+                && !item.distinct
+                && item.argument.as_ref().is_none_or(|expression| {
+                    matches!(expression, ScalarExpr::Column(column)
+                        if types.get(column).is_some_and(|kind|
+                            !kind.starts_with("Nullable(")))
+                })
+        });
+    if metadata_counts {
+        if query.offset.unwrap_or(0) == 0 {
+            for (index, _) in items.iter().enumerate() {
+                if index > 0 {
+                    output.write_all(b"\t")?;
+                }
+                write!(output, "{}", metadata.rows)?;
+            }
+            output.write_all(b"\n")?;
+        }
+        return Ok(());
+    }
+    // Mixed nullable COUNTs only need their compact null maps. A full
+    // typed value scan decodes every numeric or String payload needlessly.
+    // De-duplicate repeated nullable columns across up to 128 metrics.
+    let nullmap_counts = query.predicates.is_empty()
+        && query.or_predicates.is_empty()
+        && items.iter().all(|item| {
+            item.function.is_none()
+                && !item.distinct
+                && item.argument.as_ref().is_none_or(|expression| {
+                    matches!(expression, ScalarExpr::Column(column)
+                        if types.contains_key(column))
+                })
+        });
+    if nullmap_counts {
+        let mut cached = HashMap::<String, u64>::new();
+        for item in items {
+            let Some(ScalarExpr::Column(column)) = &item.argument else {
+                continue;
+            };
+            if !types[column].starts_with("Nullable(") || cached.contains_key(column) {
+                continue;
+            }
+            let mut reader = TypedQueryReader::open_with_metadata(
+                part, std::slice::from_ref(column), &metadata
+            )?;
+            let mut nonnull = 0u64;
+            while let Some(nulls) = reader.next_null_batch()? {
+                let count = nulls.iter().filter(|&&value| value == 0).count() as u64;
+                nonnull = nonnull.checked_add(count).ok_or_else(|| {
+                    ExecutionError::Invalid("COUNT overflow".into())
+                })?;
+            }
+            cached.insert(column.clone(), nonnull);
+        }
+        if query.offset.unwrap_or(0) == 0 {
+            for (index, item) in items.iter().enumerate() {
+                if index > 0 {
+                    output.write_all(b"\t")?;
+                }
+                let count = match &item.argument {
+                    Some(ScalarExpr::Column(column)) if types[column].starts_with("Nullable(") =>
+                        cached[column],
+                    _ => metadata.rows,
+                };
+                write!(output, "{count}")?;
+            }
+            output.write_all(b"\n")?;
+        }
+        return Ok(());
+    }
     let mut states = items
         .iter()
         .map(|item| match item.function {
             Some(function) => State::Numeric(AggregateState::new(function)),
-            None if item.distinct => State::Distinct(HashSet::new()),
+            None if item.distinct => State::Distinct(DistinctValues::default()),
             None => State::Count(0),
         })
         .collect::<Vec<_>>();
@@ -324,9 +580,35 @@ pub(super) fn execute<W: Write>(
                 .transpose()
         })
         .collect::<Result<Vec<_>, _>>()?;
-    let mut reader = TypedQueryReader::open_with_metadata(part, &names, &metadata)?;
     let no_filters = query.predicates.is_empty() && query.or_predicates.is_empty();
-    while let Some(batch) = reader.next_batch()? {
+    let parallel_safe = items.iter().all(|item| match (&item.function, &item.argument, item.distinct) {
+        (None, _, false) => true,
+        (Some(crate::AggregateFunction::Sum), Some(crate::ScalarExpr::Column(column)), false) => {
+            types.get(column).is_some_and(|kind| matches!(
+                typed::base_type(kind),
+                "UInt8" | "UInt16" | "UInt32" | "UInt64" | "UInt128"
+                    | "Int8" | "Int16" | "Int32" | "Int64" | "Int128"
+            ))
+        }
+        _ => false,
+    });
+    let parallel = if parallel_safe {
+        parallel_exact_multi_aggregates(
+            part, &names, items, &arguments, &conditions, no_filters,
+        )?
+    } else {
+        None
+    };
+    let scan_serially = parallel.is_none();
+    if let Some(partial) = parallel {
+        states = partial;
+    }
+    let mut reader = if scan_serially {
+        Some(TypedQueryReader::open_with_metadata(part, &names, &metadata)?)
+    } else {
+        None
+    };
+    while let Some(batch) = reader.as_mut().map_or(Ok(None), TypedQueryReader::next_batch)? {
         for row in 0..batch[0].len() {
             if !no_filters && !typed::passes(&batch, row, &conditions) {
                 continue;
@@ -344,13 +626,13 @@ pub(super) fn execute<W: Write>(
                         let expression = argument.as_ref().ok_or_else(|| {
                             ExecutionError::Invalid("distinct argument missing".into())
                         })?;
-                        if let Some(key) = distinct_argument(expression, &batch, row)? {
-                            if seen.len() >= 100_000 && !seen.contains(&key) {
-                                return Err(ExecutionError::Invalid(
-                                    "COUNT(DISTINCT) supports at most 100000 values".into(),
-                                ));
+                        if let BoundExpr::Column(index) = expression {
+                            if seen.insert_column(&batch[*index], row)? {
+                                continue;
                             }
-                            seen.insert(key);
+                        }
+                        if let Some(key) = distinct_argument(expression, &batch, row)? {
+                            seen.insert_key(key)?;
                         }
                     }
                     State::Numeric(state) => {
@@ -379,6 +661,54 @@ pub(super) fn execute<W: Write>(
         output.write_all(b"\n")?;
     }
     Ok(())
+}
+
+/// Compute exact arithmetic-series metrics in O(number of aggregates) instead
+/// of iterating a billion generated rows. Predicated or DISTINCT inputs keep the
+/// existing streaming path.
+fn generated_series_metrics(
+    start: u64,
+    rows: u64,
+    step: u64,
+    items: &[AggregateItem],
+) -> Option<Result<Vec<String>, ExecutionError>> {
+    if !items.iter().all(|item| {
+        !item.distinct
+            && item.argument.as_ref().is_none_or(|expression| {
+                matches!(expression, ScalarExpr::Column(name) if name == "number")
+            })
+            && matches!(item.function, None | Some(crate::AggregateFunction::Count
+                | crate::AggregateFunction::Sum | crate::AggregateFunction::Min
+                | crate::AggregateFunction::Max | crate::AggregateFunction::Avg))
+    }) {
+        return None;
+    }
+    let first = u128::from(start);
+    let n = u128::from(rows);
+    let last = if n == 0 {
+        first
+    } else {
+        first + (n - 1) * u128::from(step)
+    };
+    let sum = if n & 1 == 0 {
+        (n / 2) * (first + last)
+    } else {
+        n * ((first + last) / 2)
+    };
+    let results = items.iter().map(|item| {
+        Ok(match item.function {
+            None | Some(crate::AggregateFunction::Count) => rows.to_string(),
+            Some(crate::AggregateFunction::Sum) if n > 0 => sum.to_string(),
+            Some(crate::AggregateFunction::Min) if n > 0 => first.to_string(),
+            Some(crate::AggregateFunction::Max) if n > 0 => last.to_string(),
+            Some(crate::AggregateFunction::Avg) if n > 0 =>
+                ((first as f64 + last as f64) / 2.0).to_string(),
+            Some(crate::AggregateFunction::Sum | crate::AggregateFunction::Min
+                | crate::AggregateFunction::Max | crate::AggregateFunction::Avg) => "NULL".into(),
+            _ => unreachable!("fast path excludes other aggregate functions"),
+        })
+    }).collect::<Result<Vec<_>, ExecutionError>>();
+    Some(results)
 }
 
 /// Evaluate bounded generated-number aggregate projections without a stored part.
@@ -416,11 +746,19 @@ pub(super) fn execute_numbers<W: Write>(
     if query.limit == Some(0) {
         return Ok(());
     }
+    if query.predicates.is_empty() && query.or_predicates.is_empty() {
+        if let Some(results) = generated_series_metrics(start, rows, step, items) {
+            if query.offset.unwrap_or(0) == 0 {
+                writeln!(output, "{}", results?.join("\t"))?;
+            }
+            return Ok(());
+        }
+    }
     let mut states = items
         .iter()
         .map(|item| match item.function {
             Some(function) => State::Numeric(AggregateState::new(function)),
-            None if item.distinct => State::Distinct(HashSet::new()),
+            None if item.distinct => State::Distinct(DistinctValues::default()),
             None => State::Count(0),
         })
         .collect::<Vec<_>>();
@@ -437,13 +775,7 @@ pub(super) fn execute_numbers<W: Write>(
                         .ok_or_else(|| ExecutionError::Invalid("COUNT overflow".into()))?;
                 }
                 State::Distinct(seen) => {
-                    let key = typed::Key::Numeric(NumberKey::from(value));
-                    if seen.len() >= 100_000 && !seen.contains(&key) {
-                        return Err(ExecutionError::Invalid(
-                            "COUNT(DISTINCT) supports at most 100000 values".into(),
-                        ));
-                    }
-                    seen.insert(key);
+                    seen.insert_key(typed::Key::Numeric(NumberKey::from(value)))?;
                 }
                 State::Numeric(state) => state.update(value)?,
             }
@@ -507,6 +839,26 @@ mod affine_tests {
 mod distinct_key_tests {
     use super::*;
     use rusthouse_storage::read_legacy_strings;
+
+    #[test]
+    fn distinct_state_uses_borrowed_text_and_fixed_width_uuid_keys() {
+        let mut input = b"\x03abc\x03abc\x03xyz".as_slice();
+        let values = read_legacy_strings(&mut input, 3).unwrap();
+        let column = TypedColumn::Text(values);
+        let mut distinct = DistinctValues::default();
+        for row in 0..3 {
+            assert!(distinct.insert_column(&column, row).unwrap());
+        }
+        assert_eq!(distinct.len(), 2);
+        assert!(distinct.other.is_empty());
+        assert_eq!(distinct.text.len(), 2);
+
+        let nullable = TypedColumn::NullableNumeric {
+            values: rusthouse_storage::NumericColumn::UInt64(vec![1]),
+            nulls: vec![1],
+        };
+        assert!(!distinct.insert_column(&nullable, 0).unwrap());
+    }
 
     #[test]
     fn distinct_argument_preserves_nullable_string_values() {

@@ -311,21 +311,25 @@ fn quoted_map_text(output: &mut String, bytes: &[u8]) -> Result<(), PartError> {
     Ok(())
 }
 
-fn map_numeric_text(values: &NumericColumn, index: usize) -> String {
+fn append_map_numeric(output: &mut String, values: &NumericColumn, index: usize) {
+    use std::fmt::Write as _;
+    // Render into the row scratch buffer instead of allocating a temporary
+    // String for every numeric Map entry.
     match values {
-        NumericColumn::UInt8(rows) => rows[index].to_string(),
-        NumericColumn::UInt16(rows) => rows[index].to_string(),
-        NumericColumn::UInt32(rows) => rows[index].to_string(),
-        NumericColumn::UInt64(rows) => rows[index].to_string(),
-        NumericColumn::UInt128(rows) => rows[index].to_string(),
-        NumericColumn::Int8(rows) => rows[index].to_string(),
-        NumericColumn::Int16(rows) => rows[index].to_string(),
-        NumericColumn::Int32(rows) => rows[index].to_string(),
-        NumericColumn::Int64(rows) => rows[index].to_string(),
-        NumericColumn::Int128(rows) => rows[index].to_string(),
-        NumericColumn::Float32(rows) => rows[index].to_string(),
-        NumericColumn::Float64(rows) => rows[index].to_string(),
+        NumericColumn::UInt8(rows) => write!(output, "{}", rows[index]),
+        NumericColumn::UInt16(rows) => write!(output, "{}", rows[index]),
+        NumericColumn::UInt32(rows) => write!(output, "{}", rows[index]),
+        NumericColumn::UInt64(rows) => write!(output, "{}", rows[index]),
+        NumericColumn::UInt128(rows) => write!(output, "{}", rows[index]),
+        NumericColumn::Int8(rows) => write!(output, "{}", rows[index]),
+        NumericColumn::Int16(rows) => write!(output, "{}", rows[index]),
+        NumericColumn::Int32(rows) => write!(output, "{}", rows[index]),
+        NumericColumn::Int64(rows) => write!(output, "{}", rows[index]),
+        NumericColumn::Int128(rows) => write!(output, "{}", rows[index]),
+        NumericColumn::Float32(rows) => write!(output, "{}", rows[index]),
+        NumericColumn::Float64(rows) => write!(output, "{}", rows[index]),
     }
+    .expect("formatting into a String cannot fail");
 }
 
 fn read_string_key_map(
@@ -391,7 +395,7 @@ fn read_string_key_map(
                         .ok_or_else(|| PartError::InvalidScan("missing Map String value".into()))?,
                 )?;
             } else if let Some(values) = &numeric_values {
-                output.push_str(&map_numeric_text(values, element));
+                append_map_numeric(&mut output, values, element);
             }
         }
         output.push('}');
@@ -416,10 +420,192 @@ struct ColumnReader {
     map_sizes: Option<Stream>,
 }
 
+// Stream initialization reads separate immutable files and can run on
+// independent workers. Layout checks run after all streams are opened.
+fn open_typed_column(
+    part: &Path,
+    name: &str,
+    data_type: &str,
+) -> Result<ColumnReader, PartError> {
+    let kind = StorageKind::from_data_type(data_type)?;
+    let data_name = if kind.needs_map_streams() {
+        format!("{name}.keys")
+    } else {
+        name.to_owned()
+    };
+    let data = Stream::open(part, &data_name)?;
+    let null_map = kind
+        .needs_null_map()
+        .then(|| Stream::open(part, &format!("{name}.null")))
+        .transpose()?;
+    let array_sizes = kind
+        .needs_array_sizes()
+        .then(|| Stream::open(part, &format!("{name}.size0")))
+        .transpose()?;
+    let map_values = kind
+        .needs_map_streams()
+        .then(|| Stream::open(part, &format!("{name}.values")))
+        .transpose()?;
+    let map_sizes = kind
+        .needs_map_streams()
+        .then(|| Stream::open(part, &format!("{name}.size0")))
+        .transpose()?;
+    Ok(ColumnReader {
+        kind,
+        data,
+        null_map,
+        array_sizes,
+        map_values,
+        map_sizes,
+    })
+}
+
 pub struct TypedPartReader {
     columns: Vec<ColumnReader>,
     marks: usize,
     next_mark: usize,
+}
+
+/// Decode one requested projection column. Each column has independent file
+/// streams, so wide analytical marks can decode on separate CPU workers.
+fn decode_typed_column(
+    column: &mut ColumnReader,
+    index: usize,
+    rows: usize,
+) -> Result<TypedColumn, PartError> {
+    let mark = &column.data.marks[index];
+    let nulls = column
+        .null_map
+        .as_mut()
+        .map(|stream| stream.read_fixed(index, rows))
+        .transpose()?;
+    let values = match &column.kind {
+        StorageKind::Numeric(kind) | StorageKind::NullableNumeric(kind) => {
+            TypedColumn::Numeric(read_numeric_granule_cached(
+                &mut column.data.reader,
+                mark,
+                kind,
+                &mut column.data.cached,
+            )?)
+        }
+        StorageKind::String | StorageKind::NullableString => {
+            let mut stream = MarkStream::open(&mut column.data, index)?;
+            TypedColumn::Text(
+                read_legacy_strings(&mut stream, rows)
+                    .map_err(|error| PartError::InvalidScan(error.to_string()))?,
+            )
+        }
+        StorageKind::NumericArray(kind) => {
+            let sizes = column.array_sizes.as_mut().ok_or_else(|| {
+                PartError::InvalidScan("missing Array size stream".into())
+            })?;
+            let mut sizes_stream = MarkStream::open(sizes, index)?;
+            let mut data_stream = MarkStream::open(&mut column.data, index)?;
+            let arrays = read_numeric_array_column(
+                &mut sizes_stream,
+                &mut data_stream,
+                kind,
+                rows,
+                ArrayOffsetsEncoding::Sizes,
+            )
+            .map_err(|error| PartError::InvalidScan(error.to_string()))?;
+            // Build one contiguous StringColumn as rows are rendered.
+            // Keep one expandable scratch String instead of allocating
+            // both a String and a Vec<u8> for every Array row.
+            let mut decoded = StringColumn::builder(rows)
+                .map_err(|error| PartError::InvalidScan(error.to_string()))?;
+            let mut text = String::new();
+            for row in 0..rows {
+                let range = arrays.row_range(row).ok_or_else(|| {
+                    PartError::InvalidScan("invalid Array row range".into())
+                })?;
+                text.clear();
+                text.push('[');
+                for element in range {
+                    if text.len() != 1 {
+                        text.push(',');
+                    }
+                    text.push_str(&numeric_array_element(arrays.values(), element));
+                }
+                text.push(']');
+                decoded
+                    .push_row(text.as_bytes())
+                    .map_err(|error| PartError::InvalidScan(error.to_string()))?;
+            }
+            TypedColumn::Text(decoded)
+        }
+        StorageKind::StringMap(value_type) => {
+            let values = column.map_values.as_mut().ok_or_else(|| {
+                PartError::InvalidScan("missing Map values stream".into())
+            })?;
+            let sizes = column
+                .map_sizes
+                .as_mut()
+                .ok_or_else(|| PartError::InvalidScan("missing Map size stream".into()))?;
+            TypedColumn::Text(read_string_key_map(
+                &mut column.data,
+                values,
+                sizes,
+                value_type,
+                index,
+                rows,
+            )?)
+        }
+        StorageKind::Uuid => {
+            let bytes = column.data.read_fixed(
+                index,
+                rows.checked_mul(16).ok_or_else(|| {
+                    PartError::InvalidScan("UUID granule too large".into())
+                })?,
+            )?;
+            TypedColumn::Uuid(
+                read_uuid_values(&mut bytes.as_slice(), rows)
+                    .map_err(|error| PartError::InvalidScan(error.to_string()))?,
+            )
+        }
+    };
+    let values = wrap_null_map(values, nulls)?;
+    if values.len() != rows {
+        return Err(PartError::InvalidScan(
+            "typed batch row count mismatch".into(),
+        ));
+    }
+    Ok(values)
+}
+
+/// Decode in deterministic column order. Thread the expensive wide-mark path
+/// only when the caller has enough rows and columns to amortize worker setup.
+fn decode_typed_columns(
+    columns: &mut [ColumnReader],
+    index: usize,
+    rows: usize,
+    workers: usize,
+) -> Result<Vec<TypedColumn>, PartError> {
+    if workers <= 1 || columns.len() < 2 {
+        return columns.iter_mut()
+            .map(|column| decode_typed_column(column, index, rows))
+            .collect();
+    }
+    let chunk_width = columns.len().div_ceil(workers);
+    let pieces = std::thread::scope(|scope| {
+        let handles = columns.chunks_mut(chunk_width)
+            .map(|chunk| scope.spawn(move || {
+                chunk.iter_mut()
+                    .map(|column| decode_typed_column(column, index, rows))
+                    .collect::<Result<Vec<_>, PartError>>()
+            }))
+            .collect::<Vec<_>>();
+        handles.into_iter()
+            .map(|handle| handle.join().unwrap_or_else(|_| {
+                Err(PartError::InvalidScan("typed mark decoder panicked".into()))
+            }))
+            .collect::<Vec<_>>()
+    });
+    let mut batch = Vec::with_capacity(columns.len());
+    for piece in pieces {
+        batch.extend(piece?);
+    }
+    Ok(batch)
 }
 
 impl TypedPartReader {
@@ -431,8 +617,9 @@ impl TypedPartReader {
                 "typed scan requires at least one column".into(),
             ));
         }
-        let mut columns = Vec::with_capacity(names.len());
-        let mut layout = ScanLayout::default();
+
+        // Bind and validate the schema before opening physical streams.
+        let mut types = Vec::with_capacity(names.len());
         for name in names {
             if !name.bytes().all(|v| v.is_ascii_alphanumeric() || v == b'_') {
                 return Err(PartError::InvalidScan("unsafe column filename".into()));
@@ -444,53 +631,86 @@ impl TypedPartReader {
                 .ok_or_else(|| PartError::InvalidScan(format!("unknown column: {name}")))?
                 .data_type
                 .as_str();
-            let kind = StorageKind::from_data_type(data_type)?;
-            if metadata.rows == 0 {
-                continue;
+            // An empty part still validates declared data types.
+            StorageKind::from_data_type(data_type)?;
+            types.push(data_type);
+        }
+
+        let mut columns = Vec::with_capacity(names.len());
+        if metadata.rows != 0 {
+            const PARALLEL_COLUMN_THRESHOLD: usize = 8;
+            const MAX_OPEN_WORKERS: usize = 4;
+            let workers = std::thread::available_parallelism()
+                .map_or(1, |parallelism| parallelism.get())
+                .min(MAX_OPEN_WORKERS);
+            if names.len() >= PARALLEL_COLUMN_THRESHOLD && workers > 1 {
+                use std::sync::atomic::{AtomicUsize, Ordering};
+                let cursor = AtomicUsize::new(0);
+                let mut slots: Vec<Option<Result<ColumnReader, PartError>>> =
+                    (0..names.len()).map(|_| None).collect();
+                std::thread::scope(|scope| -> Result<(), PartError> {
+                    let handles = (0..workers)
+                        .map(|_| {
+                            let cursor = &cursor;
+                            let types = &types;
+                            scope.spawn(move || {
+                                let mut completed = Vec::new();
+                                loop {
+                                    let index = cursor.fetch_add(1, Ordering::Relaxed);
+                                    if index >= names.len() {
+                                        break;
+                                    }
+                                    completed.push((
+                                        index,
+                                        open_typed_column(part, &names[index], types[index]),
+                                    ));
+                                }
+                                completed
+                            })
+                        })
+                        .collect::<Vec<_>>();
+                    for handle in handles {
+                        let completed = handle.join().map_err(|_| {
+                            PartError::InvalidScan("typed stream opener panicked".into())
+                        })?;
+                        for (index, column) in completed {
+                            slots[index] = Some(column);
+                        }
+                    }
+                    Ok(())
+                })?;
+                for result in slots {
+                    columns.push(result.expect("every stream was claimed once")?);
+                }
+            } else {
+                for (name, data_type) in names.iter().zip(&types) {
+                    columns.push(open_typed_column(part, name, data_type)?);
+                }
             }
-            let data_name = if kind.needs_map_streams() {
+        }
+
+        // Validate cross-column mark layouts in original projection order.
+        // Physical stream opens are independent, but their granules must match.
+        let mut layout = ScanLayout::default();
+        for (name, column) in names.iter().zip(&columns) {
+            let data_name = if column.kind.needs_map_streams() {
                 format!("{name}.keys")
             } else {
                 name.to_owned()
             };
-            let data = Stream::open(part, &data_name)?;
-            let null_map = kind
-                .needs_null_map()
-                .then(|| Stream::open(part, &format!("{name}.null")))
-                .transpose()?;
-            let array_sizes = kind
-                .needs_array_sizes()
-                .then(|| Stream::open(part, &format!("{name}.size0")))
-                .transpose()?;
-            let map_values = kind
-                .needs_map_streams()
-                .then(|| Stream::open(part, &format!("{name}.values")))
-                .transpose()?;
-            let map_sizes = kind
-                .needs_map_streams()
-                .then(|| Stream::open(part, &format!("{name}.size0")))
-                .transpose()?;
-            layout.validate(&data_name, &data.marks, metadata.rows)?;
-            if let Some(nulls) = &null_map {
+            layout.validate(&data_name, &column.data.marks, metadata.rows)?;
+            if let Some(nulls) = &column.null_map {
                 layout.validate(&format!("{name}.null"), &nulls.marks, metadata.rows)?;
             }
-            if let Some(sizes) = &array_sizes {
+            if let Some(sizes) = &column.array_sizes {
                 layout.validate(&format!("{name}.size0"), &sizes.marks, metadata.rows)?;
             }
-            if let Some(values) = &map_values {
+            if let Some(values) = &column.map_values {
                 layout.validate(&format!("{name}.values"), &values.marks, metadata.rows)?;
             }
-            if let Some(sizes) = &map_sizes {
+            if let Some(sizes) = &column.map_sizes {
                 layout.validate(&format!("{name}.size0"), &sizes.marks, metadata.rows)?;
             }
-            columns.push(ColumnReader {
-                kind,
-                data,
-                null_map,
-                array_sizes,
-                map_values,
-                map_sizes,
-            });
         }
         Ok(Self {
             columns,
@@ -580,108 +800,65 @@ impl TypedPartReader {
             self.next_mark = self.marks;
             return Ok(None);
         }
-        let mut batch = Vec::with_capacity(self.columns.len());
-        for column in &mut self.columns {
-            let mark = &column.data.marks[index];
-            let rows = usize::try_from(mark.rows.ok_or_else(|| {
+        // ScanLayout has already validated that all requested column streams
+        // share the same adaptive granule row count. Decode this once instead
+        // of repeating the conversion for every column in a wide projection.
+        let rows = usize::try_from(
+            self.columns[0].data.marks[index].rows.ok_or_else(|| {
                 PartError::InvalidScan("typed scan requires adaptive marks".into())
-            })?)
-            .map_err(|_| PartError::InvalidScan("row count too large".into()))?;
-            let nulls = column
-                .null_map
-                .as_mut()
-                .map(|stream| stream.read_fixed(index, rows))
-                .transpose()?;
-            let values = match &column.kind {
-                StorageKind::Numeric(kind) | StorageKind::NullableNumeric(kind) => {
-                    TypedColumn::Numeric(read_numeric_granule_cached(
-                        &mut column.data.reader,
-                        mark,
-                        kind,
-                        &mut column.data.cached,
-                    )?)
-                }
-                StorageKind::String | StorageKind::NullableString => {
-                    let mut stream = MarkStream::open(&mut column.data, index)?;
-                    TypedColumn::Text(
-                        read_legacy_strings(&mut stream, rows)
-                            .map_err(|error| PartError::InvalidScan(error.to_string()))?,
-                    )
-                }
-                StorageKind::NumericArray(kind) => {
-                    let sizes = column.array_sizes.as_mut().ok_or_else(|| {
-                        PartError::InvalidScan("missing Array size stream".into())
-                    })?;
-                    let mut sizes_stream = MarkStream::open(sizes, index)?;
-                    let mut data_stream = MarkStream::open(&mut column.data, index)?;
-                    let arrays = read_numeric_array_column(
-                        &mut sizes_stream,
-                        &mut data_stream,
-                        kind,
-                        rows,
-                        ArrayOffsetsEncoding::Sizes,
-                    )
-                    .map_err(|error| PartError::InvalidScan(error.to_string()))?;
-                    let mut rendered = Vec::with_capacity(rows);
-                    for row in 0..rows {
-                        let range = arrays.row_range(row).ok_or_else(|| {
-                            PartError::InvalidScan("invalid Array row range".into())
-                        })?;
-                        let mut text = String::from("[");
-                        for element in range {
-                            if text.len() != 1 {
-                                text.push(',');
-                            }
-                            text.push_str(&numeric_array_element(arrays.values(), element));
-                        }
-                        text.push(']');
-                        rendered.push(text.into_bytes());
-                    }
-                    TypedColumn::Text(
-                        StringColumn::from_rows(rendered)
-                            .map_err(|error| PartError::InvalidScan(error.to_string()))?,
-                    )
-                }
-                StorageKind::StringMap(value_type) => {
-                    let values = column.map_values.as_mut().ok_or_else(|| {
-                        PartError::InvalidScan("missing Map values stream".into())
-                    })?;
-                    let sizes = column
-                        .map_sizes
-                        .as_mut()
-                        .ok_or_else(|| PartError::InvalidScan("missing Map size stream".into()))?;
-                    TypedColumn::Text(read_string_key_map(
-                        &mut column.data,
-                        values,
-                        sizes,
-                        value_type,
-                        index,
-                        rows,
-                    )?)
-                }
-                StorageKind::Uuid => {
-                    let bytes = column.data.read_fixed(
-                        index,
-                        rows.checked_mul(16).ok_or_else(|| {
-                            PartError::InvalidScan("UUID granule too large".into())
-                        })?,
-                    )?;
-                    TypedColumn::Uuid(
-                        read_uuid_values(&mut bytes.as_slice(), rows)
-                            .map_err(|error| PartError::InvalidScan(error.to_string()))?,
-                    )
-                }
-            };
-            let values = wrap_null_map(values, nulls)?;
-            if values.len() != rows {
-                return Err(PartError::InvalidScan(
-                    "typed batch row count mismatch".into(),
-                ));
-            }
-            batch.push(values);
-        }
+            })?,
+        )
+        .map_err(|_| PartError::InvalidScan("row count too large".into()))?;
+        const PARALLEL_DECODE_ROWS: usize = 4096;
+        const PARALLEL_DECODE_COLUMNS: usize = 8;
+        let workers = if rows >= PARALLEL_DECODE_ROWS
+            && self.columns.len() >= PARALLEL_DECODE_COLUMNS
+        {
+            std::thread::available_parallelism().map_or(1, |count| count.get()).min(4)
+        } else {
+            1
+        };
+        let batch = decode_typed_columns(&mut self.columns, index, rows, workers)?;
         self.next_mark += 1;
         Ok(Some(batch))
+    }
+}
+
+// One worker serves the entire immutable snapshot. Spawning once per part
+// is expensive for tables with tens of thousands of small MergeTree parts.
+struct PartPrefetchWorker {
+    queue: Option<std::sync::mpsc::SyncSender<PathBuf>>,
+    results: std::sync::mpsc::Receiver<Result<TypedPartReader, PartError>>,
+    thread: Option<std::thread::JoinHandle<()>>,
+}
+
+impl PartPrefetchWorker {
+    fn new(columns: std::sync::Arc<[String]>) -> Self {
+        let (queue, requests) = std::sync::mpsc::sync_channel::<PathBuf>(1);
+        let (responses, results) =
+            std::sync::mpsc::sync_channel::<Result<TypedPartReader, PartError>>(1);
+        let thread = std::thread::spawn(move || {
+            while let Ok(path) = requests.recv() {
+                if responses.send(TypedPartReader::open(&path, &columns)).is_err() {
+                    break;
+                }
+            }
+        });
+        Self {
+            queue: Some(queue),
+            results,
+            thread: Some(thread),
+        }
+    }
+}
+
+impl Drop for PartPrefetchWorker {
+    fn drop(&mut self) {
+        // Disconnect requests before joining, including on LIMIT and error.
+        self.queue.take();
+        if let Some(thread) = self.thread.take() {
+            let _ = thread.join();
+        }
     }
 }
 
@@ -689,9 +866,14 @@ impl TypedPartReader {
 /// Only one part's file streams are held open at a time.
 pub struct TypedQueryReader {
     parts: Vec<PathBuf>,
-    columns: Vec<String>,
+    columns: std::sync::Arc<[String]>,
     next_part: usize,
     current: Option<TypedPartReader>,
+    // At most one part-open result is staged ahead, never decoded batches.
+    prefetched: bool,
+    worker: Option<PartPrefetchWorker>,
+    #[cfg(test)]
+    prefetch_worker_starts: usize,
 }
 
 impl TypedQueryReader {
@@ -729,10 +911,59 @@ impl TypedQueryReader {
         }
         Ok(Self {
             parts,
-            columns: columns.to_vec(),
+            columns: std::sync::Arc::from(columns.to_vec()),
             next_part: 0,
             current: None,
+            prefetched: false,
+            worker: None,
+            #[cfg(test)]
+            prefetch_worker_starts: 0,
         })
+    }
+
+    // Schedule one validated part open on the persistent worker. When a
+    // receiver fails, fall back to synchronous opens without losing a part.
+    fn prefetch_next(&mut self) {
+        if self.prefetched || self.next_part >= self.parts.len() {
+            return;
+        }
+        if self.worker.is_none() {
+            self.worker = Some(PartPrefetchWorker::new(self.columns.clone()));
+            #[cfg(test)]
+            { self.prefetch_worker_starts += 1; }
+        }
+        let path = self.parts[self.next_part].clone();
+        let queued = self.worker.as_ref()
+            .and_then(|worker| worker.queue.as_ref())
+            .is_some_and(|queue| queue.send(path).is_ok());
+        if queued {
+            self.next_part += 1;
+            self.prefetched = true;
+        } else {
+            self.worker.take();
+        }
+    }
+
+    fn advance_part(&mut self) -> Result<bool, PartError> {
+        let reader = if self.prefetched {
+            self.prefetched = false;
+            self.worker.as_ref().ok_or_else(|| {
+                PartError::InvalidScan("missing part prefetch worker".into())
+            })?.results.recv().map_err(|_| {
+                PartError::InvalidScan("typed snapshot part opener stopped".into())
+            })??
+        } else if self.next_part < self.parts.len() {
+            let reader = TypedPartReader::open(
+                &self.parts[self.next_part], &self.columns,
+            )?;
+            self.next_part += 1;
+            reader
+        } else {
+            return Ok(false);
+        };
+        self.current = Some(reader);
+        self.prefetch_next();
+        Ok(true)
     }
 
     /// Read NULL maps across a multi-part snapshot without decoding values.
@@ -742,6 +973,9 @@ impl TypedQueryReader {
                 "null-map scan requires exactly one column".into(),
             ));
         }
+        if self.current.is_some() {
+            self.prefetch_next();
+        }
         loop {
             if let Some(reader) = self.current.as_mut() {
                 if let Some(nulls) = reader.next_null_batch()? {
@@ -749,14 +983,9 @@ impl TypedQueryReader {
                 }
                 self.current = None;
             }
-            if self.next_part == self.parts.len() {
+            if !self.advance_part()? {
                 return Ok(None);
             }
-            self.current = Some(TypedPartReader::open(
-                &self.parts[self.next_part],
-                &self.columns,
-            )?);
-            self.next_part += 1;
         }
     }
 
@@ -782,6 +1011,10 @@ impl TypedQueryReader {
     }
 
     pub fn next_batch(&mut self) -> Result<Option<Vec<TypedColumn>>, PartError> {
+        // A preceding OFFSET skip may leave a partially consumed part open.
+        if self.current.is_some() {
+            self.prefetch_next();
+        }
         loop {
             if let Some(reader) = self.current.as_mut() {
                 if let Some(batch) = reader.next_batch()? {
@@ -789,21 +1022,109 @@ impl TypedQueryReader {
                 }
                 self.current = None;
             }
-            if self.next_part == self.parts.len() {
+            if !self.advance_part()? {
                 return Ok(None);
             }
-            self.current = Some(TypedPartReader::open(
-                &self.parts[self.next_part],
-                &self.columns,
-            )?);
-            self.next_part += 1;
         }
+    }
+}
+
+impl Drop for TypedQueryReader {
+    fn drop(&mut self) {
+        // Disconnect and join the persistent opener before releasing the scan.
+        self.worker.take();
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn typed_part_prefetch_keeps_physical_row_order_and_offset() {
+        use crate::{Column, write_wide_part};
+        use std::fs;
+
+        let root = std::env::temp_dir().join(format!(
+            "rusthouse-typed-part-prefetch-{}", std::process::id()
+        ));
+        let _ = fs::remove_dir_all(&root);
+        fs::create_dir_all(&root).unwrap();
+        let cols = [Column { name: "category".into(), data_type: "String".into() }];
+        for index in 0..24 {
+            write_wide_part(
+                &root.join(format!("all_{index}_{index}_0")),
+                &cols,
+                &[vec![Some(format!("category-{index}"))]],
+            ).unwrap();
+        }
+
+        let mut scan = TypedQueryReader::open(&root, &["category".into()]).unwrap();
+        let mut seen = Vec::new();
+        while let Some(batch) = scan.next_batch().unwrap() {
+            let TypedColumn::Text(values) = &batch[0] else {
+                panic!("expected String batch");
+            };
+            for index in 0..values.len() {
+                seen.push(values.get(index).unwrap().to_vec());
+            }
+        }
+        assert_eq!(
+            seen,
+            (0..24).map(|index| format!("category-{index}").into_bytes()).collect::<Vec<_>>()
+        );
+        assert_eq!(scan.prefetch_worker_starts, 1);
+        drop(scan);
+
+        let mut paged = TypedQueryReader::open(&root, &["category".into()]).unwrap();
+        assert_eq!(paged.skip_prefix_rows(18).unwrap(), 18);
+        let mut after_offset = Vec::new();
+        while let Some(batch) = paged.next_batch().unwrap() {
+            let TypedColumn::Text(values) = &batch[0] else {
+                panic!("expected String batch");
+            };
+            for index in 0..values.len() {
+                after_offset.push(values.get(index).unwrap().to_vec());
+            }
+        }
+        assert_eq!(
+            after_offset,
+            (18..24).map(|index| format!("category-{index}").into_bytes()).collect::<Vec<_>>()
+        );
+        drop(paged);
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn prefetched_nullable_parts_preserve_nullmap_only_scan() {
+        use crate::{Column, write_wide_part};
+        use std::fs;
+
+        let root = std::env::temp_dir().join(format!(
+            "rusthouse-nullmap-prefetch-{}", std::process::id()
+        ));
+        let _ = fs::remove_dir_all(&root);
+        fs::create_dir_all(&root).unwrap();
+        let cols = [Column { name: "value".into(), data_type: "Nullable(UInt64)".into() }];
+        for index in 0..16 {
+            write_wide_part(
+                &root.join(format!("all_{index}_{index}_0")),
+                &cols,
+                &[vec![if index % 3 == 0 { None } else { Some(index.to_string()) }]],
+            ).unwrap();
+        }
+        let mut scan = TypedQueryReader::open(&root, &["value".into()]).unwrap();
+        let mut nullmaps = Vec::new();
+        while let Some(map) = scan.next_null_batch().unwrap() {
+            nullmaps.extend_from_slice(&map);
+        }
+        assert_eq!(
+            nullmaps,
+            (0..16).map(|index| if index % 3 == 0 { 1u8 } else { 0u8 }).collect::<Vec<_>>()
+        );
+        drop(scan);
+        fs::remove_dir_all(root).unwrap();
+    }
 
     #[test]
     fn typed_kinds_own_their_null_map_requirements() {
@@ -1004,4 +1325,94 @@ mod map_row_fast_path_tests {
         assert!(row.capacity() >= reserved);
     }
 
+}
+
+#[cfg(test)]
+mod direct_map_numeric_render_tests {
+    use super::*;
+
+    #[test]
+    fn appends_signed_unsigned_and_float_map_values_in_place() {
+        let mut text = String::from("{");
+        append_map_numeric(&mut text, &NumericColumn::UInt128(vec![u128::MAX]), 0);
+        text.push(',');
+        append_map_numeric(&mut text, &NumericColumn::Int64(vec![-1234]), 0);
+        text.push(',');
+        append_map_numeric(&mut text, &NumericColumn::Float32(vec![1.5]), 0);
+        text.push('}');
+        assert_eq!(text, format!("{{{},-1234,1.5}}", u128::MAX));
+    }
+}
+
+#[cfg(test)]
+mod parallel_typed_open_tests {
+    use super::*;
+    use crate::{Column, write_wide_part};
+    use std::fs;
+
+    #[test]
+    fn wide_projection_opens_all_streams_in_order() {
+        let root = std::env::temp_dir().join(format!(
+            "rusthouse-typed-wide-open-{}", std::process::id()
+        ));
+        let _ = fs::remove_dir_all(&root);
+        let columns = (0..10)
+            .map(|index| Column {
+                name: format!("c{index}"),
+                data_type: "UInt64".into(),
+            })
+            .collect::<Vec<_>>();
+        let data = (0..10)
+            .map(|index| vec![Some(index.to_string()), Some((index + 100).to_string())])
+            .collect::<Vec<_>>();
+        write_wide_part(&root, &columns, &data).unwrap();
+        let names = columns.iter().map(|column| column.name.clone()).collect::<Vec<_>>();
+        let mut reader = TypedPartReader::open(&root, &names).unwrap();
+        let batch = reader.next_batch().unwrap().unwrap();
+        assert_eq!(batch.len(), 10);
+        assert!(batch.iter().all(|column| column.len() == 2));
+        assert!(reader.next_batch().unwrap().is_none());
+        fs::remove_dir_all(root).unwrap();
+    }
+}
+
+#[cfg(test)]
+mod parallel_wide_decode_tests {
+    use super::*;
+    use crate::{Column, write_wide_part};
+    use std::fs;
+
+    #[test]
+    fn parallel_columns_match_serial_granule_decode_and_projection_order() {
+        let root = std::env::temp_dir().join(format!(
+            "rusthouse-typed-wide-decode-{}", std::process::id()
+        ));
+        let _ = fs::remove_dir_all(&root);
+        let columns = (0..12).map(|i| Column {
+            name: format!("metric{i}"),
+            data_type: "UInt64".into(),
+        }).collect::<Vec<_>>();
+        let rows = (0..1024).map(|i| (0..12)
+            .map(|column| Some((i * 1000 + column).to_string()))
+            .collect::<Vec<_>>()).collect::<Vec<_>>();
+        write_wide_part(&root, &columns, &rows).unwrap();
+        let projection = columns.iter().map(|column| column.name.clone()).collect::<Vec<_>>();
+        let mut serial = TypedPartReader::open(&root, &projection).unwrap();
+        let mut parallel = TypedPartReader::open(&root, &projection).unwrap();
+        let left = decode_typed_columns(&mut serial.columns, 0, 1024, 1).unwrap();
+        let right = decode_typed_columns(&mut parallel.columns, 0, 1024, 4).unwrap();
+        assert_eq!(left.len(), 12);
+        for (column, (a, b)) in left.into_iter().zip(right).enumerate() {
+            match (a, b) {
+                (TypedColumn::Numeric(NumericColumn::UInt64(a)),
+                 TypedColumn::Numeric(NumericColumn::UInt64(b))) => {
+                    assert_eq!(a, b);
+                    assert_eq!(a[0], column as u64);
+                    assert_eq!(a[1023], 1_023_000 + column as u64);
+                }
+                _ => panic!("wrong wide projection column type"),
+            }
+        }
+        fs::remove_dir_all(root).unwrap();
+    }
 }
