@@ -21,6 +21,14 @@ fn checked_chunk_count(
     Ok(count as usize)
 }
 
+fn chunk_at_index(total_bytes: u64, chunk_bytes: u64, index: usize) -> Chunk {
+    let offset = index as u64 * chunk_bytes;
+    Chunk {
+        offset,
+        length: (total_bytes - offset).min(chunk_bytes),
+    }
+}
+
 /// Plan nonoverlapping ranges. Empty files have no data chunks.
 pub fn plan_chunks(
     total_bytes: u64,
@@ -29,11 +37,8 @@ pub fn plan_chunks(
 ) -> Result<Vec<Chunk>, &'static str> {
     let count = checked_chunk_count(total_bytes, chunk_bytes, max_chunks)?;
     let mut chunks = Vec::with_capacity(count);
-    let mut offset = 0u64;
-    while offset < total_bytes {
-        let length = (total_bytes - offset).min(chunk_bytes);
-        chunks.push(Chunk { offset, length });
-        offset += length;
+    for index in 0..count {
+        chunks.push(chunk_at_index(total_bytes, chunk_bytes, index));
     }
     Ok(chunks)
 }
@@ -73,13 +78,11 @@ pub fn plan_missing_chunks(
         if selected.len() >= max_batch_chunks {
             break;
         }
-        let offset = (index as u64) * chunk_bytes;
-        let length = (total_bytes - offset).min(chunk_bytes);
-        if length > remaining_bytes {
+        let chunk = chunk_at_index(total_bytes, chunk_bytes, index);
+        if chunk.length > remaining_bytes {
             break;
         }
-        let chunk = Chunk { offset, length };
-        remaining_bytes -= length;
+        remaining_bytes -= chunk.length;
         selected.push(IndexedChunk { index, chunk });
     }
     Ok(selected)
