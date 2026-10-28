@@ -13,6 +13,7 @@ pub(super) fn is_function(name: &str) -> bool {
             | "CHAR_LENGTH"
             | "LENGTHUTF8"
             | "OCTET_LENGTH"
+            | "TOSTARTOFFIFTEENMINUTES"
             | "ASCII"
             | "UTF16_LENGTH"
             | "ISIPV6STRING"
@@ -252,6 +253,18 @@ fn parse_at_depth(parser: &mut Parser, depth: usize) -> Result<ConstantValue, Pa
                         i64::try_from(length)
                             .map_err(|_| ParseError("string length exceeds Int64".into()))?,
                     )
+                }
+                None => ConstantValue::Null,
+            }
+        }
+        "TOSTARTOFFIFTEENMINUTES" => {
+            let input = text_arg(parser, depth + 1)?;
+            require(parser, Token::RParen, "toStartOfFifteenMinutes requires one argument")?;
+            match input {
+                Some(value) => {
+                    let seconds = rusthouse_storage::parse_datetime(&value)
+                        .ok_or_else(|| ParseError("invalid UTC DateTime argument".into()))?;
+                    ConstantValue::Text(rusthouse_storage::format_datetime(seconds / 900 * 900))
                 }
                 None => ConstantValue::Null,
             }
