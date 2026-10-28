@@ -96,6 +96,90 @@ pub(super) fn read_rows(
 // Build the probe key directly from its batch columns so misses never
 // materialize the full row, which may contain wide String payloads.
 
+/// Retain only join keys, projected build-side columns and the optional
+/// post-join filter. All other columns are read neither from disk nor into
+/// the hash build. Slot indices remain in the full table schema.
+fn retained_build_columns(
+    names: &[String],
+    keys: &[usize],
+    selected: &[(usize, String, Option<usize>)],
+    null_filter: Option<(usize, bool)>,
+    base: usize,
+) -> Vec<usize> {
+    let mut keep = vec![false; names.len()];
+    for &key in keys {
+        keep[key] = true;
+    }
+    for &(column, _, _) in selected {
+        if let Some(local) = column.checked_sub(base).filter(|&local| local < names.len()) {
+            keep[local] = true;
+        }
+    }
+    if let Some((column, _)) = null_filter {
+        if let Some(local) = column.checked_sub(base).filter(|&local| local < names.len()) {
+            keep[local] = true;
+        }
+    }
+    keep.iter().enumerate().filter_map(|(i, &used)| used.then_some(i)).collect()
+}
+
+/// Keep full-column positions for existing JOIN key/projection code, but only
+/// decode retained physical streams. This is especially useful for wide
+/// dimensions with many String payload columns.
+fn read_projected_build_rows(
+    path: &Path,
+    names: &[String],
+    indices: &[usize],
+    expected_rows: u64,
+    row_limit: u64,
+    byte_limit: usize,
+) -> Result<Vec<Vec<typed::Cell>>, ExecutionError> {
+    if expected_rows > row_limit {
+        return Err(invalid(format!("JOIN supports at most {row_limit} input rows per table")));
+    }
+    if indices.is_empty() || names.is_empty() {
+        return Err(invalid("JOIN requires nonempty build columns"));
+    }
+    let projected = indices.iter().map(|&i| names[i].clone()).collect::<Vec<_>>();
+    let mut reader = TypedQueryReader::open(path, &projected)?;
+    let mut rows = Vec::with_capacity(expected_rows as usize);
+    let mut retained_bytes = 0usize;
+    while let Some(batch) = reader.next_batch()? {
+        for row_index in 0..batch[0].len() {
+            if rows.len() >= row_limit as usize {
+                return Err(invalid("JOIN input row limit exceeded"));
+            }
+            let mut cells = vec![typed::Cell::Null; names.len()];
+            for (column, &full_index) in indices.iter().enumerate() {
+                cells[full_index] = typed::cell(&batch[column], row_index);
+            }
+            let bytes = cells
+                .len()
+                .checked_mul(std::mem::size_of::<typed::Cell>())
+                .and_then(|bytes| bytes.checked_add(std::mem::size_of::<Vec<typed::Cell>>()))
+                .and_then(|bytes| cells.iter().try_fold(bytes, |sum, cell| {
+                    let added = match cell {
+                        typed::Cell::Text(value) => value.len(),
+                        typed::Cell::Uuid(value) => value.len(),
+                        _ => 0,
+                    };
+                    sum.checked_add(added)
+                }))
+                .ok_or_else(|| invalid("JOIN build size overflow"))?;
+            retained_bytes = retained_bytes.checked_add(bytes)
+                .ok_or_else(|| invalid("JOIN build size overflow"))?;
+            if retained_bytes > byte_limit {
+                return Err(invalid("JOIN exceeds its retained-row memory budget"));
+            }
+            rows.push(cells);
+        }
+    }
+    if rows.len() as u64 != expected_rows {
+        return Err(invalid("JOIN input row count changed during scan"));
+    }
+    Ok(rows)
+}
+
 /// Avoid allocating a heap Vec for the common unique JOIN build key.
 /// Promote to a Vec only when the build side contains duplicate keys.
 enum Bucket {
@@ -229,9 +313,11 @@ fn execute_streaming_inner<W: Write>(
     // The probe side is scanned in batches and never retained. Keep the
     // hash-build and matched-output limits, not an artificial probe-row cap.
     let right_meta = inspect_query_source(right_path)?;
-    let right_rows = read_rows(
+    let keep = retained_build_columns(right_names, right_keys, selected, null_filter, left_names.len());
+    let right_rows = read_projected_build_rows(
         right_path,
         right_names,
+        &keep,
         right_meta.rows,
         MAX_STREAM_BUILD_ROWS,
         MAX_STREAM_BUILD_BYTES,
@@ -436,9 +522,11 @@ fn execute_streaming_right<W: Write>(
         null_filter,
     } = columns;
     let left_meta = inspect_query_source(left_path)?;
-    let left_rows = read_rows(
+    let keep = retained_build_columns(left_names, left_keys, selected, null_filter, 0);
+    let left_rows = read_projected_build_rows(
         left_path,
         left_names,
+        &keep,
         left_meta.rows,
         MAX_STREAM_BUILD_ROWS,
         MAX_STREAM_BUILD_BYTES,
@@ -833,6 +921,37 @@ pub fn execute_join<W: Write>(
 mod tests {
     use super::*;
     use rusthouse_storage::NumericColumn;
+
+    #[test]
+    fn projected_hash_build_only_reads_referenced_wide_columns() {
+        use rusthouse_storage::{Column, write_wide_part};
+        use std::fs;
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        static NEXT: AtomicUsize = AtomicUsize::new(0);
+        let root = std::env::temp_dir().join(format!(
+            "rusthouse-join-build-pruning-{}-{}",
+            std::process::id(), NEXT.fetch_add(1, Ordering::Relaxed)
+        ));
+        let names = vec!["id".into(), "unused".into(), "label".into()];
+        let schema = vec![
+            Column { name: names[0].clone(), data_type: "UInt64".into() },
+            Column { name: names[1].clone(), data_type: "String".into() },
+            Column { name: names[2].clone(), data_type: "String".into() },
+        ];
+        write_wide_part(
+            &root, &schema, &[
+                vec![Some("5".into()), Some("unneeded-heavy-payload".repeat(100)), Some("ok".into())],
+            ],
+        ).unwrap();
+        let selected = vec![(3, "fact.id".into(), None), (5, "dimension.label".into(), None)];
+        let keep = retained_build_columns(&names, &[0], &selected, None, 3);
+        assert_eq!(keep, vec![0, 2]);
+        let rows = read_projected_build_rows(&root, &names, &keep, 1, 10, 4_096).unwrap();
+        assert_eq!(rows.len(), 1);
+        assert!(matches!(&rows[0][1], typed::Cell::Null));
+        assert!(matches!(&rows[0][2], typed::Cell::Text(value) if value == b"ok"));
+        fs::remove_dir_all(root).unwrap();
+    }
 
     #[test]
     fn probe_keys_match_materialized_keys_and_skip_invalid_values() {
