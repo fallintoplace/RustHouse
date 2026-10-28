@@ -19,6 +19,7 @@ pub(super) fn is_function(name: &str) -> bool {
             | "SUBTRACTMINUTES"
             | "ADDSECONDS"
             | "SUBTRACTSECONDS"
+            | "ADDMONTHS"
     )
 }
 
@@ -38,6 +39,7 @@ pub(super) fn parse_after_open(
         "SUBTRACTMINUTES" => offset_seconds(parser, depth, 60, true, true),
         "ADDSECONDS" => offset_seconds(parser, depth, 1, false, true),
         "SUBTRACTSECONDS" => offset_seconds(parser, depth, 1, true, true),
+        "ADDMONTHS" => offset_months(parser, depth, 1, false),
         _ => Err(ParseError(format!("unsupported date function: {name}"))),
     }
 }
@@ -196,3 +198,44 @@ fn offset_seconds(
     )?))
 }
 
+
+fn offset_months(
+    parser: &mut Parser,
+    depth: usize,
+    unit_months: i64,
+    subtract: bool,
+) -> Result<ConstantValue, ParseError> {
+    let input = super::text_scalar::text_arg(parser, depth + 1)?;
+    if !parser.take(Token::Comma) {
+        return Err(ParseError("calendar arithmetic requires an amount".into()));
+    }
+    let amount = super::text_scalar::integer_arg(parser, depth + 1)?;
+    if !parser.take(Token::RParen) {
+        return Err(ParseError("expected ')' after calendar arithmetic".into()));
+    }
+    let (Some(source), Some(amount)) = (input, amount) else {
+        return Ok(ConstantValue::Null);
+    };
+    let value = Temporal::parse(&source)?;
+    let (year, month, day) = civil_from_days(value.seconds.div_euclid(DAY_SECONDS));
+    let signed_amount = if subtract {
+        -i128::from(amount)
+    } else {
+        i128::from(amount)
+    };
+    let index = i128::from(year) * 12
+        + i128::from(month) - 1
+        + signed_amount * i128::from(unit_months);
+    let new_year = index.div_euclid(12);
+    if !(i128::from(MIN_YEAR)..=i128::from(MAX_YEAR)).contains(&new_year) {
+        return Err(ParseError("calendar arithmetic is outside 1900..2299".into()));
+    }
+    let year = i64::try_from(new_year)
+        .map_err(|_| ParseError("calendar year overflows".into()))?;
+    let month = u32::try_from(index.rem_euclid(12) + 1)
+        .map_err(|_| ParseError("calendar month overflows".into()))?;
+    let day = day.min(days_in_month(year, month));
+    let seconds = days_from_civil(year, month, day) * DAY_SECONDS
+        + value.seconds.rem_euclid(DAY_SECONDS);
+    Ok(ConstantValue::Text(Temporal::render(seconds, value.has_time)?))
+}
