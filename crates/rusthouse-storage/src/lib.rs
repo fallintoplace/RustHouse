@@ -13,6 +13,7 @@ pub mod distributed_quorum;
 mod decimal;
 pub mod distributed_replica_order;
 mod enums;
+pub mod distributed_membership;
 mod file_sizes;
 mod fixed_strings;
 mod fixed_width;

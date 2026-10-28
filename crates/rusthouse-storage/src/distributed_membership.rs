@@ -1,0 +1,83 @@
+//! Strict, explicit membership file for experimental storage clusters.
+use std::collections::HashSet;
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Member {
+    pub node: String,
+    pub zone: String,
+    pub weight: u16,
+}
+
+fn identifier(value: &str) -> bool {
+    !value.is_empty()
+        && value.len() <= 64
+        && value
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_'))
+}
+
+/// Format: one `node zone weight` record per line, at most 64 records.
+/// Membership is a configuration snapshot, not automatic discovery or consensus.
+pub fn parse_membership(text: &str) -> Result<Vec<Member>, &'static str> {
+    if text.len() > 8192 {
+        return Err("membership manifest too large");
+    }
+    let mut members = Vec::new();
+    let mut seen = HashSet::new();
+    for line in text.lines() {
+        if line.is_empty() {
+            return Err("empty membership record");
+        }
+        let fields: Vec<&str> = line.split_whitespace().collect();
+        if fields.len() != 3 || !identifier(fields[0]) || !identifier(fields[1]) {
+            return Err("invalid membership record");
+        }
+        let weight = fields[2]
+            .parse::<u16>()
+            .map_err(|_| "invalid member weight")?;
+        if !(1..=1000).contains(&weight) || !seen.insert(fields[0]) {
+            return Err("duplicate member or invalid weight");
+        }
+        members.push(Member {
+            node: fields[0].to_owned(),
+            zone: fields[1].to_owned(),
+            weight,
+        });
+        if members.len() > 64 {
+            return Err("too many cluster members");
+        }
+    }
+    if members.is_empty() {
+        return Err("membership is empty");
+    }
+    Ok(members)
+}
+
+/// Stable on-disk representation of an already validated member set.
+pub fn format_membership(members: &[Member]) -> Result<String, &'static str> {
+    let text = members
+        .iter()
+        .map(|member| format!("{} {} {}\n", member.node, member.zone, member.weight))
+        .collect::<String>();
+    parse_membership(&text)?;
+    Ok(text)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn round_trips_membership() {
+        let parsed = parse_membership("node_a eu1 3\nnode_b eu2 1\n").unwrap();
+        assert_eq!(parsed.len(), 2);
+        assert_eq!(format_membership(&parsed).unwrap(), "node_a eu1 3\nnode_b eu2 1\n");
+    }
+
+    #[test]
+    fn rejects_duplicates_and_bad_records() {
+        for input in ["", "a eu1 0\n", "a eu1 1\na eu2 2\n", "../etc eu 1\n", "a eu 1 extra\n"] {
+            assert!(parse_membership(input).is_err(), "{input}");
+        }
+    }
+}
