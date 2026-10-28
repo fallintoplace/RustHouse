@@ -10,6 +10,24 @@ from bench.common import latency_summary
 from bench.latency.run import make_cases
 
 
+def validate_query_record(index, case, result, runs):
+    if not isinstance(result, dict):
+        raise ValueError(f"query {index} has an invalid record")
+    if (type(result.get("id")) is not int or result["id"] != index
+            or result.get("name") != case.name or result.get("sql") != case.sql):
+        raise ValueError(f"query {index} does not match the expected generated SQL")
+    if result.get("status") != "passed" or result.get("error") is not None:
+        raise ValueError(f"query {index} did not pass exact-output verification")
+    samples = result.get("seconds")
+    if not isinstance(samples, list) or len(samples) != runs:
+        raise ValueError(f"query {index} has incomplete timing samples")
+    if any(type(value) not in (int, float) or not math.isfinite(value) or value < 0
+           for value in samples):
+        raise ValueError(f"query {index} has invalid timing samples")
+    if result.get("latency") != latency_summary(samples):
+        raise ValueError(f"query {index} has inconsistent latency statistics")
+
+
 def validate_report(report, *, rows, runs, warmups):
     if not isinstance(report, dict) or report.get("suite") != "generated-sql-latency":
         raise ValueError("wrong SQL latency report type")
@@ -25,21 +43,7 @@ def validate_report(report, *, rows, runs, warmups):
         raise ValueError("latency report must contain exactly 20 query results")
 
     for index, (case, result) in enumerate(zip(expected_cases, results), start=1):
-        if not isinstance(result, dict):
-            raise ValueError(f"query {index} has an invalid record")
-        if (type(result.get("id")) is not int or result["id"] != index
-                or result.get("name") != case.name or result.get("sql") != case.sql):
-            raise ValueError(f"query {index} does not match the expected generated SQL")
-        if result.get("status") != "passed" or result.get("error") is not None:
-            raise ValueError(f"query {index} did not pass exact-output verification")
-        samples = result.get("seconds")
-        if not isinstance(samples, list) or len(samples) != runs:
-            raise ValueError(f"query {index} has incomplete timing samples")
-        if any(type(value) not in (int, float) or not math.isfinite(value) or value < 0
-               for value in samples):
-            raise ValueError(f"query {index} has invalid timing samples")
-        if result.get("latency") != latency_summary(samples):
-            raise ValueError(f"query {index} has inconsistent latency statistics")
+        validate_query_record(index, case, result, runs)
     return len(results)
 
 
