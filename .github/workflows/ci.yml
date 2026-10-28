@@ -50,6 +50,11 @@ jobs:
           cache-on-failure: true
       - run: cargo test --workspace --locked
       - run: cargo build --workspace --locked
+      - name: Verify 20 generated SQL queries
+        run: |
+          python3 -m bench workload latency -- \
+            --binary target/debug/rusthouse \
+            --rows 512 --runs 1 --warmups 0
       - name: Verify analytics baseline against SQLite
         if: matrix.os == 'ubuntu-latest'
         run: |
