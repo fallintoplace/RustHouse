@@ -85,7 +85,7 @@ fn parallel_grouped_distinct(
                                     groups[id].distinct_uuids.insert(*values[row].as_bytes())
                                 }
                                 TypedColumn::Text(values) | TypedColumn::NullableText { values, .. } => {
-                                    groups[id].distinct_text.insert(values[row].to_vec())
+                                    groups[id].distinct_text.insert(values.get(row).unwrap().to_vec())
                                 }
                                 column => {
                                     groups[id].distinct.insert(typed::key_at(column, row))
