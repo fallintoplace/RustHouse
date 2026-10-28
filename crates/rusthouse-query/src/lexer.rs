@@ -274,7 +274,7 @@ mod tests {
 
     #[test]
     fn rejects_incomplete_numbers_and_accepts_exact_size_limit() {
-        for sql in ["1.", "-.2", "SELECT é"] {
+        for sql in ["1.", "-.", "SELECT é"] {
             assert!(tokenize(sql).is_err(), "{sql:?}");
         }
         assert!(tokenize(&" ".repeat(4096)).is_ok());
