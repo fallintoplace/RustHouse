@@ -55,6 +55,9 @@ fn read_with_deadline(stream: &mut TcpStream, timeout: Duration) -> Result<Vec<u
     let started = Instant::now();
     let max_wire = MAX_HEADER_BYTES + MAX_RESPONSE_BYTES + 1;
     let mut raw = Vec::new();
+    // The response header is immutable after its terminator. Parse it once,
+    // then compare subsequent network reads against the cached wire length.
+    let mut expected_length = None;
     let mut buffer = [0u8; 8192];
     loop {
         let remaining = timeout
@@ -85,12 +88,13 @@ fn read_with_deadline(stream: &mut TcpStream, timeout: Duration) -> Result<Vec<u
             break;
         }
         raw.extend_from_slice(&buffer[..size]);
-        if let Some(expected) = expected_wire_length(&raw)? {
-            // Content-Length is authoritative for this restricted peer protocol.
-            // Never block waiting for EOF on a valid, complete response.
-            if raw.len() >= expected {
-                break;
-            }
+        if expected_length.is_none() {
+            expected_length = expected_wire_length(&raw)?;
+        }
+        // Content-Length is authoritative for this restricted peer protocol.
+        // Never wait for EOF after receiving the entire declared body.
+        if expected_length.is_some_and(|expected| raw.len() >= expected) {
+            break;
         }
     }
     Ok(raw)
