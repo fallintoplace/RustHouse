@@ -1,8 +1,9 @@
 //! Bounded-memory exact median of physical integer columns.
 //! One byte of the key is selected per immutable scan. Each pass uses only
 //! 2 * 256 counters regardless of input cardinality.
-use super::ExecutionError;
-use rusthouse_storage::{NumericColumn, NumericQueryReader, PartMetadata};
+use super::{ExecutionError, batch_matches, count_batch_matches, typed};
+use super::predicates::CompiledPredicate;
+use rusthouse_storage::{NumericColumn, NumericQueryReader, PartMetadata, TypedColumn, TypedQueryReader};
 use std::path::Path;
 
 fn width_and_sign(kind: &str) -> Option<(usize, bool)> {
@@ -59,18 +60,85 @@ fn key_as_f64(key: u128, bits: usize, signed: bool) -> f64 {
     (extended as i128) as f64
 }
 
-/// Exact integer selection, with Float64 interpolation for even row counts.
-/// No data rows are retained between the passes.
-pub(super) fn median(
+/// Add the native integer batch directly to two radix histograms. Nullable
+/// rows are skipped before key encoding, so NULLs never affect rank.
+fn count_column(
+    column: &NumericColumn,
+    nulls: Option<&[u8]>,
+    included: Option<&[bool]>,
+    bits: usize,
+    shift: usize,
+    prefix_mask: u128,
+    prefixes: &[u128; 2],
+    histogram: &mut [[u64; 256]; 2],
+) -> Result<(), ExecutionError> {
+    let mut visit = |value: u128, row: usize| {
+        if nulls.is_some_and(|map| map[row] != 0)
+            || included.is_some_and(|mask| !mask[row])
+        {
+            return;
+        }
+        for side in 0..2 {
+            if value & prefix_mask != prefixes[side] & prefix_mask {
+                continue;
+            }
+            histogram[side][((value >> shift) & 255) as usize] += 1;
+        }
+    };
+    macro_rules! unsigned {
+        ($values:expr) => {
+            for (index, &value) in $values.iter().enumerate() {
+                visit(sorted_key_unsigned(u128::from(value)), index);
+            }
+        };
+    }
+    macro_rules! signed {
+        ($values:expr) => {
+            for (index, &value) in $values.iter().enumerate() {
+                visit(sorted_key_signed(i128::from(value), bits), index);
+            }
+        };
+    }
+    match column {
+        NumericColumn::UInt8(values) => unsigned!(values),
+        NumericColumn::UInt16(values) => unsigned!(values),
+        NumericColumn::UInt32(values) => unsigned!(values),
+        NumericColumn::UInt64(values) => unsigned!(values),
+        NumericColumn::UInt128(values) => unsigned!(values),
+        NumericColumn::Int8(values) => signed!(values),
+        NumericColumn::Int16(values) => signed!(values),
+        NumericColumn::Int32(values) => signed!(values),
+        NumericColumn::Int64(values) => signed!(values),
+        NumericColumn::Int128(values) => signed!(values),
+        _ => return Err(ExecutionError::Invalid(
+            "radix median requires a native integer column".into()
+        )),
+    }
+    Ok(())
+}
+
+/// Exact order statistics from bounded 256-bucket histograms. Each pass reads
+/// immutable parts sequentially and retains no values from previous passes.
+fn median_inner(
     part: &Path,
     column: &str,
     metadata: &PartMetadata,
+    n: u64,
+    nullable: bool,
+    filtered: Option<(&[String], &[Vec<CompiledPredicate>])>,
+    typed_filtered: Option<(&[String], &[Vec<typed::Condition>])>,
 ) -> Result<Option<String>, ExecutionError> {
     let kind = metadata.columns.iter().find(|item| item.name == column)
         .ok_or_else(|| ExecutionError::Invalid(format!("unknown column: {column}")))?;
-    let (bytes, signed) = width_and_sign(&kind.data_type)
+    let base = if nullable {
+        kind.data_type.strip_prefix("Nullable(")
+            .and_then(|kind| kind.strip_suffix(')'))
+            .ok_or_else(|| ExecutionError::Invalid("expected Nullable column".into()))?
+    } else {
+        &kind.data_type
+    };
+    let (bytes, signed) = width_and_sign(base)
         .ok_or_else(|| ExecutionError::Invalid("radix median requires integer values".into()))?;
-    let n = metadata.rows;
     if n == 0 { return Ok(None); }
     let bits = bytes * 8;
     let mut keys = [0_u128; 2];
@@ -84,45 +152,34 @@ pub(super) fn median(
             u128::MAX << (shift + 8)
         };
         let mut histogram = [[0_u64; 256]; 2];
-        let mut reader = NumericQueryReader::open_with_metadata(part, &names, metadata)?;
-        while let Some(batch) = reader.next_batch()? {
-            let mut visit = |value: u128| {
-                for side in 0..2 {
-                    if value & prefix_mask != keys[side] & prefix_mask {
-                        continue;
-                    }
-                    let bucket = ((value >> shift) & 255) as usize;
-                    histogram[side][bucket] += 1;
-                }
-            };
-            macro_rules! unsigned {
-                ($values:expr) => {
-                    for &value in $values {
-                        visit(sorted_key_unsigned(u128::from(value)));
-                    }
+        if nullable {
+            let columns = typed_filtered.map_or(names.as_slice(), |(columns, _)| columns);
+            let mut reader = TypedQueryReader::open_with_metadata(part, columns, metadata)?;
+            while let Some(batch) = reader.next_batch()? {
+                let TypedColumn::NullableNumeric { values, nulls } = &batch[0] else {
+                    return Err(ExecutionError::Invalid(
+                        "nullable radix input changed type".into()
+                    ));
                 };
+                let selected = typed_filtered.map(|(_, conditions)| {
+                    (0..batch[0].len())
+                        .map(|row| typed::passes(&batch, row, conditions))
+                        .collect::<Vec<_>>()
+                });
+                count_column(values, Some(nulls), selected.as_deref(),
+                    bits, shift, prefix_mask, &keys, &mut histogram)?;
             }
-            macro_rules! signed {
-                ($values:expr) => {
-                    for &value in $values {
-                        visit(sorted_key_signed(i128::from(value), bits));
-                    }
-                };
-            }
-            match &batch[0] {
-                NumericColumn::UInt8(values) => unsigned!(values),
-                NumericColumn::UInt16(values) => unsigned!(values),
-                NumericColumn::UInt32(values) => unsigned!(values),
-                NumericColumn::UInt64(values) => unsigned!(values),
-                NumericColumn::UInt128(values) => unsigned!(values),
-                NumericColumn::Int8(values) => signed!(values),
-                NumericColumn::Int16(values) => signed!(values),
-                NumericColumn::Int32(values) => signed!(values),
-                NumericColumn::Int64(values) => signed!(values),
-                NumericColumn::Int128(values) => signed!(values),
-                _ => return Err(ExecutionError::Invalid(
-                    "radix median column changed type during scan".into()
-                )),
+        } else {
+            let scan_columns = filtered.map_or(names.as_slice(), |(columns, _)| columns);
+            let mut reader = NumericQueryReader::open_with_metadata(part, scan_columns, metadata)?;
+            while let Some(batch) = reader.next_batch()? {
+                let selected = filtered.map(|(_, conditions)| {
+                    (0..batch[0].len())
+                        .map(|row| batch_matches(&batch, row, conditions))
+                        .collect::<Vec<_>>()
+                });
+                count_column(&batch[0], None, selected.as_deref(),
+                    bits, shift, prefix_mask, &keys, &mut histogram)?;
             }
         }
         for side in 0..2 {
@@ -151,6 +208,79 @@ pub(super) fn median(
         let high = key_as_f64(keys[1], bits, signed);
         Ok(Some((low / 2.0 + high / 2.0).to_string()))
     }
+}
+
+/// The non-nullable path uses the snapshot's exact verified row count.
+pub(super) fn median(
+    part: &Path,
+    column: &str,
+    metadata: &PartMetadata,
+) -> Result<Option<String>, ExecutionError> {
+    median_inner(part, column, metadata, metadata.rows, false, None, None)
+}
+
+/// The nullable path scans compact null maps once to derive the SQL count,
+/// then excludes nulls from each bounded radix pass.
+pub(super) fn median_nullable(
+    part: &Path,
+    column: &str,
+    metadata: &PartMetadata,
+) -> Result<Option<String>, ExecutionError> {
+    let names = [column.to_owned()];
+    let mut reader = TypedQueryReader::open_with_metadata(part, &names, metadata)?;
+    let mut count = 0u64;
+    while let Some(nulls) = reader.next_null_batch()? {
+        count = count.checked_add(nulls.iter().filter(|&&v| v == 0).count() as u64)
+            .ok_or_else(|| ExecutionError::Invalid("median row count overflow".into()))?;
+    }
+    drop(reader);
+    median_inner(part, column, metadata, count, true, None, None)
+}
+
+/// Filtered nullable medians combine typed predicates and NULL semantics
+/// without retaining a large bitmap or all qualifying numeric values.
+pub(super) fn median_nullable_filtered(
+    part: &Path,
+    column: &str,
+    metadata: &PartMetadata,
+    scan_columns: &[String],
+    conditions: &[Vec<typed::Condition>],
+) -> Result<Option<String>, ExecutionError> {
+    let mut reader = TypedQueryReader::open_with_metadata(part, scan_columns, metadata)?;
+    let mut selected_rows = 0u64;
+    while let Some(batch) = reader.next_batch()? {
+        for row in 0..batch[0].len() {
+            if !typed::is_null_at(&batch[0], row) && typed::passes(&batch, row, conditions) {
+                selected_rows = selected_rows.checked_add(1)
+                    .ok_or_else(|| ExecutionError::Invalid("median row count overflow".into()))?;
+            }
+        }
+    }
+    drop(reader);
+    median_inner(part, column, metadata, selected_rows, true, None,
+        Some((scan_columns, conditions)))
+}
+
+/// Exact filtered order statistics without storing rows or hash-set keys.
+pub(super) fn median_filtered(
+    part: &Path,
+    column: &str,
+    metadata: &PartMetadata,
+    scan_columns: &[String],
+    conditions: &[Vec<CompiledPredicate>],
+) -> Result<Option<String>, ExecutionError> {
+    let mut reader = NumericQueryReader::open_with_metadata(part, scan_columns, metadata)?;
+    let mut selected_rows = 0_u64;
+    while let Some(batch) = reader.next_batch()? {
+        selected_rows = selected_rows
+            .checked_add(count_batch_matches(&batch, conditions) as u64)
+            .ok_or_else(|| ExecutionError::Invalid("median row count overflow".into()))?;
+    }
+    drop(reader);
+    median_inner(
+        part, column, metadata, selected_rows, false,
+        Some((scan_columns, conditions)), None,
+    )
 }
 
 #[cfg(test)]

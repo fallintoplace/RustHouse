@@ -830,10 +830,16 @@ pub(super) fn execute_aggregate_part<W: Write>(
     let no_filters = query.predicates.is_empty() && query.or_predicates.is_empty();
     // Exact radix selection needs only 256 counters per byte and a bounded
     // number of repeated immutable scans, not a full materialized row array.
-    if function == AggregateFunction::Median && no_filters {
+    if function == AggregateFunction::Median {
         if let Some(kind) = metadata.columns.iter().find(|candidate| candidate.name == column) {
             if super::radix_median::supports_type(&kind.data_type) {
-                let median = super::radix_median::median(part, column, &metadata)?;
+                let median = if no_filters {
+                    super::radix_median::median(part, column, &metadata)?
+                } else {
+                    super::radix_median::median_filtered(
+                        part, column, &metadata, &scan_columns, &comparisons,
+                    )?
+                };
                 if query.offset.unwrap_or(0) == 0 {
                     writeln!(output, "{}", median.unwrap_or_else(|| "NULL".into()))?;
                 }
