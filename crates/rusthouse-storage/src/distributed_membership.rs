@@ -17,6 +17,32 @@ fn identifier(value: &str) -> bool {
             .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_'))
 }
 
+fn parse_member(line: &str) -> Result<Member, &'static str> {
+    if line.is_empty() {
+        return Err("empty membership record");
+    }
+    let mut fields = line.split_whitespace();
+    let (Some(node), Some(zone), Some(weight_text), None) =
+        (fields.next(), fields.next(), fields.next(), fields.next())
+    else {
+        return Err("invalid membership record");
+    };
+    if !identifier(node) || !identifier(zone) {
+        return Err("invalid membership record");
+    }
+    let weight = weight_text
+        .parse::<u16>()
+        .map_err(|_| "invalid member weight")?;
+    if !(1..=1000).contains(&weight) {
+        return Err("duplicate member or invalid weight");
+    }
+    Ok(Member {
+        node: node.to_owned(),
+        zone: zone.to_owned(),
+        weight,
+    })
+}
+
 /// Format: one `node zone weight` record per line, at most 64 records.
 /// Membership is a configuration snapshot, not automatic discovery or consensus.
 pub fn parse_membership(text: &str) -> Result<Vec<Member>, &'static str> {
@@ -26,29 +52,11 @@ pub fn parse_membership(text: &str) -> Result<Vec<Member>, &'static str> {
     let mut members = Vec::new();
     let mut seen = HashSet::new();
     for line in text.lines() {
-        if line.is_empty() {
-            return Err("empty membership record");
-        }
-        let mut fields = line.split_whitespace();
-        let (Some(node), Some(zone), Some(weight_text), None) =
-            (fields.next(), fields.next(), fields.next(), fields.next())
-        else {
-            return Err("invalid membership record");
-        };
-        if !identifier(node) || !identifier(zone) {
-            return Err("invalid membership record");
-        }
-        let weight = weight_text
-            .parse::<u16>()
-            .map_err(|_| "invalid member weight")?;
-        if !(1..=1000).contains(&weight) || !seen.insert(node) {
+        let member = parse_member(line)?;
+        if !seen.insert(member.node.clone()) {
             return Err("duplicate member or invalid weight");
         }
-        members.push(Member {
-            node: node.to_owned(),
-            zone: zone.to_owned(),
-            weight,
-        });
+        members.push(member);
         if members.len() > 64 {
             return Err("too many cluster members");
         }
