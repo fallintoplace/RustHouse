@@ -31,7 +31,8 @@ def assess_query(result, min_samples=5, max_cv_percent=10.0):
 
 
 def assess_report(report, min_samples=5, max_cv_percent=10.0):
-    if not isinstance(report, dict) or not isinstance(report.get("results"), list):
+    if (not isinstance(report, dict) or not isinstance(report.get("results"), list)
+            or not report["results"]):
         raise ValueError("invalid TPC-H report")
     return {
         "min_samples": min_samples, "max_cv_percent": max_cv_percent,
