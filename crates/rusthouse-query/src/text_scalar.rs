@@ -87,6 +87,7 @@ pub(super) fn is_function(name: &str) -> bool {
             | "RPAD"
             | "LOWERUTF8"
             | "SPACE"
+            | "IPV4NUMTOSTRINGCLASSC"
             | "IPV4NUMTOSTRING"
             | "INET_NTOA"
             | "IPV4STRINGTONUMORNULL"
@@ -1976,6 +1977,20 @@ fn parse_at_depth(parser: &mut Parser, depth: usize) -> Result<ConstantValue, Pa
                         ParseError("IPv4NumToString input must fit UInt32".into())
                     })?;
                     ConstantValue::Text(std::net::Ipv4Addr::from(number).to_string())
+                }
+                None => ConstantValue::Null,
+            }
+        }
+        "IPV4NUMTOSTRINGCLASSC" => {
+            let input = integer_arg(parser, depth + 1)?;
+            require(parser, Token::RParen, "IPv4NumToStringClassC requires one argument")?;
+            match input {
+                Some(input) => {
+                    let number = u32::try_from(input).map_err(|_| {
+                        ParseError("IPv4NumToStringClassC input must fit UInt32".into())
+                    })?;
+                    let [a, b, c, _] = std::net::Ipv4Addr::from(number).octets();
+                    ConstantValue::Text(format!("{a}.{b}.{c}.xxx"))
                 }
                 None => ConstantValue::Null,
             }
