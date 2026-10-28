@@ -47,6 +47,7 @@ pub(super) fn is_function(name: &str) -> bool {
             | "JSONEXTRACTSTRING"
             | "JSONEXTRACTRAW"
             | "SUBSTRING"
+            | "YYYYMMDDTODATE"
             | "HASSUBSEQUENCECASEINSENSITIVE"
             | "OVERLAY"
             | "QUERYSTRING"
@@ -831,6 +832,33 @@ fn parse_at_depth(parser: &mut Parser, depth: usize) -> Result<ConstantValue, Pa
                         .map_or("", |(_, fragment)| fragment)
                         .to_owned(),
                 ),
+                None => ConstantValue::Null,
+            }
+        }
+        "YYYYMMDDTODATE" => {
+            let input = integer_arg(parser, depth + 1)?;
+            require(
+                parser,
+                Token::RParen,
+                "YYYYMMDDToDate requires one argument",
+            )?;
+            match input {
+                Some(value) => {
+                    let digits = value.to_string();
+                    if digits.len() != 8 || !digits.is_ascii() {
+                        return Err(ParseError("YYYYMMDDToDate requires a 8-digit integer".into()));
+                    }
+                    let timestamp = format!(
+                        "{}-{}-{}",
+                        &digits[..4],
+                        &digits[4..6],
+                        &digits[6..8],
+                    );
+                    if rusthouse_storage::parse_date(&timestamp).is_none() {
+                        return Err(ParseError("YYYYMMDDToDate requires a valid UTC calendar value".into()));
+                    }
+                    ConstantValue::Text(timestamp)
+                }
                 None => ConstantValue::Null,
             }
         }
