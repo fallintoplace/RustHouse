@@ -48,6 +48,7 @@ pub(super) fn is_function(name: &str) -> bool {
             | "COUNT_SUBSTRING"
             | "NULLIF"
             | "LAST_INDEX_OF"
+            | "PATH"
             | "LEFT"
             | "REPLACE_FIRST"
             | "STARTS_WITH"
@@ -670,6 +671,27 @@ fn parse_at_depth(parser: &mut Parser, depth: usize) -> Result<ConstantValue, Pa
                     )
                 }
                 _ => ConstantValue::Null,
+            }
+        }
+        "PATH" => {
+            let input = text_arg(parser, depth + 1)?;
+            require(parser, Token::RParen, "path requires one argument")?;
+            match input {
+                Some(input) => {
+                    let suffix = if let Some((_, after_scheme)) = input.split_once("://") {
+                        let start = after_scheme.find(['/', '?', '#'])
+                            .unwrap_or(after_scheme.len());
+                        &after_scheme[start..]
+                    } else {
+                        input.as_str()
+                    };
+                    let end = suffix.find(['?', '#']).unwrap_or(suffix.len());
+                    let path = &suffix[..end];
+                    ConstantValue::Text(
+                        if path.starts_with('/') { path } else { "" }.to_owned()
+                    )
+                }
+                None => ConstantValue::Null,
             }
         }
         "NULLIF" => {
