@@ -598,12 +598,21 @@ pub(super) fn passes(batch: &[TypedColumn], row: usize, branches: &[Vec<Conditio
                     _ => false,
                 },
                 Test::DistinctFrom(target, negated) => {
-                    let equal = if let Cell::Numeric(super::Number::Float(right)) = target {
-                        matches!(cell(column, row), Cell::Numeric(super::Number::Float(left)) if left.is_nan() && right.is_nan())
-                            || matches_comparison_at(column, row, target, Operator::Eq)
-                    } else {
-                        matches_comparison_at(column, row, target, Operator::Eq)
-                    };
+                    // SQL null-safe comparisons consider two NaNs equal.
+                    // Read the numeric vector directly instead of boxing a
+                    // Float in a Cell to inspect its NaN bit.
+                    let nan_equal = matches!(target, Cell::Numeric(Number::Float(value)) if value.is_nan())
+                        && match column {
+                            TypedColumn::Numeric(values) => {
+                                matches!(number_at(values, row), Number::Float(n) if n.is_nan())
+                            }
+                            TypedColumn::NullableNumeric { values, nulls } if nulls[row] == 0 => {
+                                matches!(number_at(values, row), Number::Float(n) if n.is_nan())
+                            }
+                            _ => false,
+                        };
+                    let equal = nan_equal
+                        || matches_comparison_at(column, row, target, Operator::Eq);
                     equal == *negated
                 }
                 Test::In(targets, negated) => {
@@ -2065,5 +2074,31 @@ mod uuid_literal_byte_parse_tests {
         ] {
             assert!(uuid_literal_bytes(invalid).is_err(), "{invalid}");
         }
+    }
+}
+
+#[cfg(test)]
+mod native_nan_distinct_from_tests {
+    use super::{Condition, Number, Test, Cell, passes};
+    use rusthouse_storage::{NumericColumn, TypedColumn};
+
+    #[test]
+    fn null_safe_nan_equality_reads_direct_numeric_values() {
+        let batch = [TypedColumn::NullableNumeric {
+            values: NumericColumn::Float64(vec![f64::NAN, 1.0, f64::NAN]),
+            nulls: vec![0, 0, 1],
+        }];
+        let same = [vec![Condition {
+            index: 0, test: Test::DistinctFrom(Cell::Numeric(Number::Float(f64::NAN)), true),
+        }]];
+        assert!(passes(&batch, 0, &same));
+        assert!(!passes(&batch, 1, &same));
+        assert!(!passes(&batch, 2, &same));
+        let different = [vec![Condition {
+            index: 0, test: Test::DistinctFrom(Cell::Numeric(Number::Float(f64::NAN)), false),
+        }]];
+        assert!(!passes(&batch, 0, &different));
+        assert!(passes(&batch, 1, &different));
+        assert!(passes(&batch, 2, &different));
     }
 }
