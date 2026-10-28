@@ -188,17 +188,25 @@ mod tests {
 
     #[test]
     fn writes_medium_ascii_json_strings_once() {
-        struct Counting { calls: usize, bytes: Vec<u8> }
+        struct Counting {
+            calls: usize,
+            bytes: Vec<u8>,
+        }
         impl Write for Counting {
             fn write(&mut self, bytes: &[u8]) -> io::Result<usize> {
                 self.calls += 1;
                 self.bytes.extend_from_slice(bytes);
                 Ok(bytes.len())
             }
-            fn flush(&mut self) -> io::Result<()> { Ok(()) }
+            fn flush(&mut self) -> io::Result<()> {
+                Ok(())
+            }
         }
         let plain = vec![b'x'; 200];
-        let mut sink = Counting { calls: 0, bytes: Vec::new() };
+        let mut sink = Counting {
+            calls: 0,
+            bytes: Vec::new(),
+        };
         write_json_string(&mut sink, &plain).unwrap();
         assert_eq!(sink.calls, 1);
         assert_eq!(sink.bytes.len(), 202);
