@@ -369,7 +369,13 @@ mod tests {
 
     #[test]
     fn tokenizes_large_plain_sql_statements_without_losing_positions() {
-        let sql = format!("SELECT {}", (0..100).map(|i| i.to_string()).collect::<Vec<_>>().join(","));
+        let sql = format!(
+            "SELECT {}",
+            (0..100)
+                .map(|i| i.to_string())
+                .collect::<Vec<_>>()
+                .join(",")
+        );
         let tokens = tokenize(&sql).unwrap();
         assert!(matches!(tokens.first(), Some(Token::Word(word)) if word == "SELECT"));
         assert_eq!(tokens.len(), 200);
