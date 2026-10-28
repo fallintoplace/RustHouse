@@ -16,6 +16,7 @@ pub(super) fn is_function(name: &str) -> bool {
             | "CHR"
             | "STRINGBYTESUNIQ"
             | "BIT_LENGTH"
+            | "MACNUMTOSTRING"
             | "IS_INT64"
             | "BTRIM"
             | "TRIMBOTH"
@@ -230,6 +231,24 @@ fn parse_at_depth(parser: &mut Parser, depth: usize) -> Result<ConstantValue, Pa
                         seen[usize::from(byte)] = true;
                     }
                     ConstantValue::Integer(seen.iter().filter(|&&present| present).count() as i64)
+                }
+                None => ConstantValue::Null,
+            }
+        }
+        "MACNUMTOSTRING" => {
+            let input = integer_arg(parser, depth + 1)?;
+            require(parser, Token::RParen, "MACNumToString requires one argument")?;
+            match input {
+                Some(value) => {
+                    let bits = value as u64;
+                    let mut octets = [0u8; 6];
+                    for (index, octet) in octets.iter_mut().enumerate() {
+                        *octet = (bits >> (8 * (5 - index))) as u8;
+                    }
+                    ConstantValue::Text(format!(
+                        "{:02X}:{:02X}:{:02X}:{:02X}:{:02X}:{:02X}",
+                        octets[0], octets[1], octets[2], octets[3], octets[4], octets[5],
+                    ))
                 }
                 None => ConstantValue::Null,
             }
