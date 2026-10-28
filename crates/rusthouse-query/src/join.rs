@@ -293,6 +293,13 @@ pub fn parse_join(sql: &str) -> Result<Option<JoinSelect>, ParseError> {
                         )));
                     }
                 }
+                let first_is_new = first.relation == alias;
+                let second_is_new = second.relation == alias;
+                if first_is_new == second_is_new {
+                    return Err(ParseError(
+                        "JOIN ON must compare an existing relation to the new table".into(),
+                    ));
+                }
                 keys.push((first, second));
                 if !parser.keyword("AND") {
                     break;
@@ -522,6 +529,21 @@ pub fn explain_join(query: &JoinSelect) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn chained_join_rejects_equalities_on_the_same_side() {
+        for statement in [
+            "SELECT * FROM a x JOIN b y ON x.id = y.id JOIN c z ON x.id = y.id",
+            "SELECT * FROM a x JOIN b y ON x.id = y.id JOIN c z ON z.id = z.other",
+            "SELECT * FROM a x JOIN b y ON x.id = y.id JOIN c z ON z.id = x.id AND x.k = y.k",
+        ] {
+            assert!(parse_join(statement).is_err(), "{statement}");
+        }
+        assert!(parse_join(
+            "SELECT * FROM a x JOIN b y ON x.id = y.id JOIN c z ON y.id = z.id",
+        )
+        .is_ok());
+    }
 
     #[test]
     fn explain_shows_the_original_using_predicate() {
