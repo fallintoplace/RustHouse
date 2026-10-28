@@ -54,6 +54,7 @@ pub(super) fn is_function(name: &str) -> bool {
             | "SUBSTRING_INDEX"
             | "SUBSTRINGINDEXUTF8"
             | "QUERYSTRINGANDFRAGMENT"
+            | "FORMATREADABLETIMEDELTA"
             | "TO_INT64"
             | "TRIM"
             | "LTRIM"
@@ -128,6 +129,63 @@ fn parse_at_depth(parser: &mut Parser, depth: usize) -> Result<ConstantValue, Pa
                         .map_err(|_| ParseError("lengthUTF8 result exceeds Int64".into()))?,
                 ),
                 None => ConstantValue::Null,
+            }
+        }
+        "FORMATREADABLETIMEDELTA" => {
+            let value = integer_arg(parser, depth + 1)?;
+            let maximum_unit = if parser.take(Token::Comma) {
+                Some(text_arg(parser, depth + 1)?)
+            } else {
+                None
+            };
+            let minimum_unit = if parser.take(Token::Comma) {
+                Some(text_arg(parser, depth + 1)?)
+            } else {
+                None
+            };
+            require(parser, Token::RParen, "formatReadableTimeDelta requires ')'")?;
+            if value.is_none() || matches!(maximum_unit, Some(None))
+                || matches!(minimum_unit, Some(None))
+            {
+                ConstantValue::Null
+            } else {
+                let maximum = maximum_unit.flatten().unwrap_or_else(|| "years".into());
+                let minimum = minimum_unit.flatten().unwrap_or_else(|| "seconds".into());
+                const UNITS: &[(&str, u64)] = &[
+                    ("years", 31_536_000), ("months", 2_635_200),
+                    ("days", 86_400), ("hours", 3_600),
+                    ("minutes", 60), ("seconds", 1),
+                ];
+                let max_index = UNITS.iter().position(|(name, _)| *name == maximum)
+                    .ok_or_else(|| ParseError("invalid maximum time unit".into()))?;
+                let min_index = UNITS.iter().position(|(name, _)| *name == minimum)
+                    .ok_or_else(|| ParseError("invalid minimum time unit".into()))?;
+                if max_index > min_index {
+                    return Err(ParseError("minimum unit exceeds maximum unit".into()));
+                }
+                let seconds = value.expect("validated nonnull time value");
+                let mut remaining = seconds.unsigned_abs();
+                let mut parts = Vec::new();
+                for (index, &(name, unit_seconds)) in UNITS.iter().enumerate()
+                    .skip(max_index).take(min_index - max_index + 1)
+                {
+                    let count = remaining / unit_seconds;
+                    remaining %= unit_seconds;
+                    if count > 0 || (index == min_index && parts.is_empty()) {
+                        let singular = name.trim_end_matches('s');
+                        parts.push(format!("{count} {singular}{}", if count == 1 { "" } else { "s" }));
+                    }
+                }
+                let mut formatted = if parts.len() <= 1 {
+                    parts.join("")
+                } else {
+                    let last = parts.pop().expect("at least two time parts");
+                    format!("{} and {last}", parts.join(", "))
+                };
+                if seconds < 0 {
+                    formatted.insert(0, '-');
+                }
+                ConstantValue::Text(formatted)
             }
         }
         "ASCII" => {
@@ -2004,5 +2062,27 @@ fn text_arg(parser: &mut Parser, depth: usize) -> Result<Option<String>, ParseEr
         _ => Err(ParseError(
             "expected a string literal or string function".into(),
         )),
+    }
+}
+
+#[cfg(test)]
+mod clickhouse_readable_time_delta_tests {
+    use crate::{parse_select, ConstantValue, Projection};
+    #[test]
+    fn formats_second_intervals_and_unit_limits() {
+        for (sql, expected) in [
+            ("SELECT formatReadableTimeDelta(0)", "0 seconds"),
+            ("SELECT formatReadableTimeDelta(12345)", "3 hours, 25 minutes and 45 seconds"),
+            ("SELECT formatReadableTimeDelta(100, 'minutes')", "1 minute and 40 seconds"),
+            ("SELECT formatReadableTimeDelta(12345, 'minutes')", "205 minutes and 45 seconds"),
+            ("SELECT formatReadableTimeDelta(-60)", "-1 minute"),
+            ("SELECT formatReadableTimeDelta(3600, 'minutes', 'minutes')", "60 minutes"),
+            ("SELECT formatReadableTimeDelta(5456456)", "2 months, 2 days, 3 hours, 40 minutes and 56 seconds"),
+        ] {
+            assert!(matches!(parse_select(sql).unwrap().projection, Projection::Constants(values)
+                if values.len() == 1 && values[0].value == ConstantValue::Text(expected.into())), "{sql}");
+        }
+        assert!(parse_select("SELECT formatReadableTimeDelta(60, 'invalid')").is_err());
+        assert!(parse_select("SELECT formatReadableTimeDelta(60, 'minutes', 'hours')").is_err());
     }
 }
