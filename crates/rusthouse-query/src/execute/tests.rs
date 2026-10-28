@@ -637,10 +637,10 @@ fn orders_unfiltered_generated_ranges_without_scanning() {
         .unwrap(),
         "number\n"
     );
-    assert!(run("SELECT number FROM numbers(100001) ORDER BY number", None).is_err());
+    assert!(run("SELECT number FROM numbers(200001) ORDER BY number", None).is_err());
     assert!(
         run(
-            "SELECT number FROM numbers(100001) ORDER BY number LIMIT 100001",
+            "SELECT number FROM numbers(200001) ORDER BY number LIMIT 200001",
             None
         )
         .is_err()
