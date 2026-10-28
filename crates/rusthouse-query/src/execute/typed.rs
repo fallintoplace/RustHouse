@@ -996,6 +996,11 @@ pub(super) fn execute_typed<W: Write>(
             .and_then(|count| count.checked_add(offset))
             .filter(|count| *count <= MAX_BUFFERED_ROWS)
     };
+    // Allocate only the bounded set of winning rows. Avoid repeated heap
+    // growth for typed ORDER BY while leaving unlimited scans lazy.
+    if let Some(capacity) = top_capacity {
+        top.reserve(capacity.min(1024));
+    }
     let no_filters = query.predicates.is_empty() && query.or_predicates.is_empty();
     if no_filters && !is_count && !is_count_column && !is_count_distinct
         && !is_grouped && !query.distinct && sort_indices.is_empty() {
