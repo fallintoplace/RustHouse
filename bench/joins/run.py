@@ -44,7 +44,9 @@ def execute(binary, database, sql, timeout):
     return cli_sql(binary, database, sql, timeout)
 
 def verify_result(output, expected_labels):
-    lines = output.splitlines()
+    if output and not output.endswith(b"\n"):
+        raise ValueError("join output is missing its final newline")
+    lines = output.split(b"\n")[:-1] if output else []
     if len(lines) != len(expected_labels):
         raise ValueError(
             f"expected {len(expected_labels)} join rows, received {len(lines)}"
@@ -54,7 +56,10 @@ def verify_result(output, expected_labels):
         columns = row.decode("utf-8").split("\t")
         if len(columns) != 2:
             raise ValueError(f"unexpected join row: {row!r}")
-        identifier = int(columns[0])
+        identifier_text = columns[0]
+        identifier = int(identifier_text)
+        if identifier_text != str(identifier):
+            raise ValueError(f"noncanonical join key: {identifier_text!r}")
         if identifier in ids:
             raise ValueError(f"duplicate join key: {identifier}")
         if expected_labels.get(identifier) != columns[1]:
@@ -79,7 +84,12 @@ def main(argv=None):
     parser.add_argument("--timeout", type=float, default=120)
     parser.add_argument("--output", type=Path)
     args = parser.parse_args(argv)
-    if args.runs < 1 or args.warmups < 0 or args.timeout <= 0:
+    if (
+        args.runs < 1
+        or args.warmups < 0
+        or not math.isfinite(args.timeout)
+        or args.timeout <= 0
+    ):
         parser.error("invalid run count, warmups, or timeout")
     with tempfile.TemporaryDirectory(prefix="rusthouse-join-bench-") as root:
         root = Path(root)
