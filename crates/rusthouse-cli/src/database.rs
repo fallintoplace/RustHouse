@@ -422,9 +422,7 @@ pub(super) fn insert_stream(
     })
 }
 
-/// Bulk insertion under the caller's exclusive database write lock.
-/// All rows are validated before staging a new generation.
-
+/// The caller must already own the exclusive database write lock.
 pub(super) fn insert_many_locked(database: &Path, insert: &Insert) -> Result<(), String> {
     let cols = columns(database, &insert.table)?;
     let (_, parts) = validated_parts(database, &insert.table, &cols)?;

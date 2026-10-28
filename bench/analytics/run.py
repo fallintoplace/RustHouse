@@ -94,13 +94,15 @@ def run_benchmark(queries, indices, runs, timeout, execute, reference_dir=None, 
             except (OSError, RuntimeError, subprocess.TimeoutExpired, urllib.error.URLError) as error:
                 status, failure = "error", str(error)[:2000]
                 break
+            # Reference file I/O and comparisons are outside the timed query.
+            finished = time.perf_counter_ns() if start is not None else None
             if expected_path is not None:
                 invalid = reference_failure(expected_path, output)
                 if invalid is not None:
                     status, failure = invalid
                     break
-            if start is not None:
-                elapsed = (time.perf_counter_ns() - start) / 1_000_000_000
+            if finished is not None:
+                elapsed = (finished - start) / 1_000_000_000
                 timings.append(round(elapsed, 9))
         if status not in ("passed", "unverified"):
             timings = []

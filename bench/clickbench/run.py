@@ -144,11 +144,13 @@ def benchmark_one(number, sql, execute, runs, warmups, reference=None):
             error = str(failure)
             status = error_status(error)
             break
+        # Measure the engine invocation, not Python golden-output comparison.
+        finished = time.perf_counter() if start is not None else None
         if reference is not None and not matches_reference(output, reference):
             status, error = "mismatch", "output differs from the reference"
             break
-        if start is not None:
-            elapsed.append(time.perf_counter() - start)
+        if finished is not None:
+            elapsed.append(finished - start)
     if status not in SUCCESS:
         elapsed = []
     return {

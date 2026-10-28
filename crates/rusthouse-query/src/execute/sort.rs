@@ -90,8 +90,7 @@ impl SortedRows {
         offset: usize,
         descending: bool,
     ) -> Result<Self, ExecutionError> {
-        let mut sorted = Self::new(limit, descending);
-        sorted.requested = limit
+        let requested = limit
             .map(|limit| {
                 limit
                     .checked_add(offset)
@@ -99,11 +98,11 @@ impl SortedRows {
             })
             .transpose()?
             .unwrap_or(usize::MAX);
+        // Construct directly with the page size instead of allocating for
+        // LIMIT and then growing immediately to accommodate OFFSET.
+        let mut sorted = Self::new(limit.map(|_| requested), descending);
+        sorted.requested = requested;
         sorted.offset = offset;
-        if limit.is_some() {
-            // OFFSET expands the number of retained candidates beyond LIMIT.
-            sorted.rows.reserve(sorted.requested.min(1024));
-        }
         Ok(sorted)
     }
 

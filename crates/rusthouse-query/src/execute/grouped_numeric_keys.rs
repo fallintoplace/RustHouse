@@ -21,6 +21,24 @@ fn byte_group_key(column: &TypedColumn, row: usize) -> Option<u8> {
     }
 }
 
+fn numeric_value_at(column: &TypedColumn, row: usize) -> Result<Option<Number>, ExecutionError> {
+    // Avoid constructing a generic Cell for every aggregate value in
+    // large GROUP BY scans. NULLs are filtered directly from the null map.
+    match column {
+        TypedColumn::Numeric(values) => Ok(Some(super::number_at(values, row))),
+        TypedColumn::NullableNumeric { values, nulls } => {
+            if nulls[row] != 0 {
+                Ok(None)
+            } else {
+                Ok(Some(super::number_at(values, row)))
+            }
+        }
+        _ => Err(ExecutionError::Invalid(
+            "numeric aggregates require numeric columns".into(),
+        )),
+    }
+}
+
 pub(super) fn execute<W: Write>(
     query: &Select,
     part: &Path,
@@ -182,14 +200,8 @@ pub(super) fn execute<W: Write>(
                     }
                     continue;
                 }
-                match typed::cell(&batch[index], row) {
-                    Cell::Numeric(value) => state.update(value)?,
-                    Cell::Null => {}
-                    Cell::Text(_) | Cell::Uuid(_) => {
-                        return Err(ExecutionError::Invalid(
-                            "numeric aggregates require numeric columns".into(),
-                        ));
-                    }
+                if let Some(value) = numeric_value_at(&batch[index], row)? {
+                    state.update(value)?;
                 }
             }
         }
@@ -263,4 +275,27 @@ pub(super) fn execute<W: Write>(
         }
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod direct_grouped_numeric_tests {
+    use super::*;
+
+    #[test]
+    fn reads_grouped_aggregate_values_and_skips_nulls() {
+        let plain = TypedColumn::Numeric(NumericColumn::UInt64(vec![7, 11]));
+        assert!(matches!(
+            numeric_value_at(&plain, 1).unwrap(),
+            Some(Number::Unsigned(11))
+        ));
+        let nullable = TypedColumn::NullableNumeric {
+            values: NumericColumn::Int16(vec![-8, 99]),
+            nulls: vec![0, 1],
+        };
+        assert!(matches!(
+            numeric_value_at(&nullable, 0).unwrap(),
+            Some(Number::Signed(-8))
+        ));
+        assert!(numeric_value_at(&nullable, 1).unwrap().is_none());
+    }
 }

@@ -52,56 +52,64 @@ pub(super) fn decode_url(value: &str) -> Result<String, &'static str> {
 }
 
 pub(super) fn write_json_string<W: Write>(writer: &mut W, value: &str) -> io::Result<()> {
-    // UTF-8 bytes other than ASCII controls, quotes and backslashes are safe.
-    if !value
-        .as_bytes()
-        .iter()
-        .any(|byte| *byte < 0x20 || *byte == b'\"' || *byte == b'\\')
-    {
-        if value.len() <= 256 {
+    let bytes = value.as_bytes();
+    // Plain UTF-8 fields are copied without transformation.
+    if !bytes.iter().any(|&byte| byte < 0x20 || byte == b'"' || byte == b'\\') {
+        if bytes.len() <= 256 {
             let mut quoted = [0u8; 258];
             quoted[0] = b'"';
-            quoted[1..value.len() + 1].copy_from_slice(value.as_bytes());
-            quoted[value.len() + 1] = b'"';
-            return writer.write_all(&quoted[..value.len() + 2]);
+            quoted[1..bytes.len() + 1].copy_from_slice(bytes);
+            quoted[bytes.len() + 1] = b'"';
+            return writer.write_all(&quoted[..bytes.len() + 2]);
         }
         writer.write_all(b"\"")?;
-        writer.write_all(value.as_bytes())?;
+        writer.write_all(bytes)?;
         return writer.write_all(b"\"");
     }
-    writer.write_all(b"\"")?;
-    let mut start = 0;
-    for (index, ch) in value.char_indices() {
-        let escape: Option<&[u8]> = match ch {
-            '"' => Some(b"\\\""),
-            '\\' => Some(b"\\\\"),
-            '\n' => Some(b"\\n"),
-            '\r' => Some(b"\\r"),
-            '\t' => Some(b"\\t"),
-            '\u{08}' => Some(b"\\b"),
-            '\u{0c}' => Some(b"\\f"),
-            ch if ch <= '\u{1f}' => {
-                if start < index {
-                    writer.write_all(&value.as_bytes()[start..index])?;
-                }
-                write!(writer, "\\u{:04x}", ch as u32)?;
-                start = index + ch.len_utf8();
-                continue;
+
+    // Batch frequent JSON escapes into stack chunks. Inspect bytes because
+    // every JSON-special/control character is ASCII; other UTF-8 bytes pass
+    // through unchanged.
+    const HEX: &[u8; 16] = b"0123456789abcdef";
+    let mut buffer = [0u8; 4096];
+    buffer[0] = b'"';
+    let mut used = 1;
+    for &byte in bytes {
+        let mut unicode_escape = [0u8; 6];
+        let encoded: &[u8] = match byte {
+            b'"' => br#"\""#,
+            b'\\' => br"\\",
+            b'\n' => br"\n",
+            b'\r' => br"\r",
+            b'\t' => br"\t",
+            8 => br"\b",
+            12 => br"\f",
+            0..=31 => {
+                unicode_escape = [
+                    b'\\',
+                    b'u',
+                    b'0',
+                    b'0',
+                    HEX[(byte >> 4) as usize],
+                    HEX[(byte & 0xf) as usize],
+                ];
+                &unicode_escape
             }
-            _ => None,
+            _ => std::slice::from_ref(&byte),
         };
-        if let Some(escape) = escape {
-            if start < index {
-                writer.write_all(&value.as_bytes()[start..index])?;
-            }
-            writer.write_all(escape)?;
-            start = index + ch.len_utf8();
+        if buffer.len() - used < encoded.len() {
+            writer.write_all(&buffer[..used])?;
+            used = 0;
         }
+        buffer[used..used + encoded.len()].copy_from_slice(encoded);
+        used += encoded.len();
     }
-    if start < value.len() {
-        writer.write_all(&value.as_bytes()[start..])?;
+    if used == buffer.len() {
+        writer.write_all(&buffer)?;
+        used = 0;
     }
-    writer.write_all(b"\"")
+    buffer[used] = b'"';
+    writer.write_all(&buffer[..used + 1])
 }
 
 #[cfg(test)]
@@ -189,5 +197,47 @@ mod tests {
         assert_eq!(decode_url(&maximum).unwrap().len(), MAX_QUERY_BYTES);
         assert!(decode_url(&format!("{maximum}%41")).is_err());
         assert!(decode_url(&("a".repeat(MAX_QUERY_BYTES * 4))).is_err());
+    }
+}
+
+#[cfg(test)]
+mod batched_json_escape_tests {
+    use super::*;
+
+    struct Count {
+        calls: usize,
+        data: Vec<u8>,
+    }
+    impl Write for Count {
+        fn write(&mut self, bytes: &[u8]) -> io::Result<usize> {
+            self.calls += 1;
+            self.data.extend_from_slice(bytes);
+            Ok(bytes.len())
+        }
+        fn flush(&mut self) -> io::Result<()> {
+            Ok(())
+        }
+    }
+    #[test]
+    fn large_quote_heavy_json_uses_bounded_writes() {
+        let mut writer = Count {
+            calls: 0,
+            data: Vec::new(),
+        };
+        write_json_string(&mut writer, &"\"".repeat(10_000)).unwrap();
+        assert_eq!(writer.data.len(), 20_002);
+        assert!(writer.data.starts_with(br#""\""#));
+        assert!(writer.data.ends_with(br#"\"""#));
+        assert!(writer.calls <= 6, "{} writes", writer.calls);
+    }
+    #[test]
+    fn escapes_controls_without_changing_unicode_or_utf8_bytes() {
+        let value = "caf\u{e9}\n\t\r\\\"\u{0000}\u{001f}\u{0008}\u{000c}";
+        let mut output = Vec::new();
+        write_json_string(&mut output, value).unwrap();
+        assert_eq!(
+            String::from_utf8(output).unwrap(),
+            "\"caf\u{e9}\\n\\t\\r\\\\\\\"\\u0000\\u001f\\b\\f\""
+        );
     }
 }

@@ -81,7 +81,7 @@ fn measure(name: &str, sql: &str, expected: &str, rows: u64, samples: usize) {
     timings.sort_unstable();
     let median_seconds = timings[samples / 2].as_secs_f64();
     println!(
-        "{name:<18} {:>10.3} {:>17.2}",
+        "{name:<18} {:>10.6} {:>17.4}",
         median_seconds * 1000.0,
         rows as f64 / median_seconds / 1_000_000.0
     );

@@ -115,3 +115,52 @@ mod tests {
         }
     }
 }
+
+/// Pick the latest generation from one metadata-consistent epoch.
+/// This does not prove that different generations share a valid history or quorum.
+pub fn newest_consistent_snapshot(
+    versions: &[SnapshotVersion],
+) -> Result<SnapshotVersion, &'static str> {
+    if versions.is_empty() || versions.len() > 4096 {
+        return Err("invalid snapshot candidate count");
+    }
+    let epoch = versions[0].epoch;
+    let mut seen = std::collections::HashMap::with_capacity(versions.len());
+    let mut newest = versions[0];
+    for &version in versions {
+        if version.epoch == 0 || version.generation == 0 || version.epoch != epoch {
+            return Err("invalid or mismatched snapshot epoch");
+        }
+        if seen
+            .insert(version.generation, version.fingerprint)
+            .is_some_and(|previous| previous != version.fingerprint)
+        {
+            return Err("conflicting snapshot fingerprint");
+        }
+        if version.generation > newest.generation {
+            newest = version;
+        }
+    }
+    Ok(newest)
+}
+
+#[cfg(test)]
+mod snapshot_selection_tests {
+    use super::*;
+
+    #[test]
+    fn selects_latest_candidate_only_without_conflicts() {
+        let older = SnapshotVersion { epoch: 2, generation: 3, fingerprint: 11 };
+        let newer = SnapshotVersion { epoch: 2, generation: 5, fingerprint: 22 };
+        assert_eq!(newest_consistent_snapshot(&[newer, older, newer]).unwrap(), newer);
+        assert!(newest_consistent_snapshot(&[]).is_err());
+        assert!(newest_consistent_snapshot(&[
+            older,
+            SnapshotVersion { epoch: 3, ..newer },
+        ]).is_err());
+        assert!(newest_consistent_snapshot(&[
+            newer,
+            SnapshotVersion { fingerprint: 33, ..newer },
+        ]).is_err());
+    }
+}
