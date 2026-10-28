@@ -803,6 +803,20 @@ pub(super) fn execute_count_distinct_part<W: Write>(
     Ok(())
 }
 
+/// Update population/sample moments directly from a native numeric slot.
+/// Matches AggregateState's Welford update order but skips Number dispatch.
+fn update_native_moment(state: &mut AggregateState, numeric: f64) -> Result<(), ExecutionError> {
+    let next_count = state.count.checked_add(1)
+        .ok_or_else(|| ExecutionError::Invalid("aggregate row count overflow".into()))?;
+    let difference = numeric - state.mean;
+    state.mean += difference / next_count as f64;
+    if state.function != AggregateFunction::Avg {
+        state.squared_deviations += difference * (numeric - state.mean);
+    }
+    state.count = next_count;
+    Ok(())
+}
+
 pub(super) fn execute_aggregate_part<W: Write>(
     query: &Select,
     part: &Path,
@@ -989,6 +1003,46 @@ pub(super) fn execute_aggregate_part<W: Write>(
         }
         return Ok(());
     }
+    // AVG, variance and standard deviation on a billion non-nullable numeric
+    // rows still require stable Welford arithmetic, but not an enum dispatch
+    // or number conversion per row. Keep the exact update order.
+    if no_filters && matches!(
+        function,
+        AggregateFunction::Avg
+            | AggregateFunction::VarPop
+            | AggregateFunction::VarSamp
+            | AggregateFunction::StddevPop
+            | AggregateFunction::StddevSamp
+    ) {
+        let mut state = AggregateState::new(function);
+        macro_rules! fold_moments {
+            ($values:expr) => {
+                for &value in $values {
+                    update_native_moment(&mut state, value as f64)?;
+                }
+            };
+        }
+        while let Some(batch) = reader.next_batch()? {
+            match &batch[0] {
+                NumericColumn::UInt8(values) => fold_moments!(values),
+                NumericColumn::UInt16(values) => fold_moments!(values),
+                NumericColumn::UInt32(values) => fold_moments!(values),
+                NumericColumn::UInt64(values) => fold_moments!(values),
+                NumericColumn::UInt128(values) => fold_moments!(values),
+                NumericColumn::Int8(values) => fold_moments!(values),
+                NumericColumn::Int16(values) => fold_moments!(values),
+                NumericColumn::Int32(values) => fold_moments!(values),
+                NumericColumn::Int64(values) => fold_moments!(values),
+                NumericColumn::Int128(values) => fold_moments!(values),
+                NumericColumn::Float32(values) => fold_moments!(values),
+                NumericColumn::Float64(values) => fold_moments!(values),
+            }
+        }
+        if query.offset.unwrap_or(0) == 0 {
+            writeln!(output, "{}", state.render())?;
+        }
+        return Ok(());
+    }
     let mut state = AggregateState::new(function);
     while let Some(batch) = reader.next_batch()? {
         for row in 0..batch[0].len() {
@@ -1162,4 +1216,42 @@ pub(super) fn execute_aggregate_numbers<W: Write>(
         writeln!(output, "{}", state.render())?;
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod native_moment_tests {
+    use super::*;
+
+    #[test]
+    fn native_welford_matches_generic_aggregates_for_large_signed_values() {
+        let inputs = [
+            Number::Signed(-91),
+            Number::Unsigned(u128::from(u64::MAX)),
+            Number::Float(1.75),
+            Number::Float(-2.5),
+            Number::Unsigned(7),
+        ];
+        for function in [
+            AggregateFunction::Avg,
+            AggregateFunction::VarPop,
+            AggregateFunction::VarSamp,
+            AggregateFunction::StddevPop,
+            AggregateFunction::StddevSamp,
+        ] {
+            let mut native = AggregateState::new(function);
+            let mut baseline = AggregateState::new(function);
+            for value in inputs {
+                let numeric = match value {
+                    Number::Signed(v) => v as f64,
+                    Number::Unsigned(v) => v as f64,
+                    Number::Float(v) => v,
+                };
+                update_native_moment(&mut native, numeric).unwrap();
+                baseline.update(value).unwrap();
+            }
+            assert_eq!(native.mean.to_bits(), baseline.mean.to_bits());
+            assert_eq!(native.squared_deviations.to_bits(), baseline.squared_deviations.to_bits());
+            assert_eq!(native.render(), baseline.render());
+        }
+    }
 }
