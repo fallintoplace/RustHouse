@@ -37,6 +37,7 @@ pub mod distributed_lineage;
 mod nullable_arrays;
 pub mod distributed_retry;
 mod numeric;
+pub mod distributed_snapshot_copy;
 mod part_scan;
 mod part_verify;
 mod part_write;
