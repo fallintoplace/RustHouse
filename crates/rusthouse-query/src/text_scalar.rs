@@ -50,6 +50,7 @@ pub(super) fn is_function(name: &str) -> bool {
             | "JSONEXTRACTSTRING"
             | "JSONEXTRACTRAW"
             | "SUBSTRING"
+            | "SUBSTRINGUTF8"
             | "HASSUBSEQUENCECASEINSENSITIVE"
             | "OVERLAY"
             | "QUERYSTRING"
@@ -837,7 +838,7 @@ fn parse_at_depth(parser: &mut Parser, depth: usize) -> Result<ConstantValue, Pa
                 None => ConstantValue::Null,
             }
         }
-        "SUBSTRING" => {
+        "SUBSTRING" | "SUBSTRINGUTF8" => {
             let input = text_arg(parser, depth + 1)?;
             require(parser, Token::Comma, "SUBSTRING requires a start position")?;
             let position = integer_arg(parser, depth + 1)?;
