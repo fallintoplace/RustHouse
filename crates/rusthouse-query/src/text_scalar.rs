@@ -85,6 +85,7 @@ pub(super) fn is_function(name: &str) -> bool {
             | "BASE64_DECODE"
             | "APPENDTRAILINGCHARIFABSENT"
             | "RPAD"
+            | "DOMAIN"
             | "SPACE"
     )
 }
@@ -1908,6 +1909,35 @@ fn parse_at_depth(parser: &mut Parser, depth: usize) -> Result<ConstantValue, Pa
                     }
                 }
                 _ => ConstantValue::Null,
+            }
+        }
+        "DOMAIN" => {
+            let input = text_arg(parser, depth + 1)?;
+            require(parser, Token::RParen, "domain requires one argument")?;
+            match input {
+                Some(input) => {
+                    let authority = input
+                        .split_once("://")
+                        .map_or(input.as_str(), |(_, rest)| rest)
+                        .split(['/', '?', '#'])
+                        .next()
+                        .unwrap_or("");
+                    let host_port = authority.rsplit('@').next().unwrap_or("");
+                    let host = if host_port.starts_with('[') {
+                        host_port
+                            .split_once(']')
+                            .map_or("", |(host, _)| host.strip_prefix('[').unwrap_or(""))
+                    } else {
+                        host_port.split(':').next().unwrap_or("")
+                    };
+                    let host = if host.contains(char::is_whitespace) {
+                        ""
+                    } else {
+                        host
+                    };
+                    ConstantValue::Text(host.to_owned())
+                }
+                None => ConstantValue::Null,
             }
         }
         _ => return Err(ParseError(format!("unsupported string function: {name}"))),
