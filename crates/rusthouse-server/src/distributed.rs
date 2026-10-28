@@ -166,6 +166,58 @@ struct ShardResponse {
     schema: Vec<u8>,
 }
 
+/// Run blocking shard requests through a bounded worker pool, retaining peer
+/// order in the output. This avoids a thread per shard as membership grows.
+/// Panicking workers leave an explicit failure for their uncompleted slot.
+fn scatter_indexed<T, F>(count: usize, in_flight: usize, run: F) -> Vec<Result<T, String>>
+where
+    T: Send,
+    F: Fn(usize) -> Result<T, String> + Sync,
+{
+    use std::sync::Mutex;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
+    let next = AtomicUsize::new(0);
+    let results: Vec<Mutex<Option<Result<T, String>>>> =
+        (0..count).map(|_| Mutex::new(None)).collect();
+    std::thread::scope(|scope| {
+        let workers = (0..count.min(in_flight.max(1)))
+            .map(|_| {
+                let run = &run;
+                let results = &results;
+                let next = &next;
+                scope.spawn(move || {
+                    loop {
+                        let index = next.fetch_add(1, Ordering::Relaxed);
+                        if index >= results.len() {
+                            break;
+                        }
+                        // Do the fallible work outside the mutex: one shard
+                        // must not block an unrelated worker's result slot.
+                        let value = run(index);
+                        *results[index]
+                            .lock()
+                            .unwrap_or_else(|poisoned| poisoned.into_inner()) = Some(value);
+                    }
+                })
+            })
+            .collect::<Vec<_>>();
+        for worker in workers {
+            // The missing slot is reported below, without hiding results
+            // completed by independent workers.
+            let _ = worker.join();
+        }
+    });
+    results
+        .into_iter()
+        .map(|slot| {
+            slot.into_inner()
+                .unwrap_or_else(|poisoned| poisoned.into_inner())
+                .unwrap_or_else(|| Err("distributed shard worker panicked".into()))
+        })
+        .collect()
+}
+
 fn read_shard(
     peer: Peer,
     sql: &str,
@@ -825,23 +877,17 @@ pub fn handle(method: &str, body: &[u8], cluster: &Cluster, max_rows: usize) -> 
         Some(Source::Table(table)) => table.as_str(),
         _ => unreachable!("validated named table"),
     };
-    let results = std::thread::scope(|scope| {
-        let shard_query = shard_sql.as_str();
-        let handles = cluster
-            .peers()
-            .iter()
-            .map(|&peer| {
-                scope.spawn(move || read_shard(peer, shard_query, sum_schema, group_schema, table))
-            })
-            .collect::<Vec<_>>();
-        handles
-            .into_iter()
-            .map(|handle| {
-                handle
-                    .join()
-                    .unwrap_or_else(|_| Err("peer query panicked".into()))
-            })
-            .collect::<Vec<_>>()
+    // Network I/O dominates; allow a small number of in-flight shard
+    // requests without creating one operating-system thread per peer.
+    const MAX_IN_FLIGHT_SHARDS: usize = 16;
+    let results = scatter_indexed(cluster.peers().len(), MAX_IN_FLIGHT_SHARDS, |index| {
+        read_shard(
+            cluster.peers()[index],
+            shard_sql.as_str(),
+            sum_schema,
+            group_schema,
+            table,
+        )
     });
     let mut shards = Vec::with_capacity(results.len());
     let mut sum_type: Option<String> = None;
@@ -981,6 +1027,43 @@ pub fn handle(method: &str, body: &[u8], cluster: &Cluster, max_rows: usize) -> 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn scatter_bounds_in_flight_requests_and_preserves_shard_order() {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        let active = AtomicUsize::new(0);
+        let peak = AtomicUsize::new(0);
+        let result = scatter_indexed(96, 7, |index| {
+            let current = active.fetch_add(1, Ordering::SeqCst) + 1;
+            peak.fetch_max(current, Ordering::SeqCst);
+            std::thread::yield_now();
+            active.fetch_sub(1, Ordering::SeqCst);
+            Ok::<_, String>(index * 17)
+        });
+        assert_eq!(result.into_iter().collect::<Result<Vec<_>, _>>().unwrap(),
+            (0..96).map(|index| index * 17).collect::<Vec<_>>());
+        assert!(peak.load(Ordering::SeqCst) <= 7);
+        assert_eq!(active.load(Ordering::SeqCst), 0);
+    }
+
+    #[test]
+    fn scatter_keeps_per_shard_errors_and_handles_panicked_workers() {
+        let result = scatter_indexed(5, 2, |index| -> Result<usize, String> {
+            if index == 1 {
+                panic!("simulated shard worker panic");
+            }
+            if index == 3 {
+                return Err("shard unavailable".into());
+            }
+            Ok(index)
+        });
+        assert!(result[1].as_ref().unwrap_err().contains("panicked"));
+        assert_eq!(result[3].as_ref().unwrap_err(), "shard unavailable");
+        assert_eq!(*result[0].as_ref().unwrap(), 0);
+        assert_eq!(*result[2].as_ref().unwrap(), 2);
+        assert_eq!(*result[4].as_ref().unwrap(), 4);
+        assert!(scatter_indexed::<usize, _>(0, 4, |_| Ok(0)).is_empty());
+    }
 
     #[test]
     fn extracts_column_types_from_one_validated_schema_response() {
