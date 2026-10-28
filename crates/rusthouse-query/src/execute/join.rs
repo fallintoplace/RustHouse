@@ -468,7 +468,7 @@ fn execute_streaming_right<W: Write>(
         &left_rows,
         &hash,
         ProbeOptions {
-            materialize_rows: true,
+            materialize_rows: selected.iter().any(|(column, _, _)| *column >= left_width),
             materialize_after: query.offset,
             stop_after,
             any: query.any,
@@ -611,6 +611,17 @@ pub fn execute_join<W: Write>(
 
     // LIMIT 0 needs the validated output schema, but not either input scan.
     if query.limit == Some(0) {
+        let header = selected
+            .iter()
+            .map(|(_, name, _)| name.as_str())
+            .collect::<Vec<_>>()
+            .join("\t");
+        writeln!(output, "{header}")?;
+        return Ok(());
+    }
+
+    // A validated INNER join with an empty input cannot produce matches.
+    if query.kind == JoinType::Inner && (left_meta.rows == 0 || right_meta.rows == 0) {
         let header = selected
             .iter()
             .map(|(_, name, _)| name.as_str())

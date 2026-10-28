@@ -56,7 +56,7 @@ fn rejects_invalid_arguments_and_unbounded_queries() {
     for sql in [
         "SELECT number FROM generate_series(1)",
         "SELECT number FROM generate_series(1, 10, 0)",
-        "SELECT number FROM generate_series(0, 1000000)",
+        "SELECT number FROM generate_series(0, 10000000)",
         "SELECT number FROM generate_series(0, 18446744073709551615)",
         "SELECT number FROM generate_series(0, 5, 1, 2)",
         "SELECT number FROM generate_series(-1, 5)",

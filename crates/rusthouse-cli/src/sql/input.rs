@@ -84,10 +84,10 @@ pub(super) fn split_sql_script(input: &str) -> Result<Vec<String>, String> {
             let statement = current.trim();
             if !statement.is_empty() {
                 if statement.len() > MAX_SQL_BYTES {
-                    return Err("SQL script statement exceeds 4096 bytes".into());
+                    return Err(format!("SQL script statement exceeds {MAX_SQL_BYTES} bytes"));
                 }
                 if statements.len() >= MAX_SCRIPT_STATEMENTS {
-                    return Err("SQL script supports at most 128 statements".into());
+                    return Err(format!("SQL script supports at most {MAX_SCRIPT_STATEMENTS} statements"));
                 }
                 statements.push(statement.to_owned());
             }
@@ -105,10 +105,10 @@ pub(super) fn split_sql_script(input: &str) -> Result<Vec<String>, String> {
     let statement = current.trim();
     if !statement.is_empty() {
         if statement.len() > MAX_SQL_BYTES {
-            return Err("SQL script statement exceeds 4096 bytes".into());
+            return Err(format!("SQL script statement exceeds {MAX_SQL_BYTES} bytes"));
         }
         if statements.len() >= MAX_SCRIPT_STATEMENTS {
-            return Err("SQL script supports at most 128 statements".into());
+            return Err(format!("SQL script supports at most {MAX_SCRIPT_STATEMENTS} statements"));
         }
         statements.push(statement.to_owned());
     }

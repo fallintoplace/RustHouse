@@ -269,18 +269,10 @@ pub fn parse_join(sql: &str) -> Result<Option<JoinSelect>, ParseError> {
             }
             (Vec::new(), names)
         } else if parser.keyword("ON") {
-            let mut keys = Vec::new();
-            loop {
-                if keys.len() == 8 {
-                    return Err(ParseError("JOIN supports at most 8 equality keys".into()));
-                }
-                let first = qualified(&mut parser)?;
-                if !parser.take(Token::Operator(super::Operator::Eq)) {
-                    return Err(ParseError(
-                        "JOIN ON supports AND-connected equality keys".into(),
-                    ));
-                }
-                let second = qualified(&mut parser)?;
+            let mut raw = Vec::new();
+            equality_group(&mut parser, &mut raw, 0)?;
+            let mut keys: Vec<(JoinColumn, JoinColumn)> = Vec::new();
+            for (first, second) in raw {
                 for column in [&first, &second] {
                     if column.relation != left_alias
                         && column.relation != right_alias
@@ -293,10 +285,22 @@ pub fn parse_join(sql: &str) -> Result<Option<JoinSelect>, ParseError> {
                         )));
                     }
                 }
-                keys.push((first, second));
-                if !parser.keyword("AND") {
-                    break;
+                let first_is_new = first.relation == alias;
+                let second_is_new = second.relation == alias;
+                if first_is_new == second_is_new {
+                    return Err(ParseError(
+                        "JOIN ON must compare an existing relation to the new table".into(),
+                    ));
                 }
+                if !keys.iter().any(|(left, right)| {
+                    (left == &first && right == &second)
+                        || (left == &second && right == &first)
+                }) {
+                    keys.push((first, second));
+                }
+            }
+            if keys.len() > 8 {
+                return Err(ParseError("JOIN supports at most 8 equality keys".into()));
             }
             (keys, Vec::new())
         } else {
@@ -438,15 +442,20 @@ pub fn explain_join(query: &JoinSelect) -> String {
         })
         .collect::<Vec<_>>()
         .join(" AND ");
+    let predicate = if query.using_keys.is_empty() {
+        format!("ON {conditions}")
+    } else {
+        format!("USING ({})", query.using_keys.join(", "))
+    };
     let mut plan = format!(
-        "Source: table {} AS {}\nSource: table {} AS {}\nJoin: {}{:?} ON {}",
+        "Source: table {} AS {}\nSource: table {} AS {}\nJoin: {}{:?} {}",
         query.left,
         query.left_alias,
         query.right,
         query.right_alias,
         if query.any { "Any " } else { "" },
         query.kind,
-        conditions,
+        predicate,
     );
     for step in &query.steps {
         let conditions = step.keys.iter()
@@ -517,6 +526,47 @@ pub fn explain_join(query: &JoinSelect) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn chained_join_accepts_nested_on_equalities() {
+        let query = parse_join(
+            "SELECT * FROM a x JOIN b y ON x.id = y.id JOIN c z ON (y.id = z.id AND (x.k = z.k))",
+        )
+        .unwrap()
+        .unwrap();
+        assert_eq!(query.steps[0].keys.len(), 2);
+        for statement in [
+            "SELECT * FROM a x JOIN b y ON x.id = y.id JOIN c z ON (y.id = z.id",
+            "SELECT * FROM a x JOIN b y ON x.id = y.id JOIN c z ON (y.id = z.id OR x.k = z.k)",
+        ] {
+            assert!(parse_join(statement).is_err(), "{statement}");
+        }
+    }
+
+    #[test]
+    fn chained_join_rejects_equalities_on_the_same_side() {
+        for statement in [
+            "SELECT * FROM a x JOIN b y ON x.id = y.id JOIN c z ON x.id = y.id",
+            "SELECT * FROM a x JOIN b y ON x.id = y.id JOIN c z ON z.id = z.other",
+            "SELECT * FROM a x JOIN b y ON x.id = y.id JOIN c z ON z.id = x.id AND x.k = y.k",
+        ] {
+            assert!(parse_join(statement).is_err(), "{statement}");
+        }
+        assert!(parse_join(
+            "SELECT * FROM a x JOIN b y ON x.id = y.id JOIN c z ON y.id = z.id",
+        )
+        .is_ok());
+    }
+
+    #[test]
+    fn explain_shows_the_original_using_predicate() {
+        let query = parse_join("SELECT * FROM a x FULL JOIN b y USING (id, tenant)")
+            .unwrap()
+            .unwrap();
+        let plan = explain_join(&query);
+        assert!(plan.contains("Join: Full USING (id, tenant)"), "{plan}");
+        assert!(!plan.contains("Join: Full ON"), "{plan}");
+    }
 
     #[test]
     fn chained_join_rejects_unknown_on_qualifiers_at_parse_time() {

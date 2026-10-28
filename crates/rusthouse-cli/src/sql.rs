@@ -13,9 +13,9 @@ use rusthouse_query::{
 use std::ffi::OsString;
 use std::path::PathBuf;
 
-const MAX_SQL_BYTES: usize = 4096;
+const MAX_SQL_BYTES: usize = 64 * 1024;
 const MAX_SCRIPT_BYTES: usize = 1024 * 1024;
-const MAX_SCRIPT_STATEMENTS: usize = 128;
+const MAX_SCRIPT_STATEMENTS: usize = 512;
 
 #[derive(Clone, Copy)]
 pub(super) enum SqlOutputFormat {
@@ -513,7 +513,9 @@ mod tests {
         );
         assert!(split_sql_script("-- only comment").is_err());
         assert!(split_sql_script("SELECT 'unfinished").is_err());
+        assert!(split_sql_script(&"x".repeat(4097)).is_ok());
         assert!(split_sql_script(&"x".repeat(MAX_SQL_BYTES + 1)).is_err());
+        assert_eq!(split_sql_script(&"SELECT 1;".repeat(256)).unwrap().len(), 256);
         assert!(split_sql_script(&"SELECT 1;".repeat(MAX_SCRIPT_STATEMENTS + 1)).is_err());
     }
 
@@ -543,7 +545,7 @@ mod tests {
         );
         assert_eq!(
             read_sql_input(&vec![b'x'; MAX_SQL_BYTES + 1][..], "SQL file", "SQL file").unwrap_err(),
-            "SQL file exceeds the 4096-byte statement limit"
+            "SQL file exceeds the 65536-byte statement limit"
         );
         assert_eq!(
             read_sql_input(&[0xff][..], "SQL file", "SQL file").unwrap_err(),
