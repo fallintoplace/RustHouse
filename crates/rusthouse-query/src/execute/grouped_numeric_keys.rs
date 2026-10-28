@@ -42,7 +42,7 @@ fn numeric_value_at(column: &TypedColumn, row: usize) -> Result<Option<Number>, 
 // Encode a composite GROUP BY key into reusable storage. String components
 // borrow the column's decoded bytes; only the first occurrence of a group
 // needs to own an encoded key. Tags and lengths preserve tuple boundaries.
-fn append_group_component(column: &TypedColumn, row: usize, buffer: &mut Vec<u8>) {
+pub(super) fn append_group_component(column: &TypedColumn, row: usize, buffer: &mut Vec<u8>) {
     if typed::is_null_at(column, row) {
         buffer.push(0);
         return;
