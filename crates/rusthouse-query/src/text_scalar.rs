@@ -66,6 +66,7 @@ pub(super) fn is_function(name: &str) -> bool {
             | "LEFTPADUTF8"
             | "COUNTSUBSTRINGSCASEINSENSITIVE"
             | "HEX_DECODE"
+            | "BASE58DECODE"
             | "REPLACE"
             | "REPLACEALL"
             | "PROTOCOL"
@@ -809,6 +810,45 @@ fn parse_at_depth(parser: &mut Parser, depth: usize) -> Result<ConstantValue, Pa
                     ConstantValue::Text(value.chars().skip(start).take(count).collect())
                 }
                 _ => ConstantValue::Null,
+            }
+        }
+        "BASE58DECODE" => {
+            let input = text_arg(parser, depth + 1)?;
+            require(parser, Token::RParen, "base58Decode requires one string")?;
+            match input {
+                Some(input) => {
+                    if input.len() > 4096 {
+                        return Err(ParseError("base58Decode input exceeds 4096 bytes".into()));
+                    }
+                    const ALPHABET: &[u8] =
+                        b"123456789ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz";
+                    let zeroes = input.bytes().take_while(|byte| *byte == b'1').count();
+                    let mut bytes = Vec::<u8>::new();
+                    for character in input.bytes() {
+                        let digit = ALPHABET
+                            .iter()
+                            .position(|value| *value == character)
+                            .ok_or_else(|| ParseError("invalid Base58 character".into()))?;
+                        let mut carry = u32::try_from(digit)
+                            .map_err(|_| ParseError("invalid Base58 digit".into()))?;
+                        for byte in &mut bytes {
+                            carry += u32::from(*byte) * 58;
+                            *byte = (carry % 256) as u8;
+                            carry /= 256;
+                        }
+                        while carry > 0 {
+                            bytes.push((carry % 256) as u8);
+                            carry /= 256;
+                        }
+                    }
+                    let mut decoded = vec![0u8; zeroes];
+                    decoded.extend(bytes.into_iter().rev());
+                    ConstantValue::Text(
+                        String::from_utf8(decoded)
+                            .map_err(|_| ParseError("base58Decode result is not UTF-8".into()))?,
+                    )
+                }
+                None => ConstantValue::Null,
             }
         }
         "HEX_DECODE" => {
@@ -2004,5 +2044,42 @@ fn text_arg(parser: &mut Parser, depth: usize) -> Result<Option<String>, ParseEr
         _ => Err(ParseError(
             "expected a string literal or string function".into(),
         )),
+    }
+}
+
+#[cfg(test)]
+mod clickhouse_base58_decode_tests {
+    use crate::{ConstantValue, Projection, parse_select};
+
+    fn value(sql: &str) -> ConstantValue {
+        match parse_select(sql).unwrap().projection {
+            Projection::Constants(columns) if columns.len() == 1 => columns[0].value.clone(),
+            Projection::Literal(number) => ConstantValue::Integer(number),
+            other => panic!("unexpected projection: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn valid_calls() {
+        for (sql, expected) in [
+            ("SELECT base58Decode('4nhk8K7GHXf6zx')", ConstantValue::Text("ClickHouse".into())),
+            ("SELECT base58Decode('JxF12TrwUP45BMd')", ConstantValue::Text("Hello World".into())),
+            ("SELECT base58Decode('')", ConstantValue::Text("".into())),
+            ("SELECT base58Decode(NULL)", ConstantValue::Null),
+        ] {
+            assert_eq!(value(sql), expected, "{sql}");
+        }
+    }
+
+    #[test]
+    fn invalid_calls() {
+        for sql in [
+            "SELECT base58Decode()",
+            "SELECT base58Decode(1)",
+            "SELECT base58Decode('0')",
+            "SELECT base58Decode('a','b')",
+        ] {
+            assert!(parse_select(sql).is_err(), "{sql}");
+        }
     }
 }
