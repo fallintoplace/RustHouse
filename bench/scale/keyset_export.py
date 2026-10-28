@@ -27,7 +27,7 @@ def page_sql(table, column, first, count):
     high = first + count
     upper = f"{column} < {high}" if high < 2**64 else f"{column} <= {2**64 - 1}"
     return (f"SELECT {column} FROM {table} WHERE {column} >= {first} "
-            f"AND {upper} LIMIT {count + 1}")
+            f"AND {upper} ORDER BY {column} ASC LIMIT {count + 1}")
 
 
 def query(binary, database, statement, timeout):
