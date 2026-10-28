@@ -2072,11 +2072,12 @@ impl AggregateState {
         // SELECT median from up to 100k analytical values in expected linear
         // time instead of sorting the entire vector for every finalization.
         let mut values = self.median_values.clone();
+        let odd = values.len() % 2 == 1;
         let middle = values.len() / 2;
         let (lower, selected, _) = values.select_nth_unstable_by(middle, |left, right| {
             compare_numbers(*left, *right)
         });
-        if values.len() % 2 == 1 {
+        if odd {
             return Some(*selected);
         }
         let previous = *lower.iter().max_by(|left, right| {
