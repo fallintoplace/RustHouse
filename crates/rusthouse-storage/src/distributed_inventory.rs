@@ -156,6 +156,38 @@ pub struct CheckedInventoryEntry {
 
 /// Build a bounded, content-checksummed inventory for replica reconciliation.
 /// CRC32C is an accidental corruption check, not authentication.
+fn checksum_inventory_entry(
+    active: &Path,
+    entry: &InventoryEntry,
+) -> Result<CheckedInventoryEntry, PartError> {
+    let path = active.join(&entry.relative_path);
+    let metadata = fs::symlink_metadata(&path).map_err(|error| io_error(&path, error))?;
+    if !metadata.file_type().is_file() || metadata.len() != entry.bytes {
+        return Err(PartError::InvalidScan(
+            "snapshot inventory file changed before hashing".into(),
+        ));
+    }
+    let mut file = fs::File::open(&path).map_err(|error| io_error(&path, error))?;
+    let opened = file.metadata().map_err(|error| io_error(&path, error))?;
+    if !opened.file_type().is_file() || opened.len() != entry.bytes {
+        return Err(PartError::InvalidScan(
+            "snapshot inventory file changed before hashing".into(),
+        ));
+    }
+    let (bytes, crc32c) = crate::distributed_crc32c::crc32c_reader(&mut file, entry.bytes)
+        .map_err(|error| io_error(&path, error))?;
+    if bytes != entry.bytes {
+        return Err(PartError::InvalidScan(
+            "snapshot inventory file changed during hashing".into(),
+        ));
+    }
+    Ok(CheckedInventoryEntry {
+        relative_path: entry.relative_path.clone(),
+        bytes,
+        crc32c,
+    })
+}
+
 pub fn inventory_snapshot_crc32c(
     root: &Path,
     max_files: usize,
@@ -163,41 +195,91 @@ pub fn inventory_snapshot_crc32c(
 ) -> Result<Vec<CheckedInventoryEntry>, PartError> {
     let entries = inventory_snapshot(root, max_files, max_bytes)?;
     let active = resolve_active_snapshot(root)?;
-    let mut checked = Vec::with_capacity(entries.len());
-    for entry in entries {
-        let path = active.join(&entry.relative_path);
-        let metadata = fs::symlink_metadata(&path).map_err(|error| io_error(&path, error))?;
-        if !metadata.file_type().is_file() || metadata.len() != entry.bytes {
-            return Err(PartError::InvalidScan(
-                "snapshot inventory file changed before hashing".into(),
-            ));
-        }
-        let mut file = fs::File::open(&path).map_err(|error| io_error(&path, error))?;
-        let opened = file.metadata().map_err(|error| io_error(&path, error))?;
-        if !opened.file_type().is_file() || opened.len() != entry.bytes {
-            return Err(PartError::InvalidScan(
-                "snapshot inventory file changed before hashing".into(),
-            ));
-        }
-        let (bytes, crc32c) =
-            crate::distributed_crc32c::crc32c_reader(&mut file, entry.bytes)
-                .map_err(|error| io_error(&path, error))?;
-        if bytes != entry.bytes {
-            return Err(PartError::InvalidScan("snapshot inventory file changed during hashing".into()));
-        }
-        checked.push(CheckedInventoryEntry {
-            relative_path: entry.relative_path,
-            bytes,
-            crc32c,
-        });
+    const PARALLEL_THRESHOLD: usize = 64;
+    const MAX_HASH_WORKERS: usize = 4;
+    let workers = std::thread::available_parallelism()
+        .map_or(1, |parallelism| parallelism.get())
+        .min(MAX_HASH_WORKERS);
+    if entries.len() < PARALLEL_THRESHOLD || workers == 1 {
+        return entries
+            .iter()
+            .map(|entry| checksum_inventory_entry(&active, entry))
+            .collect();
     }
-    Ok(checked)
+
+    // Hash each file independently with bounded concurrency. Keep original
+    // inventory order, including deterministic first-error reporting.
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    let cursor = AtomicUsize::new(0);
+    let mut slots: Vec<Option<Result<CheckedInventoryEntry, PartError>>> =
+        (0..entries.len()).map(|_| None).collect();
+    std::thread::scope(|scope| -> Result<(), PartError> {
+        let handles = (0..workers)
+            .map(|_| {
+                let cursor = &cursor;
+                let entries = &entries;
+                let active = &active;
+                scope.spawn(move || {
+                    let mut completed = Vec::new();
+                    loop {
+                        let index = cursor.fetch_add(1, Ordering::Relaxed);
+                        if index >= entries.len() {
+                            break;
+                        }
+                        completed.push((index, checksum_inventory_entry(active, &entries[index])));
+                    }
+                    completed
+                })
+            })
+            .collect::<Vec<_>>();
+        for handle in handles {
+            let completed = handle.join().map_err(|_| {
+                PartError::InvalidScan("snapshot checksum worker panicked".into())
+            })?;
+            for (index, item) in completed {
+                slots[index] = Some(item);
+            }
+        }
+        Ok(())
+    })?;
+    slots
+        .into_iter()
+        .map(|slot| slot.expect("every claimed file has one result"))
+        .collect()
 }
 
 #[cfg(test)]
 mod checksummed_inventory_tests {
     use super::*;
     use crate::{Column, write_wide_part};
+
+    #[test]
+    fn parallel_checksums_keep_sorted_paths_and_exact_file_bytes() {
+        let root = std::env::temp_dir().join(format!(
+            "rusthouse-parallel-crc32c-{}", std::process::id()
+        ));
+        let _ = fs::remove_dir_all(&root);
+        fs::create_dir(&root).unwrap();
+        for part_number in 0..40 {
+            let part = root.join(format!("all_{part_number}_{part_number}_0"));
+            write_wide_part(
+                &part,
+                &[Column { name: "id".into(), data_type: "UInt64".into() }],
+                &[vec![Some(part_number.to_string())]],
+            ).unwrap();
+        }
+        let inventory = inventory_snapshot_crc32c(&root, 512, 64 * 1024 * 1024).unwrap();
+        assert!(inventory.len() >= 64);
+        assert!(inventory.windows(2).all(|pair| {
+            pair[0].relative_path < pair[1].relative_path
+        }));
+        for entry in &inventory {
+            let bytes = fs::read(root.join(&entry.relative_path)).unwrap();
+            assert_eq!(entry.bytes, bytes.len() as u64);
+            assert_eq!(entry.crc32c, crate::distributed_crc32c::crc32c(&bytes));
+        }
+        fs::remove_dir_all(root).unwrap();
+    }
 
     #[test]
     fn checksums_actual_wide_part_files() {

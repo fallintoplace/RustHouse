@@ -100,12 +100,40 @@ pub fn read_object_ranges(
             return Err(io::Error::other("object range exceeds file length"));
         }
     }
-    let mut output = Vec::with_capacity(ranges.len());
-    for &(offset, length) in ranges {
-        file.seek(SeekFrom::Start(offset))?;
-        let mut bytes = vec![0u8; length];
-        file.read_exact(&mut bytes)?;
-        output.push(bytes);
+    // Adjacent or overlapping logical ranges share one physical read.
+    // This reduces seeks and small I/O operations for mark-driven scans.
+    // Preserve the request order and return independent byte buffers.
+    let mut ordered: Vec<(usize, u64, u64)> = ranges
+        .iter()
+        .enumerate()
+        .filter_map(|(index, &(offset, length))| {
+            (length > 0).then_some((index, offset, offset + length as u64))
+        })
+        .collect();
+    ordered.sort_unstable_by_key(|(_, start, _)| *start);
+    let mut output = vec![Vec::new(); ranges.len()];
+    let mut cursor = 0;
+    while cursor < ordered.len() {
+        let start = ordered[cursor].1;
+        let mut end = ordered[cursor].2;
+        let mut tail = cursor + 1;
+        while tail < ordered.len() && ordered[tail].1 <= end {
+            end = end.max(ordered[tail].2);
+            tail += 1;
+        }
+        let bytes = usize::try_from(end - start)
+            .map_err(|_| io::Error::other("coalesced object range too large"))?;
+        // Every merged interval is covered by the sum of requested lengths,
+        // which was checked against the 8 MiB request budget above.
+        let mut chunk = vec![0u8; bytes];
+        file.seek(SeekFrom::Start(start))?;
+        file.read_exact(&mut chunk)?;
+        for &(index, offset, item_end) in &ordered[cursor..tail] {
+            let from = (offset - start) as usize;
+            let to = (item_end - start) as usize;
+            output[index] = chunk[from..to].to_vec();
+        }
+        cursor = tail;
     }
     Ok(output)
 }
@@ -113,6 +141,21 @@ pub fn read_object_ranges(
 #[cfg(test)]
 mod multi_range_tests {
     use super::*;
+
+    #[test]
+    fn overlapping_and_adjacent_ranges_preserve_request_order() {
+        let path = std::env::temp_dir().join(format!(
+            "rusthouse-overlap-ranges-{}", std::process::id()
+        ));
+        fs::write(&path, b"abcdefghijklmnop").unwrap();
+        let selections = [(8, 4), (0, 4), (2, 5), (7, 1), (8, 0), (14, 2)];
+        let ranges = read_object_ranges(&path, &selections, 17).unwrap();
+        assert_eq!(ranges, vec![
+            b"ijkl".to_vec(), b"abcd".to_vec(), b"cdefg".to_vec(),
+            b"h".to_vec(), Vec::new(), b"op".to_vec(),
+        ]);
+        fs::remove_file(path).unwrap();
+    }
 
     #[test]
     fn reads_multiple_intervals_in_request_order() {
