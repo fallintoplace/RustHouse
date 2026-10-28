@@ -88,14 +88,11 @@ fn generated_rows_and_empty_inserts_use_existing_publish_path() {
     let pointer = db.join("target.parts/.rusthouse-active");
     assert_eq!(fs::read_to_string(&pointer).unwrap(), "g1\n");
 
-    // The 100,001st row must be rejected, not silently truncated or published.
-    let too_many = sql(
-        "INSERT INTO target (id) SELECT number FROM numbers(100001)",
-        &db,
-    );
-    assert!(!too_many.status.success());
-    assert_eq!(fs::read_to_string(&pointer).unwrap(), "g1\n");
-    assert_eq!(ok("SELECT count(*) FROM target", &db), "count\n50003\n");
+    // The old 100,000-row ceiling is gone. The whole insert commits atomically.
+    ok("INSERT INTO target (id) SELECT number FROM numbers(100001)", &db);
+    assert_eq!(fs::read_to_string(&pointer).unwrap(), "g2\n");
+    assert_eq!(ok("SELECT count(*) FROM target", &db), "count\n150004\n");
+    assert!(!db.join(".rusthouse-insert-select-0.tmp").exists());
     fs::remove_dir_all(db).unwrap();
 }
 
