@@ -31,7 +31,16 @@ impl<W: Write> JsonlWriter<W> {
         if self.headers.is_none() {
             let headers = parse_headers(&self.line);
             self.line.clear();
-            self.headers = Some(headers?);
+            self.headers = Some(
+                headers?
+                    .into_iter()
+                    .map(|header| {
+                        let mut encoded = Vec::with_capacity(header.len() + 2);
+                        write_json_string(&mut encoded, &header)?;
+                        Ok(encoded)
+                    })
+                    .collect::<io::Result<Vec<_>>>()?,
+            );
             return Ok(());
         }
 
@@ -91,7 +100,7 @@ fn write_json_row_into<W: Write>(
         if index > 0 {
             row.write_all(b",")?;
         }
-        write_json_string(&mut *row, header)?;
+        row.write_all(header)?;
         row.write_all(b":")?;
         write_json_value(&mut *row, value)?;
     }
@@ -107,7 +116,15 @@ fn write_json_row_into<W: Write>(
 
 #[cfg(test)]
 fn write_json_row<W: Write>(output: &mut W, headers: &[Vec<u8>], line: &[u8]) -> io::Result<()> {
-    write_json_row_into(output, headers, line, &mut Vec::new())
+    let encoded = headers
+        .iter()
+        .map(|header| {
+            let mut escaped = Vec::with_capacity(header.len() + 2);
+            write_json_string(&mut escaped, header)?;
+            Ok(escaped)
+        })
+        .collect::<io::Result<Vec<_>>>()?;
+    write_json_row_into(output, &encoded, line, &mut Vec::new())
 }
 
 // Keep NULL marker handling in one place for every JSONL field.
@@ -551,6 +568,17 @@ mod single_pass_row_tests {
         assert_eq!(writer.encoded.len(), 202);
         assert_eq!(writer.encoded[0], b'"');
         assert_eq!(writer.encoded.last(), Some(&b'"'));
+    }
+
+    #[test]
+    fn jsonl_writer_caches_escaped_header_across_rows() {
+        let mut writer = JsonlWriter::new(Vec::new());
+        writer.write_all(b"key\"name\n").unwrap();
+        writer.write_all(b"first\nsecond\n").unwrap();
+        assert_eq!(
+            writer.output,
+            b"{\"key\\\"name\":\"first\"}\n{\"key\\\"name\":\"second\"}\n"
+        );
     }
 
 }
