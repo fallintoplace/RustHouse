@@ -11,8 +11,21 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::Duration;
 
+const MAX_CONFIGURED_CONNECTIONS: usize = 64;
+
+/// Bound concurrent read-only analytical requests to avoid unbounded
+/// thread, decoded-block and response-buffer amplification.
+fn parse_max_connections(value: &str) -> io::Result<usize> {
+    let workers = value.parse::<usize>()
+        .map_err(|_| io::Error::other("invalid max connections"))?;
+    if !(1..=MAX_CONFIGURED_CONNECTIONS).contains(&workers) {
+        return Err(io::Error::other("max connections must be 1..64"));
+    }
+    Ok(workers)
+}
+
 fn usage() -> &'static str {
-    "Usage: rusthouse-server [--port <1-65535>] [--part <frozen-part-or-snapshot> | --database <directory>] [--max-rows <n>] [--peer IPv4:<port>]... [--bind <IPv4>] [--allow-private-network]\n\
+    "Usage: rusthouse-server [--port <1-65535>] [--part <frozen-part-or-snapshot> | --database <directory>] [--max-rows <n>] [--max-connections <1-64>] [--peer IPv4:<port>]... [--bind <IPv4>] [--allow-private-network]\n\
      Listens on 127.0.0.1 by default. Private networking requires opt-in. No TLS or authentication.\n"
 }
 
@@ -172,6 +185,7 @@ fn main() -> io::Result<()> {
     let mut part = None;
     let mut database = None;
     let mut max_rows = 10_000usize;
+    let mut max_connections = MAX_CONNECTIONS;
     let mut peers = Vec::new();
     let mut bind = Ipv4Addr::LOCALHOST;
     let mut allow_private_network = false;
@@ -202,6 +216,11 @@ fn main() -> io::Result<()> {
                     args.next()
                         .ok_or_else(|| io::Error::other("missing database path"))?,
                 ));
+            }
+            "--max-connections" => {
+                let value = args.next()
+                    .ok_or_else(|| io::Error::other("missing max connections"))?;
+                max_connections = parse_max_connections(&value)?;
             }
             "--peer" => {
                 peers.push(
@@ -271,7 +290,7 @@ fn main() -> io::Result<()> {
         let stream = accepted?;
         let mut count = active.load(Ordering::Relaxed);
         let acquired = loop {
-            if count >= MAX_CONNECTIONS {
+            if count >= max_connections {
                 break false;
             }
             match active.compare_exchange_weak(
@@ -384,5 +403,21 @@ mod request_line_spacing_regressions {
                 Some("400 Bad Request")
             );
         }
+    }
+}
+
+#[cfg(test)]
+mod concurrency_capacity_tests {
+    use super::*;
+
+    #[test]
+    fn bounds_parallel_query_workers_before_binding_server() {
+        assert_eq!(parse_max_connections("1").unwrap(), 1);
+        assert_eq!(parse_max_connections("16").unwrap(), 16);
+        assert_eq!(parse_max_connections("64").unwrap(), 64);
+        for invalid in ["", "0", "65", "1000000", "-1", "4.5", "many"] {
+            assert!(parse_max_connections(invalid).is_err(), "{invalid}");
+        }
+        assert_eq!(MAX_CONNECTIONS, 16);
     }
 }
