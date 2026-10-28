@@ -46,6 +46,14 @@ class BenchmarkComparisonTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "engine"):
             compare(baseline, candidate)
 
+    def test_unverified_baseline_does_not_produce_latency_claims(self):
+        baseline = {"results": [result(1, "unverified", 0.01)]}
+        candidate = {"results": [result(1, "passed", 0.001)]}
+        report = compare(baseline, candidate)
+        self.assertEqual(report["compared_queries"], 0)
+        self.assertFalse(report["improvements"])
+        self.assertEqual(report["incomparable"][0]["reason"], "query_not_successful")
+
     def test_invalid_medians_are_not_measured(self):
         self.assertIsNone(elapsed(result(1, "passed", 0)))
         report = compare({"results": [result(1, "passed", 0)]},
