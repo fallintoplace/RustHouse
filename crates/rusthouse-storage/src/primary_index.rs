@@ -401,7 +401,7 @@ mod tests {
         };
         assert!(
             candidate_u64_mark_ranges(&unsorted, 0, &[(Bound::Unbounded, Bound::Unbounded)])
-                == Some(vec![0..2])
+                == Some(std::iter::once(0..2).collect())
         );
     }
 
