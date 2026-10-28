@@ -1865,7 +1865,11 @@ fn parse_at_depth(parser: &mut Parser, depth: usize) -> Result<ConstantValue, Pa
                             '\u{0008}' => result.push_str("\\b"),
                             '\u{000C}' => result.push_str("\\f"),
                             character if character < '\u{0020}' => {
-                                result.push_str(&format!("\\u{:04x}", character as u32));
+                                const HEX: &[u8; 16] = b"0123456789abcdef";
+                                let byte = character as u8;
+                                result.push_str("\\u00");
+                                result.push(char::from(HEX[usize::from(byte >> 4)]));
+                                result.push(char::from(HEX[usize::from(byte & 0x0f)]));
                             }
                             character => result.push(character),
                         }
