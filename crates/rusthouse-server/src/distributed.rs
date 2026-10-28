@@ -1607,6 +1607,51 @@ fn globally_rank_group_ids(
     indices
 }
 
+
+/// Merge exact distributed COUNT(column) partials while retaining the original
+/// output schema. Reuse the grouped COUNT reduction so HAVING and top-k are
+/// applied once on complete non-NULL counts, not shard-local groups.
+fn merge_grouped_nonnull_counts(
+    shards: &[(usize, Vec<u8>)],
+    max_rows: usize,
+    column: &str,
+    value_column: &str,
+    global: &Select,
+    key_kind: Option<&str>,
+) -> Result<Vec<u8>, MergeError> {
+    let expected = format!("{column}\tcount({value_column})\n");
+    let normalized_header = format!("{column}\tcount\n");
+    let mut normalized = Vec::with_capacity(shards.len());
+    for (cap, body) in shards {
+        if !body.starts_with(expected.as_bytes()) || !body.ends_with(b"\n") {
+            return Err(MergeError::InvalidGroupedCount);
+        }
+        let mut canonical = Vec::with_capacity(body.len());
+        canonical.extend_from_slice(normalized_header.as_bytes());
+        canonical.extend_from_slice(&body[expected.len()..]);
+        normalized.push((*cap, canonical));
+    }
+    let mut query = global.clone();
+    query.projection = Projection::GroupedCount { column: column.to_owned() };
+    for order in query.order_by.iter_mut().chain(query.order_by_extra.iter_mut()) {
+        if order.column == "#aggregate" {
+            order.column = "count".to_owned();
+        }
+    }
+    let result = merge_grouped_counts_typed(
+        &normalized, max_rows, Some(&query), key_kind,
+    )?;
+    if !result.starts_with(normalized_header.as_bytes()) {
+        return Err(MergeError::SchemaMismatch);
+    }
+    let mut output = expected.into_bytes();
+    output.extend_from_slice(&result[normalized_header.len()..]);
+    if output.len() > MAX_RESPONSE_BYTES {
+        return Err(MergeError::CoordinatorLimit);
+    }
+    Ok(output)
+}
+
 /// Reduce grouped COUNT results by their canonical TSV-encoded key.
 /// Preserve first-seen key order, reject malformed rows, and only emit a
 /// complete bounded result. Shards may hold overlapping group *keys*, but
@@ -1869,6 +1914,7 @@ pub fn handle(method: &str, body: &[u8], cluster: &Cluster, max_rows: usize) -> 
                 || is_safe_weighted_avg(&select)
                 || is_safe_grouped_weighted_avg(&select)
                 || is_safe_multikey_weighted_avg(&select)
+                || is_safe_grouped_nonnull_count(&select)
                 || is_safe_sum(&select)
                 || is_safe_extremum(&select) =>
         {
@@ -1896,6 +1942,7 @@ pub fn handle(method: &str, body: &[u8], cluster: &Cluster, max_rows: usize) -> 
     let weighted_avg_query = is_safe_weighted_avg(&select);
     let grouped_weighted_avg_query = is_safe_grouped_weighted_avg(&select);
     let multikey_weighted_avg_query = is_safe_multikey_weighted_avg(&select);
+    let grouped_nonnull_count_query = is_safe_grouped_nonnull_count(&select);
     let sum_query = is_safe_sum(&select);
     let shard_sql = if is_safe_scan(&select) {
         match unpaged_scan_sql(sql, &select) {
@@ -1926,7 +1973,7 @@ pub fn handle(method: &str, body: &[u8], cluster: &Cluster, max_rows: usize) -> 
 "),
         }
     } else if grouped_sum_query || grouped_extremum_query || grouped_multikey_sum_query
-        || grouped_multikey_extremum_query {
+        || grouped_multikey_extremum_query || grouped_nonnull_count_query {
         match grouped_aggregate_shard_sql(sql, &select) {
             Some(query) => query,
             None => {
@@ -2004,7 +2051,7 @@ pub fn handle(method: &str, body: &[u8], cluster: &Cluster, max_rows: usize) -> 
         (
             Some(Source::Table(table)),
             Projection::GroupedAggregate {
-                function: AggregateFunction::Sum | AggregateFunction::Min | AggregateFunction::Max | AggregateFunction::Avg,
+                function: AggregateFunction::Sum | AggregateFunction::Min | AggregateFunction::Max | AggregateFunction::Avg | AggregateFunction::Count,
                 column,
                 ..
             },
@@ -2168,6 +2215,16 @@ pub fn handle(method: &str, body: &[u8], cluster: &Cluster, max_rows: usize) -> 
                 )
             }
             _ => Err(MergeError::InvalidGroupedSum),
+        }
+    } else if grouped_nonnull_count_query {
+        match (&select.projection, group_schema) {
+            (Projection::GroupedAggregate { column, value_column, .. }, Some((_, key))) => {
+                merge_grouped_nonnull_counts(
+                    &shards, max_rows.min(250_000), column, value_column,
+                    &select, group_key_kind.as_deref(),
+                )
+            }
+            _ => Err(MergeError::InvalidGroupedCount),
         }
     } else if grouped_weighted_avg_query {
         match (sum_type.as_deref(), group_schema, sum_schema) {
@@ -2870,6 +2927,50 @@ mod tests {
             tied[left].cmp(&tied[right])
         });
         assert_eq!(sorted, (0..10).collect::<Vec<_>>());
+    }
+
+    #[test]
+    fn distributed_grouped_count_column_excludes_null_values() {
+        let sql = "SELECT region, count(email) FROM events GROUP BY region HAVING count(email) >= 2 ORDER BY 2 DESC LIMIT 2";
+        let query = parse_select(sql).unwrap();
+        assert!(is_safe_grouped_nonnull_count(&query));
+        assert_eq!(
+            grouped_aggregate_shard_sql(sql, &query).as_deref(),
+            Some("SELECT region, count(email) FROM events GROUP BY region")
+        );
+        let shards = [
+            shard(10, "region\tcount(email)\neast\t1\nwest\t0\nnorth\t3\n"),
+            shard(10, "region\tcount(email)\neast\t4\nwest\t1\nnorth\t1\n"),
+        ];
+        assert_eq!(
+            merge_grouped_nonnull_counts(&shards, 2, "region", "email", &query, None).unwrap(),
+            b"region\tcount(email)\neast\t5\nnorth\t4\n"
+        );
+        // A peer-local LIMIT must not discard groups before global reduction.
+        assert_eq!(
+            merge_grouped_nonnull_counts(
+                &[shard(2, "region\tcount(email)\na\t1\nb\t2\n")],
+                1, "region", "email", &query, None,
+            ),
+            Err(MergeError::ShardRowLimit)
+        );
+    }
+
+    #[test]
+    fn distributed_grouped_count_column_sorts_numeric_dimensions() {
+        let query = parse_select(
+            "SELECT customer, count(email) FROM events GROUP BY customer ORDER BY customer ASC LIMIT 2",
+        ).unwrap();
+        let shards = [
+            shard(10, "customer\tcount(email)\n10\t2\n2\t3\n1\t0\n"),
+            shard(10, "customer\tcount(email)\n10\t1\n1\t1\n"),
+        ];
+        assert_eq!(
+            merge_grouped_nonnull_counts(
+                &shards, 2, "customer", "email", &query, Some("UInt32"),
+            ).unwrap(),
+            b"customer\tcount(email)\n1\t1\n2\t3\n"
+        );
     }
     #[test]
     fn distributed_count_distinct_uses_global_unique_values() {
