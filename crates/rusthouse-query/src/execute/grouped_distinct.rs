@@ -8,8 +8,8 @@ use std::collections::{HashMap, HashSet, hash_map::Entry};
 use std::io::Write;
 use std::path::Path;
 
-const MAX_GROUPS: usize = 100_000;
-const MAX_GROUP_VALUE_PAIRS: usize = 100_000;
+const MAX_GROUPS: usize = 200_000;
+const MAX_GROUP_VALUE_PAIRS: usize = 200_000;
 
 struct Group {
     key: Cell,
@@ -105,7 +105,7 @@ pub(super) fn execute<W: Write>(
                 } else {
                     if groups.len() >= MAX_GROUPS {
                         return Err(ExecutionError::Invalid(
-                            "GROUP BY supports at most 100000 groups".into(),
+                            "GROUP BY supports at most 200000 groups".into(),
                         ));
                     }
                     let id = groups.len();
@@ -125,7 +125,7 @@ pub(super) fn execute<W: Write>(
                     Entry::Vacant(entry) => {
                         if groups.len() >= MAX_GROUPS {
                             return Err(ExecutionError::Invalid(
-                                "GROUP BY supports at most 100000 groups".into(),
+                                "GROUP BY supports at most 200000 groups".into(),
                             ));
                         }
                         let id = groups.len();
@@ -148,7 +148,7 @@ pub(super) fn execute<W: Write>(
                 if total_pairs >= MAX_GROUP_VALUE_PAIRS {
                     if !groups[id].distinct_uuids.contains(&key) {
                         return Err(ExecutionError::Invalid(
-                            "grouped COUNT(DISTINCT) supports at most 100000 distinct pairs".into(),
+                            "grouped COUNT(DISTINCT) supports at most 200000 distinct pairs".into(),
                         ));
                     }
                 } else if groups[id].distinct_uuids.insert(key) {
@@ -166,7 +166,7 @@ pub(super) fn execute<W: Write>(
                 if !groups[id].distinct_text.contains(text) {
                     if total_pairs >= MAX_GROUP_VALUE_PAIRS {
                         return Err(ExecutionError::Invalid(
-                            "grouped COUNT(DISTINCT) supports at most 100000 distinct pairs".into(),
+                            "grouped COUNT(DISTINCT) supports at most 200000 distinct pairs".into(),
                         ));
                     }
                     groups[id].distinct_text.insert(text.to_vec());
@@ -182,7 +182,7 @@ pub(super) fn execute<W: Write>(
             if total_pairs >= MAX_GROUP_VALUE_PAIRS {
                 if !groups[id].distinct.contains(&key) {
                     return Err(ExecutionError::Invalid(
-                        "grouped COUNT(DISTINCT) supports at most 100000 distinct pairs".into(),
+                        "grouped COUNT(DISTINCT) supports at most 200000 distinct pairs".into(),
                     ));
                 }
             } else if groups[id].distinct.insert(key) {
