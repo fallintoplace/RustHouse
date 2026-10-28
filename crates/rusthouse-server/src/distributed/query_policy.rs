@@ -119,6 +119,16 @@ pub(super) fn is_safe_grouped_sum(select: &Select) -> bool {
     ) && is_safe_unpaged_select(select)
 }
 
+pub(super) fn is_safe_grouped_extremum(select: &Select) -> bool {
+    matches!(
+        select.projection,
+        Projection::GroupedAggregate {
+            function: AggregateFunction::Min | AggregateFunction::Max,
+            ..
+        }
+    ) && is_safe_unpaged_select(select)
+}
+
 pub(super) fn group_key_type(kind: &str) -> bool {
     let base = kind
         .strip_prefix("Nullable(")
