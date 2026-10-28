@@ -233,3 +233,18 @@ pub(super) fn grouped_aggregate_shard_sql(sql: &str, select: &Select) -> Option<
     }
     None
 }
+
+/// Allow grouped MIN/MAX of exact integers with global aggregate ordering.
+pub(super) fn is_safe_grouped_extremum(select: &Select) -> bool {
+    matches!(
+        select.projection,
+        Projection::GroupedAggregate {
+            function: AggregateFunction::Min | AggregateFunction::Max,
+            ..
+        }
+    ) && matches!(select.source, Some(Source::Table(_)))
+        && !select.distinct
+        && select.rename.is_none()
+        && select.alias.is_none()
+        && select.order_terms().all(|term| term.column == "#aggregate")
+}
