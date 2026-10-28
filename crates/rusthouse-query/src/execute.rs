@@ -209,6 +209,66 @@ pub fn execute<W: Write>(
 /// Evaluate filtered COUNT independently on immutable parts, then reduce the
 /// partial counts. Skip small snapshots where thread startup costs dominate.
 /// An unfiltered COUNT already has a cheaper metadata-only path.
+/// Compile numeric WHERE predicates once and scan immutable parts directly,
+/// without restarting the SQL executor or parsing tabular output per part.
+/// Text and nullable filters retain the existing general-purpose fallback.
+fn parallel_numeric_filtered_count(
+    query: &Select,
+    parts: &[std::path::PathBuf],
+    metadata: &rusthouse_storage::PartMetadata,
+    workers: usize,
+) -> Result<Option<u64>, ExecutionError> {
+    let supported = |name: &str| -> Result<bool, ExecutionError> {
+        let column = metadata.columns.iter().find(|column| column.name == name)
+            .ok_or_else(|| ExecutionError::Invalid(format!("unknown WHERE column: {name}")))?;
+        Ok(matches!(column.data_type.as_str(),
+            "UInt8" | "UInt16" | "UInt32" | "UInt64" | "UInt128" |
+            "Int8" | "Int16" | "Int32" | "Int64" | "Int128" |
+            "Float32" | "Float64"))
+    };
+    for predicate in query.predicates.iter().chain(query.or_predicates.iter().flatten()) {
+        if !supported(predicate.column())? {
+            return Ok(None);
+        }
+    }
+    let mut columns = Vec::new();
+    let branches = compile_part_where(query, &mut columns, |name, literal| {
+        let column = metadata.columns.iter().find(|column| column.name == name)
+            .ok_or_else(|| ExecutionError::Invalid(format!("unknown WHERE column: {name}")))?;
+        parse_numeric(&column.data_type, literal)
+    })?;
+    if columns.is_empty() {
+        return Ok(None);
+    }
+    let chunk_size = parts.len().div_ceil(workers);
+    let count = std::thread::scope(|scope| -> Result<u64, ExecutionError> {
+        let handles = parts.chunks(chunk_size).map(|chunk| {
+            let columns = &columns;
+            let branches = &branches;
+            scope.spawn(move || -> Result<u64, ExecutionError> {
+                let mut partial = 0u64;
+                for part in chunk {
+                    let mut reader = rusthouse_storage::NumericPartReader::open(part, columns)?;
+                    while let Some(batch) = reader.next_batch()? {
+                        partial = partial.checked_add(count_batch_matches(&batch, branches) as u64)
+                            .ok_or_else(|| ExecutionError::Invalid("parallel COUNT overflow".into()))?;
+                    }
+                }
+                Ok(partial)
+            })
+        }).collect::<Vec<_>>();
+        let mut total = 0u64;
+        for handle in handles {
+            let partial = handle.join()
+                .map_err(|_| ExecutionError::Invalid("parallel COUNT worker panicked".into()))??;
+            total = total.checked_add(partial)
+                .ok_or_else(|| ExecutionError::Invalid("parallel COUNT overflow".into()))?;
+        }
+        Ok(total)
+    })?;
+    Ok(Some(count))
+}
+
 fn parallel_filtered_count(query: &Select, source: &Path) -> Result<Option<u64>, ExecutionError> {
     if !matches!(query.projection, Projection::Count)
         || (query.predicates.is_empty() && query.or_predicates.is_empty())
@@ -232,7 +292,10 @@ fn parallel_filtered_count(query: &Select, source: &Path) -> Result<Option<u64>,
     }
     // Validate all part schemas before executing any partial count. A mismatched
     // or incomplete snapshot must never produce a plausible partial answer.
-    inspect_query_source(source)?;
+    let metadata = inspect_query_source(source)?;
+    if let Some(count) = parallel_numeric_filtered_count(query, &parts, &metadata, workers)? {
+        return Ok(Some(count));
+    }
     let chunk_size = parts.len().div_ceil(workers);
     let total = std::thread::scope(|scope| -> Result<u64, ExecutionError> {
         let handles = parts
