@@ -332,18 +332,20 @@ fn parallel_filtered_count(query: &Select, source: &Path) -> Result<Option<u64>,
     if let Some(count) = parallel_numeric_filtered_count(query, &parts, &metadata, workers)? {
         return Ok(Some(count));
     }
-    let chunk_size = parts.len().div_ceil(workers);
+    // Text and nullable filters use the general executor. Balance uneven
+    // part sizes by claiming one verified part at a time.
+    let next = AtomicUsize::new(0);
     let total = std::thread::scope(|scope| -> Result<u64, ExecutionError> {
-        let handles = parts
-            .chunks(chunk_size)
-            .map(|chunk| {
+        let handles = (0..workers)
+            .map(|_| {
+                let next = &next;
                 scope.spawn(move || -> Result<u64, ExecutionError> {
                     let mut sum = 0u64;
                     let mut buffer = Vec::new();
-                    for part in chunk {
+                    while let Some(index) = next_part_index(next, parts.len()) {
                         buffer.clear();
                         // A single-part source avoids re-entering this parallel path.
-                        execute(query, Some(part), &mut buffer)?;
+                        execute(query, Some(&parts[index]), &mut buffer)?;
                         let header_end =
                             buffer
                                 .iter()
