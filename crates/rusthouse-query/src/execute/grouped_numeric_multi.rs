@@ -8,6 +8,7 @@ use std::io::Write;
 use std::path::Path;
 
 const MAX_GROUPS: usize = 200_000;
+
 fn filter_enabled(column: &TypedColumn, row: usize) -> Result<bool, ExecutionError> {
     let number = match column {
         TypedColumn::Numeric(values) => Some(super::number_at(values, row)),
@@ -25,6 +26,30 @@ fn filter_enabled(column: &TypedColumn, row: usize) -> Result<bool, ExecutionErr
         Some(Number::Float(value)) => value != 0.0,
         None => false,
     })
+}
+
+
+const MAX_GROUP_STATE_BYTES: usize = 64 * 1024 * 1024;
+
+fn reserve_group(
+    retained: &mut usize,
+    metric_count: usize,
+    variable_bytes: usize,
+) -> Result<(), ExecutionError> {
+    let fixed = std::mem::size_of::<(Cell, Vec<AggregateState>)>()
+        .checked_add(std::mem::size_of::<typed::Key>())
+        .and_then(|v| metric_count.checked_mul(std::mem::size_of::<AggregateState>())
+            .and_then(|states| v.checked_add(states)))
+        .ok_or_else(|| ExecutionError::Invalid("group memory estimate overflow".into()))?;
+    let next = variable_bytes.checked_mul(2)
+        .and_then(|variable| fixed.checked_add(variable))
+        .and_then(|additional| retained.checked_add(additional))
+        .ok_or_else(|| ExecutionError::Invalid("group memory estimate overflow".into()))?;
+    if next > MAX_GROUP_STATE_BYTES {
+        return Err(ExecutionError::Invalid("GROUP BY exceeds 64 MiB group-state budget".into()));
+    }
+    *retained = next;
+    Ok(())
 }
 
 
@@ -121,6 +146,7 @@ pub(super) fn execute<W: Write>(
         .map(|value| value.as_ref().map(|column| indices[column]))
         .collect::<Vec<_>>();
     let mut groups = Vec::<(Cell, Vec<AggregateState>)>::new();
+    let mut retained_group_bytes = 0usize;
     // Direct slots avoid repeated hashing on compact grouping columns.
     let mut dense_slots = match group_type.as_str() {
         "UInt8" | "Int8" => Some(vec![usize::MAX; 256]),
@@ -159,6 +185,7 @@ pub(super) fn execute<W: Write>(
                 if *slot != usize::MAX {
                     *slot
                 } else {
+                    reserve_group(&mut retained_group_bytes, items.len(), 0)?;
                     let index = groups.len();
                     *slot = index;
                     groups.push((
@@ -191,6 +218,7 @@ pub(super) fn execute<W: Write>(
                                 "GROUP BY supports at most 200000 groups".into(),
                             ));
                         }
+                        reserve_group(&mut retained_group_bytes, items.len(), 0)?;
                         let group = groups.len();
                         by_uuid.insert(key, group);
                         groups.push((
@@ -211,6 +239,7 @@ pub(super) fn execute<W: Write>(
                                 "GROUP BY supports at most 200000 groups".into(),
                             ));
                         }
+                        reserve_group(&mut retained_group_bytes, items.len(), key.len())?;
                         let group = groups.len();
                         by_text.insert(key.to_vec(), group);
                         groups.push((
@@ -232,6 +261,7 @@ pub(super) fn execute<W: Write>(
                                     "GROUP BY supports at most 200000 groups".into(),
                                 ));
                             }
+                            reserve_group(&mut retained_group_bytes, items.len(), 0)?;
                             entry.insert(groups.len());
                             groups.push((
                                 key,
@@ -351,6 +381,23 @@ pub(super) fn execute<W: Write>(
         }
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod group_state_budget_tests {
+    use super::*;
+
+    #[test]
+    fn bounded_multi_metric_group_memory_cannot_wrap_or_overrun() {
+        let mut used = 0usize;
+        reserve_group(&mut used, 4, 128).unwrap();
+        let first = used;
+        reserve_group(&mut used, 4, 128).unwrap();
+        assert_eq!(used, first * 2);
+        assert!(reserve_group(&mut used, usize::MAX, 0).is_err());
+        assert_eq!(used, first * 2);
+        assert!(reserve_group(&mut used, 1, MAX_GROUP_STATE_BYTES).is_err());
+    }
 }
 
 #[cfg(test)]

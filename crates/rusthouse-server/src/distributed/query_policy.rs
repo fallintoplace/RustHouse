@@ -191,6 +191,44 @@ pub(super) fn unpaged_scan_sql(sql: &str, select: &Select) -> Option<String> {
 }
 
  
+/// Ordinary un-ordered scans need at most OFFSET + LIMIT rows from any
+/// one shard. Keep the global OFFSET at the coordinator, and reparse the
+/// rewritten query before it can be dispatched.
+pub(super) fn bounded_scan_sql(sql: &str, select: &Select) -> Option<String> {
+    let bare = unpaged_scan_sql(sql, select)?;
+    let Some(limit) = select.limit else {
+        return Some(bare);
+    };
+    let prefix = select.offset.unwrap_or(0).checked_add(limit)?;
+    let candidate = format!("{bare} LIMIT {prefix}");
+    let mut expected = select.clone();
+    expected.limit = Some(prefix);
+    expected.offset = None;
+    (parse_select(&candidate).ok()? == expected).then_some(candidate)
+}
+
+#[cfg(test)]
+mod bounded_scan_rewrite_tests {
+    use super::*;
+
+    #[test]
+    fn pushes_only_verified_prefixes_and_preserves_quoted_keywords() {
+        for (sql, expected) in [
+            ("SELECT id FROM events LIMIT 5", "SELECT id FROM events LIMIT 5"),
+            ("SELECT id FROM events LIMIT 5 OFFSET 7", "SELECT id FROM events LIMIT 12"),
+            ("SELECT name FROM events WHERE name = 'LIMIT 9' LIMIT 2 OFFSET 3",
+             "SELECT name FROM events WHERE name = 'LIMIT 9' LIMIT 5"),
+        ] {
+            let select = parse_select(sql).unwrap();
+            assert_eq!(bounded_scan_sql(sql, &select).as_deref(), Some(expected));
+        }
+        let unbounded = "SELECT id FROM events OFFSET 5";
+        let select = parse_select(unbounded).unwrap();
+        assert_eq!(bounded_scan_sql(unbounded, &select).as_deref(),
+            Some("SELECT id FROM events"));
+    }
+}
+
 /// Remove global HAVING, ORDER BY and pagination before per-shard grouping.
 /// Require a full parser round trip to avoid changing WHERE string literals.
 pub(super) fn grouped_count_shard_sql(sql: &str, select: &Select) -> Option<String> {

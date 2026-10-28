@@ -30,7 +30,11 @@ Two persistent tables can be queried with a typed, in-memory INNER equi-join:
 cargo run -p rusthouse-cli -- sql "SELECT u.id, t.label FROM users u JOIN teams t ON u.team_id = t.id ORDER BY u.id LIMIT 10" --database ./mydb
 ```
 
-Join columns must use qualified names. The current join executor supports two named tables, up to eight equi-keys connected by AND, INNER/LEFT/RIGHT/FULL [OUTER] JOIN, optional aliases, \`SELECT *\`, ORDER BY, LIMIT and OFFSET. NULL join keys do not match. Unsorted INNER JOIN streams the left table without a fixed probe-row cap and builds up to 32,768 right-side rows (with a 32 MiB estimated retained-cell budget). When the right side exceeds that row cap and the left fits the hash-build budget, the join instead builds the left and streams the right side. Sorted INNER joins and outer joins support up to 16,384 rows per table, subject to the 32 MiB retained-row budget per side. Unbounded joins reject more than 65,536 matched output rows. Unsorted INNER JOINs can page through larger match counts with `LIMIT` (up to 65,536 returned rows) and `OFFSET`.
+Join columns must use qualified names. NULL join keys do not match. The parser supports up to eight named tables in a JOIN chain, up to eight equality keys per JOIN, INNER/LEFT/RIGHT/FULL joins, optional aliases, projections, ORDER BY, LIMIT and OFFSET.
+
+**Two-table execution limits:** An unordered INNER JOIN can build a hash table from up to **262,144 build-side rows** (subject to a **32 MiB** retained-cell budget) while streaming the other side without a fixed probe-row cap. An ordered or non-streaming outer JOIN normally retains at most **32,768 rows per input**, also subject to the byte budget; specialized ordered and RIGHT OUTER paths can stream larger inputs when applicable. An unbounded two-table JOIN rejects more than **131,072 matched rows**. Supported paged INNER JOINs can scan larger match counts without retaining all output rows; LIMIT and OFFSET still determine the returned page.
+
+**Chained joins:** Three to eight tables currently use a bounded materialized intermediate, with a **64 MiB** retained-row budget and the **131,072 matched rows** limit. This is experimental hash-join execution, not a disk-spilling general-purpose join planner. See `crates/rusthouse-query/src/join.rs` for the shared runtime limits.
 
 ## Query frozen parts
 
