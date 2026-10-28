@@ -1,0 +1,19 @@
+{
+  "name": "join-wildcard-projections",
+  "description": "Compare left, right and dual qualified wildcard JOIN projections",
+  "queries": [
+    {
+      "name": "left-star",
+      "sql": "SELECT a.* FROM accounts a JOIN accounts b ON a.user_id = b.user_id ORDER BY a.user_id LIMIT 20"
+    },
+    {
+      "name": "right-star",
+      "sql": "SELECT a.user_id, b.* FROM accounts a JOIN accounts b ON a.user_id = b.user_id ORDER BY a.user_id LIMIT 20"
+    },
+    {
+      "name": "both-stars",
+      "sql": "SELECT a.*, b.* FROM accounts a JOIN accounts b ON a.user_id = b.user_id ORDER BY a.user_id LIMIT 20"
+    }
+  ],
+  "max_rows": 16000
+}
