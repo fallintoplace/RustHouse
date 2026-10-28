@@ -85,7 +85,7 @@ pub(super) fn execute<W: Write>(
     // Repeated String group keys can be checked without owning row bytes.
     let mut text_groups = HashMap::<Vec<u8>, usize>::new();
     let mut total_pairs = 0usize;
-    let mut reader = TypedQueryReader::open(part, &names)?;
+    let mut reader = TypedQueryReader::open_with_metadata(part, &names, &metadata)?;
     let no_filters = query.predicates.is_empty() && query.or_predicates.is_empty();
 
     while let Some(batch) = reader.next_batch()? {
