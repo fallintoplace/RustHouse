@@ -11,7 +11,10 @@ use std::sync::atomic::{AtomicU64, Ordering};
 static NEXT_PENDING: AtomicU64 = AtomicU64::new(0);
 
 fn io_error(path: &Path, source: io::Error) -> PartError {
-    PartError::Io { path: path.to_owned(), source }
+    PartError::Io {
+        path: path.to_owned(),
+        source,
+    }
 }
 
 /// Publish only a complete generation newer than the active local pointer.
@@ -19,13 +22,17 @@ pub fn activate_verified_generation(root: &Path, generation: u64) -> Result<(), 
     if generation == 0 {
         return Err(PartError::InvalidScan("generation must be positive".into()));
     }
-    let target = root.join(".rusthouse-versions").join(format!("g{generation}"));
+    let target = root
+        .join(".rusthouse-versions")
+        .join(format!("g{generation}"));
     if !fs::symlink_metadata(&target)
         .map_err(|error| io_error(&target, error))?
         .file_type()
         .is_dir()
     {
-        return Err(PartError::InvalidScan("generation is not a real directory".into()));
+        return Err(PartError::InvalidScan(
+            "generation is not a real directory".into(),
+        ));
     }
     inspect_query_source(&target)?;
     for part in query_parts(&target)? {
@@ -37,15 +44,17 @@ pub fn activate_verified_generation(root: &Path, generation: u64) -> Result<(), 
             if !meta.file_type().is_file() || meta.len() > 64 {
                 return Err(PartError::InvalidScan("invalid active pointer".into()));
             }
-            let current = fs::read_to_string(&pointer)
-                .map_err(|error| io_error(&pointer, error))?;
+            let current =
+                fs::read_to_string(&pointer).map_err(|error| io_error(&pointer, error))?;
             let prior = current
                 .strip_prefix('g')
                 .and_then(|text| text.strip_suffix('\n'))
                 .and_then(|text| text.parse::<u64>().ok())
                 .ok_or_else(|| PartError::InvalidScan("invalid active generation".into()))?;
             if generation <= prior {
-                return Err(PartError::InvalidScan("follower generation is not newer".into()));
+                return Err(PartError::InvalidScan(
+                    "follower generation is not newer".into(),
+                ));
             }
         }
         Err(error) if error.kind() == io::ErrorKind::NotFound => {}
@@ -89,16 +98,16 @@ mod tests {
 
     #[test]
     fn publishes_verified_generation_and_rejects_downgrade() {
-        let root = std::env::temp_dir().join(format!(
-            "rusthouse-activate-{}",
-            std::process::id()
-        ));
+        let root = std::env::temp_dir().join(format!("rusthouse-activate-{}", std::process::id()));
         let _ = fs::remove_dir_all(&root);
         let generation = root.join(".rusthouse-versions/g1");
         fs::create_dir_all(&generation).unwrap();
         write_wide_part(
             &generation.join("all_0_0_0"),
-            &[Column { name: "id".into(), data_type: "UInt64".into() }],
+            &[Column {
+                name: "id".into(),
+                data_type: "UInt64".into(),
+            }],
             &[vec![Some("12".into())]],
         )
         .unwrap();
@@ -110,18 +119,21 @@ mod tests {
     }
     #[test]
     fn corrupted_generation_does_not_publish_active_pointer() {
-        let root = std::env::temp_dir().join(format!(
-            "rusthouse-activate-corrupt-{}", std::process::id()
-        ));
+        let root =
+            std::env::temp_dir().join(format!("rusthouse-activate-corrupt-{}", std::process::id()));
         let _ = fs::remove_dir_all(&root);
         let generation = root.join(".rusthouse-versions/g1");
         fs::create_dir_all(&generation).unwrap();
         let part = generation.join("all_0_0_0");
         write_wide_part(
             &part,
-            &[Column { name: "id".into(), data_type: "UInt64".into() }],
+            &[Column {
+                name: "id".into(),
+                data_type: "UInt64".into(),
+            }],
             &[vec![Some("3".into())]],
-        ).unwrap();
+        )
+        .unwrap();
         let count_file = part.join("count.txt");
         let valid = fs::read(&count_file).unwrap();
         fs::write(&count_file, "999\n").unwrap();

@@ -41,18 +41,43 @@ mod tests {
 
     #[test]
     fn detects_copied_newer_and_conflicting_snapshots() {
-        let original = SnapshotVersion { epoch: 1, generation: 4, fingerprint: 11 };
-        assert_eq!(compare_snapshots(original, original), VersionRelation::Identical);
+        let original = SnapshotVersion {
+            epoch: 1,
+            generation: 4,
+            fingerprint: 11,
+        };
         assert_eq!(
-            compare_snapshots(original, SnapshotVersion { generation: 5, ..original }),
+            compare_snapshots(original, original),
+            VersionRelation::Identical
+        );
+        assert_eq!(
+            compare_snapshots(
+                original,
+                SnapshotVersion {
+                    generation: 5,
+                    ..original
+                }
+            ),
             VersionRelation::LocalBehind
         );
         assert_eq!(
-            compare_snapshots(original, SnapshotVersion { epoch: 2, ..original }),
+            compare_snapshots(
+                original,
+                SnapshotVersion {
+                    epoch: 2,
+                    ..original
+                }
+            ),
             VersionRelation::Diverged
         );
         assert_eq!(
-            compare_snapshots(original, SnapshotVersion { fingerprint: 12, ..original }),
+            compare_snapshots(
+                original,
+                SnapshotVersion {
+                    fingerprint: 12,
+                    ..original
+                }
+            ),
             VersionRelation::Diverged
         );
     }
@@ -60,14 +85,26 @@ mod tests {
     fn reversing_snapshot_inputs_reverses_direction() {
         for local in 1..=8 {
             for remote in 1..=8 {
-                let a = SnapshotVersion { epoch: 2, generation: local, fingerprint: 10 };
-                let b = SnapshotVersion { epoch: 2, generation: remote, fingerprint: 10 };
+                let a = SnapshotVersion {
+                    epoch: 2,
+                    generation: local,
+                    fingerprint: 10,
+                };
+                let b = SnapshotVersion {
+                    epoch: 2,
+                    generation: remote,
+                    fingerprint: 10,
+                };
                 let forward = compare_snapshots(a, b);
                 let backward = compare_snapshots(b, a);
                 match forward {
                     VersionRelation::Identical => assert_eq!(backward, VersionRelation::Identical),
-                    VersionRelation::LocalAhead => assert_eq!(backward, VersionRelation::LocalBehind),
-                    VersionRelation::LocalBehind => assert_eq!(backward, VersionRelation::LocalAhead),
+                    VersionRelation::LocalAhead => {
+                        assert_eq!(backward, VersionRelation::LocalBehind)
+                    }
+                    VersionRelation::LocalBehind => {
+                        assert_eq!(backward, VersionRelation::LocalAhead)
+                    }
                     VersionRelation::Diverged => panic!("identical epochs cannot diverge here"),
                 }
                 assert_eq!(

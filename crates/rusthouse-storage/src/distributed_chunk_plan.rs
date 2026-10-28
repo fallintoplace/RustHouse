@@ -94,9 +94,18 @@ mod tests {
         assert_eq!(
             plan_chunks(10, 4, 3).unwrap(),
             vec![
-                Chunk { offset: 0, length: 4 },
-                Chunk { offset: 4, length: 4 },
-                Chunk { offset: 8, length: 2 },
+                Chunk {
+                    offset: 0,
+                    length: 4
+                },
+                Chunk {
+                    offset: 4,
+                    length: 4
+                },
+                Chunk {
+                    offset: 8,
+                    length: 2
+                },
             ]
         );
         assert!(plan_chunks(0, 4, 1).unwrap().is_empty());
@@ -107,20 +116,51 @@ mod tests {
     #[test]
     fn schedules_only_missing_chunks_with_stable_indices_and_byte_budget() {
         let pending = plan_missing_chunks(10, 4, 3, &[0, 2], 6, 3).unwrap();
-        assert_eq!(pending, vec![
-            IndexedChunk { index: 0, chunk: Chunk { offset: 0, length: 4 } },
-            IndexedChunk { index: 2, chunk: Chunk { offset: 8, length: 2 } },
-        ]);
+        assert_eq!(
+            pending,
+            vec![
+                IndexedChunk {
+                    index: 0,
+                    chunk: Chunk {
+                        offset: 0,
+                        length: 4
+                    }
+                },
+                IndexedChunk {
+                    index: 2,
+                    chunk: Chunk {
+                        offset: 8,
+                        length: 2
+                    }
+                },
+            ]
+        );
         assert_eq!(
             plan_missing_chunks(10, 4, 3, &[0, 1, 2], 7, 3).unwrap(),
-            vec![IndexedChunk { index: 0, chunk: Chunk { offset: 0, length: 4 } }],
+            vec![IndexedChunk {
+                index: 0,
+                chunk: Chunk {
+                    offset: 0,
+                    length: 4
+                }
+            }],
         );
         assert_eq!(
             plan_missing_chunks(10, 4, 3, &[2], 2, 1).unwrap(),
-            vec![IndexedChunk { index: 2, chunk: Chunk { offset: 8, length: 2 } }],
+            vec![IndexedChunk {
+                index: 2,
+                chunk: Chunk {
+                    offset: 8,
+                    length: 2
+                }
+            }],
         );
         assert!(plan_missing_chunks(0, 4, 3, &[], 0, 3).unwrap().is_empty());
-        assert!(plan_missing_chunks(10, 4, 3, &[2], 0, 3).unwrap().is_empty());
+        assert!(
+            plan_missing_chunks(10, 4, 3, &[2], 0, 3)
+                .unwrap()
+                .is_empty()
+        );
     }
 
     #[test]
@@ -136,7 +176,10 @@ mod tests {
     fn handles_the_largest_u64_range() {
         assert_eq!(
             plan_chunks(u64::MAX, u64::MAX, 1).unwrap(),
-            vec![Chunk { offset: 0, length: u64::MAX }]
+            vec![Chunk {
+                offset: 0,
+                length: u64::MAX
+            }]
         );
     }
     #[test]

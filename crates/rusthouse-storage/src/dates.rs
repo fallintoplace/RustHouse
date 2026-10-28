@@ -78,8 +78,7 @@ fn parse_clock_time(text: &str) -> Option<u64> {
     let hour = text[..2].parse::<u64>().ok()?;
     let minute = text[3..5].parse::<u64>().ok()?;
     let second = text[6..].parse::<u64>().ok()?;
-    (hour <= 23 && minute <= 59 && second <= 59)
-        .then_some(hour * 3_600 + minute * 60 + second)
+    (hour <= 23 && minute <= 59 && second <= 59).then_some(hour * 3_600 + minute * 60 + second)
 }
 
 /// Parse a DateTime as UTC, accepting the usual SQL form and RFC 3339
@@ -165,10 +164,14 @@ mod tests {
         assert_eq!(parse_datetime("1970-01-01T00:00:00Z"), Some(epoch));
         assert_eq!(parse_datetime("1970-01-01T01:30:00+01:30"), Some(epoch));
         assert_eq!(parse_datetime("1969-12-31T22:00:00-02:00"), Some(epoch));
-        assert_eq!(parse_datetime("2000-01-01T00:00:00+01:00"),
-            parse_datetime("1999-12-31 23:00:00"));
-        assert_eq!(parse_datetime("2024-02-29T23:59:59-00:01"),
-            parse_datetime("2024-03-01 00:00:59"));
+        assert_eq!(
+            parse_datetime("2000-01-01T00:00:00+01:00"),
+            parse_datetime("1999-12-31 23:00:00")
+        );
+        assert_eq!(
+            parse_datetime("2024-02-29T23:59:59-00:01"),
+            parse_datetime("2024-03-01 00:00:59")
+        );
         for invalid in [
             "1970-01-01T00:00:00+24:00",
             "1970-01-01T00:00:00+01:60",
