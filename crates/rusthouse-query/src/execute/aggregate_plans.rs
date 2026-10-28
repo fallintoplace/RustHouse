@@ -149,6 +149,20 @@ pub(super) fn execute_count_column_part<W: Write>(
     output: &mut W,
 ) -> Result<(), ExecutionError> {
     let metadata = inspect_query_source(part)?;
+    // A non-nullable column has one value for every stored row. The
+    // validated snapshot metadata already contains the exact row count.
+    // Avoid opening and decompressing column streams for COUNT(column).
+    if query.predicates.is_empty() && query.or_predicates.is_empty() {
+        let selected = metadata.columns.iter().find(|item| item.name == column)
+            .ok_or_else(|| ExecutionError::Invalid(format!("unknown column: {column}")))?;
+        if !selected.data_type.starts_with("Nullable(") {
+            write_header(query, output, &format!("count({column})"))?;
+            if query.limit != Some(0) && query.offset.unwrap_or(0) == 0 {
+                writeln!(output, "{}", metadata.rows)?;
+            }
+            return Ok(());
+        }
+    }
     let mut scan_columns = vec![column.to_owned()];
     let comparisons = compile_part_where(query, &mut scan_columns, |name, literal| {
         let col = metadata
@@ -158,6 +172,25 @@ pub(super) fn execute_count_column_part<W: Write>(
             .ok_or_else(|| ExecutionError::Invalid(format!("unknown WHERE column: {name}")))?;
         parse_numeric(&col.data_type, literal)
     })?;
+    // All rows in a plain numeric column are non-NULL. For an unfiltered
+    // COUNT(column), immutable part metadata is sufficient even for large tables.
+    // Other types continue through the validated reader path.
+    let fast_count_type = metadata.columns.iter().any(|candidate| {
+        candidate.name == column
+            && matches!(
+                candidate.data_type.as_str(),
+                "UInt8" | "UInt16" | "UInt32" | "UInt64" | "UInt128"
+                    | "Int8" | "Int16" | "Int32" | "Int64" | "Int128"
+                    | "Float32" | "Float64" | "Date" | "Date32" | "DateTime"
+            )
+    });
+    if fast_count_type && query.predicates.is_empty() && query.or_predicates.is_empty() {
+        write_header(query, output, &format!("count({column})"))?;
+        if query.limit != Some(0) && query.offset.unwrap_or(0) == 0 {
+            writeln!(output, "{}", metadata.rows)?;
+        }
+        return Ok(());
+    }
     let mut reader = NumericQueryReader::open(part, &scan_columns)?;
     write_header(query, output, &format!("count({column})"))?;
     if query.limit == Some(0) {
@@ -172,13 +205,11 @@ pub(super) fn execute_count_column_part<W: Write>(
                 .ok_or_else(|| ExecutionError::Invalid("count overflow".into()))?;
             continue;
         }
-        for row in 0..batch[0].len() {
-            if batch_matches(&batch, row, &comparisons) {
-                count = count
-                    .checked_add(1)
-                    .ok_or_else(|| ExecutionError::Invalid("count overflow".into()))?;
-            }
-        }
+        // The batch counter evaluates simple typed comparisons directly
+        // without boxing each numeric value or rechecking the predicate tree.
+        count = count
+            .checked_add(count_batch_matches(&batch, &comparisons) as u64)
+            .ok_or_else(|| ExecutionError::Invalid("count overflow".into()))?;
     }
     if query.offset.unwrap_or(0) == 0 {
         writeln!(output, "{count}")?;
@@ -315,6 +346,87 @@ pub(super) fn execute_aggregate_numbers<W: Write>(
             writeln!(output, "{result}")?;
         }
         return Ok(());
+    }
+    // A filtered arithmetic progression can be aggregated from its exact
+    // matching interval without generating a billion individual rows.
+    if matches!(function, AggregateFunction::Sum | AggregateFunction::Min | AggregateFunction::Max) {
+        if let Some((lower, upper)) = monotonic_range_indices(&comparisons, start, rows, step) {
+        if query.offset.unwrap_or(0) == 0 {
+            if lower == upper {
+                writeln!(output, "NULL")?;
+            } else {
+                let first = u128::from(start) + u128::from(lower) * u128::from(step);
+                let last = u128::from(start) + u128::from(upper - 1) * u128::from(step);
+                let count = u128::from(upper - lower);
+                let result = match function {
+                    // Halve before multiplying to avoid a transient u128
+                    // overflow at the full UInt64 cardinality boundary.
+                    AggregateFunction::Sum => {
+                        let endpoints = first + last;
+                        if count % 2 == 0 {
+                            (count / 2) * endpoints
+                        } else {
+                            count * (endpoints / 2)
+                        }
+                    }
+                    AggregateFunction::Min => first,
+                    AggregateFunction::Max => last,
+                    _ => unreachable!(),
+                };
+                writeln!(output, "{result}")?;
+            }
+        }
+        return Ok(());
+        }
+    }
+    // Excluding a small finite set from an arithmetic progression leaves
+    // a closed-form sum and extrema. Only O(exclusions) values are visited.
+    if matches!(function, AggregateFunction::Sum | AggregateFunction::Min | AggregateFunction::Max) {
+        if let Some(excluded) = excluded_generated_positions(&comparisons, start, rows, step) {
+            if query.offset.unwrap_or(0) == 0 {
+                let remaining = rows - excluded.len() as u64;
+                if remaining == 0 {
+                    writeln!(output, "NULL")?;
+                } else {
+                    let first = u128::from(start);
+                    let stride = u128::from(step);
+                    let last = first + u128::from(rows - 1) * stride;
+                    let result = match function {
+                        AggregateFunction::Sum => {
+                            let endpoints = first + last;
+                            let baseline = if rows % 2 == 0 {
+                                u128::from(rows / 2) * endpoints
+                            } else {
+                                u128::from(rows) * (endpoints / 2)
+                            };
+                            let removed = excluded.iter()
+                                .map(|&index| first + u128::from(index) * stride)
+                                .sum::<u128>();
+                            baseline.checked_sub(removed).ok_or_else(|| {
+                                ExecutionError::Invalid("excluded SUM underflow".into())
+                            })?
+                        }
+                        AggregateFunction::Min => {
+                            let mut index = 0u64;
+                            while excluded.binary_search(&index).is_ok() {
+                                index += 1;
+                            }
+                            first + u128::from(index) * stride
+                        }
+                        AggregateFunction::Max => {
+                            let mut index = rows - 1;
+                            while excluded.binary_search(&index).is_ok() {
+                                index -= 1;
+                            }
+                            first + u128::from(index) * stride
+                        }
+                        _ => unreachable!(),
+                    };
+                    writeln!(output, "{result}")?;
+                }
+            }
+            return Ok(());
+        }
     }
     let mut state = AggregateState::new(function);
     for index in 0..rows {
