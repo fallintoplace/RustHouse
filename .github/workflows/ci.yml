@@ -70,6 +70,12 @@ jobs:
           python3 -m bench workload latency -- \
             --binary target/debug/rusthouse \
             --rows 512 --runs 1 --warmups 0
+      - name: Verify CLI and HTTP query parity
+        if: matrix.os == 'ubuntu-latest'
+        run: |
+          python3 -m bench.interop.cli_http_parity \
+            --binary target/debug/rusthouse \
+            --server target/debug/rusthouse-server
       - name: Verify analytics baseline against SQLite
         if: matrix.os == 'ubuntu-latest'
         run: |
