@@ -12,11 +12,13 @@ def preflight(source, destination):
     if source.is_symlink() or not source.is_dir():
         raise ValueError("source must be an existing real directory")
     source = source.resolve(strict=True)
+    if destination.is_symlink():
+        raise ValueError("backup destination must not be a symlink")
     destination = destination.resolve(strict=False)
     if destination.exists() or destination == source or source in destination.parents:
         raise ValueError("destination must not exist or be inside the source")
     stage = destination.with_name(destination.name + ".partial")
-    if stage.exists():
+    if stage.exists() or stage.is_symlink():
         raise ValueError("staging destination already exists: " + str(stage))
     for base, directories, files in os.walk(source, followlinks=False):
         for item in directories + files:
