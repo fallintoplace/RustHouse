@@ -8,7 +8,7 @@ use super::{AggregateState, ExecutionError, Number, typed};
 use crate::{AggregateFunction, JoinAggregate, JoinColumn, JoinSelect, JoinType};
 use rusthouse_storage::{TypedColumn, TypedQueryReader, inspect_query_source};
 use std::cmp::Ordering;
-use std::collections::{BinaryHeap, HashMap};
+use std::collections::{hash_map::Entry, BinaryHeap, HashMap};
 use std::io::Write;
 use std::sync::Arc;
 use std::path::Path;
@@ -809,6 +809,125 @@ fn execute_streaming_ordered_inner<W: Write>(
 
 
 
+
+fn execute_streaming_inner_group_count<W: Write>(
+    query: &JoinSelect,
+    left_path: &Path,
+    right_path: &Path,
+    columns: InnerJoinColumns<'_>,
+    left_count: u64,
+    right_count: u64,
+    key_index: usize,
+    header: &str,
+    output: &mut W,
+) -> Result<(), ExecutionError> {
+    const MAX_GROUPS: usize = 200_000;
+    const MAX_GROUP_BYTES: usize = 64 * 1024 * 1024;
+    let InnerJoinColumns {
+        left_names, right_names, left_keys, right_keys, null_filter, ..
+    } = columns;
+    if query.limit == Some(0) {
+        writeln!(output, "{header}\tcount")?;
+        return Ok(());
+    }
+    let mut groups = Vec::<(typed::Cell, u64)>::new();
+    let mut lookup = HashMap::<typed::Key, usize>::new();
+    let mut retained_bytes = 0usize;
+    let width = left_names.len();
+    let mut accept = |left: &[typed::Cell], right: &[typed::Cell]| {
+        let key = if key_index < width {
+            &left[key_index]
+        } else {
+            &right[key_index - width]
+        };
+        let entry_key = key.key();
+        match lookup.entry(entry_key) {
+            Entry::Occupied(entry) => {
+                let count = &mut groups[*entry.get()].1;
+                *count = count.checked_add(1)
+                    .ok_or_else(|| invalid("JOIN GROUP BY count overflow"))?;
+            }
+            Entry::Vacant(entry) => {
+                if groups.len() >= MAX_GROUPS {
+                    return Err(invalid("JOIN GROUP BY supports at most 200000 groups"));
+                }
+                let variable = match key {
+                    typed::Cell::Text(value) => value.len(),
+                    typed::Cell::Uuid(value) => value.len(),
+                    _ => 0,
+                };
+                retained_bytes = retained_bytes
+                    .checked_add(std::mem::size_of::<typed::Key>()
+                        + std::mem::size_of::<(typed::Cell, u64)>() + variable * 2)
+                    .ok_or_else(|| invalid("JOIN GROUP BY memory overflow"))?;
+                if retained_bytes > MAX_GROUP_BYTES {
+                    return Err(invalid("JOIN GROUP BY exceeds retained group memory budget"));
+                }
+                entry.insert(groups.len());
+                groups.push((key.clone(), 1));
+            }
+        }
+        Ok(())
+    };
+    if left_count != 0 && right_count != 0 {
+        if right_count <= MAX_STREAM_BUILD_ROWS &&
+            (right_count <= left_count || left_count > MAX_STREAM_BUILD_ROWS) {
+            let right_rows = read_rows(
+                right_path, right_names, right_count,
+                MAX_STREAM_BUILD_ROWS, MAX_STREAM_BUILD_BYTES
+            )?;
+            let mut hash = HashMap::<Vec<typed::Key>, Bucket>::with_capacity(right_rows.len());
+            for (index, row) in right_rows.iter().enumerate() {
+                if let Some(key) = row_key(row, right_keys) {
+                    if query.any {
+                        hash.entry(key).or_insert(Bucket::One(index));
+                    } else {
+                        hash.entry(key)
+                            .and_modify(|bucket| bucket.push(index))
+                            .or_insert(Bucket::One(index));
+                    }
+                }
+            }
+            probe_inner(
+                left_path, left_names, left_keys, &right_rows, &hash,
+                ProbeOptions {
+                    materialize_rows: key_index < width,
+                    materialize_after: 0, stop_after: Some(usize::MAX),
+                    any: query.any, null_filter,
+                }, &mut accept
+            )?;
+        } else {
+            let left_rows = read_rows(
+                left_path, left_names, left_count,
+                MAX_STREAM_BUILD_ROWS, MAX_STREAM_BUILD_BYTES
+            )?;
+            let mut hash = HashMap::<Vec<typed::Key>, Bucket>::with_capacity(left_rows.len());
+            for (index, row) in left_rows.iter().enumerate() {
+                if let Some(key) = row_key(row, left_keys) {
+                    hash.entry(key)
+                        .and_modify(|bucket| bucket.push(index))
+                        .or_insert(Bucket::One(index));
+                }
+            }
+            probe_right(
+                right_path, right_names, right_keys, &left_rows, &hash,
+                ProbeOptions {
+                    materialize_rows: key_index >= width,
+                    materialize_after: 0, stop_after: Some(usize::MAX),
+                    any: query.any, null_filter,
+                }, &mut accept
+            )?;
+        }
+    }
+    writeln!(output, "{header}\tcount")?;
+    for (key, count) in groups.into_iter()
+        .skip(query.offset).take(query.limit.unwrap_or(usize::MAX)) {
+        typed::write_value(output, &key)?;
+        writeln!(output, "\t{count}")?;
+    }
+    Ok(())
+}
+
 fn execute_streaming_inner_sum<W: Write>(
     query: &JoinSelect,
     left_path: &Path,
@@ -1113,6 +1232,14 @@ pub fn execute_join<W: Write>(
                 execute_streaming_inner_sum(
                     query, left_path, right_path, columns,
                     left_meta.rows, right_meta.rows, metric, &header, output
+                )
+            }
+            JoinAggregate::GroupCount(column) => {
+                let index = resolve(query, column, &left_names, &right_names)?;
+                let header = format!("{}.{}", column.relation, column.name);
+                execute_streaming_inner_group_count(
+                    query, left_path, right_path, columns,
+                    left_meta.rows, right_meta.rows, index, &header, output
                 )
             }
         };
