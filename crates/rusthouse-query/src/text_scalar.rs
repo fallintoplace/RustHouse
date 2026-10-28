@@ -34,6 +34,7 @@ pub(super) fn is_function(name: &str) -> bool {
             | "REVERSEUTF8"
             | "INITCAP"
             | "CONCAT"
+            | "SUBTRACTSECONDS"
             | "QUOTE_LITERAL"
             | "CUTQUERYSTRINGANDFRAGMENT"
             | "COALESCE"
@@ -424,6 +425,27 @@ fn parse_at_depth(parser: &mut Parser, depth: usize) -> Result<ConstantValue, Pa
             match input {
                 Some(value) => ConstantValue::Integer(i64::from(value.parse::<i64>().is_ok())),
                 None => ConstantValue::Null,
+            }
+        }
+        "SUBTRACTSECONDS" => {
+            let input = text_arg(parser, depth + 1)?;
+            require(parser, Token::Comma, "subtractSeconds requires an offset")?;
+            let amount = integer_arg(parser, depth + 1)?;
+            require(parser, Token::RParen, "subtractSeconds requires two arguments")?;
+            match (input, amount) {
+                (Some(value), Some(amount)) => {
+                    let seconds = rusthouse_storage::parse_datetime(&value)
+                        .ok_or_else(|| ParseError("invalid UTC DateTime argument".into()))?;
+                    let delta = amount
+                        .checked_mul(1)
+                        .ok_or_else(|| ParseError("subtractSeconds offset overflow".into()))?;
+                    let shifted = i64::from(seconds)
+                        .checked_sub(delta)
+                        .and_then(|value| u32::try_from(value).ok())
+                        .ok_or_else(|| ParseError("subtractSeconds result outside UTC DateTime range".into()))?;
+                    ConstantValue::Text(rusthouse_storage::format_datetime(shifted))
+                }
+                _ => ConstantValue::Null,
             }
         }
         "REVERSE" | "REVERSEUTF8" => {
