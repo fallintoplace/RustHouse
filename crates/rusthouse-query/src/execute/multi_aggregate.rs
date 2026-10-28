@@ -92,32 +92,46 @@ impl BoundExpr {
     }
 }
 
+fn numeric_argument_at(
+    batch: &[TypedColumn],
+    index: usize,
+    row: usize,
+) -> Result<Option<Number>, ExecutionError> {
+    // Number extraction does not require allocating a String/UUID Cell.
+    match &batch[index] {
+        TypedColumn::Numeric(values) => Ok(Some(number_at(values, row))),
+        TypedColumn::NullableNumeric { values, nulls } => {
+            if nulls[row] != 0 {
+                Ok(None)
+            } else {
+                Ok(Some(number_at(values, row)))
+            }
+        }
+        _ => Err(ExecutionError::Invalid(
+            "aggregate expression requires numeric columns".into(),
+        )),
+    }
+}
+
 fn eval_number(
     expression: &BoundExpr,
     batch: &[TypedColumn],
     row: usize,
 ) -> Result<Option<Number>, ExecutionError> {
     match expression {
-        BoundExpr::Column(index) => match typed::cell(&batch[*index], row) {
-            Cell::Numeric(value) => Ok(Some(value)),
-            Cell::Null => Ok(None),
-            _ => Err(ExecutionError::Invalid(
-                "aggregate expression requires numeric columns".into(),
-            )),
-        },
+        BoundExpr::Column(index) => numeric_argument_at(batch, *index, row),
         BoundExpr::Integer(value) => Ok(Some(Number::Signed(i128::from(*value)))),
         BoundExpr::AffineColumn {
             index,
             constant,
             subtract,
-        } => match typed::cell(&batch[*index], row) {
-            Cell::Numeric(value) => {
-                checked_binary(value, Number::Signed(i128::from(*constant)), *subtract).map(Some)
-            }
-            Cell::Null => Ok(None),
-            _ => Err(ExecutionError::Invalid(
-                "aggregate expression requires numeric columns".into(),
-            )),
+        } => match numeric_argument_at(batch, *index, row)? {
+            Some(value) => checked_binary(
+                value,
+                Number::Signed(i128::from(*constant)),
+                *subtract,
+            ).map(Some),
+            None => Ok(None),
         },
         BoundExpr::TextLength(index) => match &batch[*index] {
             // Length only needs the decoded byte span. Do not clone payloads.
@@ -506,5 +520,29 @@ mod distinct_key_tests {
             Some(typed::Key::Text(value)) if value == b"abc"
         ));
         assert!(distinct_argument(&expression, &batch, 1).unwrap().is_none());
+    }
+}
+
+#[cfg(test)]
+mod direct_numeric_argument_tests {
+    use super::*;
+    use rusthouse_storage::NumericColumn;
+
+    #[test]
+    fn evaluates_numeric_columns_and_preserves_nulls() {
+        let batch = vec![
+            TypedColumn::Numeric(NumericColumn::UInt64(vec![100, 200])),
+            TypedColumn::NullableNumeric {
+                values: NumericColumn::Int64(vec![-5, 7]),
+                nulls: vec![0, 1],
+            },
+        ];
+        assert!(matches!(eval_number(&BoundExpr::Column(0), &batch, 1).unwrap(),
+            Some(Number::Unsigned(200))));
+        assert!(matches!(eval_number(&BoundExpr::Column(1), &batch, 0).unwrap(),
+            Some(Number::Signed(-5))));
+        assert!(eval_number(&BoundExpr::Column(1), &batch, 1).unwrap().is_none());
+        let affine = BoundExpr::AffineColumn { index: 0, constant: 5, subtract: false };
+        assert!(matches!(eval_number(&affine, &batch, 0).unwrap(), Some(Number::Unsigned(105)) | Some(Number::Signed(105))));
     }
 }
