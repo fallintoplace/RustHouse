@@ -184,24 +184,43 @@ pub(crate) fn inspect_parts_metadata(
         .min(MAX_WORKERS);
     let mut metadata = Vec::with_capacity(paths.len());
     if paths.len() >= PARALLEL_THRESHOLD && workers > 1 {
-        let chunk_size = paths.len().div_ceil(workers);
+        // A few parts can have much larger metadata than the rest. Claim
+        // part indexes dynamically so one slow range does not hold up the
+        // whole scan. Retain results by input index for stable diagnostics.
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        let cursor = AtomicUsize::new(0);
+        let mut slots: Vec<Option<Result<PartMetadata, PartError>>> =
+            (0..paths.len()).map(|_| None).collect();
         std::thread::scope(|scope| -> Result<(), PartError> {
-            let handles = paths
-                .chunks(chunk_size)
-                .map(|chunk| {
-                    scope.spawn(move || chunk.iter().map(inspect_part).collect::<Vec<_>>())
+            let handles = (0..workers)
+                .map(|_| {
+                    let cursor = &cursor;
+                    scope.spawn(move || {
+                        let mut completed = Vec::new();
+                        loop {
+                            let index = cursor.fetch_add(1, Ordering::Relaxed);
+                            if index >= paths.len() {
+                                break;
+                            }
+                            completed.push((index, inspect_part(&paths[index])));
+                        }
+                        completed
+                    })
                 })
                 .collect::<Vec<_>>();
             for handle in handles {
-                let chunk = handle.join().map_err(|_| {
+                let completed = handle.join().map_err(|_| {
                     PartError::InvalidScan("snapshot metadata worker panicked".into())
                 })?;
-                for result in chunk {
-                    metadata.push(result?);
+                for (index, item) in completed {
+                    slots[index] = Some(item);
                 }
             }
             Ok(())
         })?;
+        for slot in slots {
+            metadata.push(slot.expect("every claimed part has one result")?);
+        }
     } else {
         for part in paths {
             metadata.push(inspect_part(part)?);
