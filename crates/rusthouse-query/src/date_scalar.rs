@@ -20,6 +20,7 @@ pub(super) fn is_function(name: &str) -> bool {
             | "ADDSECONDS"
             | "SUBTRACTSECONDS"
             | "ADDMONTHS"
+            | "SUBTRACTMONTHS"
     )
 }
 
@@ -40,6 +41,7 @@ pub(super) fn parse_after_open(
         "ADDSECONDS" => offset_seconds(parser, depth, 1, false, true),
         "SUBTRACTSECONDS" => offset_seconds(parser, depth, 1, true, true),
         "ADDMONTHS" => offset_months(parser, depth, 1, false),
+        "SUBTRACTMONTHS" => offset_months(parser, depth, 1, true),
         _ => Err(ParseError(format!("unsupported date function: {name}"))),
     }
 }
