@@ -38,7 +38,7 @@ def p90(samples):
 def write_fixture(path, rows):
     with path.open("w", encoding="ascii", buffering=1024 * 1024) as output:
         for start in range(0, rows, 8192):
-            output.write("".join(f"{value}\\n" for value in range(start, min(start + 8192, rows))))
+            output.write("".join(f"{value}\n" for value in range(start, min(start + 8192, rows))))
 
 
 def invoke(binary, database, sql, *, timeout, no_header=False):
@@ -64,7 +64,7 @@ def scan(binary, database, sql, expected, runs, warmups, timeout):
     samples = []
     for index in range(runs + warmups):
         actual, elapsed = invoke(binary, database, sql, timeout=timeout, no_header=True)
-        if actual != f"{expected}\\n".encode("ascii"):
+        if actual != f"{expected}\n".encode("ascii"):
             raise ValueError(f"{sql}: expected {expected}, received {actual!r}")
         if index >= warmups:
             samples.append(elapsed)
@@ -150,7 +150,7 @@ def main(argv=None):
             args.scratch_dir,
         )
     except (OSError, ValueError, RuntimeError, subprocess.TimeoutExpired) as error:
-        parser.exit(1, f"persisted scan benchmark failed: {error}\\n")
+        parser.exit(1, f"persisted scan benchmark failed: {error}\n")
 
     rendered = json.dumps(report, indent=2) + "\n"
     if args.output:
