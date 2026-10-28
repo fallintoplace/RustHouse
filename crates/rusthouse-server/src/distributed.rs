@@ -738,17 +738,39 @@ fn merge_grouped_counts_query(
         if let Some(having) = &select.having {
             groups.retain(|(_, count)| passes_count_having(*count, having));
         }
+        let mut bounded_order = None;
         if let Some(order) = &select.order_by {
-            groups.sort_by(|left, right| {
+            let descending = order.descending;
+            let compare = |left: &( &[u8], u64), right: &( &[u8], u64)| {
                 let cmp = left.1.cmp(&right.1);
-                if order.descending { cmp.reverse() } else { cmp }
-            });
+                if descending { cmp.reverse() } else { cmp }
+            };
+            let end = select.limit
+                .and_then(|limit| select.offset.unwrap_or(0).checked_add(limit));
+            if let Some(end) = end.filter(|&end| end < groups.len()) {
+                let mut indices = (0..groups.len()).collect::<Vec<_>>();
+                let compare_index = |left: &usize, right: &usize| {
+                    compare(&groups[*left], &groups[*right]).then_with(|| left.cmp(right))
+                };
+                indices.select_nth_unstable_by(end, &compare_index);
+                indices.truncate(end);
+                indices.sort_unstable_by(compare_index);
+                bounded_order = Some(indices);
+            } else {
+                groups.sort_by(compare);
+            }
         }
-        groups = groups
-            .into_iter()
-            .skip(select.offset.unwrap_or(0))
-            .take(select.limit.unwrap_or(usize::MAX))
-            .collect();
+        groups = if let Some(indices) = bounded_order {
+            indices.into_iter()
+                .skip(select.offset.unwrap_or(0))
+                .map(|index| groups[index])
+                .collect()
+        } else {
+            groups.into_iter()
+                .skip(select.offset.unwrap_or(0))
+                .take(select.limit.unwrap_or(usize::MAX))
+                .collect()
+        };
     }
     if groups.len() > max_rows {
         return Err(MergeError::CoordinatorLimit);
@@ -1768,5 +1790,33 @@ mod tests {
             handle("POST", b"SELECT id FROM events", &cluster, 10).status,
             "400 Bad Request"
         );
+    }
+}
+
+#[cfg(test)]
+mod bounded_grouped_count_topk_tests {
+    use super::*;
+
+    #[test]
+    fn paginates_global_count_ranking_with_stable_ties() {
+        let shards = vec![
+            (250_000, b"dim\tcount\nA\t1\nB\t2\nC\t1\nD\t1\n".to_vec()),
+            (250_000, b"dim\tcount\nA\t4\nB\t1\nC\t2\nD\t1\n".to_vec()),
+        ];
+        let sql = parse_select(
+            "SELECT dim, count(*) FROM facts GROUP BY dim ORDER BY count DESC LIMIT 2 OFFSET 1"
+        ).unwrap();
+        let merged = merge_grouped_counts_query(&shards, 2, Some(&sql)).unwrap();
+        assert_eq!(merged, b"dim\tcount\nB\t3\nC\t3\n");
+    }
+
+    #[test]
+    fn zero_length_ranked_page_keeps_only_header() {
+        let shards = vec![(250_000, b"dim\tcount\nA\t3\nB\t2\n".to_vec())];
+        let sql = parse_select(
+            "SELECT dim, count(*) FROM facts GROUP BY dim ORDER BY count DESC LIMIT 0"
+        ).unwrap();
+        let merged = merge_grouped_counts_query(&shards, 1, Some(&sql)).unwrap();
+        assert_eq!(merged, b"dim\tcount\n");
     }
 }
