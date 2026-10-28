@@ -173,9 +173,11 @@ pub fn inspect_query_source(path: &Path) -> Result<PartMetadata, PartError> {
 /// Verify one chunk without retaining per-part metadata. Each worker holds at
 /// most one PartMetadata at a time, regardless of the number of parts.
 fn inspect_metadata_chunk(paths: &[PathBuf]) -> Result<(Vec<Column>, u64), PartError> {
-    let first = paths
-        .first()
-        .ok_or_else(|| PartError::InvalidScan("snapshot contains no readable parts".into()))?;
+    if paths.is_empty() {
+        return Err(PartError::InvalidScan(
+            "snapshot contains no readable parts".into(),
+        ));
+    }
     let mut columns: Option<Vec<Column>> = None;
     let mut rows = 0u64;
     for path in paths {
