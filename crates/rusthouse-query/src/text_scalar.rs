@@ -41,6 +41,7 @@ pub(super) fn is_function(name: &str) -> bool {
             | "JSONHAS"
             | "JSONEXTRACTSTRING"
             | "JSONEXTRACTRAW"
+            | "JSONEXTRACTUINTCASEINSENSITIVE"
             | "JSONEXTRACTBOOLCASEINSENSITIVE"
             | "JSONEXTRACTINTCASEINSENSITIVE"
             | "JSONEXTRACTRAWCASEINSENSITIVE"
@@ -1966,6 +1967,25 @@ fn parse_at_depth(parser: &mut Parser, depth: usize) -> Result<ConstantValue, Pa
                     ConstantValue::Integer(i64::from(
                         found.is_some_and(|value| value.raw() == "true"),
                     ))
+                }
+                _ => ConstantValue::Null,
+            }
+        }
+        "JSONEXTRACTUINTCASEINSENSITIVE" => {
+            let input = text_arg(parser, depth + 1)?;
+            let path = case_json_path(parser, depth + 1)?;
+            match (input, path) {
+                (Some(input), Some(steps)) => {
+                    let json = crate::json::parse_json(&input)
+                        .map_err(|error| ParseError(format!("invalid JSON: {error}")))?;
+                    let number = match json.at_case_path(&steps)
+                        .and_then(|value| value.raw().parse::<u64>().ok()) {
+                        Some(number) => i64::try_from(number).map_err(|_| {
+                            ParseError("JSONExtractUInt exceeds supported Int64 range".into())
+                        })?,
+                        None => 0,
+                    };
+                    ConstantValue::Integer(number)
                 }
                 _ => ConstantValue::Null,
             }
