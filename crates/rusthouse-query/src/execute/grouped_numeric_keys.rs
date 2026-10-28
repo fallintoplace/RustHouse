@@ -86,6 +86,120 @@ fn append_group_component(column: &TypedColumn, row: usize, buffer: &mut Vec<u8>
     }
 }
 
+
+/// Partial exact COUNT/SUM aggregates over multi-dimensional typed group keys.
+/// Merge in input-part order to preserve the serial first-seen group ordering.
+fn parallel_multi_dimensional_metrics(
+    part: &Path,
+    names: &[String],
+    group_indices: &[usize],
+    item_indices: &[usize],
+    items: &[(AggregateFunction, String)],
+    conditions: &[Vec<typed::Condition>],
+    no_filters: bool,
+) -> Result<Option<Vec<(Vec<Cell>, Vec<AggregateState>)>>, ExecutionError> {
+    let parts = rusthouse_storage::query_parts(part)?;
+    let workers = std::thread::available_parallelism()
+        .map_or(1, |count| count.get())
+        .min(4);
+    if workers < 2 || parts.len() < 16 {
+        return Ok(None);
+    }
+    let chunk_size = parts.len().div_ceil(workers);
+    let chunks = std::thread::scope(|scope| {
+        let handles = parts.chunks(chunk_size).map(|paths| {
+            scope.spawn(move || -> Result<Vec<(Vec<Cell>, Vec<AggregateState>)>, ExecutionError> {
+                let mut groups: Vec<(Vec<Cell>, Vec<AggregateState>)> = Vec::new();
+                let mut by_key = HashMap::<Vec<Key>, usize>::new();
+                for path in paths {
+                    let mut reader = rusthouse_storage::TypedPartReader::open(path, names)?;
+                    while let Some(batch) = reader.next_batch()? {
+                        for row in 0..batch[0].len() {
+                            if !no_filters && !typed::passes(&batch, row, conditions) {
+                                continue;
+                            }
+                            let key = group_indices.iter()
+                                .map(|&column| typed::key_at(&batch[column], row))
+                                .collect::<Vec<_>>();
+                            let group = if let Some(&found) = by_key.get(&key) {
+                                found
+                            } else {
+                                if groups.len() >= MAX_GROUPS {
+                                    return Err(ExecutionError::Invalid(
+                                        "GROUP BY supports at most 200000 groups".into(),
+                                    ));
+                                }
+                                let id = groups.len();
+                                by_key.insert(key, id);
+                                groups.push((
+                                    group_indices.iter().map(|&column| {
+                                        typed::cell(&batch[column], row)
+                                    }).collect(),
+                                    items.iter().map(|(function, _)| {
+                                        AggregateState::new(*function)
+                                    }).collect(),
+                                ));
+                                id
+                            };
+                            for ((function, _), (&index, state)) in items.iter().zip(
+                                item_indices.iter().zip(groups[group].1.iter_mut())
+                            ) {
+                                if *function == AggregateFunction::Count {
+                                    if !typed::is_null_at(&batch[index], row) {
+                                        state.increment_count()?;
+                                    }
+                                } else if let Some(value) = numeric_value_at(&batch[index], row)? {
+                                    state.update(value)?;
+                                }
+                            }
+                        }
+                    }
+                }
+                Ok(groups)
+            })
+        }).collect::<Vec<_>>();
+        handles.into_iter().map(|handle| handle.join().unwrap_or_else(|_| {
+            Err(ExecutionError::Invalid("parallel multi-dimensional metric worker panicked".into()))
+        })).collect::<Vec<_>>()
+    });
+    let mut groups: Vec<(Vec<Cell>, Vec<AggregateState>)> = Vec::new();
+    let mut by_key = HashMap::<Vec<Key>, usize>::new();
+    for chunk in chunks {
+        for (keys, partials) in chunk? {
+            let key = keys.iter().map(Cell::key).collect::<Vec<_>>();
+            let group = if let Some(&found) = by_key.get(&key) {
+                found
+            } else {
+                if groups.len() >= MAX_GROUPS {
+                    return Err(ExecutionError::Invalid(
+                        "GROUP BY supports at most 200000 groups".into(),
+                    ));
+                }
+                let id = groups.len();
+                by_key.insert(key, id);
+                groups.push((
+                    keys,
+                    items.iter().map(|(function, _)| {
+                        AggregateState::new(*function)
+                    }).collect(),
+                ));
+                id
+            };
+            for ((function, _), (target, partial)) in items.iter().zip(
+                groups[group].1.iter_mut().zip(partials.iter())
+            ) {
+                if *function == AggregateFunction::Count {
+                    target.count = target.count.checked_add(partial.count)
+                        .ok_or_else(|| ExecutionError::Invalid("aggregate row count overflow".into()))?;
+                } else if let Some(value) = partial.value {
+                    target.update(value)?;
+                }
+            }
+        }
+    }
+    Ok(Some(groups))
+}
+
 pub(super) fn execute<W: Write>(
     query: &Select,
     part: &Path,
@@ -176,19 +290,40 @@ pub(super) fn execute<W: Write>(
     });
     let mut encoded_groups = HashMap::<Vec<u8>, usize>::new();
     let mut encoded_probe = Vec::<u8>::new();
+    let no_filters = query.predicates.is_empty() && query.or_predicates.is_empty();
+    let parallel_safe = items.iter().all(|(function, value_column)| {
+        *function == AggregateFunction::Count || (
+            *function == AggregateFunction::Sum && matches!(
+                typed::base_type(&types[value_column]),
+                "UInt8" | "UInt16" | "UInt32" | "UInt64" | "UInt128"
+                    | "Int8" | "Int16" | "Int32" | "Int64" | "Int128"
+            )
+        )
+    });
+    let parallel = if parallel_safe {
+        parallel_multi_dimensional_metrics(
+            part, &names, &group_indices, &item_indices, items, &conditions, no_filters,
+        )?
+    } else {
+        None
+    };
+    let scan_serially = parallel.is_none();
     let mut by_key = HashMap::<Vec<Key>, usize>::new();
-    let mut groups = Vec::<(Vec<Cell>, Vec<AggregateState>)>::new();
+    let mut groups = parallel.unwrap_or_default();
     let mut dense_slots = (columns.len() == 2
         && columns
             .iter()
             .all(|key| matches!(types.get(key).map(String::as_str), Some("UInt8" | "Int8"))))
     .then(|| vec![usize::MAX; 1 << 16]);
-    let mut reader = TypedQueryReader::open_with_metadata(part, &names, &metadata)?;
+    let mut reader = if scan_serially {
+        Some(TypedQueryReader::open_with_metadata(part, &names, &metadata)?)
+    } else {
+        None
+    };
     // Reuse a probe buffer for existing groups instead of allocating a Vec
     // of Cells and a Vec of Keys for every matching input row.
     let mut probe_key = Vec::<Key>::with_capacity(group_indices.len());
-    let no_filters = query.predicates.is_empty() && query.or_predicates.is_empty();
-    while let Some(batch) = reader.next_batch()? {
+    while let Some(batch) = reader.as_mut().map_or(Ok(None), TypedQueryReader::next_batch)? {
         for row in 0..batch[0].len() {
             if !no_filters && !typed::passes(&batch, row, &conditions) {
                 continue;
