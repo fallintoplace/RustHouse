@@ -47,8 +47,8 @@ fn decode_escape(field: &[u8], index: &mut usize) -> io::Result<u8> {
         *index += 3;
         Ok(decoded)
     } else {
-        let decoded = decode_simple_escape(escaped)
-            .ok_or_else(|| invalid_escape("unknown TSV escape"))?;
+        let decoded =
+            decode_simple_escape(escaped).ok_or_else(|| invalid_escape("unknown TSV escape"))?;
         *index += 1;
         Ok(decoded)
     }

@@ -343,7 +343,6 @@ pub(super) fn encode_checksums(files: &[FileChecksum]) -> Vec<u8> {
     bytes
 }
 
-
 #[cfg(test)]
 mod checksum_preallocation_tests {
     use super::*;

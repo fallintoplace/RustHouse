@@ -464,7 +464,6 @@ mod tests {
         assert!(active_parts_near_limit(MAX_ACTIVE_PARTS));
     }
 
-
     #[test]
     fn doctor_parser_accepts_only_explicit_hash_flag() {
         let parse = |args: &[&str]| parse_doctor_directory(args.iter().map(OsString::from));

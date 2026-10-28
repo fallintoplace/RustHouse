@@ -26,8 +26,7 @@ pub(super) fn is_safe_count(select: &Select) -> bool {
 }
 
 pub(super) fn is_safe_count_distinct(select: &Select) -> bool {
-    matches!(select.projection, Projection::CountDistinct { .. })
-        && is_safe_unpaged_select(select)
+    matches!(select.projection, Projection::CountDistinct { .. }) && is_safe_unpaged_select(select)
 }
 
 /// Rebuild only the projection while keeping an exactly verified WHERE clause.
@@ -101,8 +100,7 @@ pub(super) fn integer_type(kind: &str) -> bool {
 }
 
 pub(super) fn is_safe_grouped_count(select: &Select) -> bool {
-    matches!(select.projection, Projection::GroupedCount { .. })
-        && is_safe_unpaged_select(select)
+    matches!(select.projection, Projection::GroupedCount { .. }) && is_safe_unpaged_select(select)
 }
 
 pub(super) fn is_safe_grouped_sum(select: &Select) -> bool {

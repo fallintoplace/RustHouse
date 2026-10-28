@@ -43,10 +43,18 @@ fn nullable_typed_columns_keep_rows_and_nulls_in_tsv_and_jsonl() {
         "CREATE TABLE entries (id UInt64, name Nullable(String), score Nullable(UInt64))",
         None,
     );
-    ok(&db, "INSERT INTO entries VALUES (1, 'Ada', 10), (2, NULL, NULL), (3, 'Bob', 0)", None);
+    ok(
+        &db,
+        "INSERT INTO entries VALUES (1, 'Ada', 10), (2, NULL, NULL), (3, 'Bob', 0)",
+        None,
+    );
 
     assert_eq!(
-        ok(&db, "SELECT id, name FROM entries WHERE id >= 2 ORDER BY id", None),
+        ok(
+            &db,
+            "SELECT id, name FROM entries WHERE id >= 2 ORDER BY id",
+            None
+        ),
         "id\tname\n2\t\\N\n3\tBob\n"
     );
     let jsonl = ok(
@@ -60,7 +68,11 @@ fn nullable_typed_columns_keep_rows_and_nulls_in_tsv_and_jsonl() {
     assert!(jsonl.contains("\"name\":\"Bob\""), "{jsonl}");
 
     assert_eq!(
-        ok(&db, "SELECT id FROM entries WHERE score IS NULL ORDER BY id", None),
+        ok(
+            &db,
+            "SELECT id FROM entries WHERE score IS NULL ORDER BY id",
+            None
+        ),
         "id\n2\n"
     );
     assert_eq!(

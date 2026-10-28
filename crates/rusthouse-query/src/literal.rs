@@ -6,7 +6,11 @@ use self::decimal::*;
 
 use crate::ParseError;
 
-fn rescale_decimal(value: i128, current_scale: usize, target_scale: usize) -> Result<i128, ParseError> {
+fn rescale_decimal(
+    value: i128,
+    current_scale: usize,
+    target_scale: usize,
+) -> Result<i128, ParseError> {
     let factor = 10_i128
         .checked_pow((target_scale - current_scale) as u32)
         .ok_or_else(|| ParseError("decimal constant scale is too large".into()))?;

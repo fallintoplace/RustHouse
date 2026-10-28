@@ -162,5 +162,4 @@ mod tests {
         assert!(output.0.iter().any(|chunk| chunk.as_slice() == b"\"a\": "));
         assert_eq!(output.0.concat(), b"{\n    \"a\": 1\n  }");
     }
-
 }

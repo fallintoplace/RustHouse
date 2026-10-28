@@ -1,8 +1,5 @@
 //! Conservative generation-retention planning; no files are deleted.
-fn validated_generations(
-    generations: &[u64],
-    active: u64,
-) -> Result<Vec<u64>, &'static str> {
+fn validated_generations(generations: &[u64], active: u64) -> Result<Vec<u64>, &'static str> {
     let mut sorted = generations.to_vec();
     sorted.sort_unstable();
     if sorted[0] == 0
