@@ -176,7 +176,7 @@ pub fn read_array_offsets<O: Read>(
     let mut offsets = Vec::with_capacity(rows + 1);
     offsets.push(0);
 
-    let mut buffer = [0u8; 16 * 1024];
+    let mut buffer = [0u8; 64 * 1024];
     let mut row = 0;
     while row < rows {
         let count = (rows - row).min(buffer.len() / OFFSET_ENTRY_BYTES);
@@ -251,6 +251,23 @@ mod tests {
             .iter()
             .flat_map(|value| value.to_le_bytes())
             .collect()
+    }
+
+    #[test]
+    fn reads_8192_offsets_in_one_bulk_read() {
+        struct Counting<'a> { inner: &'a [u8], calls: usize }
+        impl Read for Counting<'_> {
+            fn read(&mut self, bytes: &mut [u8]) -> io::Result<usize> {
+                self.calls += 1;
+                self.inner.read(bytes)
+            }
+        }
+        let data = vec![0u8; 8192 * OFFSET_ENTRY_BYTES];
+        let mut reader = Counting { inner: &data, calls: 0 };
+        let offsets = read_array_offsets(&mut reader, 8192, ArrayOffsetsEncoding::Sizes).unwrap();
+        assert_eq!(offsets.len(), 8192);
+        assert_eq!(offsets.element_count(), 0);
+        assert_eq!(reader.calls, 1);
     }
 
     #[test]
