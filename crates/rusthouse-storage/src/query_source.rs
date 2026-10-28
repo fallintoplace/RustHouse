@@ -292,8 +292,19 @@ impl NumericQueryReader {
         }
         let mut skipped = 0usize;
         while skipped < max_rows && self.next_part < self.parts.len() {
-            // Opening validates stream layout and marks before we skip them.
-            let mut reader = NumericPartReader::open(&self.parts[self.next_part], &self.columns)?;
+            // Immutable part row counts are validated by the snapshot planner.
+            // Skipping a complete part never needs to open its wide streams or
+            // decode thousands of mark entries.
+            let part = &self.parts[self.next_part];
+            let metadata = inspect_part(part)?;
+            if let Ok(rows) = usize::try_from(metadata.rows) {
+                if rows <= max_rows - skipped {
+                    skipped += rows;
+                    self.next_part += 1;
+                    continue;
+                }
+            }
+            let mut reader = NumericPartReader::open(part, &self.columns)?;
             self.next_part += 1;
             let amount = reader.skip_complete_marks(max_rows - skipped);
             skipped += amount;
@@ -411,6 +422,12 @@ mod tests {
             inspected += batch[0].len();
         }
         assert_eq!(inspected, 40);
+        let mut paged =
+            NumericQueryReader::open_with_metadata(&root, &["id".into()], &metadata).unwrap();
+        assert_eq!(paged.skip_prefix_rows(39).unwrap(), 39);
+        let tail = paged.next_batch().unwrap().unwrap();
+        assert!(matches!(&tail[0], NumericColumn::UInt64(values) if values == &[40]));
+        assert!(paged.next_batch().unwrap().is_none());
         assert!(matches!(
             NumericQueryReader::open_with_metadata(
                 &root.join("other-snapshot"),
