@@ -170,6 +170,9 @@ fn read_fixed<R: Read, T, const WIDTH: usize>(
     rows: usize,
     parse: fn([u8; WIDTH]) -> T,
 ) -> io::Result<Vec<T>> {
+    if rows == 0 {
+        return Ok(Vec::new());
+    }
     let mut values = Vec::with_capacity(rows);
     let mut buffer = [0u8; READ_BUFFER_BYTES];
 
@@ -502,5 +505,22 @@ mod tests {
             read_numeric_column(&mut raw.as_slice(), "Int64", numbers.len()).unwrap(),
             NumericColumn::Int64(numbers.to_vec())
         );
+    }
+}
+
+#[cfg(test)]
+mod zero_row_numeric_tests {
+    use super::*;
+
+    #[test]
+    fn zero_rows_do_not_read_the_numeric_stream() {
+        struct NoRead;
+        impl Read for NoRead {
+            fn read(&mut self, _: &mut [u8]) -> io::Result<usize> {
+                panic!("zero-row numeric read consumed input");
+            }
+        }
+        let values = read_numeric_column(&mut NoRead, "UInt64", 0).unwrap();
+        assert!(matches!(values, NumericColumn::UInt64(v) if v.is_empty()));
     }
 }

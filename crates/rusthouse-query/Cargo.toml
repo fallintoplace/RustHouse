@@ -22,6 +22,10 @@ harness = false
 name = "billion_parts"
 harness = false
 
+[[bench]]
+name = "join"
+harness = false
+
 [dependencies]
 rusthouse-storage = { path = "../rusthouse-storage" }
 

@@ -46,7 +46,22 @@ impl ResumeMap {
         if self.completed.iter().all(|&byte| byte == 0) {
             return (0..self.chunks).collect();
         }
-        let mut missing = Vec::new();
+        // Count only valid completion bits before allocating the missing-index list.
+        let completed_count = self
+            .completed
+            .iter()
+            .enumerate()
+            .map(|(byte_index, &bits)| {
+                let valid = (self.chunks - byte_index * 8).min(8);
+                let mask = if valid == 8 {
+                    u8::MAX
+                } else {
+                    ((1u16 << valid) - 1) as u8
+                };
+                (bits & mask).count_ones() as usize
+            })
+            .sum::<usize>();
+        let mut missing = Vec::with_capacity(self.chunks - completed_count);
         for (byte_index, &completed) in self.completed.iter().enumerate() {
             let mut bits = !completed;
             if byte_index == self.completed.len() - 1 && self.chunks % 8 != 0 {
@@ -179,5 +194,62 @@ mod tests {
         assert_eq!(decoded.len(), 65_536);
         assert_eq!(decoded.encode(), input);
         assert_eq!(decoded.remaining().len(), 3 * 8192);
+    }
+
+    #[test]
+    fn partial_bitmap_reserves_exact_remaining_slots() {
+        let mut progress = ResumeMap::new(65_536).unwrap();
+        for index in (0..65_536).step_by(2) {
+            progress.mark_complete(index).unwrap();
+        }
+        let remaining = progress.remaining();
+        assert_eq!(remaining.len(), 32_768);
+        assert_eq!(remaining.capacity(), remaining.len());
+        assert_eq!(remaining[0], 1);
+        assert_eq!(*remaining.last().unwrap(), 65_535);
+    }
+}
+
+impl ResumeMap {
+    /// Merge verified progress for the same immutable object and chunk layout.
+    /// The caller must authenticate that both maps refer to the same object.
+    pub fn merge_verified(&mut self, other: &Self) -> Result<(), &'static str> {
+        if self.chunks != other.chunks {
+            return Err("cannot merge mismatched transfer layouts");
+        }
+        for (destination, &source) in self.completed.iter_mut().zip(&other.completed) {
+            *destination |= source;
+        }
+        Ok(())
+    }
+}
+
+#[cfg(test)]
+mod merge_checkpoint_tests {
+    use super::*;
+
+    #[test]
+    fn combines_worker_progress_without_losing_bit_positions() {
+        let mut first = ResumeMap::new(10).unwrap();
+        first.mark_complete(0).unwrap();
+        first.mark_complete(8).unwrap();
+        let mut second = ResumeMap::new(10).unwrap();
+        second.mark_complete(1).unwrap();
+        second.mark_complete(9).unwrap();
+        first.merge_verified(&second).unwrap();
+        assert_eq!(first.remaining(), vec![2, 3, 4, 5, 6, 7]);
+        assert_eq!(ResumeMap::decode(&first.encode()).unwrap(), first);
+        first.merge_verified(&second).unwrap();
+        assert_eq!(first.remaining().len(), 6);
+    }
+
+    #[test]
+    fn incompatible_maps_leave_progress_unchanged() {
+        let mut first = ResumeMap::new(8).unwrap();
+        first.mark_complete(7).unwrap();
+        let original = first.clone();
+        assert!(first.merge_verified(&ResumeMap::new(9).unwrap()).is_err());
+        assert_eq!(first, original);
+        assert!(ResumeMap::new(0).unwrap().merge_verified(&ResumeMap::new(0).unwrap()).is_ok());
     }
 }

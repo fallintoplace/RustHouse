@@ -75,7 +75,7 @@ impl<W: Write> JsonCompactEachRowWriter<W> {
             write_json_value(&mut *encoded, value)?;
         }
         encoded.write_all(b"]\n")?;
-        self.output.write_all(&encoded)?;
+        self.output.write_all(encoded)?;
         Ok(())
     }
 

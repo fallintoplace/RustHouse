@@ -133,3 +133,39 @@ mod tests {
         }
     }
 }
+
+impl Capacity {
+    /// Reserve a whole immutable-object batch or reject it without changing state.
+    pub fn reserve_many(self, object_sizes: &[u64]) -> Result<Self, &'static str> {
+        if object_sizes.len() > 65_536 {
+            return Err("replica object batch exceeds limit");
+        }
+        let bytes = object_sizes.iter().try_fold(0u64, |total, &size| {
+            total.checked_add(size).ok_or("replica batch size overflow")
+        })?;
+        self.reserve(bytes)
+    }
+}
+
+#[cfg(test)]
+mod batch_reservation_tests {
+    use super::*;
+
+    #[test]
+    fn reserves_all_objects_as_one_transaction() {
+        let capacity = Capacity { total: 100, used: 10, reserved: 5 };
+        let booked = capacity.reserve_many(&[30, 25, 30]).unwrap();
+        assert_eq!(booked.available().unwrap(), 0);
+        assert_eq!(booked.reserved, 90);
+        assert!(capacity.reserve_many(&[30, 25, 31]).is_err());
+        assert_eq!(capacity.reserved, 5);
+    }
+
+    #[test]
+    fn refuses_overflow_and_unbounded_batches() {
+        let capacity = Capacity { total: u64::MAX, used: 0, reserved: 0 };
+        assert!(capacity.reserve_many(&[u64::MAX, 1]).is_err());
+        assert!(capacity.reserve_many(&vec![0; 65_537]).is_err());
+        assert_eq!(capacity.reserve_many(&[]).unwrap(), capacity);
+    }
+}

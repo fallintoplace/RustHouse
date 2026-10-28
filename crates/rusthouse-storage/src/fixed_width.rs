@@ -14,6 +14,11 @@ pub(crate) fn read_fixed_width<R: Read, T, const WIDTH: usize>(
     if WIDTH == 0 || WIDTH > MAX_ELEMENT_WIDTH || rows > MAX_BATCH_BYTES / WIDTH {
         return Err(io::Error::new(io::ErrorKind::InvalidInput, error_message));
     }
+    // Empty batches are common at mark and part boundaries. Avoid entering
+    // the fixed-width decode path or setting up its 64 KiB scratch buffer.
+    if rows == 0 {
+        return Ok(Vec::new());
+    }
     let mut result = Vec::with_capacity(rows);
     let mut buffer = [0u8; READ_BUFFER_BYTES];
     while result.len() < rows {
@@ -69,5 +74,24 @@ mod tests {
         let oversized =
             read_fixed_width::<_, u8, 16385>(&mut io::empty(), 1, "invalid element width", |_| 0);
         assert_eq!(oversized.unwrap_err().kind(), io::ErrorKind::InvalidInput);
+    }
+}
+
+#[cfg(test)]
+mod empty_batch_fast_path_tests {
+    use super::*;
+
+    #[test]
+    fn empty_batch_never_reads_the_underlying_stream() {
+        struct NoReads;
+        impl Read for NoReads {
+            fn read(&mut self, _: &mut [u8]) -> io::Result<usize> {
+                panic!("unexpected read for an empty batch");
+            }
+        }
+        let decoded =
+            read_fixed_width::<_, u64, 8>(&mut NoReads, 0, "invalid width", u64::from_le_bytes)
+                .unwrap();
+        assert!(decoded.is_empty());
     }
 }
