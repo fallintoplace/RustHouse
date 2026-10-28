@@ -10,6 +10,7 @@ pub(super) fn is_function(name: &str) -> bool {
             | "LENGTHUTF8"
             | "CHAR_LENGTH"
             | "OCTET_LENGTH"
+            | "TOINT16ORDEFAULT"
             | "ASCII"
             | "UTF16_LENGTH"
             | "HASSUBSEQUENCE"
@@ -128,6 +129,27 @@ fn parse_at_depth(parser: &mut Parser, depth: usize) -> Result<ConstantValue, Pa
                         .map_err(|_| ParseError("lengthUTF8 result exceeds Int64".into()))?,
                 ),
                 None => ConstantValue::Null,
+            }
+        }
+        "TOINT16ORDEFAULT" => {
+            let input = text_arg(parser, depth + 1)?;
+            let default = if parser.take(Token::Comma) {
+                integer_arg(parser, depth + 1)?
+            } else {
+                Some(0)
+            };
+            require(parser, Token::RParen, "toInt16OrDefault requires one or two arguments")?;
+            match (input, default) {
+                (Some(text), Some(default)) => {
+                    let default = i16::try_from(default)
+                        .map_err(|_| ParseError("toInt16OrDefault default is out of range".into()))?;
+                    ConstantValue::Integer(
+                        text.parse::<i64>()
+                            .ok()
+                            .map_or(i64::from(default), |number| number as i16 as i64)
+                    )
+                }
+                _ => ConstantValue::Null,
             }
         }
         "ASCII" => {
