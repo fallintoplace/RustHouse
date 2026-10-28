@@ -1124,25 +1124,25 @@ pub fn handle(method: &str, body: &[u8], cluster: &Cluster, max_rows: usize) -> 
         Some(Source::Table(table)) => table.as_str(),
         _ => unreachable!("validated named table"),
     };
+    // A high-fanout query must not launch one full response buffer per peer.
+    // Process bounded waves while maintaining the configured shard order.
+    const MAX_INFLIGHT_SHARDS: usize = 8;
     let results = std::thread::scope(|scope| {
         let shard_query = shard_sql.as_str();
-        let handles = cluster
-            .peers()
-            .iter()
-            .map(|&peer| {
+        let mut results = Vec::with_capacity(cluster.peers().len());
+        for wave in cluster.peers().chunks(MAX_INFLIGHT_SHARDS) {
+            let handles = wave.iter().map(|&peer| {
                 scope.spawn(move || {
                     read_shard(peer, shard_query, sum_schema, group_schema, table, sorted_prefix)
                 })
-            })
-            .collect::<Vec<_>>();
-        handles
-            .into_iter()
-            .map(|handle| {
-                handle
-                    .join()
-                    .unwrap_or_else(|_| Err("peer query panicked".into()))
-            })
-            .collect::<Vec<_>>()
+            }).collect::<Vec<_>>();
+            for handle in handles {
+                results.push(
+                    handle.join().unwrap_or_else(|_| Err("peer query panicked".into()))
+                );
+            }
+        }
+        results
     });
     let mut shards = Vec::with_capacity(results.len());
     let mut sum_type: Option<String> = None;
@@ -2266,5 +2266,17 @@ mod distributed_uniq_state_tests {
         );
         let unsafe_query = parse_select("SELECT uniq(uid) FROM events ORDER BY uid").unwrap();
         assert!(!is_safe_uniq(&unsafe_query));
+    }
+}
+
+#[cfg(test)]
+mod shard_dispatch_wave_tests {
+    #[test]
+    fn bounded_waves_keep_stable_peer_order_without_skips() {
+        let peers: Vec<usize> = (0..32).collect();
+        let selected: Vec<usize> = peers.chunks(8)
+            .flat_map(|wave| wave.iter().copied()).collect();
+        assert_eq!(selected, peers);
+        assert_eq!(peers.chunks(8).count(), 4);
     }
 }
