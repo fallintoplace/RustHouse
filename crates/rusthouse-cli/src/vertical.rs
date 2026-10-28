@@ -56,6 +56,17 @@ fn write_row<W: Write>(
     headers: &[Vec<u8>],
     line: &[u8],
 ) -> io::Result<()> {
+    if !line.contains(&b'\\') {
+        writeln!(output, "Row {row}:")?;
+        for (header, field) in headers.iter().zip(line.split(|&byte| byte == b'\t')) {
+            output.write_all(b"  ")?;
+            write_visible(output, header)?;
+            output.write_all(b": ")?;
+            write_visible(output, field)?;
+            output.write_all(b"\n")?;
+        }
+        return output.write_all(b"\n");
+    }
     let fields = decode_row_fields(line)?;
     writeln!(output, "Row {row}:")?;
     for (header, field) in headers.iter().zip(&fields) {
