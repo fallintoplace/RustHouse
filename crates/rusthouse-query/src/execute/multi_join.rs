@@ -172,156 +172,12 @@ fn step_keys(
     Ok((left_keys, right_keys))
 }
 
-/// Execute a chain of three or more bounded joins. No output is written before
-/// all input validation, row-limit checks, and final ordering have succeeded.
-pub fn execute_multi_join<W: Write>(
+/// Bind the output schema without opening or scanning any table rows.
+fn output_columns(
     query: &JoinSelect,
-    paths: &[PathBuf],
-    output: &mut W,
-) -> Result<(), ExecutionError> {
-    if paths.len() != query.steps.len() + 2 {
-        return Err(invalid("JOIN source count differs from its plan"));
-    }
-    let mut relations = Vec::with_capacity(paths.len());
-    let mut width = 0usize;
-    for (index, path) in paths.iter().enumerate() {
-        let metadata = inspect_query_source(path)?;
-        let names = metadata
-            .columns
-            .iter()
-            .map(|column| column.name.clone())
-            .collect::<Vec<_>>();
-        let types = metadata
-            .columns
-            .iter()
-            .map(|column| column.data_type.clone())
-            .collect::<Vec<_>>();
-        let alias = match index {
-            0 => query.left_alias.clone(),
-            1 => query.right_alias.clone(),
-            _ => query.steps[index - 2].alias.clone(),
-        };
-        width = width
-            .checked_add(names.len())
-            .ok_or_else(|| invalid("JOIN column count overflow"))?;
-        if width > MAX_CHAIN_COLUMNS {
-            return Err(invalid("JOIN supports at most 128 source columns"));
-        }
-        relations.push(Relation {
-            alias,
-            names,
-            types,
-            start: width - metadata.columns.len(),
-            rows: metadata.rows,
-        });
-    }
-
-    let mut rows = read_rows(
-        &paths[0],
-        &relations[0].names,
-        relations[0].rows,
-        MAX_INPUT_ROWS,
-        MAX_STREAM_BUILD_BYTES,
-    )?;
-    let initial_step = JoinStep {
-        table: query.right.clone(),
-        alias: query.right_alias.clone(),
-        kind: query.kind,
-        any: query.any,
-        keys: query.keys.clone(),
-        using_keys: query.using_keys.clone(),
-    };
-    for (step_index, step) in std::iter::once(&initial_step)
-        .chain(query.steps.iter())
-        .enumerate()
-    {
-        let right_relation = &relations[step_index + 1];
-        let left_width = right_relation.start;
-        let (left_keys, right_keys) = step_keys(step, &relations[..=step_index + 1], left_width)?;
-        let right_rows = read_rows(
-            &paths[step_index + 1],
-            &right_relation.names,
-            right_relation.rows,
-            MAX_INPUT_ROWS,
-            MAX_STREAM_BUILD_BYTES,
-        )?;
-        let mut hash: HashMap<Vec<typed::Key>, Vec<usize>> =
-            HashMap::with_capacity(right_rows.len());
-        for (index, row) in right_rows.iter().enumerate() {
-            if let Some(key) = row_key(row, &right_keys) {
-                hash.entry(key).or_default().push(index);
-            }
-        }
-        let mut next = Vec::new();
-        let mut retained = 0usize;
-        let mut matched_right = matches!(step.kind, JoinType::Right | JoinType::Full)
-            .then(|| vec![false; right_rows.len()]);
-        for row in &rows {
-            let mut matched = false;
-            if let Some(key) = row_key(row, &left_keys) {
-                if let Some(matches) = hash.get(&key) {
-                    for &match_index in matches
-                        .iter()
-                        .take(if step.any && step.kind != JoinType::Right {
-                            1
-                        } else {
-                            usize::MAX
-                        })
-                    {
-                        if step.any && step.kind == JoinType::Right && matched_right[match_index] {
-                            continue;
-                        }
-                        matched = true;
-                        if let Some(flags) = matched_right.as_mut() {
-                            flags[match_index] = true;
-                        }
-                        let mut joined =
-                            Vec::with_capacity(left_width + right_relation.names.len());
-                        joined.extend_from_slice(row);
-                        joined.extend_from_slice(&right_rows[match_index]);
-                        push_row(&mut next, joined, &mut retained)?;
-                    }
-                }
-            }
-            if !matched && matches!(step.kind, JoinType::Left | JoinType::Full) {
-                let mut joined = Vec::with_capacity(left_width + right_relation.names.len());
-                joined.extend_from_slice(row);
-                joined.resize(left_width + right_relation.names.len(), typed::Cell::Null);
-                push_row(&mut next, joined, &mut retained)?;
-            }
-        }
-        if let Some(matched_right) = matched_right {
-            for (right_index, matched) in matched_right.into_iter().enumerate() {
-                if !matched {
-                    let mut joined = vec![typed::Cell::Null; left_width];
-                    joined.extend_from_slice(&right_rows[right_index]);
-                    push_row(&mut next, joined, &mut retained)?;
-                }
-            }
-        }
-        rows = next;
-    }
-
-    if let Some((column, not_null)) = &query.where_null {
-        let index = column_index(&relations, column)?;
-        rows.retain(|row| matches!(row[index], typed::Cell::Null) != *not_null);
-    }
-    if !query.order_by.is_empty() {
-        let ordering_columns = query.order_by.iter()
-            .map(|(column, descending, nulls_first)| {
-                column_index(&relations, column).map(|index| (index, *descending, *nulls_first))
-            })
-            .collect::<Result<Vec<_>, _>>()?;
-        rows.sort_by(|left, right| {
-            for (index, descending, nulls_first) in &ordering_columns {
-                let ordering = typed::compare_order_cells(
-                    &left[*index], &right[*index], *descending, *nulls_first
-                );
-                if !ordering.is_eq() { return ordering; }
-            }
-            std::cmp::Ordering::Equal
-        });
-    }
+    relations: &[Relation],
+    initial_step: &JoinStep,
+) -> Result<Vec<(usize, String, Option<usize>)>, ExecutionError> {
     // For unqualified *, the USING key appears once. With a RIGHT/FULL
     // join, fall back to the newly joined value when the old side is NULL.
     let mut omitted = HashMap::new();
@@ -375,6 +231,199 @@ pub fn execute_multi_join<W: Write>(
             }
         }
     }
+    Ok(selected)
+}
+
+/// Execute a chain of three or more bounded joins. No output is written before
+/// all input validation, row-limit checks, and final ordering have succeeded.
+pub fn execute_multi_join<W: Write>(
+    query: &JoinSelect,
+    paths: &[PathBuf],
+    output: &mut W,
+) -> Result<(), ExecutionError> {
+    if paths.len() != query.steps.len() + 2 {
+        return Err(invalid("JOIN source count differs from its plan"));
+    }
+    let mut relations = Vec::with_capacity(paths.len());
+    let mut width = 0usize;
+    for (index, path) in paths.iter().enumerate() {
+        let metadata = inspect_query_source(path)?;
+        let names = metadata
+            .columns
+            .iter()
+            .map(|column| column.name.clone())
+            .collect::<Vec<_>>();
+        let types = metadata
+            .columns
+            .iter()
+            .map(|column| column.data_type.clone())
+            .collect::<Vec<_>>();
+        let alias = match index {
+            0 => query.left_alias.clone(),
+            1 => query.right_alias.clone(),
+            _ => query.steps[index - 2].alias.clone(),
+        };
+        width = width
+            .checked_add(names.len())
+            .ok_or_else(|| invalid("JOIN column count overflow"))?;
+        if width > MAX_CHAIN_COLUMNS {
+            return Err(invalid("JOIN supports at most 128 source columns"));
+        }
+        relations.push(Relation {
+            alias,
+            names,
+            types,
+            start: width - metadata.columns.len(),
+            rows: metadata.rows,
+        });
+    }
+
+    let initial_step = JoinStep {
+        table: query.right.clone(),
+        alias: query.right_alias.clone(),
+        kind: query.kind,
+        any: query.any,
+        keys: query.keys.clone(),
+        using_keys: query.using_keys.clone(),
+    };
+    // Validate the complete output schema without materializing rows.
+    if query.limit == Some(0) {
+        for (index, join) in std::iter::once(&initial_step)
+            .chain(query.steps.iter())
+            .enumerate()
+        {
+            let width = relations[index + 1].start;
+            step_keys(join, &relations[..=index + 1], width)?;
+        }
+        if let Some((column, _)) = &query.where_null {
+            column_index(&relations, column)?;
+        }
+        for (column, _, _) in &query.order_by {
+            column_index(&relations, column)?;
+        }
+        let selected = output_columns(query, &relations, &initial_step)?;
+        let header = selected
+            .iter()
+            .map(|(_, name, _)| name.as_str())
+            .collect::<Vec<_>>()
+            .join("\t");
+        writeln!(output, "{header}")?;
+        return Ok(());
+    }
+
+    let mut rows = read_rows(
+        &paths[0],
+        &relations[0].names,
+        relations[0].rows,
+        MAX_INPUT_ROWS,
+        MAX_STREAM_BUILD_BYTES,
+    )?;
+    for (step_index, step) in std::iter::once(&initial_step)
+        .chain(query.steps.iter())
+        .enumerate()
+    {
+        let right_relation = &relations[step_index + 1];
+        let left_width = right_relation.start;
+        let (left_keys, right_keys) = step_keys(step, &relations[..=step_index + 1], left_width)?;
+        // INNER and LEFT cannot create rows from an empty intermediate.
+        // Keep the source row limit even when its payload is not needed.
+        if rows.is_empty() && matches!(step.kind, JoinType::Inner | JoinType::Left) {
+            if right_relation.rows > MAX_INPUT_ROWS {
+                return Err(invalid(format!(
+                    "JOIN supports at most {MAX_INPUT_ROWS} input rows per table"
+                )));
+            }
+            continue;
+        }
+        let right_rows = read_rows(
+            &paths[step_index + 1],
+            &right_relation.names,
+            right_relation.rows,
+            MAX_INPUT_ROWS,
+            MAX_STREAM_BUILD_BYTES,
+        )?;
+        let mut hash: HashMap<Vec<typed::Key>, Vec<usize>> =
+            HashMap::with_capacity(right_rows.len());
+        for (index, row) in right_rows.iter().enumerate() {
+            if let Some(key) = row_key(row, &right_keys) {
+                hash.entry(key).or_default().push(index);
+            }
+        }
+        // Most fact-to-dimension joins preserve the incoming row count.
+        let mut next = Vec::with_capacity(rows.len().min(MAX_RESULT_ROWS));
+        let mut retained = 0usize;
+        let mut matched_right = matches!(step.kind, JoinType::Right | JoinType::Full)
+            .then(|| vec![false; right_rows.len()]);
+        for row in &rows {
+            let mut matched = false;
+            if let Some(key) = row_key(row, &left_keys) {
+                if let Some(matches) = hash.get(&key) {
+                    for &match_index in matches
+                        .iter()
+                        .take(if step.any && step.kind != JoinType::Right {
+                            1
+                        } else {
+                            usize::MAX
+                        })
+                    {
+                        if step.any
+                            && step.kind == JoinType::Right
+                            && matched_right.as_ref().is_some_and(|flags| flags[match_index])
+                        {
+                            continue;
+                        }
+                        matched = true;
+                        if let Some(flags) = matched_right.as_mut() {
+                            flags[match_index] = true;
+                        }
+                        let mut joined =
+                            Vec::with_capacity(left_width + right_relation.names.len());
+                        joined.extend_from_slice(row);
+                        joined.extend_from_slice(&right_rows[match_index]);
+                        push_row(&mut next, joined, &mut retained)?;
+                    }
+                }
+            }
+            if !matched && matches!(step.kind, JoinType::Left | JoinType::Full) {
+                let mut joined = Vec::with_capacity(left_width + right_relation.names.len());
+                joined.extend_from_slice(row);
+                joined.resize(left_width + right_relation.names.len(), typed::Cell::Null);
+                push_row(&mut next, joined, &mut retained)?;
+            }
+        }
+        if let Some(matched_right) = matched_right {
+            for (right_index, matched) in matched_right.into_iter().enumerate() {
+                if !matched {
+                    let mut joined = vec![typed::Cell::Null; left_width];
+                    joined.extend_from_slice(&right_rows[right_index]);
+                    push_row(&mut next, joined, &mut retained)?;
+                }
+            }
+        }
+        rows = next;
+    }
+
+    if let Some((column, not_null)) = &query.where_null {
+        let index = column_index(&relations, column)?;
+        rows.retain(|row| matches!(row[index], typed::Cell::Null) != *not_null);
+    }
+    if !query.order_by.is_empty() {
+        let ordering_columns = query.order_by.iter()
+            .map(|(column, descending, nulls_first)| {
+                column_index(&relations, column).map(|index| (index, *descending, *nulls_first))
+            })
+            .collect::<Result<Vec<_>, _>>()?;
+        rows.sort_by(|left, right| {
+            for (index, descending, nulls_first) in &ordering_columns {
+                let ordering = typed::compare_order_cells(
+                    &left[*index], &right[*index], *descending, *nulls_first
+                );
+                if !ordering.is_eq() { return ordering; }
+            }
+            std::cmp::Ordering::Equal
+        });
+    }
+    let selected = output_columns(query, &relations, &initial_step)?;
     let header = selected
         .iter()
         .map(|(_, name, _)| name.as_str())

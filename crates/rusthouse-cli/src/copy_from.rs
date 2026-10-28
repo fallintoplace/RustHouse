@@ -6,7 +6,7 @@ use std::io::{BufRead, BufReader, Read};
 use std::path::Path;
 
 const MAX_COPY_BYTES: usize = 16 * 1024 * 1024;
-const MAX_CSV_DATA_RECORDS: usize = 50_000;
+const MAX_CSV_DATA_RECORDS: usize = 100_000;
 const MAX_CSV_RECORDS: usize = MAX_CSV_DATA_RECORDS + 1;
 #[cfg(test)]
 const MAX_TSV_RECORDS: usize = MAX_CSV_RECORDS; // legacy in-memory parser tests
@@ -42,7 +42,7 @@ fn push_record(
     row: &mut Vec<Option<String>>,
 ) -> Result<(), String> {
     if records.len() >= MAX_CSV_RECORDS {
-        return Err("CSV supports at most 50001 records including the header".into());
+        return Err("CSV supports at most 100001 records including the header".into());
     }
     records.push(std::mem::take(row));
     Ok(())
@@ -187,7 +187,7 @@ fn parse_tsv(data: &str) -> Result<Vec<Vec<Option<String>>>, String> {
     let mut records = Vec::new();
     for line in input.split_terminator('\n') {
         if records.len() >= MAX_TSV_RECORDS {
-            return Err("TSV supports at most 50001 records including the header".into());
+            return Err("TSV supports at most 100001 records including the header".into());
         }
         let line = line.strip_suffix('\r').unwrap_or(line);
         records.push(parse_tsv_record(line)?);
@@ -358,6 +358,14 @@ mod tests {
         assert_eq!(parse_csv(&csv).unwrap()[0].len(), 105);
         assert!(parse_tsv_record(&vec!["1"; 129].join("\t")).is_err());
         assert!(parse_csv(&vec!["1"; 129].join(",")).is_err());
+    }
+
+    #[test]
+    fn csv_parser_accepts_more_than_50000_data_rows_and_still_bounds_records() {
+        let input = "1\n".repeat(100_001);
+        assert_eq!(parse_csv(&input).unwrap().len(), 100_001);
+        let overflow = format!("{input}1\n");
+        assert!(parse_csv(&overflow).is_err());
     }
 
     #[test]
