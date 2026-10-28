@@ -22,12 +22,22 @@ pub(super) fn scan_number(sql: &str, index: &mut usize) -> Result<Token, ParseEr
     let start = *index;
     if bytes[*index] == b'-' {
         *index += 1;
-        require_digit(bytes, *index, "expected digits after '-'")?;
+        if bytes.get(*index) != Some(&b'.') {
+            require_digit(bytes, *index, "expected digits after '-'")?;
+        }
     }
     advance_ascii_digits(bytes, index);
     if bytes.get(*index) == Some(&b'.') {
         *index += 1;
         require_digit(bytes, *index, "expected digits after decimal point")?;
+        advance_ascii_digits(bytes, index);
+    }
+    if matches!(bytes.get(*index), Some(b'e' | b'E')) {
+        *index += 1;
+        if matches!(bytes.get(*index), Some(b'+' | b'-')) {
+            *index += 1;
+        }
+        require_digit(bytes, *index, "expected digits in exponent")?;
         advance_ascii_digits(bytes, index);
     }
     Ok(Token::Number(sql[start..*index].into()))
@@ -105,5 +115,23 @@ pub(super) fn punctuation_token(byte: u8) -> Token {
         b')' => Token::RParen,
         b';' => Token::Semicolon,
         _ => unreachable!("only supported punctuation reaches this helper"),
+    }
+}
+
+#[cfg(test)]
+mod exponent_tests {
+    use super::*;
+
+    #[test]
+    fn scans_signed_exponents_without_splitting_the_number() {
+        let mut index = 0;
+        assert_eq!(
+            scan_number("2.5E-3", &mut index).unwrap(),
+            Token::Number("2.5E-3".into())
+        );
+        assert_eq!(index, 6);
+        for invalid in ["2e", "2e+", "2e-"] {
+            assert!(scan_number(invalid, &mut 0).is_err());
+        }
     }
 }

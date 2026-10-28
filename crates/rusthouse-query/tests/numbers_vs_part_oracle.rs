@@ -135,3 +135,17 @@ fn multi_part_queries_match_independent_generated_source() {
     }
     fs::remove_dir_all(root).unwrap();
 }
+
+#[test]
+fn count_nonnullable_column_uses_exact_snapshot_row_count() {
+    let root = test_multi_parts(8201);
+    for (sql, expected) in [
+        ("SELECT count(number) FROM part", "count(number)\n8201\n"),
+        ("SELECT count(number) FROM part LIMIT 0", "count(number)\n"),
+        ("SELECT count(number) FROM part LIMIT 1 OFFSET 1", "count(number)\n"),
+        ("SELECT count(number) FROM part WHERE number >= 8200", "count(number)\n1\n"),
+    ] {
+        assert_eq!(run(sql, Some(&root)), expected, "{sql}");
+    }
+    fs::remove_dir_all(root).unwrap();
+}

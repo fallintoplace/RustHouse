@@ -821,7 +821,7 @@ pub(super) fn execute_typed<W: Write>(
     if query.limit == Some(0) {
         return Ok(());
     }
-    let mut scan = TypedQueryReader::open(part, &names)?;
+    let mut scan = TypedQueryReader::open_with_metadata(part, &names, &metadata)?;
     let is_count = matches!(query.projection, Projection::Count);
     let is_count_column = matches!(query.projection, Projection::CountColumn { .. });
     let is_count_distinct = matches!(query.projection, Projection::CountDistinct { .. });
@@ -871,7 +871,28 @@ pub(super) fn execute_typed<W: Write>(
             .filter(|count| *count <= MAX_BUFFERED_ROWS)
     };
     let no_filters = query.predicates.is_empty() && query.or_predicates.is_empty();
+    if no_filters && !is_count && !is_count_column && !is_count_distinct
+        && !is_grouped && !query.distinct && sort_indices.is_empty() {
+        skipped = scan.skip_prefix_rows(offset)?;
+    }
     while let Some(batch) = scan.next_batch()? {
+        if no_filters && (is_count || is_count_column) {
+            let matches = if is_count {
+                batch[0].len()
+            } else {
+                match &batch[projection_indices[0]] {
+                    TypedColumn::NullableNumeric { nulls, .. }
+                    | TypedColumn::NullableText { nulls, .. } => {
+                        nulls.iter().filter(|&&null| null == 0).count()
+                    }
+                    _ => batch[0].len(),
+                }
+            };
+            count = count
+                .checked_add(matches as u64)
+                .ok_or_else(|| ExecutionError::Invalid("count overflow".into()))?;
+            continue;
+        }
         for index in 0..batch[0].len() {
             if !no_filters && !passes(&batch, index, &conditions) {
                 continue;

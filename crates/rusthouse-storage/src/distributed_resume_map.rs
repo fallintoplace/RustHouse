@@ -50,7 +50,12 @@ impl ResumeMap {
     }
 
     pub fn complete(&self) -> bool {
-        (0..self.chunks).all(|index| self.is_complete(index))
+        let full_bytes = self.chunks / 8;
+        if !self.completed[..full_bytes].iter().all(|&byte| byte == u8::MAX) {
+            return false;
+        }
+        let remainder = self.chunks % 8;
+        remainder == 0 || self.completed[full_bytes] & ((1u8 << remainder) - 1) == (1u8 << remainder) - 1
     }
 
     /// Stable ASCII encoding for persisting transfer progress.
@@ -114,4 +119,16 @@ mod tests {
         assert!(ResumeMap::decode("10x01").is_err());
         assert!(ResumeMap::new(1).unwrap().mark_complete(2).is_err());
     }
+    #[test]
+    fn completion_checks_only_used_bits_in_partial_tail() {
+        let mut progress = ResumeMap::new(9).unwrap();
+        for index in 0..8 {
+            progress.mark_complete(index).unwrap();
+        }
+        assert!(!progress.complete());
+        progress.mark_complete(8).unwrap();
+        assert!(progress.complete());
+        assert!(ResumeMap::new(0).unwrap().complete());
+    }
+
 }
