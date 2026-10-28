@@ -45,6 +45,9 @@ fn describe_projection(projection: &Projection) -> String {
         Projection::ApproxDistinct { column } => {
             format!("Aggregate: uniq({column}) [HyperLogLog, 16384 registers]")
         }
+        Projection::BinaryStat { function, x, y } => {
+            format!("Aggregate: {}({x}, {y}) [online covariance]", function.name())
+        }
         Projection::GroupedCount { column } => {
             format!("Aggregate: GROUP BY {column}, count(*)")
         }
