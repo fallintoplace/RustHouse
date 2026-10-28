@@ -40,6 +40,7 @@ pub(super) fn is_function(name: &str) -> bool {
             | "CONCAT_WS"
             | "CUTFRAGMENT"
             | "URL_ENCODE"
+            | "FROMUNIXTIMESTAMP"
             | "FRAGMENT"
             | "JSON_QUOTE"
             | "ISVALIDJSON"
@@ -444,6 +445,19 @@ fn parse_at_depth(parser: &mut Parser, depth: usize) -> Result<ConstantValue, Pa
                         .map_or(input.as_str(), |(prefix, _)| prefix)
                         .to_owned(),
                 ),
+                None => ConstantValue::Null,
+            }
+        }
+        "FROMUNIXTIMESTAMP" => {
+            let input = integer_arg(parser, depth + 1)?;
+            require(parser, Token::RParen, "fromUnixTimestamp requires one argument")?;
+            match input {
+                Some(seconds) => {
+                    let seconds = u32::try_from(seconds).map_err(|_| {
+                        ParseError("fromUnixTimestamp requires seconds in the DateTime range".into())
+                    })?;
+                    ConstantValue::Text(rusthouse_storage::format_datetime(seconds))
+                }
                 None => ConstantValue::Null,
             }
         }
