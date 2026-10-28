@@ -1140,12 +1140,13 @@ pub fn handle(method: &str, body: &[u8], cluster: &Cluster, max_rows: usize) -> 
     let retained_input = AtomicUsize::new(0);
     let results = std::thread::scope(|scope| {
         let shard_query = shard_sql.as_str();
+        let used_bytes = &retained_input;
         let handles = cluster
             .peers()
             .iter()
             .map(|&peer| {
                 scope.spawn(move || {
-                    read_shard(peer, shard_query, sum_schema, group_schema, table, sorted_prefix, &retained_input)
+                    read_shard(peer, shard_query, sum_schema, group_schema, table, sorted_prefix, used_bytes)
                 })
             })
             .collect::<Vec<_>>();
