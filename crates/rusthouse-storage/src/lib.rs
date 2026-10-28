@@ -21,6 +21,7 @@ pub mod distributed_capacity;
 mod fixed_width;
 pub mod distributed_atomic_copy;
 mod granules;
+pub mod distributed_range_read;
 mod ip;
 mod mark_validation;
 mod marks;
