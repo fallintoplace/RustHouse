@@ -76,7 +76,7 @@ pub(super) fn candidate_mark_ranges<T: Ord + Copy>(
     if intervals.iter().any(|(lower, upper)| {
         matches!(lower, Bound::Unbounded) && matches!(upper, Bound::Unbounded)
     }) {
-        return Some(if len == 0 { Vec::new() } else { Vec::from([0..len]) });
+        return Some(if len == 0 { Vec::new() } else { std::iter::once(0..len).collect() });
     }
     if !monotonic_mark_keys(len, &key_at) {
         return None;
@@ -143,6 +143,6 @@ mod unbounded_range_tests {
             |_| panic!("full-range OR must not inspect mark keys"),
             &intervals,
         );
-        assert_eq!(merged, Some(Vec::from([0..17])));
+        assert_eq!(merged, Some(std::iter::once(0..17).collect::<Vec<_>>()));
     }
 }
