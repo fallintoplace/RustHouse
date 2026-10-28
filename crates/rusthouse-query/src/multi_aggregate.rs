@@ -60,7 +60,7 @@ fn render_expr(expr: &ScalarExpr) -> String {
         ScalarExpr::Multiply(left, right) => {
             let operand = |value: &ScalarExpr| {
                 let rendered = render_expr(value);
-                if matches!(value, ScalarExpr::Add(..) | ScalarExpr::Subtract(..)) {
+                if matches!(value, ScalarExpr::Add(..) | ScalarExpr::Subtract(..) | ScalarExpr::Compare(..)) {
                     format!("({rendered})")
                 } else {
                     rendered
