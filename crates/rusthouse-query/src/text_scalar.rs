@@ -231,7 +231,7 @@ fn parse_at_depth(parser: &mut Parser, depth: usize) -> Result<ConstantValue, Pa
             require(parser, Token::RParen, "LOWER requires one argument")?;
             match input {
                 Some(value) => {
-                    let result = value.to_lowercase();
+                    let result = value.to_ascii_lowercase();
                     if result.len() > MAX_TEXT_BYTES {
                         return Err(ParseError("LOWER result is too large".into()));
                     }
