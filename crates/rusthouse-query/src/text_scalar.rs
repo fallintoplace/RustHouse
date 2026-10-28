@@ -10,6 +10,7 @@ pub(super) fn is_function(name: &str) -> bool {
             | "LENGTHUTF8"
             | "CHAR_LENGTH"
             | "OCTET_LENGTH"
+            | "TRYBASE64URLDECODE"
             | "ASCII"
             | "UTF16_LENGTH"
             | "HASSUBSEQUENCE"
@@ -126,6 +127,16 @@ fn parse_at_depth(parser: &mut Parser, depth: usize) -> Result<ConstantValue, Pa
                 Some(value) => ConstantValue::Integer(
                     i64::try_from(value.chars().count())
                         .map_err(|_| ParseError("lengthUTF8 result exceeds Int64".into()))?,
+                ),
+                None => ConstantValue::Null,
+            }
+        }
+        "TRYBASE64URLDECODE" => {
+            let input = text_arg(parser, depth + 1)?;
+            require(parser, Token::RParen, "tryBase64URLDecode requires one argument")?;
+            match input {
+                Some(input) => ConstantValue::Text(
+                    decode_base64url_utf8(&input).unwrap_or_default()
                 ),
                 None => ConstantValue::Null,
             }
@@ -1957,6 +1968,45 @@ fn parse_at_depth(parser: &mut Parser, depth: usize) -> Result<ConstantValue, Pa
         _ => return Err(ParseError(format!("unsupported string function: {name}"))),
     };
     Ok(value)
+}
+
+/// ClickHouse accepts both URL-safe and standard Base64 alphabets. RustHouse
+/// constants are UTF-8, so binary payloads that are not UTF-8 return empty.
+fn decode_base64url_utf8(encoded: &str) -> Option<String> {
+    let filtered: Vec<u8> = encoded
+        .bytes()
+        .filter(|byte| !matches!(byte, b' ' | b'\t' | b'\r' | b'\n' | 0x0c))
+        .collect();
+    let padding = filtered.iter().rev().take_while(|byte| **byte == b'=').count();
+    if padding > 2 {
+        return None;
+    }
+    let digits_len = filtered.len() - padding;
+    let remainder = digits_len % 4;
+    if remainder == 1 || (padding > 0 && (filtered.len() % 4 != 0 || remainder + padding != 4)) {
+        return None;
+    }
+    let mut result = Vec::with_capacity((digits_len / 4) * 3 + 2);
+    let mut buffer = 0u32;
+    let mut remaining_bits = 0;
+    for &byte in &filtered[..digits_len] {
+        let value = match byte {
+            b'A'..=b'Z' => byte - b'A',
+            b'a'..=b'z' => byte - b'a' + 26,
+            b'0'..=b'9' => byte - b'0' + 52,
+            b'+' | b'-' => 62,
+            b'/' | b'_' => 63,
+            _ => return None,
+        };
+        buffer = (buffer << 6) | u32::from(value);
+        remaining_bits += 6;
+        if remaining_bits >= 8 {
+            remaining_bits -= 8;
+            result.push((buffer >> remaining_bits) as u8);
+            buffer &= (1 << remaining_bits) - 1;
+        }
+    }
+    String::from_utf8(result).ok()
 }
 
 fn require(parser: &mut Parser, token: Token, message: &str) -> Result<(), ParseError> {
