@@ -154,7 +154,14 @@ pub(super) fn execute_count_column_part<W: Write>(
         return Ok(());
     }
     let mut count = 0u64;
+    let no_filters = query.predicates.is_empty() && query.or_predicates.is_empty();
     while let Some(batch) = reader.next_batch()? {
+        if no_filters {
+            count = count
+                .checked_add(batch[0].len() as u64)
+                .ok_or_else(|| ExecutionError::Invalid("count overflow".into()))?;
+            continue;
+        }
         for row in 0..batch[0].len() {
             if batch_matches(&batch, row, &comparisons) {
                 count = count
