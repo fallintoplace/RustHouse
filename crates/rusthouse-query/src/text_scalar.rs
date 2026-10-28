@@ -475,7 +475,7 @@ fn parse_at_depth(parser: &mut Parser, depth: usize) -> Result<ConstantValue, Pa
                 None => ConstantValue::Null,
             }
         }
-        "LOWER" | "LOWERUTF8" => {
+        "LOWER" => {
             let input = text_arg(parser, depth + 1)?;
             require(parser, Token::RParen, "LOWER requires one argument")?;
             match input {
