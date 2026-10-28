@@ -84,6 +84,7 @@ pub(super) fn execute<W: Write>(
     let mut by_key = HashMap::<Key, usize>::new();
     // Repeated String group keys can be checked without owning row bytes.
     let mut text_groups = HashMap::<Vec<u8>, usize>::new();
+    let mut uuid_groups = HashMap::<[u8; 16], usize>::new();
     // One byte yields at most 256 groups. Use direct lookup rather than
     // hashing every GROUP BY key in large low-cardinality scans.
     let mut dense_slots = matches!(
@@ -108,6 +109,10 @@ pub(super) fn execute<W: Write>(
             let group_text = match &batch[group_index] {
                 TypedColumn::Text(values) => values.get(row),
                 TypedColumn::NullableText { values, nulls } if nulls[row] == 0 => values.get(row),
+                _ => None,
+            };
+            let group_uuid = match &batch[group_index] {
+                TypedColumn::Uuid(values) => Some(*values[row].as_bytes()),
                 _ => None,
             };
             let id = if let Some(slots) = dense_slots.as_mut() {
@@ -151,6 +156,25 @@ pub(super) fn execute<W: Write>(
                 } else {
                     let id = groups.len();
                     *slot = id;
+                    groups.push(Group {
+                        key: typed::cell(&batch[group_index], row),
+                        distinct: HashSet::new(),
+                        distinct_text: HashSet::new(),
+                        distinct_uuids: HashSet::new(),
+                    });
+                    id
+                }
+            } else if let Some(key) = group_uuid {
+                if let Some(&id) = uuid_groups.get(&key) {
+                    id
+                } else {
+                    if groups.len() >= MAX_GROUPS {
+                        return Err(ExecutionError::Invalid(
+                            "GROUP BY supports at most 200000 groups".into(),
+                        ));
+                    }
+                    let id = groups.len();
+                    uuid_groups.insert(key, id);
                     groups.push(Group {
                         key: typed::cell(&batch[group_index], row),
                         distinct: HashSet::new(),
