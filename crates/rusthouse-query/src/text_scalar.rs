@@ -35,6 +35,7 @@ pub(super) fn is_function(name: &str) -> bool {
             | "INITCAP"
             | "CONCAT"
             | "QUOTE_LITERAL"
+            | "BASE58ENCODE"
             | "CUTQUERYSTRINGANDFRAGMENT"
             | "COALESCE"
             | "CONCAT_WS"
@@ -505,6 +506,42 @@ fn parse_at_depth(parser: &mut Parser, depth: usize) -> Result<ConstantValue, Pa
                 ConstantValue::Text(result)
             } else {
                 ConstantValue::Null
+            }
+        }
+        "BASE58ENCODE" => {
+            let input = text_arg(parser, depth + 1)?;
+            require(parser, Token::RParen, "base58Encode requires one string")?;
+            match input {
+                Some(input) => {
+                    if input.len() > 4096 {
+                        return Err(ParseError("base58Encode input exceeds 4096 bytes".into()));
+                    }
+                    const ALPHABET: &[u8] =
+                        b"123456789ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz";
+                    let zeroes = input.bytes().take_while(|byte| *byte == 0).count();
+                    let mut digits = Vec::<u8>::new();
+                    for byte in input.bytes() {
+                        let mut carry = u32::from(byte);
+                        for digit in &mut digits {
+                            carry += u32::from(*digit) * 256;
+                            *digit = (carry % 58) as u8;
+                            carry /= 58;
+                        }
+                        while carry > 0 {
+                            digits.push((carry % 58) as u8);
+                            carry /= 58;
+                        }
+                    }
+                    let mut encoded = String::with_capacity(zeroes + digits.len());
+                    for _ in 0..zeroes {
+                        encoded.push('1');
+                    }
+                    for digit in digits.into_iter().rev() {
+                        encoded.push(char::from(ALPHABET[usize::from(digit)]));
+                    }
+                    ConstantValue::Text(encoded)
+                }
+                None => ConstantValue::Null,
             }
         }
         "QUOTE_LITERAL" => {
@@ -2004,5 +2041,41 @@ fn text_arg(parser: &mut Parser, depth: usize) -> Result<Option<String>, ParseEr
         _ => Err(ParseError(
             "expected a string literal or string function".into(),
         )),
+    }
+}
+
+#[cfg(test)]
+mod clickhouse_base58_encode_tests {
+    use crate::{ConstantValue, Projection, parse_select};
+
+    fn value(sql: &str) -> ConstantValue {
+        match parse_select(sql).unwrap().projection {
+            Projection::Constants(columns) if columns.len() == 1 => columns[0].value.clone(),
+            Projection::Literal(number) => ConstantValue::Integer(number),
+            other => panic!("unexpected projection: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn reference_inputs() {
+        for (sql, expected) in [
+            ("SELECT base58Encode('ClickHouse')", ConstantValue::Text("4nhk8K7GHXf6zx".into())),
+            ("SELECT base58Encode('Hello World')", ConstantValue::Text("JxF12TrwUP45BMd".into())),
+            ("SELECT base58Encode('')", ConstantValue::Text("".into())),
+            ("SELECT base58Encode(NULL)", ConstantValue::Null),
+        ] {
+            assert_eq!(value(sql), expected, "{sql}");
+        }
+    }
+
+    #[test]
+    fn invalid_calls() {
+        for sql in [
+            "SELECT base58Encode()",
+            "SELECT base58Encode(1)",
+            "SELECT base58Encode('abc','def')",
+        ] {
+            assert!(parse_select(sql).is_err(), "{sql}");
+        }
     }
 }
