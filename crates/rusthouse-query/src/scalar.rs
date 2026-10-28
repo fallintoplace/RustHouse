@@ -33,6 +33,7 @@ pub(super) fn is_function(name: &str) -> bool {
         return true;
     }
     is_saturating(name)
+        || name.eq_ignore_ascii_case("MINUS")
         || name.eq_ignore_ascii_case("ABS")
         || name.eq_ignore_ascii_case("BIT_PARITY")
         || name.eq_ignore_ascii_case("BIT_MASK")
@@ -183,6 +184,15 @@ fn parse_power(parser: &mut Parser, depth: usize) -> Result<i64, ParseError> {
 }
 
 /// SQL-style truncating integer division and remainder.
+fn parse_minus(parser: &mut Parser, depth: usize) -> Result<i64, ParseError> {
+    require_token(parser, Token::LParen, "minus requires '('")?;
+    let left = expression(parser, depth + 1)?;
+    require_token(parser, Token::Comma, "minus requires two arguments")?;
+    let right = expression(parser, depth + 1)?;
+    require_token(parser, Token::RParen, "expected ')' after minus arguments")?;
+    left.checked_sub(right).ok_or_else(overflow)
+}
+
 fn parse_div_mod(parser: &mut Parser, depth: usize, divide: bool) -> Result<i64, ParseError> {
     require_token(parser, Token::LParen, "DIV/MOD requires '('")?;
     let left = expression(parser, depth + 1)?;
@@ -936,6 +946,9 @@ fn factor(parser: &mut Parser, depth: usize) -> Result<i64, ParseError> {
         return factor(parser, depth + 1)?
             .checked_neg()
             .ok_or_else(overflow);
+    }
+    if parser.keyword("MINUS") {
+        return parse_minus(parser, depth);
     }
     if parser.keyword("DIV") {
         return parse_div_mod(parser, depth, true);
