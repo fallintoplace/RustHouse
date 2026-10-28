@@ -38,7 +38,11 @@ fn ok(dir: &Path, statement: &str, format: Option<&str>) -> String {
 #[test]
 fn nullable_typed_columns_keep_rows_and_nulls_in_tsv_and_jsonl() {
     let db = database();
-    ok(&db, "CREATE TABLE entries (id UInt64, name Nullable(String), score Nullable(UInt64))", None);
+    ok(
+        &db,
+        "CREATE TABLE entries (id UInt64, name Nullable(String), score Nullable(UInt64))",
+        None,
+    );
     ok(&db, "INSERT INTO entries VALUES (1, 'Ada', 10), (2, NULL, NULL), (3, 'Bob', 0)", None);
 
     assert_eq!(
