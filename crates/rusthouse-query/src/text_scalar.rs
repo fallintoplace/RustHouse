@@ -72,6 +72,7 @@ pub(super) fn is_function(name: &str) -> bool {
             | "PATH"
             | "LEFT"
             | "REPLACE_FIRST"
+            | "REPLACEONE"
             | "STARTS_WITH"
             | "STARTSWITH"
             | "HASTOKEN"
@@ -1347,7 +1348,7 @@ fn parse_at_depth(parser: &mut Parser, depth: usize) -> Result<ConstantValue, Pa
                 _ => ConstantValue::Null,
             }
         }
-        "REPLACE_FIRST" => {
+        "REPLACE_FIRST" | "REPLACEONE" => {
             let input = text_arg(parser, depth + 1)?;
             require(
                 parser,
