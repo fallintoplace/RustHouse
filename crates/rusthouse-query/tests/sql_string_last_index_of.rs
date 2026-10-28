@@ -18,8 +18,14 @@ fn last_index_of_counts_unicode_positions() {
     ] {
         assert_eq!(value(sql), ConstantValue::Integer(expected), "{sql}");
     }
-    assert_eq!(value("SELECT LAST_INDEX_OF(NULL, 'a')"), ConstantValue::Null);
-    assert_eq!(value("SELECT LAST_INDEX_OF('a', NULL)"), ConstantValue::Null);
+    assert_eq!(
+        value("SELECT LAST_INDEX_OF(NULL, 'a')"),
+        ConstantValue::Null
+    );
+    assert_eq!(
+        value("SELECT LAST_INDEX_OF('a', NULL)"),
+        ConstantValue::Null
+    );
 }
 
 #[test]
