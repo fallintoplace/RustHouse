@@ -37,7 +37,9 @@ pub fn scrub_snapshot(root: &Path, max_parts: usize) -> Result<ScrubReport, Part
     let active = resolve_active_snapshot(root)?;
     let parts = query_parts(&active)?;
     if parts.len() > max_parts || max_parts > 16_384 {
-        return Err(PartError::InvalidScan("replica scrub exceeds part limit".into()));
+        return Err(PartError::InvalidScan(
+            "replica scrub exceeds part limit".into(),
+        ));
     }
     let mut report = ScrubReport {
         parts: 0,
@@ -61,15 +63,15 @@ mod tests {
 
     #[test]
     fn verifies_newly_written_frozen_parts() {
-        let root = std::env::temp_dir().join(format!(
-            "rusthouse-scrub-{}",
-            std::process::id()
-        ));
+        let root = std::env::temp_dir().join(format!("rusthouse-scrub-{}", std::process::id()));
         let _ = fs::remove_dir_all(&root);
         fs::create_dir(&root).unwrap();
         write_wide_part(
             &root.join("all_0_0_0"),
-            &[Column { name: "id".into(), data_type: "UInt64".into() }],
+            &[Column {
+                name: "id".into(),
+                data_type: "UInt64".into(),
+            }],
             &[vec![Some("4".into())]],
         )
         .unwrap();
@@ -81,17 +83,20 @@ mod tests {
     }
     #[test]
     fn refuses_tampered_snapshot_files() {
-        let root = std::env::temp_dir().join(format!(
-            "rusthouse-scrub-corrupt-{}", std::process::id()
-        ));
+        let root =
+            std::env::temp_dir().join(format!("rusthouse-scrub-corrupt-{}", std::process::id()));
         let _ = fs::remove_dir_all(&root);
         fs::create_dir(&root).unwrap();
         let part = root.join("all_0_0_0");
         write_wide_part(
             &part,
-            &[Column { name: "id".into(), data_type: "UInt64".into() }],
+            &[Column {
+                name: "id".into(),
+                data_type: "UInt64".into(),
+            }],
             &[vec![Some("4".into())]],
-        ).unwrap();
+        )
+        .unwrap();
         fs::write(part.join("count.txt"), "999\n").unwrap();
         assert!(scrub_snapshot(&root, 1).is_err());
         fs::remove_dir_all(root).unwrap();

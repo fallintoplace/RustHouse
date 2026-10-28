@@ -42,10 +42,7 @@ mod tests {
 
     #[test]
     fn reads_exact_intervals_and_rejects_bad_ranges() {
-        let path = std::env::temp_dir().join(format!(
-            "rusthouse-range-{}",
-            std::process::id()
-        ));
+        let path = std::env::temp_dir().join(format!("rusthouse-range-{}", std::process::id()));
         fs::write(&path, b"0123456789").unwrap();
         assert_eq!(read_object_range(&path, 3, 4, 8).unwrap(), b"3456");
         assert_eq!(read_object_range(&path, 10, 0, 8).unwrap(), b"");
@@ -58,9 +55,7 @@ mod tests {
     #[test]
     fn refuses_symlinked_range_sources() {
         use std::os::unix::fs::symlink;
-        let dir = std::env::temp_dir().join(format!(
-            "rusthouse-range-link-{}", std::process::id()
-        ));
+        let dir = std::env::temp_dir().join(format!("rusthouse-range-link-{}", std::process::id()));
         let _ = fs::remove_dir_all(&dir);
         fs::create_dir_all(&dir).unwrap();
         let original = dir.join("object");

@@ -62,11 +62,15 @@ impl ResumeMap {
 
     pub fn complete(&self) -> bool {
         let full_bytes = self.chunks / 8;
-        if !self.completed[..full_bytes].iter().all(|&byte| byte == u8::MAX) {
+        if !self.completed[..full_bytes]
+            .iter()
+            .all(|&byte| byte == u8::MAX)
+        {
             return false;
         }
         let remainder = self.chunks % 8;
-        remainder == 0 || self.completed[full_bytes] & ((1u8 << remainder) - 1) == (1u8 << remainder) - 1
+        remainder == 0
+            || self.completed[full_bytes] & ((1u8 << remainder) - 1) == (1u8 << remainder) - 1
     }
 
     /// Stable ASCII encoding for persisting transfer progress.

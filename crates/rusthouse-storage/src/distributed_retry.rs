@@ -17,8 +17,8 @@ pub fn retry_delay(
         .wrapping_mul(0x9e37_79b9_7f4a_7c15)
         .rotate_left(attempt)
         % (exponent - half + 1);
-    Ok(Duration::from_millis(half + jitter))
-}
+    Ok(Duration::from_millis(half + jitter))}
+
 
 #[cfg(test)]
 mod tests {
@@ -56,7 +56,10 @@ mod tests {
                 let delay = retry_delay(attempt, u64::MAX, u64::MAX, seed).unwrap();
                 assert!(delay >= Duration::from_millis(1));
                 assert!(delay.as_millis() <= u128::from(u64::MAX));
-                assert_eq!(delay, retry_delay(attempt, u64::MAX, u64::MAX, seed).unwrap());
+                assert_eq!(
+                    delay,
+                    retry_delay(attempt, u64::MAX, u64::MAX, seed).unwrap()
+                );
             }
         }
     }
