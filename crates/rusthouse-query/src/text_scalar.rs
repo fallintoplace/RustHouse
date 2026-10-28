@@ -1013,15 +1013,11 @@ fn parse_at_depth(parser: &mut Parser, depth: usize) -> Result<ConstantValue, Pa
             }
         }
         "NULLIF" => {
-            let left = text_arg(parser, depth + 1)?;
+            let left = constant_arg(parser, depth + 1)?;
             require(parser, Token::Comma, "NULLIF requires a second argument")?;
-            let right = text_arg(parser, depth + 1)?;
+            let right = constant_arg(parser, depth + 1)?;
             require(parser, Token::RParen, "expected ')' after NULLIF arguments")?;
-            match (left, right) {
-                (Some(left), Some(right)) if left == right => ConstantValue::Null,
-                (Some(left), _) => ConstantValue::Text(left),
-                (None, _) => ConstantValue::Null,
-            }
+            if left == right { ConstantValue::Null } else { left }
         }
         "POSITIONCASEINSENSITIVE" => {
             let input = text_arg(parser, depth + 1)?;
@@ -1913,6 +1909,22 @@ fn parse_at_depth(parser: &mut Parser, depth: usize) -> Result<ConstantValue, Pa
         _ => return Err(ParseError(format!("unsupported string function: {name}"))),
     };
     Ok(value)
+}
+
+fn constant_arg(parser: &mut Parser, depth: usize) -> Result<ConstantValue, ParseError> {
+    match parser.tokens.get(parser.index) {
+        Some(Token::String(value)) => {
+            let result = ConstantValue::Text(value.clone());
+            parser.index += 1;
+            Ok(result)
+        }
+        Some(Token::Word(word)) if word.eq_ignore_ascii_case("NULL") => {
+            parser.index += 1;
+            Ok(ConstantValue::Null)
+        }
+        Some(Token::Word(word)) if is_function(word) => parse_at_depth(parser, depth),
+        _ => Ok(ConstantValue::Integer(super::scalar::parse(parser)?)),
+    }
 }
 
 fn require(parser: &mut Parser, token: Token, message: &str) -> Result<(), ParseError> {
