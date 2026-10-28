@@ -1,7 +1,7 @@
 //! Bounded-memory exact median of physical integer columns.
 //! One byte of the key is selected per immutable scan. Each pass uses only
 //! 2 * 256 counters regardless of input cardinality.
-use super::{ExecutionError, batch_matches, count_batch_matches};
+use super::{ExecutionError, batch_matches, count_batch_matches, typed};
 use super::predicates::CompiledPredicate;
 use rusthouse_storage::{NumericColumn, NumericQueryReader, PartMetadata, TypedColumn, TypedQueryReader};
 use std::path::Path;
@@ -126,6 +126,7 @@ fn median_inner(
     n: u64,
     nullable: bool,
     filtered: Option<(&[String], &[Vec<CompiledPredicate>])>,
+    typed_filtered: Option<(&[String], &[Vec<typed::Condition>])>,
 ) -> Result<Option<String>, ExecutionError> {
     let kind = metadata.columns.iter().find(|item| item.name == column)
         .ok_or_else(|| ExecutionError::Invalid(format!("unknown column: {column}")))?;
@@ -152,14 +153,21 @@ fn median_inner(
         };
         let mut histogram = [[0_u64; 256]; 2];
         if nullable {
-            let mut reader = TypedQueryReader::open_with_metadata(part, &names, metadata)?;
+            let columns = typed_filtered.map_or(names.as_slice(), |(columns, _)| columns);
+            let mut reader = TypedQueryReader::open_with_metadata(part, columns, metadata)?;
             while let Some(batch) = reader.next_batch()? {
                 let TypedColumn::NullableNumeric { values, nulls } = &batch[0] else {
                     return Err(ExecutionError::Invalid(
                         "nullable radix input changed type".into()
                     ));
                 };
-                count_column(values, Some(nulls), None, bits, shift, prefix_mask, &keys, &mut histogram)?;
+                let selected = typed_filtered.map(|(_, conditions)| {
+                    (0..batch[0].len())
+                        .map(|row| typed::passes(&batch, row, conditions))
+                        .collect::<Vec<_>>()
+                });
+                count_column(values, Some(nulls), selected.as_deref(),
+                    bits, shift, prefix_mask, &keys, &mut histogram)?;
             }
         } else {
             let scan_columns = filtered.map_or(names.as_slice(), |(columns, _)| columns);
@@ -208,7 +216,7 @@ pub(super) fn median(
     column: &str,
     metadata: &PartMetadata,
 ) -> Result<Option<String>, ExecutionError> {
-    median_inner(part, column, metadata, metadata.rows, false, None)
+    median_inner(part, column, metadata, metadata.rows, false, None, None)
 }
 
 /// The nullable path scans compact null maps once to derive the SQL count,
@@ -226,7 +234,31 @@ pub(super) fn median_nullable(
             .ok_or_else(|| ExecutionError::Invalid("median row count overflow".into()))?;
     }
     drop(reader);
-    median_inner(part, column, metadata, count, true, None)
+    median_inner(part, column, metadata, count, true, None, None)
+}
+
+/// Filtered nullable medians combine typed predicates and NULL semantics
+/// without retaining a large bitmap or all qualifying numeric values.
+pub(super) fn median_nullable_filtered(
+    part: &Path,
+    column: &str,
+    metadata: &PartMetadata,
+    scan_columns: &[String],
+    conditions: &[Vec<typed::Condition>],
+) -> Result<Option<String>, ExecutionError> {
+    let mut reader = TypedQueryReader::open_with_metadata(part, scan_columns, metadata)?;
+    let mut selected_rows = 0u64;
+    while let Some(batch) = reader.next_batch()? {
+        for row in 0..batch[0].len() {
+            if !typed::is_null_at(&batch[0], row) && typed::passes(&batch, row, conditions) {
+                selected_rows = selected_rows.checked_add(1)
+                    .ok_or_else(|| ExecutionError::Invalid("median row count overflow".into()))?;
+            }
+        }
+    }
+    drop(reader);
+    median_inner(part, column, metadata, selected_rows, true, None,
+        Some((scan_columns, conditions)))
 }
 
 /// Exact filtered order statistics without storing rows or hash-set keys.
@@ -247,7 +279,7 @@ pub(super) fn median_filtered(
     drop(reader);
     median_inner(
         part, column, metadata, selected_rows, false,
-        Some((scan_columns, conditions)),
+        Some((scan_columns, conditions)), None,
     )
 }
 

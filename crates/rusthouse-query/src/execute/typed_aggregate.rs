@@ -75,12 +75,18 @@ pub(super) fn execute_typed_aggregate<W: Write>(
         return Ok(());
     }
     let no_filters = query.predicates.is_empty() && query.or_predicates.is_empty();
-    if *function == AggregateFunction::Median && no_filters {
+    if *function == AggregateFunction::Median {
         if let Some(inner) = selected.data_type.strip_prefix("Nullable(")
             .and_then(|name| name.strip_suffix(')'))
         {
             if super::radix_median::supports_type(inner) {
-                let value = super::radix_median::median_nullable(part, column, &metadata)?;
+                let value = if no_filters {
+                    super::radix_median::median_nullable(part, column, &metadata)?
+                } else {
+                    super::radix_median::median_nullable_filtered(
+                        part, column, &metadata, &names, &conditions,
+                    )?
+                };
                 if query.offset.unwrap_or(0) == 0 {
                     writeln!(output, "{}", value.unwrap_or_else(|| "NULL".into()))?;
                 }
