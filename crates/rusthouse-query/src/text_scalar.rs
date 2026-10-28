@@ -60,6 +60,7 @@ pub(super) fn is_function(name: &str) -> bool {
             | "BASENAME"
             | "TRIM_WHITESPACE"
             | "TRY_TO_INT64"
+            | "TOINT64ORNULL"
             | "LPAD"
             | "LEFTPADUTF8"
             | "COUNTSUBSTRINGSCASEINSENSITIVE"
@@ -1652,7 +1653,7 @@ fn parse_at_depth(parser: &mut Parser, depth: usize) -> Result<ConstantValue, Pa
                 None => ConstantValue::Null,
             }
         }
-        "TRY_TO_INT64" => {
+        "TRY_TO_INT64" | "TOINT64ORNULL" => {
             let input = text_arg(parser, depth + 1)?;
             require(parser, Token::RParen, "TRY_TO_INT64 requires one argument")?;
             match input {
