@@ -140,3 +140,47 @@ mod tests {
         );
     }
 }
+
+/// Rank healthy replicas at or above a required snapshot version.
+/// A newer epoch supersedes the requested generation floor.
+pub fn rank_read_replicas_at_least(
+    replicas: &[ReplicaStatus],
+    minimum_epoch: u64,
+    minimum_generation: u64,
+) -> Result<Vec<String>, &'static str> {
+    rank_read_replicas(replicas)?;
+    let eligible = replicas
+        .iter()
+        .filter(|replica| {
+            replica.healthy
+                && (replica.epoch > minimum_epoch
+                    || (replica.epoch == minimum_epoch
+                        && replica.generation >= minimum_generation))
+        })
+        .cloned()
+        .collect::<Vec<_>>();
+    if eligible.is_empty() {
+        return Err("no storage replica meets the freshness floor");
+    }
+    rank_read_replicas(&eligible)
+}
+
+#[cfg(test)]
+mod freshness_floor_tests {
+    use super::*;
+
+    #[test]
+    fn rejects_stale_read_replicas() {
+        let replicas = [
+            ReplicaStatus { node: "old".into(), epoch: 4, generation: 9, healthy: true },
+            ReplicaStatus { node: "new".into(), epoch: 4, generation: 10, healthy: true },
+            ReplicaStatus { node: "next".into(), epoch: 5, generation: 1, healthy: true },
+        ];
+        assert_eq!(
+            rank_read_replicas_at_least(&replicas, 4, 10).unwrap(),
+            vec!["next", "new"]
+        );
+        assert!(rank_read_replicas_at_least(&replicas, 5, 2).is_err());
+        assert!(rank_read_replicas_at_least(&replicas, 6, 0).is_err());
+    }
+}
