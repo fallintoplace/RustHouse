@@ -43,6 +43,7 @@ pub(super) fn is_function(name: &str) -> bool {
         || name.eq_ignore_ascii_case("MOD")
         || name.eq_ignore_ascii_case("ABS_DIFF")
         || name.eq_ignore_ascii_case("SIGN")
+        || name.eq_ignore_ascii_case("TOBOOL")
         || name.eq_ignore_ascii_case("DIGIT_COUNT")
         || name.eq_ignore_ascii_case("HAMMING_DISTANCE")
         || is_extrema(name)
@@ -949,6 +950,12 @@ fn factor(parser: &mut Parser, depth: usize) -> Result<i64, ParseError> {
             .checked_neg()
             .ok_or_else(overflow);
     }
+    if parser.keyword("TOBOOL") {
+        require_token(parser, Token::LParen, "toBool requires '('")?;
+        let value = expression(parser, depth + 1)?;
+        require_token(parser, Token::RParen, "toBool requires ')'")?;
+        return Ok(i64::from(value != 0));
+    }
     if parser.keyword("DIV") || parser.keyword("INTDIV") {
         return parse_div_mod(parser, depth, true);
     }
@@ -1195,4 +1202,24 @@ fn parse_next_power_of_two(parser: &mut Parser, depth: usize) -> Result<i64, Par
 
 fn overflow() -> ParseError {
     ParseError("signed 64-bit scalar expression overflow".into())
+}
+
+#[cfg(test)]
+mod clickhouse_tobool_int64_tests {
+    use crate::{parse_select, Projection};
+    #[test]
+    fn boolean_cast_is_zero_or_one_for_int64() {
+        for (sql, expected) in [
+            ("SELECT toBool(0)", 0),
+            ("SELECT toBool(1)", 1),
+            ("SELECT toBool(-1)", 1),
+            ("SELECT toBool(400)", 1),
+            ("SELECT toBool(1 - 1)", 0),
+        ] {
+            assert_eq!(parse_select(sql).unwrap().projection, Projection::Literal(expected), "{sql}");
+        }
+        for sql in ["SELECT toBool()", "SELECT toBool(1, 2)"] {
+            assert!(parse_select(sql).is_err(), "{sql}");
+        }
+    }
 }
