@@ -171,7 +171,7 @@ fn streaming_inner_join_scans_more_than_100000_probe_rows() {
 }
 
 #[test]
-fn ordered_join_accepts_16384_rows_but_rejects_one_more() {
+fn ordered_join_accepts_32768_rows_but_rejects_one_more() {
     let db = database();
     for statement in [
         "CREATE TABLE facts (id UInt64)",
@@ -181,6 +181,10 @@ fn ordered_join_accepts_16384_rows_but_rejects_one_more() {
         "INSERT INTO facts SELECT number FROM numbers(4096, 4096)",
         "INSERT INTO facts SELECT number FROM numbers(8192, 4096)",
         "INSERT INTO facts SELECT number FROM numbers(12288, 4096)",
+        "INSERT INTO facts SELECT number FROM numbers(16384, 4096)",
+        "INSERT INTO facts SELECT number FROM numbers(20480, 4096)",
+        "INSERT INTO facts SELECT number FROM numbers(24576, 4096)",
+        "INSERT INTO facts SELECT number FROM numbers(28672, 4096)",
     ] {
         let result = sql(statement, &db, &[]);
         assert!(result.status.success(), "{statement}: {result:?}");
@@ -191,11 +195,11 @@ fn ordered_join_accepts_16384_rows_but_rejects_one_more() {
     assert!(accepted.status.success(), "{accepted:?}");
     assert_eq!(accepted.stdout, b"f.id\n0\n1\n");
 
-    let append = sql("INSERT INTO facts VALUES (16384)", &db, &[]);
+    let append = sql("INSERT INTO facts VALUES (32768)", &db, &[]);
     assert!(append.status.success(), "{append:?}");
     let rejected = sql(query, &db, &[]);
     assert!(!rejected.status.success());
-    assert!(String::from_utf8_lossy(&rejected.stderr).contains("16384"));
+    assert!(String::from_utf8_lossy(&rejected.stderr).contains("32768"));
     assert!(rejected.stdout.is_empty());
     fs::remove_dir_all(db).unwrap();
 }
