@@ -21,6 +21,86 @@ fn byte_group_key(column: &TypedColumn, row: usize) -> Option<u8> {
     }
 }
 
+
+fn parallel_grouped_parts(
+    part: &Path,
+    names: &[String],
+    group_indices: &[usize],
+    conditions: &[Vec<typed::Condition>],
+    no_filters: bool,
+) -> Result<Option<Vec<(Vec<Cell>, u64)>>, ExecutionError> {
+    let parts = rusthouse_storage::query_parts(part)?;
+    let workers = std::thread::available_parallelism()
+        .map_or(1, |parallelism| parallelism.get())
+        .min(4);
+    if workers < 2 || parts.len() < 16 {
+        return Ok(None);
+    }
+    let chunk_size = parts.len().div_ceil(workers);
+    let chunks = std::thread::scope(|scope| {
+        let handles = parts.chunks(chunk_size).map(|paths| {
+            scope.spawn(move || -> Result<Vec<(Vec<Cell>, u64)>, ExecutionError> {
+                let mut rows: Vec<(Vec<Cell>, u64)> = Vec::new();
+                let mut index: HashMap<Vec<Key>, usize> = HashMap::new();
+                for path in paths {
+                    let mut reader = rusthouse_storage::TypedPartReader::open(path, names)?;
+                    while let Some(batch) = reader.as_mut().map_or(Ok(None), TypedQueryReader::next_batch)? {
+                        for row in 0..batch[0].len() {
+                            if !no_filters && !typed::passes(&batch, row, conditions) {
+                                continue;
+                            }
+                            let key = group_indices.iter()
+                                .map(|&column| typed::key_at(&batch[column], row))
+                                .collect::<Vec<_>>();
+                            if let Some(&found) = index.get(&key) {
+                                rows[found].1 = rows[found].1.checked_add(1)
+                                    .ok_or_else(|| ExecutionError::Invalid("group count overflow".into()))?;
+                            } else {
+                                if rows.len() >= MAX_GROUPS {
+                                    return Err(ExecutionError::Invalid(
+                                        "GROUP BY supports at most 200000 groups".into(),
+                                    ));
+                                }
+                                index.insert(key, rows.len());
+                                rows.push((
+                                    group_indices.iter()
+                                        .map(|&column| typed::cell(&batch[column], row))
+                                        .collect(),
+                                    1,
+                                ));
+                            }
+                        }
+                    }
+                }
+                Ok(rows)
+            })
+        }).collect::<Vec<_>>();
+        handles.into_iter().map(|handle| handle.join().unwrap_or_else(|_| {
+            Err(ExecutionError::Invalid("parallel grouped worker panicked".into()))
+        })).collect::<Vec<_>>()
+    });
+    let mut rows = Vec::<(Vec<Cell>, u64)>::new();
+    let mut by_key = HashMap::<Vec<Key>, usize>::new();
+    for chunk in chunks {
+        for (key_values, count) in chunk? {
+            let key = key_values.iter().map(Cell::key).collect::<Vec<_>>();
+            if let Some(&found) = by_key.get(&key) {
+                rows[found].1 = rows[found].1.checked_add(count)
+                    .ok_or_else(|| ExecutionError::Invalid("group count overflow".into()))?;
+            } else {
+                if rows.len() >= MAX_GROUPS {
+                    return Err(ExecutionError::Invalid(
+                        "GROUP BY supports at most 200000 groups".into(),
+                    ));
+                }
+                by_key.insert(key, rows.len());
+                rows.push((key_values, count));
+            }
+        }
+    }
+    Ok(Some(rows))
+}
+
 pub(super) fn execute<W: Write>(
     query: &Select,
     part: &Path,
@@ -70,8 +150,19 @@ pub(super) fn execute<W: Write>(
     }
 
     let group_indices = columns.iter().map(|name| indices[name]).collect::<Vec<_>>();
-    let mut reader = TypedQueryReader::open_with_metadata(part, &names, &metadata)?;
-    let mut groups: Vec<(Vec<Cell>, u64)> = Vec::new();
+    let mut groups: Vec<(Vec<Cell>, u64)> =
+        parallel_grouped_parts(
+            part,
+            &names,
+            &group_indices,
+            &conditions,
+            query.predicates.is_empty() && query.or_predicates.is_empty(),
+        )?.unwrap_or_default();
+    let mut reader = if groups.is_empty() {
+        Some(TypedQueryReader::open_with_metadata(part, &names, &metadata)?)
+    } else {
+        None
+    };
     let mut by_key: HashMap<Vec<Key>, usize> = HashMap::new();
     let mut probe_key = Vec::with_capacity(group_indices.len());
     let mut dense_groups = (columns.len() == 2
