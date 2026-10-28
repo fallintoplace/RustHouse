@@ -7,6 +7,7 @@ This verifies sequential IDs, not arbitrary sort orders or arbitrary primary key
 import argparse
 import hashlib
 import json
+import math
 import os
 import re
 import subprocess
@@ -22,7 +23,8 @@ def identifier(value):
 def page_sql(table, column, first, count):
     identifier(table)
     identifier(column)
-    if first < 0 or count < 1 or first + count > 2**64:
+    if (type(first) is not int or type(count) is not int
+            or first < 0 or count < 1 or first + count > 2**64):
         raise ValueError("invalid UInt64 page")
     high = first + count
     upper = f"{column} < {high}" if high < 2**64 else f"{column} <= {2**64 - 1}"
@@ -45,8 +47,11 @@ def export(binary, database, table, output, start, rows, page_rows=8192, timeout
            column="id", execute=None):
     if type(start) is not int or type(rows) is not int or start < 0 or rows < 1:
         raise ValueError("start and rows must be positive UInt64 bounds")
-    if start + rows > 2**64 or not 1 <= page_rows <= 65535:
+    if (start + rows > 2**64 or type(page_rows) is not int
+            or not 1 <= page_rows <= 65535):
         raise ValueError("range overflow or invalid page size (1..65535)")
+    if type(timeout) not in (float, int) or not math.isfinite(timeout) or timeout <= 0:
+        raise ValueError("timeout must be finite and positive")
     output = Path(output)
     if output.exists():
         raise ValueError("refusing to overwrite an existing export")
@@ -91,8 +96,8 @@ def main(argv=None):
     p.add_argument("--output", required=True, type=Path)
     p.add_argument("--timeout", type=float, default=300)
     a = p.parse_args(argv)
-    if a.timeout <= 0:
-        p.error("--timeout must be positive")
+    if not math.isfinite(a.timeout) or a.timeout <= 0:
+        p.error("--timeout must be finite and positive")
     try:
         report = export(a.binary, a.database, a.table, a.output, a.start,
                         a.rows, a.page_rows, a.timeout, a.column)
