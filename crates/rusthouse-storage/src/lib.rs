@@ -17,6 +17,7 @@ mod metadata;
 mod nested_arrays;
 mod nullable;
 mod nullable_arrays;
+pub mod distributed_retry;
 mod numeric;
 mod part_scan;
 mod part_verify;
