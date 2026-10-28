@@ -3,7 +3,11 @@
 use rusthouse_server::{Config, handle_request};
 
 fn config() -> Config {
-    Config { part: None, database: None, max_rows: 100 }
+    Config {
+        part: None,
+        database: None,
+        max_rows: 100,
+    }
 }
 
 #[test]
@@ -21,7 +25,10 @@ fn capability_discovery_has_stable_read_only_fields() {
 #[test]
 fn json_numbers_are_lossless_strings() {
     let response = handle_request(
-        "POST", "/?format=json", b"SELECT number FROM numbers(3)", &config(),
+        "POST",
+        "/?format=json",
+        b"SELECT number FROM numbers(3)",
+        &config(),
     );
     assert_eq!(response.status, "200 OK");
     assert_eq!(response.content_type, "application/json; charset=utf-8");
@@ -32,7 +39,11 @@ fn json_numbers_are_lossless_strings() {
 
 #[test]
 fn unsupported_writes_and_malformed_json_formats_fail_closed() {
-    for sql in ["CREATE TABLE x (n UInt64)", "DROP TABLE x", "INSERT INTO x VALUES (1)"] {
+    for sql in [
+        "CREATE TABLE x (n UInt64)",
+        "DROP TABLE x",
+        "INSERT INTO x VALUES (1)",
+    ] {
         let response = handle_request("POST", "/?format=json", sql.as_bytes(), &config());
         assert_ne!(response.status, "200 OK", "accepted mutating SQL: {sql}");
     }
