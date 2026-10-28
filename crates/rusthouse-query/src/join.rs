@@ -278,6 +278,21 @@ pub fn parse_join(sql: &str) -> Result<Option<JoinSelect>, ParseError> {
     } else {
         return Err(ParseError("JOIN requires ON or USING".into()));
     };
+    for (first, second) in &keys {
+        for column in [first, second] {
+            if column.relation != left_alias && column.relation != right_alias {
+                return Err(ParseError(format!(
+                    "unknown JOIN qualifier: {}",
+                    column.relation
+                )));
+            }
+        }
+        if first.relation == second.relation {
+            return Err(ParseError(
+                "JOIN ON must compare one column from each table".into(),
+            ));
+        }
+    }
     let where_null = if parser.keyword("WHERE") {
         let column = qualified(&mut parser)?;
         if !parser.keyword("IS") {
@@ -527,6 +542,23 @@ mod tests {
         assert_eq!(parsed.keys.len(), 2);
         assert_eq!(parsed.keys[0].0.name, "id");
         assert_eq!(parsed.keys[1].0.name, "k");
+    }
+
+    #[test]
+    fn join_on_requires_two_known_distinct_relations() {
+        for statement in [
+            "SELECT * FROM a x JOIN b y ON x.id = x.parent",
+            "SELECT * FROM a x JOIN b y ON y.id = y.parent",
+            "SELECT * FROM a x JOIN b y ON x.id = z.id",
+            "SELECT * FROM a x JOIN b y ON z.id = y.id",
+        ] {
+            assert!(parse_join(statement).is_err(), "{statement}");
+        }
+        assert!(
+            parse_join("SELECT * FROM a x JOIN b y ON y.id = x.id")
+                .unwrap()
+                .is_some()
+        );
     }
 
     #[test]
