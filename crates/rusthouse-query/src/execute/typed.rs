@@ -821,7 +821,7 @@ pub(super) fn execute_typed<W: Write>(
     if query.limit == Some(0) {
         return Ok(());
     }
-    let mut scan = TypedQueryReader::open(part, &names)?;
+    let mut scan = TypedQueryReader::open_with_metadata(part, &names, &metadata)?;
     let is_count = matches!(query.projection, Projection::Count);
     let is_count_column = matches!(query.projection, Projection::CountColumn { .. });
     let is_count_distinct = matches!(query.projection, Projection::CountDistinct { .. });
