@@ -45,10 +45,22 @@ fn render_expr(expr: &ScalarExpr) -> String {
         ScalarExpr::Divide(left, right) => {
             format!("({}) / ({})", render_expr(left), render_expr(right))
         }
+        ScalarExpr::Compare(left, operator, right) => {
+            let symbol = match operator {
+                crate::Operator::Eq => "=",
+                crate::Operator::Ne => "!=",
+                crate::Operator::Lt => "<",
+                crate::Operator::Le => "<=",
+                crate::Operator::Gt => ">",
+                crate::Operator::Ge => ">=",
+                _ => unreachable!("comparisons only accept comparison operators"),
+            };
+            format!("{} {symbol} {}", render_expr(left), render_expr(right))
+        }
         ScalarExpr::Multiply(left, right) => {
             let operand = |value: &ScalarExpr| {
                 let rendered = render_expr(value);
-                if matches!(value, ScalarExpr::Add(..) | ScalarExpr::Subtract(..)) {
+                if matches!(value, ScalarExpr::Add(..) | ScalarExpr::Subtract(..) | ScalarExpr::Compare(..)) {
                     format!("({rendered})")
                 } else {
                     rendered
@@ -66,6 +78,21 @@ fn aggregate_function(name: &str) -> Option<Option<AggregateFunction>> {
         "AVG" => Some(Some(AggregateFunction::Avg)),
         "MIN" => Some(Some(AggregateFunction::Min)),
         "MAX" => Some(Some(AggregateFunction::Max)),
+        "COUNTIF" => Some(Some(AggregateFunction::CountIf)),
+        "PRODUCT" => Some(Some(AggregateFunction::Product)),
+        "SUMSQUARES" => Some(Some(AggregateFunction::SumSquares)),
+        "RANGE" => Some(Some(AggregateFunction::Range)),
+        "RMS" => Some(Some(AggregateFunction::Rms)),
+        "VARPOP" => Some(Some(AggregateFunction::VarPop)),
+        "VARSAMP" => Some(Some(AggregateFunction::VarSamp)),
+        "STDDEVPOP" => Some(Some(AggregateFunction::StddevPop)),
+        "STDDEVSAMP" => Some(Some(AggregateFunction::StddevSamp)),
+        "MEDIAN" => Some(Some(AggregateFunction::Median)),
+        "ANY" => Some(Some(AggregateFunction::Any)),
+        "ANYLAST" => Some(Some(AggregateFunction::AnyLast)),
+        "GROUPBITAND" => Some(Some(AggregateFunction::GroupBitAnd)),
+        "GROUPBITOR" => Some(Some(AggregateFunction::GroupBitOr)),
+        "GROUPBITXOR" => Some(Some(AggregateFunction::GroupBitXor)),
         _ => None,
     }
 }

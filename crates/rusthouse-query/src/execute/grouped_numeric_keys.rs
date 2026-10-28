@@ -39,11 +39,60 @@ fn numeric_value_at(column: &TypedColumn, row: usize) -> Result<Option<Number>, 
     }
 }
 
+// Encode a composite GROUP BY key into reusable storage. String components
+// borrow the column's decoded bytes; only the first occurrence of a group
+// needs to own an encoded key. Tags and lengths preserve tuple boundaries.
+pub(super) fn append_group_component(column: &TypedColumn, row: usize, buffer: &mut Vec<u8>) {
+    if typed::is_null_at(column, row) {
+        buffer.push(0);
+        return;
+    }
+    match column {
+        TypedColumn::Text(values) | TypedColumn::NullableText { values, .. } => {
+            let bytes = values.get(row).expect("validated typed batch row");
+            buffer.push(1);
+            buffer.extend_from_slice(&(bytes.len() as u64).to_le_bytes());
+            buffer.extend_from_slice(bytes);
+        }
+        TypedColumn::Uuid(values) => {
+            buffer.push(2);
+            buffer.extend_from_slice(values[row].as_bytes());
+        }
+        TypedColumn::Numeric(values) | TypedColumn::NullableNumeric { values, .. } => {
+            match super::number_at(values, row) {
+                Number::Unsigned(value) => {
+                    buffer.push(3);
+                    buffer.extend_from_slice(&value.to_le_bytes());
+                }
+                Number::Signed(value) => {
+                    buffer.push(4);
+                    buffer.extend_from_slice(&value.to_le_bytes());
+                }
+                Number::Float(value) => {
+                    buffer.push(5);
+                    // Match NumberKey: -0 and +0 are one group; all NaNs
+                    // also share the same GROUP BY key.
+                    let bits = if value == 0.0 {
+                        0
+                    } else if value.is_nan() {
+                        f64::NAN.to_bits()
+                    } else {
+                        value.to_bits()
+                    };
+                    buffer.extend_from_slice(&bits.to_le_bytes());
+                }
+            }
+        }
+    }
+}
+
 pub(super) fn execute<W: Write>(
     query: &Select,
     part: &Path,
     columns: &[String],
     items: &[(AggregateFunction, String)],
+    aliases: &[Option<String>],
+    filters: &[Option<String>],
     output: &mut W,
 ) -> Result<(), ExecutionError> {
     let metadata = inspect_query_source(part)?;
@@ -76,6 +125,16 @@ pub(super) fn execute<W: Write>(
             names.push(column.clone());
         }
     }
+    for filter in filters.iter().flatten() {
+        if !names.contains(filter) {
+            names.push(filter.clone());
+        }
+        let column_type = metadata.columns.iter().find(|column| &column.name == filter)
+            .ok_or_else(|| ExecutionError::Invalid(format!("unknown filter column: {filter}")))?;
+        if matches!(typed::base_type(&column_type.data_type), "String" | "UUID") {
+            return Err(ExecutionError::Invalid("conditional metric filters must be numeric".into()));
+        }
+    }
     for predicate in query
         .predicates
         .iter()
@@ -102,8 +161,16 @@ pub(super) fn execute<W: Write>(
         }
         output.write_all(column.as_bytes())?;
     }
-    for (function, column) in items {
-        write!(output, "\t{}({column})", function.name())?;
+    for (index, (function, column)) in items.iter().enumerate() {
+        if let Some(alias) = aliases.get(index).and_then(Option::as_deref) {
+            write!(output, "\t{alias}")?;
+        } else {
+            if let Some(filter) = filters.get(index).and_then(Option::as_deref) {
+                write!(output, "\t{}If({column}, {filter})", function.name())?;
+            } else {
+            write!(output, "\t{}({column})", function.name())?;
+            }
+        }
     }
     writeln!(output)?;
     if query.limit == Some(0) {
@@ -117,6 +184,15 @@ pub(super) fn execute<W: Write>(
     let item_indices = items
         .iter()
         .map(|(_, column)| indices[column])
+        .collect::<Vec<_>>();
+    // Composite text GROUP BY otherwise clones every string key on each row.
+    let has_text_key = columns.iter().any(|column| {
+        matches!(typed::base_type(types[column].as_str()), "String")
+    });
+    let mut encoded_groups = HashMap::<Vec<u8>, usize>::new();
+    let mut encoded_probe = Vec::<u8>::new();
+    let filter_indices = filters.iter()
+        .map(|value| value.as_ref().map(|column| indices[column]))
         .collect::<Vec<_>>();
     let mut by_key = HashMap::<Vec<Key>, usize>::new();
     let mut groups = Vec::<(Vec<Cell>, Vec<AggregateState>)>::new();
@@ -160,6 +236,35 @@ pub(super) fn execute<W: Write>(
                     ));
                     *index
                 }
+            } else if has_text_key {
+                encoded_probe.clear();
+                for &index in &group_indices {
+                    append_group_component(&batch[index], row, &mut encoded_probe);
+                }
+                if let Some(&index) = encoded_groups.get(encoded_probe.as_slice()) {
+                    index
+                } else {
+                    if groups.len() >= MAX_GROUPS {
+                        return Err(ExecutionError::Invalid(
+                            "GROUP BY supports at most 200000 groups".into(),
+                        ));
+                    }
+                    let index = groups.len();
+                    let keys = group_indices
+                        .iter()
+                        .map(|&column| typed::cell(&batch[column], row))
+                        .collect::<Vec<_>>();
+                    encoded_groups.insert(std::mem::take(&mut encoded_probe), index);
+                    encoded_probe = Vec::with_capacity(group_indices.len() * 24);
+                    groups.push((
+                        keys,
+                        items
+                            .iter()
+                            .map(|(function, _)| AggregateState::new(*function))
+                            .collect(),
+                    ));
+                    index
+                }
             } else {
                 probe_key.clear();
                 for &index in &group_indices {
@@ -190,10 +295,20 @@ pub(super) fn execute<W: Write>(
                     index
                 }
             };
-            for ((function, _), (&index, state)) in items
+            for (metric, ((function, _), (&index, state))) in items
                 .iter()
                 .zip(item_indices.iter().zip(groups[group].1.iter_mut()))
+                .enumerate()
             {
+                if let Some(&filter_index) = filter_indices.get(metric).and_then(Option::as_ref) {
+                    let enabled = match numeric_value_at(&batch[filter_index], row)? {
+                        Some(Number::Unsigned(value)) => value != 0,
+                        Some(Number::Signed(value)) => value != 0,
+                        Some(Number::Float(value)) => value != 0.0,
+                        None => false,
+                    };
+                    if !enabled {continue;}
+                }
                 if *function == AggregateFunction::Count {
                     if !typed::is_null_at(&batch[index], row) {
                         state.update(Number::Unsigned(1))?;
@@ -207,21 +322,22 @@ pub(super) fn execute<W: Write>(
         }
     }
 
-    let terms = query
-        .order_terms()
-        .map(|term| {
-            let index = columns
-                .iter()
-                .position(|column| column == &term.column)
-                .expect("GROUP BY ORDER BY validated by parser");
-            (index, term.descending, term.nulls_first)
-        })
-        .collect::<Vec<_>>();
-    let compare = |(left, _): &(Vec<Cell>, Vec<AggregateState>),
-                   (right, _): &(Vec<Cell>, Vec<AggregateState>)| {
-        for &(index, descending, nulls_first) in &terms {
-            let order =
-                typed::compare_order_cells(&left[index], &right[index], descending, nulls_first);
+    let terms = query.order_terms().map(|term| {
+        let metric = term.column.strip_prefix("#aggregate")
+            .and_then(|number| number.parse::<usize>().ok());
+        let group = columns.iter().position(|column| column == &term.column);
+        (group, metric, term.descending, term.nulls_first)
+    }).collect::<Vec<_>>();
+    let compare = |(left_keys, left_states): &(Vec<Cell>, Vec<AggregateState>),
+                   (right_keys, right_states): &(Vec<Cell>, Vec<AggregateState>)| {
+        for &(group, metric, descending, nulls_first) in &terms {
+            let order = if let Some(index) = metric {
+                typed::compare_order_cells(&left_states[index].sort_cell(),
+                    &right_states[index].sort_cell(), descending, nulls_first)
+            } else {
+                let index = group.expect("GROUP BY ORDER BY validated by parser");
+                typed::compare_order_cells(&left_keys[index], &right_keys[index], descending, nulls_first)
+            };
             if order != Ordering::Equal {
                 return order;
             }
@@ -247,13 +363,18 @@ pub(super) fn execute<W: Write>(
         }
     }
 
+    // Resolve output schema once before serializing many grouped rows.
+    let output_types = columns
+        .iter()
+        .map(|column| types[column].as_str())
+        .collect::<Vec<_>>();
     let write_group =
         |keys: &[Cell], states: &[AggregateState], output: &mut W| -> Result<(), ExecutionError> {
             for (index, key) in keys.iter().enumerate() {
                 if index != 0 {
                     output.write_all(b"\t")?;
                 }
-                typed::write_typed_value(output, key, &types[&columns[index]])?;
+                typed::write_typed_value(output, key, output_types[index])?;
             }
             for state in states {
                 write!(output, "\t{}", state.render())?;
@@ -280,6 +401,49 @@ pub(super) fn execute<W: Write>(
 #[cfg(test)]
 mod direct_grouped_numeric_tests {
     use super::*;
+
+    #[test]
+    fn compact_composite_keys_preserve_boundaries_nulls_and_float_normalization() {
+        use rusthouse_storage::read_legacy_strings;
+        let mut source = b"\x02ab\x01a\x02ab".as_slice();
+        let strings = TypedColumn::Text(read_legacy_strings(&mut source, 3).unwrap());
+        let numbers = TypedColumn::Numeric(NumericColumn::UInt64(vec![12, 12, 13]));
+        let mut scratch = Vec::new();
+        let key = |row, scratch: &mut Vec<u8>| {
+            scratch.clear();
+            append_group_component(&strings, row, scratch);
+            append_group_component(&numbers, row, scratch);
+            scratch.clone()
+        };
+        let first = key(0, &mut scratch);
+        let second = key(1, &mut scratch);
+        let third = key(2, &mut scratch);
+        assert_ne!(first, second);
+        assert_ne!(first, third);
+        let zeroes = TypedColumn::Numeric(NumericColumn::Float64(vec![-0.0, 0.0, f64::NAN, f64::NAN]));
+        scratch.clear();
+        append_group_component(&zeroes, 0, &mut scratch);
+        let positive_zero = scratch.clone();
+        scratch.clear();
+        append_group_component(&zeroes, 1, &mut scratch);
+        assert_eq!(scratch, positive_zero);
+        scratch.clear();
+        append_group_component(&zeroes, 2, &mut scratch);
+        let nan = scratch.clone();
+        scratch.clear();
+        append_group_component(&zeroes, 3, &mut scratch);
+        assert_eq!(scratch, nan);
+        let nulls = TypedColumn::NullableNumeric {
+            values: NumericColumn::UInt64(vec![7, 7]),
+            nulls: vec![1, 0],
+        };
+        scratch.clear();
+        append_group_component(&nulls, 0, &mut scratch);
+        assert_eq!(scratch, vec![0]);
+        scratch.clear();
+        append_group_component(&nulls, 1, &mut scratch);
+        assert_ne!(scratch, vec![0]);
+    }
 
     #[test]
     fn reads_grouped_aggregate_values_and_skips_nulls() {

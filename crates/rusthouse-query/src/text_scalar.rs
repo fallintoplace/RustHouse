@@ -4,89 +4,151 @@ const MAX_DEPTH: usize = 16;
 const MAX_TEXT_BYTES: usize = 1_048_576;
 
 pub(super) fn is_function(name: &str) -> bool {
-    matches!(
+    super::date_scalar::is_function(name) || matches!(
         name.to_ascii_uppercase().as_str(),
         "LENGTH"
+            | "TOYEAR"
+            | "LENGTHUTF8"
+            | "TOSTARTOFFIVEMINUTES"
             | "CHAR_LENGTH"
+            | "LENGTHUTF8"
             | "OCTET_LENGTH"
+            | "TOSTARTOFFIFTEENMINUTES"
             | "ASCII"
+            | "TOSTARTOFMINUTE"
             | "UTF16_LENGTH"
+            | "ISIPV6STRING"
             | "HASSUBSEQUENCE"
+            | "BYTEHAMMINGDISTANCE"
             | "CHR"
+            | "TOUNIXTIMESTAMP"
             | "STRINGBYTESUNIQ"
             | "BIT_LENGTH"
+            | "BITMASKTOLIST"
             | "IS_INT64"
+            | "TOMODIFIEDJULIANDAY"
             | "BTRIM"
+            | "TOLASTDAYOFWEEK"
+            | "TRIMBOTH"
             | "RTRIM"
             | "CUTQUERYSTRING"
             | "COLLAPSE_WHITESPACE"
             | "LOWER"
+            | "LOWERUTF8"
             | "HEX_ENCODE"
+            | "ENCODEXMLCOMPONENT"
+            | "HEX"
             | "IS_ASCII"
+            | "ISIPV4STRING"
             | "UPPER"
+            | "UPPERUTF8"
             | "URL_DECODE"
+            | "DECODEURLCOMPONENT"
             | "IS_EMPTY"
+            | "EMPTY"
             | "REVERSE"
+            | "REVERSEUTF8"
             | "INITCAP"
+            | "TOSTARTOFTENMINUTES"
             | "CONCAT"
+            | "CONCATASSUMEINJECTIVE"
             | "QUOTE_LITERAL"
+            | "FROMUNIXTIMESTAMP64MILLI"
             | "CUTQUERYSTRINGANDFRAGMENT"
             | "COALESCE"
+            | "SUBTRACTHOURS"
             | "CONCAT_WS"
+            | "CONCATWITHSEPARATOR"
             | "CUTFRAGMENT"
             | "URL_ENCODE"
             | "FRAGMENT"
+            | "DATETRUNC"
             | "JSON_QUOTE"
             | "ISVALIDJSON"
             | "JSONHAS"
             | "JSONEXTRACTSTRING"
+            | "JSONEXTRACTINT"
             | "JSONEXTRACTRAW"
             | "SUBSTRING"
+            | "SUBSTRINGUTF8"
             | "HASSUBSEQUENCECASEINSENSITIVE"
             | "OVERLAY"
             | "QUERYSTRING"
             | "SPLIT_PART"
             | "SUBSTRING_INDEX"
+            | "SUBSTRINGINDEXUTF8"
             | "QUERYSTRINGANDFRAGMENT"
+            | "FORMATREADABLETIMEDELTA"
             | "TO_INT64"
+            | "TOSTRING"
             | "TRIM"
             | "LTRIM"
+            | "TRIMLEFT"
             | "BASENAME"
+            | "FROMUNIXTIMESTAMP64MICRO"
             | "TRIM_WHITESPACE"
             | "TRY_TO_INT64"
+            | "TOINT64ORNULL"
             | "LPAD"
+            | "TOSTARTOFFIFTEENMINUTES"
+            | "LEFTPADUTF8"
             | "COUNTSUBSTRINGSCASEINSENSITIVE"
             | "HEX_DECODE"
+            | "UNBIN"
             | "REPLACE"
+            | "REPLACEALL"
             | "PROTOCOL"
+            | "FROMUNIXTIMESTAMP64NANO"
             | "TRANSLATE"
+            | "TRANSLATEUTF8"
             | "POSITIONCASEINSENSITIVE"
             | "STRPOS"
+            | "TOSTARTOFISOYEAR"
+            | "POSITIONUTF8"
             | "COUNT_SUBSTRING"
+            | "COUNTSUBSTRINGS"
             | "EXTRACTURLPARAMETER"
             | "NULLIF"
+            | "IFNULL"
             | "LAST_INDEX_OF"
+            | "DATEADD"
             | "PATH"
             | "LEFT"
+            | "LEFTUTF8"
             | "REPLACE_FIRST"
+            | "REPLACEONE"
             | "STARTS_WITH"
+            | "STARTSWITH"
             | "HASTOKEN"
+            | "TOMONTHNUMSINCEEPOCH"
             | "CONTAINS"
             | "STRIP_PREFIX"
             | "RIGHT"
+            | "RIGHTUTF8"
             | "BASE64_ENCODE"
+            | "BASE64ENCODE"
             | "HASTOKENCASEINSENSITIVE"
             | "ENDS_WITH"
+            | "ENDSWITHUTF8"
+            | "ENDSWITH"
             | "PATHFULL"
             | "REPLACE_LAST"
+            | "SUBTRACTMINUTES"
             | "NETLOC"
+            | "DOMAIN"
             | "STRIP_SUFFIX"
+            | "SUBTRACTMONTHS"
+            | "TOSTRINGCUTTOZERO"
             | "REPEAT"
             | "BASE64_DECODE"
+            | "BASE64DECODE"
             | "APPENDTRAILINGCHARIFABSENT"
+            | "ADDMONTHS"
             | "RPAD"
+            | "LOWERUTF8"
             | "NOTEMPTY"
             | "SPACE"
+            | "ENCODEURLFORMCOMPONENT"
     )
 }
 
@@ -100,7 +162,104 @@ fn parse_at_depth(parser: &mut Parser, depth: usize) -> Result<ConstantValue, Pa
     }
     let name = parser.word()?.to_ascii_uppercase();
     require(parser, Token::LParen, "string function requires '('")?;
+    if super::date_scalar::is_function(&name) {
+        return super::date_scalar::parse_after_open(parser, &name, depth);
+    }
     let value = match name.as_str() {
+
+        "LENGTHUTF8" => {
+            let input = text_arg(parser, depth + 1)?;
+            require(parser, Token::RParen, "lengthUTF8 requires one argument")?;
+            match input {
+                Some(value) => ConstantValue::Integer(
+                    i64::try_from(value.chars().count())
+                        .map_err(|_| ParseError("lengthUTF8 result exceeds Int64".into()))?,
+                ),
+                None => ConstantValue::Null,
+            }
+        }
+        "TOSTARTOFFIVEMINUTES" => {
+            let input = text_arg(parser, depth + 1)?;
+            require(parser, Token::RParen, "toStartOfFiveMinutes requires one argument")?;
+            match input {
+                Some(value) => {
+                    let seconds = rusthouse_storage::parse_datetime(&value)
+                        .ok_or_else(|| ParseError("invalid UTC DateTime argument".into()))?;
+                    ConstantValue::Text(rusthouse_storage::format_datetime(seconds / 300 * 300))
+                }
+                None => ConstantValue::Null,
+            }
+        }
+        "FORMATREADABLETIMEDELTA" => {
+            let value = integer_arg(parser, depth + 1)?;
+            let maximum_unit = if parser.take(Token::Comma) {
+                Some(text_arg(parser, depth + 1)?)
+            } else {
+                None
+            };
+            let minimum_unit = if parser.take(Token::Comma) {
+                Some(text_arg(parser, depth + 1)?)
+            } else {
+                None
+            };
+            require(parser, Token::RParen, "formatReadableTimeDelta requires ')'")?;
+            if value.is_none() || matches!(maximum_unit, Some(None))
+                || matches!(minimum_unit, Some(None))
+            {
+                ConstantValue::Null
+            } else {
+                let maximum = maximum_unit.flatten().unwrap_or_else(|| "years".into());
+                let minimum = minimum_unit.flatten().unwrap_or_else(|| "seconds".into());
+                const UNITS: &[(&str, u64)] = &[
+                    ("years", 31_536_000), ("months", 2_635_200),
+                    ("days", 86_400), ("hours", 3_600),
+                    ("minutes", 60), ("seconds", 1),
+                ];
+                let max_index = UNITS.iter().position(|(name, _)| *name == maximum)
+                    .ok_or_else(|| ParseError("invalid maximum time unit".into()))?;
+                let min_index = UNITS.iter().position(|(name, _)| *name == minimum)
+                    .ok_or_else(|| ParseError("invalid minimum time unit".into()))?;
+                if max_index > min_index {
+                    return Err(ParseError("minimum unit exceeds maximum unit".into()));
+                }
+                let seconds = value.expect("validated nonnull time value");
+                let mut remaining = seconds.unsigned_abs();
+                let mut parts = Vec::new();
+                for (index, &(name, unit_seconds)) in UNITS.iter().enumerate()
+                    .skip(max_index).take(min_index - max_index + 1)
+                {
+                    let count = remaining / unit_seconds;
+                    remaining %= unit_seconds;
+                    if count > 0 || (index == min_index && parts.is_empty()) {
+                        let singular = name.trim_end_matches('s');
+                        parts.push(format!("{count} {singular}{}", if count == 1 { "" } else { "s" }));
+                    }
+                }
+                let mut formatted = if parts.len() <= 1 {
+                    parts.join("")
+                } else {
+                    let last = parts.pop().expect("at least two time parts");
+                    format!("{} and {last}", parts.join(", "))
+                };
+                if seconds < 0 {
+                    formatted.insert(0, '-');
+                }
+                ConstantValue::Text(formatted)
+            }
+        }
+        "TOSTARTOFMINUTE" => {
+            let input = text_arg(parser, depth + 1)?;
+            require(parser, Token::RParen, "toStartOfMinute requires one argument")?;
+            match input {
+                Some(value) => {
+                    let seconds = rusthouse_storage::parse_datetime(&value).ok_or_else(|| {
+                        ParseError("toStartOfMinute requires a valid UTC DateTime".into())
+                    })?;
+                    ConstantValue::Text(rusthouse_storage::format_datetime(seconds - seconds % 60))
+                }
+                None => ConstantValue::Null,
+            }
+        }
         "ASCII" => {
             let input = text_arg(parser, depth + 1)?;
             require(parser, Token::RParen, "ASCII requires one argument")?;
@@ -115,12 +274,12 @@ fn parse_at_depth(parser: &mut Parser, depth: usize) -> Result<ConstantValue, Pa
                 None => ConstantValue::Null,
             }
         }
-        "LENGTH" | "CHAR_LENGTH" | "OCTET_LENGTH" => {
+        "LENGTH" | "CHAR_LENGTH" | "LENGTHUTF8" | "OCTET_LENGTH" => {
             let input = text_arg(parser, depth + 1)?;
             require(parser, Token::RParen, "LENGTH requires one argument")?;
             match input {
                 Some(value) => {
-                    let length = if name == "CHAR_LENGTH" {
+                    let length = if name == "CHAR_LENGTH" || name == "LENGTHUTF8" {
                         value.chars().count()
                     } else {
                         value.len()
@@ -129,6 +288,18 @@ fn parse_at_depth(parser: &mut Parser, depth: usize) -> Result<ConstantValue, Pa
                         i64::try_from(length)
                             .map_err(|_| ParseError("string length exceeds Int64".into()))?,
                     )
+                }
+                None => ConstantValue::Null,
+            }
+        }
+        "TOSTARTOFFIFTEENMINUTES" => {
+            let input = text_arg(parser, depth + 1)?;
+            require(parser, Token::RParen, "toStartOfFifteenMinutes requires one argument")?;
+            match input {
+                Some(value) => {
+                    let seconds = rusthouse_storage::parse_datetime(&value)
+                        .ok_or_else(|| ParseError("invalid UTC DateTime argument".into()))?;
+                    ConstantValue::Text(rusthouse_storage::format_datetime(seconds / 900 * 900))
                 }
                 None => ConstantValue::Null,
             }
@@ -159,7 +330,41 @@ fn parse_at_depth(parser: &mut Parser, depth: usize) -> Result<ConstantValue, Pa
                 None => ConstantValue::Null,
             }
         }
-        "HEX_ENCODE" => {
+        "ENCODEXMLCOMPONENT" => {
+            let input = text_arg(parser, depth + 1)?;
+            require(parser, Token::RParen, "encodeXMLComponent requires one string")?;
+            match input {
+                Some(input) => {
+                    let mut result = String::new();
+                    for character in input.chars() {
+                        let escaped = match character {
+                            '&' => "&amp;",
+                            '<' => "&lt;",
+                            '>' => "&gt;",
+                            '"' => "&quot;",
+                            '\'' => "&apos;",
+                            _ => "",
+                        };
+                        let increase = if escaped.is_empty() {
+                            character.len_utf8()
+                        } else {
+                            escaped.len()
+                        };
+                        if result.len() + increase > MAX_TEXT_BYTES {
+                            return Err(ParseError("encodeXMLComponent result is too large".into()));
+                        }
+                        if escaped.is_empty() {
+                            result.push(character);
+                        } else {
+                            result.push_str(escaped);
+                        }
+                    }
+                    ConstantValue::Text(result)
+                }
+                None => ConstantValue::Null,
+            }
+        }
+        "HEX_ENCODE" | "HEX" => {
             let input = text_arg(parser, depth + 1)?;
             require(parser, Token::RParen, "HEX_ENCODE requires one argument")?;
             match input {
@@ -182,6 +387,17 @@ fn parse_at_depth(parser: &mut Parser, depth: usize) -> Result<ConstantValue, Pa
                 None => ConstantValue::Null,
             }
         }
+        "ISIPV6STRING" => {
+            let input = text_arg(parser, depth + 1)?;
+            require(parser, Token::RParen, "isIPv6String requires one argument")?;
+            match input {
+                Some(value) => {
+                    let is_ipv6 = value.parse::<std::net::Ipv6Addr>().is_ok();
+                    ConstantValue::Integer(i64::from(is_ipv6))
+                }
+                None => ConstantValue::Null,
+            }
+        }
         "UTF16_LENGTH" => {
             let input = text_arg(parser, depth + 1)?;
             require(parser, Token::RParen, "UTF16_LENGTH requires one argument")?;
@@ -190,6 +406,18 @@ fn parse_at_depth(parser: &mut Parser, depth: usize) -> Result<ConstantValue, Pa
                     let length = i64::try_from(value.encode_utf16().count())
                         .map_err(|_| ParseError("UTF16_LENGTH result exceeds Int64".into()))?;
                     ConstantValue::Integer(length)
+                }
+                None => ConstantValue::Null,
+            }
+        }
+        "TOUNIXTIMESTAMP" => {
+            let input = text_arg(parser, depth + 1)?;
+            require(parser, Token::RParen, "toUnixTimestamp requires one argument")?;
+            match input {
+                Some(value) => {
+                    let seconds = rusthouse_storage::parse_datetime(&value)
+                        .ok_or_else(|| ParseError("invalid UTC DateTime argument".into()))?;
+                    ConstantValue::Integer(i64::from(seconds))
                 }
                 None => ConstantValue::Null,
             }
@@ -208,6 +436,27 @@ fn parse_at_depth(parser: &mut Parser, depth: usize) -> Result<ConstantValue, Pa
                         seen[usize::from(byte)] = true;
                     }
                     ConstantValue::Integer(seen.iter().filter(|&&present| present).count() as i64)
+                }
+                None => ConstantValue::Null,
+            }
+        }
+        "BITMASKTOLIST" => {
+            let input = integer_arg(parser, depth + 1)?;
+            require(parser, Token::RParen, "bitmaskToList requires one argument")?;
+            match input {
+                Some(input) => {
+                    let mut bits = input as u64;
+                    let mut result = String::new();
+                    while bits != 0 {
+                        let bit = bits.trailing_zeros();
+                        let magnitude = 1u64 << bit;
+                        if !result.is_empty() {
+                            result.push(',');
+                        }
+                        result.push_str(&magnitude.to_string());
+                        bits &= bits - 1;
+                    }
+                    ConstantValue::Text(result)
                 }
                 None => ConstantValue::Null,
             }
@@ -232,13 +481,32 @@ fn parse_at_depth(parser: &mut Parser, depth: usize) -> Result<ConstantValue, Pa
             require(parser, Token::RParen, "LOWER requires one argument")?;
             match input {
                 Some(value) => {
-                    let result = value.to_lowercase();
+                    let result = value.to_ascii_lowercase();
                     if result.len() > MAX_TEXT_BYTES {
                         return Err(ParseError("LOWER result is too large".into()));
                     }
                     ConstantValue::Text(result)
                 }
                 None => ConstantValue::Null,
+            }
+        }
+        "BYTEHAMMINGDISTANCE" => {
+            let left = text_arg(parser, depth + 1)?;
+            require(parser, Token::Comma, "byteHammingDistance requires two strings")?;
+            let right = text_arg(parser, depth + 1)?;
+            require(parser, Token::RParen, "expected ')' after byteHammingDistance")?;
+            match (left, right) {
+                (Some(left), Some(right)) => {
+                    if left.len() != right.len() {
+                        return Err(ParseError("byteHammingDistance requires equal byte lengths".into()));
+                    }
+                    let mismatches = left.bytes().zip(right.bytes())
+                        .filter(|(a, b)| a != b).count();
+                    ConstantValue::Integer(i64::try_from(mismatches).map_err(|_| {
+                        ParseError("byteHammingDistance count exceeds Int64".into())
+                    })?)
+                }
+                _ => ConstantValue::Null,
             }
         }
         "HASSUBSEQUENCE" => {
@@ -277,16 +545,43 @@ fn parse_at_depth(parser: &mut Parser, depth: usize) -> Result<ConstantValue, Pa
                 None => ConstantValue::Null,
             }
         }
+        "UPPERUTF8" => {
+            let input = text_arg(parser, depth + 1)?;
+            require(parser, Token::RParen, "UPPERUTF8 requires one argument")?;
+            match input {
+                Some(input) => {
+                    let output = input.to_uppercase();
+                    if output.len() > MAX_TEXT_BYTES {
+                        return Err(ParseError("upperUTF8 result is too large".into()));
+                    }
+                    ConstantValue::Text(output)
+                }
+                None => ConstantValue::Null,
+            }
+        }
         "UPPER" => {
             let input = text_arg(parser, depth + 1)?;
             require(parser, Token::RParen, "UPPER requires one argument")?;
             match input {
                 Some(value) => {
-                    let result = value.to_uppercase();
+                    let result = value.to_ascii_uppercase();
                     if result.len() > MAX_TEXT_BYTES {
                         return Err(ParseError("UPPER result is too large".into()));
                     }
                     ConstantValue::Text(result)
+                }
+                None => ConstantValue::Null,
+            }
+        }
+        "TOSTARTOFTENMINUTES" => {
+            let input = text_arg(parser, depth + 1)?;
+            require(parser, Token::RParen, "toStartOfTenMinutes requires one argument")?;
+            match input {
+                Some(value) => {
+                    let seconds = rusthouse_storage::parse_datetime(&value).ok_or_else(|| {
+                        ParseError("toStartOfTenMinutes requires a valid UTC DateTime".into())
+                    })?;
+                    ConstantValue::Text(rusthouse_storage::format_datetime(seconds - seconds % 600))
                 }
                 None => ConstantValue::Null,
             }
@@ -315,6 +610,17 @@ fn parse_at_depth(parser: &mut Parser, depth: usize) -> Result<ConstantValue, Pa
                 None => ConstantValue::Null,
             }
         }
+        "ISIPV4STRING" => {
+            let input = text_arg(parser, depth + 1)?;
+            require(parser, Token::RParen, "isIPv4String requires one argument")?;
+            match input {
+                Some(value) => {
+                    let is_ipv4 = value.parse::<std::net::Ipv4Addr>().is_ok();
+                    ConstantValue::Integer(i64::from(is_ipv4))
+                }
+                None => ConstantValue::Null,
+            }
+        }
         "IS_ASCII" => {
             let input = text_arg(parser, depth + 1)?;
             require(parser, Token::RParen, "IS_ASCII requires one argument")?;
@@ -323,11 +629,28 @@ fn parse_at_depth(parser: &mut Parser, depth: usize) -> Result<ConstantValue, Pa
                 None => ConstantValue::Null,
             }
         }
-        "IS_EMPTY" => {
+        "IS_EMPTY" | "EMPTY" => {
             let input = text_arg(parser, depth + 1)?;
             require(parser, Token::RParen, "IS_EMPTY requires one argument")?;
             match input {
                 Some(value) => ConstantValue::Integer(i64::from(value.is_empty())),
+                None => ConstantValue::Null,
+            }
+        }
+        "TOMODIFIEDJULIANDAY" => {
+            let input = text_arg(parser, depth + 1)?;
+            require(
+                parser,
+                Token::RParen,
+                "toModifiedJulianDay requires one argument",
+            )?;
+            match input {
+                Some(value) => {
+                    let days = rusthouse_storage::parse_date(&value).ok_or_else(|| {
+                        ParseError("toModifiedJulianDay requires a valid UTC Date".into())
+                    })?;
+                    ConstantValue::Integer(i64::from(days) + 40_587)
+                }
                 None => ConstantValue::Null,
             }
         }
@@ -339,12 +662,33 @@ fn parse_at_depth(parser: &mut Parser, depth: usize) -> Result<ConstantValue, Pa
                 None => ConstantValue::Null,
             }
         }
-        "REVERSE" => {
+        "REVERSE" | "REVERSEUTF8" => {
             let input = text_arg(parser, depth + 1)?;
             require(parser, Token::RParen, "REVERSE requires one argument")?;
             match input {
                 Some(value) => ConstantValue::Text(value.chars().rev().collect()),
                 None => ConstantValue::Null,
+            }
+        }
+        "SUBTRACTMINUTES" => {
+            let input = text_arg(parser, depth + 1)?;
+            require(parser, Token::Comma, "subtractMinutes requires an offset")?;
+            let amount = integer_arg(parser, depth + 1)?;
+            require(parser, Token::RParen, "subtractMinutes requires two arguments")?;
+            match (input, amount) {
+                (Some(value), Some(amount)) => {
+                    let seconds = rusthouse_storage::parse_datetime(&value)
+                        .ok_or_else(|| ParseError("invalid UTC DateTime argument".into()))?;
+                    let delta = amount
+                        .checked_mul(60)
+                        .ok_or_else(|| ParseError("subtractMinutes offset overflow".into()))?;
+                    let shifted = i64::from(seconds)
+                        .checked_sub(delta)
+                        .and_then(|value| u32::try_from(value).ok())
+                        .ok_or_else(|| ParseError("subtractMinutes result outside UTC DateTime range".into()))?;
+                    ConstantValue::Text(rusthouse_storage::format_datetime(shifted))
+                }
+                _ => ConstantValue::Null,
             }
         }
         "CUTFRAGMENT" => {
@@ -358,6 +702,27 @@ fn parse_at_depth(parser: &mut Parser, depth: usize) -> Result<ConstantValue, Pa
                         .to_owned(),
                 ),
                 None => ConstantValue::Null,
+            }
+        }
+        "SUBTRACTHOURS" => {
+            let input = text_arg(parser, depth + 1)?;
+            require(parser, Token::Comma, "subtractHours requires an offset")?;
+            let amount = integer_arg(parser, depth + 1)?;
+            require(parser, Token::RParen, "subtractHours requires two arguments")?;
+            match (input, amount) {
+                (Some(value), Some(amount)) => {
+                    let seconds = rusthouse_storage::parse_datetime(&value)
+                        .ok_or_else(|| ParseError("invalid UTC DateTime argument".into()))?;
+                    let delta = amount
+                        .checked_mul(3600)
+                        .ok_or_else(|| ParseError("subtractHours offset overflow".into()))?;
+                    let shifted = i64::from(seconds)
+                        .checked_sub(delta)
+                        .and_then(|value| u32::try_from(value).ok())
+                        .ok_or_else(|| ParseError("subtractHours result outside UTC DateTime range".into()))?;
+                    ConstantValue::Text(rusthouse_storage::format_datetime(shifted))
+                }
+                _ => ConstantValue::Null,
             }
         }
         "URL_ENCODE" => {
@@ -393,6 +758,32 @@ fn parse_at_depth(parser: &mut Parser, depth: usize) -> Result<ConstantValue, Pa
                 None => ConstantValue::Null,
             }
         }
+        "ENCODEURLFORMCOMPONENT" => {
+            let input = text_arg(parser, depth + 1)?;
+            require(parser, Token::RParen, "encodeURLFormComponent requires one argument")?;
+            match input {
+                Some(input) => {
+                    const DIGITS: &[u8; 16] = b"0123456789ABCDEF";
+                    let mut output = String::new();
+                    for byte in input.bytes() {
+                        if byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'.' | b'_' | b'~') {
+                            output.push(char::from(byte));
+                        } else if byte == b' ' {
+                            output.push('+');
+                        } else {
+                            output.push('%');
+                            output.push(char::from(DIGITS[usize::from(byte >> 4)]));
+                            output.push(char::from(DIGITS[usize::from(byte & 15)]));
+                        }
+                        if output.len() > MAX_TEXT_BYTES {
+                            return Err(ParseError("encodeURLFormComponent result is too large".into()));
+                        }
+                    }
+                    ConstantValue::Text(output)
+                }
+                None => ConstantValue::Null,
+            }
+        }
         "CUTQUERYSTRINGANDFRAGMENT" => {
             let input = text_arg(parser, depth + 1)?;
             require(
@@ -406,6 +797,34 @@ fn parse_at_depth(parser: &mut Parser, depth: usize) -> Result<ConstantValue, Pa
                     ConstantValue::Text(input[..end].to_owned())
                 }
                 None => ConstantValue::Null,
+            }
+        }
+        "TOLASTDAYOFWEEK" => {
+            let input = text_arg(parser, depth + 1)?;
+            let mode = if parser.take(Token::Comma) {
+                integer_arg(parser, depth + 1)?
+            } else {
+                Some(0)
+            };
+            require(parser, Token::RParen, "toLastDayOfWeek requires one or two arguments")?;
+            match (input, mode) {
+                (Some(value), Some(mode)) => {
+                    if !matches!(mode, 0 | 1) {
+                        return Err(ParseError("toLastDayOfWeek only supports week modes 0 and 1".into()));
+                    }
+                    let days = rusthouse_storage::parse_date(&value).map(u32::from)
+                        .or_else(|| rusthouse_storage::parse_datetime(&value).map(|seconds| seconds / 86_400))
+                        .ok_or_else(|| ParseError("toLastDayOfWeek requires a valid UTC Date or DateTime".into()))?;
+                    let weekday = (days + if mode == 1 { 3 } else { 4 }) % 7;
+                    let days = days.checked_add(6 - weekday).ok_or_else(|| {
+                        ParseError("toLastDayOfWeek result overflows Date".into())
+                    })?;
+                    let days = u16::try_from(days).map_err(|_| {
+                        ParseError("toLastDayOfWeek result exceeds the Date range".into())
+                    })?;
+                    ConstantValue::Text(rusthouse_storage::format_date(days))
+                }
+                _ => ConstantValue::Null,
             }
         }
         "COALESCE" => {
@@ -431,7 +850,7 @@ fn parse_at_depth(parser: &mut Parser, depth: usize) -> Result<ConstantValue, Pa
             )?;
             first.map_or(ConstantValue::Null, ConstantValue::Text)
         }
-        "CONCAT_WS" => {
+        "CONCAT_WS" | "CONCATWITHSEPARATOR" => {
             let separator = text_arg(parser, depth + 1)?;
             require(
                 parser,
@@ -478,6 +897,29 @@ fn parse_at_depth(parser: &mut Parser, depth: usize) -> Result<ConstantValue, Pa
                 ConstantValue::Null
             }
         }
+        "FROMUNIXTIMESTAMP64MILLI" => {
+            let input = integer_arg(parser, depth + 1)?;
+            require(
+                parser,
+                Token::RParen,
+                "fromUnixTimestamp64Milli requires one argument",
+            )?;
+            match input {
+                Some(input) => {
+                    let unit = 10_i64.pow(3);
+                    let seconds = u32::try_from(input.div_euclid(unit)).map_err(|_| {
+                        ParseError("fromUnixTimestamp64Milli requires a supported UTC DateTime".into())
+                    })?;
+                    let fraction = input.rem_euclid(unit);
+                    let datetime = rusthouse_storage::format_datetime(seconds);
+                    ConstantValue::Text(format!(
+                        "{datetime}.{fraction:0width$}",
+                        width = 3
+                    ))
+                }
+                None => ConstantValue::Null,
+            }
+        }
         "QUOTE_LITERAL" => {
             let input = text_arg(parser, depth + 1)?;
             require(parser, Token::RParen, "QUOTE_LITERAL requires one argument")?;
@@ -506,7 +948,7 @@ fn parse_at_depth(parser: &mut Parser, depth: usize) -> Result<ConstantValue, Pa
                 None => ConstantValue::Null,
             }
         }
-        "CONCAT" => {
+        "CONCAT" | "CONCATASSUMEINJECTIVE" => {
             let mut result = String::new();
             let mut count = 0;
             let mut is_null = false;
@@ -542,6 +984,27 @@ fn parse_at_depth(parser: &mut Parser, depth: usize) -> Result<ConstantValue, Pa
                 ConstantValue::Text(result)
             }
         }
+        "DATETRUNC" => {
+            let unit = text_arg(parser, depth + 1)?;
+            require(parser, Token::Comma, "dateTrunc requires a timestamp")?;
+            let input = text_arg(parser, depth + 1)?;
+            require(parser, Token::RParen, "dateTrunc requires two arguments")?;
+            match (unit, input) {
+                (Some(unit), Some(input)) => {
+                    let step: u32 = match unit.to_ascii_lowercase().as_str() {
+                        "second" | "seconds" => 1,
+                        "minute" | "minutes" => 60,
+                        "hour" | "hours" => 3_600,
+                        "day" | "days" => 86_400,
+                        _ => return Err(ParseError("unsupported dateTrunc unit".into())),
+                    };
+                    let seconds = rusthouse_storage::parse_datetime(&input)
+                        .ok_or_else(|| ParseError("invalid UTC DateTime argument".into()))?;
+                    ConstantValue::Text(rusthouse_storage::format_datetime(seconds / step * step))
+                }
+                _ => ConstantValue::Null,
+            }
+        }
         "QUERYSTRING" => {
             let input = text_arg(parser, depth + 1)?;
             require(parser, Token::RParen, "queryString requires one argument")?;
@@ -558,7 +1021,38 @@ fn parse_at_depth(parser: &mut Parser, depth: usize) -> Result<ConstantValue, Pa
                 None => ConstantValue::Null,
             }
         }
-        "SUBSTRING_INDEX" => {
+        "DATEADD" => {
+            let unit = text_arg(parser, depth + 1)?;
+            require(parser, Token::Comma, "dateAdd requires an offset")?;
+            let amount = integer_arg(parser, depth + 1)?;
+            require(parser, Token::Comma, "dateAdd requires a timestamp")?;
+            let input = text_arg(parser, depth + 1)?;
+            require(parser, Token::RParen, "dateAdd requires three arguments")?;
+            match (unit, amount, input) {
+                (Some(unit), Some(amount), Some(input)) => {
+                    let step: i64 = match unit.to_ascii_lowercase().as_str() {
+                        "second" | "seconds" => 1,
+                        "minute" | "minutes" => 60,
+                        "hour" | "hours" => 3_600,
+                        "day" | "days" => 86_400,
+                        "week" | "weeks" => 604_800,
+                        _ => return Err(ParseError("unsupported dateAdd unit".into())),
+                    };
+                    let seconds = rusthouse_storage::parse_datetime(&input)
+                        .ok_or_else(|| ParseError("invalid UTC DateTime argument".into()))?;
+                    let offset = amount
+                        .checked_mul(step)
+                        .ok_or_else(|| ParseError("dateAdd offset overflow".into()))?;
+                    let shifted = i64::from(seconds)
+                        .checked_add(offset)
+                        .and_then(|value| u32::try_from(value).ok())
+                        .ok_or_else(|| ParseError("dateAdd result outside UTC DateTime range".into()))?;
+                    ConstantValue::Text(rusthouse_storage::format_datetime(shifted))
+                }
+                _ => ConstantValue::Null,
+            }
+        }
+        "SUBSTRING_INDEX" | "SUBSTRINGINDEXUTF8" => {
             let input = text_arg(parser, depth + 1)?;
             require(parser, Token::Comma, "SUBSTRING_INDEX requires a delimiter")?;
             let delimiter = text_arg(parser, depth + 1)?;
@@ -600,6 +1094,61 @@ fn parse_at_depth(parser: &mut Parser, depth: usize) -> Result<ConstantValue, Pa
                 _ => ConstantValue::Null,
             }
         }
+        "ADDMONTHS" => {
+            let input = text_arg(parser, depth + 1)?;
+            require(parser, Token::Comma, "addMonths requires a month count")?;
+            let amount = integer_arg(parser, depth + 1)?;
+            require(parser, Token::RParen, "addMonths requires two arguments")?;
+            match (input, amount) {
+                (Some(value), Some(amount)) => {
+                    let (calendar, clock) = if let Some(days) = rusthouse_storage::parse_date(&value) {
+                        (rusthouse_storage::format_date(days), None)
+                    } else if let Some(seconds) = rusthouse_storage::parse_datetime(&value) {
+                        let datetime = rusthouse_storage::format_datetime(seconds);
+                        (datetime[..10].to_owned(), Some(datetime[10..].to_owned()))
+                    } else {
+                        return Err(ParseError("invalid UTC Date or DateTime argument".into()));
+                    };
+                    let year = calendar[..4]
+                        .parse::<i64>()
+                        .map_err(|_| ParseError("invalid calendar year".into()))?;
+                    let month = calendar[5..7]
+                        .parse::<i64>()
+                        .map_err(|_| ParseError("invalid calendar month".into()))?;
+                    let day = calendar[8..10]
+                        .parse::<u32>()
+                        .map_err(|_| ParseError("invalid calendar day".into()))?;
+                    let offset = amount;
+                    let target = (year * 12 + month - 1)
+                        .checked_add(offset)
+                        .ok_or_else(|| ParseError("addMonths offset overflow".into()))?;
+                    let target_year = target.div_euclid(12);
+                    let target_month = target.rem_euclid(12) + 1;
+                    if !(1970..=2149).contains(&target_year) {
+                        return Err(ParseError("addMonths result outside Date range".into()));
+                    }
+                    let mut candidate = None;
+                    for target_day in (1..=day).rev() {
+                        let date = format!("{target_year:04}-{target_month:02}-{target_day:02}");
+                        if let Some(days) = rusthouse_storage::parse_date(&date) {
+                            candidate = Some((date, days));
+                            break;
+                        }
+                    }
+                    let (date, days) = candidate
+                        .ok_or_else(|| ParseError("addMonths result outside Date range".into()))?;
+                    if let Some(clock) = clock {
+                        let datetime = format!("{date}{clock}");
+                        let seconds = rusthouse_storage::parse_datetime(&datetime)
+                            .ok_or_else(|| ParseError("addMonths result outside DateTime range".into()))?;
+                        ConstantValue::Text(rusthouse_storage::format_datetime(seconds))
+                    } else {
+                        ConstantValue::Text(rusthouse_storage::format_date(days))
+                    }
+                }
+                _ => ConstantValue::Null,
+            }
+        }
         "QUERYSTRINGANDFRAGMENT" => {
             let input = text_arg(parser, depth + 1)?;
             require(
@@ -618,6 +1167,62 @@ fn parse_at_depth(parser: &mut Parser, depth: usize) -> Result<ConstantValue, Pa
                     ConstantValue::Text(query.to_owned())
                 }
                 None => ConstantValue::Null,
+            }
+        }
+        "SUBTRACTMONTHS" => {
+            let input = text_arg(parser, depth + 1)?;
+            require(parser, Token::Comma, "subtractMonths requires a month count")?;
+            let amount = integer_arg(parser, depth + 1)?;
+            require(parser, Token::RParen, "subtractMonths requires two arguments")?;
+            match (input, amount) {
+                (Some(value), Some(amount)) => {
+                    let (calendar, clock) = if let Some(days) = rusthouse_storage::parse_date(&value) {
+                        (rusthouse_storage::format_date(days), None)
+                    } else if let Some(seconds) = rusthouse_storage::parse_datetime(&value) {
+                        let datetime = rusthouse_storage::format_datetime(seconds);
+                        (datetime[..10].to_owned(), Some(datetime[10..].to_owned()))
+                    } else {
+                        return Err(ParseError("invalid UTC Date or DateTime argument".into()));
+                    };
+                    let year = calendar[..4]
+                        .parse::<i64>()
+                        .map_err(|_| ParseError("invalid calendar year".into()))?;
+                    let month = calendar[5..7]
+                        .parse::<i64>()
+                        .map_err(|_| ParseError("invalid calendar month".into()))?;
+                    let day = calendar[8..10]
+                        .parse::<u32>()
+                        .map_err(|_| ParseError("invalid calendar day".into()))?;
+                    let offset = amount.checked_neg()
+                        .ok_or_else(|| ParseError("subtractMonths offset overflow".into()))?;
+                    let target = (year * 12 + month - 1)
+                        .checked_add(offset)
+                        .ok_or_else(|| ParseError("subtractMonths offset overflow".into()))?;
+                    let target_year = target.div_euclid(12);
+                    let target_month = target.rem_euclid(12) + 1;
+                    if !(1970..=2149).contains(&target_year) {
+                        return Err(ParseError("subtractMonths result outside Date range".into()));
+                    }
+                    let mut candidate = None;
+                    for target_day in (1..=day).rev() {
+                        let date = format!("{target_year:04}-{target_month:02}-{target_day:02}");
+                        if let Some(days) = rusthouse_storage::parse_date(&date) {
+                            candidate = Some((date, days));
+                            break;
+                        }
+                    }
+                    let (date, days) = candidate
+                        .ok_or_else(|| ParseError("subtractMonths result outside Date range".into()))?;
+                    if let Some(clock) = clock {
+                        let datetime = format!("{date}{clock}");
+                        let seconds = rusthouse_storage::parse_datetime(&datetime)
+                            .ok_or_else(|| ParseError("subtractMonths result outside DateTime range".into()))?;
+                        ConstantValue::Text(rusthouse_storage::format_datetime(seconds))
+                    } else {
+                        ConstantValue::Text(rusthouse_storage::format_date(days))
+                    }
+                }
+                _ => ConstantValue::Null,
             }
         }
         "SPLIT_PART" => {
@@ -747,7 +1352,7 @@ fn parse_at_depth(parser: &mut Parser, depth: usize) -> Result<ConstantValue, Pa
                 None => ConstantValue::Null,
             }
         }
-        "SUBSTRING" => {
+        "SUBSTRING" | "SUBSTRINGUTF8" => {
             let input = text_arg(parser, depth + 1)?;
             require(parser, Token::Comma, "SUBSTRING requires a start position")?;
             let position = integer_arg(parser, depth + 1)?;
@@ -782,6 +1387,33 @@ fn parse_at_depth(parser: &mut Parser, depth: usize) -> Result<ConstantValue, Pa
                 _ => ConstantValue::Null,
             }
         }
+        "UNBIN" => {
+            let input = text_arg(parser, depth + 1)?;
+            require(parser, Token::RParen, "unbin requires one argument")?;
+            match input {
+                Some(input) => {
+                    let bits = input.as_bytes();
+                    if bits.len() % 8 != 0 {
+                        return Err(ParseError("unbin requires complete byte groups".into()));
+                    }
+                    let mut decoded = Vec::with_capacity(bits.len() / 8);
+                    for group in bits.chunks_exact(8) {
+                        let mut value = 0u8;
+                        for &bit in group {
+                            value = (value << 1) | match bit {
+                                b'0' => 0,
+                                b'1' => 1,
+                                _ => return Err(ParseError("unbin requires binary digits".into())),
+                            };
+                        }
+                        decoded.push(value);
+                    }
+                    ConstantValue::Text(String::from_utf8(decoded)
+                        .map_err(|_| ParseError("unbin result is not UTF-8".into()))?)
+                }
+                None => ConstantValue::Null,
+            }
+        }
         "HEX_DECODE" => {
             let input = text_arg(parser, depth + 1)?;
             require(parser, Token::RParen, "HEX_DECODE requires one argument")?;
@@ -807,6 +1439,21 @@ fn parse_at_depth(parser: &mut Parser, depth: usize) -> Result<ConstantValue, Pa
                 None => ConstantValue::Null,
             }
         }
+        "TOSTRING" => {
+            let value = match parser.tokens.get(parser.index) {
+                Some(Token::String(_)) => text_arg(parser, depth + 1)?,
+                Some(Token::Word(name)) if is_function(name) => {
+                    match parse_at_depth(parser, depth + 1)? {
+                        ConstantValue::Text(value) => Some(value),
+                        ConstantValue::Integer(value) => Some(value.to_string()),
+                        ConstantValue::Null => None,
+                    }
+                }
+                _ => integer_arg(parser, depth + 1)?.map(|value| value.to_string()),
+            };
+            require(parser, Token::RParen, "toString requires one argument")?;
+            value.map_or(ConstantValue::Null, ConstantValue::Text)
+        }
         "TO_INT64" => {
             let input = text_arg(parser, depth + 1)?;
             require(parser, Token::RParen, "TO_INT64 requires one argument")?;
@@ -819,7 +1466,20 @@ fn parse_at_depth(parser: &mut Parser, depth: usize) -> Result<ConstantValue, Pa
                 None => ConstantValue::Null,
             }
         }
-        "LPAD" => {
+        "TOSTARTOFFIFTEENMINUTES" => {
+            let input = text_arg(parser, depth + 1)?;
+            require(parser, Token::RParen, "toStartOfFifteenMinutes requires one argument")?;
+            match input {
+                Some(value) => {
+                    let seconds = rusthouse_storage::parse_datetime(&value).ok_or_else(|| {
+                        ParseError("toStartOfFifteenMinutes requires a valid UTC DateTime".into())
+                    })?;
+                    ConstantValue::Text(rusthouse_storage::format_datetime(seconds - seconds % 900))
+                }
+                None => ConstantValue::Null,
+            }
+        }
+        "LPAD" | "LEFTPADUTF8" => {
             let input = text_arg(parser, depth + 1)?;
             require(parser, Token::Comma, "LPAD requires a width")?;
             let width = integer_arg(parser, depth + 1)?;
@@ -857,6 +1517,29 @@ fn parse_at_depth(parser: &mut Parser, depth: usize) -> Result<ConstantValue, Pa
                 _ => ConstantValue::Null,
             }
         }
+        "FROMUNIXTIMESTAMP64NANO" => {
+            let input = integer_arg(parser, depth + 1)?;
+            require(
+                parser,
+                Token::RParen,
+                "fromUnixTimestamp64Nano requires one argument",
+            )?;
+            match input {
+                Some(input) => {
+                    let unit = 10_i64.pow(9);
+                    let seconds = u32::try_from(input.div_euclid(unit)).map_err(|_| {
+                        ParseError("fromUnixTimestamp64Nano requires a supported UTC DateTime".into())
+                    })?;
+                    let fraction = input.rem_euclid(unit);
+                    let datetime = rusthouse_storage::format_datetime(seconds);
+                    ConstantValue::Text(format!(
+                        "{datetime}.{fraction:0width$}",
+                        width = 9
+                    ))
+                }
+                None => ConstantValue::Null,
+            }
+        }
         "PROTOCOL" => {
             let input = text_arg(parser, depth + 1)?;
             require(parser, Token::RParen, "protocol requires one argument")?;
@@ -875,7 +1558,7 @@ fn parse_at_depth(parser: &mut Parser, depth: usize) -> Result<ConstantValue, Pa
                 None => ConstantValue::Null,
             }
         }
-        "LTRIM" => {
+        "LTRIM" | "TRIMLEFT" => {
             let input = text_arg(parser, depth + 1)?;
             let characters = if parser.take(Token::Comma) {
                 Some(text_arg(parser, depth + 1)?)
@@ -893,6 +1576,29 @@ fn parse_at_depth(parser: &mut Parser, depth: usize) -> Result<ConstantValue, Pa
                         .to_owned(),
                 ),
                 _ => ConstantValue::Null,
+            }
+        }
+        "FROMUNIXTIMESTAMP64MICRO" => {
+            let input = integer_arg(parser, depth + 1)?;
+            require(
+                parser,
+                Token::RParen,
+                "fromUnixTimestamp64Micro requires one argument",
+            )?;
+            match input {
+                Some(input) => {
+                    let unit = 10_i64.pow(6);
+                    let seconds = u32::try_from(input.div_euclid(unit)).map_err(|_| {
+                        ParseError("fromUnixTimestamp64Micro requires a supported UTC DateTime".into())
+                    })?;
+                    let fraction = input.rem_euclid(unit);
+                    let datetime = rusthouse_storage::format_datetime(seconds);
+                    ConstantValue::Text(format!(
+                        "{datetime}.{fraction:0width$}",
+                        width = 6
+                    ))
+                }
+                None => ConstantValue::Null,
             }
         }
         "BASENAME" => {
@@ -970,7 +1676,7 @@ fn parse_at_depth(parser: &mut Parser, depth: usize) -> Result<ConstantValue, Pa
                 _ => ConstantValue::Null,
             }
         }
-        "COUNT_SUBSTRING" => {
+        "COUNT_SUBSTRING" | "COUNTSUBSTRINGS" => {
             let input = text_arg(parser, depth + 1)?;
             require(parser, Token::Comma, "COUNT_SUBSTRING requires a substring")?;
             let needle = text_arg(parser, depth + 1)?;
@@ -1013,16 +1719,19 @@ fn parse_at_depth(parser: &mut Parser, depth: usize) -> Result<ConstantValue, Pa
                 None => ConstantValue::Null,
             }
         }
+        "IFNULL" => {
+            let left = constant_arg(parser, depth + 1)?;
+            require(parser, Token::Comma, "ifNull requires a fallback")?;
+            let fallback = constant_arg(parser, depth + 1)?;
+            require(parser, Token::RParen, "expected ')' after ifNull")?;
+            if left == ConstantValue::Null { fallback } else { left }
+        }
         "NULLIF" => {
-            let left = text_arg(parser, depth + 1)?;
+            let left = constant_arg(parser, depth + 1)?;
             require(parser, Token::Comma, "NULLIF requires a second argument")?;
-            let right = text_arg(parser, depth + 1)?;
+            let right = constant_arg(parser, depth + 1)?;
             require(parser, Token::RParen, "expected ')' after NULLIF arguments")?;
-            match (left, right) {
-                (Some(left), Some(right)) if left == right => ConstantValue::Null,
-                (Some(left), _) => ConstantValue::Text(left),
-                (None, _) => ConstantValue::Null,
-            }
+            if left == right { ConstantValue::Null } else { left }
         }
         "POSITIONCASEINSENSITIVE" => {
             let input = text_arg(parser, depth + 1)?;
@@ -1067,7 +1776,33 @@ fn parse_at_depth(parser: &mut Parser, depth: usize) -> Result<ConstantValue, Pa
                 _ => ConstantValue::Null,
             }
         }
-        "STRPOS" => {
+        "TOSTARTOFISOYEAR" => {
+            let input = text_arg(parser, depth + 1)?;
+            require(parser, Token::RParen, "toStartOfISOYear requires one argument")?;
+            match input {
+                Some(value) => {
+                    let days = rusthouse_storage::parse_date(&value).map(u32::from)
+                        .or_else(|| rusthouse_storage::parse_datetime(&value).map(|seconds| seconds / 86_400))
+                        .ok_or_else(|| ParseError("toStartOfISOYear requires a valid UTC Date or DateTime".into()))?;
+                    let weekday = (days + 3) % 7;
+                    let thursday = i64::from(days) + 3 - i64::from(weekday);
+                    let thursday = u16::try_from(thursday).map_err(|_| {
+                        ParseError("toStartOfISOYear is outside the Date range".into())
+                    })?;
+                    let calendar_day = rusthouse_storage::format_date(thursday);
+                    let year = &calendar_day[..4];
+                    let jan4 = rusthouse_storage::parse_date(&format!("{year}-01-04"))
+                        .ok_or_else(|| ParseError("invalid ISO calendar year".into()))?;
+                    let iso_start = i64::from(jan4) - i64::from((u32::from(jan4) + 3) % 7);
+                    let iso_start = u16::try_from(iso_start).map_err(|_| {
+                        ParseError("toStartOfISOYear result is outside the Date range".into())
+                    })?;
+                    ConstantValue::Text(rusthouse_storage::format_date(iso_start))
+                }
+                None => ConstantValue::Null,
+            }
+        }
+        "STRPOS" | "POSITIONUTF8" => {
             let input = text_arg(parser, depth + 1)?;
             require(parser, Token::Comma, "STRPOS requires a substring")?;
             let needle = text_arg(parser, depth + 1)?;
@@ -1159,7 +1894,7 @@ fn parse_at_depth(parser: &mut Parser, depth: usize) -> Result<ConstantValue, Pa
                 None => ConstantValue::Null,
             }
         }
-        "BTRIM" => {
+        "BTRIM" | "TRIMBOTH" => {
             let input = text_arg(parser, depth + 1)?;
             let characters = if parser.take(Token::Comma) {
                 Some(text_arg(parser, depth + 1)?)
@@ -1177,7 +1912,7 @@ fn parse_at_depth(parser: &mut Parser, depth: usize) -> Result<ConstantValue, Pa
                 _ => ConstantValue::Null,
             }
         }
-        "TRANSLATE" => {
+        "TRANSLATE" | "TRANSLATEUTF8" => {
             let input = text_arg(parser, depth + 1)?;
             require(parser, Token::Comma, "TRANSLATE requires source characters")?;
             let from = text_arg(parser, depth + 1)?;
@@ -1194,6 +1929,9 @@ fn parse_at_depth(parser: &mut Parser, depth: usize) -> Result<ConstantValue, Pa
             )?;
             match (input, from, to) {
                 (Some(input), Some(from), Some(to)) => {
+                    if name == "TRANSLATEUTF8" && from.chars().count() != to.chars().count() {
+                        return Err(ParseError("translateUTF8 requires matching character counts".into()));
+                    }
                     let mut replacements = std::collections::HashMap::new();
                     let mut to_chars = to.chars();
                     for ch in from.chars() {
@@ -1239,7 +1977,7 @@ fn parse_at_depth(parser: &mut Parser, depth: usize) -> Result<ConstantValue, Pa
                 None => ConstantValue::Null,
             }
         }
-        "REPLACE" => {
+        "REPLACE" | "REPLACEALL" => {
             let input = text_arg(parser, depth + 1)?;
             require(parser, Token::Comma, "REPLACE requires a search string")?;
             let needle = text_arg(parser, depth + 1)?;
@@ -1274,6 +2012,28 @@ fn parse_at_depth(parser: &mut Parser, depth: usize) -> Result<ConstantValue, Pa
                     }
                 }
                 _ => ConstantValue::Null,
+            }
+        }
+        "TOMONTHNUMSINCEEPOCH" => {
+            let input = text_arg(parser, depth + 1)?;
+            require(parser, Token::RParen, "toMonthNumSinceEpoch requires one argument")?;
+            match input {
+                Some(value) => {
+                    let days = rusthouse_storage::parse_date(&value).map(u32::from)
+                        .or_else(|| rusthouse_storage::parse_datetime(&value).map(|seconds| seconds / 86_400))
+                        .ok_or_else(|| ParseError("toMonthNumSinceEpoch requires a valid UTC Date or DateTime".into()))?;
+                    let date = rusthouse_storage::format_date(u16::try_from(days).map_err(|_| {
+                        ParseError("toMonthNumSinceEpoch date is out of range".into())
+                    })?);
+                    let year = date[..4].parse::<i64>().map_err(|_| {
+                        ParseError("invalid calendar year".into())
+                    })?;
+                    let month = date[5..7].parse::<i64>().map_err(|_| {
+                        ParseError("invalid calendar month".into())
+                    })?;
+                    ConstantValue::Integer((year - 1970) * 12 + month - 1)
+                }
+                None => ConstantValue::Null,
             }
         }
         "HASTOKEN" => {
@@ -1314,7 +2074,7 @@ fn parse_at_depth(parser: &mut Parser, depth: usize) -> Result<ConstantValue, Pa
                 _ => ConstantValue::Null,
             }
         }
-        "STARTS_WITH" => {
+        "STARTS_WITH" | "STARTSWITH" => {
             let input = text_arg(parser, depth + 1)?;
             require(parser, Token::Comma, "STARTS_WITH requires a prefix")?;
             let prefix = text_arg(parser, depth + 1)?;
@@ -1330,7 +2090,7 @@ fn parse_at_depth(parser: &mut Parser, depth: usize) -> Result<ConstantValue, Pa
                 _ => ConstantValue::Null,
             }
         }
-        "REPLACE_FIRST" => {
+        "REPLACE_FIRST" | "REPLACEONE" => {
             let input = text_arg(parser, depth + 1)?;
             require(
                 parser,
@@ -1379,7 +2139,7 @@ fn parse_at_depth(parser: &mut Parser, depth: usize) -> Result<ConstantValue, Pa
                 _ => ConstantValue::Null,
             }
         }
-        "LEFT" => {
+        "LEFT" | "LEFTUTF8" => {
             let input = text_arg(parser, depth + 1)?;
             require(parser, Token::Comma, "LEFT requires a character count")?;
             let count = integer_arg(parser, depth + 1)?;
@@ -1465,7 +2225,7 @@ fn parse_at_depth(parser: &mut Parser, depth: usize) -> Result<ConstantValue, Pa
                 _ => ConstantValue::Null,
             }
         }
-        "ENDS_WITH" => {
+        "ENDS_WITH" | "ENDSWITH" | "ENDSWITHUTF8" => {
             let input = text_arg(parser, depth + 1)?;
             require(parser, Token::Comma, "ENDS_WITH requires a suffix")?;
             let suffix = text_arg(parser, depth + 1)?;
@@ -1481,7 +2241,7 @@ fn parse_at_depth(parser: &mut Parser, depth: usize) -> Result<ConstantValue, Pa
                 _ => ConstantValue::Null,
             }
         }
-        "URL_DECODE" => {
+        "URL_DECODE" | "DECODEURLCOMPONENT" => {
             let input = text_arg(parser, depth + 1)?;
             require(parser, Token::RParen, "URL_DECODE requires one argument")?;
             match input {
@@ -1517,7 +2277,7 @@ fn parse_at_depth(parser: &mut Parser, depth: usize) -> Result<ConstantValue, Pa
                 None => ConstantValue::Null,
             }
         }
-        "BASE64_ENCODE" => {
+        "BASE64_ENCODE" | "BASE64ENCODE" => {
             let input = text_arg(parser, depth + 1)?;
             require(parser, Token::RParen, "BASE64_ENCODE requires one argument")?;
             match input {
@@ -1579,6 +2339,29 @@ fn parse_at_depth(parser: &mut Parser, depth: usize) -> Result<ConstantValue, Pa
                 _ => ConstantValue::Null,
             }
         }
+        "DOMAIN" => {
+            let input = text_arg(parser, depth + 1)?;
+            require(parser, Token::RParen, "domain requires one argument")?;
+            match input {
+                Some(input) => {
+                    let authority = input
+                        .split_once("://")
+                        .map(|(_, rest)| rest.split(['/', '?', '#']).next().unwrap_or(""))
+                        .unwrap_or("");
+                    let host_port = authority.rsplit('@').next().unwrap_or("");
+                    let host = if let Some(without_bracket) = host_port.strip_prefix('[') {
+                        without_bracket
+                            .split_once(']')
+                            .map(|(host, _)| host)
+                            .unwrap_or("")
+                    } else {
+                        host_port.split(':').next().unwrap_or("")
+                    };
+                    ConstantValue::Text(host.to_owned())
+                }
+                None => ConstantValue::Null,
+            }
+        }
         "NETLOC" => {
             let input = text_arg(parser, depth + 1)?;
             require(parser, Token::RParen, "netloc requires one argument")?;
@@ -1593,7 +2376,7 @@ fn parse_at_depth(parser: &mut Parser, depth: usize) -> Result<ConstantValue, Pa
                 None => ConstantValue::Null,
             }
         }
-        "RIGHT" => {
+        "RIGHT" | "RIGHTUTF8" => {
             let input = text_arg(parser, depth + 1)?;
             require(parser, Token::Comma, "RIGHT requires a character count")?;
             let count = integer_arg(parser, depth + 1)?;
@@ -1625,7 +2408,7 @@ fn parse_at_depth(parser: &mut Parser, depth: usize) -> Result<ConstantValue, Pa
                 None => ConstantValue::Null,
             }
         }
-        "TRY_TO_INT64" => {
+        "TRY_TO_INT64" | "TOINT64ORNULL" => {
             let input = text_arg(parser, depth + 1)?;
             require(parser, Token::RParen, "TRY_TO_INT64 requires one argument")?;
             match input {
@@ -1704,7 +2487,7 @@ fn parse_at_depth(parser: &mut Parser, depth: usize) -> Result<ConstantValue, Pa
                 _ => ConstantValue::Null,
             }
         }
-        "BASE64_DECODE" => {
+        "BASE64_DECODE" | "BASE64DECODE" => {
             let input = text_arg(parser, depth + 1)?;
             require(parser, Token::RParen, "BASE64_DECODE requires one argument")?;
             match input {
@@ -1849,6 +2632,24 @@ fn parse_at_depth(parser: &mut Parser, depth: usize) -> Result<ConstantValue, Pa
                 _ => ConstantValue::Null,
             }
         }
+        "JSONEXTRACTINT" => {
+            let input = text_arg(parser, depth + 1)?;
+            require(parser, Token::Comma, "JSONExtractInt requires a path")?;
+            let path = text_arg(parser, depth + 1)?;
+            require(parser, Token::RParen, "JSONExtractInt requires two arguments")?;
+            match (input, path) {
+                (Some(input), Some(path)) => {
+                    let json = crate::json::parse_json(&input)
+                        .map_err(|error| ParseError(format!("invalid JSON: {error}")))?;
+                    let value = json
+                        .at_path(&path)
+                        .and_then(|value| value.raw().parse::<i64>().ok())
+                        .unwrap_or(0);
+                    ConstantValue::Integer(value)
+                }
+                _ => ConstantValue::Null,
+            }
+        }
         "JSON_QUOTE" => {
             let input = text_arg(parser, depth + 1)?;
             require(parser, Token::RParen, "JSON_QUOTE requires one argument")?;
@@ -1884,6 +2685,17 @@ fn parse_at_depth(parser: &mut Parser, depth: usize) -> Result<ConstantValue, Pa
                 None => ConstantValue::Null,
             }
         }
+        "TOSTRINGCUTTOZERO" => {
+            let input = text_arg(parser, depth + 1)?;
+            require(parser, Token::RParen, "toStringCutToZero requires one argument")?;
+            match input {
+                Some(input) => {
+                    let before_nul = input.split('\0').next().unwrap_or("");
+                    ConstantValue::Text(before_nul.to_owned())
+                }
+                None => ConstantValue::Null,
+            }
+        }
         "REPEAT" => {
             let input = text_arg(parser, depth + 1)?;
             require(parser, Token::Comma, "REPEAT requires a count")?;
@@ -1911,6 +2723,33 @@ fn parse_at_depth(parser: &mut Parser, depth: usize) -> Result<ConstantValue, Pa
                 _ => ConstantValue::Null,
             }
         }
+        "LOWERUTF8" => {
+            let input = text_arg(parser, depth + 1)?;
+            require(parser, Token::RParen, "lowerUTF8 requires one argument")?;
+            match input {
+                Some(value) => {
+                    let result = value.to_lowercase();
+                    if result.len() > MAX_TEXT_BYTES {
+                        return Err(ParseError("lowerUTF8 result is too large".into()));
+                    }
+                    ConstantValue::Text(result)
+                }
+                None => ConstantValue::Null,
+            }
+        }
+        "TOYEAR" => {
+            let input = text_arg(parser, depth + 1)?;
+            require(parser, Token::RParen, "toYear requires one argument")?;
+            match input {
+                Some(value) => {
+                    if rusthouse_storage::parse_date(&value).is_none() {
+                        return Err(ParseError("invalid Date argument".into()));
+                    }
+                    ConstantValue::Integer(value[..4].parse::<i64>().unwrap())
+                }
+                None => ConstantValue::Null,
+            }
+        }
         "NOTEMPTY" => {
             let input = text_arg(parser, depth + 1)?;
             require(parser, Token::RParen, "notEmpty requires one argument")?;
@@ -1924,6 +2763,22 @@ fn parse_at_depth(parser: &mut Parser, depth: usize) -> Result<ConstantValue, Pa
     Ok(value)
 }
 
+fn constant_arg(parser: &mut Parser, depth: usize) -> Result<ConstantValue, ParseError> {
+    match parser.tokens.get(parser.index) {
+        Some(Token::String(value)) => {
+            let result = ConstantValue::Text(value.clone());
+            parser.index += 1;
+            Ok(result)
+        }
+        Some(Token::Word(word)) if word.eq_ignore_ascii_case("NULL") => {
+            parser.index += 1;
+            Ok(ConstantValue::Null)
+        }
+        Some(Token::Word(word)) if is_function(word) => parse_at_depth(parser, depth),
+        _ => Ok(ConstantValue::Integer(super::scalar::parse(parser)?)),
+    }
+}
+
 fn require(parser: &mut Parser, token: Token, message: &str) -> Result<(), ParseError> {
     if parser.take(token) {
         Ok(())
@@ -1932,7 +2787,7 @@ fn require(parser: &mut Parser, token: Token, message: &str) -> Result<(), Parse
     }
 }
 
-fn integer_arg(parser: &mut Parser, depth: usize) -> Result<Option<i64>, ParseError> {
+pub(super) fn integer_arg(parser: &mut Parser, depth: usize) -> Result<Option<i64>, ParseError> {
     if matches!(
         parser.tokens.get(parser.index),
         Some(Token::Word(word)) if word.eq_ignore_ascii_case("NULL")
@@ -1950,7 +2805,7 @@ fn integer_arg(parser: &mut Parser, depth: usize) -> Result<Option<i64>, ParseEr
     Ok(Some(super::scalar::parse(parser)?))
 }
 
-fn text_arg(parser: &mut Parser, depth: usize) -> Result<Option<String>, ParseError> {
+pub(super) fn text_arg(parser: &mut Parser, depth: usize) -> Result<Option<String>, ParseError> {
     match parser.tokens.get(parser.index) {
         Some(Token::String(value)) => {
             let result = value.clone();
@@ -1969,5 +2824,27 @@ fn text_arg(parser: &mut Parser, depth: usize) -> Result<Option<String>, ParseEr
         _ => Err(ParseError(
             "expected a string literal or string function".into(),
         )),
+    }
+}
+
+#[cfg(test)]
+mod clickhouse_readable_time_delta_tests {
+    use crate::{parse_select, ConstantValue, Projection};
+    #[test]
+    fn formats_second_intervals_and_unit_limits() {
+        for (sql, expected) in [
+            ("SELECT formatReadableTimeDelta(0)", "0 seconds"),
+            ("SELECT formatReadableTimeDelta(12345)", "3 hours, 25 minutes and 45 seconds"),
+            ("SELECT formatReadableTimeDelta(100, 'minutes')", "1 minute and 40 seconds"),
+            ("SELECT formatReadableTimeDelta(12345, 'minutes')", "205 minutes and 45 seconds"),
+            ("SELECT formatReadableTimeDelta(-60)", "-1 minute"),
+            ("SELECT formatReadableTimeDelta(3600, 'minutes', 'minutes')", "60 minutes"),
+            ("SELECT formatReadableTimeDelta(5456456)", "2 months, 2 days, 3 hours, 40 minutes and 56 seconds"),
+        ] {
+            assert!(matches!(parse_select(sql).unwrap().projection, Projection::Constants(values)
+                if values.len() == 1 && values[0].value == ConstantValue::Text(expected.into())), "{sql}");
+        }
+        assert!(parse_select("SELECT formatReadableTimeDelta(60, 'invalid')").is_err());
+        assert!(parse_select("SELECT formatReadableTimeDelta(60, 'minutes', 'hours')").is_err());
     }
 }

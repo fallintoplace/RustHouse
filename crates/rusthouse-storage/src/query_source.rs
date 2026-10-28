@@ -184,24 +184,43 @@ pub(crate) fn inspect_parts_metadata(
         .min(MAX_WORKERS);
     let mut metadata = Vec::with_capacity(paths.len());
     if paths.len() >= PARALLEL_THRESHOLD && workers > 1 {
-        let chunk_size = paths.len().div_ceil(workers);
+        // A few parts can have much larger metadata than the rest. Claim
+        // part indexes dynamically so one slow range does not hold up the
+        // whole scan. Retain results by input index for stable diagnostics.
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        let cursor = AtomicUsize::new(0);
+        let mut slots: Vec<Option<Result<PartMetadata, PartError>>> =
+            (0..paths.len()).map(|_| None).collect();
         std::thread::scope(|scope| -> Result<(), PartError> {
-            let handles = paths
-                .chunks(chunk_size)
-                .map(|chunk| {
-                    scope.spawn(move || chunk.iter().map(inspect_part).collect::<Vec<_>>())
+            let handles = (0..workers)
+                .map(|_| {
+                    let cursor = &cursor;
+                    scope.spawn(move || {
+                        let mut completed = Vec::new();
+                        loop {
+                            let index = cursor.fetch_add(1, Ordering::Relaxed);
+                            if index >= paths.len() {
+                                break;
+                            }
+                            completed.push((index, inspect_part(&paths[index])));
+                        }
+                        completed
+                    })
                 })
                 .collect::<Vec<_>>();
             for handle in handles {
-                let chunk = handle.join().map_err(|_| {
+                let completed = handle.join().map_err(|_| {
                     PartError::InvalidScan("snapshot metadata worker panicked".into())
                 })?;
-                for result in chunk {
-                    metadata.push(result?);
+                for (index, item) in completed {
+                    slots[index] = Some(item);
                 }
             }
             Ok(())
         })?;
+        for slot in slots {
+            metadata.push(slot.expect("every claimed part has one result")?);
+        }
     } else {
         for part in paths {
             metadata.push(inspect_part(part)?);
@@ -230,13 +249,57 @@ pub(crate) fn inspect_parts_metadata(
     })
 }
 
+/// Reuse one bounded worker across thousands of immutable numeric parts.
+/// A single in-flight open avoids thread creation per part without retaining
+/// data batches or opening the whole table at once.
+struct NumericPartPrefetchWorker {
+    requests: Option<std::sync::mpsc::SyncSender<PathBuf>>,
+    responses: std::sync::mpsc::Receiver<Result<NumericPartReader, PartError>>,
+    thread: Option<std::thread::JoinHandle<()>>,
+}
+
+impl NumericPartPrefetchWorker {
+    fn new(columns: std::sync::Arc<[String]>) -> Self {
+        let (requests, jobs) = std::sync::mpsc::sync_channel::<PathBuf>(1);
+        let (answers, responses) =
+            std::sync::mpsc::sync_channel::<Result<NumericPartReader, PartError>>(1);
+        let thread = std::thread::spawn(move || {
+            while let Ok(path) = jobs.recv() {
+                if answers.send(NumericPartReader::open(&path, &columns)).is_err() {
+                    break;
+                }
+            }
+        });
+        Self {
+            requests: Some(requests),
+            responses,
+            thread: Some(thread),
+        }
+    }
+}
+
+impl Drop for NumericPartPrefetchWorker {
+    fn drop(&mut self) {
+        // Disconnect requests first so a worker waiting for more jobs exits.
+        self.requests.take();
+        if let Some(thread) = self.thread.take() {
+            let _ = thread.join();
+        }
+    }
+}
+
 /// Keep only one part's streams open at once; the executor sees a single
 /// continuous sequence, so GROUP BY, ORDER BY, DISTINCT and LIMIT are global.
 pub struct NumericQueryReader {
     parts: Vec<PathBuf>,
-    columns: Vec<String>,
+    columns: std::sync::Arc<[String]>,
     next_part: usize,
     current: Option<NumericPartReader>,
+    // One prefetched part open, never prefetched decoded data batches.
+    prefetched: bool,
+    worker: Option<NumericPartPrefetchWorker>,
+    #[cfg(test)]
+    prefetch_worker_starts: usize,
 }
 
 impl NumericQueryReader {
@@ -274,10 +337,58 @@ impl NumericQueryReader {
         }
         Ok(Self {
             parts,
-            columns: columns.to_owned(),
+            columns: std::sync::Arc::from(columns.to_owned()),
             next_part: 0,
             current: None,
+            prefetched: false,
+            worker: None,
+            #[cfg(test)]
+            prefetch_worker_starts: 0,
         })
+    }
+
+    /// Keep exactly one future part open in the worker's bounded queue.
+    fn prefetch_next(&mut self) {
+        if self.prefetched || self.next_part >= self.parts.len() {
+            return;
+        }
+        if self.worker.is_none() {
+            self.worker = Some(NumericPartPrefetchWorker::new(self.columns.clone()));
+            #[cfg(test)]
+            { self.prefetch_worker_starts += 1; }
+        }
+        let path = self.parts[self.next_part].clone();
+        let queued = self.worker.as_ref()
+            .and_then(|worker| worker.requests.as_ref())
+            .is_some_and(|queue| queue.send(path).is_ok());
+        if queued {
+            self.next_part += 1;
+            self.prefetched = true;
+        } else {
+            self.worker.take();
+        }
+    }
+
+    fn advance_part(&mut self) -> Result<bool, PartError> {
+        let reader = if self.prefetched {
+            self.prefetched = false;
+            self.worker.as_ref().ok_or_else(|| {
+                PartError::InvalidScan("missing numeric part prefetch worker".into())
+            })?.responses.recv().map_err(|_| {
+                PartError::InvalidScan("numeric snapshot part opener stopped".into())
+            })??
+        } else if self.next_part < self.parts.len() {
+            let reader = NumericPartReader::open(
+                &self.parts[self.next_part], &self.columns,
+            )?;
+            self.next_part += 1;
+            reader
+        } else {
+            return Ok(false);
+        };
+        self.current = Some(reader);
+        self.prefetch_next();
+        Ok(true)
     }
 
     /// Skip as much of an unfiltered OFFSET as possible using part/mark
@@ -292,8 +403,19 @@ impl NumericQueryReader {
         }
         let mut skipped = 0usize;
         while skipped < max_rows && self.next_part < self.parts.len() {
-            // Opening validates stream layout and marks before we skip them.
-            let mut reader = NumericPartReader::open(&self.parts[self.next_part], &self.columns)?;
+            // Immutable part row counts are validated by the snapshot planner.
+            // Skipping a complete part never needs to open its wide streams or
+            // decode thousands of mark entries.
+            let part = &self.parts[self.next_part];
+            let metadata = inspect_part(part)?;
+            if let Ok(rows) = usize::try_from(metadata.rows) {
+                if rows <= max_rows - skipped {
+                    skipped += rows;
+                    self.next_part += 1;
+                    continue;
+                }
+            }
+            let mut reader = NumericPartReader::open(part, &self.columns)?;
             self.next_part += 1;
             let amount = reader.skip_complete_marks(max_rows - skipped);
             skipped += amount;
@@ -306,6 +428,10 @@ impl NumericQueryReader {
     }
 
     pub fn next_batch(&mut self) -> Result<Option<Vec<NumericColumn>>, PartError> {
+        // OFFSET may have already installed a partially skipped part.
+        if self.current.is_some() {
+            self.prefetch_next();
+        }
         loop {
             if let Some(current) = self.current.as_mut() {
                 if let Some(batch) = current.next_batch()? {
@@ -313,15 +439,17 @@ impl NumericQueryReader {
                 }
                 self.current = None;
             }
-            if self.next_part == self.parts.len() {
+            if !self.advance_part()? {
                 return Ok(None);
             }
-            self.current = Some(NumericPartReader::open(
-                &self.parts[self.next_part],
-                &self.columns,
-            )?);
-            self.next_part += 1;
         }
+    }
+}
+
+impl Drop for NumericQueryReader {
+    fn drop(&mut self) {
+        // Wait for any active open, including when LIMIT exits early.
+        self.worker.take();
     }
 }
 
@@ -382,6 +510,48 @@ mod tests {
     }
 
     #[test]
+    fn prefetches_numeric_part_open_without_reordering_batches_or_offset() {
+        use crate::write_wide_part;
+        let root = std::env::temp_dir().join(format!(
+            "rusthouse-numeric-part-prefetch-{}", std::process::id()
+        ));
+        let _ = fs::remove_dir_all(&root);
+        fs::create_dir_all(&root).unwrap();
+        let columns = vec![Column { name: "id".into(), data_type: "UInt64".into() }];
+        for index in 0..24u64 {
+            write_wide_part(
+                &root.join(format!("all_{index}_{index}_0")),
+                &columns,
+                &[vec![Some(index.to_string())]],
+            ).unwrap();
+        }
+        let mut scan = NumericQueryReader::open(&root, &["id".to_owned()]).unwrap();
+        let mut seen = Vec::new();
+        while let Some(batch) = scan.next_batch().unwrap() {
+            if let NumericColumn::UInt64(values) = &batch[0] {
+                seen.extend_from_slice(values);
+            } else {
+                panic!("expected UInt64 batch");
+            }
+        }
+        assert_eq!(seen, (0..24u64).collect::<Vec<_>>());
+        assert_eq!(scan.prefetch_worker_starts, 1);
+        drop(scan);
+
+        let mut paged = NumericQueryReader::open(&root, &["id".to_owned()]).unwrap();
+        assert_eq!(paged.skip_prefix_rows(18).unwrap(), 18);
+        let mut rest = Vec::new();
+        while let Some(batch) = paged.next_batch().unwrap() {
+            if let NumericColumn::UInt64(values) = &batch[0] {
+                rest.extend_from_slice(values);
+            }
+        }
+        assert_eq!(rest, (18..24u64).collect::<Vec<_>>());
+        drop(paged);
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
     fn inspects_many_immutable_parts_and_rejects_one_incompatible_schema() {
         use crate::write_wide_part;
         use std::sync::atomic::{AtomicUsize, Ordering};
@@ -411,6 +581,12 @@ mod tests {
             inspected += batch[0].len();
         }
         assert_eq!(inspected, 40);
+        let mut paged =
+            NumericQueryReader::open_with_metadata(&root, &["id".into()], &metadata).unwrap();
+        assert_eq!(paged.skip_prefix_rows(39).unwrap(), 39);
+        let tail = paged.next_batch().unwrap().unwrap();
+        assert!(matches!(&tail[0], NumericColumn::UInt64(values) if values == &[40]));
+        assert!(paged.next_batch().unwrap().is_none());
         assert!(matches!(
             NumericQueryReader::open_with_metadata(
                 &root.join("other-snapshot"),

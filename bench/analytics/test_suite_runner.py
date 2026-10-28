@@ -5,7 +5,8 @@ import unittest
 from pathlib import Path
 
 from bench.analytics.suite_runner import (
-    benchmark_one, fact_row, load_workload, make_fixture, run_suite, sqlite_reference,
+    benchmark_one, fact_row, load_workload, make_fixture, run_suite,
+    sqlite_reference, sqlite_typed_reference,
 )
 
 WORKLOADS = Path(__file__).resolve().parent / "workloads"
@@ -47,9 +48,45 @@ class AnalyticsSuiteTests(unittest.TestCase):
                 for path in paths:
                     with self.subTest(workload=path.name):
                         for case in load_workload(path)["queries"]:
-                            self.assertTrue(sqlite_reference(oracle, case["sql"]))
+                            reference = (
+                                sqlite_typed_reference(oracle, case["sql"])
+                                if case.get("oracle", "exact") == "typed"
+                                else sqlite_reference(oracle, case["sql"])
+                            )
+                            self.assertTrue(reference or case.get("oracle") == "typed")
             finally:
                 oracle.close()
+
+    def test_typed_oracle_supports_floats_nulls_and_exact_integers(self):
+        with tempfile.TemporaryDirectory() as folder:
+            _, oracle = make_fixture(folder, 17)
+            expected = sqlite_typed_reference(
+                oracle, "SELECT AVG(amount), MIN(amount) FROM events WHERE status = 'missing'"
+            )
+            self.assertEqual(expected, [(None, None)])
+            oracle.close()
+        case = {"name": "typed", "sql": "SELECT AVG(amount)", "oracle": "typed"}
+        self.assertEqual(benchmark_one(1, case, [(2.0,)], lambda _: b"2.000000000000001\\n", 1, 0)["status"], "passed")
+        self.assertEqual(benchmark_one(1, case, [(None,)], lambda _: b"NULL\\n", 1, 0)["status"], "passed")
+        self.assertEqual(benchmark_one(1, case, [(9007199254740993,)],
+                                       lambda _: b"9007199254740992\\n", 1, 0)["status"], "mismatch")
+        unordered = {"name": "unordered", "sql": "SELECT user_id", "oracle": "typed", "unordered": True}
+        self.assertEqual(benchmark_one(1, unordered, [(1,), (2,)],
+                                       lambda _: b"2\\n1\\n", 1, 0)["status"], "passed")
+        self.assertEqual(benchmark_one(1, unordered, [(1,), (2,)],
+                                       lambda _: b"2\\n2\\n", 1, 0)["status"], "mismatch")
+
+    def test_oracle_configuration_is_validated(self):
+        with tempfile.TemporaryDirectory() as folder:
+            path = Path(folder) / "cases.json"
+            for case in (
+                {"name": "q", "sql": "SELECT 1", "oracle": "invalid"},
+                {"name": "q", "sql": "SELECT 1", "unordered": True},
+                {"name": "q", "sql": "SELECT 1", "oracle": "typed", "unordered": "true"},
+            ):
+                path.write_text(json.dumps({"name": "suite", "queries": [case]}))
+                with self.assertRaises(ValueError):
+                    load_workload(path)
 
     def test_bad_output_and_error_have_no_partial_latency(self):
         case = {"name": "q", "sql": "SELECT COUNT(*) FROM events"}

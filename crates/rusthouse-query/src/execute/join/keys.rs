@@ -68,41 +68,67 @@ pub(super) fn row_key_into(
     true
 }
 
+// Replace scalar keys in place. More importantly, preserve the capacity of
+// already decoded String probe keys across rows of the same JOIN batch.
+fn put_key(result: &mut Vec<typed::Key>, position: usize, key: typed::Key) {
+    if position < result.len() {
+        result[position] = key;
+    } else {
+        result.push(key);
+    }
+}
+
+fn put_text_key(result: &mut Vec<typed::Key>, position: usize, bytes: &[u8]) {
+    if let Some(typed::Key::Text(existing)) = result.get_mut(position) {
+        existing.clear();
+        existing.extend_from_slice(bytes);
+    } else {
+        put_key(result, position, typed::Key::Text(bytes.to_vec()));
+    }
+}
+
 pub(super) fn batch_key_into(
     batch: &[TypedColumn],
     row: usize,
     indices: &[usize],
     result: &mut Vec<typed::Key>,
 ) -> bool {
-    result.clear();
-    // A later NULL must not force us to clone an earlier String/UUID key.
-    if indices.len() > 1
-        && indices
-            .iter()
-            .any(|&index| typed::is_null_at(&batch[index], row))
+    // Reject all NULL components before changing existing buffers.
+    if indices
+        .iter()
+        .any(|&index| typed::is_null_at(&batch[index], row))
     {
+        result.clear();
         return false;
     }
-    // The same vector is reused across batches and rows.
-    result.reserve(indices.len());
-    for &index in indices {
-        // UUID probe keys are already stored as canonical bytes. Avoid
-        // allocating a 36-byte display String for each probed row.
-        let key = if let TypedColumn::Uuid(values) = &batch[index] {
-            typed::Key::UuidBytes(*values[row].as_bytes())
-        } else {
-            let value = typed::cell(&batch[index], row);
-            if !key_eligible(&value) {
-                result.clear();
-                return false;
+    result.reserve(indices.len().saturating_sub(result.len()));
+    for (position, &index) in indices.iter().enumerate() {
+        match &batch[index] {
+            TypedColumn::Uuid(values) => {
+                put_key(result, position, typed::Key::UuidBytes(*values[row].as_bytes()));
             }
-            match value {
-                typed::Cell::Text(bytes) => typed::Key::Text(bytes),
-                _ => value.key(),
+            TypedColumn::Text(values) | TypedColumn::NullableText { values, .. } => {
+                put_text_key(
+                    result,
+                    position,
+                    values.get(row).expect("validated typed string row"),
+                );
             }
-        };
-        result.push(key);
+            TypedColumn::Numeric(values) | TypedColumn::NullableNumeric { values, .. } => {
+                let value = super::super::number_at(values, row);
+                if matches!(value, Number::Float(number) if number.is_nan()) {
+                    result.clear();
+                    return false;
+                }
+                put_key(
+                    result,
+                    position,
+                    typed::Key::Numeric(super::super::NumberKey::from(value)),
+                );
+            }
+        }
     }
+    result.truncate(indices.len());
     true
 }
 
@@ -164,6 +190,30 @@ mod tests {
     }
 
     #[test]
+    fn repeated_text_probes_reuse_the_same_allocation() {
+        let mut stream = b"\x04same\x04same\x04diff".as_slice();
+        let strings = read_legacy_strings(&mut stream, 3).unwrap();
+        let batch = vec![TypedColumn::Text(strings)];
+        let mut key = Vec::new();
+        assert!(batch_key_into(&batch, 0, &[0], &mut key));
+        let (address, capacity) = match &key[0] {
+            typed::Key::Text(bytes) => (bytes.as_ptr(), bytes.capacity()),
+            _ => panic!("expected text key"),
+        };
+        for index in 1..3 {
+            assert!(batch_key_into(&batch, index, &[0], &mut key));
+            match &key[0] {
+                typed::Key::Text(bytes) => {
+                    assert_eq!(bytes.as_ptr(), address);
+                    assert_eq!(bytes.capacity(), capacity);
+                }
+                _ => panic!("expected text key"),
+            }
+        }
+        assert!(matches!(&key[0], typed::Key::Text(bytes) if bytes == b"diff"));
+    }
+
+    #[test]
     fn probe_key_moves_text_and_rejects_nullable_text() {
         let mut stream = b"\x03abc\x03def".as_slice();
         let values = read_legacy_strings(&mut stream, 2).unwrap();
@@ -203,5 +253,31 @@ mod uuid_join_key_tests {
         assert!(build != reusable);
         assert!(row_key_into(&rows[1..], &[0], &mut reusable));
         assert!(reusable == row_key(&rows[1..], &[0]).unwrap());
+    }
+}
+
+#[cfg(test)]
+mod direct_numeric_join_probe_tests {
+    use super::*;
+    use rusthouse_storage::NumericColumn;
+
+    #[test]
+    fn native_probe_keys_match_materialized_build_keys() {
+        let batch = [
+            TypedColumn::Numeric(NumericColumn::Int64(vec![-12, 9])),
+            TypedColumn::NullableNumeric {
+                values: NumericColumn::UInt64(vec![7, 8]),
+                nulls: vec![0, 1],
+            },
+        ];
+        let mut key = Vec::new();
+        assert!(batch_key_into(&batch, 0, &[0, 1], &mut key));
+        let row = [typed::Cell::Numeric(Number::Signed(-12)),
+                   typed::Cell::Numeric(Number::Unsigned(7))];
+        assert_eq!(key, row_key(&row, &[0, 1]).unwrap());
+        assert!(!batch_key_into(&batch, 1, &[0, 1], &mut key));
+        assert!(key.is_empty());
+        let nan = [TypedColumn::Numeric(NumericColumn::Float64(vec![f64::NAN]))];
+        assert!(!batch_key_into(&nan, 0, &[0], &mut key));
     }
 }
