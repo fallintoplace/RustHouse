@@ -14,7 +14,7 @@ use std::ffi::OsString;
 use std::path::PathBuf;
 
 const MAX_SQL_BYTES: usize = 64 * 1024;
-const MAX_SCRIPT_BYTES: usize = 256 * 1024;
+const MAX_SCRIPT_BYTES: usize = 1024 * 1024;
 const MAX_SCRIPT_STATEMENTS: usize = 512;
 
 #[derive(Clone, Copy)]
