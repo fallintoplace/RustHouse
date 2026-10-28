@@ -86,8 +86,12 @@ pub(super) fn split_sql_script(input: &str) -> Result<Vec<String>, String> {
             continue;
         }
         if !quoted && bytes[index] == b';' {
-            current.push_str(&input[segment..index]);
-            let statement = current.trim();
+            let statement = if current.is_empty() {
+                input[segment..index].trim()
+            } else {
+                current.push_str(&input[segment..index]);
+                current.trim()
+            };
             if !statement.is_empty() {
                 if statement.len() > MAX_SQL_BYTES {
                     return Err(format!(
@@ -111,8 +115,12 @@ pub(super) fn split_sql_script(input: &str) -> Result<Vec<String>, String> {
     if quoted {
         return Err("unterminated SQL string in script".into());
     }
-    current.push_str(&input[segment..]);
-    let statement = current.trim();
+    let statement = if current.is_empty() {
+        input[segment..].trim()
+    } else {
+        current.push_str(&input[segment..]);
+        current.trim()
+    };
     if !statement.is_empty() {
         if statement.len() > MAX_SQL_BYTES {
             return Err(format!(
@@ -152,6 +160,14 @@ pub(super) fn read_script(path: &std::path::Path) -> Result<Vec<String>, String>
 #[cfg(test)]
 mod block_comment_tests {
     use super::split_sql_script;
+
+    #[test]
+    fn plain_statements_and_semicolons_in_quotes_keep_their_values() {
+        assert_eq!(
+            split_sql_script(" SELECT 1; SELECT 'a;b'; SELECT 3 ").unwrap(),
+            vec!["SELECT 1", "SELECT 'a;b'", "SELECT 3"]
+        );
+    }
 
     #[test]
     fn ignores_comment_delimiters_inside_sql_scripts() {
