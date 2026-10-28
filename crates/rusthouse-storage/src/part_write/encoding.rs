@@ -127,10 +127,13 @@ fn read_map_hex(input: &[u8], position: &mut usize) -> Result<u16, PartError> {
         let byte = *input
             .get(*position)
             .ok_or_else(|| invalid("incomplete Map Unicode escape"))?;
-        let digit = (byte as char)
-            .to_digit(16)
-            .ok_or_else(|| invalid("invalid Map Unicode escape"))?;
-        number = number * 16 + digit as u16;
+        let digit = match byte {
+            b'0'..=b'9' => u16::from(byte - b'0'),
+            b'a'..=b'f' => u16::from(byte - b'a' + 10),
+            b'A'..=b'F' => u16::from(byte - b'A' + 10),
+            _ => return Err(invalid("invalid Map Unicode escape")),
+        };
+        number = (number << 4) | digit;
         *position += 1;
     }
     Ok(number)
