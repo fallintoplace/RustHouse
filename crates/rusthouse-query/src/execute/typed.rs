@@ -837,9 +837,10 @@ pub(super) fn execute_typed<W: Write>(
             .and_then(|count| count.checked_add(offset))
             .filter(|count| *count <= MAX_BUFFERED_ROWS)
     };
+    let no_filters = query.predicates.is_empty() && query.or_predicates.is_empty();
     while let Some(batch) = scan.next_batch()? {
         for index in 0..batch[0].len() {
-            if !passes(&batch, index, &conditions) {
+            if !no_filters && !passes(&batch, index, &conditions) {
                 continue;
             }
             if is_count || is_count_column {
