@@ -3,7 +3,7 @@ use std::fmt;
 use std::io::{self, Read};
 
 const MAX_BATCH_BYTES: usize = 64 * 1024 * 1024;
-const READ_BUFFER_BYTES: usize = 16 * 1024;
+const READ_BUFFER_BYTES: usize = 64 * 1024;
 
 #[derive(Debug, PartialEq)]
 pub enum NumericColumn {
@@ -430,6 +430,34 @@ mod tests {
         assert!(column.is_empty());
         assert_eq!(column.len(), 0);
     }
+    #[test]
+    fn reads_wide_numeric_values_in_one_64k_batch() {
+        struct Counting<'a> {
+            inner: &'a [u8],
+            reads: usize,
+        }
+        impl Read for Counting<'_> {
+            fn read(&mut self, out: &mut [u8]) -> io::Result<usize> {
+                self.reads += 1;
+                self.inner.read(out)
+            }
+        }
+        let values = vec![1234u16; 32_768];
+        let bytes = values
+            .iter()
+            .flat_map(|value| value.to_le_bytes())
+            .collect::<Vec<_>>();
+        let mut reader = Counting {
+            inner: &bytes,
+            reads: 0,
+        };
+        assert_eq!(
+            read_numeric_column(&mut reader, "UInt16", values.len()).unwrap(),
+            NumericColumn::UInt16(values)
+        );
+        assert_eq!(reader.reads, 1);
+    }
+
     #[test]
     fn reads_large_u8_columns_directly_with_one_bulk_read() {
         struct CountingReader<R> {
