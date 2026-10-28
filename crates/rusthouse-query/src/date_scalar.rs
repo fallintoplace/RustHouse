@@ -28,6 +28,7 @@ pub(super) fn is_function(name: &str) -> bool {
             | "TOSTARTOFTENMINUTES"
             | "TOSTARTOFFIFTEENMINUTES"
             | "TOUNIXTIMESTAMP"
+            | "TOSTARTOFWEEK"
     )
 }
 
@@ -56,6 +57,7 @@ pub(super) fn parse_after_open(
         "TOSTARTOFTENMINUTES" => bucket_minutes(parser, depth, 10),
         "TOSTARTOFFIFTEENMINUTES" => bucket_minutes(parser, depth, 15),
         "TOUNIXTIMESTAMP" => unix_timestamp(parser, depth),
+        "TOSTARTOFWEEK" => start_of_week(parser, depth),
         _ => Err(ParseError(format!("unsupported date function: {name}"))),
     }
 }
@@ -290,4 +292,34 @@ fn unix_timestamp(parser: &mut Parser, depth: usize) -> Result<ConstantValue, Pa
         return Err(ParseError("toUnixTimestamp result is outside UInt32".into()));
     }
     Ok(ConstantValue::Integer(value.seconds))
+}
+
+fn start_of_week(parser: &mut Parser, depth: usize) -> Result<ConstantValue, ParseError> {
+    let input = super::text_scalar::text_arg(parser, depth + 1)?;
+    let mode = if parser.take(Token::Comma) {
+        super::text_scalar::integer_arg(parser, depth + 1)?
+    } else {
+        Some(0)
+    };
+    if !parser.take(Token::RParen) {
+        return Err(ParseError("toStartOfWeek accepts a date and optional mode".into()));
+    }
+    let (Some(source), Some(mode)) = (input, mode) else {
+        return Ok(ConstantValue::Null);
+    };
+    if !matches!(mode, 0 | 1) {
+        return Err(ParseError("only week modes 0 (Sunday) and 1 (Monday) are supported".into()));
+    }
+    let value = Temporal::parse(&source)?;
+    let days = value.seconds.div_euclid(DAY_SECONDS);
+    let sunday_zero = (days + 4).rem_euclid(7);
+    let offset = if mode == 0 {
+        sunday_zero
+    } else {
+        (sunday_zero + 6) % 7
+    };
+    Ok(ConstantValue::Text(Temporal::render(
+        (days - offset) * DAY_SECONDS,
+        false,
+    )?))
 }
