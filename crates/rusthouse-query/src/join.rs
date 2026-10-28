@@ -243,7 +243,7 @@ pub fn parse_join(sql: &str) -> Result<Option<JoinSelect>, ParseError> {
             || (any && !matches!(kind, JoinType::Inner | JoinType::Left | JoinType::Right))
         {
             return Err(ParseError(
-                "chained ANY JOIN supports only INNER and LEFT joins".into(),
+                "chained ANY JOIN supports only INNER, LEFT and RIGHT joins".into(),
             ));
         }
         let (step_keys, step_using) = if parser.keyword("USING") {
