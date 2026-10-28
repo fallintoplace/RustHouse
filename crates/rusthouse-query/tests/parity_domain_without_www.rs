@@ -19,14 +19,8 @@ fn clickhouse_compatibility_cases() {
             "SELECT domainWithoutWWW('http://www.www.example.com/')",
             ConstantValue::Text("www.example.com".into()),
         ),
-        (
-            "SELECT domainWithoutWWW('example.org')",
-            ConstantValue::Text("example.org".into()),
-        ),
-        (
-            "SELECT domainWithoutWWW(NULL)",
-            ConstantValue::Null,
-        ),
+        ("SELECT domainWithoutWWW('example.org')", ConstantValue::Text("example.org".into())),
+        ("SELECT domainWithoutWWW(NULL)", ConstantValue::Null),
     ] {
         assert_eq!(value(sql), expected, "{sql}");
     }
