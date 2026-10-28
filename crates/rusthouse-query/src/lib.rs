@@ -16,12 +16,12 @@ mod update;
 pub use copy::{CopyFormat, CopyFrom, parse_copy_from};
 pub use ddl::{ColumnDef, Ddl, parse_ddl};
 pub use delete::parse_delete;
-pub use execute::{ExecutionError, RowPredicate, execute, execute_join};
+pub use execute::{ExecutionError, RowPredicate, execute, execute_join, execute_multi_join};
 pub use explain::explain_select;
 pub use expression::{ScalarExpr, parse_scalar_expression};
 pub use insert::{Insert, parse_insert};
 pub use insert_select::{InsertSelect, parse_insert_select};
-pub use join::{JoinColumn, JoinSelect, JoinType, explain_join, parse_join};
+pub use join::{JoinColumn, JoinSelect, JoinStep, JoinType, explain_join, parse_join};
 pub use multi_aggregate::AggregateItem;
 pub use update::{Update, parse_update};
 
@@ -195,6 +195,12 @@ pub enum Predicate {
         column: String,
         negated: bool,
     },
+    /// SQL NULL-safe equality / inequality against a non-NULL literal.
+    DistinctFrom {
+        column: String,
+        value: String,
+        negated: bool,
+    },
     Like {
         column: String,
         pattern: String,
@@ -211,6 +217,7 @@ impl Predicate {
             | Self::NotIn { column, .. }
             | Self::NotBetween { column, .. }
             | Self::IsNull { column, .. }
+            | Self::DistinctFrom { column, .. }
             | Self::Like { column, .. } => column,
         }
     }
@@ -337,6 +344,14 @@ impl Parser {
         }
     }
 
+    fn bounded_word(&mut self) -> Result<String, ParseError> {
+        let name = self.word()?;
+        if name.len() > 128 {
+            return Err(ParseError("identifiers cannot exceed 128 bytes".into()));
+        }
+        Ok(name)
+    }
+
     fn literal(&mut self) -> Result<String, ParseError> {
         // Typed dates and timestamps use the same storage format as quoted
         // literals. Support the DATE + INTERVAL 'N' YEAR form used by TPC-H Q6.
@@ -453,11 +468,6 @@ impl Parser {
                     2 => "count".into(),
                     _ => return Err(ParseError("ORDER BY position is out of range".into())),
                 },
-                Projection::GroupedMultiAggregates { columns, .. } => position
-                    .checked_sub(1)
-                    .and_then(|index| columns.get(index))
-                    .cloned()
-                    .ok_or_else(|| ParseError("ORDER BY position is out of range".into()))?,
                 Projection::GroupedMultiCount { columns } => {
                     if position == columns.len() + 1 {
                         "count".into()
@@ -469,6 +479,11 @@ impl Parser {
                             .ok_or_else(|| ParseError("ORDER BY position is out of range".into()))?
                     }
                 }
+                Projection::GroupedMultiAggregates { columns, .. } => position
+                    .checked_sub(1)
+                    .and_then(|index| columns.get(index))
+                    .cloned()
+                    .ok_or_else(|| ParseError("ORDER BY position is out of range".into()))?,
                 Projection::GroupedAggregate { column, .. }
                 | Projection::GroupedAggregates { column, .. } => match position {
                     1 => column.clone(),
@@ -772,7 +787,7 @@ fn parse_select_tokens(tokens: Vec<Token>) -> Result<Select, ParseError> {
                         }
                         items.push((function, value_column));
                     }
-                    if items.len() == 1 {
+                    if items.len() == 1 && columns.len() == 1 {
                         grouped_aggregate = items.pop();
                     } else {
                         grouped_aggregates = Some(items);
@@ -799,31 +814,21 @@ fn parse_select_tokens(tokens: Vec<Token>) -> Result<Select, ParseError> {
                 value_column,
             }
         } else if let Some((function, value_column)) = grouped_aggregate {
-            if columns.len() > 8 {
-                return Err(ParseError("GROUP BY supports at most 8 keys".into()));
-            }
-            if columns.len() == 1 {
-                Projection::GroupedAggregate {
-                    column: columns.remove(0),
-                    function,
-                    value_column,
-                }
-            } else {
-                Projection::GroupedMultiAggregates {
-                    columns,
-                    items: vec![(function, value_column)],
-                }
+            Projection::GroupedAggregate {
+                column: columns.remove(0),
+                function,
+                value_column,
             }
         } else if let Some(items) = grouped_aggregates {
-            if columns.len() > 8 {
-                return Err(ParseError("GROUP BY supports at most 8 keys".into()));
-            }
             if columns.len() == 1 {
                 Projection::GroupedAggregates {
                     column: columns.remove(0),
                     items,
                 }
             } else {
+                if columns.len() > 8 {
+                    return Err(ParseError("GROUP BY supports at most 8 keys".into()));
+                }
                 Projection::GroupedMultiAggregates { columns, items }
             }
         } else {
@@ -1025,13 +1030,26 @@ fn parse_select_tokens(tokens: Vec<Token>) -> Result<Select, ParseError> {
                     return Err(ParseError("unexpected NOT before IS".into()));
                 }
                 let negated = parser.keyword("NOT") ^ prefix_not;
-                if !parser.keyword("NULL") {
-                    return Err(ParseError("expected NULL after IS".into()));
-                }
-                branches
-                    .last_mut()
-                    .unwrap()
-                    .push(Predicate::IsNull { column, negated });
+                let predicate = if parser.keyword("DISTINCT") {
+                    if !parser.keyword("FROM") {
+                        return Err(ParseError("IS DISTINCT requires FROM".into()));
+                    }
+                    if parser.keyword("NULL") {
+                        // x IS DISTINCT FROM NULL is x IS NOT NULL.
+                        Predicate::IsNull { column, negated: !negated }
+                    } else {
+                        Predicate::DistinctFrom {
+                            column,
+                            value: parser.literal()?,
+                            negated,
+                        }
+                    }
+                } else if parser.keyword("NULL") {
+                    Predicate::IsNull { column, negated }
+                } else {
+                    return Err(ParseError("expected NULL or DISTINCT FROM after IS".into()));
+                };
+                branches.last_mut().unwrap().push(predicate);
                 total_conditions += 1;
             } else if let Some(case_insensitive) = parser.like_keyword() {
                 let pattern = match parser.tokens.get(parser.index) {
@@ -1184,9 +1202,11 @@ fn parse_select_tokens(tokens: Vec<Token>) -> Result<Select, ParseError> {
                 {
                     column.clone()
                 }
-                Projection::GroupedMultiAggregates { columns, .. } if position == 1 => {
-                    columns[0].clone()
-                }
+                Projection::GroupedMultiAggregates { columns, .. } => position
+                    .checked_sub(1)
+                    .and_then(|index| columns.get(index))
+                    .cloned()
+                    .ok_or_else(|| ParseError("GROUP BY position is out of range".into()))?,
                 _ => return Err(ParseError("GROUP BY position is out of range".into())),
             }
         } else {
@@ -1201,7 +1221,8 @@ fn parse_select_tokens(tokens: Vec<Token>) -> Result<Select, ParseError> {
         }
         match &projection {
             Projection::GroupedMultiCount { columns } if columns == &group_columns => {}
-            Projection::GroupedMultiAggregates { columns, .. } if columns == &group_columns => {}
+            Projection::GroupedMultiAggregates { columns, .. }
+                if columns == &group_columns => {}
             Projection::GroupedCount { column }
             | Projection::GroupedDistinctCount { column, .. }
             | Projection::GroupedAggregate { column, .. }
@@ -1234,32 +1255,69 @@ fn parse_select_tokens(tokens: Vec<Token>) -> Result<Select, ParseError> {
     }
 
     let having = if parser.keyword("HAVING") {
-        if !matches!(
+        if matches!(
             projection,
             Projection::GroupedCount { .. } | Projection::GroupedMultiCount { .. }
         ) {
-            return Err(ParseError("HAVING requires GROUP BY with COUNT(*)".into()));
-        }
-        let using_alias = alias.as_ref().is_some_and(|value| {
-            matches!(parser.tokens.get(parser.index), Some(Token::Word(word)) if word == value)
-        });
-        if using_alias {
-            parser.index += 1;
-        } else {
-            if !parser.keyword("COUNT") || !parser.take(Token::LParen) {
-                return Err(ParseError("HAVING requires COUNT(*)".into()));
+            let using_alias = alias.as_ref().is_some_and(|value| {
+                matches!(parser.tokens.get(parser.index), Some(Token::Word(word)) if word == value)
+            });
+            if using_alias {
+                parser.index += 1;
+            } else {
+                if !parser.keyword("COUNT") || !parser.take(Token::LParen) {
+                    return Err(ParseError("HAVING requires COUNT(*)".into()));
+                }
+                if !parser.take(Token::RParen)
+                    && !(parser.take(Token::Star) && parser.take(Token::RParen))
+                {
+                    return Err(ParseError("HAVING requires COUNT() or COUNT(*)".into()));
+                }
             }
-            if !parser.take(Token::RParen)
-                && !(parser.take(Token::Star) && parser.take(Token::RParen))
+        } else if let Projection::GroupedAggregate {
+            function,
+            value_column,
+            ..
+        } = &projection
+        {
+            if !matches!(
+                function,
+                AggregateFunction::Sum
+                    | AggregateFunction::Min
+                    | AggregateFunction::Max
+                    | AggregateFunction::Avg
+            ) {
+                return Err(ParseError("HAVING does not support this aggregate".into()));
+            }
+            let name = parser.word()?;
+            if !name.eq_ignore_ascii_case(function.name())
+                || !parser.take(Token::LParen)
+                || parser.word()? != *value_column
+                || !parser.take(Token::RParen)
             {
-                return Err(ParseError("HAVING requires COUNT() or COUNT(*)".into()));
+                return Err(ParseError(
+                    "HAVING must match the selected aggregate".into(),
+                ));
             }
+        } else if let Projection::GroupedDistinctCount { value_column, .. } = &projection {
+            if !parser.keyword("COUNT")
+                || !parser.take(Token::LParen)
+                || !parser.keyword("DISTINCT")
+                || parser.word()? != *value_column
+                || !parser.take(Token::RParen)
+            {
+                return Err(ParseError(
+                    "HAVING must match the selected COUNT(DISTINCT column)".into(),
+                ));
+            }
+        } else {
+            return Err(ParseError("HAVING requires a grouped aggregate".into()));
         }
         let operator = parser.operator()?;
         let value = parser
             .number()?
             .parse::<u64>()
-            .map_err(|_| ParseError("HAVING count must be a UInt64".into()))?;
+            .map_err(|_| ParseError("HAVING threshold must be a UInt64".into()))?;
         Some(Having { operator, value })
     } else {
         None
@@ -1431,10 +1489,6 @@ fn parse_select_tokens(tokens: Vec<Token>) -> Result<Select, ParseError> {
         }
         limit = Some(count);
     }
-    if offset.is_some() && limit.is_none() {
-        return Err(ParseError("OFFSET requires LIMIT or FETCH".into()));
-    }
-
     parser.take(Token::Semicolon);
     if parser.index != parser.tokens.len() {
         return Err(ParseError(

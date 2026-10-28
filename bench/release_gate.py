@@ -30,6 +30,18 @@ def parse_query_ids(spec):
     return ids
 
 
+def validate_samples(samples, runs, number):
+    if not isinstance(samples, list) or len(samples) != runs:
+        raise ValueError(f"query {number} has incomplete timing samples")
+    if any(
+        type(value) not in (int, float)
+        or not math.isfinite(value)
+        or value < 0
+        for value in samples
+    ):
+        raise ValueError(f"query {number} has invalid timing samples")
+
+
 def verify(report, required):
     if not isinstance(report, dict) or report.get("reference_checked") is not True:
         raise ValueError("benchmark report must confirm reference comparisons")
@@ -52,15 +64,7 @@ def verify(report, required):
         if row.get("status") != "passed":
             raise ValueError(f"query {number} was not reference-verified: {row.get('status')}")
         samples = row.get("timings_seconds", row.get("seconds"))
-        if not isinstance(samples, list) or len(samples) != runs:
-            raise ValueError(f"query {number} has incomplete timing samples")
-        if any(
-            type(value) not in (int, float)
-            or not math.isfinite(value)
-            or value < 0
-            for value in samples
-        ):
-            raise ValueError(f"query {number} has invalid timing samples")
+        validate_samples(samples, runs, number)
     if seen != required:
         missing = sorted(required - seen)
         unexpected = sorted(seen - required)

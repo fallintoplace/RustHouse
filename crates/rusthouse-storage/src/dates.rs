@@ -82,15 +82,39 @@ fn parse_clock_time(text: &str) -> Option<u64> {
         .then_some(hour * 3_600 + minute * 60 + second)
 }
 
+/// Parse a DateTime as UTC, accepting the usual SQL form and RFC 3339
+/// whole-second timestamps. Explicit offsets are normalized to UTC before
+/// checking the unsigned DateTime storage range.
 pub fn parse_datetime(text: &str) -> Option<u32> {
-    let bytes = text.as_bytes();
-    if bytes.len() != 19 || !text.is_char_boundary(10) || !matches!(bytes[10], b' ' | b'T') {
+    let timestamp = text.get(..19)?;
+    let bytes = timestamp.as_bytes();
+    if !matches!(bytes[10], b' ' | b'T') {
         return None;
     }
-    let days = u64::try_from(parse_calendar_day(&text[..10])?).ok()?;
-    let time = parse_clock_time(&text[11..])?;
+    let offset = match text.get(19..)? {
+        "" | "Z" => 0i64,
+        suffix => {
+            let bytes = suffix.as_bytes();
+            if bytes.len() != 6
+                || !matches!(bytes[0], b'+' | b'-')
+                || bytes[3] != b':'
+                || ![1, 2, 4, 5].iter().all(|&i| bytes[i].is_ascii_digit())
+            {
+                return None;
+            }
+            let hours = suffix.get(1..3)?.parse::<i64>().ok()?;
+            let minutes = suffix.get(4..6)?.parse::<i64>().ok()?;
+            if hours > 23 || minutes > 59 {
+                return None;
+            }
+            let seconds = hours * 3_600 + minutes * 60;
+            if bytes[0] == b'+' { seconds } else { -seconds }
+        }
+    };
+    let days = parse_calendar_day(text.get(..10)?)?;
+    let time = i64::try_from(parse_clock_time(text.get(11..19)?)?).ok()?;
     let seconds = days.checked_mul(86_400)?.checked_add(time)?;
-    u32::try_from(seconds).ok()
+    u32::try_from(seconds.checked_sub(offset)?).ok()
 }
 
 fn format_calendar_day(days: i64) -> String {
@@ -132,6 +156,29 @@ mod tests {
         }
         for text in ["1969-12-31", "2013-02-29", "1900-02-29", "2149-06-07"] {
             assert!(parse_date(text).is_none(), "{text}");
+        }
+    }
+
+    #[test]
+    fn rfc3339_offsets_normalize_to_utc() {
+        let epoch = parse_datetime("1970-01-01 00:00:00").unwrap();
+        assert_eq!(parse_datetime("1970-01-01T00:00:00Z"), Some(epoch));
+        assert_eq!(parse_datetime("1970-01-01T01:30:00+01:30"), Some(epoch));
+        assert_eq!(parse_datetime("1969-12-31T22:00:00-02:00"), Some(epoch));
+        assert_eq!(parse_datetime("2000-01-01T00:00:00+01:00"),
+            parse_datetime("1999-12-31 23:00:00"));
+        assert_eq!(parse_datetime("2024-02-29T23:59:59-00:01"),
+            parse_datetime("2024-03-01 00:00:59"));
+        for invalid in [
+            "1970-01-01T00:00:00+24:00",
+            "1970-01-01T00:00:00+01:60",
+            "1970-01-01T00:00:00+01",
+            "1970-01-01T00:00:00Zx",
+            "1970-01-01T00:00:00.123Z",
+            "1970-01-01T00:00:00+00:01",
+            "2106-02-07T06:28:15-00:01",
+        ] {
+            assert_eq!(parse_datetime(invalid), None, "{invalid}");
         }
     }
 

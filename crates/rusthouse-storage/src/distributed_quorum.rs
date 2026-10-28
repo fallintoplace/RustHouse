@@ -1,0 +1,127 @@
+//! Quorum policy validation for future replicated storage writes.
+//! This module does not implement consensus or distributed transactions.
+
+use std::collections::HashSet;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct QuorumObservation {
+    pub distinct_acks: usize,
+    pub can_read: bool,
+    pub can_write: bool,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct QuorumPolicy {
+    pub replicas: usize,
+    pub reads: usize,
+    pub writes: usize,
+}
+
+impl QuorumPolicy {
+    /// Require overlapping read/write and write/write quorums.
+    pub fn new(replicas: usize, reads: usize, writes: usize) -> Result<Self, &'static str> {
+        if replicas == 0
+            || replicas > 16
+            || reads == 0
+            || writes == 0
+            || reads > replicas
+            || writes > replicas
+            || reads + writes <= replicas
+            || writes <= replicas / 2
+        {
+            return Err("unsafe replica quorum policy");
+        }
+        Ok(Self {
+            replicas,
+            reads,
+            writes,
+        })
+    }
+
+    /// Determine availability from actual replica IDs instead of trusting a
+    /// caller-supplied acknowledgement count. Duplicate replies never count
+    /// as more than one vote. This is planning, not a consensus protocol.
+    pub fn observe(
+        self,
+        members: &[&str],
+        acknowledgements: &[&str],
+    ) -> Result<QuorumObservation, &'static str> {
+        if members.len() != self.replicas || acknowledgements.len() > 256 {
+            return Err("quorum membership or acknowledgement count mismatch");
+        }
+        let mut membership = HashSet::new();
+        for &member in members {
+            if member.is_empty()
+                || member.len() > 64
+                || !member.bytes().all(|byte| {
+                    byte.is_ascii_alphanumeric() || matches!(byte, b'_' | b'-')
+                })
+                || !membership.insert(member)
+            {
+                return Err("invalid or duplicate quorum member");
+            }
+        }
+        let mut received = HashSet::new();
+        for &replica in acknowledgements {
+            if !membership.contains(replica) {
+                return Err("acknowledgement from unknown replica");
+            }
+            received.insert(replica);
+        }
+        let distinct_acks = received.len();
+        Ok(QuorumObservation {
+            distinct_acks,
+            can_read: self.can_read(distinct_acks),
+            can_write: self.can_write(distinct_acks),
+        })
+    }
+
+    pub fn can_read(self, unique_acks: usize) -> bool {
+        unique_acks >= self.reads && unique_acks <= self.replicas
+    }
+
+    pub fn can_write(self, unique_acks: usize) -> bool {
+        unique_acks >= self.writes && unique_acks <= self.replicas
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn accepts_intersecting_quorums() {
+        let policy = QuorumPolicy::new(3, 2, 2).unwrap();
+        assert!(policy.can_write(2));
+        assert!(!policy.can_read(1));
+        assert!(!policy.can_write(4));
+        assert_eq!(QuorumPolicy::new(5, 2, 4).unwrap().writes, 4);
+    }
+
+    #[test]
+    fn counts_distinct_known_acknowledgements_only() {
+        let policy = QuorumPolicy::new(3, 2, 2).unwrap();
+        let members = ["a", "b", "c"];
+        let single = policy.observe(&members, &["a", "a", "a"]).unwrap();
+        assert_eq!(single.distinct_acks, 1);
+        assert!(!single.can_read);
+        assert!(!single.can_write);
+        let majority = policy.observe(&members, &["a", "b", "b"]).unwrap();
+        assert_eq!(majority.distinct_acks, 2);
+        assert!(majority.can_read);
+        assert!(majority.can_write);
+        assert!(policy.observe(&members, &["unknown"]).is_err());
+        assert!(policy.observe(&["a", "a", "c"], &["a"]).is_err());
+        assert!(policy.observe(&["a", "b"], &["a"]).is_err());
+        assert!(policy.observe(&["a", "b", ""], &["a"]).is_err());
+        assert!(policy.observe(&members, &vec!["a"; 257]).is_err());
+    }
+
+    #[test]
+    fn refuses_non_intersecting_or_unbounded_policies() {
+        assert!(QuorumPolicy::new(3, 1, 2).is_err());
+        assert!(QuorumPolicy::new(4, 2, 2).is_err());
+        assert!(QuorumPolicy::new(0, 0, 0).is_err());
+        assert!(QuorumPolicy::new(17, 9, 9).is_err());
+    }
+}

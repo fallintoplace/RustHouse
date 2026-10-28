@@ -5,6 +5,7 @@ Only SQLite floating results receive relative/absolute tolerance.
 """
 import math
 import sqlite3
+from contextlib import closing
 
 
 def cell_equal(actual, expected, rel_tol=1e-12, abs_tol=1e-12):
@@ -40,16 +41,13 @@ def row_equal(actual, expected):
     )
 
 
-def assert_matches(output, expected_rows, unordered=False):
-    actual = parse_rows(output)
-    expected_rows = list(expected_rows)
-    if len(actual) != len(expected_rows):
-        raise ValueError(f"row count mismatch: RustHouse={len(actual)}, SQLite={len(expected_rows)}")
-    if not unordered:
-        for number, (a, e) in enumerate(zip(actual, expected_rows), 1):
-            if not row_equal(a, e):
-                raise ValueError(f"row {number} differs from SQLite")
-        return
+def assert_ordered_rows(actual, expected_rows):
+    for number, (row, expected) in enumerate(zip(actual, expected_rows), 1):
+        if not row_equal(row, expected):
+            raise ValueError(f"row {number} differs from SQLite")
+
+
+def assert_unordered_rows(actual, expected_rows):
     if len(actual) > 4096:
         raise ValueError("unordered comparison is limited to 4096 result rows")
     unmatched = list(actual)
@@ -60,6 +58,17 @@ def assert_matches(output, expected_rows, unordered=False):
         unmatched.pop(position)
 
 
+def assert_matches(output, expected_rows, unordered=False):
+    actual = parse_rows(output)
+    expected_rows = list(expected_rows)
+    if len(actual) != len(expected_rows):
+        raise ValueError(f"row count mismatch: RustHouse={len(actual)}, SQLite={len(expected_rows)}")
+    if unordered:
+        assert_unordered_rows(actual, expected_rows)
+    else:
+        assert_ordered_rows(actual, expected_rows)
+
+
 def sqlite_query(path, sql):
-    with sqlite3.connect(path) as connection:
+    with closing(sqlite3.connect(path)) as connection:
         return connection.execute(sql).fetchall()

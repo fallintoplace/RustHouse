@@ -3,7 +3,7 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from run import benchmark_one, load_queries, official_22_coverage, query_fingerprint, select_queries, summary, summarize_coverage
+from run import benchmark_one, compare_reference, load_queries, official_22_coverage, query_fingerprint, select_queries, summary, summarize_coverage
 
 class RunnerTests(unittest.TestCase):
     def test_query_discovery_is_numeric(self):
@@ -14,6 +14,13 @@ class RunnerTests(unittest.TestCase):
             self.assertEqual(
                 load_queries(directory), [(2, "SELECT 2"), (10, "SELECT 10")]
             )
+
+    def test_query_discovery_accepts_uppercase_names(self):
+        with tempfile.TemporaryDirectory() as root:
+            directory = Path(root)
+            (directory / "Q03.SQL").write_text("SELECT 3;\n")
+            (directory / "q01.sql").write_text("SELECT 1;\n")
+            self.assertEqual(load_queries(directory), [(1, "SELECT 1"), (3, "SELECT 3")])
 
     def test_rejects_zero_query_ids(self):
         for filename in ("q0.sql", "q00.sql"):
@@ -38,6 +45,20 @@ class RunnerTests(unittest.TestCase):
         mismatched = benchmark_one(6, "SELECT 1", lambda _: b"2\n", 3, 1, b"1\n")
         self.assertEqual(mismatched["status"], "mismatch")
         self.assertEqual(mismatched["timings_seconds"], [])
+
+    def test_unverified_results_are_not_counted_as_correct(self):
+        result = benchmark_one(6, "SELECT 6", lambda _: b"6\\n", 2, 0)
+        self.assertEqual(result["status"], "unverified")
+        self.assertEqual(summarize_coverage([result])["verified_queries"], 0)
+
+    def test_unordered_rows_preserve_duplicate_counts(self):
+        expected = b"1\n2\n2\n"
+        self.assertFalse(compare_reference(b"2\n1\n2\n", expected))
+        self.assertTrue(compare_reference(b"2\n1\n2\n", expected, "unordered"))
+        self.assertFalse(compare_reference(b"2\n1\n1\n", expected, "unordered"))
+        result = benchmark_one(1, "SELECT id", lambda _: b"2\n1\n2\n",
+                               2, 0, expected, comparison="unordered")
+        self.assertEqual(result["status"], "passed")
 
     def test_failed_late_iteration_discards_partial_samples(self):
         calls = 0

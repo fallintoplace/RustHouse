@@ -64,15 +64,20 @@ pub(super) fn execute<W: Write>(
     let mut by_key = HashMap::<typed::Key, usize>::new();
     let mut by_text = HashMap::<Vec<u8>, usize>::new();
     let mut reader = TypedQueryReader::open(part, &names)?;
+    let no_filters = query.predicates.is_empty() && query.or_predicates.is_empty();
     while let Some(batch) = reader.next_batch()? {
         for row in 0..batch[0].len() {
-            if !typed::passes(&batch, row, &conditions) {
+            if !no_filters && !typed::passes(&batch, row, &conditions) {
                 continue;
             }
-            let index = if let TypedColumn::Text(values) = &batch[group_index] {
-                let key = values.get(row).ok_or_else(|| {
-                    ExecutionError::Invalid("invalid String row index".into())
-                })?;
+            // Nullable String keys can use the same borrowed-byte lookup as String.
+            // Only new groups need to own the decoded bytes.
+            let borrowed_text = match &batch[group_index] {
+                TypedColumn::Text(values) => values.get(row),
+                TypedColumn::NullableText { values, nulls } if nulls[row] == 0 => values.get(row),
+                _ => None,
+            };
+            let index = if let Some(key) = borrowed_text {
                 if let Some(&group) = by_text.get(key) {
                     group
                 } else {

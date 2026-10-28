@@ -1,3 +1,7 @@
+mod range_keys;
+
+use self::range_keys::*;
+
 use crate::{CompressedBlockReader, PartError};
 use std::fs::File;
 use std::io::Read;
@@ -32,61 +36,52 @@ impl FixedPrimaryIndex {
     }
 }
 
-/// Conservative granule range for an ascending UInt64 first-key index.
+/// Conservative granule range for an ascending fixed-width index.
 ///
-/// Every mark contains the first key of a sorted granule. The predecessor of
-/// the first matching mark may still contain matching rows, so include it.
-/// This is an index-planning primitive, not a substitute for row predicates.
-/// Returns None for an unsupported field or an invalid/unsorted index.
-fn u64_mark_key(index: &FixedPrimaryIndex, mark: usize, field: usize) -> Option<u64> {
-    let bytes: [u8; 8] = index.field(mark, field)?.try_into().ok()?;
-    Some(u64::from_le_bytes(bytes))
-}
-
+/// A mark stores the first key of a granule. The predecessor of the first
+/// matching mark can also contain matching rows, so range selection must
+/// retain it. Callers still apply the exact row predicate.
+/// Returns a conservative mark range for an ascending UInt64 key.
+/// An invalid, unsorted or non-UInt64 index returns None.
 pub fn candidate_u64_mark_range(
     index: &FixedPrimaryIndex,
     field: usize,
     lower: Bound<u64>,
     upper: Bound<u64>,
 ) -> Option<Range<usize>> {
-    let len = index.len();
-    // Keep the same conservative safety check without materializing every key.
-    let mut previous = None;
-    for mark in 0..len {
-        let key = u64_mark_key(index, mark, field)?;
-        if previous.is_some_and(|last| last > key) {
-            return None;
-        }
-        previous = Some(key);
-    }
+    candidate_mark_range(index.len(), |mark| u64_mark_key(index, mark, field), lower, upper)
+}
 
-    // The complete index layout and ordering have been validated above.
-    let key_at = |mark| u64_mark_key(index, mark, field).unwrap();
-    let partition_point = |target: u64, inclusive: bool| {
-        let mut low = 0;
-        let mut high = len;
-        while low < high {
-            let mid = low + (high - low) / 2;
-            let key = key_at(mid);
-            if key < target || (inclusive && key == target) {
-                low = mid + 1;
-            } else {
-                high = mid;
-            }
-        }
-        low
-    };
-    let start = match lower {
-        Bound::Included(value) => partition_point(value, false).saturating_sub(1),
-        Bound::Excluded(value) => partition_point(value, true).saturating_sub(1),
-        Bound::Unbounded => 0,
-    };
-    let end = match upper {
-        Bound::Included(value) => partition_point(value, true),
-        Bound::Excluded(value) => partition_point(value, false),
-        Bound::Unbounded => len,
-    };
-    Some(start.min(end)..end)
+/// Returns a conservative mark range for an ascending Int64 key.
+///
+/// Signed comparisons use the decoded Int64 values rather than their raw
+/// little-endian byte order. This is only a planning primitive: callers must
+/// still evaluate the predicate for candidate rows.
+pub fn candidate_i64_mark_range(
+    index: &FixedPrimaryIndex,
+    field: usize,
+    lower: Bound<i64>,
+    upper: Bound<i64>,
+) -> Option<Range<usize>> {
+    candidate_mark_range(index.len(), |mark| i64_mark_key(index, mark, field), lower, upper)
+}
+
+/// Plan and coalesce candidate granules for UInt64 IN and OR predicates.
+pub fn candidate_u64_mark_ranges(
+    index: &FixedPrimaryIndex,
+    field: usize,
+    intervals: &[(Bound<u64>, Bound<u64>)],
+) -> Option<Vec<Range<usize>>> {
+    candidate_mark_ranges(index.len(), |mark| u64_mark_key(index, mark, field), intervals)
+}
+
+/// Plan and coalesce candidate granules for signed Int64 predicates.
+pub fn candidate_i64_mark_ranges(
+    index: &FixedPrimaryIndex,
+    field: usize,
+    intervals: &[(Bound<i64>, Bound<i64>)],
+) -> Option<Vec<Range<usize>>> {
+    candidate_mark_ranges(index.len(), |mark| i64_mark_key(index, mark, field), intervals)
 }
 
 pub fn read_fixed_primary_index(
@@ -237,6 +232,75 @@ mod tests {
     }
 
     #[test]
+    fn signed_i64_pruning_keeps_matching_granules() {
+        let keys = [-10i64, -5, 0, 5];
+        let index = FixedPrimaryIndex {
+            data: keys.into_iter().flat_map(i64::to_le_bytes).collect(),
+            field_offsets: vec![0, 8],
+            row_width: 8,
+        };
+        let rows = [[-10, -9], [-5, -4], [0, 1], [5, 6]];
+        for lower in -12..8 {
+            for upper in lower..8 {
+                let candidate = candidate_i64_mark_range(
+                    &index,
+                    0,
+                    Bound::Included(lower),
+                    Bound::Included(upper),
+                )
+                .unwrap();
+                for (mark, granule) in rows.iter().enumerate() {
+                    if granule.iter().any(|value| *value >= lower && *value <= upper) {
+                        assert!(
+                            candidate.contains(&mark),
+                            "query [{lower}, {upper}] skipped signed mark {mark}"
+                        );
+                    }
+                }
+            }
+        }
+        assert_eq!(
+            candidate_i64_mark_range(&index, 0, Bound::Included(-3), Bound::Excluded(5)),
+            Some(1..3)
+        );
+    }
+
+    #[test]
+    fn signed_i64_pruning_handles_duplicates_and_extreme_keys() {
+        let index = FixedPrimaryIndex {
+            data: [i64::MIN, -10, -10, 0, 9, i64::MAX]
+                .into_iter().flat_map(i64::to_le_bytes).collect(),
+            field_offsets: vec![0, 8],
+            row_width: 8,
+        };
+        assert_eq!(
+            candidate_i64_mark_range(&index, 0, Bound::Included(-9), Bound::Included(0)),
+            Some(2..4)
+        );
+        assert_eq!(
+            candidate_i64_mark_range(&index, 0, Bound::Included(i64::MIN), Bound::Excluded(-10)),
+            Some(0..1)
+        );
+        assert_eq!(
+            candidate_i64_mark_range(&index, 0, Bound::Unbounded, Bound::Included(i64::MAX)),
+            Some(0..6)
+        );
+        assert_eq!(
+            candidate_i64_mark_range(&index, 1, Bound::Unbounded, Bound::Unbounded),
+            None
+        );
+        let unsorted = FixedPrimaryIndex {
+            data: [0i64, -1].into_iter().flat_map(i64::to_le_bytes).collect(),
+            field_offsets: vec![0, 8],
+            row_width: 8,
+        };
+        assert_eq!(
+            candidate_i64_mark_range(&unsorted, 0, Bound::Unbounded, Bound::Unbounded),
+            None
+        );
+    }
+
+    #[test]
     fn invalid_primary_key_layout_disables_pruning() {
         let index = FixedPrimaryIndex {
             data: [20u64, 10].into_iter().flat_map(u64::to_le_bytes).collect(),
@@ -251,6 +315,52 @@ mod tests {
             candidate_u64_mark_range(&index, 1, Bound::Unbounded, Bound::Unbounded),
             None
         );
+    }
+
+    #[test]
+    fn batches_and_coalesces_primary_index_candidate_ranges() {
+        let index = FixedPrimaryIndex {
+            data: [10u64, 20, 30, 40, 50, 60]
+                .into_iter().flat_map(u64::to_le_bytes).collect(),
+            field_offsets: vec![0, 8],
+            row_width: 8,
+        };
+        assert_eq!(
+            candidate_u64_mark_ranges(&index, 0, &[
+                (Bound::Included(51), Bound::Included(52)),
+                (Bound::Included(11), Bound::Included(12)),
+                (Bound::Included(12), Bound::Included(15)),
+            ]),
+            Some(vec![0..1, 4..5])
+        );
+        assert_eq!(candidate_u64_mark_ranges(&index, 0, &[]), Some(vec![]));
+        assert_eq!(
+            candidate_u64_mark_ranges(&index, 0, &[
+                (Bound::Included(11), Bound::Included(45)),
+                (Bound::Included(31), Bound::Included(55)),
+            ]),
+            Some(vec![0..5])
+        );
+        let signed = FixedPrimaryIndex {
+            data: [-20i64, -10, 0, 10, 20]
+                .into_iter().flat_map(i64::to_le_bytes).collect(),
+            field_offsets: vec![0, 8],
+            row_width: 8,
+        };
+        assert_eq!(
+            candidate_i64_mark_ranges(&signed, 0, &[
+                (Bound::Included(-9), Bound::Included(-1)),
+                (Bound::Included(11), Bound::Included(19)),
+            ]),
+            Some(vec![1..2, 3..4])
+        );
+        let unsorted = FixedPrimaryIndex {
+            data: [30u64, 20].into_iter().flat_map(u64::to_le_bytes).collect(),
+            field_offsets: vec![0, 8],
+            row_width: 8,
+        };
+        assert!(candidate_u64_mark_ranges(&unsorted, 0,
+            &[(Bound::Unbounded, Bound::Unbounded)]).is_none());
     }
 
     #[test]

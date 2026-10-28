@@ -1,100 +1,79 @@
-//! Execute a bounded two-table JOIN using the existing SQL output adapters.
+//! Execute bounded JOIN queries using the existing SQL output adapters.
 use crate::sql::SqlOutputFormat;
 use crate::{
     csv, csv_no_header, html, json_array, json_compact_each_row, json_seq, jsonl, markdown,
     sql_values, vertical,
 };
-use rusthouse_query::{JoinSelect, execute_join};
+use rusthouse_query::{JoinSelect, execute_join, execute_multi_join};
 use std::path::{Path, PathBuf};
+
+fn execute_selected_join<W: std::io::Write>(
+    query: &JoinSelect,
+    paths: &[PathBuf],
+    output: &mut W,
+) -> Result<(), rusthouse_query::ExecutionError> {
+    if paths.len() == 2 {
+        execute_join(query, &paths[0], &paths[1], output)
+    } else {
+        execute_multi_join(query, paths, output)
+    }
+}
+
+fn finish_join<T>(
+    result: Result<(), rusthouse_query::ExecutionError>,
+    finish: impl FnOnce() -> std::io::Result<T>,
+) -> Result<(), rusthouse_query::ExecutionError> {
+    result.and_then(|()| finish().map(|_| ()).map_err(rusthouse_query::ExecutionError::Io))
+}
 
 fn execute_formatted_join(
     query: &JoinSelect,
-    left: &Path,
-    right: &Path,
+    paths: &[PathBuf],
     format: SqlOutputFormat,
     mut output: &mut dyn std::io::Write,
 ) -> Result<(), rusthouse_query::ExecutionError> {
     match format {
-        SqlOutputFormat::Tsv => execute_join(query, left, right, &mut output),
-        SqlOutputFormat::TsvNoHeader => execute_join(
-            query,
-            left,
-            right,
+        SqlOutputFormat::Tsv => execute_selected_join(query, paths, &mut output),
+        SqlOutputFormat::TsvNoHeader => execute_selected_join(query, paths,
             &mut csv_no_header::WithoutHeader::new(&mut output),
         ),
         SqlOutputFormat::Csv => {
-            execute_join(query, left, right, &mut csv::CsvWriter::new(&mut output))
+            execute_selected_join(query, paths, &mut csv::CsvWriter::new(&mut output))
         }
-        SqlOutputFormat::CsvNoHeader => execute_join(
-            query,
-            left,
-            right,
+        SqlOutputFormat::CsvNoHeader => execute_selected_join(query, paths,
             &mut csv::CsvWriter::new(csv_no_header::WithoutHeader::new(&mut output)),
         ),
-        SqlOutputFormat::Markdown => execute_join(
-            query,
-            left,
-            right,
+        SqlOutputFormat::Markdown => execute_selected_join(query, paths,
             &mut markdown::MarkdownWriter::new(&mut output),
         ),
         SqlOutputFormat::Html => {
             let mut writer = html::HtmlWriter::new(&mut output);
-            execute_join(query, left, right, &mut writer).and_then(|()| {
-                writer
-                    .finish()
-                    .map(|_| ())
-                    .map_err(rusthouse_query::ExecutionError::Io)
-            })
+            finish_join(execute_selected_join(query, paths, &mut writer), || writer.finish())
         }
-        SqlOutputFormat::Vertical => execute_join(
-            query,
-            left,
-            right,
+        SqlOutputFormat::Vertical => execute_selected_join(query, paths,
             &mut vertical::VerticalWriter::new(&mut output),
         ),
         SqlOutputFormat::SqlValues => {
             let mut writer = sql_values::SqlValuesWriter::new(&mut output);
-            execute_join(query, left, right, &mut writer)
-                .and_then(|()| writer.finish().map_err(rusthouse_query::ExecutionError::Io))
+            finish_join(execute_selected_join(query, paths, &mut writer), || writer.finish())
         }
-        SqlOutputFormat::Jsonl => execute_join(
-            query,
-            left,
-            right,
+        SqlOutputFormat::Jsonl => execute_selected_join(query, paths,
             &mut jsonl::JsonlWriter::new(&mut output),
         ),
-        SqlOutputFormat::JsonSeq => execute_join(
-            query,
-            left,
-            right,
+        SqlOutputFormat::JsonSeq => execute_selected_join(query, paths,
             &mut json_seq::JsonSeqWriter::new(&mut output),
         ),
         SqlOutputFormat::Json => {
             let mut writer = json_array::JsonArrayWriter::new(&mut output);
-            execute_join(query, left, right, &mut writer).and_then(|()| {
-                writer
-                    .finish()
-                    .map(|_| ())
-                    .map_err(rusthouse_query::ExecutionError::Io)
-            })
+            finish_join(execute_selected_join(query, paths, &mut writer), || writer.finish())
         }
         SqlOutputFormat::JsonCompactEachRow => {
             let mut writer = json_compact_each_row::JsonCompactEachRowWriter::new(&mut output);
-            execute_join(query, left, right, &mut writer).and_then(|()| {
-                writer
-                    .finish()
-                    .map(|_| ())
-                    .map_err(rusthouse_query::ExecutionError::Io)
-            })
+            finish_join(execute_selected_join(query, paths, &mut writer), || writer.finish())
         }
         SqlOutputFormat::JsonPretty => {
             let mut writer = json_array::JsonArrayWriter::new_pretty(&mut output);
-            execute_join(query, left, right, &mut writer).and_then(|()| {
-                writer
-                    .finish()
-                    .map(|_| ())
-                    .map_err(rusthouse_query::ExecutionError::Io)
-            })
+            finish_join(execute_selected_join(query, paths, &mut writer), || writer.finish())
         }
     }
 }
@@ -126,11 +105,16 @@ pub(super) fn run(
     } else {
         None
     };
-    let left = crate::database::select_source(database, &query.left)?;
-    let right = crate::database::select_source(database, &query.right)?;
+    let mut paths = vec![
+        crate::database::select_source(database, &query.left)?,
+        crate::database::select_source(database, &query.right)?,
+    ];
+    for step in &query.steps {
+        paths.push(crate::database::select_source(database, &step.table)?);
+    }
     let mut output = open_output(output_path.as_deref())?;
     let start = std::time::Instant::now();
-    let result = execute_formatted_join(query, &left, &right, format, output.as_mut());
+    let result = execute_formatted_join(query, &paths, format, output.as_mut());
     if time {
         eprintln!("Elapsed: {:.3} ms", start.elapsed().as_secs_f64() * 1000.0);
     }

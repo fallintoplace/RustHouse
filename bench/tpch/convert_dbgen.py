@@ -13,15 +13,7 @@ DECIMAL = re.compile(r"-?[0-9]+(?:\.[0-9]+)?\Z")
 INTEGER = re.compile(r"-?[0-9]+\Z")
 
 
-def convert_value(raw, kind, scale):
-    if kind == "String":
-        if not raw or raw == r"\N" or any(c in raw for c in ("\t", "\r", "\n")):
-            raise ValueError("empty, NULL-marker, or control-character string")
-        return raw.replace("\\", "\\\\")
-    if kind == "Date":
-        if len(raw) != 10 or datetime.date.fromisoformat(raw).isoformat() != raw:
-            raise ValueError("date must be YYYY-MM-DD")
-        return raw
+def parse_scaled_number(raw, scale):
     if scale != 1:
         if not DECIMAL.fullmatch(raw):
             raise ValueError("invalid fixed-point decimal")
@@ -31,11 +23,22 @@ def convert_value(raw, kind, scale):
             raise ValueError("invalid decimal") from error
         if scaled != scaled.to_integral_value():
             raise ValueError("decimal precision exceeds supported fixed-point scale")
-        value = int(scaled)
-    else:
-        if not INTEGER.fullmatch(raw):
-            raise ValueError("integer expected")
-        value = int(raw)
+        return int(scaled)
+    if not INTEGER.fullmatch(raw):
+        raise ValueError("integer expected")
+    return int(raw)
+
+
+def convert_value(raw, kind, scale):
+    if kind == "String":
+        if not raw or raw == r"\N" or any(c in raw for c in ("\t", "\r", "\n")):
+            raise ValueError("empty, NULL-marker, or control-character string")
+        return raw.replace("\\", "\\\\")
+    if kind == "Date":
+        if len(raw) != 10 or datetime.date.fromisoformat(raw).isoformat() != raw:
+            raise ValueError("date must be YYYY-MM-DD")
+        return raw
+    value = parse_scaled_number(raw, scale)
     low, high = (0, 2**64 - 1) if kind == "UInt64" else (-2**63, 2**63 - 1)
     if not low <= value <= high:
         raise ValueError("integer outside RustHouse column range")
@@ -81,9 +84,11 @@ def convert_table(source, target, table):
 
 
 def convert_directory(source_dir, target_dir, selected=None):
-    selected = tuple(selected or TABLES)
-    if not selected or any(table not in TABLES for table in selected):
-        raise ValueError("select one or more known TPC-H tables")
+    selected = tuple(TABLES if selected is None else selected)
+    if not selected or len(set(selected)) != len(selected) or any(
+        table not in TABLES for table in selected
+    ):
+        raise ValueError("select a nonempty unique set of known TPC-H tables")
     counts = {}
     for table in selected:
         src = Path(source_dir) / (table + ".tbl")

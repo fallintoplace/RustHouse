@@ -6,6 +6,7 @@ use std::ops::Range;
 
 const MAX_BATCH_ROWS: usize = 1_000_000;
 const MAX_BATCH_ELEMENTS: u64 = 64 * 1024 * 1024;
+const OFFSET_ENTRY_BYTES: usize = size_of::<u64>();
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ArrayOffsetsEncoding {
@@ -178,12 +179,12 @@ pub fn read_array_offsets<O: Read>(
     let mut buffer = [0u8; 16 * 1024];
     let mut row = 0;
     while row < rows {
-        let count = (rows - row).min(buffer.len() / 8);
+        let count = (rows - row).min(buffer.len() / OFFSET_ENTRY_BYTES);
         offset_stream
-            .read_exact(&mut buffer[..count * 8])
+            .read_exact(&mut buffer[..count * OFFSET_ENTRY_BYTES])
             .map_err(ArrayReadError::Offsets)?;
 
-        for bytes in buffer[..count * 8].chunks_exact(8) {
+        for bytes in buffer[..count * OFFSET_ENTRY_BYTES].chunks_exact(OFFSET_ENTRY_BYTES) {
             let encoded = u64::from_le_bytes(bytes.try_into().unwrap());
             append_array_offset(encoding, base, &mut absolute, encoded, row, &mut offsets)?;
             row += 1;

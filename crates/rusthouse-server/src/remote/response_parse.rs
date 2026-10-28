@@ -1,0 +1,112 @@
+use super::*;
+
+pub(super) fn parse_http_status(status_line: &str) -> Result<u16, String> {
+    let mut words = status_line.splitn(3, ' ');
+    let version = words.next().ok_or("invalid peer HTTP status")?;
+    let code = words.next().ok_or("invalid peer HTTP status")?;
+    let reason = words.next().ok_or("invalid peer HTTP status")?;
+    if !matches!(version, "HTTP/1.1" | "HTTP/1.0")
+        || code.len() != 3
+        || !code.bytes().all(|byte| byte.is_ascii_digit())
+        || reason.bytes().any(|byte| byte.is_ascii_control())
+    {
+        return Err("invalid peer HTTP status".into());
+    }
+    let status = code
+        .parse::<u16>()
+        .map_err(|_| "invalid peer HTTP status")?;
+    if !(200..=599).contains(&status) {
+        return Err("unsupported peer HTTP status".into());
+    }
+    Ok(status)
+}
+
+pub(super) fn parse_peer_header(line: &str) -> Result<(&str, &str), String> {
+    let (name, value) = line.split_once(':').ok_or("invalid peer header")?;
+    if name.is_empty()
+        || !name
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || byte == b'-')
+        || value
+            .bytes()
+            .any(|byte| byte.is_ascii_control() && byte != b'\t')
+    {
+        return Err("invalid peer header".into());
+    }
+    Ok((name, value.trim()))
+}
+
+pub(super) fn parse_content_length(value: &str) -> Result<usize, String> {
+    if value.is_empty() || !value.bytes().all(|byte| byte.is_ascii_digit()) {
+        return Err("invalid peer Content-Length".into());
+    }
+    value
+        .parse::<usize>()
+        .map_err(|_| "invalid peer Content-Length".into())
+}
+
+/// Parse a complete HTTP response head without waiting for the peer to close
+/// its connection. The advertised body length is untrusted and remains bounded.
+fn response_head(raw: &[u8]) -> Result<Option<(usize, u16, String, usize)>, String> {
+    let Some(head_end) = raw.windows(4).position(|bytes| bytes == b"\r\n\r\n") else {
+        if raw.len() >= MAX_HEADER_BYTES {
+            return Err("peer headers exceed 8 KiB".into());
+        }
+        return Ok(None);
+    };
+    if head_end + 4 > MAX_HEADER_BYTES {
+        return Err("peer headers exceed 8 KiB".into());
+    }
+    let head = std::str::from_utf8(&raw[..head_end]).map_err(|_| "peer headers are not UTF-8")?;
+    let mut lines = head.split("\r\n");
+    let status = parse_http_status(lines.next().ok_or("missing peer status")?)?;
+    let mut length = None;
+    let mut content_type = None;
+    for line in lines {
+        let (name, value) = parse_peer_header(line)?;
+        if name.eq_ignore_ascii_case("content-length") {
+            if length.is_some() {
+                return Err("invalid peer Content-Length".into());
+            }
+            length = Some(parse_content_length(value)?);
+        } else if name.eq_ignore_ascii_case("content-type") {
+            if content_type.is_some() {
+                return Err("duplicate peer Content-Type".into());
+            }
+            if value.is_empty() {
+                return Err("empty peer Content-Type".into());
+            }
+            content_type = Some(value.to_owned());
+        } else if name.eq_ignore_ascii_case("transfer-encoding")
+            || name.eq_ignore_ascii_case("content-encoding")
+        {
+            return Err("unsupported peer transfer encoding".into());
+        }
+    }
+    let length = length.ok_or("missing peer Content-Length")?;
+    let content_type = content_type.ok_or("missing peer Content-Type")?;
+    if length > MAX_RESPONSE_BYTES {
+        return Err("peer response size mismatch or exceeds 8 MiB".into());
+    }
+    Ok(Some((head_end + 4, status, content_type, length)))
+}
+
+/// Total valid wire bytes needed for a complete content-length response.
+pub(super) fn expected_wire_length(raw: &[u8]) -> Result<Option<usize>, String> {
+    response_head(raw)?.map(|(start, _, _, length)| {
+        start.checked_add(length).ok_or("peer response size overflow".into())
+    }).transpose()
+}
+
+pub(super) fn parse_response(raw: &[u8]) -> Result<PeerResponse, String> {
+    let (body_start, status, content_type, length) = response_head(raw)?
+        .ok_or("peer response has no header terminator")?;
+    if raw.len() != body_start + length {
+        return Err("peer response size mismatch or exceeds 8 MiB".into());
+    }
+    Ok(PeerResponse {
+        status,
+        content_type,
+        body: raw[body_start..].to_vec(),
+    })
+}

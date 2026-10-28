@@ -1,26 +1,10 @@
 //! Small, checked constant expressions used by analytical WHERE predicates.
 
-use crate::ParseError;
+mod decimal;
 
-fn fixed_decimal(value: &str) -> Result<(i128, usize), ParseError> {
-    let (negative, digits) = match value.strip_prefix('-') {
-        Some(rest) => (true, rest),
-        None => (false, value),
-    };
-    let (whole, fraction) = digits.split_once('.').unwrap_or((digits, ""));
-    if whole.is_empty()
-        || fraction.len() > 18
-        || !whole.bytes().all(|byte| byte.is_ascii_digit())
-        || !fraction.bytes().all(|byte| byte.is_ascii_digit())
-    {
-        return Err(ParseError("invalid decimal constant".into()));
-    }
-    let magnitude = format!("{whole}{fraction}")
-        .parse::<i128>()
-        .map_err(|_| ParseError("decimal constant exceeds Int128".into()))?;
-    let signed = if negative { -magnitude } else { magnitude };
-    Ok((signed, fraction.len()))
-}
+use self::decimal::*;
+
+use crate::ParseError;
 
 /// Fold decimal literal arithmetic without floating point rounding in bounds.
 pub(super) fn arithmetic(left: &str, right: &str, subtract: bool) -> Result<String, ParseError> {
@@ -45,30 +29,7 @@ pub(super) fn arithmetic(left: &str, right: &str, subtract: bool) -> Result<Stri
     }
     .ok_or_else(|| ParseError("decimal constant overflow".into()))?;
 
-    let absolute = value.unsigned_abs();
-    let divisor = 10_u128.pow(scale as u32);
-    let mut formatted = if scale == 0 {
-        absolute.to_string()
-    } else {
-        format!(
-            "{}.{:0width$}",
-            absolute / divisor,
-            absolute % divisor,
-            width = scale
-        )
-    };
-    if scale > 0 {
-        while formatted.ends_with('0') {
-            formatted.pop();
-        }
-        if formatted.ends_with('.') {
-            formatted.pop();
-        }
-    }
-    if value < 0 {
-        formatted.insert(0, '-');
-    }
-    Ok(formatted)
+    Ok(format_decimal(value, scale))
 }
 
 /// Add calendar years while preserving month/day, clamping Feb 29 to Feb 28.
@@ -110,6 +71,13 @@ mod tests {
         assert_eq!(arithmetic("1", "2.5", true).unwrap(), "-1.5");
         assert_eq!(arithmetic("-1.25", "1.25", false).unwrap(), "0");
         assert!(arithmetic("170141183460469231731687303715884105727", "1", false).is_err());
+    }
+
+    #[test]
+    fn folds_minimum_int128_without_positive_magnitude_overflow() {
+        let minimum = "-170141183460469231731687303715884105728";
+        assert_eq!(arithmetic(minimum, "0", false).unwrap(), minimum);
+        assert!(arithmetic(minimum, "1", true).is_err());
     }
 
     #[test]

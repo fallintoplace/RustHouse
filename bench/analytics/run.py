@@ -39,16 +39,19 @@ def execute_cli(binary, database, sql, timeout):
     return cli_sql(binary, database, sql, timeout)
 
 
-def execute_http(endpoint, sql, timeout):
+def http_target(endpoint):
     parsed = urllib.parse.urlsplit(endpoint)
     if parsed.scheme not in ("http", "https") or not parsed.netloc:
         raise ValueError("--url requires an HTTP(S) URL")
     params = urllib.parse.parse_qsl(parsed.query, keep_blank_values=True)
     params.append(("format", "tsv-no-header"))
-    target = urllib.parse.urlunsplit(
+    return urllib.parse.urlunsplit(
         (parsed.scheme, parsed.netloc, parsed.path or "/", urllib.parse.urlencode(params), "")
     )
-    request = urllib.request.Request(target, sql.encode("utf-8"), method="POST")
+
+
+def execute_http(endpoint, sql, timeout):
+    request = urllib.request.Request(http_target(endpoint), sql.encode("utf-8"), method="POST")
     try:
         with urllib.request.urlopen(request, timeout=timeout) as response:
             return response.read()
@@ -97,6 +100,8 @@ def run_benchmark(queries, indices, runs, timeout, execute, reference_dir=None, 
             if start is not None:
                 elapsed = (time.perf_counter_ns() - start) / 1_000_000_000
                 timings.append(round(elapsed, 9))
+        if status not in ("passed", "unverified"):
+            timings = []
         results.append({
             "query": index + 1,
             "status": status,

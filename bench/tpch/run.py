@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """Run SQL compatibility and end-to-end latency checks against RustHouse."""
 import argparse
+from collections import Counter
 import hashlib
 import re
 import subprocess
@@ -15,7 +16,9 @@ QUERY_NAME = re.compile(r"q(\d{1,2})\.sql$", re.IGNORECASE)
 
 def load_queries(directory):
     queries = []
-    for path in directory.glob("q*.sql"):
+    for path in directory.iterdir():
+        if not path.is_file():
+            continue
         match = QUERY_NAME.fullmatch(path.name)
         if match is None:
             continue
@@ -52,7 +55,17 @@ def invoke(binary, database, sql, timeout):
 def summary(seconds):
     return latency_summary(seconds)
 
-def benchmark_one(number, sql, execute, runs, warmups, reference=None):
+def compare_reference(actual, reference, mode="exact"):
+    if mode == "exact":
+        return actual == reference
+    if mode == "unordered":
+        return Counter(actual.splitlines(keepends=True)) == Counter(
+            reference.splitlines(keepends=True)
+        )
+    raise ValueError(f"unknown reference comparison mode: {mode}")
+
+
+def benchmark_one(number, sql, execute, runs, warmups, reference=None, comparison="exact"):
     elapsed = []
     status = "unverified" if reference is None else "passed"
     error = None
@@ -66,7 +79,7 @@ def benchmark_one(number, sql, execute, runs, warmups, reference=None):
         except (OSError, RuntimeError, ValueError) as exc:
             status, error = "error", str(exc)
             break
-        if reference is not None and output != reference:
+        if reference is not None and not compare_reference(output, reference, comparison):
             status, error = "mismatch", "output differs from reference bytes"
             break
         if started is not None:
@@ -136,6 +149,10 @@ def main(argv=None):
     parser.add_argument("--database", type=Path, required=True)
     parser.add_argument("--queries-dir", type=Path, required=True)
     parser.add_argument("--reference-dir", type=Path)
+    parser.add_argument("--comparison", choices=("exact", "unordered"), default="exact",
+                        help="Compare row order exactly or as a multiset")
+    parser.add_argument("--require-verified", action="store_true",
+                        help="Require golden output for every measured query")
     parser.add_argument("--only", help="Comma-separated query IDs, e.g. 1,6,12")
     parser.add_argument("--require-22", action="store_true",
                         help="Reject query directories missing any of the 22 official IDs")
@@ -145,6 +162,8 @@ def main(argv=None):
     parser.add_argument("--expected-lineitem-rows", type=int)
     parser.add_argument("--output", type=Path)
     args = parser.parse_args(argv)
+    if args.require_verified and args.reference_dir is None:
+        parser.error("--require-verified needs --reference-dir")
     if args.runs < 1 or args.warmups < 0 or args.timeout <= 0:
         parser.error("runs and timeout must be positive; warmups cannot be negative")
     if args.expected_lineitem_rows is not None and args.expected_lineitem_rows < 0:
@@ -185,7 +204,8 @@ def main(argv=None):
                 continue
             reference = path.read_bytes()
         results.append(benchmark_one(
-            number, sql, execute, args.runs, args.warmups, reference
+            number, sql, execute, args.runs, args.warmups, reference,
+            comparison=args.comparison,
         ))
     report = {
         "engine": "rusthouse-cli",
@@ -193,11 +213,14 @@ def main(argv=None):
         "runs": args.runs, "warmups": args.warmups,
         "query_sha256": query_fingerprint(queries),
         "reference_checked": args.reference_dir is not None,
+        "comparison": args.comparison,
         "coverage": summarize_coverage(results),
         "official_22_coverage": official_coverage,
         "results": results,
     }
     emit_json(report, args.output)
+    if args.require_verified:
+        return int(any(result["status"] != "passed" for result in results))
     return int(any(result["status"] not in ("passed", "unverified") for result in results))
 
 if __name__ == "__main__":

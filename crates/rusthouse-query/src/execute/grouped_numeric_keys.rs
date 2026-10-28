@@ -1,10 +1,10 @@
-//! Bounded multi-key numeric aggregation over immutable typed column batches.
+//! Numeric aggregates grouped by multiple typed columns.
 use super::typed::{self, Cell, Key};
 use super::{AggregateState, ExecutionError};
 use crate::{AggregateFunction, Select};
 use rusthouse_storage::{TypedQueryReader, inspect_query_source};
 use std::cmp::Ordering;
-use std::collections::{HashMap, hash_map::Entry};
+use std::collections::HashMap;
 use std::io::Write;
 use std::path::Path;
 
@@ -23,17 +23,18 @@ pub(super) fn execute<W: Write>(
         .iter()
         .map(|column| (column.name.clone(), column.data_type.clone()))
         .collect::<HashMap<_, _>>();
-    let mut names = columns.to_vec();
     for column in columns {
         if !types.contains_key(column) {
             return Err(ExecutionError::Invalid(format!("unknown group column: {column}")));
         }
     }
+
+    let mut names = columns.to_vec();
     for (_, column) in items {
-        let data_type = types.get(column).ok_or_else(|| {
+        let kind = types.get(column).ok_or_else(|| {
             ExecutionError::Invalid(format!("unknown aggregate column: {column}"))
         })?;
-        if matches!(typed::base_type(data_type), "String" | "UUID") {
+        if matches!(typed::base_type(kind), "String" | "UUID") {
             return Err(ExecutionError::Invalid(
                 "numeric aggregates require numeric columns".into(),
             ));
@@ -47,8 +48,9 @@ pub(super) fn execute<W: Write>(
         .iter()
         .chain(query.or_predicates.iter().flatten())
     {
-        if !names.contains(&predicate.column().to_owned()) {
-            names.push(predicate.column().to_owned());
+        let column = predicate.column();
+        if !names.iter().any(|name| name == column) {
+            names.push(column.to_owned());
         }
     }
     let indices = names
@@ -56,10 +58,10 @@ pub(super) fn execute<W: Write>(
         .enumerate()
         .map(|(index, name)| (name.clone(), index))
         .collect::<HashMap<_, _>>();
-    let conditions = std::iter::once(&query.predicates)
-        .chain(query.or_predicates.iter())
-        .map(|predicates| typed::compile(predicates, &indices, &types))
-        .collect::<Result<Vec<_>, _>>()?;
+    let mut conditions = vec![typed::compile(&query.predicates, &indices, &types)?];
+    for branch in &query.or_predicates {
+        conditions.push(typed::compile(branch, &indices, &types)?);
+    }
 
     write!(output, "{}", columns.join("\t"))?;
     for (function, column) in items {
@@ -78,40 +80,48 @@ pub(super) fn execute<W: Write>(
         .iter()
         .map(|(_, column)| indices[column])
         .collect::<Vec<_>>();
-    let mut groups: Vec<(Vec<Cell>, Vec<AggregateState>)> = Vec::new();
-    let mut by_key: HashMap<Vec<Key>, usize> = HashMap::new();
+    let mut by_key = HashMap::<Vec<Key>, usize>::new();
+    let mut groups = Vec::<(Vec<Cell>, Vec<AggregateState>)>::new();
     let mut reader = TypedQueryReader::open(part, &names)?;
+    // Reuse a probe buffer for existing groups instead of allocating a Vec
+    // of Cells and a Vec of Keys for every matching input row.
+    let mut probe_key = Vec::<Key>::with_capacity(group_indices.len());
+    let no_filters = query.predicates.is_empty() && query.or_predicates.is_empty();
     while let Some(batch) = reader.next_batch()? {
         for row in 0..batch[0].len() {
-            if !typed::passes(&batch, row, &conditions) {
+            if !no_filters && !typed::passes(&batch, row, &conditions) {
                 continue;
             }
-            let values = group_indices
-                .iter()
-                .map(|&index| typed::cell(&batch[index], row))
-                .collect::<Vec<_>>();
-            let keys = values.iter().map(Cell::key).collect::<Vec<_>>();
-            let index = match by_key.entry(keys) {
-                Entry::Occupied(entry) => *entry.get(),
-                Entry::Vacant(entry) => {
-                    if groups.len() >= MAX_GROUPS {
-                        return Err(ExecutionError::Invalid(
-                            "GROUP BY supports at most 100000 groups".into(),
-                        ));
-                    }
-                    entry.insert(groups.len());
-                    groups.push((
-                        values,
-                        items
-                            .iter()
-                            .map(|(function, _)| AggregateState::new(*function))
-                            .collect(),
+            probe_key.clear();
+            for &index in &group_indices {
+                probe_key.push(typed::cell(&batch[index], row).key());
+            }
+            let group = if let Some(&index) = by_key.get(probe_key.as_slice()) {
+                index
+            } else {
+                if groups.len() >= MAX_GROUPS {
+                    return Err(ExecutionError::Invalid(
+                        "GROUP BY supports at most 100000 groups".into(),
                     ));
-                    groups.len() - 1
                 }
+                let index = groups.len();
+                let keys = group_indices
+                    .iter()
+                    .map(|&column| typed::cell(&batch[column], row))
+                    .collect::<Vec<_>>();
+                by_key.insert(std::mem::take(&mut probe_key), index);
+                probe_key = Vec::with_capacity(group_indices.len());
+                groups.push((
+                    keys,
+                    items
+                        .iter()
+                        .map(|(function, _)| AggregateState::new(*function))
+                        .collect(),
+                ));
+                index
             };
-            for (&column, state) in item_indices.iter().zip(groups[index].1.iter_mut()) {
-                match typed::cell(&batch[column], row) {
+            for (&index, state) in item_indices.iter().zip(groups[group].1.iter_mut()) {
+                match typed::cell(&batch[index], row) {
                     Cell::Numeric(value) => state.update(value)?,
                     Cell::Null => {}
                     Cell::Text(_) | Cell::Uuid(_) => {
@@ -123,42 +133,44 @@ pub(super) fn execute<W: Write>(
             }
         }
     }
-    if query.order_by.is_some() {
-        let order_terms = query
-            .order_terms()
-            .map(|term| {
-                let index = columns
-                    .iter()
-                    .position(|column| column == &term.column)
-                    .expect("ORDER BY validated during parsing");
-                (index, term.descending, term.nulls_first)
-            })
-            .collect::<Vec<_>>();
+
+    let terms = query
+        .order_terms()
+        .map(|term| {
+            let index = columns
+                .iter()
+                .position(|column| column == &term.column)
+                .expect("GROUP BY ORDER BY validated by parser");
+            (index, term.descending, term.nulls_first)
+        })
+        .collect::<Vec<_>>();
+    if !terms.is_empty() {
         groups.sort_by(|(left, _), (right, _)| {
-            for &(index, descending, nulls_first) in &order_terms {
-                let cmp = typed::compare_order_cells(
+            for &(index, descending, nulls_first) in &terms {
+                let order = typed::compare_order_cells(
                     &left[index],
                     &right[index],
                     descending,
                     nulls_first,
                 );
-                if cmp != Ordering::Equal {
-                    return cmp;
+                if order != Ordering::Equal {
+                    return order;
                 }
             }
             Ordering::Equal
         });
     }
+
     for (keys, states) in groups
         .into_iter()
         .skip(query.offset.unwrap_or(0))
         .take(query.limit.unwrap_or(usize::MAX))
     {
-        for (index, value) in keys.iter().enumerate() {
+        for (index, key) in keys.iter().enumerate() {
             if index != 0 {
                 output.write_all(b"\t")?;
             }
-            typed::write_typed_value(output, value, &types[&columns[index]])?;
+            typed::write_typed_value(output, key, &types[&columns[index]])?;
         }
         for state in states {
             write!(output, "\t{}", state.render())?;

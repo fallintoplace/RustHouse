@@ -4,6 +4,7 @@ use std::io::{self, Read};
 
 const MAX_BATCH_ROWS: usize = 1_000_000;
 const MAX_BATCH_BYTES: usize = 64 * 1024 * 1024;
+const SIZE_ENTRY_BYTES: usize = size_of::<u64>();
 
 #[derive(Debug, PartialEq, Eq)]
 pub struct StringColumn {
@@ -117,9 +118,10 @@ pub fn read_legacy_strings<R: Read>(
 }
 
 fn append_sized_offsets(values: &mut StringColumn, bytes: &[u8]) -> Result<(), StringReadError> {
-    for encoded in bytes.chunks_exact(8) {
+    let mut end = *values.offsets.last().unwrap();
+    for encoded in bytes.chunks_exact(SIZE_ENTRY_BYTES) {
         let length = u64::from_le_bytes(encoded.try_into().unwrap());
-        let end = checked_end(*values.offsets.last().unwrap(), length)?;
+        end = checked_end(end, length)?;
         values.offsets.push(end);
     }
     Ok(())
@@ -133,12 +135,12 @@ pub fn read_sized_strings<S: Read, D: Read>(
     checked_rows(rows)?;
     let mut values = StringColumn::new(rows);
     // Read size entries in bounded chunks without consuming bytes from the next batch.
-    let mut buffer = [0u8; 8 * 1024];
+    let mut buffer = [0u8; SIZE_ENTRY_BYTES * 1024];
     let mut decoded_rows = 0;
     while decoded_rows < rows {
-        let batch_rows = (rows - decoded_rows).min(buffer.len() / 8);
-        sizes.read_exact(&mut buffer[..batch_rows * 8])?;
-        append_sized_offsets(&mut values, &buffer[..batch_rows * 8])?;
+        let batch_rows = (rows - decoded_rows).min(buffer.len() / SIZE_ENTRY_BYTES);
+        sizes.read_exact(&mut buffer[..batch_rows * SIZE_ENTRY_BYTES])?;
+        append_sized_offsets(&mut values, &buffer[..batch_rows * SIZE_ENTRY_BYTES])?;
         decoded_rows += batch_rows;
     }
     let bytes = *values.offsets.last().unwrap();

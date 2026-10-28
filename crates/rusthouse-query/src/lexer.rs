@@ -1,3 +1,7 @@
+mod scanning;
+
+use self::scanning::*;
+
 use crate::{Operator, ParseError};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -16,110 +20,6 @@ pub(super) enum Token {
     RParen,
     Semicolon,
     Operator(Operator),
-}
-
-fn is_ascii_digit_at(bytes: &[u8], index: usize) -> bool {
-    matches!(bytes.get(index), Some(b'0'..=b'9'))
-}
-
-fn advance_ascii_digits(bytes: &[u8], index: &mut usize) {
-    while is_ascii_digit_at(bytes, *index) {
-        *index += 1;
-    }
-}
-
-fn require_digit(bytes: &[u8], index: usize, message: &'static str) -> Result<(), ParseError> {
-    if !is_ascii_digit_at(bytes, index) {
-        return Err(ParseError(message.into()));
-    }
-    Ok(())
-}
-
-fn scan_number(sql: &str, index: &mut usize) -> Result<Token, ParseError> {
-    let bytes = sql.as_bytes();
-    let start = *index;
-    if bytes[*index] == b'-' {
-        *index += 1;
-        require_digit(bytes, *index, "expected digits after '-'")?;
-    }
-    advance_ascii_digits(bytes, index);
-    if bytes.get(*index) == Some(&b'.') {
-        *index += 1;
-        require_digit(bytes, *index, "expected digits after decimal point")?;
-        advance_ascii_digits(bytes, index);
-    }
-    Ok(Token::Number(sql[start..*index].into()))
-}
-
-fn scan_string(sql: &str, index: &mut usize) -> Result<Token, ParseError> {
-    let bytes = sql.as_bytes();
-    let mut cursor = *index;
-    cursor += 1;
-    let mut value = String::new();
-    let mut start = cursor;
-    while cursor < bytes.len() {
-        if bytes[cursor] == b'\\' && matches!(bytes.get(cursor + 1), Some(b'\'' | b'\\')) {
-            value.push_str(&sql[start..cursor]);
-            value.push(bytes[cursor + 1] as char);
-            cursor += 2;
-            start = cursor;
-        } else if bytes[cursor] == b'\'' {
-            value.push_str(&sql[start..cursor]);
-            if bytes.get(cursor + 1) == Some(&b'\'') {
-                value.push('\'');
-                cursor += 2;
-                start = cursor;
-            } else {
-                *index = cursor + 1;
-                return Ok(Token::String(value));
-            }
-        } else {
-            cursor += 1;
-        }
-    }
-    Err(ParseError("unterminated string literal".into()))
-}
-
-fn scan_word(sql: &str, index: &mut usize) -> Token {
-    let bytes = sql.as_bytes();
-    let start = *index;
-    *index += 1;
-    while matches!(
-        bytes.get(*index),
-        Some(b'a'..=b'z' | b'A'..=b'Z' | b'0'..=b'9' | b'_')
-    ) {
-        *index += 1;
-    }
-    Token::Word(sql[start..*index].into())
-}
-
-fn scan_comparison(bytes: &[u8], index: &mut usize) -> Operator {
-    let (operator, width) = match (bytes[*index], bytes.get(*index + 1)) {
-        (b'<', Some(b'=')) => (Operator::Le, 2),
-        (b'<', Some(b'>')) | (b'!', Some(b'=')) => (Operator::Ne, 2),
-        (b'>', Some(b'=')) => (Operator::Ge, 2),
-        (b'=', _) => (Operator::Eq, 1),
-        (b'<', _) => (Operator::Lt, 1),
-        (b'>', _) => (Operator::Gt, 1),
-        _ => unreachable!("only comparison operator starters reach this helper"),
-    };
-    *index += width;
-    operator
-}
-
-fn punctuation_token(byte: u8) -> Token {
-    match byte {
-        b'*' => Token::Star,
-        b'/' => Token::Slash,
-        b'%' => Token::Percent,
-        b'+' => Token::Plus,
-        b',' => Token::Comma,
-        b'.' => Token::Dot,
-        b'(' => Token::LParen,
-        b')' => Token::RParen,
-        b';' => Token::Semicolon,
-        _ => unreachable!("only supported punctuation reaches this helper"),
-    }
 }
 
 pub(super) fn tokenize(sql: &str) -> Result<Vec<Token>, ParseError> {
@@ -141,9 +41,7 @@ pub(super) fn tokenize(sql: &str) -> Result<Vec<Token>, ParseError> {
                 index += 1;
                 punctuation_token(byte)
             }
-            b'-' if matches!(tokens.last(), Some(Token::Number(_) | Token::RParen))
-                || matches!(tokens.last(), Some(Token::Word(word)) if !word.eq_ignore_ascii_case("SELECT")) =>
-            {
+            b'-' if follows_binary_minus_context(&tokens) => {
                 index += 1;
                 Token::Minus
             }

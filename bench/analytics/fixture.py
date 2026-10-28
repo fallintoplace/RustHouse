@@ -6,6 +6,7 @@ This is synthetic data with seven columns, NOT the official hits dataset.
 import argparse
 import random
 import sqlite3
+from contextlib import closing
 from datetime import date, timedelta
 from pathlib import Path
 
@@ -33,6 +34,13 @@ def records(count, seed):
         )
 
 
+def insert_batch(connection, batch):
+    connection.executemany(
+        "INSERT INTO hits VALUES (" + ",".join("?" for _ in FIELDS) + ")",
+        batch,
+    )
+
+
 def generate(directory, rows=10000, seed=42):
     if not 1 <= rows <= 1000000:
         raise ValueError("rows must be in 1..1000000")
@@ -41,7 +49,7 @@ def generate(directory, rows=10000, seed=42):
     names = [name for name, _, _ in FIELDS]
     tsv = directory / "hits.tsv"
     db = directory / "hits.sqlite"
-    with sqlite3.connect(db) as connection, tsv.open("w", encoding="utf-8", newline="\n") as stream:
+    with closing(sqlite3.connect(db)) as connection, connection, tsv.open("w", encoding="utf-8", newline="\n") as stream:
         connection.execute("DROP TABLE IF EXISTS hits")
         connection.execute("CREATE TABLE hits (" +
                            ", ".join(f"{name} {kind}" for name, _, kind in FIELDS) + ")")
@@ -51,10 +59,10 @@ def generate(directory, rows=10000, seed=42):
             stream.write("\t".join(map(str, record)) + "\n")
             batch.append(record)
             if len(batch) == 512:
-                connection.executemany("INSERT INTO hits VALUES (" + ",".join("?" for _ in FIELDS) + ")", batch)
+                insert_batch(connection, batch)
                 batch.clear()
         if batch:
-            connection.executemany("INSERT INTO hits VALUES (" + ",".join("?" for _ in FIELDS) + ")", batch)
+            insert_batch(connection, batch)
     (directory / "create.sql").write_text(
         "CREATE TABLE hits (" + ", ".join(f"{name} {kind}" for name, kind, _ in FIELDS) + ");\n",
         encoding="utf-8",
