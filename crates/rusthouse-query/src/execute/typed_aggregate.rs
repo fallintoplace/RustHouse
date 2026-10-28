@@ -59,7 +59,7 @@ pub(super) fn execute_typed_aggregate<W: Write>(
     if query.limit == Some(0) {
         return Ok(());
     }
-    let mut reader = TypedQueryReader::open(part, &names)?;
+    let mut reader = TypedQueryReader::open_with_metadata(part, &names, &metadata)?;
     let no_filters = query.predicates.is_empty() && query.or_predicates.is_empty();
 
     let mut state = AggregateState::new(*function);
@@ -189,7 +189,7 @@ pub(super) fn execute_grouped_aggregate<W: Write>(
     if query.limit == Some(0) {
         return Ok(());
     }
-    let mut reader = TypedQueryReader::open(part, &names)?;
+    let mut reader = TypedQueryReader::open_with_metadata(part, &names, &metadata)?;
 
     let mut by_key = HashMap::<typed::Key, usize>::new();
     // Keep String keys in an owned map and probe with borrowed bytes.

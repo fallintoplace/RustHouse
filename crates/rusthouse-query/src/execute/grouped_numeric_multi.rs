@@ -63,7 +63,7 @@ pub(super) fn execute<W: Write>(
     let mut groups = Vec::<(Cell, Vec<AggregateState>)>::new();
     let mut by_key = HashMap::<typed::Key, usize>::new();
     let mut by_text = HashMap::<Vec<u8>, usize>::new();
-    let mut reader = TypedQueryReader::open(part, &names)?;
+    let mut reader = TypedQueryReader::open_with_metadata(part, &names, &metadata)?;
     let no_filters = query.predicates.is_empty() && query.or_predicates.is_empty();
     while let Some(batch) = reader.next_batch()? {
         for row in 0..batch[0].len() {
@@ -114,20 +114,49 @@ pub(super) fn execute<W: Write>(
             }
         }
     }
+    let mut bounded_order = None;
     if let Some(order) = &query.order_by {
-        groups.sort_by(|(left, _), (right, _)| {
-            typed::compare_order_cells(left, right, order.descending, order.nulls_first)
-        });
+        let compare = |left: &(Cell, Vec<AggregateState>),
+                       right: &(Cell, Vec<AggregateState>)| {
+            typed::compare_order_cells(&left.0, &right.0, order.descending, order.nulls_first)
+        };
+        let end = query
+            .limit
+            .and_then(|limit| query.offset.unwrap_or(0).checked_add(limit));
+        if let Some(end) = end.filter(|&end| end < groups.len()) {
+            let mut indices = (0..groups.len()).collect::<Vec<_>>();
+            let compare_index = |left: &usize, right: &usize| {
+                compare(&groups[*left], &groups[*right]).then_with(|| left.cmp(right))
+            };
+            indices.select_nth_unstable_by(end, &compare_index);
+            indices.truncate(end);
+            indices.sort_unstable_by(compare_index);
+            bounded_order = Some(indices);
+        } else {
+            groups.sort_by(compare);
+        }
     }
-    for (key, states) in groups.into_iter()
-        .skip(query.offset.unwrap_or(0))
-        .take(query.limit.unwrap_or(usize::MAX))
-    {
-        typed::write_typed_value(output, &key, group_type)?;
+    let write_group = |key: &Cell, states: &[AggregateState], output: &mut W|
+        -> Result<(), ExecutionError> {
+        typed::write_typed_value(output, key, group_type)?;
         for state in states {
             write!(output, "\t{}", state.render())?;
         }
         writeln!(output)?;
+        Ok(())
+    };
+    if let Some(indices) = bounded_order {
+        for index in indices.into_iter().skip(query.offset.unwrap_or(0)) {
+            write_group(&groups[index].0, &groups[index].1, output)?;
+        }
+    } else {
+        for (key, states) in groups
+            .into_iter()
+            .skip(query.offset.unwrap_or(0))
+            .take(query.limit.unwrap_or(usize::MAX))
+        {
+            write_group(&key, &states, output)?;
+        }
     }
     Ok(())
 }

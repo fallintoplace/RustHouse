@@ -38,25 +38,57 @@ fn tokenize_with_limit(sql: &str, max_bytes: usize) -> Result<Vec<Token>, ParseE
     }
     let bytes = sql.as_bytes();
     let mut tokens = Vec::new();
-    let mut index = 0;
+    let mut index = if sql.starts_with('\u{feff}') { 3 } else { 0 };
     while index < bytes.len() {
         let byte = bytes[index];
         let token = match byte {
-            b' ' | b'\t' | b'\r' | b'\n' => {
+            b' ' | b'\t' | b'\r' | b'\n' | b'\x0b' | b'\x0c' => {
                 index += 1;
                 continue;
             }
             b'\'' => scan_string(sql, &mut index)?,
+            b'.' if is_ascii_digit_at(bytes, index + 1) => scan_number(sql, &mut index)?,
+            b'/' if bytes.get(index + 1) == Some(&b'*') => {
+                index += 2;
+                while index + 1 < bytes.len()
+                    && !(bytes[index] == b'*' && bytes[index + 1] == b'/')
+                {
+                    index += 1;
+                }
+                if index + 1 >= bytes.len() {
+                    return Err(ParseError("unterminated block comment".into()));
+                }
+                index += 2;
+                continue;
+            }
             b'*' | b'/' | b'%' | b'+' | b',' | b'.' | b'(' | b')' | b';' => {
                 index += 1;
                 punctuation_token(byte)
+            }
+            b'#' => {
+                index += 1;
+                while index < bytes.len() && !matches!(bytes[index], b'\r' | b'\n') {
+                    index += 1;
+                }
+                continue;
+            }
+            b'-' if bytes.get(index + 1) == Some(&b'-') => {
+                index += 2;
+                while index < bytes.len() && !matches!(bytes[index], b'\r' | b'\n') {
+                    index += 1;
+                }
+                continue;
             }
             b'-' if follows_binary_minus_context(&tokens) => {
                 index += 1;
                 Token::Minus
             }
             b'-' if bytes.get(index + 1) == Some(&b'.') => {
-                return Err(ParseError("expected digits after '-'".into()));
+                if is_ascii_digit_at(bytes, index + 2) {
+                    scan_number(sql, &mut index)?
+                } else {
+                    return Err(ParseError("expected digits after '-'".into()));
+                }
             }
             b'-' if !is_ascii_digit_at(bytes, index + 1) => {
                 index += 1;
@@ -242,4 +274,96 @@ mod tests {
         }
         assert!(tokenize(&" ".repeat(4096)).is_ok());
     }
+    #[test]
+    fn accepts_leading_dot_decimals_and_preserves_subtraction() {
+        assert_eq!(
+            tokenize(".5, -.25 2-.75").unwrap(),
+            vec![
+                Token::Number(".5".into()),
+                Token::Comma,
+                Token::Number("-.25".into()),
+                Token::Number("2".into()),
+                Token::Minus,
+                Token::Number(".75".into()),
+            ]
+        );
+        assert!(tokenize("-.").is_err());
+    }
+
+    #[test]
+    fn preserves_utf8_strings_around_escaped_delimiters() {
+        assert_eq!(
+            tokenize(r"SELECT 'café''s', '東京\_b', '🙂'").unwrap(),
+            vec![
+                Token::Word("SELECT".into()),
+                Token::String("café's".into()),
+                Token::Comma,
+                Token::String(r"東京\_b".into()),
+                Token::Comma,
+                Token::String("🙂".into()),
+            ]
+        );
+    }
+
+    #[test]
+    fn ignores_only_a_leading_utf8_bom() {
+        assert_eq!(
+            tokenize("\u{feff}SELECT 1").unwrap(),
+            vec![Token::Word("SELECT".into()), Token::Number("1".into())]
+        );
+        assert!(tokenize("SELECT \u{feff}1").is_err());
+    }
+
+    #[test]
+    fn accepts_ascii_vertical_tab_and_form_feed_separators() {
+        assert_eq!(
+            tokenize("SELECT\x0b1\x0c+\x0b2").unwrap(),
+            vec![
+                Token::Word("SELECT".into()),
+                Token::Number("1".into()),
+                Token::Plus,
+                Token::Number("2".into()),
+            ]
+        );
+    }
+
+    #[test]
+    fn skips_block_comments_and_rejects_unterminated_blocks() {
+        assert_eq!(
+            tokenize("SELECT/* hidden */1").unwrap(),
+            vec![Token::Word("SELECT".into()), Token::Number("1".into())]
+        );
+        assert!(tokenize("/* standalone */").unwrap().is_empty());
+        assert!(tokenize("SELECT /* never closed").is_err());
+        assert!(tokenize("/*").is_err());
+    }
+
+    #[test]
+    fn skips_clickhouse_hash_line_comments() {
+        assert_eq!(
+            tokenize("SELECT 1 # comment\n + 2").unwrap(),
+            vec![
+                Token::Word("SELECT".into()),
+                Token::Number("1".into()),
+                Token::Plus,
+                Token::Number("2".into()),
+            ]
+        );
+        assert!(tokenize("# only a comment").unwrap().is_empty());
+    }
+
+    #[test]
+    fn skips_double_dash_line_comments() {
+        assert_eq!(
+            tokenize("SELECT 1-- ignore the rest\n + 2").unwrap(),
+            vec![
+                Token::Word("SELECT".into()),
+                Token::Number("1".into()),
+                Token::Plus,
+                Token::Number("2".into()),
+            ]
+        );
+        assert!(tokenize("-- only a comment").unwrap().is_empty());
+    }
+
 }

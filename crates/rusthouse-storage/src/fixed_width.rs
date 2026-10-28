@@ -10,7 +10,7 @@ pub(crate) fn read_fixed_width<R: Read, T, const WIDTH: usize>(
     error_message: &'static str,
     decode: impl Fn([u8; WIDTH]) -> T,
 ) -> io::Result<Vec<T>> {
-    if rows > MAX_BATCH_BYTES / WIDTH {
+    if WIDTH == 0 || WIDTH > READ_BUFFER_BYTES || rows > MAX_BATCH_BYTES / WIDTH {
         return Err(io::Error::new(io::ErrorKind::InvalidInput, error_message));
     }
     let mut result = Vec::with_capacity(rows);
@@ -24,4 +24,27 @@ pub(crate) fn read_fixed_width<R: Read, T, const WIDTH: usize>(
         }));
     }
     Ok(result)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn refuses_invalid_element_widths_without_panicking() {
+        let zero = read_fixed_width::<_, u8, 0>(
+            &mut io::empty(),
+            1,
+            "invalid element width",
+            |_| 0,
+        );
+        assert_eq!(zero.unwrap_err().kind(), io::ErrorKind::InvalidInput);
+        let oversized = read_fixed_width::<_, u8, 16385>(
+            &mut io::empty(),
+            1,
+            "invalid element width",
+            |_| 0,
+        );
+        assert_eq!(oversized.unwrap_err().kind(), io::ErrorKind::InvalidInput);
+    }
 }
