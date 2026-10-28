@@ -1,6 +1,7 @@
 mod arrays;
 mod checksums;
 mod columns;
+pub mod distributed_crc32c;
 mod compression;
 mod database_lock;
 mod dates;
