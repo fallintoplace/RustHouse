@@ -63,6 +63,8 @@ fn parse_copy_header(parser: &mut Parser) -> Result<bool, ParseError> {
         Ok(true)
     } else if parser.keyword("FALSE") {
         Ok(false)
+    } else if parser.tokens.get(parser.index) == Some(&Token::RParen) {
+        Ok(true)
     } else {
         Err(ParseError("HEADER must be TRUE or FALSE".into()))
     }
@@ -212,4 +214,14 @@ mod tests {
             assert!(parse_copy_from(sql).is_err(), "{sql}");
         }
     }
+    #[test]
+    fn accepts_copy_header_shorthand() {
+        let parsed = parse_copy_from("COPY events FROM 'events.csv' WITH (FORMAT CSV, HEADER)")
+            .unwrap()
+            .unwrap();
+        assert_eq!(parsed.format, CopyFormat::Csv);
+        assert!(parsed.header);
+        assert!(parse_copy_from("COPY events FROM 'x.csv' WITH (FORMAT CSV, HEADER, FORMAT TSV)").is_err());
+    }
+
 }
