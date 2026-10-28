@@ -74,6 +74,7 @@ pub(super) fn is_function(name: &str) -> bool {
             | "CONTAINS"
             | "STRIP_PREFIX"
             | "RIGHT"
+            | "RIGHTUTF8"
             | "BASE64_ENCODE"
             | "HASTOKENCASEINSENSITIVE"
             | "ENDS_WITH"
@@ -1592,7 +1593,7 @@ fn parse_at_depth(parser: &mut Parser, depth: usize) -> Result<ConstantValue, Pa
                 None => ConstantValue::Null,
             }
         }
-        "RIGHT" => {
+        "RIGHT" | "RIGHTUTF8" => {
             let input = text_arg(parser, depth + 1)?;
             require(parser, Token::Comma, "RIGHT requires a character count")?;
             let count = integer_arg(parser, depth + 1)?;
