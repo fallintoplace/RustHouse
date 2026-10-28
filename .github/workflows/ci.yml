@@ -75,6 +75,22 @@ jobs:
         run: cargo test -p rusthouse-cli --bin rusthouse --locked
       - name: Build workspace binaries
         run: cargo build --workspace --locked
+      - name: Smoke-test Windows CLI and server
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          & '.\target\debug\rusthouse-server.exe' --help | Out-Null
+          if ($LASTEXITCODE -ne 0) {
+            throw "rusthouse-server --help failed with exit code $LASTEXITCODE"
+          }
+          $rows = @(& '.\target\debug\rusthouse.exe' sql 'SELECT number FROM numbers(3) ORDER BY number' --format tsv-no-header)
+          if ($LASTEXITCODE -ne 0) {
+            throw "rusthouse SQL query failed with exit code $LASTEXITCODE"
+          }
+          $actual = $rows -join "`n"
+          if ($actual -ne "0`n1`n2") {
+            throw "Unexpected SQL query output: $actual"
+          }
 
   analytics-harness:
     name: Analytics harness (Python)
