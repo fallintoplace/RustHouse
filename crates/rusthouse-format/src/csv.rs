@@ -72,7 +72,10 @@ mod tests {
             }
         }
 
-        let mut sink = Calls { count: 0, data: Vec::new() };
+        let mut sink = Calls {
+            count: 0,
+            data: Vec::new(),
+        };
         write_quoted_csv_field(&mut sink, b"hello").unwrap();
         assert_eq!(sink.count, 1);
         assert_eq!(sink.data, b"\"hello\"");
