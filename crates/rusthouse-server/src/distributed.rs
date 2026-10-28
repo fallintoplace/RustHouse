@@ -730,6 +730,13 @@ fn merge_grouped_counts_query(
     max_rows: usize,
     global: Option<&Select>,
 ) -> Result<Vec<u8>, MergeError> {
+    let group_width = match global.map(|query| &query.projection) {
+        Some(Projection::GroupedMultiCount { columns }) => columns.len(),
+        _ => 1,
+    };
+    if !(1..=8).contains(&group_width) {
+        return Err(MergeError::InvalidGroupedCount);
+    }
     let mut expected_header: Option<&[u8]> = None;
     let mut positions = HashMap::<&[u8], usize>::new();
     let mut groups = Vec::<(&[u8], u64)>::new();
@@ -742,10 +749,11 @@ fn merge_grouped_counts_query(
             .position(|&byte| byte == b'\n')
             .ok_or(MergeError::InvalidGroupedCount)?;
         let header = &body[..=header_end];
-        // The local GROUP BY executor writes one key column and count.
+        // Each shard sends exactly N key fields followed by COUNT.
+        // TSV-escaped text cannot embed literal tabs in a field.
         if header.len() <= b"\tcount\n".len()
             || !header.ends_with(b"\tcount\n")
-            || header.iter().filter(|&&byte| byte == b'\t').count() != 1
+            || header.iter().filter(|&&byte| byte == b'\t').count() != group_width
         {
             return Err(MergeError::InvalidGroupedCount);
         }
@@ -771,9 +779,12 @@ fn merge_grouped_counts_query(
             if shard_rows >= *cap {
                 return Err(MergeError::ShardRowLimit);
             }
+            if row.iter().filter(|&&byte| byte == b'\t').count() != group_width {
+                return Err(MergeError::InvalidGroupedCount);
+            }
             let delimiter = row
                 .iter()
-                .position(|&byte| byte == b'\t')
+                .rposition(|&byte| byte == b'\t')
                 .ok_or(MergeError::InvalidGroupedCount)?;
             let key = &row[..delimiter];
             let digits = &row[delimiter + 1..];
@@ -1064,7 +1075,8 @@ pub fn handle(method: &str, body: &[u8], cluster: &Cluster, max_rows: usize) -> 
         }
     } else if grouped_count_query {
         let limit = max_rows.min(250_000);
-        if select.having.is_some()
+        if matches!(select.projection, Projection::GroupedMultiCount { .. })
+            || select.having.is_some()
             || select.order_by.is_some()
             || select.limit.is_some()
             || select.offset.is_some()
@@ -1231,6 +1243,29 @@ mod tests {
             merge_grouped_integer_sums_query(&[shard(2, "region\tsum(amount)\na\t1\nb\t2\n")], 1, "Int64", "region", "amount", Some(&query)),
             Err(MergeError::ShardRowLimit)
         );
+    }
+
+    #[test]
+    fn distributed_multikey_grouped_count_reduces_composite_keys_globally() {
+        let sql = "SELECT region, category, count(*) FROM events GROUP BY region, category HAVING count(*) >= 3 ORDER BY count DESC LIMIT 2";
+        let query = parse_select(sql).unwrap();
+        assert!(is_safe_grouped_count(&query));
+        assert_eq!(
+            grouped_count_shard_sql(sql, &query).as_deref(),
+            Some("SELECT region, category, count(*) FROM events GROUP BY region, category")
+        );
+        let shards = [
+            shard(10, "region\tcategory\tcount\neu\tfood\t2\nus\tfood\t2\n"),
+            shard(10, "region\tcategory\tcount\neu\tfood\t4\nus\tfood\t3\neu\tbooks\t4\n"),
+        ];
+        assert_eq!(
+            merge_grouped_counts_query(&shards, 2, Some(&query)).unwrap(),
+            b"region\tcategory\tcount\neu\tfood\t6\nus\tfood\t5\n"
+        );
+        let malformed = [shard(10, "region\tcategory\tcount\neu\tfood\t2\n"),
+                         shard(10, "region\tcategory\tcount\neu\tbroken\n")];
+        assert_eq!(merge_grouped_counts_query(&malformed, 2, Some(&query)),
+                   Err(MergeError::InvalidGroupedCount));
     }
     #[test]
     fn distributed_count_distinct_uses_global_unique_values() {
