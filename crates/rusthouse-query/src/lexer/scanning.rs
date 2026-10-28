@@ -40,21 +40,20 @@ pub(super) fn scan_string(sql: &str, index: &mut usize) -> Result<Token, ParseEr
     let mut value = String::new();
     let mut start = cursor;
     while cursor < bytes.len() {
-        if bytes[cursor] == b'\\' && matches!(bytes.get(cursor + 1), Some(b'\'' | b'\\')) {
+        let escaped = match (bytes[cursor], bytes.get(cursor + 1)) {
+            (b'\\', Some(b'\'' | b'\\')) => Some(bytes[cursor + 1]),
+            (b'\'', Some(b'\'')) => Some(b'\''),
+            _ => None,
+        };
+        if let Some(escaped) = escaped {
             value.push_str(&sql[start..cursor]);
-            value.push(bytes[cursor + 1] as char);
+            value.push(escaped as char);
             cursor += 2;
             start = cursor;
         } else if bytes[cursor] == b'\'' {
             value.push_str(&sql[start..cursor]);
-            if bytes.get(cursor + 1) == Some(&b'\'') {
-                value.push('\'');
-                cursor += 2;
-                start = cursor;
-            } else {
-                *index = cursor + 1;
-                return Ok(Token::String(value));
-            }
+            *index = cursor + 1;
+            return Ok(Token::String(value));
         } else {
             cursor += 1;
         }
