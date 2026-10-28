@@ -1,0 +1,19 @@
+{
+  "name": "join-page-offset",
+  "description": "Compare deterministic JOIN pagination with different OFFSET boundaries",
+  "queries": [
+    {
+      "name": "first-page",
+      "sql": "SELECT e.event_id, a.tier FROM events e JOIN accounts a ON e.user_id = a.user_id ORDER BY e.event_id LIMIT 10 OFFSET 0"
+    },
+    {
+      "name": "mid-page",
+      "sql": "SELECT e.event_id, a.tier FROM events e JOIN accounts a ON e.user_id = a.user_id ORDER BY e.event_id LIMIT 10 OFFSET 30"
+    },
+    {
+      "name": "short-page",
+      "sql": "SELECT e.event_id, a.tier FROM events e JOIN accounts a ON e.user_id = a.user_id ORDER BY e.event_id LIMIT 5 OFFSET 60"
+    }
+  ],
+  "max_rows": 16000
+}
