@@ -85,6 +85,7 @@ pub(super) fn is_function(name: &str) -> bool {
             | "BASE64_DECODE"
             | "APPENDTRAILINGCHARIFABSENT"
             | "RPAD"
+            | "PORT"
             | "SPACE"
     )
 }
@@ -1906,6 +1907,39 @@ fn parse_at_depth(parser: &mut Parser, depth: usize) -> Result<ConstantValue, Pa
                         }
                         ConstantValue::Text(value.repeat(count))
                     }
+                }
+                _ => ConstantValue::Null,
+            }
+        }
+        "PORT" => {
+            let input = text_arg(parser, depth + 1)?;
+            let default = if parser.take(Token::Comma) {
+                integer_arg(parser, depth + 1)?
+            } else {
+                Some(0)
+            };
+            require(parser, Token::RParen, "expected ')' after port arguments")?;
+            match (input, default) {
+                (Some(input), Some(default)) => {
+                    if !(0..=65535).contains(&default) {
+                        return Err(ParseError("port default must fit UInt16".into()));
+                    }
+                    let authority = input
+                        .split_once("://")
+                        .map_or(input.as_str(), |(_, rest)| rest)
+                        .split(['/', '?', '#'])
+                        .next()
+                        .unwrap_or("");
+                    let host_port = authority.rsplit('@').next().unwrap_or("");
+                    let port = if host_port.starts_with('[') {
+                        host_port.split_once(']').and_then(|(_, rest)| rest.strip_prefix(':'))
+                    } else if host_port.matches(':').count() == 1 {
+                        host_port.rsplit_once(':').map(|(_, port)| port)
+                    } else {
+                        None
+                    };
+                    let value = port.and_then(|port| port.parse::<u16>().ok());
+                    ConstantValue::Integer(value.map_or(default, i64::from))
                 }
                 _ => ConstantValue::Null,
             }
