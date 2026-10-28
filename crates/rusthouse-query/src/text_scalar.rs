@@ -54,6 +54,7 @@ pub(super) fn is_function(name: &str) -> bool {
             | "SUBSTRING_INDEX"
             | "SUBSTRINGINDEXUTF8"
             | "QUERYSTRINGANDFRAGMENT"
+            | "FORMATREADABLEDECIMALSIZE"
             | "TO_INT64"
             | "TRIM"
             | "LTRIM"
@@ -128,6 +129,33 @@ fn parse_at_depth(parser: &mut Parser, depth: usize) -> Result<ConstantValue, Pa
                         .map_err(|_| ParseError("lengthUTF8 result exceeds Int64".into()))?,
                 ),
                 None => ConstantValue::Null,
+            }
+        }
+        "FORMATREADABLEDECIMALSIZE" => {
+            let value = integer_arg(parser, depth + 1)?;
+            let precision = if parser.take(Token::Comma) {
+                integer_arg(parser, depth + 1)?
+            } else {
+                Some(2)
+            };
+            require(parser, Token::RParen, "formatReadableDecimalSize requires ')'")?;
+            match (value, precision) {
+                (Some(value), Some(precision)) => {
+                    let precision = usize::try_from(precision)
+                        .map_err(|_| ParseError("precision must be between 0 and 12".into()))?;
+                    if precision > 12 {
+                        return Err(ParseError("precision must be between 0 and 12".into()));
+                    }
+                    const UNITS: &[&str] = &[" B", " KB", " MB", " GB", " TB", " PB", " EB"];
+                    let mut scaled = value as f64;
+                    let mut unit = 0;
+                    while scaled.abs() >= 1000.0 && unit + 1 < UNITS.len() {
+                        scaled /= 1000.0;
+                        unit += 1;
+                    }
+                    ConstantValue::Text(format!("{scaled:.precision$}{}", UNITS[unit]))
+                }
+                _ => ConstantValue::Null,
             }
         }
         "ASCII" => {
@@ -2004,5 +2032,24 @@ fn text_arg(parser: &mut Parser, depth: usize) -> Result<Option<String>, ParseEr
         _ => Err(ParseError(
             "expected a string literal or string function".into(),
         )),
+    }
+}
+
+#[cfg(test)]
+mod clickhouse_decimal_size_tests {
+    use crate::{parse_select, ConstantValue, Projection};
+    #[test]
+    fn formats_decimal_byte_units_and_precisions() {
+        for (sql, expected) in [
+            ("SELECT formatReadableDecimalSize(1)", "1.00 B"),
+            ("SELECT formatReadableDecimalSize(1024)", "1.02 KB"),
+            ("SELECT formatReadableDecimalSize(1048576)", "1.05 MB"),
+            ("SELECT formatReadableDecimalSize(192851925)", "192.85 MB"),
+            ("SELECT formatReadableDecimalSize(1000, 0)", "1 KB"),
+        ] {
+            assert!(matches!(parse_select(sql).unwrap().projection, Projection::Constants(values)
+                if values.len() == 1 && values[0].value == ConstantValue::Text(expected.into())), "{sql}");
+        }
+        assert!(parse_select("SELECT formatReadableDecimalSize(1, 13)").is_err());
     }
 }
