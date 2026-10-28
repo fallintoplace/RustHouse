@@ -319,3 +319,83 @@ mod tests {
         assert_eq!(value.at_path("x").unwrap().raw(), "2");
     }
 }
+
+pub(crate) fn pretty_json(input: &str) -> Result<String, &'static str> {
+    parse_json(input)?;
+    let bytes = input.as_bytes();
+    let mut result = Vec::with_capacity(input.len().min(MAX_JSON_BYTES));
+    let mut containers: Vec<bool> = Vec::new();
+    let mut in_string = false;
+    let mut escaped = false;
+
+    for (index, &byte) in bytes.iter().enumerate() {
+        if in_string {
+            result.push(byte);
+            if escaped {
+                escaped = false;
+            } else if byte == b'\\' {
+                escaped = true;
+            } else if byte == b'"' {
+                in_string = false;
+            }
+            continue;
+        }
+        match byte {
+            b'"' => {
+                in_string = true;
+                result.push(byte);
+            }
+            b'{' | b'[' => {
+                result.push(byte);
+                let next = bytes[index + 1..].iter().copied()
+                    .find(|value| !value.is_ascii_whitespace());
+                let nonempty = next != Some(if byte == b'{' { b'}' } else { b']' });
+                containers.push(nonempty);
+                if nonempty {
+                    result.push(b'\n');
+                    result.extend(std::iter::repeat_n(b' ', containers.len() * 2));
+                }
+            }
+            b'}' | b']' => {
+                let nonempty = containers.pop().ok_or("invalid JSON nesting")?;
+                if nonempty {
+                    result.push(b'\n');
+                    result.extend(std::iter::repeat_n(b' ', containers.len() * 2));
+                }
+                result.push(byte);
+            }
+            b',' => {
+                result.push(byte);
+                result.push(b'\n');
+                result.extend(std::iter::repeat_n(b' ', containers.len() * 2));
+            }
+            b':' => {
+                result.extend_from_slice(b": ");
+            }
+            whitespace if whitespace.is_ascii_whitespace() => {}
+            other => result.push(other),
+        }
+        if result.len() > MAX_JSON_BYTES {
+            return Err("pretty JSON exceeds 1 MiB");
+        }
+    }
+    if result.len() > MAX_JSON_BYTES {
+        return Err("pretty JSON exceeds 1 MiB");
+    }
+    String::from_utf8(result).map_err(|_| "pretty JSON must be UTF-8")
+}
+
+#[cfg(test)]
+mod pretty_json_parity_tests {
+    use super::pretty_json;
+    #[test]
+    fn formats_objects_arrays_and_escaped_text() {
+        assert_eq!(
+            pretty_json(r#"{"a":1,"b":[true,{"c":"hello"}]}"#).unwrap(),
+            "{\n  \"a\": 1,\n  \"b\": [\n    true,\n    {\n      \"c\": \"hello\"\n    }\n  ]\n}"
+        );
+        assert_eq!(pretty_json(r#"{"empty":[]}"#).unwrap(), "{\n  \"empty\": []\n}");
+        assert_eq!(pretty_json(" [ ] ").unwrap(), "[]");
+        assert!(pretty_json("{bad}").is_err());
+    }
+}
