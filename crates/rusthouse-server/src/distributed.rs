@@ -164,6 +164,7 @@ struct ShardResponse {
     kind: Option<String>,
     key_kind: Option<String>,
     schema: Vec<u8>,
+    multi_kinds: Option<Vec<String>>,
 }
 
 fn read_shard(
@@ -171,6 +172,7 @@ fn read_shard(
     sql: &str,
     sum_schema: Option<(&str, &str)>,
     group_schema: Option<(&str, &str)>,
+    multi_schema: Option<&[(AggregateFunction, String)]>,
     table: &str,
 ) -> Result<ShardResponse, String> {
     let cap = shard_row_cap(peer)?;
@@ -188,6 +190,15 @@ fn read_shard(
             Ok(kind)
         })
         .transpose()?;
+    let multi_kinds = multi_schema.map(|items| {
+        items.iter().map(|(function, column)| {
+            if *function == AggregateFunction::Count {
+                shard_column_kind(&schema_response, column)
+            } else {
+                shard_integer_kind(&schema_response, column)
+            }
+        }).collect::<Result<Vec<_>, _>>()
+    }).transpose()?;
     let result = remote::query(peer, sql)?;
     if result.status != 200 {
         return Err(format!("peer returned HTTP {}", result.status));
@@ -201,6 +212,7 @@ fn read_shard(
         kind,
         key_kind,
         schema,
+        multi_kinds,
     })
 }
 
@@ -830,6 +842,144 @@ fn merge_grouped_integer_extrema(
     Ok(output)
 }
 
+
+/// Separate partial state for each exact aggregate in a fused GROUP BY.
+enum GroupedMetric {
+    Count(u64),
+    Signed(Option<i128>),
+    Unsigned(Option<u128>),
+}
+
+fn merge_grouped_fused_metrics(
+    shards: &[(usize, Vec<u8>)],
+    max_rows: usize,
+    keys: &[String],
+    items: &[(AggregateFunction, String)],
+    kinds: &[String],
+) -> Result<Vec<u8>, MergeError> {
+    if keys.is_empty() || items.len() < 2 || items.len() != kinds.len() {
+        return Err(MergeError::InvalidGroupedSum);
+    }
+    let mut header = keys.join("\t");
+    for (function, column) in items {
+        header.push_str(&format!("\t{}({column})", function.name()));
+    }
+    header.push('\n');
+    let state = || items.iter().zip(kinds).map(|((function, _), kind)| {
+        if *function == AggregateFunction::Count {
+            GroupedMetric::Count(0)
+        } else if kind.strip_prefix("Nullable(").unwrap_or(kind).starts_with("UInt") {
+            GroupedMetric::Unsigned(None)
+        } else {
+            GroupedMetric::Signed(None)
+        }
+    }).collect::<Vec<_>>();
+    let mut positions = HashMap::<&[u8], usize>::new();
+    let mut groups = Vec::<(&[u8], Vec<GroupedMetric>)>::new();
+    for (cap, body) in shards {
+        if *cap == 0 || !body.ends_with(b"\n") || !body.starts_with(header.as_bytes()) {
+            return Err(MergeError::InvalidGroupedSum);
+        }
+        let records = &body[header.len()..];
+        if records.is_empty() {
+            continue;
+        }
+        let mut shard_rows = 0usize;
+        for row in records[..records.len() - 1].split(|&b| b == b'\n') {
+            shard_rows = shard_rows.checked_add(1).ok_or(MergeError::CoordinatorLimit)?;
+            if shard_rows >= *cap {
+                return Err(MergeError::ShardRowLimit);
+            }
+            let delimiters = row.iter().enumerate()
+                .filter_map(|(position, &b)| (b == b'\t').then_some(position))
+                .collect::<Vec<_>>();
+            if delimiters.len() != keys.len() + items.len() - 1 {
+                return Err(MergeError::InvalidGroupedSum);
+            }
+            let key_end = delimiters[keys.len() - 1];
+            let key = &row[..key_end];
+            let fields = row[key_end + 1..].split(|&b| b == b'\t').collect::<Vec<_>>();
+            if fields.len() != items.len() {
+                return Err(MergeError::InvalidGroupedSum);
+            }
+            let index = if let Some(&index) = positions.get(key) {
+                index
+            } else {
+                if groups.len() >= max_rows {
+                    return Err(MergeError::CoordinatorLimit);
+                }
+                let index = groups.len();
+                positions.insert(key, index);
+                groups.push((key, state()));
+                index
+            };
+            for (((function, _), field), metric) in items.iter()
+                .zip(fields).zip(groups[index].1.iter_mut())
+            {
+                if field.is_empty() {
+                    return Err(MergeError::InvalidGroupedSum);
+                }
+                match metric {
+                    GroupedMetric::Count(value) if *function == AggregateFunction::Count => {
+                        let partial = std::str::from_utf8(field)
+                            .map_err(|_| MergeError::InvalidGroupedSum)?
+                            .parse::<u64>().map_err(|_| MergeError::InvalidGroupedSum)?;
+                        *value = value.checked_add(partial).ok_or(MergeError::CountOverflow)?;
+                    }
+                    GroupedMetric::Signed(current) => {
+                        if field == b"NULL" { continue; }
+                        let value = std::str::from_utf8(field)
+                            .map_err(|_| MergeError::InvalidGroupedSum)?
+                            .parse::<i128>().map_err(|_| MergeError::InvalidGroupedSum)?;
+                        *current = Some(match (*function, *current) {
+                            (AggregateFunction::Sum, Some(previous)) =>
+                                previous.checked_add(value).ok_or(MergeError::SumOverflow)?,
+                            (AggregateFunction::Min, Some(previous)) => previous.min(value),
+                            (AggregateFunction::Max, Some(previous)) => previous.max(value),
+                            (_, None) => value,
+                            _ => return Err(MergeError::InvalidGroupedSum),
+                        });
+                    }
+                    GroupedMetric::Unsigned(current) => {
+                        if field == b"NULL" { continue; }
+                        let value = std::str::from_utf8(field)
+                            .map_err(|_| MergeError::InvalidGroupedSum)?
+                            .parse::<u128>().map_err(|_| MergeError::InvalidGroupedSum)?;
+                        *current = Some(match (*function, *current) {
+                            (AggregateFunction::Sum, Some(previous)) =>
+                                previous.checked_add(value).ok_or(MergeError::SumOverflow)?,
+                            (AggregateFunction::Min, Some(previous)) => previous.min(value),
+                            (AggregateFunction::Max, Some(previous)) => previous.max(value),
+                            (_, None) => value,
+                            _ => return Err(MergeError::InvalidGroupedSum),
+                        });
+                    }
+                    _ => return Err(MergeError::InvalidGroupedSum),
+                }
+            }
+        }
+    }
+    let mut output = header.into_bytes();
+    for (key, metrics) in groups {
+        let mut row = key.to_vec();
+        for metric in metrics {
+            row.push(b'\t');
+            let value = match metric {
+                GroupedMetric::Count(value) => value.to_string(),
+                GroupedMetric::Signed(value) => value.map(|v| v.to_string()).unwrap_or("NULL".into()),
+                GroupedMetric::Unsigned(value) => value.map(|v| v.to_string()).unwrap_or("NULL".into()),
+            };
+            row.extend_from_slice(value.as_bytes());
+        }
+        row.push(b'\n');
+        if output.len().checked_add(row.len()).is_none_or(|size| size > MAX_RESPONSE_BYTES) {
+            return Err(MergeError::CoordinatorLimit);
+        }
+        output.extend_from_slice(&row);
+    }
+    Ok(output)
+}
+
 /// Reduce grouped COUNT results by their canonical TSV-encoded key.
 /// Preserve first-seen key order, reject malformed rows, and only emit a
 /// complete bounded result. Shards may hold overlapping group *keys*, but
@@ -1006,6 +1156,7 @@ pub fn handle(method: &str, body: &[u8], cluster: &Cluster, max_rows: usize) -> 
                 || is_safe_grouped_extremum(&select)
                 || is_safe_grouped_multikey_sum(&select)
                 || is_safe_grouped_multikey_extremum(&select)
+                || is_safe_grouped_fused_metrics(&select)
                 || is_safe_sum(&select)
                 || is_safe_extremum(&select) =>
         {
@@ -1028,6 +1179,7 @@ pub fn handle(method: &str, body: &[u8], cluster: &Cluster, max_rows: usize) -> 
     let grouped_extremum_query = is_safe_grouped_extremum(&select);
     let grouped_multikey_sum_query = is_safe_grouped_multikey_sum(&select);
     let grouped_multikey_extremum_query = is_safe_grouped_multikey_extremum(&select);
+    let grouped_fused_query = is_safe_grouped_fused_metrics(&select);
     let sum_query = is_safe_sum(&select);
     let shard_sql = if is_safe_scan(&select) {
         match unpaged_scan_sql(sql, &select) {
@@ -1093,6 +1245,12 @@ pub fn handle(method: &str, body: &[u8], cluster: &Cluster, max_rows: usize) -> 
             Some((table.as_str(), items[0].1.as_str())),
         _ => None,
     };
+    let multi_schema = match &select.projection {
+        Projection::GroupedAggregates { items, .. }
+        | Projection::GroupedMultiAggregates { items, .. } if grouped_fused_query =>
+            Some(items.as_slice()),
+        _ => None,
+    };
     let group_schema = match (&select.source, &select.projection) {
         (
             Some(Source::Table(table)),
@@ -1121,7 +1279,7 @@ pub fn handle(method: &str, body: &[u8], cluster: &Cluster, max_rows: usize) -> 
             .peers()
             .iter()
             .map(|&peer| {
-                scope.spawn(move || read_shard(peer, shard_query, sum_schema, group_schema, table))
+                scope.spawn(move || read_shard(peer, shard_query, sum_schema, group_schema, multi_schema, table))
             })
             .collect::<Vec<_>>();
         handles
@@ -1136,6 +1294,7 @@ pub fn handle(method: &str, body: &[u8], cluster: &Cluster, max_rows: usize) -> 
     let mut shards = Vec::with_capacity(results.len());
     let mut sum_type: Option<String> = None;
     let mut group_key_kind: Option<String> = None;
+    let mut multi_kinds: Option<Vec<String>> = None;
     let mut expected_schema: Option<Vec<u8>> = None;
     for result in results {
         match result {
@@ -1145,6 +1304,7 @@ pub fn handle(method: &str, body: &[u8], cluster: &Cluster, max_rows: usize) -> 
                 kind,
                 key_kind,
                 schema,
+                multi_kinds: shard_multi_kinds,
             }) => {
                 if expected_schema
                     .as_ref()
@@ -1178,6 +1338,15 @@ pub fn handle(method: &str, body: &[u8], cluster: &Cluster, max_rows: usize) -> 
                         );
                     }
                     group_key_kind = Some(key_kind);
+                }
+                if let Some(kinds) = shard_multi_kinds {
+                    if multi_kinds.as_ref().is_some_and(|prior| prior != &kinds) {
+                        return Response::text(
+                            "409 Conflict",
+                            "distributed grouped metric column types disagree\n",
+                        );
+                    }
+                    multi_kinds = Some(kinds);
                 }
                 shards.push((cap, body));
             }
@@ -1216,6 +1385,17 @@ pub fn handle(method: &str, body: &[u8], cluster: &Cluster, max_rows: usize) -> 
             }
             _ => Err(MergeError::InvalidGroupedSum),
         }
+    } else if grouped_fused_query {
+        let (keys, items) = match &select.projection {
+            Projection::GroupedAggregates { column, items } =>
+                (vec![column.clone()], items.as_slice()),
+            Projection::GroupedMultiAggregates { columns, items } =>
+                (columns.clone(), items.as_slice()),
+            _ => unreachable!("validated grouped fused metrics"),
+        };
+        multi_kinds.as_ref().map_or(Err(MergeError::InvalidGroupedSum), |kinds| {
+            merge_grouped_fused_metrics(&shards, max_rows.min(250_000), &keys, items, kinds)
+        })
     } else if grouped_multikey_extremum_query {
         match (sum_type.as_deref(), &select.projection) {
             (Some(kind), Projection::GroupedMultiAggregates { columns, items }) => {
@@ -1512,6 +1692,55 @@ mod tests {
                 "country\tproduct", "price", AggregateFunction::Max, None,
             ),
             Err(MergeError::InvalidExtremum)
+        );
+    }
+
+    #[test]
+    fn distributed_grouped_fused_metrics_reduce_each_partial_correctly() {
+        let query = parse_select(
+            "SELECT region, sum(revenue), count(revenue), min(revenue), max(revenue) FROM sales GROUP BY region",
+        ).unwrap();
+        assert!(is_safe_grouped_fused_metrics(&query));
+        let items = vec![
+            (AggregateFunction::Sum, "revenue".to_owned()),
+            (AggregateFunction::Count, "revenue".to_owned()),
+            (AggregateFunction::Min, "revenue".to_owned()),
+            (AggregateFunction::Max, "revenue".to_owned()),
+        ];
+        let shards = [
+            shard(10, "region\tsum(revenue)\tcount(revenue)\tmin(revenue)\tmax(revenue)\neu\t4\t2\t1\t3\nus\tNULL\t0\tNULL\tNULL\n"),
+            shard(10, "region\tsum(revenue)\tcount(revenue)\tmin(revenue)\tmax(revenue)\neu\t7\t1\t7\t7\nus\t8\t1\t8\t8\n"),
+        ];
+        assert_eq!(
+            merge_grouped_fused_metrics(&shards, 10, &["region".into()], &items,
+                &["Int64".into(), "Int64".into(), "Int64".into(), "Int64".into()]).unwrap(),
+            b"region\tsum(revenue)\tcount(revenue)\tmin(revenue)\tmax(revenue)\neu\t11\t3\t1\t7\nus\t8\t1\t8\t8\n"
+        );
+    }
+
+    #[test]
+    fn distributed_fused_multikey_metrics_validate_row_width() {
+        let query = parse_select(
+            "SELECT region, category, sum(price), count(price) FROM sales GROUP BY region, category",
+        ).unwrap();
+        assert!(is_safe_grouped_fused_metrics(&query));
+        let items = vec![(AggregateFunction::Sum, "price".into()),
+                         (AggregateFunction::Count, "price".into())];
+        let shards = [
+            shard(10, "region\tcategory\tsum(price)\tcount(price)\neu\tbook\t5\t2\n"),
+            shard(10, "region\tcategory\tsum(price)\tcount(price)\neu\tbook\t4\t1\n"),
+        ];
+        assert_eq!(
+            merge_grouped_fused_metrics(&shards, 10, &["region".into(), "category".into()],
+                &items, &["UInt64".into(), "UInt64".into()]).unwrap(),
+            b"region\tcategory\tsum(price)\tcount(price)\neu\tbook\t9\t3\n"
+        );
+        assert_eq!(
+            merge_grouped_fused_metrics(
+                &[shard(10, "region\tcategory\tsum(price)\tcount(price)\neu\tbook\t5\n")],
+                10, &["region".into(), "category".into()],
+                &items, &["UInt64".into(), "UInt64".into()]),
+            Err(MergeError::InvalidGroupedSum)
         );
     }
     #[test]
