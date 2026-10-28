@@ -11,26 +11,11 @@ fn value(sql: &str) -> ConstantValue {
 #[test]
 fn clickhouse_compatibility_cases() {
     for (sql, expected) in [
-        (
-            "SELECT port('https://example.com:8123/path')",
-            ConstantValue::Integer(8123),
-        ),
-        (
-            "SELECT port('https://example.com')",
-            ConstantValue::Integer(0),
-        ),
-        (
-            "SELECT port('http://example.com', 443)",
-            ConstantValue::Integer(443),
-        ),
-        (
-            "SELECT port('http://[::1]:8080/x')",
-            ConstantValue::Integer(8080),
-        ),
-        (
-            "SELECT port(NULL)",
-            ConstantValue::Null,
-        ),
+        ("SELECT port('https://example.com:8123/path')", ConstantValue::Integer(8123)),
+        ("SELECT port('https://example.com')", ConstantValue::Integer(0)),
+        ("SELECT port('http://example.com', 443)", ConstantValue::Integer(443)),
+        ("SELECT port('http://[::1]:8080/x')", ConstantValue::Integer(8080)),
+        ("SELECT port(NULL)", ConstantValue::Null),
     ] {
         assert_eq!(value(sql), expected, "{sql}");
     }
