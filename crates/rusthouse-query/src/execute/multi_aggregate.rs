@@ -376,14 +376,6 @@ pub(super) fn execute<W: Write>(
     if query.limit == Some(0) {
         return Ok(());
     }
-    if query.predicates.is_empty() && query.or_predicates.is_empty() {
-        if let Some(results) = generated_series_metrics(start, rows, step, items) {
-            if query.offset.unwrap_or(0) == 0 {
-                writeln!(output, "{}", results?.join("\t"))?;
-            }
-            return Ok(());
-        }
-    }
     let mut states = items
         .iter()
         .map(|item| match item.function {
@@ -540,6 +532,14 @@ pub(super) fn execute_numbers<W: Write>(
     )?;
     if query.limit == Some(0) {
         return Ok(());
+    }
+    if query.predicates.is_empty() && query.or_predicates.is_empty() {
+        if let Some(results) = generated_series_metrics(start, rows, step, items) {
+            if query.offset.unwrap_or(0) == 0 {
+                writeln!(output, "{}", results?.join("\t"))?;
+            }
+            return Ok(());
+        }
     }
     let mut states = items
         .iter()
