@@ -111,14 +111,19 @@ mod tests {
     }
     #[test]
     fn short_quote_heavy_fields_need_only_one_writer_call() {
-        struct CountWrites { writes: usize, bytes: Vec<u8> }
+        struct CountWrites {
+            writes: usize,
+            bytes: Vec<u8>,
+        }
         impl Write for CountWrites {
             fn write(&mut self, bytes: &[u8]) -> io::Result<usize> {
                 self.writes += 1;
                 self.bytes.extend_from_slice(bytes);
                 Ok(bytes.len())
             }
-            fn flush(&mut self) -> io::Result<()> { Ok(()) }
+            fn flush(&mut self) -> io::Result<()> {
+                Ok(())
+            }
         }
         let mut output = CountWrites { writes: 0, bytes: Vec::new() };
         write_quoted_csv_field(&mut output, b"a\"\"b").unwrap();
