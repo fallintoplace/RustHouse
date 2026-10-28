@@ -8,6 +8,32 @@ use std::io::Write;
 use std::path::Path;
 
 const MAX_GROUPS: usize = 200_000;
+const MAX_PARALLEL_KEY_BYTES: usize = 64 * 1024 * 1024;
+
+fn reserve_parallel_group(
+    budget: &std::sync::atomic::AtomicUsize,
+    keys: &[Key],
+) -> Result<(), ExecutionError> {
+    use std::sync::atomic::Ordering;
+    let fixed = keys.len().checked_mul(
+        std::mem::size_of::<Key>() + std::mem::size_of::<Cell>()
+    ).ok_or_else(|| ExecutionError::Invalid("GROUP BY key accounting overflow".into()))?;
+    let bytes = keys.iter().try_fold(fixed, |sum, key| {
+        let extra = match key {
+            Key::Text(text) => text.len().checked_mul(2),
+            Key::Uuid(value) => value.len().checked_mul(2),
+            _ => Some(0),
+        }.ok_or_else(|| ExecutionError::Invalid("GROUP BY key accounting overflow".into()))?;
+        sum.checked_add(extra)
+            .ok_or_else(|| ExecutionError::Invalid("GROUP BY key accounting overflow".into()))
+    })?;
+    budget.fetch_update(Ordering::AcqRel, Ordering::Acquire, |current| {
+        current.checked_add(bytes).filter(|&total| total <= MAX_PARALLEL_KEY_BYTES)
+    }).map(|_| ()).map_err(|_| ExecutionError::Invalid(
+        "parallel GROUP BY exceeds 64 MiB worker key budget".into()
+    ))
+}
+
 
 // Reinterpret signed 8-bit keys as indices, retaining the original signed
 // values in result cells. A two-byte tuple needs at most 65,536 slots.
@@ -37,7 +63,9 @@ fn parallel_grouped_parts(
         return Ok(None);
     }
     let chunk_size = parts.len().div_ceil(workers);
+    let retained = std::sync::atomic::AtomicUsize::new(0);
     let chunks = std::thread::scope(|scope| {
+        let retained = &retained;
         let handles = parts.chunks(chunk_size).map(|paths| {
             scope.spawn(move || -> Result<Vec<(Vec<Cell>, u64)>, ExecutionError> {
                 let mut rows: Vec<(Vec<Cell>, u64)> = Vec::new();
@@ -61,6 +89,7 @@ fn parallel_grouped_parts(
                                         "GROUP BY supports at most 200000 groups".into(),
                                     ));
                                 }
+                                reserve_parallel_group(retained, &key)?;
                                 index.insert(key, rows.len());
                                 rows.push((
                                     group_indices.iter()
@@ -358,4 +387,23 @@ pub(super) fn execute<W: Write>(
         }
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod parallel_key_budget_tests {
+    use super::*;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    #[test]
+    fn concurrent_group_reservations_never_exceed_global_budget() {
+        let used = AtomicUsize::new(0);
+        let huge_key = Key::Text(vec![0; 1024 * 1024]);
+        let group = [huge_key];
+        let count = std::thread::scope(|scope| {
+            let handles = (0..64).map(|_| scope.spawn(|| reserve_parallel_group(&used, &group).is_ok()))
+                .collect::<Vec<_>>();
+            handles.into_iter().filter(|task| task.join().unwrap()).count()
+        });
+        assert!(count > 0 && count < 64);
+        assert!(used.load(Ordering::Relaxed) <= MAX_PARALLEL_KEY_BYTES);
+    }
 }
