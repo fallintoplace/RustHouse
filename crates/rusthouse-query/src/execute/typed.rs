@@ -206,20 +206,20 @@ fn parse_literal(data_type: &str, literal: &str) -> Result<Cell, ExecutionError>
 
 /// Decode a validated UUID literal once for binary comparisons during scans.
 fn uuid_literal_bytes(text: &str) -> Result<[u8; 16], ExecutionError> {
-    parse_literal("UUID", text)?;
-    let mut output = [0u8; 16];
-    let mut digits = text.bytes().filter(|byte| *byte != b'-');
-    for byte in &mut output {
-        let high = digits.next().expect("validated UUID").to_ascii_lowercase();
-        let low = digits.next().expect("validated UUID").to_ascii_lowercase();
-        let nibble = |value: u8| match value {
-            b'0'..=b'9' => value - b'0',
-            b'a'..=b'f' => value - b'a' + 10,
-            _ => unreachable!("validated UUID"),
-        };
-        *byte = (nibble(high) << 4) | nibble(low);
+    // Validate directly on the source bytes. The old path first allocated
+    // a lowercased UUID display String just to discard it before decoding.
+    let valid = text.len() == 36
+        && text.bytes().enumerate().all(|(index, byte)| {
+            if matches!(index, 8 | 13 | 18 | 23) {
+                byte == b'-'
+            } else {
+                byte.is_ascii_hexdigit()
+            }
+        });
+    if !valid {
+        return Err(ExecutionError::Invalid("invalid UUID literal".into()));
     }
-    Ok(output)
+    Ok(uuid_key(text))
 }
 
 fn matches_uuid_compare(value: &[u8; 16], target: &[u8; 16], operator: Operator) -> bool {
@@ -1908,5 +1908,30 @@ mod single_column_distinct_perf_tests {
         execute(&query, Some(&part), &mut output).unwrap();
         assert_eq!(output, b"word\nalpha\nbeta\ngamma\n");
         std::fs::remove_dir_all(part).unwrap();
+    }
+}
+
+#[cfg(test)]
+mod uuid_literal_byte_parse_tests {
+    use super::uuid_literal_bytes;
+
+    #[test]
+    fn decodes_uppercase_and_lowercase_without_changing_byte_order() {
+        let lower = uuid_literal_bytes("61f0c404-5cb3-11e7-907b-a6006ad3dba0").unwrap();
+        let upper = uuid_literal_bytes("61F0C404-5CB3-11E7-907B-A6006AD3DBA0").unwrap();
+        assert_eq!(lower, upper);
+        assert_eq!(lower[..4], [0x61, 0xf0, 0xc4, 0x04]);
+        assert_eq!(lower[15], 0xa0);
+    }
+
+    #[test]
+    fn rejects_invalid_uuid_literals_before_decoding() {
+        for invalid in [
+            "", "1", "61f0c4045cb311e7907ba6006ad3dba0",
+            "61f0c404-5cb3-11e7-907b-a6006ad3dbzz",
+            "61f0c404-5cb3-11e7-907b-a6006ad3dbax",
+        ] {
+            assert!(uuid_literal_bytes(invalid).is_err(), "{invalid}");
+        }
     }
 }
