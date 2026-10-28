@@ -25,7 +25,7 @@ QUERIES = (
 
 def cli(binary, directory, statement):
     result = subprocess.run(
-        [str(binary), "sql", statement, "--database", str(directory), "--format", "tsv"],
+        [str(binary), "sql", statement, "--database", str(directory)],
         capture_output=True,
         timeout=30,
         check=False,
@@ -103,7 +103,7 @@ def check_parity(binary, server):
                     raise AssertionError(f"unexpected HTTP status: {error.code}")
             else:
                 raise AssertionError("HTTP accepted a write operation")
-            if cli(binary, directory, "SELECT count(*) FROM events") != b"count\\n3\\n":
+            if cli(binary, directory, "SELECT count(*) FROM events") != b"count\n3\n":
                 raise AssertionError("rejected HTTP write changed the database")
             return {"queries_checked": len(QUERIES), "rows": 3, "http_read_only": True}
         finally:
@@ -123,7 +123,7 @@ def main(argv=None):
     try:
         report = check_parity(args.binary, args.server)
     except (OSError, ValueError, RuntimeError, AssertionError, subprocess.TimeoutExpired) as error:
-        parser.exit(1, f"CLI/HTTP parity failed: {error}\\n")
+        parser.exit(1, f"CLI/HTTP parity failed: {error}\n")
     print(json.dumps(report, sort_keys=True))
     return 0
 
