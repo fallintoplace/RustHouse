@@ -3,7 +3,7 @@ use super::typed::{self, Cell, Key};
 use crate::Select;
 use rusthouse_storage::{TypedQueryReader, inspect_query_source};
 use std::cmp::Ordering;
-use std::collections::{HashMap, hash_map::Entry};
+use std::collections::HashMap;
 use std::io::Write;
 use std::path::Path;
 
@@ -60,32 +60,36 @@ pub(super) fn execute<W: Write>(
     let mut reader = TypedQueryReader::open(part, &names)?;
     let mut groups: Vec<(Vec<Cell>, u64)> = Vec::new();
     let mut by_key: HashMap<Vec<Key>, usize> = HashMap::new();
+    let mut probe_key = Vec::with_capacity(group_indices.len());
     while let Some(batch) = reader.next_batch()? {
         for row in 0..batch[0].len() {
             if !typed::passes(&batch, row, &conditions) {
                 continue;
             }
-            let values: Vec<_> = group_indices
-                .iter()
-                .map(|&index| typed::cell(&batch[index], row))
-                .collect();
-            let key: Vec<_> = values.iter().map(Cell::key).collect();
-            match by_key.entry(key) {
-                Entry::Occupied(entry) => {
-                    let count = &mut groups[*entry.get()].1;
-                    *count = count
-                        .checked_add(1)
-                        .ok_or_else(|| ExecutionError::Invalid("group count overflow".into()))?;
+            // Build only the probe key for existing groups. Wide projection
+            // cells are materialized once, when a new group is discovered.
+            probe_key.clear();
+            for &column in &group_indices {
+                probe_key.push(typed::cell(&batch[column], row).key());
+            }
+            if let Some(&index) = by_key.get(probe_key.as_slice()) {
+                let count = &mut groups[index].1;
+                *count = count
+                    .checked_add(1)
+                    .ok_or_else(|| ExecutionError::Invalid("group count overflow".into()))?;
+            } else {
+                if groups.len() >= MAX_GROUPS {
+                    return Err(ExecutionError::Invalid(
+                        "GROUP BY supports at most 100000 groups".into(),
+                    ));
                 }
-                Entry::Vacant(entry) => {
-                    if groups.len() >= MAX_GROUPS {
-                        return Err(ExecutionError::Invalid(
-                            "GROUP BY supports at most 100000 groups".into(),
-                        ));
-                    }
-                    entry.insert(groups.len());
-                    groups.push((values, 1));
-                }
+                let values: Vec<Cell> = group_indices
+                    .iter()
+                    .map(|&index| typed::cell(&batch[index], row))
+                    .collect();
+                by_key.insert(std::mem::take(&mut probe_key), groups.len());
+                probe_key = Vec::with_capacity(group_indices.len());
+                groups.push((values, 1));
             }
         }
     }
