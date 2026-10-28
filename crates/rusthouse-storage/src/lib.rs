@@ -1,6 +1,7 @@
 mod arrays;
 pub mod distributed_inventory;
 mod checksums;
+pub mod distributed_object_key;
 mod columns;
 mod compression;
 mod database_lock;
