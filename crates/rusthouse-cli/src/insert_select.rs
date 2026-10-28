@@ -2,7 +2,7 @@
 //! The source query finishes before publishing, keeping self-INSERT consistent.
 use rusthouse_query::{InsertSelect, Source, execute};
 use std::fs::{self, File, OpenOptions};
-use std::io::{self, BufRead, BufReader, BufWriter, Write};
+use std::io::{BufRead, BufReader, BufWriter, Write};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicUsize, Ordering};
 
