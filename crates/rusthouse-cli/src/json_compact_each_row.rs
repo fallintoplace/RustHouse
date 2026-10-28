@@ -170,7 +170,7 @@ mod tests {
     fn compact_output_keeps_plain_row_field_boundaries() {
         let mut writer = JsonCompactEachRowWriter::new(Vec::new());
         writer.write_all(b"a\tb\tc\n1\t2\t3\n").unwrap();
-        assert_eq!(writer.finish().unwrap(), b"[\\\"1\\\",\\\"2\\\",\\\"3\\\"]\n");
+        assert_eq!(writer.finish().unwrap(), b"[\"1\",\"2\",\"3\"]\n");
     }
 
 }
