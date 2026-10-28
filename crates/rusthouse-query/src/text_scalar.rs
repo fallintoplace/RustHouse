@@ -26,6 +26,7 @@ pub(super) fn is_function(name: &str) -> bool {
             | "HEX_ENCODE"
             | "HEX"
             | "IS_ASCII"
+            | "DECODEQUOTEDPRINTABLE"
             | "UPPER"
             | "URL_DECODE"
             | "IS_EMPTY"
@@ -1894,6 +1895,52 @@ fn parse_at_depth(parser: &mut Parser, depth: usize) -> Result<ConstantValue, Pa
                     ConstantValue::Text(value.to_owned())
                 }
                 _ => ConstantValue::Null,
+            }
+        }
+        "DECODEQUOTEDPRINTABLE" => {
+            let input = text_arg(parser, depth + 1)?;
+            require(parser, Token::RParen, "decodeQuotedPrintable requires one argument")?;
+            match input {
+                Some(input) => {
+                    let bytes = input.as_bytes();
+                    let mut decoded = Vec::with_capacity(bytes.len());
+                    let mut index = 0_usize;
+                    while index < bytes.len() {
+                        if bytes[index] != b'=' {
+                            decoded.push(bytes[index]);
+                            index += 1;
+                            continue;
+                        }
+                        if bytes.get(index + 1) == Some(&b'\r')
+                            && bytes.get(index + 2) == Some(&b'\n') {
+                            index += 3;
+                            continue;
+                        }
+                        if bytes.get(index + 1) == Some(&b'\n') {
+                            index += 2;
+                            continue;
+                        }
+                        let hex = |byte: u8| -> Option<u8> {
+                            match byte {
+                                b'0'..=b'9' => Some(byte - b'0'),
+                                b'a'..=b'f' => Some(byte - b'a' + 10),
+                                b'A'..=b'F' => Some(byte - b'A' + 10),
+                                _ => None,
+                            }
+                        };
+                        let left = bytes.get(index + 1).and_then(|b| hex(*b));
+                        let right = bytes.get(index + 2).and_then(|b| hex(*b));
+                        match (left, right) {
+                            (Some(left), Some(right)) => decoded.push((left << 4) | right),
+                            _ => return Err(ParseError("invalid quoted-printable escape".into())),
+                        }
+                        index += 3;
+                    }
+                    let decoded = String::from_utf8(decoded)
+                        .map_err(|_| ParseError("decodeQuotedPrintable output is not UTF-8".into()))?;
+                    ConstantValue::Text(decoded)
+                }
+                None => ConstantValue::Null,
             }
         }
         "ISVALIDJSON" => {
