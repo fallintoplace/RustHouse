@@ -216,16 +216,19 @@ impl NumericPartReader {
             return Ok(None);
         }
         let index = self.next_mark;
+        // Legacy marks have no adaptive row count and must remain readable.
+        // Only an explicit terminal zero-row mark is an end sentinel.
         let row_count = self.streams.first()
-            .and_then(|stream| stream.marks[index].rows)
-            .unwrap_or(0);
-        if row_count == 0 {
+            .and_then(|stream| stream.marks[index].rows);
+        if row_count == Some(0) {
             self.next_mark = self.marks;
             return Ok(None);
         }
-        // Small marks remain serial: worker setup is worthwhile only for
-        // large analytical projections, such as native 8192-row MergeTree marks.
-        let workers = if row_count >= 4096 && self.streams.len() >= 8 {
+        // Small or legacy marks remain serial: worker setup is worthwhile only
+        // for large adaptive analytical projections.
+        let workers = if row_count.is_some_and(|rows| rows >= 4096)
+            && self.streams.len() >= 8
+        {
             std::thread::available_parallelism().map_or(1, |n| n.get()).min(4)
         } else {
             1
