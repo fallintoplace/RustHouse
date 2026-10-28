@@ -33,7 +33,7 @@ use std::path::{Path, PathBuf};
 
 pub const MAX_QUERY_BYTES: usize = 4096;
 pub const MAX_HEADER_BYTES: usize = 8192;
-pub const MAX_RESPONSE_BYTES: usize = 8 * 1024 * 1024;
+pub const MAX_RESPONSE_BYTES: usize = 16 * 1024 * 1024;
 pub const MAX_CONNECTIONS: usize = 16;
 
 #[derive(Clone, Debug, Default)]
@@ -83,7 +83,7 @@ impl Write for LimitedWriter {
             self.exceeded = true;
             return Err(io::Error::new(
                 io::ErrorKind::InvalidData,
-                "SQL response exceeds 8 MiB",
+                "SQL response exceeds 16 MiB",
             ));
         }
         self.data.extend_from_slice(bytes);
@@ -216,7 +216,7 @@ fn schema_response(config: &Config, table: Option<&str>) -> Response {
             content_type: "application/json; charset=utf-8",
             body: output.data,
         },
-        Err(_) => Response::text("413 Payload Too Large", "schema response exceeds 8 MiB\n"),
+        Err(_) => Response::text("413 Payload Too Large", "schema response exceeds 16 MiB\n"),
     }
 }
 
@@ -512,7 +512,7 @@ pub fn handle_request(method: &str, target: &str, body: &[u8], config: &Config) 
             body: writer.data,
         },
         Err(_) if writer.exceeded => {
-            Response::text("413 Payload Too Large", "SQL response exceeds 8 MiB\n")
+            Response::text("413 Payload Too Large", "SQL response exceeds 16 MiB\n")
         }
         Err(error) => Response::text("400 Bad Request", &format!("{error}\n")),
     }
@@ -784,6 +784,14 @@ mod tests {
                 "400 Bad Request"
             );
         }
+    }
+
+    #[test]
+    fn response_writer_accepts_above_eight_mib() {
+        let mut writer = LimitedWriter::new();
+        writer.write_all(&vec![b'x'; 8 * 1024 * 1024 + 1]).unwrap();
+        assert_eq!(writer.data.len(), 8 * 1024 * 1024 + 1);
+        assert!(!writer.exceeded);
     }
 
     #[test]
