@@ -44,8 +44,8 @@ These are not certified cross-engine benchmark results.
 Generate, COPY and query a physical dataset with strict COUNT and SUM references:
 
 ```sh
-python3 -m bench workload physical-scan -- \\
-  --binary target/release/rusthouse --rows 1000000 \\
+python3 -m bench workload physical-scan -- \
+  --binary target/release/rusthouse --rows 1000000 \
   --runs 5 --warmups 2 --output bench/results/physical-scan.json
 ```
 
