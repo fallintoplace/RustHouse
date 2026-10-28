@@ -245,6 +245,7 @@ mod tests {
             format!("[{large_row},{{}}]\n").as_bytes()
         );
     }
+
     #[test]
     fn complete_json_object_avoids_intermediate_row_copy() {
         let mut sink = JsonArraySink::new(Vec::new(), false);
