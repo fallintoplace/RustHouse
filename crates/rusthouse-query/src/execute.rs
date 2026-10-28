@@ -1,5 +1,6 @@
 mod aggregate_plans;
 mod bitmap_distinct;
+mod hyperloglog;
 
 #[cfg(test)]
 mod dynamic_part_tests {
@@ -950,6 +951,10 @@ fn execute_into<W: Write>(
     let part = part.ok_or_else(|| {
         ExecutionError::Invalid("pass --part <directory> for table queries".into())
     })?;
+    // A single typed scan serves numeric and String columns with fixed 16 KiB state.
+    if matches!(query.projection, Projection::ApproxDistinct { .. }) {
+        return typed::execute_typed(query, part, output);
+    }
     if let Some(count) = parallel_filtered_count(query, part)? {
         write_header(query, output, "count")?;
         writeln!(output, "{count}")?;
@@ -1049,6 +1054,7 @@ fn execute_into<W: Write>(
         Projection::Aggregate { .. }
         | Projection::CountColumn { .. }
         | Projection::CountDistinct { .. }
+        | Projection::ApproxDistinct { .. }
         | Projection::GroupedCount { .. }
         | Projection::GroupedDistinctCount { .. }
         | Projection::GroupedMultiDistinctCount { .. }
@@ -1440,6 +1446,7 @@ fn execute_numbers<W: Write>(
         let scalar_count = matches!(
             query.projection,
             Projection::Count | Projection::CountColumn { .. } | Projection::CountDistinct { .. }
+                | Projection::ApproxDistinct { .. }
         );
         let simple_result = query.order_by.is_none()
             && query.order_by_extra.is_empty()
@@ -1553,14 +1560,19 @@ fn execute_numbers<W: Write>(
         }
         return Ok(());
     }
-    if let Projection::CountDistinct { column } = &query.projection {
+    if let Projection::CountDistinct { column } | Projection::ApproxDistinct { column } = &query.projection {
         if column != "number" {
             return Err(ExecutionError::Invalid(
                 "numbers(N) exposes only the number column".into(),
             ));
         }
         let comparisons = compile_numbers_predicates(query)?;
-        write_header(query, output, "countDistinct(number)")?;
+        let header = if matches!(query.projection, Projection::ApproxDistinct { .. }) {
+            "uniq(number)"
+        } else {
+            "countDistinct(number)"
+        };
+        write_header(query, output, header)?;
         if query.limit != Some(0) && query.offset.unwrap_or(0) == 0 {
             // Generated numbers are unique, so unfiltered COUNT(DISTINCT) is their row count.
             let count = if query.predicates.is_empty() && query.or_predicates.is_empty() {
@@ -1604,6 +1616,7 @@ fn execute_numbers<W: Write>(
         Projection::Aggregate { .. }
         | Projection::CountColumn { .. }
         | Projection::CountDistinct { .. }
+        | Projection::ApproxDistinct { .. }
         | Projection::GroupedCount { .. }
         | Projection::GroupedDistinctCount { .. }
         | Projection::GroupedMultiDistinctCount { .. }
