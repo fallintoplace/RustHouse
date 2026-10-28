@@ -44,13 +44,22 @@ pub fn write_pretty_json_row<W: Write>(output: &mut W, row: &[u8]) -> io::Result
             b'{' | b'[' => {
                 output.write_all(&row[start..=index])?;
                 depth += 1;
-                write_indent(output, depth)?;
+                let empty = (byte == b'{' && row.get(index + 1) == Some(&b'}'))
+                    || (byte == b'[' && row.get(index + 1) == Some(&b']'));
+                if !empty {
+                    write_indent(output, depth)?;
+                }
                 start = index + 1;
             }
             b'}' | b']' => {
                 output.write_all(&row[start..index])?;
                 depth = depth.saturating_sub(1);
-                write_indent(output, depth)?;
+                let empty = index > 0
+                    && ((byte == b'}' && row[index - 1] == b'{')
+                        || (byte == b']' && row[index - 1] == b'['));
+                if !empty {
+                    write_indent(output, depth)?;
+                }
                 output.write_all(&row[index..=index])?;
                 start = index + 1;
             }
@@ -108,6 +117,13 @@ mod tests {
         write_indent(&mut output, 1).unwrap();
         assert_eq!(output.writes, 1);
         assert_eq!(output.bytes, b"\n    ");
+    }
+
+    #[test]
+    fn keeps_empty_containers_on_one_line() {
+        let mut output = Vec::new();
+        write_pretty_json_row(&mut output, br#"{"empty":{},"items":[]}"#).unwrap();
+        assert_eq!(output, b"{\n    \"empty\": {},\n    \"items\": []\n  }");
     }
 
     #[test]
