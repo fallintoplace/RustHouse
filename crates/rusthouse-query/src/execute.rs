@@ -2042,15 +2042,9 @@ impl AggregateState {
         Ok(())
     }
 
-    /// Compare supported numeric aggregate values without rounding to text.
+    /// Compare numeric aggregates without rounding through their TSV rendering.
     fn passes_having(&self, having: &crate::Having) -> bool {
-        let value = match self.function {
-            AggregateFunction::Sum | AggregateFunction::Min | AggregateFunction::Max => self.value,
-            AggregateFunction::Avg if self.count > 0 => Some(Number::Float(self.mean)),
-            AggregateFunction::Count => Some(Number::Unsigned(u128::from(self.count))),
-            _ => None,
-        };
-        let Some(value) = value else {
+        let typed::Cell::Numeric(value) = self.sort_cell() else {
             // SQL HAVING removes groups whose aggregate is NULL.
             return false;
         };
@@ -2062,12 +2056,63 @@ impl AggregateState {
         number_matches(value, threshold, having.operator)
     }
 
-    /// Exact numeric ORDER BY key for supported grouped aggregates.
+    fn median_number(&self) -> Option<Number> {
+        if self.median_values.is_empty() {
+            return None;
+        }
+        let mut values = self.median_values.clone();
+        values.sort_unstable_by(|left, right| compare_numbers(*left, *right));
+        let middle = values.len() / 2;
+        if values.len() % 2 == 1 {
+            return Some(values[middle]);
+        }
+        let as_float = |value: Number| match value {
+            Number::Unsigned(value) => value as f64,
+            Number::Signed(value) => value as f64,
+            Number::Float(value) => value,
+        };
+        Some(Number::Float(
+            as_float(values[middle - 1]) / 2.0 + as_float(values[middle]) / 2.0
+        ))
+    }
+
+    /// Exact comparisons for grouped analytics, including statistical HAVING.
     fn sort_cell(&self) -> typed::Cell {
+        let nonempty = self.count > 0;
+        let sample = self.count > 1;
         let value = match self.function {
-            AggregateFunction::Sum | AggregateFunction::Min | AggregateFunction::Max => self.value,
-            AggregateFunction::Avg if self.count > 0 => Some(Number::Float(self.mean)),
             AggregateFunction::Count => Some(Number::Unsigned(u128::from(self.count))),
+            AggregateFunction::CountIf => Some(self.value.unwrap_or(Number::Unsigned(0))),
+            AggregateFunction::Sum
+            | AggregateFunction::Product
+            | AggregateFunction::SumSquares
+            | AggregateFunction::Min
+            | AggregateFunction::Max
+            | AggregateFunction::Any
+            | AggregateFunction::AnyLast
+            | AggregateFunction::GroupBitAnd
+            | AggregateFunction::GroupBitOr
+            | AggregateFunction::GroupBitXor => self.value,
+            AggregateFunction::Avg | AggregateFunction::Rms if nonempty =>
+                Some(Number::Float(self.mean)),
+            AggregateFunction::VarPop if nonempty =>
+                Some(Number::Float(self.squared_deviations / self.count as f64)),
+            AggregateFunction::StddevPop if nonempty =>
+                Some(Number::Float((self.squared_deviations / self.count as f64).sqrt())),
+            AggregateFunction::VarSamp if sample =>
+                Some(Number::Float(self.squared_deviations / (self.count - 1) as f64)),
+            AggregateFunction::StddevSamp if sample =>
+                Some(Number::Float((self.squared_deviations / (self.count - 1) as f64).sqrt())),
+            AggregateFunction::Median => self.median_number(),
+            AggregateFunction::Range => match (self.value, self.max_value) {
+                (Some(Number::Unsigned(low)), Some(Number::Unsigned(high))) =>
+                    Some(Number::Unsigned(high - low)),
+                (Some(Number::Signed(low)), Some(Number::Signed(high))) =>
+                    Some(Number::Unsigned(high.abs_diff(low))),
+                (Some(Number::Float(low)), Some(Number::Float(high))) =>
+                    Some(Number::Float(high - low)),
+                _ => None,
+            },
             _ => None,
         };
         value.map_or(typed::Cell::Null, typed::Cell::Numeric)

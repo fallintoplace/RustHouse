@@ -1327,6 +1327,8 @@ fn parse_select_tokens(tokens: Vec<Token>) -> Result<Select, ParseError> {
             ..
         } = &projection
         {
+            // The grouped state can evaluate HAVING on all numeric metrics.
+            // Invalid NULL results are removed by SQL HAVING semantics.
             if !matches!(
                 function,
                 AggregateFunction::Sum
@@ -1334,6 +1336,21 @@ fn parse_select_tokens(tokens: Vec<Token>) -> Result<Select, ParseError> {
                     | AggregateFunction::Max
                     | AggregateFunction::Avg
                     | AggregateFunction::Count
+                    | AggregateFunction::CountIf
+                    | AggregateFunction::Product
+                    | AggregateFunction::SumSquares
+                    | AggregateFunction::Range
+                    | AggregateFunction::Rms
+                    | AggregateFunction::VarPop
+                    | AggregateFunction::VarSamp
+                    | AggregateFunction::StddevPop
+                    | AggregateFunction::StddevSamp
+                    | AggregateFunction::Median
+                    | AggregateFunction::Any
+                    | AggregateFunction::AnyLast
+                    | AggregateFunction::GroupBitAnd
+                    | AggregateFunction::GroupBitOr
+                    | AggregateFunction::GroupBitXor
             ) {
                 return Err(ParseError("HAVING does not support this aggregate".into()));
             }
