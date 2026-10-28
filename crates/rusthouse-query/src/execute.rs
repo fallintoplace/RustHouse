@@ -1634,9 +1634,9 @@ fn execute_numbers<W: Write>(
     };
     if let Some(sorted) = unfiltered_sort {
         if rows > MAX_SORTED_ROWS as u64 && sorted.requested() > MAX_SORTED_ROWS {
-            return Err(ExecutionError::Invalid(
-                format!("ORDER BY requires LIMIT <= {MAX_SORTED_ROWS} for large results"),
-            ));
+            return Err(ExecutionError::Invalid(format!(
+                "ORDER BY requires LIMIT <= {MAX_SORTED_ROWS} for large results"
+            )));
         }
         let total = usize::try_from(rows).unwrap_or(usize::MAX);
         let begin = sorted.offset().min(total);
