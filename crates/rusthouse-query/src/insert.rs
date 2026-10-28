@@ -1,5 +1,6 @@
 //! Deliberately narrow INSERT ... VALUES parser for local writable tables.
-use super::{ParseError, Parser, Token, tokenize};
+use super::{ParseError, Parser, Token};
+use crate::lexer::tokenize_insert;
 use std::collections::HashSet;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -71,7 +72,7 @@ fn parse_insert_columns(parser: &mut Parser) -> Result<Option<Vec<String>>, Pars
 /// Only literal rows are accepted, with no expressions or implicit casts.
 pub fn parse_insert(sql: &str) -> Result<Option<Insert>, ParseError> {
     let mut parser = Parser {
-        tokens: tokenize(sql)?,
+        tokens: tokenize_insert(sql)?,
         index: 0,
     };
     if !parser.keyword("INSERT") {
@@ -241,6 +242,21 @@ mod tests {
             assert!(parse_insert(input).is_err(), "{input}");
         }
     }
+    #[test]
+    fn accepts_large_insert_batches_but_keeps_a_bounded_budget() {
+        let text = "x".repeat(5000);
+        let sql = format!("INSERT INTO events VALUES ('{text}')");
+        assert_eq!(
+            parse_insert(&sql).unwrap().unwrap().rows,
+            vec![vec![Some(text)]]
+        );
+        let oversized = format!(
+            "INSERT INTO events VALUES ('{}')",
+            "x".repeat(1024 * 1024)
+        );
+        assert!(parse_insert(&oversized).is_err());
+    }
+
     #[test]
     fn accepts_unary_plus_only_before_insert_numbers() {
         let parsed = parse_insert("INSERT INTO events VALUES (+3, -4)")
