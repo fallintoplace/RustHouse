@@ -7,6 +7,7 @@ pub mod distributed_crc32c;
 mod compression;
 pub mod distributed_chunk_plan;
 mod database_lock;
+mod database_table;
 pub mod distributed_rendezvous;
 mod dates;
 pub mod distributed_quorum;
@@ -60,6 +61,7 @@ pub use checksums::{
 pub use columns::parse_columns;
 pub use compression::{CompressedBlock, CompressedBlockReader, DecodedBlock};
 pub use database_lock::{DatabaseLock, acquire_database_lock};
+pub use database_table::resolve_database_table;
 pub use dates::{format_date, format_datetime, parse_date, parse_datetime};
 pub use decimal::{DecimalColumn, DecimalReadError, read_decimal_column};
 pub use enums::{EnumColumn, EnumReadError, read_enum_column};
