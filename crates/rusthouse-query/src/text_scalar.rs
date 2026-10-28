@@ -42,6 +42,7 @@ pub(super) fn is_function(name: &str) -> bool {
             | "URL_ENCODE"
             | "FRAGMENT"
             | "JSON_QUOTE"
+            | "TOJSONSTRING"
             | "ISVALIDJSON"
             | "JSONHAS"
             | "JSONEXTRACTSTRING"
@@ -1878,7 +1879,7 @@ fn parse_at_depth(parser: &mut Parser, depth: usize) -> Result<ConstantValue, Pa
                 _ => ConstantValue::Null,
             }
         }
-        "JSON_QUOTE" => {
+        "JSON_QUOTE" | "TOJSONSTRING" => {
             let input = text_arg(parser, depth + 1)?;
             require(parser, Token::RParen, "JSON_QUOTE requires one argument")?;
             match input {
@@ -1910,6 +1911,7 @@ fn parse_at_depth(parser: &mut Parser, depth: usize) -> Result<ConstantValue, Pa
                     result.push('"');
                     ConstantValue::Text(result)
                 }
+                None if name == "TOJSONSTRING" => ConstantValue::Text("null".into()),
                 None => ConstantValue::Null,
             }
         }
