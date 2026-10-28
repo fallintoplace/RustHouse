@@ -26,6 +26,7 @@ pub(super) fn is_function(name: &str) -> bool {
             | "UPPER"
             | "URL_DECODE"
             | "IS_EMPTY"
+            | "ISNOTNULL"
             | "REVERSE"
             | "INITCAP"
             | "CONCAT"
@@ -329,6 +330,27 @@ fn parse_at_depth(parser: &mut Parser, depth: usize) -> Result<ConstantValue, Pa
                 Some(value) => ConstantValue::Integer(i64::from(value.is_empty())),
                 None => ConstantValue::Null,
             }
+        }
+        "ISNOTNULL" => {
+            let is_null = match parser.tokens.get(parser.index) {
+                Some(Token::Word(word)) if word.eq_ignore_ascii_case("NULL") => {
+                    parser.index += 1;
+                    true
+                }
+                Some(Token::Word(word)) if is_function(word) => {
+                    matches!(parse_at_depth(parser, depth + 1)?, ConstantValue::Null)
+                }
+                Some(Token::String(_)) => {
+                    text_arg(parser, depth + 1)?;
+                    false
+                }
+                _ => {
+                    super::scalar::parse(parser)?;
+                    false
+                }
+            };
+            require(parser, Token::RParen, "isNotNull requires exactly one argument")?;
+            ConstantValue::Integer(i64::from(!is_null))
         }
         "IS_INT64" => {
             let input = text_arg(parser, depth + 1)?;
