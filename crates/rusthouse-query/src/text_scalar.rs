@@ -59,6 +59,7 @@ pub(super) fn is_function(name: &str) -> bool {
             | "POSITIONCASEINSENSITIVE"
             | "STRPOS"
             | "COUNT_SUBSTRING"
+            | "EXTRACTURLPARAMETER"
             | "NULLIF"
             | "LAST_INDEX_OF"
             | "PATH"
@@ -1580,6 +1581,31 @@ fn parse_at_depth(parser: &mut Parser, depth: usize) -> Result<ConstantValue, Pa
                     )
                 }
                 None => ConstantValue::Null,
+            }
+        }
+        "EXTRACTURLPARAMETER" => {
+            let input = text_arg(parser, depth + 1)?;
+            require(parser, Token::Comma, "extractURLParameter requires a parameter name")?;
+            let name = text_arg(parser, depth + 1)?;
+            require(parser, Token::RParen, "expected ')' after extractURLParameter")?;
+            match (input, name) {
+                (Some(input), Some(name)) => {
+                    let before_fragment = input.split_once('#')
+                        .map_or(input.as_str(), |(head, _)| head);
+                    let query = before_fragment.split_once('?')
+                        .map_or("", |(_, query)| query);
+                    let value = query.split('&').find_map(|part| {
+                        if part == name {
+                            Some("")
+                        } else {
+                            part.split_once('=').and_then(|(key, value)|
+                                (key == name).then_some(value)
+                            )
+                        }
+                    }).unwrap_or("");
+                    ConstantValue::Text(value.to_owned())
+                }
+                _ => ConstantValue::Null,
             }
         }
         "JSON_QUOTE" => {
