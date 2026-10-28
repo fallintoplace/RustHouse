@@ -140,9 +140,15 @@ pub(super) fn like_matches(value: &[u8], pattern: &LikePattern, case_insensitive
             if bytes.is_empty() {
                 true
             } else if !case_insensitive {
-                value.windows(bytes.len()).any(|part| {
-                    part[0] == bytes[0] && part[1..] == bytes[1..]
-                })
+                if let (Ok(haystack), Ok(needle)) =
+                    (std::str::from_utf8(value), std::str::from_utf8(bytes))
+                {
+                    haystack.contains(needle)
+                } else {
+                    value.windows(bytes.len()).any(|part| {
+                        part[0] == bytes[0] && part[1..] == bytes[1..]
+                    })
+                }
             } else if value.is_ascii() && bytes.is_ascii() {
                 value
                     .windows(bytes.len())
@@ -212,6 +218,21 @@ mod perf_tests {
         assert_eq!(next_utf8_boundary(b"ascii", 5), None);
         assert_eq!(next_utf8_boundary("é".as_bytes(), 0), Some(2));
         assert_eq!(next_utf8_boundary(b"\xff", 0), None);
+    }
+
+    #[test]
+    fn case_sensitive_contains_matches_utf8_and_raw_bytes() {
+        let pattern = compile_like("%needle%").unwrap();
+        let mut large = "haystack".repeat(512);
+        large.push_str("needle");
+        assert!(like_matches(large.as_bytes(), &pattern, false));
+        assert!(!like_matches(b"haystack", &pattern, false));
+
+        let raw = b"\xffneedle\xfe";
+        assert!(like_matches(raw, &pattern, false));
+
+        let accented = compile_like("%f\u{e9}%").unwrap();
+        assert!(like_matches("caf\u{e9}".as_bytes(), &accented, false));
     }
 
     #[test]
