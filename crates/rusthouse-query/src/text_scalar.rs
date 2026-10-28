@@ -41,6 +41,7 @@ pub(super) fn is_function(name: &str) -> bool {
             | "JSONHAS"
             | "JSONEXTRACTSTRING"
             | "JSONEXTRACTRAW"
+            | "JSONEXTRACTBOOL"
             | "SUBSTRING"
             | "HASSUBSEQUENCECASEINSENSITIVE"
             | "OVERLAY"
@@ -1844,6 +1845,21 @@ fn parse_at_depth(parser: &mut Parser, depth: usize) -> Result<ConstantValue, Pa
                             found.map(|value| value.raw()).unwrap_or("").to_owned(),
                         ),
                     }
+                }
+                _ => ConstantValue::Null,
+            }
+        }
+        "JSONEXTRACTBOOL" => {
+            let input = text_arg(parser, depth + 1)?;
+            require(parser, Token::Comma, "JSONExtractBool requires a path")?;
+            let path = text_arg(parser, depth + 1)?;
+            require(parser, Token::RParen, "JSONExtractBool requires two arguments")?;
+            match (input, path) {
+                (Some(input), Some(path)) => {
+                    let json = crate::json::parse_json(&input)
+                        .map_err(|error| ParseError(format!("invalid JSON: {error}")))?;
+                    let found = json.at_path(&path).is_some_and(|value| value.raw() == "true");
+                    ConstantValue::Integer(i64::from(found))
                 }
                 _ => ConstantValue::Null,
             }
