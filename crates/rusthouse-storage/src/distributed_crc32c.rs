@@ -252,3 +252,57 @@ mod tests {
         );
     }
 }
+
+/// Incremental CRC32C for an ordered byte stream.
+/// The checksum is only a corruption check, not an authentication mechanism.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Crc32cState {
+    state: u32,
+}
+
+impl Crc32cState {
+    pub fn new() -> Self {
+        Self { state: !0u32 }
+    }
+
+    pub fn append(&mut self, bytes: &[u8]) {
+        self.state = update(self.state, bytes);
+    }
+
+    /// Snapshot the current CRC32C without consuming the accumulator.
+    pub fn checksum(&self) -> u32 {
+        self.state ^ !0u32
+    }
+}
+
+impl Default for Crc32cState {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+#[cfg(test)]
+mod incremental_crc_tests {
+    use super::*;
+
+    #[test]
+    fn matches_one_shot_crc_at_all_chunk_boundaries() {
+        let data = b"123456789 plus some additional immutable storage bytes";
+        for split in 0..=data.len() {
+            let mut crc = Crc32cState::new();
+            crc.append(&data[..split]);
+            crc.append(&data[split..]);
+            assert_eq!(crc.checksum(), crc32c(data), "split {split}");
+        }
+        assert_eq!(Crc32cState::default().checksum(), crc32c(b""));
+    }
+
+    #[test]
+    fn can_continue_after_intermediate_checksum_snapshot() {
+        let mut crc = Crc32cState::new();
+        crc.append(b"part-one");
+        assert_eq!(crc.checksum(), crc32c(b"part-one"));
+        crc.append(b"-part-two");
+        assert_eq!(crc.checksum(), crc32c(b"part-one-part-two"));
+    }
+}
