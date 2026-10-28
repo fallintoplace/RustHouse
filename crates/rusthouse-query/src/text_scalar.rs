@@ -7,6 +7,7 @@ pub(super) fn is_function(name: &str) -> bool {
     matches!(
         name.to_ascii_uppercase().as_str(),
         "LENGTH"
+            | "DECODEXMLCOMPONENT"
             | "CHAR_LENGTH"
             | "OCTET_LENGTH"
             | "ASCII"
@@ -100,6 +101,47 @@ fn parse_at_depth(parser: &mut Parser, depth: usize) -> Result<ConstantValue, Pa
     let name = parser.word()?.to_ascii_uppercase();
     require(parser, Token::LParen, "string function requires '('")?;
     let value = match name.as_str() {
+
+        "DECODEXMLCOMPONENT" => {
+            let input = text_arg(parser, depth + 1)?;
+            require(parser, Token::RParen, "DECODEXMLCOMPONENT requires one argument")?;
+            match input {
+                Some(input) => {
+                    let mut output = String::new();
+                    let mut rest = input.as_str();
+                    while let Some(index) = rest.find('&') {
+                        output.push_str(&rest[..index]);
+                        rest = &rest[index..];
+                        if let Some((entity, tail)) = rest[1..].split_once(';') {
+                            let decoded = match entity {
+                                "amp" => Some('&'),
+                                "lt" => Some('<'),
+                                "gt" => Some('>'),
+                                "quot" => Some('"'),
+                                "apos" => Some('\''),
+                                _ if entity.starts_with("#x") || entity.starts_with("#X") => {
+                                    u32::from_str_radix(&entity[2..], 16).ok().and_then(char::from_u32)
+                                }
+                                _ if entity.starts_with('#') => {
+                                    entity[1..].parse::<u32>().ok().and_then(char::from_u32)
+                                }
+                                _ => None,
+                            };
+                            if let Some(ch) = decoded {
+                                output.push(ch);
+                                rest = tail;
+                                continue;
+                            }
+                        }
+                        output.push('&');
+                        rest = &rest[1..];
+                    }
+                    output.push_str(rest);
+                    ConstantValue::Text(output)
+                }
+                None => ConstantValue::Null,
+            }
+        }
         "ASCII" => {
             let input = text_arg(parser, depth + 1)?;
             require(parser, Token::RParen, "ASCII requires one argument")?;
