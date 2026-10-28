@@ -61,6 +61,42 @@ pub(super) fn execute_grouped_part<W: Write>(
         }
         return groups.write(query, column, output);
     }
+    // 16-bit keys have at most 65,536 groups. A dense counter array avoids
+    // one HashMap probe and NumberKey construction per input row.
+    if matches!(narrow, Some("UInt16" | "Int16")) {
+        let mut counts = vec![0u64; 1 << 16];
+        let mut insertion_order = Vec::<u16>::new();
+        while let Some(batch) = reader.next_batch()? {
+            for row in 0..batch[0].len() {
+                if !no_filters && !batch_matches(&batch, row, &comparisons) {
+                    continue;
+                }
+                let key = match &batch[0] {
+                    NumericColumn::UInt16(values) => values[row],
+                    NumericColumn::Int16(values) => values[row] as u16,
+                    _ => return Err(ExecutionError::Invalid(
+                        "unexpected 16-bit GROUP BY type".into(),
+                    )),
+                };
+                let count = &mut counts[usize::from(key)];
+                if *count == 0 {
+                    insertion_order.push(key);
+                }
+                *count = count.checked_add(1)
+                    .ok_or_else(|| ExecutionError::Invalid("group count overflow".into()))?;
+            }
+        }
+        for key in insertion_order {
+            let value = if matches!(narrow, Some("Int16")) {
+                Number::Signed(i128::from(key as i16))
+            } else {
+                Number::Unsigned(u128::from(key))
+            };
+            groups.by_key.insert(NumberKey::from(value), groups.rows.len());
+            groups.rows.push((value, counts[usize::from(key)]));
+        }
+        return groups.write(query, column, output);
+    }
     while let Some(batch) = reader.next_batch()? {
         for row in 0..batch[0].len() {
             if no_filters || batch_matches(&batch, row, &comparisons) {
