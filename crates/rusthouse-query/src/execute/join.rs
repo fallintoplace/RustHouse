@@ -810,6 +810,153 @@ fn execute_streaming_ordered_inner<W: Write>(
 
 
 
+
+fn execute_streaming_inner_multi_grouped<W: Write>(
+    query: &JoinSelect,
+    left_path: &Path,
+    right_path: &Path,
+    columns: InnerJoinColumns<'_>,
+    left_count: u64,
+    right_count: u64,
+    indices: &[usize],
+    header: &str,
+    output: &mut W,
+) -> Result<(), ExecutionError> {
+    const MAX_GROUPS: usize = 200_000;
+    const MAX_GROUP_BYTES: usize = 64 * 1024 * 1024;
+    let InnerJoinColumns {
+        left_names, right_names, left_keys, right_keys, null_filter, ..
+    } = columns;
+    if query.limit == Some(0) {
+        writeln!(output, "{header}")?;
+        return Ok(());
+    }
+    let mut groups = Vec::<(Vec<typed::Cell>, AggregateState)>::new();
+    let mut lookup = HashMap::<Vec<typed::Key>, usize>::new();
+    let width = left_names.len();
+    let mut used_bytes = 0usize;
+    let mut accept = |left: &[typed::Cell], right: &[typed::Cell]| {
+        let at = |index: usize| {
+            if index < width { &left[index] } else { &right[index - width] }
+        };
+        let probe = indices.iter().map(|&index| at(index).key()).collect::<Vec<_>>();
+        let group = match lookup.entry(probe) {
+            Entry::Occupied(entry) => *entry.get(),
+            Entry::Vacant(entry) => {
+                if groups.len() >= MAX_GROUPS {
+                    return Err(invalid("JOIN GROUP BY supports at most 200000 groups"));
+                }
+                let values = indices.iter().map(|&index| at(index).clone()).collect::<Vec<_>>();
+                let additional = indices.len()
+                    .checked_mul(std::mem::size_of::<typed::Key>() +
+                        std::mem::size_of::<typed::Cell>())
+                    .and_then(|bytes| indices.iter().try_fold(bytes, |total, &index| {
+                        let size = match at(index) {
+                            typed::Cell::Text(text) => text.len() * 2,
+                            typed::Cell::Uuid(value) => value.len() * 2,
+                            _ => 0
+                        };
+                        total.checked_add(size)
+                    }))
+                    .ok_or_else(|| invalid("JOIN GROUP BY memory overflow"))?;
+                used_bytes = used_bytes.checked_add(additional)
+                    .ok_or_else(|| invalid("JOIN GROUP BY memory overflow"))?;
+                if used_bytes > MAX_GROUP_BYTES {
+                    return Err(invalid("JOIN GROUP BY exceeds retained group memory budget"));
+                }
+                entry.insert(groups.len());
+                groups.push((values, AggregateState::new(AggregateFunction::Count)));
+                groups.len() - 1
+            }
+        };
+        groups[group].1.increment_count()
+    };
+    if left_count != 0 && right_count != 0 {
+        if right_count <= MAX_STREAM_BUILD_ROWS &&
+            (right_count <= left_count || left_count > MAX_STREAM_BUILD_ROWS) {
+            let right_rows = read_rows(right_path, right_names, right_count,
+                MAX_STREAM_BUILD_ROWS, MAX_STREAM_BUILD_BYTES)?;
+            let mut hash = HashMap::<Vec<typed::Key>, Bucket>::with_capacity(right_rows.len());
+            for (index, row) in right_rows.iter().enumerate() {
+                if let Some(key) = row_key(row, right_keys) {
+                    if query.any {
+                        hash.entry(key).or_insert(Bucket::One(index));
+                    } else {
+                        hash.entry(key).and_modify(|bucket| bucket.push(index))
+                            .or_insert(Bucket::One(index));
+                    }
+                }
+            }
+            probe_inner(left_path, left_names, left_keys, &right_rows, &hash,
+                ProbeOptions {
+                    materialize_rows: indices.iter().any(|&i| i < width),
+                    materialize_after: 0, stop_after: Some(usize::MAX),
+                    any: query.any, null_filter,
+                }, &mut accept)?;
+        } else {
+            let left_rows = read_rows(left_path, left_names, left_count,
+                MAX_STREAM_BUILD_ROWS, MAX_STREAM_BUILD_BYTES)?;
+            let mut hash = HashMap::<Vec<typed::Key>, Bucket>::with_capacity(left_rows.len());
+            for (index, row) in left_rows.iter().enumerate() {
+                if let Some(key) = row_key(row, left_keys) {
+                    hash.entry(key).and_modify(|bucket| bucket.push(index))
+                        .or_insert(Bucket::One(index));
+                }
+            }
+            probe_right(right_path, right_names, right_keys, &left_rows, &hash,
+                ProbeOptions {
+                    materialize_rows: indices.iter().any(|&i| i >= width),
+                    materialize_after: 0, stop_after: Some(usize::MAX),
+                    any: query.any, null_filter,
+                }, &mut accept)?;
+        }
+    }
+    if let Some(having) = &query.group_having {
+        groups.retain(|(_, state)| state.passes_having(having));
+    }
+    let mut bounded_order = None;
+    if let Some((descending, nulls_first)) = query.group_order_by {
+        let compare = |left: &(Vec<typed::Cell>, AggregateState),
+                       right: &(Vec<typed::Cell>, AggregateState)| {
+            typed::compare_order_cells(
+                &left.1.sort_cell(), &right.1.sort_cell(), descending, nulls_first
+            )
+        };
+        let end = query.limit.and_then(|limit| query.offset.checked_add(limit));
+        if let Some(end) = end.filter(|&end| end < groups.len()) {
+            let mut positions = (0..groups.len()).collect::<Vec<_>>();
+            let cmp = |l: &usize, r: &usize| {
+                compare(&groups[*l], &groups[*r]).then_with(|| l.cmp(r))
+            };
+            positions.select_nth_unstable_by(end, &cmp);
+            positions.truncate(end);
+            positions.sort_unstable_by(cmp);
+            bounded_order = Some(positions);
+        } else { groups.sort_by(compare); }
+    }
+    writeln!(output, "{header}")?;
+    let write_group = |values: &[typed::Cell], state: &AggregateState, output: &mut W|
+        -> Result<(), ExecutionError> {
+        for (i, value) in values.iter().enumerate() {
+            if i != 0 { output.write_all(b"\t")?; }
+            typed::write_value(output, value)?;
+        }
+        writeln!(output, "\t{}", state.render())?;
+        Ok(())
+    };
+    if let Some(positions) = bounded_order {
+        for index in positions.into_iter().skip(query.offset) {
+            write_group(&groups[index].0, &groups[index].1, output)?;
+        }
+    } else {
+        for (values, state) in groups.into_iter()
+            .skip(query.offset).take(query.limit.unwrap_or(usize::MAX)) {
+            write_group(&values, &state, output)?;
+        }
+    }
+    Ok(())
+}
+
 fn execute_streaming_inner_grouped<W: Write>(
     query: &JoinSelect,
     left_path: &Path,
@@ -1280,6 +1427,18 @@ pub fn execute_join<W: Write>(
                 execute_streaming_inner_sum(
                     query, left_path, right_path, columns,
                     left_meta.rows, right_meta.rows, metric, &header, output
+                )
+            }
+            JoinAggregate::GroupMultiCount(keys) => {
+                let indices = keys.iter().map(|column|
+                    resolve(query, column, &left_names, &right_names)
+                ).collect::<Result<Vec<_>, _>>()?;
+                let header = keys.iter().map(|key|
+                    format!("{}.{}", key.relation, key.name)
+                ).collect::<Vec<_>>().join("\t") + "\tcount";
+                execute_streaming_inner_multi_grouped(
+                    query, left_path, right_path, columns,
+                    left_meta.rows, right_meta.rows, &indices, &header, output
                 )
             }
             JoinAggregate::GroupCount(column) => {
