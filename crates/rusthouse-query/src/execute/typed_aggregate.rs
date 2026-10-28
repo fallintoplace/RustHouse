@@ -399,22 +399,30 @@ pub(super) fn execute_grouped_aggregate<W: Write>(
     }
     let mut bounded_order = None;
     if query.order_by.is_some() {
+        // Resolve the small ORDER BY specification once. The comparator can
+        // run O(groups * log groups) times for a large grouped result.
+        let order_terms = query
+            .order_terms()
+            .map(|term| {
+                (term.column == "#aggregate", term.descending, term.nulls_first)
+            })
+            .collect::<Vec<_>>();
         let compare = |(left_key, left_state): &(Cell, AggregateState),
                        (right_key, right_state): &(Cell, AggregateState)| {
-            for term in query.order_terms() {
-                let comparison = if term.column == "#aggregate" {
+            for &(aggregate, descending, nulls_first) in &order_terms {
+                let comparison = if aggregate {
                     typed::compare_order_cells(
                         &left_state.sort_cell(),
                         &right_state.sort_cell(),
-                        term.descending,
-                        term.nulls_first,
+                        descending,
+                        nulls_first,
                     )
                 } else {
                     typed::compare_order_cells(
                         left_key,
                         right_key,
-                        term.descending,
-                        term.nulls_first,
+                        descending,
+                        nulls_first,
                     )
                 };
                 if comparison != std::cmp::Ordering::Equal {
