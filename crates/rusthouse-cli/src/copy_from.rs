@@ -340,7 +340,7 @@ impl CsvRecords {
         if rows.len() != 1 {
             return Err("COPY CSV record is empty or malformed".into());
         }
-        Ok(rows.remove(0))
+        Ok(Some(rows.remove(0)))
     }
 }
 
