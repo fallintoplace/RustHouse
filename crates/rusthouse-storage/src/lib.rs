@@ -29,6 +29,7 @@ pub mod distributed_scrub;
 mod marks;
 pub mod distributed_activate;
 mod metadata;
+pub mod distributed_retention;
 mod nested_arrays;
 mod nullable;
 mod nullable_arrays;
