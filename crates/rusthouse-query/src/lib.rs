@@ -630,6 +630,17 @@ fn parse_select_tokens(tokens: Vec<Token>) -> Result<Select, ParseError> {
             Projection::CountColumn { column }
         }
     } else if matches!(parser.tokens.get(parser.index + 1), Some(Token::LParen))
+        && parser.keyword("UNIQEXACT")
+    {
+        if !parser.take(Token::LParen) {
+            return Err(ParseError("uniqExact requires '('".into()));
+        }
+        let column = parser.word()?;
+        if !parser.take(Token::RParen) {
+            return Err(ParseError("uniqExact requires one column".into()));
+        }
+        Projection::CountDistinct { column }
+    } else if matches!(parser.tokens.get(parser.index + 1), Some(Token::LParen))
         && !matches!(parser.tokens.get(parser.index), Some(Token::Word(word)) if scalar::is_function(word) || text_scalar::is_function(word))
     {
         let name = parser.word()?;
@@ -1629,5 +1640,21 @@ mod generated_numbers_boundary_regressions {
         ] {
             assert!(parse_select(sql).is_err(), "{sql}");
         }
+    }
+}
+
+#[cfg(test)]
+mod clickhouse_uniq_exact_parity_tests {
+    use super::*;
+    #[test]
+    fn uniq_exact_reuses_exact_distinct_count() {
+        let alias = parse_select("SELECT uniqExact(number) FROM numbers(7)").unwrap();
+        let canonical = parse_select("SELECT COUNT(DISTINCT number) FROM numbers(7)").unwrap();
+        assert_eq!(alias.projection, canonical.projection);
+        let mut output = Vec::new();
+        execute(&alias, None, &mut output).unwrap();
+        assert!(String::from_utf8(output).unwrap().contains("\\n7\\n"));
+        assert!(parse_select("SELECT uniqExact() FROM numbers(1)").is_err());
+        assert!(parse_select("SELECT uniqExact(number, number) FROM numbers(1)").is_err());
     }
 }
