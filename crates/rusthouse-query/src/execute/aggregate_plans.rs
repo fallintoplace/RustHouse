@@ -490,12 +490,17 @@ pub(super) fn execute_count_distinct_part<W: Write>(
                 continue;
             }
             let key = NumberKey::from(number_at(&batch[0], row));
-            if seen.len() >= MAX_DISTINCT_ROWS && !seen.contains(&key) {
-                return Err(ExecutionError::Invalid(
-                    "COUNT(DISTINCT) supports at most 100000 unique values".into(),
-                ));
+            if seen.len() >= MAX_DISTINCT_ROWS {
+                // At the memory cap, check membership without then inserting
+                // the already-present key a second time.
+                if !seen.contains(&key) {
+                    return Err(ExecutionError::Invalid(
+                        "COUNT(DISTINCT) supports at most 100000 unique values".into(),
+                    ));
+                }
+            } else {
+                seen.insert(key);
             }
-            seen.insert(key);
         }
     }
     if query.offset.unwrap_or(0) == 0 {
