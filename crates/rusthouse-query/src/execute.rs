@@ -410,6 +410,95 @@ fn add_integer_partial(
     }
 }
 
+/// Evaluate MIN and MAX over many immutable parts in parallel. The scan
+/// applies the same typed numeric predicates as a serial aggregate, while
+/// reducing only one extremum from each worker.
+fn parallel_integer_minmax(
+    query: &Select,
+    source: &Path,
+) -> Result<Option<Option<Number>>, ExecutionError> {
+    let Projection::Aggregate { function, column } = &query.projection else {
+        return Ok(None);
+    };
+    if !matches!(function, AggregateFunction::Min | AggregateFunction::Max)
+        || query.distinct || query.limit.is_some() || query.offset.is_some()
+        || query.order_by.is_some() || !query.order_by_extra.is_empty()
+        || query.having.is_some()
+    {
+        return Ok(None);
+    }
+    let parts = rusthouse_storage::query_parts(source)?;
+    let workers = std::thread::available_parallelism().map_or(1, |n| n.get()).min(4);
+    if parts.len() < 32 || workers < 2 {
+        return Ok(None);
+    }
+    let metadata = inspect_query_source(source)?;
+    let Some(kind) = metadata.columns.iter().find(|candidate| candidate.name == *column)
+        .map(|candidate| candidate.data_type.as_str())
+    else {
+        return Err(ExecutionError::Invalid(format!("unknown aggregate column: {column}")));
+    };
+    if !matches!(kind, "Int8" | "Int16" | "Int32" | "Int64" | "Int128"
+        | "UInt8" | "UInt16" | "UInt32" | "UInt64" | "UInt128")
+    {
+        return Ok(None);
+    }
+    for predicate in query.predicates.iter().chain(query.or_predicates.iter().flatten()) {
+        let selected = metadata.columns.iter().find(|candidate| candidate.name == predicate.column())
+            .ok_or_else(|| ExecutionError::Invalid(format!("unknown WHERE column: {}", predicate.column())))?;
+        if !matches!(selected.data_type.as_str(),
+            "Int8" | "Int16" | "Int32" | "Int64" | "Int128"
+            | "UInt8" | "UInt16" | "UInt32" | "UInt64" | "UInt128"
+            | "Float32" | "Float64")
+        {
+            return Ok(None);
+        }
+    }
+    let mut names = vec![column.clone()];
+    let branches = compile_part_where(query, &mut names, |name, text| {
+        let kind = metadata.columns.iter().find(|candidate| candidate.name == name)
+            .ok_or_else(|| ExecutionError::Invalid(format!("unknown WHERE column: {name}")))?;
+        parse_numeric(&kind.data_type, text)
+    })?;
+    let no_filters = query.predicates.is_empty() && query.or_predicates.is_empty();
+    let next = AtomicUsize::new(0);
+    let result = std::thread::scope(|scope| -> Result<Option<Number>, ExecutionError> {
+        let handles = (0..workers).map(|_| {
+            let next = &next;
+            let names = &names;
+            let branches = &branches;
+            scope.spawn(move || -> Result<Option<Number>, ExecutionError> {
+                let mut state = AggregateState::new(*function);
+                while let Some(index) = next_part_index(next, parts.len()) {
+                    let mut reader = rusthouse_storage::NumericPartReader::open(&parts[index], names)?;
+                    while let Some(batch) = reader.next_batch()? {
+                        for row in 0..batch[0].len() {
+                            if no_filters || batch_matches(&batch, row, branches) {
+                                state.update(number_at(&batch[0], row))?;
+                            }
+                        }
+                    }
+                }
+                Ok(state.value)
+            })
+        }).collect::<Vec<_>>();
+        let mut extremum = None;
+        for handle in handles {
+            if let Some(value) = handle.join()
+                .map_err(|_| ExecutionError::Invalid("parallel extremum worker panicked".into()))??
+            {
+                let replace = extremum.is_none_or(|previous| {
+                    let ordering = compare_numbers(value, previous);
+                    if *function == AggregateFunction::Min { ordering.is_lt() } else { ordering.is_gt() }
+                });
+                if replace { extremum = Some(value); }
+            }
+        }
+        Ok(extremum)
+    })?;
+    Ok(Some(result))
+}
+
 /// Process independent frozen parts concurrently for exact integer SUM.
 /// Unsupported types and small inputs stay on the existing executor path.
 fn parallel_integer_sum(
@@ -570,6 +659,18 @@ fn execute_into<W: Write>(
     if let Some(count) = parallel_filtered_count(query, part)? {
         write_header(query, output, "count")?;
         writeln!(output, "{count}")?;
+        return Ok(());
+    }
+    if let Some(extremum) = parallel_integer_minmax(query, part)? {
+        let Projection::Aggregate { function, column } = &query.projection else {
+            unreachable!("parallel_integer_minmax accepts only aggregate projections");
+        };
+        write_header(query, output, &format!("{}({column})", function.name()))?;
+        if let Some(value) = extremum {
+            writeln!(output, "{value}")?;
+        } else {
+            writeln!(output, "NULL")?;
+        }
         return Ok(());
     }
     if let Some(sum) = parallel_integer_sum(query, part)? {
