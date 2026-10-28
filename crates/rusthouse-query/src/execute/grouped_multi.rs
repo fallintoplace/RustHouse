@@ -57,7 +57,7 @@ pub(super) fn execute<W: Write>(
     }
 
     let group_indices = columns.iter().map(|name| indices[name]).collect::<Vec<_>>();
-    let mut reader = TypedQueryReader::open(part, &names)?;
+    let mut reader = TypedQueryReader::open_with_metadata(part, &names, &metadata)?;
     let mut groups: Vec<(Vec<Cell>, u64)> = Vec::new();
     let mut by_key: HashMap<Vec<Key>, usize> = HashMap::new();
     let mut probe_key = Vec::with_capacity(group_indices.len());

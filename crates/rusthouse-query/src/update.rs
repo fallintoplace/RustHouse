@@ -19,6 +19,17 @@ fn value(parser: &mut Parser) -> Result<Option<String>, ParseError> {
             parser.index += 1;
             Ok(None)
         }
+        Some(Token::Plus) => {
+            parser.index += 1;
+            match parser.tokens.get(parser.index) {
+                Some(Token::Number(value)) if !value.starts_with('-') => {
+                    let value = value.clone();
+                    parser.index += 1;
+                    Ok(Some(value))
+                }
+                _ => Err(ParseError("UPDATE + requires a numeric literal".into())),
+            }
+        }
         _ => Err(ParseError(
             "UPDATE SET accepts only literal values or NULL".into(),
         )),
@@ -32,7 +43,7 @@ fn parse_assignments(parser: &mut Parser) -> Result<Vec<(String, Option<String>)
         if assignments.len() >= 64 {
             return Err(ParseError("UPDATE supports at most 64 columns".into()));
         }
-        let column = parser.word()?;
+        let column = parser.bounded_word()?;
         if !seen.insert(column.clone()) {
             return Err(ParseError(format!("duplicate UPDATE column: {column}")));
         }
@@ -180,4 +191,25 @@ mod tests {
             assert!(parse_update(statement).is_err(), "{statement}");
         }
     }
+    #[test]
+    fn restricts_update_column_identifiers_to_128_bytes() {
+        let accepted = "a".repeat(128);
+        let rejected = "a".repeat(129);
+        assert!(
+            parse_update(&format!("UPDATE events SET {accepted} = 1")).is_ok()
+        );
+        assert!(
+            parse_update(&format!("UPDATE events SET {rejected} = 1")).is_err()
+        );
+    }
+
+    #[test]
+    fn accepts_unsigned_numeric_literals_with_unary_plus() {
+        let parsed = parse_update("UPDATE events SET id = +3 WHERE id = 1")
+            .unwrap()
+            .unwrap();
+        assert_eq!(parsed.assignments, vec![("id".into(), Some("3".into()))]);
+        assert!(parse_update("UPDATE events SET id = +NULL").is_err());
+    }
+
 }

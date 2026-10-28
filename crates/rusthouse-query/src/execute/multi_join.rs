@@ -204,7 +204,7 @@ fn output_columns(
     // For unqualified *, the USING key appears once. With a RIGHT/FULL
     // join, fall back to the newly joined value when the old side is NULL.
     let mut omitted = HashMap::new();
-    for (index, step) in std::iter::once(&initial_step)
+    for (index, step) in std::iter::once(initial_step)
         .chain(query.steps.iter())
         .enumerate()
     {
@@ -239,7 +239,7 @@ fn output_columns(
             }
         }
     } else {
-        for relation in &relations {
+        for relation in relations {
             for (index, name) in relation.names.iter().enumerate() {
                 let absolute = relation.start + index;
                 if let Some(&left) = omitted.get(&absolute) {
