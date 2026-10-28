@@ -9,16 +9,17 @@ MAX_UINT64 = (1 << 64) - 1
 
 
 def sum_range(start, stop):
-    if not 0 <= start <= stop <= MAX_UINT64 + 1:
+    if type(start) is not int or type(stop) is not int or not 0 <= start <= stop <= MAX_UINT64 + 1:
         raise ValueError("expected an ordered UInt64 half-open range")
     count = stop - start
     return count * (start + stop - 1) // 2 if count else 0
 
 
 def modulo_reference(rows, modulus, residue):
-    if not 0 <= rows <= MAX_UINT64 + 1:
+    if type(rows) is not int or not 0 <= rows <= MAX_UINT64 + 1:
         raise ValueError("invalid UInt64 row count")
-    if not 1 <= modulus <= MAX_UINT64 or not 0 <= residue < modulus:
+    if (type(modulus) is not int or type(residue) is not int
+            or not 1 <= modulus <= MAX_UINT64 or not 0 <= residue < modulus):
         raise ValueError("invalid modulus or residue")
     count = 0 if residue >= rows else (rows - 1 - residue) // modulus + 1
     total = count * residue + modulus * count * (count - 1) // 2
@@ -26,7 +27,7 @@ def modulo_reference(rows, modulus, residue):
 
 
 def make_oracles(rows):
-    if not 1 <= rows <= MAX_UINT64 + 1:
+    if type(rows) is not int or not 1 <= rows <= MAX_UINT64 + 1:
         raise ValueError("rows must be in 1..2^64")
     even = modulo_reference(rows, 2, 0)
     odd = modulo_reference(rows, 2, 1)
