@@ -107,6 +107,11 @@ fn scan_comparison(bytes: &[u8], index: &mut usize) -> Operator {
     operator
 }
 
+fn follows_binary_minus_context(tokens: &[Token]) -> bool {
+    matches!(tokens.last(), Some(Token::Number(_) | Token::RParen))
+        || matches!(tokens.last(), Some(Token::Word(word)) if !word.eq_ignore_ascii_case("SELECT"))
+}
+
 fn punctuation_token(byte: u8) -> Token {
     match byte {
         b'*' => Token::Star,
@@ -141,9 +146,7 @@ pub(super) fn tokenize(sql: &str) -> Result<Vec<Token>, ParseError> {
                 index += 1;
                 punctuation_token(byte)
             }
-            b'-' if matches!(tokens.last(), Some(Token::Number(_) | Token::RParen))
-                || matches!(tokens.last(), Some(Token::Word(word)) if !word.eq_ignore_ascii_case("SELECT")) =>
-            {
+            b'-' if follows_binary_minus_context(&tokens) => {
                 index += 1;
                 Token::Minus
             }
