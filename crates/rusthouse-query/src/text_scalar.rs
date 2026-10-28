@@ -55,6 +55,7 @@ pub(super) fn is_function(name: &str) -> bool {
             | "TRIM_WHITESPACE"
             | "TRY_TO_INT64"
             | "LPAD"
+            | "LEFTPAD"
             | "COUNTSUBSTRINGSCASEINSENSITIVE"
             | "HEX_DECODE"
             | "REPLACE"
@@ -816,6 +817,41 @@ fn parse_at_depth(parser: &mut Parser, depth: usize) -> Result<ConstantValue, Pa
                         .map_err(|_| ParseError("TO_INT64 requires an Int64 string".into()))?,
                 ),
                 None => ConstantValue::Null,
+            }
+        }
+        "LEFTPAD" => {
+            let input = text_arg(parser, depth + 1)?;
+            require(parser, Token::Comma, "leftPad requires a width")?;
+            let width = integer_arg(parser, depth + 1)?;
+            let padding = if parser.take(Token::Comma) {
+                text_arg(parser, depth + 1)?
+            } else {
+                Some(" ".to_owned())
+            };
+            require(parser, Token::RParen, "expected ')' after leftPad")?;
+            match (input, width, padding) {
+                (Some(input), Some(width), Some(padding)) => {
+                    let width = usize::try_from(width)
+                        .map_err(|_| ParseError("leftPad width must be nonnegative".into()))?;
+                    if width > MAX_TEXT_BYTES {
+                        return Err(ParseError("leftPad result exceeds byte limit".into()));
+                    }
+                    let bytes = if width <= input.len() {
+                        input.into_bytes()[..width].to_vec()
+                    } else {
+                        if padding.is_empty() {
+                            return Err(ParseError("leftPad padding cannot be empty".into()));
+                        }
+                        let mut result = Vec::with_capacity(width);
+                        result.extend(padding.bytes().cycle().take(width - input.len()));
+                        result.extend_from_slice(input.as_bytes());
+                        result
+                    };
+                    ConstantValue::Text(String::from_utf8(bytes).map_err(|_| {
+                        ParseError("leftPad result cannot be represented as UTF-8".into())
+                    })?)
+                }
+                _ => ConstantValue::Null,
             }
         }
         "LPAD" => {
