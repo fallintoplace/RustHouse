@@ -209,7 +209,7 @@ pub fn parse_join(sql: &str) -> Result<Option<JoinSelect>, ParseError> {
     while matches!(
         parser.tokens.get(parser.index),
         Some(Token::Word(word))
-            if ["JOIN", "INNER", "LEFT", "RIGHT", "FULL", "ANY"]
+            if ["JOIN", "INNER", "LEFT", "RIGHT", "FULL", "ANY", "ALL"]
                 .iter()
                 .any(|keyword| word.eq_ignore_ascii_case(keyword))
     ) {
@@ -217,8 +217,14 @@ pub fn parse_join(sql: &str) -> Result<Option<JoinSelect>, ParseError> {
             return Err(ParseError("JOIN supports at most 8 tables".into()));
         }
         let leading_any = parser.keyword("ANY");
+        let leading_all = !leading_any && parser.keyword("ALL");
         let step_kind = parse_join_kind(&mut parser);
-        let step_any = parser.keyword("ANY") || leading_any;
+        let trailing_any = parser.keyword("ANY");
+        let trailing_all = !trailing_any && parser.keyword("ALL");
+        if (leading_any || leading_all) && (trailing_any || trailing_all) {
+            return Err(ParseError("JOIN strictness specified twice".into()));
+        }
+        let step_any = leading_any || trailing_any;
         if !parser.keyword("JOIN") {
             return Err(ParseError("expected JOIN after join type".into()));
         }
@@ -496,6 +502,27 @@ pub fn explain_join(query: &JoinSelect) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn chained_joins_accept_explicit_all_strictness() {
+        for statement in [
+            "SELECT * FROM a x JOIN b y ON x.id = y.id ALL JOIN c z ON y.id = z.id",
+            "SELECT * FROM a x JOIN b y ON x.id = y.id INNER ALL JOIN c z ON y.id = z.id",
+            "SELECT * FROM a x JOIN b y ON x.id = y.id LEFT ALL JOIN c z USING (id)",
+        ] {
+            let query = parse_join(statement).unwrap().unwrap();
+            assert_eq!(query.steps.len(), 1);
+            assert!(!query.steps[0].any, "{statement}");
+        }
+        for statement in [
+            "SELECT * FROM a x JOIN b y ON x.id = y.id ALL ALL JOIN c z USING (id)",
+            "SELECT * FROM a x JOIN b y ON x.id = y.id ANY INNER ANY JOIN c z USING (id)",
+            "SELECT * FROM a x JOIN b y ON x.id = y.id ALL INNER ANY JOIN c z USING (id)",
+        ] {
+            assert!(parse_join(statement).is_err(), "{statement}");
+        }
+    }
+
 
     #[test]
     fn explain_includes_using_filter_sort_and_offset() {
