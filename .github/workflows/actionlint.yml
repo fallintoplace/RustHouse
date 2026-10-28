@@ -28,5 +28,14 @@ jobs:
         with:
           go-version: '1.25.x'
           cache: false
+      - name: Cache actionlint dependencies and build outputs
+        uses: actions/cache@v5
+        with:
+          path: |
+            ~/.cache/go-build
+            ~/go/pkg/mod
+          key: actionlint-${{ runner.os }}-go1.25-v1.7.12
+      - name: Require ShellCheck for embedded shell scripts
+        run: command -v shellcheck
       - name: Check workflow syntax, expressions and scripts
-        run: go run github.com/rhysd/actionlint/cmd/actionlint@v1.7.12 -color
+        run: go run github.com/rhysd/actionlint/cmd/actionlint@v1.7.12 -shellcheck shellcheck -color

@@ -31,9 +31,21 @@ fn composite_reversed_predicates() {
             .as_nanos()
     ));
     successful(&db, "CREATE TABLE facts (id UInt64, team UInt64)");
-    successful(&db, "CREATE TABLE labels (id UInt64, team UInt64, label String)");
+    successful(
+        &db,
+        "CREATE TABLE labels (id UInt64, team UInt64, label String)",
+    );
     successful(&db, "INSERT INTO facts VALUES (1, 10), (2, 20), (3, 30)");
-    successful(&db, "INSERT INTO labels VALUES (10, 1, 'A'), (30, 3, 'C'), (20, 4, 'wrong')");
-    assert_eq!(successful(&db, "SELECT f.id, l.label FROM facts f JOIN labels l ON l.id = f.team AND f.id = l.team ORDER BY f.id"), b"f.id\tl.label\n1\tA\n3\tC\n");
+    successful(
+        &db,
+        "INSERT INTO labels VALUES (10, 1, 'A'), (30, 3, 'C'), (20, 4, 'wrong')",
+    );
+    assert_eq!(
+        successful(
+            &db,
+            "SELECT f.id, l.label FROM facts f JOIN labels l ON l.id = f.team AND f.id = l.team ORDER BY f.id"
+        ),
+        b"f.id\tl.label\n1\tA\n3\tC\n"
+    );
     fs::remove_dir_all(db).unwrap();
 }

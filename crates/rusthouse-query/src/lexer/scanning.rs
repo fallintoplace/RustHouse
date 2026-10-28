@@ -10,9 +10,25 @@ pub(super) fn advance_ascii_digits(bytes: &[u8], index: &mut usize) {
     }
 }
 
-pub(super) fn require_digit(bytes: &[u8], index: usize, message: &'static str) -> Result<(), ParseError> {
+pub(super) fn require_digit(
+    bytes: &[u8],
+    index: usize,
+    message: &'static str,
+) -> Result<(), ParseError> {
     if !is_ascii_digit_at(bytes, index) {
         return Err(ParseError(message.into()));
+    }
+    Ok(())
+}
+
+fn scan_exponent(bytes: &[u8], index: &mut usize) -> Result<(), ParseError> {
+    if matches!(bytes.get(*index), Some(b'e' | b'E')) {
+        *index += 1;
+        if matches!(bytes.get(*index), Some(b'+' | b'-')) {
+            *index += 1;
+        }
+        require_digit(bytes, *index, "expected digits in exponent")?;
+        advance_ascii_digits(bytes, index);
     }
     Ok(())
 }
@@ -32,14 +48,7 @@ pub(super) fn scan_number(sql: &str, index: &mut usize) -> Result<Token, ParseEr
         require_digit(bytes, *index, "expected digits after decimal point")?;
         advance_ascii_digits(bytes, index);
     }
-    if matches!(bytes.get(*index), Some(b'e' | b'E')) {
-        *index += 1;
-        if matches!(bytes.get(*index), Some(b'+' | b'-')) {
-            *index += 1;
-        }
-        require_digit(bytes, *index, "expected digits in exponent")?;
-        advance_ascii_digits(bytes, index);
-    }
+    scan_exponent(bytes, index)?;
     Ok(Token::Number(sql[start..*index].into()))
 }
 

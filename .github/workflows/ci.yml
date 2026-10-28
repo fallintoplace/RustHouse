@@ -34,6 +34,21 @@ jobs:
           cache-on-failure: true
       - run: cargo clippy --workspace --all-targets --locked -- -D warnings
 
+  rustdoc:
+    name: Rustdoc warnings (ubuntu-latest)
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    env:
+      RUSTDOCFLAGS: -D warnings
+    steps:
+      - uses: actions/checkout@v7
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: rustdoc
+          save-if: ${{ github.ref == 'refs/heads/main' }}
+      - name: Build workspace docs without dependencies
+        run: cargo doc --workspace --no-deps --locked
+
   test:
     name: Rust (${{ matrix.os }})
     runs-on: ${{ matrix.os }}
@@ -48,13 +63,19 @@ jobs:
         with:
           save-if: ${{ github.ref == 'refs/heads/main' }}
           cache-on-failure: true
-      - run: cargo test --workspace --locked
+      - run: cargo test --workspace --locked --no-fail-fast
       - run: cargo build --workspace --locked
       - name: Verify 20 generated SQL queries
         run: |
           python3 -m bench workload latency -- \
             --binary target/debug/rusthouse \
             --rows 512 --runs 1 --warmups 0
+      - name: Verify CLI and HTTP query parity
+        if: matrix.os == 'ubuntu-latest'
+        run: |
+          python3 -m bench.interop.cli_http_parity \
+            --binary target/debug/rusthouse \
+            --server target/debug/rusthouse-server
       - name: Verify analytics baseline against SQLite
         if: matrix.os == 'ubuntu-latest'
         run: |
@@ -131,4 +152,4 @@ jobs:
           save-if: ${{ github.ref == 'refs/heads/main' }}
           cache-on-failure: true
       - name: Test minimum Rust version
-        run: cargo test --workspace --locked
+        run: cargo test --workspace --locked --no-fail-fast

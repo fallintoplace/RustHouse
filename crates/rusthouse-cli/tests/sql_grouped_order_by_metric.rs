@@ -32,7 +32,7 @@ fn orders_grouped_sum_and_avg_by_result_value() {
     );
 
     let nulls = sql(
-        "SELECT category, sum(amount) FROM sales GROUP BY category ORDER BY 2 ASC NULLS FIRST",
+        "SELECT category, sum(amount) FROM sales GROUP BY category ORDER BY 2 ASC NULLS FIRST, category ASC",
         &db,
     );
     assert!(nulls.status.success(), "{nulls:?}");
@@ -42,20 +42,20 @@ fn orders_grouped_sum_and_avg_by_result_value() {
     );
 
     let averages = sql(
-        "SELECT category, avg(amount) FROM sales GROUP BY category ORDER BY 2 DESC LIMIT 2",
+        "SELECT category, avg(amount) FROM sales GROUP BY category ORDER BY 2 DESC, category ASC LIMIT 2",
         &db,
     );
     assert!(averages.status.success(), "{averages:?}");
-    assert_eq!(
-        averages.stdout,
-        b"category\tavg(amount)\nEU\t15\nAU\t12\n"
-    );
+    assert_eq!(averages.stdout, b"category\tavg(amount)\nEU\t15\nAU\t12\n");
     fs::remove_dir_all(db).unwrap();
 }
 
 #[test]
 fn orders_generated_grouped_values_by_sum() {
-    let db = std::env::temp_dir().join(format!("rusthouse-order-metrics-generated-{}", std::process::id()));
+    let db = std::env::temp_dir().join(format!(
+        "rusthouse-order-metrics-generated-{}",
+        std::process::id()
+    ));
     let result = sql(
         "SELECT number, sum(number) FROM numbers(5) GROUP BY number ORDER BY 2 DESC LIMIT 2",
         &db,

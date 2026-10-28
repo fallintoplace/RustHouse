@@ -10,12 +10,23 @@ fn value(sql: &str) -> ConstantValue {
 #[test]
 fn appends_character_only_when_missing() {
     for (sql, expected) in [
-        ("SELECT appendTrailingCharIfAbsent('https://example.com', '/')", "https://example.com/"),
-        ("SELECT appendTrailingCharIfAbsent('https://example.com/', '/')", "https://example.com/"),
+        (
+            "SELECT appendTrailingCharIfAbsent('https://example.com', '/')",
+            "https://example.com/",
+        ),
+        (
+            "SELECT appendTrailingCharIfAbsent('https://example.com/', '/')",
+            "https://example.com/",
+        ),
         ("SELECT appendTrailingCharIfAbsent('', '/')", ""),
         ("SELECT appendTrailingCharIfAbsent('雪', '☃')", "雪☃"),
-    ] { assert_eq!(value(sql), ConstantValue::Text(expected.into()), "{sql}"); }
-    assert_eq!(value("SELECT appendTrailingCharIfAbsent(NULL, '/')"), ConstantValue::Null);
+    ] {
+        assert_eq!(value(sql), ConstantValue::Text(expected.into()), "{sql}");
+    }
+    assert_eq!(
+        value("SELECT appendTrailingCharIfAbsent(NULL, '/')"),
+        ConstantValue::Null
+    );
 }
 #[test]
 fn rejects_non_character_suffixes() {
@@ -24,5 +35,7 @@ fn rejects_non_character_suffixes() {
         "SELECT appendTrailingCharIfAbsent('a', 'bc')",
         "SELECT appendTrailingCharIfAbsent('a')",
         "SELECT appendTrailingCharIfAbsent(1, '/')",
-    ] { assert!(parse_select(sql).is_err(), "{sql}"); }
+    ] {
+        assert!(parse_select(sql).is_err(), "{sql}");
+    }
 }

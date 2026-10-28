@@ -1,14 +1,16 @@
 //! Read typed batches from immutable wide MergeTree parts.
 //! This reader is deliberately separate from the optimized numeric-only scan.
 use crate::granules::{read_mark_bytes_cached, read_numeric_granule_cached};
+use crate::mark_validation::validate_wide_marks_reader;
 use crate::numeric::numeric_storage_type;
 use crate::query_parts;
 use crate::scan_layout::ScanLayout;
 use crate::{
-    CompressedBlockReader, DecodedBlock, NumericColumn, PartError, PartMetadata, StringColumn, UuidValue,
-    WideMark, inspect_part, read_legacy_strings, read_uuid_values, read_wide_marks,
+    ArrayOffsetsEncoding, CompressedBlockReader, DecodedBlock, NumericColumn, PartError,
+    PartMetadata, StringColumn, UuidValue, WideMark, inspect_part, read_array_offsets,
+    read_legacy_strings, read_numeric_array_column, read_numeric_column, read_uuid_values,
+    read_wide_marks,
 };
-use crate::mark_validation::validate_wide_marks_reader;
 use std::fs::File;
 use std::io::{self, Read};
 use std::path::{Path, PathBuf};
@@ -25,6 +27,23 @@ pub enum TypedColumn {
         values: StringColumn,
         nulls: Vec<u8>,
     },
+}
+
+fn numeric_array_element(values: &NumericColumn, index: usize) -> String {
+    match values {
+        NumericColumn::UInt8(values) => values[index].to_string(),
+        NumericColumn::UInt16(values) => values[index].to_string(),
+        NumericColumn::UInt32(values) => values[index].to_string(),
+        NumericColumn::UInt64(values) => values[index].to_string(),
+        NumericColumn::UInt128(values) => values[index].to_string(),
+        NumericColumn::Int8(values) => values[index].to_string(),
+        NumericColumn::Int16(values) => values[index].to_string(),
+        NumericColumn::Int32(values) => values[index].to_string(),
+        NumericColumn::Int64(values) => values[index].to_string(),
+        NumericColumn::Int128(values) => values[index].to_string(),
+        NumericColumn::Float32(values) => values[index].to_string(),
+        NumericColumn::Float64(values) => values[index].to_string(),
+    }
 }
 
 impl TypedColumn {
@@ -113,7 +132,7 @@ impl<'a> MarkStream<'a> {
                     .ok_or_else(|| PartError::InvalidScan("String stream ends at mark".into()))??
             }
         };
-        if offset >= block.data.len() {
+        if offset > block.data.len() {
             return Err(PartError::InvalidScan(
                 "String mark offset exceeds block".into(),
             ));
@@ -164,10 +183,57 @@ enum StorageKind {
     Uuid,
     NullableNumeric(String),
     NullableString,
+    NumericArray(String),
+    StringMap(String),
 }
 
 impl StorageKind {
     fn from_data_type(data_type: &str) -> Result<Self, PartError> {
+        if let Some(value_type) = data_type
+            .strip_prefix("Map(String, ")
+            .and_then(|name| name.strip_suffix(')'))
+        {
+            if matches!(
+                value_type,
+                "String"
+                    | "UInt8"
+                    | "UInt16"
+                    | "UInt32"
+                    | "UInt64"
+                    | "UInt128"
+                    | "Int8"
+                    | "Int16"
+                    | "Int32"
+                    | "Int64"
+                    | "Int128"
+                    | "Float32"
+                    | "Float64"
+            ) {
+                return Ok(Self::StringMap(value_type.to_owned()));
+            }
+        }
+        if let Some(inner) = data_type
+            .strip_prefix("Array(")
+            .and_then(|type_name| type_name.strip_suffix(')'))
+        {
+            if matches!(
+                inner,
+                "UInt8"
+                    | "UInt16"
+                    | "UInt32"
+                    | "UInt64"
+                    | "UInt128"
+                    | "Int8"
+                    | "Int16"
+                    | "Int32"
+                    | "Int64"
+                    | "Int128"
+                    | "Float32"
+                    | "Float64"
+            ) {
+                return Ok(Self::NumericArray(data_type.to_owned()));
+            }
+        }
         match data_type {
             "String" => Ok(Self::String),
             "UUID" => Ok(Self::Uuid),
@@ -191,6 +257,14 @@ impl StorageKind {
     fn needs_null_map(&self) -> bool {
         matches!(self, Self::NullableNumeric(_) | Self::NullableString)
     }
+
+    fn needs_array_sizes(&self) -> bool {
+        matches!(self, Self::NumericArray(_))
+    }
+
+    fn needs_map_streams(&self) -> bool {
+        matches!(self, Self::StringMap(_))
+    }
 }
 
 fn wrap_null_map(values: TypedColumn, nulls: Option<Vec<u8>>) -> Result<TypedColumn, PartError> {
@@ -204,10 +278,131 @@ fn wrap_null_map(values: TypedColumn, nulls: Option<Vec<u8>>) -> Result<TypedCol
     }
 }
 
+fn quoted_map_text(output: &mut String, bytes: &[u8]) -> Result<(), PartError> {
+    let text = std::str::from_utf8(bytes)
+        .map_err(|_| PartError::InvalidScan("Map String contains invalid UTF-8".into()))?;
+    output.push('"');
+    for ch in text.chars() {
+        match ch {
+            '"' => output.push_str("\\\""),
+            '\\' => output.push_str("\\\\"),
+            '\n' => output.push_str("\\n"),
+            '\r' => output.push_str("\\r"),
+            '\t' => output.push_str("\\t"),
+            ch if ch < '\u{0020}' => output.push_str(&format!("\\u{:04x}", ch as u32)),
+            ch => output.push(ch),
+        }
+    }
+    output.push('"');
+    Ok(())
+}
+
+fn map_numeric_text(values: &NumericColumn, index: usize) -> String {
+    match values {
+        NumericColumn::UInt8(rows) => rows[index].to_string(),
+        NumericColumn::UInt16(rows) => rows[index].to_string(),
+        NumericColumn::UInt32(rows) => rows[index].to_string(),
+        NumericColumn::UInt64(rows) => rows[index].to_string(),
+        NumericColumn::UInt128(rows) => rows[index].to_string(),
+        NumericColumn::Int8(rows) => rows[index].to_string(),
+        NumericColumn::Int16(rows) => rows[index].to_string(),
+        NumericColumn::Int32(rows) => rows[index].to_string(),
+        NumericColumn::Int64(rows) => rows[index].to_string(),
+        NumericColumn::Int128(rows) => rows[index].to_string(),
+        NumericColumn::Float32(rows) => rows[index].to_string(),
+        NumericColumn::Float64(rows) => rows[index].to_string(),
+    }
+}
+
+fn push_encoded_map_text(encoded: &mut Vec<u8>, value: &str) {
+    let mut length = value.len() as u64;
+    while length >= 128 {
+        encoded.push((length as u8 & 0x7f) | 0x80);
+        length >>= 7;
+    }
+    encoded.push(length as u8);
+    encoded.extend_from_slice(value.as_bytes());
+}
+
+fn read_string_key_map(
+    keys_stream: &mut Stream,
+    values_stream: &mut Stream,
+    sizes_stream: &mut Stream,
+    value_type: &str,
+    mark: usize,
+    rows: usize,
+) -> Result<StringColumn, PartError> {
+    let mut sizes = MarkStream::open(sizes_stream, mark)?;
+    let offsets = read_array_offsets(&mut sizes, rows, ArrayOffsetsEncoding::Sizes)
+        .map_err(|error| PartError::InvalidScan(error.to_string()))?;
+    let count = offsets.element_count();
+    let keys = read_legacy_strings(&mut MarkStream::open(keys_stream, mark)?, count)
+        .map_err(|error| PartError::InvalidScan(error.to_string()))?;
+    let (text_values, numeric_values) = if value_type == "String" {
+        (
+            Some(
+                read_legacy_strings(&mut MarkStream::open(values_stream, mark)?, count)
+                    .map_err(|error| PartError::InvalidScan(error.to_string()))?,
+            ),
+            None,
+        )
+    } else {
+        (
+            None,
+            Some(
+                read_numeric_column(
+                    &mut MarkStream::open(values_stream, mark)?,
+                    value_type,
+                    count,
+                )
+                .map_err(|error| PartError::InvalidScan(error.to_string()))?,
+            ),
+        )
+    };
+    let mut encoded = Vec::new();
+    for row in 0..rows {
+        let range = offsets
+            .row_range(row)
+            .ok_or_else(|| PartError::InvalidScan("invalid Map row range".into()))?;
+        let mut output = String::from("{");
+        for element in range {
+            if output.len() > 1 {
+                output.push(',');
+            }
+            quoted_map_text(
+                &mut output,
+                keys.get(element)
+                    .ok_or_else(|| PartError::InvalidScan("missing Map key".into()))?,
+            )?;
+            output.push(':');
+            if let Some(values) = &text_values {
+                quoted_map_text(
+                    &mut output,
+                    values
+                        .get(element)
+                        .ok_or_else(|| PartError::InvalidScan("missing Map String value".into()))?,
+                )?;
+            } else if let Some(values) = &numeric_values {
+                output.push_str(&map_numeric_text(values, element));
+            }
+        }
+        output.push('}');
+        push_encoded_map_text(&mut encoded, &output);
+        if encoded.len() > 64 * 1024 * 1024 {
+            return Err(PartError::InvalidScan("Map batch exceeds 64 MiB".into()));
+        }
+    }
+    read_legacy_strings(&mut encoded.as_slice(), rows)
+        .map_err(|error| PartError::InvalidScan(error.to_string()))
+}
+
 struct ColumnReader {
     kind: StorageKind,
     data: Stream,
     null_map: Option<Stream>,
+    array_sizes: Option<Stream>,
+    map_values: Option<Stream>,
+    map_sizes: Option<Stream>,
 }
 
 pub struct TypedPartReader {
@@ -242,19 +437,48 @@ impl TypedPartReader {
             if metadata.rows == 0 {
                 continue;
             }
-            let data = Stream::open(part, name)?;
+            let data_name = if kind.needs_map_streams() {
+                format!("{name}.keys")
+            } else {
+                name.to_owned()
+            };
+            let data = Stream::open(part, &data_name)?;
             let null_map = kind
                 .needs_null_map()
                 .then(|| Stream::open(part, &format!("{name}.null")))
                 .transpose()?;
-            layout.validate(name, &data.marks, metadata.rows)?;
+            let array_sizes = kind
+                .needs_array_sizes()
+                .then(|| Stream::open(part, &format!("{name}.size0")))
+                .transpose()?;
+            let map_values = kind
+                .needs_map_streams()
+                .then(|| Stream::open(part, &format!("{name}.values")))
+                .transpose()?;
+            let map_sizes = kind
+                .needs_map_streams()
+                .then(|| Stream::open(part, &format!("{name}.size0")))
+                .transpose()?;
+            layout.validate(&data_name, &data.marks, metadata.rows)?;
             if let Some(nulls) = &null_map {
                 layout.validate(&format!("{name}.null"), &nulls.marks, metadata.rows)?;
+            }
+            if let Some(sizes) = &array_sizes {
+                layout.validate(&format!("{name}.size0"), &sizes.marks, metadata.rows)?;
+            }
+            if let Some(values) = &map_values {
+                layout.validate(&format!("{name}.values"), &values.marks, metadata.rows)?;
+            }
+            if let Some(sizes) = &map_sizes {
+                layout.validate(&format!("{name}.size0"), &sizes.marks, metadata.rows)?;
             }
             columns.push(ColumnReader {
                 kind,
                 data,
                 null_map,
+                array_sizes,
+                map_values,
+                map_sizes,
             });
         }
         Ok(Self {
@@ -372,6 +596,57 @@ impl TypedPartReader {
                         read_legacy_strings(&mut stream, rows)
                             .map_err(|error| PartError::InvalidScan(error.to_string()))?,
                     )
+                }
+                StorageKind::NumericArray(kind) => {
+                    let sizes = column.array_sizes.as_mut().ok_or_else(|| {
+                        PartError::InvalidScan("missing Array size stream".into())
+                    })?;
+                    let mut sizes_stream = MarkStream::open(sizes, index)?;
+                    let mut data_stream = MarkStream::open(&mut column.data, index)?;
+                    let arrays = read_numeric_array_column(
+                        &mut sizes_stream,
+                        &mut data_stream,
+                        kind,
+                        rows,
+                        ArrayOffsetsEncoding::Sizes,
+                    )
+                    .map_err(|error| PartError::InvalidScan(error.to_string()))?;
+                    let mut rendered = Vec::with_capacity(rows);
+                    for row in 0..rows {
+                        let range = arrays.row_range(row).ok_or_else(|| {
+                            PartError::InvalidScan("invalid Array row range".into())
+                        })?;
+                        let mut text = String::from("[");
+                        for element in range {
+                            if text.len() != 1 {
+                                text.push(',');
+                            }
+                            text.push_str(&numeric_array_element(arrays.values(), element));
+                        }
+                        text.push(']');
+                        rendered.push(text.into_bytes());
+                    }
+                    TypedColumn::Text(
+                        StringColumn::from_rows(rendered)
+                            .map_err(|error| PartError::InvalidScan(error.to_string()))?,
+                    )
+                }
+                StorageKind::StringMap(value_type) => {
+                    let values = column.map_values.as_mut().ok_or_else(|| {
+                        PartError::InvalidScan("missing Map values stream".into())
+                    })?;
+                    let sizes = column
+                        .map_sizes
+                        .as_mut()
+                        .ok_or_else(|| PartError::InvalidScan("missing Map size stream".into()))?;
+                    TypedColumn::Text(read_string_key_map(
+                        &mut column.data,
+                        values,
+                        sizes,
+                        value_type,
+                        index,
+                        rows,
+                    )?)
                 }
                 StorageKind::Uuid => {
                     let bytes = column.data.read_fixed(
@@ -634,25 +909,18 @@ mod tests {
             .collect::<Vec<_>>();
         write_wide_part(&part, &columns, &rows).unwrap();
         let metadata = crate::inspect_query_source(&part).unwrap();
-        let mut snapshot = TypedQueryReader::open_with_metadata(
-            &part,
-            &["id".into(), "note".into()],
-            &metadata,
-        ).unwrap();
+        let mut snapshot =
+            TypedQueryReader::open_with_metadata(&part, &["id".into(), "note".into()], &metadata)
+                .unwrap();
         let mut scanned = 0;
         while let Some(batch) = snapshot.next_batch().unwrap() {
             scanned += batch[0].len();
         }
         assert_eq!(scanned, 2050);
         assert!(matches!(
-            TypedQueryReader::open_with_metadata(
-                &root,
-                &["id".into()],
-                &metadata,
-            ),
+            TypedQueryReader::open_with_metadata(&root, &["id".into()], &metadata,),
             Err(PartError::InvalidScan(_))
         ));
-
 
         let mut reader = TypedPartReader::open(&part, &["id".into(), "note".into()]).unwrap();
         assert_eq!(reader.mark_count(), 3);

@@ -36,8 +36,7 @@ pub fn inventory_snapshot(
             let entry = entry.map_err(|error| io_error(&part, error))?;
             let path = entry.path();
             // A single no-follow stat checks both file type and byte length.
-            let metadata = fs::symlink_metadata(&path)
-                .map_err(|error| io_error(&path, error))?;
+            let metadata = fs::symlink_metadata(&path).map_err(|error| io_error(&path, error))?;
             if !metadata.file_type().is_file() {
                 return Err(PartError::InvalidScan(format!(
                     "replication inventory requires regular files: {}",
@@ -90,9 +89,11 @@ mod tests {
         )
         .unwrap();
         let files = inventory_snapshot(&root, 32, 1_000_000).unwrap();
-        assert!(files
-            .iter()
-            .any(|entry| entry.relative_path == Path::new("all_0_0_0/count.txt")));
+        assert!(
+            files
+                .iter()
+                .any(|entry| entry.relative_path == Path::new("all_0_0_0/count.txt"))
+        );
         assert!(files.iter().all(|entry| entry.bytes <= 1_000_000));
         assert!(inventory_snapshot(&root, 1, 1_000_000).is_err());
         assert!(inventory_snapshot(&root, 32, 1).is_err());
@@ -122,20 +123,22 @@ mod tests {
     }
     #[test]
     fn rejects_unexpected_directories_inside_parts() {
-        let root = std::env::temp_dir().join(format!(
-            "rusthouse-inventory-dir-{}", std::process::id()
-        ));
+        let root =
+            std::env::temp_dir().join(format!("rusthouse-inventory-dir-{}", std::process::id()));
         let _ = fs::remove_dir_all(&root);
         fs::create_dir_all(&root).unwrap();
         let part = root.join("all_0_0_0");
         write_wide_part(
             &part,
-            &[Column { name: "id".into(), data_type: "UInt64".into() }],
+            &[Column {
+                name: "id".into(),
+                data_type: "UInt64".into(),
+            }],
             &[vec![Some("7".into())]],
-        ).unwrap();
+        )
+        .unwrap();
         fs::create_dir(part.join("unexpected")).unwrap();
         assert!(inventory_snapshot(&root, 32, 1_000_000).is_err());
         fs::remove_dir_all(root).unwrap();
     }
-
 }

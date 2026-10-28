@@ -49,20 +49,56 @@ fn base_type(kind: &str) -> (&str, bool) {
     }
 }
 
+fn numeric_array_inner_type(kind: &str) -> Option<&str> {
+    let inner = kind.strip_prefix("Array(")?.strip_suffix(')')?;
+    matches!(
+        inner,
+        "UInt8"
+            | "UInt16"
+            | "UInt32"
+            | "UInt64"
+            | "UInt128"
+            | "Int8"
+            | "Int16"
+            | "Int32"
+            | "Int64"
+            | "Int128"
+            | "Float32"
+            | "Float64"
+    )
+    .then_some(inner)
+}
+
 fn map_string_value_type(kind: &str) -> Option<&str> {
     let value = kind.strip_prefix("Map(String, ")?.strip_suffix(')')?;
     matches!(
         value,
-        "String" | "UInt8" | "UInt16" | "UInt32" | "UInt64" | "UInt128"
-            | "Int8" | "Int16" | "Int32" | "Int64" | "Int128"
-            | "Float32" | "Float64"
+        "String"
+            | "UInt8"
+            | "UInt16"
+            | "UInt32"
+            | "UInt64"
+            | "UInt128"
+            | "Int8"
+            | "Int16"
+            | "Int32"
+            | "Int64"
+            | "Int128"
+            | "Float32"
+            | "Float64"
     )
     .then_some(value)
 }
 
 fn supported(kind: &str) -> bool {
     let (base, nullable) = base_type(kind);
+    if numeric_array_inner_type(base).is_some() {
+        return !nullable;
+    }
     if map_string_value_type(base).is_some() {
+        return !nullable;
+    }
+    if base == "UUID" {
         return !nullable;
     }
     matches!(
@@ -91,7 +127,7 @@ fn fixed_width_bytes_per_row(data_type: &str) -> usize {
         "UInt16" | "Int16" | "Date" => 2,
         "UInt32" | "Int32" | "Float32" | "DateTime" => 4,
         "UInt64" | "Int64" | "Float64" => 8,
-        "UInt128" | "Int128" => 16,
+        "UInt128" | "Int128" | "UUID" => 16,
         _ => 0,
     }
 }
@@ -227,6 +263,22 @@ pub fn write_wide_part_with_compression(
     if !rows.is_empty() {
         for (index, col) in columns.iter().enumerate() {
             let (_, nullable) = base_type(&col.data_type);
+            if let Some(inner) = numeric_array_inner_type(&col.data_type) {
+                let mut data_granules = Vec::with_capacity(granule_count);
+                let mut size_granules = Vec::with_capacity(granule_count);
+                for granule in rows.chunks(GRANULE_ROWS) {
+                    let mut data = Vec::new();
+                    let mut sizes = Vec::with_capacity(granule.len() * size_of::<u64>());
+                    for row in granule {
+                        push_numeric_array(inner, row[index].as_deref(), &mut data, &mut sizes)?;
+                    }
+                    data_granules.push(data);
+                    size_granules.push(sizes);
+                }
+                streams.push((col.name.clone(), data_granules));
+                streams.push((format!("{}.size0", col.name), size_granules));
+                continue;
+            }
             if let Some(value_type) = map_string_value_type(&col.data_type) {
                 let mut key_granules = Vec::with_capacity(granule_count);
                 let mut value_granules = Vec::with_capacity(granule_count);
@@ -259,9 +311,8 @@ pub fn write_wide_part_with_compression(
                 // A fixed-width column's final granule size is known
                 // before encoding. Reserve it once instead of growing at
                 // every row; nullable maps have exactly one byte per row.
-                let mut data = Vec::with_capacity(
-                    granule.len() * fixed_width_bytes_per_row(&col.data_type),
-                );
+                let mut data =
+                    Vec::with_capacity(granule.len() * fixed_width_bytes_per_row(&col.data_type));
                 let mut nulls = Vec::with_capacity(if nullable { granule.len() } else { 0 });
                 for row in granule {
                     let null = push_cell(&col.data_type, row[index].as_deref(), &mut data)?;
@@ -303,6 +354,10 @@ pub fn write_wide_part_with_compression(
             let mut uncompressed = Vec::new();
             let mut marks = Vec::with_capacity(24 * granules.len());
             for (index, data) in granules.iter().enumerate() {
+                // Empty Array and Map element streams still need a readable block
+                // for each adaptive mark. Offsets record zero logical elements;
+                // the single padding byte is never exposed as a cell.
+                let data: &[u8] = if data.is_empty() { &[0] } else { data };
                 if data.len() > MAX_STREAM_BYTES - uncompressed.len() {
                     return Err(invalid("part column exceeds 8 MiB"));
                 }
@@ -728,7 +783,10 @@ mod tests {
 #[cfg(test)]
 mod map_writer_tests {
     use super::*;
-    use crate::{ArrayOffsetsEncoding, NumericColumn, read_array_offsets, read_legacy_strings, read_numeric_column};
+    use crate::{
+        ArrayOffsetsEncoding, NumericColumn, read_array_offsets, read_legacy_strings,
+        read_numeric_column,
+    };
     use std::sync::atomic::{AtomicUsize, Ordering};
 
     static NEXT: AtomicUsize = AtomicUsize::new(0);
@@ -776,12 +834,8 @@ mod map_writer_tests {
         assert_eq!(keys.get(0), Some(&b"a"[..]));
         assert_eq!(keys.get(1), Some(&b"a"[..]));
         assert_eq!(keys.get(3), Some(&b"unicode key"[..]));
-        let values = read_numeric_column(
-            &mut values.as_slice(),
-            "UInt16",
-            offsets.element_count(),
-        )
-        .unwrap();
+        let values =
+            read_numeric_column(&mut values.as_slice(), "UInt16", offsets.element_count()).unwrap();
         assert_eq!(values, NumericColumn::UInt16(vec![1, 2, 65535, 7]));
         std::fs::remove_dir_all(root).unwrap();
     }
@@ -817,5 +871,139 @@ mod map_writer_tests {
         }
         assert!(write_wide_part(&root.join("null"), &columns, &[vec![None]]).is_err());
         std::fs::remove_dir_all(root).unwrap();
+    }
+}
+
+#[cfg(test)]
+mod numeric_array_writer_tests {
+    use super::*;
+    use crate::{ArrayOffsetsEncoding, NumericColumn, read_numeric_array_column};
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
+    static NEXT: AtomicUsize = AtomicUsize::new(0);
+
+    fn read_block(path: &Path) -> Vec<u8> {
+        let mut reader = crate::CompressedBlockReader::open(path).unwrap();
+        reader.next_decoded().unwrap().unwrap().data
+    }
+
+    #[test]
+    fn writes_clickhouse_numeric_array_element_and_size_streams() {
+        let dir = std::env::temp_dir().join(format!(
+            "rusthouse-native-array-{}-{}",
+            std::process::id(),
+            NEXT.fetch_add(1, Ordering::Relaxed)
+        ));
+        std::fs::create_dir(&dir).unwrap();
+        let part = dir.join("all_1_1_0");
+        let columns = [Column {
+            name: "items".into(),
+            data_type: "Array(UInt16)".into(),
+        }];
+        let rows = [
+            vec![Some("[12, 65535]".into())],
+            vec![Some("[]".into())],
+            vec![Some("[7]".into())],
+            vec![Some("[0, 1, 2]".into())],
+        ];
+        write_wide_part(&part, &columns, &rows).unwrap();
+        crate::verify_wide_part(&part).unwrap();
+        assert!(part.join("items.size0.bin").exists());
+        assert!(part.join("items.size0.mrk2").exists());
+        let sizes = read_block(&part.join("items.size0.bin"));
+        let data = read_block(&part.join("items.bin"));
+        let arrays = read_numeric_array_column(
+            &mut sizes.as_slice(),
+            &mut data.as_slice(),
+            "Array(UInt16)",
+            4,
+            ArrayOffsetsEncoding::Sizes,
+        )
+        .unwrap();
+        assert_eq!(arrays.offsets(), &[0, 2, 2, 3, 6]);
+        assert_eq!(
+            arrays.values(),
+            &NumericColumn::UInt16(vec![12, 65535, 7, 0, 1, 2])
+        );
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn all_empty_array_and_map_granules_have_valid_stream_blocks() {
+        let dir = std::env::temp_dir().join(format!(
+            "rusthouse-empty-collection-part-{}-{}",
+            std::process::id(),
+            NEXT.fetch_add(1, Ordering::Relaxed)
+        ));
+        std::fs::create_dir(&dir).unwrap();
+        let part = dir.join("all_1_1_0");
+        let columns = [
+            Column {
+                name: "items".into(),
+                data_type: "Array(Int8)".into(),
+            },
+            Column {
+                name: "attrs".into(),
+                data_type: "Map(String, UInt8)".into(),
+            },
+        ];
+        let rows = (0..1025)
+            .map(|_| vec![Some("[]".into()), Some("{}".into())])
+            .collect::<Vec<_>>();
+        write_wide_part(&part, &columns, &rows).unwrap();
+        crate::verify_wide_part(&part).unwrap();
+
+        let mut reader =
+            crate::TypedPartReader::open(&part, &["items".into(), "attrs".into()]).unwrap();
+        for expected in [1024, 1] {
+            let batch = reader.next_batch().unwrap().unwrap();
+            assert_eq!(batch[0].len(), expected);
+            assert_eq!(batch[1].len(), expected);
+            assert!(matches!(
+                &batch[0],
+                crate::TypedColumn::Text(values) if values.get(0) == Some(&b"[]"[..])
+            ));
+            assert!(matches!(
+                &batch[1],
+                crate::TypedColumn::Text(values) if values.get(0) == Some(&b"{}"[..])
+            ));
+        }
+        assert!(reader.next_batch().unwrap().is_none());
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn rejects_invalid_array_values_before_creating_part() {
+        let dir = std::env::temp_dir().join(format!(
+            "rusthouse-invalid-arrays-{}-{}",
+            std::process::id(),
+            NEXT.fetch_add(1, Ordering::Relaxed)
+        ));
+        std::fs::create_dir(&dir).unwrap();
+        let columns = [Column {
+            name: "xs".into(),
+            data_type: "Array(UInt8)".into(),
+        }];
+        for value in ["1,2", "[1,]", "[,1]", "[256]", "[NULL]", "[1, [2]]"] {
+            let part = dir.join("reject");
+            assert!(
+                write_wide_part(&part, &columns, &[vec![Some(value.into())]]).is_err(),
+                "{value}"
+            );
+            assert!(!part.exists(), "{value}");
+        }
+        assert!(write_wide_part(&dir.join("reject-null"), &columns, &[vec![None]]).is_err());
+        assert!(
+            write_wide_part(
+                &dir.join("reject-nested"),
+                &[Column {
+                    name: "xs".into(),
+                    data_type: "Array(Array(UInt8))".into(),
+                }],
+                &[],
+            )
+            .is_err()
+        );
+        std::fs::remove_dir_all(dir).unwrap();
     }
 }

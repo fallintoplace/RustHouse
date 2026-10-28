@@ -12,6 +12,12 @@ use std::path::Path;
 
 const MAX_ROOT_ENTRIES: usize = 20_000;
 const MAX_SNAPSHOT_GENERATIONS: usize = 16_384;
+const MAX_ACTIVE_PARTS: usize = 16_384;
+
+// Surface approaching the storage ceiling before another INSERT fails.
+fn active_parts_near_limit(count: usize) -> bool {
+    count >= MAX_ACTIVE_PARTS * 9 / 10
+}
 
 #[derive(Default)]
 struct Report {
@@ -154,7 +160,10 @@ fn inspect_saved_generations(
         let entry = match entry {
             Ok(entry) => entry,
             Err(error) => {
-                report.error(table, format!("cannot read saved generation entry: {error}"));
+                report.error(
+                    table,
+                    format!("cannot read saved generation entry: {error}"),
+                );
                 continue;
             }
         };
@@ -301,6 +310,16 @@ fn inspect_table(
             return;
         }
     };
+    if active_parts_near_limit(active_parts.len()) {
+        report.warning(
+            name,
+            format!(
+                "active part slots nearing limit: {}/{}; run OPTIMIZE TABLE or reduce part churn",
+                active_parts.len(),
+                MAX_ACTIVE_PARTS
+            ),
+        );
+    }
     for part in &active_parts {
         verify_active_part(report, name, part, full_hashes);
     }
@@ -436,6 +455,15 @@ pub(super) fn run(args: impl Iterator<Item = OsString>) -> Result<(), String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn warns_only_when_active_parts_reach_ninety_percent() {
+        assert!(!active_parts_near_limit(0));
+        assert!(!active_parts_near_limit(MAX_ACTIVE_PARTS * 9 / 10 - 1));
+        assert!(active_parts_near_limit(MAX_ACTIVE_PARTS * 9 / 10));
+        assert!(active_parts_near_limit(MAX_ACTIVE_PARTS));
+    }
+
 
     #[test]
     fn doctor_parser_accepts_only_explicit_hash_flag() {

@@ -6,22 +6,22 @@ use self::decimal::*;
 
 use crate::ParseError;
 
+fn rescale_decimal(value: i128, current_scale: usize, target_scale: usize) -> Result<i128, ParseError> {
+    let factor = 10_i128
+        .checked_pow((target_scale - current_scale) as u32)
+        .ok_or_else(|| ParseError("decimal constant scale is too large".into()))?;
+    value
+        .checked_mul(factor)
+        .ok_or_else(|| ParseError("decimal constant overflow".into()))
+}
+
 /// Fold decimal literal arithmetic without floating point rounding in bounds.
 pub(super) fn arithmetic(left: &str, right: &str, subtract: bool) -> Result<String, ParseError> {
     let (left, left_scale) = fixed_decimal(left)?;
     let (right, right_scale) = fixed_decimal(right)?;
     let scale = left_scale.max(right_scale);
-    let factor = |digits: usize| {
-        10_i128
-            .checked_pow((scale - digits) as u32)
-            .ok_or_else(|| ParseError("decimal constant scale is too large".into()))
-    };
-    let left = left
-        .checked_mul(factor(left_scale)?)
-        .ok_or_else(|| ParseError("decimal constant overflow".into()))?;
-    let right = right
-        .checked_mul(factor(right_scale)?)
-        .ok_or_else(|| ParseError("decimal constant overflow".into()))?;
+    let left = rescale_decimal(left, left_scale, scale)?;
+    let right = rescale_decimal(right, right_scale, scale)?;
     let value = if subtract {
         left.checked_sub(right)
     } else {
@@ -55,7 +55,9 @@ pub(super) fn add_date_years(date: &str, years: i64) -> Result<String, ParseErro
     };
     let shifted = format!("{year:04}-{month}-{day}");
     if rusthouse_storage::parse_date(&shifted).is_none() {
-        return Err(ParseError("DATE interval is outside supported Date range".into()));
+        return Err(ParseError(
+            "DATE interval is outside supported Date range".into(),
+        ));
     }
     Ok(shifted)
 }

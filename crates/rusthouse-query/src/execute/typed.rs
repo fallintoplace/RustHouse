@@ -80,8 +80,9 @@ pub(super) fn key_at(column: &TypedColumn, row: usize) -> Key {
 /// Test the null bitmap without converting a value or allocating String/UUID cells.
 pub(super) fn is_null_at(column: &TypedColumn, row: usize) -> bool {
     match column {
-        TypedColumn::NullableNumeric { nulls, .. }
-        | TypedColumn::NullableText { nulls, .. } => nulls[row] != 0,
+        TypedColumn::NullableNumeric { nulls, .. } | TypedColumn::NullableText { nulls, .. } => {
+            nulls[row] != 0
+        }
         _ => false,
     }
 }
@@ -111,6 +112,8 @@ pub(super) fn cell(column: &TypedColumn, row: usize) -> Cell {
 fn is_typed(data_type: &str) -> bool {
     matches!(data_type, "String" | "UUID" | "Date" | "DateTime")
         || data_type.starts_with("Nullable(")
+        || data_type.starts_with("Array(")
+        || data_type.starts_with("Map(")
 }
 
 pub(super) fn requires_typed_scan(query: &Select, path: &Path) -> Result<bool, ExecutionError> {
@@ -209,11 +212,7 @@ fn uuid_literal_bytes(text: &str) -> Result<[u8; 16], ExecutionError> {
     Ok(output)
 }
 
-fn matches_uuid_compare(
-    value: &[u8; 16],
-    target: &[u8; 16],
-    operator: Operator,
-) -> bool {
+fn matches_uuid_compare(value: &[u8; 16], target: &[u8; 16], operator: Operator) -> bool {
     let ordering = value.cmp(target);
     match operator {
         Operator::Eq => ordering.is_eq(),
@@ -310,18 +309,24 @@ fn compile_in(kind: &str, values: &[String], negated: bool) -> Result<Test, Exec
     }
     if base_type(kind) == "String" {
         return Ok(Test::TextInSet(
-            targets.into_iter().filter_map(|cell| match cell {
-                Cell::Text(value) => Some(value),
-                _ => None,
-            }).collect(),
+            targets
+                .into_iter()
+                .filter_map(|cell| match cell {
+                    Cell::Text(value) => Some(value),
+                    _ => None,
+                })
+                .collect(),
             negated,
         ));
     }
     Ok(Test::NumericInSet(
-        targets.into_iter().filter_map(|cell| match cell {
-            Cell::Numeric(value) => Some(NumberKey::from(value)),
-            _ => None,
-        }).collect(),
+        targets
+            .into_iter()
+            .filter_map(|cell| match cell {
+                Cell::Numeric(value) => Some(NumberKey::from(value)),
+                _ => None,
+            })
+            .collect(),
         negated,
     ))
 }
@@ -915,7 +920,9 @@ pub(super) fn execute_typed<W: Write>(
             && !query.distinct
             && query.order_by.is_none()
             && query.order_by_extra.is_empty()
-            && types.get(column).is_some_and(|kind| kind.starts_with("Nullable("))
+            && types
+                .get(column)
+                .is_some_and(|kind| kind.starts_with("Nullable("))
         {
             let mut reader = TypedQueryReader::open(part, std::slice::from_ref(column))?;
             let mut count = 0u64;
@@ -933,7 +940,8 @@ pub(super) fn execute_typed<W: Write>(
     // COUNT(non-nullable column) is identical to COUNT(*). Read the
     // snapshot row count rather than decoding String/UUID/numeric streams.
     if let Projection::CountColumn { column } = &query.projection {
-        if query.predicates.is_empty() && query.or_predicates.is_empty()
+        if query.predicates.is_empty()
+            && query.or_predicates.is_empty()
             && !query.distinct
             && query.order_by.is_none()
             && query.order_by_extra.is_empty()
@@ -1002,8 +1010,14 @@ pub(super) fn execute_typed<W: Write>(
         top.reserve(capacity.min(1024));
     }
     let no_filters = query.predicates.is_empty() && query.or_predicates.is_empty();
-    if no_filters && !is_count && !is_count_column && !is_count_distinct
-        && !is_grouped && !query.distinct && sort_indices.is_empty() {
+    if no_filters
+        && !is_count
+        && !is_count_column
+        && !is_count_distinct
+        && !is_grouped
+        && !query.distinct
+        && sort_indices.is_empty()
+    {
         skipped = scan.skip_prefix_rows(offset)?;
     }
     while let Some(batch) = scan.next_batch()? {
@@ -1146,7 +1160,9 @@ pub(super) fn execute_typed<W: Write>(
                             if count_distinct_keys.len() >= MAX_BUFFERED_ROWS
                                 && !count_distinct_keys.contains(&key)
                             {
-                                return Err(ExecutionError::Invalid("too many distinct rows".into()));
+                                return Err(ExecutionError::Invalid(
+                                    "too many distinct rows".into(),
+                                ));
                             }
                             count_distinct_keys.insert(key);
                         }
@@ -1272,8 +1288,7 @@ pub(super) fn execute_typed<W: Write>(
                 grouped_rows.sort_by(compare);
             }
         }
-        let write_group = |key: &Cell, count: u64, output: &mut W|
-            -> Result<(), ExecutionError> {
+        let write_group = |key: &Cell, count: u64, output: &mut W| -> Result<(), ExecutionError> {
             write_typed_value(output, key, projection_types[0])?;
             writeln!(output, "\t{count}")?;
             Ok(())
@@ -1294,9 +1309,8 @@ pub(super) fn execute_typed<W: Write>(
             let result = if is_count || is_count_column {
                 count
             } else {
-                (count_distinct_keys.len()
-                    + count_distinct_text.len()
-                    + count_distinct_uuids.len()) as u64
+                (count_distinct_keys.len() + count_distinct_text.len() + count_distinct_uuids.len())
+                    as u64
             };
             writeln!(output, "{result}")?;
         }
@@ -1340,7 +1354,10 @@ mod predicate_order_tests {
                     negated: false,
                 },
             },
-            Condition { index: 1, test: Test::IsNull(false) },
+            Condition {
+                index: 1,
+                test: Test::IsNull(false),
+            },
         ];
         order_compiled_conditions(&mut conditions);
         assert_eq!(conditions[0].index, 1);
@@ -1481,10 +1498,7 @@ mod like_tests {
         let rows = vec![text, number];
         let outside_text = vec![vec![Condition {
             index: 0,
-            test: Test::NotBetween(
-                Cell::Text(b"bbb".to_vec()),
-                Cell::Text(b"yyy".to_vec()),
-            ),
+            test: Test::NotBetween(Cell::Text(b"bbb".to_vec()), Cell::Text(b"yyy".to_vec())),
         }]];
         assert!(passes(&rows, 0, &outside_text));
         assert!(!passes(&rows, 1, &outside_text));
@@ -1526,7 +1540,7 @@ mod like_tests {
 
     #[test]
     fn hashes_long_in_lists_without_changing_nullable_semantics() {
-        use super::{compile_in, Test};
+        use super::{Test, compile_in};
         let words = (0..32).map(|i| format!("word{i}")).collect::<Vec<_>>();
         let text_test = compile_in("String", &words, false).unwrap();
         assert!(matches!(text_test, Test::TextInSet(_, false)));
@@ -1538,8 +1552,14 @@ mod like_tests {
             nulls: vec![0, 0, 1],
         };
         let batch = vec![col];
-        let positive = vec![vec![Condition { index: 0, test: text_test }]];
-        let negative = vec![vec![Condition { index: 0, test: not_text_test }]];
+        let positive = vec![vec![Condition {
+            index: 0,
+            test: text_test,
+        }]];
+        let negative = vec![vec![Condition {
+            index: 0,
+            test: not_text_test,
+        }]];
         assert!(passes(&batch, 0, &positive));
         assert!(!passes(&batch, 1, &positive));
         assert!(!passes(&batch, 2, &positive));
@@ -1554,7 +1574,10 @@ mod like_tests {
             values: NumericColumn::UInt64(vec![7, 33, 0]),
             nulls: vec![0, 0, 1],
         }];
-        let branch = vec![vec![Condition { index: 0, test: in_test }]];
+        let branch = vec![vec![Condition {
+            index: 0,
+            test: in_test,
+        }]];
         assert!(passes(&numeric, 0, &branch));
         assert!(!passes(&numeric, 1, &branch));
         assert!(!passes(&numeric, 2, &branch));
@@ -1679,7 +1702,10 @@ mod unicode_ilike_regressions {
         ] {
             let compiled = compile_like(pattern).unwrap();
             assert!(like_matches(text.as_bytes(), &compiled, true), "{pattern}");
-            assert!(!like_matches(text.as_bytes(), &compiled, false), "{pattern}");
+            assert!(
+                !like_matches(text.as_bytes(), &compiled, false),
+                "{pattern}"
+            );
         }
     }
 
@@ -1707,16 +1733,20 @@ mod topk_tests {
             NEXT.fetch_add(1, Ordering::Relaxed)
         ));
         let columns = [
-            Column { name: "note".into(), data_type: "String".into() },
-            Column { name: "rank".into(), data_type: "UInt64".into() },
+            Column {
+                name: "note".into(),
+                data_type: "String".into(),
+            },
+            Column {
+                name: "rank".into(),
+                data_type: "UInt64".into(),
+            },
         ];
         let mut rows = vec![
             vec![Some("first".into()), Some("1".into())],
             vec![Some("second".into()), Some("1".into())],
         ];
-        rows.extend((0..300).map(|index| {
-            vec![Some(format!("loser-{index}")), Some("99".into())]
-        }));
+        rows.extend((0..300).map(|index| vec![Some(format!("loser-{index}")), Some("99".into())]));
         write_wide_part(&path, &columns, &rows).unwrap();
         let query = parse_select("SELECT note FROM part ORDER BY rank LIMIT 2").unwrap();
         let mut output = Vec::new();

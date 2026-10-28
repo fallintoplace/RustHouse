@@ -57,11 +57,15 @@ impl ResumeMap {
 
     pub fn complete(&self) -> bool {
         let full_bytes = self.chunks / 8;
-        if !self.completed[..full_bytes].iter().all(|&byte| byte == u8::MAX) {
+        if !self.completed[..full_bytes]
+            .iter()
+            .all(|&byte| byte == u8::MAX)
+        {
             return false;
         }
         let remainder = self.chunks % 8;
-        remainder == 0 || self.completed[full_bytes] & ((1u8 << remainder) - 1) == (1u8 << remainder) - 1
+        remainder == 0
+            || self.completed[full_bytes] & ((1u8 << remainder) - 1) == (1u8 << remainder) - 1
     }
 
     /// Stable ASCII encoding for persisting transfer progress.
@@ -81,7 +85,7 @@ impl ResumeMap {
         for (index, byte) in text.bytes().enumerate() {
             match byte {
                 b'0' => {}
-                b'1' => result.mark_complete(index)?,
+                b'1' => result.completed[index / 8] |= 1u8 << (index % 8),
                 _ => return Err("invalid resume map byte"),
             }
         }
@@ -114,7 +118,7 @@ mod tests {
             }
             let restored = ResumeMap::decode(&progress.encode()).unwrap();
             assert_eq!(restored, progress);
-            assert_eq!(restored.remaining().len(), chunks - (chunks + 2) / 3);
+            assert_eq!(restored.remaining().len(), chunks - chunks.div_ceil(3));
             assert_eq!(restored.complete(), chunks == 0 || chunks == 1);
             for index in 0..chunks {
                 progress.mark_complete(index).unwrap();
@@ -163,4 +167,12 @@ mod tests {
         assert_eq!(map.encode(), "10100001101");
     }
 
+    #[test]
+    fn decoding_large_bitmaps_keeps_exact_bit_positions() {
+        let input = "10100111".repeat(8192);
+        let decoded = ResumeMap::decode(&input).unwrap();
+        assert_eq!(decoded.len(), 65_536);
+        assert_eq!(decoded.encode(), input);
+        assert_eq!(decoded.remaining().len(), 3 * 8192);
+    }
 }

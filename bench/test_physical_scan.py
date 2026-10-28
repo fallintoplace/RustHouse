@@ -1,0 +1,31 @@
+import unittest
+
+from bench.scale.physical_scan import even_reference, p90
+
+
+class PhysicalScanReferenceTests(unittest.TestCase):
+    def test_even_count_and_sum_cover_odd_and_even_sizes(self):
+        self.assertEqual(even_reference(1), (1, 0))
+        self.assertEqual(even_reference(2), (1, 0))
+        self.assertEqual(even_reference(3), (2, 2))
+        self.assertEqual(even_reference(4), (2, 2))
+        self.assertEqual(even_reference(5), (3, 6))
+        self.assertEqual(
+            even_reference(1_000_000_000),
+            (500_000_000, 249_999_999_500_000_000),
+        )
+
+    def test_rejects_nonpositive_row_counts(self):
+        for rows in (0, -1):
+            with self.assertRaises(ValueError):
+                even_reference(rows)
+
+    def test_nearest_rank_p90(self):
+        self.assertEqual(p90([4.0, 1.0, 2.0, 3.0, 5.0]), 5.0)
+        self.assertEqual(p90([10.0]), 10.0)
+        with self.assertRaises(ValueError):
+            p90([])
+
+
+if __name__ == "__main__":
+    unittest.main()

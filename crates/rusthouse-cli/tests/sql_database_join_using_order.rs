@@ -3,10 +3,8 @@ use std::process::Command;
 
 #[test]
 fn using_star_projects_shared_keys_first_in_using_list_order() {
-    let db = std::env::temp_dir().join(format!(
-        "rusthouse-join-using-order-{}",
-        std::process::id()
-    ));
+    let db =
+        std::env::temp_dir().join(format!("rusthouse-join-using-order-{}", std::process::id()));
     let sql = |statement: &str| {
         Command::new(env!("CARGO_BIN_EXE_rusthouse"))
             .args(["sql", statement, "--database"])
@@ -23,9 +21,7 @@ fn using_star_projects_shared_keys_first_in_using_list_order() {
         let result = sql(statement);
         assert!(result.status.success(), "{statement}: {result:?}");
     }
-    let result = sql(
-        "SELECT * FROM lefts l FULL JOIN rights r USING (region, id) LIMIT 10",
-    );
+    let result = sql("SELECT * FROM lefts l FULL JOIN rights r USING (region, id) LIMIT 10");
     assert!(result.status.success(), "{result:?}");
     assert_eq!(
         result.stdout,
