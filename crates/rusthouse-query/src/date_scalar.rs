@@ -26,6 +26,7 @@ pub(super) fn is_function(name: &str) -> bool {
             | "TOSTARTOFMINUTE"
             | "TOSTARTOFFIVEMINUTES"
             | "TOSTARTOFTENMINUTES"
+            | "TOSTARTOFFIFTEENMINUTES"
     )
 }
 
@@ -52,6 +53,7 @@ pub(super) fn parse_after_open(
         "TOSTARTOFMINUTE" => bucket_minutes(parser, depth, 1),
         "TOSTARTOFFIVEMINUTES" => bucket_minutes(parser, depth, 5),
         "TOSTARTOFTENMINUTES" => bucket_minutes(parser, depth, 10),
+        "TOSTARTOFFIFTEENMINUTES" => bucket_minutes(parser, depth, 15),
         _ => Err(ParseError(format!("unsupported date function: {name}"))),
     }
 }
