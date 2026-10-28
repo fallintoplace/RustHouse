@@ -89,6 +89,7 @@ pub(super) fn is_function(name: &str) -> bool {
             | "STRIP_PREFIX"
             | "RIGHT"
             | "BASE64_ENCODE"
+            | "TO_BASE64"
             | "BASE64ENCODE"
             | "HASTOKENCASEINSENSITIVE"
             | "ENDS_WITH"
@@ -1546,7 +1547,7 @@ fn parse_at_depth(parser: &mut Parser, depth: usize) -> Result<ConstantValue, Pa
                 None => ConstantValue::Null,
             }
         }
-        "BASE64_ENCODE" | "BASE64ENCODE" => {
+        "BASE64_ENCODE" | "BASE64ENCODE" | "TO_BASE64" => {
             let input = text_arg(parser, depth + 1)?;
             require(parser, Token::RParen, "BASE64_ENCODE requires one argument")?;
             match input {
@@ -2004,5 +2005,19 @@ fn text_arg(parser: &mut Parser, depth: usize) -> Result<Option<String>, ParseEr
         _ => Err(ParseError(
             "expected a string literal or string function".into(),
         )),
+    }
+}
+
+#[cfg(test)]
+mod parity_to_base64_tests {
+    use crate::{parse_select, ConstantValue, Projection};
+    #[test]
+    fn clickhouse_alias_matches_existing_base64() {
+        let sql = "SELECT TO_BASE64('clickhouse')";
+        let canonical = "SELECT BASE64_ENCODE('clickhouse')";
+        assert_eq!(parse_select(sql).unwrap().projection, parse_select(canonical).unwrap().projection);
+        assert!(matches!(parse_select(sql).unwrap().projection, Projection::Constants(values)
+            if values.len() == 1 && values[0].value == ConstantValue::Text("Y2xpY2tob3VzZQ==".into())));
+        assert!(parse_select("SELECT TO_BASE64()").is_err());
     }
 }
