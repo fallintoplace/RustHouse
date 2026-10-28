@@ -12,6 +12,7 @@ pub(super) fn is_function(name: &str) -> bool {
             | "ASCII"
             | "UTF16_LENGTH"
             | "HASSUBSEQUENCE"
+            | "EDITDISTANCEUTF8"
             | "CHR"
             | "STRINGBYTESUNIQ"
             | "BIT_LENGTH"
@@ -238,6 +239,35 @@ fn parse_at_depth(parser: &mut Parser, depth: usize) -> Result<ConstantValue, Pa
                     ConstantValue::Text(result)
                 }
                 None => ConstantValue::Null,
+            }
+        }
+        "EDITDISTANCEUTF8" => {
+            let left = text_arg(parser, depth + 1)?;
+            require(parser, Token::Comma, "editDistanceUTF8 requires two strings")?;
+            let right = text_arg(parser, depth + 1)?;
+            require(parser, Token::RParen, "expected ')' after editDistanceUTF8")?;
+            match (left, right) {
+                (Some(left), Some(right)) => {
+                    let a: Vec<char> = left.chars().collect();
+                    let b: Vec<char> = right.chars().collect();
+                    if a.len() > 4096 || b.len() > 4096 {
+                        return Err(ParseError("editDistanceUTF8 input is too long".into()));
+                    }
+                    let mut previous: Vec<usize> = (0..=b.len()).collect();
+                    let mut current = vec![0; b.len() + 1];
+                    for (i, a_char) in a.iter().enumerate() {
+                        current[0] = i + 1;
+                        for (j, b_char) in b.iter().enumerate() {
+                            let cost = usize::from(a_char != b_char);
+                            current[j + 1] = (previous[j + 1] + 1)
+                                .min(current[j] + 1)
+                                .min(previous[j] + cost);
+                        }
+                        std::mem::swap(&mut previous, &mut current);
+                    }
+                    ConstantValue::Integer(previous[b.len()] as i64)
+                }
+                _ => ConstantValue::Null,
             }
         }
         "HASSUBSEQUENCE" => {
