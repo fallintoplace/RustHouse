@@ -31,7 +31,7 @@ use std::fs;
 use std::io::{self, Read, Write};
 use std::path::{Path, PathBuf};
 
-pub const MAX_QUERY_BYTES: usize = 4096;
+pub const MAX_QUERY_BYTES: usize = 64 * 1024;
 pub const MAX_HEADER_BYTES: usize = 8192;
 pub const MAX_RESPONSE_BYTES: usize = 8 * 1024 * 1024;
 pub const MAX_CONNECTIONS: usize = 16;
@@ -707,6 +707,19 @@ mod tests {
         assert_eq!(
             handle_request("PUT", "/ping", b"", &config()).status,
             "405 Method Not Allowed"
+        );
+    }
+
+    #[test]
+    fn accepts_post_sql_above_four_kib_but_rejects_oversized_bodies() {
+        let statement = format!("SELECT number FROM numbers(1){}", " ".repeat(5000));
+        let response = handle_request("POST", "/", statement.as_bytes(), &config());
+        assert_eq!(response.status, "200 OK");
+        assert_eq!(response.body, b"number\n0\n");
+        let too_large = format!("SELECT 1{}", " ".repeat(MAX_QUERY_BYTES));
+        assert_eq!(
+            handle_request("POST", "/", too_large.as_bytes(), &config()).status,
+            "413 Payload Too Large"
         );
     }
 
