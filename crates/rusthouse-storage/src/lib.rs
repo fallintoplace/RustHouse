@@ -4,6 +4,7 @@ mod columns;
 mod compression;
 mod database_lock;
 mod dates;
+pub mod distributed_quorum;
 mod decimal;
 mod enums;
 mod file_sizes;
