@@ -491,7 +491,7 @@ impl Parser {
                             .ok_or_else(|| ParseError("ORDER BY position is out of range".into()))?
                     }
                 }
-                Projection::GroupedMultiAggregates { columns, items } => {
+                Projection::GroupedMultiAggregates { columns, items, .. } => {
                     if position <= columns.len() {
                         columns[position - 1].clone()
                     } else {
@@ -527,7 +527,7 @@ impl Parser {
                         ));
                     }
                 },
-                Projection::GroupedAggregates { column, items } => {
+                Projection::GroupedAggregates { column, items, .. } => {
                     if position == 1 {
                         column.clone()
                     } else {
@@ -590,7 +590,24 @@ impl Parser {
                 }).ok_or_else(|| ParseError("ORDER BY aggregate must match SELECT".into()))?;
                 format!("#aggregate{index}")
             } else {
-                column
+                let aliases = match projection {
+                    Projection::GroupedAggregates { aliases, .. }
+                    | Projection::GroupedMultiAggregates { aliases, .. } => aliases,
+                    _ => unreachable!("aggregate aliases belong to grouped projections"),
+                };
+                let selected_alias = aliases.iter().position(|alias| alias.as_ref()
+                    .is_some_and(|alias| alias.eq_ignore_ascii_case(&column)));
+                if let Some(index) = selected_alias {
+                    if !matches!(items[index].0,
+                        AggregateFunction::Sum | AggregateFunction::Min | AggregateFunction::Max
+                        | AggregateFunction::Avg | AggregateFunction::Count)
+                    {
+                        return Err(ParseError("ORDER BY this aggregate is not supported".into()));
+                    }
+                    format!("#aggregate{index}")
+                } else {
+                    column
+                }
             }
         } else {
             column
@@ -1556,7 +1573,7 @@ fn parse_select_tokens(tokens: Vec<Token>) -> Result<Select, ParseError> {
             ));
         }
     }
-    if let Projection::GroupedAggregates { column, items } = &projection {
+    if let Projection::GroupedAggregates { column, items, .. } = &projection {
         let metric = |name: &str| name.strip_prefix("#aggregate")
             .and_then(|number| number.parse::<usize>().ok())
             .is_some_and(|index| index < items.len());
@@ -1569,7 +1586,7 @@ fn parse_select_tokens(tokens: Vec<Token>) -> Result<Select, ParseError> {
         }
     }
 
-    if let Projection::GroupedMultiAggregates { columns, items } = &projection {
+    if let Projection::GroupedMultiAggregates { columns, items, .. } = &projection {
         let metric = |name: &str| name.strip_prefix("#aggregate")
             .and_then(|number| number.parse::<usize>().ok())
             .is_some_and(|index| index < items.len());
