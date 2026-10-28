@@ -32,7 +32,7 @@ fn orders_grouped_sum_and_avg_by_result_value() {
     );
 
     let nulls = sql(
-        "SELECT category, sum(amount) FROM sales GROUP BY category ORDER BY 2 ASC NULLS FIRST",
+        "SELECT category, sum(amount) FROM sales GROUP BY category ORDER BY 2 ASC NULLS FIRST, category ASC",
         &db,
     );
     assert!(nulls.status.success(), "{nulls:?}");
@@ -42,7 +42,7 @@ fn orders_grouped_sum_and_avg_by_result_value() {
     );
 
     let averages = sql(
-        "SELECT category, avg(amount) FROM sales GROUP BY category ORDER BY 2 DESC LIMIT 2",
+        "SELECT category, avg(amount) FROM sales GROUP BY category ORDER BY 2 DESC, category ASC LIMIT 2",
         &db,
     );
     assert!(averages.status.success(), "{averages:?}");

@@ -16,10 +16,9 @@ fn parallel_text_filtered_count_reduces_uneven_parts() {
         "rusthouse-parallel-text-count-{}",
         std::process::id()
     ));
-    for statement in ["CREATE TABLE events (id UInt64, category String)"] {
-        let result = sql(statement, &db);
-        assert!(result.status.success(), "{statement}: {result:?}");
-    }
+    let statement = "CREATE TABLE events (id UInt64, category String)";
+    let result = sql(statement, &db);
+    assert!(result.status.success(), "{statement}: {result:?}");
     for n in 0..36 {
         let statement = format!(
             "INSERT INTO events VALUES ({n}, 'yes'), ({}, 'no')",

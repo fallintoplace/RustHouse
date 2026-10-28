@@ -950,11 +950,8 @@ mod numeric_array_writer_tests {
         write_wide_part(&part, &columns, &rows).unwrap();
         crate::verify_wide_part(&part).unwrap();
 
-        let mut reader = crate::TypedPartReader::open(
-            &part,
-            &["items".into(), "attrs".into()],
-        )
-        .unwrap();
+        let mut reader =
+            crate::TypedPartReader::open(&part, &["items".into(), "attrs".into()]).unwrap();
         for expected in [1024, 1] {
             let batch = reader.next_batch().unwrap().unwrap();
             assert_eq!(batch[0].len(), expected);

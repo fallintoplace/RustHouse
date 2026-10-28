@@ -27,7 +27,7 @@ fn nullable_text_predicates_keep_case_escapes_and_null_semantics() {
             data_type: "Nullable(Int64)".into(),
         },
     ];
-    let batches: [[(u64, Option<&str>, Option<i64>); 4]; 2] = [
+    let batches = [
         [
             (1, Some("Alpha"), Some(12)),
             (2, Some("beta"), None),
