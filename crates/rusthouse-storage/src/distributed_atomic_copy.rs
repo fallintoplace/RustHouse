@@ -127,3 +127,61 @@ mod tests {
         fs::remove_dir_all(dir).unwrap();
     }
 }
+
+/// Copy a frozen file and publish it only when the staged bytes match CRC32C.
+/// CRC32C detects accidental corruption, not malicious content modification.
+pub fn copy_immutable_file_checked(
+    source: &Path,
+    destination: &Path,
+    max_bytes: u64,
+    expected_crc32c: u32,
+) -> io::Result<u64> {
+    let parent = destination
+        .parent()
+        .ok_or_else(|| io::Error::other("destination has no parent directory"))?;
+    let staging = parent.join(format!(
+        ".rusthouse-checked-copy-{}-{}",
+        std::process::id(),
+        NEXT_STAGE.fetch_add(1, Ordering::Relaxed)
+    ));
+    let copied = copy_immutable_file(source, &staging, max_bytes)?;
+    let verified = (|| -> io::Result<()> {
+        let mut file = File::open(&staging)?;
+        let (size, crc32c) = crate::distributed_crc32c::crc32c_reader(&mut file, max_bytes)?;
+        if size != copied || crc32c != expected_crc32c {
+            return Err(io::Error::other("replica object checksum mismatch"));
+        }
+        fs::hard_link(&staging, destination)?;
+        Ok(())
+    })();
+    let cleanup = fs::remove_file(&staging);
+    verified?;
+    cleanup?;
+    #[cfg(unix)]
+    File::open(parent)?.sync_all()?;
+    Ok(copied)
+}
+
+#[cfg(test)]
+mod checked_copy_tests {
+    use super::*;
+
+    #[test]
+    fn checks_staged_bytes_before_publishing() {
+        let dir = std::env::temp_dir().join(format!(
+            "rusthouse-checked-copy-{}", std::process::id()
+        ));
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir(&dir).unwrap();
+        let source = dir.join("source");
+        let target = dir.join("target");
+        fs::write(&source, b"verified").unwrap();
+        assert!(copy_immutable_file_checked(&source, &target, 100, 0).is_err());
+        assert!(!target.exists());
+        let checksum = crate::distributed_crc32c::crc32c(b"verified");
+        assert_eq!(copy_immutable_file_checked(&source, &target, 100, checksum).unwrap(), 8);
+        assert_eq!(fs::read(&target).unwrap(), b"verified");
+        assert!(copy_immutable_file_checked(&source, &target, 100, checksum).is_err());
+        fs::remove_dir_all(dir).unwrap();
+    }
+}
