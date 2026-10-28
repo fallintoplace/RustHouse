@@ -165,6 +165,12 @@ pub(super) fn like_matches(value: &[u8], pattern: &LikePattern, case_insensitive
                 } else {
                     value.windows(bytes.len()).any(|part| part == bytes)
                 }
+            } else if bytes.len() == 1 && value.is_ascii() && bytes[0].is_ascii() {
+                // The frequent ILIKE '%x%' case needs only a byte scan,
+                // not a one-byte slice and comparison at every position.
+                value
+                    .iter()
+                    .any(|byte| byte.eq_ignore_ascii_case(&bytes[0]))
             } else if value.is_ascii() && bytes.is_ascii() {
                 value
                     .windows(bytes.len())
@@ -323,6 +329,21 @@ mod perf_tests {
         assert!(!like_matches(b"\0y\xff", &pattern, false));
         assert!(!like_matches(b"", &pattern, false));
         assert!(like_matches(b"X", &pattern, true));
+    }
+
+    #[test]
+    fn ascii_case_insensitive_single_byte_contains_scans_long_rows() {
+        let pattern = compile_like("%x%").unwrap();
+        let mut value = vec![b'a'; 16384];
+        value.push(b'X');
+        assert!(like_matches(&value, &pattern, true));
+        assert!(!like_matches(&value, &pattern, false));
+        assert!(!like_matches(&value[..16384], &pattern, true));
+        assert!(like_matches(b"x", &pattern, true));
+        assert!(!like_matches(b"", &pattern, true));
+        // Non-ASCII still follows Unicode case-folding logic.
+        let accent = compile_like("%é%").unwrap();
+        assert!(like_matches("CAFÉ".as_bytes(), &accent, true));
     }
 
     #[test]
