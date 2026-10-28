@@ -4,6 +4,7 @@
 mod like;
 
 use self::like::*;
+use super::grouped_numeric_keys::append_group_component;
 
 use super::{ExecutionError, Number, NumberKey, compare_numbers, number_at};
 use crate::{Operator, Predicate, Projection, Select};
@@ -1020,6 +1021,15 @@ pub(super) fn execute_typed<W: Write>(
     let is_count_distinct = matches!(query.projection, Projection::CountDistinct { .. });
     let is_grouped = matches!(query.projection, Projection::GroupedCount { .. });
     let mut count = 0u64;
+    // A composite DISTINCT with text dimensions should not clone all String
+    // components for every duplicate fact row. Encode into reusable storage.
+    let compact_text_distinct = query.distinct
+        && projection_indices.len() > 1
+        && projection_types
+            .iter()
+            .any(|kind| matches!(*kind, "String" | "Nullable(String)"));
+    let mut packed_distinct = HashSet::<Vec<u8>>::new();
+    let mut packed_probe = Vec::<u8>::new();
     let mut distinct = HashSet::<Vec<Key>>::new();
     // A one-column DISTINCT key does not need a heap-allocated Vec<Key>.
     let mut single_distinct = HashSet::<Key>::new();
@@ -1343,9 +1353,21 @@ pub(super) fn execute_typed<W: Write>(
                             return Err(ExecutionError::Invalid("too many distinct rows".into()));
                         }
                     }
+                } else if compact_text_distinct {
+                    packed_probe.clear();
+                    for &idx in &projection_indices {
+                        append_group_component(&batch[idx], index, &mut packed_probe);
+                    }
+                    if packed_distinct.contains(packed_probe.as_slice()) {
+                        continue;
+                    }
+                    if packed_distinct.len() >= MAX_BUFFERED_ROWS {
+                        return Err(ExecutionError::Invalid("too many distinct rows".into()));
+                    }
+                    packed_distinct.insert(std::mem::take(&mut packed_probe));
+                    packed_probe = Vec::with_capacity(projection_indices.len() * 24);
                 } else {
-                    // Probe with just the hash key. Duplicate rows should never
-                    // materialize a second set of projected String/UUID cells.
+                    // Numeric and UUID-only DISTINCT still use typed hash keys.
                     distinct_probe.clear();
                     for &idx in &projection_indices {
                         distinct_probe.push(key_at(&batch[idx], index));
