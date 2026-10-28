@@ -17,9 +17,12 @@ def part_density(root):
     for child in root.iterdir():
         if child.is_symlink():
             raise ValueError(f"refusing symlink: {child.name}")
-        if not child.is_dir() or not (child / "count.txt").is_file():
+        count_file = child / "count.txt"
+        if count_file.is_symlink():
+            raise ValueError(f"refusing symlinked count.txt: {child.name}")
+        if not child.is_dir() or not count_file.is_file():
             continue
-        raw = (child / "count.txt").read_text(encoding="ascii")
+        raw = count_file.read_text(encoding="ascii")
         if not raw.strip().isdecimal():
             raise ValueError(f"invalid count.txt in {child.name}")
         count = int(raw.strip())
