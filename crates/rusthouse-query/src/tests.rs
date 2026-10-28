@@ -549,7 +549,7 @@ fn parses_scalar_arithmetic_with_checked_overflow_and_precedence() {
         ("SELECT 10 + -4", 6),
         ("SELECT - 2 * 3", -6),
         ("SELECT -9223372036854775808", i64::MIN),
-        ("SELECT 1--2", 3),
+        ("SELECT 1 - -2", 3),
     ] {
         assert_eq!(
             parse_select(sql).unwrap().projection,
@@ -557,6 +557,10 @@ fn parses_scalar_arithmetic_with_checked_overflow_and_precedence() {
             "{sql}"
         );
     }
+    assert_eq!(
+        parse_select("SELECT 1--2").unwrap().projection,
+        Projection::Literal(1)
+    );
     let aliased = parse_select("SELECT 5 * (2 + 1) AS answer LIMIT 1").unwrap();
     assert_eq!(aliased.projection, Projection::Literal(15));
     assert_eq!(aliased.alias.as_deref(), Some("answer"));
