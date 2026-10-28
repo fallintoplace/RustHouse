@@ -108,4 +108,29 @@ mod tests {
         assert!(activate_verified_generation(&root, 0).is_err());
         fs::remove_dir_all(root).unwrap();
     }
+    #[test]
+    fn corrupted_generation_does_not_publish_active_pointer() {
+        let root = std::env::temp_dir().join(format!(
+            "rusthouse-activate-corrupt-{}", std::process::id()
+        ));
+        let _ = fs::remove_dir_all(&root);
+        let generation = root.join(".rusthouse-versions/g1");
+        fs::create_dir_all(&generation).unwrap();
+        let part = generation.join("all_0_0_0");
+        write_wide_part(
+            &part,
+            &[Column { name: "id".into(), data_type: "UInt64".into() }],
+            &[vec![Some("3".into())]],
+        ).unwrap();
+        let count_file = part.join("count.txt");
+        let valid = fs::read(&count_file).unwrap();
+        fs::write(&count_file, "999\n").unwrap();
+        assert!(activate_verified_generation(&root, 1).is_err());
+        assert!(!root.join(".rusthouse-active").exists());
+        fs::write(&count_file, valid).unwrap();
+        activate_verified_generation(&root, 1).unwrap();
+        assert_eq!(resolve_active_snapshot(&root).unwrap(), generation);
+        fs::remove_dir_all(root).unwrap();
+    }
+
 }
