@@ -67,7 +67,7 @@ pub fn plan_missing_chunks(
     {
         return Err("invalid or duplicate missing chunk index");
     }
-    let mut selected = Vec::new();
+    let mut selected = Vec::with_capacity(remaining_indices.len().min(max_batch_chunks));
     let mut remaining_bytes = byte_budget;
     for &index in remaining_indices {
         if selected.len() >= max_batch_chunks {
