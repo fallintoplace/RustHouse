@@ -84,6 +84,12 @@ def run_benchmark(queries, indices, runs, timeout, execute, reference_dir=None, 
     for index in indices:
         sql = queries[index]
         expected_path = None if reference_dir is None else reference_dir / ("q%02d.tsv" % (index + 1))
+        if expected_path is not None and not expected_path.is_file():
+            results.append({
+                "query": index + 1, "status": "missing_reference",
+                "seconds": [], "latency": None, "error": str(expected_path),
+            })
+            continue
         timings = []
         status = "unverified" if expected_path is None else "passed"
         failure = None
