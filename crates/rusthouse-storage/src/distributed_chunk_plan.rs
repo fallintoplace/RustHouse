@@ -94,6 +94,28 @@ pub fn plan_missing_chunks(
     Ok(selected)
 }
 
+/// Page through a transfer plan without allocating the entire chunk list.
+pub fn plan_chunk_window(
+    total_bytes: u64,
+    chunk_bytes: u64,
+    max_chunks: usize,
+    start_index: usize,
+    requested: usize,
+) -> Result<Vec<IndexedChunk>, &'static str> {
+    let count = checked_chunk_count(total_bytes, chunk_bytes, max_chunks)?;
+    if start_index > count || requested > count - start_index {
+        return Err("transfer chunk window exceeds bounds");
+    }
+    let mut page = Vec::with_capacity(requested);
+    for index in start_index..start_index + requested {
+        page.push(IndexedChunk {
+            index,
+            chunk: chunk_at_index(total_bytes, chunk_bytes, index),
+        });
+    }
+    Ok(page)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -232,28 +254,6 @@ mod tests {
         );
         assert!(plan_missing_chunks(65_537, 1, 65_536, &[], 0, 1).is_err());
     }
-}
-
-/// Page through a transfer plan without allocating the entire chunk list.
-pub fn plan_chunk_window(
-    total_bytes: u64,
-    chunk_bytes: u64,
-    max_chunks: usize,
-    start_index: usize,
-    requested: usize,
-) -> Result<Vec<IndexedChunk>, &'static str> {
-    let count = checked_chunk_count(total_bytes, chunk_bytes, max_chunks)?;
-    if start_index > count || requested > count - start_index {
-        return Err("transfer chunk window exceeds bounds");
-    }
-    let mut page = Vec::with_capacity(requested);
-    for index in start_index..start_index + requested {
-        page.push(IndexedChunk {
-            index,
-            chunk: chunk_at_index(total_bytes, chunk_bytes, index),
-        });
-    }
-    Ok(page)
 }
 
 #[cfg(test)]
