@@ -8,6 +8,13 @@ import subprocess
 import sys
 
 
+def reject_symlinks(source):
+    for base, directories, files in os.walk(source, followlinks=False):
+        for item in directories + files:
+            if (Path(base) / item).is_symlink():
+                raise ValueError("backup refuses symlinks: " + str(Path(base) / item))
+
+
 def preflight(source, destination):
     if source.is_symlink() or not source.is_dir():
         raise ValueError("source must be an existing real directory")
@@ -20,10 +27,7 @@ def preflight(source, destination):
     stage = destination.with_name(destination.name + ".partial")
     if stage.exists() or stage.is_symlink():
         raise ValueError("staging destination already exists: " + str(stage))
-    for base, directories, files in os.walk(source, followlinks=False):
-        for item in directories + files:
-            if (Path(base) / item).is_symlink():
-                raise ValueError("backup refuses symlinks: " + str(Path(base) / item))
+    reject_symlinks(source)
     return source, destination, stage
 
 
