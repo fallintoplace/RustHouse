@@ -151,7 +151,8 @@ fn parse_coalesce(parser: &mut Parser) -> Result<ScalarExpr, ParseError> {
 }
 
 fn is_unary_math(name: &str) -> bool {
-    matches!(name.to_ascii_uppercase().as_str(), "SIGN")
+    name.eq_ignore_ascii_case("SIGN")
+        || name.eq_ignore_ascii_case("NEGATE")
 }
 
 fn parse_unary_math(parser: &mut Parser) -> Result<ScalarExpr, ParseError> {

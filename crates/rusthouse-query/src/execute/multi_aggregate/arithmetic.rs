@@ -89,6 +89,22 @@ pub(super) fn apply_unary_math(name: &str, value: Number) -> Result<Number, Exec
                 }
             }
         },
+        "NEGATE" => match value {
+            Number::Signed(number) if number == i128::MIN => {
+                Number::Unsigned(1_u128 << 127)
+            }
+            Number::Signed(number) => Number::Signed(-number),
+            Number::Unsigned(number) if number == 1_u128 << 127 => {
+                Number::Signed(i128::MIN)
+            }
+            Number::Unsigned(number) => {
+                let magnitude = i128::try_from(number).map_err(|_| {
+                    ExecutionError::Invalid("aggregate negate exceeds Int128".into())
+                })?;
+                Number::Signed(-magnitude)
+            }
+            Number::Float(number) => Number::Float(-number),
+        },
         _ => {
             return Err(ExecutionError::Invalid(format!(
                 "unsupported aggregate numeric function: {name}"
@@ -136,4 +152,19 @@ mod aggregate_unary_math_tests {
         assert!(crate::parse_scalar_expression("sign(amount)").is_ok());
         assert!(crate::parse_scalar_expression("sign(amount, 2)").is_err());
     }
+    #[test]
+    fn negate_preserves_signed_boundaries_and_rejects_unrepresentable_values() {
+        assert!(matches!(
+            apply_unary_math("NEGATE", Number::Signed(i128::MIN)),
+            Ok(Number::Unsigned(value)) if value == 1_u128 << 127
+        ));
+        assert!(matches!(
+            apply_unary_math("NEGATE", Number::Unsigned(1_u128 << 127)),
+            Ok(Number::Signed(i128::MIN))
+        ));
+        assert!(apply_unary_math("NEGATE", Number::Unsigned(u128::MAX)).is_err());
+        assert!(crate::parse_scalar_expression("negate(amount)").is_ok());
+        assert!(crate::parse_scalar_expression("negate(amount, 2)").is_err());
+    }
+
 }
