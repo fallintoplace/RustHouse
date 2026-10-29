@@ -419,13 +419,17 @@ pub(super) fn execute<W: Write>(
             let compare_cached = |left: &usize, right: &usize| {
                 for &(group, metric, descending, nulls_first) in &terms {
                     let order = if let Some(index) = metric {
-                        let (left_cell, right_cell) = if let Some(keys) = cached_medians.get(&index) {
-                            (keys[*left].clone(), keys[*right].clone())
+                        if let Some(keys) = cached_medians.get(&index) {
+                            typed::compare_order_cells(
+                                &keys[*left], &keys[*right], descending, nulls_first,
+                            )
                         } else {
-                            (groups[*left].1[index].sort_cell(),
-                             groups[*right].1[index].sort_cell())
-                        };
-                        typed::compare_order_cells(&left_cell, &right_cell, descending, nulls_first)
+                            let left_cell = groups[*left].1[index].sort_cell();
+                            let right_cell = groups[*right].1[index].sort_cell();
+                            typed::compare_order_cells(
+                                &left_cell, &right_cell, descending, nulls_first,
+                            )
+                        }
                     } else {
                         let index = group.expect("GROUP BY ORDER BY validated by parser");
                         typed::compare_order_cells(&groups[*left].0[index], &groups[*right].0[index],
