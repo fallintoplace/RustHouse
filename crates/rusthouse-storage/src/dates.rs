@@ -81,16 +81,8 @@ fn parse_clock_time(text: &str) -> Option<u64> {
     (hour <= 23 && minute <= 59 && second <= 59).then_some(hour * 3_600 + minute * 60 + second)
 }
 
-/// Parse a DateTime as UTC, accepting the usual SQL form and RFC 3339
-/// whole-second timestamps. Explicit offsets are normalized to UTC before
-/// checking the unsigned DateTime storage range.
-pub fn parse_datetime(text: &str) -> Option<u32> {
-    let timestamp = text.get(..19)?;
-    let bytes = timestamp.as_bytes();
-    if !matches!(bytes[10], b' ' | b'T' | b't') {
-        return None;
-    }
-    let offset = match text.get(19..)? {
+fn parse_utc_offset(suffix: &str) -> Option<i64> {
+    Some(match suffix {
         "" | "Z" | "z" => 0i64,
         suffix => {
             let bytes = suffix.as_bytes();
@@ -109,7 +101,19 @@ pub fn parse_datetime(text: &str) -> Option<u32> {
             let seconds = hours * 3_600 + minutes * 60;
             if bytes[0] == b'+' { seconds } else { -seconds }
         }
-    };
+    })
+}
+
+/// Parse a DateTime as UTC, accepting the usual SQL form and RFC 3339
+/// whole-second timestamps. Explicit offsets are normalized to UTC before
+/// checking the unsigned DateTime storage range.
+pub fn parse_datetime(text: &str) -> Option<u32> {
+    let timestamp = text.get(..19)?;
+    let bytes = timestamp.as_bytes();
+    if !matches!(bytes[10], b' ' | b'T' | b't') {
+        return None;
+    }
+    let offset = parse_utc_offset(text.get(19..)?)?;
     let days = parse_calendar_day(text.get(..10)?)?;
     let time = i64::try_from(parse_clock_time(text.get(11..19)?)?).ok()?;
     let seconds = days.checked_mul(86_400)?.checked_add(time)?;
