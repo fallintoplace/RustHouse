@@ -1,6 +1,8 @@
 //! Copy-only reconciliation plan for trusted immutable object inventories.
 use std::collections::HashMap;
 
+const MAX_REPLICA_OBJECTS: usize = 65_536;
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ObjectMetadata {
     pub key: String,
@@ -43,7 +45,7 @@ fn valid_key(key: &str) -> bool {
 }
 
 fn index(objects: &[ObjectMetadata]) -> Result<HashMap<&str, &ObjectMetadata>, &'static str> {
-    if objects.len() > 65_536 {
+    if objects.len() > MAX_REPLICA_OBJECTS {
         return Err("replica inventory too large");
     }
     let mut indexed = HashMap::with_capacity(objects.len());
@@ -193,7 +195,7 @@ pub fn plan_replica_copy_batch(
     max_bytes: u64,
     max_objects: usize,
 ) -> Result<Vec<ObjectMetadata>, &'static str> {
-    if max_objects > 65_536 {
+    if max_objects > MAX_REPLICA_OBJECTS {
         return Err("replica copy batch exceeds object limit");
     }
     let needed = plan_replica_copies(source, destination)?;
