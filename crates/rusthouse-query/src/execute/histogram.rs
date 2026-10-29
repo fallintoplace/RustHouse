@@ -12,6 +12,8 @@ use std::collections::HashMap;
 use std::io::Write;
 use std::path::Path;
 
+const MAX_GENERATED_HISTOGRAM_ROWS: u64 = 10_000_000;
+
 #[derive(Clone, Copy)]
 struct Bin {
     min: f64,
@@ -19,7 +21,7 @@ struct Bin {
     count: u64,
 }
 
-fn number_as_float(value: Number) -> Result<f64, ExecutionError> {
+fn finite_number_as_f64(value: Number) -> Result<f64, ExecutionError> {
     let value = match value {
         Number::Unsigned(value) => value as f64,
         Number::Signed(value) => value as f64,
@@ -78,11 +80,19 @@ fn output_bins<W: Write>(
         return Ok(());
     }
     output.write_all(b"[")?;
+    // Formatting directly into a writer emits several tiny writes per bin.
+    // Reuse one short String so each result tuple is written in one call.
+    let mut formatted = String::with_capacity(96);
     for (index, bin) in result.iter().enumerate() {
+        formatted.clear();
         if index > 0 {
-            output.write_all(b",")?;
+            formatted.push(',');
         }
-        write!(output, "({},{},{})", bin.min, bin.max, bin.count)?;
+        std::fmt::Write::write_fmt(
+            &mut formatted,
+            format_args!("({},{},{})", bin.min, bin.max, bin.count),
+        ).expect("writing to String cannot fail");
+        output.write_all(formatted.as_bytes())?;
     }
     output.write_all(b"]\n")?;
     Ok(())
@@ -91,20 +101,15 @@ fn output_bins<W: Write>(
 /// Iterates a verified snapshot from the beginning, using identical compiled
 /// filters in both passes. No values or rows are retained between passes.
 fn visit_part(
-    query: &Select,
     part: &Path,
     metadata: &PartMetadata,
     names: &[String],
     indices: &HashMap<String, usize>,
-    types: &HashMap<String, String>,
     column: &str,
+    conditions: &[Vec<typed::Condition>],
+    no_filters: bool,
     mut observe: impl FnMut(f64) -> Result<(), ExecutionError>,
 ) -> Result<(), ExecutionError> {
-    let mut conditions = vec![typed::compile(&query.predicates, indices, types)?];
-    for branch in &query.or_predicates {
-        conditions.push(typed::compile(branch, indices, types)?);
-    }
-    let no_filters = query.predicates.is_empty() && query.or_predicates.is_empty();
     let selected = indices[column];
     let mut reader = TypedQueryReader::open_with_metadata(part, names, metadata)?;
     while let Some(batch) = reader.next_batch()? {
@@ -114,10 +119,10 @@ fn visit_part(
             }
             match &batch[selected] {
                 TypedColumn::Numeric(values) => {
-                    observe(number_as_float(number_at(values, row))?)?
+                    observe(finite_number_as_f64(number_at(values, row))?)?
                 }
                 TypedColumn::NullableNumeric { values, nulls } if nulls[row] == 0 => {
-                    observe(number_as_float(number_at(values, row))?)?
+                    observe(finite_number_as_f64(number_at(values, row))?)?
                 }
                 TypedColumn::NullableNumeric { .. } => {}
                 _ => return Err(ExecutionError::Invalid(
@@ -177,10 +182,17 @@ pub(super) fn execute_part<W: Write>(
         .iter()
         .map(|candidate| (candidate.name.clone(), candidate.data_type.clone()))
         .collect::<HashMap<String, String>>();
+    // Both passes traverse the same immutable snapshot with identical
+    // filters. Compile regex-like patterns and IN sets only once.
+    let mut conditions = vec![typed::compile(&query.predicates, &indices, &types)?];
+    for branch in &query.or_predicates {
+        conditions.push(typed::compile(branch, &indices, &types)?);
+    }
+    let no_filters = query.predicates.is_empty() && query.or_predicates.is_empty();
     let mut min = f64::INFINITY;
     let mut max = f64::NEG_INFINITY;
     let mut rows = 0u64;
-    visit_part(query, part, &metadata, &names, &indices, &types, column, |value| {
+    visit_part(part, &metadata, &names, &indices, column, &conditions, no_filters, |value| {
         min = min.min(value);
         max = max.max(value);
         rows = rows
@@ -191,13 +203,21 @@ pub(super) fn execute_part<W: Write>(
     if rows == 0 {
         return output_bins(query, output, column, *bins, &[]);
     }
+    // The first pass established that every qualifying value is identical.
+    // One exact bucket already contains all rows, so a second disk scan
+    // cannot change the result.
+    if min == max {
+        return output_bins(query, output, column, *bins, &[Bin {
+            min, max, count: rows,
+        }]);
+    }
     if !(max - min).is_finite() {
         return Err(ExecutionError::Invalid(
             "histogram numeric range exceeds Float64 precision".into(),
         ));
     }
     let mut counts = vec![0u64; *bins];
-    visit_part(query, part, &metadata, &names, &indices, &types, column, |value| {
+    visit_part(part, &metadata, &names, &indices, column, &conditions, no_filters, |value| {
         let index = bucket(value, min, max, *bins);
         counts[index] = counts[index]
             .checked_add(1)
@@ -283,7 +303,7 @@ pub(super) fn execute_numbers<W: Write>(
         let result = uniform_generated_bins(start, lower, count, step, *bins);
         return output_bins(query, output, column, *bins, &result);
     }
-    if rows > 10_000_000 {
+    if rows > MAX_GENERATED_HISTOGRAM_ROWS {
         return Err(ExecutionError::Invalid(
             "large generated histogram requires monotonic WHERE predicates".into(),
         ));
@@ -316,6 +336,34 @@ mod tests {
     use super::*;
 
     #[test]
+    fn formats_histogram_rows_with_one_output_write_per_bin() {
+        use std::io;
+        struct Counting {
+            calls: usize,
+            bytes: Vec<u8>,
+        }
+        impl Write for Counting {
+            fn write(&mut self, bytes: &[u8]) -> io::Result<usize> {
+                self.calls += 1;
+                self.bytes.extend_from_slice(bytes);
+                Ok(bytes.len())
+            }
+            fn flush(&mut self) -> io::Result<()> { Ok(()) }
+        }
+        let query = crate::parse_select("SELECT histogram(3)(number) FROM numbers(10)").unwrap();
+        let bins = [
+            Bin { min: 0.0, max: 3.0, count: 3 },
+            Bin { min: 3.0, max: 6.0, count: 3 },
+            Bin { min: 6.0, max: 9.0, count: 4 },
+        ];
+        let mut writer = Counting { calls: 0, bytes: Vec::new() };
+        output_bins(&query, &mut writer, "number", 3, &bins).unwrap();
+        assert!(writer.bytes.ends_with(b"[(0,3,3),(3,6,3),(6,9,4)]\n"));
+        // Header, brackets and the three bins need a bounded number of writes.
+        assert!(writer.calls <= 12, "too many writes: {}", writer.calls);
+    }
+
+    #[test]
     fn equal_width_boundaries_include_maximum_and_empty() {
         let mut counts = vec![0u64; 8];
         for index in 0..10_000 {
@@ -331,8 +379,8 @@ mod tests {
 
     #[test]
     fn numerically_invalid_inputs_rejected() {
-        assert!(number_as_float(Number::Float(f64::NAN)).is_err());
-        assert!(number_as_float(Number::Float(f64::INFINITY)).is_err());
+        assert!(finite_number_as_f64(Number::Float(f64::NAN)).is_err());
+        assert!(finite_number_as_f64(Number::Float(f64::INFINITY)).is_err());
     }
 }
 

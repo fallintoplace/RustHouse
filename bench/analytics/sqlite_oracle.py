@@ -5,12 +5,61 @@ Only SQLite floating results receive relative/absolute tolerance.
 """
 import math
 import sqlite3
+from pathlib import Path
 from contextlib import closing
+
+
+def decode_tsv_value(raw):
+    """Decode ClickHouse-style TSV escapes without conflating NULL and '\\N' text.
+
+    Returns None only for the unescaped NULL marker. Input is UTF-8 TSV text;
+    \\xHH escapes are bytes, not Unicode code points.
+    """
+    if raw == r"\N":
+        return None
+    if "\\" not in raw:
+        return raw
+    encoded = raw.encode("utf-8")
+    output = bytearray()
+    simple = {
+        ord("t"): 9, ord("n"): 10, ord("r"): 13,
+        ord("0"): 0, ord("b"): 8, ord("f"): 12,
+        ord("v"): 11, ord("\\"): 92,
+    }
+    index = 0
+    while index < len(encoded):
+        char = encoded[index]
+        if char != 92:
+            output.append(char)
+            index += 1
+            continue
+        index += 1
+        if index >= len(encoded):
+            raise ValueError("truncated TSV escape")
+        char = encoded[index]
+        if char == ord("x"):
+            pair = encoded[index + 1:index + 3]
+            if len(pair) != 2 or any(c not in b"0123456789abcdefABCDEF" for c in pair):
+                raise ValueError("invalid TSV hex escape")
+            output.append(int(pair, 16))
+            index += 3
+        elif char in simple:
+            output.append(simple[char])
+            index += 1
+        else:
+            raise ValueError("unsupported TSV escape")
+    return output.decode("utf-8")
 
 
 def cell_equal(actual, expected, rel_tol=1e-12, abs_tol=1e-12):
     if expected is None:
-        return actual in ("NULL", r"\N")
+        return actual == r"\N"
+    try:
+        actual = decode_tsv_value(actual)
+    except (UnicodeError, ValueError, AttributeError):
+        return False
+    if actual is None:
+        return False
     if isinstance(expected, bool):
         expected = int(expected)
     if isinstance(expected, int):
@@ -75,5 +124,9 @@ def assert_matches(output, expected_rows, unordered=False):
 
 
 def sqlite_query(path, sql):
-    with closing(sqlite3.connect(path)) as connection:
-        return connection.execute(sql).fetchall()
+    database_uri = Path(path).resolve().as_uri() + "?mode=ro"
+    with closing(sqlite3.connect(database_uri, uri=True)) as connection:
+        rows = connection.execute(sql).fetchmany(100_001)
+        if len(rows) > 100_000:
+            raise ValueError("SQLite reference exceeds 100000 rows")
+        return rows

@@ -123,5 +123,14 @@ class GeneratedQueryTests(unittest.TestCase):
             self.assertIn("Median ms", details.getvalue())
 
 
+    def test_sql_benchmark_capture_rejects_oversized_results(self):
+        def fake_run(command, **kwargs):
+            kwargs["stdout"].write(b"x" * (256 * 1024 + 1))
+            return subprocess.CompletedProcess(command, 0, b"", b"")
+        with mock.patch.object(runner.subprocess, "run", side_effect=fake_run) as execute:
+            with self.assertRaisesRegex(ValueError, "256 KiB"):
+                runner.invoke("rusthouse", "SELECT 1", 3)
+        self.assertEqual(execute.call_args.kwargs["stderr"], subprocess.PIPE)
+
 if __name__ == "__main__":
     unittest.main()

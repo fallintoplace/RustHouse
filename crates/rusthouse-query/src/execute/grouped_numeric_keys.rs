@@ -12,6 +12,14 @@ const MAX_GROUPS: usize = 200_000;
 
 const MAX_RETAINED_GROUP_BYTES: usize = 64 * 1024 * 1024;
 
+fn group_limit_error() -> ExecutionError {
+    ExecutionError::Invalid("GROUP BY supports at most 200000 groups".into())
+}
+
+fn numeric_column_error() -> ExecutionError {
+    ExecutionError::Invalid("numeric aggregates require numeric columns".into())
+}
+
 fn charge_median_value(used: &mut usize) -> Result<(), ExecutionError> {
     let next = used.checked_add(std::mem::size_of::<Number>())
         .ok_or_else(|| ExecutionError::Invalid("composite group median memory overflow".into()))?;
@@ -72,9 +80,7 @@ fn numeric_value_at(column: &TypedColumn, row: usize) -> Result<Option<Number>, 
                 Ok(Some(super::number_at(values, row)))
             }
         }
-        _ => Err(ExecutionError::Invalid(
-            "numeric aggregates require numeric columns".into(),
-        )),
+        _ => Err(numeric_column_error()),
     }
 }
 
@@ -156,9 +162,7 @@ pub(super) fn execute<W: Write>(
         if *function != AggregateFunction::Count
             && matches!(typed::base_type(kind), "String" | "UUID")
         {
-            return Err(ExecutionError::Invalid(
-                "numeric aggregates require numeric columns".into(),
-            ));
+            return Err(numeric_column_error());
         }
         if !names.contains(column) {
             names.push(column.clone());
@@ -287,9 +291,7 @@ pub(super) fn execute<W: Write>(
                     index
                 } else {
                     if groups.len() >= MAX_GROUPS {
-                        return Err(ExecutionError::Invalid(
-                            "GROUP BY supports at most 200000 groups".into(),
-                        ));
+                        return Err(group_limit_error());
                     }
                     let index = groups.len();
                     let keys = group_indices
@@ -320,9 +322,7 @@ pub(super) fn execute<W: Write>(
                     index
                 } else {
                     if groups.len() >= MAX_GROUPS {
-                        return Err(ExecutionError::Invalid(
-                            "GROUP BY supports at most 200000 groups".into(),
-                        ));
+                        return Err(group_limit_error());
                     }
                     let index = groups.len();
                     let keys = group_indices
@@ -419,13 +419,19 @@ pub(super) fn execute<W: Write>(
             let compare_cached = |left: &usize, right: &usize| {
                 for &(group, metric, descending, nulls_first) in &terms {
                     let order = if let Some(index) = metric {
-                        let (left_cell, right_cell) = if let Some(keys) = cached_medians.get(&index) {
-                            (keys[*left].clone(), keys[*right].clone())
+                        if let Some(keys) = cached_medians.get(&index) {
+                            // Median sort cells were materialized once; borrow
+                            // them instead of cloning on every comparison.
+                            typed::compare_order_cells(
+                                &keys[*left], &keys[*right], descending, nulls_first,
+                            )
                         } else {
-                            (groups[*left].1[index].sort_cell(),
-                             groups[*right].1[index].sort_cell())
-                        };
-                        typed::compare_order_cells(&left_cell, &right_cell, descending, nulls_first)
+                            let left_cell = groups[*left].1[index].sort_cell();
+                            let right_cell = groups[*right].1[index].sort_cell();
+                            typed::compare_order_cells(
+                                &left_cell, &right_cell, descending, nulls_first,
+                            )
+                        }
                     } else {
                         let index = group.expect("GROUP BY ORDER BY validated by parser");
                         typed::compare_order_cells(&groups[*left].0[index], &groups[*right].0[index],
@@ -590,6 +596,21 @@ mod composite_group_median_retention_tests {
 #[cfg(test)]
 mod cached_composite_group_median_order_tests {
     use super::*;
+    #[test]
+    fn cached_composite_median_sort_compares_borrowed_cells() {
+        let mut numeric = Vec::new();
+        for n in [5u128, 2, 8] {
+            let mut state = AggregateState::new(AggregateFunction::Median);
+            state.update(Number::Unsigned(n)).unwrap();
+            numeric.push(state.sort_cell());
+        }
+        let mut positions = vec![0usize, 1, 2];
+        positions.sort_unstable_by(|&left, &right| {
+            typed::compare_order_cells(&numeric[left], &numeric[right], false, false)
+        });
+        assert_eq!(positions, vec![1, 0, 2]);
+    }
+
     #[test]
     fn preselected_median_cells_preserve_composite_group_metric_order() {
         let groups = [(30_u128, 40_u128), (4, 6), (20, 22)].map(|(first, second)| {

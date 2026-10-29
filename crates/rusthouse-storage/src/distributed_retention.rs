@@ -1,14 +1,16 @@
 //! Conservative generation-retention planning; no files are deleted.
+
+const MAX_RETENTION_GENERATIONS: usize = 16_384;
 fn validated_generations(generations: &[u64], active: u64) -> Result<Vec<u64>, &'static str> {
-    let mut sorted = generations.to_vec();
-    sorted.sort_unstable();
-    if sorted[0] == 0
-        || sorted.windows(2).any(|pair| pair[0] == pair[1])
-        || sorted.binary_search(&active).is_err()
+    let mut sorted_generations = generations.to_vec();
+    sorted_generations.sort_unstable();
+    if sorted_generations[0] == 0
+        || sorted_generations.windows(2).any(|pair| pair[0] == pair[1])
+        || sorted_generations.binary_search(&active).is_err()
     {
         return Err("duplicate, missing, or invalid generation");
     }
-    Ok(sorted)
+    Ok(sorted_generations)
 }
 
 fn planned_retention(
@@ -16,18 +18,18 @@ fn planned_retention(
     active: u64,
     keep_latest: usize,
 ) -> Result<(Vec<u64>, Vec<u64>), &'static str> {
-    if generations.is_empty() || generations.len() > 16_384 || keep_latest == 0 || active == 0 {
+    if generations.is_empty() || generations.len() > MAX_RETENTION_GENERATIONS || keep_latest == 0 || active == 0 {
         return Err("invalid generation retention configuration");
     }
-    let sorted = validated_generations(generations, active)?;
-    let candidate_count = sorted.len().saturating_sub(keep_latest);
-    let candidates = sorted
+    let sorted_generations = validated_generations(generations, active)?;
+    let candidate_count = sorted_generations.len().saturating_sub(keep_latest);
+    let candidates = sorted_generations
         .iter()
         .take(candidate_count)
         .copied()
         .filter(|&generation| generation != active)
         .collect();
-    Ok((candidates, sorted))
+    Ok((candidates, sorted_generations))
 }
 
 /// List old generations eligible for review by a caller with exclusive ownership.
@@ -91,10 +93,14 @@ pub fn retention_candidates_with_pins(
     keep_latest: usize,
     pinned: &[u64],
 ) -> Result<Vec<u64>, &'static str> {
-    if pinned.len() > 16_384 {
+    if pinned.len() > MAX_RETENTION_GENERATIONS {
         return Err("too many pinned generations");
     }
     let (candidates, known) = planned_retention(generations, active, keep_latest)?;
+    if pinned.is_empty() {
+        // Do not hash every candidate when no snapshot has a reader pin.
+        return Ok(candidates);
+    }
     let mut pins = std::collections::HashSet::with_capacity(pinned.len());
     for &generation in pinned {
         if !pins.insert(generation) || known.binary_search(&generation).is_err() {
@@ -121,6 +127,19 @@ mod pinned_retention_tests {
             retention_candidates_with_pins(&[1, 2, 3], 1, 1, &[2]).unwrap(),
             Vec::<u64>::new()
         );
+    }
+
+    #[test]
+    fn no_pins_use_the_same_retention_plan_as_unpinned_reads() {
+        let generations = (1..=16_384_u64).rev().collect::<Vec<_>>();
+        for active in [1u64, 8_192, 16_384] {
+            let expected = retention_candidates(&generations, active, 128).unwrap();
+            assert_eq!(
+                retention_candidates_with_pins(&generations, active, 128, &[]).unwrap(),
+                expected,
+            );
+        }
+        assert!(retention_candidates_with_pins(&[1, 1], 1, 1, &[]).is_err());
     }
 
     #[test]
