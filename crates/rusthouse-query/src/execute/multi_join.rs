@@ -320,7 +320,7 @@ pub fn execute_multi_join<W: Write>(
         using_keys: query.using_keys.clone(),
     };
     // Validate the complete output schema without materializing rows.
-    if query.limit == Some(0) {
+    if query.limit == Some(0) || (query.aggregate.is_some() && query.offset > 0) {
         for (index, join) in std::iter::once(&initial_step)
             .chain(query.steps.iter())
             .enumerate()
@@ -334,8 +334,12 @@ pub fn execute_multi_join<W: Write>(
         for (column, _, _) in &query.order_by {
             column_index(&relations, column)?;
         }
-        let selected = output_columns(query, &relations, &initial_step)?;
-        write_join_header(output, &selected)?;
+        if query.aggregate.is_some() {
+            output.write_all(b"count\n")?;
+        } else {
+            let selected = output_columns(query, &relations, &initial_step)?;
+            write_join_header(output, &selected)?;
+        }
         return Ok(());
     }
 
@@ -377,6 +381,25 @@ pub fn execute_multi_join<W: Write>(
                     .and_modify(|bucket| bucket.push(index))
                     .or_insert(Bucket::One(index));
             }
+        }
+        // COUNT(*) over an INNER join chain never needs to materialize the
+        // final product. Count bucket multiplicities directly, avoiding the
+        // intermediate result-row cap on high-fanout last joins.
+        if query.aggregate.is_some() && step_index == query.steps.len() {
+            let mut count = 0u64;
+            for row in &rows {
+                if let Some(key) = row_key(row, &left_keys) {
+                    if let Some(matches) = hash.get(&key) {
+                        let multiplicity = if step.any { 1 } else { matches.iter().len() };
+                        let multiplicity = u64::try_from(multiplicity)
+                            .map_err(|_| invalid("JOIN count overflow"))?;
+                        count = count.checked_add(multiplicity)
+                            .ok_or_else(|| invalid("JOIN count overflow"))?;
+                    }
+                }
+            }
+            write!(output, "count\\n{count}\\n")?;
+            return Ok(());
         }
         // Most fact-to-dimension joins preserve the incoming row count.
         let mut next = Vec::with_capacity(rows.len().min(MAX_RESULT_ROWS));
@@ -433,6 +456,12 @@ pub fn execute_multi_join<W: Write>(
             }
         }
         rows = next;
+    }
+
+    // An empty intermediate on an all-INNER chain yields a zero count.
+    if query.aggregate.is_some() {
+        output.write_all(b"count\\n0\\n")?;
+        return Ok(());
     }
 
     if let Some((column, not_null)) = &query.where_null {
