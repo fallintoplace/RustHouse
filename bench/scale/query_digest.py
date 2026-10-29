@@ -18,7 +18,7 @@ from pathlib import Path
 def query_digest(binary, part, sql, *, expected_sha256=None, expected_bytes=None,
                  max_rows=10000, max_output_bytes=100_000_000,
                  timeout=600, run=None):
-    if not 1 <= max_rows <= 250_000:
+    if type(max_rows) is not int or not 1 <= max_rows <= 250_000:
         raise ValueError("max_rows must be in 1..250000")
     if (type(max_output_bytes) is not int or max_output_bytes < 1
             or type(timeout) not in (int, float) or not math.isfinite(timeout)
@@ -27,8 +27,12 @@ def query_digest(binary, part, sql, *, expected_sha256=None, expected_bytes=None
     if (expected_bytes is not None and
             (type(expected_bytes) is not int or not 0 <= expected_bytes <= max_output_bytes)):
         raise ValueError("expected_bytes must be within max_output_bytes")
-    if expected_sha256 is not None and not re.fullmatch(r"[0-9a-f]{64}", expected_sha256):
+    if expected_sha256 is not None and (
+            not isinstance(expected_sha256, str)
+            or not re.fullmatch(r"[0-9a-f]{64}", expected_sha256)):
         raise ValueError("expected_sha256 must be lowercase SHA256 hex")
+    if not isinstance(sql, str) or not sql.strip() or len(sql.encode("utf-8")) > 65_536:
+        raise ValueError("SQL must be nonempty and at most 64 KiB")
     execute = run or subprocess.run
     started = time.perf_counter()
     with tempfile.TemporaryFile(mode="w+b") as output:

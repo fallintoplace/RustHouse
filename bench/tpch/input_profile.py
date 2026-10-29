@@ -24,6 +24,9 @@ def profile_table(path, table, *, max_record_bytes=MAX_RECORD_BYTES):
     if (type(max_record_bytes) is not int or
             not 1 <= max_record_bytes <= MAX_RECORD_BYTES):
         raise ValueError("max_record_bytes must be in 1..8388608")
+    path = Path(path)
+    if not path.is_file() or path.is_symlink():
+        raise ValueError("expected a regular, non-symlinked TPC-H input file")
     digest = hashlib.sha256()
     rows, bytes_read, q6_matches = 0, 0, 0
     min_shipdate = max_shipdate = None
