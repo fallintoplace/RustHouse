@@ -160,3 +160,8 @@ fn clamp_limits_nullable_numeric_inputs() {
 fn sign_preserves_negative_zero_positive_and_null_values() {
     assert_eq!(evaluate("sign(x)"), "0");
 }
+
+#[test]
+fn iszero_distinguishes_zero_from_null() {
+    assert_eq!(evaluate("isZero(x)"), "1");
+}

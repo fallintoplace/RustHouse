@@ -268,6 +268,11 @@ fn parse_aggregate_builtin(parser: &mut Parser) -> Result<ScalarExpr, ParseError
             Ok(ScalarExpr::Clamp(value, lower, upper))
         }
         ("SIGN", 1) => Ok(ScalarExpr::Sign(Box::new(args.remove(0)))),
+        ("ISZERO", 1) => Ok(ScalarExpr::Compare(
+            Box::new(args.remove(0)),
+            crate::Operator::Eq,
+            Box::new(ScalarExpr::Integer(0)),
+        )),
         _ => Err(ParseError(format!("unsupported aggregate function: {name}"))),
     }
 }
