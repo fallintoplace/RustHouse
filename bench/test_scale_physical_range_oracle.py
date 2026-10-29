@@ -52,5 +52,13 @@ class PhysicalRangeOracleTests(unittest.TestCase):
                    window_rows=1, execute=lambda _: b"")
 
 
+class PhysicalRangeTimeoutTypeTests(unittest.TestCase):
+    def test_rejects_invalid_deadlines_before_running_queries(self):
+        for timeout in (True, "20", float("nan"), float("inf")):
+            with self.subTest(timeout=timeout):
+                with self.assertRaisesRegex(ValueError, "finite"):
+                    verify("unused", "db", "events", 10, 2, 2,
+                           timeout=timeout, execute=lambda _: b"2\t21\n")
+
 if __name__ == "__main__":
     unittest.main()
