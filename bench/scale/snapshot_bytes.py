@@ -20,6 +20,13 @@ def classify(path):
     return "metadata_bytes"
 
 
+def regular_file_size(path):
+    info = path.lstat()
+    if not stat.S_ISREG(info.st_mode):
+        raise ValueError(f"unsafe snapshot entry: {path}")
+    return info.st_size
+
+
 def inventory(root, *, max_files=1_000_000):
     root = Path(root)
     if not root.is_dir() or root.is_symlink():
@@ -37,10 +44,7 @@ def inventory(root, *, max_files=1_000_000):
                 raise ValueError("symlinked directory is unsafe")
         for name in files:
             path = Path(directory) / name
-            info = path.lstat()
-            if not stat.S_ISREG(info.st_mode):
-                raise ValueError(f"unsafe snapshot entry: {path}")
-            groups[classify(name)] += info.st_size
+            groups[classify(name)] += regular_file_size(path)
             count += 1
             if count > max_files:
                 raise ValueError("snapshot exceeds max_files")
