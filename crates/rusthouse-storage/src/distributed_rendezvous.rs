@@ -9,6 +9,16 @@ fn valid_node(node: &str) -> bool {
             .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'_' | b'-'))
 }
 
+fn valid_shard(shard: &str) -> bool {
+    !shard.is_empty()
+        && shard.len() <= 128
+        && shard.as_bytes()[0].is_ascii_alphanumeric()
+        && !shard.contains("..")
+        && shard
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'_' | b'-' | b'.'))
+}
+
 const OFFSET: u64 = 0xcbf2_9ce4_8422_2325;
 const PRIME: u64 = 0x0000_0100_0000_01b3;
 
@@ -36,14 +46,7 @@ pub fn replicas_for(
     nodes: &[String],
     replicas: usize,
 ) -> Result<Vec<String>, &'static str> {
-    if shard.is_empty()
-        || shard.len() > 128
-        || !shard.as_bytes()[0].is_ascii_alphanumeric()
-        || shard.contains("..")
-        || !shard
-            .bytes()
-            .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'_' | b'-' | b'.'))
-    {
+    if !valid_shard(shard) {
         return Err("invalid shard identifier");
     }
     if nodes.is_empty() || nodes.len() > 64 || replicas == 0 || replicas > nodes.len() {
@@ -98,13 +101,7 @@ pub fn weighted_replicas_for(
     nodes: &[(&str, u16)],
     replicas: usize,
 ) -> Result<Vec<String>, &'static str> {
-    if shard.is_empty()
-        || shard.len() > 128
-        || !shard.as_bytes()[0].is_ascii_alphanumeric()
-        || shard.contains("..")
-        || !shard
-            .bytes()
-            .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'_' | b'-' | b'.'))
+    if !valid_shard(shard)
         || nodes.is_empty()
         || nodes.len() > 64
         || replicas == 0
