@@ -37,7 +37,7 @@ def source_bytes(raw):
     """Strip the two RustHouse provenance comments, preserving SQL bytes."""
     lines = raw.splitlines(keepends=True)
     if len(lines) < 3:
-        raise ValueError("missing source headers or SQL")
+        raise ValueError("missing pinned query provenance or SQL")
     if not lines[0].startswith(b"-- Full TPC-H Q") and not lines[0].startswith(b"-- TPC-H Q"):
         raise ValueError("missing pinned query provenance")
     if b"SPDX-License-Identifier: MIT" not in lines[1]:
