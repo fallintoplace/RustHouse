@@ -50,7 +50,7 @@ const MAX_EXPRESSION_DEPTH: usize = 64;
 
 fn parse_arithmetic_tokens(parser: &mut Parser, depth: usize) -> Result<ScalarExpr, ParseError> {
     let mut expr = product(parser, depth)?;
-    let mut operators = 0usize;
+    let mut operator_count = 0usize;
     loop {
         let addition = if parser.take(Token::Plus) {
             true
@@ -59,8 +59,8 @@ fn parse_arithmetic_tokens(parser: &mut Parser, depth: usize) -> Result<ScalarEx
         } else {
             break;
         };
-        operators += 1;
-        if operators > 128 {
+        operator_count += 1;
+        if operator_count > 128 {
             return Err(ParseError("arithmetic operator chain exceeds 128 terms".into()));
         }
         let right = product(parser, depth)?;
