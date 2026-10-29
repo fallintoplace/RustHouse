@@ -30,6 +30,21 @@ fn render_expr(expr: &ScalarExpr) -> String {
         ScalarExpr::Column(name) => name.clone(),
         ScalarExpr::TextLength(name) => format!("length({name})"),
         ScalarExpr::Integer(number) => number.to_string(),
+        ScalarExpr::Case { branches, else_expr } => {
+            let mut result = String::from("CASE");
+            for (condition, value) in branches {
+                result.push_str(&format!(
+                    " WHEN {} THEN {}",
+                    render_expr(condition),
+                    render_expr(value),
+                ));
+            }
+            if let Some(value) = else_expr {
+                result.push_str(&format!(" ELSE {}", render_expr(value)));
+            }
+            result.push_str(" END");
+            result
+        }
         ScalarExpr::Add(left, right) => format!("{} + {}", render_expr(left), render_expr(right)),
         ScalarExpr::Subtract(left, right) => {
             let right = if matches!(
