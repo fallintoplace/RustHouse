@@ -11,6 +11,7 @@ pub enum ScalarExpr {
     Column(String),
     TextLength(String),
     Integer(i64),
+    Null,
     Add(Box<ScalarExpr>, Box<ScalarExpr>),
     Subtract(Box<ScalarExpr>, Box<ScalarExpr>),
     Multiply(Box<ScalarExpr>, Box<ScalarExpr>),
@@ -32,7 +33,7 @@ impl ScalarExpr {
                     out.push(name.clone());
                 }
             }
-            Self::Integer(_) => {}
+            Self::Integer(_) | Self::Null => {}
             Self::CaseWhen(condition, yes, no) => {
                 condition.collect_referenced_columns(out, seen);
                 yes.collect_referenced_columns(out, seen);
