@@ -4,6 +4,9 @@
 import argparse
 import sys
 import math
+import re
+import statistics
+import subprocess
 import tempfile
 import time
 from pathlib import Path
@@ -71,6 +74,22 @@ def verify(binary, database, rows, stations, minimum, maximum, total, timeout):
         )
 
 
+def verified_part_count(binary, database, rows, timeout):
+    # Keep the storage health check outside measured COPY timing.
+    checked = subprocess.run(
+        [str(binary), "doctor", "--database", str(database)],
+        capture_output=True, check=False, timeout=timeout,
+    )
+    output = checked.stdout.decode("utf-8", "replace")
+    matched = re.search(rf"^OK measurements: {rows} rows, ([0-9]+) parts", output, re.M)
+    if checked.returncode or matched is None:
+        raise RuntimeError("physical part verification failed after ingestion")
+    count = int(matched.group(1))
+    if count < 1 or count > 16384:
+        raise RuntimeError("physical part count is out of bounds")
+    return count
+
+
 def benchmark(binary, rows, stations, runs, warmups, timeout, format_name,
               fixture_batch_rows=4096):
     if rows < 1 or stations < 1 or stations > rows:
@@ -88,6 +107,7 @@ def benchmark(binary, rows, stations, runs, warmups, timeout, format_name,
                                               batch_rows=fixture_batch_rows)
         size = source.stat().st_size
         timings = []
+        part_counts = []
         for index in range(warmups + runs):
             database = root / f"database-{index}"
             database.mkdir()
@@ -105,8 +125,10 @@ def benchmark(binary, rows, stations, runs, warmups, timeout, format_name,
             sql(binary, database, copy, timeout)
             elapsed = (time.perf_counter_ns() - start) / 1_000_000_000
             verify(binary, database, rows, stations, minimum, maximum, total, timeout)
+            parts = verified_part_count(binary, database, rows, timeout)
             if index >= warmups:
                 timings.append(elapsed)
+                part_counts.append(parts)
     latency = summarize(timings)
     return {
         "format": format_name,
@@ -117,6 +139,9 @@ def benchmark(binary, rows, stations, runs, warmups, timeout, format_name,
         "runs": runs,
         "warmups": warmups,
         "latency": latency,
+        "physical_part_counts": part_counts,
+        "median_physical_parts": statistics.median(part_counts),
+        "physical_parts_verified": True,
         "rows_per_second": rows / latency["median_seconds"],
         "megabytes_per_second": size / latency["median_seconds"] / 1_000_000,
         "correctness": "verified",
