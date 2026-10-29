@@ -623,6 +623,27 @@ pub(super) fn execute_grouped_numbers<W: Write>(
     if query.limit == Some(0) {
         return groups.write(query, column, output);
     }
+    // Unique generated keys need neither a hash table nor retained rows
+    // when there is no grouping filter or sort. Preserve the group cap.
+    if query.limit.is_none() && query.predicates.is_empty()
+        && query.or_predicates.is_empty() && query.having.is_none()
+        && query.order_by.is_none() && query.order_by_extra.is_empty()
+        && step != 0
+    {
+        if rows > MAX_GROUPS as u64 {
+            return Err(ExecutionError::Invalid(
+                "GROUP BY supports at most 200000 groups".into(),
+            ));
+        }
+        writeln!(
+            output, "{column}\t{}", query.alias.as_deref().unwrap_or("count")
+        )?;
+        for index in query.offset.unwrap_or(0) as u64..rows {
+            let number = u128::from(start) + u128::from(index) * u128::from(step);
+            writeln!(output, "{number}\t1")?;
+        }
+        return Ok(());
+    }
     // GROUP BY number contains exactly one row per generated key. If the
     // client requests a bounded unordered page, jump directly to its keys.
     if query.predicates.is_empty()
