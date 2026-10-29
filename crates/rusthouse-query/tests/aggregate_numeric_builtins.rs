@@ -145,3 +145,8 @@ fn min2_selects_minimum_including_nullable_input() {
 fn nullifzero_skips_zero_and_missing_rows() {
     assert_eq!(evaluate("nullIfZero(x)"), "3");
 }
+
+#[test]
+fn zeroifnull_replaces_null_numeric_values_with_zero() {
+    assert_eq!(evaluate("zeroIfNull(x)"), "3");
+}

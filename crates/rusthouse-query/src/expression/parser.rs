@@ -257,6 +257,10 @@ fn parse_aggregate_builtin(parser: &mut Parser) -> Result<ScalarExpr, ParseError
             Box::new(args.remove(0)),
             Box::new(ScalarExpr::Integer(0)),
         )),
+        ("ZEROIFNULL", 1) => Ok(ScalarExpr::Coalesce(vec![
+            args.remove(0),
+            ScalarExpr::Integer(0),
+        ])),
         _ => Err(ParseError(format!("unsupported aggregate function: {name}"))),
     }
 }
