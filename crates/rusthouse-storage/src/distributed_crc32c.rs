@@ -63,7 +63,40 @@ pub fn crc32c(bytes: &[u8]) -> u32 {
     checksum.finish()
 }
 
-fn update(mut crc: u32, bytes: &[u8]) -> u32 {
+fn update(crc: u32, bytes: &[u8]) -> u32 {
+    // Avoid runtime feature dispatch for very short input fragments.
+    #[cfg(target_arch = "x86_64")]
+    if bytes.len() >= 64 && std::arch::is_x86_feature_detected!("sse4.2") {
+        // SAFETY: runtime feature detection guarantees the required instruction.
+        return unsafe { update_hardware(crc, bytes) };
+    }
+    update_software(crc, bytes)
+}
+
+#[cfg(target_arch = "x86_64")]
+#[target_feature(enable = "sse4.2")]
+unsafe fn update_hardware(mut crc: u32, bytes: &[u8]) -> u32 {
+    use std::arch::x86_64::{_mm_crc32_u32, _mm_crc32_u64, _mm_crc32_u8};
+    let mut blocks = bytes.chunks_exact(8);
+    for block in &mut blocks {
+        let word = u64::from_le_bytes(block.try_into().unwrap());
+        // SAFETY: the caller checked SSE4.2 at runtime.
+        crc = unsafe { _mm_crc32_u64(u64::from(crc), word) as u32 };
+    }
+    let mut words = blocks.remainder().chunks_exact(4);
+    for word in &mut words {
+        let value = u32::from_le_bytes(word.try_into().unwrap());
+        // SAFETY: the caller checked SSE4.2 at runtime.
+        crc = unsafe { _mm_crc32_u32(crc, value) };
+    }
+    for &byte in words.remainder() {
+        // SAFETY: the caller checked SSE4.2 at runtime.
+        crc = unsafe { _mm_crc32_u8(crc, byte) };
+    }
+    crc
+}
+
+fn update_software(mut crc: u32, bytes: &[u8]) -> u32 {
     // A slicing-by-eight lookup processes two UInt32 words per iteration
     // without platform-specific instructions.
     let mut wide_chunks = bytes.chunks_exact(8);
@@ -304,5 +337,28 @@ mod incremental_crc_tests {
         assert_eq!(crc.checksum(), crc32c(b"part-one"));
         crc.append(b"-part-two");
         assert_eq!(crc.checksum(), crc32c(b"part-one-part-two"));
+    }
+}
+
+#[cfg(all(test, target_arch = "x86_64"))]
+mod hardware_crc_tests {
+    use super::*;
+
+    #[test]
+    fn native_crc_matches_portable_reference_for_lengths_and_incremental_updates() {
+        if !std::arch::is_x86_feature_detected!("sse4.2") {
+            return;
+        }
+        let bytes = (0..131_089).map(|index| (index * 97 % 251) as u8).collect::<Vec<_>>();
+        for len in [0, 1, 2, 3, 4, 7, 8, 9, 31, 63, 64, 65, 257, 8192, bytes.len()] {
+            // SAFETY: this test also checks hardware availability at runtime.
+            let native = unsafe { update_hardware(!0, &bytes[..len]) };
+            assert_eq!(native, update_software(!0, &bytes[..len]), "length {len}");
+        }
+        for split in [0, 1, 7, 8, 63, 64, 8192, bytes.len()] {
+            // SAFETY: this test also checks hardware availability at runtime.
+            let native = unsafe { update_hardware(update_hardware(!0, &bytes[..split]), &bytes[split..]) };
+            assert_eq!(native, update_software(!0, &bytes));
+        }
     }
 }
