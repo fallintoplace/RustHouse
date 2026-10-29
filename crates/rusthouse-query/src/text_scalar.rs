@@ -99,6 +99,7 @@ pub(super) fn is_function(name: &str) -> bool {
             | "UNBIN"
             | "REPLACE"
             | "REPLACEALL"
+            | "PORT"
             | "PROTOCOL"
             | "FROMUNIXTIMESTAMP64NANO"
             | "TRANSLATE"
@@ -171,6 +172,39 @@ fn parse_at_depth(parser: &mut Parser, depth: usize) -> Result<ConstantValue, Pa
     }
     let value = match name.as_str() {
 
+        "PORT" => {
+            let input = text_arg(parser, depth + 1)?;
+            let fallback = if parser.take(Token::Comma) {
+                integer_arg(parser, depth + 1)?
+            } else {
+                Some(0)
+            };
+            require(parser, Token::RParen, "port requires one or two arguments")?;
+            match (input, fallback) {
+                (Some(input), Some(fallback)) => {
+                    let fallback = u16::try_from(fallback)
+                        .map_err(|_| ParseError("port default must be UInt16".into()))?;
+                    let authority = input
+                        .split_once("://")
+                        .map_or(input.as_str(), |(_, rest)| rest)
+                        .split(['/', '?', '#'])
+                        .next()
+                        .unwrap_or("");
+                    let host_port = authority.rsplit('@').next().unwrap_or("");
+                    let number = if host_port.starts_with('[') {
+                        host_port
+                            .split_once("]:")
+                            .and_then(|(_, port)| port.parse::<u16>().ok())
+                    } else {
+                        host_port
+                            .rsplit_once(':')
+                            .and_then(|(_, port)| port.parse::<u16>().ok())
+                    };
+                    ConstantValue::Integer(i64::from(number.unwrap_or(fallback)))
+                }
+                _ => ConstantValue::Null,
+            }
+        }
         "MODULOORNULL" => {
             let dividend = integer_arg(parser, depth + 1)?;
             require(parser, Token::Comma, "moduloOrNull requires two arguments")?;
