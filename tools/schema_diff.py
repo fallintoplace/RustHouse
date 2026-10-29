@@ -28,7 +28,7 @@ def columns(payload):
     for col in result:
         if not isinstance(col, dict) or not isinstance(col.get("name"), str) or not isinstance(col.get("type"), str):
             raise ValueError("malformed column")
-        if not col["name"] or not col["type"] or col["name"] in seen:
+        if not col["name"].strip() or not col["type"].strip() or col["name"] in seen:
             raise ValueError("empty or duplicate schema column")
         seen.add(col["name"])
         output.append((col["name"], col["type"]))
