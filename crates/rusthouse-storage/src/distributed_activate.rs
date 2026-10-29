@@ -164,7 +164,6 @@ mod tests {
     }
 }
 
-use std::io::Read;
 
 /// Read the canonical active-generation pointer without opening snapshot parts.
 /// A missing pointer is reported as None. This does not validate part contents.
