@@ -1,3 +1,17 @@
+#[test]
+fn unicode_multi_percent_patterns_reuse_compiled_folded_tokens() {
+    let pattern = compile_like("x%É%Y").unwrap();
+    assert!(matches!(&pattern, LikePattern::Wildcard {
+        folded_percent: Some(_),
+        ..
+    }));
+    for text in ["xabcdeféghiY", "xÉY", "xémiddleY"] {
+        assert!(like_matches(text.as_bytes(), &pattern, true), "{text}");
+    }
+    assert!(!like_matches("xabcdefémiddleY".as_bytes(), &pattern, false));
+    assert!(!like_matches("xémiddleZ".as_bytes(), &pattern, true));
+}
+
 use super::*;
 
 #[test]

@@ -279,7 +279,10 @@ enum LikePattern {
     Prefix(Vec<u8>),
     Suffix(Vec<u8>),
     Contains(Vec<u8>),
-    Wildcard(Vec<LikeToken>),
+    Wildcard {
+        tokens: Vec<LikeToken>,
+        folded_percent: Option<Vec<LikeToken>>,
+    },
 }
 
 enum Test {
