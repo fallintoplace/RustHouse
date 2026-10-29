@@ -5,6 +5,18 @@ pub(crate) const MAX_BATCH_BYTES: usize = 64 * 1024 * 1024;
 const READ_BUFFER_BYTES: usize = 64 * 1024;
 const MAX_ELEMENT_WIDTH: usize = 16 * 1024;
 
+fn append_decoded<T, const WIDTH: usize>(
+    result: &mut Vec<T>,
+    bytes: &[u8],
+    decode: &impl Fn([u8; WIDTH]) -> T,
+) {
+    result.extend(
+        bytes
+            .chunks_exact(WIDTH)
+            .map(|chunk| decode(chunk.try_into().expect("fixed-width chunk size"))),
+    );
+}
+
 pub(crate) fn read_fixed_width<R: Read, T, const WIDTH: usize>(
     reader: &mut R,
     rows: usize,
@@ -25,11 +37,7 @@ pub(crate) fn read_fixed_width<R: Read, T, const WIDTH: usize>(
     if rows * WIDTH <= SMALL_BYTES {
         let mut buffer = [0u8; SMALL_BYTES];
         reader.read_exact(&mut buffer[..rows * WIDTH])?;
-        result.extend(
-            buffer[..rows * WIDTH]
-                .chunks_exact(WIDTH)
-                .map(|chunk| decode(chunk.try_into().expect("fixed-width chunk size"))),
-        );
+        append_decoded::<T, WIDTH>(&mut result, &buffer[..rows * WIDTH], &decode);
         return Ok(result);
     }
     let mut buffer = [0u8; READ_BUFFER_BYTES];
@@ -37,11 +45,7 @@ pub(crate) fn read_fixed_width<R: Read, T, const WIDTH: usize>(
         let count = (rows - result.len()).min(buffer.len() / WIDTH);
         let size = count * WIDTH;
         reader.read_exact(&mut buffer[..size])?;
-        result.extend(
-            buffer[..size]
-                .chunks_exact(WIDTH)
-                .map(|chunk| decode(chunk.try_into().expect("fixed-width chunk size"))),
-        );
+        append_decoded::<T, WIDTH>(&mut result, &buffer[..size], &decode);
     }
     Ok(result)
 }
