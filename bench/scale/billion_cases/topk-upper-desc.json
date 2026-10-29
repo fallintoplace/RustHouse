@@ -1,0 +1,8 @@
+{
+  "id": "topk-upper-desc",
+  "kind": "topk_desc",
+  "lo": "p50",
+  "hi": "end",
+  "limit": 8,
+  "offset": 0
+}
