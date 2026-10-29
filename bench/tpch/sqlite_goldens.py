@@ -23,8 +23,8 @@ def tsv_cell(value, null_token="NULL"):
 
 
 def write_one(connection, sql, destination, max_rows=100_000, null_token="NULL"):
-    if max_rows < 1:
-        raise ValueError("max_rows must be positive")
+    if type(max_rows) is not int or max_rows < 1:
+        raise ValueError("max_rows must be a positive integer")
     destination = Path(destination)
     temporary = destination.with_name(destination.name + ".tmp")
     count = 0
@@ -44,6 +44,8 @@ def write_one(connection, sql, destination, max_rows=100_000, null_token="NULL")
 
 def generate(database, queries_dir, output_dir, only=None,
              max_rows=100_000, overwrite=False, null_token="NULL"):
+    if type(max_rows) is not int or max_rows < 1:
+        raise ValueError("max_rows must be a positive integer")
     database = Path(database)
     if not database.is_file():
         raise ValueError("SQLite reference database does not exist")
