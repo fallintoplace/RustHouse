@@ -72,6 +72,10 @@ pub fn plan_missing_chunks(
         }
         previous_chunk_index = Some(index);
     }
+    // Validate every missing index first, even when no work can be scheduled.
+    if byte_budget == 0 || max_batch_chunks == 0 || remaining_indices.is_empty() {
+        return Ok(Vec::new());
+    }
     // Only full chunks plus possibly one short final chunk can fit this budget.
     let budget_chunks = byte_budget / chunk_bytes;
     let reserve = remaining_indices
@@ -81,7 +85,7 @@ pub fn plan_missing_chunks(
     let mut selected = Vec::with_capacity(reserve);
     let mut remaining_bytes = byte_budget;
     for &index in remaining_indices {
-        if selected.len() >= max_batch_chunks {
+        if selected.len() >= max_batch_chunks || remaining_bytes == 0 {
             break;
         }
         let chunk = chunk_at_index(total_bytes, chunk_bytes, index);
@@ -189,6 +193,17 @@ mod tests {
                 .unwrap()
                 .is_empty()
         );
+    }
+
+    #[test]
+    fn zero_budget_still_validates_indexes_before_skipping_work() {
+        let indexes = (0..65_536).collect::<Vec<_>>();
+        assert!(plan_missing_chunks(65_536, 1, 65_536, &indexes, 0, 65_536)
+            .unwrap()
+            .is_empty());
+        assert!(plan_missing_chunks(4, 1, 4, &[3, 3], 0, 0).is_err());
+        assert!(plan_missing_chunks(4, 1, 4, &[3, 4], 0, 2).is_err());
+        assert!(plan_missing_chunks(4, 1, 4, &[3], 4, 0).unwrap().is_empty());
     }
 
     #[test]
