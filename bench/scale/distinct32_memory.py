@@ -35,6 +35,8 @@ def write_tsv(path, rows, layout, duplicates):
             or type(rows) is not int or not 1 <= rows <= MAX_ROWS
             or rows * duplicates > 1_000_000):
         raise ValueError("duplicates must be 1..16 and total rows <=1000000")
+    if layout not in ("sparse", "dense", "mixed"):
+        raise ValueError("layout must be sparse, dense or mixed")
     unique = set()
     with Path(path).open("w", encoding="ascii") as output:
         output.write("id\n")
