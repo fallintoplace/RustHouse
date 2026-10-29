@@ -97,7 +97,7 @@ impl HyperLogLog {
         String::from_utf8(bytes).expect("ASCII hex bytes are valid UTF-8")
     }
 
-    fn decode_state(value: &str) -> Result<Self, String> {
+    fn merge_hex_state(&mut self, value: &str) -> Result<(), String> {
         let bytes = value.as_bytes();
         if bytes.len() != REGISTERS * 2 {
             return Err("invalid HLL register count".into());
@@ -107,17 +107,18 @@ impl HyperLogLog {
             b'a'..=b'f' => Some(value - b'a' + 10),
             _ => None,
         };
-        let mut state = Self::default();
-        for (index, bytes) in bytes.chunks_exact(2).enumerate() {
-            let high = digit(bytes[0]).ok_or("invalid HLL hex state")?;
-            let low = digit(bytes[1]).ok_or("invalid HLL hex state")?;
+        // Decode into the final union. Do not allocate and zero a 16 KiB
+        // scratch sketch for every shard's serialized state.
+        for (target, pair) in self.registers.iter_mut().zip(bytes.chunks_exact(2)) {
+            let high = digit(pair[0]).ok_or("invalid HLL hex state")?;
+            let low = digit(pair[1]).ok_or("invalid HLL hex state")?;
             let register = (high << 4) | low;
             if register > MAX_REGISTER_RANK {
                 return Err("invalid HLL register rank".into());
             }
-            state.registers[index] = register;
+            *target = (*target).max(register);
         }
-        Ok(state)
+        Ok(())
     }
 
     pub(super) fn merge(&mut self, other: &Self) {
@@ -202,7 +203,7 @@ pub(super) fn merge_state_hex_values(states: &[&str]) -> Result<u64, String> {
     }
     let mut union = HyperLogLog::default();
     for &state in states {
-        union.merge(&HyperLogLog::decode_state(state)?);
+        union.merge_hex_state(state)?;
     }
     Ok(union.estimate())
 }
@@ -233,6 +234,20 @@ mod state_tests {
         );
         let empty = HyperLogLog::default().encode_state();
         assert_eq!(merge_state_hex_values(&[&empty]).unwrap(), 0);
+    }
+
+    #[test]
+    fn repeated_shards_reuse_union_storage_and_reject_late_invalid_states() {
+        let mut sketch = HyperLogLog::default();
+        for value in 0..20_000u64 {
+            sketch.observe_number(Number::Unsigned(value));
+        }
+        let encoded = sketch.encode_state();
+        let repeated = vec![encoded.as_str(); 256];
+        assert_eq!(merge_state_hex_values(&repeated).unwrap(), sketch.estimate());
+        let mut invalid = repeated;
+        invalid.push("00");
+        assert!(merge_state_hex_values(&invalid).is_err());
     }
 
     #[test]
