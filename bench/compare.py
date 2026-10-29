@@ -41,7 +41,7 @@ def ensure_compatible_reports(baseline, candidate):
                   "query_sha256", "comparison"):
         old = baseline.get(field)
         new = candidate.get(field)
-        if (old is None) != (new is None) or (old is not None and old != new):
+        if (type(old) is not type(new) or (old is not None and old != new)):
             raise ValueError(f"cannot compare different {field} values")
 
 
