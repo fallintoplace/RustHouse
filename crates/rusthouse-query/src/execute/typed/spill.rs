@@ -176,17 +176,13 @@ fn write_entry(output: &mut impl Write, entry: &SortEntry) -> Result<(), Executi
 }
 
 fn read_entry(input: &mut impl Read) -> Result<Option<SortEntry>, ExecutionError> {
-    let mut first = [0u8; 1];
-    if input.read(&mut first)? == 0 {
+    let mut header = [0u8; 12];
+    if input.read(&mut header[..1])? == 0 {
         return Ok(None);
     }
-    let mut ordinal = [0u8; 8];
-    ordinal[0] = first[0];
-    input.read_exact(&mut ordinal[1..])?;
-    let mut counts = [0u8; 4];
-    input.read_exact(&mut counts)?;
-    let values = u16::from_le_bytes([counts[0], counts[1]]) as usize;
-    let keys = u16::from_le_bytes([counts[2], counts[3]]) as usize;
+    input.read_exact(&mut header[1..])?;
+    let values = u16::from_le_bytes([header[8], header[9]]) as usize;
+    let keys = u16::from_le_bytes([header[10], header[11]]) as usize;
     if values > 4096 || keys > 8 {
         return Err(invalid("typed sort run has invalid projection width"));
     }
@@ -200,7 +196,7 @@ fn read_entry(input: &mut impl Read) -> Result<Option<SortEntry>, ExecutionError
     }
     Ok(Some(SortEntry {
         row: Row { values: projected, sort_keys: sorted },
-        ordinal: usize::try_from(u64::from_le_bytes(ordinal))
+        ordinal: usize::try_from(u64::from_le_bytes(header[..8].try_into().unwrap()))
             .map_err(|_| invalid("typed sort run sequence exceeds address space"))?,
     }))
 }
