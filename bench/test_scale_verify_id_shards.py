@@ -67,5 +67,29 @@ class VerifyShardsTests(unittest.TestCase):
                 verify_file(path, 1, 2)
 
 
+    def test_validates_strided_shard_manifest(self):
+        with tempfile.TemporaryDirectory() as root:
+            folder = Path(root)
+            first = folder / "a.tsv"
+            second = folder / "b.tsv"
+            first.write_bytes(b"10\\n13\\n")
+            second.write_bytes(b"16\\n")
+            shards = [
+                {"path": "a.tsv", "start": 10, "rows": 2,
+                 "sha256": hashlib.sha256(first.read_bytes()).hexdigest()},
+                {"path": "b.tsv", "start": 16, "rows": 1,
+                 "sha256": hashlib.sha256(second.read_bytes()).hexdigest()},
+            ]
+            manifest = folder / "manifest.json"
+            payload = {"schema_version": 1, "start": 10,
+                       "rows": 3, "step": 3, "shards": shards}
+            manifest.write_text(json.dumps(payload))
+            self.assertEqual(verify(manifest)["step"], 3)
+            payload["shards"][1]["start"] = 17
+            manifest.write_text(json.dumps(payload))
+            with self.assertRaisesRegex(ValueError, "gap"):
+                verify(manifest)
+
+
 if __name__ == "__main__":
     unittest.main()
