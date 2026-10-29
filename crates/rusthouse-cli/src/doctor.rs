@@ -13,10 +13,12 @@ use std::path::Path;
 const MAX_ROOT_ENTRIES: usize = 20_000;
 const MAX_SNAPSHOT_GENERATIONS: usize = 16_384;
 const MAX_ACTIVE_PARTS: usize = 16_384;
+const MAX_DOCTOR_NAME_BYTES: usize = 128;
+const ACTIVE_PARTS_WARNING_PERCENT: usize = 90;
 
 // Surface approaching the storage ceiling before another INSERT fails.
 fn active_parts_near_limit(count: usize) -> bool {
-    count >= MAX_ACTIVE_PARTS * 9 / 10
+    count >= MAX_ACTIVE_PARTS * ACTIVE_PARTS_WARNING_PERCENT / 100
 }
 
 #[derive(Default)]
@@ -41,7 +43,7 @@ impl Report {
 fn valid_name(name: &str) -> bool {
     let mut bytes = name.bytes();
     !name.is_empty()
-        && name.len() <= 128
+        && name.len() <= MAX_DOCTOR_NAME_BYTES
         && matches!(bytes.next(), Some(b'a'..=b'z' | b'A'..=b'Z' | b'_'))
         && bytes.all(|byte| byte.is_ascii_alphanumeric() || byte == b'_')
 }
