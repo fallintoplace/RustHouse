@@ -60,6 +60,27 @@ impl Capacity {
             ..self
         })
     }
+
+    /// Reserve a whole immutable-object batch or reject it without changing state.
+    pub fn reserve_many(self, object_sizes: &[u64]) -> Result<Self, &'static str> {
+        if object_sizes.len() > 65_536 {
+            return Err("replica object batch exceeds limit");
+        }
+        let bytes = object_sizes.iter().try_fold(0u64, |total, &size| {
+            total.checked_add(size).ok_or("replica batch size overflow")
+        })?;
+        self.reserve(bytes)
+    }
+
+    /// Release committed storage usage after verified object deletion.
+    /// The caller is responsible for ensuring the physical deletion succeeded.
+    pub fn reclaim_used(self, bytes: u64) -> Result<Self, &'static str> {
+        self.available()?;
+        Ok(Self {
+            used: self.used.checked_sub(bytes).ok_or("cannot reclaim unused bytes")?,
+            ..self
+        })
+    }
 }
 
 #[cfg(test)]
@@ -136,19 +157,6 @@ mod tests {
     }
 }
 
-impl Capacity {
-    /// Reserve a whole immutable-object batch or reject it without changing state.
-    pub fn reserve_many(self, object_sizes: &[u64]) -> Result<Self, &'static str> {
-        if object_sizes.len() > 65_536 {
-            return Err("replica object batch exceeds limit");
-        }
-        let bytes = object_sizes.iter().try_fold(0u64, |total, &size| {
-            total.checked_add(size).ok_or("replica batch size overflow")
-        })?;
-        self.reserve(bytes)
-    }
-}
-
 #[cfg(test)]
 mod batch_reservation_tests {
     use super::*;
@@ -169,18 +177,6 @@ mod batch_reservation_tests {
         assert!(capacity.reserve_many(&[u64::MAX, 1]).is_err());
         assert!(capacity.reserve_many(&vec![0; 65_537]).is_err());
         assert_eq!(capacity.reserve_many(&[]).unwrap(), capacity);
-    }
-}
-
-impl Capacity {
-    /// Release committed storage usage after verified object deletion.
-    /// The caller is responsible for ensuring the physical deletion succeeded.
-    pub fn reclaim_used(self, bytes: u64) -> Result<Self, &'static str> {
-        self.available()?;
-        Ok(Self {
-            used: self.used.checked_sub(bytes).ok_or("cannot reclaim unused bytes")?,
-            ..self
-        })
     }
 }
 
