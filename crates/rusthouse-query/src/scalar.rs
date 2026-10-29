@@ -45,6 +45,7 @@ pub(super) fn is_function(name: &str) -> bool {
         || name.eq_ignore_ascii_case("LESSOREQUALS")
         || name.eq_ignore_ascii_case("GREATER")
         || name.eq_ignore_ascii_case("GREATEROREQUALS")
+        || name.eq_ignore_ascii_case("NOT")
         || is_saturating(name)
         || name.eq_ignore_ascii_case("BITHAMMINGDISTANCE")
         || name.eq_ignore_ascii_case("ABS")
@@ -1244,6 +1245,7 @@ fn factor(parser: &mut Parser, depth: usize) -> Result<i64, ParseError> {
                 "TOINT16" => first as i16 as i64,
                 "POSITIVE" => first,
                 "ISZERO" => i64::from(first == 0),
+                "NOT" => i64::from(first == 0),
                 _ => first.signum(),
             }
         };
