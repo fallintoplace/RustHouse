@@ -29,6 +29,14 @@ impl<'a> JsonValue<'a> {
         }
     }
 
+    pub(crate) fn container_len(&self) -> usize {
+        match &self.kind {
+            JsonKind::Array(items) => items.len(),
+            JsonKind::Object(fields) => fields.len(),
+            _ => 0,
+        }
+    }
+
     pub(crate) fn at_path(&self, path: &str) -> Option<&JsonValue<'a>> {
         if path.is_empty() {
             return None;

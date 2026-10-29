@@ -121,8 +121,8 @@ fn write_bytes(output: &mut impl Write, value: &[u8]) -> Result<(), ExecutionErr
     if value.len() > MAX_FIELD_BYTES {
         return Err(invalid("typed sort value exceeds 32 MiB field limit"));
     }
-    if value.len() <= 128 {
-        let mut frame = [0u8; 132];
+    if value.len() <= 256 {
+        let mut frame = [0u8; 260];
         frame[..4].copy_from_slice(&length.to_le_bytes());
         frame[4..4 + value.len()].copy_from_slice(value);
         output.write_all(&frame[..4 + value.len()])?;
