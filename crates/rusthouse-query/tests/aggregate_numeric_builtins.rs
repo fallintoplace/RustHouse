@@ -165,3 +165,8 @@ fn sign_preserves_negative_zero_positive_and_null_values() {
 fn iszero_distinguishes_zero_from_null() {
     assert_eq!(evaluate("isZero(x)"), "1");
 }
+
+#[test]
+fn isnotzero_ignores_null_values() {
+    assert_eq!(evaluate("isNotZero(x)"), "2");
+}
