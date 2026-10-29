@@ -214,6 +214,6 @@ mod replication_factor_tests {
         assert!(plan_repairs_for_replication_factor(&jobs, 2, 10, 1).is_err());
         assert!(plan_repairs_for_replication_factor(&jobs, 0, 10, 1).is_err());
         assert!(plan_repairs_for_replication_factor(&jobs, 17, 10, 1).is_err());
-        assert_eq!(plan_repairs_for_replication_factor(&jobs, 3, 10, 1).unwrap(), jobs);
+        assert_eq!(plan_repairs_for_replication_factor(&jobs, 3, 10, 1).unwrap(), jobs.to_vec());
     }
 }
