@@ -1,0 +1,6 @@
+{
+  "id": "sum-middle-half",
+  "kind": "sum_range",
+  "lo": "p25",
+  "hi": "p75"
+}
