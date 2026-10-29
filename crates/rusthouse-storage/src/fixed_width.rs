@@ -34,10 +34,11 @@ pub(crate) fn read_fixed_width<R: Read, T, const WIDTH: usize>(
     let mut result = Vec::with_capacity(rows);
     // Small marks should not initialize the entire 64 KiB scan buffer.
     const SMALL_BYTES: usize = 512;
-    if rows * WIDTH <= SMALL_BYTES {
+    let batch_bytes = rows * WIDTH;
+    if batch_bytes <= SMALL_BYTES {
         let mut buffer = [0u8; SMALL_BYTES];
-        reader.read_exact(&mut buffer[..rows * WIDTH])?;
-        append_decoded::<T, WIDTH>(&mut result, &buffer[..rows * WIDTH], &decode);
+        reader.read_exact(&mut buffer[..batch_bytes])?;
+        append_decoded::<T, WIDTH>(&mut result, &buffer[..batch_bytes], &decode);
         return Ok(result);
     }
     let mut buffer = [0u8; READ_BUFFER_BYTES];

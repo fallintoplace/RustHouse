@@ -1,0 +1,8 @@
+{
+  "name": "middle-range-count",
+  "description": "Centered 10 percent range count",
+  "kind": "range",
+  "aggregate": "count",
+  "lower_ppm": 450000,
+  "upper_ppm": 550000
+}
