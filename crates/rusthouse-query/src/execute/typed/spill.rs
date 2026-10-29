@@ -187,7 +187,7 @@ fn read_entry(input: &mut impl Read) -> Result<Option<SortEntry>, ExecutionError
     input.read_exact(&mut counts)?;
     let values = u16::from_le_bytes([counts[0], counts[1]]) as usize;
     let keys = u16::from_le_bytes([counts[2], counts[3]]) as usize;
-    if values > 256 || keys > 8 {
+    if values > 4096 || keys > 8 {
         return Err(invalid("typed sort run has invalid projection width"));
     }
     let mut projected = Vec::with_capacity(values);
@@ -464,7 +464,8 @@ mod tests {
         assert!(matches!(&recovered.row.values[2], Cell::Uuid(value) if value.starts_with("61f0")));
         assert!(matches!(&recovered.row.values[3], Cell::Numeric(Number::Signed(-5))));
         assert!(matches!(&recovered.row.values[4], Cell::Numeric(Number::Float(1.5))));
-        assert!(read_entry(&mut input.as_slice()[input.len()..]).unwrap().is_none());
+        let mut empty: &[u8] = &[];
+        assert!(read_entry(&mut empty).unwrap().is_none());
     }
 
     #[test]
