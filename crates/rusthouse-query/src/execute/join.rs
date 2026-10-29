@@ -20,6 +20,20 @@ pub(super) const MAX_RESULT_ROWS: usize = crate::join::MAX_JOIN_RESULT_ROWS;
 // Bound retained cells as well as row count to protect against wide String rows.
 const MAX_STREAM_BUILD_ROWS: u64 = crate::join::MAX_STREAM_JOIN_BUILD_ROWS;
 pub(super) const MAX_STREAM_BUILD_BYTES: usize = crate::join::MAX_JOIN_BUILD_BYTES;
+/// Integers of different widths or signedness can be equi-joined exactly
+/// through the canonical 128-bit hash key; floats remain strict by type.
+pub(super) fn compatible_join_types(left: &str, right: &str) -> bool {
+    let (left, right) = (base_type(left), base_type(right));
+    if left == right {
+        return true;
+    }
+    let integer = |kind: &str| matches!(
+        kind, "UInt8" | "UInt16" | "UInt32" | "UInt64" | "UInt128"
+            | "Int8" | "Int16" | "Int32" | "Int64" | "Int128"
+    );
+    integer(left) && integer(right)
+}
+
 
 type Pair = (Option<usize>, Option<usize>);
 
@@ -1186,7 +1200,7 @@ pub fn execute_join<W: Write>(
         };
         let left_type = &left_meta.columns[left_index].data_type;
         let right_type = &right_meta.columns[right_index].data_type;
-        if base_type(left_type) != base_type(right_type) {
+        if !compatible_join_types(left_type, right_type) {
             return Err(invalid(format!(
                 "JOIN key types differ: {left_type} and {right_type}"
             )));
