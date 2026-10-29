@@ -42,8 +42,10 @@ def insert_batch(connection, batch):
 
 
 def generate(directory, rows=10000, seed=42):
-    if not 1 <= rows <= 1000000:
-        raise ValueError("rows must be in 1..1000000")
+    if type(rows) is not int or not 1 <= rows <= 1000000:
+        raise ValueError("rows must be an integer in 1..1000000")
+    if type(seed) is not int or not 0 <= seed <= (1 << 64) - 1:
+        raise ValueError("seed must be an unsigned 64-bit integer")
     directory = Path(directory)
     directory.mkdir(parents=True, exist_ok=True)
     names = [name for name, _, _ in FIELDS]

@@ -40,5 +40,17 @@ class ClickBenchFixtureTests(unittest.TestCase):
                 generate(root, rows=0)
 
 
+class SyntheticFixtureParameterTests(unittest.TestCase):
+    def test_invalid_row_and_seed_controls_fail_without_creating_files(self):
+        with tempfile.TemporaryDirectory() as root:
+            folder = Path(root) / "fixture"
+            for options in ({"rows": True}, {"rows": 10.5},
+                            {"seed": True}, {"seed": 1.25},
+                            {"seed": -1}, {"seed": 1 << 64}):
+                with self.subTest(options=options):
+                    with self.assertRaisesRegex(ValueError, "rows|seed"):
+                        generate(folder, **options)
+                    self.assertFalse(folder.exists())
+
 if __name__ == "__main__":
     unittest.main()
