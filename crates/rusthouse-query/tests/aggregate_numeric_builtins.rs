@@ -100,3 +100,8 @@ fn not_equals_preserves_three_valued_logic() {
 fn less_uses_exact_comparison_semantics() {
     assert_eq!(evaluate("less(x, y)"), "1");
 }
+
+#[test]
+fn less_or_equals_includes_equal_rows() {
+    assert_eq!(evaluate("lessOrEquals(x, y)"), "2");
+}
