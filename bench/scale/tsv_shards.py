@@ -22,6 +22,8 @@ def split_tsv(source, output_dir, *, rows_per_chunk=65536,
     if max_bytes_per_chunk is not None and (
             type(max_bytes_per_chunk) is not int or max_bytes_per_chunk < 1):
         raise ValueError("max_bytes_per_chunk must be a positive integer")
+    if not source.is_file() or source.is_symlink():
+        raise ValueError("input must be a regular, non-symlinked TSV file")
     if output_dir.exists() or output_dir.is_symlink():
         raise FileExistsError(f"output directory exists: {output_dir}")
     output_dir.parent.mkdir(parents=True, exist_ok=True)
