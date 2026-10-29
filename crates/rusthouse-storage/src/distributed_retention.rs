@@ -40,6 +40,47 @@ pub fn retention_candidates(
     planned_retention(generations, active, keep_latest).map(|(candidates, _)| candidates)
 }
 
+/// Plan retention while protecting snapshots pinned by readers, replicas or backups.
+/// This only lists candidates; it never deletes generation files.
+pub fn retention_candidates_with_pins(
+    generations: &[u64],
+    active: u64,
+    keep_latest: usize,
+    pinned: &[u64],
+) -> Result<Vec<u64>, &'static str> {
+    if pinned.len() > 16_384 {
+        return Err("too many pinned generations");
+    }
+    let (candidates, known) = planned_retention(generations, active, keep_latest)?;
+    let mut pins = std::collections::HashSet::with_capacity(pinned.len());
+    for &generation in pinned {
+        if !pins.insert(generation) || known.binary_search(&generation).is_err() {
+            return Err("duplicate or unknown pinned generation");
+        }
+    }
+    Ok(candidates
+        .into_iter()
+        .filter(|generation| !pins.contains(generation))
+        .collect())
+}
+
+/// Retain any generation at or above the oldest generation a replica needs.
+/// The caller must supply a verified replica catch-up floor.
+pub fn retention_candidates_below_replica_floor(
+    generations: &[u64],
+    active: u64,
+    keep_latest: usize,
+    oldest_needed: u64,
+) -> Result<Vec<u64>, &'static str> {
+    if oldest_needed == 0 {
+        return Err("invalid replica retention floor");
+    }
+    Ok(retention_candidates(generations, active, keep_latest)?
+        .into_iter()
+        .filter(|&generation| generation < oldest_needed)
+        .collect())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -83,30 +124,6 @@ mod tests {
     }
 }
 
-/// Plan retention while protecting snapshots pinned by readers, replicas or backups.
-/// This only lists candidates; it never deletes generation files.
-pub fn retention_candidates_with_pins(
-    generations: &[u64],
-    active: u64,
-    keep_latest: usize,
-    pinned: &[u64],
-) -> Result<Vec<u64>, &'static str> {
-    if pinned.len() > 16_384 {
-        return Err("too many pinned generations");
-    }
-    let (candidates, known) = planned_retention(generations, active, keep_latest)?;
-    let mut pins = std::collections::HashSet::with_capacity(pinned.len());
-    for &generation in pinned {
-        if !pins.insert(generation) || known.binary_search(&generation).is_err() {
-            return Err("duplicate or unknown pinned generation");
-        }
-    }
-    Ok(candidates
-        .into_iter()
-        .filter(|generation| !pins.contains(generation))
-        .collect())
-}
-
 #[cfg(test)]
 mod pinned_retention_tests {
     use super::*;
@@ -129,23 +146,6 @@ mod pinned_retention_tests {
         assert!(retention_candidates_with_pins(&[1, 2, 3], 3, 1, &[1, 1]).is_err());
         assert!(retention_candidates_with_pins(&[1, 1], 1, 1, &[]).is_err());
     }
-}
-
-/// Retain any generation at or above the oldest generation a replica needs.
-/// The caller must supply a verified replica catch-up floor.
-pub fn retention_candidates_below_replica_floor(
-    generations: &[u64],
-    active: u64,
-    keep_latest: usize,
-    oldest_needed: u64,
-) -> Result<Vec<u64>, &'static str> {
-    if oldest_needed == 0 {
-        return Err("invalid replica retention floor");
-    }
-    Ok(retention_candidates(generations, active, keep_latest)?
-        .into_iter()
-        .filter(|&generation| generation < oldest_needed)
-        .collect())
 }
 
 #[cfg(test)]
