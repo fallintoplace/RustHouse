@@ -56,7 +56,7 @@ impl fmt::Display for DecimalReadError {
 impl Error for DecimalReadError {
     fn source(&self) -> Option<&(dyn Error + 'static)> {
         match self {
-            Self::InvalidType(_) => None,
+            Self::InvalidType(_) | Self::ValueExceedsPrecision { .. } => None,
             Self::Numeric(source) => Some(source),
         }
     }
