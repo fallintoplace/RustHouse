@@ -372,7 +372,12 @@ pub fn write_wide_part_with_compression(
                     // Pack adjacent marks into larger compressed blocks, while each
                     // mark retains its exact intra-block decompressed byte offset.
                     const PACKED_BLOCK_BYTES: usize = 64 * 1024;
-                    let mut pending = Vec::new();
+                    // Reserve enough for a packed block without overallocating
+                    // tiny streams. Every granule is already materialized here.
+                    let pending_capacity = granules.iter()
+                        .fold(0usize, |size, granule| size.saturating_add(granule.len().max(1)))
+                        .min(PACKED_BLOCK_BYTES);
+                    let mut pending = Vec::with_capacity(pending_capacity);
                     for (index, data) in granules.iter().enumerate() {
                         // Empty Array and Map streams retain an unexposed pad byte.
                         let data: &[u8] = if data.is_empty() { &[0] } else { data };
