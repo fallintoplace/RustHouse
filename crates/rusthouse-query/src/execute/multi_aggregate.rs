@@ -101,6 +101,7 @@ enum BoundExpr {
     Multiply(Box<Self>, Box<Self>),
     Divide(Box<Self>, Box<Self>),
     Compare(Box<Self>, crate::Operator, Box<Self>),
+    CaseWhen(Box<Self>, Box<Self>, Box<Self>),
 }
 
 impl BoundExpr {
@@ -163,6 +164,11 @@ impl BoundExpr {
                 *operator,
                 Box::new(Self::bind(right, indices)?),
             ),
+            ScalarExpr::CaseWhen(condition, yes, no) => Self::CaseWhen(
+                Box::new(Self::bind(condition, indices)?),
+                Box::new(Self::bind(yes, indices)?),
+                Box::new(Self::bind(no, indices)?),
+            ),
         })
     }
 }
@@ -212,6 +218,15 @@ fn eval_number(
             Ok(Some(Number::Unsigned(u128::from(matched))))
         },
         BoundExpr::Integer(value) => Ok(Some(Number::Signed(i128::from(*value)))),
+        BoundExpr::CaseWhen(condition, yes, no) => {
+            let truth = match eval_number(condition, batch, row)? {
+                Some(Number::Unsigned(value)) => value != 0,
+                Some(Number::Signed(value)) => value != 0,
+                Some(Number::Float(value)) => value != 0.0,
+                None => false,
+            };
+            eval_number(if truth { yes } else { no }, batch, row)
+        },
         BoundExpr::AffineColumn {
             index,
             constant,
