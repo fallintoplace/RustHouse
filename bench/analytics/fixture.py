@@ -55,13 +55,17 @@ def generate(directory, rows=10000, seed=42):
                            ", ".join(f"{name} {kind}" for name, _, kind in FIELDS) + ")")
         stream.write("\t".join(names) + "\n")
         batch = []
+        tsv_batch = []
         for record in records(rows, seed):
-            stream.write("\t".join(map(str, record)) + "\n")
+            tsv_batch.append("\t".join(map(str, record)) + "\n")
             batch.append(record)
             if len(batch) == 512:
+                stream.write("".join(tsv_batch))
+                tsv_batch.clear()
                 insert_batch(connection, batch)
                 batch.clear()
         if batch:
+            stream.write("".join(tsv_batch))
             insert_batch(connection, batch)
     (directory / "create.sql").write_text(
         "CREATE TABLE hits (" + ", ".join(f"{name} {kind}" for name, kind, _ in FIELDS) + ");\n",
