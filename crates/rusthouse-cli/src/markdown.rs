@@ -59,7 +59,7 @@ fn write_tsv_markdown_row<W: Write>(output: &mut W, line: &[u8], data_row: bool)
         output.write_all(b"|")?;
         for field in line.split(|&byte| byte == b'\t') {
             output.write_all(b" ")?;
-            write_cell(output, field)?;
+            write_markdown_cell(output, field)?;
             output.write_all(b" |")?;
         }
         return output.write_all(b"\n");
@@ -73,7 +73,7 @@ fn write_tsv_markdown_row<W: Write>(output: &mut W, line: &[u8], data_row: bool)
     output.write_all(b"|")?;
     for field in fields {
         output.write_all(b" ")?;
-        write_cell(output, field.as_ref())?;
+        write_markdown_cell(output, field.as_ref())?;
         output.write_all(b" |")?;
     }
     output.write_all(b"\n")
@@ -87,7 +87,7 @@ fn write_header_separator<W: Write>(output: &mut W, columns: usize) -> io::Resul
     output.write_all(b"\n")
 }
 
-fn write_cell<W: Write>(output: &mut W, field: &[u8]) -> io::Result<()> {
+fn write_markdown_cell<W: Write>(output: &mut W, field: &[u8]) -> io::Result<()> {
     let mut start = 0;
     for (index, &byte) in field.iter().enumerate() {
         let escape: Option<&[u8]> = match byte {
@@ -311,14 +311,14 @@ mod markdown_bulk_output_tests {
     #[test]
     fn writes_plain_markdown_cell_with_one_bulk_call() {
         let mut output = CountingWriter { calls: 0, bytes: 0 };
-        write_cell(&mut output, &vec![b'a'; 16 * 1024]).unwrap();
+        write_markdown_cell(&mut output, &vec![b'a'; 16 * 1024]).unwrap();
         assert_eq!(output.bytes, 16 * 1024);
         assert_eq!(output.calls, 1);
     }
     #[test]
     fn keeps_escaped_bytes_and_control_formatting() {
         let mut output = Vec::new();
-        write_cell(&mut output, b"abc|xyz<&>\r\x01").unwrap();
+        write_markdown_cell(&mut output, b"abc|xyz<&>\r\x01").unwrap();
         assert_eq!(output, b"abc\\|xyz&lt;&amp;&gt;&#13;&#1;");
     }
 }
