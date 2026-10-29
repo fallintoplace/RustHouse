@@ -764,7 +764,15 @@ fn parse_at_depth(parser: &mut Parser, depth: usize) -> Result<ConstantValue, Pa
             let input = text_arg(parser, depth + 1)?;
             require(parser, Token::RParen, "REVERSE requires one argument")?;
             match input {
-                Some(value) => ConstantValue::Text(value.chars().rev().collect()),
+                Some(value) => {
+                    if value.is_ascii() {
+                        let mut bytes = value.into_bytes();
+                        bytes.reverse();
+                        ConstantValue::Text(String::from_utf8(bytes).expect("ASCII remains UTF-8"))
+                    } else {
+                        ConstantValue::Text(value.chars().rev().collect())
+                    }
+                },
                 None => ConstantValue::Null,
             }
         }
