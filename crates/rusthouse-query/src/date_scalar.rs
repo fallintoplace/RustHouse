@@ -10,6 +10,7 @@ pub(super) fn is_function(name: &str) -> bool {
     matches!(
         name.to_ascii_uppercase().as_str(),
         "ADDDAYS"
+            | "TORELATIVEQUARTERNUM"
             | "DATEDIFF"
             | "DATE_DIFF"
             | "TIMEDIFF"
@@ -51,6 +52,12 @@ pub(super) fn parse_after_open(
     depth: usize,
 ) -> Result<ConstantValue, ParseError> {
     match name {
+        "TORELATIVEQUARTERNUM" => unary_date(parser, depth, |value| {
+            Ok(ConstantValue::Integer({
+                let (year, month, _) = civil_from_days(value.seconds.div_euclid(DAY_SECONDS));
+                (year - 1970) * 4 + i64::from((month - 1) / 3)
+            }))
+        }),
         "ADDDAYS" => offset_seconds(parser, depth, DAY_SECONDS, false, false),
         "SUBTRACTDAYS" => offset_seconds(parser, depth, DAY_SECONDS, true, false),
         "ADDWEEKS" => offset_seconds(parser, depth, 7 * DAY_SECONDS, false, false),
