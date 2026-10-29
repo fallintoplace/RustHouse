@@ -1865,6 +1865,34 @@ fn execute_numbers<W: Write>(
     Ok(())
 }
 
+/// Render the mean of two integral median ranks exactly, including
+/// half-integers and sums outside the representable 128-bit integer range.
+fn exact_median_pair(low: Number, high: Number) -> Option<String> {
+    match (low, high) {
+        (Number::Unsigned(low), Number::Unsigned(high)) => {
+            let carry = low % 2 + high % 2;
+            let value = low / 2 + high / 2 + carry / 2;
+            Some(if carry % 2 == 0 {
+                value.to_string()
+            } else {
+                format!("{value}.5")
+            })
+        }
+        (Number::Signed(low), Number::Signed(high)) => {
+            let carry = low.rem_euclid(2) + high.rem_euclid(2);
+            let value = low.div_euclid(2) + high.div_euclid(2) + carry / 2;
+            Some(if carry % 2 == 0 {
+                value.to_string()
+            } else if value < 0 {
+                format!("-{}.5", value.unsigned_abs() - 1)
+            } else {
+                format!("{value}.5")
+            })
+        }
+        _ => None,
+    }
+}
+
 struct AggregateState {
     function: AggregateFunction,
     value: Option<Number>,
@@ -2113,32 +2141,50 @@ impl AggregateState {
         number_matches(value, threshold, having.operator)
     }
 
-    fn median_number(&self) -> Option<Number> {
+    fn median_middle_pair(&self) -> Option<(Number, Option<Number>)> {
         if self.median_values.is_empty() {
             return None;
         }
-        // SELECT median from up to 100k analytical values in expected linear
-        // time instead of sorting the entire vector for every finalization.
+        // Select middle order statistics in expected linear time.
         let mut values = self.median_values.clone();
-        let odd = values.len() % 2 == 1;
         let middle = values.len() / 2;
-        let (lower, selected, _) = values.select_nth_unstable_by(middle, |left, right| {
-            compare_numbers(*left, *right)
+        let (lower, selected, _) = values.select_nth_unstable_by(middle, |a, b| {
+            compare_numbers(*a, *b)
         });
-        if odd {
-            return Some(*selected);
-        }
-        let previous = *lower.iter().max_by(|left, right| {
-            compare_numbers(**left, **right)
-        }).expect("even-length median has a lower element");
-        let as_float = |value: Number| match value {
-            Number::Unsigned(value) => value as f64,
-            Number::Signed(value) => value as f64,
-            Number::Float(value) => value,
+        let previous = if self.median_values.len() % 2 == 0 {
+            Some(*lower.iter().max_by(|a, b| {
+                compare_numbers(**a, **b)
+            }).expect("even median has a lower element"))
+        } else {
+            None
         };
-        Some(Number::Float(
-            as_float(previous) / 2.0 + as_float(*selected) / 2.0
-        ))
+        Some((*selected, previous))
+    }
+
+    fn median_number(&self) -> Option<Number> {
+        let (selected, previous) = self.median_middle_pair()?;
+        let Some(previous) = previous else { return Some(selected); };
+        let to_float = |value: Number| match value {
+            Number::Unsigned(n) => n as f64,
+            Number::Signed(n) => n as f64,
+            Number::Float(n) => n,
+        };
+        Some(Number::Float(to_float(previous) / 2.0 + to_float(selected) / 2.0))
+    }
+
+    fn median_text(&self) -> Option<String> {
+        let (selected, previous) = self.median_middle_pair()?;
+        match previous {
+            None => Some(selected.to_string()),
+            Some(previous) => {
+                if let Some(exact) = exact_median_pair(previous, selected) {
+                    Some(exact)
+                } else {
+                    // Floating-point medians retain the existing numeric path.
+                    self.median_number().map(|value| value.to_string())
+                }
+            }
+        }
     }
 
     /// Exact comparisons for grouped analytics, including statistical HAVING.
@@ -2225,9 +2271,8 @@ impl AggregateState {
                 _ => unreachable!("nonempty RANGE has both extrema"),
             },
             AggregateFunction::Median => self
-                .median_number()
-                .expect("nonempty median has a selected value")
-                .to_string(),
+                .median_text()
+                .expect("nonempty median has a selected value"),
             _ => self
                 .value
                 .map_or_else(String::new, |value| value.to_string()),
@@ -2375,6 +2420,31 @@ mod median_selection_tests {
                 state.update(value).unwrap();
             }
             assert_eq!(state.median_number().unwrap().to_string(), reference(values).to_string());
+        }
+    }
+}
+
+#[cfg(test)]
+mod exact_grouped_median_text_tests {
+    use super::*;
+
+    #[test]
+    fn renders_even_integral_medians_without_float_rounding() {
+        for (lower, higher, expected) in [
+            (Number::Unsigned(u128::MAX - 1), Number::Unsigned(u128::MAX),
+             format!("{}.5", u128::MAX - 1)),
+            (Number::Signed(i128::MIN), Number::Signed(i128::MIN),
+             i128::MIN.to_string()),
+            (Number::Signed(-3), Number::Signed(-2), "-2.5".into()),
+            (Number::Signed(-1), Number::Signed(0), "-0.5".into()),
+            (Number::Signed(i128::MAX), Number::Signed(i128::MAX),
+             i128::MAX.to_string()),
+        ] {
+            assert_eq!(exact_median_pair(lower, higher).unwrap(), expected);
+            let mut state = AggregateState::new(AggregateFunction::Median);
+            state.update(lower).unwrap();
+            state.update(higher).unwrap();
+            assert_eq!(state.render(), expected);
         }
     }
 }
