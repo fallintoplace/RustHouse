@@ -207,5 +207,14 @@ class AnalyticsRunnerTests(unittest.TestCase):
         rows = runner.run_benchmark(["invalid", "SELECT 1"], [0, 1], 1, 3, execute)
         self.assertEqual([row["status"] for row in rows], ["error", "unverified"])
 
+class AnalyticsWorkloadFileSizeTests(unittest.TestCase):
+    def test_rejects_oversized_sql_workload_before_parsing(self):
+        with tempfile.TemporaryDirectory() as root:
+            source = Path(root) / "queries.sql"
+            source.write_bytes(b"SELECT 1\n" * 20)
+            with mock.patch.object(runner, "MAX_QUERY_FILE_BYTES", 32):
+                with self.assertRaisesRegex(ValueError, "exceeds 4 MiB"):
+                    runner.load_queries(source)
+
 if __name__ == "__main__":
     unittest.main()
