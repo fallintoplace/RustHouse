@@ -197,8 +197,9 @@ pub fn inventory_snapshot_crc32c(
     max_files: usize,
     max_bytes: u64,
 ) -> Result<Vec<CheckedInventoryEntry>, PartError> {
-    let entries = inventory_snapshot(root, max_files, max_bytes)?;
+    // Bind enumeration and hashing to the same frozen generation path.
     let active = resolve_active_snapshot(root)?;
+    let entries = inventory_snapshot(&active, max_files, max_bytes)?;
     const PARALLEL_THRESHOLD: usize = 64;
     const MAX_HASH_WORKERS: usize = 4;
     let workers = std::thread::available_parallelism()
@@ -307,6 +308,38 @@ mod checksummed_inventory_tests {
         assert_eq!(count.bytes, expected.len() as u64);
         assert_eq!(count.crc32c, crate::distributed_crc32c::crc32c(&expected));
         assert!(inventory_snapshot_crc32c(&root, 1, 1_000_000).is_err());
+        fs::remove_dir_all(root).unwrap();
+    }
+}
+
+#[cfg(test)]
+mod pinned_inventory_tests {
+    use super::*;
+    use crate::{Column, write_wide_part};
+
+    #[test]
+    fn checksums_follow_one_selected_immutable_generation() {
+        let root = std::env::temp_dir().join(format!(
+            "rusthouse-pinned-inventory-{}",
+            std::process::id()
+        ));
+        let _ = fs::remove_dir_all(&root);
+        let versions = root.join(".rusthouse-versions");
+        for (generation, value) in [(1, "10"), (2, "20")] {
+            let dir = versions.join(format!("g{generation}"));
+            fs::create_dir_all(&dir).unwrap();
+            write_wide_part(
+                &dir.join("all_0_0_0"),
+                &[Column { name: "id".into(), data_type: "UInt64".into() }],
+                &[vec![Some(value.to_owned())]],
+            ).unwrap();
+        }
+        fs::write(root.join(".rusthouse-active"), "g1\n").unwrap();
+        let first = inventory_snapshot_crc32c(&root, 128, 1_000_000).unwrap();
+        fs::write(root.join(".rusthouse-active"), "g2\n").unwrap();
+        let second = inventory_snapshot_crc32c(&root, 128, 1_000_000).unwrap();
+        assert_eq!(first.len(), second.len());
+        assert_ne!(first, second);
         fs::remove_dir_all(root).unwrap();
     }
 }
