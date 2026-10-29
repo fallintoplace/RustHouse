@@ -1,6 +1,6 @@
 //! Bounded streaming CSV and TSV loaders for COPY FROM local files.
-use rusthouse_query::{CopyFormat, CopyFrom};
-use std::collections::HashSet;
+use rusthouse_query::{CopyFormat, CopyFrom, parse_json_each_row_fields};
+use std::collections::{HashMap, HashSet};
 use std::fs::File;
 use std::io::{BufRead, BufReader, Read};
 use std::path::Path;
@@ -386,11 +386,93 @@ fn run_csv(database: &Path, statement: &CopyFrom) -> Result<(), String> {
     crate::database::insert_stream(database, &statement.table, columns, || input.next_record())
 }
 
-pub(super) fn run(database: &Path, statement: &CopyFrom) -> Result<(), String> {
-    if matches!(statement.format, CopyFormat::Tsv | CopyFormat::Ssv) {
-        run_tsv(database, statement)
+/// Read ClickHouse JSONEachRow streams a line at a time. The strict JSON
+/// parser bounds nesting and field sizes, while this reader bounds line length.
+const MAX_JSONEACHROW_RECORD_BYTES: usize = 1024 * 1024;
+
+struct JsonEachRowRecords {
+    reader: BufReader<Box<dyn Read>>,
+    buffer: Vec<u8>,
+    first: bool,
+    column_indices: HashMap<String, usize>,
+    column_count: usize,
+}
+
+impl JsonEachRowRecords {
+    fn next_record(&mut self) -> Result<Option<Vec<Option<String>>>, String> {
+        loop {
+            self.buffer.clear();
+            let read = self.reader.by_ref()
+                .take((MAX_JSONEACHROW_RECORD_BYTES + 1) as u64)
+                .read_until(b'\n', &mut self.buffer)
+                .map_err(|error| format!("cannot read JSONEachRow record: {error}"))?;
+            if read == 0 {
+                return Ok(None);
+            }
+            if self.buffer.len() > MAX_JSONEACHROW_RECORD_BYTES {
+                return Err("JSONEachRow record exceeds 1 MiB".into());
+            }
+            let text = std::str::from_utf8(&self.buffer)
+                .map_err(|_| "JSONEachRow input must be UTF-8")?
+                .trim_end_matches(|ch| ch == '\n' || ch == '\r');
+            let text = if self.first {
+                text.strip_prefix('\u{feff}').unwrap_or(text)
+            } else {
+                text
+            };
+            self.first = false;
+            if text.starts_with('\u{feff}') {
+                return Err("JSONEachRow BOM is only allowed at the beginning".into());
+            }
+            if text.trim().is_empty() {
+                continue;
+            }
+            let fields = parse_json_each_row_fields(text)?;
+            let mut values = vec![None; self.column_count];
+            for (name, value) in fields {
+                let index = *self.column_indices.get(&name)
+                    .ok_or_else(|| format!("unknown JSONEachRow column: {name}"))?;
+                values[index] = value;
+            }
+            return Ok(Some(values));
+        }
+    }
+}
+
+fn run_json_each_row(database: &Path, statement: &CopyFrom) -> Result<(), String> {
+    let columns = if let Some(explicit) = statement.columns.clone() {
+        explicit
     } else {
-        run_csv(database, statement)
+        crate::catalog::read_schema(database, &statement.table)?
+            .into_iter().map(|column| column.name).collect()
+    };
+    let column_count = columns.len();
+    let mut column_indices = HashMap::with_capacity(column_count);
+    for (index, name) in columns.iter().enumerate() {
+        if column_indices.insert(name.clone(), index).is_some() {
+            return Err(format!("duplicate JSONEachRow column: {name}"));
+        }
+    }
+    let source: Box<dyn Read> = if statement.path == "-" {
+        Box::new(std::io::stdin())
+    } else {
+        Box::new(File::open(&statement.path)
+            .map_err(|error| format!("cannot open COPY file {}: {error}", statement.path))?)
+    };
+    let mut reader = JsonEachRowRecords {
+        reader: BufReader::new(source), buffer: Vec::new(),
+        first: true, column_indices, column_count,
+    };
+    crate::database::insert_stream(
+        database, &statement.table, Some(columns), || reader.next_record(),
+    )
+}
+
+pub(super) fn run(database: &Path, statement: &CopyFrom) -> Result<(), String> {
+    match statement.format {
+        CopyFormat::Tsv | CopyFormat::Ssv => run_tsv(database, statement),
+        CopyFormat::Csv => run_csv(database, statement),
+        CopyFormat::JsonEachRow => run_json_each_row(database, statement),
     }
 }
 

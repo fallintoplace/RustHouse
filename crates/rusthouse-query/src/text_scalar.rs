@@ -7,6 +7,11 @@ pub(super) fn is_function(name: &str) -> bool {
     super::date_scalar::is_function(name) || matches!(
         name.to_ascii_uppercase().as_str(),
         "CUTURLPARAMETER"
+            | "JSONEXTRACTBOOL"
+            | "IPV4NUMTOSTRING"
+            | "IPV4STRINGTONUM"
+            | "IPV4STRINGTONUMORNULL"
+            | "DECODEURLFORMCOMPONENT"
             | "LENGTH"
             | "TOYEAR"
             | "LENGTHUTF8"
@@ -303,6 +308,76 @@ fn parse_at_depth(parser: &mut Parser, depth: usize) -> Result<ConstantValue, Pa
     }
     let value = match name.as_str() {
 
+        "IPV4STRINGTONUMORNULL" => {
+            let input = text_arg(parser, depth + 1)?;
+            require(
+                parser,
+                Token::RParen,
+                "IPv4StringToNumOrNull requires one argument",
+            )?;
+            match input {
+                Some(input) => input
+                    .parse::<std::net::Ipv4Addr>()
+                    .ok()
+                    .map_or(ConstantValue::Null, |address| {
+                        ConstantValue::Integer(i64::from(u32::from(address)))
+                    }),
+                None => ConstantValue::Null,
+            }
+        }
+        "IPV4STRINGTONUM" => {
+            let input = text_arg(parser, depth + 1)?;
+            require(
+                parser,
+                Token::RParen,
+                "IPv4StringToNum requires one argument",
+            )?;
+            match input {
+                Some(input) => {
+                    let address = input.parse::<std::net::Ipv4Addr>().map_err(|_| {
+                        ParseError("IPv4StringToNum requires a valid IPv4 address".into())
+                    })?;
+                    ConstantValue::Integer(i64::from(u32::from(address)))
+                }
+                None => ConstantValue::Null,
+            }
+        }
+        "IPV4NUMTOSTRING" => {
+            let value = integer_arg(parser, depth + 1)?;
+            require(
+                parser,
+                Token::RParen,
+                "IPv4NumToString requires one argument",
+            )?;
+            match value {
+                Some(value) => {
+                    let value = u32::try_from(value).map_err(|_| {
+                        ParseError("IPv4NumToString requires a UInt32 integer".into())
+                    })?;
+                    ConstantValue::Text(std::net::Ipv4Addr::from(value).to_string())
+                }
+                None => ConstantValue::Null,
+            }
+        }
+        "JSONEXTRACTBOOL" => {
+            let input = text_arg(parser, depth + 1)?;
+            require(parser, Token::Comma, "JSONExtractBool requires a path")?;
+            let path = text_arg(parser, depth + 1)?;
+            require(
+                parser,
+                Token::RParen,
+                "JSONExtractBool requires two arguments",
+            )?;
+            match (input, path) {
+                (Some(input), Some(path)) => {
+                    let json = crate::json::parse_json(&input)
+                        .map_err(|error| ParseError(format!("invalid JSON: {error}")))?;
+                    let is_true = json.at_path(&path).is_some_and(|value| value.raw() == "true");
+                    ConstantValue::Integer(i64::from(is_true))
+                }
+                _ => ConstantValue::Null,
+            }
+        }
         "CUTURLPARAMETER" => {
             let input = text_arg(parser, depth + 1)?;
             require(
@@ -2824,7 +2899,7 @@ fn parse_at_depth(parser: &mut Parser, depth: usize) -> Result<ConstantValue, Pa
                 _ => ConstantValue::Null,
             }
         }
-        "URL_DECODE" | "DECODEURLCOMPONENT" => {
+        "URL_DECODE" | "DECODEURLCOMPONENT" | "DECODEURLFORMCOMPONENT" => {
             let input = text_arg(parser, depth + 1)?;
             require(parser, Token::RParen, "URL_DECODE requires one argument")?;
             match input {
@@ -2848,7 +2923,13 @@ fn parse_at_depth(parser: &mut Parser, depth: usize) -> Result<ConstantValue, Pa
                             result.push(byte);
                             index += 3;
                         } else {
-                            result.push(source[index]);
+                            result.push(if source[index] == b'+'
+                                && name == "DECODEURLFORMCOMPONENT"
+                            {
+                                b' '
+                            } else {
+                                source[index]
+                            });
                             index += 1;
                         }
                     }
@@ -3619,6 +3700,146 @@ mod ch_position_byte_tests {
         for sql in ["SELECT position('abc')", "SELECT position('abc','a','x')"] {
             assert!(parse_select(sql).is_err(), "{sql}");
         }
+    }
+}
+
+#[cfg(test)]
+mod clickhouse_decode_url_form_tests {
+    use crate::{parse_select, ConstantValue, Projection};
+
+    #[test]
+    fn decodes_plus_and_percent_escaped_form_components() {
+        for (sql, expected) in [
+            ("SELECT decodeURLFormComponent('hello+world')", "hello world"),
+            ("SELECT decodeURLFormComponent('x%2By+z')", "x+y z"),
+            ("SELECT decodeURLFormComponent('a%20b')", "a b"),
+            ("SELECT decodeURLFormComponent('')", ""),
+        ] {
+            assert!(
+                matches!(parse_select(sql).unwrap().projection, Projection::Constants(values)
+                    if values.len() == 1
+                        && values[0].value == ConstantValue::Text(expected.into())),
+                "{sql}",
+            );
+        }
+        for sql in [
+            "SELECT decodeURLFormComponent('%GG')",
+            "SELECT decodeURLFormComponent('%')",
+            "SELECT decodeURLFormComponent('x', 'y')",
+        ] {
+            assert!(parse_select(sql).is_err(), "{sql}");
+        }
+    }
+}
+
+#[cfg(test)]
+mod clickhouse_ipv4_to_num_or_null_tests {
+    use crate::{parse_select, ConstantValue, Projection};
+
+    #[test]
+    fn valid_ipv4_is_numeric_and_invalid_input_is_null() {
+        for (sql, expected) in [
+            ("SELECT IPv4StringToNumOrNull('192.168.0.1')", 3232235521),
+            ("SELECT IPv4StringToNumOrNull('0.0.0.0')", 0),
+        ] {
+            assert!(
+                matches!(parse_select(sql).unwrap().projection, Projection::Constants(values)
+                    if values.len() == 1
+                        && values[0].value == ConstantValue::Integer(expected)),
+                "{sql}",
+            );
+        }
+        for sql in [
+            "SELECT IPv4StringToNumOrNull('invalid')",
+            "SELECT IPv4StringToNumOrNull(NULL)",
+        ] {
+            assert!(
+                matches!(parse_select(sql).unwrap().projection, Projection::Constants(values)
+                    if values.len() == 1 && values[0].value == ConstantValue::Null),
+                "{sql}",
+            );
+        }
+        assert!(parse_select("SELECT IPv4StringToNumOrNull('x', 'y')").is_err());
+    }
+}
+
+#[cfg(test)]
+mod clickhouse_ipv4_string_to_num_tests {
+    use crate::{parse_select, ConstantValue, Projection};
+
+    #[test]
+    fn converts_ipv4_to_network_order_integer() {
+        for (sql, expected) in [
+            ("SELECT IPv4StringToNum('0.0.0.0')", 0),
+            ("SELECT IPv4StringToNum('192.168.0.1')", 3232235521),
+            ("SELECT IPv4StringToNum('255.255.255.255')", 4294967295),
+        ] {
+            assert!(
+                matches!(parse_select(sql).unwrap().projection, Projection::Constants(values)
+                    if values.len() == 1
+                        && values[0].value == ConstantValue::Integer(expected)),
+                "{sql}",
+            );
+        }
+        for sql in [
+            "SELECT IPv4StringToNum('256.1.2.3')",
+            "SELECT IPv4StringToNum('1.2.3')",
+            "SELECT IPv4StringToNum('1.2.3.4', 'x')",
+        ] {
+            assert!(parse_select(sql).is_err(), "{sql}");
+        }
+    }
+}
+
+#[cfg(test)]
+mod clickhouse_ipv4_num_to_string_tests {
+    use crate::{parse_select, ConstantValue, Projection};
+
+    #[test]
+    fn formats_network_order_ipv4_integers() {
+        for (sql, expected) in [
+            ("SELECT IPv4NumToString(0)", "0.0.0.0"),
+            ("SELECT IPv4NumToString(3232235521)", "192.168.0.1"),
+            ("SELECT IPv4NumToString(4294967295)", "255.255.255.255"),
+        ] {
+            assert!(
+                matches!(parse_select(sql).unwrap().projection, Projection::Constants(values)
+                    if values.len() == 1
+                        && values[0].value == ConstantValue::Text(expected.into())),
+                "{sql}",
+            );
+        }
+        for sql in [
+            "SELECT IPv4NumToString(-1)",
+            "SELECT IPv4NumToString(4294967296)",
+            "SELECT IPv4NumToString(1, 2)",
+        ] {
+            assert!(parse_select(sql).is_err(), "{sql}");
+        }
+    }
+}
+
+#[cfg(test)]
+mod clickhouse_json_extract_bool_tests {
+    use crate::{parse_select, ConstantValue, Projection};
+
+    #[test]
+    fn reads_boolean_paths_and_defaults_nonbooleans_to_zero() {
+        for (sql, expected) in [
+            (r#"SELECT JSONExtractBool('{"x":true}', 'x')"#, 1),
+            (r#"SELECT JSONExtractBool('{"x":false}', 'x')"#, 0),
+            (r#"SELECT JSONExtractBool('{"x":1}', 'x')"#, 0),
+            (r#"SELECT JSONExtractBool('{"x":{"y":true}}', 'x.y')"#, 1),
+            (r#"SELECT JSONExtractBool('{"x":true}', 'missing')"#, 0),
+        ] {
+            assert!(
+                matches!(parse_select(sql).unwrap().projection, Projection::Constants(values)
+                    if values.len() == 1
+                        && values[0].value == ConstantValue::Integer(expected)),
+                "{sql}",
+            );
+        }
+        assert!(parse_select("SELECT JSONExtractBool('not-json', 'x')").is_err());
     }
 }
 

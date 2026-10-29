@@ -11,6 +11,7 @@ import math
 import os
 import re
 import subprocess
+import tempfile
 import time
 from pathlib import Path
 
@@ -62,22 +63,31 @@ def export(binary, database, table, output, start, rows, page_rows=8192, timeout
             not isinstance(expected_sha256, str)
             or not re.fullmatch(r"[0-9a-f]{64}", expected_sha256)):
         raise ValueError("expected_sha256 must be lowercase SHA256")
+    identifier(table)
+    identifier(column)
     output = Path(output)
-    if output.exists():
+    if output.exists() or output.is_symlink():
         raise ValueError("refusing to overwrite an existing export")
     execute = execute or (lambda statement: query(binary, database, statement, timeout))
-    temporary = output.with_name("." + output.name + f".{os.getpid()}.pending")
+    temporary = None
     digest = hashlib.sha256()
     pages = 0
     started = time.monotonic()
     try:
-        with temporary.open("xb") as sink:
+        with tempfile.NamedTemporaryFile(
+            mode="w+b", dir=output.parent, prefix=f".{output.name}.",
+            suffix=".pending", delete=False,
+        ) as sink:
+            temporary = Path(sink.name)
             for first in range(start, start + rows, page_rows):
                 if (max_total_seconds is not None
                         and time.monotonic() - started > max_total_seconds):
                     raise TimeoutError("total export deadline exceeded")
                 count = min(page_rows, start + rows - first)
                 data = execute(page_sql(table, column, first, count))
+                if (max_total_seconds is not None
+                        and time.monotonic() - started > max_total_seconds):
+                    raise TimeoutError("total export deadline exceeded")
                 # Compare the complete expected page in one operation.
                 # Avoid one Python bytes allocation and one splitline per ID.
                 expected = "".join(f"{number}\n" for number in
@@ -91,11 +101,12 @@ def export(binary, database, table, output, start, rows, page_rows=8192, timeout
             os.fsync(sink.fileno())
         if expected_sha256 is not None and digest.hexdigest() != expected_sha256:
             raise ValueError("keyset export SHA256 differs from expected_sha256")
-        if output.exists():
+        if output.exists() or output.is_symlink():
             raise ValueError("refusing to overwrite an existing export")
         os.link(temporary, output)
     finally:
-        temporary.unlink(missing_ok=True)
+        if temporary is not None:
+            temporary.unlink(missing_ok=True)
     return {"rows": rows, "pages": pages, "start": start,
             "sha256": digest.hexdigest(), "verified_sha256": expected_sha256 is not None,
             "output": str(output)}

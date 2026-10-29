@@ -30,6 +30,14 @@ class PhysicalScanReferenceTests(unittest.TestCase):
                 with self.assertRaises(ValueError):
                     benchmark("unused", rows, runs, warmups, timeout)
 
+    def test_rejects_unbounded_query_iterations_before_loading_data(self):
+        for runs, warmups in ((1001, 0), (1, 1000), (1000, 1)):
+            with self.subTest(runs=runs, warmups=warmups):
+                with self.assertRaisesRegex(ValueError, "1..1000"):
+                    benchmark("no-binary", 1_000_000_000, runs, warmups, 1)
+        with self.assertRaisesRegex(ValueError, "run counts"):
+            benchmark("no-binary", 100, True, 0, 1)
+
     def test_nearest_rank_p90(self):
         self.assertEqual(p90([4.0, 1.0, 2.0, 3.0, 5.0]), 5.0)
         self.assertEqual(p90([10.0]), 10.0)

@@ -45,7 +45,9 @@ def run_sweep(binary, part, rows, *, samples=3, timeout=600,
                 raise ValueError(f"threshold {threshold}: result differs from sequential-id oracle")
             durations.append(elapsed)
         results.append({"threshold": threshold, "expected_count": rows - threshold,
+                        "selectivity_percent": round(100 * (rows - threshold) / rows, 6),
                         "median_seconds": statistics.median(durations),
+                        "p95_seconds": sorted(durations)[math.ceil(0.95 * len(durations)) - 1],
                         "samples_seconds": durations, "verified": True})
     return {"workload": "physical-selectivity-sweep", "rows_assumed": rows,
             "assumption": "id is exactly 0..rows-1", "steps": steps,

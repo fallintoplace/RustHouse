@@ -22,6 +22,7 @@ from bench.tpch.canonical_integrity import verify as verify_canonical_sql
 ENGINES = ("rusthouse", "clickhouse")
 ABBA = ("rusthouse", "clickhouse", "clickhouse", "rusthouse")
 BAAB = ("clickhouse", "rusthouse", "rusthouse", "clickhouse")
+MAX_REFERENCE_BYTES = 16 * 1024 * 1024
 
 
 def command(engine, binary, database, sql):
@@ -109,7 +110,16 @@ def compare(binary, database, clickhouse_binary, clickhouse_database,
             record["error"] = f"missing reference: {ref_path}"
             results.append(record)
             continue
-        reference = ref_path.read_bytes()
+        if ref_path.is_symlink() or ref_path.stat().st_size > MAX_REFERENCE_BYTES:
+            record["error"] = "unsafe or oversized reference TSV"
+            results.append(record)
+            continue
+        with ref_path.open("rb") as source:
+            reference = source.read(MAX_REFERENCE_BYTES + 1)
+        if len(reference) > MAX_REFERENCE_BYTES:
+            record["error"] = "reference exceeds byte limit"
+            results.append(record)
+            continue
         record["reference_sha256"] = hashlib.sha256(reference).hexdigest()
 
         def execute(engine, statement):

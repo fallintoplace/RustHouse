@@ -4,6 +4,7 @@
 This is a synthetic compatibility smoke test, not an official TPC-H score.
 """
 import argparse
+import math
 import sys
 import tempfile
 from pathlib import Path
@@ -15,8 +16,12 @@ from run import benchmark_one, summarize_coverage
 
 
 def run_smoke(binary, rows=1000, seed=42, runs=3, warmups=1, timeout=120, execute=None):
-    if rows < 1 or runs < 1 or warmups < 0 or timeout <= 0:
-        raise ValueError("rows and runs must be positive; warmups must be nonnegative")
+    if (type(rows) is not int or type(seed) is not int
+            or type(runs) is not int or type(warmups) is not int
+            or rows < 1 or runs < 1 or warmups < 0
+            or type(timeout) not in (int, float)
+            or not math.isfinite(timeout) or timeout <= 0):
+        raise ValueError("rows and runs must be positive integers; warmups nonnegative; timeout finite")
     with tempfile.TemporaryDirectory(prefix="rusthouse-tpch-q6-") as directory:
         root = Path(directory)
         fixture = generate(root, rows, seed)
