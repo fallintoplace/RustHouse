@@ -508,7 +508,10 @@ pub(super) fn compact_table(database: &Path, table: &str) -> Result<(), String> 
     let mut reader = TypedQueryReader::open(&source, &names).map_err(|error| error.to_string())?;
     let mut scanned = 0u64;
     publish_snapshot_with(database, table, |staging| {
-        let mut buffer = Vec::with_capacity(PART_ROWS);
+        // Keep the existing 4 MiB row-byte ceiling, but allow narrow rows
+        // to fill the writer's 262,144-row part limit. This reduces the part
+        // count for large numeric tables without increasing retained bytes.
+        let mut buffer = Vec::with_capacity(STREAMED_PART_ROWS);
         let mut buffered_bytes = 0usize;
         let mut part_number = 0u64;
         let mut flush =
@@ -540,7 +543,7 @@ pub(super) fn compact_table(database: &Path, table: &str) -> Result<(), String> 
                         .ok_or_else(|| "compaction row size overflow".to_string())
                 })?;
                 if !buffer.is_empty()
-                    && (buffer.len() >= PART_ROWS
+                    && (buffer.len() >= STREAMED_PART_ROWS
                         || buffered_bytes
                             .checked_add(row_bytes)
                             .is_none_or(|bytes| bytes > MAX_PART_BUFFER_BYTES))
