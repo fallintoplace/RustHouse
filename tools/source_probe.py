@@ -8,6 +8,9 @@ from urllib.parse import quote, urlsplit
 from urllib.request import urlopen
 
 
+MAX_RESPONSE_BYTES = 1_048_576
+
+
 def verify_origin(value):
     parsed = urlsplit(value)
     if (parsed.scheme != "http" or parsed.hostname not in ("localhost", "127.0.0.1")
@@ -19,8 +22,8 @@ def verify_origin(value):
 
 def read_json(url, timeout):
     with urlopen(url, timeout=timeout) as reply:
-        payload = reply.read(1_048_577)
-    if len(payload) > 1_048_576:
+        payload = reply.read(MAX_RESPONSE_BYTES + 1)
+    if len(payload) > MAX_RESPONSE_BYTES:
         raise ValueError("response exceeds 1 MiB")
     return json.loads(payload)
 
