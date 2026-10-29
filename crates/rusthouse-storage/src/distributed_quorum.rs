@@ -68,13 +68,30 @@ impl QuorumPolicy {
         if members.len() != self.replicas || acknowledgements.len() > 256 {
             return Err("quorum membership or acknowledgement count mismatch");
         }
-        let membership = member_index(members)?;
         let mut acknowledgement_mask = 0u16;
-        for &replica in acknowledgements {
-            let Some(&index) = membership.get(replica) else {
-                return Err("acknowledgement from unknown replica");
-            };
-            acknowledgement_mask |= 1u16 << index;
+        if members.len() <= 8 {
+            // Small replication groups are the common case. A short borrowed
+            // lookup avoids allocating and hashing a temporary member map.
+            for (index, &member) in members.iter().enumerate() {
+                if !valid_member(member) || members[..index].contains(&member) {
+                    return Err("invalid or duplicate quorum member");
+                }
+            }
+            for &replica in acknowledgements {
+                let index = members
+                    .iter()
+                    .position(|&member| member == replica)
+                    .ok_or("acknowledgement from unknown replica")?;
+                acknowledgement_mask |= 1u16 << index;
+            }
+        } else {
+            let membership = member_index(members)?;
+            for &replica in acknowledgements {
+                let Some(&index) = membership.get(replica) else {
+                    return Err("acknowledgement from unknown replica");
+                };
+                acknowledgement_mask |= 1u16 << index;
+            }
         }
         let distinct_acks = acknowledgement_mask.count_ones() as usize;
         Ok(QuorumObservation {
@@ -152,6 +169,26 @@ mod tests {
         assert!(policy.observe(&["a", "b"], &["a"]).is_err());
         assert!(policy.observe(&["a", "b", ""], &["a"]).is_err());
         assert!(policy.observe(&members, &vec!["a"; 257]).is_err());
+    }
+
+    #[test]
+    fn small_and_large_memberships_count_votes_without_duplicates() {
+        for replicas in [1usize, 2, 3, 5, 8, 9, 16] {
+            let names = (0..replicas).map(|index| format!("node_{index}")).collect::<Vec<_>>();
+            let members = names.iter().map(String::as_str).collect::<Vec<_>>();
+            let policy = QuorumPolicy::new(replicas, 1, replicas).unwrap();
+            let all = policy.observe(&members, &members).unwrap();
+            assert_eq!(all.distinct_acks, replicas);
+            assert!(all.can_read && all.can_write);
+            let repeated = vec![members[0]; 256];
+            assert_eq!(policy.observe(&members, &repeated).unwrap().distinct_acks, 1);
+            assert!(policy.observe(&members, &["missing"]).is_err());
+            let mut duplicates = members.clone();
+            if replicas > 1 {
+                duplicates[replicas - 1] = duplicates[0];
+                assert!(policy.observe(&duplicates, &[]).is_err());
+            }
+        }
     }
 
     #[test]

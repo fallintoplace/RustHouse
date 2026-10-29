@@ -80,16 +80,18 @@ impl ObjectKey {
     /// Reject noncanonical generation spellings and path traversal.
     pub fn parse_relative(path: &std::path::Path) -> Result<Self, &'static str> {
         use std::path::Component;
-        let segments = path.components().collect::<Vec<_>>();
-        if segments.len() != 5 {
-            return Err("distributed object key must have five components");
-        }
+        // Path components borrow the original Path. Keep the five fields on
+        // the stack instead of allocating a Vec for each replicated object.
+        let mut segments = path.components();
         let mut fields = [""; 5];
-        for (index, segment) in segments.into_iter().enumerate() {
-            let Component::Normal(value) = segment else {
-                return Err("distributed object key must be relative");
+        for field in &mut fields {
+            let Some(Component::Normal(value)) = segments.next() else {
+                return Err("distributed object key must have five relative components");
             };
-            fields[index] = value.to_str().ok_or("non-UTF8 distributed object key")?;
+            *field = value.to_str().ok_or("non-UTF8 distributed object key")?;
+        }
+        if segments.next().is_some() {
+            return Err("distributed object key must have five components");
         }
         let generation_text = fields[2]
             .strip_prefix('g')
@@ -174,6 +176,22 @@ mod parse_relative_tests {
         assert!(ObjectKey::parse_relative(
             std::path::Path::new("cluster/shard_1/g1/part_10/data.bin")
         ).is_ok());
+    }
+
+    #[test]
+    fn component_iterator_requires_exactly_five_safe_components() {
+        let valid = std::path::Path::new("prod/shard_4/g432/part_1/data.bin");
+        let key = ObjectKey::parse_relative(valid).unwrap();
+        assert_eq!(key.generation(), 432);
+        for invalid in [
+            "prod/shard_4/g432/part_1",
+            "prod/shard_4/g432/part_1/data.bin/extra",
+            "prod/shard_4/g432/part_1/../data.bin",
+            "/prod/shard_4/g432/part_1/data.bin",
+            "prod/shard_4/g0432/part_1/data.bin",
+        ] {
+            assert!(ObjectKey::parse_relative(std::path::Path::new(invalid)).is_err(), "{invalid}");
+        }
     }
 
     #[test]

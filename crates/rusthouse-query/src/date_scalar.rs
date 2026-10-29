@@ -14,6 +14,10 @@ pub(super) fn is_function(name: &str) -> bool {
             | "DATE_DIFF"
             | "TIMEDIFF"
             | "FROMDAYSSINCEYEARZERO32"
+            | "FROMDAYSSINCEYEARZERO"
+            | "FROM_DAYS"
+            | "TODAYSSINCEYEARZERO"
+            | "TO_DAYS"
             | "TOISOYEAR"
             | "TOISOWEEK"
             | "TOUNIXTIMESTAMP64NANO"
@@ -258,6 +262,27 @@ pub(super) fn parse_after_open(
                 }
             }
         },
+        "FROMDAYSSINCEYEARZERO" | "FROM_DAYS" => {
+            let days = super::text_scalar::integer_arg(parser, depth + 1)?;
+            if !parser.take(Token::RParen) {
+                return Err(ParseError("fromDaysSinceYearZero requires one argument".into()));
+            }
+            match days {
+                None => Ok(ConstantValue::Null),
+                Some(days) => {
+                    if !(719_528..=785_063).contains(&days) {
+                        return Err(ParseError("Date day count is outside 1970..2149".into()));
+                    }
+                    let unix_days = days - 719_528;
+                    let seconds = unix_days * DAY_SECONDS;
+                    Ok(ConstantValue::Text(Temporal::render(seconds, false)?))
+                }
+            }
+        },
+        "TODAYSSINCEYEARZERO" | "TO_DAYS" => unary_date(parser, depth, |value| {
+            let unix_days = value.seconds.div_euclid(DAY_SECONDS);
+            Ok(ConstantValue::Integer(unix_days + 719_528))
+        }),
         "TIMEDIFF" => time_difference(parser, depth),
         _ => Err(ParseError(format!("unsupported date function: {name}"))),
     }
