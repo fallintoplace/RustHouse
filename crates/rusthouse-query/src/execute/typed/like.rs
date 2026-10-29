@@ -192,6 +192,11 @@ pub(super) fn like_matches(value: &[u8], pattern: &LikePattern, case_insensitive
             if bytes.is_empty() {
                 return true;
             }
+            if value.len() < bytes.len()
+                && (!case_insensitive || (value.is_ascii() && bytes.is_ascii()))
+            {
+                return false;
+            }
             // ASCII-only ILIKE can search borrowed bytes directly, without
             // decoding or allocating a Unicode-folded copy of every row.
             if case_insensitive && value.is_ascii() && bytes.is_ascii() {
