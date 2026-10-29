@@ -57,8 +57,8 @@ pub(super) fn write_json_string<W: Write>(writer: &mut W, value: &str) -> io::Re
     let bytes = value.as_bytes();
     // Plain UTF-8 fields are copied without transformation.
     if !bytes.iter().any(|&byte| byte < 0x20 || byte == b'"' || byte == b'\\') {
-        if bytes.len() <= 256 {
-            let mut quoted = [0u8; 258];
+        if bytes.len() <= 1024 {
+            let mut quoted = [0u8; 1026];
             quoted[0] = b'"';
             quoted[1..bytes.len() + 1].copy_from_slice(bytes);
             quoted[bytes.len() + 1] = b'"';
