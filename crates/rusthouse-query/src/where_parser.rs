@@ -41,7 +41,89 @@ fn combine_and(left: Branches, right: Branches) -> Result<Branches, ParseError> 
     Ok(result)
 }
 
+fn inverse(predicate: &Predicate) -> Branches {
+    let opposite = match predicate {
+        Predicate::Comparison { column, operator, value } => {
+            let operator = match operator {
+                Operator::Eq => Operator::Ne,
+                Operator::Ne => Operator::Eq,
+                Operator::Lt => Operator::Ge,
+                Operator::Le => Operator::Gt,
+                Operator::Gt => Operator::Le,
+                Operator::Ge => Operator::Lt,
+                Operator::Modulo(n) => Operator::ModuloNe(*n),
+                Operator::ModuloNe(n) => Operator::Modulo(*n),
+            };
+            Predicate::Comparison {
+                column: column.clone(), operator, value: value.clone(),
+            }
+        }
+        Predicate::In { column, values } => Predicate::NotIn {
+            column: column.clone(), values: values.clone(),
+        },
+        Predicate::NotIn { column, values } => Predicate::In {
+            column: column.clone(), values: values.clone(),
+        },
+        Predicate::IsNull { column, negated } => Predicate::IsNull {
+            column: column.clone(), negated: !*negated,
+        },
+        Predicate::DistinctFrom { column, value, negated } => Predicate::DistinctFrom {
+            column: column.clone(), value: value.clone(), negated: !*negated,
+        },
+        Predicate::Like { column, pattern, case_insensitive, negated } => Predicate::Like {
+            column: column.clone(), pattern: pattern.clone(),
+            case_insensitive: *case_insensitive, negated: !*negated,
+        },
+        Predicate::NotBetween { column, lower, upper } => {
+            return vec![vec![
+                Predicate::Comparison {
+                    column: column.clone(), operator: Operator::Ge, value: lower.clone(),
+                },
+                Predicate::Comparison {
+                    column: column.clone(), operator: Operator::Le, value: upper.clone(),
+                },
+            ]];
+        }
+    };
+    vec![vec![opposite]]
+}
+
+/// Apply De Morgan's laws to the existing bounded OR-of-AND representation.
+/// No unbounded AST or exponential predicate expansion is allowed.
+fn negate(branches: Branches) -> Result<Branches, ParseError> {
+    let mut inverted = vec![vec![]];
+    for conjunction in branches {
+        let mut alternatives = Vec::new();
+        for atom in conjunction {
+            alternatives.extend(inverse(&atom));
+        }
+        if alternatives.is_empty() {
+            // NOT(TRUE) is FALSE, which cannot match any row.
+            return Ok(Vec::new());
+        }
+        inverted = combine_and(inverted, alternatives)?;
+    }
+    check_expansion(&inverted)?;
+    Ok(inverted)
+}
+
 fn parse_atom(parser: &mut Parser, conditions: &mut usize, depth: usize) -> Result<Branches, ParseError> {
+    // Parenthesized negations are different from NOT applied to one predicate:
+    // invert every AND/OR branch using De Morgan's laws before execution.
+    if parser.keyword("NOT") {
+        if parser.take(Token::LParen) {
+            if depth >= MAX_DEPTH {
+                return Err(ParseError("WHERE has too many nested parentheses".into()));
+            }
+            let expression = parse_or(parser, conditions, depth + 1)?;
+            if !parser.take(Token::RParen) {
+                return Err(ParseError("NOT group requires closing ')'".into()));
+            }
+            return negate(expression);
+        }
+        // Reuse existing NOT IN, NOT BETWEEN, NOT LIKE and comparison parsing.
+        parser.index -= 1;
+    }
     if parser.take(Token::LParen) {
         if depth >= MAX_DEPTH {
             return Err(ParseError("WHERE has too many nested parentheses".into()));
@@ -229,6 +311,29 @@ mod tests {
             run("SELECT number FROM numbers(8) WHERE number BETWEEN 1 AND 5 AND (number = 2 OR number = 4) ORDER BY number"),
             "number\n2\n4\n"
         );
+    }
+
+    #[test]
+    fn not_group_distributes_over_or_and_between_predicates() {
+        assert_eq!(
+            run("SELECT number FROM numbers(7) WHERE NOT (number = 1 OR number BETWEEN 3 AND 5) ORDER BY number"),
+            "number\n0\n2\n6\n",
+        );
+        assert_eq!(
+            run("SELECT number FROM numbers(7) WHERE NOT (number = 1 AND number < 2) ORDER BY number"),
+            "number\n0\n2\n3\n4\n5\n6\n",
+        );
+    }
+
+    #[test]
+    fn not_group_handles_nested_groups_and_modulo() {
+        assert_eq!(
+            run("SELECT number FROM numbers(8) WHERE NOT (number % 2 = 0 OR (number > 5 AND number < 7)) ORDER BY number"),
+            "number\n1\n3\n5\n7\n",
+        );
+        assert!(parse_select(
+            "SELECT number FROM numbers(8) WHERE NOT (number = 1"
+        ).is_err());
     }
 
     #[test]
