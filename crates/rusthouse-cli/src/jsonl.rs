@@ -79,6 +79,10 @@ fn parse_headers(line: &[u8]) -> io::Result<Vec<Vec<u8>>> {
     Ok(headers)
 }
 
+fn jsonl_row_width_error() -> io::Error {
+    io::Error::new(io::ErrorKind::InvalidData, "JSONL row does not match header column count")
+}
+
 fn write_json_row_into<W: Write>(
     output: &mut W,
     headers: &[Vec<u8>],
@@ -92,12 +96,7 @@ fn write_json_row_into<W: Write>(
     row.reserve(line.len() + headers.len() * 8 + 3);
     row.write_all(b"{")?;
     for (index, header) in headers.iter().enumerate() {
-        let value = fields.next().ok_or_else(|| {
-            io::Error::new(
-                io::ErrorKind::InvalidData,
-                "JSONL row does not match header column count",
-            )
-        })?;
+        let value = fields.next().ok_or_else(jsonl_row_width_error)?;
         if index > 0 {
             row.write_all(b",")?;
         }
@@ -106,10 +105,7 @@ fn write_json_row_into<W: Write>(
         write_json_value(&mut *row, value)?;
     }
     if fields.next().is_some() {
-        return Err(io::Error::new(
-            io::ErrorKind::InvalidData,
-            "JSONL row does not match header column count",
-        ));
+        return Err(jsonl_row_width_error());
     }
     row.write_all(b"}\n")?;
     output.write_all(row)
