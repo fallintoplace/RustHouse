@@ -1,4 +1,27 @@
 use super::*;
+    #[test]
+    fn multi_join_text_probes_reuse_string_buffers() {
+        let row = [typed::Cell::Text(b"long-string-key".to_vec())];
+        let mut key = Vec::new();
+        assert!(row_key_into(&row, &[0], &mut key));
+        let (pointer, capacity) = match &key[0] {
+            typed::Key::Text(bytes) => (bytes.as_ptr(), bytes.capacity()),
+            _ => panic!("expected a text key"),
+        };
+        for payload in [b"short".as_slice(), b"long-string-key".as_slice()] {
+            let row = [typed::Cell::Text(payload.to_vec())];
+            assert!(row_key_into(&row, &[0], &mut key));
+            match &key[0] {
+                typed::Key::Text(bytes) => {
+                    assert_eq!(bytes.as_slice(), payload);
+                    assert_eq!(bytes.as_ptr(), pointer);
+                    assert_eq!(bytes.capacity(), capacity);
+                }
+                _ => panic!("expected a text key"),
+            }
+        }
+    }
+
 
 pub(super) fn base_type(value: &str) -> &str {
     value
