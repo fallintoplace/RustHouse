@@ -29,6 +29,11 @@ class SelectivitySweepTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "differs"):
             run_sweep("rusthouse", "frozen", 10, execute=execute)
 
+    def test_rejects_unbounded_sweep_samples(self):
+        from bench.scale.selectivity_sweep import run_sweep
+        with self.assertRaisesRegex(ValueError, "samples"):
+            run_sweep("rusthouse", "part", 1_000_000_000, samples=129)
+
 
 if __name__ == "__main__":
     unittest.main()
