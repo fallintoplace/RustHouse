@@ -6,6 +6,7 @@ use rusthouse_storage::TypedColumn;
 
 const PRECISION: u32 = 14;
 const REGISTERS: usize = 1 << PRECISION;
+const MAX_REGISTER_RANK: u8 = (64 - PRECISION + 1) as u8;
 
 pub(super) struct HyperLogLog {
     registers: Box<[u8; REGISTERS]>,
@@ -39,7 +40,7 @@ impl HyperLogLog {
         // A zero suffix has rank 64 - PRECISION + 1, not 65.
         // Keep every emitted register valid for strict shard-state decoding.
         let rank = ((hash << PRECISION).leading_zeros() + 1)
-            .min(64 - PRECISION + 1) as u8;
+            .min(u32::from(MAX_REGISTER_RANK)) as u8;
         self.registers[index] = self.registers[index].max(rank);
     }
 
@@ -111,7 +112,7 @@ impl HyperLogLog {
             let high = digit(bytes[0]).ok_or("invalid HLL hex state")?;
             let low = digit(bytes[1]).ok_or("invalid HLL hex state")?;
             let register = (high << 4) | low;
-            if register > 51 {
+            if register > MAX_REGISTER_RANK {
                 return Err("invalid HLL register rank".into());
             }
             state.registers[index] = register;
