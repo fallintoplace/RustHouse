@@ -17,6 +17,7 @@ pub enum ScalarExpr {
     Between(Box<ScalarExpr>, Box<ScalarExpr>, Box<ScalarExpr>, bool),
     In(Box<ScalarExpr>, Vec<ScalarExpr>, bool),
     Coalesce(Vec<ScalarExpr>),
+    NullIf(Box<ScalarExpr>, Box<ScalarExpr>),
     Add(Box<ScalarExpr>, Box<ScalarExpr>),
     Subtract(Box<ScalarExpr>, Box<ScalarExpr>),
     Multiply(Box<ScalarExpr>, Box<ScalarExpr>),
@@ -64,7 +65,8 @@ impl ScalarExpr {
                 yes.collect_referenced_columns(out, seen);
                 no.collect_referenced_columns(out, seen);
             }
-            Self::Add(left, right)
+            Self::NullIf(left, right)
+            | Self::Add(left, right)
             | Self::Subtract(left, right)
             | Self::Multiply(left, right)
             | Self::Divide(left, right)
@@ -378,6 +380,14 @@ mod tests {
         assert!(parse_scalar_expression("coalesce(amount)").is_err());
         assert!(parse_scalar_expression(&format!("coalesce({})",
             vec!["1"; 17].join(", "))).is_err());
+    }
+
+    #[test]
+    fn nullif_is_a_nullable_numeric_expression() {
+        assert!(matches!(parse_scalar_expression("nullIf(amount, 0)").unwrap(),
+            ScalarExpr::NullIf(..)));
+        assert!(parse_scalar_expression("nullIf(amount)").is_err());
+        assert!(parse_scalar_expression("nullIf(amount, 0, 1)").is_err());
     }
 
     #[test]
