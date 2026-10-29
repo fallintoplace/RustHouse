@@ -1,4 +1,4 @@
-use crate::{AggregateItem, Projection, Select, Source};
+use crate::{AggregateFunction, AggregateItem, Projection, Select, Source};
 
 fn describe_source(source: Option<&Source>) -> String {
     match source {
@@ -26,6 +26,19 @@ fn describe_source(source: Option<&Source>) -> String {
 
 fn join_labels(labels: impl Iterator<Item = String>) -> String {
     labels.collect::<Vec<_>>().join(", ")
+}
+
+fn describe_grouped_metrics(
+    items: &[(AggregateFunction, String)],
+    filters: &[Option<String>],
+) -> String {
+    join_labels(items.iter().enumerate().map(|(index, (function, value))| {
+        if let Some(filter) = filters[index].as_deref() {
+            format!("{}If({value}, {filter})", function.name())
+        } else {
+            format!("{}({value})", function.name())
+        }
+    }))
 }
 
 fn describe_projection(projection: &Projection) -> String {
@@ -75,24 +88,12 @@ fn describe_projection(projection: &Projection) -> String {
         ),
         Projection::GroupedAggregates { column, items, filters, .. } => format!(
             "Aggregate: GROUP BY {column}, {}",
-            join_labels(items.iter().enumerate().map(|(index, (function, value))| {
-                if let Some(filter) = filters[index].as_deref() {
-                    format!("{}If({value}, {filter})", function.name())
-                } else {
-                    format!("{}({value})", function.name())
-                }
-            }))
+            describe_grouped_metrics(items, filters)
         ),
         Projection::GroupedMultiAggregates { columns, items, filters, .. } => format!(
             "Aggregate: GROUP BY {}, {}",
             columns.join(", "),
-            join_labels(items.iter().enumerate().map(|(index, (function, value))| {
-                if let Some(filter) = filters[index].as_deref() {
-                    format!("{}If({value}, {filter})", function.name())
-                } else {
-                    format!("{}({value})", function.name())
-                }
-            }))
+            describe_grouped_metrics(items, filters)
         ),
         Projection::Aggregate { function, column } => {
             format!("Aggregate: {}({column})", function.name())
