@@ -16,7 +16,7 @@ impl<W: Write> JsonSeqSink<W> {
         }
     }
 
-    fn write_fragment(&mut self, chunk: &[u8]) -> io::Result<()> {
+    fn write_record_fragment(&mut self, chunk: &[u8]) -> io::Result<()> {
         if chunk.is_empty() {
             return Ok(());
         }
@@ -35,7 +35,7 @@ impl<W: Write> JsonSeqSink<W> {
 impl<W: Write> Write for JsonSeqSink<W> {
     fn write(&mut self, bytes: &[u8]) -> io::Result<usize> {
         for chunk in bytes.split_inclusive(|&byte| byte == b'\n') {
-            self.write_fragment(chunk)?;
+            self.write_record_fragment(chunk)?;
         }
         Ok(bytes.len())
     }
