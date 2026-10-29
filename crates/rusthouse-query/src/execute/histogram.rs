@@ -12,6 +12,8 @@ use std::collections::HashMap;
 use std::io::Write;
 use std::path::Path;
 
+const MAX_GENERATED_HISTOGRAM_ROWS: u64 = 10_000_000;
+
 #[derive(Clone, Copy)]
 struct Bin {
     min: f64,
@@ -283,7 +285,7 @@ pub(super) fn execute_numbers<W: Write>(
         let result = uniform_generated_bins(start, lower, count, step, *bins);
         return output_bins(query, output, column, *bins, &result);
     }
-    if rows > 10_000_000 {
+    if rows > MAX_GENERATED_HISTOGRAM_ROWS {
         return Err(ExecutionError::Invalid(
             "large generated histogram requires monotonic WHERE predicates".into(),
         ));
