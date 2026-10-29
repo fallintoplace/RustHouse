@@ -8,7 +8,7 @@ use std::path::PathBuf;
 
 use super::join::{
     MAX_INPUT_ROWS, MAX_RESULT_ROWS, MAX_STREAM_BUILD_BYTES, multi_join_row_key as row_key,
-    read_rows,
+    read_projected_build_rows,
 };
 
 const MAX_CHAIN_BYTES: usize = crate::join::MAX_JOIN_CHAIN_BYTES;
@@ -267,6 +267,84 @@ fn output_columns(
     Ok(selected)
 }
 
+/// Retain only physical streams needed by the query's output, join keys,
+/// optional NULL filter, and ORDER BY. Output rows still carry full-width
+/// logical slots so existing join-key and projection indices remain valid.
+fn required_physical_columns(
+    query: &JoinSelect,
+    relations: &[Relation],
+    initial_step: &JoinStep,
+) -> Result<Vec<Vec<usize>>, ExecutionError> {
+    let mut required = relations.iter()
+        .map(|relation| vec![false; relation.names.len()])
+        .collect::<Vec<_>>();
+    let mut retain_absolute = |absolute: usize| {
+        if let Some((index, relation)) = relations.iter().enumerate()
+            .rev().find(|(_, relation)| absolute >= relation.start)
+        {
+            required[index][absolute - relation.start] = true;
+        }
+    };
+    if query.aggregate.is_none() {
+        if let Some(columns) = &query.columns {
+            for column in columns {
+                if column.name == "*" {
+                    let relation = relations.iter()
+                        .find(|relation| relation.alias == column.relation)
+                        .ok_or_else(|| invalid(format!(
+                            "unknown JOIN qualifier: {}", column.relation
+                        )))?;
+                    for local in 0..relation.names.len() {
+                        retain_absolute(relation.start + local);
+                    }
+                } else {
+                    retain_absolute(column_index(relations, column)?);
+                }
+            }
+        } else {
+            for relation in relations {
+                for local in 0..relation.names.len() {
+                    retain_absolute(relation.start + local);
+                }
+            }
+        }
+    }
+    if let Some((column, _)) = &query.where_null {
+        retain_absolute(column_index(relations, column)?);
+    }
+    for (column, _, _) in &query.order_by {
+        retain_absolute(column_index(relations, column)?);
+    }
+    for (step_index, step) in std::iter::once(initial_step)
+        .chain(query.steps.iter()).enumerate()
+    {
+        let width = relations[step_index + 1].start;
+        let (left, right) = step_keys(step, &relations[..=step_index + 1], width)?;
+        for key in left {
+            retain_absolute(key);
+        }
+        for key in right {
+            retain_absolute(width + key);
+        }
+    }
+    // A CROSS JOIN or a COUNT-only relation can have no referenced values.
+    // Keep one column to obtain exact row counts from the typed reader.
+    let mut indices = Vec::with_capacity(relations.len());
+    for (relation, columns) in relations.iter().zip(required) {
+        let mut keep = columns.into_iter().enumerate().filter_map(
+            |(index, needed)| needed.then_some(index)
+        ).collect::<Vec<_>>();
+        if keep.is_empty() {
+            if relation.names.is_empty() {
+                return Err(invalid("JOIN requires nonempty table schemas"));
+            }
+            keep.push(0);
+        }
+        indices.push(keep);
+    }
+    Ok(indices)
+}
+
 /// Execute a chain of three or more bounded joins. No output is written before
 /// all input validation, row-limit checks, and final ordering have succeeded.
 pub fn execute_multi_join<W: Write>(
@@ -339,9 +417,11 @@ pub fn execute_multi_join<W: Write>(
         return Ok(());
     }
 
-    let mut rows = read_rows(
+    let required = required_physical_columns(query, &relations, &initial_step)?;
+    let mut rows = read_projected_build_rows(
         &paths[0],
         &relations[0].names,
+        &required[0],
         relations[0].rows,
         MAX_INPUT_ROWS,
         MAX_STREAM_BUILD_BYTES,
@@ -363,9 +443,10 @@ pub fn execute_multi_join<W: Write>(
             }
             continue;
         }
-        let right_rows = read_rows(
+        let right_rows = read_projected_build_rows(
             &paths[step_index + 1],
             &right_relation.names,
+            &required[step_index + 1],
             right_relation.rows,
             MAX_INPUT_ROWS,
             MAX_STREAM_BUILD_BYTES,
