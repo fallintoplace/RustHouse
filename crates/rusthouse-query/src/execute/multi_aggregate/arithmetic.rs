@@ -112,6 +112,16 @@ pub(super) fn checked_binary(
     }
 }
 
+fn multiply_unsigned_signed(unsigned: u128, signed: i128) -> Result<Number, ExecutionError> {
+    let magnitude = unsigned.checked_mul(signed.unsigned_abs())
+        .ok_or_else(|| ExecutionError::Invalid("aggregate expression overflow".into()))?;
+    if signed < 0 {
+        mixed_negative(magnitude)
+    } else {
+        Ok(mixed_positive(magnitude))
+    }
+}
+
 pub(super) fn checked_multiply(left: Number, right: Number) -> Result<Number, ExecutionError> {
     match (left, right) {
         (Number::Float(_), _) | (_, Number::Float(_)) => {
@@ -122,6 +132,8 @@ pub(super) fn checked_multiply(left: Number, right: Number) -> Result<Number, Ex
                 ExecutionError::Invalid("unsigned aggregate expression overflow".into())
             })
         }
+        (Number::Unsigned(a), Number::Signed(b))
+        | (Number::Signed(b), Number::Unsigned(a)) => multiply_unsigned_signed(a, b),
         (a, b) => {
             number_as_i128(a)?
                 .checked_mul(number_as_i128(b)?)
@@ -151,5 +163,24 @@ mod mixed_uint128_binary_tests {
         assert!(matches!(checked_binary(Number::Unsigned(0), Number::Signed(i128::MIN), false),
             Ok(Number::Signed(i128::MIN))));
         assert!(checked_binary(Number::Signed(i128::MIN), Number::Unsigned(1), true).is_err());
+    }
+}
+
+#[cfg(test)]
+mod full_width_mixed_multiply_tests {
+    use super::*;
+
+    #[test]
+    fn preserves_u128_range_and_exact_negative_limit() {
+        assert!(matches!(checked_multiply(Number::Unsigned(u128::MAX), Number::Signed(0)),
+            Ok(Number::Signed(0))));
+        assert!(matches!(checked_multiply(Number::Signed(1), Number::Unsigned(u128::MAX)),
+            Ok(Number::Unsigned(value)) if value == u128::MAX));
+        assert!(matches!(checked_multiply(Number::Unsigned(1_u128 << 127), Number::Signed(-1)),
+            Ok(Number::Signed(i128::MIN))));
+        assert!(checked_multiply(Number::Unsigned(u128::MAX), Number::Signed(-1)).is_err());
+        assert!(checked_multiply(Number::Unsigned(u128::MAX), Number::Signed(2)).is_err());
+        assert!(matches!(checked_multiply(Number::Signed(-1), Number::Unsigned(1)),
+            Ok(Number::Signed(-1))));
     }
 }
