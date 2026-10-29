@@ -5,7 +5,14 @@ pub(super) fn fixed_decimal(value: &str) -> Result<(i128, usize), ParseError> {
         Some(rest) => (true, rest),
         None => (false, value),
     };
-    let (whole, fraction) = digits.split_once('.').unwrap_or((digits, ""));
+    let (mantissa, exponent) = if let Some(pos) = digits.find(['e', 'E']) {
+        let exponent = digits[pos + 1..].parse::<i32>()
+            .map_err(|_| ParseError("invalid decimal exponent".into()))?;
+        (&digits[..pos], exponent)
+    } else {
+        (digits, 0)
+    };
+    let (whole, fraction) = mantissa.split_once('.').unwrap_or((mantissa, ""));
     if (whole.is_empty() && fraction.is_empty())
         || fraction.len() > 18
         || !whole.bytes().all(|byte| byte.is_ascii_digit())
@@ -20,7 +27,23 @@ pub(super) fn fixed_decimal(value: &str) -> Result<(i128, usize), ParseError> {
         digits.parse::<i128>()
     }
     .map_err(|_| ParseError("decimal constant exceeds Int128".into()))?;
-    Ok((signed, fraction.len()))
+    let remaining_scale = fraction.len() as i64 - i64::from(exponent);
+    if remaining_scale >= 0 {
+        let scale = usize::try_from(remaining_scale)
+            .map_err(|_| ParseError("decimal constant scale is too large".into()))?;
+        if scale > 18 {
+            return Err(ParseError("decimal constant scale is too large".into()));
+        }
+        Ok((signed, scale))
+    } else {
+        let shift = u32::try_from(-remaining_scale)
+            .map_err(|_| ParseError("decimal exponent is too large".into()))?;
+        let factor = 10_i128.checked_pow(shift)
+            .ok_or_else(|| ParseError("decimal exponent overflows Int128".into()))?;
+        let value = signed.checked_mul(factor)
+            .ok_or_else(|| ParseError("decimal exponent overflows Int128".into()))?;
+        Ok((value, 0))
+    }
 }
 
 pub(super) fn format_decimal(value: i128, scale: usize) -> String {
@@ -63,5 +86,12 @@ mod tests {
         assert!(fixed_decimal(".").is_err());
         assert!(fixed_decimal("-.").is_err());
         assert!(fixed_decimal("").is_err());
+        assert_eq!(fixed_decimal("1.25e2").unwrap(), (125, 0));
+        assert_eq!(fixed_decimal("1.25E-2").unwrap(), (125, 4));
+        assert_eq!(fixed_decimal("1.e2").unwrap(), (100, 0));
+        assert_eq!(fixed_decimal("-.5e1").unwrap(), (-5, 0));
+        assert!(fixed_decimal("1e-19").is_err());
+        assert!(fixed_decimal("1e100").is_err());
+        assert!(fixed_decimal("1e+").is_err());
     }
 }
