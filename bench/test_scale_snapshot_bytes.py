@@ -65,5 +65,12 @@ class SnapshotBytesTests(unittest.TestCase):
         self.assertEqual(classify("id.bin"), "data_bytes")
 
 
+    def test_requires_integer_file_limit(self):
+        with tempfile.TemporaryDirectory() as root:
+            (Path(root) / "a.bin").write_bytes(b"x")
+            for invalid in (True, 2.5, float("nan"), "3", 0):
+                with self.subTest(value=invalid), self.assertRaisesRegex(ValueError, "max_files"):
+                    inventory(root, max_files=invalid)
+
 if __name__ == "__main__":
     unittest.main()
