@@ -146,6 +146,7 @@ pub(super) fn is_function(name: &str) -> bool {
             | "NOTEMPTY"
             | "SPACE"
             | "ENCODEURLFORMCOMPONENT"
+            | "NULLIFZERO"
             | "ISNOTNULL"
             | "ISNULL"
             | "TOTYPENAME"
@@ -186,6 +187,14 @@ fn parse_at_depth(parser: &mut Parser, depth: usize) -> Result<ConstantValue, Pa
             let input = constant_arg(parser, depth + 1)?;
             require(parser, Token::RParen, "isNotNull requires one argument")?;
             ConstantValue::Integer(i64::from(!matches!(input, ConstantValue::Null)))
+        }
+        "NULLIFZERO" => {
+            let input = integer_arg(parser, depth + 1)?;
+            require(parser, Token::RParen, "nullIfZero requires one argument")?;
+            match input {
+                Some(0) | None => ConstantValue::Null,
+                Some(value) => ConstantValue::Integer(value),
+            }
         }
         "LENGTHUTF8" => {
             let input = text_arg(parser, depth + 1)?;
