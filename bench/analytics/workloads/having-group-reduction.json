@@ -1,0 +1,22 @@
+{
+  "name": "having-group-reduction",
+  "description": "Catch post-aggregation filtering regressions at realistic group shapes",
+  "queries": [
+    {
+      "name": "large-regions",
+      "sql": "SELECT region, COUNT(*) FROM events GROUP BY region HAVING COUNT(*) > 100 ORDER BY region"
+    },
+    {
+      "name": "popular-categories",
+      "sql": "SELECT category, COUNT(*) FROM events GROUP BY category HAVING COUNT(*) > 100 ORDER BY category"
+    },
+    {
+      "name": "active-users",
+      "sql": "SELECT user_id, COUNT(*) FROM events GROUP BY user_id HAVING COUNT(*) > 5 ORDER BY user_id LIMIT 50"
+    },
+    {
+      "name": "region-revenue-floor",
+      "sql": "SELECT region, SUM(amount) FROM events GROUP BY region HAVING SUM(amount) > 10000 ORDER BY region"
+    }
+  ]
+}

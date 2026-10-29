@@ -2,6 +2,7 @@
 import argparse
 import json
 import math
+import statistics
 from pathlib import Path
 
 from bench.scale.physical_scan import COUNT_SQL, SUM_SQL, even_reference
@@ -45,6 +46,27 @@ def compare(baseline, candidate, *, max_slowdown_percent=10,
                 or type(b.get("expected")) is not int
                 or a["expected"] != oracle or b["expected"] != oracle):
             raise ValueError(f"{name}: incorrect physical SQL or independent oracle")
+        for report, item in ((baseline, a), (candidate, b)):
+            raw = item.get("samples_seconds")
+            if raw is None:
+                continue
+            if (not isinstance(raw, list) or not raw
+                    or any(type(value) not in (int, float)
+                           or not math.isfinite(value) or value <= 0 for value in raw)):
+                raise ValueError(f"{name}: invalid raw timing samples")
+            if ("runs" in report and
+                    (type(report["runs"]) is not int or len(raw) != report["runs"])):
+                raise ValueError(f"{name}: sample count disagrees with measured runs")
+            raw_median = statistics.median(raw)
+            raw_p90 = sorted(raw)[math.ceil(0.9 * len(raw)) - 1]
+            reported_median, reported_p90 = item.get("median_seconds"), item.get("p90_seconds")
+            if (type(reported_median) not in (int, float)
+                    or not math.isclose(reported_median, raw_median, rel_tol=1e-9)
+                    or type(reported_p90) not in (int, float)
+                    or not math.isclose(reported_p90, raw_p90, rel_tol=1e-9)):
+                raise ValueError(f"{name}: timing summary differs from raw samples")
+        if (a.get("samples_seconds") is None) != (b.get("samples_seconds") is None):
+            raise ValueError(f"{name}: baseline and candidate timing samples differ")
         old, new = a.get("median_seconds"), b.get("median_seconds")
         if not all(type(x) in (int, float) and math.isfinite(x) and x > 0 for x in (old, new)):
             raise ValueError(f"{name} has invalid median timings")
