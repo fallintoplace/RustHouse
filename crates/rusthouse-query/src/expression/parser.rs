@@ -252,6 +252,7 @@ fn parse_aggregate_builtin(parser: &mut Parser) -> Result<ScalarExpr, ParseError
         }
         ("LOGICALNOT", 1) => Ok(ScalarExpr::Not(Box::new(args.remove(0)))),
         ("MAX2", 2) => Ok(ScalarExpr::Extremum(args, true)),
+        ("MIN2", 2) => Ok(ScalarExpr::Extremum(args, false)),
         _ => Err(ParseError(format!("unsupported aggregate function: {name}"))),
     }
 }

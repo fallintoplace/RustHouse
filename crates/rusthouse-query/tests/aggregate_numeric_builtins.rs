@@ -135,3 +135,8 @@ fn functional_logical_not_propagates_null() {
 fn max2_selects_maximum_including_nullable_input() {
     assert_eq!(evaluate("max2(x, y)"), "15");
 }
+
+#[test]
+fn min2_selects_minimum_including_nullable_input() {
+    assert_eq!(evaluate("min2(x, y)"), "4");
+}
