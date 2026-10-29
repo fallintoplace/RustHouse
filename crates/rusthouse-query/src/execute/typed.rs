@@ -18,6 +18,28 @@ use std::path::Path;
 
 const MAX_BUFFERED_ROWS: usize = 200_000;
 
+const MAX_GROUPED_TEXT_BYTES: usize = 64 * 1024 * 1024;
+
+/// A String GROUP BY key is owned twice: by the hash lookup and the output
+/// row. Charge it before cloning large or adversarial group keys.
+fn charge_grouped_text(used: &mut usize, key_bytes: usize) -> Result<(), ExecutionError> {
+    let increment = key_bytes.checked_mul(2)
+        .and_then(|bytes| bytes.checked_add(
+            std::mem::size_of::<(Vec<u8>, usize)>() + std::mem::size_of::<(Cell, u64)>()
+        ))
+        .ok_or_else(|| ExecutionError::Invalid("grouped String key memory overflow".into()))?;
+    let next = used.checked_add(increment)
+        .ok_or_else(|| ExecutionError::Invalid("grouped String key memory overflow".into()))?;
+    if next > MAX_GROUPED_TEXT_BYTES {
+        return Err(ExecutionError::Invalid(
+            "GROUP BY String keys exceed 64 MiB retained budget".into(),
+        ));
+    }
+    *used = next;
+    Ok(())
+}
+
+
 const MAX_SELECT_DISTINCT_KEY_BYTES: usize = 64 * 1024 * 1024;
 
 fn charge_select_distinct_key(
@@ -1338,6 +1360,7 @@ pub(super) fn execute_typed<W: Write>(
     };
     // String group probes can borrow the decoded input instead of cloning it.
     let mut text_group_indices = HashMap::<Vec<u8>, usize>::new();
+    let mut grouped_text_bytes = 0usize;
     let mut uuid_group_indices = HashMap::<[u8; 16], usize>::new();
     let mut grouped_rows = Vec::<(Cell, u64)>::new();
     // Typed ORDER BY spills sorted runs when the bounded top-k heap cannot be used.
@@ -1466,6 +1489,7 @@ pub(super) fn execute_typed<W: Write>(
                             ));
                         }
                         let group = grouped_rows.len();
+                        charge_grouped_text(&mut grouped_text_bytes, key.len())?;
                         text_group_indices.insert(key.to_vec(), group);
                         grouped_rows.push((Cell::Text(key.to_vec()), 1));
                     }
@@ -2650,5 +2674,21 @@ mod select_distinct_key_budget_tests {
         let huge = vec![Key::Text(vec![b'x'; MAX_SELECT_DISTINCT_KEY_BYTES])];
         assert!(charge_select_distinct_key(&mut used, &huge).is_err());
         assert_eq!(used, 0);
+    }
+}
+
+#[cfg(test)]
+mod grouped_text_retention_budget_tests {
+    use super::*;
+
+    #[test]
+    fn charges_both_owned_copies_before_insert() {
+        let mut charged = 0;
+        charge_grouped_text(&mut charged, 1024).unwrap();
+        assert!(charged >= 2048);
+        let previous = charged;
+        assert!(charge_grouped_text(&mut charged, MAX_GROUPED_TEXT_BYTES).is_err());
+        assert_eq!(charged, previous);
+        assert!(charge_grouped_text(&mut charged, usize::MAX).is_err());
     }
 }
