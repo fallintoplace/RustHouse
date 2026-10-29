@@ -62,5 +62,17 @@ class BenchmarkComparisonTests(unittest.TestCase):
         self.assertEqual(report["incomparable"][0]["reason"], "missing_positive_median")
 
 
+    def test_comparison_rejects_different_reference_and_distribution(self):
+        before = {"results": [result(1, "passed", 0.01)],
+                  "reference_checked": True, "distribution": "uniform"}
+        after = {"results": [result(1, "passed", 0.01)],
+                 "reference_checked": False, "distribution": "uniform"}
+        with self.assertRaisesRegex(ValueError, "reference_checked"):
+            compare(before, after)
+        after["reference_checked"] = True
+        after["distribution"] = "skewed"
+        with self.assertRaisesRegex(ValueError, "distribution"):
+            compare(before, after)
+
 if __name__ == "__main__":
     unittest.main()
