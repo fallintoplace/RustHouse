@@ -10,6 +10,14 @@ pub(super) fn is_function(name: &str) -> bool {
     matches!(
         name.to_ascii_uppercase().as_str(),
         "ADDDAYS"
+            | "TOLASTDAYOFYEAR"
+            | "TOLASTDAYOFQUARTER"
+            | "TOWEEK"
+            | "ISLEAPYEAR"
+            | "DAYSINMONTH"
+            | "TIMESLOT"
+            | "TORELATIVEYEARNUM"
+            | "TORELATIVEQUARTERNUM"
             | "TOYEARWEEK"
             | "DATEDIFF"
             | "DATE_DIFF"
@@ -78,6 +86,65 @@ pub(super) fn parse_after_open(
                 };
                 ConstantValue::Integer(week_year * 100 + week)
             })
+        }),
+        "TOLASTDAYOFYEAR" => unary_date(parser, depth, |value| {
+            Ok({
+                let (year, _, _) = civil_from_days(value.seconds.div_euclid(DAY_SECONDS));
+                let days = days_from_civil(year, 12, 31);
+                ConstantValue::Text(Temporal::render(days * DAY_SECONDS, false)?)
+            })
+        }),
+        "TOLASTDAYOFQUARTER" => unary_date(parser, depth, |value| {
+            Ok({
+                let (year, month, _) = civil_from_days(value.seconds.div_euclid(DAY_SECONDS));
+                let last_month = ((month - 1) / 3 + 1) * 3;
+                let last_day = days_in_month(year, last_month);
+                let days = days_from_civil(year, last_month, last_day);
+                ConstantValue::Text(Temporal::render(days * DAY_SECONDS, false)?)
+            })
+        }),
+        "TOWEEK" => unary_date(parser, depth, |value| {
+            Ok({
+                let days = value.seconds.div_euclid(DAY_SECONDS);
+                let (year, _, _) = civil_from_days(days);
+                let jan_one = days_from_civil(year, 1, 1);
+                let first_sunday = jan_one + (7 - (jan_one + 4).rem_euclid(7)).rem_euclid(7);
+                let week = if days < first_sunday {
+                    0
+                } else {
+                    (days - first_sunday) / 7 + 1
+                };
+                ConstantValue::Integer(week)
+            })
+        }),
+        "ISLEAPYEAR" => unary_date(parser, depth, |value| {
+            Ok({
+                let (year, _, _) = civil_from_days(value.seconds.div_euclid(DAY_SECONDS));
+                ConstantValue::Integer(i64::from(
+                    year % 4 == 0 && (year % 100 != 0 || year % 400 == 0),
+                ))
+            })
+        }),
+        "DAYSINMONTH" => unary_date(parser, depth, |value| {
+            Ok({
+                let (year, month, _) = civil_from_days(value.seconds.div_euclid(DAY_SECONDS));
+                ConstantValue::Integer(i64::from(days_in_month(year, month)))
+            })
+        }),
+        "TIMESLOT" => unary_date(parser, depth, |value| {
+            Ok(ConstantValue::Text(Temporal::render(value.seconds.div_euclid(1_800) * 1_800, true)?))
+        }),
+        "TORELATIVEYEARNUM" => unary_date(parser, depth, |value| {
+            Ok(ConstantValue::Integer({
+                let (year, _, _) = civil_from_days(value.seconds.div_euclid(DAY_SECONDS));
+                year - 1970
+            }))
+        }),
+        "TORELATIVEQUARTERNUM" => unary_date(parser, depth, |value| {
+            Ok(ConstantValue::Integer({
+                let (year, month, _) = civil_from_days(value.seconds.div_euclid(DAY_SECONDS));
+                (year - 1970) * 4 + i64::from((month - 1) / 3)
+            }))
         }),
         "ADDDAYS" => offset_seconds(parser, depth, DAY_SECONDS, false, false),
         "SUBTRACTDAYS" => offset_seconds(parser, depth, DAY_SECONDS, true, false),
