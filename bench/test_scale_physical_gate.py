@@ -39,6 +39,12 @@ class PhysicalGateTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "oracle mismatch"):
             validate(wrong_query)
 
+    def test_rejects_float_oracles_even_when_numerically_equal(self):
+        invalid = example()
+        invalid["count_even"]["expected"] = float(invalid["count_even"]["expected"])
+        with self.assertRaisesRegex(ValueError, "oracle mismatch"):
+            validate(invalid)
+
     def test_rejects_inconsistent_percentile(self):
         broken = example()
         broken["sum_even"]["p90_seconds"] = 0.1
