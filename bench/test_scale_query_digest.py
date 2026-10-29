@@ -33,6 +33,18 @@ class QueryDigestTests(unittest.TestCase):
             query_digest("binary", "part", "SELECT 1",
                          max_output_bytes=2, run=execute)
 
+    def test_posix_child_receives_an_online_output_size_limit(self):
+        import os
+        from unittest.mock import patch
+        if os.name != "posix":
+            self.skipTest("POSIX resource limits required")
+        def execute(command, **kwargs):
+            self.assertIn("preexec_fn", kwargs)
+            kwargs["stdout"].write(b"ok\n")
+            return SimpleNamespace(returncode=0, stderr=b"")
+        with patch("bench.scale.query_digest.subprocess.run", side_effect=execute):
+            self.assertEqual(query_digest("binary", "part", "SELECT 1")["bytes"], 3)
+
 
 if __name__ == "__main__":
     unittest.main()
