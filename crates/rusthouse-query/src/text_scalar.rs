@@ -146,6 +146,7 @@ pub(super) fn is_function(name: &str) -> bool {
             | "NOTEMPTY"
             | "SPACE"
             | "ENCODEURLFORMCOMPONENT"
+            | "POSITION"
     )
 }
 
@@ -1786,6 +1787,19 @@ fn parse_at_depth(parser: &mut Parser, depth: usize) -> Result<ConstantValue, Pa
                 None => ConstantValue::Null,
             }
         }
+        "POSITION" => {
+            let haystack = text_arg(parser, depth + 1)?;
+            require(parser, Token::Comma, "position requires two arguments")?;
+            let needle = text_arg(parser, depth + 1)?;
+            require(parser, Token::RParen, "position requires two arguments")?;
+            match (haystack, needle) {
+                (Some(haystack), Some(needle)) => ConstantValue::Integer(
+                    i64::try_from(haystack.find(&needle).map_or(0, |index| index + 1))
+                        .map_err(|_| ParseError("position result exceeds Int64".into()))?,
+                ),
+                _ => ConstantValue::Null,
+            }
+        }
         "STRPOS" | "POSITIONUTF8" => {
             let input = text_arg(parser, depth + 1)?;
             require(parser, Token::Comma, "STRPOS requires a substring")?;
@@ -2830,5 +2844,31 @@ mod clickhouse_readable_time_delta_tests {
         }
         assert!(parse_select("SELECT formatReadableTimeDelta(60, 'invalid')").is_err());
         assert!(parse_select("SELECT formatReadableTimeDelta(60, 'minutes', 'hours')").is_err());
+    }
+}
+
+#[cfg(test)]
+mod ch_position_byte_tests {
+    use crate::{parse_select, ConstantValue, Projection};
+    fn value(sql: &str) -> ConstantValue {
+        match parse_select(sql).unwrap().projection {
+            Projection::Constants(items) if items.len() == 1 => items[0].value.clone(),
+            Projection::Literal(value) => ConstantValue::Integer(value),
+            other => panic!("unexpected projection: {other:?}"),
+        }
+    }
+    #[test]
+    fn supported_values_and_invalid_arity() {
+        for (sql, expected) in [
+            ("SELECT position('éa', 'a')", ConstantValue::Integer(3)),
+            ("SELECT position('hello', 'll')", ConstantValue::Integer(3)),
+            ("SELECT position('abc', 'Z')", ConstantValue::Integer(0)),
+            ("SELECT position(NULL, 'a')", ConstantValue::Null),
+        ] {
+            assert_eq!(value(sql), expected, "{sql}");
+        }
+        for sql in ["SELECT position('abc')", "SELECT position('abc','a','x')"] {
+            assert!(parse_select(sql).is_err(), "{sql}");
+        }
     }
 }
