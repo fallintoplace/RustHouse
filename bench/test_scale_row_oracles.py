@@ -17,8 +17,8 @@ class RowOracleTests(unittest.TestCase):
         flat = make_oracles(4, start=2, step=2)
         self.assertEqual(flat["even"], {"count": 4, "sum": 20})
         self.assertEqual(flat["odd"], {"count": 0, "sum": 0})
-        self.assertEqual(progression_reference((1 << 64) - 3, 2, 3),
-                         {"count": 2, "sum": 2 * (1 << 64) - 3})
+        self.assertEqual(progression_reference((1 << 64) - 4, 2, 3),
+                         {"count": 2, "sum": 2 * (1 << 64) - 5})
 
     def test_rejects_strided_uint64_overflow(self):
         with self.assertRaisesRegex(ValueError, "overflow"):
