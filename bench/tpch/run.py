@@ -10,8 +10,9 @@ import time
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 from common import cli_sql, emit_json, latency_summary
-from canonical_integrity import verify as verify_canonical_sql
+from bench.tpch.canonical_integrity import verify as verify_canonical_sql
 
 QUERY_NAME = re.compile(r"q(\d{1,2})\.sql$", re.IGNORECASE)
 
