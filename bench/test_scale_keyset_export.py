@@ -50,6 +50,16 @@ class KeysetExportTests(unittest.TestCase):
         self.assertIn("<= 18446744073709551615",
                       page_sql("events", "id", 2**64 - 1, 1))
 
+    def test_rejects_overrun_total_export_deadline_before_copying(self):
+        from unittest.mock import patch
+        with tempfile.TemporaryDirectory() as temp:
+            output = Path(temp) / "ids.tsv"
+            with patch("bench.scale.keyset_export.time.monotonic", side_effect=[0.0, 2.0]):
+                with self.assertRaisesRegex(TimeoutError, "total export deadline"):
+                    export("unused", "unused", "events", output, 0, 5,
+                           max_total_seconds=1, execute=lambda sql: b"0\n")
+            self.assertFalse(output.exists())
+
 
 if __name__ == "__main__":
     unittest.main()
