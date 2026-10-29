@@ -79,6 +79,7 @@ fn count_column(
     shift: usize,
     prefix_mask: u128,
     prefixes: &[u128; 2],
+    first_side: usize,
     histogram: &mut [[u64; 256]; 2],
 ) -> Result<(), ExecutionError> {
     let mut visit = |value: u128, row: usize| {
@@ -87,7 +88,7 @@ fn count_column(
         {
             return;
         }
-        for side in 0..2 {
+        for side in first_side..2 {
             if value & prefix_mask != prefixes[side] & prefix_mask {
                 continue;
             }
@@ -149,6 +150,7 @@ fn median_inner(
     let (bytes, signed) = width_and_sign(base)
         .ok_or_else(|| ExecutionError::Invalid("radix median requires integer values".into()))?;
     if n == 0 { return Ok(None); }
+    let first_side = usize::from(n % 2 == 1);
     let bits = bytes * 8;
     let mut keys = [0_u128; 2];
     let mut ranks = [(n - 1) / 2, n / 2];
@@ -176,7 +178,7 @@ fn median_inner(
                         .collect::<Vec<_>>()
                 });
                 count_column(values, Some(nulls), selected.as_deref(),
-                    bits, shift, prefix_mask, &keys, &mut histogram)?;
+                    bits, shift, prefix_mask, &keys, first_side, &mut histogram)?;
             }
         } else {
             let scan_columns = filtered.map_or(names.as_slice(), |(columns, _)| columns);
@@ -188,10 +190,10 @@ fn median_inner(
                         .collect::<Vec<_>>()
                 });
                 count_column(&batch[0], None, selected.as_deref(),
-                    bits, shift, prefix_mask, &keys, &mut histogram)?;
+                    bits, shift, prefix_mask, &keys, first_side, &mut histogram)?;
             }
         }
-        for side in 0..2 {
+        for side in first_side..2 {
             let mut remaining = ranks[side];
             let mut selected = false;
             for (bucket, &count) in histogram[side].iter().enumerate() {
@@ -293,6 +295,17 @@ pub(super) fn median_filtered(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn odd_median_updates_only_the_required_rank_histogram() {
+        let values = NumericColumn::UInt8(vec![1, 2, 3, 4, 5]);
+        let mut histogram = [[0_u64; 256]; 2];
+        count_column(&values, None, None, 8, 0, 0, &[0, 0], 1, &mut histogram)
+            .unwrap();
+        assert_eq!(histogram[0].iter().sum::<u64>(), 0);
+        assert_eq!(histogram[1].iter().sum::<u64>(), 5);
+        assert_eq!(histogram[1][3], 1);
+    }
 
     #[test]
     fn exact_middle_pair_handles_half_values_without_float_rounding() {
