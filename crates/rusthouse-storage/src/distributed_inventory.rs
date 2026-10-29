@@ -40,8 +40,8 @@ pub fn inventory_snapshot(
     let parts = query_parts(&active)?;
     // A typical wide part has several streams plus its metadata files.
     // Cap the estimate to avoid excessive allocations for sparse inventories.
-    let capacity = parts.len().saturating_mul(8).min(max_files).min(1024);
-    let mut files = Vec::with_capacity(capacity);
+    let estimated_file_capacity = parts.len().saturating_mul(8).min(max_files).min(1024);
+    let mut files = Vec::with_capacity(estimated_file_capacity);
     let mut total_bytes = 0u64;
     for part in parts {
         let name = part
