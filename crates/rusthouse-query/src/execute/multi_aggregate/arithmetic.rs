@@ -132,6 +132,7 @@ pub(super) fn apply_unary_math(name: &str, value: Number) -> Result<Number, Exec
         "TAN" => Number::Float(number_as_float(value).tan()),
         "ASIN" => Number::Float(number_as_float(value).asin()),
         "ACOS" => Number::Float(number_as_float(value).acos()),
+        "ATAN" => Number::Float(number_as_float(value).atan()),
         _ => {
             return Err(ExecutionError::Invalid(format!(
                 "unsupported aggregate numeric function: {name}"
@@ -388,6 +389,22 @@ mod aggregate_unary_math_tests {
         assert!(apply_unary_math("ACOS", Number::Signed(2)).is_err());
         assert!(crate::parse_scalar_expression("acos(amount)").is_ok());
         assert!(crate::parse_scalar_expression("acos(amount, 2)").is_err());
+    }
+
+    #[test]
+    fn atan_supports_positive_and_negative_inputs() {
+        assert!(matches!(
+            apply_unary_math("ATAN", Number::Signed(1)),
+            Ok(Number::Float(value))
+                if (value - std::f64::consts::FRAC_PI_4).abs() < 1e-12
+        ));
+        assert!(matches!(
+            apply_unary_math("ATAN", Number::Signed(-1)),
+            Ok(Number::Float(value))
+                if (value + std::f64::consts::FRAC_PI_4).abs() < 1e-12
+        ));
+        assert!(crate::parse_scalar_expression("atan(amount)").is_ok());
+        assert!(crate::parse_scalar_expression("atan(amount, 2)").is_err());
     }
 
 }
