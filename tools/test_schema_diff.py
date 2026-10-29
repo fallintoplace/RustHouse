@@ -14,5 +14,14 @@ class SchemaTests(unittest.TestCase):
             validate_url("http://example.org:8123")
 
 
+    def test_rejects_whitespace_only_schema_fields(self):
+        for malformed in (
+            {"name": " ", "type": "UInt64"},
+            {"name": "id", "type": "  "},
+        ):
+            with self.subTest(malformed=malformed), self.assertRaises(ValueError):
+                columns({"columns": [malformed]})
+
+
 if __name__ == "__main__":
     unittest.main()
