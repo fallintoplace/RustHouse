@@ -7,6 +7,8 @@ from pathlib import Path
 
 from schema import TABLES, names, explain_scaling
 
+MAX_RECORD_BYTES = 8 * 1024 * 1024
+
 
 def inspect_table(path, table):
     path = Path(path)
@@ -17,14 +19,17 @@ def inspect_table(path, table):
     rows = 0
     expected_columns = len(TABLES[table])
     with path.open("rb") as source:
-        header = source.readline()
+        header = source.readline(MAX_RECORD_BYTES + 1)
+        if len(header) > MAX_RECORD_BYTES:
+            raise ValueError(f"{table}: TSV header exceeds 8 MiB")
         if header not in (expected + b"\n", expected + b"\r\n"):
             raise ValueError(f"{table}: unexpected TSV header")
         digest.update(header)
-        for record in source:
+        for record in iter(lambda: source.readline(MAX_RECORD_BYTES + 1), b""):
             if record in (b"\n", b"\r\n", b""):
                 raise ValueError(f"{table}: blank record")
-            if not record.endswith(b"\n") or record.count(b"\t") != expected_columns - 1:
+            if (len(record) > MAX_RECORD_BYTES or not record.endswith(b"\n")
+                    or record.count(b"\t") != expected_columns - 1):
                 raise ValueError(f"{table}: malformed or truncated TSV record")
             digest.update(record)
             rows += 1
