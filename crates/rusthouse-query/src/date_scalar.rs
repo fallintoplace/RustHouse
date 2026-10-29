@@ -40,6 +40,7 @@ pub(super) fn is_function(name: &str) -> bool {
             | "SUBTRACTWEEKS"
             | "ADDWEEKS"
             | "SUBTRACTDAYS"
+            | "TOSECOND"
             | "TOMINUTE"
             | "TOHOUR"
     )
@@ -56,6 +57,9 @@ pub(super) fn parse_after_open(
         }),
         "TOMINUTE" => unary_date(parser, depth, |value| {
             Ok(ConstantValue::Integer(value.seconds.rem_euclid(3_600) / 60))
+        }),
+        "TOSECOND" => unary_date(parser, depth, |value| {
+            Ok(ConstantValue::Integer(value.seconds.rem_euclid(60)))
         }),
         "ADDDAYS" => offset_seconds(parser, depth, DAY_SECONDS, false, false),
         "SUBTRACTDAYS" => offset_seconds(parser, depth, DAY_SECONDS, true, false),
