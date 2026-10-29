@@ -12,6 +12,7 @@ pub enum ScalarExpr {
     TextLength(String),
     Integer(i64),
     Null,
+    IsNull(Box<ScalarExpr>, bool),
     Add(Box<ScalarExpr>, Box<ScalarExpr>),
     Subtract(Box<ScalarExpr>, Box<ScalarExpr>),
     Multiply(Box<ScalarExpr>, Box<ScalarExpr>),
@@ -36,6 +37,7 @@ impl ScalarExpr {
                 }
             }
             Self::Integer(_) | Self::Null => {}
+            Self::IsNull(value, _) => value.collect_referenced_columns(out, seen),
             Self::CaseWhen(condition, yes, no) => {
                 condition.collect_referenced_columns(out, seen);
                 yes.collect_referenced_columns(out, seen);
@@ -79,6 +81,13 @@ fn parse_arithmetic_tokens(parser: &mut Parser) -> Result<ScalarExpr, ParseError
 /// AND before OR. CASE WHEN conditions use the same expression parser.
 fn parse_comparison_tokens(parser: &mut Parser) -> Result<ScalarExpr, ParseError> {
     let left = parse_arithmetic_tokens(parser)?;
+    if parser.keyword("IS") {
+        let negated = parser.keyword("NOT");
+        if !parser.keyword("NULL") {
+            return Err(ParseError("IS requires NULL or NOT NULL".into()));
+        }
+        return Ok(ScalarExpr::IsNull(Box::new(left), negated));
+    }
     if let Some(Token::Operator(operator)) = parser.tokens.get(parser.index) {
         let operator = *operator;
         if !matches!(operator, Operator::Eq | Operator::Ne | Operator::Lt
@@ -233,6 +242,15 @@ mod tests {
         assert!(matches!(expr, ScalarExpr::Compare(..)));
         assert!(parse_scalar_expression("amount >").is_err());
         assert!(parse_scalar_expression("amount > 1 > 2").is_err());
+    }
+
+    #[test]
+    fn parses_null_checks_inside_computed_aggregate_conditions() {
+        for (sql, negated) in [("amount IS NULL", false), ("amount IS NOT NULL", true)] {
+            let value = parse_scalar_expression(sql).unwrap();
+            assert!(matches!(value, ScalarExpr::IsNull(_, flag) if flag == negated));
+        }
+        assert!(parse_scalar_expression("amount IS EMPTY").is_err());
     }
 
     #[test]
