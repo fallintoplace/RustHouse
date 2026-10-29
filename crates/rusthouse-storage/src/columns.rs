@@ -1,6 +1,8 @@
 use crate::{Column, PartError};
 use std::collections::HashSet;
 
+const MAX_INITIAL_COLUMNS: usize = 1024;
+
 pub fn parse_columns(content: &str) -> Result<Vec<Column>, PartError> {
     let mut lines = content.lines();
     if lines.next() != Some("columns format version: 1") {
@@ -14,7 +16,7 @@ pub fn parse_columns(content: &str) -> Result<Vec<Column>, PartError> {
         parse_column_count(header).ok_or_else(|| invalid(2, "expected '<count> columns:'"))?;
 
     // Keep malformed huge counts from triggering an unbounded allocation.
-    let capacity = expected.min(1024);
+    let capacity = expected.min(MAX_INITIAL_COLUMNS);
     let mut columns = Vec::with_capacity(capacity);
     let mut names = HashSet::with_capacity(capacity);
     for index in 0..expected {
