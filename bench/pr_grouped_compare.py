@@ -30,9 +30,11 @@ def parse_benchmark(text):
             key, median, _p90, _rate = measurement.groups()
             if key in medians:
                 raise ValueError(f"duplicate grouped case: {key}")
-            value = float(median)
-            if not math.isfinite(value) or value <= 0:
-                raise ValueError("grouped medians must be positive")
+            value, tail, throughput = float(median), float(_p90), float(_rate)
+            if not all(math.isfinite(item) and item > 0 for item in (value, tail, throughput)):
+                raise ValueError("grouped timings and throughput must be positive")
+            if tail < value:
+                raise ValueError("grouped p90 cannot be below median")
             medians[key] = value
     if settings is None:
         raise ValueError("missing grouped benchmark settings")
