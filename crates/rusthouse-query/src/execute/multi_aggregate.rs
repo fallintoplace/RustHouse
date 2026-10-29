@@ -109,6 +109,7 @@ enum BoundExpr {
     Subtract(Box<Self>, Box<Self>),
     Multiply(Box<Self>, Box<Self>),
     Divide(Box<Self>, Box<Self>),
+    Modulo(Box<Self>, Box<Self>),
     And(Box<Self>, Box<Self>),
     Or(Box<Self>, Box<Self>),
     Compare(Box<Self>, crate::Operator, Box<Self>),
@@ -198,6 +199,10 @@ impl BoundExpr {
                 Box::new(Self::bind(left, indices)?),
                 Box::new(Self::bind(right, indices)?),
             ),
+            ScalarExpr::Modulo(left, right) => Self::Modulo(
+                Box::new(Self::bind(left, indices)?),
+                Box::new(Self::bind(right, indices)?),
+            ),
             ScalarExpr::Divide(left, right) => Self::Divide(
                 Box::new(Self::bind(left, indices)?),
                 Box::new(Self::bind(right, indices)?),
@@ -251,6 +256,31 @@ fn numeric_truth(number: Option<Number>) -> Option<bool> {
         Number::Signed(value) => value != 0,
         Number::Float(value) => value != 0.0,
     })
+}
+
+fn integer_modulo(left: Number, right: Number) -> Result<Number, ExecutionError> {
+    let magnitude = |value: Number| match value {
+        Number::Unsigned(value) => Ok((value, false)),
+        Number::Signed(value) => Ok((value.unsigned_abs(), value < 0)),
+        Number::Float(_) => Err(ExecutionError::Invalid(
+            "aggregate modulo requires integer arguments".into())),
+    };
+    let (dividend, negative) = magnitude(left)?;
+    let (divisor, _) = magnitude(right)?;
+    if divisor == 0 {
+        return Err(ExecutionError::Invalid("modulo by zero in aggregate expression".into()));
+    }
+    let remainder = dividend % divisor;
+    if negative && remainder != 0 {
+        let result = if remainder == (1_u128 << 127) {
+            i128::MIN
+        } else {
+            -(remainder as i128)
+        };
+        Ok(Number::Signed(result))
+    } else {
+        Ok(Number::Unsigned(remainder))
+    }
 }
 
 fn eval_number(
@@ -410,6 +440,11 @@ fn eval_number(
             _ => Err(ExecutionError::Invalid(
                 "length requires a String column".into(),
             )),
+        },
+        BoundExpr::Modulo(left, right) => {
+            let Some(left) = eval_number(left, batch, row)? else { return Ok(None); };
+            let Some(right) = eval_number(right, batch, row)? else { return Ok(None); };
+            integer_modulo(left, right).map(Some)
         },
         BoundExpr::Divide(left, right) => {
             let Some(left) = eval_number(left, batch, row)? else {
@@ -1096,5 +1131,29 @@ mod null_predicate_expression_tests {
             assert!(matches!(eval_number(&present, &batch, 0), Ok(Some(Number::Unsigned(1)))));
             assert!(matches!(eval_number(&present, &batch, 1), Ok(Some(Number::Unsigned(0)))));
         }
+    }
+}
+
+#[cfg(test)]
+mod aggregate_modulo_tests {
+    use super::*;
+
+    #[test]
+    fn mixed_sign_modulo_preserves_magnitude_and_never_overflows_min() {
+        for (left, right, expected) in [
+            (Number::Signed(-7), Number::Unsigned(3), -1),
+            (Number::Unsigned(7), Number::Signed(-3), 1),
+            (Number::Signed(i128::MIN), Number::Signed(-1), 0),
+            (Number::Signed(-9), Number::Signed(3), 0),
+        ] {
+            let remainder = integer_modulo(left, right).unwrap();
+            assert!(match remainder {
+                Number::Signed(value) => value == expected,
+                Number::Unsigned(value) => value == expected as u128,
+                Number::Float(_) => false,
+            });
+        }
+        assert!(integer_modulo(Number::Unsigned(1), Number::Signed(0)).is_err());
+        assert!(integer_modulo(Number::Float(1.5), Number::Unsigned(2)).is_err());
     }
 }
