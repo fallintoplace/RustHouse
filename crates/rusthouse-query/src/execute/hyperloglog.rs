@@ -128,10 +128,16 @@ impl HyperLogLog {
 
     pub(super) fn estimate(&self) -> u64 {
         let register_count = REGISTERS as f64;
-        let zero_register_count = self.registers.iter().filter(|&&rank| rank == 0).count();
-        let harmonic = self.registers.iter()
-            .map(|&rank| 2.0_f64.powi(-i32::from(rank)))
-            .sum::<f64>();
+        // Each rank is bounded to 64 - PRECISION + 1. Its contribution
+        // is an exact normal binary64 power of two, so avoid 16K powi calls.
+        // Count zero registers in the same pass.
+        let (harmonic, zero_register_count) = self.registers.iter().fold(
+            (0.0f64, 0usize),
+            |(sum, zeros), &rank| {
+                let contribution = f64::from_bits((1023 - u64::from(rank)) << 52);
+                (sum + contribution, zeros + usize::from(rank == 0))
+            },
+        );
         let alpha = 0.7213 / (1.0 + 1.079 / register_count);
         let raw_estimate = alpha * register_count * register_count / harmonic;
         let estimate = if raw_estimate <= 2.5 * register_count && zero_register_count > 0 {
@@ -146,6 +152,35 @@ impl HyperLogLog {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn exponent_bits_match_original_power_of_two_contributions() {
+        for rank in 0..=MAX_REGISTER_RANK {
+            let encoded = f64::from_bits((1023 - u64::from(rank)) << 52);
+            assert_eq!(encoded, 2.0f64.powi(-i32::from(rank)));
+        }
+    }
+
+    #[test]
+    fn estimate_matches_original_two_pass_reference() {
+        let mut state = HyperLogLog::default();
+        for number in 0..50_000u64 {
+            state.add(HyperLogLog::hash(&number.to_le_bytes()));
+        }
+        let zeros = state.registers.iter().filter(|&&rank| rank == 0).count();
+        let harmonic = state.registers.iter()
+            .map(|&rank| 2.0f64.powi(-i32::from(rank)))
+            .sum::<f64>();
+        let m = REGISTERS as f64;
+        let alpha = 0.7213 / (1.0 + 1.079 / m);
+        let raw = alpha * m * m / harmonic;
+        let estimate = if raw <= 2.5 * m && zeros > 0 {
+            m * (m / zeros as f64).ln()
+        } else {
+            raw
+        };
+        assert_eq!(state.estimate(), estimate.round().min(u64::MAX as f64) as u64);
+    }
 
     #[test]
     fn empty_duplicates_and_small_counts_are_stable() {
