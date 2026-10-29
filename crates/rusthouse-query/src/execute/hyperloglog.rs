@@ -101,7 +101,9 @@ impl HyperLogLog {
         String::from_utf8(bytes).expect("ASCII hex bytes are valid UTF-8")
     }
 
-    fn decode_state(value: &str) -> Result<Self, String> {
+    /// Merge strict encoded state directly into the destination registers,
+    /// without allocating another 16 KiB sketch for every shard.
+    fn merge_encoded(&mut self, value: &str) -> Result<(), String> {
         let bytes = value.as_bytes();
         if bytes.len() != REGISTERS * 2 {
             return Err("invalid HLL register count".into());
@@ -111,23 +113,16 @@ impl HyperLogLog {
             b'a'..=b'f' => Some(value - b'a' + 10),
             _ => None,
         };
-        let mut state = Self::default();
-        for (index, bytes) in bytes.chunks_exact(2).enumerate() {
-            let high = digit(bytes[0]).ok_or("invalid HLL hex state")?;
-            let low = digit(bytes[1]).ok_or("invalid HLL hex state")?;
-            let register = (high << 4) | low;
-            if register > 51 {
+        for (index, pair) in bytes.chunks_exact(2).enumerate() {
+            let high = digit(pair[0]).ok_or("invalid HLL hex state")?;
+            let low = digit(pair[1]).ok_or("invalid HLL hex state")?;
+            let rank = (high << 4) | low;
+            if rank > 51 {
                 return Err("invalid HLL register rank".into());
             }
-            state.registers[index] = register;
+            self.registers[index] = self.registers[index].max(rank);
         }
-        Ok(state)
-    }
-
-    pub(super) fn merge(&mut self, other: &Self) {
-        for (target, &register) in self.registers.iter_mut().zip(other.registers.iter()) {
-            *target = (*target).max(register);
-        }
+        Ok(())
     }
 
     pub(super) fn estimate(&self) -> u64 {
@@ -208,7 +203,7 @@ pub(super) fn merge_state_hex_values(states: &[&str]) -> Result<u64, String> {
     }
     let mut union = HyperLogLog::default();
     for &state in states {
-        union.merge(&HyperLogLog::decode_state(state)?);
+        union.merge_encoded(state)?;
     }
     Ok(union.estimate())
 }
@@ -239,6 +234,22 @@ mod state_tests {
         );
         let empty = HyperLogLog::default().encode_state();
         assert_eq!(merge_state_hex_values(&[&empty]).unwrap(), 0);
+    }
+
+    #[test]
+    fn encoded_merger_is_order_independent_and_exact() {
+        let mut states = std::array::from_fn::<_, 3, _>(|_| HyperLogLog::default());
+        let mut all = HyperLogLog::default();
+        for value in 0..30_000u128 {
+            let number = Number::Unsigned(value);
+            states[value as usize % 3].observe_number(number);
+            all.observe_number(number);
+        }
+        let encoded = states.map(|state| state.encode_state());
+        let expected = all.estimate();
+        assert_eq!(merge_state_hex_values(&[&encoded[0], &encoded[1], &encoded[2]]).unwrap(), expected);
+        assert_eq!(merge_state_hex_values(&[&encoded[2], &encoded[0], &encoded[1]]).unwrap(), expected);
+        assert_eq!(merge_state_hex_values(&[&encoded[0], &encoded[0], &encoded[1], &encoded[2]]).unwrap(), expected);
     }
 
     #[test]
