@@ -18,6 +18,8 @@ def choose_ids(start, rows, count, seed):
         raise ValueError("invalid row domain")
     if start + rows > 2**64 or type(count) is not int or not 1 <= count <= min(rows, 10_000):
         raise ValueError("invalid sample size or UInt64 overflow")
+    if type(seed) is not int or not 0 <= seed <= (1 << 64) - 1:
+        raise ValueError("seed must be UInt64")
     rng = random.Random(seed)
     chosen = set()
     sampled = []
