@@ -65,5 +65,13 @@ class SnapshotBytesTests(unittest.TestCase):
         self.assertEqual(classify("id.bin"), "data_bytes")
 
 
+class SnapshotInventoryBudgetTypeTests(unittest.TestCase):
+    def test_invalid_file_budget_is_rejected_before_traversal(self):
+        with tempfile.TemporaryDirectory() as root:
+            for limit in (True, 0.5, float("nan"), float("inf"), "100"):
+                with self.subTest(limit=limit):
+                    with self.assertRaisesRegex(ValueError, "positive integer"):
+                        inventory(root, max_files=limit)
+
 if __name__ == "__main__":
     unittest.main()
