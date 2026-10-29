@@ -1229,7 +1229,7 @@ pub(super) fn execute_typed<W: Write>(
     let is_count_distinct = matches!(query.projection, Projection::CountDistinct { .. });
     let is_approx_distinct = matches!(query.projection, Projection::ApproxDistinct { .. } | Projection::ApproxDistinctState { .. });
     let is_approx_state = matches!(query.projection, Projection::ApproxDistinctState { .. });
-    let mut sketch = HyperLogLog::default();
+    let mut sketch = is_approx_distinct.then(HyperLogLog::default);
     let is_grouped = matches!(query.projection, Projection::GroupedCount { .. });
     let mut count = 0u64;
     let mut distinct = HashSet::<Vec<Key>>::new();
@@ -1376,7 +1376,7 @@ pub(super) fn execute_typed<W: Write>(
                 continue;
             }
             if is_approx_distinct {
-                sketch.observe(&batch[projection_indices[0]], index)?;
+                sketch.as_mut().expect("approximate DISTINCT sketch").observe(&batch[projection_indices[0]], index)?;
                 continue;
             }
             if is_grouped {
@@ -1780,11 +1780,11 @@ pub(super) fn execute_typed<W: Write>(
     if is_count || is_count_column || is_count_distinct || is_approx_distinct {
         if offset == 0 {
             if is_approx_state {
-                writeln!(output, "{}", sketch.encode_state())?;
+                writeln!(output, "{}", sketch.as_ref().expect("HLL state sketch").encode_state())?;
                 return Ok(());
             }
             let result = if is_approx_distinct {
-                sketch.estimate()
+                sketch.as_ref().expect("approximate DISTINCT sketch").estimate()
             } else if is_count || is_count_column {
                 count
             } else {
