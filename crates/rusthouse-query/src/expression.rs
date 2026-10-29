@@ -44,8 +44,10 @@ impl ScalarExpr {
     }
 }
 
-fn parse_arithmetic_tokens(parser: &mut Parser) -> Result<ScalarExpr, ParseError> {
-    let mut expr = product(parser)?;
+const MAX_EXPRESSION_DEPTH: usize = 64;
+
+fn parse_arithmetic_tokens(parser: &mut Parser, depth: usize) -> Result<ScalarExpr, ParseError> {
+    let mut expr = product(parser, depth)?;
     loop {
         let addition = if parser.take(Token::Plus) {
             true
@@ -54,7 +56,7 @@ fn parse_arithmetic_tokens(parser: &mut Parser) -> Result<ScalarExpr, ParseError
         } else {
             break;
         };
-        let right = product(parser)?;
+        let right = product(parser, depth)?;
         expr = if addition {
             ScalarExpr::Add(Box::new(expr), Box::new(right))
         } else {
@@ -66,7 +68,11 @@ fn parse_arithmetic_tokens(parser: &mut Parser) -> Result<ScalarExpr, ParseError
 
 /// Comparison has lower precedence than addition and multiplication.
 pub(crate) fn parse_expression_tokens(parser: &mut Parser) -> Result<ScalarExpr, ParseError> {
-    let left = parse_arithmetic_tokens(parser)?;
+    parse_expression_tokens_at_depth(parser, 0)
+}
+
+fn parse_expression_tokens_at_depth(parser: &mut Parser, depth: usize) -> Result<ScalarExpr, ParseError> {
+    let left = parse_arithmetic_tokens(parser, depth)?;
     if let Some(Token::Operator(operator)) = parser.tokens.get(parser.index) {
         let operator = *operator;
         if !matches!(operator, Operator::Eq | Operator::Ne | Operator::Lt
@@ -74,7 +80,7 @@ pub(crate) fn parse_expression_tokens(parser: &mut Parser) -> Result<ScalarExpr,
             return Err(ParseError("invalid operator in numeric expression".into()));
         }
         parser.index += 1;
-        let right = parse_arithmetic_tokens(parser)?;
+        let right = parse_arithmetic_tokens(parser, depth)?;
         Ok(ScalarExpr::Compare(Box::new(left), operator, Box::new(right)))
     } else {
         Ok(left)
@@ -203,6 +209,18 @@ mod tests {
         assert!(matches!(expr, ScalarExpr::Compare(..)));
         assert!(parse_scalar_expression("amount >").is_err());
         assert!(parse_scalar_expression("amount > 1 > 2").is_err());
+    }
+
+    #[test]
+    fn rejects_excessive_parentheses_and_unary_sign_nesting() {
+        for expression in [
+            format!("{}1{}", "(".repeat(1000), ")".repeat(1000)),
+            format!("{}1", "-".repeat(1000)),
+            format!("{}1", "+".repeat(1000)),
+        ] {
+            assert!(parse_scalar_expression(&expression).is_err());
+        }
+        assert!(parse_scalar_expression(&format!("{}1{}", "(".repeat(16), ")".repeat(16))).is_ok());
     }
 
     #[test]
