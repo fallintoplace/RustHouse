@@ -623,6 +623,39 @@ pub(super) fn execute_grouped_numbers<W: Write>(
     if query.limit == Some(0) {
         return groups.write(query, column, output);
     }
+    // Key order already follows (or reverses) the generated arithmetic
+    // progression. No per-key hash state or full result sort is needed.
+    if query.limit.is_none() && query.having.is_none()
+        && query.order_by_extra.is_empty() && step != 0
+    {
+        if let Some(order) = query.order_by.as_ref().filter(|order| order.column == "number") {
+            let bounds = if query.predicates.is_empty() && query.or_predicates.is_empty() {
+                Some((0, rows))
+            } else {
+                monotonic_range_indices(&comparisons, start, rows, step)
+            };
+            if let Some((lower, upper)) = bounds {
+                let selected = upper - lower;
+                if selected > MAX_GROUPS as u64 {
+                    return Err(ExecutionError::Invalid(
+                        "GROUP BY supports at most 200000 groups".into(),
+                    ));
+                }
+                writeln!(output, "{column}\t{}", query.alias.as_deref().unwrap_or("count"))?;
+                let begin = (query.offset.unwrap_or(0) as u64).min(selected);
+                for position in begin..selected {
+                    let index = if order.descending {
+                        upper - 1 - position
+                    } else {
+                        lower + position
+                    };
+                    let value = u128::from(start) + u128::from(index) * u128::from(step);
+                    writeln!(output, "{value}\t1")?;
+                }
+                return Ok(());
+            }
+        }
+    }
     // GROUP BY number contains exactly one row per generated key. If the
     // client requests a bounded unordered page, jump directly to its keys.
     if query.predicates.is_empty()
