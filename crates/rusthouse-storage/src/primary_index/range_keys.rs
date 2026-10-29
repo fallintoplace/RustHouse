@@ -1,6 +1,6 @@
 use super::*;
 
-fn monotonic_mark_keys<T: Ord + Copy>(len: usize, key_at: &impl Fn(usize) -> Option<T>) -> bool {
+fn mark_keys_sorted<T: Ord + Copy>(len: usize, key_at: &impl Fn(usize) -> Option<T>) -> bool {
     let mut previous = None;
     for mark in 0..len {
         let Some(key) = key_at(mark) else {
@@ -58,7 +58,7 @@ pub(super) fn candidate_mark_range<T: Ord + Copy>(
     if matches!(lower, Bound::Unbounded) && matches!(upper, Bound::Unbounded) {
         return Some(0..len);
     }
-    monotonic_mark_keys(len, &key_at)
+    mark_keys_sorted(len, &key_at)
         .then(|| candidate_mark_range_sorted(len, &key_at, lower, upper))
 }
 
@@ -82,7 +82,7 @@ pub(super) fn candidate_mark_ranges<T: Ord + Copy>(
             std::iter::once(0..len).collect()
         });
     }
-    if !monotonic_mark_keys(len, &key_at) {
+    if !mark_keys_sorted(len, &key_at) {
         return None;
     }
     if let [(lower, upper)] = intervals {
@@ -112,14 +112,16 @@ pub(super) fn candidate_mark_ranges<T: Ord + Copy>(
     Some(merged)
 }
 
+fn key_bytes(index: &FixedPrimaryIndex, mark: usize, field: usize) -> Option<[u8; 8]> {
+    index.field(mark, field)?.try_into().ok()
+}
+
 pub(super) fn u64_mark_key(index: &FixedPrimaryIndex, mark: usize, field: usize) -> Option<u64> {
-    let bytes: [u8; 8] = index.field(mark, field)?.try_into().ok()?;
-    Some(u64::from_le_bytes(bytes))
+    Some(u64::from_le_bytes(key_bytes(index, mark, field)?))
 }
 
 pub(super) fn i64_mark_key(index: &FixedPrimaryIndex, mark: usize, field: usize) -> Option<i64> {
-    let bytes: [u8; 8] = index.field(mark, field)?.try_into().ok()?;
-    Some(i64::from_le_bytes(bytes))
+    Some(i64::from_le_bytes(key_bytes(index, mark, field)?))
 }
 
 #[cfg(test)]
