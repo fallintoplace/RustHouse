@@ -7,6 +7,17 @@ from pathlib import Path
 MAX_RECORD_BYTES = 8 * 1024 * 1024
 
 
+def validate_record(raw, columns, number):
+    if len(raw) > MAX_RECORD_BYTES or not raw.endswith(b"\n"):
+        raise ValueError(f"record {number}: oversized or truncated")
+    row = raw.removesuffix(b"\n").removesuffix(b"\r")
+    if not row or row.count(b"\t") != columns - 1:
+        raise ValueError(f"record {number}: invalid column count or empty row")
+    if b"\x00" in row:
+        raise ValueError(f"record {number}: raw NUL byte")
+    row.decode("utf-8", errors="strict")
+
+
 def profile(path, *, columns=1, header=False, min_rows=1):
     if type(columns) is not int or not 1 <= columns <= 1024:
         raise ValueError("columns must be in 1..1024")
@@ -22,14 +33,7 @@ def profile(path, *, columns=1, header=False, min_rows=1):
             raw = stream.readline(MAX_RECORD_BYTES + 1)
             if not raw:
                 break
-            if len(raw) > MAX_RECORD_BYTES or not raw.endswith(b"\n"):
-                raise ValueError(f"record {records + 1}: oversized or truncated")
-            row = raw.removesuffix(b"\n").removesuffix(b"\r")
-            if not row or row.count(b"\t") != columns - 1:
-                raise ValueError(f"record {records + 1}: invalid column count or empty row")
-            if b"\x00" in row:
-                raise ValueError(f"record {records + 1}: raw NUL byte")
-            row.decode("utf-8", errors="strict")
+            validate_record(raw, columns, records + 1)
             digest.update(raw)
             bytes_read += len(raw)
             records += 1
