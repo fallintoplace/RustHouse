@@ -20,7 +20,7 @@ fn bitfloor_handles_signed_inputs_and_errors() {
         ("3", 2),
         ("9", 8),
         ("1024", 1024),
-        ("9223372036854775807", 4611686018427388000),
+        ("9223372036854775807", 4611686018427387904),
     ] {
         let sql = format!("SELECT bitFloor({input})");
         assert_eq!(scalar(&sql), expected, "{sql}");

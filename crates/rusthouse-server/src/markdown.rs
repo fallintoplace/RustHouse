@@ -59,6 +59,25 @@ fn decode_tsv_markdown_field(field: &[u8], data_row: bool) -> io::Result<Cow<'_,
     }
 }
 
+// Plain fields are the common Markdown response case. Send the complete
+// framed cell in one write, while escaping special fields with the old path.
+fn write_framed_cell<W: Write>(output: &mut W, field: &[u8]) -> io::Result<()> {
+    if field.len() <= 256
+        && field.iter().all(|&byte| {
+            !byte.is_ascii_control() && !matches!(byte, b'|' | b'\\' | b'&' | b'<' | b'>')
+        })
+    {
+        let mut framed = [0u8; 259];
+        framed[0] = b' ';
+        framed[1..field.len() + 1].copy_from_slice(field);
+        framed[field.len() + 1..field.len() + 3].copy_from_slice(b" |");
+        return output.write_all(&framed[..field.len() + 3]);
+    }
+    output.write_all(b" ")?;
+    write_cell(output, field)?;
+    output.write_all(b" |")
+}
+
 fn write_markdown_row<W: Write>(output: &mut W, line: &[u8], data_row: bool) -> io::Result<()> {
     if !line.contains(&b'\\') {
         // Validate before writing, so malformed UTF-8 never leaves a partial row.
@@ -67,9 +86,7 @@ fn write_markdown_row<W: Write>(output: &mut W, line: &[u8], data_row: bool) -> 
         })?;
         output.write_all(b"|")?;
         for field in line.split(|&byte| byte == b'\t') {
-            output.write_all(b" ")?;
-            write_cell(output, field)?;
-            output.write_all(b" |")?;
+            write_framed_cell(output, field)?;
         }
         return output.write_all(b"\n");
     }
@@ -84,9 +101,7 @@ fn write_markdown_row<W: Write>(output: &mut W, line: &[u8], data_row: bool) -> 
     }
     output.write_all(b"|")?;
     for field in fields {
-        output.write_all(b" ")?;
-        write_cell(output, field.as_ref())?;
-        output.write_all(b" |")?;
+        write_framed_cell(output, field.as_ref())?;
     }
     output.write_all(b"\n")
 }
@@ -178,6 +193,31 @@ mod tests {
         writer.write_all(format!("{item}\n").as_bytes()).unwrap();
         assert_eq!(writer.line.capacity(), before);
         assert!(writer.output.ends_with(format!("| {item} |\n").as_bytes()));
+    }
+
+    #[test]
+    fn plain_markdown_cells_need_one_output_call() {
+        struct Count {
+            writes: usize,
+            bytes: Vec<u8>,
+        }
+        impl Write for Count {
+            fn write(&mut self, bytes: &[u8]) -> io::Result<usize> {
+                self.writes += 1;
+                self.bytes.extend_from_slice(bytes);
+                Ok(bytes.len())
+            }
+            fn flush(&mut self) -> io::Result<()> { Ok(()) }
+        }
+        let mut writer = Count { writes: 0, bytes: Vec::new() };
+        write_framed_cell(&mut writer, "München".as_bytes()).unwrap();
+        write_framed_cell(&mut writer, b"42").unwrap();
+        assert_eq!(writer.writes, 2);
+        assert_eq!(writer.bytes, " München | 42 |".as_bytes());
+
+        let mut special = Vec::new();
+        write_framed_cell(&mut special, b"a|b & <c>").unwrap();
+        assert_eq!(special, b" a\\|b &amp; &lt;c&gt; |");
     }
 
     #[test]
