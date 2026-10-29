@@ -648,7 +648,7 @@ fn parse_at_depth(parser: &mut Parser, depth: usize) -> Result<ConstantValue, Pa
             require(parser, Token::RParen, "UPPERUTF8 requires one argument")?;
             match input {
                 Some(input) => {
-                    let output = input.to_uppercase();
+                    let output = if input.is_ascii() { input.to_ascii_uppercase() } else { input.to_uppercase() };
                     if output.len() > MAX_TEXT_BYTES {
                         return Err(ParseError("upperUTF8 result is too large".into()));
                     }
