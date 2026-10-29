@@ -2,8 +2,10 @@
 //! Keep the numeric-only executor unchanged for its optimized fast paths.
 
 mod like;
+mod spill;
 
 use self::like::*;
+use self::spill::TypedExternalSort;
 use super::hyperloglog::HyperLogLog;
 
 use super::{BitmapDistinct32, ExecutionError, Number, NumberKey, compare_numbers, number_at};
@@ -1115,7 +1117,7 @@ pub(super) fn execute_typed<W: Write>(
     let mut text_group_indices = HashMap::<Vec<u8>, usize>::new();
     let mut uuid_group_indices = HashMap::<[u8; 16], usize>::new();
     let mut grouped_rows = Vec::<(Cell, u64)>::new();
-    let mut ordered = Vec::<Row>::new();
+    // Typed ORDER BY spills sorted runs when the bounded top-k heap cannot be used.
     let mut top = BinaryHeap::<TopRow>::new();
     let mut ordinal = 0usize;
     let mut emitted = 0usize;
@@ -1137,6 +1139,9 @@ pub(super) fn execute_typed<W: Write>(
             None => {}
         }
     }
+    let mut external_sort = TypedExternalSort::new(
+        descending_mask, nulls_first_mask, nulls_last_mask,
+    );
     let top_capacity = if sort_indices.is_empty() {
         None
     } else {
@@ -1504,12 +1509,7 @@ pub(super) fn execute_typed<W: Write>(
                         *top.peek_mut().unwrap() = next;
                     }
                 } else {
-                    if ordered.len() >= MAX_BUFFERED_ROWS {
-                        return Err(ExecutionError::Invalid(
-                            "typed ORDER BY exceeds 100000 matching rows".into(),
-                        ));
-                    }
-                    ordered.push(row);
+                    external_sort.push(row)?;
                 }
                 continue;
             }
@@ -1628,18 +1628,7 @@ pub(super) fn execute_typed<W: Write>(
                 write_row(output, &entry.row.values, &projection_types)?;
             }
         } else {
-            ordered.sort_by(|left, right| {
-                compare_sort_keys(
-                    &left.sort_keys,
-                    &right.sort_keys,
-                    descending_mask,
-                    nulls_first_mask,
-                    nulls_last_mask,
-                )
-            });
-            for row in ordered.into_iter().skip(offset).take(limit) {
-                write_row(output, &row.values, &projection_types)?;
-            }
+            external_sort.write(output, &projection_types, offset, limit)?;
         }
     }
     Ok(())
