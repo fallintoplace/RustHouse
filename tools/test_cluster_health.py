@@ -10,6 +10,20 @@ class ClusterTests(unittest.TestCase):
         self.assertFalse(validate({"total": 1, "healthy": 0,
                                    "peers": [{"address": "127.0.0.1:8124", "healthy": False}]}))
 
+    def test_explicit_healthy_peer_threshold(self):
+        payload = {"total": 3, "healthy": 2, "peers": [
+            {"address": "a", "healthy": True},
+            {"address": "b", "healthy": True},
+            {"address": "c", "healthy": False},
+        ]}
+        self.assertFalse(validate(payload))
+        self.assertTrue(validate(payload, min_healthy=2))
+        self.assertFalse(validate(payload, min_healthy=3))
+        with self.assertRaisesRegex(ValueError, "min_healthy"):
+            validate(payload, min_healthy=4)
+        with self.assertRaisesRegex(ValueError, "min_healthy"):
+            validate(payload, min_healthy=True)
+
     def test_inconsistent_count_rejected(self):
         with self.assertRaises(ValueError):
             validate({"total": 1, "healthy": 1,
