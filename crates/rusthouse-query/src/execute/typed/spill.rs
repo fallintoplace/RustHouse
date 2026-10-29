@@ -115,6 +115,13 @@ fn write_bytes(output: &mut impl Write, value: &[u8]) -> Result<(), ExecutionErr
     if value.len() > MAX_FIELD_BYTES {
         return Err(invalid("typed sort value exceeds 32 MiB field limit"));
     }
+    if value.len() <= 128 {
+        let mut frame = [0u8; 132];
+        frame[..4].copy_from_slice(&length.to_le_bytes());
+        frame[4..4 + value.len()].copy_from_slice(value);
+        output.write_all(&frame[..4 + value.len()])?;
+        return Ok(());
+    }
     output.write_all(&length.to_le_bytes())?;
     output.write_all(value)?;
     Ok(())
@@ -445,6 +452,25 @@ mod tests {
             values: vec![Cell::Text(text.as_bytes().to_vec()), Cell::Numeric(Number::Unsigned(value as u128))],
             sort_keys: vec![Cell::Numeric(Number::Unsigned(value as u128))],
         }
+    }
+
+    #[test]
+    fn short_string_spill_frame_uses_one_write() {
+        struct Calls { count: usize, bytes: Vec<u8> }
+        impl Write for Calls {
+            fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
+                self.count += 1;
+                self.bytes.extend_from_slice(bytes);
+                Ok(bytes.len())
+            }
+            fn flush(&mut self) -> std::io::Result<()> { Ok(()) }
+        }
+        let mut output = Calls { count: 0, bytes: Vec::new() };
+        write_bytes(&mut output, b"hello").unwrap();
+        let mut expected = 5u32.to_le_bytes().to_vec();
+        expected.extend_from_slice(b"hello");
+        assert_eq!(output.count, 1);
+        assert_eq!(output.bytes, expected);
     }
 
     #[test]
