@@ -80,10 +80,26 @@ fn read_plain_wide_marks(path: &Path, format: WideMarkFormat) -> Result<Vec<Wide
         });
     }
     let file = File::open(path).map_err(|source| marks_io_error(path, source))?;
-    let size = file
+    let opened = file
         .metadata()
-        .map_err(|source| marks_io_error(path, source))?
-        .len();
+        .map_err(|source| marks_io_error(path, source))?;
+    if !opened.file_type().is_file() {
+        return Err(marks_io_error(
+            path,
+            io::Error::new(io::ErrorKind::InvalidData, "marks file changed before open"),
+        ));
+    }
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::MetadataExt;
+        if entry.dev() != opened.dev() || entry.ino() != opened.ino() {
+            return Err(marks_io_error(
+                path,
+                io::Error::new(io::ErrorKind::InvalidData, "marks file inode changed"),
+            ));
+        }
+    }
+    let size = opened.len();
     if size > MAX_MARKS_BYTES as u64 {
         return Err(marks_too_large(path));
     }
@@ -482,5 +498,24 @@ mod tests {
                 "split {split}"
             );
         }
+    }
+}
+
+#[cfg(test)]
+mod raw_mark_identity_tests {
+    use super::*;
+
+    #[test]
+    fn raw_mark_reader_accepts_regular_files_only() {
+        let dir = std::env::temp_dir().join(format!(
+            "rusthouse-raw-mark-identity-{}", std::process::id()
+        ));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("one.mrk");
+        std::fs::write(&path, [0u8; 16]).unwrap();
+        assert_eq!(read_wide_marks(&path).unwrap().marks.len(), 1);
+        assert!(read_wide_marks(dir.join("missing.mrk")).is_err());
+        std::fs::remove_dir_all(dir).unwrap();
     }
 }

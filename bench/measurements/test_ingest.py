@@ -81,5 +81,17 @@ class IngestBenchmarkTests(unittest.TestCase):
             runner.benchmark(Path("/missing"), 3, 1, 0, 1, 1, "TSV")
 
 
+    def test_buffered_fixture_matches_one_row_reference(self):
+        with tempfile.TemporaryDirectory() as temp:
+            single = Path(temp) / "single.tsv"
+            batched = Path(temp) / "batched.tsv"
+            baseline = runner.write_input(single, 10003, 17, batch_rows=1)
+            generated = runner.write_input(batched, 10003, 17, batch_rows=4096)
+            self.assertEqual(baseline, generated)
+            self.assertEqual(single.read_bytes(), batched.read_bytes())
+            with self.assertRaisesRegex(ValueError, "batch_rows"):
+                runner.write_input(batched, 1, 1, batch_rows=0)
+
+
 if __name__ == "__main__":
     unittest.main()

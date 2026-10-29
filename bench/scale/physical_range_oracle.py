@@ -21,14 +21,16 @@ def expected(start, count):
     return count, count * (2 * start + count - 1) // 2
 
 
-def sql_for(table, first, count):
+def sql_for(table, first, count, column="id"):
     if not re.fullmatch(r"[A-Za-z_][A-Za-z_0-9]*", table):
         raise ValueError("unsafe table name")
+    if not re.fullmatch(r"[A-Za-z_][A-Za-z_0-9]*", column):
+        raise ValueError("unsafe column name")
     expected(first, count)
-    upper = (f"id < {first + count}" if first + count < 2**64
-             else f"id <= {2**64 - 1}")
-    return (f"SELECT count(*), sum(id) FROM {table} WHERE "
-            f"id >= {first} AND {upper}")
+    upper = (f"{column} < {first + count}" if first + count < 2**64
+             else f"{column} <= {2**64 - 1}")
+    return (f"SELECT count(*), sum({column}) FROM {table} WHERE "
+            f"{column} >= {first} AND {upper}")
 
 
 def invoke(binary, database, statement, timeout):
@@ -43,10 +45,12 @@ def invoke(binary, database, statement, timeout):
 
 
 def verify(binary, database, table, start, rows, window_rows=10_000_000,
-           timeout=1800, execute=None):
+           timeout=1800, execute=None, column="id"):
     expected(start, rows)
     if type(window_rows) is not int or window_rows < 1:
         raise ValueError("window_rows must be positive")
+    if (rows - 1) // window_rows + 1 > 10_000:
+        raise ValueError("range oracle exceeds 10000 query windows")
     if timeout <= 0 or not math.isfinite(timeout):
         raise ValueError("timeout must be finite and positive")
     execute = execute or (lambda statement: invoke(binary, database, statement, timeout))
@@ -55,7 +59,7 @@ def verify(binary, database, table, start, rows, window_rows=10_000_000,
     sum_total = 0
     for position in range(start, start + rows, window_rows):
         count = min(window_rows, start + rows - position)
-        query = sql_for(table, position, count)
+        query = sql_for(table, position, count, column=column)
         begun = time.perf_counter()
         data = execute(query)
         seconds.append(time.perf_counter() - begun)
@@ -77,6 +81,7 @@ def main(argv=None):
     parser.add_argument("--binary", required=True)
     parser.add_argument("--database", required=True)
     parser.add_argument("--table", required=True)
+    parser.add_argument("--column", default="id")
     parser.add_argument("--start", type=int, default=0)
     parser.add_argument("--rows", type=int, required=True)
     parser.add_argument("--window-rows", type=int, default=10_000_000)
@@ -84,7 +89,7 @@ def main(argv=None):
     args = parser.parse_args(argv)
     try:
         result = verify(args.binary, args.database, args.table, args.start, args.rows,
-                        args.window_rows, args.timeout)
+                        args.window_rows, args.timeout, column=args.column)
     except (OSError, ValueError, RuntimeError, subprocess.TimeoutExpired) as error:
         parser.exit(1, f"physical range oracle failed: {error}\n")
     print(json.dumps(result))

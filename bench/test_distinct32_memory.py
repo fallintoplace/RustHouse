@@ -45,6 +45,16 @@ class ExactDistinctMemoryFixtureTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             list(distinct_values(5, "bad"))
 
+    def test_buffer_flush_boundaries_preserve_all_duplicates(self):
+        with tempfile.TemporaryDirectory() as temp:
+            source = Path(temp) / "distinct.tsv"
+            unique = write_tsv(source, 8193, "sparse", 2)
+            lines = source.read_text().splitlines()
+            self.assertEqual(unique, 8193)
+            self.assertEqual(len(lines), 1 + 8193 * 2)
+            self.assertEqual(lines[-1], lines[-2])
+            self.assertEqual(lines[1], lines[2])
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -38,6 +38,17 @@ class MassiveTsvGeneratorTests(unittest.TestCase):
             self.assertEqual(path.read_text(), "5\n6\n")
             self.assertEqual(list(Path(root).glob("*.tmp")), [])
 
+    def test_dangling_symlink_is_not_overwritten(self):
+        import sys
+        if sys.platform == "win32":
+            self.skipTest("symlinks are not available on Windows CI")
+        with tempfile.TemporaryDirectory() as root:
+            path = Path(root) / "huge.tsv"
+            path.symlink_to(Path(root) / "missing.tsv")
+            with self.assertRaises(FileExistsError):
+                generate(path, 3)
+            self.assertTrue(path.is_symlink())
+
 
 if __name__ == "__main__":
     unittest.main()

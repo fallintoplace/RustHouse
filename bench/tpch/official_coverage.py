@@ -11,7 +11,7 @@ import sys
 from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from common import cli_sql, emit_json
-from run import benchmark_one, summarize_coverage
+from run import benchmark_one, summarize_coverage, query_fingerprint
 
 
 def clean_sql(path):
@@ -30,6 +30,7 @@ def coverage(binary, database, query_dir, reference_dir=None, runs=3, warmups=1,
     if execute is None:
         execute = lambda sql: cli_sql(binary, database, sql, timeout)
     results = []
+    executed_sql = []
     for number in range(1, 23):
         path = Path(query_dir) / f"q{number:02d}.sql"
         if not path.is_file():
@@ -42,6 +43,7 @@ def coverage(binary, database, query_dir, reference_dir=None, runs=3, warmups=1,
                             "timings_seconds": [], "latency": None,
                             "error": "empty query or exceeds SQL statement limit"})
             continue
+        executed_sql.append((number, sql))
         reference = None
         if reference_dir is not None:
             ref = Path(reference_dir) / f"q{number:02d}.tsv"
@@ -52,6 +54,7 @@ def coverage(binary, database, query_dir, reference_dir=None, runs=3, warmups=1,
             reference = ref.read_bytes()
         results.append(benchmark_one(number, sql, execute, runs, warmups, reference))
     return {"workload": "tpch-22-query-execution-inventory",
+            "query_sha256": query_fingerprint(executed_sql),
             "official_tpch_score": False, "reference_checked": reference_dir is not None,
             "coverage": summarize_coverage(results), "results": results}
 

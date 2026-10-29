@@ -31,7 +31,7 @@ def emit_rows(stream, rows, *, start=0, batch_rows=8192, header=False):
 
 def generate(path, rows, *, start=0, batch_rows=8192, header=False, force=False):
     path = Path(path)
-    if path.exists() and not force:
+    if (path.exists() or path.is_symlink()) and not force:
         raise FileExistsError(f"refusing to overwrite {path} without --force")
     path.parent.mkdir(parents=True, exist_ok=True)
     temporary = None
@@ -42,7 +42,12 @@ def generate(path, rows, *, start=0, batch_rows=8192, header=False, force=False)
         ) as stream:
             temporary = Path(stream.name)
             emit_rows(stream, rows, start=start, batch_rows=batch_rows, header=header)
-        os.replace(temporary, path)
+            stream.flush()
+            os.fsync(stream.fileno())
+        if force:
+            os.replace(temporary, path)
+        else:
+            os.link(temporary, path)
     finally:
         if temporary is not None:
             temporary.unlink(missing_ok=True)
