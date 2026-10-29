@@ -153,5 +153,17 @@ class AnalyticsRunnerTests(unittest.TestCase):
         self.assertEqual(results[1]["seconds"].__len__(), 3)
 
 
+    def test_http_benchmark_refuses_redirects(self):
+        self.assertIsNone(runner.NoRedirect().redirect_request(
+            None, None, 302, "Found", {}, "http://example.org/query"
+        ))
+        with mock.patch.object(runner, "HTTP_OPENER") as opener:
+            opener.open.return_value.__enter__.return_value.read.return_value = b"7\n"
+            self.assertEqual(
+                runner.execute_http("http://127.0.0.1:8123/", "SELECT 7", 2),
+                b"7\n",
+            )
+            self.assertEqual(opener.open.call_count, 1)
+
 if __name__ == "__main__":
     unittest.main()
