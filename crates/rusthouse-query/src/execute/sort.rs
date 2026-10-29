@@ -120,7 +120,7 @@ fn merge_runs(
     inputs: &[PathBuf],
     descending: bool,
     directions: &Arc<[bool]>,
-    mut output: impl FnMut(&SortedRow) -> Result<(), ExecutionError>,
+    mut output: impl FnMut(&SortedRow) -> Result<bool, ExecutionError>,
 ) -> Result<(), ExecutionError> {
     let mut streams = inputs.iter().map(File::open)
         .map(|source| source.map(BufReader::new))
@@ -132,7 +132,9 @@ fn merge_runs(
         }
     }
     while let Some(Reverse((row, index))) = heap.pop() {
-        output(&row)?;
+        if !output(&row)? {
+            return Ok(());
+        }
         if let Some(next) = read_sorted_row(&mut streams[index], descending, directions)? {
             heap.push(Reverse((next, index)));
         }
@@ -440,7 +442,8 @@ impl SortedRows {
                     let mut writer = BufWriter::new(OpenOptions::new()
                         .create_new(true).write(true).open(&path)?);
                     merge_runs(group, self.descending, &self.extra_descending, |row| {
-                        write_sorted_row(&mut writer, row)
+                        write_sorted_row(&mut writer, row)?;
+                        Ok(true)
                     })?;
                     writer.flush()?;
                     self.charge_temp(&path)?;
@@ -464,7 +467,7 @@ impl SortedRows {
                     returned += 1;
                 }
                 scanned += 1;
-                Ok(())
+                Ok(returned < limit)
             })?;
             return Ok(());
         }
@@ -495,6 +498,35 @@ mod tests {
         }
         encoded[9] = 1;
         assert!(read_number(&mut encoded.as_slice()).is_err());
+    }
+
+    #[test]
+    fn numeric_spill_merge_can_stop_before_decoding_corrupt_unneeded_tail() {
+        let scratch = SortScratch::new().unwrap();
+        let path = scratch.0.join("run.bin");
+        {
+            let mut output = BufWriter::new(File::create(&path).unwrap());
+            for value in 0..2u128 {
+                let row = SortedRow {
+                    key: Number::Unsigned(value),
+                    extra_keys: vec![],
+                    values: vec![Number::Unsigned(value)],
+                    sequence: value as usize,
+                    descending: false,
+                    extra_descending: Arc::from(Vec::<bool>::new()),
+                };
+                write_sorted_row(&mut output, &row).unwrap();
+            }
+            output.flush().unwrap();
+        }
+        OpenOptions::new().append(true).open(&path).unwrap()
+            .write_all(b"x").unwrap();
+        let mut seen = Vec::new();
+        merge_runs(&[path], false, &Arc::from(Vec::<bool>::new()), |row| {
+            seen.push(row.sequence);
+            Ok(seen.len() < 1)
+        }).unwrap();
+        assert_eq!(seen, [0]);
     }
 
     #[test]
