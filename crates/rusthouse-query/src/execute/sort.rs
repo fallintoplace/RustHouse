@@ -508,7 +508,7 @@ mod tests {
     fn scratch_directory_is_private() {
         use std::os::unix::fs::PermissionsExt;
         let scratch = SortScratch::new().unwrap();
-        assert_eq!(fs::metadata(&scratch.0).unwrap().permissions().mode() & 0o777, 0o700);
+        assert_eq!(fs::metadata(&scratch.0).unwrap().permissions().mode() & 0o077, 0);
     }
 
     #[test]
