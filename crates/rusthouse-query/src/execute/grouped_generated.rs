@@ -5,6 +5,32 @@ use std::cmp::Ordering;
 use std::io::Write;
 
 const MAX_GROUPS: usize = 200_000;
+const MAX_GENERATED_GROUP_BYTES: usize = 64 * 1024 * 1024;
+
+/// Each generated group owns one aggregate-state vector. The group-count
+/// ceiling alone cannot bound memory when a query selects many metrics.
+fn charge_group_states(
+    used: &mut usize,
+    items: &[(AggregateFunction, String)],
+) -> Result<(), ExecutionError> {
+    let state_bytes = items.len().checked_mul(std::mem::size_of::<AggregateState>())
+        .ok_or_else(|| ExecutionError::Invalid("generated group memory overflow".into()))?;
+    let median_slots = items.iter().filter(|(function, _)| {
+        *function == AggregateFunction::Median
+    }).count().checked_mul(4 * std::mem::size_of::<Number>())
+        .ok_or_else(|| ExecutionError::Invalid("generated group memory overflow".into()))?;
+    let next = used.checked_add(std::mem::size_of::<(u128, Vec<AggregateState>)>())
+        .and_then(|bytes| bytes.checked_add(state_bytes))
+        .and_then(|bytes| bytes.checked_add(median_slots))
+        .ok_or_else(|| ExecutionError::Invalid("generated group memory overflow".into()))?;
+    if next > MAX_GENERATED_GROUP_BYTES {
+        return Err(ExecutionError::Invalid(
+            "generated GROUP BY exceeds 64 MiB state budget".into()
+        ));
+    }
+    *used = next;
+    Ok(())
+}
 
 pub(super) fn execute<W: Write>(
     query: &Select,
@@ -63,6 +89,7 @@ pub(super) fn execute<W: Write>(
         }
     }
     let mut groups=Vec::<(u128,Vec<AggregateState>)>::new();
+    let mut retained_state_bytes = 0usize;
     for index in 0..rows {
         let value=u128::from(start)+u128::from(index)*u128::from(step);
         if !number_matches_all(Number::Unsigned(value),&comparisons) {continue;}
@@ -72,6 +99,7 @@ pub(super) fn execute<W: Write>(
         }
         // The virtual number column is unique for nonzero steps. Every row
         // forms one group and can share the regular aggregate-state semantics.
+        charge_group_states(&mut retained_state_bytes, items)?;
         let mut states=Vec::with_capacity(items.len());
         for (function,_) in items {
             let mut state=AggregateState::new(*function);
@@ -161,5 +189,24 @@ mod generated_multi_group_having_tests {
             "SELECT number, sum(number), max(number) FROM numbers(4) \
              GROUP BY number HAVING max(number) > 100"
         ), "number\tsum(number)\tmax(number)\n");
+    }
+}
+
+#[cfg(test)]
+mod generated_group_state_budget_tests {
+    use super::*;
+
+    #[test]
+    fn budgets_wide_group_metric_vectors_before_allocating() {
+        let items = (0..64).map(|_| (AggregateFunction::Sum, "number".into()))
+            .collect::<Vec<_>>();
+        let mut used = 0;
+        charge_group_states(&mut used, &items).unwrap();
+        let first = used;
+        charge_group_states(&mut used, &items).unwrap();
+        assert_eq!(used, first * 2);
+        used = MAX_GENERATED_GROUP_BYTES - 1;
+        assert!(charge_group_states(&mut used, &items).is_err());
+        assert_eq!(used, MAX_GENERATED_GROUP_BYTES - 1);
     }
 }
