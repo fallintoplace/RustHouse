@@ -6,7 +6,8 @@ const MAX_TEXT_BYTES: usize = 1_048_576;
 pub(super) fn is_function(name: &str) -> bool {
     super::date_scalar::is_function(name) || matches!(
         name.to_ascii_uppercase().as_str(),
-        "LENGTH"
+        "IPV4NUMTOSTRINGCLASSC"
+            | "LENGTH"
             | "TOYEAR"
             | "LENGTHUTF8"
             | "TOSTARTOFFIVEMINUTES"
@@ -302,6 +303,24 @@ fn parse_at_depth(parser: &mut Parser, depth: usize) -> Result<ConstantValue, Pa
     }
     let value = match name.as_str() {
 
+        "IPV4NUMTOSTRINGCLASSC" => {
+            let value = integer_arg(parser, depth + 1)?;
+            require(
+                parser,
+                Token::RParen,
+                "IPv4NumToStringClassC requires one argument",
+            )?;
+            match value {
+                Some(value) => {
+                    let numeric = u32::try_from(value).map_err(|_| {
+                        ParseError("IPv4NumToStringClassC requires UInt32".into())
+                    })?;
+                    let [a, b, c, _] = numeric.to_be_bytes();
+                    ConstantValue::Text(format!("{a}.{b}.{c}.xxx"))
+                }
+                None => ConstantValue::Null,
+            }
+        }
         "PORT" => {
             let input = text_arg(parser, depth + 1)?;
             let fallback = if parser.take(Token::Comma) {
@@ -3575,5 +3594,28 @@ mod ch_position_byte_tests {
         for sql in ["SELECT position('abc')", "SELECT position('abc','a','x')"] {
             assert!(parse_select(sql).is_err(), "{sql}");
         }
+    }
+}
+
+#[cfg(test)]
+mod clickhouse_ipv4_class_c_tests {
+    use crate::{parse_select, ConstantValue, Projection};
+
+    #[test]
+    fn redacts_low_octet_of_network_order_ipv4() {
+        for (sql, expected) in [
+            ("SELECT IPv4NumToStringClassC(3232235521)", "192.168.0.xxx"),
+            ("SELECT IPv4NumToStringClassC(0)", "0.0.0.xxx"),
+            ("SELECT IPv4NumToStringClassC(4294967295)", "255.255.255.xxx"),
+        ] {
+            assert!(
+                matches!(parse_select(sql).unwrap().projection, Projection::Constants(values)
+                    if values.len() == 1
+                        && values[0].value == ConstantValue::Text(expected.into())),
+                "{sql}",
+            );
+        }
+        assert!(parse_select("SELECT IPv4NumToStringClassC(-1)").is_err());
+        assert!(parse_select("SELECT IPv4NumToStringClassC(1,2)").is_err());
     }
 }
