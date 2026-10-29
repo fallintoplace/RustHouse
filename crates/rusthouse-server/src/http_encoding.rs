@@ -35,7 +35,9 @@ pub(super) fn decode_url(value: &str) -> Result<String, &'static str> {
             value.to_owned()
         });
     }
-    let mut decoded = Vec::with_capacity(bytes.len());
+    // Percent escapes can triple the encoded length. Bound allocation by
+    // the maximum decoded query size instead of the wire-size buffer.
+    let mut decoded = Vec::with_capacity(bytes.len().min(MAX_QUERY_BYTES));
     let mut index = 0;
     while index < bytes.len() {
         let ch = bytes[index];
@@ -114,6 +116,21 @@ pub(super) fn write_json_string<W: Write>(writer: &mut W, value: &str) -> io::Re
     }
     buffer[used] = b'"';
     writer.write_all(&buffer[..used + 1])
+}
+
+#[cfg(test)]
+mod percent_decoding_allocation_tests {
+    use super::*;
+
+    #[test]
+    fn decodes_maximum_percent_encoded_sql_without_overallocating() {
+        let encoded = "%41".repeat(MAX_QUERY_BYTES);
+        let value = decode_url(&encoded).unwrap();
+        assert_eq!(value.len(), MAX_QUERY_BYTES);
+        assert!(value.bytes().all(|byte| byte == b'A'));
+        assert_eq!(decode_url("SELECT+1%2B2").unwrap(), "SELECT 1+2");
+        assert!(decode_url("%ZZ").is_err());
+    }
 }
 
 #[cfg(test)]
