@@ -173,6 +173,10 @@ def load_cases(directory):
     names = set()
     cases = []
     for path in paths:
+        if path.is_symlink() or not path.is_file():
+            raise ValueError(f"unsafe benchmark case file: {path}")
+        if path.stat().st_size > 64 * 1024:
+            raise ValueError(f"benchmark case JSON exceeds 64 KiB: {path}")
         case = json.loads(path.read_text(encoding="utf-8"))
         if (not isinstance(case, dict) or not isinstance(case.get("name"), str)
                 or case["name"] in names):

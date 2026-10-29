@@ -60,6 +60,14 @@ class TestBillionMatrix(unittest.TestCase):
                 with self.assertRaises(ValueError):
                     compile_case(case, 100_000)
 
+    def test_case_loader_bounds_json_before_reading(self):
+        with tempfile.TemporaryDirectory() as root:
+            path = Path(root) / "01-big.json"
+            path.write_bytes(b"x" * (64 * 1024 + 1))
+            with self.assertRaisesRegex(ValueError, "64 KiB"):
+                load_cases(root)
+            self.assertFalse(path.is_symlink())
+
     def test_doctor_requires_real_row_count(self):
         def doctor(command, **_):
             return SimpleNamespace(returncode=0, stdout=b'OK events: 100000 rows, 2 parts\n', stderr=b'')
