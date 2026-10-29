@@ -24,10 +24,10 @@ impl<W: Write> HtmlWriter<W> {
         let text = std::str::from_utf8(&self.line).map_err(|_| {
             io::Error::new(io::ErrorKind::InvalidData, "HTML field is not valid UTF-8")
         })?;
-        let count = 1 + self.line.iter().filter(|&&byte| byte == b'\t').count();
+        let field_count = 1 + self.line.iter().filter(|&&byte| byte == b'\t').count();
         let header = self.columns.is_none();
         if let Some(columns) = self.columns {
-            if columns != count {
+            if columns != field_count {
                 return Err(io::Error::new(
                     io::ErrorKind::InvalidData,
                     "HTML row does not match header column count",
@@ -55,7 +55,7 @@ impl<W: Write> HtmlWriter<W> {
         }
         if header {
             self.output.write_all(b"</tr></thead>\n<tbody>\n")?;
-            self.columns = Some(count);
+            self.columns = Some(field_count);
         } else {
             self.output.write_all(b"</tr>\n")?;
         }
