@@ -16,6 +16,37 @@ use std::path::Path;
 
 const MAX_BUFFERED_ROWS: usize = 200_000;
 
+const MAX_SELECT_DISTINCT_KEY_BYTES: usize = 64 * 1024 * 1024;
+
+fn charge_select_distinct_key(
+    retained_bytes: &mut usize,
+    key: &[Key],
+) -> Result<(), ExecutionError> {
+    // HashSet bucket, stored Vec and inline Key storage count toward the
+    // memory budget. Variable-width String/UUID bytes are charged separately.
+    let base = std::mem::size_of::<Vec<Key>>() + 32;
+    let bytes = key.iter().try_fold(
+        key.len().checked_mul(std::mem::size_of::<Key>())
+            .and_then(|slots| base.checked_add(slots))
+            .ok_or_else(|| ExecutionError::Invalid("DISTINCT memory overflow".into()))?,
+        |sum, value| {
+            let payload = match value {
+                Key::Text(bytes) => bytes.len(),
+                Key::Uuid(text) => text.len(),
+                _ => 0,
+            };
+            sum.checked_add(payload)
+                .ok_or_else(|| ExecutionError::Invalid("DISTINCT memory overflow".into()))
+        }
+    )?;
+    *retained_bytes = retained_bytes.checked_add(bytes)
+        .filter(|&total| total <= MAX_SELECT_DISTINCT_KEY_BYTES)
+        .ok_or_else(|| ExecutionError::Invalid(
+            "SELECT DISTINCT exceeds 64 MiB retained key budget".into()
+        ))?;
+    Ok(())
+}
+
 fn remember_distinct_text(seen: &mut HashSet<Vec<u8>>, value: &[u8]) -> Result<(), ExecutionError> {
     if seen.contains(value) {
         return Ok(());
@@ -1054,6 +1085,7 @@ pub(super) fn execute_typed<W: Write>(
     let is_grouped = matches!(query.projection, Projection::GroupedCount { .. });
     let mut count = 0u64;
     let mut distinct = HashSet::<Vec<Key>>::new();
+    let mut select_distinct_key_bytes = 0usize;
     // A one-column DISTINCT key does not need a heap-allocated Vec<Key>.
     let mut single_distinct = HashSet::<Key>::new();
     // Small integer domains need only 32 bytes (8-bit) or 8 KiB (16-bit)
@@ -1436,12 +1468,17 @@ pub(super) fn execute_typed<W: Write>(
                         }
                         *word |= bit;
                     } else {
-                        if !single_distinct.insert(key_at(&batch[projection_indices[0]], index)) {
+                        let key = key_at(&batch[projection_indices[0]], index);
+                        if single_distinct.contains(&key) {
                             continue;
                         }
-                        if single_distinct.len() > MAX_BUFFERED_ROWS {
+                        if single_distinct.len() >= MAX_BUFFERED_ROWS {
                             return Err(ExecutionError::Invalid("too many distinct rows".into()));
                         }
+                        charge_select_distinct_key(
+                            &mut select_distinct_key_bytes, std::slice::from_ref(&key)
+                        )?;
+                        single_distinct.insert(key);
                     }
                 } else {
                     // Probe with just the hash key. Duplicate rows should never
@@ -1456,6 +1493,7 @@ pub(super) fn execute_typed<W: Write>(
                     if distinct.len() >= MAX_BUFFERED_ROWS {
                         return Err(ExecutionError::Invalid("too many distinct rows".into()));
                     }
+                    charge_select_distinct_key(&mut select_distinct_key_bytes, &distinct_probe)?;
                     distinct.insert(std::mem::take(&mut distinct_probe));
                     distinct_probe = Vec::with_capacity(projection_indices.len());
                 }
@@ -2287,5 +2325,29 @@ mod narrow_group_bucket_tests {
             [Some(0), None, Some(65535), Some(1)]);
         let wide = TypedColumn::Numeric(NumericColumn::UInt32(vec![1]));
         assert_eq!(dense_group_bucket(&wide, 0), None);
+    }
+}
+
+#[cfg(test)]
+mod select_distinct_key_budget_tests {
+    use super::*;
+
+    #[test]
+    fn text_key_bytes_contribute_to_distinct_budget() {
+        let mut used = 0usize;
+        let one = vec![Key::Text(vec![1u8; 1_024])];
+        charge_select_distinct_key(&mut used, &one).unwrap();
+        assert!(used > 1_024);
+        let before = used;
+        charge_select_distinct_key(&mut used, &one).unwrap();
+        assert_eq!(used, before * 2);
+    }
+
+    #[test]
+    fn oversized_distinct_key_fails_without_charging() {
+        let mut used = 0usize;
+        let huge = vec![Key::Text(vec![b'x'; MAX_SELECT_DISTINCT_KEY_BYTES])];
+        assert!(charge_select_distinct_key(&mut used, &huge).is_err());
+        assert_eq!(used, 0);
     }
 }
