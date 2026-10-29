@@ -42,6 +42,15 @@ def validate(report, *, min_rows=1_000_000_000, max_median_seconds=None,
             raise ValueError(f"{query}: invalid timings")
         if p90 < median:
             raise ValueError(f"{query}: p90 must not be below median")
+        samples = result.get("samples_seconds")
+        if samples is not None:
+            if (not isinstance(samples, list) or not samples
+                    or any(type(t) not in (int, float) or not math.isfinite(t) or t <= 0
+                           for t in samples)):
+                raise ValueError(f"{query}: invalid timing samples")
+            if "runs" in report and (type(report["runs"]) is not int
+                                     or len(samples) != report["runs"]):
+                raise ValueError(f"{query}: timing sample count differs from runs")
         checks.append({"query": query, "median_seconds": median,
                        "p90_seconds": p90,
                        "within_target": (max_median_seconds is None or median <= max_median_seconds)
