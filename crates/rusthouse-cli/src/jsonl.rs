@@ -143,19 +143,12 @@ fn write_json_string<W: Write>(writer: &mut W, input: &[u8]) -> io::Result<()> {
         io::Error::new(io::ErrorKind::InvalidData, "JSONL field is not valid UTF-8")
     })?;
     let bytes = input.as_bytes();
-    if bytes.len() <= 256
+    if bytes.len() <= 1024
         && bytes
             .iter()
             .all(|&byte| (b' '..=b'~').contains(&byte) && byte != b'"' && byte != b'\\')
     {
-        if bytes.len() <= 64 {
-            let mut quoted = [0u8; 66];
-            quoted[0] = b'"';
-            quoted[1..bytes.len() + 1].copy_from_slice(bytes);
-            quoted[bytes.len() + 1] = b'"';
-            return writer.write_all(&quoted[..bytes.len() + 2]);
-        }
-        let mut quoted = [0u8; 258];
+        let mut quoted = [0u8; 1026];
         quoted[0] = b'"';
         quoted[1..bytes.len() + 1].copy_from_slice(bytes);
         quoted[bytes.len() + 1] = b'"';
