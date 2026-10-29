@@ -108,6 +108,7 @@ fn validate_block_ranges(ranges: &mut HashMap<String, Vec<(u64, u64)>>) -> Resul
 /// List complete active wide parts from an offline snapshot.
 /// Refuse overlapping block ranges rather than double-count replaced parts.
 pub fn query_parts(path: &Path) -> Result<Vec<PathBuf>, PartError> {
+    require_snapshot_directory(path, "query source must be a real directory")?;
     if path.join("count.txt").exists() || path.join("columns.txt").exists() {
         return Ok(vec![path.to_owned()]);
     }
@@ -643,5 +644,27 @@ mod tests {
 
         let mut ranges = HashMap::from([("all".to_owned(), vec![(10, 12), (1, 3), (4, 5)])]);
         validate_block_ranges(&mut ranges).unwrap();
+    }
+}
+
+#[cfg(all(test, unix))]
+mod frozen_root_identity_tests {
+    use super::*;
+    use std::os::unix::fs::symlink;
+
+    #[test]
+    fn refuses_symlinked_snapshot_root_before_directory_walk() {
+        let dir = std::env::temp_dir().join(format!(
+            "rusthouse-query-root-symlink-{}",
+            std::process::id()
+        ));
+        let link = dir.with_extension("link");
+        let _ = fs::remove_dir_all(&dir);
+        let _ = fs::remove_file(&link);
+        fs::create_dir_all(&dir).unwrap();
+        symlink(&dir, &link).unwrap();
+        assert!(matches!(query_parts(&link), Err(PartError::InvalidScan(_))));
+        fs::remove_file(link).unwrap();
+        fs::remove_dir_all(dir).unwrap();
     }
 }
