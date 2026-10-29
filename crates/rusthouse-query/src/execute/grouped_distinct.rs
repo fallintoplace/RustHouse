@@ -457,7 +457,7 @@ mod grouped_byte_distinct_tests {
             distinct_text: HashSet::new(),
             distinct_uuids: HashSet::new(),
             byte_values: [0; 4],
-                        distinct_count: 0,
+            distinct_count: 0,
         };
         for value in 0u8..=255 {
             mark_distinct_byte(&mut group, value);
@@ -493,7 +493,7 @@ mod grouped_byte_distinct_tests {
             distinct_text: HashSet::new(),
             distinct_uuids: HashSet::new(),
             byte_values: [0; 4],
-                        distinct_count: 0,
+            distinct_count: 0,
         };
         mark_distinct_byte(&mut group, 0);
         mark_distinct_byte(&mut group, 128);
