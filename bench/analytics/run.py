@@ -16,6 +16,16 @@ from common import cli_sql, emit_json, latency_summary
 DEFAULT_QUERIES = Path(__file__).with_name("queries.sql")
 
 
+class NoRedirect(urllib.request.HTTPRedirectHandler):
+    """Do not forward benchmark SQL bodies to an unexpected endpoint."""
+
+    def redirect_request(self, req, fp, code, msg, headers, newurl):
+        return None
+
+
+HTTP_OPENER = urllib.request.build_opener(NoRedirect())
+
+
 def load_queries(path):
     lines = path.read_text(encoding="utf-8").splitlines()
     return [line.strip().rstrip(";") for line in lines if line.strip() and not line.lstrip().startswith("--")]
@@ -53,7 +63,7 @@ def http_target(endpoint):
 def execute_http(endpoint, sql, timeout):
     request = urllib.request.Request(http_target(endpoint), sql.encode("utf-8"), method="POST")
     try:
-        with urllib.request.urlopen(request, timeout=timeout) as response:
+        with HTTP_OPENER.open(request, timeout=timeout) as response:
             return response.read()
     except urllib.error.HTTPError as error:
         raise RuntimeError("HTTP %d: %s" % (error.code, error.read(2000).decode("utf-8", "replace"))) from error
