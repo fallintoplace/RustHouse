@@ -63,6 +63,13 @@ impl HyperLogLog {
                 SMALL_UNSIGNED_HASHES[value as usize]
             }
             Number::Unsigned(value) => Self::hash(&value.to_le_bytes()),
+            Number::Signed(value) if value < 0 => {
+                // Negative Int128 keys must not collide with two's-complement UInt128 values.
+                let mut tagged = [0u8; 17];
+                tagged[0] = 1;
+                tagged[1..].copy_from_slice(&value.to_le_bytes());
+                Self::hash(&tagged)
+            }
             Number::Signed(value) => Self::hash(&value.to_le_bytes()),
             Number::Float(value) => {
                 let bits = if value == 0.0 {
@@ -242,6 +249,17 @@ mod tests {
         assert_eq!(sketch.registers[0], (64 - PRECISION + 1) as u8);
         let encoded = sketch.encode_state();
         assert!(HyperLogLog::decode_state(&encoded).is_ok());
+    }
+
+    #[test]
+    fn negative_signed_keys_do_not_alias_large_unsigned_keys() {
+        let mut sketch = HyperLogLog::default();
+        sketch.observe_number(Number::Signed(-1));
+        sketch.observe_number(Number::Unsigned(u128::MAX));
+        assert_eq!(sketch.estimate(), 2);
+        sketch.observe_number(Number::Signed(7));
+        sketch.observe_number(Number::Unsigned(7));
+        assert_eq!(sketch.estimate(), 3);
     }
 
     #[test]
