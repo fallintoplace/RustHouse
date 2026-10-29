@@ -50,26 +50,14 @@ fn validate_row_width(headers: &[Vec<u8>], line: &[u8]) -> io::Result<()> {
     Ok(())
 }
 
-fn write_row<W: Write>(
+fn write_row_fields<'a, W: Write>(
     output: &mut W,
     row: usize,
     headers: &[Vec<u8>],
-    line: &[u8],
+    fields: impl Iterator<Item = &'a [u8]>,
 ) -> io::Result<()> {
-    if !line.contains(&b'\\') {
-        writeln!(output, "Row {row}:")?;
-        for (header, field) in headers.iter().zip(line.split(|&byte| byte == b'\t')) {
-            output.write_all(b"  ")?;
-            write_visible(output, header)?;
-            output.write_all(b": ")?;
-            write_visible(output, field)?;
-            output.write_all(b"\n")?;
-        }
-        return output.write_all(b"\n");
-    }
-    let fields = decode_row_fields(line)?;
     writeln!(output, "Row {row}:")?;
-    for (header, field) in headers.iter().zip(&fields) {
+    for (header, field) in headers.iter().zip(fields) {
         output.write_all(b"  ")?;
         write_visible(output, header)?;
         output.write_all(b": ")?;
@@ -77,6 +65,19 @@ fn write_row<W: Write>(
         output.write_all(b"\n")?;
     }
     output.write_all(b"\n")
+}
+
+fn write_row<W: Write>(
+    output: &mut W,
+    row: usize,
+    headers: &[Vec<u8>],
+    line: &[u8],
+) -> io::Result<()> {
+    if !line.contains(&b'\\') {
+        return write_row_fields(output, row, headers, line.split(|&byte| byte == b'\t'));
+    }
+    let fields = decode_row_fields(line)?;
+    write_row_fields(output, row, headers, fields.iter().map(|field| field.as_ref()))
 }
 
 impl<W: Write> VerticalWriter<W> {
