@@ -1,0 +1,6 @@
+{
+  "id": "sum-outside-middle",
+  "kind": "sum_or",
+  "lo": "p25",
+  "hi": "p75"
+}
