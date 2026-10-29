@@ -62,5 +62,15 @@ class BenchmarkComparisonTests(unittest.TestCase):
         self.assertEqual(report["incomparable"][0]["reason"], "missing_positive_median")
 
 
+    def test_extreme_latency_ratio_stays_finite_json(self):
+        import json
+        baseline = {"results": [result(1, "passed", 1e-300)]}
+        candidate = {"results": [result(1, "passed", 1e300)]}
+        report = compare(baseline, candidate)
+        self.assertEqual(report["regression_count"], 1)
+        self.assertIsNone(report["regressions"][0]["change_percent"])
+        json.dumps(report, allow_nan=False)
+
+
 if __name__ == "__main__":
     unittest.main()
