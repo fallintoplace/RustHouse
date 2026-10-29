@@ -65,3 +65,8 @@ fn minus_preserves_signed_numeric_arithmetic() {
 fn multiply_handles_negative_numeric_inputs() {
     assert_eq!(evaluate("multiply(x, y)"), "-11");
 }
+
+#[test]
+fn divide_uses_infix_numeric_semantics() {
+    assert_eq!(evaluate("divide(x, if(y = 0, 1, y))"), evaluate("x / if(y = 0, 1, y)"));
+}
