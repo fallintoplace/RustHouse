@@ -2,6 +2,7 @@
 //! This is intentionally not a full database wire protocol.
 
 mod http_encoding;
+mod sql_format;
 
 use self::http_encoding::*;
 
@@ -356,6 +357,17 @@ pub fn handle_request(method: &str, target: &str, body: &[u8], config: &Config) 
     if sql.is_empty() || sql.len() > MAX_QUERY_BYTES {
         return Response::text("400 Bad Request", "missing or oversized SQL statement\n");
     }
+    // SQL FORMAT wins over default_format, as it does in ClickHouse. A complete
+    // lexical scan prevents string literals or nested SQL from being mistaken
+    // for a trailing output-format clause.
+    let (sql, sql_format) = match sql_format::extract(&sql) {
+        Ok(value) => value,
+        Err(message) => return Response::text("400 Bad Request", message),
+    };
+    if path == "/explain" && sql_format.is_some() {
+        return Response::text("400 Bad Request", "format is unsupported for EXPLAIN");
+    }
+    let format = sql_format.unwrap_or(format);
     // Join queries need multiple resolved table sources and an independent
     // bounded executor. Delegate before the single-source SELECT parser.
     match parse_join(&sql) {

@@ -155,3 +155,53 @@ fn default_format_is_bounded_and_explicit_format_wins() {
         );
     }
 }
+
+#[test]
+fn clickhouse_sql_format_clause_overrides_http_default() {
+    let get = handle_request(
+        "GET",
+        "/?query=SELECT+number+FROM+numbers%282%29+FORMAT+CSV&default_format=TSVWithNames",
+        b"",
+        &config(),
+    );
+    assert_eq!(get.status, "200 OK");
+    assert_eq!(get.body, b"0\r\n1\r\n");
+
+    let post = handle_request(
+        "POST",
+        "/?default_format=CSVWithNames",
+        b"SELECT 7 FORMAT TSV",
+        &config(),
+    );
+    assert_eq!(post.status, "200 OK");
+    assert_eq!(post.body, b"7\n");
+
+    let semicolon = handle_request("POST", "/", b"SELECT 3 FORMAT TSV;", &config());
+    assert_eq!(semicolon.status, "200 OK");
+    assert_eq!(semicolon.body, b"3\n");
+
+    let quoted = handle_request("POST", "/", b"SELECT 'FORMAT CSV' AS value", &config());
+    assert_eq!(quoted.status, "200 OK");
+    assert_eq!(quoted.body, b"value\nFORMAT CSV\n");
+}
+
+#[test]
+fn clickhouse_sql_format_clause_rejects_bad_syntax() {
+    for sql in [
+        "SELECT 1 FORMAT JSONEachRow",
+        "SELECT 1 FORMAT unknown",
+        "SELECT 1 FORMAT CSV FORMAT TSV",
+        "SELECT 1 FORMAT CSV; SELECT 2",
+        "SELECT 1 FORMAT CSV /* unterminated",
+    ] {
+        assert_eq!(
+            handle_request("POST", "/", sql.as_bytes(), &config()).status,
+            "400 Bad Request",
+            "{sql}"
+        );
+    }
+    assert_eq!(
+        handle_request("POST", "/explain", b"SELECT 1 FORMAT TSV", &config()).status,
+        "400 Bad Request"
+    );
+}
