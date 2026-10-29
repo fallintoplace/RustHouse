@@ -25,6 +25,16 @@ class SnapshotGateTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             inspect_snapshot("rusthouse", "parts", min_rows=0, run=run)
 
+    def test_rejects_high_row_counts_with_invalid_column_metadata(self):
+        for columns in ([1], [{"name": "", "type": "UInt64"}],
+                        [{"name": "id", "type": "UInt64"}] * 2):
+            def run(command, **kwargs):
+                return SimpleNamespace(returncode=0, stdout=json.dumps({
+                    "rows": 1_000_000_001, "parts": 10000, "columns": columns
+                }).encode(), stderr=b"")
+            with self.assertRaisesRegex(ValueError, "columns"):
+                inspect_snapshot("rusthouse", "/frozen/parts", run=run)
+
     def test_failure_propagates(self):
         def run(command, **kwargs):
             return SimpleNamespace(returncode=1, stdout=b"", stderr=b"overlapping")
