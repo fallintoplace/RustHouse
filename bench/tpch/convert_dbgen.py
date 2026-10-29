@@ -74,7 +74,7 @@ def convert_table(source, target, table):
         with source.open("rb") as reader, \
                 temp.open("w", encoding="utf-8", newline="\n") as writer:
             writer.write("\t".join(names(table)) + "\n")
-            for number, raw_line in enumerate(reader, 1):
+            for number, raw_line in enumerate(iter(lambda: reader.readline(MAX_LINE + 1), b""), 1):
                 if len(raw_line) > MAX_LINE:
                     raise ValueError(f"{table} row {number}: exceeds 8 MiB")
                 try:
