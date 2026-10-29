@@ -55,6 +55,62 @@ class ClickHouseDifferentialTests(unittest.TestCase):
             finally:
                 oracle.close()
 
+
+    def test_parity_json_is_derived_from_loaded_tsv_not_regenerated(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            _, oracle = make_fixture(root, 5)
+            oracle.close()
+            path = root / "events.tsv"
+            lines = path.read_text().splitlines()
+            cells = lines[1].split("\t")
+            cells[COLUMNS.index("amount")] = "777"
+            lines[1] = "\t".join(cells)
+            cells = lines[2].split("\t")
+            cells[COLUMNS.index("coupon")] = r"\\N"
+            lines[2] = "\t".join(cells)
+            path.write_text("\n".join(lines) + "\n")
+            accounts = root / "accounts.tsv"
+            account_lines = accounts.read_text().splitlines()
+            first_account = account_lines[1].split("\t")
+            first_account[1] = r"new\tplan"
+            account_lines[1] = "\t".join(first_account)
+            accounts.write_text("\n".join(account_lines) + "\n")
+            event_json, account_json = fixture_json(root, 5)
+            rows = [json.loads(row) for row in event_json.read_text().splitlines()]
+            self.assertEqual(rows[0]["amount"], 777)
+            self.assertEqual(rows[1]["coupon"], r"\N")
+            accounts = [json.loads(row) for row in account_json.read_text().splitlines()]
+            self.assertEqual(accounts[0]["tier"], "new\tplan")
+
+    def test_parity_fixture_rejects_corrupt_tsv_and_bad_numeric_types(self):
+        for mutation in ("bad_header", "too_many_fields", "missing_row",
+                         "null_in_nonnullable", "uint64_overflow", "unknown_escape"):
+            with self.subTest(mutation=mutation), tempfile.TemporaryDirectory() as directory:
+                root = Path(directory)
+                _, oracle = make_fixture(root, 3)
+                oracle.close()
+                path = root / "events.tsv"
+                lines = path.read_text().splitlines()
+                if mutation == "bad_header":
+                    lines[0] = lines[0].replace("event_id", "bad_id")
+                if mutation == "too_many_fields":
+                    lines[1] += "\textra"
+                if mutation == "missing_row":
+                    lines.pop()
+                if mutation in ("null_in_nonnullable", "uint64_overflow", "unknown_escape"):
+                    cells = lines[1].split("\t")
+                    if mutation == "null_in_nonnullable":
+                        cells[COLUMNS.index("amount")] = r"\N"
+                    elif mutation == "uint64_overflow":
+                        cells[COLUMNS.index("amount")] = str(1 << 64)
+                    else:
+                        cells[COLUMNS.index("region")] = r"\q"
+                    lines[1] = "\t".join(cells)
+                path.write_text("\n".join(lines) + "\n")
+                with self.assertRaises(ValueError):
+                    fixture_json(root, 3)
+
     def test_clickhouse_uses_memory_engines_and_requires_create_table(self):
         schema = "CREATE TABLE events (id UInt64)"
         self.assertEqual(clickhouse_create_table(schema),
