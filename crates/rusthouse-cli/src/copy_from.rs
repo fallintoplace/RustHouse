@@ -358,7 +358,7 @@ fn run_csv(database: &Path, statement: &CopyFrom) -> Result<(), String> {
         )
     };
     let mut input = CsvRecords {
-        reader: BufReader::new(reader),
+        reader: BufReader::with_capacity(64 * 1024, reader),
         buffer: Vec::new(),
         first: true,
     };
