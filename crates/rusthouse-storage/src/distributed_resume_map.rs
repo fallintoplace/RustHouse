@@ -31,6 +31,14 @@ impl ResumeMap {
         (index / 8, 1u8 << (index % 8))
     }
 
+    fn valid_bit_mask(bits: usize) -> u8 {
+        if bits == 8 {
+            u8::MAX
+        } else {
+            ((1u16 << bits) - 1) as u8
+        }
+    }
+
     pub fn mark_complete(&mut self, index: usize) -> Result<(), &'static str> {
         if index >= self.chunks {
             return Err("chunk index out of bounds");
@@ -53,11 +61,7 @@ impl ResumeMap {
             .enumerate()
             .map(|(byte_index, &bits)| {
                 let valid = (self.chunks - byte_index * 8).min(8);
-                let mask = if valid == 8 {
-                    u8::MAX
-                } else {
-                    ((1u16 << valid) - 1) as u8
-                };
+                let mask = Self::valid_bit_mask(valid);
                 (bits & mask).count_ones() as usize
             })
             .sum::<usize>();
@@ -65,7 +69,7 @@ impl ResumeMap {
         for (byte_index, &completed) in self.completed.iter().enumerate() {
             let mut bits = !completed;
             if byte_index == self.completed.len() - 1 && self.chunks % 8 != 0 {
-                bits &= ((1u16 << (self.chunks % 8)) - 1) as u8;
+                bits &= Self::valid_bit_mask(self.chunks % 8);
             }
             while bits != 0 {
                 missing.push(byte_index * 8 + bits.trailing_zeros() as usize);
@@ -84,8 +88,10 @@ impl ResumeMap {
             return false;
         }
         let remainder = self.chunks % 8;
-        remainder == 0
-            || self.completed[full_bytes] & ((1u8 << remainder) - 1) == (1u8 << remainder) - 1
+        remainder == 0 || {
+            let mask = Self::valid_bit_mask(remainder);
+            self.completed[full_bytes] & mask == mask
+        }
     }
 
     /// Stable ASCII encoding for persisting transfer progress.
