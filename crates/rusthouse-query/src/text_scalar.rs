@@ -122,6 +122,7 @@ pub(super) fn is_function(name: &str) -> bool {
             | "IFNULL"
             | "LAST_INDEX_OF"
             | "DATEADD"
+            | "DATESUB"
             | "PATH"
             | "LEFT"
             | "LEFTUTF8"
@@ -1203,7 +1204,7 @@ fn parse_at_depth(parser: &mut Parser, depth: usize) -> Result<ConstantValue, Pa
                 None => ConstantValue::Null,
             }
         }
-        "DATEADD" => {
+        "DATEADD" | "DATESUB" => {
             let unit = text_arg(parser, depth + 1)?;
             require(parser, Token::Comma, "dateAdd requires an offset")?;
             let amount = integer_arg(parser, depth + 1)?;
@@ -1225,10 +1226,13 @@ fn parse_at_depth(parser: &mut Parser, depth: usize) -> Result<ConstantValue, Pa
                     let offset = amount
                         .checked_mul(step)
                         .ok_or_else(|| ParseError("dateAdd offset overflow".into()))?;
-                    let shifted = i64::from(seconds)
-                        .checked_add(offset)
-                        .and_then(|value| u32::try_from(value).ok())
-                        .ok_or_else(|| ParseError("dateAdd result outside UTC DateTime range".into()))?;
+                    let shifted = if name == "DATESUB" {
+                        i64::from(seconds).checked_sub(offset)
+                    } else {
+                        i64::from(seconds).checked_add(offset)
+                    }
+                    .and_then(|value| u32::try_from(value).ok())
+                    .ok_or_else(|| ParseError("dateAdd result outside UTC DateTime range".into()))?;
                     ConstantValue::Text(rusthouse_storage::format_datetime(shifted))
                 }
                 _ => ConstantValue::Null,
