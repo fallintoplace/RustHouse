@@ -91,6 +91,9 @@ fn parallel_grouped_parts(
             scope.spawn(move || -> Result<Vec<(Vec<Cell>, u64)>, ExecutionError> {
                 let mut rows: Vec<(Vec<Cell>, u64)> = Vec::new();
                 let mut index: HashMap<Vec<Key>, usize> = HashMap::new();
+                // Frequent dimension keys should reuse their probe allocation
+                // instead of allocating a Vec for every fact row.
+                let mut probe = Vec::<Key>::with_capacity(group_indices.len());
                 for path in paths {
                     let mut reader = rusthouse_storage::TypedPartReader::open(path, names)?;
                     while let Some(batch) = reader.next_batch()? {
@@ -98,10 +101,10 @@ fn parallel_grouped_parts(
                             if !no_filters && !typed::passes(&batch, row, conditions) {
                                 continue;
                             }
-                            let key = group_indices.iter()
-                                .map(|&column| typed::key_at(&batch[column], row))
-                                .collect::<Vec<_>>();
-                            if let Some(&found) = index.get(&key) {
+                            probe.clear();
+                            probe.extend(group_indices.iter()
+                                .map(|&column| typed::key_at(&batch[column], row)));
+                            if let Some(&found) = index.get(probe.as_slice()) {
                                 rows[found].1 = rows[found].1.checked_add(1)
                                     .ok_or_else(|| ExecutionError::Invalid("group count overflow".into()))?;
                             } else {
@@ -110,8 +113,9 @@ fn parallel_grouped_parts(
                                         "GROUP BY supports at most 200000 groups".into(),
                                     ));
                                 }
-                                reserve_parallel_group(retained, &key)?;
-                                index.insert(key, rows.len());
+                                reserve_parallel_group(retained, &probe)?;
+                                index.insert(std::mem::take(&mut probe), rows.len());
+                                probe = Vec::with_capacity(group_indices.len());
                                 rows.push((
                                     group_indices.iter()
                                         .map(|&column| typed::cell(&batch[column], row))

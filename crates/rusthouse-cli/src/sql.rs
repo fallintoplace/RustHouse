@@ -8,6 +8,7 @@ use crate::{
 };
 use rusthouse_query::{
     Source, execute, explain_join, explain_select, parse_ddl, parse_delete, parse_insert,
+    split_clickhouse_format,
     parse_join, parse_select, parse_update,
 };
 use std::ffi::OsString;
@@ -233,6 +234,23 @@ pub(super) fn run_sql_args(mut args: impl Iterator<Item = OsString>) -> Result<(
             return Err("EXPLAIN requires a SELECT statement".into());
         }
         explain = true;
+    }
+    // ClickHouse clients may select a supported text encoding directly in SQL.
+    // Only inspect SELECT statements; large INSERT payloads have a separate lexer limit.
+    let first_word = query.trim_start().split_ascii_whitespace().next();
+    if first_word.is_some_and(|word| word.eq_ignore_ascii_case("SELECT")) {
+        let (statement, inline_format) =
+            split_clickhouse_format(&query).map_err(|error| error.to_string())?;
+        if let Some(name) = inline_format {
+            if explain {
+                return Err("FORMAT is not supported with EXPLAIN".into());
+            }
+            if format.is_some() {
+                return Err("cannot combine SQL FORMAT with --format".into());
+            }
+            format = Some(SqlOutputFormat::from_arg(Some(OsString::from(name)))?);
+            query = statement.to_owned();
+        }
     }
     if database.is_some() && catalog.is_some() {
         return Err("--catalog and --database cannot be combined".into());

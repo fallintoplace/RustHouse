@@ -37,36 +37,64 @@ pub(crate) fn read_mark_bytes_cached<R: Read + Seek>(
     byte_count: usize,
     cached: &mut Option<DecodedBlock>,
 ) -> Result<Vec<u8>, PartError> {
+    Ok(read_mark_bytes_cow_cached(reader, mark, byte_count, cached)?.into_owned())
+}
+
+/// Borrow a verified compressed-block slice whenever a complete mark fits
+/// inside a single block. Only cross-block marks require a copied buffer.
+fn read_mark_bytes_cow_cached<'a, R: Read + Seek>(
+    reader: &mut CompressedBlockReader<R>,
+    mark: &WideMark,
+    byte_count: usize,
+    cached: &'a mut Option<DecodedBlock>,
+) -> Result<std::borrow::Cow<'a, [u8]>, PartError> {
+    use std::borrow::Cow;
     if byte_count > MAX_GRANULE_BYTES {
         return Err(invalid_mark(mark, "granule exceeds the 64 MiB read limit"));
     }
     if byte_count == 0 {
-        return Ok(Vec::new());
+        return Ok(Cow::Owned(Vec::new()));
     }
-
-    let mut offset = usize::try_from(mark.decompressed_offset)
+    let offset = usize::try_from(mark.decompressed_offset)
         .map_err(|_| invalid_mark(mark, "decompressed offset exceeds address space"))?;
-    // Adjacent adaptive marks often reference the same compressed block.
-    // Keep one verified decoded block per column stream and avoid re-decoding it.
-    if let Some(bytes) = cached_granule_bytes(cached, mark, offset, byte_count) {
-        return Ok(bytes.to_vec());
-    }
-    reader.seek_to_block(mark.compressed_offset)?;
-
-    let mut result = Vec::with_capacity(byte_count);
-    while result.len() < byte_count {
-        let block = reader
+    // Check for a cache hit without borrowing it across the cache-update path.
+    // A borrowed slice is returned only after all possible mutations have finished.
+    if cached_granule_bytes(cached, mark, offset, byte_count).is_none() {
+        reader.seek_to_block(mark.compressed_offset)?;
+        let first = reader
             .next_decoded()
             .ok_or_else(|| invalid_mark(mark, "column stream ends before granule"))??;
-        if offset >= block.data.len() {
+        if offset >= first.data.len() {
             return Err(invalid_mark(mark, "decompressed offset is outside block"));
         }
-        let count = (byte_count - result.len()).min(block.data.len() - offset);
-        result.extend_from_slice(&block.data[offset..offset + count]);
-        offset = 0;
-        *cached = Some(block);
+        if offset.checked_add(byte_count).is_some_and(|end| end <= first.data.len()) {
+            *cached = Some(first);
+        } else {
+            let mut result = Vec::with_capacity(byte_count);
+            let mut block = first;
+            let mut position = offset;
+            while result.len() < byte_count {
+                if position >= block.data.len() {
+                    return Err(invalid_mark(mark, "decompressed offset is outside block"));
+                }
+                let count = (byte_count - result.len()).min(block.data.len() - position);
+                result.extend_from_slice(&block.data[position..position + count]);
+                *cached = Some(block);
+                if result.len() == byte_count {
+                    break;
+                }
+                block = reader
+                    .next_decoded()
+                    .ok_or_else(|| invalid_mark(mark, "column stream ends before granule"))??;
+                position = 0;
+            }
+            return Ok(Cow::Owned(result));
+        }
     }
-    Ok(result)
+    Ok(Cow::Borrowed(
+        cached_granule_bytes(cached, mark, offset, byte_count)
+            .expect("validated mark fits cached decoded block"),
+    ))
 }
 
 pub fn read_u64_granule<R: Read + Seek>(
@@ -79,15 +107,10 @@ pub fn read_u64_granule<R: Read + Seek>(
     if rows == 0 {
         return Ok(Vec::new());
     }
-    let byte_count = usize::try_from(rows)
-        .ok()
-        .and_then(|rows| rows.checked_mul(size_of::<u64>()))
-        .ok_or_else(|| invalid_mark(mark, "granule size overflows"))?;
-    let bytes = read_mark_bytes(reader, mark, byte_count)?;
-    Ok(bytes
-        .chunks_exact(size_of::<u64>())
-        .map(|chunk| u64::from_le_bytes(chunk.try_into().unwrap()))
-        .collect())
+    match read_numeric_granule(reader, mark, "UInt64")? {
+        NumericColumn::UInt64(values) => Ok(values),
+        _ => unreachable!("UInt64 decoder returned another numeric type"),
+    }
 }
 
 pub fn read_numeric_granule<R: Read + Seek>(
@@ -128,17 +151,10 @@ pub(crate) fn read_numeric_granule_cached<R: Read + Seek>(
     if byte_count > MAX_GRANULE_BYTES {
         return Err(invalid_mark(mark, "granule exceeds the 64 MiB read limit"));
     }
-    // A verified cached block can be decoded directly. This avoids allocating
-    // and copying the bytes of every adaptive mark sharing a compressed block.
-    if let Some(bytes) = usize::try_from(mark.decompressed_offset)
-        .ok()
-        .and_then(|offset| cached_granule_bytes(cached, mark, offset, byte_count))
-    {
-        return read_numeric_column(&mut &bytes[..], data_type, rows)
-            .map_err(PartError::NumericRead);
-    }
-    let bytes = read_mark_bytes_cached(reader, mark, byte_count, cached)?;
-    read_numeric_column(&mut bytes.as_slice(), data_type, rows).map_err(PartError::NumericRead)
+    // Decode the typed values straight from a verified block, including the
+    // first mark after a seek, without allocating intermediate mark bytes.
+    let bytes = read_mark_bytes_cow_cached(reader, mark, byte_count, cached)?;
+    read_numeric_column(&mut bytes.as_ref(), data_type, rows).map_err(PartError::NumericRead)
 }
 
 fn invalid_mark(mark: &WideMark, reason: &'static str) -> PartError {
@@ -200,6 +216,32 @@ mod tests {
         fn seek(&mut self, position: SeekFrom) -> std::io::Result<u64> {
             self.inner.seek(position)
         }
+    }
+
+    #[test]
+    fn borrows_cold_single_block_marks_and_copies_only_spanning_marks() {
+        use std::borrow::Cow;
+
+        let first = [11u64, 22].into_iter()
+            .flat_map(u64::to_le_bytes).collect::<Vec<_>>();
+        let block = checked_block(0x82, &first);
+        let mut reader = reader(block.clone());
+        let mut cache = None;
+        let bytes = read_mark_bytes_cow_cached(
+            &mut reader, &mark(0, 0, Some(2)), 16, &mut cache,
+        ).unwrap();
+        assert!(matches!(bytes, Cow::Borrowed(_)));
+        assert_eq!(bytes.as_ref(), first.as_slice());
+
+        let first_block = checked_block(0x82, &first[..8]);
+        let second_block = checked_block(0x82, &first[8..]);
+        let mut reader = reader([first_block, second_block].concat());
+        let mut cache = None;
+        let bytes = read_mark_bytes_cow_cached(
+            &mut reader, &mark(0, 0, Some(2)), 16, &mut cache,
+        ).unwrap();
+        assert!(matches!(bytes, Cow::Owned(_)));
+        assert_eq!(bytes.as_ref(), first.as_slice());
     }
 
     #[test]
