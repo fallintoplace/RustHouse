@@ -107,14 +107,19 @@ fn negate(branches: Branches) -> Result<Branches, ParseError> {
     Ok(inverted)
 }
 
+fn check_parenthesis_depth(depth: usize) -> Result<(), ParseError> {
+    if depth >= MAX_DEPTH {
+        return Err(ParseError("WHERE has too many nested parentheses".into()));
+    }
+    Ok(())
+}
+
 fn parse_atom(parser: &mut Parser, conditions: &mut usize, depth: usize) -> Result<Branches, ParseError> {
     // Parenthesized negations are different from NOT applied to one predicate:
     // invert every AND/OR branch using De Morgan's laws before execution.
     if parser.keyword("NOT") {
         if parser.take(Token::LParen) {
-            if depth >= MAX_DEPTH {
-                return Err(ParseError("WHERE has too many nested parentheses".into()));
-            }
+            check_parenthesis_depth(depth)?;
             let expression = parse_or(parser, conditions, depth + 1)?;
             if !parser.take(Token::RParen) {
                 return Err(ParseError("NOT group requires closing ')'".into()));
@@ -125,9 +130,7 @@ fn parse_atom(parser: &mut Parser, conditions: &mut usize, depth: usize) -> Resu
         parser.index -= 1;
     }
     if parser.take(Token::LParen) {
-        if depth >= MAX_DEPTH {
-            return Err(ParseError("WHERE has too many nested parentheses".into()));
-        }
+        check_parenthesis_depth(depth)?;
         let branches = parse_or(parser, conditions, depth + 1)?;
         if !parser.take(Token::RParen) {
             return Err(ParseError("WHERE requires closing ')'".into()));
