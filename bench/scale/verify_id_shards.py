@@ -27,6 +27,15 @@ def verify_file(path, start, rows):
     return digest.hexdigest()
 
 
+def resolve_shard_path(manifest_path, path):
+    shard_file = Path(path)
+    if not shard_file.is_absolute():
+        shard_file = manifest_path.parent / shard_file
+    if shard_file.is_symlink():
+        raise ValueError("shard manifest must not contain symlink paths")
+    return shard_file
+
+
 def verify(manifest_path):
     manifest_path = Path(manifest_path).resolve()
     manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
@@ -50,11 +59,7 @@ def verify(manifest_path):
         expected_hash = shard.get("sha256")
         if not isinstance(path, str) or not path:
             raise ValueError("shard path is missing")
-        shard_file = Path(path)
-        if not shard_file.is_absolute():
-            shard_file = manifest_path.parent / shard_file
-        if shard_file.is_symlink():
-            raise ValueError("shard manifest must not contain symlink paths")
+        shard_file = resolve_shard_path(manifest_path, path)
         canonical = str(shard_file.resolve())
         if canonical in seen_paths:
             raise ValueError("duplicate shard path")
