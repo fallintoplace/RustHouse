@@ -9,6 +9,7 @@ use std::io::{self, Read, Seek};
 use std::path::{Path, PathBuf};
 
 const MAX_MARKS_BYTES: usize = 64 * 1024 * 1024;
+const MARK_FIELD_BYTES: usize = std::mem::size_of::<u64>();
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum WideMarkFormat {
@@ -19,8 +20,8 @@ pub enum WideMarkFormat {
 impl WideMarkFormat {
     fn record_size(self) -> usize {
         match self {
-            Self::Fixed => 16,
-            Self::Adaptive => 24,
+            Self::Fixed => 2 * MARK_FIELD_BYTES,
+            Self::Adaptive => 3 * MARK_FIELD_BYTES,
         }
     }
 }
