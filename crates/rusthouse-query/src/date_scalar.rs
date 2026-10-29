@@ -10,6 +10,7 @@ pub(super) fn is_function(name: &str) -> bool {
     matches!(
         name.to_ascii_uppercase().as_str(),
         "ADDDAYS"
+            | "TOLASTDAYOFMONTH"
             | "TOSTARTOFYEAR"
             | "TOSTARTOFQUARTER"
             | "TOSTARTOFMONTH"
@@ -81,6 +82,12 @@ pub(super) fn parse_after_open(
         "TOSTARTOFYEAR" => unary_date(parser, depth, |value| {
             let (year, _, _) = civil_from_days(value.seconds.div_euclid(DAY_SECONDS));
             let days = days_from_civil(year, 1, 1);
+            Ok(ConstantValue::Text(Temporal::render(days * DAY_SECONDS, false)?))
+        }),
+        "TOLASTDAYOFMONTH" => unary_date(parser, depth, |value| {
+            let (year, month, _) = civil_from_days(value.seconds.div_euclid(DAY_SECONDS));
+            let last = days_in_month(year, month);
+            let days = days_from_civil(year, month, last);
             Ok(ConstantValue::Text(Temporal::render(days * DAY_SECONDS, false)?))
         }),
         _ => Err(ParseError(format!("unsupported date function: {name}"))),
@@ -642,6 +649,25 @@ mod utc_compat_tests {
             "SELECT toStartOfYear()",
             "SELECT toStartOfYear('2023-02-29')",
             "SELECT toStartOfYear('2024-01-01', 1)",
+        ] {
+            assert!(crate::parse_select(sql).is_err(), "{sql}");
+        }
+    }
+
+    #[test]
+    fn last_day_month_uses_gregorian_calendar() {
+        for (sql, expected) in [
+            ("SELECT toLastDayOfMonth('2024-02-01')", "2024-02-29"),
+            ("SELECT toLastDayOfMonth('2023-02-15')", "2023-02-28"),
+            ("SELECT toLastDayOfMonth('2024-12-31')", "2024-12-31"),
+        ] {
+            assert_eq!(value(sql), ConstantValue::Text(expected.into()), "{sql}");
+        }
+        assert_eq!(value("SELECT toLastDayOfMonth(NULL)"), ConstantValue::Null);
+        for sql in [
+            "SELECT toLastDayOfMonth()",
+            "SELECT toLastDayOfMonth('2023-02-29')",
+            "SELECT toLastDayOfMonth('2024-01-01', 1)",
         ] {
             assert!(crate::parse_select(sql).is_err(), "{sql}");
         }
