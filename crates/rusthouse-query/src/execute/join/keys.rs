@@ -1,4 +1,27 @@
 use super::*;
+    #[test]
+    fn multi_join_text_probes_reuse_string_buffers() {
+        let row = [typed::Cell::Text(b"long-string-key".to_vec())];
+        let mut key = Vec::new();
+        assert!(row_key_into(&row, &[0], &mut key));
+        let (pointer, capacity) = match &key[0] {
+            typed::Key::Text(bytes) => (bytes.as_ptr(), bytes.capacity()),
+            _ => panic!("expected a text key"),
+        };
+        for payload in [b"short".as_slice(), b"long-string-key".as_slice()] {
+            let row = [typed::Cell::Text(payload.to_vec())];
+            assert!(row_key_into(&row, &[0], &mut key));
+            match &key[0] {
+                typed::Key::Text(bytes) => {
+                    assert_eq!(bytes.as_slice(), payload);
+                    assert_eq!(bytes.as_ptr(), pointer);
+                    assert_eq!(bytes.capacity(), capacity);
+                }
+                _ => panic!("expected a text key"),
+            }
+        }
+    }
+
 
 pub(super) fn base_type(value: &str) -> &str {
     value
@@ -68,13 +91,13 @@ pub(super) fn row_key_into(
     indices: &[usize],
     result: &mut Vec<typed::Key>,
 ) -> bool {
-    if indices.iter().any(|&index| !key_eligible(&row[index])) {
-        result.clear();
-        return false;
-    }
     // Preserve the backing allocation of repeated text probe keys. Rebuilding
     // the key vector for every fact row is especially costly in skewed joins.
     for (position, &index) in indices.iter().enumerate() {
+        if !key_eligible(&row[index]) {
+            result.clear();
+            return false;
+        }
         match &row[index] {
             typed::Cell::Text(value) => put_text_key(result, position, value),
             value => put_key(result, position, join_key(value)),
@@ -109,16 +132,12 @@ pub(super) fn batch_key_into(
     indices: &[usize],
     result: &mut Vec<typed::Key>,
 ) -> bool {
-    // Reject all NULL components before changing existing buffers.
-    if indices
-        .iter()
-        .any(|&index| typed::is_null_at(&batch[index], row))
-    {
-        result.clear();
-        return false;
-    }
     result.reserve(indices.len().saturating_sub(result.len()));
     for (position, &index) in indices.iter().enumerate() {
+        if typed::is_null_at(&batch[index], row) {
+            result.clear();
+            return false;
+        }
         match &batch[index] {
             TypedColumn::Uuid(values) => {
                 put_key(result, position, typed::Key::UuidBytes(*values[row].as_bytes()));

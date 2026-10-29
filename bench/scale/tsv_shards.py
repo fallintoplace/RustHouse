@@ -14,10 +14,16 @@ MAX_RECORD_BYTES = 8 * 1024 * 1024
 MAX_SHARDS = 16_384
 
 
-def split_tsv(source, output_dir, *, rows_per_chunk=65536):
+def split_tsv(source, output_dir, *, rows_per_chunk=65536,
+              max_bytes_per_chunk=None):
     source, output_dir = Path(source), Path(output_dir)
-    if not 1 <= rows_per_chunk <= 1_000_000:
+    if type(rows_per_chunk) is not int or not 1 <= rows_per_chunk <= 1_000_000:
         raise ValueError("rows_per_chunk must be in 1..1000000")
+    if max_bytes_per_chunk is not None and (
+            type(max_bytes_per_chunk) is not int or max_bytes_per_chunk < 1):
+        raise ValueError("max_bytes_per_chunk must be a positive integer")
+    if not source.is_file() or source.is_symlink():
+        raise ValueError("input must be a regular, non-symlinked TSV file")
     if output_dir.exists() or output_dir.is_symlink():
         raise FileExistsError(f"output directory exists: {output_dir}")
     output_dir.parent.mkdir(parents=True, exist_ok=True)
@@ -42,9 +48,16 @@ def split_tsv(source, output_dir, *, rows_per_chunk=65536):
                     raise ValueError("truncated or oversized TSV record")
                 if record in (b"\n", b"\r\n"):
                     raise ValueError("empty TSV record")
-                if current is None or current["rows"] == rows_per_chunk:
+                if (max_bytes_per_chunk is not None
+                        and len(record) > max_bytes_per_chunk):
+                    raise ValueError("TSV record exceeds max_bytes_per_chunk")
+                if (current is None or current["rows"] == rows_per_chunk
+                        or (max_bytes_per_chunk is not None and
+                            current["bytes"] + len(record) > max_bytes_per_chunk)):
                     if current is not None:
                         flush_pending()
+                        current["file"].flush()
+                        os.fsync(current["file"].fileno())
                         current["file"].close()
                         del current["file"]
                     if len(shards) >= MAX_SHARDS:
@@ -61,6 +74,8 @@ def split_tsv(source, output_dir, *, rows_per_chunk=65536):
                 current["rows"] += 1
         if current is not None:
             flush_pending()
+            current["file"].flush()
+            os.fsync(current["file"].fileno())
             current["file"].close()
             del current["file"]
         if not shards:
@@ -71,12 +86,25 @@ def split_tsv(source, output_dir, *, rows_per_chunk=65536):
                     "total_rows": sum(s["rows"] for s in shards),
                     "total_bytes": sum(s["bytes"] for s in shards),
                     "shards": shards}
-        (temporary / "manifest.json").write_text(
-            json.dumps(manifest, indent=2) + "\n", encoding="utf-8"
-        )
+        with (temporary / "manifest.json").open("w", encoding="utf-8") as output:
+            output.write(json.dumps(manifest, indent=2) + "\n")
+            output.flush()
+            os.fsync(output.fileno())
+        if os.name == "posix":
+            descriptor = os.open(temporary, os.O_RDONLY)
+            try:
+                os.fsync(descriptor)
+            finally:
+                os.close(descriptor)
         if output_dir.exists() or output_dir.is_symlink():
             raise FileExistsError(f"output directory exists: {output_dir}")
         os.replace(temporary, output_dir)
+        if os.name == "posix":
+            descriptor = os.open(output_dir.parent, os.O_RDONLY)
+            try:
+                os.fsync(descriptor)
+            finally:
+                os.close(descriptor)
         return manifest
     finally:
         if current is not None and "file" in current:
@@ -90,9 +118,13 @@ def main(argv=None):
     parser.add_argument("--input", type=Path, required=True)
     parser.add_argument("--output-dir", type=Path, required=True)
     parser.add_argument("--rows-per-chunk", type=int, default=65536)
+    parser.add_argument("--max-bytes-per-chunk", type=int,
+                        help="Optional maximum shard file size in bytes")
     args = parser.parse_args(argv)
     try:
-        report = split_tsv(args.input, args.output_dir, rows_per_chunk=args.rows_per_chunk)
+        report = split_tsv(args.input, args.output_dir,
+                           rows_per_chunk=args.rows_per_chunk,
+                           max_bytes_per_chunk=args.max_bytes_per_chunk)
     except (OSError, ValueError) as error:
         parser.exit(1, f"TSV shard split failed: {error}\n")
     print(json.dumps(report, indent=2))

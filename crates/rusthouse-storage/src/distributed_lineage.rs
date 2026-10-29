@@ -128,6 +128,26 @@ pub fn newest_consistent_snapshot(
         return Err("invalid snapshot candidate count");
     }
     let epoch = versions[0].epoch;
+    if versions.len() <= 8 {
+        // The normal replica set is small. Validate generations in-place
+        // without constructing a temporary fingerprint hash map.
+        let mut newest = versions[0];
+        for (index, &version) in versions.iter().enumerate() {
+            if !valid_version(version) || version.epoch != epoch {
+                return Err("invalid or mismatched snapshot epoch");
+            }
+            if versions[..index].iter().any(|earlier| {
+                earlier.generation == version.generation
+                    && earlier.fingerprint != version.fingerprint
+            }) {
+                return Err("conflicting snapshot fingerprint");
+            }
+            if version.generation > newest.generation {
+                newest = version;
+            }
+        }
+        return Ok(newest);
+    }
     let mut seen = std::collections::HashMap::with_capacity(versions.len());
     let mut newest = versions[0];
     for &version in versions {
@@ -150,6 +170,36 @@ pub fn newest_consistent_snapshot(
 #[cfg(test)]
 mod snapshot_selection_tests {
     use super::*;
+
+    #[test]
+    fn small_candidates_match_larger_group_semantics() {
+        for count in [1usize, 2, 3, 8, 9, 64] {
+            let versions = (1..=count)
+                .rev()
+                .map(|index| SnapshotVersion {
+                    epoch: 7,
+                    generation: index as u64,
+                    fingerprint: index as u128 * 17,
+                })
+                .collect::<Vec<_>>();
+            assert_eq!(newest_consistent_snapshot(&versions).unwrap(), versions[0]);
+            let mut same_duplicate = versions.clone();
+            same_duplicate.push(versions[0]);
+            assert_eq!(
+                newest_consistent_snapshot(&same_duplicate).unwrap(),
+                versions[0]
+            );
+            let mut conflicting = versions.clone();
+            conflicting.push(SnapshotVersion {
+                fingerprint: u128::MAX,
+                ..versions[0]
+            });
+            assert!(newest_consistent_snapshot(&conflicting).is_err());
+            let mut wrong_epoch = versions.clone();
+            wrong_epoch[count - 1].epoch = 8;
+            assert!(newest_consistent_snapshot(&wrong_epoch).is_err());
+        }
+    }
 
     #[test]
     fn selects_latest_candidate_only_without_conflicts() {
