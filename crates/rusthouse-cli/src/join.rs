@@ -135,10 +135,10 @@ pub(super) fn run(
         paths.push(crate::database::select_source(database, &step.table)?);
     }
     let mut output = open_output(output_path.as_deref())?;
-    let start = std::time::Instant::now();
+    let query_started_at = std::time::Instant::now();
     let result = execute_formatted_join(query, &paths, format, output.as_mut());
     if time {
-        eprintln!("Elapsed: {:.3} ms", start.elapsed().as_secs_f64() * 1000.0);
+        eprintln!("Elapsed: {:.3} ms", query_started_at.elapsed().as_secs_f64() * 1000.0);
     }
     if result.is_err() {
         drop(output);
