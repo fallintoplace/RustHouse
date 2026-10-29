@@ -67,6 +67,9 @@ fn render_expr(expr: &ScalarExpr) -> String {
         ScalarExpr::Divide(left, right) => {
             format!("({}) / ({})", render_expr(left), render_expr(right))
         }
+        ScalarExpr::Modulo(left, right) => {
+            format!("({}) % ({})", render_expr(left), render_expr(right))
+        }
         ScalarExpr::Compare(left, operator, right) => {
             let symbol = match operator {
                 crate::Operator::Eq => "=",
