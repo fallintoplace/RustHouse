@@ -17,6 +17,19 @@ class SnapshotGateTests(unittest.TestCase):
         self.assertEqual(report["physical_rows"], 1_000_000_001)
         self.assertFalse(report["physical_scan_timed"])
 
+    def test_max_parts_prevents_oversharded_benchmark_snapshots(self):
+        def run(command, **kwargs):
+            return SimpleNamespace(returncode=0, stdout=json.dumps({
+                "rows": 1_000_000_001, "parts": 10000,
+                "columns": [{"name": "id", "type": "UInt64"}]
+            }).encode(), stderr=b"")
+        with self.assertRaisesRegex(ValueError, "above max_parts"):
+            inspect_snapshot("rusthouse", "parts", max_parts=9999, run=run)
+        valid = inspect_snapshot("rusthouse", "parts", max_parts=10000, run=run)
+        self.assertEqual(valid["maximum_parts"], 10000)
+        with self.assertRaisesRegex(ValueError, "max_parts"):
+            inspect_snapshot("rusthouse", "parts", max_parts=16385, run=run)
+
     def test_rejects_small_or_invalid_metadata(self):
         def run(command, **kwargs):
             return SimpleNamespace(returncode=0, stdout=b'{"rows":10,"parts":1,"columns":[1]}', stderr=b"")
