@@ -10,6 +10,7 @@ pub(super) fn is_function(name: &str) -> bool {
     matches!(
         name.to_ascii_uppercase().as_str(),
         "ADDDAYS"
+            | "ADDWEEKS"
             | "SUBTRACTDAYS"
     )
 }
@@ -22,6 +23,7 @@ pub(super) fn parse_after_open(
     match name {
         "ADDDAYS" => offset_seconds(parser, depth, DAY_SECONDS, false, false),
         "SUBTRACTDAYS" => offset_seconds(parser, depth, DAY_SECONDS, true, false),
+        "ADDWEEKS" => offset_seconds(parser, depth, 7 * DAY_SECONDS, false, false),
         _ => Err(ParseError(format!("unsupported date function: {name}"))),
     }
 }
@@ -207,6 +209,25 @@ mod utc_compat_tests {
             "SELECT subtractDays()",
             "SELECT subtractDays('2023-02-29', 1)",
             "SELECT subtractDays('1900-01-01', 1)",
+        ] {
+            assert!(crate::parse_select(sql).is_err(), "{sql}");
+        }
+    }
+
+    #[test]
+    fn add_weeks_handles_utc_and_bounds() {
+        for (sql, expected) in [
+            ("SELECT addWeeks('2024-02-22', 1)", "2024-02-29"),
+            ("SELECT addWeeks('2024-02-29', -1)", "2024-02-22"),
+        ] {
+            assert_eq!(value(sql), ConstantValue::Text(expected.into()), "{sql}");
+        }
+        assert_eq!(value("SELECT addWeeks(NULL, 1)"), ConstantValue::Null);
+        for sql in [
+            "SELECT addWeeks()",
+            "SELECT addWeeks('2023-02-29', 1)",
+            "SELECT addWeeks('2299-12-31', 1)",
+            "SELECT addWeeks('2024-01-01', 1, 2)",
         ] {
             assert!(crate::parse_select(sql).is_err(), "{sql}");
         }
