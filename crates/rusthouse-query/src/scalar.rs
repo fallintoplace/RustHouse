@@ -117,6 +117,7 @@ pub(super) fn is_function(name: &str) -> bool {
         || name.eq_ignore_ascii_case("ROUND_TO_MULTIPLE")
         || name.eq_ignore_ascii_case("PMOD")
         || name.eq_ignore_ascii_case("TRAILING_ONES")
+        || name.eq_ignore_ascii_case("SQUARE")
         || name.eq_ignore_ascii_case("CUBE")
         || name.eq_ignore_ascii_case("ISEVEN")
         || name.eq_ignore_ascii_case("ISODD")
@@ -1150,6 +1151,12 @@ fn factor(parser: &mut Parser, depth: usize) -> Result<i64, ParseError> {
             .checked_mul(value)
             .and_then(|square| square.checked_mul(value))
             .ok_or_else(overflow);
+    }
+    if parser.keyword("SQUARE") {
+        require_token(parser, Token::LParen, "SQUARE requires '('")?;
+        let value = expression(parser, depth + 1)?;
+        require_token(parser, Token::RParen, "SQUARE requires ')'")?;
+        return value.checked_mul(value).ok_or_else(overflow);
     }
     if parser.keyword("DIGITAL_ROOT") {
         return parse_digital_root(parser, depth);
