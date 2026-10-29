@@ -63,7 +63,28 @@ pub fn crc32c(bytes: &[u8]) -> u32 {
     checksum.finish()
 }
 
+#[cfg(target_arch = "aarch64")]
+#[target_feature(enable = "crc")]
+unsafe fn update_arm64(mut crc: u32, bytes: &[u8]) -> u32 {
+    use std::arch::aarch64::{__crc32cb, __crc32cd};
+
+    let mut words = bytes.chunks_exact(8);
+    for word in &mut words {
+        let value = u64::from_le_bytes(word.try_into().expect("eight-byte chunk"));
+        crc = __crc32cd(crc, value);
+    }
+    for &byte in words.remainder() {
+        crc = __crc32cb(crc, byte);
+    }
+    crc
+}
+
 fn update(mut crc: u32, bytes: &[u8]) -> u32 {
+    #[cfg(target_arch = "aarch64")]
+    if bytes.len() >= 128 && std::arch::is_aarch64_feature_detected!("crc") {
+        // SAFETY: CRC support was checked on the running CPU.
+        return unsafe { update_arm64(crc, bytes) };
+    }
     // A slicing-by-eight lookup processes two UInt32 words per iteration
     // without platform-specific instructions.
     let mut wide_chunks = bytes.chunks_exact(8);
@@ -155,6 +176,21 @@ impl Default for Crc32cState {
 mod tests {
     use super::*;
     use std::io::Cursor;
+
+    #[cfg(target_arch = "aarch64")]
+    #[test]
+    fn arm64_crc_matches_across_unaligned_splits() {
+        if !std::arch::is_aarch64_feature_detected!("crc") {
+            return;
+        }
+        let bytes = (0..10_003).map(|i| (i % 251) as u8).collect::<Vec<_>>();
+        for split in [0, 1, 7, 8, 127, 128, 4096, bytes.len()] {
+            // SAFETY: CRC support was checked on the running CPU.
+            let first = unsafe { update_arm64(!0, &bytes[..split]) };
+            let second = unsafe { update_arm64(first, &bytes[split..]) };
+            assert_eq!(second ^ !0, crc32c(&bytes));
+        }
+    }
 
     #[test]
     fn matches_castagnoli_reference_vector() {
