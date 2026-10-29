@@ -105,6 +105,12 @@ those fields are empty. It holds the database read lock and uses the same
 schema/active-part validation as SELECT. Supported HTTP formats and row limits
 apply. This does not enable schema modifications.
 
+The `SHOW CREATE TABLE events` SQL statement returns the validated logical
+CREATE TABLE schema as a `statement` column. It intentionally excludes
+ClickHouse engine, primary/sort key, and partition settings that are not
+available in RustHouse's catalog. It cannot be used to reproduce physical
+ClickHouse storage layouts.
+
 Read-only SQL discovery supports `SHOW TABLES`, `SHOW TABLES LIKE 'event%'`,
 and `SHOW TABLES NOT LIKE 'event%'` in database mode. Discovery uses the same
 catalog validation and read lock as `GET /tables`. Results respect the HTTP

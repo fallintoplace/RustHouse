@@ -5,6 +5,7 @@ mod http_encoding;
 mod sql_format;
 mod sql_parameters;
 mod sql_discovery;
+mod sql_create;
 
 use self::http_encoding::*;
 
@@ -575,6 +576,9 @@ pub fn handle_request(method: &str, target: &str, body: &[u8], config: &Config) 
             | Ok(Some(ddl @ Ddl::ShowTablesLike { .. }))
             | Ok(Some(ddl @ Ddl::ShowTablesNotLike { .. })) => {
                 sql_discovery::show_tables(ddl, format, config)
+            }
+            Ok(Some(Ddl::ShowCreateTable { name })) => {
+                sql_create::show_create_table(&name, format, config)
             }
             Ok(_) => Response::text("400 Bad Request", "unsupported read-only SHOW query\n"),
             Err(error) => Response::text("400 Bad Request", &format!("{error}\n")),
