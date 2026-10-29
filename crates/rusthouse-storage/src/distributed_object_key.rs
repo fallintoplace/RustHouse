@@ -75,6 +75,44 @@ impl ObjectKey {
             .join(&self.part)
             .join(&self.file)
     }
+
+    /// Parse a generation-scoped key from five safe relative path components.
+    /// Reject noncanonical generation spellings and path traversal.
+    pub fn parse_relative(path: &std::path::Path) -> Result<Self, &'static str> {
+        use std::path::Component;
+        let segments = path.components().collect::<Vec<_>>();
+        if segments.len() != 5 {
+            return Err("distributed object key must have five components");
+        }
+        let mut fields = [""; 5];
+        for (index, segment) in segments.into_iter().enumerate() {
+            let Component::Normal(value) = segment else {
+                return Err("distributed object key must be relative");
+            };
+            fields[index] = value.to_str().ok_or("non-UTF8 distributed object key")?;
+        }
+        let generation_text = fields[2]
+            .strip_prefix('g')
+            .ok_or("missing distributed generation prefix")?;
+        let generation = generation_text
+            .parse::<u64>()
+            .map_err(|_| "invalid distributed generation")?;
+        if generation_text != generation.to_string() {
+            return Err("noncanonical distributed generation");
+        }
+        let key = Self::new(fields[0], fields[1], generation, fields[3], fields[4])?;
+        let original = path.to_str().ok_or("invalid distributed object key path")?;
+        let canonical = key.relative_path();
+        let canonical = canonical.to_str().ok_or("invalid distributed object key path")?;
+        // Windows accepts both slash spellings; compare only after normalizing
+        // separators, without removing dot or duplicate path components.
+        if original.replace(std::path::MAIN_SEPARATOR, "/")
+            != canonical.replace(std::path::MAIN_SEPARATOR, "/")
+        {
+            return Err("noncanonical distributed object key path");
+        }
+        Ok(key)
+    }
 }
 
 #[cfg(test)]
@@ -113,47 +151,6 @@ mod tests {
             assert!(ObjectKey::new("prod", "s1", 1, "all_0_0_0", invalid).is_err());
         }
         assert!(ObjectKey::new("prod", "s1", 0, "all_0_0_0", "count.txt").is_err());
-    }
-}
-
-
-impl ObjectKey {
-    /// Parse a generation-scoped key from five safe relative path components.
-    /// Reject noncanonical generation spellings and path traversal.
-    pub fn parse_relative(path: &std::path::Path) -> Result<Self, &'static str> {
-        use std::path::Component;
-        let segments = path.components().collect::<Vec<_>>();
-        if segments.len() != 5 {
-            return Err("distributed object key must have five components");
-        }
-        let mut fields = [""; 5];
-        for (index, segment) in segments.into_iter().enumerate() {
-            let Component::Normal(value) = segment else {
-                return Err("distributed object key must be relative");
-            };
-            fields[index] = value.to_str().ok_or("non-UTF8 distributed object key")?;
-        }
-        let generation_text = fields[2]
-            .strip_prefix('g')
-            .ok_or("missing distributed generation prefix")?;
-        let generation = generation_text
-            .parse::<u64>()
-            .map_err(|_| "invalid distributed generation")?;
-        if generation_text != generation.to_string() {
-            return Err("noncanonical distributed generation");
-        }
-        let key = Self::new(fields[0], fields[1], generation, fields[3], fields[4])?;
-        let original = path.to_str().ok_or("invalid distributed object key path")?;
-        let canonical = key.relative_path();
-        let canonical = canonical.to_str().ok_or("invalid distributed object key path")?;
-        // Windows accepts both slash spellings; compare only after normalizing
-        // separators, without removing dot or duplicate path components.
-        if original.replace(std::path::MAIN_SEPARATOR, "/")
-            != canonical.replace(std::path::MAIN_SEPARATOR, "/")
-        {
-            return Err("noncanonical distributed object key path");
-        }
-        Ok(key)
     }
 }
 
