@@ -57,6 +57,7 @@ pub(super) fn primary(parser: &mut Parser, depth: usize) -> Result<ScalarExpr, P
 
 pub(super) fn product(parser: &mut Parser, depth: usize) -> Result<ScalarExpr, ParseError> {
     let mut expr = primary(parser, depth)?;
+    let mut operators = 0usize;
     loop {
         let multiply = if parser.take(Token::Star) {
             true
@@ -65,6 +66,10 @@ pub(super) fn product(parser: &mut Parser, depth: usize) -> Result<ScalarExpr, P
         } else {
             break;
         };
+        operators += 1;
+        if operators > 128 {
+            return Err(ParseError("multiplicative operator chain exceeds 128 terms".into()));
+        }
         let right = Box::new(primary(parser, depth)?);
         expr = if multiply {
             ScalarExpr::Multiply(Box::new(expr), right)
