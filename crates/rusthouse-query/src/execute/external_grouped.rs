@@ -28,7 +28,13 @@ impl Scratch {
         let path = std::env::temp_dir().join(format!(
             "rusthouse-external-grouped-{}-{stamp}-{}",
             std::process::id(), NEXT.fetch_add(1, Ordering::Relaxed)));
-        fs::create_dir(&path)?;
+        let mut dir = fs::DirBuilder::new();
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::DirBuilderExt;
+            dir.mode(0o700);
+        }
+        dir.create(&path)?;
         Ok(Self(path))
     }
 }
@@ -289,6 +295,14 @@ impl ExternalGroupCount64 {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[cfg(unix)]
+    #[test]
+    fn grouped_spill_directory_is_private() {
+        use std::os::unix::fs::PermissionsExt;
+        let scratch = Scratch::create().unwrap();
+        assert_eq!(fs::metadata(&scratch.0).unwrap().permissions().mode() & 0o777, 0o700);
+    }
+
     #[test]
     fn spills_and_merges_more_than_thirty_two_sorted_group_runs() {
         let mut group = ExternalGroupCount64::new(false, false);
