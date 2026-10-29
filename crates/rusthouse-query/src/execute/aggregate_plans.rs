@@ -1,4 +1,5 @@
 use super::*;
+use super::predicates::CompiledPredicate;
 
 struct DenseGroupChunk {
     counts: Vec<u64>,
