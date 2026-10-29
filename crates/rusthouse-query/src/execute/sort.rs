@@ -61,11 +61,10 @@ fn write_number(writer: &mut impl Write, number: Number) -> Result<(), Execution
 }
 
 fn read_number(reader: &mut impl Read) -> Result<Number, ExecutionError> {
-    let mut tag = [0u8; 1];
-    let mut payload = [0u8; 16];
-    reader.read_exact(&mut tag)?;
-    reader.read_exact(&mut payload)?;
-    match tag[0] {
+    let mut encoded = [0u8; 17];
+    reader.read_exact(&mut encoded)?;
+    let payload: [u8; 16] = encoded[1..].try_into().expect("fixed numeric record");
+    match encoded[0] {
         0 => Ok(Number::Unsigned(u128::from_le_bytes(payload))),
         1 => Ok(Number::Signed(i128::from_le_bytes(payload))),
         2 => {
