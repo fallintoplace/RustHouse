@@ -5,6 +5,7 @@ use super::{ExecutionError, Number, number_at};
 use rusthouse_storage::TypedColumn;
 
 const PRECISION: u32 = 14;
+const HASH_BITS: u32 = u64::BITS;
 const REGISTERS: usize = 1 << PRECISION;
 
 pub(super) struct HyperLogLog {
@@ -35,11 +36,11 @@ impl HyperLogLog {
     }
 
     fn add(&mut self, hash: u64) {
-        let index = (hash >> (64 - PRECISION)) as usize;
+        let index = (hash >> (HASH_BITS - PRECISION)) as usize;
         // A zero suffix has rank 64 - PRECISION + 1, not 65.
         // Keep every emitted register valid for strict shard-state decoding.
         let rank = ((hash << PRECISION).leading_zeros() + 1)
-            .min(64 - PRECISION + 1) as u8;
+            .min(HASH_BITS - PRECISION + 1) as u8;
         self.registers[index] = self.registers[index].max(rank);
     }
 
