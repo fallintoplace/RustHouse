@@ -59,6 +59,27 @@ fn parse_case_when(parser: &mut Parser) -> Result<ScalarExpr, ParseError> {
     }))
 }
 
+fn parse_coalesce(parser: &mut Parser) -> Result<ScalarExpr, ParseError> {
+    parser.index += 1;
+    if !parser.take(Token::LParen) {
+        return Err(ParseError("coalesce requires '('".into()));
+    }
+    let mut arguments = Vec::new();
+    loop {
+        if arguments.len() >= 16 {
+            return Err(ParseError("coalesce accepts at most 16 values".into()));
+        }
+        arguments.push(parse_expression_tokens(parser)?);
+        if !parser.take(Token::Comma) {
+            break;
+        }
+    }
+    if arguments.len() < 2 || !parser.take(Token::RParen) {
+        return Err(ParseError("coalesce needs two or more values and ')'".into()));
+    }
+    Ok(ScalarExpr::Coalesce(arguments))
+}
+
 pub(super) fn primary(parser: &mut Parser) -> Result<ScalarExpr, ParseError> {
     match parser.tokens.get(parser.index) {
         Some(Token::Plus) => {
@@ -81,6 +102,8 @@ pub(super) fn primary(parser: &mut Parser) -> Result<ScalarExpr, ParseError> {
         Some(Token::Word(name)) if name.eq_ignore_ascii_case("CASE") => {
             parse_case_when(parser)
         }
+        Some(Token::Word(name)) if name.eq_ignore_ascii_case("COALESCE") =>
+            parse_coalesce(parser),
         Some(Token::Word(name)) if name.eq_ignore_ascii_case("NULL") => {
             parser.index += 1;
             Ok(ScalarExpr::Null)
