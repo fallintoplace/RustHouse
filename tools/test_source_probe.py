@@ -54,5 +54,22 @@ class SourceProbeTests(unittest.TestCase):
             probe("http://127.0.0.1:8123", "database", "items")
 
 
+    def test_redirect_handler_never_follows_locations(self):
+        from source_probe import NoRedirect
+        handler = NoRedirect()
+        self.assertIsNone(
+            handler.redirect_request(None, None, 302, "Found", {}, "http://example.org/")
+        )
+
+    @patch("source_probe.NO_REDIRECT_OPENER")
+    def test_read_json_uses_restricted_opener(self, opener):
+        from source_probe import read_json
+        opener.open.return_value.__enter__.return_value.read.return_value = b'{"read_only":true}'
+        self.assertEqual(read_json("http://127.0.0.1:8123/capabilities", 3),
+                         {"read_only": True})
+        opener.open.assert_called_once_with(
+            "http://127.0.0.1:8123/capabilities", timeout=3
+        )
+
 if __name__ == "__main__":
     unittest.main()
