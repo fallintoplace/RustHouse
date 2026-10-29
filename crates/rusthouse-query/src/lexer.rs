@@ -4,9 +4,14 @@ use self::scanning::*;
 
 use crate::{Operator, ParseError};
 
+const LARGE_STATEMENT_THRESHOLD: usize = 64 * 1024;
+const MAX_LARGE_STATEMENT_TOKENS: usize = 262_144;
+const MAX_SMALL_STATEMENT_TOKENS: usize = 32_768;
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(super) enum Token {
     Word(String),
+    QuotedWord(String),
     Number(String),
     String(String),
     Star,
@@ -30,6 +35,12 @@ pub(super) fn tokenize_insert(sql: &str) -> Result<Vec<Token>, ParseError> {
     tokenize_with_limit(sql, 1024 * 1024)
 }
 
+fn skip_line_comment(bytes: &[u8], index: &mut usize) {
+    while *index < bytes.len() && !matches!(bytes[*index], b'\r' | b'\n') {
+        *index += 1;
+    }
+}
+
 fn tokenize_with_limit(sql: &str, max_bytes: usize) -> Result<Vec<Token>, ParseError> {
     if sql.len() > max_bytes {
         return Err(ParseError(format!(
@@ -38,7 +49,11 @@ fn tokenize_with_limit(sql: &str, max_bytes: usize) -> Result<Vec<Token>, ParseE
     }
     // A one-megabyte INSERT full of one-byte punctuation can otherwise
     // allocate a million 24-byte enum tokens before parsing rejects it.
-    let max_tokens = if max_bytes > 64 * 1024 { 262_144 } else { 32_768 };
+    let max_tokens = if max_bytes > LARGE_STATEMENT_THRESHOLD {
+        MAX_LARGE_STATEMENT_TOKENS
+    } else {
+        MAX_SMALL_STATEMENT_TOKENS
+    };
     let bytes = sql.as_bytes();
     // Avoid repeated vector growth on common SELECT statements and large INSERTs.
     let mut tokens = Vec::with_capacity((sql.len() / 8).min(2048));
@@ -51,6 +66,7 @@ fn tokenize_with_limit(sql: &str, max_bytes: usize) -> Result<Vec<Token>, ParseE
                 continue;
             }
             b'\'' => scan_string(sql, &mut index)?,
+            b'`' | b'"' => scan_quoted_identifier(sql, &mut index)?,
             b'.' if is_ascii_digit_at(bytes, index + 1) => scan_number(sql, &mut index)?,
             b'/' if bytes.get(index + 1) == Some(&b'*') => {
                 index += 2;
@@ -70,16 +86,12 @@ fn tokenize_with_limit(sql: &str, max_bytes: usize) -> Result<Vec<Token>, ParseE
             }
             b'#' => {
                 index += 1;
-                while index < bytes.len() && !matches!(bytes[index], b'\r' | b'\n') {
-                    index += 1;
-                }
+                skip_line_comment(bytes, &mut index);
                 continue;
             }
             b'-' if bytes.get(index + 1) == Some(&b'-') => {
                 index += 2;
-                while index < bytes.len() && !matches!(bytes[index], b'\r' | b'\n') {
-                    index += 1;
-                }
+                skip_line_comment(bytes, &mut index);
                 continue;
             }
             b'-' if follows_binary_minus_context(&tokens) => {
@@ -122,6 +134,33 @@ fn tokenize_with_limit(sql: &str, max_bytes: usize) -> Result<Vec<Token>, ParseE
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn tokenizes_backtick_and_double_quoted_identifiers_without_keywords() {
+        assert_eq!(
+            tokenize("SELECT `order`, \"select\" FROM `events`").unwrap(),
+            vec![
+                Token::Word("SELECT".into()),
+                Token::QuotedWord("order".into()),
+                Token::Comma,
+                Token::QuotedWord("select".into()),
+                Token::Word("FROM".into()),
+                Token::QuotedWord("events".into()),
+            ]
+        );
+        for sql in [
+            "SELECT `unterminated",
+            "SELECT \"unterminated",
+            "SELECT ``",
+            "SELECT \"a b\"",
+            "SELECT `../db`",
+            "SELECT `some``thing`",
+            "SELECT `1bad`",
+            "SELECT `xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx`",
+        ] {
+            assert!(tokenize(sql).is_err(), "{sql}");
+        }
+    }
 
     #[test]
     fn token_limits_bound_adversarial_punctuation_statements() {
