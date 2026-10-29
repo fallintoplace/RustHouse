@@ -19,24 +19,28 @@ def aggregates(rows):
             ("min(id)", 0), ("max(id)", rows - 1))
 
 
+def measure_aggregate(run, binary, part, expression, expected, timeout):
+    sql = f"SELECT {expression} FROM part"
+    started = time.perf_counter()
+    completed = run([str(binary), "sql", sql, "--part", str(part),
+                     "--format", "tsv-no-header"],
+                    capture_output=True, check=False, timeout=timeout)
+    elapsed = time.perf_counter() - started
+    if completed.returncode:
+        raise RuntimeError(f"{expression}: query failed: {completed.stderr!r}")
+    if completed.stdout != f"{expected}\n".encode():
+        raise ValueError(f"{expression}: result differs from independent reference")
+    return {"aggregate": expression, "expected": expected,
+            "seconds": elapsed, "verified": True}
+
+
 def verify(binary, part, rows, *, timeout=600, execute=None):
     if type(timeout) not in (int, float) or not math.isfinite(timeout) or timeout <= 0:
         raise ValueError("timeout must be finite and positive")
     run = execute or subprocess.run
     result = []
     for expression, expected in aggregates(rows):
-        sql = f"SELECT {expression} FROM part"
-        started = time.perf_counter()
-        completed = run([str(binary), "sql", sql, "--part", str(part),
-                         "--format", "tsv-no-header"],
-                        capture_output=True, check=False, timeout=timeout)
-        elapsed = time.perf_counter() - started
-        if completed.returncode:
-            raise RuntimeError(f"{expression}: query failed: {completed.stderr!r}")
-        if completed.stdout != f"{expected}\n".encode():
-            raise ValueError(f"{expression}: result differs from independent reference")
-        result.append({"aggregate": expression, "expected": expected,
-                       "seconds": elapsed, "verified": True})
+        result.append(measure_aggregate(run, binary, part, expression, expected, timeout))
     return {"workload": "persisted-aggregate-probe", "rows_assumed": rows,
             "assumption": "one record per id 0..rows-1", "results": result}
 
