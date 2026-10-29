@@ -1,0 +1,6 @@
+{
+  "id": "max-center",
+  "kind": "max_range",
+  "lo": "p01",
+  "hi": "p99"
+}
