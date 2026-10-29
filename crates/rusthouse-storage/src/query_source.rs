@@ -164,10 +164,19 @@ pub fn query_parts(path: &Path) -> Result<Vec<PathBuf>, PartError> {
     Ok(parts)
 }
 
+/// List a snapshot's active parts and validate their combined metadata in one pass.
+/// Callers that need both results should not re-enumerate thousands of parts.
+pub fn query_parts_with_metadata(
+    path: &Path,
+) -> Result<(Vec<PathBuf>, PartMetadata), PartError> {
+    let parts = query_parts(path)?;
+    let metadata = inspect_parts_metadata(path, &parts)?;
+    Ok((parts, metadata))
+}
+
 /// Return consistent metadata for a single part or a frozen table snapshot.
 pub fn inspect_query_source(path: &Path) -> Result<PartMetadata, PartError> {
-    let paths = query_parts(path)?;
-    inspect_parts_metadata(path, &paths)
+    query_parts_with_metadata(path).map(|(_, metadata)| metadata)
 }
 
 pub(crate) fn inspect_parts_metadata(
@@ -571,7 +580,8 @@ mod tests {
             let part = root.join(format!("all_{index}_{index}_0"));
             write_wide_part(&part, &columns, &[vec![Some(index.to_string())]]).unwrap();
         }
-        let metadata = inspect_query_source(&root).unwrap();
+        let (paths, metadata) = query_parts_with_metadata(&root).unwrap();
+        assert_eq!(paths.len(), 40);
         assert_eq!(metadata.rows, 40);
         assert_eq!(metadata.columns, columns);
         let mut reader =
