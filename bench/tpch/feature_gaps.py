@@ -37,6 +37,8 @@ def classify_error(message):
 
 def classify(result):
     status = result.get("status", "unknown")
+    if not isinstance(status, str):
+        return "unexpected_status"
     if status in KNOWN_STATUSES:
         return status
     if status != "error":
@@ -58,6 +60,8 @@ def analyze(report, require_all_22=False):
         number = item.get("query")
         if type(number) is not int or not 1 <= number <= 22 or number in seen:
             raise ValueError("query IDs must be unique integers in 1..22")
+        if "status" in item and not isinstance(item["status"], str):
+            raise ValueError("query result status must be a string")
         seen.add(number)
         groups[classify(item)].append(number)
     if require_all_22 and seen != set(range(1, 23)):
