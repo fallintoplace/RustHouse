@@ -62,7 +62,8 @@ def create(directory, start, rows, shard_rows):
     positive(start, "start", allow_zero=True)
     positive(rows, "rows")
     positive(shard_rows, "shard_rows")
-    if start + rows > 2**64:
+    stop = start + rows
+    if stop > 2**64:
         raise ValueError("UInt64 fixture exceeds the supported value domain")
     if (rows - 1) // shard_rows + 1 > MAX_SHARDS:
         raise ValueError("requested shards exceed RustHouse's 16384-part limit")
@@ -73,8 +74,8 @@ def create(directory, start, rows, shard_rows):
     if directory.is_symlink():
         raise ValueError("refusing symlinked shard directory")
     shards = []
-    for position in range(start, start + rows, shard_rows):
-        count = min(shard_rows, start + rows - position)
+    for position in range(start, stop, shard_rows):
+        count = min(shard_rows, stop - position)
         path = directory / f"id-{position:020d}-{position + count:020d}.tsv"
         digest, reused = write_shard(path, position, count)
         shards.append({
