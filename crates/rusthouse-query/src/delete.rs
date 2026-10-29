@@ -14,7 +14,7 @@ fn keyword<'a>(input: &'a str, expected: &str) -> Option<&'a str> {
     Some(rest.trim_start())
 }
 
-fn valid_delete_scope(select: &Select) -> bool {
+fn is_supported_delete_scope(select: &Select) -> bool {
     matches!(select.source, Some(Source::Table(_)))
         && select.projection == Projection::All
         && !select.distinct
@@ -35,7 +35,7 @@ pub fn parse_delete(sql: &str) -> Result<Option<Select>, ParseError> {
     let mut tokens = tokenize(sql)?;
     tokens.splice(..1, [Token::Word("SELECT".into()), Token::Star]);
     let select = parse_select_tokens(tokens)?;
-    if !valid_delete_scope(&select) {
+    if !is_supported_delete_scope(&select) {
         return Err(ParseError(
             "DELETE supports only FROM table [WHERE predicate]".into(),
         ));
