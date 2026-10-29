@@ -59,6 +59,26 @@ fn parse_case_when(parser: &mut Parser) -> Result<ScalarExpr, ParseError> {
     }))
 }
 
+fn parse_extremum(parser: &mut Parser) -> Result<ScalarExpr, ParseError> {
+    let name = parser.word()?;
+    let maximum = name.eq_ignore_ascii_case("GREATEST");
+    if !parser.take(Token::LParen) {
+        return Err(ParseError("greatest/least requires '('".into()));
+    }
+    let mut values = Vec::new();
+    loop {
+        if values.len() >= 16 {
+            return Err(ParseError("greatest/least supports at most 16 values".into()));
+        }
+        values.push(parse_expression_tokens(parser)?);
+        if !parser.take(Token::Comma) { break; }
+    }
+    if values.len() < 2 || !parser.take(Token::RParen) {
+        return Err(ParseError("greatest/least requires two values and ')'".into()));
+    }
+    Ok(ScalarExpr::Extremum(values, maximum))
+}
+
 fn parse_abs(parser: &mut Parser) -> Result<ScalarExpr, ParseError> {
     parser.index += 1;
     if !parser.take(Token::LParen) {
@@ -160,6 +180,8 @@ pub(super) fn primary(parser: &mut Parser) -> Result<ScalarExpr, ParseError> {
             parse_if(parser),
         Some(Token::Word(name)) if name.eq_ignore_ascii_case("ABS") =>
             parse_abs(parser),
+        Some(Token::Word(name)) if name.eq_ignore_ascii_case("GREATEST")
+            || name.eq_ignore_ascii_case("LEAST") => parse_extremum(parser),
         Some(Token::Word(name)) if name.eq_ignore_ascii_case("NULL") => {
             parser.index += 1;
             Ok(ScalarExpr::Null)
