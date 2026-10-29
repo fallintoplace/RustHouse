@@ -259,146 +259,164 @@ pub fn write_wide_part_with_compression(
         return Err(invalid("INSERT row width does not match table schema"));
     }
     let granule_count = rows.len().div_ceil(GRANULE_ROWS);
-    let mut streams = Vec::with_capacity(columns.len() * 2);
-    if !rows.is_empty() {
-        for (index, col) in columns.iter().enumerate() {
-            let (_, nullable) = base_type(&col.data_type);
-            if let Some(inner) = numeric_array_inner_type(&col.data_type) {
-                let mut data_granules = Vec::with_capacity(granule_count);
-                let mut size_granules = Vec::with_capacity(granule_count);
-                for granule in rows.chunks(GRANULE_ROWS) {
-                    let mut data = Vec::new();
-                    let mut sizes = Vec::with_capacity(granule.len() * size_of::<u64>());
-                    for row in granule {
-                        push_numeric_array(inner, row[index].as_deref(), &mut data, &mut sizes)?;
-                    }
-                    data_granules.push(data);
-                    size_granules.push(sizes);
-                }
-                streams.push((col.name.clone(), data_granules));
-                streams.push((format!("{}.size0", col.name), size_granules));
-                continue;
-            }
-            if let Some(value_type) = map_string_value_type(&col.data_type) {
-                let mut key_granules = Vec::with_capacity(granule_count);
-                let mut value_granules = Vec::with_capacity(granule_count);
-                let mut size_granules = Vec::with_capacity(granule_count);
-                for granule in rows.chunks(GRANULE_ROWS) {
-                    let mut keys = Vec::new();
-                    let mut values = Vec::new();
-                    let mut sizes = Vec::with_capacity(granule.len() * size_of::<u64>());
-                    for row in granule {
-                        push_string_key_map(
-                            value_type,
-                            row[index].as_deref(),
-                            &mut keys,
-                            &mut values,
-                            &mut sizes,
-                        )?;
-                    }
-                    key_granules.push(keys);
-                    value_granules.push(values);
-                    size_granules.push(sizes);
-                }
-                streams.push((format!("{}.keys", col.name), key_granules));
-                streams.push((format!("{}.values", col.name), value_granules));
-                streams.push((format!("{}.size0", col.name), size_granules));
-                continue;
-            }
-            let mut data_granules = Vec::with_capacity(granule_count);
-            let mut null_granules = Vec::with_capacity(granule_count);
-            for granule in rows.chunks(GRANULE_ROWS) {
-                // A fixed-width column's final granule size is known
-                // before encoding. Reserve it once instead of growing at
-                // every row; nullable maps have exactly one byte per row.
-                let mut data =
-                    Vec::with_capacity(granule.len() * fixed_width_bytes_per_row(&col.data_type));
-                let mut nulls = Vec::with_capacity(if nullable { granule.len() } else { 0 });
-                for row in granule {
-                    let null = push_cell(&col.data_type, row[index].as_deref(), &mut data)?;
-                    if nullable {
-                        nulls.push(u8::from(null));
-                    }
-                }
-                data_granules.push(data);
-                if nullable {
-                    null_granules.push(nulls);
-                }
-            }
-            streams.push((col.name.clone(), data_granules));
-            if nullable {
-                streams.push((format!("{}.null", col.name), null_granules));
-            }
-        }
-    }
-
     fs::create_dir(part).map_err(|error| io_error(part, error))?;
-    let mut files = Vec::new();
-    let mut definitions = format!("columns format version: 1\n{} columns:\n", columns.len());
-    for col in columns {
-        definitions.push('`');
-        definitions.push_str(&col.name);
-        definitions.push_str("` ");
-        definitions.push_str(&col.data_type);
-        definitions.push('\n');
-    }
-    write_tracked_file(
-        part,
-        "columns.txt",
-        definitions.as_bytes(),
-        None,
-        &mut files,
-    )?;
-    let count = format!("{}\n", rows.len());
-    write_tracked_file(part, "count.txt", count.as_bytes(), None, &mut files)?;
-
-    if !rows.is_empty() {
-        for (name, granules) in streams {
-            let mut encoded = Vec::new();
-            let mut uncompressed = Vec::new();
-            let mut marks = Vec::with_capacity(24 * granules.len());
-            // Pack adjacent marks into larger compressed blocks, while each
-            // mark retains its exact intra-block decompressed byte offset.
-            const PACKED_BLOCK_BYTES: usize = 64 * 1024;
-            let mut pending = Vec::new();
-            for (index, data) in granules.iter().enumerate() {
-                // Empty Array and Map streams retain an unexposed pad byte.
-                let data: &[u8] = if data.is_empty() { &[0] } else { data };
-                if data.len() > MAX_STREAM_BYTES - uncompressed.len() {
-                    return Err(invalid("part column exceeds 8 MiB"));
-                }
-                if !pending.is_empty()
-                    && data.len() > PACKED_BLOCK_BYTES.saturating_sub(pending.len())
-                {
-                    encoded.extend_from_slice(&block(&pending, compression)?);
-                    pending.clear();
-                }
-                marks.extend_from_slice(&(encoded.len() as u64).to_le_bytes());
-                marks.extend_from_slice(&(pending.len() as u64).to_le_bytes());
-                let row_count = (rows.len() - index * GRANULE_ROWS).min(GRANULE_ROWS);
-                marks.extend_from_slice(&(row_count as u64).to_le_bytes());
-                pending.extend_from_slice(data);
-                uncompressed.extend_from_slice(data);
-            }
-            if !pending.is_empty() {
-                encoded.extend_from_slice(&block(&pending, compression)?);
-            }
-            write_tracked_file(
-                part,
-                &format!("{name}.bin"),
-                &encoded,
-                Some(&uncompressed),
-                &mut files,
-            )?;
-            write_tracked_file(part, &format!("{name}.mrk2"), &marks, None, &mut files)?;
+    let write_result = (|| -> Result<(), PartError> {
+        let mut files = Vec::new();
+        let mut definitions = format!("columns format version: 1\n{} columns:\n", columns.len());
+        for col in columns {
+            definitions.push('`');
+            definitions.push_str(&col.name);
+            definitions.push_str("` ");
+            definitions.push_str(&col.data_type);
+            definitions.push('\n');
         }
-    }
+        write_tracked_file(
+            part,
+            "columns.txt",
+            definitions.as_bytes(),
+            None,
+            &mut files,
+        )?;
+        let count = format!("{}\n", rows.len());
+        write_tracked_file(part, "count.txt", count.as_bytes(), None, &mut files)?;
 
-    // Write the manifest only after all listed files have been synced.
-    write_file(&part.join("checksums.txt"), &encode_checksums(&files))?;
-    fs::File::open(part)
-        .and_then(|dir| dir.sync_all())
-        .map_err(|error| io_error(part, error))
+        if !rows.is_empty() {
+            // Encode up to four columns per batch, rather than retaining the
+            // uncompressed granules of the entire table schema at once.
+            const COLUMN_BATCH: usize = 4;
+            for batch_start in (0..columns.len()).step_by(COLUMN_BATCH) {
+                let batch_end = (batch_start + COLUMN_BATCH).min(columns.len());
+                let mut streams = Vec::with_capacity(COLUMN_BATCH * 3);
+                for index in batch_start..batch_end {
+                    let col = &columns[index];
+                    let (_, nullable) = base_type(&col.data_type);
+                    if let Some(inner) = numeric_array_inner_type(&col.data_type) {
+                        let mut data_granules = Vec::with_capacity(granule_count);
+                        let mut size_granules = Vec::with_capacity(granule_count);
+                        for granule in rows.chunks(GRANULE_ROWS) {
+                            let mut data = Vec::new();
+                            let mut sizes = Vec::with_capacity(granule.len() * size_of::<u64>());
+                            for row in granule {
+                                push_numeric_array(
+                                inner,
+                                row[index].as_deref(),
+                                &mut data,
+                                &mut sizes,
+                            )?;
+                            }
+                            data_granules.push(data);
+                            size_granules.push(sizes);
+                        }
+                        streams.push((col.name.clone(), data_granules));
+                        streams.push((format!("{}.size0", col.name), size_granules));
+                        continue;
+                    }
+                    if let Some(value_type) = map_string_value_type(&col.data_type) {
+                        let mut key_granules = Vec::with_capacity(granule_count);
+                        let mut value_granules = Vec::with_capacity(granule_count);
+                        let mut size_granules = Vec::with_capacity(granule_count);
+                        for granule in rows.chunks(GRANULE_ROWS) {
+                            let mut keys = Vec::new();
+                            let mut values = Vec::new();
+                            let mut sizes = Vec::with_capacity(granule.len() * size_of::<u64>());
+                            for row in granule {
+                                push_string_key_map(
+                                    value_type,
+                                    row[index].as_deref(),
+                                    &mut keys,
+                                    &mut values,
+                                    &mut sizes,
+                                )?;
+                            }
+                            key_granules.push(keys);
+                            value_granules.push(values);
+                            size_granules.push(sizes);
+                        }
+                        streams.push((format!("{}.keys", col.name), key_granules));
+                        streams.push((format!("{}.values", col.name), value_granules));
+                        streams.push((format!("{}.size0", col.name), size_granules));
+                        continue;
+                    }
+                    let mut data_granules = Vec::with_capacity(granule_count);
+                    let mut null_granules = Vec::with_capacity(granule_count);
+                    for granule in rows.chunks(GRANULE_ROWS) {
+                        // A fixed-width column's final granule size is known
+                        // before encoding. Reserve it once instead of growing at
+                        // every row; nullable maps have exactly one byte per row.
+                        let mut data = Vec::with_capacity(
+                            granule.len() * fixed_width_bytes_per_row(&col.data_type),
+                        );
+                        let mut nulls =
+                            Vec::with_capacity(if nullable { granule.len() } else { 0 });
+                        for row in granule {
+                            let null = push_cell(&col.data_type, row[index].as_deref(), &mut data)?;
+                            if nullable {
+                                nulls.push(u8::from(null));
+                            }
+                        }
+                        data_granules.push(data);
+                        if nullable {
+                            null_granules.push(nulls);
+                        }
+                    }
+                    streams.push((col.name.clone(), data_granules));
+                    if nullable {
+                        streams.push((format!("{}.null", col.name), null_granules));
+                    }
+                }
+                for (name, granules) in streams {
+                    let mut encoded = Vec::new();
+                    let mut uncompressed = Vec::new();
+                    let mut marks = Vec::with_capacity(24 * granules.len());
+                    // Pack adjacent marks into larger compressed blocks, while each
+                    // mark retains its exact intra-block decompressed byte offset.
+                    const PACKED_BLOCK_BYTES: usize = 64 * 1024;
+                    let mut pending = Vec::new();
+                    for (index, data) in granules.iter().enumerate() {
+                        // Empty Array and Map streams retain an unexposed pad byte.
+                        let data: &[u8] = if data.is_empty() { &[0] } else { data };
+                        if data.len() > MAX_STREAM_BYTES - uncompressed.len() {
+                            return Err(invalid("part column exceeds 8 MiB"));
+                        }
+                        if !pending.is_empty()
+                            && data.len() > PACKED_BLOCK_BYTES.saturating_sub(pending.len())
+                        {
+                            encoded.extend_from_slice(&block(&pending, compression)?);
+                            pending.clear();
+                        }
+                        marks.extend_from_slice(&(encoded.len() as u64).to_le_bytes());
+                        marks.extend_from_slice(&(pending.len() as u64).to_le_bytes());
+                        let row_count = (rows.len() - index * GRANULE_ROWS).min(GRANULE_ROWS);
+                        marks.extend_from_slice(&(row_count as u64).to_le_bytes());
+                        pending.extend_from_slice(data);
+                        uncompressed.extend_from_slice(data);
+                    }
+                    if !pending.is_empty() {
+                        encoded.extend_from_slice(&block(&pending, compression)?);
+                    }
+                    write_tracked_file(
+                        part,
+                        &format!("{name}.bin"),
+                        &encoded,
+                        Some(&uncompressed),
+                        &mut files,
+                    )?;
+                    write_tracked_file(part, &format!("{name}.mrk2"), &marks, None, &mut files)?;
+                }
+            }
+        }
+
+        // Write the manifest only after all listed files have been synced.
+        write_file(&part.join("checksums.txt"), &encode_checksums(&files))?;
+        fs::File::open(part)
+            .and_then(|dir| dir.sync_all())
+            .map_err(|error| io_error(part, error))
+    })();
+    if write_result.is_err() {
+        // A bad value in a later column must not leave a partial part.
+        let _ = fs::remove_dir_all(part);
+    }
+    write_result
 }
 
 #[cfg(test)]
@@ -420,6 +438,24 @@ mod tests {
         ));
         fs::create_dir(&path).unwrap();
         path
+    }
+
+    #[test]
+    fn failed_later_column_encoding_removes_partial_part() {
+        let root = root();
+        let part = root.join("late-error");
+        let columns = (0..5)
+            .map(|index| Column {
+                name: format!("col{index}"),
+                data_type: "UInt8".to_owned(),
+            })
+            .collect::<Vec<_>>();
+        let row = (0..5)
+            .map(|index| Some(if index == 4 { "invalid" } else { "1" }.to_owned()))
+            .collect::<Vec<_>>();
+        assert!(write_wide_part(&part, &columns, &[row]).is_err());
+        assert!(!part.exists(), "failed writes must not publish partial parts");
+        fs::remove_dir_all(root).unwrap();
     }
 
     #[test]
