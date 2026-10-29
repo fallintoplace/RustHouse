@@ -9,6 +9,7 @@ mod insert;
 mod insert_select;
 mod join;
 mod json;
+pub use json::parse_json_each_row_fields;
 mod lexer;
 mod literal;
 mod multi_aggregate;
