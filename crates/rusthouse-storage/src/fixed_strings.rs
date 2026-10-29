@@ -1,10 +1,10 @@
+use crate::fixed_width::MAX_BATCH_BYTES;
 use crate::{CompressedBlockReader, PartError, WideMark, read_mark_bytes};
 use std::error::Error;
 use std::fmt;
 use std::io::{self, Read, Seek};
 
 const MAX_BATCH_ROWS: usize = 1_000_000;
-const MAX_BATCH_BYTES: usize = 64 * 1024 * 1024;
 const MAX_FIXED_STRING_WIDTH: usize = 0x00ff_ffff;
 
 #[derive(Debug, PartialEq, Eq)]
