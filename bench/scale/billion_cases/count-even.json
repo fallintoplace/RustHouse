@@ -1,0 +1,6 @@
+{
+  "id": "count-even",
+  "kind": "count_mod",
+  "modulus": 2,
+  "residue": 0
+}
