@@ -75,15 +75,19 @@ impl<W: Write> CsvWriter<W> {
     }
 }
 
+fn is_tsv_null(field: &[u8]) -> bool {
+    field == b"\\N"
+}
+
 fn needs_csv_quotes(value: &[u8]) -> bool {
-    value == b"\\N"
+    is_tsv_null(value)
         || value
             .iter()
             .any(|byte| matches!(byte, b',' | b'"' | b'\t' | b'\r' | b'\n'))
 }
 
 fn write_csv_field<W: Write>(output: &mut W, field: &[u8]) -> io::Result<()> {
-    if field == b"\\N" {
+    if is_tsv_null(field) {
         return output.write_all(b"\\N");
     }
     let decoded: Cow<'_, [u8]> = if field.contains(&b'\\') {
