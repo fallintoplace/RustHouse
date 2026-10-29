@@ -292,6 +292,7 @@ enum Test {
     UuidInSet(HashSet<[u8; 16]>, bool),
     TextInSet(HashSet<Vec<u8>>, bool),
     NumericInSet(HashSet<NumberKey>, bool),
+    ByteInSet([u64; 4], bool),
     ShortInSet(Box<[u64; 1024]>, bool),
     NotBetween(Cell, Cell),
     UuidNotBetween([u8; 16], [u8; 16]),
@@ -367,6 +368,24 @@ fn compile_in(kind: &str, values: &[String], negated: bool) -> Result<Test, Exec
     }
     if targets.len() < HASHED_TYPED_IN_MIN_VALUES {
         return Ok(Test::In(targets, negated));
+    }
+    if matches!(base_type(kind), "Int8" | "UInt8") {
+        let mut bitmap = [0u64; 4];
+        for target in &targets {
+            let index = match (base_type(kind), target) {
+                ("UInt8", Cell::Numeric(Number::Unsigned(value))) => {
+                    u8::try_from(*value).ok().map(usize::from)
+                }
+                ("Int8", Cell::Numeric(Number::Signed(value))) => {
+                    i8::try_from(*value).ok().map(|number| usize::from(number as u8))
+                }
+                _ => None,
+            };
+            if let Some(index) = index {
+                bitmap[index / 64] |= 1u64 << (index % 64);
+            }
+        }
+        return Ok(Test::ByteInSet(bitmap, negated));
     }
     if matches!(base_type(kind), "Int16" | "UInt16") {
         let mut bitmap = Box::new([0u64; 1024]);
@@ -706,6 +725,21 @@ pub(super) fn passes(batch: &[TypedColumn], row: usize, branches: &[Vec<Conditio
                         let found = !matches!(value, Number::Float(n) if n.is_nan())
                             && targets.contains(&NumberKey::from(value));
                         found != *negated
+                    })
+                }
+                Test::ByteInSet(bitmap, negated) => {
+                    let byte = match column {
+                        TypedColumn::Numeric(NumericColumn::UInt8(values)) => Some(values[row]),
+                        TypedColumn::Numeric(NumericColumn::Int8(values)) => Some(values[row] as u8),
+                        TypedColumn::NullableNumeric { values: NumericColumn::UInt8(values), nulls }
+                            if nulls[row] == 0 => Some(values[row]),
+                        TypedColumn::NullableNumeric { values: NumericColumn::Int8(values), nulls }
+                            if nulls[row] == 0 => Some(values[row] as u8),
+                        _ => None,
+                    };
+                    byte.is_some_and(|byte| {
+                        let index = usize::from(byte);
+                        ((bitmap[index / 64] >> (index % 64)) & 1 != 0) != *negated
                     })
                 }
                 Test::ShortInSet(bitmap, negated) => {
@@ -2480,3 +2514,36 @@ mod count_distinct_text_budget_tests {
         assert!(seen.is_empty());
     }
 }
+
+#[cfg(test)]
+mod byte_in_predicate_perf_tests {
+    use super::*;
+
+    #[test]
+    fn compiled_byte_bitmap_respects_nullable_and_signed_membership() {
+        let unsigned = (0..20).map(|value| value.to_string()).collect::<Vec<_>>();
+        let includes = [vec![Condition {
+            index: 0,
+            test: compile_in("Nullable(UInt8)", &unsigned, false).unwrap(),
+        }]];
+        assert!(matches!(&includes[0][0].test, Test::ByteInSet(_, false)));
+        let batch = [TypedColumn::NullableNumeric {
+            values: NumericColumn::UInt8(vec![0, 19, 20, 5]),
+            nulls: vec![0, 0, 0, 1],
+        }];
+        assert!(passes(&batch, 0, &includes));
+        assert!(passes(&batch, 1, &includes));
+        assert!(!passes(&batch, 2, &includes));
+        assert!(!passes(&batch, 3, &includes));
+        let signed = (-20..0).map(|value| value.to_string()).collect::<Vec<_>>();
+        let excludes = [vec![Condition {
+            index: 0,
+            test: compile_in("Int8", &signed, true).unwrap(),
+        }]];
+        let batch = [TypedColumn::Numeric(NumericColumn::Int8(vec![-20, -1, 1]))];
+        assert!(!passes(&batch, 0, &excludes));
+        assert!(!passes(&batch, 1, &excludes));
+        assert!(passes(&batch, 2, &excludes));
+    }
+}
+
