@@ -38,6 +38,13 @@ fn open_verified_object(path: &Path) -> io::Result<(File, u64)> {
     Ok((file, opened.len()))
 }
 
+fn read_exact_at(file: &mut File, offset: u64, length: usize) -> io::Result<Vec<u8>> {
+    file.seek(SeekFrom::Start(offset))?;
+    let mut bytes = vec![0u8; length];
+    file.read_exact(&mut bytes)?;
+    Ok(bytes)
+}
+
 /// Read an exact byte range from a frozen regular file, rejecting short reads.
 pub fn read_object_range(
     path: &Path,
@@ -50,10 +57,7 @@ pub fn read_object_range(
     }
     let (mut file, file_length) = open_verified_object(path)?;
     validate_range(offset, length, file_length)?;
-    file.seek(SeekFrom::Start(offset))?;
-    let mut bytes = vec![0; length];
-    file.read_exact(&mut bytes)?;
-    Ok(bytes)
+    read_exact_at(&mut file, offset, length)
 }
 
 #[cfg(test)]
@@ -135,9 +139,7 @@ pub fn read_object_ranges(
             .map_err(|_| io::Error::other("coalesced object range too large"))?;
         // Every merged interval is covered by the sum of requested lengths,
         // which was checked against the 8 MiB request budget above.
-        let mut chunk = vec![0u8; bytes];
-        file.seek(SeekFrom::Start(start))?;
-        file.read_exact(&mut chunk)?;
+        let chunk = read_exact_at(&mut file, start, bytes)?;
         for &(index, offset, item_end) in &ordered[cursor..tail] {
             let from = (offset - start) as usize;
             let to = (item_end - start) as usize;
