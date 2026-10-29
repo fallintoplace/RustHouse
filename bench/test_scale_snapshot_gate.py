@@ -54,6 +54,14 @@ class SnapshotGateTests(unittest.TestCase):
         with self.assertRaisesRegex(RuntimeError, "overlapping"):
             inspect_snapshot("rusthouse", "parts", run=run)
 
+    def test_rejects_nonobject_snapshot_json(self):
+        for payload in ([], None, 0, "unavailable"):
+            def run(*_args, **_kwargs):
+                return SimpleNamespace(returncode=0,
+                                       stdout=json.dumps(payload).encode(), stderr=b"")
+            with self.subTest(payload=payload), self.assertRaisesRegex(ValueError, "JSON object"):
+                inspect_snapshot("binary", "part", min_rows=1, run=run)
+
     def test_rejects_invalid_snapshot_part_and_row_domains(self):
         from types import SimpleNamespace
         from bench.scale.snapshot_gate import inspect_snapshot

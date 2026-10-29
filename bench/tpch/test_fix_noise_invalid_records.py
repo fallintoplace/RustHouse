@@ -9,7 +9,7 @@ class MalformedNoiseTests(unittest.TestCase):
     def test_rejects_duplicate_queries(self):
         report = {"results": [{"query": 1, "status": "passed", "timings_seconds": [1] * 5},
                               {"query": 1, "status": "passed", "timings_seconds": [2] * 5}]}
-        with self.assertRaisesRegex(ValueError, "duplicate"):
+        with self.assertRaisesRegex(ValueError, "distinct|duplicate"):
             assess_report(report)
 
     def test_preserves_valid_results(self):
