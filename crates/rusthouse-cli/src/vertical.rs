@@ -27,6 +27,32 @@ fn write_terminal_safe<W: Write>(output: &mut W, bytes: &[u8]) -> io::Result<()>
     output.write_all(&bytes[start..])
 }
 
+fn write_vertical_field<W: Write>(output: &mut W, header: &[u8], field: &[u8]) -> io::Result<()> {
+    // Most CLI rows contain short, terminal-safe values. Batch their labels,
+    // values and newline instead of issuing five separate writes.
+    if header
+        .len()
+        .checked_add(field.len())
+        .and_then(|len| len.checked_add(5))
+        .is_some_and(|len| len <= 512)
+        && !header.iter().chain(field).any(|byte| byte.is_ascii_control())
+    {
+        let mut framed = [0u8; 512];
+        framed[..2].copy_from_slice(b"  ");
+        framed[2..2 + header.len()].copy_from_slice(header);
+        let field_start = 2 + header.len() + 2;
+        framed[field_start - 2..field_start].copy_from_slice(b": ");
+        framed[field_start..field_start + field.len()].copy_from_slice(field);
+        framed[field_start + field.len()] = b'\n';
+        return output.write_all(&framed[..field_start + field.len() + 1]);
+    }
+    output.write_all(b"  ")?;
+    write_terminal_safe(output, header)?;
+    output.write_all(b": ")?;
+    write_terminal_safe(output, field)?;
+    output.write_all(b"\n")
+}
+
 fn decode_row_fields(line: &[u8]) -> io::Result<Vec<Cow<'_, [u8]>>> {
     line.split(|&byte| byte == b'\t')
         .map(|field| {
@@ -59,22 +85,14 @@ fn write_row<W: Write>(
     if !line.contains(&b'\\') {
         writeln!(output, "Row {row}:")?;
         for (header, field) in headers.iter().zip(line.split(|&byte| byte == b'\t')) {
-            output.write_all(b"  ")?;
-            write_terminal_safe(output, header)?;
-            output.write_all(b": ")?;
-            write_terminal_safe(output, field)?;
-            output.write_all(b"\n")?;
+            write_vertical_field(output, header, field)?;
         }
         return output.write_all(b"\n");
     }
     let fields = decode_row_fields(line)?;
     writeln!(output, "Row {row}:")?;
     for (header, field) in headers.iter().zip(&fields) {
-        output.write_all(b"  ")?;
-        write_terminal_safe(output, header)?;
-        output.write_all(b": ")?;
-        write_terminal_safe(output, field)?;
-        output.write_all(b"\n")?;
+        write_vertical_field(output, header, field.as_ref())?;
     }
     output.write_all(b"\n")
 }
@@ -133,6 +151,17 @@ impl<W: Write> Write for VerticalWriter<W> {
                     "vertical row exceeds 1 MiB",
                 ));
             }
+            if has_newline && self.line.is_empty() {
+                if let Some(headers) = self.headers.as_ref() {
+                    validate_row_width(headers, fragment)?;
+                    let row = self.rows.checked_add(1).ok_or_else(|| {
+                        io::Error::new(io::ErrorKind::InvalidData, "too many vertical rows")
+                    })?;
+                    write_row(&mut self.output, row, headers, fragment)?;
+                    self.rows = row;
+                    continue;
+                }
+            }
             self.line.extend_from_slice(fragment);
             if has_newline {
                 self.finish_line()?;
@@ -149,6 +178,42 @@ impl<W: Write> Write for VerticalWriter<W> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn short_vertical_fields_are_written_as_one_frame() {
+        struct Count {
+            writes: usize,
+            bytes: Vec<u8>,
+        }
+        impl Write for Count {
+            fn write(&mut self, bytes: &[u8]) -> io::Result<usize> {
+                self.writes += 1;
+                self.bytes.extend_from_slice(bytes);
+                Ok(bytes.len())
+            }
+            fn flush(&mut self) -> io::Result<()> { Ok(()) }
+        }
+        let mut output = Count { writes: 0, bytes: Vec::new() };
+        write_vertical_field(&mut output, b"city", "München".as_bytes()).unwrap();
+        assert_eq!(output.writes, 1);
+        assert_eq!(output.bytes, "  city: München\n".as_bytes());
+
+        let mut escaped = Vec::new();
+        write_vertical_field(&mut escaped, b"control", b"X\rY").unwrap();
+        assert_eq!(escaped, b"  control: X\\x0DY\n");
+    }
+
+    #[test]
+    fn complete_vertical_rows_keep_the_staging_buffer_small() {
+        let mut writer = VerticalWriter::new(Vec::new());
+        writer.write_all(b"value\n").unwrap();
+        let before = writer.line.capacity();
+        let value = "z".repeat(16 * 1024);
+        writer.write_all(format!("{value}\n").as_bytes()).unwrap();
+        assert_eq!(writer.line.capacity(), before);
+        assert_eq!(writer.rows, 1);
+        assert!(writer.output.ends_with(format!("  value: {value}\n\n").as_bytes()));
+    }
 
     #[test]
     fn plain_rows_keep_controls_and_unicode_without_field_collection() {

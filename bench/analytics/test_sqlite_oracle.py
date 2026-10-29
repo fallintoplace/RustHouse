@@ -19,6 +19,13 @@ class SqliteOracleTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "differs"):
             assert_matches(b"1\tno\n", [(1, "yes")])
 
+    def test_literal_null_text_is_not_a_null_cell(self):
+        self.assertFalse(cell_equal("NULL", None))
+        self.assertTrue(cell_equal(r"\N", None))
+        self.assertTrue(cell_equal("NULL", "NULL"))
+        with self.assertRaisesRegex(ValueError, "row 1"):
+            assert_matches(b"NULL\n", [(None,)])
+
     def test_tsv_escaped_text_matches_sqlite_typed_string_values(self):
         self.assertTrue(cell_equal(r"left\tright", "left\tright"))
         self.assertTrue(cell_equal(r"C:\\data", r"C:\data"))
@@ -57,6 +64,13 @@ class SqliteOracleTests(unittest.TestCase):
         self.assertEqual(parse_rows(b"a\t1\r\nb\t2\r\n"),
                          [["a", "1"], ["b", "2"]])
 
+    def test_sqlite_reference_cannot_be_created_by_query(self):
+        with tempfile.TemporaryDirectory() as root:
+            missing = Path(root) / "missing-reference.sqlite"
+            with self.assertRaises(sqlite3.OperationalError):
+                sqlite_query(missing, "SELECT 1")
+            self.assertFalse(missing.exists())
+
     def test_sqlite_query(self):
         with tempfile.TemporaryDirectory() as root:
             path = Path(root) / "db.sqlite"
@@ -64,6 +78,17 @@ class SqliteOracleTests(unittest.TestCase):
                 db.execute("CREATE TABLE t (x INTEGER)")
                 db.execute("INSERT INTO t VALUES (3)")
             self.assertEqual(sqlite_query(path, "SELECT x FROM t"), [(3,)])
+
+
+    def test_sqlite_oracle_limits_materialized_reference_rows(self):
+        from unittest import mock
+        with mock.patch("sqlite_oracle.sqlite3.connect") as connect:
+            cursor = connect.return_value.execute.return_value
+            cursor.fetchmany.return_value = [(1,)] * 100_001
+            with self.assertRaisesRegex(ValueError, "100000 rows"):
+                sqlite_query("sample.sqlite", "SELECT id FROM hits")
+            cursor.fetchmany.assert_called_once_with(100_001)
+            cursor.fetchall.assert_not_called()
 
 
 if __name__ == "__main__":

@@ -5,6 +5,7 @@ Only SQLite floating results receive relative/absolute tolerance.
 """
 import math
 import sqlite3
+from pathlib import Path
 from contextlib import closing
 
 
@@ -52,7 +53,7 @@ def decode_tsv_value(raw):
 
 def cell_equal(actual, expected, rel_tol=1e-12, abs_tol=1e-12):
     if expected is None:
-        return actual in ("NULL", r"\N")
+        return actual == r"\N"
     try:
         actual = decode_tsv_value(actual)
     except (UnicodeError, ValueError, AttributeError):
@@ -123,5 +124,9 @@ def assert_matches(output, expected_rows, unordered=False):
 
 
 def sqlite_query(path, sql):
-    with closing(sqlite3.connect(path)) as connection:
-        return connection.execute(sql).fetchall()
+    database_uri = Path(path).resolve().as_uri() + "?mode=ro"
+    with closing(sqlite3.connect(database_uri, uri=True)) as connection:
+        rows = connection.execute(sql).fetchmany(100_001)
+        if len(rows) > 100_000:
+            raise ValueError("SQLite reference exceeds 100000 rows")
+        return rows
