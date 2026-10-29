@@ -17,6 +17,10 @@ enum Block {
 
 const DENSE_THRESHOLD: usize = 4096;
 
+fn prefix_budget_error() -> ExecutionError {
+    ExecutionError::Invalid("COUNT(DISTINCT) exceeded its 32768-prefix budget".into())
+}
+
 fn insert_bitmap_bit(bitmap: &mut [u64; WORDS_PER_BLOCK], suffix: u16) -> bool {
     let index = usize::from(suffix);
     let mask = 1u64 << (index % 64);
@@ -42,9 +46,7 @@ impl BitmapDistinct32 {
     pub(super) fn insert(&mut self, key: u32) -> Result<(), ExecutionError> {
         let prefix = (key >> 16) as u16;
         if self.blocks.len() >= MAX_BLOCKS && !self.blocks.contains_key(&prefix) {
-            return Err(ExecutionError::Invalid(
-                "COUNT(DISTINCT) exceeded its 32768-prefix budget".into(),
-            ));
+            return Err(prefix_budget_error());
         }
         let suffix = (key & 0xffff) as u16;
         if self.dense_blocks >= MAX_DENSE_BLOCKS
@@ -111,9 +113,7 @@ impl BitmapDistinct32 {
         if self.blocks.len().checked_add(new_prefixes)
             .is_none_or(|n| n > MAX_BLOCKS)
         {
-            return Err(ExecutionError::Invalid(
-                "COUNT(DISTINCT) exceeded its 32768-prefix budget".into(),
-            ));
+            return Err(prefix_budget_error());
         }
         for (&prefix, incoming) in &other.blocks {
             let additions = if let Some(current) = self.blocks.get_mut(&prefix) {
