@@ -53,6 +53,8 @@ def verify(manifest_path):
         shard_file = Path(path)
         if not shard_file.is_absolute():
             shard_file = manifest_path.parent / shard_file
+        if shard_file.is_symlink():
+            raise ValueError("shard manifest must not contain symlink paths")
         canonical = str(shard_file.resolve())
         if canonical in seen_paths:
             raise ValueError("duplicate shard path")

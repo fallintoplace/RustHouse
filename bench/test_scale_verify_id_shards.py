@@ -1,5 +1,6 @@
 import hashlib
 import json
+import sys
 import tempfile
 import unittest
 from pathlib import Path
@@ -41,6 +42,21 @@ class VerifyShardsTests(unittest.TestCase):
             manifest.write_text(json.dumps({"schema_version": 1, "start": 0,
                                             "rows": 2, "shards": [shard]}))
             with self.assertRaisesRegex(ValueError, "gap"):
+                verify(manifest)
+
+    @unittest.skipIf(sys.platform == "win32", "Windows CI cannot create symlinks")
+    def test_rejects_symlinked_valid_shard(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            original = root / "actual.tsv"
+            original.write_bytes(b"0\n1\n")
+            link = root / "alias.tsv"
+            link.symlink_to(original)
+            manifest = root / "manifest.json"
+            manifest.write_text(json.dumps({"schema_version": 1, "start": 0,
+                "rows": 2, "shards": [{"path": str(link), "start": 0,
+                "rows": 2, "sha256": hashlib.sha256(original.read_bytes()).hexdigest()}]}))
+            with self.assertRaisesRegex(ValueError, "symlink"):
                 verify(manifest)
 
     def test_detects_extra_rows(self):
