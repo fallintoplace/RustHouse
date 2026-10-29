@@ -103,6 +103,7 @@ pub(super) fn is_function(name: &str) -> bool {
         || name.eq_ignore_ascii_case("INTEXP2")
         || name.eq_ignore_ascii_case("INTEXP10")
         || name.eq_ignore_ascii_case("BITTESTALL")
+        || name.eq_ignore_ascii_case("BITTESTANY")
         || name.eq_ignore_ascii_case("TOINT8")
         || name.eq_ignore_ascii_case("TOINT16")
 }
@@ -974,6 +975,16 @@ fn parse_compat_bittestall(parser: &mut Parser, depth: usize) -> Result<i64, Par
     Ok(i64::from(value & mask == mask))
 }
 
+/// ClickHouse-compatible test whether any bit in a mask is set for constant Int64 expressions.
+fn parse_compat_bittestany(parser: &mut Parser, depth: usize) -> Result<i64, ParseError> {
+    require_token(parser, Token::LParen, "bitTestAny requires '('")?;
+    let value = expression(parser, depth + 1)?;
+    require_token(parser, Token::Comma, "bitTestAny requires two arguments")?;
+    let mask = expression(parser, depth + 1)?;
+    require_token(parser, Token::RParen, "bitTestAny requires ')'")?;
+    Ok(i64::from(value & mask != 0))
+}
+
 fn factor(parser: &mut Parser, depth: usize) -> Result<i64, ParseError> {
     if depth >= MAX_DEPTH {
         return Err(ParseError(
@@ -1141,6 +1152,9 @@ fn factor(parser: &mut Parser, depth: usize) -> Result<i64, ParseError> {
     }
     if parser.keyword("BITTESTALL") {
         return parse_compat_bittestall(parser, depth);
+    }
+    if parser.keyword("BITTESTANY") {
+        return parse_compat_bittestany(parser, depth);
     }
     if matches!(parser.tokens.get(parser.index), Some(Token::Word(name)) if is_function(name)) {
         let name = parser.word()?;
@@ -1337,6 +1351,25 @@ mod ch_bittestall_tests {
             assert_eq!(parse_select(sql).unwrap().projection, Projection::Literal(expected), "{sql}");
         }
         for sql in ["SELECT bitTestAll(1)", "SELECT bitTestAll(1,2,3)"] {
+            assert!(parse_select(sql).is_err(), "{sql}");
+        }
+    }
+}
+
+#[cfg(test)]
+mod ch_bittestany_tests {
+    use crate::{parse_select, Projection};
+    #[test]
+    fn accepts_checked_binary_inputs() {
+        for (sql, expected) in [
+            ("SELECT bitTestAny(5, 2)", 0),
+            ("SELECT bitTestAny(5, 4)", 1),
+            ("SELECT bitTestAny(-1, 2)", 1),
+            ("SELECT bitTestAny(0, 0)", 0),
+        ] {
+            assert_eq!(parse_select(sql).unwrap().projection, Projection::Literal(expected), "{sql}");
+        }
+        for sql in ["SELECT bitTestAny(1)", "SELECT bitTestAny(1,2,3)"] {
             assert!(parse_select(sql).is_err(), "{sql}");
         }
     }
