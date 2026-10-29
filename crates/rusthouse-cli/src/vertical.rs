@@ -50,6 +50,18 @@ fn validate_row_width(headers: &[Vec<u8>], line: &[u8]) -> io::Result<()> {
     Ok(())
 }
 
+fn write_labeled_field<W: Write>(
+    output: &mut W,
+    header: &[u8],
+    field: &[u8],
+) -> io::Result<()> {
+    output.write_all(b"  ")?;
+    write_visible(output, header)?;
+    output.write_all(b": ")?;
+    write_visible(output, field)?;
+    output.write_all(b"\n")
+}
+
 fn write_row<W: Write>(
     output: &mut W,
     row: usize,
@@ -59,22 +71,14 @@ fn write_row<W: Write>(
     if !line.contains(&b'\\') {
         writeln!(output, "Row {row}:")?;
         for (header, field) in headers.iter().zip(line.split(|&byte| byte == b'\t')) {
-            output.write_all(b"  ")?;
-            write_visible(output, header)?;
-            output.write_all(b": ")?;
-            write_visible(output, field)?;
-            output.write_all(b"\n")?;
+            write_labeled_field(output, header, field)?;
         }
         return output.write_all(b"\n");
     }
     let fields = decode_row_fields(line)?;
     writeln!(output, "Row {row}:")?;
     for (header, field) in headers.iter().zip(&fields) {
-        output.write_all(b"  ")?;
-        write_visible(output, header)?;
-        output.write_all(b": ")?;
-        write_visible(output, field)?;
-        output.write_all(b"\n")?;
+        write_labeled_field(output, header, field.as_ref())?;
     }
     output.write_all(b"\n")
 }
