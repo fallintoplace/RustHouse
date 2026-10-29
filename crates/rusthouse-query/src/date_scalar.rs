@@ -10,6 +10,7 @@ pub(super) fn is_function(name: &str) -> bool {
     matches!(
         name.to_ascii_uppercase().as_str(),
         "ADDDAYS"
+            | "TIMEDIFF"
             | "TOISOYEAR"
             | "TOISOWEEK"
             | "TOYYYYMMDDHHMMSS"
@@ -151,6 +152,7 @@ pub(super) fn parse_after_open(
             let (year, _) = iso_week_and_year(days);
             Ok(ConstantValue::Integer(year))
         }),
+        "TIMEDIFF" => time_difference(parser, depth),
         _ => Err(ParseError(format!("unsupported date function: {name}"))),
     }
 }
@@ -364,6 +366,27 @@ fn iso_week_and_year(days: i64) -> (i64, i64) {
     let january_fourth = days_from_civil(iso_year, 1, 4);
     let week_one_monday = january_fourth - (january_fourth + 3).rem_euclid(7);
     (iso_year, (days - week_one_monday).div_euclid(7) + 1)
+}
+
+fn time_difference(parser: &mut Parser, depth: usize) -> Result<ConstantValue, ParseError> {
+    let start = super::text_scalar::text_arg(parser, depth + 1)?;
+    if !parser.take(Token::Comma) {
+        return Err(ParseError("timeDiff requires two dates".into()));
+    }
+    let end = super::text_scalar::text_arg(parser, depth + 1)?;
+    if !parser.take(Token::RParen) {
+        return Err(ParseError("expected ')' after timeDiff".into()));
+    }
+    let (Some(start), Some(end)) = (start, end) else {
+        return Ok(ConstantValue::Null);
+    };
+    let start = Temporal::parse(&start)?;
+    let end = Temporal::parse(&end)?;
+    let seconds = end
+        .seconds
+        .checked_sub(start.seconds)
+        .ok_or_else(|| ParseError("timeDiff exceeds Int64 range".into()))?;
+    Ok(ConstantValue::Integer(seconds))
 }
 
 #[cfg(test)]
@@ -927,6 +950,27 @@ mod utc_compat_tests {
             "SELECT toISOYear()",
             "SELECT toISOYear('2023-02-29')",
             "SELECT toISOYear('2024-01-01', 1)",
+        ] {
+            assert!(crate::parse_select(sql).is_err(), "{sql}");
+        }
+    }
+
+    #[test]
+    fn time_diff_matches_utc_calendar_examples() {
+        for (sql, expected) in [
+            ("SELECT timeDiff('2024-02-29 23:59:59', '2024-03-01 00:00:00')", 1),
+            ("SELECT timeDiff('2024-03-01 00:00:00', '2024-02-29 23:59:59')", -1),
+            ("SELECT timeDiff('2024-02-28', '2024-03-01')", 172800),
+        ] {
+            assert_eq!(value(sql), ConstantValue::Integer(expected), "{sql}");
+        }
+        assert_eq!(value("SELECT timeDiff(NULL, '2024-01-01')"), ConstantValue::Null);
+        assert_eq!(value("SELECT timeDiff('2024-01-01', NULL)"), ConstantValue::Null);
+        for sql in [
+            "SELECT timeDiff()",
+            "SELECT timeDiff('2023-02-29', '2024-01-01')",
+            "SELECT timeDiff('2024-01-01')",
+            "SELECT timeDiff('2024-01-01', '2024-01-02', '2024-01-03')",
         ] {
             assert!(crate::parse_select(sql).is_err(), "{sql}");
         }
