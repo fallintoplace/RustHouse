@@ -30,6 +30,8 @@ def profile_table(path, table):
             raise ValueError(f"{table}: TSV header mismatch")
         indexes = {name: position for position, name in enumerate(names(table))}
         for line in stream:
+            if not line.endswith(b"\n"):
+                raise ValueError(f"{table}: truncated TSV data record")
             bytes_read += len(line)
             digest.update(line)
             parts = line.decode("utf-8").rstrip("\r\n").split("\t")

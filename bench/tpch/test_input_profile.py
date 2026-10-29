@@ -30,6 +30,13 @@ class InputProfileTests(unittest.TestCase):
                 with self.assertRaisesRegex(ValueError, "unique"):
                     profile_directory("/nonexistent", selected)
 
+    def test_rejects_unterminated_final_record(self):
+        with tempfile.TemporaryDirectory() as root:
+            source = Path(root) / "region.tsv"
+            source.write_text("\t".join(names("region")) + "\n1\tEUROPE\tcomment")
+            with self.assertRaisesRegex(ValueError, "truncated"):
+                profile_table(source, "region")
+
     def test_rejects_wrong_schema(self):
         with tempfile.TemporaryDirectory() as root:
             path = Path(root) / "region.tsv"
