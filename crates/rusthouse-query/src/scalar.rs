@@ -96,6 +96,7 @@ pub(super) fn is_function(name: &str) -> bool {
         || name.eq_ignore_ascii_case("PMOD")
         || name.eq_ignore_ascii_case("TRAILING_ONES")
         || name.eq_ignore_ascii_case("TOINT8")
+        || name.eq_ignore_ascii_case("INTDIVORZERO")
         || name.eq_ignore_ascii_case("MINUS")
         || name.eq_ignore_ascii_case("PLUS")
 }
@@ -990,6 +991,14 @@ fn factor(parser: &mut Parser, depth: usize) -> Result<i64, ParseError> {
         let right = expression(parser, depth + 1)?;
         require_token(parser, Token::RParen, "minus requires two arguments")?;
         return left.checked_sub(right).ok_or_else(overflow);
+    }
+    if parser.keyword("INTDIVORZERO") {
+        require_token(parser, Token::LParen, "intDivOrZero requires '('")?;
+        let left = expression(parser, depth + 1)?;
+        require_token(parser, Token::Comma, "intDivOrZero requires two arguments")?;
+        let right = expression(parser, depth + 1)?;
+        require_token(parser, Token::RParen, "intDivOrZero requires two arguments")?;
+        return Ok(left.checked_div(right).unwrap_or(0));
     }
     if parser.keyword("TOBOOL") {
         require_token(parser, Token::LParen, "toBool requires '('")?;
