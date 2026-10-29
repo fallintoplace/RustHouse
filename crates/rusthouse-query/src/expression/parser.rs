@@ -9,7 +9,10 @@ fn parse_length_column(parser: &mut Parser) -> Result<ScalarExpr, ParseError> {
     Ok(ScalarExpr::TextLength(column))
 }
 
-fn parse_parenthesized(parser: &mut Parser, depth: usize) -> Result<ScalarExpr, ParseError> {
+fn parse_parenthesized_scalar_expression(
+    parser: &mut Parser,
+    depth: usize,
+) -> Result<ScalarExpr, ParseError> {
     parser.index += 1;
     let result = parse_expression_tokens_at_depth(parser, depth + 1)?;
     if !parser.take(Token::RParen) {
@@ -59,7 +62,7 @@ pub(super) fn primary(parser: &mut Parser, depth: usize) -> Result<ScalarExpr, P
             parser.index += 1;
             Ok(literal)
         }
-        Some(Token::LParen) => parse_parenthesized(parser, depth),
+        Some(Token::LParen) => parse_parenthesized_scalar_expression(parser, depth),
         _ => Err(ParseError(
             "expected column, integer, or '(' in expression".into(),
         )),
@@ -70,7 +73,7 @@ pub(super) fn product(parser: &mut Parser, depth: usize) -> Result<ScalarExpr, P
     let mut expr = primary(parser, depth)?;
     let mut operators = 0usize;
     loop {
-        let multiply = if parser.take(Token::Star) {
+        let is_multiplication = if parser.take(Token::Star) {
             true
         } else if parser.take(Token::Slash) {
             false
@@ -82,7 +85,7 @@ pub(super) fn product(parser: &mut Parser, depth: usize) -> Result<ScalarExpr, P
             return Err(ParseError("multiplicative operator chain exceeds 128 terms".into()));
         }
         let right = Box::new(primary(parser, depth)?);
-        expr = if multiply {
+        expr = if is_multiplication {
             ScalarExpr::Multiply(Box::new(expr), right)
         } else {
             ScalarExpr::Divide(Box::new(expr), right)

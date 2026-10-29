@@ -9,6 +9,14 @@ use std::path::Path;
 
 const MAX_GROUPS: usize = 200_000;
 
+fn group_limit_error() -> ExecutionError {
+    ExecutionError::Invalid("GROUP BY supports at most 200000 groups".into())
+}
+
+fn numeric_column_error() -> ExecutionError {
+    ExecutionError::Invalid("numeric aggregates require numeric columns".into())
+}
+
 fn filter_enabled(column: &TypedColumn, row: usize) -> Result<bool, ExecutionError> {
     let number = match column {
         TypedColumn::Numeric(values) => Some(super::number_at(values, row)),
@@ -90,9 +98,7 @@ pub(super) fn execute<W: Write>(
         if *function != AggregateFunction::Count
             && matches!(typed::base_type(&selected.data_type), "String" | "UUID")
         {
-            return Err(ExecutionError::Invalid(
-                "numeric aggregates require numeric columns".into(),
-            ));
+            return Err(numeric_column_error());
         }
     }
     for filter in filters.iter().flatten() {
@@ -227,9 +233,7 @@ pub(super) fn execute<W: Write>(
                         group
                     } else {
                         if groups.len() >= MAX_GROUPS {
-                            return Err(ExecutionError::Invalid(
-                                "GROUP BY supports at most 200000 groups".into(),
-                            ));
+                            return Err(group_limit_error());
                         }
                         reserve_group(&mut retained_group_bytes, items.len(), 0)?;
                         let group = groups.len();
@@ -248,9 +252,7 @@ pub(super) fn execute<W: Write>(
                         group
                     } else {
                         if groups.len() >= MAX_GROUPS {
-                            return Err(ExecutionError::Invalid(
-                                "GROUP BY supports at most 200000 groups".into(),
-                            ));
+                            return Err(group_limit_error());
                         }
                         reserve_group(&mut retained_group_bytes, items.len(), key.len())?;
                         let group = groups.len();
@@ -270,9 +272,7 @@ pub(super) fn execute<W: Write>(
                         Entry::Occupied(entry) => *entry.get(),
                         Entry::Vacant(entry) => {
                             if groups.len() >= MAX_GROUPS {
-                                return Err(ExecutionError::Invalid(
-                                    "GROUP BY supports at most 200000 groups".into(),
-                                ));
+                                return Err(group_limit_error());
                             }
                             reserve_group(&mut retained_group_bytes, items.len(), 0)?;
                             entry.insert(groups.len());
@@ -323,9 +323,7 @@ pub(super) fn execute<W: Write>(
                         Cell::Numeric(value) => state.update(value)?,
                         Cell::Null => {}
                         Cell::Text(_) | Cell::Uuid(_) => {
-                            return Err(ExecutionError::Invalid(
-                                "numeric aggregates require numeric columns".into(),
-                            ));
+                            return Err(numeric_column_error());
                         }
                     },
                 }
