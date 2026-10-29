@@ -42,7 +42,13 @@ def guard(binary, database, table, source, watch_dir, min_free_gib=5,
         raise ValueError("source TSV is missing")
     if not Path(watch_dir).is_dir():
         raise ValueError("watch directory is missing")
-    if Path(database).exists() and not same_device(database, watch_dir):
+    # New database paths are not present yet. The filesystem of their nearest
+    # existing parent determines where COPY will consume disk space.
+    database_path = Path(database)
+    probe_path = database_path if database_path.exists() else next(
+        (parent for parent in database_path.parents if parent.exists()), None
+    )
+    if probe_path is None or not same_device(probe_path, watch_dir):
         raise ValueError("watch directory is not on the database filesystem")
     reserve = int(min_free_gib * (1024**3))
     free_start = shutil.disk_usage(watch_dir).free
