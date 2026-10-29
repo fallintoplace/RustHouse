@@ -1,0 +1,6 @@
+{
+  "id": "count-between-full",
+  "kind": "count_between",
+  "lo": "start",
+  "hi": "last"
+}
