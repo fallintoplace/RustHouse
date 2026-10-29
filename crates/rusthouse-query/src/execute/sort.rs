@@ -98,16 +98,14 @@ fn read_sorted_row(
     descending: bool,
     directions: &Arc<[bool]>,
 ) -> Result<Option<SortedRow>, ExecutionError> {
-    let mut sequence = [0u8; 8];
-    if reader.read(&mut sequence[..1])? == 0 { return Ok(None); }
-    reader.read_exact(&mut sequence[1..])?;
-    let sequence = usize::try_from(u64::from_le_bytes(sequence))
+    // Retain the single-byte EOF probe, but fetch the rest of the header once.
+    let mut header = [0u8; 16];
+    if reader.read(&mut header[..1])? == 0 { return Ok(None); }
+    reader.read_exact(&mut header[1..])?;
+    let sequence = usize::try_from(u64::from_le_bytes(header[..8].try_into().unwrap()))
         .map_err(|_| invalid("external sort sequence overflow"))?;
-    let mut bytes = [0u8; 4];
-    reader.read_exact(&mut bytes)?;
-    let extra = u32::from_le_bytes(bytes) as usize;
-    reader.read_exact(&mut bytes)?;
-    let width = u32::from_le_bytes(bytes) as usize;
+    let extra = u32::from_le_bytes(header[8..12].try_into().unwrap()) as usize;
+    let width = u32::from_le_bytes(header[12..].try_into().unwrap()) as usize;
     if extra != directions.len() || width > 128 {
         return Err(invalid("malformed external sort run width"));
     }
