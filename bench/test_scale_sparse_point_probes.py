@@ -30,6 +30,12 @@ class SparseProbeTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             probe("x", "x", "a;drop", 0, 10)
 
+    def test_sampling_supports_full_uint64_domain(self):
+        first = choose_ids(0, 1 << 64, 10, 42)
+        self.assertEqual(len(set(first)), 10)
+        self.assertEqual(first, choose_ids(0, 1 << 64, 10, 42))
+        self.assertTrue(all(0 <= value < (1 << 64) for value in first))
+
 
 if __name__ == "__main__":
     unittest.main()
