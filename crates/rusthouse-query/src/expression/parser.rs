@@ -178,6 +178,7 @@ fn parse_aggregate_builtin(parser: &mut Parser) -> Result<ScalarExpr, ParseError
     match (name.as_str(), args.len()) {
         ("IFNULL", 2) => Ok(ScalarExpr::Coalesce(args)),
         ("NVL", 2) => Ok(ScalarExpr::Coalesce(args)),
+        ("ISNULL", 1) => Ok(ScalarExpr::IsNull(Box::new(args.remove(0)), false)),
         _ => Err(ParseError(format!("unsupported aggregate function: {name}"))),
     }
 }

@@ -40,3 +40,8 @@ fn ifnull_substitutes_null_aggregate_inputs() {
 fn nvl_matches_ifnull() {
     assert_eq!(evaluate("nvl(x, y)"), "10");
 }
+
+#[test]
+fn isnull_counts_missing_numeric_values() {
+    assert_eq!(evaluate("isNull(x)"), "1");
+}
