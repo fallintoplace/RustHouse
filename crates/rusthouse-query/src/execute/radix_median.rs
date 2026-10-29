@@ -79,6 +79,7 @@ fn count_column(
     shift: usize,
     prefix_mask: u128,
     prefixes: &[u128; 2],
+    histogram_sides: usize,
     histogram: &mut [[u64; 256]; 2],
 ) -> Result<(), ExecutionError> {
     let mut visit = |value: u128, row: usize| {
@@ -87,7 +88,7 @@ fn count_column(
         {
             return;
         }
-        for side in 0..2 {
+        for side in 0..histogram_sides {
             if value & prefix_mask != prefixes[side] & prefix_mask {
                 continue;
             }
@@ -161,6 +162,8 @@ fn median_inner(
             u128::MAX << (shift + 8)
         };
         let mut histogram = [[0_u64; 256]; 2];
+        let shared_prefix = keys[0] & prefix_mask == keys[1] & prefix_mask;
+        let histogram_sides = if shared_prefix { 1 } else { 2 };
         if nullable {
             let columns = typed_filtered.map_or(names.as_slice(), |(columns, _)| columns);
             let mut reader = TypedQueryReader::open_with_metadata(part, columns, metadata)?;
@@ -176,7 +179,7 @@ fn median_inner(
                         .collect::<Vec<_>>()
                 });
                 count_column(values, Some(nulls), selected.as_deref(),
-                    bits, shift, prefix_mask, &keys, &mut histogram)?;
+                    bits, shift, prefix_mask, &keys, histogram_sides, &mut histogram)?;
             }
         } else {
             let scan_columns = filtered.map_or(names.as_slice(), |(columns, _)| columns);
@@ -188,8 +191,11 @@ fn median_inner(
                         .collect::<Vec<_>>()
                 });
                 count_column(&batch[0], None, selected.as_deref(),
-                    bits, shift, prefix_mask, &keys, &mut histogram)?;
+                    bits, shift, prefix_mask, &keys, histogram_sides, &mut histogram)?;
             }
+        }
+        if shared_prefix {
+            histogram[1] = histogram[0];
         }
         for side in 0..2 {
             let mut remaining = ranks[side];
@@ -293,6 +299,20 @@ pub(super) fn median_filtered(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn shared_median_prefix_reuses_the_first_histogram() {
+        let mut histogram = [[0u64; 256]; 2];
+        let values = NumericColumn::UInt8(vec![1, 3, 3, 7]);
+        count_column(&values, None, None, 8, 0, 0, &[0, 0], 1, &mut histogram)
+            .unwrap();
+        assert_eq!(histogram[0][1], 1);
+        assert_eq!(histogram[0][3], 2);
+        assert_eq!(histogram[0][7], 1);
+        assert_eq!(histogram[1].iter().sum::<u64>(), 0);
+        histogram[1] = histogram[0];
+        assert_eq!(histogram[1], histogram[0]);
+    }
 
     #[test]
     fn exact_middle_pair_handles_half_values_without_float_rounding() {
