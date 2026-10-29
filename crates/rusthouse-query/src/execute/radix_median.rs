@@ -33,17 +33,11 @@ fn sorted_key_signed(value: i128, bits: usize) -> u128 {
 }
 
 fn render_key(key: u128, bits: usize, signed: bool) -> String {
-    if !signed {
-        return key.to_string();
-    }
-    let sign_bit = 1_u128 << (bits - 1);
-    let original = key ^ sign_bit;
-    let extended = if original & sign_bit != 0 {
-        original | !low_mask(bits)
+    if signed {
+        signed_key_value(key, bits).to_string()
     } else {
-        original
-    };
-    (extended as i128).to_string()
+        key.to_string()
+    }
 }
 
 fn signed_key_value(key: u128, bits: usize) -> i128 {

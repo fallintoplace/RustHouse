@@ -69,7 +69,7 @@ impl<'a> Parser<'a> {
         }
     }
 
-    fn take(&mut self, expected: u8) -> bool {
+    fn consume_expected_byte_if_present(&mut self, expected: u8) -> bool {
         if self.next() == Some(expected) {
             self.offset += 1;
             true
@@ -79,7 +79,7 @@ impl<'a> Parser<'a> {
     }
 
     fn expect(&mut self, expected: u8) -> Result<(), &'static str> {
-        self.take(expected)
+        self.consume_expected_byte_if_present(expected)
             .then_some(())
             .ok_or("unexpected JSON character")
     }
@@ -164,7 +164,7 @@ impl<'a> Parser<'a> {
     }
 
     fn number(&mut self) -> Result<(), &'static str> {
-        self.take(b'-');
+        self.consume_expected_byte_if_present(b'-');
         match self.next() {
             Some(b'0') => self.offset += 1,
             Some(b'1'..=b'9') => {
@@ -172,12 +172,14 @@ impl<'a> Parser<'a> {
             }
             _ => return Err("invalid JSON number"),
         }
-        if self.take(b'.') && self.digits() == 0 {
+        if self.consume_expected_byte_if_present(b'.') && self.digits() == 0 {
             return Err("missing JSON fractional digits");
         }
-        if self.take(b'e') || self.take(b'E') {
-            if !self.take(b'+') {
-                self.take(b'-');
+        if self.consume_expected_byte_if_present(b'e')
+            || self.consume_expected_byte_if_present(b'E')
+        {
+            if !self.consume_expected_byte_if_present(b'+') {
+                self.consume_expected_byte_if_present(b'-');
             }
             if self.digits() == 0 {
                 return Err("missing JSON exponent digits");
@@ -198,14 +200,14 @@ impl<'a> Parser<'a> {
                 self.offset += 1;
                 self.skip_ws();
                 let mut fields = Vec::new();
-                if !self.take(b'}') {
+                if !self.consume_expected_byte_if_present(b'}') {
                     loop {
                         let key = self.string()?;
                         self.skip_ws();
                         self.expect(b':')?;
                         fields.push((key, self.value(depth + 1)?));
                         self.skip_ws();
-                        if self.take(b'}') {
+                        if self.consume_expected_byte_if_present(b'}') {
                             break;
                         }
                         self.expect(b',')?;
@@ -218,11 +220,11 @@ impl<'a> Parser<'a> {
                 self.offset += 1;
                 self.skip_ws();
                 let mut items = Vec::new();
-                if !self.take(b']') {
+                if !self.consume_expected_byte_if_present(b']') {
                     loop {
                         items.push(self.value(depth + 1)?);
                         self.skip_ws();
-                        if self.take(b']') {
+                        if self.consume_expected_byte_if_present(b']') {
                             break;
                         }
                         self.expect(b',')?;

@@ -6,6 +6,7 @@ modified. Results, not just execution success, determine parity.
 """
 import argparse
 import json
+import math
 import re
 import statistics
 import subprocess
@@ -14,9 +15,9 @@ import time
 import uuid
 from pathlib import Path
 
-from bench.analytics.sqlite_oracle import assert_matches, parse_rows
+from bench.analytics.sqlite_oracle import assert_matches, cell_equal, parse_rows
 from bench.analytics.suite_runner import (
-    ACCOUNTS_ROWS, ACCOUNTS_SCHEMA, COLUMNS, SCHEMA, fact_row,
+    ACCOUNTS_ROWS, ACCOUNTS_SCHEMA, COLUMNS, SCHEMA,
     load_workload, make_fixture,
 )
 from bench.common import cli_sql, emit_json
@@ -46,6 +47,87 @@ def assert_clickhouse_parity(rusthouse_output, clickhouse_output, unordered=Fals
     return len(expected)
 
 
+
+def _json_result_rows(data):
+    """Parse JSONEachRow without silently overwriting duplicate column names."""
+    if not isinstance(data, bytes):
+        raise TypeError("differential JSON output must be bytes")
+    if len(data) > 4_000_000:
+        raise ValueError("differential JSON result exceeds 4 MB")
+
+    def no_duplicate_keys(pairs):
+        result = {}
+        for name, value in pairs:
+            if name in result:
+                raise ValueError("duplicate JSON result column")
+            result[name] = value
+        return result
+
+    def no_nonfinite(value):
+        raise ValueError(f"non-finite JSON token: {value}")
+
+    rows = []
+    for number, line in enumerate(data.splitlines(), 1):
+        if not line:
+            raise ValueError(f"blank JSON result row {number}")
+        row = json.loads(line, object_pairs_hook=no_duplicate_keys,
+                         parse_constant=no_nonfinite)
+        if not isinstance(row, dict):
+            raise ValueError(f"JSON result row {number} is not an object")
+        rows.append(row)
+    return rows
+
+
+def _json_cell_equal(actual, expected):
+    """RustHouse JSONStringsEachRow emits number text while ClickHouse retains types."""
+    if expected is None:
+        return actual is None
+    if not isinstance(actual, str):
+        return False
+    if isinstance(expected, str):
+        return actual == expected
+    if isinstance(expected, bool):
+        return actual == ("1" if expected else "0")
+    if isinstance(expected, (int, float)):
+        return cell_equal(actual, expected)
+    return False
+
+
+def assert_clickhouse_json_parity(rusthouse_output, clickhouse_output, unordered=False):
+    """Compare typed ClickHouse JSONEachRow with RustHouse JSONStringsEachRow.
+
+    The reference types decide whether a value is a String, number, or NULL.
+    This avoids treating numeric-looking String values as measured numbers.
+    """
+    actual = _json_result_rows(rusthouse_output)
+    expected = _json_result_rows(clickhouse_output)
+    if len(actual) != len(expected):
+        raise ValueError(
+            f"row count mismatch: RustHouse={len(actual)}, ClickHouse={len(expected)}"
+        )
+
+    def equal(row, reference):
+        return (
+            list(row) == list(reference)
+            and all(_json_cell_equal(row[key], value) for key, value in reference.items())
+        )
+
+    if unordered:
+        if len(actual) > 4096:
+            raise ValueError("unordered JSON parity is limited to 4096 result rows")
+        unmatched = list(actual)
+        for reference in expected:
+            index = next((i for i, row in enumerate(unmatched) if equal(row, reference)), None)
+            if index is None:
+                raise ValueError("JSON result multiset differs from ClickHouse")
+            unmatched.pop(index)
+    else:
+        for number, (row, reference) in enumerate(zip(actual, expected), 1):
+            if not equal(row, reference):
+                raise ValueError(f"JSON result row {number} differs from ClickHouse")
+    return len(expected)
+
+
 def cli_clickhouse(client, host, port, query, timeout, database=None, data=None):
     command = [str(client), "--host", host, "--port", str(port), "--query", query]
     if database:
@@ -64,24 +146,98 @@ def cli_clickhouse(client, host, port, query, timeout, database=None, data=None)
     return result.stdout
 
 
+
+MAX_FIXTURE_LINE_BYTES = 1024 * 1024
+UINT64_MAX = (1 << 64) - 1
+
+
+def _decode_fixture_field(field):
+    """Decode the escaped TSV bytes that RustHouse COPY also reads."""
+    decoded = bytearray()
+    index = 0
+    escapes = {
+        ord("t"): 9, ord("n"): 10, ord("r"): 13,
+        ord("0"): 0, ord("b"): 8, ord("f"): 12,
+        ord("v"): 11, ord("\\"): 92,
+    }
+    while index < len(field):
+        if field[index] != 92:
+            decoded.append(field[index])
+            index += 1
+            continue
+        index += 1
+        if index == len(field):
+            raise ValueError("incomplete fixture TSV escape")
+        if field[index] == ord("x"):
+            pair = field[index + 1:index + 3]
+            if len(pair) != 2 or any(byte not in b"0123456789abcdefABCDEF" for byte in pair):
+                raise ValueError("invalid fixture TSV hex escape")
+            decoded.append(int(pair, 16))
+            index += 3
+        else:
+            replacement = escapes.get(field[index])
+            if replacement is None:
+                raise ValueError("unsupported fixture TSV escape")
+            decoded.append(replacement)
+            index += 1
+    return decoded.decode("utf-8")
+
+
+def _copy_fixture_to_json(source, target, names, numeric, nullable, expected_count):
+    """Use the real COPY TSV input, not an independently regenerated dataset."""
+    seen = 0
+    with source.open("rb") as reader, target.open("w", encoding="utf-8") as writer:
+        header = reader.readline(MAX_FIXTURE_LINE_BYTES + 1)
+        if header != ("\t".join(names) + "\n").encode():
+            raise ValueError(f"{source.name}: unexpected TSV column header")
+        while True:
+            line = reader.readline(MAX_FIXTURE_LINE_BYTES + 1)
+            if not line:
+                break
+            seen += 1
+            if seen > expected_count or len(line) > MAX_FIXTURE_LINE_BYTES:
+                raise ValueError(f"{source.name}: too many or oversized fixture rows")
+            if not line.endswith(b"\n"):
+                raise ValueError(f"{source.name}: unterminated TSV fixture row")
+            fields = line[:-1].split(b"\t")
+            if len(fields) != len(names):
+                raise ValueError(f"{source.name}: fixture row width mismatch")
+            record = {}
+            for name, raw in zip(names, fields):
+                if raw == b"\\N":
+                    if name not in nullable:
+                        raise ValueError(f"{source.name}: NULL in nonnullable field {name}")
+                    value = None
+                else:
+                    value = _decode_fixture_field(raw)
+                    if name in numeric:
+                        if not value.isascii() or not value.isdigit():
+                            raise ValueError(f"{source.name}: invalid unsigned integer in {name}")
+                        value = int(value)
+                        if value > UINT64_MAX:
+                            raise ValueError(f"{source.name}: UInt64 overflow in {name}")
+                record[name] = value
+            writer.write(json.dumps(record, ensure_ascii=False) + "\n")
+        if seen != expected_count:
+            raise ValueError(
+                f"{source.name}: expected {expected_count} fixture rows, found {seen}"
+            )
+
+
 def fixture_json(directory, rows):
-    """Reuse the exact deterministic rows loaded into RustHouse, including NULLs."""
+    """Build ClickHouse JSONEachRow from the exact TSV loaded into RustHouse."""
     directory = Path(directory)
-    path = directory / "events.jsonl"
-    with path.open("w", encoding="utf-8") as stream:
-        for index in range(rows):
-            stream.write(json.dumps(dict(zip(COLUMNS, fact_row(index)))) + "\n")
-    accounts_path = directory / "accounts.jsonl"
-    with (directory / "accounts.tsv").open(encoding="utf-8") as src, accounts_path.open(
-        "w", encoding="utf-8"
-    ) as dst:
-        next(src)
-        for line in src:
-            user_id, tier, country = line.rstrip("\n").split("\t")
-            dst.write(json.dumps({
-                "user_id": int(user_id), "tier": tier, "country": country
-            }) + "\n")
-    return path, accounts_path
+    event_json = directory / "events.jsonl"
+    account_json = directory / "accounts.jsonl"
+    _copy_fixture_to_json(
+        directory / "events.tsv", event_json, COLUMNS,
+        {"event_id", "user_id", "amount", "quantity"}, {"coupon"}, rows,
+    )
+    _copy_fixture_to_json(
+        directory / "accounts.tsv", account_json,
+        ("user_id", "tier", "country"), {"user_id"}, set(), ACCOUNTS_ROWS,
+    )
+    return event_json, account_json
 
 
 def clickhouse_create_table(schema):
@@ -104,11 +260,14 @@ def paired_query(query, rust, clickhouse, *, runs=5, warmups=2,
         outputs = {}
         for engine in engines:
             started = clock()
-            outputs[engine] = clickhouse(query + " FORMAT TabSeparated") if engine == "clickhouse" else rust(query)
+            outputs[engine] = (
+                clickhouse(query + " FORMAT JSONEachRow SETTINGS output_format_json_quote_64bit_integers=0")
+                if engine == "clickhouse" else rust(query)
+            )
             milliseconds = (clock() - started) / 1e6
             if iteration >= 0:
                 samples[engine].append(milliseconds)
-        verified_rows = assert_clickhouse_parity(
+        verified_rows = assert_clickhouse_json_parity(
             outputs["rusthouse"], outputs["clickhouse"], unordered=unordered
         )
     clickhouse_ms = statistics.median(samples["clickhouse"])
@@ -140,6 +299,7 @@ def run_parity(binary, client, workload, rows=10_000, timeout=120,
         event_json, account_json = fixture_json(root, rows)
         database = root / "rusthouse-db"
         rust = lambda sql: cli_sql(binary, database, sql, timeout)
+        rust_json = lambda sql: cli_sql(binary, database, sql, timeout, select_format="jsonl")
         ch = lambda sql, data=None, database_name=None: cli_clickhouse(
             client, host, port, sql, timeout, database_name, data
         )
@@ -167,7 +327,7 @@ def run_parity(binary, client, workload, rows=10_000, timeout=120,
             for case in workload["queries"]:
                 try:
                     measured = paired_query(
-                        case["sql"], rust,
+                        case["sql"], rust_json,
                         lambda query: ch(query, database_name=db_name),
                         runs=runs, warmups=warmups,
                         unordered=case.get("unordered", False),
@@ -188,6 +348,7 @@ def run_parity(binary, client, workload, rows=10_000, timeout=120,
         "timing": "paired interleaved runs, median wall clock including CLI overhead",
         "official_benchmark": False,
         "fixture": "deterministic identical JSONEachRow and TSV data",
+        "oracle": "typed ClickHouse JSONEachRow vs RustHouse JSONStringsEachRow",
         "coverage": {
             "total_queries": len(results), "verified_queries": verified,
             "failed_queries": len(results) - verified,
