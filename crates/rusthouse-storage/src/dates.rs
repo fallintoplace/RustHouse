@@ -142,11 +142,13 @@ pub fn format_date(days: u16) -> String {
 pub fn format_datetime(seconds: u32) -> String {
     let days = seconds / 86_400;
     let remainder = seconds % 86_400;
-    let date = format_calendar_day(i64::from(days));
+    // Format the calendar date and time together rather than allocating
+    // an intermediate String for every timestamp in a result batch.
+    let (year, month, day) = from_days(i64::from(days));
     let hour = remainder / 3_600;
     let minute = remainder / 60 % 60;
     let second = remainder % 60;
-    format!("{date} {hour:02}:{minute:02}:{second:02}")
+    format!("{year:04}-{month:02}-{day:02} {hour:02}:{minute:02}:{second:02}")
 }
 
 #[cfg(test)]
@@ -196,6 +198,22 @@ mod tests {
             "2106-02-07T06:28:15-00:01",
         ] {
             assert_eq!(parse_datetime(invalid), None, "{invalid}");
+        }
+    }
+
+    #[test]
+    fn combined_timestamp_format_matches_independent_calendar_format() {
+        for seconds in [0u32, 1, 86_399, 86_400, 1_700_000_000, u32::MAX] {
+            let days = seconds / 86_400;
+            let remainder = seconds % 86_400;
+            let expected = format!(
+                "{} {:02}:{:02}:{:02}",
+                format_calendar_day(i64::from(days)),
+                remainder / 3_600,
+                remainder / 60 % 60,
+                remainder % 60,
+            );
+            assert_eq!(format_datetime(seconds), expected);
         }
     }
 
