@@ -9,8 +9,8 @@ from pathlib import Path
 
 
 def inspect_snapshot(binary, path, *, min_rows=1_000_000_000, run=None):
-    if min_rows < 1:
-        raise ValueError("min_rows must be positive")
+    if type(min_rows) is not int or not 1 <= min_rows <= (1 << 64) - 1:
+        raise ValueError("min_rows must be a positive UInt64 integer")
     execute = run or subprocess.run
     result = execute(
         [str(binary), "inspect-snapshot", str(path), "--json"],
@@ -20,7 +20,8 @@ def inspect_snapshot(binary, path, *, min_rows=1_000_000_000, run=None):
         raise RuntimeError(f"snapshot inspection failed: {result.stderr.decode('utf-8', 'replace')[-600:]}")
     data = json.loads(result.stdout)
     rows, parts = data.get("rows"), data.get("parts")
-    if type(rows) is not int or type(parts) is not int or rows < 0 or parts < 1:
+    if (type(rows) is not int or type(parts) is not int or rows < 0
+            or rows > (1 << 64) - 1 or not 1 <= parts <= 16_384):
         raise ValueError("snapshot report has invalid rows or parts")
     columns = data.get("columns")
     if (not isinstance(columns, list) or not columns or any(
