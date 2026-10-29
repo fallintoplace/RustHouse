@@ -666,6 +666,44 @@ impl Parser {
     }
 }
 
+/// Split a terminal ClickHouse FORMAT clause without confusing SQL string
+/// contents or comments with keywords. Return the original SQL when absent.
+/// The caller validates the requested format against supported encodings.
+pub fn split_clickhouse_format(sql: &str) -> Result<(&str, Option<&str>), ParseError> {
+    let trimmed = sql.trim_end();
+    let trimmed = trimmed.strip_suffix(';').unwrap_or(trimmed).trim_end();
+    let tokens = tokenize(trimmed)?;
+    let (Some(Token::Word(name)), Some(Token::Word(keyword))) =
+        (tokens.last(), tokens.get(tokens.len().saturating_sub(2)))
+    else {
+        return Ok((sql, None));
+    };
+    if !keyword.eq_ignore_ascii_case("FORMAT") {
+        return Ok((sql, None));
+    }
+    let Some(format_start) = trimmed.len().checked_sub(name.len()) else {
+        return Ok((sql, None));
+    };
+    let Some(format_name) = trimmed.get(format_start..) else {
+        return Ok((sql, None));
+    };
+    if !format_name.eq_ignore_ascii_case(name) {
+        return Ok((sql, None));
+    }
+    let before_format = trimmed[..format_start].trim_end();
+    let Some(keyword_start) = before_format.len().checked_sub(6) else {
+        return Ok((sql, None));
+    };
+    if !before_format[keyword_start..].eq_ignore_ascii_case("FORMAT") {
+        return Ok((sql, None));
+    }
+    let statement = before_format[..keyword_start].trim_end();
+    if statement.is_empty() {
+        return Err(ParseError("FORMAT requires a SELECT statement".into()));
+    }
+    Ok((statement, Some(format_name)))
+}
+
 pub fn parse_select(sql: &str) -> Result<Select, ParseError> {
     parse_select_tokens(tokenize(sql)?)
 }

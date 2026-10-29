@@ -13,6 +13,11 @@ curl http://127.0.0.1:8123/ --data-binary 'SELECT count(*) FROM part'
 ```
 
 The endpoint supports GET /?query=... and POST / with raw SQL. Responses are TSV by default.
+For SELECT queries, a terminal ClickHouse `FORMAT TabSeparated`, `FORMAT CSV`,
+`FORMAT CSVWithNames`, or `FORMAT JSONStringsEachRow` clause chooses that
+output encoding. SQL `FORMAT` cannot be combined with URL `format=` or EXPLAIN.
+The JSONStringsEachRow form deliberately preserves numeric values as JSON strings;
+regular typed ClickHouse JSONEachRow is not implemented.
 Pass `format=tsv-no-header` to remove the header row, including for empty results.
 Pass `format=csv` on either method for RFC 4180-style CSV with CRLF row endings.
 CSV includes headers, quotes embedded commas/newlines, and uses an unquoted `\\N` for NULL.
