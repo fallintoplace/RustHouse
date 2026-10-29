@@ -8,6 +8,8 @@ import json
 import re
 from pathlib import Path
 
+MAX_MANIFEST_BYTES = 8 * 1024 * 1024
+
 
 def require_uint(value, name, *, zero=False):
     if type(value) is not int or value < (0 if zero else 1):
@@ -38,8 +40,15 @@ def verify_file(path, start, rows, step=1):
 
 
 def verify(manifest_path):
-    manifest_path = Path(manifest_path).resolve()
-    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    manifest_path = Path(manifest_path)
+    if manifest_path.is_symlink():
+        raise ValueError("refusing symlinked shard manifest")
+    with manifest_path.open("rb") as stream:
+        payload = stream.read(MAX_MANIFEST_BYTES + 1)
+    if len(payload) > MAX_MANIFEST_BYTES:
+        raise ValueError("shard manifest exceeds 8 MiB")
+    manifest_path = manifest_path.resolve()
+    manifest = json.loads(payload)
     if manifest.get("schema_version") != 1:
         raise ValueError("unsupported shard manifest version")
     start = require_uint(manifest.get("start"), "start", zero=True)
