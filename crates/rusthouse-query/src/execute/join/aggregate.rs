@@ -1,6 +1,7 @@
 //! Stream numeric aggregates over joined rows without materializing pair output.
 
-use super::{AggregateState, *};
+use super::*;
+use super::super::AggregateState;
 use crate::AggregateFunction;
 
 #[allow(clippy::too_many_arguments)]
