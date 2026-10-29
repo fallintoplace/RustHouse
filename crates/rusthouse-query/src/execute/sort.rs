@@ -84,9 +84,11 @@ fn write_sorted_row(writer: &mut impl Write, row: &SortedRow)
         .map_err(|_| invalid("too many ORDER BY keys"))?;
     let width = u32::try_from(row.values.len())
         .map_err(|_| invalid("too many sorted columns"))?;
-    writer.write_all(&index.to_le_bytes())?;
-    writer.write_all(&secondary.to_le_bytes())?;
-    writer.write_all(&width.to_le_bytes())?;
+    let mut header = [0u8; 16];
+    header[..8].copy_from_slice(&index.to_le_bytes());
+    header[8..12].copy_from_slice(&secondary.to_le_bytes());
+    header[12..16].copy_from_slice(&width.to_le_bytes());
+    writer.write_all(&header)?;
     write_number(writer, row.key)?;
     for &key in &row.extra_keys { write_number(writer, key)?; }
     for &value in &row.values { write_number(writer, value)?; }
