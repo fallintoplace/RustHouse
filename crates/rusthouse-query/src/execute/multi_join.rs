@@ -55,6 +55,23 @@ impl Bucket {
     }
 }
 
+/// ANY INNER/LEFT only needs the first build index for a key, even if
+/// the dimension contains many duplicate records.
+fn insert_hash_key(
+    hash: &mut HashMap<Vec<typed::Key>, Bucket>,
+    key: Vec<typed::Key>,
+    index: usize,
+    first_only: bool,
+) {
+    if first_only {
+        hash.entry(key).or_insert(Bucket::One(index));
+    } else {
+        hash.entry(key)
+            .and_modify(|bucket| bucket.push(index))
+            .or_insert(Bucket::One(index));
+    }
+}
+
 struct Relation {
     alias: String,
     names: Vec<String>,
@@ -370,12 +387,18 @@ pub fn execute_multi_join<W: Write>(
             MAX_INPUT_ROWS,
             MAX_STREAM_BUILD_BYTES,
         )?;
-        let mut hash: HashMap<Vec<typed::Key>, Bucket> = HashMap::with_capacity(right_rows.len());
+        // Large nullable or heavily duplicated build dimensions should not
+        // force a full-size hash allocation before keys are inspected.
+        let mut hash: HashMap<Vec<typed::Key>, Bucket> =
+            HashMap::with_capacity(right_rows.len().min(4096));
         for (index, row) in right_rows.iter().enumerate() {
             if let Some(key) = row_key(row, &right_keys) {
-                hash.entry(key)
-                    .and_modify(|bucket| bucket.push(index))
-                    .or_insert(Bucket::One(index));
+                insert_hash_key(
+                    &mut hash,
+                    key,
+                    index,
+                    step.any && step.kind != JoinType::Right,
+                );
             }
         }
         // Most fact-to-dimension joins preserve the incoming row count.
@@ -496,5 +519,22 @@ mod bucket_tests {
         bucket.push(7);
         bucket.push(9);
         assert_eq!(bucket.iter().copied().collect::<Vec<_>>(), vec![3, 7, 9]);
+    }
+
+    #[test]
+    fn any_join_build_ignores_duplicate_dimension_rows() {
+        let mut hash = HashMap::new();
+        for index in 0..20_000 {
+            insert_hash_key(
+                &mut hash,
+                vec![typed::Key::Text(b"hot".to_vec())],
+                index,
+                true,
+            );
+        }
+        assert_eq!(hash.len(), 1);
+        assert_eq!(hash.values().next().unwrap().iter().copied().collect::<Vec<_>>(), vec![0]);
+        insert_hash_key(&mut hash, vec![typed::Key::Text(b"hot".to_vec())], 20_000, false);
+        assert_eq!(hash.values().next().unwrap().iter().copied().collect::<Vec<_>>(), vec![0, 20_000]);
     }
 }
