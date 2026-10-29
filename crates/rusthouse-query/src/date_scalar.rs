@@ -10,6 +10,7 @@ pub(super) fn is_function(name: &str) -> bool {
     matches!(
         name.to_ascii_uppercase().as_str(),
         "ADDDAYS"
+            | "TOISOYEAR"
             | "TOISOWEEK"
             | "TOYYYYMMDDHHMMSS"
             | "TOYYYYMMDD"
@@ -144,6 +145,11 @@ pub(super) fn parse_after_open(
             let days = value.seconds.div_euclid(DAY_SECONDS);
             let (_, week) = iso_week_and_year(days);
             Ok(ConstantValue::Integer(week))
+        }),
+        "TOISOYEAR" => unary_date(parser, depth, |value| {
+            let days = value.seconds.div_euclid(DAY_SECONDS);
+            let (year, _) = iso_week_and_year(days);
+            Ok(ConstantValue::Integer(year))
         }),
         _ => Err(ParseError(format!("unsupported date function: {name}"))),
     }
@@ -902,6 +908,25 @@ mod utc_compat_tests {
             "SELECT toISOWeek()",
             "SELECT toISOWeek('2023-02-29')",
             "SELECT toISOWeek('2024-01-01', 1)",
+        ] {
+            assert!(crate::parse_select(sql).is_err(), "{sql}");
+        }
+    }
+
+    #[test]
+    fn iso_year_matches_utc_calendar_examples() {
+        for (sql, expected) in [
+            ("SELECT toISOYear('2021-01-01')", 2020),
+            ("SELECT toISOYear('2021-01-04')", 2021),
+            ("SELECT toISOYear('2019-12-30')", 2020),
+        ] {
+            assert_eq!(value(sql), ConstantValue::Integer(expected), "{sql}");
+        }
+        assert_eq!(value("SELECT toISOYear(NULL)"), ConstantValue::Null);
+        for sql in [
+            "SELECT toISOYear()",
+            "SELECT toISOYear('2023-02-29')",
+            "SELECT toISOYear('2024-01-01', 1)",
         ] {
             assert!(crate::parse_select(sql).is_err(), "{sql}");
         }
