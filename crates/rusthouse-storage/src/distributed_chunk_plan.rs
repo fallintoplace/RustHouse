@@ -65,12 +65,16 @@ pub fn plan_missing_chunks(
         return Err("transfer batch chunk limit exceeds bound");
     }
     let chunk_count = checked_chunk_count(total_bytes, chunk_bytes, max_chunks)?;
-    let mut previous = None;
+    let mut previous_chunk_index = None;
     for &index in remaining_indices {
-        if index >= chunk_count || previous.is_some_and(|last| index <= last) {
+        if index >= chunk_count || previous_chunk_index.is_some_and(|last| index <= last) {
             return Err("invalid or duplicate missing chunk index");
         }
-        previous = Some(index);
+        previous_chunk_index = Some(index);
+    }
+    // Validate every missing index first, even when no work can be scheduled.
+    if byte_budget == 0 || max_batch_chunks == 0 || remaining_indices.is_empty() {
+        return Ok(Vec::new());
     }
     // Only full chunks plus possibly one short final chunk can fit this budget.
     let budget_chunks = byte_budget / chunk_bytes;
@@ -81,7 +85,7 @@ pub fn plan_missing_chunks(
     let mut selected = Vec::with_capacity(reserve);
     let mut remaining_bytes = byte_budget;
     for &index in remaining_indices {
-        if selected.len() >= max_batch_chunks {
+        if selected.len() >= max_batch_chunks || remaining_bytes == 0 {
             break;
         }
         let chunk = chunk_at_index(total_bytes, chunk_bytes, index);
@@ -94,9 +98,71 @@ pub fn plan_missing_chunks(
     Ok(selected)
 }
 
+/// Page through a transfer plan without allocating the entire chunk list.
+pub fn plan_chunk_window(
+    total_bytes: u64,
+    chunk_bytes: u64,
+    max_chunks: usize,
+    start_index: usize,
+    requested: usize,
+) -> Result<Vec<IndexedChunk>, &'static str> {
+    let count = checked_chunk_count(total_bytes, chunk_bytes, max_chunks)?;
+    if start_index > count || requested > count - start_index {
+        return Err("transfer chunk window exceeds bounds");
+    }
+    let mut page = Vec::with_capacity(requested);
+    for index in start_index..start_index + requested {
+        page.push(IndexedChunk {
+            index,
+            chunk: chunk_at_index(total_bytes, chunk_bytes, index),
+        });
+    }
+    Ok(page)
+}
+
+/// Return up to requested chunks, stopping at the end of the transfer.
+///
+/// The strict plan_chunk_window keeps its original out-of-bounds semantics.
+/// This variant is useful for callers that page through a transfer with a
+/// fixed page size and cannot predict the final partial page.
+pub fn plan_chunk_window_clamped(
+    total_bytes: u64,
+    chunk_bytes: u64,
+    max_chunks: usize,
+    start_index: usize,
+    requested: usize,
+) -> Result<Vec<IndexedChunk>, &'static str> {
+    let count = checked_chunk_count(total_bytes, chunk_bytes, max_chunks)?;
+    if start_index > count {
+        return Err("transfer chunk window exceeds bounds");
+    }
+    plan_chunk_window(
+        total_bytes,
+        chunk_bytes,
+        max_chunks,
+        start_index,
+        requested.min(count - start_index),
+    )
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn clamped_windows_return_partial_final_pages() {
+        let all = plan_chunks(10, 3, 4).unwrap();
+        let first = plan_chunk_window_clamped(10, 3, 4, 0, 3).unwrap();
+        let tail = plan_chunk_window_clamped(10, 3, 4, 3, 3).unwrap();
+        assert_eq!(first.len(), 3);
+        assert_eq!(tail.len(), 1);
+        assert_eq!(tail[0].chunk, all[3]);
+        assert!(plan_chunk_window_clamped(10, 3, 4, 4, usize::MAX)
+            .unwrap()
+            .is_empty());
+        assert!(plan_chunk_window_clamped(10, 3, 4, 5, 1).is_err());
+        assert!(plan_chunk_window(10, 3, 4, 3, 2).is_err());
+    }
 
     #[test]
     fn partitions_without_gaps_or_overlaps() {
@@ -170,6 +236,17 @@ mod tests {
     }
 
     #[test]
+    fn zero_budget_still_validates_indexes_before_skipping_work() {
+        let indexes = (0..65_536).collect::<Vec<_>>();
+        assert!(plan_missing_chunks(65_536, 1, 65_536, &indexes, 0, 65_536)
+            .unwrap()
+            .is_empty());
+        assert!(plan_missing_chunks(4, 1, 4, &[3, 3], 0, 0).is_err());
+        assert!(plan_missing_chunks(4, 1, 4, &[3, 4], 0, 2).is_err());
+        assert!(plan_missing_chunks(4, 1, 4, &[3], 4, 0).unwrap().is_empty());
+    }
+
+    #[test]
     fn tiny_resume_budget_does_not_reserve_full_batch() {
         let remaining = (0..65_536).collect::<Vec<_>>();
         let chunks = plan_missing_chunks(65_536, 1, 65_536, &remaining, 0, 65_536).unwrap();
@@ -232,28 +309,6 @@ mod tests {
         );
         assert!(plan_missing_chunks(65_537, 1, 65_536, &[], 0, 1).is_err());
     }
-}
-
-/// Page through a transfer plan without allocating the entire chunk list.
-pub fn plan_chunk_window(
-    total_bytes: u64,
-    chunk_bytes: u64,
-    max_chunks: usize,
-    start_index: usize,
-    requested: usize,
-) -> Result<Vec<IndexedChunk>, &'static str> {
-    let count = checked_chunk_count(total_bytes, chunk_bytes, max_chunks)?;
-    if start_index > count || requested > count - start_index {
-        return Err("transfer chunk window exceeds bounds");
-    }
-    let mut page = Vec::with_capacity(requested);
-    for index in start_index..start_index + requested {
-        page.push(IndexedChunk {
-            index,
-            chunk: chunk_at_index(total_bytes, chunk_bytes, index),
-        });
-    }
-    Ok(page)
 }
 
 #[cfg(test)]

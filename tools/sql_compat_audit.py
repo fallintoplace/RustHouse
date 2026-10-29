@@ -28,7 +28,7 @@ def parse_lines(content):
     return queries
 
 
-def audit(binary, queries, run=subprocess.run):
+def audit(binary, queries, run=subprocess.run, fail_fast=False):
     results = []
     with tempfile.TemporaryDirectory(prefix="rusthouse-sql-audit-") as database:
         for line, query in queries:
@@ -41,10 +41,14 @@ def audit(binary, queries, run=subprocess.run):
                 status = False
                 reason = str(exc)[:500]
             results.append({"line": line, "parser_accepted": status, "reason": reason})
+            if fail_fast and not status:
+                break
     return {
         "schema_version": 1,
         "scope": "parser-only, no data read or SQL execution",
         "total": len(results),
+        "requested": len(queries),
+        "stopped_early": len(results) < len(queries),
         "accepted": sum(row["parser_accepted"] for row in results),
         "results": results,
     }
@@ -54,10 +58,11 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("queries", type=Path, help="one SELECT per line")
     parser.add_argument("--binary", default="target/debug/rusthouse")
+    parser.add_argument("--fail-fast", action="store_true")
     args = parser.parse_args()
     try:
         statements = parse_lines(args.queries.read_text(encoding="utf-8"))
-        result = audit(args.binary, statements)
+        result = audit(args.binary, statements, fail_fast=args.fail_fast)
     except (OSError, UnicodeError, ValueError) as exc:
         print("FAIL: " + str(exc), file=sys.stderr)
         return 2

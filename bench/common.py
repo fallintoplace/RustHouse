@@ -8,13 +8,17 @@ import sys
 from pathlib import Path
 
 
-def cli_sql(binary, database, statement, timeout):
+def cli_sql(binary, database, statement, timeout, *, select_format="tsv-no-header"):
     """Execute SQL via the CLI and return exact output bytes for verification."""
     # --format is a SELECT-only option. DDL, COPY, and INSERT reject it.
     command = [str(binary), "sql", statement, "--database", str(database)]
     keyword = statement.split(maxsplit=1)[0].upper() if statement.strip() else ""
     if keyword == "SELECT":
-        command.extend(["--format", "tsv-no-header"])
+        if select_format not in ("tsv-no-header", "jsonl"):
+            raise ValueError("unsupported verification SELECT format")
+        command.extend(["--format", select_format])
+    elif select_format != "tsv-no-header":
+        raise ValueError("a verification format can be used only with SELECT")
     completed = subprocess.run(
         command,
         stdout=subprocess.PIPE,
@@ -32,8 +36,15 @@ def latency_summary(seconds):
     """Report a common nearest-rank p90 for wall-clock timings."""
     if not seconds:
         return None
-    if any(not math.isfinite(value) or value < 0 for value in seconds):
-        raise ValueError("timing samples must be finite and nonnegative")
+    for value in seconds:
+        if type(value) not in (int, float) or value < 0:
+            raise ValueError("timing samples must be finite nonnegative numbers")
+        try:
+            finite = math.isfinite(value)
+        except OverflowError:
+            finite = False
+        if not finite:
+            raise ValueError("timing samples must be finite nonnegative numbers")
     ordered = sorted(seconds)
     return {
         "min_seconds": ordered[0],

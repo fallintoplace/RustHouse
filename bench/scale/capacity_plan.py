@@ -5,7 +5,7 @@ import math
 
 
 def plan(rows, *, rows_per_part=65536, max_parts=16384, bytes_per_row=16,
-         disk_budget_bytes=None, disk_copies=2):
+         disk_budget_bytes=None, disk_copies=2, stored_bytes_per_row=None):
     if type(rows) is not int or not 1 <= rows <= (1 << 64) - 1:
         raise ValueError("rows must be positive UInt64")
     if type(rows_per_part) is not int or not 1 <= rows_per_part <= 1_000_000:
@@ -14,6 +14,9 @@ def plan(rows, *, rows_per_part=65536, max_parts=16384, bytes_per_row=16,
         raise ValueError("max_parts must be in 1..16384")
     if type(bytes_per_row) is not int or bytes_per_row < 1:
         raise ValueError("bytes_per_row must be a positive integer")
+    if stored_bytes_per_row is not None and (
+            type(stored_bytes_per_row) is not int or stored_bytes_per_row < 1):
+        raise ValueError("stored_bytes_per_row must be positive")
     if disk_budget_bytes is not None and (type(disk_budget_bytes) is not int or disk_budget_bytes < 1):
         raise ValueError("disk_budget_bytes must be positive")
     if type(disk_copies) is not int or not 1 <= disk_copies <= 8:
@@ -22,7 +25,9 @@ def plan(rows, *, rows_per_part=65536, max_parts=16384, bytes_per_row=16,
     minimum_rows = (rows - 1) // max_parts + 1
     estimated_bytes = rows * bytes_per_row
     part_fit = required_parts <= max_parts
-    estimated_peak_bytes = estimated_bytes * disk_copies
+    stored_width = bytes_per_row if stored_bytes_per_row is None else stored_bytes_per_row
+    stored_bytes = rows * stored_width
+    estimated_peak_bytes = stored_bytes * disk_copies
     disk_fit = disk_budget_bytes is None or estimated_peak_bytes <= disk_budget_bytes
     return {
         "workload": "rusthouse-billion-row-capacity-plan",
@@ -31,6 +36,8 @@ def plan(rows, *, rows_per_part=65536, max_parts=16384, bytes_per_row=16,
         "minimum_rows_per_part_to_fit": minimum_rows,
         "bytes_per_row_assumption": bytes_per_row,
         "estimated_uncompressed_bytes": estimated_bytes,
+        "stored_bytes_per_row_assumption": stored_width,
+        "estimated_stored_bytes": stored_bytes,
         "disk_copies_assumption": disk_copies,
         "estimated_peak_disk_bytes": estimated_peak_bytes,
         "disk_budget_bytes": disk_budget_bytes,
@@ -45,6 +52,7 @@ def main(argv=None):
     parser.add_argument("--rows-per-part", type=int, default=65536)
     parser.add_argument("--max-parts", type=int, default=16384)
     parser.add_argument("--bytes-per-row", type=int, default=16)
+    parser.add_argument("--stored-bytes-per-row", type=int)
     parser.add_argument("--disk-copies", type=int, default=2)
     parser.add_argument("--disk-budget-bytes", type=int)
     parser.add_argument("--output")
@@ -53,7 +61,8 @@ def main(argv=None):
         report = plan(args.rows, rows_per_part=args.rows_per_part,
                       max_parts=args.max_parts, bytes_per_row=args.bytes_per_row,
                       disk_budget_bytes=args.disk_budget_bytes,
-                      disk_copies=args.disk_copies)
+                      disk_copies=args.disk_copies,
+                      stored_bytes_per_row=args.stored_bytes_per_row)
     except ValueError as error:
         parser.exit(1, f"capacity plan failed: {error}\n")
     rendered = json.dumps(report, indent=2) + "\n"
