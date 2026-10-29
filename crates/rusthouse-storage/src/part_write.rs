@@ -366,13 +366,19 @@ pub fn write_wide_part_with_compression(
                     }
                 }
                 for (name, granules) in streams {
+                    // The encoded granules are already in memory. Count bytes
+                    // once so the checksum stream does not repeatedly reallocate.
+                    let uncompressed_size = granules.iter().try_fold(0usize, |used, chunk| {
+                        used.checked_add(chunk.len().max(1))
+                    }).filter(|&size| size <= MAX_STREAM_BYTES)
+                        .ok_or_else(|| invalid("part column exceeds 8 MiB"))?;
                     let mut encoded = Vec::new();
-                    let mut uncompressed = Vec::new();
+                    let mut uncompressed = Vec::with_capacity(uncompressed_size);
                     let mut marks = Vec::with_capacity(24 * granules.len());
                     // Pack adjacent marks into larger compressed blocks, while each
                     // mark retains its exact intra-block decompressed byte offset.
                     const PACKED_BLOCK_BYTES: usize = 64 * 1024;
-                    let mut pending = Vec::new();
+                    let mut pending = Vec::with_capacity(uncompressed_size.min(PACKED_BLOCK_BYTES));
                     for (index, data) in granules.iter().enumerate() {
                         // Empty Array and Map streams retain an unexposed pad byte.
                         let data: &[u8] = if data.is_empty() { &[0] } else { data };
