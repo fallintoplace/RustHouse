@@ -736,11 +736,15 @@ fn parse_at_depth(parser: &mut Parser, depth: usize) -> Result<ConstantValue, Pa
             )?;
             match input {
                 Some(value) => {
-                    let mut seen = [false; 256];
+                    // Four machine words replace 256 boolean slots and their
+                    // full-length counting pass for short SQL strings.
+                    let mut bitmap = [0u64; 4];
                     for byte in value.bytes() {
-                        seen[usize::from(byte)] = true;
+                        bitmap[usize::from(byte) / 64] |= 1u64 << (byte % 64);
                     }
-                    ConstantValue::Integer(seen.iter().filter(|&&present| present).count() as i64)
+                    ConstantValue::Integer(
+                        bitmap.iter().map(|word| i64::from(word.count_ones())).sum(),
+                    )
                 }
                 None => ConstantValue::Null,
             }
@@ -3294,5 +3298,32 @@ mod clickhouse_readable_time_delta_tests {
         }
         assert!(parse_select("SELECT formatReadableTimeDelta(60, 'invalid')").is_err());
         assert!(parse_select("SELECT formatReadableTimeDelta(60, 'minutes', 'hours')").is_err());
+    }
+}
+
+#[cfg(test)]
+mod string_bytes_uniq_bitmap_tests {
+    use crate::{ConstantValue, Projection, parse_select};
+
+    #[test]
+    fn counts_distinct_bytes_including_utf8_and_duplicates() {
+        for (sql, expected) in [
+            ("SELECT stringBytesUniq('')", 0),
+            ("SELECT stringBytesUniq('aaaa')", 1),
+            ("SELECT stringBytesUniq('abcabc')", 3),
+            ("SELECT stringBytesUniq('éé')", 2),
+            ("SELECT stringBytesUniq('aé')", 3),
+        ] {
+            let parsed = parse_select(sql).unwrap();
+            assert!(
+                matches!(parsed.projection, Projection::Constants(values)
+                    if values.len() == 1
+                        && values[0].value == ConstantValue::Integer(expected)),
+                "{sql}",
+            );
+        }
+        let parsed = parse_select("SELECT stringBytesUniq(NULL)").unwrap();
+        assert!(matches!(parsed.projection, Projection::Constants(values)
+            if values[0].value == ConstantValue::Null));
     }
 }
