@@ -1,6 +1,6 @@
 use super::*;
 
-fn monotonic_mark_keys<T: Ord + Copy>(len: usize, key_at: &impl Fn(usize) -> Option<T>) -> bool {
+fn mark_keys_sorted<T: Ord + Copy>(len: usize, key_at: &impl Fn(usize) -> Option<T>) -> bool {
     let mut previous = None;
     for mark in 0..len {
         let Some(key) = key_at(mark) else {
@@ -58,7 +58,7 @@ pub(super) fn candidate_mark_range<T: Ord + Copy>(
     if matches!(lower, Bound::Unbounded) && matches!(upper, Bound::Unbounded) {
         return Some(0..len);
     }
-    monotonic_mark_keys(len, &key_at)
+    mark_keys_sorted(len, &key_at)
         .then(|| candidate_mark_range_sorted(len, &key_at, lower, upper))
 }
 
@@ -82,7 +82,7 @@ pub(super) fn candidate_mark_ranges<T: Ord + Copy>(
             std::iter::once(0..len).collect()
         });
     }
-    if !monotonic_mark_keys(len, &key_at) {
+    if !mark_keys_sorted(len, &key_at) {
         return None;
     }
     if let [(lower, upper)] = intervals {
