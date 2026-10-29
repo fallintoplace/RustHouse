@@ -1,0 +1,13 @@
+{
+  "name": "point-set-count",
+  "description": "Five sparse point-probe count",
+  "kind": "membership",
+  "aggregate": "count",
+  "ids": [
+    0,
+    1,
+    7,
+    1024,
+    65536
+  ]
+}
