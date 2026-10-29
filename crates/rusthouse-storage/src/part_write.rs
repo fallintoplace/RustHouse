@@ -17,6 +17,7 @@ use std::path::Path;
 const MAX_PART_ROWS: usize = 262_144;
 const GRANULE_ROWS: usize = 1024;
 const MAX_STREAM_BYTES: usize = 8 * 1024 * 1024;
+const MIN_COMPRESS_BYTES: usize = 128;
 
 /// Compression for newly written wide parts. Tiny or incompressible blocks
 /// are still stored uncompressed to avoid making them larger.
@@ -169,7 +170,7 @@ fn write_tracked_file(
 fn block(data: &[u8], compression: PartCompression) -> Result<Vec<u8>, PartError> {
     let length = u32::try_from(data.len()).map_err(|_| invalid("part column is too large"))?;
     // Keep tiny and incompressible blocks in the ClickHouse NONE format.
-    let compressed = if data.len() >= 128 {
+    let compressed = if data.len() >= MIN_COMPRESS_BYTES {
         Some(match compression {
             PartCompression::Lz4 => (0x82, lz4_flex::block::compress(data)),
             PartCompression::Zstd => (
