@@ -15,6 +15,13 @@ KNOWN_STATUSES = frozenset((
 ))
 
 
+def safe_csv_error(value):
+    text = "" if value is None else str(value)
+    if text.lstrip().startswith(("=", "+", "-", "@")) or text.startswith(("\t", "\r", "\n")):
+        return "'" + text
+    return text
+
+
 def rows_from_report(report):
     if not isinstance(report, dict) or not isinstance(report.get("results"), list):
         raise ValueError("report must contain a results array")
@@ -64,7 +71,7 @@ def rows_from_report(report):
                           if valid and latency else ""),
             "p90_ms": (f'{latency["p90_seconds"] * 1000:.6f}'
                        if valid and latency else ""),
-            "error": result.get("error") or "",
+            "error": safe_csv_error(result.get("error")),
         })
     return rows
 
