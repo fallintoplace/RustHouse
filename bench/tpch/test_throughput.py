@@ -16,6 +16,17 @@ class ThroughputTests(unittest.TestCase):
         self.assertGreater(report["successful_queries_per_second"], 0)
         self.assertFalse(report["official_tpch_score"])
 
+    def test_only_byte_results_count_as_success(self):
+        report = run_throughput(
+            [(1, "SELECT 1")], lambda _: "1\\n", rounds=1
+        )
+        self.assertEqual(report["successful_executions"], 0)
+        self.assertEqual(report["results"][0]["status"], "error")
+        self.assertIn("bytes", report["results"][0]["error"])
+        with self.assertRaisesRegex(ValueError, "references"):
+            run_throughput([(1, "SELECT 1")], lambda _: b"1\\n",
+                           rounds=1, references={1: "1\\n"})
+
     def test_mismatch_does_not_count_as_success(self):
         report = run_throughput(
             [(1, "SELECT 1")], lambda _: b"wrong\n",

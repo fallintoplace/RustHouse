@@ -17,11 +17,16 @@ from run import load_queries, select_queries
 
 def run_throughput(queries, execute, clients=2, rounds=2, references=None,
                    require_verified=False):
-    if not 1 <= clients <= 64 or not 1 <= rounds <= 100:
+    if (type(clients) is not int or type(rounds) is not int
+            or not 1 <= clients <= 64 or not 1 <= rounds <= 100):
         raise ValueError("clients must be 1..64 and rounds 1..100")
     if not queries:
         raise ValueError("at least one SQL query is required")
     references = references or {}
+    if not isinstance(references, dict) or any(
+            type(number) is not int or type(golden) is not bytes
+            for number, golden in references.items()):
+        raise ValueError("throughput references must map integer IDs to bytes")
     if require_verified and any(number not in references for number, _ in queries):
         raise ValueError("verified throughput requires a reference for every query")
     # Explicitly cap the planned jobs to avoid runaway CI load.
@@ -34,10 +39,12 @@ def run_throughput(queries, execute, clients=2, rounds=2, references=None,
         started = time.perf_counter()
         try:
             output = execute(sql)
+            if type(output) is not bytes:
+                raise TypeError("SQL execution must return bytes")
         except subprocess.TimeoutExpired:
             return {"query": number, "status": "timeout",
                     "seconds": None, "error": "query timed out"}
-        except (OSError, RuntimeError, ValueError) as error:
+        except (OSError, RuntimeError, ValueError, TypeError) as error:
             return {"query": number, "status": "error",
                     "seconds": None, "error": str(error)[:1000]}
         duration = time.perf_counter() - started
