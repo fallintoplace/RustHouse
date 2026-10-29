@@ -75,5 +75,13 @@ class ThroughputTests(unittest.TestCase):
                            clients=2, rounds=100)
 
 
+class ThroughputQueryIdentityTests(unittest.TestCase):
+    def test_rejects_reused_query_id_for_different_sql(self):
+        with self.assertRaisesRegex(ValueError, "distinct positive"):
+            run_throughput([(1, "SELECT 1"), (1, "SELECT 2")],
+                           lambda _: b"1\n", rounds=1, references={1: b"1\n"})
+        with self.assertRaisesRegex(ValueError, "nonempty SQL"):
+            run_throughput([(1, "  ")], lambda _: b"", rounds=1)
+
 if __name__ == "__main__":
     unittest.main()

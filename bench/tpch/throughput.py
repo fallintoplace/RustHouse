@@ -42,6 +42,14 @@ def run_throughput(queries, execute, clients=2, rounds=2, references=None,
     # Explicitly cap the planned jobs to avoid runaway CI load.
     if len(queries) * rounds > 2200:
         raise ValueError("no more than 2200 query executions per run")
+    seen = set()
+    for entry in queries:
+        if (not isinstance(entry, (tuple, list)) or len(entry) != 2
+                or type(entry[0]) is not int or entry[0] < 1
+                or entry[0] in seen or not isinstance(entry[1], str)
+                or not entry[1].strip()):
+            raise ValueError("queries need distinct positive IDs and nonempty SQL")
+        seen.add(entry[0])
     tasks = [(number, sql) for _ in range(rounds) for number, sql in queries]
 
     def once(task):
