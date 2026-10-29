@@ -3,7 +3,7 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from bench.scale.permuted_ids import MASK, emit, generate, permuted
+from bench.scale.permuted_ids import MASK, MULTIPLIER, emit, generate, permuted
 
 
 class PermutedFixturesTests(unittest.TestCase):
