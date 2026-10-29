@@ -10,6 +10,7 @@ pub(super) fn is_function(name: &str) -> bool {
     matches!(
         name.to_ascii_uppercase().as_str(),
         "ADDDAYS"
+            | "TOQUARTER"
             | "TOMONTH"
             | "TODAYOFYEAR"
             | "TODAYOFWEEK"
@@ -111,6 +112,10 @@ pub(super) fn parse_after_open(
         "TOMONTH" => unary_date(parser, depth, |value| {
             let (_, month, _) = civil_from_days(value.seconds.div_euclid(DAY_SECONDS));
             Ok(ConstantValue::Integer(i64::from(month)))
+        }),
+        "TOQUARTER" => unary_date(parser, depth, |value| {
+            let (_, month, _) = civil_from_days(value.seconds.div_euclid(DAY_SECONDS));
+            Ok(ConstantValue::Integer(i64::from((month - 1) / 3 + 1)))
         }),
         _ => Err(ParseError(format!("unsupported date function: {name}"))),
     }
@@ -765,6 +770,25 @@ mod utc_compat_tests {
             "SELECT toMonth()",
             "SELECT toMonth('2023-02-29')",
             "SELECT toMonth('2024-01-01', 1)",
+        ] {
+            assert!(crate::parse_select(sql).is_err(), "{sql}");
+        }
+    }
+
+    #[test]
+    fn to_quarter_extracts_correct_calendar_values() {
+        for (sql, expected) in [
+            ("SELECT toQuarter('2024-03-31')", 1),
+            ("SELECT toQuarter('2024-04-01')", 2),
+            ("SELECT toQuarter('2024-12-31')", 4),
+        ] {
+            assert_eq!(value(sql), ConstantValue::Integer(expected), "{sql}");
+        }
+        assert_eq!(value("SELECT toQuarter(NULL)"), ConstantValue::Null);
+        for sql in [
+            "SELECT toQuarter()",
+            "SELECT toQuarter('2023-02-29')",
+            "SELECT toQuarter('2024-01-01', 1)",
         ] {
             assert!(crate::parse_select(sql).is_err(), "{sql}");
         }
