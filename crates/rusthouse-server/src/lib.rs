@@ -334,6 +334,20 @@ pub fn handle_request(method: &str, target: &str, body: &[u8], config: &Config) 
     if sql.is_empty() || sql.len() > MAX_QUERY_BYTES {
         return Response::text("400 Bad Request", "missing or oversized SQL statement\n");
     }
+    // ClickHouse allows output selection in SQL itself. The shared parser
+    // ignores occurrences inside string literals, comments and parentheses.
+    let (statement, sql_format) = rusthouse_query::split_select_format(&sql);
+    if path == "/explain" && sql_format.is_some() {
+        return Response::text("400 Bad Request", "SQL FORMAT is unsupported for EXPLAIN\n");
+    }
+    let format = match sql_format {
+        Some(name) => match QueryFormat::parse(name) {
+            Ok(format) => format,
+            Err(message) => return Response::text("400 Bad Request", message),
+        },
+        None => format,
+    };
+    let sql = statement;
     // Join queries need multiple resolved table sources and an independent
     // bounded executor. Delegate before the single-source SELECT parser.
     match parse_join(&sql) {
@@ -896,6 +910,54 @@ mod tests {
         assert_eq!(decode_url("%FF"), Err("SQL query must be valid UTF-8"));
         assert_eq!(decode_url("%2"), Err("invalid percent encoding"));
     }
+
+    #[test]
+    fn sql_format_clause_selects_clickhouse_wire_formats_for_get_and_post() {
+        for (suffix, expected) in [
+            ("CSV", b"0\r\n1\r\n".as_slice()),
+            ("TabSeparated", b"0\n1\n".as_slice()),
+            ("TabSeparatedWithNames", b"number\n0\n1\n".as_slice()),
+            ("JSONStringsEachRow", b"{\"number\":\"0\"}\n{\"number\":\"1\"}\n".as_slice()),
+        ] {
+            let url = format!(
+                "/?query=SELECT+number+FROM+numbers%282%29+FORMAT+{suffix}"
+            );
+            let get = handle_request("GET", &url, b"", &config());
+            assert_eq!(get.status, "200 OK", "{suffix}");
+            assert_eq!(get.body, expected, "{suffix}");
+
+            let statement = format!("SELECT number FROM numbers(2) FORMAT {suffix}");
+            let post = handle_request("POST", "/", statement.as_bytes(), &config());
+            assert_eq!(post.status, "200 OK", "{suffix}");
+            assert_eq!(post.body, expected, "{suffix}");
+        }
+    }
+
+    #[test]
+    fn sql_format_precedes_url_default_and_rejects_unsafe_options() {
+        let response = handle_request(
+            "POST", "/?format=CSV",
+            b"SELECT number FROM numbers(2) FORMAT TabSeparated", &config(),
+        );
+        assert_eq!(response.status, "200 OK");
+        assert_eq!(response.body, b"0\n1\n");
+
+        for (target, body) in [
+            ("/", b"SELECT 1 FORMAT JSONEachRow".as_slice()),
+            ("/explain", b"SELECT 1 FORMAT CSV".as_slice()),
+            ("/", b"DROP TABLE test FORMAT CSV".as_slice()),
+        ] {
+            assert_eq!(
+                handle_request("POST", target, body, &config()).status,
+                "400 Bad Request"
+            );
+        }
+
+        let constant = handle_request("POST", "/", b"SELECT 'FORMAT CSV' AS value", &config());
+        assert_eq!(constant.status, "200 OK");
+        assert_eq!(constant.body, b"value\nFORMAT CSV\n");
+    }
+
     #[test]
     fn returns_bounded_ndjson_for_get_and_post() {
         let response = handle_request(
