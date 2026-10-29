@@ -55,8 +55,10 @@ fn write_number(writer: &mut impl Write, number: Number) -> Result<(), Execution
         Number::Signed(v) => (1u8, v.to_le_bytes()),
         Number::Float(v) => (2u8, (v.to_bits() as u128).to_le_bytes()),
     };
-    writer.write_all(&[tag])?;
-    writer.write_all(&payload)?;
+    let mut encoded = [0u8; 17];
+    encoded[0] = tag;
+    encoded[1..].copy_from_slice(&payload);
+    writer.write_all(&encoded)?;
     Ok(())
 }
 
@@ -486,6 +488,33 @@ impl SortedRows {
             writeln!(output)?;
         }
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod serialization_tests {
+    use super::*;
+
+    #[test]
+    fn numeric_records_keep_the_exact_external_sort_wire_format() {
+        for number in [
+            Number::Unsigned(u128::MAX),
+            Number::Signed(-123),
+            Number::Float(-0.0),
+        ] {
+            let mut bytes = Vec::new();
+            write_number(&mut bytes, number).unwrap();
+            assert_eq!(bytes.len(), 17);
+            let mut input = bytes.as_slice();
+            let recovered = read_number(&mut input).unwrap();
+            match (number, recovered) {
+                (Number::Unsigned(a), Number::Unsigned(b)) => assert_eq!(a, b),
+                (Number::Signed(a), Number::Signed(b)) => assert_eq!(a, b),
+                (Number::Float(a), Number::Float(b)) => assert_eq!(a.to_bits(), b.to_bits()),
+                _ => panic!("numeric record changed type"),
+            }
+            assert!(input.is_empty());
+        }
     }
 }
 
