@@ -786,6 +786,26 @@ pub(super) fn execute_grouped_aggregate_numbers<W: Write>(
     if query.limit == Some(0) {
         return Ok(());
     }
+    // Unique generated keys do not need per-key hash entries when the
+    // result is emitted in source order. Reject oversized groups up front.
+    if query.limit.is_none() && query.predicates.is_empty()
+        && query.or_predicates.is_empty() && query.having.is_none()
+        && query.order_by.is_none() && query.order_by_extra.is_empty()
+        && step != 0
+    {
+        if rows > MAX_GROUPS as u64 {
+            return Err(ExecutionError::Invalid(
+                "GROUP BY supports at most 100000 groups".into(),
+            ));
+        }
+        for index in query.offset.unwrap_or(0) as u64..rows {
+            let number = u128::from(start) + u128::from(index) * u128::from(step);
+            let mut state = AggregateState::new(*function);
+            state.update(Number::Unsigned(number))?;
+            writeln!(output, "{number}\t{}", state.render())?;
+        }
+        return Ok(());
+    }
     if query.limit.is_none() && query.having.is_none()
         && query.order_by_extra.is_empty() && step != 0
     {
