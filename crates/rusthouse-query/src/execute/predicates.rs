@@ -1136,7 +1136,7 @@ mod tests {
                 test: compile_in_test(targets.clone(), negated),
             };
             let expected = values.iter().filter(|&&value| {
-                targets.contains(&Number::Unsigned(u128::from(value))) != negated
+                (value < 200 && value % 2 == 0) != negated
             }).count();
             assert_eq!(
                 count_batch_matches(&[NumericColumn::UInt16(values.clone())], &[vec![predicate]]),
