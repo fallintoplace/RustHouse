@@ -55,3 +55,8 @@ fn isnotnull_counts_present_numeric_values() {
 fn plus_preserves_signed_numeric_arithmetic() {
     assert_eq!(evaluate("plus(x, y)"), "5");
 }
+
+#[test]
+fn minus_preserves_signed_numeric_arithmetic() {
+    assert_eq!(evaluate("minus(x, y)"), "1");
+}
