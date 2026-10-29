@@ -225,6 +225,19 @@ fn update_group_numeric(
 
 const MAX_GROUPS: usize = 100_000;
 const MAX_GROUPED_TEXT_BYTES: usize = 64 * 1024 * 1024;
+const MAX_GROUPED_MEDIAN_BYTES: usize = 64 * 1024 * 1024;
+
+fn reserve_grouped_median_value(retained: &mut usize) -> Result<(), ExecutionError> {
+    let next = retained.checked_add(std::mem::size_of::<Number>())
+        .ok_or_else(|| ExecutionError::Invalid("grouped median memory overflow".into()))?;
+    if next > MAX_GROUPED_MEDIAN_BYTES {
+        return Err(ExecutionError::Invalid(
+            "GROUP BY median values exceed 64 MiB retained budget".into()
+        ));
+    }
+    *retained = next;
+    Ok(())
+}
 
 /// A new String GROUP BY key is owned by the lookup map and output Cell.
 fn charge_grouped_text(used: &mut usize, text_len: usize) -> Result<(), ExecutionError> {
@@ -456,6 +469,7 @@ pub(super) fn execute_grouped_aggregate<W: Write>(
     let mut retained_text_bytes = 0usize;
     let mut uuid_groups = HashMap::<[u8; 16], usize>::new();
     let mut groups = partial.unwrap_or_default();
+    let mut retained_median_bytes = 0usize;
     // Direct numeric buckets also include nullable dimensions. Reserve a
     // separate sentinel bucket so NULL never aliases integer zero.
     let mut dense_slots = match group_type {
@@ -554,6 +568,13 @@ pub(super) fn execute_grouped_aggregate<W: Write>(
                     groups[group].1.increment_count()?;
                 }
                 continue;
+            }
+            // A per-group 100k median limit alone can retain many millions
+            // of values across groups. Bound total median allocations as well.
+            if *function == AggregateFunction::Median
+                && !typed::is_null_at(&batch[value_index], row)
+            {
+                reserve_grouped_median_value(&mut retained_median_bytes)?;
             }
             // Numeric aggregate inputs are already native column vectors.
             // Do not construct a Cell for each GROUP BY input row.
@@ -748,5 +769,22 @@ mod grouped_text_budget_tests {
         assert!(charge_grouped_text(&mut used, MAX_GROUPED_TEXT_BYTES).is_err());
         assert_eq!(used, previous);
         assert!(charge_grouped_text(&mut used, usize::MAX).is_err());
+    }
+}
+
+#[cfg(test)]
+mod grouped_median_retention_tests {
+    use super::*;
+
+    #[test]
+    fn budget_counts_values_from_all_groups_and_rejects_overrun() {
+        let mut bytes = 0;
+        reserve_grouped_median_value(&mut bytes).unwrap();
+        let per_value = bytes;
+        reserve_grouped_median_value(&mut bytes).unwrap();
+        assert_eq!(bytes, per_value * 2);
+        bytes = MAX_GROUPED_MEDIAN_BYTES - 1;
+        assert!(reserve_grouped_median_value(&mut bytes).is_err());
+        assert_eq!(bytes, MAX_GROUPED_MEDIAN_BYTES - 1);
     }
 }
