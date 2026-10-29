@@ -46,6 +46,16 @@ def query(binary, database, statement, timeout):
     return result.stdout
 
 
+def _timed_point_probe(execute, table, value):
+    statement = f"SELECT id FROM {table} WHERE id = {value} LIMIT 2"
+    begun = time.perf_counter()
+    actual = execute(statement)
+    elapsed = time.perf_counter() - begun
+    if actual != f"{value}\n".encode("ascii"):
+        raise ValueError(f"point probe {value} returned {actual[:100]!r}")
+    return elapsed
+
+
 def probe(binary, database, table, start, rows, count=50, seed=0, timeout=30,
           execute=None):
     if not re.fullmatch(r"[A-Za-z_][A-Za-z_0-9]*", table):
@@ -56,12 +66,7 @@ def probe(binary, database, table, start, rows, count=50, seed=0, timeout=30,
     sampled = choose_ids(start, rows, count, seed)
     times = []
     for value in sampled:
-        statement = f"SELECT id FROM {table} WHERE id = {value} LIMIT 2"
-        begun = time.perf_counter()
-        actual = execute(statement)
-        times.append(time.perf_counter() - begun)
-        if actual != f"{value}\n".encode("ascii"):
-            raise ValueError(f"point probe {value} returned {actual[:100]!r}")
+        times.append(_timed_point_probe(execute, table, value))
     return {"verified": True, "rows_in_domain": rows, "samples": count,
             "seed": seed, "p50_seconds": statistics.median(times),
             "p95_seconds": percentile(times, 95),
