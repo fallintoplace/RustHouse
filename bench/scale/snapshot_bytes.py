@@ -25,8 +25,8 @@ def inventory(root, *, max_files=1_000_000, largest_files=0):
     root = Path(root)
     if not root.is_dir() or root.is_symlink():
         raise ValueError("expected a real offline snapshot directory")
-    if max_files < 1:
-        raise ValueError("max_files must be positive")
+    if type(max_files) is not int or max_files < 1:
+        raise ValueError("max_files must be a positive integer")
     if type(largest_files) is not int or not 0 <= largest_files <= 100:
         raise ValueError("largest_files must be in 0..100")
     heap = []
