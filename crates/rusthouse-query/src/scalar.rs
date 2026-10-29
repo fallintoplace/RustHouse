@@ -100,6 +100,7 @@ pub(super) fn is_function(name: &str) -> bool {
         || name.eq_ignore_ascii_case("TOUINT16")
         || name.eq_ignore_ascii_case("TOUINT32")
         || name.eq_ignore_ascii_case("TOINT64")
+        || name.eq_ignore_ascii_case("INTEXP2")
         || name.eq_ignore_ascii_case("TOINT8")
         || name.eq_ignore_ascii_case("TOINT16")
 }
@@ -1190,6 +1191,10 @@ fn factor(parser: &mut Parser, depth: usize) -> Result<i64, ParseError> {
                 return Err(ParseError("INTLOG2 requires a positive integer".into()));
             }
             i64::from(first.ilog2())
+        } else if name.eq_ignore_ascii_case("INTEXP2") {
+            let exponent = u32::try_from(first)
+                .map_err(|_| ParseError("intExp2 exponent must be nonnegative".into()))?;
+            2_i64.checked_pow(exponent).ok_or_else(overflow)?
         } else {
             match name.to_ascii_uppercase().as_str() {
                 "TRAILING_ONES" => i64::from(first.trailing_ones()),
@@ -1258,6 +1263,24 @@ mod clickhouse_tobool_int64_tests {
             assert_eq!(parse_select(sql).unwrap().projection, Projection::Literal(expected), "{sql}");
         }
         for sql in ["SELECT toBool()", "SELECT toBool(1, 2)"] {
+            assert!(parse_select(sql).is_err(), "{sql}");
+        }
+    }
+}
+
+#[cfg(test)]
+mod ch_intexp2_tests {
+    use crate::{parse_select, Projection};
+    #[test]
+    fn integer_exponents_are_bounded() {
+        for (sql, expected) in [
+            ("SELECT intExp2(0)", 1),
+            ("SELECT intExp2(10)", 1024),
+            ("SELECT intExp2(62)", 4611686018427387904),
+        ] {
+            assert_eq!(parse_select(sql).unwrap().projection, Projection::Literal(expected), "{sql}");
+        }
+        for sql in ["SELECT intExp2(-1)", "SELECT intExp2(63)", "SELECT intExp2()", "SELECT intExp2(2,3)"] {
             assert!(parse_select(sql).is_err(), "{sql}");
         }
     }
