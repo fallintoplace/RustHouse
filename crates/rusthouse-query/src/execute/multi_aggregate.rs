@@ -844,12 +844,23 @@ pub(super) fn execute_numbers<W: Write>(
     if query.limit == Some(0) {
         return Ok(());
     }
-    if query.predicates.is_empty() && query.or_predicates.is_empty() {
-        if let Some(results) = generated_series_metrics(start, rows, step, items) {
-            if query.offset.unwrap_or(0) == 0 {
-                writeln!(output, "{}", results?.join("\t"))?;
+    // Monotonic predicates select an exact contiguous arithmetic interval.
+    // Reuse the formula path for the selected range instead of scanning every
+    // generated row and updating each metric separately.
+    let interval = if query.predicates.is_empty() && query.or_predicates.is_empty() {
+        Some((0, rows))
+    } else {
+        super::monotonic_range_indices(&comparisons, start, rows, step)
+    };
+    if let Some((lower, upper)) = interval {
+        let first = u128::from(start) + u128::from(lower) * u128::from(step);
+        if let Ok(first) = u64::try_from(first) {
+            if let Some(results) = generated_series_metrics(first, upper - lower, step, items) {
+                if query.offset.unwrap_or(0) == 0 {
+                    writeln!(output, "{}", results?.join("\t"))?;
+                }
+                return Ok(());
             }
-            return Ok(());
         }
     }
     let mut states = items
