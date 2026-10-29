@@ -51,7 +51,8 @@ def verify(binary, database, table, start, rows, window_rows=10_000_000,
         raise ValueError("window_rows must be positive")
     if (rows - 1) // window_rows + 1 > 10_000:
         raise ValueError("range oracle exceeds 10000 query windows")
-    if timeout <= 0 or not math.isfinite(timeout):
+    if (type(timeout) not in (int, float)
+            or not math.isfinite(timeout) or timeout <= 0):
         raise ValueError("timeout must be finite and positive")
     execute = execute or (lambda statement: invoke(binary, database, statement, timeout))
     seconds = []

@@ -46,6 +46,12 @@ class PhysicalRangeOracleTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             sql_for("x;delete", 0, 1)
 
+    def test_rejects_invalid_timeout_without_querying(self):
+        for timeout in (True, None, "30", float("nan"), float("inf"), -1):
+            with self.subTest(timeout=timeout), self.assertRaisesRegex(ValueError, "timeout"):
+                verify("binary", "db", "events", 0, 2, 1,
+                       timeout=timeout, execute=lambda _: self.fail("unexpected query"))
+
     def test_rejects_unbounded_billion_row_query_count(self):
         with self.assertRaisesRegex(ValueError, "10000 query windows"):
             verify("rusthouse", "db", "events", 0, 1_000_000_000,
