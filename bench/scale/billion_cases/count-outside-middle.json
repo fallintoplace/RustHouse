@@ -1,0 +1,6 @@
+{
+  "id": "count-outside-middle",
+  "kind": "count_or",
+  "lo": "p25",
+  "hi": "p75"
+}
