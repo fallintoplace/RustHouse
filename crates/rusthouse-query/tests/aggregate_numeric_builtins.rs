@@ -70,3 +70,8 @@ fn multiply_handles_negative_numeric_inputs() {
 fn divide_uses_infix_numeric_semantics() {
     assert_eq!(evaluate("divide(x, if(y = 0, 1, y))"), evaluate("x / if(y = 0, 1, y)"));
 }
+
+#[test]
+fn modulo_preserves_signed_remainder() {
+    assert_eq!(evaluate("modulo(x, if(y = 0, 1, y))"), "-2");
+}
