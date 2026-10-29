@@ -37,9 +37,13 @@ pub struct JoinStep {
     pub using_keys: Vec<String>,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum JoinAggregate {
     CountStar,
+    Numeric {
+        function: crate::AggregateFunction,
+        column: JoinColumn,
+    },
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -97,7 +101,29 @@ pub fn parse_join(sql: &str) -> Result<Option<JoinSelect>, ParseError> {
         }
         Some(JoinAggregate::CountStar)
     } else {
-        None
+        let function = if parser.keyword("SUM") {
+            Some(crate::AggregateFunction::Sum)
+        } else if parser.keyword("AVG") {
+            Some(crate::AggregateFunction::Avg)
+        } else if parser.keyword("MIN") {
+            Some(crate::AggregateFunction::Min)
+        } else if parser.keyword("MAX") {
+            Some(crate::AggregateFunction::Max)
+        } else {
+            None
+        };
+        if let Some(function) = function {
+            if !parser.take(Token::LParen) {
+                return Err(ParseError("JOIN aggregate requires '('".into()));
+            }
+            let column = qualified(&mut parser)?;
+            if !parser.take(Token::RParen) {
+                return Err(ParseError("JOIN aggregate requires ')'".into()));
+            }
+            Some(JoinAggregate::Numeric { function, column })
+        } else {
+            None
+        }
     };
     let columns = if aggregate.is_some() || parser.take(Token::Star) {
         None
@@ -424,6 +450,13 @@ pub fn parse_join(sql: &str) -> Result<Option<JoinSelect>, ParseError> {
             || relation == right_alias
             || steps.iter().any(|step| step.alias == relation)
     };
+    if let Some(JoinAggregate::Numeric { column, .. }) = &aggregate {
+        if !known_qualifier(&column.relation) {
+            return Err(ParseError(format!(
+                "unknown JOIN qualifier: {}", column.relation
+            )));
+        }
+    }
     if let Some(columns) = &columns {
         for column in columns {
             if !known_qualifier(&column.relation) {
@@ -563,8 +596,13 @@ pub fn explain_join(query: &JoinSelect) -> String {
     }
     plan.push_str(&format!(
         "\nProject: {}\nLimit: {}",
-        if query.aggregate.is_some() {
-            "count(*)".to_owned()
+        if let Some(aggregate) = &query.aggregate {
+            match aggregate {
+                JoinAggregate::CountStar => "count(*)".to_owned(),
+                JoinAggregate::Numeric { function, column } => {
+                    format!("{}({}.{})", function.name(), column.relation, column.name)
+                }
+            }
         } else { query.columns.as_ref().map_or("*".to_owned(), |columns| {
             columns
                 .iter()
