@@ -10,6 +10,7 @@ pub(super) fn is_function(name: &str) -> bool {
     matches!(
         name.to_ascii_uppercase().as_str(),
         "ADDDAYS"
+            | "TOYEARWEEK"
             | "DATEDIFF"
             | "DATE_DIFF"
             | "TIMEDIFF"
@@ -60,6 +61,24 @@ pub(super) fn parse_after_open(
     depth: usize,
 ) -> Result<ConstantValue, ParseError> {
     match name {
+        "TOYEARWEEK" => unary_date(parser, depth, |value| {
+            Ok({
+                let days = value.seconds.div_euclid(DAY_SECONDS);
+                let (year, _, _) = civil_from_days(days);
+                let jan_one = days_from_civil(year, 1, 1);
+                let first_sunday = jan_one + (7 - (jan_one + 4).rem_euclid(7)).rem_euclid(7);
+                let (week_year, week) = if days < first_sunday {
+                    let previous_year = year - 1;
+                    let prev_jan_one = days_from_civil(previous_year, 1, 1);
+                    let first_prev_sunday = prev_jan_one
+                        + (7 - (prev_jan_one + 4).rem_euclid(7)).rem_euclid(7);
+                    (previous_year, (jan_one - 1 - first_prev_sunday) / 7 + 1)
+                } else {
+                    (year, (days - first_sunday) / 7 + 1)
+                };
+                ConstantValue::Integer(week_year * 100 + week)
+            })
+        }),
         "ADDDAYS" => offset_seconds(parser, depth, DAY_SECONDS, false, false),
         "SUBTRACTDAYS" => offset_seconds(parser, depth, DAY_SECONDS, true, false),
         "ADDWEEKS" => offset_seconds(parser, depth, 7 * DAY_SECONDS, false, false),
