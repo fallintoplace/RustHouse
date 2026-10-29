@@ -94,20 +94,20 @@ fn write_json_row_into<W: Write>(
     let mut fields = line.split(|byte| *byte == b'\t');
     row.clear();
     row.reserve(line.len() + headers.len() * 8 + 3);
-    row.write_all(b"{")?;
+    row.push(b'{');
     for (index, header) in headers.iter().enumerate() {
         let value = fields.next().ok_or_else(jsonl_row_width_error)?;
         if index > 0 {
-            row.write_all(b",")?;
+            row.push(b',');
         }
-        row.write_all(header)?;
-        row.write_all(b":")?;
+        row.extend_from_slice(header);
+        row.push(b':');
         write_json_value(&mut *row, value)?;
     }
     if fields.next().is_some() {
         return Err(jsonl_row_width_error());
     }
-    row.write_all(b"}\n")?;
+    row.extend_from_slice(b"}\n");
     output.write_all(row)
 }
 
@@ -143,19 +143,12 @@ fn write_json_string<W: Write>(writer: &mut W, input: &[u8]) -> io::Result<()> {
         io::Error::new(io::ErrorKind::InvalidData, "JSONL field is not valid UTF-8")
     })?;
     let bytes = input.as_bytes();
-    if bytes.len() <= 256
+    if bytes.len() <= 1024
         && bytes
             .iter()
             .all(|&byte| (b' '..=b'~').contains(&byte) && byte != b'"' && byte != b'\\')
     {
-        if bytes.len() <= 64 {
-            let mut quoted = [0u8; 66];
-            quoted[0] = b'"';
-            quoted[1..bytes.len() + 1].copy_from_slice(bytes);
-            quoted[bytes.len() + 1] = b'"';
-            return writer.write_all(&quoted[..bytes.len() + 2]);
-        }
-        let mut quoted = [0u8; 258];
+        let mut quoted = [0u8; 1026];
         quoted[0] = b'"';
         quoted[1..bytes.len() + 1].copy_from_slice(bytes);
         quoted[bytes.len() + 1] = b'"';
@@ -220,6 +213,18 @@ impl<W: Write> Write for JsonlWriter<W> {
                     "JSONL row exceeds 1 MiB",
                 ));
             }
+            if complete && self.line.is_empty() {
+                if let Some(headers) = self.headers.as_ref() {
+                    // Complete data rows can be encoded straight from this write.
+                    write_json_row_into(
+                        &mut self.output,
+                        headers,
+                        fragment,
+                        &mut self.encoded,
+                    )?;
+                    continue;
+                }
+            }
             self.line.extend_from_slice(fragment);
             if complete {
                 self.finish_line()?;
@@ -236,6 +241,20 @@ impl<W: Write> Write for JsonlWriter<W> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn complete_large_rows_do_not_stage_the_input() {
+        let mut writer = JsonlWriter::new(Vec::new());
+        writer.write_all(b"value\n").unwrap();
+        let before = writer.line.capacity();
+        let value = "x".repeat(16 * 1024);
+        writer.write_all(format!("{value}\n").as_bytes()).unwrap();
+        assert_eq!(writer.line.capacity(), before);
+        assert_eq!(
+            writer.output,
+            format!("{{\"value\":\"{value}\"}}\n").as_bytes()
+        );
+    }
 
     #[test]
     fn reuses_jsonl_output_allocation_for_shorter_rows() {

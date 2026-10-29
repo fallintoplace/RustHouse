@@ -41,10 +41,13 @@ def write_shard(path, start, count):
     digest = hashlib.sha256()
     try:
         with pending.open("xb", buffering=1024 * 1024) as output:
-            for value in range(start, start + count):
-                record = f"{value}\n".encode("ascii")
-                output.write(record)
-                digest.update(record)
+            # Amortize writes and SHA256 updates for million-row shards without
+            # retaining more than one 4096-row block in memory.
+            for first in range(start, start + count, 4096):
+                last = min(first + 4096, start + count)
+                block = "".join(f"{value}\n" for value in range(first, last)).encode("ascii")
+                output.write(block)
+                digest.update(block)
             output.flush()
             os.fsync(output.fileno())
         # Fail closed rather than replacing an existing shard from a concurrent writer.

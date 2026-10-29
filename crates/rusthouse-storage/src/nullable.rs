@@ -117,7 +117,8 @@ pub fn read_nullable_numeric_column<N: Read, D: Read>(
     rows: usize,
 ) -> Result<NullableColumn<NumericColumn>, NullableReadError> {
     let nested_type = nullable_inner_type(data_type)?;
-    if read_numeric_column(&mut io::empty(), nested_type, 0).is_err() {
+    // Type validation is a lookup, not a zero-row decode per nullable batch.
+    if crate::numeric::numeric_storage_type(nested_type).is_none() {
         return Err(NullableReadError::InvalidType(data_type.to_owned()));
     }
     read_nullable_values(
@@ -185,6 +186,19 @@ mod tests {
         fn read(&mut self, bytes: &mut [u8]) -> io::Result<usize> {
             let count = bytes.len().min(1);
             self.0.read(&mut bytes[..count])
+        }
+    }
+
+    #[test]
+    fn nullable_numeric_validation_rejects_types_without_consuming_streams() {
+        struct NoRead;
+        impl Read for NoRead {
+            fn read(&mut self, _: &mut [u8]) -> io::Result<usize> {
+                panic!("invalid numeric type must not read the source");
+            }
+        }
+        for kind in ["Nullable(String)", "Nullable(UInt256)", "Nullable(DateTime64(10))"] {
+            assert!(read_nullable_numeric_column(&mut NoRead, &mut NoRead, kind, 10).is_err());
         }
     }
 

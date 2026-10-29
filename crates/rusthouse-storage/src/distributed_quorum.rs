@@ -68,19 +68,38 @@ impl QuorumPolicy {
         if members.len() != self.replicas || acknowledgements.len() > 256 {
             return Err("quorum membership or acknowledgement count mismatch");
         }
-        let membership = member_index(members)?;
         let mut acknowledgement_mask = 0u16;
-        for &replica in acknowledgements {
-            let Some(&index) = membership.get(replica) else {
-                return Err("acknowledgement from unknown replica");
-            };
-            acknowledgement_mask |= 1u16 << index;
+        if members.len() <= 8 {
+            // Small replication groups are the common case. A short borrowed
+            // lookup avoids allocating and hashing a temporary member map.
+            for (index, &member) in members.iter().enumerate() {
+                if !valid_member(member) || members[..index].contains(&member) {
+                    return Err("invalid or duplicate quorum member");
+                }
+            }
+            for &replica in acknowledgements {
+                let index = members
+                    .iter()
+                    .position(|&member| member == replica)
+                    .ok_or("acknowledgement from unknown replica")?;
+                acknowledgement_mask |= 1u16 << index;
+            }
+        } else {
+            let membership = member_index(members)?;
+            for &replica in acknowledgements {
+                let Some(&index) = membership.get(replica) else {
+                    return Err("acknowledgement from unknown replica");
+                };
+                acknowledgement_mask |= 1u16 << index;
+            }
         }
         let distinct_acks = acknowledgement_mask.count_ones() as usize;
         Ok(QuorumObservation {
             distinct_acks,
-            can_read: self.can_read(distinct_acks),
-            can_write: self.can_write(distinct_acks),
+            // Self::new was checked before membership processing, so these
+            // comparisons do not need to validate the policy twice more.
+            can_read: distinct_acks >= self.reads,
+            can_write: distinct_acks >= self.writes,
         })
     }
 
@@ -155,6 +174,26 @@ mod tests {
     }
 
     #[test]
+    fn small_and_large_memberships_count_votes_without_duplicates() {
+        for replicas in [1usize, 2, 3, 5, 8, 9, 16] {
+            let names = (0..replicas).map(|index| format!("node_{index}")).collect::<Vec<_>>();
+            let members = names.iter().map(String::as_str).collect::<Vec<_>>();
+            let policy = QuorumPolicy::new(replicas, 1, replicas).unwrap();
+            let all = policy.observe(&members, &members).unwrap();
+            assert_eq!(all.distinct_acks, replicas);
+            assert!(all.can_read && all.can_write);
+            let repeated = vec![members[0]; 256];
+            assert_eq!(policy.observe(&members, &repeated).unwrap().distinct_acks, 1);
+            assert!(policy.observe(&members, &["missing"]).is_err());
+            let mut duplicates = members.clone();
+            if replicas > 1 {
+                duplicates[replicas - 1] = duplicates[0];
+                assert!(policy.observe(&duplicates, &[]).is_err());
+            }
+        }
+    }
+
+    #[test]
     fn refuses_non_intersecting_or_unbounded_policies() {
         assert!(QuorumPolicy::new(3, 1, 2).is_err());
         assert!(QuorumPolicy::new(4, 2, 2).is_err());
@@ -213,5 +252,33 @@ mod direct_policy_validation_tests {
         assert!(unsafe_policy.observe(&["a", "b", "c"], &["a"]).is_err());
         assert!(!unsafe_policy.can_read(3));
         assert!(!unsafe_policy.can_write(3));
+    }
+}
+
+#[cfg(test)]
+mod observed_quorum_fast_path_tests {
+    use super::*;
+
+    #[test]
+    fn observations_match_checked_policy_for_all_quorum_thresholds() {
+        for replicas in 1..=16 {
+            let names = (0..replicas)
+                .map(|index| format!("replica_{index}"))
+                .collect::<Vec<_>>();
+            let members = names.iter().map(String::as_str).collect::<Vec<_>>();
+            for writes in 1..=replicas {
+                for reads in 1..=replicas {
+                    let Ok(policy) = QuorumPolicy::new(replicas, reads, writes) else {
+                        continue;
+                    };
+                    for ack_count in 0..=replicas {
+                        let observed = policy.observe(&members, &members[..ack_count]).unwrap();
+                        assert_eq!(observed.distinct_acks, ack_count);
+                        assert_eq!(observed.can_read, policy.can_read(ack_count));
+                        assert_eq!(observed.can_write, policy.can_write(ack_count));
+                    }
+                }
+            }
+        }
     }
 }
