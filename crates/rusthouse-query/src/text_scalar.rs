@@ -147,8 +147,40 @@ pub(super) fn is_function(name: &str) -> bool {
             | "SPACE"
             | "INTDIVORNULL"
             | "MODULOORNULL"
+            | "EDITDISTANCEUTF8"
             | "ENCODEURLFORMCOMPONENT"
     )
+}
+
+fn bounded_utf8_edit_distance(left: &str, right: &str) -> Result<i64, ParseError> {
+    let left: Vec<char> = left.chars().collect();
+    let right: Vec<char> = right.chars().collect();
+    if left.is_empty() {
+        return Ok(right.len() as i64);
+    }
+    if right.is_empty() {
+        return Ok(left.len() as i64);
+    }
+    if left.len().saturating_mul(right.len()) > 2_000_000 {
+        return Err(ParseError("editDistanceUTF8 exceeds computation budget".into()));
+    }
+    let (short, long) = if left.len() <= right.len() {
+        (&left, &right)
+    } else {
+        (&right, &left)
+    };
+    let mut previous: Vec<usize> = (0..=short.len()).collect();
+    let mut current = vec![0; short.len() + 1];
+    for (row, item) in long.iter().enumerate() {
+        current[0] = row + 1;
+        for (column, other) in short.iter().enumerate() {
+            current[column + 1] = (previous[column + 1] + 1)
+                .min(current[column] + 1)
+                .min(previous[column] + usize::from(item != other));
+        }
+        std::mem::swap(&mut previous, &mut current);
+    }
+    Ok(previous[short.len()] as i64)
 }
 
 pub(super) fn parse(parser: &mut Parser) -> Result<ConstantValue, ParseError> {
@@ -166,6 +198,18 @@ fn parse_at_depth(parser: &mut Parser, depth: usize) -> Result<ConstantValue, Pa
     }
     let value = match name.as_str() {
 
+        "EDITDISTANCEUTF8" => {
+            let left = text_arg(parser, depth + 1)?;
+            require(parser, Token::Comma, "editDistanceUTF8 requires two strings")?;
+            let right = text_arg(parser, depth + 1)?;
+            require(parser, Token::RParen, "editDistanceUTF8 requires two strings")?;
+            match (left, right) {
+                (Some(left), Some(right)) => ConstantValue::Integer(
+                    bounded_utf8_edit_distance(&left, &right)?,
+                ),
+                _ => ConstantValue::Null,
+            }
+        }
         "MODULOORNULL" => {
             let dividend = integer_arg(parser, depth + 1)?;
             require(parser, Token::Comma, "moduloOrNull requires two arguments")?;
