@@ -379,6 +379,32 @@ impl Parser {
     }
 
     fn literal(&mut self) -> Result<String, ParseError> {
+        // TPC-H validation SQL commonly expresses date bounds as CAST('...' AS DATE).
+        // Resolve only quoted date/timestamp literals; general CAST expressions
+        // belong in the typed expression evaluator, not a literal predicate.
+        if self.keyword("CAST") {
+            if !self.take(Token::LParen) {
+                return Err(ParseError("CAST requires '('".into()));
+            }
+            let value = match self.tokens.get(self.index) {
+                Some(Token::String(value)) => value.clone(),
+                _ => return Err(ParseError("CAST date requires a quoted literal".into())),
+            };
+            self.index += 1;
+            if !self.keyword("AS") {
+                return Err(ParseError("CAST requires AS".into()));
+            }
+            let target = self.word()?;
+            if !target.eq_ignore_ascii_case("DATE")
+                && !target.eq_ignore_ascii_case("TIMESTAMP")
+            {
+                return Err(ParseError("only CAST(... AS DATE/TIMESTAMP) is supported in predicates".into()));
+            }
+            if !self.take(Token::RParen) {
+                return Err(ParseError("CAST date requires ')'".into()));
+            }
+            return Ok(value);
+        }
         // Typed dates and timestamps use the same storage format as quoted
         // literals. Support the DATE + INTERVAL 'N' YEAR form used by TPC-H Q6.
         let is_date = matches!(
@@ -1852,5 +1878,34 @@ mod stddev_clickhouse_parity_tests {
             assert_eq!(parse_select(input).unwrap().projection, parse_select(&canonical).unwrap().projection);
         }
         assert!(parse_select("SELECT stddev() FROM numbers(3)").is_err());
+    }
+}
+
+#[cfg(test)]
+mod tpch_cast_date_tests {
+    use super::{Operator, Predicate, parse_select};
+
+    #[test]
+    fn accepts_cast_date_predicates_used_by_full_tpch_queries() {
+        for sql in [
+            "SELECT count(*) FROM lineitem WHERE l_shipdate <= CAST('1998-09-02' AS DATE)",
+            "SELECT count(*) FROM lineitem WHERE l_shipdate >= cast('1994-01-01' as date)",
+        ] {
+            let selected = parse_select(sql).unwrap();
+            assert!(matches!(&selected.predicates[0], Predicate::Comparison { operator: Operator::Le | Operator::Ge, value, .. } if value.starts_with("199")));
+        }
+    }
+
+    #[test]
+    fn rejects_incomplete_or_untyped_casts_in_predicates() {
+        for value in [
+            "CAST('1998-09-02' AS Int64)",
+            "CAST('1998-09-02' DATE)",
+            "CAST(123 AS DATE)",
+            "CAST('1998-09-02' AS DATE",
+        ] {
+            let sql = format!("SELECT count(*) FROM lineitem WHERE l_shipdate < {value}");
+            assert!(parse_select(&sql).is_err(), "{sql}");
+        }
     }
 }
