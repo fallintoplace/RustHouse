@@ -60,6 +60,13 @@ pub fn write_quoted_csv_field<W: Write>(output: &mut W, field: &[u8]) -> io::Res
         return output.write_all(&buffer[..field.len() + 2]);
     }
     if !field.contains(&b'"') {
+        if field.len() <= 4094 {
+            let mut buffer = [0u8; 4096];
+            buffer[0] = b'"';
+            buffer[1..field.len() + 1].copy_from_slice(field);
+            buffer[field.len() + 1] = b'"';
+            return output.write_all(&buffer[..field.len() + 2]);
+        }
         output.write_all(b"\"")?;
         output.write_all(field)?;
         return output.write_all(b"\"");
@@ -126,6 +133,27 @@ mod tests {
         write_quoted_csv_field(&mut sink, b"hello").unwrap();
         assert_eq!(sink.count, 1);
         assert_eq!(sink.data, b"\"hello\"");
+    }
+
+    #[test]
+    fn four_kibibyte_plain_csv_field_uses_one_write() {
+        struct Counting { calls: usize, bytes: Vec<u8> }
+        impl Write for Counting {
+            fn write(&mut self, bytes: &[u8]) -> io::Result<usize> {
+                self.calls += 1;
+                self.bytes.extend_from_slice(bytes);
+                Ok(bytes.len())
+            }
+            fn flush(&mut self) -> io::Result<()> { Ok(()) }
+        }
+        let mut sink = Counting { calls: 0, bytes: Vec::new() };
+        let value = vec![b'x'; 4094];
+        write_quoted_csv_field(&mut sink, &value).unwrap();
+        assert_eq!(sink.calls, 1);
+        assert_eq!(sink.bytes.len(), 4096);
+        assert_eq!(sink.bytes[0], b'"');
+        assert_eq!(sink.bytes[4095], b'"');
+        assert_eq!(&sink.bytes[1..4095], value.as_slice());
     }
 
     #[test]
