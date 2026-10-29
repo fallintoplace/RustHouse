@@ -146,6 +146,7 @@ pub(super) fn is_function(name: &str) -> bool {
             | "NOTEMPTY"
             | "SPACE"
             | "ENCODEURLFORMCOMPONENT"
+            | "IPV4NUMTOSTRING"
             | "IPV4STRINGTONUM"
             | "JSONTYPE"
             | "JSONEXTRACTBOOL"
@@ -2758,6 +2759,18 @@ fn parse_at_depth(parser: &mut Parser, depth: usize) -> Result<ConstantValue, Pa
                 None => ConstantValue::Null,
             }
         }
+        "IPV4NUMTOSTRING" => {
+            let input = integer_arg(parser, depth + 1)?;
+            require(parser, Token::RParen, "IPv4NumToString requires one integer")?;
+            match input {
+                Some(input) => {
+                    let encoded = u32::try_from(input)
+                        .map_err(|_| ParseError("IPv4NumToString requires a UInt32 value".into()))?;
+                    ConstantValue::Text(std::net::Ipv4Addr::from(encoded).to_string())
+                }
+                None => ConstantValue::Null,
+            }
+        }
         "JSONEXTRACTINT" => {
             let input = text_arg(parser, depth + 1)?;
             require(parser, Token::Comma, "JSONExtractInt requires a path")?;
@@ -3222,6 +3235,32 @@ mod ch_ipv4_string_to_num_tests {
             assert_eq!(value(sql), expected, "{sql}");
         }
         for sql in ["SELECT IPv4StringToNum()", "SELECT IPv4StringToNum('999.0.0.1')"] {
+            assert!(parse_select(sql).is_err(), "{sql}");
+        }
+    }
+}
+
+#[cfg(test)]
+mod ch_ipv4_num_to_string_tests {
+    use crate::{parse_select, ConstantValue, Projection};
+    fn value(sql: &str) -> ConstantValue {
+        match parse_select(sql).unwrap().projection {
+            Projection::Constants(items) if items.len() == 1 => items[0].value.clone(),
+            Projection::Literal(value) => ConstantValue::Integer(value),
+            other => panic!("unexpected projection: {other:?}"),
+        }
+    }
+    #[test]
+    fn ipv4_compatibility_values() {
+        for (sql, expected) in [
+            ("SELECT IPv4NumToString(16909060)", ConstantValue::Text("1.2.3.4".into())),
+            ("SELECT IPv4NumToString(0)", ConstantValue::Text("0.0.0.0".into())),
+            ("SELECT IPv4NumToString(4294967295)", ConstantValue::Text("255.255.255.255".into())),
+            ("SELECT IPv4NumToString(NULL)", ConstantValue::Null),
+        ] {
+            assert_eq!(value(sql), expected, "{sql}");
+        }
+        for sql in ["SELECT IPv4NumToString()", "SELECT IPv4NumToString(-1)"] {
             assert!(parse_select(sql).is_err(), "{sql}");
         }
     }
