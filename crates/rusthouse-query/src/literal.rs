@@ -6,6 +6,10 @@ use self::decimal::*;
 
 use crate::ParseError;
 
+fn is_leap_year(year: i64) -> bool {
+    year % 4 == 0 && (year % 100 != 0 || year % 400 == 0)
+}
+
 fn rescale_decimal(
     value: i128,
     current_scale: usize,
@@ -52,8 +56,7 @@ pub(super) fn add_date_years(date: &str, years: i64) -> Result<String, ParseErro
     }
     let month = &date[5..7];
     let day = if month == "02" && &date[8..10] == "29" {
-        let leap = year % 4 == 0 && (year % 100 != 0 || year % 400 == 0);
-        if leap { "29" } else { "28" }
+        if is_leap_year(year) { "29" } else { "28" }
     } else {
         &date[8..10]
     };
