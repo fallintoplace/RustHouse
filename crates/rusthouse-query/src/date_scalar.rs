@@ -10,6 +10,7 @@ pub(super) fn is_function(name: &str) -> bool {
     matches!(
         name.to_ascii_uppercase().as_str(),
         "ADDDAYS"
+            | "ADDYEARS"
             | "SUBTRACTSECONDS"
             | "ADDSECONDS"
             | "ADDMINUTES"
@@ -34,6 +35,7 @@ pub(super) fn parse_after_open(
         "ADDMINUTES" => offset_seconds(parser, depth, 60, false, true),
         "ADDSECONDS" => offset_seconds(parser, depth, 1, false, true),
         "SUBTRACTSECONDS" => offset_seconds(parser, depth, 1, true, true),
+        "ADDYEARS" => offset_months(parser, depth, 12, false),
         _ => Err(ParseError(format!("unsupported date function: {name}"))),
     }
 }
@@ -189,6 +191,41 @@ fn offset_seconds(
     )?))
 }
 
+fn offset_months(
+    parser: &mut Parser,
+    depth: usize,
+    months_per_unit: i64,
+    subtract: bool,
+) -> Result<ConstantValue, ParseError> {
+    let source = super::text_scalar::text_arg(parser, depth + 1)?;
+    if !parser.take(Token::Comma) {
+        return Err(ParseError("calendar arithmetic requires an amount".into()));
+    }
+    let amount = super::text_scalar::integer_arg(parser, depth + 1)?;
+    if !parser.take(Token::RParen) {
+        return Err(ParseError("expected ')' after calendar arithmetic".into()));
+    }
+    let (Some(source), Some(amount)) = (source, amount) else {
+        return Ok(ConstantValue::Null);
+    };
+    let value = Temporal::parse(&source)?;
+    let (year, month, day) = civil_from_days(value.seconds.div_euclid(DAY_SECONDS));
+    let current = i128::from(year) * 12 + i128::from(month - 1);
+    let delta = i128::from(amount) * i128::from(months_per_unit);
+    let target = current + if subtract { -delta } else { delta };
+    let target_year = target.div_euclid(12);
+    if !(i128::from(MIN_YEAR)..=i128::from(MAX_YEAR)).contains(&target_year) {
+        return Err(ParseError("calendar result is outside 1900..2299".into()));
+    }
+    let target_year = i64::try_from(target_year)
+        .map_err(|_| ParseError("calendar year is out of range".into()))?;
+    let target_month = (target.rem_euclid(12) + 1) as u32;
+    let target_day = day.min(days_in_month(target_year, target_month));
+    let target_days = days_from_civil(target_year, target_month, target_day);
+    let seconds = target_days * DAY_SECONDS + value.seconds.rem_euclid(DAY_SECONDS);
+    Ok(ConstantValue::Text(Temporal::render(seconds, value.has_time)?))
+}
+
 #[cfg(test)]
 mod utc_compat_tests {
     use super::*;
@@ -333,6 +370,27 @@ mod utc_compat_tests {
             "SELECT subtractSeconds('2023-02-29', 1)",
             "SELECT subtractSeconds('1900-01-01 00:00:00', 1)",
             "SELECT subtractSeconds('2024-01-01', 1, 2)",
+        ] {
+            assert!(crate::parse_select(sql).is_err(), "{sql}");
+        }
+    }
+
+    #[test]
+    fn add_years_clamps_month_ends_safely() {
+        for (sql, expected) in [
+            ("SELECT addYears('2024-02-29', 1)", "2025-02-28"),
+            ("SELECT addYears('2024-01-31 12:30:05', 1)", "2025-01-31 12:30:05"),
+            ("SELECT addYears('2023-02-28', 1)", "2024-02-28"),
+        ] {
+            assert_eq!(value(sql), ConstantValue::Text(expected.into()), "{sql}");
+        }
+        assert_eq!(value("SELECT addYears(NULL, 1)"), ConstantValue::Null);
+        assert_eq!(value("SELECT addYears('2024-02-29', NULL)"), ConstantValue::Null);
+        for sql in [
+            "SELECT addYears()",
+            "SELECT addYears('2023-02-29', 1)",
+            "SELECT addYears('2299-12-31', 1)",
+            "SELECT addYears('2024-01-01', 1, 2)",
         ] {
             assert!(crate::parse_select(sql).is_err(), "{sql}");
         }
