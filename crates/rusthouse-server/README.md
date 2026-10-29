@@ -78,6 +78,14 @@ return the bounded logical plan as plain text. The endpoint parses SQL but does
 not inspect parts or read rows. It uses the same 65536-byte input limit and
 server-side row cap as ordinary queries. This is not a physical or cost-based plan.
 
+In database mode, `DESCRIBE TABLE events` (and `DESC TABLE events`) returns
+the seven standard ClickHouse description columns: name, type, default_type,
+default_expression, comment, codec_expression, and ttl_expression. The local
+catalog has no default expressions, codecs, comments, or TTL definitions, so
+those fields are empty. It holds the database read lock and uses the same
+schema/active-part validation as SELECT. Supported HTTP formats and row limits
+apply. This does not enable schema modifications.
+
 Read-only SQL discovery supports `SHOW TABLES`, `SHOW TABLES LIKE 'event%'`,
 and `SHOW TABLES NOT LIKE 'event%'` in database mode. Discovery uses the same
 catalog validation and read lock as `GET /tables`. Results respect the HTTP

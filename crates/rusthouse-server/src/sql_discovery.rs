@@ -7,7 +7,7 @@ use super::{
     markdown::MarkdownWriter, sql_values::SqlValuesWriter, tables,
 };
 use rusthouse_query::Ddl;
-use rusthouse_storage::acquire_database_lock;
+use rusthouse_storage::{acquire_database_lock, inspect_query_source, resolve_database_table};
 use std::io::{self, Write};
 
 /// SQL LIKE matches ASCII catalog identifiers. Backslash quotes the next byte.
@@ -170,5 +170,134 @@ mod tests {
             respond_with_format(QueryFormat::Jsonl, &names).body,
             b"{\"name\":\"events\"}\n{\"name\":\"users\"}\n"
         );
+    }
+}
+
+fn write_description_rows<W: Write>(
+    output: &mut W,
+    columns: &[rusthouse_storage::Column],
+    limit: usize,
+) -> io::Result<()> {
+    // ClickHouse's default DESCRIBE schema has seven columns. Unsupported
+    // default expressions, codecs, comments, and TTLs are blank because
+    // the local RustHouse catalog cannot represent them.
+    output.write_all(b"name\ttype\tdefault_type\tdefault_expression\tcomment\tcodec_expression\tttl_expression\n")?;
+    for column in columns.iter().take(limit) {
+        if column.name.len() > 128
+            || column.data_type.len() > 256
+            || [column.name.as_str(), column.data_type.as_str()]
+                .iter()
+                .any(|cell| cell.bytes().any(|ch| ch == b'\t' || ch == b'\r' || ch == b'\n' || ch == 0))
+        {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                "invalid table description field",
+            ));
+        }
+        output.write_all(column.name.as_bytes())?;
+        output.write_all(b"\t")?;
+        output.write_all(column.data_type.as_bytes())?;
+        output.write_all(b"\t\t\t\t\t\n")?;
+    }
+    Ok(())
+}
+
+/// DESCRIBE never reads row data, and it shares the same lock and catalog
+/// resolution used by SELECT to avoid returning stale or orphaned metadata.
+pub(super) fn describe_table(name: &str, format: QueryFormat, config: &Config) -> Response {
+    if config.part.is_some() {
+        return Response::text("400 Bad Request", "DESCRIBE TABLE requires --database only\n");
+    }
+    let Some(database) = config.database.as_deref() else {
+        return Response::text("400 Bad Request", "DESCRIBE TABLE requires --database\n");
+    };
+    let _lock = match acquire_database_lock(database, false) {
+        Ok(lock) => lock,
+        Err(error) => return Response::text("409 Conflict", &format!("{error}\n")),
+    };
+    let part = match resolve_database_table(database, name) {
+        Ok(path) => path,
+        Err(error) => return Response::text("400 Bad Request", &format!("{error}\n")),
+    };
+    let metadata = match inspect_query_source(&part) {
+        Ok(metadata) => metadata,
+        Err(error) => return Response::text("400 Bad Request", &format!("{error}\n")),
+    };
+    // The metadata column limit is bounded by storage, and we additionally
+    // bound materialization to the existing SQL output limits.
+    let mut tsv = Vec::new();
+    if let Err(error) = write_description_rows(&mut tsv, &metadata.columns, config.max_rows.min(250_000)) {
+        return Response::text("400 Bad Request", &format!("{error}\n"));
+    }
+    let mut output = LimitedWriter::new();
+    let result: io::Result<()> = match format {
+        QueryFormat::Tsv => output.write_all(&tsv),
+        QueryFormat::TsvNoHeader => {
+            let mut sink = WithoutHeader::new(&mut output);
+            sink.write_all(&tsv)
+        }
+        QueryFormat::Csv => CsvWriter::new(&mut output).write_all(&tsv),
+        QueryFormat::CsvNoHeader => {
+            CsvWriter::new(WithoutHeader::new(&mut output)).write_all(&tsv)
+        }
+        QueryFormat::Jsonl => JsonlWriter::new(&mut output).write_all(&tsv),
+        QueryFormat::JsonCompactEachRow => {
+            let mut sink = JsonCompactEachRowWriter::new(&mut output);
+            sink.write_all(&tsv).and_then(|()| sink.finish().map(|_| ()))
+        }
+        QueryFormat::Json | QueryFormat::JsonPretty => {
+            let mut array = if matches!(format, QueryFormat::JsonPretty) {
+                JsonArraySink::new_pretty(&mut output)
+            } else {
+                JsonArraySink::new(&mut output)
+            };
+            JsonlWriter::new(&mut array)
+                .write_all(&tsv)
+                .and_then(|()| array.finish().map(|_| ()))
+        }
+        QueryFormat::SqlValues => {
+            let mut sink = SqlValuesWriter::new(&mut output);
+            sink.write_all(&tsv).and_then(|()| sink.finish())
+        }
+        QueryFormat::Markdown => MarkdownWriter::new(&mut output).write_all(&tsv),
+    };
+    match result {
+        Ok(()) => Response {
+            status: "200 OK",
+            content_type: format.content_type(),
+            body: output.data,
+        },
+        Err(_) => Response::text("413 Payload Too Large", "table description exceeds 16 MiB\n"),
+    }
+}
+
+#[cfg(test)]
+mod describe_tests {
+    use super::*;
+
+    #[test]
+    fn description_has_clickhouse_seven_column_header_and_empty_defaults() {
+        let columns = [
+            rusthouse_storage::Column { name: "id".into(), data_type: "UInt64".into() },
+            rusthouse_storage::Column { name: "email".into(), data_type: "String".into() },
+        ];
+        let mut data = Vec::new();
+        write_description_rows(&mut data, &columns, 2).unwrap();
+        assert_eq!(
+            String::from_utf8(data).unwrap(),
+            "name\ttype\tdefault_type\tdefault_expression\tcomment\tcodec_expression\tttl_expression\nid\tUInt64\t\t\t\t\t\nemail\tString\t\t\t\t\t\n"
+        );
+        let mut limited = Vec::new();
+        write_description_rows(&mut limited, &columns, 1).unwrap();
+        assert!(!String::from_utf8(limited).unwrap().contains("email"));
+    }
+
+    #[test]
+    fn malformed_description_fields_are_rejected() {
+        let bad = [rusthouse_storage::Column {
+            name: "name\twrong".into(),
+            data_type: "String".into(),
+        }];
+        assert!(write_description_rows(&mut Vec::new(), &bad, 1).is_err());
     }
 }

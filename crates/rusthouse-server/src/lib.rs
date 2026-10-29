@@ -404,6 +404,19 @@ pub fn handle_request(method: &str, target: &str, body: &[u8], config: &Config) 
     if sql
         .split_ascii_whitespace()
         .next()
+        .is_some_and(|first| first.eq_ignore_ascii_case("DESCRIBE") || first.eq_ignore_ascii_case("DESC"))
+    {
+        return match parse_ddl(sql) {
+            Ok(Some(Ddl::DescribeTable { name })) => {
+                sql_discovery::describe_table(&name, format, config)
+            }
+            Ok(_) => Response::text("400 Bad Request", "unsupported DESCRIBE SQL query\n"),
+            Err(error) => Response::text("400 Bad Request", &format!("{error}\n")),
+        };
+    }
+    if sql
+        .split_ascii_whitespace()
+        .next()
         .is_some_and(|first| first.eq_ignore_ascii_case("SHOW"))
     {
         return match parse_ddl(sql) {
