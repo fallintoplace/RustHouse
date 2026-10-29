@@ -24,10 +24,7 @@ def percentile(samples, percentile):
 def digest_file(source):
     digest = hashlib.sha256()
     length = 0
-    while True:
-        data = source.read(64 * 1024)
-        if not data:
-            break
+    for data in iter(lambda: source.read(64 * 1024), b""):
         digest.update(data)
         length += len(data)
     return digest.hexdigest(), length
