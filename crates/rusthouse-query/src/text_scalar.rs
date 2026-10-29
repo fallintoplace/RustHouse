@@ -2325,7 +2325,7 @@ fn parse_at_depth(parser: &mut Parser, depth: usize) -> Result<ConstantValue, Pa
                     if output_len > MAX_TEXT_BYTES {
                         return Err(ParseError("BASE64_ENCODE result is too large".into()));
                     }
-                    const ALPHABET: &[u8; 64] = if name == "BASE64URLENCODE" {
+                    let alphabet: &[u8; 64] = if name == "BASE64URLENCODE" {
                         b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_"
                     } else {
                         b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/"
@@ -2339,15 +2339,15 @@ fn parse_at_depth(parser: &mut Parser, depth: usize) -> Result<ConstantValue, Pa
                         if chunk.len() > 2 {
                             bits |= u32::from(chunk[2]);
                         }
-                        result.push(char::from(ALPHABET[((bits >> 18) & 63) as usize]));
-                        result.push(char::from(ALPHABET[((bits >> 12) & 63) as usize]));
+                        result.push(char::from(alphabet[((bits >> 18) & 63) as usize]));
+                        result.push(char::from(alphabet[((bits >> 12) & 63) as usize]));
                         if chunk.len() > 1 {
-                            result.push(char::from(ALPHABET[((bits >> 6) & 63) as usize]));
+                            result.push(char::from(alphabet[((bits >> 6) & 63) as usize]));
                         } else {
                             result.push('=');
                         }
                         if chunk.len() > 2 {
-                            result.push(char::from(ALPHABET[(bits & 63) as usize]));
+                            result.push(char::from(alphabet[(bits & 63) as usize]));
                         } else {
                             result.push('=');
                         }
