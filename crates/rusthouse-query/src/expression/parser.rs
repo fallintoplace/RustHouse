@@ -180,6 +180,11 @@ fn parse_aggregate_builtin(parser: &mut Parser) -> Result<ScalarExpr, ParseError
         ("NVL", 2) => Ok(ScalarExpr::Coalesce(args)),
         ("ISNULL", 1) => Ok(ScalarExpr::IsNull(Box::new(args.remove(0)), false)),
         ("ISNOTNULL", 1) => Ok(ScalarExpr::IsNull(Box::new(args.remove(0)), true)),
+        ("PLUS", 2) => {
+            let left = Box::new(args.remove(0));
+            let right = Box::new(args.remove(0));
+            Ok(ScalarExpr::Add(left, right))
+        }
         _ => Err(ParseError(format!("unsupported aggregate function: {name}"))),
     }
 }

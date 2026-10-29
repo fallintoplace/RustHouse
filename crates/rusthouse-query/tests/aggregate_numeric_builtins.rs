@@ -50,3 +50,8 @@ fn isnull_counts_missing_numeric_values() {
 fn isnotnull_counts_present_numeric_values() {
     assert_eq!(evaluate("isNotNull(x)"), "3");
 }
+
+#[test]
+fn plus_preserves_signed_numeric_arithmetic() {
+    assert_eq!(evaluate("plus(x, y)"), "5");
+}
