@@ -1,0 +1,6 @@
+{
+  "id": "count-tail-million",
+  "kind": "count_range",
+  "lo": "tail1m",
+  "hi": "end"
+}
