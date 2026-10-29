@@ -37,6 +37,27 @@ class ChunkCopyTests(unittest.TestCase):
             self.assertEqual(len(commands), 2)
             self.assertIn("part-000000.tsv", commands[0][2])
 
+    def test_dry_run_checks_manifest_without_copying(self):
+        with tempfile.TemporaryDirectory() as root:
+            directory = Path(root)
+            payload = b"42\n"
+            (directory / "part-000000.tsv").write_bytes(payload)
+            (directory / "manifest.json").write_text(json.dumps({
+                "format": "rusthouse-tsv-shards-v1", "header": False,
+                "total_rows": 1, "total_bytes": len(payload),
+                "shards": [{"path": "part-000000.tsv", "rows": 1,
+                            "bytes": len(payload),
+                            "sha256": hashlib.sha256(payload).hexdigest()}]}))
+            report = load_chunks("no-binary", "no-db", "events", directory,
+                                 dry_run=True, execute=lambda *args, **kwargs:
+                                 self.fail("dry-run must never execute SQL"))
+            self.assertEqual(report["shards_planned"], 1)
+            self.assertEqual(report["shards_loaded"], 0)
+            self.assertTrue(report["preflight_verified"])
+            (directory / "part-000000.tsv").write_bytes(b"bad\n")
+            with self.assertRaisesRegex(ValueError, "mismatch"):
+                load_chunks("x", "x", "events", directory, dry_run=True)
+
     def test_corruption_fails_before_any_copy(self):
         with tempfile.TemporaryDirectory() as root:
             path = Path(root)

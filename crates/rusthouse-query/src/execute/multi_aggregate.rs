@@ -764,13 +764,9 @@ pub(super) fn execute<W: Write>(
 /// Compute exact arithmetic-series metrics in O(number of aggregates) instead
 /// of iterating a billion generated rows. Predicated or DISTINCT inputs keep the
 /// existing streaming path.
-fn generated_series_metrics(
-    start: u64,
-    rows: u64,
-    step: u64,
-    items: &[AggregateItem],
-) -> Option<Result<Vec<String>, ExecutionError>> {
-    if !items.iter().all(|item| {
+/// Only these generated metrics have a constant-time arithmetic result.
+pub(super) fn supports_generated_series_metrics(items: &[AggregateItem]) -> bool {
+    items.iter().all(|item| {
         !item.distinct
             && item.argument.as_ref().is_none_or(|expression| {
                 matches!(expression, ScalarExpr::Column(name) if name == "number")
@@ -778,7 +774,16 @@ fn generated_series_metrics(
             && matches!(item.function, None | Some(crate::AggregateFunction::Count
                 | crate::AggregateFunction::Sum | crate::AggregateFunction::Min
                 | crate::AggregateFunction::Max | crate::AggregateFunction::Avg))
-    }) {
+    })
+}
+
+fn generated_series_metrics(
+    start: u64,
+    rows: u64,
+    step: u64,
+    items: &[AggregateItem],
+) -> Option<Result<Vec<String>, ExecutionError>> {
+    if !supports_generated_series_metrics(items) {
         return None;
     }
     let first = u128::from(start);
@@ -844,12 +849,23 @@ pub(super) fn execute_numbers<W: Write>(
     if query.limit == Some(0) {
         return Ok(());
     }
-    if query.predicates.is_empty() && query.or_predicates.is_empty() {
-        if let Some(results) = generated_series_metrics(start, rows, step, items) {
-            if query.offset.unwrap_or(0) == 0 {
-                writeln!(output, "{}", results?.join("\t"))?;
+    // Monotonic predicates select an exact contiguous arithmetic interval.
+    // Reuse the formula path for the selected range instead of scanning every
+    // generated row and updating each metric separately.
+    let interval = if query.predicates.is_empty() && query.or_predicates.is_empty() {
+        Some((0, rows))
+    } else {
+        super::monotonic_range_indices(&comparisons, start, rows, step)
+    };
+    if let Some((lower, upper)) = interval {
+        let first = u128::from(start) + u128::from(lower) * u128::from(step);
+        if let Ok(first) = u64::try_from(first) {
+            if let Some(results) = generated_series_metrics(first, upper - lower, step, items) {
+                if query.offset.unwrap_or(0) == 0 {
+                    writeln!(output, "{}", results?.join("\t"))?;
+                }
+                return Ok(());
             }
-            return Ok(());
         }
     }
     let mut states = items

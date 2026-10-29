@@ -103,6 +103,63 @@ pub fn copy_immutable_file(source: &Path, destination: &Path, max_bytes: u64) ->
     Ok(total)
 }
 
+/// Copy a frozen file and publish it only when the staged bytes match CRC32C.
+/// CRC32C detects accidental corruption, not malicious content modification.
+pub fn copy_immutable_file_checked(
+    source: &Path,
+    destination: &Path,
+    max_bytes: u64,
+    expected_crc32c: u32,
+) -> io::Result<u64> {
+    let parent = destination
+        .parent()
+        .ok_or_else(|| io::Error::other("destination has no parent directory"))?;
+    let staging = parent.join(format!(
+        ".rusthouse-checked-copy-{}-{}",
+        std::process::id(),
+        NEXT_STAGE.fetch_add(1, Ordering::Relaxed)
+    ));
+    let copied = copy_immutable_file(source, &staging, max_bytes)?;
+    let verified = (|| -> io::Result<()> {
+        let mut file = File::open(&staging)?;
+        let (size, crc32c) = crate::distributed_crc32c::crc32c_reader(&mut file, max_bytes)?;
+        if size != copied || crc32c != expected_crc32c {
+            return Err(io::Error::other("replica object checksum mismatch"));
+        }
+        fs::hard_link(&staging, destination)?;
+        Ok(())
+    })();
+    let cleanup = fs::remove_file(&staging);
+    verified?;
+    cleanup?;
+    #[cfg(unix)]
+    File::open(parent)?.sync_all()?;
+    Ok(copied)
+}
+
+#[cfg(all(test, unix))]
+mod copy_identity_tests {
+    use super::*;
+
+    #[test]
+    fn identical_sizes_do_not_make_different_inodes_equivalent() {
+        let root = std::env::temp_dir().join(format!(
+            "rusthouse-copy-source-id-{}", std::process::id()
+        ));
+        let _ = fs::remove_dir_all(&root);
+        fs::create_dir_all(&root).unwrap();
+        let first = root.join("first");
+        let second = root.join("second");
+        let link = root.join("link");
+        fs::write(&first, b"one").unwrap();
+        fs::write(&second, b"two").unwrap();
+        fs::hard_link(&first, &link).unwrap();
+        assert!(same_source_identity(&fs::metadata(&first).unwrap(), &fs::metadata(&link).unwrap()));
+        assert!(!same_source_identity(&fs::metadata(&first).unwrap(), &fs::metadata(&second).unwrap()));
+        fs::remove_dir_all(root).unwrap();
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -141,40 +198,6 @@ mod tests {
     }
 }
 
-/// Copy a frozen file and publish it only when the staged bytes match CRC32C.
-/// CRC32C detects accidental corruption, not malicious content modification.
-pub fn copy_immutable_file_checked(
-    source: &Path,
-    destination: &Path,
-    max_bytes: u64,
-    expected_crc32c: u32,
-) -> io::Result<u64> {
-    let parent = destination
-        .parent()
-        .ok_or_else(|| io::Error::other("destination has no parent directory"))?;
-    let staging = parent.join(format!(
-        ".rusthouse-checked-copy-{}-{}",
-        std::process::id(),
-        NEXT_STAGE.fetch_add(1, Ordering::Relaxed)
-    ));
-    let copied = copy_immutable_file(source, &staging, max_bytes)?;
-    let verified = (|| -> io::Result<()> {
-        let mut file = File::open(&staging)?;
-        let (size, crc32c) = crate::distributed_crc32c::crc32c_reader(&mut file, max_bytes)?;
-        if size != copied || crc32c != expected_crc32c {
-            return Err(io::Error::other("replica object checksum mismatch"));
-        }
-        fs::hard_link(&staging, destination)?;
-        Ok(())
-    })();
-    let cleanup = fs::remove_file(&staging);
-    verified?;
-    cleanup?;
-    #[cfg(unix)]
-    File::open(parent)?.sync_all()?;
-    Ok(copied)
-}
-
 #[cfg(test)]
 mod checked_copy_tests {
     use super::*;
@@ -196,28 +219,5 @@ mod checked_copy_tests {
         assert_eq!(fs::read(&target).unwrap(), b"verified");
         assert!(copy_immutable_file_checked(&source, &target, 100, checksum).is_err());
         fs::remove_dir_all(dir).unwrap();
-    }
-}
-
-#[cfg(all(test, unix))]
-mod copy_identity_tests {
-    use super::*;
-
-    #[test]
-    fn identical_sizes_do_not_make_different_inodes_equivalent() {
-        let root = std::env::temp_dir().join(format!(
-            "rusthouse-copy-source-id-{}", std::process::id()
-        ));
-        let _ = fs::remove_dir_all(&root);
-        fs::create_dir_all(&root).unwrap();
-        let first = root.join("first");
-        let second = root.join("second");
-        let link = root.join("link");
-        fs::write(&first, b"one").unwrap();
-        fs::write(&second, b"two").unwrap();
-        fs::hard_link(&first, &link).unwrap();
-        assert!(same_source_identity(&fs::metadata(&first).unwrap(), &fs::metadata(&link).unwrap()));
-        assert!(!same_source_identity(&fs::metadata(&first).unwrap(), &fs::metadata(&second).unwrap()));
-        fs::remove_dir_all(root).unwrap();
     }
 }

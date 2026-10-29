@@ -9,6 +9,14 @@ use std::path::Path;
 
 const MAX_GROUPS: usize = 200_000;
 
+fn group_limit_error() -> ExecutionError {
+    ExecutionError::Invalid("GROUP BY supports at most 200000 groups".into())
+}
+
+fn numeric_column_error() -> ExecutionError {
+    ExecutionError::Invalid("numeric aggregates require numeric columns".into())
+}
+
 fn filter_enabled(column: &TypedColumn, row: usize) -> Result<bool, ExecutionError> {
     let number = match column {
         TypedColumn::Numeric(values) => Some(super::number_at(values, row)),
@@ -90,9 +98,7 @@ pub(super) fn execute<W: Write>(
         if *function != AggregateFunction::Count
             && matches!(typed::base_type(&selected.data_type), "String" | "UUID")
         {
-            return Err(ExecutionError::Invalid(
-                "numeric aggregates require numeric columns".into(),
-            ));
+            return Err(numeric_column_error());
         }
     }
     for filter in filters.iter().flatten() {
@@ -227,9 +233,7 @@ pub(super) fn execute<W: Write>(
                         group
                     } else {
                         if groups.len() >= MAX_GROUPS {
-                            return Err(ExecutionError::Invalid(
-                                "GROUP BY supports at most 200000 groups".into(),
-                            ));
+                            return Err(group_limit_error());
                         }
                         reserve_group(&mut retained_group_bytes, items.len(), 0)?;
                         let group = groups.len();
@@ -248,9 +252,7 @@ pub(super) fn execute<W: Write>(
                         group
                     } else {
                         if groups.len() >= MAX_GROUPS {
-                            return Err(ExecutionError::Invalid(
-                                "GROUP BY supports at most 200000 groups".into(),
-                            ));
+                            return Err(group_limit_error());
                         }
                         reserve_group(&mut retained_group_bytes, items.len(), key.len())?;
                         let group = groups.len();
@@ -270,9 +272,7 @@ pub(super) fn execute<W: Write>(
                         Entry::Occupied(entry) => *entry.get(),
                         Entry::Vacant(entry) => {
                             if groups.len() >= MAX_GROUPS {
-                                return Err(ExecutionError::Invalid(
-                                    "GROUP BY supports at most 200000 groups".into(),
-                                ));
+                                return Err(group_limit_error());
                             }
                             reserve_group(&mut retained_group_bytes, items.len(), 0)?;
                             entry.insert(groups.len());
@@ -323,9 +323,7 @@ pub(super) fn execute<W: Write>(
                         Cell::Numeric(value) => state.update(value)?,
                         Cell::Null => {}
                         Cell::Text(_) | Cell::Uuid(_) => {
-                            return Err(ExecutionError::Invalid(
-                                "numeric aggregates require numeric columns".into(),
-                            ));
+                            return Err(numeric_column_error());
                         }
                     },
                 }
@@ -376,13 +374,17 @@ pub(super) fn execute<W: Write>(
             let compare_cached = |left: &usize, right: &usize| {
                 for &(metric, descending, nulls_first) in &terms {
                     let order = if let Some(index) = metric {
-                        let (left_cell, right_cell) = if let Some(keys) = cached_medians.get(&index) {
-                            (keys[*left].clone(), keys[*right].clone())
+                        if let Some(keys) = cached_medians.get(&index) {
+                            typed::compare_order_cells(
+                                &keys[*left], &keys[*right], descending, nulls_first,
+                            )
                         } else {
-                            (groups[*left].1[index].sort_cell(),
-                             groups[*right].1[index].sort_cell())
-                        };
-                        typed::compare_order_cells(&left_cell, &right_cell, descending, nulls_first)
+                            let left_cell = groups[*left].1[index].sort_cell();
+                            let right_cell = groups[*right].1[index].sort_cell();
+                            typed::compare_order_cells(
+                                &left_cell, &right_cell, descending, nulls_first,
+                            )
+                        }
                     } else {
                         typed::compare_order_cells(&groups[*left].0, &groups[*right].0,
                             descending, nulls_first)
@@ -495,6 +497,21 @@ mod grouped_multi_median_budget_tests {
 #[cfg(test)]
 mod cached_multimetric_median_sort_tests {
     use super::*;
+    #[test]
+    fn borrowed_cached_medians_keep_same_sort_order() {
+        let values = [3u128, 9, 1, 7];
+        let keys = values.map(|value| {
+            let mut median = AggregateState::new(AggregateFunction::Median);
+            median.update(Number::Unsigned(value)).unwrap();
+            median.sort_cell()
+        });
+        let mut positions = (0..keys.len()).collect::<Vec<_>>();
+        positions.sort_unstable_by(|&a, &b| {
+            typed::compare_order_cells(&keys[a], &keys[b], false, false)
+        });
+        assert_eq!(positions, [2, 0, 3, 1]);
+    }
+
     #[test]
     fn cached_medians_preserve_multi_metric_order() {
         let groups = [(10u128, 4u128), (4, 2), (7, 3)].map(|(a, b)| {

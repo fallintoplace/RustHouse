@@ -5,6 +5,7 @@ import json
 from pathlib import Path
 import subprocess
 import sys
+import tempfile
 import time
 
 
@@ -27,10 +28,19 @@ def run(binary, database, full_hashes=True, timeout=600):
         command.append("--full-hashes")
     start = time.monotonic()
     try:
-        result = subprocess.run(command, capture_output=True, text=True,
-                                timeout=timeout, check=False)
-        return report(result.returncode, result.stdout, result.stderr,
-                      time.monotonic() - start, full_hashes)
+        with tempfile.TemporaryFile() as output, tempfile.TemporaryFile() as errors:
+            result = subprocess.run(command, stdout=output, stderr=errors,
+                                    timeout=timeout, check=False)
+            output.seek(0)
+            errors.seek(0)
+            out = output.read(32_769)
+            err = errors.read(32_769)
+        result_report = report(result.returncode, out.decode("utf-8", "replace"),
+                               err.decode("utf-8", "replace"),
+                               time.monotonic() - start, full_hashes)
+        if len(out) > 32_768 or len(err) > 32_768:
+            result_report["truncated"] = True
+        return result_report
     except subprocess.TimeoutExpired:
         return report(124, "", "RustHouse doctor timed out",
                       time.monotonic() - start, full_hashes)

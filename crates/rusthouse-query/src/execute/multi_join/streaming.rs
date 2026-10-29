@@ -62,6 +62,7 @@ fn visit<W: Write>(
     depth: usize,
     row: &mut Vec<typed::Cell>,
     stages: &[Stage],
+    scratch_keys: &mut [Vec<typed::Key>],
     spec: &OutputSpec<'_>,
     state: &mut OutputState,
     output: &mut W,
@@ -103,16 +104,17 @@ fn visit<W: Write>(
     }
 
     let stage = &stages[depth];
-    let Some(key) = row_key(row, &stage.left_keys) else {
+    // Preserve per-stage key buffers across millions of fact rows.
+    if !row_key_into(row, &stage.left_keys, &mut scratch_keys[depth]) {
         return Ok(());
-    };
-    let Some(matches) = stage.hash.get(&key) else {
+    }
+    let Some(matches) = stage.hash.get(scratch_keys[depth].as_slice()) else {
         return Ok(());
     };
     for &matched in matches.iter().take(if stage.any { 1 } else { usize::MAX }) {
         let original_len = row.len();
         row.extend_from_slice(&stage.rows[matched]);
-        let result = visit(depth + 1, row, stages, spec, state, output);
+        let result = visit(depth + 1, row, stages, scratch_keys, spec, state, output);
         row.truncate(original_len);
         result?;
         if spec.limit.is_some_and(|limit| state.emitted >= limit) {
@@ -248,6 +250,9 @@ pub(super) fn execute<W: Write>(
     if stages.iter().any(|stage| stage.rows.is_empty()) {
         return Ok(());
     }
+    let mut scratch_keys = stages.iter()
+        .map(|stage| Vec::with_capacity(stage.left_keys.len()))
+        .collect::<Vec<Vec<typed::Key>>>();
     // Reuse the same dependency projection for the fact scan.
     let fact_width = relations[0].names.len();
     let projected = &projections[0];
@@ -258,16 +263,18 @@ pub(super) fn execute<W: Write>(
     let mut reader = TypedQueryReader::open(&paths[0], &projected_names)?;
     let mut scanned = 0u64;
     let mut state = OutputState::default();
+    // The recursive visitor restores fact row length after each match.
+    // Retain this allocation across the entire scan.
+    let mut row = vec![typed::Cell::Null; fact_width];
     while let Some(batch) = reader.next_batch()? {
         for index in 0..batch[0].len() {
             scanned = scanned
                 .checked_add(1)
                 .ok_or_else(|| invalid("JOIN input row count overflow"))?;
-            let mut row = vec![typed::Cell::Null; fact_width];
             for (position, &column) in projected.iter().enumerate() {
                 row[column] = typed::cell(&batch[position], index);
             }
-            visit(0, &mut row, &stages, &spec, &mut state, output)?;
+            visit(0, &mut row, &stages, &mut scratch_keys, &spec, &mut state, output)?;
             if spec.limit.is_some_and(|limit| state.emitted >= limit) {
                 return Ok(());
             }
@@ -280,90 +287,9 @@ pub(super) fn execute<W: Write>(
 }
 
 #[cfg(test)]
-mod stream_output_limit_tests {
-    use super::*;
-    use super::super::super::Number;
-
-    #[test]
-    fn streaming_inner_joins_can_emit_more_than_the_materialized_row_cap() {
-        let fact = typed::Cell::Numeric(Number::Unsigned(7));
-        let dimension = typed::Cell::Numeric(Number::Unsigned(7));
-        let right_rows = vec![vec![dimension]];
-        let mut hash = HashMap::new();
-        hash.insert(row_key(&right_rows[0], &[0]).unwrap(), Bucket::One(0));
-        let stages = [Stage {
-            rows: right_rows,
-            hash,
-            left_keys: vec![0],
-            any: false,
-        }];
-        let selected = [(0, "fact.id".to_owned(), None)];
-        let spec = OutputSpec {
-            selected: &selected,
-            null_filter: None,
-            offset: 0,
-            limit: None,
-        };
-        let mut output = std::io::sink();
-        let mut state = OutputState::default();
-        let mut row = vec![fact];
-        for _ in 0..131_100 {
-            visit(0, &mut row, &stages, &spec, &mut state, &mut output).unwrap();
-        }
-        assert_eq!(state.seen, 131_100);
-        assert_eq!(state.emitted, 131_100);
-        assert_eq!(row.len(), 1);
-    }
-
-    #[test]
-    fn streaming_inner_join_still_respects_explicit_limit() {
-        let fact = typed::Cell::Numeric(Number::Unsigned(7));
-        let dimension = typed::Cell::Numeric(Number::Unsigned(7));
-        let right_rows = vec![vec![dimension]];
-        let mut hash = HashMap::new();
-        hash.insert(row_key(&right_rows[0], &[0]).unwrap(), Bucket::One(0));
-        let stages = [Stage {
-            rows: right_rows,
-            hash,
-            left_keys: vec![0],
-            any: false,
-        }];
-        let selected = [(0, "fact.id".to_owned(), None)];
-        let spec = OutputSpec {
-            selected: &selected,
-            null_filter: None,
-            offset: 0,
-            limit: Some(2),
-        };
-        let mut state = OutputState::default();
-        let mut row = vec![fact];
-        let mut output = std::io::sink();
-        for _ in 0..100 {
-            visit(0, &mut row, &stages, &spec, &mut state, &mut output).unwrap();
-        }
-        assert_eq!(state.emitted, 2);
-    }
-}
+#[path = "streaming/stream_output_limit_tests.rs"]
+mod stream_output_limit_tests;
 
 #[cfg(test)]
-mod streaming_hash_budget_tests {
-    use super::*;
-
-    #[test]
-    fn large_string_keys_are_charged_in_addition_to_dimension_rows() {
-        let key = [typed::Key::Text(vec![b'x'; 2048])];
-        assert!(hash_key_bytes(&key).unwrap() > 2048);
-        let mut used = MAX_CHAIN_BYTES - 100;
-        assert!(charge_hash_build(&mut used, hash_key_bytes(&key).unwrap()).is_err());
-        assert_eq!(used, MAX_CHAIN_BYTES - 100);
-    }
-
-    #[test]
-    fn hash_accounting_rejects_overflow_before_allocation() {
-        let mut used = 0usize;
-        assert!(charge_hash_build(&mut used, usize::MAX).is_err());
-        assert_eq!(used, 0);
-        charge_hash_build(&mut used, 128).unwrap();
-        assert_eq!(used, 128);
-    }
-}
+#[path = "streaming/streaming_hash_budget_tests.rs"]
+mod streaming_hash_budget_tests;

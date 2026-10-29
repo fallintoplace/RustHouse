@@ -100,7 +100,7 @@ fn decimal_storage_type(precision: u8) -> &'static str {
     }
 }
 
-fn parse_decimal_component(value: &str) -> Option<u8> {
+fn parse_decimal_type_number(value: &str) -> Option<u8> {
     if value.is_empty() || !value.bytes().all(|byte| byte.is_ascii_digit()) {
         return None;
     }
@@ -122,7 +122,7 @@ fn parse_sized_decimal(data_type: &str) -> Option<(u8, u8, &'static str)> {
         "128" => 38,
         _ => return None,
     };
-    let scale = parse_decimal_component(arguments.strip_suffix(')')?)?;
+    let scale = parse_decimal_type_number(arguments.strip_suffix(')')?)?;
     checked_decimal_spec(precision, scale)
 }
 
@@ -131,8 +131,8 @@ fn parse_general_decimal(inner: &str) -> Option<(u8, u8, &'static str)> {
         Some((precision, scale)) => (precision.trim(), scale.trim()),
         None => (inner.trim(), "0"),
     };
-    let precision = parse_decimal_component(precision)?;
-    let scale = parse_decimal_component(scale)?;
+    let precision = parse_decimal_type_number(precision)?;
+    let scale = parse_decimal_type_number(scale)?;
     checked_decimal_spec(precision, scale)
 }
 
