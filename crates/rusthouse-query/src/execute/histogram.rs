@@ -93,20 +93,15 @@ fn output_bins<W: Write>(
 /// Iterates a verified snapshot from the beginning, using identical compiled
 /// filters in both passes. No values or rows are retained between passes.
 fn visit_part(
-    query: &Select,
     part: &Path,
     metadata: &PartMetadata,
     names: &[String],
     indices: &HashMap<String, usize>,
-    types: &HashMap<String, String>,
     column: &str,
+    conditions: &[Vec<typed::Condition>],
+    no_filters: bool,
     mut observe: impl FnMut(f64) -> Result<(), ExecutionError>,
 ) -> Result<(), ExecutionError> {
-    let mut conditions = vec![typed::compile(&query.predicates, indices, types)?];
-    for branch in &query.or_predicates {
-        conditions.push(typed::compile(branch, indices, types)?);
-    }
-    let no_filters = query.predicates.is_empty() && query.or_predicates.is_empty();
     let selected = indices[column];
     let mut reader = TypedQueryReader::open_with_metadata(part, names, metadata)?;
     while let Some(batch) = reader.next_batch()? {
@@ -179,10 +174,17 @@ pub(super) fn execute_part<W: Write>(
         .iter()
         .map(|candidate| (candidate.name.clone(), candidate.data_type.clone()))
         .collect::<HashMap<String, String>>();
+    // Both passes traverse the same immutable snapshot with identical
+    // filters. Compile regex-like patterns and IN sets only once.
+    let mut conditions = vec![typed::compile(&query.predicates, &indices, &types)?];
+    for branch in &query.or_predicates {
+        conditions.push(typed::compile(branch, &indices, &types)?);
+    }
+    let no_filters = query.predicates.is_empty() && query.or_predicates.is_empty();
     let mut min = f64::INFINITY;
     let mut max = f64::NEG_INFINITY;
     let mut rows = 0u64;
-    visit_part(query, part, &metadata, &names, &indices, &types, column, |value| {
+    visit_part(part, &metadata, &names, &indices, column, &conditions, no_filters, |value| {
         min = min.min(value);
         max = max.max(value);
         rows = rows
@@ -199,7 +201,7 @@ pub(super) fn execute_part<W: Write>(
         ));
     }
     let mut counts = vec![0u64; *bins];
-    visit_part(query, part, &metadata, &names, &indices, &types, column, |value| {
+    visit_part(part, &metadata, &names, &indices, column, &conditions, no_filters, |value| {
         let index = bucket(value, min, max, *bins);
         counts[index] = counts[index]
             .checked_add(1)
