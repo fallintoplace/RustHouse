@@ -164,6 +164,7 @@ pub(super) fn is_function(name: &str) -> bool {
             | "INTDIVORNULL"
             | "MODULOORNULL"
             | "ENCODEURLFORMCOMPONENT"
+            | "NORMALIZEIPV6"
     )
 }
 
@@ -280,6 +281,18 @@ fn parse_at_depth(parser: &mut Parser, depth: usize) -> Result<ConstantValue, Pa
                     ConstantValue::Text(format!("{number:.precision$}{}", UNITS[index]))
                 }
                 _ => ConstantValue::Null,
+            }
+        }
+        "NORMALIZEIPV6" => {
+            let input = text_arg(parser, depth + 1)?;
+            require(parser, Token::RParen, "normalizeIPv6 requires one argument")?;
+            match input {
+                Some(value) => {
+                    let address = value.parse::<std::net::Ipv6Addr>()
+                        .map_err(|_| ParseError("invalid IPv6 address".into()))?;
+                    ConstantValue::Text(address.to_string())
+                }
+                None => ConstantValue::Null,
             }
         }
         "MODULOORNULL" => {
