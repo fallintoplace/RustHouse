@@ -17,7 +17,7 @@ def split_tsv(source, output_dir, *, rows_per_chunk=65536):
     source, output_dir = Path(source), Path(output_dir)
     if not 1 <= rows_per_chunk <= 1_000_000:
         raise ValueError("rows_per_chunk must be in 1..1000000")
-    if output_dir.exists():
+    if output_dir.exists() or output_dir.is_symlink():
         raise FileExistsError(f"output directory exists: {output_dir}")
     output_dir.parent.mkdir(parents=True, exist_ok=True)
     temporary = Path(tempfile.mkdtemp(prefix=".rusthouse-shards-", dir=output_dir.parent))
@@ -71,6 +71,8 @@ def split_tsv(source, output_dir, *, rows_per_chunk=65536):
         (temporary / "manifest.json").write_text(
             json.dumps(manifest, indent=2) + "\n", encoding="utf-8"
         )
+        if output_dir.exists() or output_dir.is_symlink():
+            raise FileExistsError(f"output directory exists: {output_dir}")
         os.replace(temporary, output_dir)
         return manifest
     finally:

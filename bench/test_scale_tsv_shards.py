@@ -1,4 +1,5 @@
 import hashlib
+import sys
 import tempfile
 import unittest
 from pathlib import Path
@@ -46,6 +47,17 @@ class ShardTests(unittest.TestCase):
             with self.assertRaisesRegex(ValueError, "truncated"):
                 split_tsv(source, target)
             self.assertFalse(target.exists())
+
+    @unittest.skipIf(sys.platform == "win32", "Windows runners cannot create symlinks")
+    def test_refuses_to_replace_dangling_symlink(self):
+        with tempfile.TemporaryDirectory() as root:
+            source = Path(root) / "input.tsv"
+            source.write_text("1\n")
+            target = Path(root) / "shards"
+            target.symlink_to(Path(root) / "missing", target_is_directory=True)
+            with self.assertRaises(FileExistsError):
+                split_tsv(source, target)
+            self.assertTrue(target.is_symlink())
 
     def test_refuses_to_replace_existing_directory(self):
         with tempfile.TemporaryDirectory() as root:
