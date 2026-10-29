@@ -13,13 +13,16 @@ fn hex_digit(value: u8) -> Option<u8> {
     }
 }
 
+fn checked_hex_digit(value: u8) -> io::Result<u8> {
+    hex_digit(value).ok_or_else(|| invalid_escape("invalid TSV hex escape"))
+}
+
 fn decode_hex_byte(field: &[u8], index: usize) -> io::Result<u8> {
     let digits = field
         .get(index..index + 2)
         .ok_or_else(|| invalid_escape("short TSV hex escape"))?;
-    let invalid = || invalid_escape("invalid TSV hex escape");
-    let high = hex_digit(digits[0]).ok_or_else(invalid)?;
-    let low = hex_digit(digits[1]).ok_or_else(invalid)?;
+    let high = checked_hex_digit(digits[0])?;
+    let low = checked_hex_digit(digits[1])?;
     Ok((high << 4) | low)
 }
 
