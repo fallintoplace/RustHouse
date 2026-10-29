@@ -1,5 +1,8 @@
 //! Bounded completion map for retrying interrupted chunk transfers.
 
+const MAX_RESUME_CHUNKS: usize = 65_536;
+const BITS_PER_COMPLETION_BYTE: usize = 8;
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ResumeMap {
     // Bit-packed completion flags: 8 times smaller than Vec<bool> when every
@@ -10,12 +13,12 @@ pub struct ResumeMap {
 
 impl ResumeMap {
     pub fn new(chunks: usize) -> Result<Self, &'static str> {
-        if chunks > 65_536 {
+        if chunks > MAX_RESUME_CHUNKS {
             return Err("resume map exceeds chunk limit");
         }
         Ok(Self {
             chunks,
-            completed: vec![0; chunks.div_ceil(8)],
+            completed: vec![0; chunks.div_ceil(BITS_PER_COMPLETION_BYTE)],
         })
     }
 
@@ -28,7 +31,7 @@ impl ResumeMap {
     }
 
     fn bit_position(index: usize) -> (usize, u8) {
-        (index / 8, 1u8 << (index % 8))
+        (index / BITS_PER_COMPLETION_BYTE, 1u8 << (index % BITS_PER_COMPLETION_BYTE))
     }
 
     pub fn mark_complete(&mut self, index: usize) -> Result<(), &'static str> {
@@ -52,8 +55,8 @@ impl ResumeMap {
             .iter()
             .enumerate()
             .map(|(byte_index, &bits)| {
-                let valid = (self.chunks - byte_index * 8).min(8);
-                let mask = if valid == 8 {
+                let valid = (self.chunks - byte_index * BITS_PER_COMPLETION_BYTE).min(BITS_PER_COMPLETION_BYTE);
+                let mask = if valid == BITS_PER_COMPLETION_BYTE {
                     u8::MAX
                 } else {
                     ((1u16 << valid) - 1) as u8
@@ -64,11 +67,11 @@ impl ResumeMap {
         let mut missing = Vec::with_capacity(self.chunks - completed_count);
         for (byte_index, &completed) in self.completed.iter().enumerate() {
             let mut bits = !completed;
-            if byte_index == self.completed.len() - 1 && self.chunks % 8 != 0 {
-                bits &= ((1u16 << (self.chunks % 8)) - 1) as u8;
+            if byte_index == self.completed.len() - 1 && self.chunks % BITS_PER_COMPLETION_BYTE != 0 {
+                bits &= ((1u16 << (self.chunks % BITS_PER_COMPLETION_BYTE)) - 1) as u8;
             }
             while bits != 0 {
-                missing.push(byte_index * 8 + bits.trailing_zeros() as usize);
+                missing.push(byte_index * BITS_PER_COMPLETION_BYTE + bits.trailing_zeros() as usize);
                 bits &= bits - 1;
             }
         }
@@ -76,14 +79,14 @@ impl ResumeMap {
     }
 
     pub fn complete(&self) -> bool {
-        let full_bytes = self.chunks / 8;
+        let full_bytes = self.chunks / BITS_PER_COMPLETION_BYTE;
         if !self.completed[..full_bytes]
             .iter()
             .all(|&byte| byte == u8::MAX)
         {
             return false;
         }
-        let remainder = self.chunks % 8;
+        let remainder = self.chunks % BITS_PER_COMPLETION_BYTE;
         remainder == 0
             || self.completed[full_bytes] & ((1u8 << remainder) - 1) == (1u8 << remainder) - 1
     }
@@ -92,7 +95,7 @@ impl ResumeMap {
     pub fn encode(&self) -> String {
         let mut encoded = String::with_capacity(self.chunks);
         for (byte_index, &bits) in self.completed.iter().enumerate() {
-            let count = (self.chunks - byte_index * 8).min(8);
+            let count = (self.chunks - byte_index * BITS_PER_COMPLETION_BYTE).min(BITS_PER_COMPLETION_BYTE);
             for index in 0..count {
                 encoded.push(if bits & (1 << index) != 0 { '1' } else { '0' });
             }
@@ -298,7 +301,7 @@ mod binary_checkpoint_tests {
                 map.mark_complete(index).unwrap();
             }
             let encoded = map.encode_binary();
-            assert_eq!(encoded.len(), 4 + count.div_ceil(8));
+            assert_eq!(encoded.len(), 4 + count.div_ceil(BITS_PER_COMPLETION_BYTE));
             assert_eq!(ResumeMap::decode_binary(&encoded).unwrap(), map);
         }
     }
