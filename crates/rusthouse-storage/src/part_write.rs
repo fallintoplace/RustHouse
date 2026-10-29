@@ -105,6 +105,7 @@ fn supported(kind: &str) -> bool {
         base,
         "String"
             | "Date"
+            | "Date32"
             | "DateTime"
             | "UInt8"
             | "UInt16"
@@ -125,7 +126,7 @@ fn fixed_width_bytes_per_row(data_type: &str) -> usize {
     match base_type(data_type).0 {
         "UInt8" | "Int8" => 1,
         "UInt16" | "Int16" | "Date" => 2,
-        "UInt32" | "Int32" | "Float32" | "DateTime" => 4,
+        "UInt32" | "Int32" | "Float32" | "Date32" | "DateTime" => 4,
         "UInt64" | "Int64" | "Float64" => 8,
         "UInt128" | "Int128" | "UUID" => 16,
         _ => 0,
