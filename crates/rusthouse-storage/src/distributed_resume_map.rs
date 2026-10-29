@@ -31,6 +31,28 @@ impl ResumeMap {
         (index / 8, 1u8 << (index % 8))
     }
 
+    /// Count verified chunks without constructing a list of missing indexes.
+    /// Ignore unused bits in the final partially populated bitmap byte.
+    pub fn completed_count(&self) -> usize {
+        self.completed
+            .iter()
+            .enumerate()
+            .map(|(byte_index, &bits)| {
+                let valid = (self.chunks - byte_index * 8).min(8);
+                let mask = if valid == 8 {
+                    u8::MAX
+                } else {
+                    ((1u16 << valid) - 1) as u8
+                };
+                (bits & mask).count_ones() as usize
+            })
+            .sum()
+    }
+
+    pub fn remaining_count(&self) -> usize {
+        self.chunks - self.completed_count()
+    }
+
     pub fn mark_complete(&mut self, index: usize) -> Result<(), &'static str> {
         if index >= self.chunks {
             return Err("chunk index out of bounds");
@@ -46,22 +68,7 @@ impl ResumeMap {
         if self.completed.iter().all(|&byte| byte == 0) {
             return (0..self.chunks).collect();
         }
-        // Count only valid completion bits before allocating the missing-index list.
-        let completed_count = self
-            .completed
-            .iter()
-            .enumerate()
-            .map(|(byte_index, &bits)| {
-                let valid = (self.chunks - byte_index * 8).min(8);
-                let mask = if valid == 8 {
-                    u8::MAX
-                } else {
-                    ((1u16 << valid) - 1) as u8
-                };
-                (bits & mask).count_ones() as usize
-            })
-            .sum::<usize>();
-        let mut missing = Vec::with_capacity(self.chunks - completed_count);
+        let mut missing = Vec::with_capacity(self.remaining_count());
         for (byte_index, &completed) in self.completed.iter().enumerate() {
             let mut bits = !completed;
             if byte_index == self.completed.len() - 1 && self.chunks % 8 != 0 {
@@ -174,6 +181,23 @@ mod tests {
         let recovered = ResumeMap::decode(&map.encode()).unwrap();
         assert_eq!(recovered.remaining(), vec![1, 3]);
         assert!(!recovered.complete());
+    }
+
+    #[test]
+    fn reports_chunk_progress_without_allocating_missing_indexes() {
+        for chunks in [0usize, 1, 7, 8, 9, 17, 65_536] {
+            let mut map = ResumeMap::new(chunks).unwrap();
+            assert_eq!(map.completed_count(), 0);
+            assert_eq!(map.remaining_count(), chunks);
+            for index in (0..chunks).step_by(3) {
+                map.mark_complete(index).unwrap();
+                map.mark_complete(index).unwrap();
+            }
+            let complete = chunks.div_ceil(3);
+            assert_eq!(map.completed_count(), complete);
+            assert_eq!(map.remaining_count(), chunks - complete);
+            assert_eq!(map.remaining().len(), map.remaining_count());
+        }
     }
 
     #[test]
