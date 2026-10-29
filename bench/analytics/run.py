@@ -14,6 +14,7 @@ from common import cli_sql, emit_json, latency_summary
 
 
 DEFAULT_QUERIES = Path(__file__).with_name("queries.sql")
+MAX_REFERENCE_BYTES = 16 * 1024 * 1024
 
 
 def load_queries(path):
@@ -74,7 +75,11 @@ def summarize_times(timings):
 def reference_failure(expected_path, output):
     if not expected_path.is_file():
         return "missing_reference", str(expected_path)
-    if output != expected_path.read_bytes():
+    with expected_path.open("rb") as source:
+        reference = source.read(MAX_REFERENCE_BYTES + 1)
+    if len(reference) > MAX_REFERENCE_BYTES:
+        return "reference_too_large", str(expected_path)
+    if output != reference:
         return "mismatch", "query output differs from expected TSV"
     return None
 
@@ -84,6 +89,13 @@ def run_benchmark(queries, indices, runs, timeout, execute, reference_dir=None, 
     for index in indices:
         sql = queries[index]
         expected_path = None if reference_dir is None else reference_dir / ("q%02d.tsv" % (index + 1))
+        if (expected_path is not None and expected_path.is_file()
+                and expected_path.stat().st_size > MAX_REFERENCE_BYTES):
+            results.append({
+                "query": index + 1, "status": "reference_too_large",
+                "seconds": [], "latency": None, "error": str(expected_path),
+            })
+            continue
         timings = []
         status = "unverified" if expected_path is None else "passed"
         failure = None
