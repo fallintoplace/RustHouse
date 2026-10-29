@@ -3,6 +3,9 @@
 
 use std::collections::HashMap;
 
+const MAX_QUORUM_REPLICAS: usize = 16;
+const MAX_ACKNOWLEDGEMENTS: usize = 256;
+
 fn valid_member(member: &str) -> bool {
     !member.is_empty()
         && member.len() <= 64
@@ -39,7 +42,7 @@ impl QuorumPolicy {
     /// Require overlapping read/write and write/write quorums.
     pub fn new(replicas: usize, reads: usize, writes: usize) -> Result<Self, &'static str> {
         if replicas == 0
-            || replicas > 16
+            || replicas > MAX_QUORUM_REPLICAS
             || reads == 0
             || writes == 0
             || reads > replicas
@@ -65,7 +68,7 @@ impl QuorumPolicy {
         acknowledgements: &[&str],
     ) -> Result<QuorumObservation, &'static str> {
         Self::new(self.replicas, self.reads, self.writes)?;
-        if members.len() != self.replicas || acknowledgements.len() > 256 {
+        if members.len() != self.replicas || acknowledgements.len() > MAX_ACKNOWLEDGEMENTS {
             return Err("quorum membership or acknowledgement count mismatch");
         }
         let membership = member_index(members)?;
