@@ -54,7 +54,7 @@ class CoverageTests(unittest.TestCase):
             (path / "q01.sql").write_text("SELECT 1;")
             refs = path / "refs"
             refs.mkdir()
-            (refs / "q01.tsv").write_bytes(b"123456\\n")
+            (refs / "q01.tsv").write_bytes(b"123456\n")
             called = []
             with patch("official_coverage.MAX_REFERENCE_BYTES", 3):
                 report = coverage("fake", "db", path, refs, runs=1, warmups=0,
