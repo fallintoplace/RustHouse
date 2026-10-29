@@ -146,6 +146,7 @@ pub(super) fn is_function(name: &str) -> bool {
             | "NOTEMPTY"
             | "SPACE"
             | "ENCODEURLFORMCOMPONENT"
+            | "RIGHTPADUTF8"
             | "ENCODEURLCOMPONENT"
             | "POSITION"
     )
@@ -2450,7 +2451,7 @@ fn parse_at_depth(parser: &mut Parser, depth: usize) -> Result<ConstantValue, Pa
                 _ => ConstantValue::Null,
             }
         }
-        "RPAD" => {
+        "RPAD" | "RIGHTPADUTF8" => {
             let input = text_arg(parser, depth + 1)?;
             require(parser, Token::Comma, "RPAD requires a width")?;
             let width = integer_arg(parser, depth + 1)?;
@@ -2894,6 +2895,32 @@ mod ch_encode_url_component_tests {
             assert_eq!(value(sql), expected, "{sql}");
         }
         for sql in ["SELECT encodeURLComponent()", "SELECT encodeURLComponent('a', 'b')"] {
+            assert!(parse_select(sql).is_err(), "{sql}");
+        }
+    }
+}
+
+#[cfg(test)]
+mod ch_right_pad_utf8_tests {
+    use crate::{parse_select, ConstantValue, Projection};
+    fn value(sql: &str) -> ConstantValue {
+        match parse_select(sql).unwrap().projection {
+            Projection::Constants(items) if items.len() == 1 => items[0].value.clone(),
+            Projection::Literal(value) => ConstantValue::Integer(value),
+            other => panic!("unexpected projection: {other:?}"),
+        }
+    }
+    #[test]
+    fn supported_values_and_invalid_arity() {
+        for (sql, expected) in [
+            ("SELECT rightPadUTF8('é', 3, '★')", ConstantValue::Text("é★★".into())),
+            ("SELECT rightPadUTF8('abc', 2, 'x')", ConstantValue::Text("ab".into())),
+            ("SELECT rightPadUTF8('a', 3)", ConstantValue::Text("a  ".into())),
+            ("SELECT rightPadUTF8(NULL, 3)", ConstantValue::Null),
+        ] {
+            assert_eq!(value(sql), expected, "{sql}");
+        }
+        for sql in ["SELECT rightPadUTF8('a')", "SELECT rightPadUTF8('a', -1)"] {
             assert!(parse_select(sql).is_err(), "{sql}");
         }
     }
