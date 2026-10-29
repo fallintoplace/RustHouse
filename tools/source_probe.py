@@ -37,8 +37,19 @@ def probe(base, expected_source, table=None, timeout=5):
         if not re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]{0,127}", table):
             raise ValueError("invalid table")
         schema = read_json(base + "/schema?table=" + quote(table, safe=""), timeout)
-        if not isinstance(schema.get("columns"), list):
+        if not isinstance(schema, dict) or not isinstance(schema.get("columns"), list):
             raise ValueError("missing schema columns")
+        columns = schema["columns"]
+        if not columns:
+            raise ValueError("schema has no columns")
+        names = set()
+        for column in columns:
+            if (not isinstance(column, dict) or not isinstance(column.get("name"), str)
+                    or not isinstance(column.get("type"), str)
+                    or not column["name"].strip() or not column["type"].strip()
+                    or column["name"] in names):
+                raise ValueError("invalid schema column")
+            names.add(column["name"])
     return data
 
 
