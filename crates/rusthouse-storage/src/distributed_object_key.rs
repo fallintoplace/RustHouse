@@ -147,7 +147,11 @@ impl ObjectKey {
         if generation_text != generation.to_string() {
             return Err("noncanonical distributed generation");
         }
-        Self::new(fields[0], fields[1], generation, fields[3], fields[4])
+        let key = Self::new(fields[0], fields[1], generation, fields[3], fields[4])?;
+        if path.as_os_str() != key.relative_path().as_os_str() {
+            return Err("noncanonical distributed object key path");
+        }
+        Ok(key)
     }
 }
 
@@ -169,6 +173,9 @@ mod parse_relative_tests {
             "cluster/s1/g01/part/file",
             "cluster/s1/gX/part/file",
             "cluster/s1/g1/../file",
+            "cluster/s1/g1/./part/file",
+            "cluster//s1/g1/part/file",
+            "cluster/s1/g1/part/file/",
             "cluster/s1/g1/.hidden/file",
             "cluster/s1/g1/part",
             "cluster/s1/g1/part/file/extra",
