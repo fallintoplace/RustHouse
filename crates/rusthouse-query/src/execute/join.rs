@@ -30,6 +30,14 @@ pub(super) fn multi_join_row_key(
     row_key(row, indices)
 }
 
+pub(super) fn multi_join_row_key_into(
+    row: &[typed::Cell],
+    indices: &[usize],
+    result: &mut Vec<typed::Key>,
+) -> bool {
+    row_key_into(row, indices, result)
+}
+
 fn invalid(message: impl Into<String>) -> ExecutionError {
     ExecutionError::Invalid(message.into())
 }
