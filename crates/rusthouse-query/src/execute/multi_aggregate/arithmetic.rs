@@ -134,6 +134,7 @@ pub(super) fn apply_unary_math(name: &str, value: Number) -> Result<Number, Exec
         "ACOS" => Number::Float(number_as_float(value).acos()),
         "ATAN" => Number::Float(number_as_float(value).atan()),
         "SINH" => Number::Float(number_as_float(value).sinh()),
+        "COSH" => Number::Float(number_as_float(value).cosh()),
         _ => {
             return Err(ExecutionError::Invalid(format!(
                 "unsupported aggregate numeric function: {name}"
@@ -421,6 +422,17 @@ mod aggregate_unary_math_tests {
         assert!(apply_unary_math("SINH", Number::Signed(1000)).is_err());
         assert!(crate::parse_scalar_expression("sinh(amount)").is_ok());
         assert!(crate::parse_scalar_expression("sinh(amount, 2)").is_err());
+    }
+
+    #[test]
+    fn cosh_supports_zero_and_rejects_overflow() {
+        assert!(matches!(
+            apply_unary_math("COSH", Number::Signed(0)),
+            Ok(Number::Float(value)) if value == 1.0
+        ));
+        assert!(apply_unary_math("COSH", Number::Signed(1000)).is_err());
+        assert!(crate::parse_scalar_expression("cosh(amount)").is_ok());
+        assert!(crate::parse_scalar_expression("cosh(amount, 2)").is_err());
     }
 
 }
