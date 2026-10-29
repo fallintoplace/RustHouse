@@ -8,6 +8,12 @@ import tempfile
 from pathlib import Path
 
 
+def _batch_records(start, stop, groups, hot_percent):
+    for index in range(start, stop):
+        key = 0 if index % 100 < hot_percent else 1 + (index % groups)
+        yield f"{index}\t{key}\n"
+
+
 def emit(stream, rows, *, groups=1000, hot_percent=90, batch_rows=8192):
     if not 1 <= rows <= (1 << 64) - 1:
         raise ValueError("rows must be positive UInt64")
@@ -16,11 +22,8 @@ def emit(stream, rows, *, groups=1000, hot_percent=90, batch_rows=8192):
     if not 1 <= batch_rows <= 1_000_000:
         raise ValueError("invalid batch_rows")
     for start in range(0, rows, batch_rows):
-        lines = []
-        for index in range(start, min(rows, start + batch_rows)):
-            key = 0 if index % 100 < hot_percent else 1 + (index % groups)
-            lines.append(f"{index}\t{key}\n")
-        stream.write("".join(lines))
+        stop = min(rows, start + batch_rows)
+        stream.write("".join(_batch_records(start, stop, groups, hot_percent)))
 
 
 def generate(output, rows, *, groups=1000, hot_percent=90, batch_rows=8192):
