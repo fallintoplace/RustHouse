@@ -675,7 +675,7 @@ fn parse_select_tokens(tokens: Vec<Token>) -> Result<Select, ParseError> {
     if !parser.keyword("SELECT") {
         return Err(ParseError("only SELECT statements are supported".into()));
     }
-    let distinct = parser.keyword("DISTINCT");
+    let mut distinct = parser.keyword("DISTINCT");
     let mut literal_alias = None;
 
     let multiple = multi_aggregate::parse_multiple(&mut parser)?;
@@ -1262,6 +1262,24 @@ fn parse_select_tokens(tokens: Vec<Token>) -> Result<Select, ParseError> {
         if !parser.keyword("BY") {
             return Err(ParseError("expected BY after GROUP".into()));
         }
+        // ClickHouse GROUP BY ALL groups by every non-aggregate output
+        // expression. In this bounded SELECT dialect those expressions are
+        // either the explicit grouping keys or all plain projected columns.
+        if parser.keyword("ALL") {
+            match &projection {
+                Projection::GroupedCount { .. }
+                | Projection::GroupedMultiCount { .. }
+                | Projection::GroupedDistinctCount { .. }
+                | Projection::GroupedMultiDistinctCount { .. }
+                | Projection::GroupedAggregate { .. }
+                | Projection::GroupedAggregates { .. }
+                | Projection::GroupedMultiAggregates { .. } => {}
+                Projection::All | Projection::Columns(_) => distinct = true,
+                _ => return Err(ParseError(
+                    "GROUP BY ALL requires projected columns or grouped aggregates".into(),
+                )),
+            }
+        } else {
         let mut group_columns = Vec::new();
         loop {
             if group_columns.len() >= 8 {
@@ -1316,6 +1334,7 @@ fn parse_select_tokens(tokens: Vec<Token>) -> Result<Select, ParseError> {
                     "GROUP BY requires SELECT key, aggregate(column)".into(),
                 ));
             }
+        }
         }
     } else if matches!(
         projection,
