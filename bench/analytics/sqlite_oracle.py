@@ -12,7 +12,7 @@ def decode_tsv_value(raw):
     """Decode ClickHouse-style TSV escapes without conflating NULL and '\\N' text.
 
     Returns None only for the unescaped NULL marker. Input is UTF-8 TSV text;
-    \xHH escapes are bytes, not Unicode code points.
+    \\xHH escapes are bytes, not Unicode code points.
     """
     if raw == r"\N":
         return None
