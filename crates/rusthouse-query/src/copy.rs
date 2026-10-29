@@ -18,7 +18,7 @@ pub struct CopyFrom {
     pub format: CopyFormat,
 }
 
-fn parse_copy_columns(parser: &mut Parser) -> Result<Option<Vec<String>>, ParseError> {
+fn parse_copy_column_list(parser: &mut Parser) -> Result<Option<Vec<String>>, ParseError> {
     if !parser.take(Token::LParen) {
         return Ok(None);
     }
@@ -116,7 +116,7 @@ pub fn parse_copy_from(sql: &str) -> Result<Option<CopyFrom>, ParseError> {
         return Ok(None);
     }
     let table = parser.bounded_word()?;
-    let columns = parse_copy_columns(&mut parser)?;
+    let columns = parse_copy_column_list(&mut parser)?;
     if !parser.keyword("FROM") {
         return Err(ParseError("COPY requires FROM 'path'".into()));
     }
