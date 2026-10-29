@@ -1,6 +1,6 @@
 import unittest
 
-from bench.scale.physical_scan import even_reference, p90
+from bench.scale.physical_scan import benchmark, even_reference, p90
 
 
 class PhysicalScanReferenceTests(unittest.TestCase):
@@ -19,6 +19,16 @@ class PhysicalScanReferenceTests(unittest.TestCase):
         for rows in (0, -1):
             with self.assertRaises(ValueError):
                 even_reference(rows)
+
+    def test_rejects_invalid_direct_benchmark_parameters(self):
+        for rows, runs, warmups, timeout in (
+            (True, 1, 0, 1), (1.0, 1, 0, 1), (1_000_000_001, 1, 0, 1),
+            (100, 0, 0, 1), (100, 1.5, 0, 1), (100, 1, -1, 1),
+            (100, 1, 0, float("nan")), (100, 1, 0, float("inf")),
+        ):
+            with self.subTest(rows=rows, runs=runs, warmups=warmups, timeout=timeout):
+                with self.assertRaises(ValueError):
+                    benchmark("unused", rows, runs, warmups, timeout)
 
     def test_nearest_rank_p90(self):
         self.assertEqual(p90([4.0, 1.0, 2.0, 3.0, 5.0]), 5.0)
