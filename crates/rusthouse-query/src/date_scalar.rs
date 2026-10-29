@@ -10,6 +10,12 @@ pub(super) fn is_function(name: &str) -> bool {
     matches!(
         name.to_ascii_uppercase().as_str(),
         "ADDDAYS"
+            | "TORELATIVEMONTHNUM"
+            | "TORELATIVEWEEKNUM"
+            | "TORELATIVEDAYNUM"
+            | "TORELATIVEHOURNUM"
+            | "TORELATIVEMINUTENUM"
+            | "TORELATIVESECONDNUM"
             | "TOLASTDAYOFYEAR"
             | "TOLASTDAYOFQUARTER"
             | "TOWEEK"
@@ -145,6 +151,27 @@ pub(super) fn parse_after_open(
                 let (year, month, _) = civil_from_days(value.seconds.div_euclid(DAY_SECONDS));
                 (year - 1970) * 4 + i64::from((month - 1) / 3)
             }))
+        }),
+        "TORELATIVEMONTHNUM" => unary_date(parser, depth, |value| {
+            Ok(ConstantValue::Integer({
+                let (year, month, _) = civil_from_days(value.seconds.div_euclid(DAY_SECONDS));
+                (year - 1970) * 12 + i64::from(month) - 1
+            }))
+        }),
+        "TORELATIVEWEEKNUM" => unary_date(parser, depth, |value| {
+            Ok(ConstantValue::Integer((value.seconds.div_euclid(DAY_SECONDS) + 4).div_euclid(7)))
+        }),
+        "TORELATIVEDAYNUM" => unary_date(parser, depth, |value| {
+            Ok(ConstantValue::Integer(value.seconds.div_euclid(DAY_SECONDS)))
+        }),
+        "TORELATIVEHOURNUM" => unary_date(parser, depth, |value| {
+            Ok(ConstantValue::Integer(value.seconds.div_euclid(3_600)))
+        }),
+        "TORELATIVEMINUTENUM" => unary_date(parser, depth, |value| {
+            Ok(ConstantValue::Integer(value.seconds.div_euclid(60)))
+        }),
+        "TORELATIVESECONDNUM" => unary_date(parser, depth, |value| {
+            Ok(ConstantValue::Integer(value.seconds))
         }),
         "ADDDAYS" => offset_seconds(parser, depth, DAY_SECONDS, false, false),
         "SUBTRACTDAYS" => offset_seconds(parser, depth, DAY_SECONDS, true, false),
