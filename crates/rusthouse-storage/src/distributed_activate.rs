@@ -29,6 +29,7 @@ fn validate_fresh_generation(pointer: &Path, generation: u64) -> Result<(), Part
                 .strip_prefix('g')
                 .and_then(|text| text.strip_suffix('\n'))
                 .and_then(|text| text.parse::<u64>().ok())
+                .filter(|&value| value > 0 && current == format!("g{value}\n"))
                 .ok_or_else(|| PartError::InvalidScan("invalid active generation".into()))?;
             if generation <= prior {
                 return Err(PartError::InvalidScan(
@@ -222,6 +223,29 @@ mod active_generation_read_tests {
         fs::write(root.join("real"), "g1\n").unwrap();
         symlink("real", root.join(".rusthouse-active")).unwrap();
         assert!(read_active_generation(&root).is_err());
+        fs::remove_dir_all(root).unwrap();
+    }
+}
+
+#[cfg(test)]
+mod promotion_pointer_canonical_tests {
+    use super::*;
+
+    #[test]
+    fn rejects_noncanonical_active_generation_before_promotion() {
+        let root = std::env::temp_dir().join(format!(
+            "rusthouse-promotion-pointer-{}", std::process::id()
+        ));
+        let _ = fs::remove_dir_all(&root);
+        fs::create_dir_all(&root).unwrap();
+        let pointer = root.join(".rusthouse-active");
+        for malformed in ["g01\n", "g0\n", "g+1\n", "g1\r\n"] {
+            fs::write(&pointer, malformed).unwrap();
+            assert!(validate_fresh_generation(&pointer, 2).is_err(), "{malformed:?}");
+        }
+        fs::write(&pointer, "g1\n").unwrap();
+        assert!(validate_fresh_generation(&pointer, 2).is_ok());
+        assert!(validate_fresh_generation(&pointer, 1).is_err());
         fs::remove_dir_all(root).unwrap();
     }
 }
