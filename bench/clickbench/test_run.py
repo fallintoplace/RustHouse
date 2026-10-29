@@ -195,5 +195,19 @@ class ClickBenchRunnerTests(unittest.TestCase):
             self.assertEqual(report["coverage"]["executed_queries"], 1)
 
 
+    def test_rejects_mutating_or_multi_statement_workloads(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "queries.sql"
+            for query in (
+                "DROP TABLE hits;",
+                "INSERT INTO hits VALUES (1);",
+                "SELECT 1; DELETE FROM hits;",
+                "SELECT " + "1" * 65537,
+            ):
+                with self.subTest(query=query[:40]):
+                    path.write_text(query + "\n")
+                    with self.assertRaisesRegex(ValueError, "bounded SELECT"):
+                        load_queries(path)
+
 if __name__ == "__main__":
     unittest.main()

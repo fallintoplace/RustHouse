@@ -30,6 +30,9 @@ def load_queries(path):
         statement = statement.removesuffix(";").strip()
         if not statement:
             continue
+        if (not re.match(r"(?i)^SELECT\s", statement) or ";" in statement
+                or len(statement.encode("utf-8")) > 65_536):
+            raise ValueError("ClickBench workload requires one bounded SELECT per line")
         queries.append((len(queries) + 1, statement))
     if not queries:
         raise ValueError("no ClickBench SQL statements found")
