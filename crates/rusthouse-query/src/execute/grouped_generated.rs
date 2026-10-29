@@ -88,6 +88,47 @@ pub(super) fn execute<W: Write>(
             return Ok(());
         }
     }
+    if query.limit.is_none()
+        && (!query.predicates.is_empty() || !query.or_predicates.is_empty())
+        && query.having.is_none() && query.order_by.is_none()
+        && query.order_by_extra.is_empty() && step != 0
+    {
+        if let Some((lower, upper)) =
+            super::monotonic_range_indices(&comparisons, start, rows, step)
+        {
+            let selected = upper - lower;
+            if selected > MAX_GROUPS as u64 {
+                return Err(ExecutionError::Invalid(
+                    "generated GROUP BY supports at most 200000 groups".into(),
+                ));
+            }
+            let mut per_group = 0usize;
+            charge_group_states(&mut per_group, items)?;
+            if (selected as usize).checked_mul(per_group)
+                .is_none_or(|total| total > MAX_GENERATED_GROUP_BYTES)
+            {
+                return Err(ExecutionError::Invalid(
+                    "generated GROUP BY exceeds 64 MiB state budget".into(),
+                ));
+            }
+            let first = lower.saturating_add(query.offset.unwrap_or(0) as u64).min(upper);
+            for index in first..upper {
+                let value = u128::from(start) + u128::from(index) * u128::from(step);
+                write!(output, "{value}")?;
+                for (function, _) in items {
+                    let mut state = AggregateState::new(*function);
+                    state.update(if *function == AggregateFunction::Count {
+                        Number::Unsigned(1)
+                    } else {
+                        Number::Unsigned(value)
+                    })?;
+                    write!(output, "\t{}", state.render())?;
+                }
+                writeln!(output)?;
+            }
+            return Ok(());
+        }
+    }
     let mut groups=Vec::<(u128,Vec<AggregateState>)>::new();
     let mut retained_state_bytes = 0usize;
     for index in 0..rows {
