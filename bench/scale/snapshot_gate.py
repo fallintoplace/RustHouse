@@ -22,7 +22,15 @@ def inspect_snapshot(binary, path, *, min_rows=1_000_000_000, run=None,
     )
     if result.returncode:
         raise RuntimeError(f"snapshot inspection failed: {result.stderr.decode('utf-8', 'replace')[-600:]}")
-    data = json.loads(result.stdout)
+    def unique_fields(pairs):
+        fields = {}
+        for name, value in pairs:
+            if name in fields:
+                raise ValueError(f"duplicate snapshot JSON field: {name}")
+            fields[name] = value
+        return fields
+
+    data = json.loads(result.stdout, object_pairs_hook=unique_fields)
     if not isinstance(data, dict):
         raise ValueError("snapshot report must be a JSON object")
     rows, parts = data.get("rows"), data.get("parts")
