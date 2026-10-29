@@ -70,7 +70,7 @@ fn parse_required_headers<'a>(
             if compressed.is_some() {
                 return Err("duplicate peer Content-Encoding".into());
             }
-            if value != "x-rusthouse-lz4" {
+            if !value.eq_ignore_ascii_case("x-rusthouse-lz4") {
                 return Err("unsupported peer transfer encoding".into());
             }
             compressed = Some(true);
@@ -192,6 +192,18 @@ pub(super) fn parse_response_owned(mut raw: Vec<u8>) -> Result<PeerResponse, Str
 #[cfg(test)]
 mod owned_response_parser_tests {
     use super::*;
+
+    #[test]
+    fn accepts_uppercase_lz4_content_encoding() {
+        let body = b"compressed peer payload";
+        let encoded = lz4_flex::compress_prepend_size(body);
+        let mut wire = format!(
+            "HTTP/1.1 200 OK\\r\\nContent-Length: {}\\r\\nContent-Type: text/plain\\r\\nContent-Encoding: X-RUSTHOUSE-LZ4\\r\\n\\r\\n",
+            encoded.len(),
+        ).into_bytes();
+        wire.extend_from_slice(&encoded);
+        assert_eq!(parse_response_owned(wire).unwrap().body, body);
+    }
 
     #[test]
     fn plain_peer_response_reuses_the_original_wire_allocation() {
