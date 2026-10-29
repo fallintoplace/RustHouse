@@ -11,6 +11,7 @@ use std::io;
 use std::path::{Path, PathBuf};
 
 const MAX_TABLE_PARTS: usize = 16_384;
+const MAX_SNAPSHOT_POINTER_BYTES: u64 = 64;
 
 fn io_error(path: &Path, source: io::Error) -> PartError {
     PartError::Io {
@@ -42,7 +43,7 @@ pub fn resolve_active_snapshot(root: &Path) -> Result<PathBuf, PartError> {
         Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(root.to_owned()),
         Err(error) => return Err(io_error(&pointer, error)),
     };
-    if !metadata.file_type().is_file() || metadata.len() > 64 {
+    if !metadata.file_type().is_file() || metadata.len() > MAX_SNAPSHOT_POINTER_BYTES {
         return Err(PartError::InvalidScan(
             "invalid database snapshot pointer".into(),
         ));
