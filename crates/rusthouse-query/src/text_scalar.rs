@@ -146,6 +146,7 @@ pub(super) fn is_function(name: &str) -> bool {
             | "NOTEMPTY"
             | "SPACE"
             | "ENCODEURLFORMCOMPONENT"
+            | "REGEXPQUOTEMETA"
             | "CUTWWW"
             | "DOMAINWITHOUTWWW"
             | "DECODEURLFORMCOMPONENT"
@@ -361,6 +362,29 @@ fn parse_at_depth(parser: &mut Parser, depth: usize) -> Result<ConstantValue, Pa
                         } else {
                             result.push_str(escaped);
                         }
+                    }
+                    ConstantValue::Text(result)
+                }
+                None => ConstantValue::Null,
+            }
+        }
+        "REGEXPQUOTEMETA" => {
+            let input = text_arg(parser, depth + 1)?;
+            require(parser, Token::RParen, "regexpQuoteMeta requires one argument")?;
+            match input {
+                Some(input) => {
+                    let mut result = String::with_capacity(input.len());
+                    for character in input.chars() {
+                        if matches!(character, '\\' | '.' | '^' | '$' | '|' | '?' | '*' | '+' | '(' | ')' | '[' | ']' | '{' | '}' | '-') {
+                            if result.len() + 1 > MAX_TEXT_BYTES {
+                                return Err(ParseError("regexpQuoteMeta result is too large".into()));
+                            }
+                            result.push('\\');
+                        }
+                        if result.len() + character.len_utf8() > MAX_TEXT_BYTES {
+                            return Err(ParseError("regexpQuoteMeta result is too large".into()));
+                        }
+                        result.push(character);
                     }
                     ConstantValue::Text(result)
                 }
@@ -3041,5 +3065,25 @@ mod ch_cut_www_tests {
         for sql in ["SELECT cutWWW()", "SELECT cutWWW('a','b')"] {
             assert!(parse_select(sql).is_err(), "{sql}");
         }
+    }
+}
+
+#[cfg(test)]
+mod ch_regexp_quote_meta_tests {
+    use crate::{parse_select, ConstantValue, Projection};
+    #[test]
+    fn quotes_regex_special_characters() {
+        for (sql, expected) in [
+            ("SELECT regexpQuoteMeta('a+b.c')", "a\\+b\\.c"),
+            ("SELECT regexpQuoteMeta('a(b)')", "a\\(b\\)"),
+            ("SELECT regexpQuoteMeta('plain')", "plain"),
+        ] {
+            let parsed = parse_select(sql).unwrap();
+            match parsed.projection {
+                Projection::Constants(items) => assert_eq!(items[0].value, ConstantValue::Text(expected.into()), "{sql}"),
+                other => panic!("unexpected projection: {other:?}"),
+            }
+        }
+        assert!(parse_select("SELECT regexpQuoteMeta()").is_err());
     }
 }
