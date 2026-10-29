@@ -4,7 +4,7 @@ use crate::{
 };
 use std::path::Path;
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub struct ScrubReport {
     pub parts: usize,
     pub checked_files: usize,
@@ -46,12 +46,7 @@ pub fn scrub_snapshot(root: &Path, max_parts: usize) -> Result<ScrubReport, Part
     let workers = std::thread::available_parallelism()
         .map_or(1, |parallelism| parallelism.get())
         .min(MAX_SCRUB_WORKERS);
-    let mut report = ScrubReport {
-        parts: 0,
-        checked_files: 0,
-        checked_bytes: 0,
-        blocks: 0,
-    };
+    let mut report = ScrubReport::default();
     if parts.len() < PARALLEL_THRESHOLD || workers == 1 {
         for part in &parts {
             let checked = scrub_part(part)?;
@@ -178,12 +173,7 @@ mod tests {
 pub fn scrub_part(part: &Path) -> Result<ScrubReport, PartError> {
     let physical = verify_wide_part(part)?;
     let hashes = verify_part_file_hashes(part)?;
-    let mut report = ScrubReport {
-        parts: 0,
-        checked_files: 0,
-        checked_bytes: 0,
-        blocks: 0,
-    };
+    let mut report = ScrubReport::default();
     report.record_part(hashes.files, hashes.total_bytes, physical.blocks)?;
     Ok(report)
 }
