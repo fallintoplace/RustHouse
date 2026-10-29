@@ -170,10 +170,8 @@ enum QueryFormat {
 impl QueryFormat {
     fn parse(value: &str) -> Result<Self, &'static str> {
         Ok(match value {
-            "tsv" => Self::Tsv,
-            "TabSeparatedWithNames" => Self::Tsv,
-            "tsv-no-header" => Self::TsvNoHeader,
-            "TabSeparated" => Self::TsvNoHeader,
+            "tsv" | "TSVWithNames" | "TabSeparatedWithNames" => Self::Tsv,
+            "tsv-no-header" | "TSV" | "TabSeparated" => Self::TsvNoHeader,
             "csv" => Self::Csv,
             "CSVWithNames" => Self::Csv,
             "csv-no-header" => Self::CsvNoHeader,
@@ -198,6 +196,7 @@ fn query_parameters(target: &str) -> Result<(String, Option<String>, QueryFormat
     }
     let mut statement = None;
     let mut format = None;
+    let mut default_format = None;
     for parameter in query.split('&').filter(|p| !p.is_empty()) {
         let (key, value) = parameter
             .split_once('=')
@@ -215,16 +214,25 @@ fn query_parameters(target: &str) -> Result<(String, Option<String>, QueryFormat
                 }
                 format = Some(QueryFormat::parse(&decode_url(value)?)?);
             }
+            // Match ClickHouse HTTP's default_format setting. RustHouse's
+            // explicit legacy format parameter takes priority regardless of
+            // URL parameter order.
+            "default_format" => {
+                if default_format.is_some() {
+                    return Err("duplicate default_format parameter");
+                }
+                default_format = Some(QueryFormat::parse(&decode_url(value)?)?);
+            }
             _ => return Err("unsupported URL query parameter"),
         }
     }
-    if path == "/explain" && format.is_some() {
+    if path == "/explain" && (format.is_some() || default_format.is_some()) {
         return Err("format is unsupported for EXPLAIN");
     }
     Ok((
         path.to_owned(),
         statement,
-        format.unwrap_or(QueryFormat::Tsv),
+        format.or(default_format).unwrap_or(QueryFormat::Tsv),
     ))
 }
 

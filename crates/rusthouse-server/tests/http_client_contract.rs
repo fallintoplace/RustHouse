@@ -105,3 +105,53 @@ fn clickhouse_http_post_split_sql_is_bounded_and_never_joins_tokens() {
     );
     assert_eq!(overflow.status, "413 Payload Too Large");
 }
+
+#[test]
+fn clickhouse_default_format_preserves_format_family_semantics() {
+    let formats = [
+        ("TSV", b"0\n1\n".as_slice()),
+        ("TabSeparated", b"0\n1\n".as_slice()),
+        ("TSVWithNames", b"number\n0\n1\n".as_slice()),
+        ("TabSeparatedWithNames", b"number\n0\n1\n".as_slice()),
+        ("CSV", b"0\r\n1\r\n".as_slice()),
+        ("CSVWithNames", b"number\r\n0\r\n1\r\n".as_slice()),
+        (
+            "JSONStringsEachRow",
+            b"{\"number\":\"0\"}\n{\"number\":\"1\"}\n".as_slice(),
+        ),
+        (
+            "JSONCompactStringsEachRow",
+            b"[\"0\"]\n[\"1\"]\n".as_slice(),
+        ),
+    ];
+    for (name, expected) in formats {
+        let target = format!("/?query=SELECT+number+FROM+numbers(2)&default_format={name}");
+        let response = handle_request("GET", &target, b"", &config());
+        assert_eq!(response.status, "200 OK", "{name}");
+        assert_eq!(response.body, expected, "{name}");
+    }
+}
+
+#[test]
+fn default_format_is_bounded_and_explicit_format_wins() {
+    for target in [
+        "/?default_format=CSV&format=tsv",
+        "/?format=tsv&default_format=CSV",
+    ] {
+        let response = handle_request("POST", target, b"SELECT 7", &config());
+        assert_eq!(response.status, "200 OK", "{target}");
+        assert_eq!(response.body, b"7\n7\n", "{target}");
+    }
+    for target in [
+        "/?default_format=CSV&default_format=TSV",
+        "/?default_format=does-not-exist",
+        "/?default_format=JSONEachRow", // typed numbers need a distinct writer
+        "/explain?default_format=TSV&query=SELECT+1",
+    ] {
+        assert_eq!(
+            handle_request("GET", target, b"", &config()).status,
+            "400 Bad Request",
+            "{target}"
+        );
+    }
+}
