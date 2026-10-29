@@ -8,9 +8,11 @@ An aborted COPY may leave staging files; run rusthouse doctor before retrying.
 import argparse
 import json
 import math
+import os
 import re
 import shutil
 import subprocess
+import tempfile
 import time
 from pathlib import Path
 
@@ -43,8 +45,13 @@ def guard(binary, database, table, source, watch_dir, min_free_gib=5,
     command = [str(binary), "sql", sql_for(table, source),
                "--database", str(database)]
     started = time.perf_counter()
-    process = subprocess.Popen(command, stdout=subprocess.DEVNULL,
-                               stderr=subprocess.PIPE)
+    stderr_file = tempfile.TemporaryFile(mode="w+b")
+    try:
+        process = subprocess.Popen(command, stdout=subprocess.DEVNULL,
+                                   stderr=stderr_file)
+    except BaseException:
+        stderr_file.close()
+        raise
     minimum = free_start
     timed_out = False
     pressure = False
@@ -61,11 +68,16 @@ def guard(binary, database, table, source, watch_dir, min_free_gib=5,
                 process.kill()
                 break
             time.sleep(poll_seconds)
-        stderr = process.communicate(timeout=10)[1]
+        process.wait(timeout=10)
+        stderr_file.seek(0, os.SEEK_END)
+        stderr_file.seek(max(0, stderr_file.tell() - 500))
+        stderr = stderr_file.read()
     except BaseException:
         process.kill()
-        process.communicate()
+        process.wait()
         raise
+    finally:
+        stderr_file.close()
     minimum = min(minimum, shutil.disk_usage(watch_dir).free)
     if pressure or minimum < reserve:
         raise RuntimeError("COPY stopped: disk reserve exhausted")
