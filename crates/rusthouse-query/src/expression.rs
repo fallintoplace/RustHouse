@@ -16,6 +16,7 @@ pub enum ScalarExpr {
     Multiply(Box<ScalarExpr>, Box<ScalarExpr>),
     Divide(Box<ScalarExpr>, Box<ScalarExpr>),
     Compare(Box<ScalarExpr>, Operator, Box<ScalarExpr>),
+    CaseWhen(Box<ScalarExpr>, Box<ScalarExpr>, Box<ScalarExpr>),
 }
 
 impl ScalarExpr {
@@ -32,6 +33,11 @@ impl ScalarExpr {
                 }
             }
             Self::Integer(_) => {}
+            Self::CaseWhen(condition, yes, no) => {
+                condition.collect_referenced_columns(out, seen);
+                yes.collect_referenced_columns(out, seen);
+                no.collect_referenced_columns(out, seen);
+            }
             Self::Add(left, right)
             | Self::Subtract(left, right)
             | Self::Multiply(left, right)
