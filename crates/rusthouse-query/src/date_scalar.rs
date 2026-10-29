@@ -10,6 +10,7 @@ pub(super) fn is_function(name: &str) -> bool {
     matches!(
         name.to_ascii_uppercase().as_str(),
         "ADDDAYS"
+            | "TOLASTDAYOFQUARTER"
             | "DATEDIFF"
             | "DATE_DIFF"
             | "TIMEDIFF"
@@ -56,6 +57,15 @@ pub(super) fn parse_after_open(
     depth: usize,
 ) -> Result<ConstantValue, ParseError> {
     match name {
+        "TOLASTDAYOFQUARTER" => unary_date(parser, depth, |value| {
+            Ok({
+                let (year, month, _) = civil_from_days(value.seconds.div_euclid(DAY_SECONDS));
+                let last_month = ((month - 1) / 3 + 1) * 3;
+                let last_day = days_in_month(year, last_month);
+                let days = days_from_civil(year, last_month, last_day);
+                ConstantValue::Text(Temporal::render(days * DAY_SECONDS, false)?)
+            })
+        }),
         "ADDDAYS" => offset_seconds(parser, depth, DAY_SECONDS, false, false),
         "SUBTRACTDAYS" => offset_seconds(parser, depth, DAY_SECONDS, true, false),
         "ADDWEEKS" => offset_seconds(parser, depth, 7 * DAY_SECONDS, false, false),
