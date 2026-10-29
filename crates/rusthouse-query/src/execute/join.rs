@@ -289,6 +289,23 @@ impl Bucket {
     }
 }
 
+/// Duplicate build keys are not needed when ANY joins select one right row
+/// for each left row. Keep the first row to match existing stream behavior.
+fn insert_build_key(
+    hash: &mut HashMap<Vec<typed::Key>, Bucket>,
+    key: Vec<typed::Key>,
+    index: usize,
+    any: bool,
+) {
+    if any {
+        hash.entry(key).or_insert(Bucket::One(index));
+    } else {
+        hash.entry(key)
+            .and_modify(|bucket| bucket.push(index))
+            .or_insert(Bucket::One(index));
+    }
+}
+
 struct ProbeOptions {
     materialize_rows: bool,
     materialize_after: usize,
@@ -599,13 +616,7 @@ fn execute_streaming_inner<W: Write>(
         if let Some(key) = row_key(row, right_keys) {
             // ANY keeps the first right match only, so duplicate indexes
             // never need to be retained in the hash table.
-            if query.any {
-                hash.entry(key).or_insert(Bucket::One(index));
-            } else {
-                hash.entry(key)
-                    .and_modify(|bucket| bucket.push(index))
-                    .or_insert(Bucket::One(index));
-            }
+            insert_build_key(&mut hash, key, index, query.any);
         }
     }
     if hash.is_empty() {
@@ -1419,9 +1430,10 @@ pub fn execute_join<W: Write>(
     let mut hash: HashMap<Vec<typed::Key>, Bucket> = HashMap::with_capacity(initial_hash_capacity(right_rows.len()));
     for (index, row) in right_rows.iter().enumerate() {
         if let Some(key) = row_key(row, &right_keys) {
-            hash.entry(key)
-                .and_modify(|bucket| bucket.push(index))
-                .or_insert(Bucket::One(index));
+            insert_build_key(
+                &mut hash, key, index,
+                query.any && matches!(query.kind, JoinType::Inner | JoinType::Left),
+            );
         }
     }
     let keep = |pair: &Pair| {
@@ -1698,5 +1710,27 @@ mod hash_capacity_regressions {
         assert_eq!(initial_hash_capacity(11), 11);
         assert_eq!(initial_hash_capacity(262_144), 4096);
         assert_eq!(initial_hash_capacity(usize::MAX), 4096);
+    }
+}
+
+#[cfg(test)]
+mod any_join_build_tests {
+    use super::*;
+
+    #[test]
+    fn any_join_retains_only_first_duplicate_build_index() {
+        let mut hash = HashMap::new();
+        let key = vec![typed::Key::Text(b"heavy-hitter".to_vec())];
+        insert_build_key(&mut hash, vec![typed::Key::Text(b"heavy-hitter".to_vec())], 1, true);
+        insert_build_key(&mut hash, key, 2, true);
+        assert_eq!(
+            hash.values().next().unwrap().iter().copied().collect::<Vec<_>>(),
+            vec![1]
+        );
+        insert_build_key(&mut hash, vec![typed::Key::Text(b"heavy-hitter".to_vec())], 3, false);
+        assert_eq!(
+            hash.values().next().unwrap().iter().copied().collect::<Vec<_>>(),
+            vec![1, 3]
+        );
     }
 }
