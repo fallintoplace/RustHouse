@@ -1,8 +1,10 @@
 //! Shared pretty-printing for complete, validated JSONL rows.
 use std::io::{self, Write};
 
+const INDENT_CHUNK_BYTES: usize = 64;
+
 fn write_spaces<W: Write>(output: &mut W, mut remaining: usize) -> io::Result<()> {
-    let spaces = [b' '; 64];
+    let spaces = [b' '; INDENT_CHUNK_BYTES];
     while remaining > 0 {
         let count = remaining.min(spaces.len());
         output.write_all(&spaces[..count])?;
@@ -12,10 +14,10 @@ fn write_spaces<W: Write>(output: &mut W, mut remaining: usize) -> io::Result<()
 }
 
 fn write_indent<W: Write>(output: &mut W, depth: usize) -> io::Result<()> {
-    const SHORT_INDENT: &[u8; 65] =
+    const SHORT_INDENT: &[u8; INDENT_CHUNK_BYTES + 1] =
         b"\n                                                                ";
     let spaces = (depth + 1) * 2;
-    if spaces <= 64 {
+    if spaces <= INDENT_CHUNK_BYTES {
         output.write_all(&SHORT_INDENT[..spaces + 1])
     } else {
         output.write_all(b"\n")?;
