@@ -130,6 +130,7 @@ pub(super) fn apply_unary_math(name: &str, value: Number) -> Result<Number, Exec
         "SIN" => Number::Float(number_as_float(value).sin()),
         "COS" => Number::Float(number_as_float(value).cos()),
         "TAN" => Number::Float(number_as_float(value).tan()),
+        "ASIN" => Number::Float(number_as_float(value).asin()),
         _ => {
             return Err(ExecutionError::Invalid(format!(
                 "unsupported aggregate numeric function: {name}"
@@ -362,6 +363,18 @@ mod aggregate_unary_math_tests {
         ));
         assert!(crate::parse_scalar_expression("tan(amount)").is_ok());
         assert!(crate::parse_scalar_expression("tan(amount, 2)").is_err());
+    }
+
+    #[test]
+    fn asin_supports_unit_interval_and_rejects_out_of_range_values() {
+        assert!(matches!(
+            apply_unary_math("ASIN", Number::Unsigned(1)),
+            Ok(Number::Float(value))
+                if (value - std::f64::consts::FRAC_PI_2).abs() < 1e-12
+        ));
+        assert!(apply_unary_math("ASIN", Number::Signed(2)).is_err());
+        assert!(crate::parse_scalar_expression("asin(amount)").is_ok());
+        assert!(crate::parse_scalar_expression("asin(amount, 2)").is_err());
     }
 
 }
