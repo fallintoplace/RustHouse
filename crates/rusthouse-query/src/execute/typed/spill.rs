@@ -86,16 +86,22 @@ fn write_cell(output: &mut impl Write, value: &Cell) -> Result<(), ExecutionErro
     match value {
         Cell::Null => output.write_all(&[0])?,
         Cell::Numeric(Number::Unsigned(v)) => {
-            output.write_all(&[1])?;
-            output.write_all(&v.to_le_bytes())?;
+            let mut record = [0u8; 17];
+            record[0] = 1;
+            record[1..].copy_from_slice(&v.to_le_bytes());
+            output.write_all(&record)?;
         }
         Cell::Numeric(Number::Signed(v)) => {
-            output.write_all(&[2])?;
-            output.write_all(&v.to_le_bytes())?;
+            let mut record = [0u8; 17];
+            record[0] = 2;
+            record[1..].copy_from_slice(&v.to_le_bytes());
+            output.write_all(&record)?;
         }
         Cell::Numeric(Number::Float(v)) => {
-            output.write_all(&[3])?;
-            output.write_all(&v.to_bits().to_le_bytes())?;
+            let mut record = [0u8; 9];
+            record[0] = 3;
+            record[1..].copy_from_slice(&v.to_bits().to_le_bytes());
+            output.write_all(&record)?;
         }
         Cell::Text(value) => {
             output.write_all(&[4])?;
