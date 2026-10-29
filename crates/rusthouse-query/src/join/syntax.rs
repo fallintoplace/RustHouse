@@ -1,23 +1,23 @@
 use super::*;
 
-pub(super) fn qualified(parser: &mut Parser) -> Result<JoinColumn, ParseError> {
+fn parse_relation(parser: &mut Parser) -> Result<String, ParseError> {
     let relation = parser.word()?;
     if !parser.take(Token::Dot) {
         return Err(ParseError(
             "JOIN columns must be qualified (alias.column)".into(),
         ));
     }
+    Ok(relation)
+}
+
+pub(super) fn qualified(parser: &mut Parser) -> Result<JoinColumn, ParseError> {
+    let relation = parse_relation(parser)?;
     let name = parser.word()?;
     Ok(JoinColumn { relation, name })
 }
 
 pub(super) fn projected(parser: &mut Parser) -> Result<JoinColumn, ParseError> {
-    let relation = parser.word()?;
-    if !parser.take(Token::Dot) {
-        return Err(ParseError(
-            "JOIN columns must be qualified (alias.column)".into(),
-        ));
-    }
+    let relation = parse_relation(parser)?;
     let name = if parser.take(Token::Star) {
         "*".to_owned()
     } else {
