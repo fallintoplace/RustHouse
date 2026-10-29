@@ -133,6 +133,7 @@ pub(super) fn apply_unary_math(name: &str, value: Number) -> Result<Number, Exec
         "ASIN" => Number::Float(number_as_float(value).asin()),
         "ACOS" => Number::Float(number_as_float(value).acos()),
         "ATAN" => Number::Float(number_as_float(value).atan()),
+        "SINH" => Number::Float(number_as_float(value).sinh()),
         _ => {
             return Err(ExecutionError::Invalid(format!(
                 "unsupported aggregate numeric function: {name}"
@@ -405,6 +406,21 @@ mod aggregate_unary_math_tests {
         ));
         assert!(crate::parse_scalar_expression("atan(amount)").is_ok());
         assert!(crate::parse_scalar_expression("atan(amount, 2)").is_err());
+    }
+
+    #[test]
+    fn sinh_supports_signed_inputs_and_rejects_float_overflow() {
+        assert!(matches!(
+            apply_unary_math("SINH", Number::Signed(0)),
+            Ok(Number::Float(value)) if value == 0.0
+        ));
+        assert!(matches!(
+            apply_unary_math("SINH", Number::Signed(-1)),
+            Ok(Number::Float(value)) if value < 0.0
+        ));
+        assert!(apply_unary_math("SINH", Number::Signed(1000)).is_err());
+        assert!(crate::parse_scalar_expression("sinh(amount)").is_ok());
+        assert!(crate::parse_scalar_expression("sinh(amount, 2)").is_err());
     }
 
 }
