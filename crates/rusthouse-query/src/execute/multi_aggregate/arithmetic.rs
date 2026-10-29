@@ -124,6 +124,7 @@ pub(super) fn apply_unary_math(name: &str, value: Number) -> Result<Number, Exec
             integer => integer,
         },
         "EXP" => Number::Float(number_as_float(value).exp()),
+        "LN" => Number::Float(number_as_float(value).ln()),
         _ => {
             return Err(ExecutionError::Invalid(format!(
                 "unsupported aggregate numeric function: {name}"
@@ -280,6 +281,18 @@ mod aggregate_unary_math_tests {
         assert!(apply_unary_math("EXP", Number::Signed(1000)).is_err());
         assert!(crate::parse_scalar_expression("exp(amount)").is_ok());
         assert!(crate::parse_scalar_expression("exp(amount, 2)").is_err());
+    }
+
+    #[test]
+    fn ln_requires_positive_inputs() {
+        assert!(matches!(
+            apply_unary_math("LN", Number::Unsigned(1)),
+            Ok(Number::Float(value)) if value == 0.0
+        ));
+        assert!(apply_unary_math("LN", Number::Signed(0)).is_err());
+        assert!(apply_unary_math("LN", Number::Signed(-1)).is_err());
+        assert!(crate::parse_scalar_expression("ln(amount)").is_ok());
+        assert!(crate::parse_scalar_expression("ln(amount, 2)").is_err());
     }
 
 }
