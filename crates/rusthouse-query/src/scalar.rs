@@ -33,6 +33,7 @@ pub(super) fn is_function(name: &str) -> bool {
         return true;
     }
     name.eq_ignore_ascii_case("TOINT16")
+        || name.eq_ignore_ascii_case("POSITIVE")
         || is_saturating(name)
         || name.eq_ignore_ascii_case("BITHAMMINGDISTANCE")
         || name.eq_ignore_ascii_case("ABS")
@@ -1190,6 +1191,7 @@ fn factor(parser: &mut Parser, depth: usize) -> Result<i64, ParseError> {
                 "TRAILING_ONES" => i64::from(first.trailing_ones()),
                 "TOINT8" => first as i8 as i64,
                 "TOINT16" => first as i16 as i64,
+                "POSITIVE" => first,
                 _ => first.signum(),
             }
         };
