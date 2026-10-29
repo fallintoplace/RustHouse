@@ -59,18 +59,12 @@ def verify(binary, database, table, start, rows, window_rows=10_000_000,
         begun = time.perf_counter()
         data = execute(query)
         seconds.append(time.perf_counter() - begun)
-        fields = data.strip().split(b"\t")
-        if len(fields) != 2:
-            raise ValueError(f"invalid aggregate SQL output for {position}: {data[:100]!r}")
-        try:
-            actual = tuple(int(value) for value in fields)
-        except ValueError as error:
-            raise ValueError(f"non-numeric aggregate output for {position}") from error
         reference = expected(position, count)
-        if actual != reference:
-            raise ValueError(f"range {position}..{position + count}: expected {reference}, got {actual}")
-        count_total += actual[0]
-        sum_total += actual[1]
+        expected_wire = f"{reference[0]}\t{reference[1]}\n".encode("ascii")
+        if data != expected_wire:
+            raise ValueError(f"range {position}..{position + count}: expected {reference}, got {data[:100]!r}")
+        count_total += reference[0]
+        sum_total += reference[1]
     if (count_total, sum_total) != expected(start, rows):
         raise ValueError("verified window totals differ from the overall oracle")
     return {"verified": True, "rows": count_total, "sum": sum_total,

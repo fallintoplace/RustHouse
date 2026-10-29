@@ -28,6 +28,12 @@ class PhysicalRangeOracleTests(unittest.TestCase):
             verify("x", "x", "events", 10, 2, 2,
                    execute=lambda _: b"2\t999\n")
 
+    def test_rejects_noncanonical_numeric_wire_values(self):
+        for raw in (b"+2\t21\n", b"02\t21\n", b"2\t21", b"2 \t21\n"):
+            with self.subTest(raw=raw):
+                with self.assertRaisesRegex(ValueError, "expected"):
+                    verify("x", "x", "events", 10, 2, 2, execute=lambda _: raw)
+
     def test_rejects_unsafe_sql_names(self):
         with self.assertRaises(ValueError):
             sql_for("x;delete", 0, 1)
