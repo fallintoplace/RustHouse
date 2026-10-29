@@ -14,6 +14,7 @@ pub enum ScalarExpr {
     Null,
     IsNull(Box<ScalarExpr>, bool),
     Not(Box<ScalarExpr>),
+    Between(Box<ScalarExpr>, Box<ScalarExpr>, Box<ScalarExpr>, bool),
     Add(Box<ScalarExpr>, Box<ScalarExpr>),
     Subtract(Box<ScalarExpr>, Box<ScalarExpr>),
     Multiply(Box<ScalarExpr>, Box<ScalarExpr>),
@@ -40,6 +41,11 @@ impl ScalarExpr {
             Self::Integer(_) | Self::Null => {}
             Self::IsNull(value, _) | Self::Not(value) =>
                 value.collect_referenced_columns(out, seen),
+            Self::Between(value, low, high, _) => {
+                value.collect_referenced_columns(out, seen);
+                low.collect_referenced_columns(out, seen);
+                high.collect_referenced_columns(out, seen);
+            }
             Self::CaseWhen(condition, yes, no) => {
                 condition.collect_referenced_columns(out, seen);
                 yes.collect_referenced_columns(out, seen);
@@ -95,6 +101,20 @@ fn parse_comparison_tokens(parser: &mut Parser) -> Result<ScalarExpr, ParseError
 
 fn parse_comparison_core(parser: &mut Parser) -> Result<ScalarExpr, ParseError> {
     let left = parse_arithmetic_tokens(parser)?;
+    let between_negated = parser.keyword("NOT");
+    if between_negated || parser.keyword("BETWEEN") {
+        if between_negated && !parser.keyword("BETWEEN") {
+            return Err(ParseError("NOT after a value requires BETWEEN".into()));
+        }
+        let lower = parse_arithmetic_tokens(parser)?;
+        if !parser.keyword("AND") {
+            return Err(ParseError("BETWEEN requires AND".into()));
+        }
+        let upper = parse_arithmetic_tokens(parser)?;
+        return Ok(ScalarExpr::Between(
+            Box::new(left), Box::new(lower), Box::new(upper), between_negated,
+        ));
+    }
     if parser.keyword("IS") {
         let negated = parser.keyword("NOT");
         if !parser.keyword("NULL") {
@@ -276,6 +296,19 @@ mod tests {
         assert!(matches!(parse_scalar_expression("NOT NOT a IS NULL").unwrap(),
             ScalarExpr::IsNull(..)));
         assert!(parse_scalar_expression(&format!("{}a = 1", "NOT ".repeat(17))).is_err());
+    }
+
+    #[test]
+    fn parses_between_and_not_between_with_boolean_precedence() {
+        assert!(matches!(parse_scalar_expression("amount BETWEEN 2 AND 5").unwrap(),
+            ScalarExpr::Between(_, _, _, false)));
+        assert!(matches!(parse_scalar_expression("amount NOT BETWEEN 2 AND 5").unwrap(),
+            ScalarExpr::Between(_, _, _, true)));
+        assert!(matches!(parse_scalar_expression("NOT amount BETWEEN 2 AND 5").unwrap(),
+            ScalarExpr::Not(..)));
+        assert!(matches!(parse_scalar_expression("amount BETWEEN 1 AND 2 OR other = 1").unwrap(),
+            ScalarExpr::Or(..)));
+        assert!(parse_scalar_expression("amount BETWEEN 1").is_err());
     }
 
     #[test]
