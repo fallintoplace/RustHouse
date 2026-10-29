@@ -32,9 +32,9 @@ pub fn parse_delete(sql: &str) -> Result<Option<Select>, ParseError> {
     keyword(rest, "FROM").ok_or_else(|| ParseError("DELETE requires FROM table".into()))?;
     // Work on the original tokens so a valid 65536-byte DELETE is not rejected
     // just because the SELECT projection is two bytes longer.
-    let mut tokens = tokenize(sql)?;
-    tokens.splice(..1, [Token::Word("SELECT".into()), Token::Star]);
-    let select = parse_select_tokens(tokens)?;
+    let mut select_tokens = tokenize(sql)?;
+    select_tokens.splice(..1, [Token::Word("SELECT".into()), Token::Star]);
+    let select = parse_select_tokens(select_tokens)?;
     if !valid_delete_scope(&select) {
         return Err(ParseError(
             "DELETE supports only FROM table [WHERE predicate]".into(),

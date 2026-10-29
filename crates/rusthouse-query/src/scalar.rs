@@ -32,7 +32,29 @@ pub(super) fn is_function(name: &str) -> bool {
     if name.eq_ignore_ascii_case("DIGIT_SUM") {
         return true;
     }
-    is_saturating(name)
+    name.eq_ignore_ascii_case("TOINT16")
+        || name.eq_ignore_ascii_case("POSITIVE")
+        || name.eq_ignore_ascii_case("ISZERO")
+        || name.eq_ignore_ascii_case("MODULOORZERO")
+        || name.eq_ignore_ascii_case("INTDIVORZERO")
+        || name.eq_ignore_ascii_case("PLUS")
+        || name.eq_ignore_ascii_case("MINUS")
+        || name.eq_ignore_ascii_case("EQUALS")
+        || name.eq_ignore_ascii_case("NOTEQUALS")
+        || name.eq_ignore_ascii_case("LESS")
+        || name.eq_ignore_ascii_case("LESSOREQUALS")
+        || name.eq_ignore_ascii_case("GREATER")
+        || name.eq_ignore_ascii_case("GREATEROREQUALS")
+        || name.eq_ignore_ascii_case("NOT")
+        || name.eq_ignore_ascii_case("AND")
+        || name.eq_ignore_ascii_case("OR")
+        || name.eq_ignore_ascii_case("XOR")
+        || name.eq_ignore_ascii_case("TOINT32")
+        || name.eq_ignore_ascii_case("TOINT64")
+        || name.eq_ignore_ascii_case("TOUINT8")
+        || name.eq_ignore_ascii_case("TOUINT16")
+        || name.eq_ignore_ascii_case("TOUINT32")
+        || is_saturating(name)
         || name.eq_ignore_ascii_case("BITHAMMINGDISTANCE")
         || name.eq_ignore_ascii_case("ABS")
         || name.eq_ignore_ascii_case("NEGATE")
@@ -95,6 +117,12 @@ pub(super) fn is_function(name: &str) -> bool {
         || name.eq_ignore_ascii_case("ROUND_TO_MULTIPLE")
         || name.eq_ignore_ascii_case("PMOD")
         || name.eq_ignore_ascii_case("TRAILING_ONES")
+        || name.eq_ignore_ascii_case("SQUARE")
+        || name.eq_ignore_ascii_case("CUBE")
+        || name.eq_ignore_ascii_case("ISEVEN")
+        || name.eq_ignore_ascii_case("ISODD")
+        || name.eq_ignore_ascii_case("ISSQUARE")
+        || name.eq_ignore_ascii_case("BITFLOOR")
         || name.eq_ignore_ascii_case("TOINT8")
 }
 
@@ -132,9 +160,13 @@ fn term(parser: &mut Parser, depth: usize) -> Result<i64, ParseError> {
                 .checked_div(factor(parser, depth)?)
                 .ok_or(ParseError("scalar division by zero or overflow".into()))?;
         } else if parser.take(Token::Percent) {
-            value = value
-                .checked_rem(factor(parser, depth)?)
-                .ok_or(ParseError("scalar modulo by zero or overflow".into()))?;
+            let divisor = factor(parser, depth)?;
+            value = if divisor == -1 {
+                0
+            } else {
+                value.checked_rem(divisor)
+                    .ok_or(ParseError("scalar modulo by zero or overflow".into()))?
+            };
         } else {
             break;
         }
@@ -208,6 +240,9 @@ fn parse_div_mod(parser: &mut Parser, depth: usize, divide: bool) -> Result<i64,
         left.checked_div(right)
             .ok_or_else(|| ParseError("DIV divisor is zero or result overflows Int64".into()))
     } else {
+        if right == -1 {
+            return Ok(0); // Int64::MIN % -1 is mathematically zero.
+        }
         left.checked_rem(right)
             .ok_or_else(|| ParseError("MOD divisor is zero or result overflows Int64".into()))
     }
@@ -496,13 +531,13 @@ fn parse_bit_extract(parser: &mut Parser, depth: usize) -> Result<i64, ParseErro
     let offset = u32::try_from(offset)
         .map_err(|_| ParseError("BIT_EXTRACT offset must be between 0 and 63".into()))?;
     let width = u32::try_from(width)
-        .map_err(|_| ParseError("BIT_EXTRACT width must be between 1 and 63".into()))?;
-    if offset >= 64 || width == 0 || width > 63 || offset + width > 64 {
+        .map_err(|_| ParseError("BIT_EXTRACT width must be between 1 and 64".into()))?;
+    if offset >= 64 || width == 0 || width > 64 || offset + width > 64 {
         return Err(ParseError(
             "BIT_EXTRACT field must fit within 64 bits".into(),
         ));
     }
-    let mask = (1_u64 << width) - 1;
+    let mask = if width == 64 { u64::MAX } else { (1_u64 << width) - 1 };
     Ok((((value as u64) >> offset) & mask) as i64)
 }
 
@@ -541,6 +576,8 @@ fn parse_euclidean_division(
     require_token(parser, Token::RParen, "Euclidean division requires ')'")?;
     let result = if quotient {
         left.checked_div_euclid(right)
+    } else if right == -1 {
+        Some(0) // The Euclidean remainder is representable for Int64::MIN.
     } else {
         left.checked_rem_euclid(right)
     };
@@ -1071,6 +1108,56 @@ fn factor(parser: &mut Parser, depth: usize) -> Result<i64, ParseError> {
     ) {
         return parse_bit_scans(parser, depth);
     }
+    if parser.keyword("BITFLOOR") {
+        require_token(parser, Token::LParen, "BITFLOOR requires '('")?;
+        let value = expression(parser, depth + 1)?;
+        require_token(parser, Token::RParen, "BITFLOOR requires ')'")?;
+        if value < 0 {
+            return Err(ParseError("bitFloor requires a nonnegative integer".into()));
+        }
+        return Ok(if value == 0 {
+            0
+        } else {
+            1_i64 << (63 - value.leading_zeros())
+        });
+    }
+    if parser.keyword("ISSQUARE") {
+        require_token(parser, Token::LParen, "ISSQUARE requires '('")?;
+        let value = expression(parser, depth + 1)?;
+        require_token(parser, Token::RParen, "ISSQUARE requires ')'")?;
+        if value < 0 {
+            return Ok(0);
+        }
+        let root = (value as u64).isqrt();
+        return Ok(i64::from(root * root == value as u64));
+    }
+    if parser.keyword("ISODD") {
+        require_token(parser, Token::LParen, "ISODD requires '('")?;
+        let value = expression(parser, depth + 1)?;
+        require_token(parser, Token::RParen, "ISODD requires ')'")?;
+        return Ok(i64::from(value & 1 != 0));
+    }
+    if parser.keyword("ISEVEN") {
+        require_token(parser, Token::LParen, "ISEVEN requires '('")?;
+        let value = expression(parser, depth + 1)?;
+        require_token(parser, Token::RParen, "ISEVEN requires ')'")?;
+        return Ok(i64::from(value & 1 == 0));
+    }
+    if parser.keyword("CUBE") {
+        require_token(parser, Token::LParen, "CUBE requires '('")?;
+        let value = expression(parser, depth + 1)?;
+        require_token(parser, Token::RParen, "CUBE requires ')'")?;
+        return value
+            .checked_mul(value)
+            .and_then(|square| square.checked_mul(value))
+            .ok_or_else(overflow);
+    }
+    if parser.keyword("SQUARE") {
+        require_token(parser, Token::LParen, "SQUARE requires '('")?;
+        let value = expression(parser, depth + 1)?;
+        require_token(parser, Token::RParen, "SQUARE requires ')'")?;
+        return value.checked_mul(value).ok_or_else(overflow);
+    }
     if parser.keyword("DIGITAL_ROOT") {
         return parse_digital_root(parser, depth);
     }
@@ -1146,6 +1233,91 @@ fn factor(parser: &mut Parser, depth: usize) -> Result<i64, ParseError> {
                 (current, next) = (next, current + next);
             }
             i64::try_from(current).map_err(|_| overflow())?
+        } else if name.eq_ignore_ascii_case("MODULOORZERO") {
+            require_token(parser, Token::Comma, "moduloOrZero requires two arguments")?;
+            let second = expression(parser, depth + 1)?;
+            first.checked_rem(second).unwrap_or(0)
+        } else if name.eq_ignore_ascii_case("INTDIVORZERO") {
+            require_token(parser, Token::Comma, "intDivOrZero requires two arguments")?;
+            let second = expression(parser, depth + 1)?;
+            first.checked_div(second).unwrap_or(0)
+        } else if name.eq_ignore_ascii_case("PLUS") {
+            require_token(parser, Token::Comma, "plus requires two arguments")?;
+            let second = expression(parser, depth + 1)?;
+            first.checked_add(second).ok_or_else(overflow)?
+        } else if name.eq_ignore_ascii_case("MINUS") {
+            require_token(parser, Token::Comma, "minus requires two arguments")?;
+            let second = expression(parser, depth + 1)?;
+            first.checked_sub(second).ok_or_else(overflow)?
+        } else if name.eq_ignore_ascii_case("EQUALS") {
+            require_token(parser, Token::Comma, "equals requires two arguments")?;
+            let second = expression(parser, depth + 1)?;
+            i64::from(first == second)
+        } else if name.eq_ignore_ascii_case("NOTEQUALS") {
+            require_token(parser, Token::Comma, "notEquals requires two arguments")?;
+            let second = expression(parser, depth + 1)?;
+            i64::from(first != second)
+        } else if name.eq_ignore_ascii_case("LESS") {
+            require_token(parser, Token::Comma, "less requires two arguments")?;
+            let second = expression(parser, depth + 1)?;
+            i64::from(first < second)
+        } else if name.eq_ignore_ascii_case("LESSOREQUALS") {
+            require_token(parser, Token::Comma, "lessOrEquals requires two arguments")?;
+            let second = expression(parser, depth + 1)?;
+            i64::from(first <= second)
+        } else if name.eq_ignore_ascii_case("GREATER") {
+            require_token(parser, Token::Comma, "greater requires two arguments")?;
+            let second = expression(parser, depth + 1)?;
+            i64::from(first > second)
+        } else if name.eq_ignore_ascii_case("GREATEROREQUALS") {
+            require_token(parser, Token::Comma, "greaterOrEquals requires two arguments")?;
+            let second = expression(parser, depth + 1)?;
+            i64::from(first >= second)
+        } else if name.eq_ignore_ascii_case("AND") {
+            let mut result = first != 0;
+            let mut arguments = 1usize;
+            while parser.take(Token::Comma) {
+                if arguments >= 16 {
+                    return Err(ParseError("and accepts at most 16 values".into()));
+                }
+                let next = expression(parser, depth + 1)?;
+                result = result && next != 0;
+                arguments += 1;
+            }
+            if arguments < 2 {
+                return Err(ParseError("and requires at least two values".into()));
+            }
+            i64::from(result)
+        } else if name.eq_ignore_ascii_case("OR") {
+            let mut result = first != 0;
+            let mut arguments = 1usize;
+            while parser.take(Token::Comma) {
+                if arguments >= 16 {
+                    return Err(ParseError("or accepts at most 16 values".into()));
+                }
+                let next = expression(parser, depth + 1)?;
+                result = result || next != 0;
+                arguments += 1;
+            }
+            if arguments < 2 {
+                return Err(ParseError("or requires at least two values".into()));
+            }
+            i64::from(result)
+        } else if name.eq_ignore_ascii_case("XOR") {
+            let mut result = first != 0;
+            let mut arguments = 1usize;
+            while parser.take(Token::Comma) {
+                if arguments >= 16 {
+                    return Err(ParseError("xor accepts at most 16 values".into()));
+                }
+                let next = expression(parser, depth + 1)?;
+                result = result ^ (next != 0);
+                arguments += 1;
+            }
+            if arguments < 2 {
+                return Err(ParseError("xor requires at least two values".into()));
+            }
+            i64::from(result)
         } else if name.eq_ignore_ascii_case("ABS") {
             first.checked_abs().ok_or_else(overflow)?
         } else if name.eq_ignore_ascii_case("DIGIT_SUM") {
@@ -1179,6 +1351,15 @@ fn factor(parser: &mut Parser, depth: usize) -> Result<i64, ParseError> {
             match name.to_ascii_uppercase().as_str() {
                 "TRAILING_ONES" => i64::from(first.trailing_ones()),
                 "TOINT8" => first as i8 as i64,
+                "TOINT16" => first as i16 as i64,
+                "TOUINT32" => first as u32 as i64,
+                "TOUINT16" => first as u16 as i64,
+                "TOUINT8" => first as u8 as i64,
+                "TOINT64" => first,
+                "TOINT32" => first as i32 as i64,
+                "POSITIVE" => first,
+                "ISZERO" => i64::from(first == 0),
+                "NOT" => i64::from(first == 0),
                 _ => first.signum(),
             }
         };
