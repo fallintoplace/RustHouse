@@ -21,44 +21,7 @@ impl<W: Write> HtmlWriter<W> {
     }
 
     fn finish_line(&mut self) -> io::Result<()> {
-        let text = std::str::from_utf8(&self.line).map_err(|_| {
-            io::Error::new(io::ErrorKind::InvalidData, "HTML field is not valid UTF-8")
-        })?;
-        let field_count = 1 + self.line.iter().filter(|&&byte| byte == b'\t').count();
-        let header = self.columns.is_none();
-        if let Some(columns) = self.columns {
-            if columns != field_count {
-                return Err(io::Error::new(
-                    io::ErrorKind::InvalidData,
-                    "HTML row does not match header column count",
-                ));
-            }
-        }
-
-        // Headers are literal and unescaped data can be emitted directly.
-        // Decode the whole row first only when it actually contains TSV escapes.
-        let decoded = if header || !text.as_bytes().contains(&b'\\') {
-            None
-        } else {
-            Some(decode_html_fields(text, header)?)
-        };
-
-        if header {
-            self.output.write_all(b"<table>\n<thead><tr>")?;
-        } else {
-            self.output.write_all(b"<tr>")?;
-        }
-        if let Some(fields) = decoded {
-            write_cells(&mut self.output, &fields, header)?;
-        } else {
-            write_plain_cells(&mut self.output, text, header)?;
-        }
-        if header {
-            self.output.write_all(b"</tr></thead>\n<tbody>\n")?;
-            self.columns = Some(field_count);
-        } else {
-            self.output.write_all(b"</tr>\n")?;
-        }
+        render_complete_row(&mut self.output, &mut self.columns, &self.line)?;
         self.line.clear();
         Ok(())
     }
@@ -74,6 +37,48 @@ impl<W: Write> HtmlWriter<W> {
         self.output.flush()?;
         Ok(self.output)
     }
+}
+
+fn render_complete_row<W: Write>(
+    output: &mut W,
+    columns: &mut Option<usize>,
+    line: &[u8],
+) -> io::Result<()> {
+    let text = std::str::from_utf8(line).map_err(|_| {
+        io::Error::new(io::ErrorKind::InvalidData, "HTML field is not valid UTF-8")
+    })?;
+    let field_count = 1 + line.iter().filter(|&&byte| byte == b'\t').count();
+    let header = columns.is_none();
+    if let Some(expected) = *columns {
+        if expected != field_count {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                "HTML row does not match header column count",
+            ));
+        }
+    }
+    let decoded = if header || !text.as_bytes().contains(&b'\\') {
+        None
+    } else {
+        Some(decode_html_fields(text, header)?)
+    };
+    if header {
+        output.write_all(b"<table>\n<thead><tr>")?;
+    } else {
+        output.write_all(b"<tr>")?;
+    }
+    if let Some(fields) = decoded {
+        write_cells(output, &fields, header)?;
+    } else {
+        write_plain_cells(output, text, header)?;
+    }
+    if header {
+        output.write_all(b"</tr></thead>\n<tbody>\n")?;
+        *columns = Some(field_count);
+    } else {
+        output.write_all(b"</tr>\n")?;
+    }
+    Ok(())
 }
 
 fn decode_tsv_field_for_html(field: &str, header: bool) -> io::Result<Cow<'_, str>> {
@@ -170,6 +175,10 @@ impl<W: Write> Write for HtmlWriter<W> {
                     "HTML row exceeds 1 MiB",
                 ));
             }
+            if complete && self.line.is_empty() {
+                render_complete_row(&mut self.output, &mut self.columns, fragment)?;
+                continue;
+            }
             self.line.extend_from_slice(fragment);
             if complete {
                 self.finish_line()?;
@@ -186,6 +195,18 @@ impl<W: Write> Write for HtmlWriter<W> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn full_html_rows_bypass_input_staging() {
+        let mut writer = HtmlWriter::new(Vec::new());
+        writer.write_all(b"name\n").unwrap();
+        assert_eq!(writer.line.capacity(), 0);
+        let text = "café".repeat(4096);
+        writer.write_all(format!("{text}\n").as_bytes()).unwrap();
+        assert_eq!(writer.line.capacity(), 0);
+        let html = writer.finish().unwrap();
+        assert!(html.windows(text.len()).any(|span| span == text.as_bytes()));
+    }
 
     #[test]
     fn plain_cells_keep_utf8_and_escape_html_without_field_collection() {
