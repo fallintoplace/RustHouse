@@ -104,8 +104,15 @@ impl ObjectKey {
         let original = path.to_str().ok_or("invalid distributed object key path")?;
         let canonical = key.relative_path();
         let canonical = canonical.to_str().ok_or("invalid distributed object key path")?;
-        // Windows accepts both slash spellings; compare only after normalizing
-        // separators, without removing dot or duplicate path components.
+        // Unix paths use '/' natively. Comparing borrowed strings avoids
+        // allocating two full replacement paths for every object key.
+        #[cfg(not(windows))]
+        if original != canonical {
+            return Err("noncanonical distributed object key path");
+        }
+        // Windows accepts both slash spellings. Preserve normalized
+        // comparison without discarding duplicate or dot components.
+        #[cfg(windows)]
         if original.replace(std::path::MAIN_SEPARATOR, "/")
             != canonical.replace(std::path::MAIN_SEPARATOR, "/")
         {
@@ -157,6 +164,17 @@ mod tests {
 #[cfg(test)]
 mod parse_relative_tests {
     use super::*;
+
+    #[test]
+    fn canonical_paths_accept_many_simple_keys_without_normalization() {
+        for generation in 1..128u64 {
+            let key = ObjectKey::new("cluster", "shard_1", generation, "part_10", "data.bin").unwrap();
+            assert_eq!(ObjectKey::parse_relative(&key.relative_path()).unwrap(), key);
+        }
+        assert!(ObjectKey::parse_relative(
+            std::path::Path::new("cluster/shard_1/g1/part_10/data.bin")
+        ).is_ok());
+    }
 
     #[test]
     fn round_trips_generation_scoped_paths() {
