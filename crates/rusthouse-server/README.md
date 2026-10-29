@@ -78,6 +78,11 @@ return the bounded logical plan as plain text. The endpoint parses SQL but does
 not inspect parts or read rows. It uses the same 65536-byte input limit and
 server-side row cap as ordinary queries. This is not a physical or cost-based plan.
 
+Read-only SQL discovery supports `SHOW TABLES`, `SHOW TABLES LIKE 'event%'`,
+and `SHOW TABLES NOT LIKE 'event%'` in database mode. Discovery uses the same
+catalog validation and read lock as `GET /tables`. Results respect the HTTP
+row cap and selected output format. Other SHOW statements and writes remain disabled.
+
 `GET /capabilities` returns read-only JSON with the server version, source mode,
 SQL and response byte limits, and effective row cap. Empty-body GET only.
 

@@ -86,7 +86,7 @@ fn discoverable_table(database: &Path, name: &str, schema: &Path) -> bool {
     fs::symlink_metadata(&parts).is_ok_and(|metadata| metadata.file_type().is_dir())
 }
 
-fn table_names(database: &Path) -> Result<Vec<String>, String> {
+pub(super) fn table_names(database: &Path) -> Result<Vec<String>, String> {
     let mut result = Vec::new();
     let entries = fs::read_dir(database)
         .map_err(|error| format!("cannot read database directory: {error}"))?;
@@ -240,6 +240,55 @@ mod tests {
         );
         assert_eq!(
             crate::handle_request("GET", "/tables", b"ignored", &config).status,
+            "400 Bad Request"
+        );
+        fs::remove_dir_all(db).unwrap();
+    }
+
+
+    #[test]
+    fn clickhouse_show_tables_reads_only_valid_catalog_and_supports_like() {
+        let db = temporary_database();
+        for name in ["events", "event_log", "users"] {
+            fs::write(
+                db.join(format!("{name}.schema")),
+                "rusthouse-schema-v1\nid\tUInt64\n",
+            )
+            .unwrap();
+            fs::create_dir(db.join(format!("{name}.parts"))).unwrap();
+        }
+        fs::write(db.join("broken.schema"), "invalid\n").unwrap();
+        fs::create_dir(db.join("broken.parts")).unwrap();
+        let config = Config {
+            database: Some(db.clone()),
+            max_rows: 10,
+            ..Config::default()
+        };
+        let response = crate::handle_request("POST", "/", b"SHOW TABLES FORMAT TSV", &config);
+        assert_eq!(response.status, "200 OK");
+        assert_eq!(response.body, b"event_log\nevents\nusers\n");
+        let filtered = crate::handle_request(
+            "POST",
+            "/?default_format=TSV",
+            b"SHOW TABLES LIKE 'event%'",
+            &config,
+        );
+        assert_eq!(filtered.status, "200 OK");
+        assert_eq!(filtered.body, b"event_log\nevents\n");
+        let excluded = crate::handle_request(
+            "POST",
+            "/",
+            b"SHOW TABLES NOT LIKE 'event%' FORMAT TSV",
+            &config,
+        );
+        assert_eq!(excluded.status, "200 OK");
+        assert_eq!(excluded.body, b"users\n");
+        assert_eq!(
+            crate::handle_request("POST", "/", b"SHOW DATABASES", &config).status,
+            "400 Bad Request"
+        );
+        assert_eq!(
+            crate::handle_request("POST", "/", b"DROP TABLE users", &config).status,
             "400 Bad Request"
         );
         fs::remove_dir_all(db).unwrap();

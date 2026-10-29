@@ -4,6 +4,7 @@
 mod http_encoding;
 mod sql_format;
 mod sql_parameters;
+mod sql_discovery;
 
 use self::http_encoding::*;
 
@@ -27,7 +28,7 @@ use json_array::JsonArraySink;
 use json_compact_each_row::JsonCompactEachRowWriter;
 use jsonl::JsonlWriter;
 use markdown::MarkdownWriter;
-use rusthouse_query::{Source, execute, explain_select, parse_join, parse_select};
+use rusthouse_query::{Ddl, Source, execute, explain_select, parse_ddl, parse_join, parse_select};
 use rusthouse_storage::{inspect_query_source, resolve_database_table};
 use sql_values::SqlValuesWriter;
 use std::io::{self, Write};
@@ -170,6 +171,17 @@ enum QueryFormat {
 }
 
 impl QueryFormat {
+    fn content_type(self) -> &'static str {
+        match self {
+            Self::Tsv | Self::TsvNoHeader => "text/tab-separated-values; charset=utf-8",
+            Self::Csv | Self::CsvNoHeader => "text/csv; charset=utf-8",
+            Self::Jsonl | Self::JsonCompactEachRow => "application/x-ndjson; charset=utf-8",
+            Self::Json | Self::JsonPretty => "application/json; charset=utf-8",
+            Self::SqlValues => "text/plain; charset=utf-8",
+            Self::Markdown => "text/markdown; charset=utf-8",
+        }
+    }
+
     fn parse(value: &str) -> Result<Self, &'static str> {
         Ok(match value {
             "tsv" | "TSVWithNames" | "TabSeparatedWithNames" => Self::Tsv,
@@ -389,6 +401,21 @@ pub fn handle_request(method: &str, target: &str, body: &[u8], config: &Config) 
         return Response::text("400 Bad Request", "format is unsupported for EXPLAIN");
     }
     let format = sql_format.unwrap_or(format);
+    if sql
+        .split_ascii_whitespace()
+        .next()
+        .is_some_and(|first| first.eq_ignore_ascii_case("SHOW"))
+    {
+        return match parse_ddl(sql) {
+            Ok(Some(ddl @ Ddl::ShowTables))
+            | Ok(Some(ddl @ Ddl::ShowTablesLike { .. }))
+            | Ok(Some(ddl @ Ddl::ShowTablesNotLike { .. })) => {
+                sql_discovery::show_tables(ddl, format, config)
+            }
+            Ok(_) => Response::text("400 Bad Request", "unsupported read-only SHOW query\n"),
+            Err(error) => Response::text("400 Bad Request", &format!("{error}\n")),
+        };
+    }
     // Join queries need multiple resolved table sources and an independent
     // bounded executor. Delegate before the single-source SELECT parser.
     match parse_join(&sql) {
@@ -501,17 +528,7 @@ pub fn handle_request(method: &str, target: &str, body: &[u8], config: &Config) 
     match result {
         Ok(()) => Response {
             status: "200 OK",
-            content_type: match format {
-                QueryFormat::Tsv | QueryFormat::TsvNoHeader => {
-                    "text/tab-separated-values; charset=utf-8"
-                }
-                QueryFormat::Csv | QueryFormat::CsvNoHeader => "text/csv; charset=utf-8",
-                QueryFormat::Jsonl => "application/x-ndjson; charset=utf-8",
-                QueryFormat::Json | QueryFormat::JsonPretty => "application/json; charset=utf-8",
-                QueryFormat::JsonCompactEachRow => "application/x-ndjson; charset=utf-8",
-                QueryFormat::SqlValues => "text/plain; charset=utf-8",
-                QueryFormat::Markdown => "text/markdown; charset=utf-8",
-            },
+            content_type: format.content_type(),
             body: writer.data,
         },
         Err(_) if writer.exceeded => {
