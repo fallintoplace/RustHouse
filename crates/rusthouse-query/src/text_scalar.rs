@@ -6,7 +6,8 @@ const MAX_TEXT_BYTES: usize = 1_048_576;
 pub(super) fn is_function(name: &str) -> bool {
     super::date_scalar::is_function(name) || matches!(
         name.to_ascii_uppercase().as_str(),
-        "IPV4NUMTOSTRING"
+        "JSONEXTRACTBOOL"
+            | "IPV4NUMTOSTRING"
             | "IPV4STRINGTONUM"
             | "IPV4STRINGTONUMORNULL"
             | "DECODEURLFORMCOMPONENT"
@@ -355,6 +356,25 @@ fn parse_at_depth(parser: &mut Parser, depth: usize) -> Result<ConstantValue, Pa
                     ConstantValue::Text(std::net::Ipv4Addr::from(value).to_string())
                 }
                 None => ConstantValue::Null,
+            }
+        }
+        "JSONEXTRACTBOOL" => {
+            let input = text_arg(parser, depth + 1)?;
+            require(parser, Token::Comma, "JSONExtractBool requires a path")?;
+            let path = text_arg(parser, depth + 1)?;
+            require(
+                parser,
+                Token::RParen,
+                "JSONExtractBool requires two arguments",
+            )?;
+            match (input, path) {
+                (Some(input), Some(path)) => {
+                    let json = crate::json::parse_json(&input)
+                        .map_err(|error| ParseError(format!("invalid JSON: {error}")))?;
+                    let is_true = json.at_path(&path).is_some_and(|value| value.raw() == "true");
+                    ConstantValue::Integer(i64::from(is_true))
+                }
+                _ => ConstantValue::Null,
             }
         }
         "PORT" => {
@@ -3752,5 +3772,29 @@ mod clickhouse_ipv4_num_to_string_tests {
         ] {
             assert!(parse_select(sql).is_err(), "{sql}");
         }
+    }
+}
+
+#[cfg(test)]
+mod clickhouse_json_extract_bool_tests {
+    use crate::{parse_select, ConstantValue, Projection};
+
+    #[test]
+    fn reads_boolean_paths_and_defaults_nonbooleans_to_zero() {
+        for (sql, expected) in [
+            (r#"SELECT JSONExtractBool('{"x":true}', 'x')"#, 1),
+            (r#"SELECT JSONExtractBool('{"x":false}', 'x')"#, 0),
+            (r#"SELECT JSONExtractBool('{"x":1}', 'x')"#, 0),
+            (r#"SELECT JSONExtractBool('{"x":{"y":true}}', 'x.y')"#, 1),
+            (r#"SELECT JSONExtractBool('{"x":true}', 'missing')"#, 0),
+        ] {
+            assert!(
+                matches!(parse_select(sql).unwrap().projection, Projection::Constants(values)
+                    if values.len() == 1
+                        && values[0].value == ConstantValue::Integer(expected)),
+                "{sql}",
+            );
+        }
+        assert!(parse_select("SELECT JSONExtractBool('not-json', 'x')").is_err());
     }
 }
