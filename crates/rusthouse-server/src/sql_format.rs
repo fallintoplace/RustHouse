@@ -93,7 +93,10 @@ pub(super) fn extract(sql: &str) -> Result<(&str, Option<QueryFormat>), &'static
             byte if byte.is_ascii_alphanumeric() || byte == b'_' => {
                 let start = offset;
                 offset += 1;
-                while bytes.get(offset).is_some_and(|byte| byte.is_ascii_alphanumeric() || *byte == b'_') {
+                while bytes
+                    .get(offset)
+                    .is_some_and(|byte| byte.is_ascii_alphanumeric() || *byte == b'_')
+                {
                     offset += 1;
                 }
                 if parens == 0 {
@@ -120,16 +123,24 @@ pub(super) fn extract(sql: &str) -> Result<(&str, Option<QueryFormat>), &'static
     } else {
         &pieces[..]
     };
-    if let [.., Piece::Word(keyword_start, keyword_end), Piece::Word(name_start, name_end)] = trailing
-        && sql[*keyword_start..*keyword_end].eq_ignore_ascii_case("FORMAT")
-        && *keyword_end < *name_start
-        && sql[*keyword_end..*name_start].bytes().all(|byte| byte.is_ascii_whitespace())
+    if let [.., Piece::Word(keyword_start, keyword_end), Piece::Word(name_start, name_end)] =
+        trailing
     {
-        let statement = sql[..*keyword_start].trim_end();
-        if statement.is_empty() {
-            return Err("FORMAT requires a SELECT statement");
+        if sql[*keyword_start..*keyword_end].eq_ignore_ascii_case("FORMAT")
+            && *keyword_end < *name_start
+            && sql[*keyword_end..*name_start]
+                .bytes()
+                .all(|byte| byte.is_ascii_whitespace())
+        {
+            let statement = sql[..*keyword_start].trim_end();
+            if statement.is_empty() {
+                return Err("FORMAT requires a SELECT statement");
+            }
+            return Ok((
+                statement,
+                Some(QueryFormat::parse(&sql[*name_start..*name_end])?),
+            ));
         }
-        return Ok((statement, Some(QueryFormat::parse(&sql[*name_start..*name_end])?)));
     }
     Ok((sql, None))
 }
