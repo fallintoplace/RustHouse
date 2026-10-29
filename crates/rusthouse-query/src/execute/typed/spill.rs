@@ -179,9 +179,11 @@ fn write_entry(output: &mut impl Write, entry: &SortEntry) -> Result<(), Executi
         .map_err(|_| invalid("too many typed sort projection columns"))?;
     let sort_keys = u16::try_from(entry.row.sort_keys.len())
         .map_err(|_| invalid("too many typed sort keys"))?;
-    output.write_all(&ordinal.to_le_bytes())?;
-    output.write_all(&values.to_le_bytes())?;
-    output.write_all(&sort_keys.to_le_bytes())?;
+    let mut header = [0u8; 12];
+    header[..8].copy_from_slice(&ordinal.to_le_bytes());
+    header[8..10].copy_from_slice(&values.to_le_bytes());
+    header[10..12].copy_from_slice(&sort_keys.to_le_bytes());
+    output.write_all(&header)?;
     for value in entry.row.values.iter().chain(entry.row.sort_keys.iter()) {
         write_cell(output, value)?;
     }
