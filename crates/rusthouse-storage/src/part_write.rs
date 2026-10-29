@@ -366,8 +366,17 @@ pub fn write_wide_part_with_compression(
                     }
                 }
                 for (name, granules) in streams {
+                    let expected_bytes = granules.iter().try_fold(0usize, |size, granule| {
+                        size.checked_add(granule.len().max(1))
+                            .ok_or_else(|| invalid("part column exceeds 8 MiB"))
+                    })?;
+                    if expected_bytes > MAX_STREAM_BYTES {
+                        return Err(invalid("part column exceeds 8 MiB"));
+                    }
                     let mut encoded = Vec::new();
-                    let mut uncompressed = Vec::new();
+                    // All granules are materialized already. Reserve their exact
+                    // uncompressed footprint, including padding for empty streams.
+                    let mut uncompressed = Vec::with_capacity(expected_bytes);
                     let mut marks = Vec::with_capacity(24 * granules.len());
                     // Pack adjacent marks into larger compressed blocks, while each
                     // mark retains its exact intra-block decompressed byte offset.
