@@ -201,6 +201,14 @@ pub(super) fn execute_part<W: Write>(
     if rows == 0 {
         return output_bins(query, output, column, *bins, &[]);
     }
+    // The first pass established that every qualifying value is identical.
+    // One exact bucket already contains all rows, so a second disk scan
+    // cannot change the result.
+    if min == max {
+        return output_bins(query, output, column, *bins, &[Bin {
+            min, max, count: rows,
+        }]);
+    }
     if !(max - min).is_finite() {
         return Err(ExecutionError::Invalid(
             "histogram numeric range exceeds Float64 precision".into(),
