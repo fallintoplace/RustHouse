@@ -170,3 +170,8 @@ fn iszero_distinguishes_zero_from_null() {
 fn isnotzero_ignores_null_values() {
     assert_eq!(evaluate("isNotZero(x)"), "2");
 }
+
+#[test]
+fn square_uses_checked_numeric_multiplication() {
+    assert_eq!(evaluate("square(x)"), "29");
+}

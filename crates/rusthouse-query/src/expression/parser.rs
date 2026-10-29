@@ -278,6 +278,13 @@ fn parse_aggregate_builtin(parser: &mut Parser) -> Result<ScalarExpr, ParseError
             crate::Operator::Ne,
             Box::new(ScalarExpr::Integer(0)),
         )),
+        ("SQUARE", 1) => {
+            let value = args.remove(0);
+            Ok(ScalarExpr::Multiply(
+                Box::new(value.clone()),
+                Box::new(value),
+            ))
+        }
         _ => Err(ParseError(format!("unsupported aggregate function: {name}"))),
     }
 }
