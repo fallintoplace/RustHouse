@@ -13,6 +13,10 @@ pub struct ScrubReport {
 }
 
 impl ScrubReport {
+    fn record_verified(&mut self, verified: &Self) -> Result<(), PartError> {
+        self.record_part(verified.checked_files, verified.checked_bytes, verified.blocks)
+    }
+
     fn record_part(&mut self, files: usize, bytes: u64, blocks: u64) -> Result<(), PartError> {
         self.checked_files = self
             .checked_files
@@ -62,7 +66,7 @@ pub fn scrub_snapshot_with_byte_limit(
     if parts.len() < PARALLEL_THRESHOLD || workers == 1 {
         for part in &parts {
             let checked = scrub_part(part)?;
-            report.record_part(checked.checked_files, checked.checked_bytes, checked.blocks)?;
+            report.record_verified(&checked)?;
         }
         return Ok(report);
     }
@@ -103,7 +107,7 @@ pub fn scrub_snapshot_with_byte_limit(
     })?;
     for slot in slots {
         let checked = slot.expect("each part was claimed exactly once")?;
-        report.record_part(checked.checked_files, checked.checked_bytes, checked.blocks)?;
+        report.record_verified(&checked)?;
     }
     Ok(report)
 }
