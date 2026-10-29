@@ -171,6 +171,7 @@ fn is_unary_math(name: &str) -> bool {
         || name.eq_ignore_ascii_case("ATAN")
         || name.eq_ignore_ascii_case("SINH")
         || name.eq_ignore_ascii_case("COSH")
+        || name.eq_ignore_ascii_case("TANH")
 }
 
 fn parse_unary_math(parser: &mut Parser) -> Result<ScalarExpr, ParseError> {
