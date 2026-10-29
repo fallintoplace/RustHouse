@@ -74,8 +74,10 @@ pub fn write_pretty_json_row<W: Write>(output: &mut W, row: &[u8]) -> io::Result
             }
             b':' => {
                 let span = &row[start..=index];
-                if span.len() < 64 {
-                    let mut buffer = [0u8; 64];
+                if span.len() < 256 {
+                    // One writer call for longer JSON keys (up to 254 bytes
+                    // plus a colon) and the required whitespace.
+                    let mut buffer = [0u8; 256];
                     buffer[..span.len()].copy_from_slice(span);
                     buffer[span.len()] = b' ';
                     output.write_all(&buffer[..span.len() + 1])?;
@@ -143,6 +145,29 @@ mod tests {
         let mut output = Vec::new();
         write_pretty_json_row(&mut output, br#"{"text":"a,{}","ok":null}"#).unwrap();
         assert_eq!(output, b"{\n    \"text\": \"a,{}\",\n    \"ok\": null\n  }");
+    }
+
+    #[test]
+    fn medium_json_key_and_colon_are_batched_together() {
+        struct Writes(Vec<Vec<u8>>);
+        impl Write for Writes {
+            fn write(&mut self, bytes: &[u8]) -> io::Result<usize> {
+                self.0.push(bytes.to_vec());
+                Ok(bytes.len())
+            }
+            fn flush(&mut self) -> io::Result<()> { Ok(()) }
+        }
+        for length in [64, 128, 250] {
+            let key = "k".repeat(length);
+            let row = format!("{{\"{key}\":0}}");
+            let mut output = Writes(Vec::new());
+            write_pretty_json_row(&mut output, row.as_bytes()).unwrap();
+            let wanted = format!("\"{key}\": ");
+            assert!(
+                output.0.iter().any(|chunk| chunk.as_slice() == wanted.as_bytes()),
+                "medium key was not emitted in one write"
+            );
+        }
     }
 
     #[test]
