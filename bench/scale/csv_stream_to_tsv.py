@@ -53,7 +53,7 @@ def convert(source, destination, *, header=False, empty_as_null=False,
                         raise ValueError(f"CSV column count mismatch at record {count + 1}")
                     if any(len(value.encode("utf-8")) > max_field_bytes for value in fields):
                         raise ValueError("CSV record contains an oversized UTF-8 field")
-                    if skip_header and header and count == 0:
+                    if skip_header and count == 0:
                         count += 1
                         continue
                     rendered = "\t".join(escape_field(value, empty_as_null)
