@@ -114,9 +114,13 @@ fn retained_build_columns(
     for &key in keys {
         keep[key] = true;
     }
-    for &(column, _, _) in selected {
-        if let Some(local) = column.checked_sub(base).filter(|&local| local < names.len()) {
-            keep[local] = true;
+    for &(column, _, fallback) in selected {
+        // FULL/RIGHT JOIN USING projections may read a fallback key from
+        // the opposite side when the preferred side is NULL.
+        for index in std::iter::once(column).chain(fallback) {
+            if let Some(local) = index.checked_sub(base).filter(|&local| local < names.len()) {
+                keep[local] = true;
+            }
         }
     }
     if let Some((column, _)) = null_filter {
@@ -1434,6 +1438,14 @@ pub fn execute_join<W: Write>(
 mod tests {
     use super::*;
     use rusthouse_storage::NumericColumn;
+
+    #[test]
+    fn projected_hash_build_retains_using_fallback_on_either_side() {
+        let names = vec!["id".to_owned(), "payload".to_owned(), "key".to_owned()];
+        let selected = vec![(3, "id".to_owned(), Some(0))];
+        assert_eq!(retained_build_columns(&names, &[2], &selected, None, 0), vec![0, 2]);
+        assert_eq!(retained_build_columns(&names, &[2], &selected, None, 3), vec![2]);
+    }
 
     #[test]
     fn streaming_right_preserves_unmatched_rows_and_key_fallbacks() {
