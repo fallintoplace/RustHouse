@@ -3,7 +3,7 @@
 //! Do not use a string search: SQL string literals and comments can contain
 //! the word FORMAT, and nested expressions are not output-format directives.
 
-pub(super) fn split_select_format(sql: &str) -> (&str, Option<&str>) {
+pub fn split_select_format(sql: &str) -> (&str, Option<&str>) {
     let trimmed = sql.trim_end();
     let statement = trimmed.strip_suffix(';').unwrap_or(trimmed).trim_end();
     let bytes = statement.as_bytes();

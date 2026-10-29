@@ -1,5 +1,4 @@
 mod input;
-mod format_clause;
 
 use self::input::*;
 
@@ -235,7 +234,7 @@ pub(super) fn run_sql_args(mut args: impl Iterator<Item = OsString>) -> Result<(
         }
         explain = true;
     }
-    let (statement, sql_format) = format_clause::split_select_format(&query);
+    let (statement, sql_format) = rusthouse_query::split_select_format(&query);
     if let Some(name) = sql_format {
         if format.is_some() {
             return Err("do not combine SQL FORMAT with --format".into());
