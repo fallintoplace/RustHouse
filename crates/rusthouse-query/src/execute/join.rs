@@ -289,6 +289,43 @@ struct ProbeOptions {
     null_filter: Option<(usize, bool)>,
 }
 
+/// Find the physical columns needed by a JOIN projection, including USING
+/// fallback fields on the other side.
+fn join_probe_projection(
+    selected: &[(usize, String, Option<usize>)],
+    base: usize,
+    width: usize,
+) -> Vec<usize> {
+    let mut fields = Vec::new();
+    for &(primary, _, fallback) in selected {
+        for column in std::iter::once(primary).chain(fallback) {
+            if let Some(index) = column.checked_sub(base).filter(|&i| i < width) {
+                fields.push(index);
+            }
+        }
+    }
+    fields.sort_unstable();
+    fields.dedup();
+    fields
+}
+
+/// Materialize only retained columns after a row survives the hash probe.
+fn materialize_join_probe_row(
+    batch: &[TypedColumn],
+    retained: &[usize],
+    index: usize,
+    width: usize,
+) -> Vec<typed::Cell> {
+    if retained.len() == width {
+        return batch.iter().map(|column| typed::cell(column, index)).collect();
+    }
+    let mut output = vec![typed::Cell::Null; width];
+    for (position, &physical) in retained.iter().enumerate() {
+        output[physical] = typed::cell(&batch[position], index);
+    }
+    output
+}
+
 /// Min/max runtime filter for homogeneous single-column integer build keys.
 /// It never rejects a possible hash match; nonnumeric and composite keys
 /// retain the normal hash lookup path.
@@ -361,6 +398,7 @@ fn probe_inner<F>(
     right_width: usize,
     preserve_unmatched_left: bool,
     mut matched_right: Option<&mut [bool]>,
+    projection: Option<&[usize]>,
     mut emit: F,
 ) -> Result<usize, ExecutionError>
 where
@@ -372,10 +410,12 @@ where
     // A COUNT or preflight probe needs join keys and filters only. Keep
     // original slot positions when actual output rows must be materialized.
     let mut retained = if options.materialize_rows {
-        (0..left_names.len()).collect::<Vec<_>>()
+        projection.map_or_else(|| (0..left_names.len()).collect::<Vec<_>>(),
+            |indices| indices.to_vec())
     } else {
-        left_keys.to_vec()
+        Vec::new()
     };
+    retained.extend_from_slice(left_keys);
     if let Some((column, _)) = options.null_filter {
         if column < left_names.len() {
             retained.push(column);
@@ -439,10 +479,9 @@ where
                             if options.materialize_rows && matches >= options.materialize_after {
                                 left_row
                                     .get_or_insert_with(|| {
-                                        batch
-                                            .iter()
-                                            .map(|column| typed::cell(column, index))
-                                            .collect()
+                                        materialize_join_probe_row(
+                                            &batch, &retained, index, left_names.len(),
+                                        )
                                     })
                                     .as_slice()
                             } else {
@@ -472,7 +511,9 @@ where
                 }
                 let left_row = if options.materialize_rows
                     && matches >= options.materialize_after {
-                    batch.iter().map(|column| typed::cell(column, index)).collect::<Vec<_>>()
+                    materialize_join_probe_row(
+                        &batch, &retained, index, left_names.len(),
+                    )
                 } else {
                     Vec::new()
                 };
@@ -789,7 +830,7 @@ fn execute_streaming_inner<W: Write>(
             null_filter,
         },
         right_names.len(), matches!(query.kind, JoinType::Left | JoinType::Full),
-        preflight_right_matched.as_deref_mut(),
+        preflight_right_matched.as_deref_mut(), None,
         |_, _| Ok(()),
     )?;
     let unmatched_right = if stop_after.is_some_and(|end| preflight_matches >= end) {
@@ -826,6 +867,7 @@ fn execute_streaming_inner<W: Write>(
     let mut position = 0usize;
     let mut emitted_right_matched =
         (query.kind == JoinType::Full).then(|| vec![false; right_rows.len()]);
+    let probe_columns = join_probe_projection(selected, 0, left_width);
     probe_inner(
         left_path,
         left_names,
@@ -833,14 +875,14 @@ fn execute_streaming_inner<W: Write>(
         &right_rows,
         &hash,
         ProbeOptions {
-            materialize_rows: selected.iter().any(|(column, _, _)| *column < left_width),
+            materialize_rows: !probe_columns.is_empty(),
             materialize_after: query.offset,
             stop_after,
             any: query.any,
             null_filter,
         },
         right_names.len(), matches!(query.kind, JoinType::Left | JoinType::Full),
-        emitted_right_matched.as_deref_mut(),
+        emitted_right_matched.as_deref_mut(), Some(&probe_columns),
         |left, right| {
             if position >= query.offset && position < end {
                 for (index, (column, _, fallback)) in selected.iter().enumerate() {
@@ -1193,10 +1235,15 @@ fn execute_streaming_ordered_inner<W: Write>(
     let mut retained = 0usize;
     let mut sequence = 0usize;
     let width = left_names.len();
+    let mut probe_columns = join_probe_projection(selected, 0, width);
+    probe_columns.extend(order.iter().filter_map(|(column, _, _)|
+        (*column < width).then_some(*column)));
+    probe_columns.sort_unstable();
+    probe_columns.dedup();
     probe_inner(
         left_path, left_names, left_keys, &right_rows, &hash,
         ProbeOptions {
-            materialize_rows: true,
+            materialize_rows: !probe_columns.is_empty(),
             materialize_after: 0,
             // A small ordered result still needs to inspect every qualifying
             // match, without the unordered 131072-output limit.
@@ -1204,7 +1251,7 @@ fn execute_streaming_ordered_inner<W: Write>(
             any: query.any,
             null_filter,
         },
-        right_names.len(), false, None,
+        right_names.len(), false, None, Some(&probe_columns),
         |left, right| {
             let at = |index: usize| -> &typed::Cell {
                 if index < width { &left[index] } else { &right[index - width] }
@@ -1318,7 +1365,7 @@ fn execute_streaming_inner_count<W: Write>(
                 stop_after: Some(usize::MAX), any: query.any, null_filter,
             }, right_names.len(),
             matches!(query.kind, JoinType::Left | JoinType::Full),
-            matched_right.as_deref_mut(), |_, _| Ok(())
+            matched_right.as_deref_mut(), None, |_, _| Ok(())
         )?;
         if let Some(flags) = matched_right {
             let unmatched = right_rows.iter().zip(flags).filter(|(row, matched)| {
@@ -1711,6 +1758,25 @@ pub fn execute_join<W: Write>(
 mod tests {
     use super::*;
     use rusthouse_storage::NumericColumn;
+
+    #[test]
+    fn streaming_join_probe_decodes_only_required_physical_columns() {
+        let selected = vec![
+            (3, "right.key".to_owned(), Some(1)),
+            (0, "left.id".to_owned(), None),
+        ];
+        assert_eq!(join_probe_projection(&selected, 0, 3), vec![0, 1]);
+        assert_eq!(join_probe_projection(&selected, 3, 3), vec![0]);
+        let batch = [
+            TypedColumn::Numeric(NumericColumn::UInt8(vec![7])),
+            TypedColumn::Numeric(NumericColumn::UInt8(vec![9])),
+        ];
+        let row = materialize_join_probe_row(&batch, &[0, 2], 0, 4);
+        assert!(matches!(&row[0], typed::Cell::Numeric(Number::Unsigned(7))));
+        assert!(matches!(&row[1], typed::Cell::Null));
+        assert!(matches!(&row[2], typed::Cell::Numeric(Number::Unsigned(9))));
+        assert!(matches!(&row[3], typed::Cell::Null));
+    }
 
     #[test]
     fn build_hash_retains_duplicate_rows_except_for_any() {
