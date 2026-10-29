@@ -17,6 +17,7 @@ def profile(path, *, columns=1, header=False, min_rows=1):
     digest = hashlib.sha256()
     records = 0
     bytes_read = 0
+    expected_tabs = columns - 1
     with Path(path).open("rb") as stream:
         while True:
             raw = stream.readline(MAX_RECORD_BYTES + 1)
@@ -25,7 +26,7 @@ def profile(path, *, columns=1, header=False, min_rows=1):
             if len(raw) > MAX_RECORD_BYTES or not raw.endswith(b"\n"):
                 raise ValueError(f"record {records + 1}: oversized or truncated")
             row = raw.removesuffix(b"\n").removesuffix(b"\r")
-            if not row or row.count(b"\t") != columns - 1:
+            if not row or row.count(b"\t") != expected_tabs:
                 raise ValueError(f"record {records + 1}: invalid column count or empty row")
             if b"\x00" in row:
                 raise ValueError(f"record {records + 1}: raw NUL byte")
