@@ -51,6 +51,7 @@ pub(super) fn is_function(name: &str) -> bool {
         || name.eq_ignore_ascii_case("XOR")
         || name.eq_ignore_ascii_case("TOINT32")
         || name.eq_ignore_ascii_case("TOINT64")
+        || name.eq_ignore_ascii_case("TOUINT8")
         || is_saturating(name)
         || name.eq_ignore_ascii_case("BITHAMMINGDISTANCE")
         || name.eq_ignore_ascii_case("ABS")
@@ -1293,6 +1294,7 @@ fn factor(parser: &mut Parser, depth: usize) -> Result<i64, ParseError> {
                 "TRAILING_ONES" => i64::from(first.trailing_ones()),
                 "TOINT8" => first as i8 as i64,
                 "TOINT16" => first as i16 as i64,
+                "TOUINT8" => first as u8 as i64,
                 "TOINT64" => first,
                 "TOINT32" => first as i32 as i64,
                 "POSITIVE" => first,
