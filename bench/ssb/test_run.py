@@ -74,6 +74,21 @@ class StarJoinBenchmarkTests(unittest.TestCase):
         self.assertEqual(result["timings_seconds"], [])
         self.assertIsNone(result["latency"])
 
+    def test_bad_timing_and_seed_values_fail_before_fixture_setup(self):
+        cases = (
+            {"runs": True},
+            {"warmups": False},
+            {"seed": True},
+            {"timeout": float("nan")},
+            {"timeout": float("inf")},
+            {"runs": 1000, "warmups": 1},
+            {"query": []},
+        )
+        for kwargs in cases:
+            with self.subTest(kwargs=kwargs):
+                with self.assertRaisesRegex(ValueError, "timing parameters"):
+                    benchmark("unused", rows=3, **kwargs)
+
     def test_reference_mismatch_and_input_limit(self):
         def execute(sql):
             if sql == "SELECT COUNT(*) FROM date_dim":

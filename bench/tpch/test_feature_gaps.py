@@ -26,6 +26,19 @@ class FeatureGapTests(unittest.TestCase):
                          "unclassified_error")
         self.assertEqual(classify({"status": "timeout", "error": "unrelated"}), "timeout")
 
+    def test_resource_capacity_failures_are_not_generic_sql_unsupported(self):
+        for message in (
+            "GROUP BY spill exceeds 32 GiB budget",
+            "query exceeds 16384 parts",
+            "too many retained rows",
+        ):
+            self.assertEqual(
+                classify({"status": "error", "error": message}),
+                "resource_limit",
+            )
+        with self.assertRaisesRegex(ValueError, "object"):
+            analyze(["not a report"])
+
     def test_all_22_validation_and_duplicate_rejection(self):
         with self.assertRaisesRegex(ValueError, "each query ID"):
             analyze({"results": [{"query": 1, "status": "passed"}]}, require_all_22=True)
@@ -34,6 +47,14 @@ class FeatureGapTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "array"):
             analyze({})
 
+
+class InvalidGapStatusTests(unittest.TestCase):
+    def test_malformed_status_does_not_crash_or_claim_success(self):
+        for status in ([], {}, True, 0):
+            with self.subTest(status=status):
+                self.assertEqual(classify({"status": status}), "unexpected_status")
+                with self.assertRaisesRegex(ValueError, "status"):
+                    analyze({"results": [{"query": 1, "status": status}]})
 
 if __name__ == "__main__":
     unittest.main()

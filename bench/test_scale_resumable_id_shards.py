@@ -21,6 +21,20 @@ class ResumableShardsTests(unittest.TestCase):
             self.assertEqual([x["sha256"] for x in first["shards"]],
                              [x["sha256"] for x in again["shards"]])
 
+    def test_multi_batch_shard_retains_exact_rows_and_hash(self):
+        import hashlib
+        with tempfile.TemporaryDirectory() as temp:
+            start, count = 2**64 - 8193, 8193
+            manifest = create(temp, start, count, count)
+            shard = Path(manifest["shards"][0]["path"])
+            data = shard.read_bytes()
+            self.assertEqual(data.splitlines()[0], str(start).encode("ascii"))
+            self.assertEqual(data.splitlines()[-1], str(2**64 - 1).encode("ascii"))
+            self.assertEqual(len(data.splitlines()), count)
+            self.assertEqual(manifest["shards"][0]["sha256"],
+                             hashlib.sha256(data).hexdigest())
+            self.assertTrue(create(temp, start, count, count)["shards"][0]["reused"])
+
     def test_rejects_corruption_without_replacing_it(self):
         with tempfile.TemporaryDirectory() as temp:
             first = create(temp, 0, 5, 5)
@@ -47,6 +61,18 @@ class ResumableShardsTests(unittest.TestCase):
                                        (2**64 - 1, 2, 1)]:
                 with self.assertRaises(ValueError):
                     create(temp, start, rows, shard)
+
+    @unittest.skipIf(sys.platform == "win32", "Windows CI cannot create symlinks")
+    def test_rejects_symlinked_output_directory(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            outside = root / "outside"
+            outside.mkdir()
+            alias = root / "alias"
+            alias.symlink_to(outside, target_is_directory=True)
+            with self.assertRaisesRegex(ValueError, "symlinked shard directory"):
+                create(alias, 0, 3, 2)
+            self.assertEqual(list(outside.iterdir()), [])
 
 
 if __name__ == "__main__":

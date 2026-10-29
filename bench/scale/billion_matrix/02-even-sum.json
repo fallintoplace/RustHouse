@@ -1,0 +1,8 @@
+{
+  "name": "even-sum",
+  "description": "Half-selectivity full-scan sum",
+  "kind": "modulo",
+  "aggregate": "sum",
+  "modulus": 2,
+  "residue": 0
+}
