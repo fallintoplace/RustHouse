@@ -108,6 +108,16 @@ pub fn scrub_snapshot_with_byte_limit(
     Ok(report)
 }
 
+/// Verify one frozen wide part without scanning unrelated snapshot parts.
+/// The caller must stop writers and provide a trusted local part path.
+pub fn scrub_part(part: &Path) -> Result<ScrubReport, PartError> {
+    let physical = verify_wide_part(part)?;
+    let hashes = verify_part_file_hashes(part)?;
+    let mut report = ScrubReport::default();
+    report.record_part(hashes.files, hashes.total_bytes, physical.blocks)?;
+    Ok(report)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -178,16 +188,6 @@ mod tests {
         assert!(scrub_snapshot(&root, 1).is_err());
         fs::remove_dir_all(root).unwrap();
     }
-}
-
-/// Verify one frozen wide part without scanning unrelated snapshot parts.
-/// The caller must stop writers and provide a trusted local part path.
-pub fn scrub_part(part: &Path) -> Result<ScrubReport, PartError> {
-    let physical = verify_wide_part(part)?;
-    let hashes = verify_part_file_hashes(part)?;
-    let mut report = ScrubReport::default();
-    report.record_part(hashes.files, hashes.total_bytes, physical.blocks)?;
-    Ok(report)
 }
 
 #[cfg(test)]

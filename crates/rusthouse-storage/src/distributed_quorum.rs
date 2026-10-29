@@ -69,14 +69,14 @@ impl QuorumPolicy {
             return Err("quorum membership or acknowledgement count mismatch");
         }
         let membership = member_index(members)?;
-        let mut received = 0u16;
+        let mut acknowledgement_mask = 0u16;
         for &replica in acknowledgements {
             let Some(&index) = membership.get(replica) else {
                 return Err("acknowledgement from unknown replica");
             };
-            received |= 1u16 << index;
+            acknowledgement_mask |= 1u16 << index;
         }
-        let distinct_acks = received.count_ones() as usize;
+        let distinct_acks = acknowledgement_mask.count_ones() as usize;
         Ok(QuorumObservation {
             distinct_acks,
             can_read: self.can_read(distinct_acks),
@@ -84,16 +84,41 @@ impl QuorumPolicy {
         })
     }
 
-    pub fn can_read(self, unique_acks: usize) -> bool {
+    fn valid_ack_count(self, unique_acks: usize) -> bool {
         Self::new(self.replicas, self.reads, self.writes).is_ok()
-            && unique_acks >= self.reads
             && unique_acks <= self.replicas
     }
 
+    pub fn can_read(self, unique_acks: usize) -> bool {
+        self.valid_ack_count(unique_acks) && unique_acks >= self.reads
+    }
+
     pub fn can_write(self, unique_acks: usize) -> bool {
-        Self::new(self.replicas, self.reads, self.writes).is_ok()
-            && unique_acks >= self.writes
-            && unique_acks <= self.replicas
+        self.valid_ack_count(unique_acks) && unique_acks >= self.writes
+    }
+}
+
+/// Additional replica acknowledgements needed to satisfy a quorum policy.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct QuorumDeficit {
+    pub distinct_acks: usize,
+    pub missing_reads: usize,
+    pub missing_writes: usize,
+}
+
+impl QuorumPolicy {
+    /// This only counts replies from listed members; it does not implement consensus.
+    pub fn deficits(
+        self,
+        members: &[&str],
+        acknowledgements: &[&str],
+    ) -> Result<QuorumDeficit, &'static str> {
+        let observed = self.observe(members, acknowledgements)?;
+        Ok(QuorumDeficit {
+            distinct_acks: observed.distinct_acks,
+            missing_reads: self.reads.saturating_sub(observed.distinct_acks),
+            missing_writes: self.writes.saturating_sub(observed.distinct_acks),
+        })
     }
 }
 
@@ -154,30 +179,6 @@ mod tests {
                 }
             }
         }
-    }
-}
-
-/// Additional replica acknowledgements needed to satisfy a quorum policy.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct QuorumDeficit {
-    pub distinct_acks: usize,
-    pub missing_reads: usize,
-    pub missing_writes: usize,
-}
-
-impl QuorumPolicy {
-    /// This only counts replies from listed members; it does not implement consensus.
-    pub fn deficits(
-        self,
-        members: &[&str],
-        acknowledgements: &[&str],
-    ) -> Result<QuorumDeficit, &'static str> {
-        let observed = self.observe(members, acknowledgements)?;
-        Ok(QuorumDeficit {
-            distinct_acks: observed.distinct_acks,
-            missing_reads: self.reads.saturating_sub(observed.distinct_acks),
-            missing_writes: self.writes.saturating_sub(observed.distinct_acks),
-        })
     }
 }
 

@@ -57,43 +57,44 @@ fn read_mark_bytes_cow_cached<'a, R: Read + Seek>(
     }
     let offset = usize::try_from(mark.decompressed_offset)
         .map_err(|_| invalid_mark(mark, "decompressed offset exceeds address space"))?;
-    if let Some(bytes) = cached_granule_bytes(cached, mark, offset, byte_count) {
-        return Ok(Cow::Borrowed(bytes));
-    }
-
-    reader.seek_to_block(mark.compressed_offset)?;
-    let first = reader
-        .next_decoded()
-        .ok_or_else(|| invalid_mark(mark, "column stream ends before granule"))??;
-    if offset >= first.data.len() {
-        return Err(invalid_mark(mark, "decompressed offset is outside block"));
-    }
-    if offset.checked_add(byte_count).is_some_and(|end| end <= first.data.len()) {
-        *cached = Some(first);
-        let data = cached_granule_bytes(cached, mark, offset, byte_count)
-            .expect("validated mark fits decoded block");
-        return Ok(Cow::Borrowed(data));
-    }
-
-    let mut result = Vec::with_capacity(byte_count);
-    let mut block = first;
-    let mut position = offset;
-    while result.len() < byte_count {
-        if position >= block.data.len() {
-            return Err(invalid_mark(mark, "decompressed offset is outside block"));
-        }
-        let count = (byte_count - result.len()).min(block.data.len() - position);
-        result.extend_from_slice(&block.data[position..position + count]);
-        *cached = Some(block);
-        if result.len() == byte_count {
-            break;
-        }
-        block = reader
+    // Check for a cache hit without borrowing it across the cache-update path.
+    // A borrowed slice is returned only after all possible mutations have finished.
+    if cached_granule_bytes(cached, mark, offset, byte_count).is_none() {
+        reader.seek_to_block(mark.compressed_offset)?;
+        let first = reader
             .next_decoded()
             .ok_or_else(|| invalid_mark(mark, "column stream ends before granule"))??;
-        position = 0;
+        if offset >= first.data.len() {
+            return Err(invalid_mark(mark, "decompressed offset is outside block"));
+        }
+        if offset.checked_add(byte_count).is_some_and(|end| end <= first.data.len()) {
+            *cached = Some(first);
+        } else {
+            let mut result = Vec::with_capacity(byte_count);
+            let mut block = first;
+            let mut position = offset;
+            while result.len() < byte_count {
+                if position >= block.data.len() {
+                    return Err(invalid_mark(mark, "decompressed offset is outside block"));
+                }
+                let count = (byte_count - result.len()).min(block.data.len() - position);
+                result.extend_from_slice(&block.data[position..position + count]);
+                *cached = Some(block);
+                if result.len() == byte_count {
+                    break;
+                }
+                block = reader
+                    .next_decoded()
+                    .ok_or_else(|| invalid_mark(mark, "column stream ends before granule"))??;
+                position = 0;
+            }
+            return Ok(Cow::Owned(result));
+        }
     }
-    Ok(Cow::Owned(result))
+    Ok(Cow::Borrowed(
+        cached_granule_bytes(cached, mark, offset, byte_count)
+            .expect("validated mark fits cached decoded block"),
+    ))
 }
 
 pub fn read_u64_granule<R: Read + Seek>(
