@@ -90,10 +90,14 @@ pub fn read_decimal_column<R: Read>(
     })
 }
 
+const DECIMAL32_MAX_PRECISION: u8 = 9;
+const DECIMAL64_MAX_PRECISION: u8 = 18;
+const DECIMAL128_MAX_PRECISION: u8 = 38;
+
 fn decimal_storage_type(precision: u8) -> &'static str {
-    if precision <= 9 {
+    if precision <= DECIMAL32_MAX_PRECISION {
         "Int32"
-    } else if precision <= 18 {
+    } else if precision <= DECIMAL64_MAX_PRECISION {
         "Int64"
     } else {
         "Int128"
@@ -108,7 +112,7 @@ fn parse_decimal_component(value: &str) -> Option<u8> {
 }
 
 fn decimal_spec(precision: u8, scale: u8) -> Option<(u8, u8, &'static str)> {
-    if precision == 0 || precision > 38 || scale > precision {
+    if precision == 0 || precision > DECIMAL128_MAX_PRECISION || scale > precision {
         return None;
     }
     Some((precision, scale, decimal_storage_type(precision)))
@@ -117,9 +121,9 @@ fn decimal_spec(precision: u8, scale: u8) -> Option<(u8, u8, &'static str)> {
 fn parse_sized_decimal(data_type: &str) -> Option<(u8, u8, &'static str)> {
     let (width, arguments) = data_type.strip_prefix("Decimal")?.split_once('(')?;
     let precision = match width {
-        "32" => 9,
-        "64" => 18,
-        "128" => 38,
+        "32" => DECIMAL32_MAX_PRECISION,
+        "64" => DECIMAL64_MAX_PRECISION,
+        "128" => DECIMAL128_MAX_PRECISION,
         _ => return None,
     };
     let scale = parse_decimal_component(arguments.strip_suffix(')')?)?;
