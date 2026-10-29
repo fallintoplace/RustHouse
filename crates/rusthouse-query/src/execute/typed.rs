@@ -708,12 +708,10 @@ pub(super) fn passes(batch: &[TypedColumn], row: usize, branches: &[Vec<Conditio
     })
 }
 
-pub(super) fn write_value<W: Write>(output: &mut W, value: &Cell) -> Result<(), ExecutionError> {
-    match value {
-        Cell::Numeric(value) => write!(output, "{value}")?,
-        Cell::Null => output.write_all(b"\\N")?,
-        Cell::Uuid(value) => output.write_all(value.as_bytes())?,
-        Cell::Text(bytes) => {
+fn write_text_bytes<W: Write>(
+    output: &mut W,
+    bytes: &[u8],
+) -> Result<(), ExecutionError> {
             let mut start = 0;
             for (index, &byte) in bytes.iter().enumerate() {
                 let escape: Option<&[u8]> = match byte {
@@ -743,7 +741,15 @@ pub(super) fn write_value<W: Write>(output: &mut W, value: &Cell) -> Result<(), 
             if start < bytes.len() {
                 output.write_all(&bytes[start..])?;
             }
-        }
+    Ok(())
+}
+
+pub(super) fn write_value<W: Write>(output: &mut W, value: &Cell) -> Result<(), ExecutionError> {
+    match value {
+        Cell::Numeric(value) => write!(output, "{value}")?,
+        Cell::Null => output.write_all(b"\\N")?,
+        Cell::Uuid(value) => output.write_all(value.as_bytes())?,
+        Cell::Text(bytes) => write_text_bytes(output, bytes)?,
     }
     Ok(())
 }
@@ -1572,18 +1578,49 @@ pub(super) fn execute_typed<W: Write>(
                     distinct_probe = Vec::with_capacity(projection_indices.len());
                 }
             }
-            // Unordered single-UUID projections can write the canonical
-            // representation directly. Avoid a temporary String and Vec<Cell>
-            // for each output row after predicates and OFFSET are applied.
+            // A single unsorted projection can stream directly from the batch.
+            // Skip per-row heap allocations for strings and typed values.
             if !query.distinct && sort_indices.is_empty() && projection_indices.len() == 1 {
-                if let TypedColumn::Uuid(values) = &batch[projection_indices[0]] {
-                    writeln!(output, "{}", values[index])?;
-                    emitted += 1;
-                    if emitted == limit {
-                        return Ok(());
+                match &batch[projection_indices[0]] {
+                    TypedColumn::Uuid(values) => writeln!(output, "{}", values[index])?,
+                    TypedColumn::Text(values) => {
+                        let bytes = values.get(index).ok_or_else(|| {
+                            ExecutionError::Invalid("missing String projection value".into())
+                        })?;
+                        write_text_bytes(output, bytes)?;
+                        output.write_all(b"\n")?;
                     }
-                    continue;
+                    TypedColumn::NullableText { values, nulls } => {
+                        if nulls[index] == 0 {
+                            let bytes = values.get(index).ok_or_else(|| {
+                                ExecutionError::Invalid("missing nullable String projection".into())
+                            })?;
+                            write_text_bytes(output, bytes)?;
+                            output.write_all(b"\n")?;
+                        } else {
+                            output.write_all(b"\\N\n")?;
+                        }
+                    }
+                    TypedColumn::Numeric(values) => {
+                        let value = Cell::Numeric(number_at(values, index));
+                        write_typed_value(output, &value, projection_types[0])?;
+                        output.write_all(b"\n")?;
+                    }
+                    TypedColumn::NullableNumeric { values, nulls } => {
+                        if nulls[index] == 0 {
+                            let value = Cell::Numeric(number_at(values, index));
+                            write_typed_value(output, &value, projection_types[0])?;
+                            output.write_all(b"\n")?;
+                        } else {
+                            output.write_all(b"\\N\n")?;
+                        }
+                    }
                 }
+                emitted += 1;
+                if emitted == limit {
+                    return Ok(());
+                }
+                continue;
             }
             let cells = projection_indices
                 .iter()
