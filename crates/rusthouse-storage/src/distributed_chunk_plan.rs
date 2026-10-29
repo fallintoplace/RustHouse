@@ -86,7 +86,7 @@ pub fn plan_missing_chunks(
         }
         let chunk = chunk_at_index(total_bytes, chunk_bytes, index);
         if chunk.length > remaining_bytes {
-            break;
+            continue;
         }
         remaining_bytes -= chunk.length;
         selected.push(IndexedChunk { index, chunk });
@@ -146,13 +146,10 @@ mod tests {
         );
         assert_eq!(
             plan_missing_chunks(10, 4, 3, &[0, 1, 2], 7, 3).unwrap(),
-            vec![IndexedChunk {
-                index: 0,
-                chunk: Chunk {
-                    offset: 0,
-                    length: 4
-                }
-            }],
+            vec![
+                IndexedChunk { index: 0, chunk: Chunk { offset: 0, length: 4 } },
+                IndexedChunk { index: 2, chunk: Chunk { offset: 8, length: 2 } },
+            ],
         );
         assert_eq!(
             plan_missing_chunks(10, 4, 3, &[2], 2, 1).unwrap(),
@@ -288,5 +285,20 @@ mod chunk_window_tests {
         let page = plan_chunk_window(65_536, 1, 65_536, 65_534, 2).unwrap();
         assert_eq!(page.len(), 2);
         assert_eq!(page[1].index, 65_535);
+    }
+}
+
+#[cfg(test)]
+mod skipped_chunk_budget_tests {
+    use super::*;
+
+    #[test]
+    fn smaller_tail_can_progress_when_first_chunk_does_not_fit() {
+        assert_eq!(
+            plan_missing_chunks(10, 4, 3, &[0, 2], 2, 2).unwrap(),
+            vec![IndexedChunk { index: 2, chunk: Chunk { offset: 8, length: 2 } }]
+        );
+        assert!(plan_missing_chunks(10, 4, 3, &[0, 2], 1, 2).unwrap().is_empty());
+        assert_eq!(plan_missing_chunks(10, 4, 3, &[0, 1, 2], 6, 3).unwrap().len(), 2);
     }
 }
