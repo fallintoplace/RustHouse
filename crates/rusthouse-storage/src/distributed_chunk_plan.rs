@@ -146,13 +146,10 @@ mod tests {
         );
         assert_eq!(
             plan_missing_chunks(10, 4, 3, &[0, 1, 2], 7, 3).unwrap(),
-            vec![IndexedChunk {
-                index: 0,
-                chunk: Chunk {
-                    offset: 0,
-                    length: 4
-                }
-            }],
+            vec![
+                IndexedChunk { index: 0, chunk: Chunk { offset: 0, length: 4 } },
+                IndexedChunk { index: 2, chunk: Chunk { offset: 8, length: 2 } },
+            ],
         );
         assert_eq!(
             plan_missing_chunks(10, 4, 3, &[2], 2, 1).unwrap(),
