@@ -7,6 +7,7 @@ use std::ops::Range;
 const MAX_BATCH_ROWS: usize = 1_000_000;
 const MAX_BATCH_ELEMENTS: u64 = 64 * 1024 * 1024;
 const OFFSET_ENTRY_BYTES: usize = size_of::<u64>();
+const OFFSET_READ_BUFFER_BYTES: usize = 64 * 1024;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ArrayOffsetsEncoding {
@@ -176,7 +177,7 @@ pub fn read_array_offsets<O: Read>(
     let mut offsets = Vec::with_capacity(rows + 1);
     offsets.push(0);
 
-    let mut buffer = [0u8; 64 * 1024];
+    let mut buffer = [0u8; OFFSET_READ_BUFFER_BYTES];
     let mut row = 0;
     while row < rows {
         let count = (rows - row).min(buffer.len() / OFFSET_ENTRY_BYTES);
