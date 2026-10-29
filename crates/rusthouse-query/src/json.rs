@@ -175,7 +175,9 @@ impl<'a> Parser<'a> {
         if self.consume_expected_byte_if_present(b'.') && self.digits() == 0 {
             return Err("missing JSON fractional digits");
         }
-        if self.consume_expected_byte_if_present(b'e') || self.consume_expected_byte_if_present(b'E') {
+        if self.consume_expected_byte_if_present(b'e')
+            || self.consume_expected_byte_if_present(b'E')
+        {
             if !self.consume_expected_byte_if_present(b'+') {
                 self.consume_expected_byte_if_present(b'-');
             }
