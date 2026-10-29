@@ -1105,7 +1105,9 @@ pub(super) fn execute_typed<W: Write>(
                 .get(column)
                 .is_some_and(|kind| kind.starts_with("Nullable("))
         {
-            let mut reader = TypedQueryReader::open(part, std::slice::from_ref(column))?;
+            let mut reader = TypedQueryReader::open_with_metadata(
+                part, std::slice::from_ref(column), &metadata,
+            )?;
             let mut count = 0u64;
             while let Some(nulls) = reader.next_null_batch()? {
                 count = count
