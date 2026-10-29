@@ -124,6 +124,7 @@ pub(super) fn is_function(name: &str) -> bool {
             | "RIGHT"
             | "RIGHTUTF8"
             | "BASE64_ENCODE"
+            | "BASE64URLENCODE"
             | "BASE64ENCODE"
             | "HASTOKENCASEINSENSITIVE"
             | "ENDS_WITH"
@@ -2310,7 +2311,7 @@ fn parse_at_depth(parser: &mut Parser, depth: usize) -> Result<ConstantValue, Pa
                 None => ConstantValue::Null,
             }
         }
-        "BASE64_ENCODE" | "BASE64ENCODE" => {
+        "BASE64_ENCODE" | "BASE64ENCODE" | "BASE64URLENCODE" => {
             let input = text_arg(parser, depth + 1)?;
             require(parser, Token::RParen, "BASE64_ENCODE requires one argument")?;
             match input {
@@ -2324,8 +2325,11 @@ fn parse_at_depth(parser: &mut Parser, depth: usize) -> Result<ConstantValue, Pa
                     if output_len > MAX_TEXT_BYTES {
                         return Err(ParseError("BASE64_ENCODE result is too large".into()));
                     }
-                    const ALPHABET: &[u8; 64] =
-                        b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+                    const ALPHABET: &[u8; 64] = if name == "BASE64URLENCODE" {
+                        b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_"
+                    } else {
+                        b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/"
+                    };
                     let mut result = String::with_capacity(output_len);
                     for chunk in value.as_bytes().chunks(3) {
                         let mut bits = u32::from(chunk[0]) << 16;
@@ -2346,6 +2350,11 @@ fn parse_at_depth(parser: &mut Parser, depth: usize) -> Result<ConstantValue, Pa
                             result.push(char::from(ALPHABET[(bits & 63) as usize]));
                         } else {
                             result.push('=');
+                        }
+                    }
+                    if name == "BASE64URLENCODE" {
+                        while result.ends_with('=') {
+                            result.pop();
                         }
                     }
                     ConstantValue::Text(result)
