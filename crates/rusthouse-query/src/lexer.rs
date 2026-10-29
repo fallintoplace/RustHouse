@@ -36,6 +36,9 @@ fn tokenize_with_limit(sql: &str, max_bytes: usize) -> Result<Vec<Token>, ParseE
             "statement exceeds the {max_bytes}-byte limit"
         )));
     }
+    // A one-megabyte INSERT full of one-byte punctuation can otherwise
+    // allocate a million 24-byte enum tokens before parsing rejects it.
+    let max_tokens = if max_bytes > 64 * 1024 { 262_144 } else { 32_768 };
     let bytes = sql.as_bytes();
     // Avoid repeated vector growth on common SELECT statements and large INSERTs.
     let mut tokens = Vec::with_capacity((sql.len() / 8).min(2048));
@@ -106,6 +109,11 @@ fn tokenize_with_limit(sql: &str, max_bytes: usize) -> Result<Vec<Token>, ParseE
                 )));
             }
         };
+        if tokens.len() >= max_tokens {
+            return Err(ParseError(format!(
+                "statement exceeds the {max_tokens}-token limit"
+            )));
+        }
         tokens.push(token);
     }
     Ok(tokens)
@@ -114,6 +122,17 @@ fn tokenize_with_limit(sql: &str, max_bytes: usize) -> Result<Vec<Token>, ParseE
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn token_limits_bound_adversarial_punctuation_statements() {
+        assert_eq!(tokenize(&",".repeat(32_768)).unwrap().len(), 32_768);
+        assert!(tokenize(&",".repeat(32_769)).is_err());
+        assert_eq!(
+            tokenize_insert(&",".repeat(262_144)).unwrap().len(),
+            262_144
+        );
+        assert!(tokenize_insert(&",".repeat(262_145)).is_err());
+    }
 
     #[test]
     fn digit_classification_handles_token_boundaries() {
