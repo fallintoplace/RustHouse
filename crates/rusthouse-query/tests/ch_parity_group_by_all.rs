@@ -32,8 +32,8 @@ fn group_by_all_lowers_plain_columns_to_distinct() {
 
 #[test]
 fn group_by_all_rejects_invalid_explicit_mixes() {
+    assert_eq!(output("SELECT count(*) FROM numbers(5) GROUP BY ALL"), "count\n5\n");
     for sql in [
-        "SELECT count(*) FROM numbers(5) GROUP BY ALL",
         "SELECT number FROM numbers(5) GROUP BY ALL, number",
         "SELECT number, count(*) FROM numbers(5) GROUP BY ALL, number",
         "SELECT 1 GROUP BY ALL",
