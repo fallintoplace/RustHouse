@@ -62,5 +62,15 @@ class BenchmarkComparisonTests(unittest.TestCase):
         self.assertEqual(report["incomparable"][0]["reason"], "missing_positive_median")
 
 
+    def test_rejects_nonobject_reports(self):
+        valid = {"results": [result(1, "passed", 0.1)]}
+        for malformed in ([], [valid], 2, None, "JSON"):
+            with self.subTest(malformed=malformed):
+                with self.assertRaisesRegex(ValueError, "JSON objects"):
+                    compare(malformed, valid)
+                with self.assertRaisesRegex(ValueError, "JSON objects"):
+                    compare(valid, malformed)
+
+
 if __name__ == "__main__":
     unittest.main()
