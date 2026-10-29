@@ -186,5 +186,14 @@ class ClickHouseDifferentialTests(unittest.TestCase):
             self.assertIn("--query", run.call_args.args[0])
 
 
+    def test_clickhouse_reference_output_is_bounded_at_capture(self):
+        def fake_run(command, **kwargs):
+            kwargs["stdout"].write(b"abcdef")
+            return mock.Mock(returncode=0, stderr=b"")
+        with mock.patch("bench.analytics.clickhouse_parity.MAX_CLICKHOUSE_OUTPUT_BYTES", 4), \
+             mock.patch("bench.analytics.clickhouse_parity.subprocess.run", side_effect=fake_run):
+            with self.assertRaisesRegex(ValueError, "4 MB"):
+                cli_clickhouse("clickhouse-client", "localhost", 9000, "SELECT 1", 10)
+
 if __name__ == "__main__":
     unittest.main()
