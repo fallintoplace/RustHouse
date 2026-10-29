@@ -16,7 +16,8 @@ def fingerprint(root, *, max_files=1_000_000, block_size=1024 * 1024,
     root = Path(root)
     if not root.is_dir() or root.is_symlink():
         raise ValueError("expected an offline snapshot directory")
-    if max_files < 1 or not 4096 <= block_size <= 16 * 1024 * 1024:
+    if (type(max_files) is not int or type(block_size) is not int
+            or max_files < 1 or not 4096 <= block_size <= 16 * 1024 * 1024):
         raise ValueError("invalid max_files or block_size")
     if expected_sha256 is not None and (
             not isinstance(expected_sha256, str)

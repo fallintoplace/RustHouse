@@ -2,6 +2,7 @@
 """Execute the full pinned 22-query TPC-H corpus with required reference checking."""
 import argparse
 import json
+import math
 import subprocess
 import sys
 from pathlib import Path
@@ -11,7 +12,10 @@ from run import load_queries, official_22_coverage
 
 def command(binary, database, queries_dir, reference_dir, report_path,
             runs=3, warmups=1, timeout=300):
-    if runs < 1 or warmups < 0 or timeout <= 0:
+    if (type(runs) is not int or runs < 1
+            or type(warmups) is not int or warmups < 0
+            or type(timeout) not in (int, float)
+            or not math.isfinite(timeout) or timeout <= 0):
         raise ValueError("invalid timing options")
     queries_dir = Path(queries_dir)
     queries = load_queries(queries_dir)

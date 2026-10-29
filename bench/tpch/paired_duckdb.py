@@ -12,6 +12,7 @@ import json
 import math
 import statistics
 import subprocess
+import tempfile
 import time
 from pathlib import Path
 
@@ -21,6 +22,7 @@ from bench.tpch.canonical_integrity import verify as verify_canonical_sql
 ENGINES = ("rusthouse", "duckdb")
 ABBA = ("rusthouse", "duckdb", "duckdb", "rusthouse")
 BAAB = ("duckdb", "rusthouse", "rusthouse", "duckdb")
+MAX_OUTPUT_BYTES = 16 * 1024 * 1024
 
 
 def command(engine, binary, database, sql):
@@ -36,12 +38,20 @@ def command(engine, binary, database, sql):
 
 def invoke(args, timeout):
     start = time.perf_counter()
-    result = subprocess.run(args, capture_output=True, check=False, timeout=timeout)
-    duration = time.perf_counter() - start
+    with tempfile.TemporaryFile() as output:
+        result = subprocess.run(
+            args, stdout=output, stderr=subprocess.PIPE,
+            check=False, timeout=timeout,
+        )
+        duration = time.perf_counter() - start
+        output.seek(0)
+        payload = output.read(MAX_OUTPUT_BYTES + 1)
     if result.returncode:
         stderr = result.stderr.decode("utf-8", "replace")
         raise RuntimeError(f"exit {result.returncode}: {stderr[-500:]}")
-    return result.stdout, duration
+    if len(payload) > MAX_OUTPUT_BYTES:
+        raise ValueError("paired CLI output exceeds 16 MiB")
+    return payload, duration
 
 
 def benchmark_pair(sql, reference, execute, runs=5, warmups=2, comparison="exact"):
@@ -107,7 +117,12 @@ def compare(binary, database, duckdb_binary, duckdb_database,
             record["error"] = f"missing reference: {ref_path}"
             results.append(record)
             continue
-        reference = ref_path.read_bytes()
+        with ref_path.open("rb") as source:
+            reference = source.read(MAX_OUTPUT_BYTES + 1)
+        if len(reference) > MAX_OUTPUT_BYTES:
+            record["error"] = "paired CLI reference exceeds 16 MiB"
+            results.append(record)
+            continue
         record["reference_sha256"] = hashlib.sha256(reference).hexdigest()
 
         def execute(engine, statement):

@@ -16,6 +16,8 @@ QUERIES = ("count_even", "sum_even")
 
 def validate(report, *, min_rows=1_000_000_000, max_median_seconds=None,
              max_p90_seconds=None, max_sample_spread_percent=None):
+    if not isinstance(report, dict):
+        raise ValueError("physical scan report must be an object")
     if type(min_rows) is not int or min_rows < 1:
         raise ValueError("min_rows must be a positive integer")
     for value in (max_median_seconds, max_p90_seconds):

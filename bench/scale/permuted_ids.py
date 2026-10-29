@@ -13,17 +13,18 @@ MULTIPLIER = 6364136223846793005
 
 
 def permuted(index, seed=0):
-    if not 0 <= index <= MASK or not 0 <= seed <= MASK:
+    if (type(index) is not int or type(seed) is not int
+            or not 0 <= index <= MASK or not 0 <= seed <= MASK):
         raise ValueError("index and seed must be UInt64")
     return (index * MULTIPLIER + seed) & MASK
 
 
 def emit(stream, rows, *, seed=0, batch_rows=8192):
-    if not 1 <= rows <= MASK + 1:
+    if type(rows) is not int or not 1 <= rows <= MASK + 1:
         raise ValueError("rows must fit in UInt64 domain")
-    if not 0 <= seed <= MASK:
+    if type(seed) is not int or not 0 <= seed <= MASK:
         raise ValueError("seed must be UInt64")
-    if not 1 <= batch_rows <= 1_000_000:
+    if type(batch_rows) is not int or not 1 <= batch_rows <= 1_000_000:
         raise ValueError("batch_rows must be in 1..1000000")
     value = seed
     for start in range(0, rows, batch_rows):

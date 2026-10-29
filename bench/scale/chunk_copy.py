@@ -5,12 +5,14 @@ Each shard is a separate database statement. The complete batch is NOT atomic.
 import argparse
 import hashlib
 import json
+import math
 import re
 import subprocess
 import time
 from pathlib import Path
 
 MAX_SHARDS = 16_384
+MAX_MANIFEST_BYTES = 8 * 1024 * 1024
 
 
 def copy_sql(table, path):
@@ -46,9 +48,18 @@ def verify_shard(path, entry):
 
 def load_chunks(binary, database, table, source_dir, *, timeout=600, execute=None,
                 dry_run=False):
-    if timeout <= 0:
-        raise ValueError("timeout must be positive")
-    manifest = json.loads((Path(source_dir) / "manifest.json").read_text(encoding="utf-8"))
+    if type(timeout) not in (int, float) or not math.isfinite(timeout) or timeout <= 0:
+        raise ValueError("timeout must be finite and positive")
+    if type(dry_run) is not bool:
+        raise ValueError("dry_run must be a boolean")
+    manifest_path = Path(source_dir) / "manifest.json"
+    if manifest_path.is_symlink():
+        raise ValueError("refusing a symlinked shard manifest")
+    with manifest_path.open("rb") as stream:
+        payload = stream.read(MAX_MANIFEST_BYTES + 1)
+    if len(payload) > MAX_MANIFEST_BYTES:
+        raise ValueError("shard manifest exceeds 8 MiB")
+    manifest = json.loads(payload)
     if manifest.get("format") != "rusthouse-tsv-shards-v1" or manifest.get("header") is not False:
         raise ValueError("expected a headerless rusthouse-tsv-shards-v1 manifest")
     shards = manifest.get("shards")
@@ -77,8 +88,6 @@ def load_chunks(binary, database, table, source_dir, *, timeout=600, execute=Non
         raise ValueError("total rows mismatch in shard manifest")
     if manifest.get("total_bytes") != sum(e["bytes"] for e in shards):
         raise ValueError("total bytes mismatch in shard manifest")
-    if type(dry_run) is not bool:
-        raise ValueError("dry_run must be a boolean")
     if dry_run:
         return {"workload": "tsv-shard-copy", "atomic_batch": False,
                 "dry_run": True, "preflight_verified": True,
