@@ -272,6 +272,7 @@ fn probe_inner<F>(
     options: ProbeOptions,
     right_width: usize,
     preserve_unmatched_left: bool,
+    mut matched_right: Option<&mut [bool]>,
     mut emit: F,
 ) -> Result<usize, ExecutionError>
 where
@@ -318,6 +319,10 @@ where
                             .iter()
                             .take(if options.any { 1 } else { usize::MAX })
                     {
+                        // Match presence is independent of a later WHERE filter.
+                        if let Some(flags) = matched_right.as_deref_mut() {
+                            flags[right_index] = true;
+                        }
                         if let Some((column, not_null)) = options.null_filter {
                             let is_null = if column < left_names.len() {
                                 typed::is_null_at(
@@ -562,6 +567,18 @@ struct InnerJoinColumns<'a> {
     null_filter: Option<(usize, bool)>,
 }
 
+fn keep_unmatched_right(
+    filter: Option<(usize, bool)>,
+    left_width: usize,
+    row: &[typed::Cell],
+) -> bool {
+    filter.is_none_or(|(column, not_null)| {
+        let is_null = column < left_width
+            || matches!(row[column - left_width], typed::Cell::Null);
+        is_null != not_null
+    })
+}
+
 fn execute_streaming_inner<W: Write>(
     query: &JoinSelect,
     left_path: &Path,
@@ -619,6 +636,8 @@ fn execute_streaming_inner<W: Write>(
         .limit
         .filter(|&limit| limit <= MAX_RESULT_ROWS)
         .and_then(|limit| query.offset.checked_add(limit));
+    let mut preflight_right_matched =
+        (query.kind == JoinType::Full).then(|| vec![false; right_rows.len()]);
     let preflight_matches = probe_inner(
         left_path,
         left_names,
@@ -632,9 +651,26 @@ fn execute_streaming_inner<W: Write>(
             any: query.any,
             null_filter,
         },
-        right_names.len(), query.kind == JoinType::Left,
+        right_names.len(), matches!(query.kind, JoinType::Left | JoinType::Full),
+        preflight_right_matched.as_deref_mut(),
         |_, _| Ok(()),
     )?;
+    let unmatched_right = if stop_after.is_some_and(|end| preflight_matches >= end) {
+        0
+    } else {
+        preflight_right_matched.as_ref().map_or(0, |matched| {
+            right_rows.iter().zip(matched)
+                .filter(|(row, was_matched)| {
+                    !**was_matched && keep_unmatched_right(null_filter, left_names.len(), row)
+                })
+                .count()
+        })
+    };
+    let total_matches = preflight_matches.checked_add(unmatched_right)
+        .ok_or_else(|| invalid("FULL JOIN output count overflow"))?;
+    if stop_after.is_none() && total_matches > MAX_RESULT_ROWS {
+        return Err(invalid("JOIN produces more than 131072 rows"));
+    }
 
     let header = selected
         .iter()
@@ -642,7 +678,7 @@ fn execute_streaming_inner<W: Write>(
         .collect::<Vec<_>>()
         .join("\t");
     writeln!(output, "{header}")?;
-    if preflight_matches <= query.offset {
+    if total_matches <= query.offset {
         return Ok(());
     }
 
@@ -651,6 +687,8 @@ fn execute_streaming_inner<W: Write>(
         .offset
         .saturating_add(query.limit.unwrap_or(usize::MAX));
     let mut position = 0usize;
+    let mut emitted_right_matched =
+        (query.kind == JoinType::Full).then(|| vec![false; right_rows.len()]);
     probe_inner(
         left_path,
         left_names,
@@ -664,19 +702,25 @@ fn execute_streaming_inner<W: Write>(
             any: query.any,
             null_filter,
         },
-        right_names.len(), query.kind == JoinType::Left,
+        right_names.len(), matches!(query.kind, JoinType::Left | JoinType::Full),
+        emitted_right_matched.as_deref_mut(),
         |left, right| {
             if position >= query.offset && position < end {
-                for (index, (column, _, _)) in selected.iter().enumerate() {
-                    if index != 0 {
-                        output.write_all(b"\t")?;
-                    }
-                    let cell = if *column < left_width {
+                for (index, (column, _, fallback)) in selected.iter().enumerate() {
+                    if index != 0 { output.write_all(b"\t")?; }
+                    let value = if *column < left_width {
                         &left[*column]
                     } else {
                         &right[*column - left_width]
                     };
-                    typed::write_value(output, cell)?;
+                    let value = if matches!(value, typed::Cell::Null) {
+                        fallback.map(|other| if other < left_width {
+                            &left[other]
+                        } else {
+                            &right[other - left_width]
+                        }).unwrap_or(value)
+                    } else { value };
+                    typed::write_value(output, value)?;
                 }
                 output.write_all(b"\n")?;
             }
@@ -684,6 +728,36 @@ fn execute_streaming_inner<W: Write>(
             Ok(())
         },
     )?;
+    if let Some(matched) = emitted_right_matched {
+        let null_left = vec![typed::Cell::Null; left_width];
+        for (right_index, right) in right_rows.iter().enumerate() {
+            if matched[right_index] || !keep_unmatched_right(null_filter, left_width, right) {
+                continue;
+            }
+            if position >= end { break; }
+            if position >= query.offset {
+                for (index, (column, _, fallback)) in selected.iter().enumerate() {
+                    if index != 0 { output.write_all(b"\t")?; }
+                    let value = if *column < left_width {
+                        &null_left[*column]
+                    } else {
+                        &right[*column - left_width]
+                    };
+                    let value = if matches!(value, typed::Cell::Null) {
+                        fallback.map(|other| if other < left_width {
+                            &null_left[other]
+                        } else {
+                            &right[other - left_width]
+                        }).unwrap_or(value)
+                    } else { value };
+                    typed::write_value(output, value)?;
+                }
+                output.write_all(b"\n")?;
+            }
+            position = position.checked_add(1)
+                .ok_or_else(|| invalid("FULL JOIN output count overflow"))?;
+        }
+    }
     Ok(())
 }
 
@@ -1009,7 +1083,7 @@ fn execute_streaming_ordered_inner<W: Write>(
             any: query.any,
             null_filter,
         },
-        right_names.len(), false,
+        right_names.len(), false, None,
         |left, right| {
             let at = |index: usize| -> &typed::Cell {
                 if index < width { &left[index] } else { &right[index - width] }
@@ -1108,7 +1182,7 @@ fn execute_streaming_inner_count<W: Write>(
             ProbeOptions {
                 materialize_rows: false, materialize_after: 0,
                 stop_after: Some(usize::MAX), any: query.any, null_filter,
-            }, right_names.len(), query.kind == JoinType::Left, |_, _| Ok(())
+            }, right_names.len(), query.kind == JoinType::Left, None, |_, _| Ok(())
         )?
     } else {
         if query.kind == JoinType::Left {
@@ -1310,7 +1384,9 @@ pub fn execute_join<W: Write>(
         );
     }
 
-    if matches!(query.kind, JoinType::Inner | JoinType::Left) && order.is_empty() {
+    if matches!(query.kind, JoinType::Inner | JoinType::Left | JoinType::Full)
+        && order.is_empty()
+        && (query.kind != JoinType::Full || right_meta.rows <= MAX_STREAM_BUILD_ROWS) {
         // A very large right table can be the streamed side if the left fits
         // the same bounded hash-build budget.
         if query.kind == JoinType::Inner
