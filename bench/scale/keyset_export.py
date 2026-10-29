@@ -64,14 +64,15 @@ def export(binary, database, table, output, start, rows, page_rows=8192, timeout
     temporary = output.with_name("." + output.name + f".{os.getpid()}.pending")
     digest = hashlib.sha256()
     pages = 0
+    stop = start + rows
     started = time.monotonic()
     try:
         with temporary.open("xb") as sink:
-            for first in range(start, start + rows, page_rows):
+            for first in range(start, stop, page_rows):
                 if (max_total_seconds is not None
                         and time.monotonic() - started > max_total_seconds):
                     raise TimeoutError("total export deadline exceeded")
-                count = min(page_rows, start + rows - first)
+                count = min(page_rows, stop - first)
                 data = execute(page_sql(table, column, first, count))
                 # Compare the complete expected page in one operation.
                 # Avoid one Python bytes allocation and one splitline per ID.
