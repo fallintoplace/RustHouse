@@ -112,7 +112,7 @@ pub(super) fn cell(column: &TypedColumn, row: usize) -> Cell {
 }
 
 fn is_typed(data_type: &str) -> bool {
-    matches!(data_type, "String" | "UUID" | "Date" | "DateTime")
+    matches!(data_type, "String" | "UUID" | "Date" | "Date32" | "DateTime")
         || data_type.starts_with("Nullable(")
         || data_type.starts_with("Array(")
         || data_type.starts_with("Map(")
@@ -171,6 +171,10 @@ fn parse_literal(data_type: &str, literal: &str) -> Result<Cell, ExecutionError>
     let kind = base_type(data_type);
     match kind {
         "String" => Ok(Cell::Text(literal.as_bytes().to_vec())),
+        "Date32" => rusthouse_storage::parse_date32(literal)
+            .or_else(|| literal.parse::<i32>().ok())
+            .map(|days| Cell::Numeric(Number::Signed(i128::from(days))))
+            .ok_or_else(|| ExecutionError::Invalid("invalid Date32 literal".into())),
         "Date" => rusthouse_storage::parse_date(literal)
             .or_else(|| literal.parse::<u16>().ok())
             .map(|days| Cell::Numeric(Number::Unsigned(u128::from(days))))
@@ -735,6 +739,12 @@ pub(super) fn write_typed_value<W: Write>(
         ("Date", Cell::Numeric(Number::Unsigned(days))) => {
             if let Ok(days) = u16::try_from(*days) {
                 return write!(output, "{}", rusthouse_storage::format_date(days))
+                    .map_err(ExecutionError::Io);
+            }
+        }
+        ("Date32", Cell::Numeric(Number::Signed(days))) => {
+            if let Ok(days) = i32::try_from(*days) {
+                return write!(output, "{}", rusthouse_storage::format_date32(days))
                     .map_err(ExecutionError::Io);
             }
         }
