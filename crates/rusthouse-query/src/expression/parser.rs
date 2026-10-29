@@ -9,26 +9,29 @@ fn parse_length_column(parser: &mut Parser) -> Result<ScalarExpr, ParseError> {
     Ok(ScalarExpr::TextLength(column))
 }
 
-fn parse_parenthesized(parser: &mut Parser) -> Result<ScalarExpr, ParseError> {
+fn parse_parenthesized(parser: &mut Parser, depth: usize) -> Result<ScalarExpr, ParseError> {
     parser.index += 1;
-    let result = parse_expression_tokens(parser)?;
+    let result = parse_expression_tokens_at_depth(parser, depth + 1)?;
     if !parser.take(Token::RParen) {
         return Err(ParseError("expected ')' in scalar expression".into()));
     }
     Ok(result)
 }
 
-pub(super) fn primary(parser: &mut Parser) -> Result<ScalarExpr, ParseError> {
+pub(super) fn primary(parser: &mut Parser, depth: usize) -> Result<ScalarExpr, ParseError> {
+    if depth >= MAX_EXPRESSION_DEPTH {
+        return Err(ParseError("scalar expression exceeds nesting depth of 64".into()));
+    }
     match parser.tokens.get(parser.index) {
         Some(Token::Plus) => {
             parser.index += 1;
-            primary(parser)
+            primary(parser, depth + 1)
         }
         Some(Token::Minus) => {
             parser.index += 1;
             Ok(ScalarExpr::Subtract(
                 Box::new(ScalarExpr::Integer(0)),
-                Box::new(primary(parser)?),
+                Box::new(primary(parser, depth + 1)?),
             ))
         }
         Some(Token::Word(name))
@@ -45,15 +48,15 @@ pub(super) fn primary(parser: &mut Parser) -> Result<ScalarExpr, ParseError> {
             parser.index += 1;
             Ok(ScalarExpr::Integer(number))
         }
-        Some(Token::LParen) => parse_parenthesized(parser),
+        Some(Token::LParen) => parse_parenthesized(parser, depth),
         _ => Err(ParseError(
             "expected column, integer, or '(' in expression".into(),
         )),
     }
 }
 
-pub(super) fn product(parser: &mut Parser) -> Result<ScalarExpr, ParseError> {
-    let mut expr = primary(parser)?;
+pub(super) fn product(parser: &mut Parser, depth: usize) -> Result<ScalarExpr, ParseError> {
+    let mut expr = primary(parser, depth)?;
     loop {
         let multiply = if parser.take(Token::Star) {
             true
@@ -62,7 +65,7 @@ pub(super) fn product(parser: &mut Parser) -> Result<ScalarExpr, ParseError> {
         } else {
             break;
         };
-        let right = Box::new(primary(parser)?);
+        let right = Box::new(primary(parser, depth)?);
         expr = if multiply {
             ScalarExpr::Multiply(Box::new(expr), right)
         } else {
