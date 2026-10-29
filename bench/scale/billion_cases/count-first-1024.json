@@ -1,0 +1,6 @@
+{
+  "id": "count-first-1024",
+  "kind": "count_range",
+  "lo": "start",
+  "hi": "first1024"
+}
