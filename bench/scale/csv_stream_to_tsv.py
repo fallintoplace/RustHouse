@@ -24,6 +24,13 @@ def escape_field(value, empty_as_null=False):
     return value.translate(ESCAPE_TRANSLATION)
 
 
+def validate_csv_record(fields, width, max_field_bytes, number):
+    if len(fields) != width:
+        raise ValueError(f"CSV column count mismatch at record {number}")
+    if any(len(value.encode("utf-8")) > max_field_bytes for value in fields):
+        raise ValueError("CSV record contains an oversized UTF-8 field")
+
+
 def convert(source, destination, *, header=False, empty_as_null=False,
             max_field_bytes=8 * 1024 * 1024, skip_header=False):
     if Path(source).resolve() == Path(destination).resolve():
@@ -49,10 +56,7 @@ def convert(source, destination, *, header=False, empty_as_null=False,
                         width = len(fields)
                         if width < 1 or width > 128:
                             raise ValueError("CSV must contain 1..128 columns")
-                    elif len(fields) != width:
-                        raise ValueError(f"CSV column count mismatch at record {count + 1}")
-                    if any(len(value.encode("utf-8")) > max_field_bytes for value in fields):
-                        raise ValueError("CSV record contains an oversized UTF-8 field")
+                    validate_csv_record(fields, width, max_field_bytes, count + 1)
                     if skip_header and header and count == 0:
                         count += 1
                         continue
