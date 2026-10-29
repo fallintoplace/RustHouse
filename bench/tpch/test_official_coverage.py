@@ -1,5 +1,6 @@
 import tempfile
 import unittest
+from unittest.mock import patch
 from pathlib import Path
 from official_coverage import coverage, clean_sql
 
@@ -67,6 +68,20 @@ class CoverageTests(unittest.TestCase):
             self.assertEqual(report["results"][0]["status"], "unverified")
             self.assertEqual(report["results"][1]["status"], "unsupported_query")
             self.assertEqual(len(observed), 1)
+
+    def test_oversized_references_fail_before_running_sql(self):
+        with tempfile.TemporaryDirectory() as root:
+            path = Path(root)
+            (path / "q01.sql").write_text("SELECT 1;")
+            refs = path / "refs"
+            refs.mkdir()
+            (refs / "q01.tsv").write_bytes(b"123456\n")
+            called = []
+            with patch("official_coverage.MAX_REFERENCE_BYTES", 3):
+                report = coverage("fake", "db", path, refs, runs=1, warmups=0,
+                                  execute=lambda sql: called.append(sql))
+            self.assertEqual(report["results"][0]["status"], "reference_error")
+            self.assertEqual(called, [])
 
     def test_reference_match_and_mismatch_are_distinct(self):
         with tempfile.TemporaryDirectory() as root:

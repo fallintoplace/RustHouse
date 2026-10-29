@@ -14,6 +14,8 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from common import cli_sql, emit_json
 from run import benchmark_one, summarize_coverage, query_fingerprint
 
+MAX_REFERENCE_BYTES = 64 * 1024 * 1024
+
 
 def clean_sql(path):
     text = "\n".join(line for line in path.read_text(encoding="utf-8").splitlines()
@@ -54,7 +56,19 @@ def coverage(binary, database, query_dir, reference_dir=None, runs=3, warmups=1,
                 results[number - 1] = {"query": number, "status": "missing_reference",
                                 "timings_seconds": [], "latency": None, "error": str(ref)}
                 continue
-            reference = ref.read_bytes()
+            # Cap third-party reference reads and refuse known symlinks.
+            if ref.is_symlink() or ref.stat().st_size > MAX_REFERENCE_BYTES:
+                results[number - 1] = {"query": number, "status": "reference_error",
+                                       "timings_seconds": [], "latency": None,
+                                       "error": "unsafe or oversized reference file"}
+                continue
+            with ref.open("rb") as stream:
+                reference = stream.read(MAX_REFERENCE_BYTES + 1)
+            if len(reference) > MAX_REFERENCE_BYTES:
+                results[number - 1] = {"query": number, "status": "reference_error",
+                                       "timings_seconds": [], "latency": None,
+                                       "error": "reference file grew beyond byte limit"}
+                continue
         pending.append((number, sql, reference))
 
     def run_query(item):
