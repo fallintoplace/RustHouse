@@ -10,6 +10,7 @@ pub(super) fn is_function(name: &str) -> bool {
     matches!(
         name.to_ascii_uppercase().as_str(),
         "ADDDAYS"
+            | "TOSTARTOFDAY"
             | "SUBTRACTQUARTERS"
             | "ADDQUARTERS"
             | "SUBTRACTYEARS"
@@ -42,6 +43,10 @@ pub(super) fn parse_after_open(
         "SUBTRACTYEARS" => offset_months(parser, depth, 12, true),
         "ADDQUARTERS" => offset_months(parser, depth, 3, false),
         "SUBTRACTQUARTERS" => offset_months(parser, depth, 3, true),
+        "TOSTARTOFDAY" => unary_date(parser, depth, |value| {
+            let seconds = value.seconds.div_euclid(DAY_SECONDS) * DAY_SECONDS;
+            Ok(ConstantValue::Text(Temporal::render(seconds, true)?))
+        }),
         _ => Err(ParseError(format!("unsupported date function: {name}"))),
     }
 }
@@ -230,6 +235,21 @@ fn offset_months(
     let target_days = days_from_civil(target_year, target_month, target_day);
     let seconds = target_days * DAY_SECONDS + value.seconds.rem_euclid(DAY_SECONDS);
     Ok(ConstantValue::Text(Temporal::render(seconds, value.has_time)?))
+}
+
+fn unary_date(
+    parser: &mut Parser,
+    depth: usize,
+    evaluate: impl FnOnce(Temporal) -> Result<ConstantValue, ParseError>,
+) -> Result<ConstantValue, ParseError> {
+    let source = super::text_scalar::text_arg(parser, depth + 1)?;
+    if !parser.take(Token::RParen) {
+        return Err(ParseError("expected ')' after date function".into()));
+    }
+    match source {
+        Some(source) => evaluate(Temporal::parse(&source)?),
+        None => Ok(ConstantValue::Null),
+    }
 }
 
 #[cfg(test)]
@@ -457,6 +477,24 @@ mod utc_compat_tests {
             "SELECT subtractQuarters('2023-02-29', 1)",
             "SELECT subtractQuarters('1900-02-01', 1)",
             "SELECT subtractQuarters('2024-01-01', 1, 2)",
+        ] {
+            assert!(crate::parse_select(sql).is_err(), "{sql}");
+        }
+    }
+
+    #[test]
+    fn start_day_preserves_calendar_boundaries() {
+        for (sql, expected) in [
+            ("SELECT toStartOfDay('2024-02-29 12:34:56')", "2024-02-29 00:00:00"),
+            ("SELECT toStartOfDay('2024-02-29')", "2024-02-29 00:00:00"),
+        ] {
+            assert_eq!(value(sql), ConstantValue::Text(expected.into()), "{sql}");
+        }
+        assert_eq!(value("SELECT toStartOfDay(NULL)"), ConstantValue::Null);
+        for sql in [
+            "SELECT toStartOfDay()",
+            "SELECT toStartOfDay('2023-02-29')",
+            "SELECT toStartOfDay('2024-03-06', 1)",
         ] {
             assert!(crate::parse_select(sql).is_err(), "{sql}");
         }
