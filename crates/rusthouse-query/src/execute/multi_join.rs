@@ -334,8 +334,12 @@ pub fn execute_multi_join<W: Write>(
         for (column, _, _) in &query.order_by {
             column_index(&relations, column)?;
         }
-        let selected = output_columns(query, &relations, &initial_step)?;
-        write_join_header(output, &selected)?;
+        if query.aggregate == Some(crate::JoinAggregate::CountStar) {
+            output.write_all(b"count\n")?;
+        } else {
+            let selected = output_columns(query, &relations, &initial_step)?;
+            write_join_header(output, &selected)?;
+        }
         return Ok(());
     }
 
@@ -462,6 +466,13 @@ pub fn execute_multi_join<W: Write>(
             }
             std::cmp::Ordering::Equal
         });
+    }
+    if query.aggregate == Some(crate::JoinAggregate::CountStar) {
+        output.write_all(b"count\n")?;
+        if query.offset == 0 {
+            writeln!(output, "{}", rows.len())?;
+        }
+        return Ok(());
     }
     let selected = output_columns(query, &relations, &initial_step)?;
     write_join_header(output, &selected)?;

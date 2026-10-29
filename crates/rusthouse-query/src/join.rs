@@ -473,10 +473,11 @@ pub fn parse_join(sql: &str) -> Result<Option<JoinSelect>, ParseError> {
             "unexpected JOIN syntax; supported: equi-JOIN, ORDER BY, LIMIT, OFFSET".into(),
         ));
     }
-    if aggregate.is_some() &&
-        (kind != JoinType::Inner || !steps.is_empty() || !order_by.is_empty()) {
+    if aggregate.is_some()
+        && (!order_by.is_empty() || (steps.is_empty() && kind != JoinType::Inner))
+    {
         return Err(ParseError(
-            "streamed JOIN COUNT requires a two-table INNER JOIN without ORDER BY".into()
+            "JOIN COUNT requires no ORDER BY; two-table COUNT requires INNER JOIN".into(),
         ));
     }
     Ok(Some(JoinSelect {
