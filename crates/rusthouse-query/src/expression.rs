@@ -16,6 +16,7 @@ pub enum ScalarExpr {
     Not(Box<ScalarExpr>),
     Between(Box<ScalarExpr>, Box<ScalarExpr>, Box<ScalarExpr>, bool),
     In(Box<ScalarExpr>, Vec<ScalarExpr>, bool),
+    Coalesce(Vec<ScalarExpr>),
     Add(Box<ScalarExpr>, Box<ScalarExpr>),
     Subtract(Box<ScalarExpr>, Box<ScalarExpr>),
     Multiply(Box<ScalarExpr>, Box<ScalarExpr>),
@@ -42,6 +43,11 @@ impl ScalarExpr {
             Self::Integer(_) | Self::Null => {}
             Self::IsNull(value, _) | Self::Not(value) =>
                 value.collect_referenced_columns(out, seen),
+            Self::Coalesce(values) => {
+                for value in values {
+                    value.collect_referenced_columns(out, seen);
+                }
+            }
             Self::In(value, candidates, _) => {
                 value.collect_referenced_columns(out, seen);
                 for candidate in candidates {
@@ -363,6 +369,15 @@ mod tests {
             ScalarExpr::In(_, members, false) if members[0] == ScalarExpr::Null));
         assert!(matches!(parse_scalar_expression("CASE WHEN a = 1 THEN NULL ELSE 2 END").unwrap(),
             ScalarExpr::CaseWhen(_, yes, _) if *yes == ScalarExpr::Null));
+    }
+
+    #[test]
+    fn coalesce_expression_requires_two_to_sixteen_arguments() {
+        assert!(matches!(parse_scalar_expression("coalesce(NULL, amount, 0)").unwrap(),
+            ScalarExpr::Coalesce(values) if values.len() == 3));
+        assert!(parse_scalar_expression("coalesce(amount)").is_err());
+        assert!(parse_scalar_expression(&format!("coalesce({})",
+            vec!["1"; 17].join(", "))).is_err());
     }
 
     #[test]
