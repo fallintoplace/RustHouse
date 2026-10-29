@@ -77,6 +77,7 @@ pub(super) fn is_function(name: &str) -> bool {
             | "SUBSTRING_INDEX"
             | "SUBSTRINGINDEXUTF8"
             | "QUERYSTRINGANDFRAGMENT"
+            | "FORMATREADABLESIZE"
             | "FORMATREADABLETIMEDELTA"
             | "TO_INT64"
             | "TOSTRING"
@@ -166,6 +167,33 @@ fn parse_at_depth(parser: &mut Parser, depth: usize) -> Result<ConstantValue, Pa
     }
     let value = match name.as_str() {
 
+        "FORMATREADABLESIZE" => {
+            let value = integer_arg(parser, depth + 1)?;
+            let precision = if parser.take(Token::Comma) {
+                integer_arg(parser, depth + 1)?
+            } else {
+                Some(2)
+            };
+            require(parser, Token::RParen, "FORMATREADABLESIZE requires one value")?;
+            match (value, precision) {
+                (Some(value), Some(precision)) => {
+                    let precision = usize::try_from(precision)
+                        .map_err(|_| ParseError("readable number precision must be nonnegative".into()))?;
+                    if precision > 8 {
+                        return Err(ParseError("readable number precision exceeds 8".into()));
+                    }
+                    const UNITS: &[&str] = &[" B", " KiB", " MiB", " GiB", " TiB", " PiB", " EiB"];
+                    let mut number = value as f64;
+                    let mut index = 0;
+                    while number.abs() >= 1024.0 && index + 1 < UNITS.len() {
+                        number /= 1024.0;
+                        index += 1;
+                    }
+                    ConstantValue::Text(format!("{number:.precision$}{}", UNITS[index]))
+                }
+                _ => ConstantValue::Null,
+            }
+        }
         "MODULOORNULL" => {
             let dividend = integer_arg(parser, depth + 1)?;
             require(parser, Token::Comma, "moduloOrNull requires two arguments")?;
