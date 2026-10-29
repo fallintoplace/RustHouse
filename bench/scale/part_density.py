@@ -9,6 +9,21 @@ import statistics
 from pathlib import Path
 
 
+def read_part_count(count_file, part_name):
+    with count_file.open("rb") as source:
+        payload = source.read(23)
+    if len(payload) > 22:
+        raise ValueError(f"invalid oversized count.txt in {part_name}")
+    raw = payload.decode("ascii")
+    digits = raw.removesuffix("\n").removesuffix("\r")
+    if not digits or not digits.isascii() or not digits.isdecimal():
+        raise ValueError(f"invalid count.txt in {part_name}")
+    count = int(digits)
+    if count <= 0 or count > (1 << 64) - 1:
+        raise ValueError(f"out-of-range part rows in {part_name}")
+    return count
+
+
 def part_density(root):
     root = Path(root)
     if not root.is_dir() or root.is_symlink():
@@ -22,18 +37,7 @@ def part_density(root):
             raise ValueError(f"refusing symlinked count.txt: {child.name}")
         if not child.is_dir() or not count_file.is_file():
             continue
-        with count_file.open("rb") as source:
-            payload = source.read(23)
-        if len(payload) > 22:
-            raise ValueError(f"invalid oversized count.txt in {child.name}")
-        raw = payload.decode("ascii")
-        digits = raw.removesuffix("\n").removesuffix("\r")
-        if not digits or not digits.isascii() or not digits.isdecimal():
-            raise ValueError(f"invalid count.txt in {child.name}")
-        count = int(digits)
-        if count <= 0 or count > (1 << 64) - 1:
-            raise ValueError(f"out-of-range part rows in {child.name}")
-        rows.append(count)
+        rows.append(read_part_count(count_file, child.name))
         if len(rows) > 16384:
             raise ValueError("more than 16384 parts")
     if not rows:
