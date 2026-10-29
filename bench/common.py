@@ -58,7 +58,7 @@ def latency_summary(seconds):
 
 def emit_json(report, path=None):
     """Write a report to stdout and, if requested, an identical JSON file."""
-    rendered = json.dumps(report, indent=2) + "\n"
+    rendered = json.dumps(report, indent=2, allow_nan=False) + "\n"
     if path is not None:
         target = Path(path)
         target.parent.mkdir(parents=True, exist_ok=True)
