@@ -32,19 +32,31 @@ def same_device(database, watch_dir):
 
 def guard(binary, database, table, source, watch_dir, min_free_gib=5,
           timeout=3600, poll_seconds=0.25):
-    if not math.isfinite(min_free_gib) or min_free_gib <= 0:
+    if (type(min_free_gib) not in (int, float)
+            or not math.isfinite(min_free_gib) or min_free_gib <= 0):
         raise ValueError("min-free-gib must be positive")
-    if not math.isfinite(timeout) or timeout <= 0:
+    if (type(timeout) not in (int, float)
+            or not math.isfinite(timeout) or timeout <= 0):
         raise ValueError("timeout must be positive")
-    if not math.isfinite(poll_seconds) or not 0.05 <= poll_seconds <= 10:
+    if (type(poll_seconds) not in (int, float)
+            or not math.isfinite(poll_seconds) or not 0.05 <= poll_seconds <= 10):
         raise ValueError("poll-seconds must be in 0.05..10")
+    reserve_float = min_free_gib * (1024**3)
+    if not math.isfinite(reserve_float) or not 1 <= reserve_float <= (1 << 63) - 1:
+        raise ValueError("min-free-gib must correspond to 1..Int64 bytes")
     if not Path(source).is_file():
         raise ValueError("source TSV is missing")
     if not Path(watch_dir).is_dir():
         raise ValueError("watch directory is missing")
-    if Path(database).exists() and not same_device(database, watch_dir):
+    # New database paths are not present yet. The filesystem of their nearest
+    # existing parent determines where COPY will consume disk space.
+    database_path = Path(database)
+    probe_path = database_path if database_path.exists() else next(
+        (parent for parent in database_path.parents if parent.exists()), None
+    )
+    if probe_path is None or not same_device(probe_path, watch_dir):
         raise ValueError("watch directory is not on the database filesystem")
-    reserve = int(min_free_gib * (1024**3))
+    reserve = math.ceil(reserve_float)
     free_start = shutil.disk_usage(watch_dir).free
     if free_start < reserve:
         raise RuntimeError("insufficient free disk space before COPY")

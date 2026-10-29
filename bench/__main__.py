@@ -82,8 +82,9 @@ def check():
 
 def optional_version(command):
     try:
-        result = subprocess.run(command, cwd=ROOT, capture_output=True, text=True, check=False)
-    except OSError:
+        result = subprocess.run(command, cwd=ROOT, capture_output=True,
+                                text=True, check=False, timeout=5)
+    except (OSError, subprocess.TimeoutExpired):
         return None
     return result.stdout.strip() if result.returncode == 0 else None
 

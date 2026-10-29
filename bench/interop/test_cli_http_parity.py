@@ -35,6 +35,15 @@ class InteropParityTests(unittest.TestCase):
             self.assertEqual(parity.verify_server_identity(8123), payload)
             response.read.assert_called_once_with(1_048_577)
 
+    def test_http_response_is_bounded(self):
+        with mock.patch.object(parity, "NO_REDIRECT_OPENER") as opener:
+            response = opener.open.return_value.__enter__.return_value
+            response.status = 200
+            response.read.return_value = b"x" * (4 * 1024 * 1024 + 1)
+            with self.assertRaisesRegex(ValueError, "exceeds 4 MiB"):
+                parity.request(8123, "SELECT 1")
+            response.read.assert_called_once_with(4 * 1024 * 1024 + 1)
+
     def test_post_query_targets_the_verified_opener(self):
         with mock.patch.object(parity, "NO_REDIRECT_OPENER") as opener:
             response = opener.open.return_value.__enter__.return_value

@@ -94,5 +94,22 @@ class ChunkCopyTests(unittest.TestCase):
                     load_chunks("rusthouse", "db", "events", path)
 
 
+    def test_rejects_invalid_copy_options_before_loading_manifest(self):
+        for timeout in (0, -1, float("nan"), float("inf"), True, "1"):
+            with self.subTest(timeout=timeout), self.assertRaisesRegex(ValueError, "timeout"):
+                load_chunks("bin", "db", "events", "/nonexistent", timeout=timeout)
+        with self.assertRaisesRegex(ValueError, "dry_run"):
+            load_chunks("bin", "db", "events", "/nonexistent", dry_run=1)
+
+    def test_rejects_oversized_manifest_before_copy(self):
+        from unittest.mock import patch
+        with tempfile.TemporaryDirectory() as root:
+            path = Path(root) / "manifest.json"
+            path.write_bytes(b"x" * 64)
+            with patch("bench.scale.chunk_copy.MAX_MANIFEST_BYTES", 16):
+                with self.assertRaisesRegex(ValueError, "manifest exceeds"):
+                    load_chunks("bin", "db", "events", root,
+                                execute=lambda *a, **kw: self.fail("must not copy"))
+
 if __name__ == "__main__":
     unittest.main()

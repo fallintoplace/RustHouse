@@ -55,6 +55,17 @@ class InputProfileTests(unittest.TestCase):
             self.assertEqual(profile(path)["rows"], 1)
 
 
+    def test_sorted_integer_profile_requires_canonical_decimal_keys(self):
+        with tempfile.TemporaryDirectory() as root:
+            source = Path(root) / "keys.tsv"
+            for payload in (b"00\n1\n", b"01\n2\n", b"0\n0002\n"):
+                with self.subTest(payload=payload):
+                    source.write_bytes(payload)
+                    with self.assertRaisesRegex(ValueError, "invalid UInt64"):
+                        profile(source, verify_sorted_uint64=True)
+            source.write_bytes(b"0\n1\n10\n")
+            self.assertEqual(profile(source, verify_sorted_uint64=True)["rows"], 3)
+
     def test_optional_sorted_uint64_verification(self):
         with tempfile.TemporaryDirectory() as root:
             path = Path(root) / "keys.tsv"
