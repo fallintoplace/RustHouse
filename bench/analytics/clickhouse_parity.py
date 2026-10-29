@@ -17,7 +17,7 @@ from pathlib import Path
 
 from bench.analytics.sqlite_oracle import assert_matches, cell_equal, parse_rows
 from bench.analytics.suite_runner import (
-    ACCOUNTS_ROWS, ACCOUNTS_SCHEMA, COLUMNS, SCHEMA, fact_row,
+    ACCOUNTS_ROWS, ACCOUNTS_SCHEMA, COLUMNS, SCHEMA,
     load_workload, make_fixture,
 )
 from bench.common import cli_sql, emit_json
@@ -146,24 +146,98 @@ def cli_clickhouse(client, host, port, query, timeout, database=None, data=None)
     return result.stdout
 
 
+
+MAX_FIXTURE_LINE_BYTES = 1024 * 1024
+UINT64_MAX = (1 << 64) - 1
+
+
+def _decode_fixture_field(field):
+    """Decode the escaped TSV bytes that RustHouse COPY also reads."""
+    decoded = bytearray()
+    index = 0
+    escapes = {
+        ord("t"): 9, ord("n"): 10, ord("r"): 13,
+        ord("0"): 0, ord("b"): 8, ord("f"): 12,
+        ord("v"): 11, ord("\\"): 92,
+    }
+    while index < len(field):
+        if field[index] != 92:
+            decoded.append(field[index])
+            index += 1
+            continue
+        index += 1
+        if index == len(field):
+            raise ValueError("incomplete fixture TSV escape")
+        if field[index] == ord("x"):
+            pair = field[index + 1:index + 3]
+            if len(pair) != 2 or any(byte not in b"0123456789abcdefABCDEF" for byte in pair):
+                raise ValueError("invalid fixture TSV hex escape")
+            decoded.append(int(pair, 16))
+            index += 3
+        else:
+            replacement = escapes.get(field[index])
+            if replacement is None:
+                raise ValueError("unsupported fixture TSV escape")
+            decoded.append(replacement)
+            index += 1
+    return decoded.decode("utf-8")
+
+
+def _copy_fixture_to_json(source, target, names, numeric, nullable, expected_count):
+    """Use the real COPY TSV input, not an independently regenerated dataset."""
+    seen = 0
+    with source.open("rb") as reader, target.open("w", encoding="utf-8") as writer:
+        header = reader.readline(MAX_FIXTURE_LINE_BYTES + 1)
+        if header != ("\t".join(names) + "\n").encode():
+            raise ValueError(f"{source.name}: unexpected TSV column header")
+        while True:
+            line = reader.readline(MAX_FIXTURE_LINE_BYTES + 1)
+            if not line:
+                break
+            seen += 1
+            if seen > expected_count or len(line) > MAX_FIXTURE_LINE_BYTES:
+                raise ValueError(f"{source.name}: too many or oversized fixture rows")
+            if not line.endswith(b"\n"):
+                raise ValueError(f"{source.name}: unterminated TSV fixture row")
+            fields = line[:-1].split(b"\t")
+            if len(fields) != len(names):
+                raise ValueError(f"{source.name}: fixture row width mismatch")
+            record = {}
+            for name, raw in zip(names, fields):
+                if raw == b"\\N":
+                    if name not in nullable:
+                        raise ValueError(f"{source.name}: NULL in nonnullable field {name}")
+                    value = None
+                else:
+                    value = _decode_fixture_field(raw)
+                    if name in numeric:
+                        if not value.isascii() or not value.isdigit():
+                            raise ValueError(f"{source.name}: invalid unsigned integer in {name}")
+                        value = int(value)
+                        if value > UINT64_MAX:
+                            raise ValueError(f"{source.name}: UInt64 overflow in {name}")
+                record[name] = value
+            writer.write(json.dumps(record, ensure_ascii=False) + "\n")
+        if seen != expected_count:
+            raise ValueError(
+                f"{source.name}: expected {expected_count} fixture rows, found {seen}"
+            )
+
+
 def fixture_json(directory, rows):
-    """Reuse the exact deterministic rows loaded into RustHouse, including NULLs."""
+    """Build ClickHouse JSONEachRow from the exact TSV loaded into RustHouse."""
     directory = Path(directory)
-    path = directory / "events.jsonl"
-    with path.open("w", encoding="utf-8") as stream:
-        for index in range(rows):
-            stream.write(json.dumps(dict(zip(COLUMNS, fact_row(index)))) + "\n")
-    accounts_path = directory / "accounts.jsonl"
-    with (directory / "accounts.tsv").open(encoding="utf-8") as src, accounts_path.open(
-        "w", encoding="utf-8"
-    ) as dst:
-        next(src)
-        for line in src:
-            user_id, tier, country = line.rstrip("\n").split("\t")
-            dst.write(json.dumps({
-                "user_id": int(user_id), "tier": tier, "country": country
-            }) + "\n")
-    return path, accounts_path
+    event_json = directory / "events.jsonl"
+    account_json = directory / "accounts.jsonl"
+    _copy_fixture_to_json(
+        directory / "events.tsv", event_json, COLUMNS,
+        {"event_id", "user_id", "amount", "quantity"}, {"coupon"}, rows,
+    )
+    _copy_fixture_to_json(
+        directory / "accounts.tsv", account_json,
+        ("user_id", "tier", "country"), {"user_id"}, set(), ACCOUNTS_ROWS,
+    )
+    return event_json, account_json
 
 
 def clickhouse_create_table(schema):
