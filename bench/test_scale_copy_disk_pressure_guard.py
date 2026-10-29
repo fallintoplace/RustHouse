@@ -29,7 +29,7 @@ class DiskGuardTests(unittest.TestCase):
 
             with patch("bench.scale.copy_disk_pressure_guard.subprocess.Popen", side_effect=launch):
                 with self.assertRaisesRegex(RuntimeError, "COPY failed"):
-                    guard("fake", "db", "events", source, temp,
+                    guard("fake", Path(temp) / "db", "events", source, temp,
                           min_free_gib=0.000001, timeout=3, poll_seconds=0.05)
 
     def test_refuses_missing_input_and_bad_budgets(self):
@@ -43,6 +43,20 @@ class DiskGuardTests(unittest.TestCase):
             with self.assertRaisesRegex(ValueError, "poll"):
                 guard("unused", "unused", "events", fake, temp,
                       poll_seconds=0.001)
+
+    def test_rejects_wrong_device_before_creating_a_new_database(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            source = root / "input.tsv"
+            source.write_bytes(b"1\n")
+            db = root / "new" / "nested" / "database"
+            with patch("bench.scale.copy_disk_pressure_guard.same_device",
+                       return_value=False) as device_check:
+                with self.assertRaisesRegex(ValueError, "database filesystem"):
+                    guard("rusthouse", db, "events", source, root,
+                          min_free_gib=0.000001)
+                self.assertEqual(device_check.call_args.args[0], root)
+            self.assertFalse(db.exists())
 
     def test_rejects_monitor_on_another_existing_database_device(self):
         with tempfile.TemporaryDirectory() as temp:
