@@ -1,7 +1,10 @@
 //! Read a frozen directory containing active, non-overlapping wide MergeTree parts.
 //! Do not point this at a live upstream table directory: renames during merges
 //! make a filesystem directory scan an inconsistent snapshot.
-use crate::{Column, NumericColumn, NumericPartReader, PartError, PartMetadata, inspect_part};
+use crate::{
+    Column, NumericColumn, NumericPartReader, PartError, PartMetadata, inspect_part,
+    read_part_row_count,
+};
 use std::collections::HashMap;
 use std::fs;
 use std::io;
@@ -454,8 +457,8 @@ impl NumericQueryReader {
             // Skipping a complete part never needs to open its wide streams or
             // decode thousands of mark entries.
             let part = &self.parts[self.next_part];
-            let metadata = inspect_part(part)?;
-            if let Ok(rows) = usize::try_from(metadata.rows) {
+            let rows = read_part_row_count(part)?;
+            if let Ok(rows) = usize::try_from(rows) {
                 if rows <= max_rows - skipped {
                     skipped += rows;
                     self.next_part += 1;
