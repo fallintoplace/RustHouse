@@ -9,6 +9,7 @@ use std::path::Path;
 const MAX_TABLES: usize = 1024;
 const MAX_DIRECTORY_ENTRIES: usize = 10_000;
 const MAX_SCHEMA_BYTES: u64 = 32 * 1024;
+const MAX_SCHEMA_COLUMNS: usize = 64;
 
 fn identifier(name: &str) -> bool {
     let mut bytes = name.bytes();
@@ -65,17 +66,12 @@ fn valid_schema_contents(contents: &str) -> bool {
         return false;
     }
     let mut names = HashSet::new();
-    let mut count = 0;
-    for line in lines {
-        count += 1;
-        if count > 64 {
-            return false;
-        }
-        if !valid_schema_line(line, &mut names) {
+    for (index, line) in lines.enumerate() {
+        if index >= MAX_SCHEMA_COLUMNS || !valid_schema_line(line, &mut names) {
             return false;
         }
     }
-    count > 0
+    !names.is_empty()
 }
 
 fn discoverable_table(database: &Path, name: &str, schema: &Path) -> bool {

@@ -9,6 +9,7 @@ const MAX_CONDITIONS: usize = 16;
 const MAX_BRANCHES: usize = 64;
 const MAX_EXPANDED_CONDITIONS: usize = 256;
 const MAX_DEPTH: usize = 16;
+const MAX_IN_LIST_VALUES: usize = 32;
 
 fn bad_expansion() -> ParseError {
     ParseError("WHERE boolean expression expands beyond bounded predicate limits".into())
@@ -107,14 +108,19 @@ fn negate(branches: Branches) -> Result<Branches, ParseError> {
     Ok(inverted)
 }
 
+fn check_parenthesis_depth(depth: usize) -> Result<(), ParseError> {
+    if depth >= MAX_DEPTH {
+        return Err(ParseError("WHERE has too many nested parentheses".into()));
+    }
+    Ok(())
+}
+
 fn parse_atom(parser: &mut Parser, conditions: &mut usize, depth: usize) -> Result<Branches, ParseError> {
     // Parenthesized negations are different from NOT applied to one predicate:
     // invert every AND/OR branch using De Morgan's laws before execution.
     if parser.keyword("NOT") {
         if parser.take(Token::LParen) {
-            if depth >= MAX_DEPTH {
-                return Err(ParseError("WHERE has too many nested parentheses".into()));
-            }
+            check_parenthesis_depth(depth)?;
             let expression = parse_or(parser, conditions, depth + 1)?;
             if !parser.take(Token::RParen) {
                 return Err(ParseError("NOT group requires closing ')'".into()));
@@ -125,9 +131,7 @@ fn parse_atom(parser: &mut Parser, conditions: &mut usize, depth: usize) -> Resu
         parser.index -= 1;
     }
     if parser.take(Token::LParen) {
-        if depth >= MAX_DEPTH {
-            return Err(ParseError("WHERE has too many nested parentheses".into()));
-        }
+        check_parenthesis_depth(depth)?;
         let branches = parse_or(parser, conditions, depth + 1)?;
         if !parser.take(Token::RParen) {
             return Err(ParseError("WHERE requires closing ')'".into()));
@@ -197,7 +201,7 @@ fn parse_atom(parser: &mut Parser, conditions: &mut usize, depth: usize) -> Resu
         }
         let mut values = Vec::new();
         loop {
-            if values.len() == 32 {
+            if values.len() == MAX_IN_LIST_VALUES {
                 return Err(ParseError("IN supports at most 32 values".into()));
             }
             values.push(parser.literal()?);

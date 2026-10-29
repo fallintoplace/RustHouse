@@ -7,6 +7,10 @@ use std::collections::{HashMap, hash_map::Entry};
 use std::io::Write;
 use std::path::Path;
 
+fn group_limit_error() -> ExecutionError {
+    ExecutionError::Invalid("GROUP BY supports at most 100000 groups".into())
+}
+
 fn replaces_text_extreme(
     value: &[u8],
     current: Option<&Cell>,
@@ -310,9 +314,7 @@ fn parallel_grouped_integer_sum(
                                 Entry::Occupied(entry) => *entry.get(),
                                 Entry::Vacant(entry) => {
                                     if groups.len() >= MAX_GROUPS {
-                                        return Err(ExecutionError::Invalid(
-                                            "GROUP BY supports at most 100000 groups".into(),
-                                        ));
+                                        return Err(group_limit_error());
                                     }
                                     let id = groups.len();
                                     entry.insert(id);
@@ -347,9 +349,7 @@ fn parallel_grouped_integer_sum(
                 }
             } else {
                 if groups.len() >= MAX_GROUPS {
-                    return Err(ExecutionError::Invalid(
-                        "GROUP BY supports at most 100000 groups".into(),
-                    ));
+                    return Err(group_limit_error());
                 }
                 by_key.insert(key_id, groups.len());
                 groups.push((key, partial));
@@ -505,9 +505,7 @@ pub(super) fn execute_grouped_aggregate<W: Write>(
                         existing
                     } else {
                         if groups.len() >= MAX_GROUPS {
-                            return Err(ExecutionError::Invalid(
-                                "GROUP BY supports at most 100000 groups".into(),
-                            ));
+                            return Err(group_limit_error());
                         }
                         let index = groups.len();
                         uuid_groups.insert(key, index);
@@ -522,9 +520,7 @@ pub(super) fn execute_grouped_aggregate<W: Write>(
                         existing
                     } else {
                         if groups.len() >= MAX_GROUPS {
-                            return Err(ExecutionError::Invalid(
-                                "GROUP BY supports at most 100000 groups".into(),
-                            ));
+                            return Err(group_limit_error());
                         }
                         charge_grouped_text(&mut retained_text_bytes, key.len())?;
                         let index = groups.len();
@@ -538,9 +534,7 @@ pub(super) fn execute_grouped_aggregate<W: Write>(
                         Entry::Occupied(entry) => *entry.get(),
                         Entry::Vacant(entry) => {
                             if groups.len() >= MAX_GROUPS {
-                                return Err(ExecutionError::Invalid(
-                                    "GROUP BY supports at most 100000 groups".into(),
-                                ));
+                                return Err(group_limit_error());
                             }
                             entry.insert(groups.len());
                             groups.push((key, AggregateState::new(*function)));
@@ -636,117 +630,17 @@ pub(super) fn execute_grouped_aggregate<W: Write>(
 }
 
 #[cfg(test)]
-mod borrowed_text_extrema_tests {
-    use super::*;
-
-    #[test]
-    fn compares_borrowed_text_without_replacing_ties() {
-        let incumbent = Cell::Text(b"beta".to_vec());
-        assert!(replaces_text_extreme(
-            b"alpha",
-            Some(&incumbent),
-            AggregateFunction::Min
-        ));
-        assert!(!replaces_text_extreme(
-            b"beta",
-            Some(&incumbent),
-            AggregateFunction::Min
-        ));
-        assert!(!replaces_text_extreme(
-            b"alpha",
-            Some(&incumbent),
-            AggregateFunction::Max
-        ));
-        assert!(replaces_text_extreme(
-            b"gamma",
-            Some(&incumbent),
-            AggregateFunction::Max
-        ));
-        assert!(replaces_text_extreme(b"beta", None, AggregateFunction::Min));
-    }
-}
+#[path = "typed_aggregate/borrowed_text_extrema_tests.rs"]
+mod borrowed_text_extrema_tests;
 
 #[cfg(test)]
-mod grouped_direct_numeric_aggregate_tests {
-    use super::*;
-
-    #[test]
-    fn direct_grouped_sum_skips_nulls_and_preserves_signed_values() {
-        let column = TypedColumn::NullableNumeric {
-            values: NumericColumn::Int64(vec![-3, 17, 9]),
-            nulls: vec![0, 1, 0],
-        };
-        let mut aggregate = AggregateState::new(AggregateFunction::Sum);
-        for row in 0..column.len() {
-            update_group_numeric(&mut aggregate, &column, row).unwrap();
-        }
-        assert_eq!(aggregate.render(), "6");
-        let non_numeric = TypedColumn::Numeric(NumericColumn::UInt64(vec![4]));
-        update_group_numeric(&mut aggregate, &non_numeric, 0).unwrap();
-        assert_eq!(aggregate.render(), "10");
-    }
-}
+#[path = "typed_aggregate/grouped_direct_numeric_aggregate_tests.rs"]
+mod grouped_direct_numeric_aggregate_tests;
 
 #[cfg(test)]
-mod nullable_numeric_aggregate_bucket_tests {
-    use super::*;
-
-    #[test]
-    fn null_is_separate_from_zero_and_all_signed_boundary_keys() {
-        let nullable = TypedColumn::NullableNumeric {
-            values: NumericColumn::Int8(vec![0, -1, i8::MIN, i8::MAX, 0]),
-            nulls: vec![1, 0, 0, 0, 0],
-        };
-        assert_eq!(
-            (0..5).map(|index| narrow_group_bucket(&nullable, index, 256).unwrap()).collect::<Vec<_>>(),
-            [256, 255, 128, 127, 0],
-        );
-        let nullable_16 = TypedColumn::NullableNumeric {
-            values: NumericColumn::UInt16(vec![0, 0, u16::MAX, 42]),
-            nulls: vec![0, 1, 0, 0],
-        };
-        assert_eq!(
-            (0..4).map(|index| narrow_group_bucket(&nullable_16, index, 65_536).unwrap()).collect::<Vec<_>>(),
-            [0, 65_536, 65_535, 42],
-        );
-    }
-
-    #[test]
-    fn same_dense_bucket_reuses_group_state_for_nullable_sum() {
-        let dimension = TypedColumn::NullableNumeric {
-            values: NumericColumn::UInt8(vec![1, 1, 2, 0, 0, 1]),
-            nulls: vec![0, 0, 0, 1, 1, 0],
-        };
-        let amounts = TypedColumn::Numeric(NumericColumn::UInt64(vec![10, 20, 30, 40, 50, 60]));
-        let mut slots = vec![usize::MAX; 257];
-        let mut groups = Vec::<(Cell, AggregateState)>::new();
-        for row in 0..6 {
-            let bucket = narrow_group_bucket(&dimension, row, 256).unwrap();
-            if slots[bucket] == usize::MAX {
-                slots[bucket] = groups.len();
-                groups.push((typed::cell(&dimension, row), AggregateState::new(AggregateFunction::Sum)));
-            }
-            update_group_numeric(&mut groups[slots[bucket]].1, &amounts, row).unwrap();
-        }
-        assert_eq!(groups.len(), 3);
-        assert_eq!(groups[slots[1]].1.render(), "90");
-        assert_eq!(groups[slots[2]].1.render(), "30");
-        assert_eq!(groups[slots[256]].1.render(), "90");
-        assert!(matches!(groups[slots[256]].0, Cell::Null));
-    }
-}
+#[path = "typed_aggregate/nullable_numeric_aggregate_bucket_tests.rs"]
+mod nullable_numeric_aggregate_bucket_tests;
 
 #[cfg(test)]
-mod grouped_text_budget_tests {
-    use super::*;
-    #[test]
-    fn repeated_text_keys_are_only_charged_once_by_the_caller() {
-        let mut used = 0usize;
-        charge_grouped_text(&mut used, 4096).unwrap();
-        assert!(used >= 8192);
-        let previous = used;
-        assert!(charge_grouped_text(&mut used, MAX_GROUPED_TEXT_BYTES).is_err());
-        assert_eq!(used, previous);
-        assert!(charge_grouped_text(&mut used, usize::MAX).is_err());
-    }
-}
+#[path = "typed_aggregate/grouped_text_budget_tests.rs"]
+mod grouped_text_budget_tests;
