@@ -1478,11 +1478,11 @@ pub fn execute_join<W: Write>(
     if matches!(query.kind, JoinType::Right | JoinType::Full)
         && order.is_empty()
         && left_meta.rows <= MAX_STREAM_BUILD_ROWS
-        && right_meta.rows > if query.kind == JoinType::Full {
-            MAX_STREAM_BUILD_ROWS
+        && (if query.kind == JoinType::Full {
+            right_meta.rows > MAX_STREAM_BUILD_ROWS
         } else {
-            MAX_INPUT_ROWS
-        }
+            right_meta.rows > MAX_INPUT_ROWS
+        })
     {
         return execute_streaming_right_outer(
             query, left_path, right_path,
