@@ -45,7 +45,7 @@ pub(super) fn parse_content_length(value: &str) -> Result<usize, String> {
         .map_err(|_| "invalid peer Content-Length".into())
 }
 
-fn parse_required_headers<'a>(
+fn parse_required_peer_headers<'a>(
     lines: impl Iterator<Item = &'a str>,
 ) -> Result<(usize, String, bool), String> {
     let mut length = None;
@@ -106,7 +106,7 @@ fn response_head(raw: &[u8]) -> Result<Option<ResponseHead>, String> {
     let head = std::str::from_utf8(&raw[..head_end]).map_err(|_| "peer headers are not UTF-8")?;
     let mut lines = head.split("\r\n");
     let status = parse_http_status(lines.next().ok_or("missing peer status")?)?;
-    let (length, content_type, compressed) = parse_required_headers(lines)?;
+    let (length, content_type, compressed) = parse_required_peer_headers(lines)?;
     if length > MAX_RESPONSE_BYTES {
         return Err("peer response size mismatch or exceeds 8 MiB".into());
     }
