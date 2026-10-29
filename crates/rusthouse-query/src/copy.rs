@@ -2,6 +2,8 @@
 use super::{ParseError, Parser, Token, tokenize};
 use std::collections::HashSet;
 
+const MAX_COPY_COLUMNS: usize = 128;
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum CopyFormat {
     Csv,
@@ -25,7 +27,7 @@ fn parse_copy_columns(parser: &mut Parser) -> Result<Option<Vec<String>>, ParseE
     let mut columns = Vec::new();
     let mut seen = HashSet::new();
     loop {
-        if columns.len() >= 128 {
+        if columns.len() >= MAX_COPY_COLUMNS {
             return Err(ParseError("COPY supports at most 128 columns".into()));
         }
         let column = parser.bounded_word()?;
