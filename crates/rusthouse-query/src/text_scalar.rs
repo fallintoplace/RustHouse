@@ -6,7 +6,8 @@ const MAX_TEXT_BYTES: usize = 1_048_576;
 pub(super) fn is_function(name: &str) -> bool {
     super::date_scalar::is_function(name) || matches!(
         name.to_ascii_uppercase().as_str(),
-        "JSONEXTRACTBOOL"
+        "CUTURLPARAMETER"
+            | "JSONEXTRACTBOOL"
             | "IPV4NUMTOSTRING"
             | "IPV4STRINGTONUM"
             | "IPV4STRINGTONUMORNULL"
@@ -373,6 +374,49 @@ fn parse_at_depth(parser: &mut Parser, depth: usize) -> Result<ConstantValue, Pa
                         .map_err(|error| ParseError(format!("invalid JSON: {error}")))?;
                     let is_true = json.at_path(&path).is_some_and(|value| value.raw() == "true");
                     ConstantValue::Integer(i64::from(is_true))
+                }
+                _ => ConstantValue::Null,
+            }
+        }
+        "CUTURLPARAMETER" => {
+            let input = text_arg(parser, depth + 1)?;
+            require(
+                parser,
+                Token::Comma,
+                "cutURLParameter requires a parameter name",
+            )?;
+            let parameter = text_arg(parser, depth + 1)?;
+            require(
+                parser,
+                Token::RParen,
+                "cutURLParameter requires two arguments",
+            )?;
+            match (input, parameter) {
+                (Some(input), Some(parameter)) => {
+                    let (url, fragment) = input
+                        .split_once('#')
+                        .map_or((input.as_str(), None), |(url, fragment)| {
+                            (url, Some(fragment))
+                        });
+                    if let Some((prefix, query)) = url.split_once('?') {
+                        let kept: Vec<&str> = query
+                            .split('&')
+                            .filter(|pair| pair.split('=').next() != Some(parameter.as_str()))
+                            .collect();
+                        let mut output = String::with_capacity(input.len());
+                        output.push_str(prefix);
+                        if !kept.is_empty() {
+                            output.push('?');
+                            output.push_str(&kept.join("&"));
+                        }
+                        if let Some(fragment) = fragment {
+                            output.push('#');
+                            output.push_str(fragment);
+                        }
+                        ConstantValue::Text(output)
+                    } else {
+                        ConstantValue::Text(input)
+                    }
                 }
                 _ => ConstantValue::Null,
             }
@@ -3796,5 +3840,32 @@ mod clickhouse_json_extract_bool_tests {
             );
         }
         assert!(parse_select("SELECT JSONExtractBool('not-json', 'x')").is_err());
+    }
+}
+
+#[cfg(test)]
+mod clickhouse_cut_url_parameter_tests {
+    use crate::{parse_select, ConstantValue, Projection};
+
+    #[test]
+    fn removes_named_query_parameters_and_preserves_fragments() {
+        for (sql, expected) in [
+            ("SELECT cutURLParameter('https://a/?x=1&y=2', 'x')",
+                "https://a/?y=2"),
+            ("SELECT cutURLParameter('https://a/?x=1&x=2#frag', 'x')",
+                "https://a/#frag"),
+            ("SELECT cutURLParameter('https://a/?x=1', 'missing')",
+                "https://a/?x=1"),
+            ("SELECT cutURLParameter('https://a/path#frag', 'x')",
+                "https://a/path#frag"),
+        ] {
+            assert!(
+                matches!(parse_select(sql).unwrap().projection, Projection::Constants(values)
+                    if values.len() == 1
+                        && values[0].value == ConstantValue::Text(expected.into())),
+                "{sql}",
+            );
+        }
+        assert!(parse_select("SELECT cutURLParameter('x')").is_err());
     }
 }
