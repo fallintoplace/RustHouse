@@ -33,7 +33,7 @@ impl<W: Write> CsvWriter<W> {
             if field_count != 0 {
                 self.encoded.write_all(b",")?;
             }
-            write_csv_field(&mut self.encoded, field)?;
+            write_csv_field_from_tsv(&mut self.encoded, field)?;
             field_count += 1;
         }
         if self.columns.is_some_and(|columns| columns != field_count) {
@@ -50,7 +50,7 @@ impl<W: Write> CsvWriter<W> {
     }
 }
 
-fn write_csv_field<W: Write>(output: &mut W, field: &[u8]) -> io::Result<()> {
+fn write_csv_field_from_tsv<W: Write>(output: &mut W, field: &[u8]) -> io::Result<()> {
     if field == b"\\N" {
         return output.write_all(b"\\N");
     }
@@ -153,8 +153,8 @@ mod tests {
     #[test]
     fn writes_null_markers_and_plain_fields() {
         let mut output = Vec::new();
-        write_csv_field(&mut output, b"\\N").unwrap();
-        write_csv_field(&mut output, b"plain").unwrap();
+        write_csv_field_from_tsv(&mut output, b"\\N").unwrap();
+        write_csv_field_from_tsv(&mut output, b"plain").unwrap();
         assert_eq!(output, b"\\Nplain");
     }
 
@@ -179,7 +179,7 @@ mod tests {
             bytes: Vec::new(),
         };
         let field = vec![b'x'; 32 * 1024];
-        write_csv_field(&mut output, &field).unwrap();
+        write_csv_field_from_tsv(&mut output, &field).unwrap();
         assert_eq!(output.calls, 1);
         assert_eq!(output.bytes, field);
     }
@@ -253,13 +253,13 @@ mod literal_null_marker_regressions {
     #[test]
     fn csv_plain_utf8_fields_skip_escape_decoding() {
         let mut output = Vec::new();
-        write_csv_field(&mut output, "café".as_bytes()).unwrap();
+        write_csv_field_from_tsv(&mut output, "café".as_bytes()).unwrap();
         assert_eq!(output, "café".as_bytes());
         output.clear();
-        write_csv_field(&mut output, b"hello,world").unwrap();
+        write_csv_field_from_tsv(&mut output, b"hello,world").unwrap();
         assert_eq!(output, b"\"hello,world\"");
         output.clear();
-        assert!(write_csv_field(&mut output, b"\xff").is_err());
+        assert!(write_csv_field_from_tsv(&mut output, b"\xff").is_err());
     }
 
     #[test]
