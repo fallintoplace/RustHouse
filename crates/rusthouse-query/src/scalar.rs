@@ -104,6 +104,7 @@ pub(super) fn is_function(name: &str) -> bool {
         || name.eq_ignore_ascii_case("INTEXP10")
         || name.eq_ignore_ascii_case("BITTESTALL")
         || name.eq_ignore_ascii_case("BITTESTANY")
+        || name.eq_ignore_ascii_case("INTDIVORZERO")
         || name.eq_ignore_ascii_case("TOINT8")
         || name.eq_ignore_ascii_case("TOINT16")
 }
@@ -985,6 +986,16 @@ fn parse_compat_bittestany(parser: &mut Parser, depth: usize) -> Result<i64, Par
     Ok(i64::from(value & mask != 0))
 }
 
+/// ClickHouse-compatible zero-safe integer division for constant Int64 expressions.
+fn parse_compat_intdivorzero(parser: &mut Parser, depth: usize) -> Result<i64, ParseError> {
+    require_token(parser, Token::LParen, "intDivOrZero requires '('")?;
+    let numerator = expression(parser, depth + 1)?;
+    require_token(parser, Token::Comma, "intDivOrZero requires two arguments")?;
+    let divisor = expression(parser, depth + 1)?;
+    require_token(parser, Token::RParen, "intDivOrZero requires ')'")?;
+    Ok(numerator.checked_div(divisor).unwrap_or(0))
+}
+
 fn factor(parser: &mut Parser, depth: usize) -> Result<i64, ParseError> {
     if depth >= MAX_DEPTH {
         return Err(ParseError(
@@ -1155,6 +1166,9 @@ fn factor(parser: &mut Parser, depth: usize) -> Result<i64, ParseError> {
     }
     if parser.keyword("BITTESTANY") {
         return parse_compat_bittestany(parser, depth);
+    }
+    if parser.keyword("INTDIVORZERO") {
+        return parse_compat_intdivorzero(parser, depth);
     }
     if matches!(parser.tokens.get(parser.index), Some(Token::Word(name)) if is_function(name)) {
         let name = parser.word()?;
@@ -1370,6 +1384,25 @@ mod ch_bittestany_tests {
             assert_eq!(parse_select(sql).unwrap().projection, Projection::Literal(expected), "{sql}");
         }
         for sql in ["SELECT bitTestAny(1)", "SELECT bitTestAny(1,2,3)"] {
+            assert!(parse_select(sql).is_err(), "{sql}");
+        }
+    }
+}
+
+#[cfg(test)]
+mod ch_intdivorzero_tests {
+    use crate::{parse_select, Projection};
+    #[test]
+    fn accepts_checked_binary_inputs() {
+        for (sql, expected) in [
+            ("SELECT intDivOrZero(10, 2)", 5),
+            ("SELECT intDivOrZero(9, 0)", 0),
+            ("SELECT intDivOrZero(-7, 2)", -3),
+            ("SELECT intDivOrZero(0, 0)", 0),
+        ] {
+            assert_eq!(parse_select(sql).unwrap().projection, Projection::Literal(expected), "{sql}");
+        }
+        for sql in ["SELECT intDivOrZero(1)", "SELECT intDivOrZero(1,2,3)"] {
             assert!(parse_select(sql).is_err(), "{sql}");
         }
     }
