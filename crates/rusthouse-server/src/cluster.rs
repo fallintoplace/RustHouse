@@ -2,6 +2,7 @@
 //! Private network transport is opt-in and unauthenticated.
 
 use crate::Response;
+use std::collections::HashSet;
 use std::fmt::Write as _;
 use std::net::{Ipv4Addr, SocketAddrV4};
 
@@ -75,8 +76,9 @@ impl Cluster {
         if peers.len() > MAX_PEERS {
             return Err("too many peers (maximum 32)");
         }
-        for (index, peer) in peers.iter().enumerate() {
-            if peers[..index].contains(peer) {
+        let mut seen = HashSet::with_capacity(peers.len());
+        for peer in &peers {
+            if !seen.insert(peer.address()) {
                 return Err("duplicate peer");
             }
         }
