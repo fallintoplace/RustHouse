@@ -18,6 +18,7 @@ RELATIVE_TOLERANCE = Decimal("1e-12")
 OFFICIAL_QUERY_COUNT = 43
 SUCCESS = {"passed", "unverified"}
 SKIPPED = {"skipped_missing_columns", "unknown_requirements"}
+MAX_REFERENCE_BYTES = 16 * 1024 * 1024
 
 
 def load_queries(path):
@@ -206,7 +207,15 @@ def run(queries, execute, runs, warmups, projection=None, references=None):
                     "latency": None, "error": str(path),
                 })
                 continue
-            reference = path.read_bytes()
+            with path.open("rb") as source:
+                reference = source.read(MAX_REFERENCE_BYTES + 1)
+            if len(reference) > MAX_REFERENCE_BYTES:
+                results.append({
+                    "query": number, "sql": sql, "status": "reference_too_large",
+                    "missing_columns": [], "timings_seconds": [],
+                    "latency": None, "error": str(path),
+                })
+                continue
         result = benchmark_one(number, sql, execute, runs, warmups, reference)
         result["missing_columns"] = []
         results.append(result)
