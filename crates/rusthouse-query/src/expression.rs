@@ -24,6 +24,7 @@ pub enum ScalarExpr {
     Subtract(Box<ScalarExpr>, Box<ScalarExpr>),
     Multiply(Box<ScalarExpr>, Box<ScalarExpr>),
     Divide(Box<ScalarExpr>, Box<ScalarExpr>),
+    Modulo(Box<ScalarExpr>, Box<ScalarExpr>),
     And(Box<ScalarExpr>, Box<ScalarExpr>),
     Or(Box<ScalarExpr>, Box<ScalarExpr>),
     Compare(Box<ScalarExpr>, Operator, Box<ScalarExpr>),
@@ -72,6 +73,7 @@ impl ScalarExpr {
             | Self::Subtract(left, right)
             | Self::Multiply(left, right)
             | Self::Divide(left, right)
+            | Self::Modulo(left, right)
             | Self::And(left, right)
             | Self::Or(left, right)
             | Self::Compare(left, _, right) => {
@@ -418,6 +420,15 @@ mod tests {
         assert!(parse_scalar_expression("greatest(a)").is_err());
         assert!(parse_scalar_expression(&format!("least({})",
             vec!["1"; 17].join(", "))).is_err());
+    }
+
+    #[test]
+    fn modulo_has_multiplicative_precedence_in_aggregate_inputs() {
+        assert!(matches!(parse_scalar_expression("a + b % 3").unwrap(),
+            ScalarExpr::Add(_, right) if matches!(*right, ScalarExpr::Modulo(..))));
+        assert!(matches!(parse_scalar_expression("a * b % 3").unwrap(),
+            ScalarExpr::Modulo(..)));
+        assert!(parse_scalar_expression("a %").is_err());
     }
 
     #[test]
