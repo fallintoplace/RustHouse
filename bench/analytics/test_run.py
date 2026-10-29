@@ -50,6 +50,22 @@ class AnalyticsRunnerTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             runner.select_indices("4-2", 43)
 
+    def test_invalid_timing_inputs_fail_without_running_sql(self):
+        def do_not_run(*_):
+            self.fail("invalid benchmark parameters reached query execution")
+        for runs, warmups, timeout in (
+            (True, 0, 1),
+            (1, False, 1),
+            (1, 0, float("nan")),
+            (1, 0, float("inf")),
+            (1000, 1, 1),
+            (1, 0, True),
+        ):
+            with self.subTest(runs=runs, warmups=warmups, timeout=timeout):
+                with self.assertRaisesRegex(ValueError, "timing parameters"):
+                    runner.run_benchmark(["SELECT 1"], [0], runs, timeout,
+                                         do_not_run, warmups=warmups)
+
     def test_unknown_output_is_never_marked_verified(self):
         results = runner.run_benchmark(["SELECT 1"], [0], 3, 1, lambda _sql, _timeout: b"1\n")
         self.assertEqual(results[0]["status"], "unverified")
