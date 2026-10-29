@@ -18,7 +18,7 @@ class NoRedirect(HTTPRedirectHandler):
 NO_REDIRECT_OPENER = build_opener(NoRedirect())
 
 
-def validate(payload):
+def validate(payload, *, min_healthy=None):
     if not isinstance(payload, dict):
         raise ValueError("expected JSON object")
     total, healthy, peers = payload.get("total"), payload.get("healthy"), payload.get("peers")
@@ -34,10 +34,14 @@ def validate(payload):
         actual += peer["healthy"]
     if actual != healthy:
         raise ValueError("peer count inconsistent with details")
+    if min_healthy is not None:
+        if type(min_healthy) is not int or not 1 <= min_healthy <= total:
+            raise ValueError("min_healthy must be within the reported peer count")
+        return healthy >= min_healthy
     return total == healthy
 
 
-def inspect(origin, timeout=5):
+def inspect(origin, timeout=5, min_healthy=None):
     url = urlsplit(origin)
     if (url.scheme != "http" or url.hostname not in ("localhost", "127.0.0.1")
             or url.path not in ("", "/") or url.query or url.fragment
@@ -53,15 +57,17 @@ def inspect(origin, timeout=5):
     if len(raw) > 1_048_576:
         raise ValueError("peer-health response too large")
     payload = json.loads(raw)
-    return validate(payload), payload
+    return validate(payload, min_healthy=min_healthy), payload
 
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--url", default="http://127.0.0.1:8123")
+    parser.add_argument("--min-healthy", type=int,
+                        help="Require at least this many reachable peers")
     args = parser.parse_args()
     try:
-        all_healthy, info = inspect(args.url)
+        all_healthy, info = inspect(args.url, min_healthy=args.min_healthy)
     except Exception as exc:
         print("FAIL: " + str(exc), file=sys.stderr)
         return 1
