@@ -1,4 +1,5 @@
 import tempfile
+import hashlib
 import unittest
 from pathlib import Path
 
@@ -33,6 +34,35 @@ class KeysetExportTests(unittest.TestCase):
                             page_rows=50000, execute=lambda _: expected)
             self.assertEqual(path.read_bytes(), expected)
             self.assertEqual(report["pages"], 1)
+
+    def test_expected_sha256_gates_atomic_export(self):
+        with tempfile.TemporaryDirectory() as root:
+            target = Path(root) / "keys.tsv"
+            payload = b"0\n1\n"
+            digest = hashlib.sha256(payload).hexdigest()
+            result = export("unused", "unused", "events", target, 0, 2,
+                            execute=lambda _: payload, expected_sha256=digest)
+            self.assertTrue(result["verified_sha256"])
+            self.assertEqual(target.read_bytes(), payload)
+            rejected = Path(root) / "bad.tsv"
+            with self.assertRaisesRegex(ValueError, "SHA256 differs"):
+                export("unused", "unused", "events", rejected, 0, 2,
+                       execute=lambda _: payload, expected_sha256="0" * 64)
+            self.assertFalse(rejected.exists())
+            self.assertEqual(list(Path(root).glob("*.pending")), [])
+
+    def test_rejects_final_page_that_outlives_total_deadline(self):
+        from unittest.mock import patch
+        with tempfile.TemporaryDirectory() as temp:
+            destination = Path(temp) / "final.tsv"
+            with patch("bench.scale.keyset_export.time.monotonic",
+                       side_effect=[0.0, 0.0, 2.0]):
+                with self.assertRaisesRegex(TimeoutError, "total export deadline"):
+                    export("binary", "db", "events", destination, 0, 1,
+                           page_rows=1, execute=lambda _: b"0\n",
+                           max_total_seconds=1)
+            self.assertFalse(destination.exists())
+            self.assertEqual(list(Path(temp).glob("*.pending")), [])
 
     def test_detects_duplicates_and_leaves_no_visible_file(self):
         with tempfile.TemporaryDirectory() as temp:

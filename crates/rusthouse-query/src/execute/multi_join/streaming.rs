@@ -62,6 +62,7 @@ fn visit<W: Write>(
     depth: usize,
     row: &mut Vec<typed::Cell>,
     stages: &[Stage],
+    scratch_keys: &mut [Vec<typed::Key>],
     spec: &OutputSpec<'_>,
     state: &mut OutputState,
     output: &mut W,
@@ -103,16 +104,17 @@ fn visit<W: Write>(
     }
 
     let stage = &stages[depth];
-    let Some(key) = row_key(row, &stage.left_keys) else {
+    // Preserve per-stage key buffers across millions of fact rows.
+    if !row_key_into(row, &stage.left_keys, &mut scratch_keys[depth]) {
         return Ok(());
-    };
-    let Some(matches) = stage.hash.get(&key) else {
+    }
+    let Some(matches) = stage.hash.get(scratch_keys[depth].as_slice()) else {
         return Ok(());
     };
     for &matched in matches.iter().take(if stage.any { 1 } else { usize::MAX }) {
         let original_len = row.len();
         row.extend_from_slice(&stage.rows[matched]);
-        let result = visit(depth + 1, row, stages, spec, state, output);
+        let result = visit(depth + 1, row, stages, scratch_keys, spec, state, output);
         row.truncate(original_len);
         result?;
         if spec.limit.is_some_and(|limit| state.emitted >= limit) {
@@ -248,6 +250,9 @@ pub(super) fn execute<W: Write>(
     if stages.iter().any(|stage| stage.rows.is_empty()) {
         return Ok(());
     }
+    let mut scratch_keys = stages.iter()
+        .map(|stage| Vec::with_capacity(stage.left_keys.len()))
+        .collect::<Vec<Vec<typed::Key>>>();
     // Reuse the same dependency projection for the fact scan.
     let fact_width = relations[0].names.len();
     let projected = &projections[0];
@@ -258,16 +263,18 @@ pub(super) fn execute<W: Write>(
     let mut reader = TypedQueryReader::open(&paths[0], &projected_names)?;
     let mut scanned = 0u64;
     let mut state = OutputState::default();
+    // The recursive visitor restores fact row length after each match.
+    // Retain this allocation across the entire scan.
+    let mut row = vec![typed::Cell::Null; fact_width];
     while let Some(batch) = reader.next_batch()? {
         for index in 0..batch[0].len() {
             scanned = scanned
                 .checked_add(1)
                 .ok_or_else(|| invalid("JOIN input row count overflow"))?;
-            let mut row = vec![typed::Cell::Null; fact_width];
             for (position, &column) in projected.iter().enumerate() {
                 row[column] = typed::cell(&batch[position], index);
             }
-            visit(0, &mut row, &stages, &spec, &mut state, output)?;
+            visit(0, &mut row, &stages, &mut scratch_keys, &spec, &mut state, output)?;
             if spec.limit.is_some_and(|limit| state.emitted >= limit) {
                 return Ok(());
             }

@@ -31,24 +31,10 @@ impl ResumeMap {
         (index / 8, 1u8 << (index % 8))
     }
 
-    pub fn mark_complete(&mut self, index: usize) -> Result<(), &'static str> {
-        if index >= self.chunks {
-            return Err("chunk index out of bounds");
-        }
-        let (byte, mask) = Self::bit_position(index);
-        self.completed[byte] |= mask;
-        Ok(())
-    }
-
-    pub fn remaining(&self) -> Vec<usize> {
-        // Fresh transfers have no completed bits: construct the complete
-        // index range with its final allocation size in one pass.
-        if self.completed.iter().all(|&byte| byte == 0) {
-            return (0..self.chunks).collect();
-        }
-        // Count only valid completion bits before allocating the missing-index list.
-        let completed_count = self
-            .completed
+    /// Count verified chunks without constructing a list of missing indexes.
+    /// Ignore unused bits in the final partially populated bitmap byte.
+    pub fn completed_count(&self) -> usize {
+        self.completed
             .iter()
             .enumerate()
             .map(|(byte_index, &bits)| {
@@ -60,8 +46,55 @@ impl ResumeMap {
                 };
                 (bits & mask).count_ones() as usize
             })
-            .sum::<usize>();
-        let mut missing = Vec::with_capacity(self.chunks - completed_count);
+            .sum()
+    }
+
+    pub fn remaining_count(&self) -> usize {
+        self.chunks - self.completed_count()
+    }
+
+    pub fn mark_complete(&mut self, index: usize) -> Result<(), &'static str> {
+        if index >= self.chunks {
+            return Err("chunk index out of bounds");
+        }
+        let (byte, mask) = Self::bit_position(index);
+        self.completed[byte] |= mask;
+        Ok(())
+    }
+
+    /// Mark a half-open range of verified chunks complete in one operation.
+    /// Fully covered bytes are updated in bulk instead of one bit at a time.
+    pub fn mark_complete_range(
+        &mut self,
+        start: usize,
+        end: usize,
+    ) -> Result<(), &'static str> {
+        if start > end || end > self.chunks {
+            return Err("chunk range out of bounds");
+        }
+        let prefix_end = start.div_ceil(8).saturating_mul(8).min(end);
+        for index in start..prefix_end {
+            let (byte, mask) = Self::bit_position(index);
+            self.completed[byte] |= mask;
+        }
+        let full_end = (end / 8) * 8;
+        if prefix_end < full_end {
+            self.completed[prefix_end / 8..full_end / 8].fill(u8::MAX);
+        }
+        for index in prefix_end.max(full_end)..end {
+            let (byte, mask) = Self::bit_position(index);
+            self.completed[byte] |= mask;
+        }
+        Ok(())
+    }
+
+    pub fn remaining(&self) -> Vec<usize> {
+        // Fresh transfers have no completed bits: construct the complete
+        // index range with its final allocation size in one pass.
+        if self.completed.iter().all(|&byte| byte == 0) {
+            return (0..self.chunks).collect();
+        }
+        let mut missing = Vec::with_capacity(self.remaining_count());
         for (byte_index, &completed) in self.completed.iter().enumerate() {
             let mut bits = !completed;
             if byte_index == self.completed.len() - 1 && self.chunks % 8 != 0 {
@@ -90,14 +123,21 @@ impl ResumeMap {
 
     /// Stable ASCII encoding for persisting transfer progress.
     pub fn encode(&self) -> String {
-        let mut encoded = String::with_capacity(self.chunks);
-        for (byte_index, &bits) in self.completed.iter().enumerate() {
-            let count = (self.chunks - byte_index * 8).min(8);
-            for index in 0..count {
-                encoded.push(if bits & (1 << index) != 0 { '1' } else { '0' });
+        // Fill the output once. Only set completion positions, instead of
+        // appending and masking each of the up to 65,536 input bits.
+        let mut encoded = vec![b'0'; self.chunks];
+        for (byte_index, &completed) in self.completed.iter().enumerate() {
+            let mut bits = completed;
+            while bits != 0 {
+                let bit = bits.trailing_zeros() as usize;
+                let index = byte_index * 8 + bit;
+                if index < self.chunks {
+                    encoded[index] = b'1';
+                }
+                bits &= bits - 1;
             }
         }
-        encoded
+        String::from_utf8(encoded).expect("binary map contains only ASCII digits")
     }
 
     pub fn decode(text: &str) -> Result<Self, &'static str> {
@@ -170,6 +210,46 @@ mod tests {
     }
 
     #[test]
+    fn reports_chunk_progress_without_allocating_missing_indexes() {
+        for chunks in [0usize, 1, 7, 8, 9, 17, 65_536] {
+            let mut map = ResumeMap::new(chunks).unwrap();
+            assert_eq!(map.completed_count(), 0);
+            assert_eq!(map.remaining_count(), chunks);
+            for index in (0..chunks).step_by(3) {
+                map.mark_complete(index).unwrap();
+                map.mark_complete(index).unwrap();
+            }
+            let complete = chunks.div_ceil(3);
+            assert_eq!(map.completed_count(), complete);
+            assert_eq!(map.remaining_count(), chunks - complete);
+            assert_eq!(map.remaining().len(), map.remaining_count());
+        }
+    }
+
+    #[test]
+    fn range_completion_matches_individual_marks_at_byte_boundaries() {
+        for len in [0usize, 1, 7, 8, 9, 16, 17, 31] {
+            for start in 0..=len {
+                for end in start..=len {
+                    let mut bulk = ResumeMap::new(len).unwrap();
+                    let mut separate = ResumeMap::new(len).unwrap();
+                    bulk.mark_complete_range(start, end).unwrap();
+                    for index in start..end {
+                        separate.mark_complete(index).unwrap();
+                    }
+                    assert_eq!(bulk, separate, "{len} {start} {end}");
+                }
+            }
+        }
+        let mut map = ResumeMap::new(17).unwrap();
+        assert!(map.mark_complete_range(1, 18).is_err());
+        assert!(map.mark_complete_range(10, 9).is_err());
+        assert_eq!(map.remaining(), (0..17).collect::<Vec<_>>());
+        map.mark_complete_range(0, 17).unwrap();
+        assert!(map.complete());
+    }
+
+    #[test]
     fn bitmap_roundtrips_across_byte_boundaries() {
         for chunks in [0usize, 1, 7, 8, 9, 15, 16, 17, 65_536] {
             let mut progress = ResumeMap::new(chunks).unwrap();
@@ -217,6 +297,23 @@ mod tests {
             }
             let expected = (0..len).filter(|index| index % 2 == 1).collect::<Vec<_>>();
             assert_eq!(progress.remaining(), expected);
+        }
+    }
+
+    #[test]
+    fn sparse_and_dense_ascii_maps_match_the_bitmap_reference() {
+        for count in [0, 1, 7, 8, 9, 513, 65_536] {
+            for step in [1, 2, 7, 31] {
+                let mut map = ResumeMap::new(count).unwrap();
+                for index in (0..count).step_by(step) {
+                    map.mark_complete(index).unwrap();
+                }
+                let expected = (0..count).map(|index| {
+                    let (byte, mask) = ResumeMap::bit_position(index);
+                    if map.completed[byte] & mask == 0 { '0' } else { '1' }
+                }).collect::<String>();
+                assert_eq!(map.encode(), expected);
+            }
         }
     }
 

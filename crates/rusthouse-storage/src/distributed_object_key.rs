@@ -80,32 +80,46 @@ impl ObjectKey {
     /// Reject noncanonical generation spellings and path traversal.
     pub fn parse_relative(path: &std::path::Path) -> Result<Self, &'static str> {
         use std::path::Component;
-        let segments = path.components().collect::<Vec<_>>();
-        if segments.len() != 5 {
-            return Err("distributed object key must have five components");
-        }
+        // Path components borrow the original Path. Keep the five fields on
+        // the stack instead of allocating a Vec for each replicated object.
+        let mut segments = path.components();
         let mut fields = [""; 5];
-        for (index, segment) in segments.into_iter().enumerate() {
-            let Component::Normal(value) = segment else {
-                return Err("distributed object key must be relative");
+        for field in &mut fields {
+            let Some(Component::Normal(value)) = segments.next() else {
+                return Err("distributed object key must have five relative components");
             };
-            fields[index] = value.to_str().ok_or("non-UTF8 distributed object key")?;
+            *field = value.to_str().ok_or("non-UTF8 distributed object key")?;
+        }
+        if segments.next().is_some() {
+            return Err("distributed object key must have five components");
         }
         let generation_text = fields[2]
             .strip_prefix('g')
             .ok_or("missing distributed generation prefix")?;
+        // Reject alternate integer spellings without allocating an owned
+        // decimal string for every scanned immutable-object key.
+        if generation_text.is_empty()
+            || generation_text.starts_with('0')
+            || !generation_text.bytes().all(|byte| byte.is_ascii_digit())
+        {
+            return Err("noncanonical distributed generation");
+        }
         let generation = generation_text
             .parse::<u64>()
             .map_err(|_| "invalid distributed generation")?;
-        if generation_text != generation.to_string() {
-            return Err("noncanonical distributed generation");
-        }
         let key = Self::new(fields[0], fields[1], generation, fields[3], fields[4])?;
         let original = path.to_str().ok_or("invalid distributed object key path")?;
         let canonical = key.relative_path();
         let canonical = canonical.to_str().ok_or("invalid distributed object key path")?;
-        // Windows accepts both slash spellings; compare only after normalizing
-        // separators, without removing dot or duplicate path components.
+        // Unix paths use '/' natively. Comparing borrowed strings avoids
+        // allocating two full replacement paths for every object key.
+        #[cfg(not(windows))]
+        if original != canonical {
+            return Err("noncanonical distributed object key path");
+        }
+        // Windows accepts both slash spellings. Preserve normalized
+        // comparison without discarding duplicate or dot components.
+        #[cfg(windows)]
         if original.replace(std::path::MAIN_SEPARATOR, "/")
             != canonical.replace(std::path::MAIN_SEPARATOR, "/")
         {
@@ -159,6 +173,33 @@ mod parse_relative_tests {
     use super::*;
 
     #[test]
+    fn canonical_paths_accept_many_simple_keys_without_normalization() {
+        for generation in 1..128u64 {
+            let key = ObjectKey::new("cluster", "shard_1", generation, "part_10", "data.bin").unwrap();
+            assert_eq!(ObjectKey::parse_relative(&key.relative_path()).unwrap(), key);
+        }
+        assert!(ObjectKey::parse_relative(
+            std::path::Path::new("cluster/shard_1/g1/part_10/data.bin")
+        ).is_ok());
+    }
+
+    #[test]
+    fn component_iterator_requires_exactly_five_safe_components() {
+        let valid = std::path::Path::new("prod/shard_4/g432/part_1/data.bin");
+        let key = ObjectKey::parse_relative(valid).unwrap();
+        assert_eq!(key.generation(), 432);
+        for invalid in [
+            "prod/shard_4/g432/part_1",
+            "prod/shard_4/g432/part_1/data.bin/extra",
+            "prod/shard_4/g432/part_1/../data.bin",
+            "/prod/shard_4/g432/part_1/data.bin",
+            "prod/shard_4/g0432/part_1/data.bin",
+        ] {
+            assert!(ObjectKey::parse_relative(std::path::Path::new(invalid)).is_err(), "{invalid}");
+        }
+    }
+
+    #[test]
     fn round_trips_generation_scoped_paths() {
         let key = ObjectKey::new("cluster", "s1", 42, "all_0_0_0", "data.bin").unwrap();
         assert_eq!(ObjectKey::parse_relative(&key.relative_path()).unwrap(), key);
@@ -195,5 +236,31 @@ mod trailing_dot_key_tests {
             assert!(ObjectKey::new("cluster", "s1", 1, "part", component).is_err());
         }
         assert!(ObjectKey::new("cluster", "s1", 1, "part", "data.bin").is_ok());
+    }
+}
+
+#[cfg(test)]
+mod canonical_generation_digits_tests {
+    use super::*;
+
+    #[test]
+    fn rejects_aliases_without_formatting_numeric_generations() {
+        for invalid in [
+            "prod/s1/g+1/part/data.bin",
+            "prod/s1/g001/part/data.bin",
+            "prod/s1/g0/part/data.bin",
+            "prod/s1/g18446744073709551616/part/data.bin",
+        ] {
+            assert!(ObjectKey::parse_relative(std::path::Path::new(invalid)).is_err());
+        }
+        for number in [1, 7, 10, 100, u64::MAX] {
+            let path = format!("prod/s1/g{number}/part/data.bin");
+            assert_eq!(
+                ObjectKey::parse_relative(std::path::Path::new(&path))
+                    .unwrap()
+                    .generation(),
+                number
+            );
+        }
     }
 }

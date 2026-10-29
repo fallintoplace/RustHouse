@@ -279,7 +279,11 @@ enum LikePattern {
     Prefix(Vec<u8>),
     Suffix(Vec<u8>),
     Contains(Vec<u8>),
-    Wildcard(Vec<LikeToken>),
+    Wildcard {
+        tokens: Vec<LikeToken>,
+        folded_percent: Option<Vec<LikeToken>>,
+        unicode_tokens: Option<Vec<UnicodeLikeToken>>,
+    },
 }
 
 enum Test {
@@ -289,6 +293,8 @@ enum Test {
     UuidInSet(HashSet<[u8; 16]>, bool),
     TextInSet(HashSet<Vec<u8>>, bool),
     NumericInSet(HashSet<NumberKey>, bool),
+    ByteInSet([u64; 4], bool),
+    ShortInSet(Box<[u64; 1024]>, bool),
     NotBetween(Cell, Cell),
     UuidNotBetween([u8; 16], [u8; 16]),
     IsNull(bool),
@@ -363,6 +369,42 @@ fn compile_in(kind: &str, values: &[String], negated: bool) -> Result<Test, Exec
     }
     if targets.len() < HASHED_TYPED_IN_MIN_VALUES {
         return Ok(Test::In(targets, negated));
+    }
+    if matches!(base_type(kind), "Int8" | "UInt8") {
+        let mut bitmap = [0u64; 4];
+        for target in &targets {
+            let index = match (base_type(kind), target) {
+                ("UInt8", Cell::Numeric(Number::Unsigned(value))) => {
+                    u8::try_from(*value).ok().map(usize::from)
+                }
+                ("Int8", Cell::Numeric(Number::Signed(value))) => {
+                    i8::try_from(*value).ok().map(|number| usize::from(number as u8))
+                }
+                _ => None,
+            };
+            if let Some(index) = index {
+                bitmap[index / 64] |= 1u64 << (index % 64);
+            }
+        }
+        return Ok(Test::ByteInSet(bitmap, negated));
+    }
+    if matches!(base_type(kind), "Int16" | "UInt16") {
+        let mut bitmap = Box::new([0u64; 1024]);
+        for target in &targets {
+            let index = match (base_type(kind), target) {
+                ("UInt16", Cell::Numeric(Number::Unsigned(value))) => {
+                    u16::try_from(*value).ok().map(usize::from)
+                }
+                ("Int16", Cell::Numeric(Number::Signed(value))) => {
+                    i16::try_from(*value).ok().map(|number| usize::from(number as u16))
+                }
+                _ => None,
+            };
+            if let Some(index) = index {
+                bitmap[index / 64] |= 1u64 << (index % 64);
+            }
+        }
+        return Ok(Test::ShortInSet(bitmap, negated));
     }
     if base_type(kind) == "String" {
         return Ok(Test::TextInSet(
@@ -686,6 +728,36 @@ pub(super) fn passes(batch: &[TypedColumn], row: usize, branches: &[Vec<Conditio
                         found != *negated
                     })
                 }
+                Test::ByteInSet(bitmap, negated) => {
+                    let byte = match column {
+                        TypedColumn::Numeric(NumericColumn::UInt8(values)) => Some(values[row]),
+                        TypedColumn::Numeric(NumericColumn::Int8(values)) => Some(values[row] as u8),
+                        TypedColumn::NullableNumeric { values: NumericColumn::UInt8(values), nulls }
+                            if nulls[row] == 0 => Some(values[row]),
+                        TypedColumn::NullableNumeric { values: NumericColumn::Int8(values), nulls }
+                            if nulls[row] == 0 => Some(values[row] as u8),
+                        _ => None,
+                    };
+                    byte.is_some_and(|byte| {
+                        let index = usize::from(byte);
+                        ((bitmap[index / 64] >> (index % 64)) & 1 != 0) != *negated
+                    })
+                }
+                Test::ShortInSet(bitmap, negated) => {
+                    let number = match column {
+                        TypedColumn::Numeric(NumericColumn::UInt16(values)) => Some(values[row]),
+                        TypedColumn::Numeric(NumericColumn::Int16(values)) => Some(values[row] as u16),
+                        TypedColumn::NullableNumeric { values: NumericColumn::UInt16(values), nulls }
+                            if nulls[row] == 0 => Some(values[row]),
+                        TypedColumn::NullableNumeric { values: NumericColumn::Int16(values), nulls }
+                            if nulls[row] == 0 => Some(values[row] as u16),
+                        _ => None,
+                    };
+                    number.is_some_and(|number| {
+                        let index = usize::from(number);
+                        ((bitmap[index / 64] >> (index % 64)) & 1 != 0) != *negated
+                    })
+                }
                 Test::UuidNotBetween(lower, upper) => match column {
                     TypedColumn::Uuid(values) => {
                         let value = values[row].as_bytes();
@@ -708,42 +780,48 @@ pub(super) fn passes(batch: &[TypedColumn], row: usize, branches: &[Vec<Conditio
     })
 }
 
+fn write_text_bytes<W: Write>(
+    output: &mut W,
+    bytes: &[u8],
+) -> Result<(), ExecutionError> {
+    let mut start = 0;
+    for (index, &byte) in bytes.iter().enumerate() {
+        let escape: Option<&[u8]> = match byte {
+            b'\\' => Some(b"\\\\"),
+            b'\t' => Some(b"\\t"),
+            b'\n' => Some(b"\\n"),
+            b'\r' => Some(b"\\r"),
+            0 => Some(b"\\0"),
+            0x01..=0x08 | 0x0b..=0x0c | 0x0e..=0x1f | 0x7f => {
+                if start < index {
+                    output.write_all(&bytes[start..index])?;
+                }
+                write!(output, "\\x{byte:02X}")?;
+                start = index + 1;
+                continue;
+            }
+            _ => None,
+        };
+        if let Some(escape) = escape {
+            if start < index {
+                output.write_all(&bytes[start..index])?;
+            }
+            output.write_all(escape)?;
+            start = index + 1;
+        }
+    }
+    if start < bytes.len() {
+        output.write_all(&bytes[start..])?;
+    }
+    Ok(())
+}
+
 pub(super) fn write_value<W: Write>(output: &mut W, value: &Cell) -> Result<(), ExecutionError> {
     match value {
         Cell::Numeric(value) => write!(output, "{value}")?,
         Cell::Null => output.write_all(b"\\N")?,
         Cell::Uuid(value) => output.write_all(value.as_bytes())?,
-        Cell::Text(bytes) => {
-            let mut start = 0;
-            for (index, &byte) in bytes.iter().enumerate() {
-                let escape: Option<&[u8]> = match byte {
-                    b'\\' => Some(b"\\\\"),
-                    b'\t' => Some(b"\\t"),
-                    b'\n' => Some(b"\\n"),
-                    b'\r' => Some(b"\\r"),
-                    0 => Some(b"\\0"),
-                    0x01..=0x08 | 0x0b..=0x0c | 0x0e..=0x1f | 0x7f => {
-                        if start < index {
-                            output.write_all(&bytes[start..index])?;
-                        }
-                        write!(output, "\\x{byte:02X}")?;
-                        start = index + 1;
-                        continue;
-                    }
-                    _ => None,
-                };
-                if let Some(escape) = escape {
-                    if start < index {
-                        output.write_all(&bytes[start..index])?;
-                    }
-                    output.write_all(escape)?;
-                    start = index + 1;
-                }
-            }
-            if start < bytes.len() {
-                output.write_all(&bytes[start..])?;
-            }
-        }
+        Cell::Text(bytes) => write_text_bytes(output, bytes)?,
     }
     Ok(())
 }
@@ -1105,7 +1183,9 @@ pub(super) fn execute_typed<W: Write>(
                 .get(column)
                 .is_some_and(|kind| kind.starts_with("Nullable("))
         {
-            let mut reader = TypedQueryReader::open(part, std::slice::from_ref(column))?;
+            let mut reader = TypedQueryReader::open_with_metadata(
+                part, std::slice::from_ref(column), &metadata,
+            )?;
             let mut count = 0u64;
             while let Some(nulls) = reader.next_null_batch()? {
                 count = count
@@ -1158,7 +1238,7 @@ pub(super) fn execute_typed<W: Write>(
     let is_count_distinct = matches!(query.projection, Projection::CountDistinct { .. });
     let is_approx_distinct = matches!(query.projection, Projection::ApproxDistinct { .. } | Projection::ApproxDistinctState { .. });
     let is_approx_state = matches!(query.projection, Projection::ApproxDistinctState { .. });
-    let mut sketch = HyperLogLog::default();
+    let mut sketch = is_approx_distinct.then(HyperLogLog::default);
     let is_grouped = matches!(query.projection, Projection::GroupedCount { .. });
     let mut count = 0u64;
     let mut distinct = HashSet::<Vec<Key>>::new();
@@ -1185,7 +1265,10 @@ pub(super) fn execute_typed<W: Write>(
             Some("UInt8" | "Int8" | "UInt16" | "Int16" | "Nullable(UInt8)" | "Nullable(Int8)" | "Nullable(UInt16)" | "Nullable(Int16)")
         )
     {
-        Some(vec![0u64; 1024])
+        Some(vec![0u64; if matches!(
+            projection_types.first().copied(),
+            Some("UInt8" | "Int8" | "Nullable(UInt8)" | "Nullable(Int8)")
+        ) { 4 } else { 1024 }])
     } else {
         None
     };
@@ -1305,7 +1388,7 @@ pub(super) fn execute_typed<W: Write>(
                 continue;
             }
             if is_approx_distinct {
-                sketch.observe(&batch[projection_indices[0]], index)?;
+                sketch.as_mut().expect("approximate DISTINCT sketch").observe(&batch[projection_indices[0]], index)?;
                 continue;
             }
             if is_grouped {
@@ -1469,7 +1552,7 @@ pub(super) fn execute_typed<W: Write>(
                         | TypedColumn::NullableNumeric {
                             values: NumericColumn::Int8(values),
                             ..
-                        } => values[index] as u16,
+                        } => u16::from(values[index] as u8),
                         _ => {
                             return Err(ExecutionError::Invalid(
                                 "unexpected 8-bit or 16-bit DISTINCT column type".into(),
@@ -1532,7 +1615,7 @@ pub(super) fn execute_typed<W: Write>(
                                 u16::from(values[index])
                             }
                             TypedColumn::Numeric(NumericColumn::Int8(values)) => {
-                                values[index] as u16
+                                u16::from(values[index] as u8)
                             }
                             TypedColumn::Numeric(NumericColumn::UInt16(values)) => values[index],
                             TypedColumn::Numeric(NumericColumn::Int16(values)) => {
@@ -1572,18 +1655,49 @@ pub(super) fn execute_typed<W: Write>(
                     distinct_probe = Vec::with_capacity(projection_indices.len());
                 }
             }
-            // Unordered single-UUID projections can write the canonical
-            // representation directly. Avoid a temporary String and Vec<Cell>
-            // for each output row after predicates and OFFSET are applied.
+            // A single unsorted projection can stream directly from the batch.
+            // Skip per-row heap allocations for strings and typed values.
             if !query.distinct && sort_indices.is_empty() && projection_indices.len() == 1 {
-                if let TypedColumn::Uuid(values) = &batch[projection_indices[0]] {
-                    writeln!(output, "{}", values[index])?;
-                    emitted += 1;
-                    if emitted == limit {
-                        return Ok(());
+                match &batch[projection_indices[0]] {
+                    TypedColumn::Uuid(values) => writeln!(output, "{}", values[index])?,
+                    TypedColumn::Text(values) => {
+                        let bytes = values.get(index).ok_or_else(|| {
+                            ExecutionError::Invalid("missing String projection value".into())
+                        })?;
+                        write_text_bytes(output, bytes)?;
+                        output.write_all(b"\n")?;
                     }
-                    continue;
+                    TypedColumn::NullableText { values, nulls } => {
+                        if nulls[index] == 0 {
+                            let bytes = values.get(index).ok_or_else(|| {
+                                ExecutionError::Invalid("missing nullable String projection".into())
+                            })?;
+                            write_text_bytes(output, bytes)?;
+                            output.write_all(b"\n")?;
+                        } else {
+                            output.write_all(b"\\N\n")?;
+                        }
+                    }
+                    TypedColumn::Numeric(values) => {
+                        let value = Cell::Numeric(number_at(values, index));
+                        write_typed_value(output, &value, projection_types[0])?;
+                        output.write_all(b"\n")?;
+                    }
+                    TypedColumn::NullableNumeric { values, nulls } => {
+                        if nulls[index] == 0 {
+                            let value = Cell::Numeric(number_at(values, index));
+                            write_typed_value(output, &value, projection_types[0])?;
+                            output.write_all(b"\n")?;
+                        } else {
+                            output.write_all(b"\\N\n")?;
+                        }
+                    }
                 }
+                emitted += 1;
+                if emitted == limit {
+                    return Ok(());
+                }
+                continue;
             }
             let cells = projection_indices
                 .iter()
@@ -1709,11 +1823,11 @@ pub(super) fn execute_typed<W: Write>(
     if is_count || is_count_column || is_count_distinct || is_approx_distinct {
         if offset == 0 {
             if is_approx_state {
-                writeln!(output, "{}", sketch.encode_state())?;
+                writeln!(output, "{}", sketch.as_ref().expect("HLL state sketch").encode_state())?;
                 return Ok(());
             }
             let result = if is_approx_distinct {
-                sketch.estimate()
+                sketch.as_ref().expect("approximate DISTINCT sketch").estimate()
             } else if is_count || is_count_column {
                 count
             } else {
@@ -2273,6 +2387,38 @@ mod single_uuid_membership_tests {
 }
 
 #[cfg(test)]
+mod short_in_predicate_perf_tests {
+    use super::*;
+
+    #[test]
+    fn compiled_short_bitmap_preserves_negative_values_and_nulls() {
+        let values = (-20..0).map(|value| value.to_string()).collect::<Vec<_>>();
+        let includes = [vec![Condition {
+            index: 0,
+            test: compile_in("Nullable(Int16)", &values, false).unwrap(),
+        }]];
+        assert!(matches!(&includes[0][0].test, Test::ShortInSet(_, false)));
+        let batch = [TypedColumn::NullableNumeric {
+            values: NumericColumn::Int16(vec![-20, -1, 100, -5]),
+            nulls: vec![0, 0, 0, 1],
+        }];
+        assert!(passes(&batch, 0, &includes));
+        assert!(passes(&batch, 1, &includes));
+        assert!(!passes(&batch, 2, &includes));
+        assert!(!passes(&batch, 3, &includes));
+        let unsigned = (0..100).map(|value| value.to_string()).collect::<Vec<_>>();
+        let excludes = [vec![Condition {
+            index: 0,
+            test: compile_in("UInt16", &unsigned, true).unwrap(),
+        }]];
+        let batch = [TypedColumn::Numeric(NumericColumn::UInt16(vec![0, 99, 65535]))];
+        assert!(!passes(&batch, 0, &excludes));
+        assert!(!passes(&batch, 1, &excludes));
+        assert!(passes(&batch, 2, &excludes));
+    }
+}
+
+#[cfg(test)]
 mod direct_numeric_set_probe_tests {
     use super::{Condition, Test, passes};
     use super::{Number, NumberKey};
@@ -2411,3 +2557,36 @@ mod count_distinct_text_budget_tests {
         assert!(seen.is_empty());
     }
 }
+
+#[cfg(test)]
+mod byte_in_predicate_perf_tests {
+    use super::*;
+
+    #[test]
+    fn compiled_byte_bitmap_respects_nullable_and_signed_membership() {
+        let unsigned = (0..20).map(|value| value.to_string()).collect::<Vec<_>>();
+        let includes = [vec![Condition {
+            index: 0,
+            test: compile_in("Nullable(UInt8)", &unsigned, false).unwrap(),
+        }]];
+        assert!(matches!(&includes[0][0].test, Test::ByteInSet(_, false)));
+        let batch = [TypedColumn::NullableNumeric {
+            values: NumericColumn::UInt8(vec![0, 19, 20, 5]),
+            nulls: vec![0, 0, 0, 1],
+        }];
+        assert!(passes(&batch, 0, &includes));
+        assert!(passes(&batch, 1, &includes));
+        assert!(!passes(&batch, 2, &includes));
+        assert!(!passes(&batch, 3, &includes));
+        let signed = (-20..0).map(|value| value.to_string()).collect::<Vec<_>>();
+        let excludes = [vec![Condition {
+            index: 0,
+            test: compile_in("Int8", &signed, true).unwrap(),
+        }]];
+        let batch = [TypedColumn::Numeric(NumericColumn::Int8(vec![-20, -1, 1]))];
+        assert!(!passes(&batch, 0, &excludes));
+        assert!(!passes(&batch, 1, &excludes));
+        assert!(passes(&batch, 2, &excludes));
+    }
+}
+
