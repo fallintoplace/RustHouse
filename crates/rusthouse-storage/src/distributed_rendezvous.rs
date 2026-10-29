@@ -156,6 +156,49 @@ pub fn weighted_replicas_for(
         .collect())
 }
 
+/// Place replicas across distinct failure zones before reusing any zone.
+/// This is deterministic placement only; it does not establish consensus.
+pub fn zone_aware_replicas_for(
+    shard: &str,
+    members: &[crate::distributed_membership::Member],
+    replicas: usize,
+) -> Result<Vec<String>, &'static str> {
+    crate::distributed_membership::format_membership(members)?;
+    if replicas == 0 || replicas > members.len() {
+        return Err("invalid zone-aware replica count");
+    }
+    let nodes = members
+        .iter()
+        .map(|member| (member.node.as_str(), member.weight))
+        .collect::<Vec<_>>();
+    let ranked = weighted_replicas_for(shard, &nodes, members.len())?;
+    let mut zones = HashSet::new();
+    let mut selected = Vec::with_capacity(replicas);
+    for node in &ranked {
+        let zone = members
+            .iter()
+            .find(|member| member.node == *node)
+            .expect("ranked node belongs to validated membership")
+            .zone
+            .as_str();
+        if zones.insert(zone) {
+            selected.push(node.clone());
+            if selected.len() == replicas {
+                return Ok(selected);
+            }
+        }
+    }
+    for node in ranked {
+        if !selected.contains(&node) {
+            selected.push(node);
+            if selected.len() == replicas {
+                break;
+            }
+        }
+    }
+    Ok(selected)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -282,49 +325,6 @@ mod tests {
             assert_eq!(first[0], all[0]);
         }
     }
-}
-
-/// Place replicas across distinct failure zones before reusing any zone.
-/// This is deterministic placement only; it does not establish consensus.
-pub fn zone_aware_replicas_for(
-    shard: &str,
-    members: &[crate::distributed_membership::Member],
-    replicas: usize,
-) -> Result<Vec<String>, &'static str> {
-    crate::distributed_membership::format_membership(members)?;
-    if replicas == 0 || replicas > members.len() {
-        return Err("invalid zone-aware replica count");
-    }
-    let nodes = members
-        .iter()
-        .map(|member| (member.node.as_str(), member.weight))
-        .collect::<Vec<_>>();
-    let ranked = weighted_replicas_for(shard, &nodes, members.len())?;
-    let mut zones = HashSet::new();
-    let mut selected = Vec::with_capacity(replicas);
-    for node in &ranked {
-        let zone = members
-            .iter()
-            .find(|member| member.node == *node)
-            .expect("ranked node belongs to validated membership")
-            .zone
-            .as_str();
-        if zones.insert(zone) {
-            selected.push(node.clone());
-            if selected.len() == replicas {
-                return Ok(selected);
-            }
-        }
-    }
-    for node in ranked {
-        if !selected.contains(&node) {
-            selected.push(node);
-            if selected.len() == replicas {
-                break;
-            }
-        }
-    }
-    Ok(selected)
 }
 
 #[cfg(test)]
