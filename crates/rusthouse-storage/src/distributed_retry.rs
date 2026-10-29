@@ -20,6 +20,45 @@ pub fn retry_delay(
     Ok(Duration::from_millis(half + jitter))
 }
 
+/// Return no scheduled retry when it cannot fit within the remaining deadline.
+pub fn retry_delay_with_deadline(
+    attempt: u32,
+    base_ms: u64,
+    max_ms: u64,
+    seed: u64,
+    remaining: Duration,
+) -> Result<Option<Duration>, &'static str> {
+    let delay = retry_delay(attempt, base_ms, max_ms, seed)?;
+    Ok((delay <= remaining).then_some(delay))
+}
+
+/// Precompute up to 33 bounded retry delays without exceeding the total budget.
+/// This only schedules delays and never starts network transfers.
+pub fn plan_retry_delays(
+    attempts: u32,
+    base_ms: u64,
+    max_ms: u64,
+    seed: u64,
+    budget: Duration,
+) -> Result<Vec<Duration>, &'static str> {
+    if attempts > 33 {
+        return Err("retry count exceeds supported attempt range");
+    }
+    // Validate settings even if the caller requests no retries.
+    retry_delay(0, base_ms, max_ms, seed)?;
+    let mut elapsed = Duration::ZERO;
+    let mut delays = Vec::with_capacity(attempts as usize);
+    for attempt in 0..attempts {
+        let delay = retry_delay(attempt, base_ms, max_ms, seed.wrapping_add(u64::from(attempt)))?;
+        if delay > budget.saturating_sub(elapsed) {
+            break;
+        }
+        elapsed += delay;
+        delays.push(delay);
+    }
+    Ok(delays)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -65,18 +104,6 @@ mod tests {
     }
 }
 
-/// Return no scheduled retry when it cannot fit within the remaining deadline.
-pub fn retry_delay_with_deadline(
-    attempt: u32,
-    base_ms: u64,
-    max_ms: u64,
-    seed: u64,
-    remaining: Duration,
-) -> Result<Option<Duration>, &'static str> {
-    let delay = retry_delay(attempt, base_ms, max_ms, seed)?;
-    Ok((delay <= remaining).then_some(delay))
-}
-
 #[cfg(test)]
 mod retry_deadline_tests {
     use super::*;
@@ -94,33 +121,6 @@ mod retry_deadline_tests {
         );
         assert!(retry_delay_with_deadline(33, 100, 1_000, 7, delay).is_err());
     }
-}
-
-/// Precompute up to 33 bounded retry delays without exceeding the total budget.
-/// This only schedules delays and never starts network transfers.
-pub fn plan_retry_delays(
-    attempts: u32,
-    base_ms: u64,
-    max_ms: u64,
-    seed: u64,
-    budget: Duration,
-) -> Result<Vec<Duration>, &'static str> {
-    if attempts > 33 {
-        return Err("retry count exceeds supported attempt range");
-    }
-    // Validate settings even if the caller requests no retries.
-    retry_delay(0, base_ms, max_ms, seed)?;
-    let mut elapsed = Duration::ZERO;
-    let mut delays = Vec::with_capacity(attempts as usize);
-    for attempt in 0..attempts {
-        let delay = retry_delay(attempt, base_ms, max_ms, seed.wrapping_add(u64::from(attempt)))?;
-        if delay > budget.saturating_sub(elapsed) {
-            break;
-        }
-        elapsed += delay;
-        delays.push(delay);
-    }
-    Ok(delays)
 }
 
 #[cfg(test)]
