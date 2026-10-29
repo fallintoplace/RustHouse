@@ -51,6 +51,16 @@ class PhysicalGateTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "p90"):
             validate(broken)
 
+    def test_rejects_corrupt_timing_samples(self):
+        broken = example()
+        broken["runs"] = 2
+        broken["count_even"]["samples_seconds"] = [1.0, float("nan")]
+        with self.assertRaisesRegex(ValueError, "samples"):
+            validate(broken)
+        broken["count_even"]["samples_seconds"] = [1.0]
+        with self.assertRaisesRegex(ValueError, "sample count"):
+            validate(broken)
+
 
 if __name__ == "__main__":
     unittest.main()
