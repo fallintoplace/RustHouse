@@ -1,0 +1,6 @@
+{
+  "id": "sum-between-quarter-half",
+  "kind": "sum_between",
+  "lo": "p25",
+  "hi": "p50"
+}
