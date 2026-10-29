@@ -17,6 +17,19 @@ class BenchmarkComparisonTests(unittest.TestCase):
         self.assertEqual([x["query"] for x in report["regressions"]], [1])
         self.assertEqual([x["query"] for x in report["improvements"]], [2])
 
+    def test_geometric_mean_speedup_is_symmetric(self):
+        baseline = {"results": [result(1, "passed", 2.0),
+                                result(2, "passed", 2.0)]}
+        candidate = {"results": [result(1, "passed", 1.0),
+                                 result(2, "passed", 4.0)]}
+        report = compare(baseline, candidate)
+        self.assertAlmostEqual(report["geomean_speedup"], 1.0)
+        candidate["results"][1]["latency"]["median_seconds"] = 1.0
+        self.assertAlmostEqual(compare(baseline, candidate)["geomean_speedup"], 2.0)
+        candidate["results"][1]["status"] = "unverified"
+        self.assertEqual(compare(baseline, candidate)["compared_queries"], 1)
+        self.assertAlmostEqual(compare(baseline, candidate)["geomean_speedup"], 2.0)
+
     def test_correctness_downgrade_is_always_reported(self):
         before = {"results": [result(6, "passed", 0.01)]}
         after = {"results": [result(6, "unverified", 0.001)]}

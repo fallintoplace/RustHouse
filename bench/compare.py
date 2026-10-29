@@ -90,22 +90,30 @@ def compare(baseline, candidate, slowdown_threshold_percent=10):
     improvements = []
     incomparable = []
     compared = 0
+    log_speedups = []
     for ident in sorted(left):
         classification, item, measured = classify_query(
             ident, left[ident], right[ident], slowdown_threshold_percent
         )
         compared += int(measured)
+        if measured:
+            previous, current = elapsed(left[ident]), elapsed(right[ident])
+            log_speedups.append(math.log(previous) - math.log(current))
         if classification == "regression":
             regressions.append(item)
         elif classification == "improvement":
             improvements.append(item)
         elif classification == "incomparable":
             incomparable.append(item)
+    mean_log = math.fsum(log_speedups) / len(log_speedups) if log_speedups else None
+    geomean = (math.exp(mean_log) if mean_log is not None
+               and -700 <= mean_log <= 700 else None)
     return {
         "comparison": "sql-query-latency",
         "threshold_percent": slowdown_threshold_percent,
         "queries": len(left),
         "compared_queries": compared,
+        "geomean_speedup": geomean,
         "regression_count": len(regressions),
         "regressions": regressions,
         "improvements": improvements,
