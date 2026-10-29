@@ -7,6 +7,17 @@ use rusthouse_storage::TypedColumn;
 const PRECISION: u32 = 14;
 const REGISTERS: usize = 1 << PRECISION;
 const MAX_REGISTER_RANK: u8 = (64 - PRECISION + 1) as u8;
+const INVERSE_POWERS_OF_TWO: [f64; MAX_REGISTER_RANK as usize + 1] = {
+    let mut values = [0.0; MAX_REGISTER_RANK as usize + 1];
+    let mut rank = 0;
+    let mut weight = 1.0;
+    while rank < values.len() {
+        values[rank] = weight;
+        weight *= 0.5;
+        rank += 1;
+    }
+    values
+};
 
 pub(super) struct HyperLogLog {
     registers: Box<[u8; REGISTERS]>,
@@ -130,7 +141,7 @@ impl HyperLogLog {
         let register_count = REGISTERS as f64;
         let zero_register_count = self.registers.iter().filter(|&&rank| rank == 0).count();
         let harmonic = self.registers.iter()
-            .map(|&rank| 2.0_f64.powi(-i32::from(rank)))
+            .map(|&rank| INVERSE_POWERS_OF_TWO[usize::from(rank)])
             .sum::<f64>();
         let alpha = 0.7213 / (1.0 + 1.079 / register_count);
         let raw_estimate = alpha * register_count * register_count / harmonic;
@@ -146,6 +157,16 @@ impl HyperLogLog {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn inverse_powers_match_exact_hll_register_weights() {
+        for rank in 0..=MAX_REGISTER_RANK {
+            assert_eq!(
+                INVERSE_POWERS_OF_TWO[usize::from(rank)],
+                2.0_f64.powi(-i32::from(rank))
+            );
+        }
+    }
 
     #[test]
     fn empty_duplicates_and_small_counts_are_stable() {
