@@ -18,7 +18,12 @@ pub enum VersionRelation {
 /// Comparing versions does not establish consensus or authorize writes.
 /// Different epochs or equal generations with different content must be reconciled.
 pub fn compare_snapshots(local: SnapshotVersion, remote: SnapshotVersion) -> VersionRelation {
-    if local.epoch != remote.epoch {
+    if local.epoch == 0
+        || remote.epoch == 0
+        || local.generation == 0
+        || remote.generation == 0
+        || local.epoch != remote.epoch
+    {
         return VersionRelation::Diverged;
     }
     match local.generation.cmp(&remote.generation) {
@@ -158,5 +163,27 @@ mod snapshot_selection_tests {
             newer,
             SnapshotVersion { fingerprint: 33, ..newer },
         ]).is_err());
+    }
+}
+
+#[cfg(test)]
+mod invalid_version_comparison_tests {
+    use super::*;
+
+    #[test]
+    fn invalid_versions_are_never_identical_or_ahead() {
+        let good = SnapshotVersion {
+            epoch: 1,
+            generation: 1,
+            fingerprint: 12,
+        };
+        for invalid in [
+            SnapshotVersion { epoch: 0, ..good },
+            SnapshotVersion { generation: 0, ..good },
+        ] {
+            assert_eq!(compare_snapshots(invalid, invalid), VersionRelation::Diverged);
+            assert_eq!(compare_snapshots(good, invalid), VersionRelation::Diverged);
+            assert_eq!(compare_snapshots(invalid, good), VersionRelation::Diverged);
+        }
     }
 }
