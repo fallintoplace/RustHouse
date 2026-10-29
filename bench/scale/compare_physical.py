@@ -9,6 +9,10 @@ from bench.scale.physical_scan import COUNT_SQL, SUM_SQL, even_reference
 CASES = ("count_even", "sum_even")
 
 
+def _valid_positive_timing(value):
+    return type(value) in (int, float) and math.isfinite(value) and value > 0
+
+
 def compare(baseline, candidate, *, max_slowdown_percent=10):
     if not math.isfinite(max_slowdown_percent) or max_slowdown_percent < 0:
         raise ValueError("max_slowdown_percent must be finite and nonnegative")
@@ -40,13 +44,13 @@ def compare(baseline, candidate, *, max_slowdown_percent=10):
                 or a["expected"] != oracle or b["expected"] != oracle):
             raise ValueError(f"{name}: incorrect physical SQL or independent oracle")
         old, new = a.get("median_seconds"), b.get("median_seconds")
-        if not all(type(x) in (int, float) and math.isfinite(x) and x > 0 for x in (old, new)):
+        if not all(_valid_positive_timing(x) for x in (old, new)):
             raise ValueError(f"{name} has invalid median timings")
         slowdown = 100 * (new / old - 1)
         old_p90, new_p90 = a.get("p90_seconds"), b.get("p90_seconds")
         tail_slowdown = None
         if old_p90 is not None or new_p90 is not None:
-            if not all(type(x) in (int, float) and math.isfinite(x) and x >= median
+            if not all(_valid_positive_timing(x) and x >= median
                        for x, median in ((old_p90, old), (new_p90, new))):
                 raise ValueError(f"{name}: invalid p90 benchmark timings")
             tail_slowdown = 100 * (new_p90 / old_p90 - 1)
