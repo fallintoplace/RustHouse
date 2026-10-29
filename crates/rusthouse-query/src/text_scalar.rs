@@ -581,7 +581,13 @@ fn parse_at_depth(parser: &mut Parser, depth: usize) -> Result<ConstantValue, Pa
             require(parser, Token::RParen, "UPPERUTF8 requires one argument")?;
             match input {
                 Some(input) => {
-                    let output = input.to_uppercase();
+                    let output = if input.is_ascii() {
+                        let mut ascii = input;
+                        ascii.make_ascii_uppercase();
+                        ascii
+                    } else {
+                        input.to_uppercase()
+                    };
                     if output.len() > MAX_TEXT_BYTES {
                         return Err(ParseError("upperUTF8 result is too large".into()));
                     }
@@ -3355,6 +3361,28 @@ mod ch_perf_ascii_lowerutf8_tests {
             ("SELECT lowerUTF8('HELLO')", ConstantValue::Text("hello".into())),
             ("SELECT lowerUTF8('ÄBC')", ConstantValue::Text("äbc".into())),
             ("SELECT lowerUTF8(NULL)", ConstantValue::Null),
+        ] {
+            assert_eq!(value(sql), expected, "{sql}");
+        }
+    }
+}
+
+#[cfg(test)]
+mod ch_perf_ascii_upperutf8_tests {
+    use crate::{parse_select, ConstantValue, Projection};
+    fn value(sql: &str) -> ConstantValue {
+        match parse_select(sql).unwrap().projection {
+            Projection::Constants(items) if items.len() == 1 => items[0].value.clone(),
+            Projection::Literal(value) => ConstantValue::Integer(value),
+            other => panic!("unexpected projection: {other:?}"),
+        }
+    }
+    #[test]
+    fn ascii_and_unicode_keep_the_same_results() {
+        for (sql, expected) in [
+            ("SELECT upperUTF8('hello')", ConstantValue::Text("HELLO".into())),
+            ("SELECT upperUTF8('äbc')", ConstantValue::Text("ÄBC".into())),
+            ("SELECT upperUTF8(NULL)", ConstantValue::Null),
         ] {
             assert_eq!(value(sql), expected, "{sql}");
         }
