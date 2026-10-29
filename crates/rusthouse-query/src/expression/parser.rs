@@ -153,6 +153,7 @@ fn parse_coalesce(parser: &mut Parser) -> Result<ScalarExpr, ParseError> {
 fn is_unary_math(name: &str) -> bool {
     name.eq_ignore_ascii_case("SIGN")
         || name.eq_ignore_ascii_case("NEGATE")
+        || name.eq_ignore_ascii_case("SQRT")
 }
 
 fn parse_unary_math(parser: &mut Parser) -> Result<ScalarExpr, ParseError> {
