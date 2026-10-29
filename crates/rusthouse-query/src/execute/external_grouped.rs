@@ -70,11 +70,16 @@ fn read_varint(input: &mut impl Read, eof_allowed: bool) -> Result<Option<u64>, 
 }
 
 fn write_varint(output: &mut impl Write, mut value: u64) -> Result<(), ExecutionError> {
+    // One buffered write for the entire canonical varint, not one per byte.
+    let mut bytes = [0u8; 10];
+    let mut length = 0;
     while value >= 128 {
-        output.write_all(&[((value as u8) & 0x7f) | 0x80])?;
+        bytes[length] = ((value as u8) & 0x7f) | 0x80;
         value >>= 7;
+        length += 1;
     }
-    output.write_all(&[value as u8])?;
+    bytes[length] = value as u8;
+    output.write_all(&bytes[..length + 1])?;
     Ok(())
 }
 
@@ -433,5 +438,37 @@ mod tests {
         let mut rows = Vec::new();
         groups.finish(|key, count| { rows.push((key as i64, count)); Ok(()) }).unwrap();
         assert_eq!(rows, vec![(1, 2), (0, 1), (-1, 1), (-5, 1)]);
+    }
+}
+#[cfg(test)]
+mod packed_grouped_varint_tests {
+    use super::*;
+
+    #[test]
+    fn writes_canonical_varints_with_one_call_each() {
+        struct Counting {
+            calls: usize,
+            bytes: Vec<u8>,
+        }
+        impl Write for Counting {
+            fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
+                self.calls += 1;
+                self.bytes.extend_from_slice(bytes);
+                Ok(bytes.len())
+            }
+            fn flush(&mut self) -> std::io::Result<()> { Ok(()) }
+        }
+
+        let mut out = Counting { calls: 0, bytes: Vec::new() };
+        let values = [0, 127, 128, 16_384, u32::MAX as u64, u64::MAX];
+        for &number in &values {
+            write_varint(&mut out, number).unwrap();
+        }
+        assert_eq!(out.calls, values.len());
+        let mut input = out.bytes.as_slice();
+        for expected in values {
+            assert_eq!(read_varint(&mut input, false).unwrap(), Some(expected));
+        }
+        assert!(input.is_empty());
     }
 }
