@@ -45,6 +45,13 @@ def columns(payload):
     return output
 
 
+def compatible_columns(left, right, *, allow_additive=False):
+    if left == right:
+        return True
+    return bool(allow_additive and len(right) >= len(left)
+                and right[:len(left)] == left)
+
+
 def fetch(base, table, timeout=5):
     url = base + "/schema?table=" + quote(table, safe="")
     with NO_REDIRECT_OPENER.open(url, timeout=timeout) as response:
@@ -59,13 +66,14 @@ def main():
     parser.add_argument("--left", required=True)
     parser.add_argument("--right", required=True)
     parser.add_argument("--table", required=True)
+    parser.add_argument("--allow-additive", action="store_true")
     args = parser.parse_args()
     try:
         if not re.fullmatch(r"[A-Za-z_][A-Za-z_0-9]{0,127}", args.table):
             raise ValueError("invalid table name")
         left = fetch(validate_url(args.left), args.table)
         right = fetch(validate_url(args.right), args.table)
-        if left != right:
+        if not compatible_columns(left, right, allow_additive=args.allow_additive):
             print("MISMATCH: ordered column names/types differ", file=sys.stderr)
             print("left: " + repr(left), file=sys.stderr)
             print("right: " + repr(right), file=sys.stderr)
@@ -73,7 +81,8 @@ def main():
     except Exception as exc:
         print("FAIL: " + str(exc), file=sys.stderr)
         return 1
-    print("PASS: identical ordered schema for " + args.table)
+    status = ("append-only compatible" if left != right else "identical ordered")
+    print("PASS: " + status + " schema for " + args.table)
     return 0
 
 
