@@ -65,12 +65,12 @@ pub fn plan_missing_chunks(
         return Err("transfer batch chunk limit exceeds bound");
     }
     let chunk_count = checked_chunk_count(total_bytes, chunk_bytes, max_chunks)?;
-    let mut previous = None;
+    let mut previous_chunk_index = None;
     for &index in remaining_indices {
-        if index >= chunk_count || previous.is_some_and(|last| index <= last) {
+        if index >= chunk_count || previous_chunk_index.is_some_and(|last| index <= last) {
             return Err("invalid or duplicate missing chunk index");
         }
-        previous = Some(index);
+        previous_chunk_index = Some(index);
     }
     // Only full chunks plus possibly one short final chunk can fit this budget.
     let budget_chunks = byte_budget / chunk_bytes;
