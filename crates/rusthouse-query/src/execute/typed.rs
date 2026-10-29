@@ -677,7 +677,17 @@ pub(super) fn passes(batch: &[TypedColumn], row: usize, branches: &[Vec<Conditio
                         | TypedColumn::NullableText { nulls, .. } => nulls[row] != 0,
                         _ => false,
                     };
-                    !is_null
+                    let is_nan = match column {
+                        TypedColumn::Numeric(values)
+                        | TypedColumn::NullableNumeric { values, .. } => {
+                            matches!(number_at(values, row), Number::Float(value) if value.is_nan())
+                        }
+                        _ => false,
+                    };
+                    let nan_bound = |cell: &Cell| matches!(
+                        cell, Cell::Numeric(Number::Float(value)) if value.is_nan()
+                    );
+                    !is_null && !is_nan && !nan_bound(lower) && !nan_bound(upper)
                         && (!matches_comparison_at(column, row, lower, Operator::Ge)
                             || !matches_comparison_at(column, row, upper, Operator::Le))
                 }
@@ -2287,5 +2297,32 @@ mod narrow_group_bucket_tests {
             [Some(0), None, Some(65535), Some(1)]);
         let wide = TypedColumn::Numeric(NumericColumn::UInt32(vec![1]));
         assert_eq!(dense_group_bucket(&wide, 0), None);
+    }
+}
+
+#[cfg(test)]
+mod typed_float_not_between_tests {
+    use super::*;
+
+    #[test]
+    fn unordered_float_values_and_bounds_do_not_pass_not_between() {
+        let input = [TypedColumn::NullableNumeric {
+            values: NumericColumn::Float64(vec![f64::NAN, -2.0, 0.0, 2.0]),
+            nulls: vec![0, 0, 0, 0],
+        }];
+        let make = |lower, upper| vec![vec![Condition {
+            index: 0,
+            test: Test::NotBetween(
+                Cell::Numeric(Number::Float(lower)),
+                Cell::Numeric(Number::Float(upper)),
+            ),
+        }]];
+        let valid = make(-1.0, 1.0);
+        assert!(!passes(&input, 0, &valid));
+        assert!(passes(&input, 1, &valid));
+        assert!(!passes(&input, 2, &valid));
+        assert!(passes(&input, 3, &valid));
+        let unordered_bound = make(f64::NAN, 1.0);
+        assert!(!passes(&input, 1, &unordered_bound));
     }
 }
