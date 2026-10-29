@@ -10,6 +10,8 @@ import subprocess
 import time
 from pathlib import Path
 
+MAX_SHARDS = 16_384
+
 
 def copy_sql(table, path):
     if not re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*", table):
@@ -42,7 +44,8 @@ def verify_shard(path, entry):
         raise ValueError(f"shard checksum, byte size, or row count mismatch: {path.name}")
 
 
-def load_chunks(binary, database, table, source_dir, *, timeout=600, execute=None):
+def load_chunks(binary, database, table, source_dir, *, timeout=600, execute=None,
+                dry_run=False):
     if timeout <= 0:
         raise ValueError("timeout must be positive")
     manifest = json.loads((Path(source_dir) / "manifest.json").read_text(encoding="utf-8"))
@@ -51,6 +54,8 @@ def load_chunks(binary, database, table, source_dir, *, timeout=600, execute=Non
     shards = manifest.get("shards")
     if not isinstance(shards, list) or not shards:
         raise ValueError("manifest contains no shards")
+    if len(shards) > MAX_SHARDS:
+        raise ValueError("manifest exceeds RustHouse's 16384-shard limit")
     # Preflight every shard before making the first nontransactional write.
     paths = []
     seen_names = set()
@@ -72,6 +77,14 @@ def load_chunks(binary, database, table, source_dir, *, timeout=600, execute=Non
         raise ValueError("total rows mismatch in shard manifest")
     if manifest.get("total_bytes") != sum(e["bytes"] for e in shards):
         raise ValueError("total bytes mismatch in shard manifest")
+    if type(dry_run) is not bool:
+        raise ValueError("dry_run must be a boolean")
+    if dry_run:
+        return {"workload": "tsv-shard-copy", "atomic_batch": False,
+                "dry_run": True, "preflight_verified": True,
+                "shards_loaded": 0, "shards_planned": len(paths),
+                "rows_reported_by_manifest": sum(s["rows"] for s in shards),
+                "results": []}
     run = execute or subprocess.run
     completed = []
     for entry, path in zip(shards, paths):
@@ -99,11 +112,13 @@ def main(argv=None):
     parser.add_argument("--table", required=True)
     parser.add_argument("--source-dir", type=Path, required=True)
     parser.add_argument("--timeout", type=float, default=600)
+    parser.add_argument("--dry-run", action="store_true")
     parser.add_argument("--output", type=Path)
     args = parser.parse_args(argv)
     try:
         report = load_chunks(args.binary, args.database, args.table,
-                             args.source_dir, timeout=args.timeout)
+                             args.source_dir, timeout=args.timeout,
+                             dry_run=args.dry_run)
         rendered = json.dumps(report, indent=2) + "\n"
         if args.output:
             args.output.parent.mkdir(parents=True, exist_ok=True)

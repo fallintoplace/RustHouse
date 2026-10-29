@@ -26,6 +26,17 @@ def modulo_reference(rows, modulus, residue):
     return {"count": count, "sum": total}
 
 
+def modulo_interval_reference(start, stop, modulus, residue):
+    """Exact count and sum of integers matching a residue in [start, stop)."""
+    if (type(start) is not int or type(stop) is not int
+            or not 0 <= start <= stop <= MAX_UINT64 + 1):
+        raise ValueError("invalid UInt64 interval")
+    before = modulo_reference(start, modulus, residue)
+    after = modulo_reference(stop, modulus, residue)
+    return {"count": after["count"] - before["count"],
+            "sum": after["sum"] - before["sum"]}
+
+
 def make_oracles(rows):
     if type(rows) is not int or not 1 <= rows <= MAX_UINT64 + 1:
         raise ValueError("rows must be in 1..2^64")

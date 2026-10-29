@@ -15,6 +15,7 @@ mod multi_aggregate;
 mod scalar;
 mod text_scalar;
 mod update;
+mod where_parser;
 pub use copy::{CopyFormat, CopyFrom, parse_copy_from};
 pub use ddl::{ColumnDef, Ddl, parse_ddl};
 pub use delete::parse_delete;
@@ -362,7 +363,7 @@ impl Parser {
 
     fn word(&mut self) -> Result<String, ParseError> {
         match self.tokens.get(self.index) {
-            Some(Token::Word(value)) => {
+            Some(Token::Word(value) | Token::QuotedWord(value)) => {
                 self.index += 1;
                 Ok(value.clone())
             }
@@ -1251,174 +1252,8 @@ fn parse_select_tokens(tokens: Vec<Token>) -> Result<Select, ParseError> {
         if source.is_none() {
             return Err(ParseError("WHERE requires a table source".into()));
         }
-        let mut branches: Vec<Vec<Predicate>> = vec![Vec::new()];
-        let mut total_conditions = 0usize;
-        loop {
-            if total_conditions == 16 {
-                return Err(ParseError("WHERE supports at most 16 conditions".into()));
-            }
-            let prefix_not = parser.keyword("NOT");
-            let column = parser.word()?;
-            let postfix_not = parser.keyword("NOT");
-            let negate_in = prefix_not ^ postfix_not;
-            if parser.keyword("IS") {
-                if postfix_not {
-                    return Err(ParseError("unexpected NOT before IS".into()));
-                }
-                let negated = parser.keyword("NOT") ^ prefix_not;
-                let predicate = if parser.keyword("DISTINCT") {
-                    if !parser.keyword("FROM") {
-                        return Err(ParseError("IS DISTINCT requires FROM".into()));
-                    }
-                    if parser.keyword("NULL") {
-                        // x IS DISTINCT FROM NULL is x IS NOT NULL.
-                        Predicate::IsNull {
-                            column,
-                            negated: !negated,
-                        }
-                    } else {
-                        Predicate::DistinctFrom {
-                            column,
-                            value: parser.literal()?,
-                            negated,
-                        }
-                    }
-                } else if parser.keyword("NULL") {
-                    Predicate::IsNull { column, negated }
-                } else {
-                    return Err(ParseError("expected NULL or DISTINCT FROM after IS".into()));
-                };
-                branches.last_mut().unwrap().push(predicate);
-                total_conditions += 1;
-            } else if let Some(case_insensitive) = parser.like_keyword() {
-                let pattern = match parser.tokens.get(parser.index) {
-                    Some(Token::String(value)) => value.clone(),
-                    _ => return Err(ParseError("LIKE requires a string literal".into())),
-                };
-                let trailing_escapes = pattern
-                    .as_bytes()
-                    .iter()
-                    .rev()
-                    .take_while(|&&byte| byte == b'\\')
-                    .count();
-                if trailing_escapes % 2 != 0 {
-                    return Err(ParseError("LIKE pattern has a trailing escape".into()));
-                }
-                parser.index += 1;
-                branches.last_mut().unwrap().push(Predicate::Like {
-                    column,
-                    pattern,
-                    case_insensitive,
-                    negated: negate_in,
-                });
-                total_conditions += 1;
-            } else if parser.keyword("BETWEEN") {
-                // BETWEEN is type-checked by the executor, so allow dates and
-                // strings as well as numbers in the lower and upper bounds.
-                let lower = parser.literal()?;
-                if !parser.keyword("AND") {
-                    return Err(ParseError("BETWEEN requires AND".into()));
-                }
-                let upper = parser.literal()?;
-                if negate_in {
-                    branches.last_mut().unwrap().push(Predicate::NotBetween {
-                        column,
-                        lower,
-                        upper,
-                    });
-                    total_conditions += 1;
-                } else {
-                    if total_conditions + 2 > 16 {
-                        return Err(ParseError("WHERE supports at most 16 conditions".into()));
-                    }
-                    branches.last_mut().unwrap().push(Predicate::Comparison {
-                        column: column.clone(),
-                        operator: Operator::Ge,
-                        value: lower,
-                    });
-                    branches.last_mut().unwrap().push(Predicate::Comparison {
-                        column,
-                        operator: Operator::Le,
-                        value: upper,
-                    });
-                    total_conditions += 2;
-                }
-            } else if parser.keyword("IN") {
-                if !parser.take(Token::LParen) {
-                    return Err(ParseError("expected '(' after IN".into()));
-                }
-                let mut values = Vec::new();
-                loop {
-                    if values.len() == 32 {
-                        return Err(ParseError("IN supports at most 32 values".into()));
-                    }
-                    values.push(parser.literal()?);
-                    if !parser.take(Token::Comma) {
-                        break;
-                    }
-                }
-                if !parser.take(Token::RParen) {
-                    return Err(ParseError("expected ')' after IN list".into()));
-                }
-                branches.last_mut().unwrap().push(if negate_in {
-                    Predicate::NotIn { column, values }
-                } else {
-                    Predicate::In { column, values }
-                });
-                total_conditions += 1;
-            } else {
-                if postfix_not {
-                    return Err(ParseError(
-                        "NOT after a column requires IN or BETWEEN".into(),
-                    ));
-                }
-                let mut operator = if parser.take(Token::Percent) {
-                    let modulus = parser.number()?;
-                    let modulus = modulus
-                        .parse::<u64>()
-                        .map_err(|_| ParseError("modulus must be a positive UInt64".into()))?;
-                    if modulus == 0 {
-                        return Err(ParseError("modulus must be positive".into()));
-                    }
-                    match parser.operator()? {
-                        Operator::Eq => Operator::Modulo(modulus),
-                        Operator::Ne => Operator::ModuloNe(modulus),
-                        _ => return Err(ParseError("modulo predicates require = or !=".into())),
-                    }
-                } else {
-                    parser.operator()?
-                };
-                if prefix_not {
-                    operator = match operator {
-                        Operator::Eq => Operator::Ne,
-                        Operator::Ne => Operator::Eq,
-                        Operator::Lt => Operator::Ge,
-                        Operator::Le => Operator::Gt,
-                        Operator::Gt => Operator::Le,
-                        Operator::Ge => Operator::Lt,
-                        Operator::Modulo(_) | Operator::ModuloNe(_) => {
-                            return Err(ParseError("NOT modulo predicates are unsupported".into()));
-                        }
-                    };
-                }
-                branches.last_mut().unwrap().push(Predicate::Comparison {
-                    column,
-                    operator,
-                    value: parser.literal()?,
-                });
-                total_conditions += 1;
-            }
-            if parser.keyword("AND") {
-                continue;
-            }
-            if parser.keyword("OR") {
-                branches.push(Vec::new());
-                continue;
-            }
-            break;
-        }
-        let first = branches.remove(0);
-        (first, branches)
+        let mut branches = where_parser::parse_where(&mut parser)?.into_iter();
+        (branches.next().unwrap_or_default(), branches.collect())
     } else {
         (Vec::new(), Vec::new())
     };
@@ -1427,37 +1262,33 @@ fn parse_select_tokens(tokens: Vec<Token>) -> Result<Select, ParseError> {
         if !parser.keyword("BY") {
             return Err(ParseError("expected BY after GROUP".into()));
         }
-        let first_column = if matches!(parser.tokens.get(parser.index), Some(Token::Number(_))) {
-            let position = parser
-                .number()?
-                .parse::<usize>()
-                .map_err(|_| ParseError("GROUP BY position is too large".into()))?;
-            match &projection {
-                Projection::GroupedCount { column }
-                | Projection::GroupedDistinctCount { column, .. }
-                | Projection::GroupedAggregate { column, .. }
-                | Projection::GroupedAggregates { column, .. }
-                    if position == 1 =>
-                {
-                    column.clone()
-                }
-                Projection::GroupedMultiAggregates { columns, .. }
-                | Projection::GroupedMultiDistinctCount { columns, .. } => position
-                    .checked_sub(1)
-                    .and_then(|index| columns.get(index))
-                    .cloned()
-                    .ok_or_else(|| ParseError("GROUP BY position is out of range".into()))?,
-                _ => return Err(ParseError("GROUP BY position is out of range".into())),
-            }
-        } else {
-            parser.word()?
-        };
-        let mut group_columns = vec![first_column];
-        while parser.take(Token::Comma) {
+        let mut group_columns = Vec::new();
+        loop {
             if group_columns.len() >= 8 {
                 return Err(ParseError("GROUP BY supports at most 8 keys".into()));
             }
-            group_columns.push(parser.word()?);
+            let column = if matches!(parser.tokens.get(parser.index), Some(Token::Number(_))) {
+                let position = parser.number()?.parse::<usize>()
+                    .map_err(|_| ParseError("GROUP BY position is too large".into()))?;
+                match &projection {
+                    Projection::GroupedCount { column }
+                    | Projection::GroupedDistinctCount { column, .. }
+                    | Projection::GroupedAggregate { column, .. }
+                    | Projection::GroupedAggregates { column, .. } if position == 1 => column.clone(),
+                    Projection::GroupedMultiCount { columns }
+                    | Projection::GroupedMultiAggregates { columns, .. }
+                    | Projection::GroupedMultiDistinctCount { columns, .. } => position
+                        .checked_sub(1).and_then(|index| columns.get(index)).cloned()
+                        .ok_or_else(|| ParseError("GROUP BY position is out of range".into()))?,
+                    _ => return Err(ParseError("GROUP BY position is out of range".into())),
+                }
+            } else {
+                parser.word()?
+            };
+            group_columns.push(column);
+            if !parser.take(Token::Comma) {
+                break;
+            }
         }
         match &projection {
             Projection::GroupedMultiCount { columns } if columns == &group_columns => {}
@@ -1563,23 +1394,29 @@ fn parse_select_tokens(tokens: Vec<Token>) -> Result<Select, ParseError> {
                     "HAVING must match the selected aggregate".into(),
                 ));
             }
-        } else if let Projection::GroupedAggregates { items, .. }
-        | Projection::GroupedMultiAggregates { items, .. } = &projection {
+        } else if let Projection::GroupedAggregates { items, aliases, .. }
+        | Projection::GroupedMultiAggregates { items, aliases, .. } = &projection {
             let name = parser.word()?;
-            if !parser.take(Token::LParen) {
-                return Err(ParseError("HAVING requires a selected metric".into()));
-            }
-            let column = parser.word()?;
-            if !parser.take(Token::RParen) {
-                return Err(ParseError("expected ')' after HAVING metric".into()));
-            }
-            aggregate_index = Some(items.iter().position(|(function, argument)| {
-                function.name().eq_ignore_ascii_case(&name)
-                    && argument == &column
-                    && matches!(function,
-                        AggregateFunction::Sum | AggregateFunction::Avg
-                        | AggregateFunction::Min | AggregateFunction::Max
-                        | AggregateFunction::Count)
+            // HAVING uses the same aggregate alias resolution as ORDER BY.
+            // Only a projected metric can be filtered, so an alias never
+            // selects a different or previously uncomputed aggregate.
+            let selected = if parser.take(Token::LParen) {
+                let column = parser.word()?;
+                if !parser.take(Token::RParen) {
+                    return Err(ParseError("expected ')' after HAVING metric".into()));
+                }
+                items.iter().position(|(function, argument)| {
+                    function.name().eq_ignore_ascii_case(&name) && argument == &column
+                })
+            } else {
+                aliases.iter().position(|alias| alias.as_ref()
+                    .is_some_and(|alias| alias.eq_ignore_ascii_case(&name)))
+            };
+            aggregate_index = Some(selected.filter(|&index| {
+                matches!(items[index].0,
+                    AggregateFunction::Sum | AggregateFunction::Avg
+                    | AggregateFunction::Min | AggregateFunction::Max
+                    | AggregateFunction::Count)
             }).ok_or_else(|| ParseError("HAVING metric must match SELECT".into()))?);
         } else if let Projection::GroupedDistinctCount { value_column, .. }
         | Projection::GroupedMultiDistinctCount { value_column, .. } = &projection {

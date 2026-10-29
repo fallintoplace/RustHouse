@@ -82,6 +82,12 @@ pub fn read_null_map<R: Read>(reader: &mut R, rows: usize) -> Result<Vec<u8>, Nu
     reader
         .read_exact(&mut null_map)
         .map_err(NullableReadError::Io)?;
+    if null_map.iter().any(|&value| value > 1) {
+        return Err(NullableReadError::Io(io::Error::new(
+            io::ErrorKind::InvalidData,
+            "Nullable null map must contain only 0 or 1",
+        )));
+    }
     Ok(null_map)
 }
 
@@ -111,7 +117,8 @@ pub fn read_nullable_numeric_column<N: Read, D: Read>(
     rows: usize,
 ) -> Result<NullableColumn<NumericColumn>, NullableReadError> {
     let nested_type = nullable_inner_type(data_type)?;
-    if read_numeric_column(&mut io::empty(), nested_type, 0).is_err() {
+    // Type validation is a lookup, not a zero-row decode per nullable batch.
+    if crate::numeric::numeric_storage_type(nested_type).is_none() {
         return Err(NullableReadError::InvalidType(data_type.to_owned()));
     }
     read_nullable_values(
@@ -179,6 +186,19 @@ mod tests {
         fn read(&mut self, bytes: &mut [u8]) -> io::Result<usize> {
             let count = bytes.len().min(1);
             self.0.read(&mut bytes[..count])
+        }
+    }
+
+    #[test]
+    fn nullable_numeric_validation_rejects_types_without_consuming_streams() {
+        struct NoRead;
+        impl Read for NoRead {
+            fn read(&mut self, _: &mut [u8]) -> io::Result<usize> {
+                panic!("invalid numeric type must not read the source");
+            }
+        }
+        for kind in ["Nullable(String)", "Nullable(UInt256)", "Nullable(DateTime64(10))"] {
+            assert!(read_nullable_numeric_column(&mut NoRead, &mut NoRead, kind, 10).is_err());
         }
     }
 
@@ -487,5 +507,22 @@ mod tests {
         assert_eq!(trailing, [99]);
         data.read_exact(&mut trailing).unwrap();
         assert_eq!(trailing, [88]);
+    }
+}
+
+#[cfg(test)]
+mod null_map_value_validation_tests {
+    use super::*;
+    use std::io::Cursor;
+
+    #[test]
+    fn accepts_binary_flags_and_rejects_corruption() {
+        let mut valid = Cursor::new([0u8, 1, 0, 1]);
+        assert_eq!(read_null_map(&mut valid, 4).unwrap(), vec![0, 1, 0, 1]);
+
+        for invalid in [2u8, 3, 255] {
+            let mut corrupt = Cursor::new([0u8, invalid, 1]);
+            assert!(read_null_map(&mut corrupt, 3).is_err());
+        }
     }
 }

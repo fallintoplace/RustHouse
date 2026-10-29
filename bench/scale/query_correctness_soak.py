@@ -50,8 +50,9 @@ def run_sql(binary, database, statement, timeout):
 
 def soak(binary, database, sql, expected_file, runs=20, warmups=2, timeout=120,
          execute=None):
-    if type(runs) is not int or type(warmups) is not int or runs < 1 or warmups < 0:
-        raise ValueError("runs must be positive and warmups nonnegative")
+    if (type(runs) is not int or type(warmups) is not int or runs < 1
+            or warmups < 0 or runs + warmups > 1_000):
+        raise ValueError("runs and warmups must total 1..1000 executions")
     if not math.isfinite(timeout) or timeout <= 0:
         raise ValueError("timeout must be finite and positive")
     with Path(expected_file).open("rb") as source:

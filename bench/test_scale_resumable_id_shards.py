@@ -48,6 +48,18 @@ class ResumableShardsTests(unittest.TestCase):
                 with self.assertRaises(ValueError):
                     create(temp, start, rows, shard)
 
+    @unittest.skipIf(sys.platform == "win32", "Windows CI cannot create symlinks")
+    def test_rejects_symlinked_output_directory(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            outside = root / "outside"
+            outside.mkdir()
+            alias = root / "alias"
+            alias.symlink_to(outside, target_is_directory=True)
+            with self.assertRaisesRegex(ValueError, "symlinked shard directory"):
+                create(alias, 0, 3, 2)
+            self.assertEqual(list(outside.iterdir()), [])
+
 
 if __name__ == "__main__":
     unittest.main()

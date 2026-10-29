@@ -13,6 +13,7 @@ pub mod health;
 mod json_array;
 mod json_compact_each_row;
 mod jsonl;
+mod join_query;
 mod markdown;
 pub mod remote;
 mod sql_values;
@@ -24,7 +25,7 @@ use json_array::JsonArraySink;
 use json_compact_each_row::JsonCompactEachRowWriter;
 use jsonl::JsonlWriter;
 use markdown::MarkdownWriter;
-use rusthouse_query::{Source, execute, explain_select, parse_select};
+use rusthouse_query::{Source, execute, explain_select, parse_join, parse_select};
 use rusthouse_storage::{inspect_query_source, resolve_database_table};
 use sql_values::SqlValuesWriter;
 use std::io::{self, Write};
@@ -332,6 +333,15 @@ pub fn handle_request(method: &str, target: &str, body: &[u8], config: &Config) 
     };
     if sql.is_empty() || sql.len() > MAX_QUERY_BYTES {
         return Response::text("400 Bad Request", "missing or oversized SQL statement\n");
+    }
+    // Join queries need multiple resolved table sources and an independent
+    // bounded executor. Delegate before the single-source SELECT parser.
+    match parse_join(&sql) {
+        Ok(Some(mut join)) => {
+            return join_query::handle(&mut join, path == "/explain", format, config);
+        }
+        Ok(None) => {}
+        Err(error) => return Response::text("400 Bad Request", &format!("{error}\n")),
     }
     let mut select = match parse_select(&sql) {
         Ok(query) => query,
