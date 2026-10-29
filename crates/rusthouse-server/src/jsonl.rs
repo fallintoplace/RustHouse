@@ -46,6 +46,10 @@ fn decoded_row_field(field: &[u8]) -> io::Result<Cow<'_, str>> {
     }
 }
 
+fn row_width_error() -> io::Error {
+    invalid("JSONL row does not match header column count")
+}
+
 fn write_json_row_into<W: Write>(
     output: &mut W,
     headers: &[Vec<u8>],
@@ -59,7 +63,7 @@ fn write_json_row_into<W: Write>(
     for (index, header) in headers.iter().enumerate() {
         let field = fields
             .next()
-            .ok_or_else(|| invalid("JSONL row does not match header column count"))?;
+            .ok_or_else(row_width_error)?;
         if index != 0 {
             row.write_all(b",")?;
         }
@@ -73,7 +77,7 @@ fn write_json_row_into<W: Write>(
         }
     }
     if fields.next().is_some() {
-        return Err(invalid("JSONL row does not match header column count"));
+        return Err(row_width_error());
     }
     row.write_all(b"}\n")?;
     output.write_all(row)
