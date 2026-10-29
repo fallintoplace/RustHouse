@@ -115,3 +115,8 @@ fn greater_compares_signed_numeric_inputs() {
 fn greater_or_equals_includes_equal_rows() {
     assert_eq!(evaluate("greaterOrEquals(x, y)"), "2");
 }
+
+#[test]
+fn functional_and_preserves_sql_unknown() {
+    assert_eq!(evaluate("and(x, y)"), "2");
+}
