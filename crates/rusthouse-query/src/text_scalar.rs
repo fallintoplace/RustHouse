@@ -147,6 +147,7 @@ pub(super) fn is_function(name: &str) -> bool {
             | "SPACE"
             | "INTDIVORNULL"
             | "MODULOORNULL"
+            | "TOPLEVELDOMAIN"
             | "ENCODEURLFORMCOMPONENT"
     )
 }
@@ -166,6 +167,43 @@ fn parse_at_depth(parser: &mut Parser, depth: usize) -> Result<ConstantValue, Pa
     }
     let value = match name.as_str() {
 
+        "TOPLEVELDOMAIN" => {
+            let input = text_arg(parser, depth + 1)?;
+            require(parser, Token::RParen, "topLevelDomain requires one argument")?;
+            match input {
+                Some(input) => {
+                    let authority = input
+                        .split_once("://")
+                        .map_or(input.as_str(), |(_, rest)| rest)
+                        .split(['/', '?', '#'])
+                        .next()
+                        .unwrap_or("");
+                    let host_port = authority.rsplit('@').next().unwrap_or("");
+                    let host = host_port.split(':').next().unwrap_or("");
+                    let labels: Vec<&str> = host.split('.').collect();
+                    let valid = labels.len() >= 2
+                        && host.parse::<std::net::Ipv4Addr>().is_err()
+                        && labels.iter().all(|label| {
+                            label.len() <= 63
+                                && !label.is_empty()
+                                && label.as_bytes()[0].is_ascii_alphanumeric()
+                                && label.as_bytes()[label.len() - 1].is_ascii_alphanumeric()
+                                && label.bytes().all(|byte| {
+                                    byte.is_ascii_alphanumeric() || byte == b'-'
+                                })
+                        });
+                    ConstantValue::Text(
+                        if valid {
+                            labels.last().copied().unwrap_or("")
+                        } else {
+                            ""
+                        }
+                        .to_owned(),
+                    )
+                }
+                None => ConstantValue::Null,
+            }
+        }
         "MODULOORNULL" => {
             let dividend = integer_arg(parser, depth + 1)?;
             require(parser, Token::Comma, "moduloOrNull requires two arguments")?;
