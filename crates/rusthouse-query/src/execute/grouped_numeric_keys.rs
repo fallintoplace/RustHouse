@@ -12,6 +12,18 @@ const MAX_GROUPS: usize = 200_000;
 
 const MAX_RETAINED_GROUP_BYTES: usize = 64 * 1024 * 1024;
 
+fn charge_median_value(used: &mut usize) -> Result<(), ExecutionError> {
+    let next = used.checked_add(std::mem::size_of::<Number>())
+        .ok_or_else(|| ExecutionError::Invalid("composite group median memory overflow".into()))?;
+    if next > MAX_RETAINED_GROUP_BYTES {
+        return Err(ExecutionError::Invalid(
+            "composite GROUP BY median exceeds 64 MiB retained memory".into()
+        ));
+    }
+    *used = next;
+    Ok(())
+}
+
 fn charge_group(
     total: &mut usize,
     dimensions: usize,
@@ -224,6 +236,7 @@ pub(super) fn execute<W: Write>(
     let mut by_key = HashMap::<Vec<Key>, usize>::new();
     let mut groups = Vec::<(Vec<Cell>, Vec<AggregateState>)>::new();
     let mut retained_group_bytes = 0usize;
+    let mut retained_median_bytes = 0usize;
     let mut dense_slots = (columns.len() == 2
         && columns
             .iter()
@@ -350,6 +363,9 @@ pub(super) fn execute<W: Write>(
                     continue;
                 }
                 if let Some(value) = numeric_value_at(&batch[index], row)? {
+                    if *function == AggregateFunction::Median {
+                        charge_median_value(&mut retained_median_bytes)?;
+                    }
                     state.update(value)?;
                 }
             }
@@ -516,5 +532,22 @@ mod keyed_aggregate_group_memory_tests {
         assert!(charge_group(&mut used, usize::MAX, 1, 0).is_err());
         assert_eq!(used, before);
         assert!(charge_group(&mut used, 8, 6, MAX_RETAINED_GROUP_BYTES).is_err());
+    }
+}
+
+#[cfg(test)]
+mod composite_group_median_retention_tests {
+    use super::*;
+
+    #[test]
+    fn accounts_for_median_inputs_across_all_group_keys() {
+        let mut used = 0usize;
+        charge_median_value(&mut used).unwrap();
+        let single = used;
+        charge_median_value(&mut used).unwrap();
+        assert_eq!(used, 2 * single);
+        used = MAX_RETAINED_GROUP_BYTES - 1;
+        assert!(charge_median_value(&mut used).is_err());
+        assert_eq!(used, MAX_RETAINED_GROUP_BYTES - 1);
     }
 }
