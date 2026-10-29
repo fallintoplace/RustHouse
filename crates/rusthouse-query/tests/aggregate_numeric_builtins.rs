@@ -110,3 +110,8 @@ fn less_or_equals_includes_equal_rows() {
 fn greater_compares_signed_numeric_inputs() {
     assert_eq!(evaluate("greater(x, y)"), "1");
 }
+
+#[test]
+fn greater_or_equals_includes_equal_rows() {
+    assert_eq!(evaluate("greaterOrEquals(x, y)"), "2");
+}
