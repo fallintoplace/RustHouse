@@ -1,0 +1,6 @@
+{
+  "id": "count-middle-half",
+  "kind": "count_range",
+  "lo": "p25",
+  "hi": "p75"
+}
