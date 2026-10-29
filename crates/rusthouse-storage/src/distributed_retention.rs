@@ -170,7 +170,7 @@ mod budgeted_retention_tests {
             (vec![1], 7)
         );
         assert_eq!(
-            retention_candidates_with_byte_budget(&generations, 5, 1, &[3], 20).unwrap(),
+            retention_candidates_with_byte_budget(&generations, 5, 1, &[3], 21).unwrap(),
             (vec![1, 2, 4], 21)
         );
         assert!(retention_candidates_with_byte_budget(&generations, 5, 1, &[99], 20).is_err());
