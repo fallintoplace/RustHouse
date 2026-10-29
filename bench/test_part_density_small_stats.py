@@ -13,7 +13,7 @@ class PartDensitySmallStatsTests(unittest.TestCase):
             for index, rows in enumerate((1, 8, 8, 12)):
                 part = root / f"part-{index}"
                 part.mkdir()
-                (part / "count.txt").write_text(f"{rows}\\n", encoding="ascii")
+                (part / "count.txt").write_text(f"{rows}\n", encoding="ascii")
             report = part_density(root, small_part_rows=8, target_part_rows=10)
             self.assertEqual(report["part_count"], 4)
             self.assertEqual(report["small_part_count"], 1)
@@ -25,7 +25,7 @@ class PartDensitySmallStatsTests(unittest.TestCase):
             root = Path(folder)
             part = root / "part"
             part.mkdir()
-            (part / "count.txt").write_text("3\\n", encoding="ascii")
+            (part / "count.txt").write_text("3\n", encoding="ascii")
             report = part_density(root, small_part_rows=4)
             self.assertEqual(report["small_part_count"], 1)
             self.assertEqual(report["small_part_row_share"], 1.0)
