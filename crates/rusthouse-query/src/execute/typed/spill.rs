@@ -340,7 +340,9 @@ impl TypedExternalSort {
     where F: FnMut(SortEntry) -> Result<bool, ExecutionError>,
     {
         let mut sources = paths.iter().map(|path| {
-            File::open(path).map(BufReader::new).map_err(ExecutionError::from)
+            File::open(path)
+                .map(|file| BufReader::with_capacity(64 * 1024, file))
+                .map_err(ExecutionError::from)
         }).collect::<Result<Vec<_>, _>>()?;
         let mut heap = BinaryHeap::new();
         for (index, source) in sources.iter_mut().enumerate() {
