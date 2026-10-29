@@ -136,6 +136,7 @@ pub(super) fn apply_unary_math(name: &str, value: Number) -> Result<Number, Exec
         "SINH" => Number::Float(number_as_float(value).sinh()),
         "COSH" => Number::Float(number_as_float(value).cosh()),
         "TANH" => Number::Float(number_as_float(value).tanh()),
+        "RADIANS" => Number::Float(number_as_float(value).to_radians()),
         _ => {
             return Err(ExecutionError::Invalid(format!(
                 "unsupported aggregate numeric function: {name}"
@@ -448,6 +449,17 @@ mod aggregate_unary_math_tests {
         ));
         assert!(crate::parse_scalar_expression("tanh(amount)").is_ok());
         assert!(crate::parse_scalar_expression("tanh(amount, 2)").is_err());
+    }
+
+    #[test]
+    fn radians_converts_degrees_before_trigonometric_evaluation() {
+        assert!(matches!(
+            apply_unary_math("RADIANS", Number::Unsigned(180)),
+            Ok(Number::Float(value))
+                if (value - std::f64::consts::PI).abs() < 1e-12
+        ));
+        assert!(crate::parse_scalar_expression("radians(amount)").is_ok());
+        assert!(crate::parse_scalar_expression("radians(amount, 2)").is_err());
     }
 
 }
