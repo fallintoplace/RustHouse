@@ -5,10 +5,11 @@ use super::ExecutionError;
 use std::collections::HashMap;
 
 const WORDS_PER_BLOCK: usize = 1024;
-const MAX_BLOCKS: usize = 32_768; // Limit occupied prefixes independently of representation.
+const MAX_BLOCKS: usize = 65_536; // Every UInt16 prefix can be represented exactly.
+const MAX_DENSE_BLOCKS: usize = 16_384; // Cap dense bitmap payloads at 128 MiB.
 
 enum Block {
-    Sparse(std::collections::HashSet<u16>),
+    Sparse(Vec<u16>),
     Dense(Box<[u64; WORDS_PER_BLOCK]>),
 }
 
@@ -27,6 +28,7 @@ fn insert_bitmap_bit(bitmap: &mut [u64; WORDS_PER_BLOCK], suffix: u16) -> bool {
 pub(super) struct BitmapDistinct32 {
     blocks: HashMap<u16, Block>,
     count: u64,
+    dense_blocks: usize,
 }
 
 impl BitmapDistinct32 {
@@ -38,27 +40,38 @@ impl BitmapDistinct32 {
         let prefix = (key >> 16) as u16;
         if self.blocks.len() >= MAX_BLOCKS && !self.blocks.contains_key(&prefix) {
             return Err(ExecutionError::Invalid(
-                "COUNT(DISTINCT) exceeded its 32768-prefix budget".into(),
+                "COUNT(DISTINCT) exceeded its UInt32 prefix budget".into(),
             ));
         }
         let suffix = (key & 0xffff) as u16;
+        // Random high-cardinality keys spread across many sparse prefixes.
+        // Sorted vectors are substantially smaller than per-prefix hash sets.
         let block = self.blocks.entry(prefix)
-            .or_insert_with(|| Block::Sparse(std::collections::HashSet::new()));
+            .or_insert_with(|| Block::Sparse(Vec::new()));
         let inserted = match block {
-            Block::Sparse(values) => {
-                let fresh = values.insert(suffix);
-                if fresh && values.len() == DENSE_THRESHOLD {
-                    let mut bitmap = Box::new([0u64; WORDS_PER_BLOCK]);
-                    for &value in values.iter() {
-                        insert_bitmap_bit(bitmap.as_mut(), value);
+            Block::Sparse(values) => match values.binary_search(&suffix) {
+                Ok(_) => false,
+                Err(position) => {
+                    if values.len() + 1 == DENSE_THRESHOLD {
+                        if self.dense_blocks >= MAX_DENSE_BLOCKS {
+                            return Err(ExecutionError::Invalid(
+                                "COUNT(DISTINCT) exceeded its 128 MiB dense bitmap budget".into(),
+                            ));
+                        }
+                        let mut bitmap = Box::new([0u64; WORDS_PER_BLOCK]);
+                        for &value in values.iter() {
+                            insert_bitmap_bit(bitmap.as_mut(), value);
+                        }
+                        insert_bitmap_bit(bitmap.as_mut(), suffix);
+                        *block = Block::Dense(bitmap);
+                        self.dense_blocks += 1;
+                    } else {
+                        values.insert(position, suffix);
                     }
-                    *block = Block::Dense(bitmap);
+                    true
                 }
-                fresh
-            }
-            Block::Dense(bitmap) => {
-                insert_bitmap_bit(bitmap.as_mut(), suffix)
-            }
+            },
+            Block::Dense(bitmap) => insert_bitmap_bit(bitmap.as_mut(), suffix),
         };
         if inserted {
             self.count = self.count.checked_add(1)
@@ -126,5 +139,37 @@ mod adaptive_large_keyspace_tests {
             state.insert((77 << 16) | low).unwrap();
         }
         assert_eq!(state.len(), 5000);
+    }
+}
+
+#[cfg(test)]
+mod full_domain_sparse_tests {
+    use super::*;
+
+    #[test]
+    fn exact_random_like_uint32_keys_span_more_than_32768_prefixes() {
+        let mut state = BitmapDistinct32::new();
+        for prefix in 0..65_536u32 {
+            state.insert((prefix << 16) | (prefix % 271)).unwrap();
+        }
+        assert_eq!(state.len(), 65_536);
+        for prefix in 0..65_536u32 {
+            state.insert((prefix << 16) | (prefix % 271)).unwrap();
+        }
+        assert_eq!(state.len(), 65_536);
+    }
+
+    #[test]
+    fn ordered_sparse_insert_handles_duplicates_and_promotion() {
+        let mut state = BitmapDistinct32::new();
+        for suffix in (0..5000u32).rev() {
+            state.insert((300 << 16) | suffix).unwrap();
+        }
+        assert_eq!(state.len(), 5000);
+        for suffix in 0..5000u32 {
+            state.insert((300 << 16) | suffix).unwrap();
+        }
+        assert_eq!(state.len(), 5000);
+        assert_eq!(state.dense_blocks, 1);
     }
 }
