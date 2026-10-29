@@ -11,12 +11,12 @@ pub fn retry_delay(
     if attempt > 32 || base_ms == 0 || max_ms == 0 || base_ms > max_ms {
         return Err("invalid replica retry configuration");
     }
-    let exponent = base_ms.saturating_mul(1u64 << attempt).min(max_ms);
-    let half = exponent.div_ceil(2);
+    let bounded_backoff_ms = base_ms.saturating_mul(1u64 << attempt).min(max_ms);
+    let half = bounded_backoff_ms.div_ceil(2);
     let jitter = seed
         .wrapping_mul(0x9e37_79b9_7f4a_7c15)
         .rotate_left(attempt)
-        % (exponent - half + 1);
+        % (bounded_backoff_ms - half + 1);
     Ok(Duration::from_millis(half + jitter))
 }
 
