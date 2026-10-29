@@ -138,18 +138,18 @@ mod adaptive_large_keyspace_tests {
     fn bounds_sparse_distinct_memory_and_keeps_duplicates_valid() {
         let mut state = BitmapDistinct32::new();
         // Use 3200 entries per block to remain below the dense threshold.
-        for prefix in 0..41u32 {
+        for prefix in 0..40u32 {
             for suffix in 0..3200u32 {
                 state.insert((prefix << 16) | suffix).unwrap();
             }
         }
-        for suffix in 0..(MAX_SPARSE_KEYS - 41 * 3200) as u32 {
-            state.insert((41 << 16) | suffix).unwrap();
+        for suffix in 0..(super::MAX_SPARSE_KEYS - 40 * 3200) as u32 {
+            state.insert((40 << 16) | suffix).unwrap();
         }
-        assert_eq!(state.sparse_keys, MAX_SPARSE_KEYS);
+        assert_eq!(state.sparse_keys, super::MAX_SPARSE_KEYS);
         assert!(state.insert(0).is_ok());
         assert!(state.insert((42 << 16) | 7).is_err());
-        assert_eq!(state.len(), MAX_SPARSE_KEYS as u64);
+        assert_eq!(state.len(), super::MAX_SPARSE_KEYS as u64);
     }
 
     #[test]
