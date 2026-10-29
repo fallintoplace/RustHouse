@@ -53,8 +53,7 @@ pub fn parse_membership(text: &str) -> Result<Vec<Member>, &'static str> {
     let mut seen = HashSet::new();
     for line in text.lines() {
         let member = parse_member(line)?;
-        let node = line.split_whitespace().next().unwrap_or("");
-        if !seen.insert(node) {
+        if !seen.insert(member.node.clone()) {
             return Err("duplicate member or invalid weight");
         }
         members.push(member);
