@@ -1,6 +1,7 @@
 import subprocess
 import sys
 import unittest
+from unittest.mock import patch
 
 from bench.scale.query_resource_profile import parse_io, parse_rss, profile
 
@@ -21,6 +22,18 @@ class ResourceProfileTests(unittest.TestCase):
         # The profiler's argument shape is tested through this harmless shim.
         with self.assertRaises(RuntimeError):
             profile(sys.executable, ".", "ignored", timeout=1, sample_ms=10)
+
+    @unittest.skipUnless(sys.platform == "linux", "requires Linux")
+    def test_large_stderr_does_not_deadlock_profile(self):
+        real_popen = subprocess.Popen
+        script = "import sys; sys.stderr.write('X' * 262144); sys.exit(17)"
+
+        def launch(_args, **kwargs):
+            return real_popen([sys.executable, "-c", script], **kwargs)
+
+        with patch("bench.scale.query_resource_profile.subprocess.Popen", side_effect=launch):
+            with self.assertRaisesRegex(RuntimeError, "query exited 17"):
+                profile(sys.executable, ".", "ignored", timeout=3, sample_ms=10)
 
     def test_budget_input_validation(self):
         if sys.platform == "linux":
