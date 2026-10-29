@@ -62,7 +62,11 @@ fn read_number(reader: &mut impl Read) -> Result<Number, ExecutionError> {
     match tag[0] {
         0 => Ok(Number::Unsigned(u128::from_le_bytes(payload))),
         1 => Ok(Number::Signed(i128::from_le_bytes(payload))),
-        2 => Ok(Number::Float(f64::from_bits(u128::from_le_bytes(payload) as u64))),
+        2 => {
+            let bits = u64::try_from(u128::from_le_bytes(payload))
+                .map_err(|_| invalid("noncanonical external sort Float64 payload"))?;
+            Ok(Number::Float(f64::from_bits(bits)))
+        },
         _ => Err(invalid("invalid external sort numeric tag")),
     }
 }
@@ -480,6 +484,18 @@ impl SortedRows {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn rejects_noncanonical_float_spill_bytes() {
+        let mut encoded = Vec::new();
+        write_number(&mut encoded, Number::Float(-0.0)).unwrap();
+        match read_number(&mut encoded.as_slice()).unwrap() {
+            Number::Float(value) => assert_eq!(value.to_bits(), (-0.0f64).to_bits()),
+            _ => panic!("expected Float64"),
+        }
+        encoded[9] = 1;
+        assert!(read_number(&mut encoded.as_slice()).is_err());
+    }
 
     #[test]
     fn external_sort_merges_many_runs_and_preserves_stable_ties() {
