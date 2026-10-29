@@ -15,17 +15,12 @@ fn component(value: &str) -> bool {
     if bytes.is_empty() || bytes.len() > 128 || !bytes[0].is_ascii_alphanumeric() {
         return false;
     }
-    let mut previous_dot = false;
-    for &byte in bytes {
-        if !byte.is_ascii_alphanumeric() && !matches!(byte, b'_' | b'-' | b'.') {
-            return false;
-        }
-        if byte == b'.' && previous_dot {
-            return false;
-        }
-        previous_dot = byte == b'.';
-    }
-    !previous_dot
+    bytes.iter().all(|&byte| {
+        byte.is_ascii_alphanumeric() || matches!(byte, b'_' | b'-' | b'.')
+    }) && bytes.last() != Some(&b'.')
+        && !bytes
+            .windows(2)
+            .any(|pair| pair[0] == b'.' && pair[1] == b'.')
 }
 
 impl ObjectKey {
