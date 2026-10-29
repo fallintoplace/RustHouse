@@ -16,20 +16,23 @@ def temperature_tenths(row):
     return (row * 17 + 13) % 801 - 400
 
 
-def write_input(path, rows, stations, delimiter="\t"):
+def write_input(path, rows, stations, delimiter="\t", batch_rows=4096):
     """Create an input file and return its min, max, and sum oracle."""
+    if type(batch_rows) is not int or not 1 <= batch_rows <= 65536:
+        raise ValueError("batch_rows must be in 1..65536")
     minimum = 10**9
     maximum = -(10**9)
     total = 0
     with path.open("w", encoding="utf-8", newline="\n") as output:
-        for row in range(rows):
-            value = temperature_tenths(row)
-            minimum = min(minimum, value)
-            maximum = max(maximum, value)
-            total += value
-            output.write(
-                f"station-{row % stations:05}{delimiter}{value / 10:.1f}\n"
-            )
+        for first in range(0, rows, batch_rows):
+            pending = []
+            for row in range(first, min(first + batch_rows, rows)):
+                value = temperature_tenths(row)
+                minimum = min(minimum, value)
+                maximum = max(maximum, value)
+                total += value
+                pending.append(f"station-{row % stations:05}{delimiter}{value / 10:.1f}\n")
+            output.write("".join(pending))
     return minimum / 10, maximum / 10, total / 10
 
 
@@ -68,7 +71,8 @@ def verify(binary, database, rows, stations, minimum, maximum, total, timeout):
         )
 
 
-def benchmark(binary, rows, stations, runs, warmups, timeout, format_name):
+def benchmark(binary, rows, stations, runs, warmups, timeout, format_name,
+              fixture_batch_rows=4096):
     if rows < 1 or stations < 1 or stations > rows:
         raise ValueError("rows must be positive and stations must be within 1..rows")
     if runs < 1 or warmups < 0 or timeout <= 0:
@@ -80,7 +84,8 @@ def benchmark(binary, rows, stations, runs, warmups, timeout, format_name):
         root = Path(directory)
         source = root / "measurements.txt"
         delimiter = ";" if format_name == "SSV" else "\t"
-        minimum, maximum, total = write_input(source, rows, stations, delimiter)
+        minimum, maximum, total = write_input(source, rows, stations, delimiter,
+                                              batch_rows=fixture_batch_rows)
         size = source.stat().st_size
         timings = []
         for index in range(warmups + runs):
@@ -107,6 +112,7 @@ def benchmark(binary, rows, stations, runs, warmups, timeout, format_name):
         "format": format_name,
         "rows": rows,
         "stations": stations,
+        "fixture_batch_rows": fixture_batch_rows,
         "file_bytes": size,
         "runs": runs,
         "warmups": warmups,
@@ -122,6 +128,7 @@ def main(argv=None):
     parser.add_argument("--binary", required=True, type=Path)
     parser.add_argument("--rows", type=int, default=100_000)
     parser.add_argument("--stations", type=int, default=413)
+    parser.add_argument("--fixture-batch-rows", type=int, default=4096)
     parser.add_argument("--runs", type=int, default=3)
     parser.add_argument("--warmups", type=int, default=1)
     parser.add_argument("--timeout", type=float, default=600)
@@ -136,6 +143,7 @@ def main(argv=None):
         args.warmups,
         args.timeout,
         args.format,
+        fixture_batch_rows=args.fixture_batch_rows,
     )
     emit_json(result, args.output)
     return 0
