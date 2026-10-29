@@ -44,6 +44,7 @@ pub(super) fn is_function(name: &str) -> bool {
         || name.eq_ignore_ascii_case("LESS")
         || name.eq_ignore_ascii_case("LESSOREQUALS")
         || name.eq_ignore_ascii_case("GREATER")
+        || name.eq_ignore_ascii_case("GREATEROREQUALS")
         || is_saturating(name)
         || name.eq_ignore_ascii_case("BITHAMMINGDISTANCE")
         || name.eq_ignore_ascii_case("ABS")
@@ -1203,6 +1204,10 @@ fn factor(parser: &mut Parser, depth: usize) -> Result<i64, ParseError> {
             require_token(parser, Token::Comma, "greater requires two arguments")?;
             let second = expression(parser, depth + 1)?;
             i64::from(first > second)
+        } else if name.eq_ignore_ascii_case("GREATEROREQUALS") {
+            require_token(parser, Token::Comma, "greaterOrEquals requires two arguments")?;
+            let second = expression(parser, depth + 1)?;
+            i64::from(first >= second)
         } else if name.eq_ignore_ascii_case("ABS") {
             first.checked_abs().ok_or_else(overflow)?
         } else if name.eq_ignore_ascii_case("DIGIT_SUM") {
