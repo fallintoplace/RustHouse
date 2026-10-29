@@ -80,3 +80,8 @@ fn modulo_preserves_signed_remainder() {
 fn negate_propagates_null_and_signed_values() {
     assert_eq!(evaluate("negate(x)"), "-3");
 }
+
+#[test]
+fn positive_preserves_nullable_numeric_values() {
+    assert_eq!(evaluate("positive(x)"), "3");
+}

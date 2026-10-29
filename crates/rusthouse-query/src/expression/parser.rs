@@ -209,6 +209,7 @@ fn parse_aggregate_builtin(parser: &mut Parser) -> Result<ScalarExpr, ParseError
             Box::new(ScalarExpr::Integer(0)),
             Box::new(args.remove(0)),
         )),
+        ("POSITIVE", 1) => Ok(args.remove(0)),
         _ => Err(ParseError(format!("unsupported aggregate function: {name}"))),
     }
 }
