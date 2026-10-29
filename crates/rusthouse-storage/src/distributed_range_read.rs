@@ -25,6 +25,10 @@ fn open_verified_object(path: &Path) -> io::Result<(File, u64)> {
     if !opened.file_type().is_file() || opened.len() != meta.len() {
         return Err(io::Error::other("object changed before range read"));
     }
+    #[cfg(unix)]
+    if !same_file_identity(&meta, &opened) {
+        return Err(io::Error::other("object replaced before range read"));
+    }
     Ok((file, opened.len()))
 }
 
@@ -171,5 +175,37 @@ mod multi_range_tests {
         assert!(read_object_ranges(&path, &[(9, 2)], 8).is_err());
         assert!(read_object_ranges(&path, &[(u64::MAX, 2)], 8).is_err());
         fs::remove_file(path).unwrap();
+    }
+}
+
+#[cfg(unix)]
+fn same_file_identity(path_metadata: &fs::Metadata, opened_metadata: &fs::Metadata) -> bool {
+    use std::os::unix::fs::MetadataExt;
+    path_metadata.dev() == opened_metadata.dev()
+        && path_metadata.ino() == opened_metadata.ino()
+}
+
+#[cfg(all(test, unix))]
+mod immutable_identity_tests {
+    use super::*;
+
+    #[test]
+    fn same_length_different_inodes_are_not_the_same_object() {
+        let root = std::env::temp_dir().join(format!(
+            "rusthouse-distributed_range_read-identity-{}",
+            std::process::id()
+        ));
+        let _ = fs::remove_dir_all(&root);
+        fs::create_dir_all(&root).unwrap();
+        let first = root.join("one");
+        let second = root.join("two");
+        fs::write(&first, b"abcd").unwrap();
+        fs::write(&second, b"wxyz").unwrap();
+        let before = fs::symlink_metadata(&first).unwrap();
+        let opened = File::open(&second).unwrap().metadata().unwrap();
+        assert_eq!(before.len(), opened.len());
+        assert!(!same_file_identity(&before, &opened));
+        assert!(same_file_identity(&before, &File::open(&first).unwrap().metadata().unwrap()));
+        fs::remove_dir_all(root).unwrap();
     }
 }
