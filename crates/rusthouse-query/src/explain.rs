@@ -75,24 +75,28 @@ fn describe_projection(projection: &Projection) -> String {
         ),
         Projection::GroupedAggregates { column, items, filters, .. } => format!(
             "Aggregate: GROUP BY {column}, {}",
-            format_comma_separated_labels(items.iter().enumerate().map(|(index, (function, value))| {
-                if let Some(filter) = filters[index].as_deref() {
-                    format!("{}If({value}, {filter})", function.name())
-                } else {
-                    format!("{}({value})", function.name())
-                }
-            }))
+            format_comma_separated_labels(
+                items.iter().enumerate().map(|(index, (function, value))| {
+                    if let Some(filter) = filters[index].as_deref() {
+                        format!("{}If({value}, {filter})", function.name())
+                    } else {
+                        format!("{}({value})", function.name())
+                    }
+                }),
+            )
         ),
         Projection::GroupedMultiAggregates { columns, items, filters, .. } => format!(
             "Aggregate: GROUP BY {}, {}",
             columns.join(", "),
-            format_comma_separated_labels(items.iter().enumerate().map(|(index, (function, value))| {
-                if let Some(filter) = filters[index].as_deref() {
-                    format!("{}If({value}, {filter})", function.name())
-                } else {
-                    format!("{}({value})", function.name())
-                }
-            }))
+            format_comma_separated_labels(
+                items.iter().enumerate().map(|(index, (function, value))| {
+                    if let Some(filter) = filters[index].as_deref() {
+                        format!("{}If({value}, {filter})", function.name())
+                    } else {
+                        format!("{}({value})", function.name())
+                    }
+                }),
+            )
         ),
         Projection::Aggregate { function, column } => {
             format!("Aggregate: {}({column})", function.name())
