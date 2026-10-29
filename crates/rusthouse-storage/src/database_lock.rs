@@ -67,7 +67,7 @@ fn validate_lock_identity(path: &Path, file: &fs::File) -> Result<(), String> {
     Ok(())
 }
 
-fn lock_error(action: &str, kind: &str, path: &Path, error: io::Error) -> String {
+fn format_database_lock_error(action: &str, kind: &str, path: &Path, error: io::Error) -> String {
     format!(
         "cannot {action} database {kind} lock {}: {error}",
         path.display()
@@ -91,13 +91,13 @@ pub fn acquire_database_lock(database: &Path, exclusive: bool) -> Result<Databas
         .create(true)
         .truncate(false)
         .open(&path)
-        .map_err(|error| lock_error("open", lock_kind, &path, error))?;
+        .map_err(|error| format_database_lock_error("open", lock_kind, &path, error))?;
 
     #[cfg(unix)]
     {
         validate_lock_identity(&path, &file)?;
         advisory::try_lock(&file, exclusive)
-            .map_err(|error| lock_error("acquire", lock_kind, &path, error))?;
+            .map_err(|error| format_database_lock_error("acquire", lock_kind, &path, error))?;
     }
 
     #[cfg(not(unix))]
@@ -105,7 +105,7 @@ pub fn acquire_database_lock(database: &Path, exclusive: bool) -> Result<Databas
         .write(true)
         .create_new(true)
         .open(&path)
-        .map_err(|error| lock_error("acquire", lock_kind, &path, error))?;
+        .map_err(|error| format_database_lock_error("acquire", lock_kind, &path, error))?;
 
     Ok(DatabaseLock {
         _file: file,

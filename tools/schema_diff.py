@@ -38,11 +38,18 @@ def columns(payload):
     for col in result:
         if not isinstance(col, dict) or not isinstance(col.get("name"), str) or not isinstance(col.get("type"), str):
             raise ValueError("malformed column")
-        if not col["name"] or not col["type"] or col["name"] in seen:
+        if not col["name"].strip() or not col["type"].strip() or col["name"] in seen:
             raise ValueError("empty or duplicate schema column")
         seen.add(col["name"])
         output.append((col["name"], col["type"]))
     return output
+
+
+def compatible_columns(left, right, *, allow_additive=False):
+    if left == right:
+        return True
+    return bool(allow_additive and len(right) >= len(left)
+                and right[:len(left)] == left)
 
 
 def fetch(base, table, timeout=5):
@@ -59,13 +66,14 @@ def main():
     parser.add_argument("--left", required=True)
     parser.add_argument("--right", required=True)
     parser.add_argument("--table", required=True)
+    parser.add_argument("--allow-additive", action="store_true")
     args = parser.parse_args()
     try:
         if not re.fullmatch(r"[A-Za-z_][A-Za-z_0-9]{0,127}", args.table):
             raise ValueError("invalid table name")
         left = fetch(validate_url(args.left), args.table)
         right = fetch(validate_url(args.right), args.table)
-        if left != right:
+        if not compatible_columns(left, right, allow_additive=args.allow_additive):
             print("MISMATCH: ordered column names/types differ", file=sys.stderr)
             print("left: " + repr(left), file=sys.stderr)
             print("right: " + repr(right), file=sys.stderr)
@@ -73,7 +81,8 @@ def main():
     except Exception as exc:
         print("FAIL: " + str(exc), file=sys.stderr)
         return 1
-    print("PASS: identical ordered schema for " + args.table)
+    status = ("append-only compatible" if left != right else "identical ordered")
+    print("PASS: " + status + " schema for " + args.table)
     return 0
 
 

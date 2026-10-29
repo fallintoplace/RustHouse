@@ -1,0 +1,22 @@
+{
+  "name": "high-selectivity-scan",
+  "description": "Exercise point, narrow range and rare dimension predicates against persisted events",
+  "queries": [
+    {
+      "name": "point-count",
+      "sql": "SELECT COUNT(*) FROM events WHERE event_id = 1"
+    },
+    {
+      "name": "short-range-sum",
+      "sql": "SELECT SUM(amount) FROM events WHERE event_id BETWEEN 10 AND 50"
+    },
+    {
+      "name": "selective-region-count",
+      "sql": "SELECT COUNT(*) FROM events WHERE region = 'EU' AND event_id BETWEEN 1 AND 100"
+    },
+    {
+      "name": "point-range-topk",
+      "sql": "SELECT event_id, amount FROM events WHERE event_id BETWEEN 50 AND 80 ORDER BY event_id DESC LIMIT 10"
+    }
+  ]
+}

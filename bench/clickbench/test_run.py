@@ -209,5 +209,18 @@ class ClickBenchRunnerTests(unittest.TestCase):
                     with self.assertRaisesRegex(ValueError, "bounded SELECT"):
                         load_queries(path)
 
+    def test_oversized_golden_reference_skips_query_execution(self):
+        with tempfile.TemporaryDirectory() as directory:
+            golden = Path(directory) / "q01.tsv"
+            golden.write_bytes(b"123456")
+            calls = []
+            with mock.patch("run.MAX_REFERENCE_BYTES", 4):
+                results = run([(1, "SELECT 1")],
+                              lambda sql: calls.append(sql), 1, 0,
+                              references=Path(directory))
+            self.assertEqual(results[0]["status"], "reference_too_large")
+            self.assertEqual(calls, [])
+
+
 if __name__ == "__main__":
     unittest.main()

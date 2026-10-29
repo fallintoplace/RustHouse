@@ -8,6 +8,17 @@ const PRECISION: u32 = 14;
 const REGISTERS: usize = 1 << PRECISION;
 const MAX_REGISTER_RANK: u8 = (64 - PRECISION + 1) as u8;
 
+// Hash the canonical UInt128 little-endian encoding once per tiny value.
+const SMALL_UNSIGNED_HASHES: [u64; 256] = {
+    let mut values = [0u64; 256];
+    let mut index = 0usize;
+    while index < values.len() {
+        values[index] = HyperLogLog::hash(&(index as u128).to_le_bytes());
+        index += 1;
+    }
+    values
+};
+
 pub(super) struct HyperLogLog {
     registers: Box<[u8; REGISTERS]>,
 }
@@ -21,12 +32,14 @@ impl Default for HyperLogLog {
 }
 
 impl HyperLogLog {
-    fn hash(value: &[u8]) -> u64 {
+    const fn hash(value: &[u8]) -> u64 {
         // Deterministic across processes; avalanche distributes sequential IDs.
         let mut hash = 0xcbf29ce484222325u64;
-        for &byte in value {
-            hash ^= u64::from(byte);
+        let mut index = 0;
+        while index < value.len() {
+            hash ^= value[index] as u64;
             hash = hash.wrapping_mul(0x100000001b3);
+            index += 1;
         }
         hash ^= hash >> 33;
         hash = hash.wrapping_mul(0xff51afd7ed558ccd);
@@ -46,6 +59,9 @@ impl HyperLogLog {
 
     fn observe_number(&mut self, value: Number) {
         let hash = match value {
+            Number::Unsigned(value) if value <= u8::MAX as u128 => {
+                SMALL_UNSIGNED_HASHES[value as usize]
+            }
             Number::Unsigned(value) => Self::hash(&value.to_le_bytes()),
             Number::Signed(value) => Self::hash(&value.to_le_bytes()),
             Number::Float(value) => {
@@ -153,6 +169,16 @@ impl HyperLogLog {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn precomputed_small_unsigned_hashes_match_canonical_bytes() {
+        for value in 0..=u8::MAX {
+            assert_eq!(
+                SMALL_UNSIGNED_HASHES[usize::from(value)],
+                HyperLogLog::hash(&u128::from(value).to_le_bytes())
+            );
+        }
+    }
 
     #[test]
     fn exponent_bits_match_original_power_of_two_contributions() {

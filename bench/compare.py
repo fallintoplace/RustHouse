@@ -31,17 +31,24 @@ def elapsed(record):
     if not isinstance(latency, dict):
         return None
     value = latency.get("median_seconds")
-    if type(value) not in (float, int) or not math.isfinite(value) or value <= 0:
+    if type(value) not in (float, int) or value <= 0:
+        return None
+    try:
+        if not math.isfinite(value):
+            return None
+    except OverflowError:
         return None
     return value
 
 
 def ensure_compatible_reports(baseline, candidate):
     for field in ("workload", "engine", "rows", "seed", "timing_scope",
-                  "query_sha256", "comparison"):
+                  "query_sha256", "comparison", "reference_checked",
+                  "distribution", "suite", "source", "projection_manifest",
+                  "official_benchmark"):
         old = baseline.get(field)
         new = candidate.get(field)
-        if (old is None) != (new is None) or (old is not None and old != new):
+        if type(old) is not type(new) or (old is not None and old != new):
             raise ValueError(f"cannot compare different {field} values")
 
 
@@ -63,6 +70,12 @@ def classify_query(ident, old, new, slowdown_threshold_percent):
             "query": ident, "reason": "missing_positive_median",
         }, False
     change = 100 * (current / previous - 1)
+    if not math.isfinite(change):
+        return "regression", {
+            "query": ident, "reason": "latency_regression",
+            "baseline_seconds": previous, "candidate_seconds": current,
+            "change_percent": None,
+        }, True
     item = {
         "query": ident,
         "baseline_ms": round(previous * 1000, 6),
@@ -90,22 +103,30 @@ def compare(baseline, candidate, slowdown_threshold_percent=10):
     improvements = []
     incomparable = []
     compared = 0
+    log_speedups = []
     for ident in sorted(left):
         classification, item, measured = classify_query(
             ident, left[ident], right[ident], slowdown_threshold_percent
         )
         compared += int(measured)
+        if measured:
+            previous, current = elapsed(left[ident]), elapsed(right[ident])
+            log_speedups.append(math.log(previous) - math.log(current))
         if classification == "regression":
             regressions.append(item)
         elif classification == "improvement":
             improvements.append(item)
         elif classification == "incomparable":
             incomparable.append(item)
+    mean_log = math.fsum(log_speedups) / len(log_speedups) if log_speedups else None
+    geomean = (math.exp(mean_log) if mean_log is not None
+               and -700 <= mean_log <= 700 else None)
     return {
         "comparison": "sql-query-latency",
         "threshold_percent": slowdown_threshold_percent,
         "queries": len(left),
         "compared_queries": compared,
+        "geomean_speedup": geomean,
         "regression_count": len(regressions),
         "regressions": regressions,
         "improvements": improvements,

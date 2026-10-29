@@ -60,6 +60,7 @@ def run_subset(binary, database, sqlite_db, only=None, runs=3, warmups=1,
             started = time.perf_counter() if iteration >= 0 else None
             try:
                 output = execute(sql)
+                finished = time.perf_counter() if started is not None else None
                 assert_matches(output, expected, unordered=(number in (8, 9)))
             except subprocess.TimeoutExpired:
                 status, failure = "timeout", "RustHouse query timed out"
@@ -71,7 +72,7 @@ def run_subset(binary, database, sqlite_db, only=None, runs=3, warmups=1,
                 status, failure = "error", str(error)
                 break
             if started is not None:
-                samples.append(time.perf_counter() - started)
+                samples.append(finished - started)
         if status != "passed":
             samples = []
         results.append({"query": number, "status": status, "error": failure,
