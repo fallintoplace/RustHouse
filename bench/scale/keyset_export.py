@@ -11,6 +11,7 @@ import math
 import os
 import re
 import subprocess
+import time
 from pathlib import Path
 
 
@@ -44,7 +45,7 @@ def query(binary, database, statement, timeout):
 
 
 def export(binary, database, table, output, start, rows, page_rows=8192, timeout=300,
-           column="id", execute=None):
+           column="id", execute=None, max_total_seconds=None):
     if type(start) is not int or type(rows) is not int or start < 0 or rows < 1:
         raise ValueError("start and rows must be positive UInt64 bounds")
     if (start + rows > 2**64 or type(page_rows) is not int
@@ -52,6 +53,10 @@ def export(binary, database, table, output, start, rows, page_rows=8192, timeout
         raise ValueError("range overflow or invalid page size (1..65535)")
     if type(timeout) not in (float, int) or not math.isfinite(timeout) or timeout <= 0:
         raise ValueError("timeout must be finite and positive")
+    if (max_total_seconds is not None and
+            (type(max_total_seconds) not in (int, float)
+             or not math.isfinite(max_total_seconds) or max_total_seconds <= 0)):
+        raise ValueError("max_total_seconds must be finite and positive")
     output = Path(output)
     if output.exists():
         raise ValueError("refusing to overwrite an existing export")
@@ -59,9 +64,13 @@ def export(binary, database, table, output, start, rows, page_rows=8192, timeout
     temporary = output.with_name("." + output.name + f".{os.getpid()}.pending")
     digest = hashlib.sha256()
     pages = 0
+    started = time.monotonic()
     try:
         with temporary.open("xb") as sink:
             for first in range(start, start + rows, page_rows):
+                if (max_total_seconds is not None
+                        and time.monotonic() - started > max_total_seconds):
+                    raise TimeoutError("total export deadline exceeded")
                 count = min(page_rows, start + rows - first)
                 data = execute(page_sql(table, column, first, count))
                 # Compare the complete expected page in one operation.
@@ -95,12 +104,14 @@ def main(argv=None):
     p.add_argument("--page-rows", type=int, default=8192)
     p.add_argument("--output", required=True, type=Path)
     p.add_argument("--timeout", type=float, default=300)
+    p.add_argument("--max-total-seconds", type=float)
     a = p.parse_args(argv)
     if not math.isfinite(a.timeout) or a.timeout <= 0:
         p.error("--timeout must be finite and positive")
     try:
         report = export(a.binary, a.database, a.table, a.output, a.start,
-                        a.rows, a.page_rows, a.timeout, a.column)
+                        a.rows, a.page_rows, a.timeout, a.column,
+                        max_total_seconds=a.max_total_seconds)
     except (OSError, RuntimeError, ValueError, subprocess.TimeoutExpired) as error:
         p.exit(1, f"keyset export failed: {error}\n")
     print(json.dumps(report))
