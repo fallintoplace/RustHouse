@@ -146,6 +146,7 @@ pub(super) fn is_function(name: &str) -> bool {
             | "NOTEMPTY"
             | "SPACE"
             | "ENCODEURLFORMCOMPONENT"
+            | "TOTYPENAME"
     )
 }
 
@@ -164,6 +165,16 @@ fn parse_at_depth(parser: &mut Parser, depth: usize) -> Result<ConstantValue, Pa
     }
     let value = match name.as_str() {
 
+        "TOTYPENAME" => {
+            let input = constant_arg(parser, depth + 1)?;
+            require(parser, Token::RParen, "toTypeName requires one argument")?;
+            let name = match input {
+                ConstantValue::Integer(_) => "Int64",
+                ConstantValue::Text(_) => "String",
+                ConstantValue::Null => "Nullable(Nothing)",
+            };
+            ConstantValue::Text(name.into())
+        }
         "LENGTHUTF8" => {
             let input = text_arg(parser, depth + 1)?;
             require(parser, Token::RParen, "lengthUTF8 requires one argument")?;
