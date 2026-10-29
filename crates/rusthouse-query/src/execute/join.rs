@@ -23,6 +23,12 @@ pub(super) const MAX_STREAM_BUILD_BYTES: usize = crate::join::MAX_JOIN_BUILD_BYT
 
 type Pair = (Option<usize>, Option<usize>);
 
+// Distinct join keys can be much fewer than build rows on skewed dimensions.
+// Grow the table with observed cardinality instead of preallocating for all rows.
+fn initial_hash_capacity(rows: usize) -> usize {
+    rows.min(4096)
+}
+
 pub(super) fn multi_join_row_key(
     row: &[typed::Cell],
     indices: &[usize],
@@ -438,7 +444,7 @@ fn execute_streaming_right_outer<W: Write>(
         left_path, left_names, &keep, left_meta.rows,
         MAX_STREAM_BUILD_ROWS, MAX_STREAM_BUILD_BYTES,
     )?;
-    let mut hash = HashMap::<Vec<typed::Key>, Bucket>::with_capacity(left_rows.len());
+    let mut hash = HashMap::<Vec<typed::Key>, Bucket>::with_capacity(initial_hash_capacity(left_rows.len()));
     for (index, row) in left_rows.iter().enumerate() {
         if let Some(key) = row_key(row, left_keys) {
             if query.any {
@@ -537,7 +543,7 @@ fn execute_streaming_inner<W: Write>(
         MAX_STREAM_BUILD_ROWS,
         MAX_STREAM_BUILD_BYTES,
     )?;
-    let mut hash: HashMap<Vec<typed::Key>, Bucket> = HashMap::with_capacity(right_rows.len());
+    let mut hash: HashMap<Vec<typed::Key>, Bucket> = HashMap::with_capacity(initial_hash_capacity(right_rows.len()));
     for (index, row) in right_rows.iter().enumerate() {
         if let Some(key) = row_key(row, right_keys) {
             // ANY keeps the first right match only, so duplicate indexes
@@ -769,7 +775,7 @@ fn execute_streaming_right<W: Write>(
         MAX_STREAM_BUILD_ROWS,
         MAX_STREAM_BUILD_BYTES,
     )?;
-    let mut hash: HashMap<Vec<typed::Key>, Bucket> = HashMap::with_capacity(left_rows.len());
+    let mut hash: HashMap<Vec<typed::Key>, Bucket> = HashMap::with_capacity(initial_hash_capacity(left_rows.len()));
     for (index, row) in left_rows.iter().enumerate() {
         if let Some(key) = row_key(row, left_keys) {
             hash.entry(key)
@@ -926,7 +932,7 @@ fn execute_streaming_ordered_inner<W: Write>(
         right_path, right_names, &keep, right_metadata.rows,
         MAX_STREAM_BUILD_ROWS, MAX_STREAM_BUILD_BYTES,
     )?;
-    let mut hash = HashMap::<Vec<typed::Key>, Bucket>::with_capacity(right_rows.len());
+    let mut hash = HashMap::<Vec<typed::Key>, Bucket>::with_capacity(initial_hash_capacity(right_rows.len()));
     for (index, row) in right_rows.iter().enumerate() {
         if let Some(key) = row_key(row, right_keys) {
             if query.any {
@@ -1035,7 +1041,7 @@ fn execute_streaming_inner_count<W: Write>(
             right_path, right_names, &keep, right_count,
             MAX_STREAM_BUILD_ROWS, MAX_STREAM_BUILD_BYTES,
         )?;
-        let mut hash = HashMap::<Vec<typed::Key>, Bucket>::with_capacity(right_rows.len());
+        let mut hash = HashMap::<Vec<typed::Key>, Bucket>::with_capacity(initial_hash_capacity(right_rows.len()));
         for (index, row) in right_rows.iter().enumerate() {
             if let Some(key) = row_key(row, right_keys) {
                 if query.any {
@@ -1062,7 +1068,7 @@ fn execute_streaming_inner_count<W: Write>(
             left_path, left_names, &keep, left_count,
             MAX_STREAM_BUILD_ROWS, MAX_STREAM_BUILD_BYTES,
         )?;
-        let mut hash = HashMap::<Vec<typed::Key>, Bucket>::with_capacity(left_rows.len());
+        let mut hash = HashMap::<Vec<typed::Key>, Bucket>::with_capacity(initial_hash_capacity(left_rows.len()));
         for (index, row) in left_rows.iter().enumerate() {
             if let Some(key) = row_key(row, left_keys) {
                 hash.entry(key)
@@ -1323,7 +1329,7 @@ pub fn execute_join<W: Write>(
         MAX_INPUT_ROWS,
         MAX_STREAM_BUILD_BYTES,
     )?;
-    let mut hash: HashMap<Vec<typed::Key>, Bucket> = HashMap::with_capacity(right_rows.len());
+    let mut hash: HashMap<Vec<typed::Key>, Bucket> = HashMap::with_capacity(initial_hash_capacity(right_rows.len()));
     for (index, row) in right_rows.iter().enumerate() {
         if let Some(key) = row_key(row, &right_keys) {
             hash.entry(key)
@@ -1577,5 +1583,18 @@ mod projected_count_build_tests {
         assert_eq!(count_build_columns(&[0], Some((7, false)), 3, 5), vec![0, 4]);
         assert_eq!(count_build_columns(&[], None, 0, 4), vec![0]);
         assert!(count_build_columns(&[], None, 0, 0).is_empty());
+    }
+}
+
+#[cfg(test)]
+mod hash_capacity_regressions {
+    use super::initial_hash_capacity;
+
+    #[test]
+    fn hash_buckets_grow_with_distinct_keys_not_input_row_estimates() {
+        assert_eq!(initial_hash_capacity(0), 0);
+        assert_eq!(initial_hash_capacity(11), 11);
+        assert_eq!(initial_hash_capacity(262_144), 4096);
+        assert_eq!(initial_hash_capacity(usize::MAX), 4096);
     }
 }
