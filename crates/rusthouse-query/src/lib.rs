@@ -409,25 +409,32 @@ impl Parser {
                     if !self.keyword("INTERVAL") {
                         return Err(ParseError("DATE arithmetic requires INTERVAL".into()));
                     }
-                    let years =
-                        match self.tokens.get(self.index) {
-                            Some(Token::Number(value) | Token::String(value)) => value
-                                .parse::<i64>()
-                                .map_err(|_| ParseError("invalid INTERVAL year count".into()))?,
-                            _ => return Err(ParseError("INTERVAL requires a year count".into())),
-                        };
-                    self.index += 1;
-                    if !self.keyword("YEAR") {
-                        return Err(ParseError("only INTERVAL YEAR is supported".into()));
-                    }
-                    let years = if subtract {
-                        years
-                            .checked_neg()
-                            .ok_or_else(|| ParseError("INTERVAL year count overflow".into()))?
-                    } else {
-                        years
+                    let amount = match self.tokens.get(self.index) {
+                        Some(Token::Number(value) | Token::String(value)) => value
+                            .parse::<i64>()
+                            .map_err(|_| ParseError("invalid INTERVAL count".into()))?,
+                        _ => return Err(ParseError("INTERVAL requires an integer count".into())),
                     };
-                    return literal::add_date_years(&value, years);
+                    self.index += 1;
+                    let amount = if subtract {
+                        amount
+                            .checked_neg()
+                            .ok_or_else(|| ParseError("INTERVAL count overflow".into()))?
+                    } else {
+                        amount
+                    };
+                    if self.keyword("YEAR") {
+                        return literal::add_date_years(&value, amount);
+                    }
+                    if self.keyword("MONTH") {
+                        return literal::add_date_months(&value, amount);
+                    }
+                    if self.keyword("DAY") {
+                        return literal::add_date_days(&value, amount);
+                    }
+                    return Err(ParseError(
+                        "only INTERVAL DAY, MONTH or YEAR is supported".into(),
+                    ));
                 }
             }
             return Ok(value);
@@ -1852,5 +1859,26 @@ mod stddev_clickhouse_parity_tests {
             assert_eq!(parse_select(input).unwrap().projection, parse_select(&canonical).unwrap().projection);
         }
         assert!(parse_select("SELECT stddev() FROM numbers(3)").is_err());
+    }
+}
+
+#[cfg(test)]
+mod tpch_interval_unit_tests {
+    use super::{Operator, Predicate, parse_select};
+
+    #[test]
+    fn folds_standard_tpch_date_intervals_in_where() {
+        for (sql, expected) in [
+            ("SELECT count(*) FROM lineitem WHERE l_shipdate <= DATE '1998-12-01' - INTERVAL '90' DAY", "1998-09-02"),
+            ("SELECT count(*) FROM orders WHERE o_orderdate < DATE '1994-01-01' + INTERVAL '3' MONTH", "1994-04-01"),
+            ("SELECT count(*) FROM lineitem WHERE l_shipdate < DATE '1994-01-01' + INTERVAL '1' YEAR", "1995-01-01"),
+        ] {
+            let selected = parse_select(sql).unwrap();
+            assert!(matches!(
+                &selected.predicates[0],
+                Predicate::Comparison { operator: Operator::Le | Operator::Lt, value, .. }
+                    if value == expected
+            ));
+        }
     }
 }
