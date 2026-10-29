@@ -5,6 +5,7 @@ Only SQLite floating results receive relative/absolute tolerance.
 """
 import math
 import sqlite3
+from collections import Counter
 from contextlib import closing
 
 
@@ -103,6 +104,26 @@ def assert_ordered_rows(actual, expected_rows):
 def assert_unordered_rows(actual, expected_rows):
     if len(actual) > 4096:
         raise ValueError("unordered comparison is limited to 4096 result rows")
+    if all(all(type(value) in (int, bool) for value in row) for row in expected_rows):
+        expected_counts = Counter(tuple(int(value) for value in row) for row in expected_rows)
+        try:
+            actual_counts = Counter()
+            for row in actual:
+                converted = []
+                for value in row:
+                    decoded = decode_tsv_value(value)
+                    if decoded is None:
+                        raise ValueError("NULL is not a numeric result")
+                    number = int(decoded)
+                    if decoded.strip() != str(number):
+                        raise ValueError("invalid integer result")
+                    converted.append(number)
+                actual_counts[tuple(converted)] += 1
+        except (UnicodeError, ValueError, TypeError) as error:
+            raise ValueError("result multiset differs from SQLite") from error
+        if actual_counts != expected_counts:
+            raise ValueError("result multiset differs from SQLite")
+        return
     unmatched = list(actual)
     for expected in expected_rows:
         position = next((i for i, row in enumerate(unmatched) if row_equal(row, expected)), None)
