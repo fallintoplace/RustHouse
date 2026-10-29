@@ -5,6 +5,8 @@ use std::fmt;
 use std::io::Read;
 
 const MAX_BATCH_ROWS: usize = 1_000_000;
+const MAX_ENUM8_VARIANTS: usize = 256;
+const MAX_ENUM16_VARIANTS: usize = 65_536;
 
 /// Enum8 and Enum16 values use signed integer storage and a type-level label map.
 #[derive(Debug, PartialEq, Eq)]
@@ -210,7 +212,11 @@ fn parse_enum_type(data_type: &str) -> Option<(u8, BTreeMap<i16, String>)> {
         if !names.insert(name.clone()) || variants.insert(code, name).is_some() {
             return None;
         }
-        let max_variants = if width == 8 { 256 } else { 65_536 };
+        let max_variants = if width == 8 {
+        MAX_ENUM8_VARIANTS
+    } else {
+        MAX_ENUM16_VARIANTS
+    };
         if variants.len() > max_variants {
             return None;
         }
