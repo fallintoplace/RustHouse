@@ -1522,6 +1522,10 @@ fn execute_numbers<W: Write>(
                     ) || matches!(&query.projection,
                         Projection::GroupedAggregate { column, value_column, .. }
                             if column == "number" && value_column == "number"
+                    ) || matches!(&query.projection,
+                        Projection::GroupedAggregates { column, items, filters, .. }
+                            if column == "number" && items.iter().all(|(_, key)| key == "number")
+                                && filters.iter().all(Option::is_none)
                     ))))
             && ((query.predicates.is_empty() && query.or_predicates.is_empty())
                 || monotonic_range_indices(&compile_numbers_predicates(query)?, start, rows, step)

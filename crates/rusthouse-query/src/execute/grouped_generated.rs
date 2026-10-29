@@ -60,7 +60,10 @@ pub(super) fn execute<W: Write>(
     let comparisons=compile_numbers_predicates(query)?;
     // Generated number keys are unique. For an unordered bounded page, jump
     // straight to the requested range instead of scanning billions of rows.
-    if query.order_by.is_none() && query.having.is_none()
+    let key_order = query.order_by.as_ref()
+        .filter(|order| order.column == "number" && query.order_by_extra.is_empty() && step != 0);
+    if (query.order_by.is_none() && query.order_by_extra.is_empty() || key_order.is_some())
+        && query.having.is_none()
         && query.limit.is_some_and(|limit| limit <= MAX_GROUPS)
     {
         let range = if query.predicates.is_empty() && query.or_predicates.is_empty() {
@@ -71,7 +74,12 @@ pub(super) fn execute<W: Write>(
         if let (Some((low, high)), Some(limit)) = (range, query.limit) {
             let first = low.saturating_add(query.offset.unwrap_or(0) as u64).min(high);
             let last = first.saturating_add(limit as u64).min(high);
-            for index in first..last {
+            for position in first..last {
+                let index = if key_order.is_some_and(|order| order.descending) {
+                    high - 1 - (position - low)
+                } else {
+                    position
+                };
                 let value = u128::from(start) + u128::from(index) * u128::from(step);
                 write!(output, "{value}")?;
                 for (function, _) in items {
@@ -336,6 +344,18 @@ mod generated_multi_group_having_tests {
             "SELECT number, sum(number), max(number) FROM numbers(1000000000) \
              WHERE number >= 999999996 GROUP BY number LIMIT 2 OFFSET 1"
         ), "number\tsum(number)\tmax(number)\n999999997\t999999997\t999999997\n999999998\t999999998\t999999998\n");
+    }
+
+    #[test]
+    fn billion_row_grouped_metrics_can_page_in_descending_key_order() {
+        assert_eq!(run(
+            "SELECT number, sum(number), max(number) FROM numbers(1000000000) \
+             GROUP BY number ORDER BY number DESC LIMIT 2 OFFSET 1"
+        ), "number\tsum(number)\tmax(number)\n999999998\t999999998\t999999998\n999999997\t999999997\t999999997\n");
+        assert_eq!(run(
+            "SELECT number, sum(number), max(number) FROM numbers(1000000000) \
+             WHERE number >= 999999995 GROUP BY number ORDER BY number DESC LIMIT 2 OFFSET 1"
+        ), "number\tsum(number)\tmax(number)\n999999998\t999999998\t999999998\n999999997\t999999997\t999999997\n");
     }
 
     #[test]
