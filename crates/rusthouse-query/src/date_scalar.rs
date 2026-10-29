@@ -10,6 +10,8 @@ pub(super) fn is_function(name: &str) -> bool {
     matches!(
         name.to_ascii_uppercase().as_str(),
         "ADDDAYS"
+            | "DATEDIFF"
+            | "DATE_DIFF"
             | "TIMEDIFF"
             | "TOISOYEAR"
             | "TOISOWEEK"
@@ -152,6 +154,58 @@ pub(super) fn parse_after_open(
             let (year, _) = iso_week_and_year(days);
             Ok(ConstantValue::Integer(year))
         }),
+        "DATEDIFF" | "DATE_DIFF" => {
+            let unit = super::text_scalar::text_arg(parser, depth + 1)?;
+            if !parser.take(Token::Comma) {
+                return Err(ParseError("dateDiff requires a start date".into()));
+            }
+            let start = super::text_scalar::text_arg(parser, depth + 1)?;
+            if !parser.take(Token::Comma) {
+                return Err(ParseError("dateDiff requires an end date".into()));
+            }
+            let end = super::text_scalar::text_arg(parser, depth + 1)?;
+            if !parser.take(Token::RParen) {
+                return Err(ParseError("dateDiff requires three arguments".into()));
+            }
+            let (Some(unit), Some(start), Some(end)) = (unit, start, end) else {
+                return Ok(ConstantValue::Null);
+            };
+            let start = Temporal::parse(&start)?;
+            let end = Temporal::parse(&end)?;
+            let start_days = start.seconds.div_euclid(DAY_SECONDS);
+            let end_days = end.seconds.div_euclid(DAY_SECONDS);
+            let difference = match unit.to_ascii_lowercase().as_str() {
+                "second" | "seconds" | "s" => end.seconds - start.seconds,
+                "minute" | "minutes" => {
+                    end.seconds.div_euclid(60) - start.seconds.div_euclid(60)
+                }
+                "hour" | "hours" => {
+                    end.seconds.div_euclid(3_600) - start.seconds.div_euclid(3_600)
+                }
+                "day" | "days" | "d" => end_days - start_days,
+                "week" | "weeks" => {
+                    (end_days + 3).div_euclid(7) - (start_days + 3).div_euclid(7)
+                }
+                "month" | "months" => {
+                    let (sy, sm, _) = civil_from_days(start_days);
+                    let (ey, em, _) = civil_from_days(end_days);
+                    ey * 12 + i64::from(em) - sy * 12 - i64::from(sm)
+                }
+                "quarter" | "quarters" => {
+                    let (sy, sm, _) = civil_from_days(start_days);
+                    let (ey, em, _) = civil_from_days(end_days);
+                    ey * 4 + i64::from((em - 1) / 3)
+                        - sy * 4 - i64::from((sm - 1) / 3)
+                }
+                "year" | "years" => {
+                    let (sy, _, _) = civil_from_days(start_days);
+                    let (ey, _, _) = civil_from_days(end_days);
+                    ey - sy
+                }
+                _ => return Err(ParseError("unsupported dateDiff unit".into())),
+            };
+            Ok(ConstantValue::Integer(difference))
+        },
         "TIMEDIFF" => time_difference(parser, depth),
         _ => Err(ParseError(format!("unsupported date function: {name}"))),
     }
