@@ -43,8 +43,9 @@ def run_readers(binary, part, sql, expected, *, clients=4, rounds=3,
         duration = time.perf_counter() - start
         if result.returncode:
             return {"ok": False, "seconds": duration, "error": "SQL process failed"}
-        return {"ok": result.stdout == expected, "seconds": duration,
-                "error": None if result.stdout == expected else "result differs from reference"}
+        matches_reference = result.stdout == expected
+        return {"ok": matches_reference, "seconds": duration,
+                "error": None if matches_reference else "result differs from reference"}
 
     started = time.perf_counter()
     with concurrent.futures.ThreadPoolExecutor(max_workers=clients) as pool:
