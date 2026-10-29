@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """Run Analytics SQL against the RustHouse CLI or HTTP server."""
 import argparse
+import re
 import subprocess
 import sys
 import time
@@ -17,8 +18,17 @@ DEFAULT_QUERIES = Path(__file__).with_name("queries.sql")
 
 
 def load_queries(path):
-    lines = path.read_text(encoding="utf-8").splitlines()
-    return [line.strip().rstrip(";") for line in lines if line.strip() and not line.lstrip().startswith("--")]
+    queries = []
+    for line in path.read_text(encoding="utf-8").splitlines():
+        statement = line.strip()
+        if not statement or statement.startswith("--"):
+            continue
+        statement = statement.removesuffix(";").strip()
+        if (not re.match(r"(?i)^SELECT\s", statement) or ";" in statement
+                or len(statement.encode("utf-8")) > 65_536):
+            raise ValueError("analytics workload requires one bounded SELECT per line")
+        queries.append(statement)
+    return queries
 
 
 def select_indices(spec, count):

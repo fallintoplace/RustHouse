@@ -153,5 +153,15 @@ class AnalyticsRunnerTests(unittest.TestCase):
         self.assertEqual(results[1]["seconds"].__len__(), 3)
 
 
+    def test_load_queries_rejects_mutations_and_multiple_statements(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "queries.sql"
+            for sql in ("DROP TABLE hits;", "SELECT 1; DELETE FROM hits;",
+                        "SELECT " + "0" * 65_537):
+                with self.subTest(sql=sql[:35]):
+                    path.write_text(sql + "\n")
+                    with self.assertRaisesRegex(ValueError, "bounded SELECT"):
+                        runner.load_queries(path)
+
 if __name__ == "__main__":
     unittest.main()
