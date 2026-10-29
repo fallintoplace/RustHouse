@@ -4,7 +4,7 @@
 use crate::{Column, NumericColumn, NumericPartReader, PartError, PartMetadata, inspect_part};
 use std::collections::HashMap;
 use std::fs;
-use std::io;
+use std::io::{self, Read};
 use std::path::{Path, PathBuf};
 
 const MAX_TABLE_PARTS: usize = 16_384;
@@ -44,7 +44,15 @@ pub fn resolve_active_snapshot(root: &Path) -> Result<PathBuf, PartError> {
             "invalid database snapshot pointer".into(),
         ));
     }
-    let label = fs::read_to_string(&pointer).map_err(|error| io_error(&pointer, error))?;
+    let mut label = String::new();
+    fs::File::open(&pointer)
+        .map_err(|error| io_error(&pointer, error))?
+        .take(65)
+        .read_to_string(&mut label)
+        .map_err(|error| io_error(&pointer, error))?;
+    if label.len() > 64 {
+        return Err(PartError::InvalidScan("snapshot pointer exceeds size limit".into()));
+    }
     let label = label
         .strip_suffix('\n')
         .ok_or_else(|| PartError::InvalidScan("invalid snapshot pointer format".into()))?;
@@ -643,5 +651,28 @@ mod tests {
 
         let mut ranges = HashMap::from([("all".to_owned(), vec![(10, 12), (1, 3), (4, 5)])]);
         validate_block_ranges(&mut ranges).unwrap();
+    }
+}
+
+#[cfg(test)]
+mod bounded_active_pointer_tests {
+    use super::*;
+
+    #[test]
+    fn refuses_large_pointer_and_accepts_valid_generation() {
+        let root = std::env::temp_dir().join(format!(
+            "rusthouse-bounded-pointer-{}", std::process::id()
+        ));
+        let _ = fs::remove_dir_all(&root);
+        fs::create_dir_all(root.join(".rusthouse-versions/g1")).unwrap();
+        let pointer = root.join(".rusthouse-active");
+        fs::write(&pointer, "g1\n").unwrap();
+        assert_eq!(
+            resolve_active_snapshot(&root).unwrap(),
+            root.join(".rusthouse-versions/g1")
+        );
+        fs::write(&pointer, "g".to_owned() + &"1".repeat(65) + "\n").unwrap();
+        assert!(resolve_active_snapshot(&root).is_err());
+        fs::remove_dir_all(root).unwrap();
     }
 }
