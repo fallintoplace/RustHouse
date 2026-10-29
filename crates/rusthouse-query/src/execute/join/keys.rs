@@ -68,13 +68,13 @@ pub(super) fn row_key_into(
     indices: &[usize],
     result: &mut Vec<typed::Key>,
 ) -> bool {
-    if indices.iter().any(|&index| !key_eligible(&row[index])) {
-        result.clear();
-        return false;
-    }
     // Preserve the backing allocation of repeated text probe keys. Rebuilding
     // the key vector for every fact row is especially costly in skewed joins.
     for (position, &index) in indices.iter().enumerate() {
+        if !key_eligible(&row[index]) {
+            result.clear();
+            return false;
+        }
         match &row[index] {
             typed::Cell::Text(value) => put_text_key(result, position, value),
             value => put_key(result, position, join_key(value)),
@@ -109,16 +109,12 @@ pub(super) fn batch_key_into(
     indices: &[usize],
     result: &mut Vec<typed::Key>,
 ) -> bool {
-    // Reject all NULL components before changing existing buffers.
-    if indices
-        .iter()
-        .any(|&index| typed::is_null_at(&batch[index], row))
-    {
-        result.clear();
-        return false;
-    }
     result.reserve(indices.len().saturating_sub(result.len()));
     for (position, &index) in indices.iter().enumerate() {
+        if typed::is_null_at(&batch[index], row) {
+            result.clear();
+            return false;
+        }
         match &batch[index] {
             TypedColumn::Uuid(values) => {
                 put_key(result, position, typed::Key::UuidBytes(*values[row].as_bytes()));

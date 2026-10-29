@@ -10,6 +10,13 @@ fn days_in_month(year: i64, month: i64) -> i64 {
     }
 }
 
+// Each caller has already validated the fixed-width ASCII digit slice.
+fn decimal_digits(bytes: &[u8]) -> i64 {
+    bytes
+        .iter()
+        .fold(0i64, |number, &byte| number * 10 + i64::from(byte - b'0'))
+}
+
 fn parse_iso_date_components(text: &str) -> Option<(i64, i64, i64)> {
     let bytes = text.as_bytes();
     if bytes.len() != 10
@@ -22,9 +29,9 @@ fn parse_iso_date_components(text: &str) -> Option<(i64, i64, i64)> {
     {
         return None;
     }
-    let year = text[..4].parse::<i64>().ok()?;
-    let month = text[5..7].parse::<i64>().ok()?;
-    let day = text[8..10].parse::<i64>().ok()?;
+    let year = decimal_digits(&bytes[..4]);
+    let month = decimal_digits(&bytes[5..7]);
+    let day = decimal_digits(&bytes[8..]);
     if !(1..=12).contains(&month) {
         return None;
     }
@@ -85,10 +92,11 @@ fn parse_clock_time(text: &str) -> Option<u64> {
     {
         return None;
     }
-    let hour = text[..2].parse::<u64>().ok()?;
-    let minute = text[3..5].parse::<u64>().ok()?;
-    let second = text[6..].parse::<u64>().ok()?;
-    (hour <= 23 && minute <= 59 && second <= 59).then_some(hour * 3_600 + minute * 60 + second)
+    let hour = decimal_digits(&bytes[..2]);
+    let minute = decimal_digits(&bytes[3..5]);
+    let second = decimal_digits(&bytes[6..]);
+    (hour <= 23 && minute <= 59 && second <= 59)
+        .then_some((hour * 3_600 + minute * 60 + second) as u64)
 }
 
 fn parse_utc_offset(suffix: &str) -> Option<i64> {
@@ -103,8 +111,8 @@ fn parse_utc_offset(suffix: &str) -> Option<i64> {
             {
                 return None;
             }
-            let hours = suffix.get(1..3)?.parse::<i64>().ok()?;
-            let minutes = suffix.get(4..6)?.parse::<i64>().ok()?;
+            let hours = decimal_digits(&bytes[1..3]);
+            let minutes = decimal_digits(&bytes[4..6]);
             if hours > 23 || minutes > 59 {
                 return None;
             }
@@ -139,14 +147,28 @@ pub fn format_date(days: u16) -> String {
     format_calendar_day(i64::from(days))
 }
 
+fn put_two_digits(output: &mut [u8; 19], offset: usize, number: u32) {
+    output[offset] = b'0' + (number / 10) as u8;
+    output[offset + 1] = b'0' + (number % 10) as u8;
+}
+
 pub fn format_datetime(seconds: u32) -> String {
     let days = seconds / 86_400;
     let remainder = seconds % 86_400;
-    let date = format_calendar_day(i64::from(days));
-    let hour = remainder / 3_600;
-    let minute = remainder / 60 % 60;
-    let second = remainder % 60;
-    format!("{date} {hour:02}:{minute:02}:{second:02}")
+    let (year, month, day) = from_days(i64::from(days));
+    // UInt32 timestamps cover 1970-2106, so the year always has four digits.
+    let year = year as u32;
+    let mut output = *b"0000-00-00 00:00:00";
+    output[0] = b'0' + (year / 1000) as u8;
+    output[1] = b'0' + ((year / 100) % 10) as u8;
+    output[2] = b'0' + ((year / 10) % 10) as u8;
+    output[3] = b'0' + (year % 10) as u8;
+    put_two_digits(&mut output, 5, month as u32);
+    put_two_digits(&mut output, 8, day as u32);
+    put_two_digits(&mut output, 11, remainder / 3_600);
+    put_two_digits(&mut output, 14, remainder / 60 % 60);
+    put_two_digits(&mut output, 17, remainder % 60);
+    String::from_utf8(output.to_vec()).expect("UTC date formatting emits ASCII")
 }
 
 #[cfg(test)]
@@ -197,6 +219,50 @@ mod tests {
         ] {
             assert_eq!(parse_datetime(invalid), None, "{invalid}");
         }
+    }
+
+    #[test]
+    fn combined_timestamp_format_matches_independent_calendar_format() {
+        for seconds in [0u32, 1, 86_399, 86_400, 1_700_000_000, u32::MAX] {
+            let days = seconds / 86_400;
+            let remainder = seconds % 86_400;
+            let expected = format!(
+                "{} {:02}:{:02}:{:02}",
+                format_calendar_day(i64::from(days)),
+                remainder / 3_600,
+                remainder / 60 % 60,
+                remainder % 60,
+            );
+            assert_eq!(format_datetime(seconds), expected);
+        }
+    }
+
+    #[test]
+    fn fixed_ascii_digit_parsing_roundtrips_timestamp_range() {
+        for seconds in (0..=u32::MAX).step_by(1_345_679) {
+            let timestamp = format_datetime(seconds);
+            assert_eq!(parse_datetime(&timestamp), Some(seconds), "{seconds}");
+        }
+        for invalid in [
+            "2026-13-01 00:00:00",
+            "2026-01-00 00:00:00",
+            "2026-01-01 24:00:00",
+            "2026-01-01 23:60:00",
+            "2026-01-01 23:59:60",
+            "2026-01-01T23:59:59+00:60",
+        ] {
+            assert!(parse_datetime(invalid).is_none(), "{invalid}");
+        }
+    }
+
+    #[test]
+    fn fixed_width_utc_rendering_roundtrips_large_timestamp_samples() {
+        for value in (0..=u32::MAX).step_by(4_000_001) {
+            let text = format_datetime(value);
+            assert_eq!(text.len(), 19);
+            assert_eq!(parse_datetime(&text), Some(value), "{value}");
+        }
+        assert_eq!(format_datetime(u32::MAX), "2106-02-07 06:28:15");
     }
 
     #[test]

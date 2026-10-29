@@ -107,15 +107,10 @@ pub fn read_u64_granule<R: Read + Seek>(
     if rows == 0 {
         return Ok(Vec::new());
     }
-    let byte_count = usize::try_from(rows)
-        .ok()
-        .and_then(|rows| rows.checked_mul(size_of::<u64>()))
-        .ok_or_else(|| invalid_mark(mark, "granule size overflows"))?;
-    let bytes = read_mark_bytes(reader, mark, byte_count)?;
-    Ok(bytes
-        .chunks_exact(size_of::<u64>())
-        .map(|chunk| u64::from_le_bytes(chunk.try_into().unwrap()))
-        .collect())
+    match read_numeric_granule(reader, mark, "UInt64")? {
+        NumericColumn::UInt64(values) => Ok(values),
+        _ => unreachable!("UInt64 decoder returned another numeric type"),
+    }
 }
 
 pub fn read_numeric_granule<R: Read + Seek>(
