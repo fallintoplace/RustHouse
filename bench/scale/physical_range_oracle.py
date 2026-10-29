@@ -13,10 +13,13 @@ import subprocess
 import time
 
 
+UINT64_END = 2**64
+
+
 def expected(start, count):
     if type(start) is not int or type(count) is not int or start < 0 or count < 1:
         raise ValueError("invalid expected UInt64 ID interval")
-    if start + count > 2**64:
+    if start + count > UINT64_END:
         raise ValueError("UInt64 interval overflow")
     return count, count * (2 * start + count - 1) // 2
 
@@ -25,8 +28,8 @@ def sql_for(table, first, count):
     if not re.fullmatch(r"[A-Za-z_][A-Za-z_0-9]*", table):
         raise ValueError("unsafe table name")
     expected(first, count)
-    upper = (f"id < {first + count}" if first + count < 2**64
-             else f"id <= {2**64 - 1}")
+    upper = (f"id < {first + count}" if first + count < UINT64_END
+             else f"id <= {UINT64_END - 1}")
     return (f"SELECT count(*), sum(id) FROM {table} WHERE "
             f"id >= {first} AND {upper}")
 
