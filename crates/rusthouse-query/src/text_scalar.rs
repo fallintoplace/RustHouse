@@ -74,6 +74,7 @@ pub(super) fn is_function(name: &str) -> bool {
             | "SUBSTRINGUTF8"
             | "HASSUBSEQUENCECASEINSENSITIVE"
             | "OVERLAY"
+            | "FORMATREADABLEQUANTITY"
             | "QUERYSTRING"
             | "SPLIT_PART"
             | "SUBSTRING_INDEX"
@@ -164,6 +165,8 @@ pub(super) fn is_function(name: &str) -> bool {
             | "MODULOORNULL"
             | "ENCODEURLFORMCOMPONENT"
             | "ISIPV6LOOPBACK"
+            | "ISIPV6MULTICAST"
+            | "NORMALIZEIPV6"
     )
 }
 
@@ -253,6 +256,57 @@ fn parse_at_depth(parser: &mut Parser, depth: usize) -> Result<ConstantValue, Pa
                     ConstantValue::Integer(i64::from(number.unwrap_or(fallback)))
                 }
                 _ => ConstantValue::Null,
+            }
+        }
+        "FORMATREADABLEQUANTITY" => {
+            let value = integer_arg(parser, depth + 1)?;
+            let precision = if parser.take(Token::Comma) {
+                integer_arg(parser, depth + 1)?
+            } else {
+                Some(2)
+            };
+            require(parser, Token::RParen, "FORMATREADABLEQUANTITY requires one value")?;
+            match (value, precision) {
+                (Some(value), Some(precision)) => {
+                    let precision = usize::try_from(precision)
+                        .map_err(|_| ParseError("readable number precision must be nonnegative".into()))?;
+                    if precision > 8 {
+                        return Err(ParseError("readable number precision exceeds 8".into()));
+                    }
+                    const UNITS: &[&str] = &["", " thousand", " million", " billion", " trillion", " quadrillion", " quintillion"];
+                    let mut number = value as f64;
+                    let mut index = 0;
+                    while number.abs() >= 1000.0 && index + 1 < UNITS.len() {
+                        number /= 1000.0;
+                        index += 1;
+                    }
+                    ConstantValue::Text(format!("{number:.precision$}{}", UNITS[index]))
+                }
+                _ => ConstantValue::Null,
+            }
+        }
+        "NORMALIZEIPV6" => {
+            let input = text_arg(parser, depth + 1)?;
+            require(parser, Token::RParen, "normalizeIPv6 requires one argument")?;
+            match input {
+                Some(value) => {
+                    let address = value.parse::<std::net::Ipv6Addr>()
+                        .map_err(|_| ParseError("invalid IPv6 address".into()))?;
+                    ConstantValue::Text(address.to_string())
+                }
+                None => ConstantValue::Null,
+            }
+        }
+        "ISIPV6MULTICAST" => {
+            let input = text_arg(parser, depth + 1)?;
+            require(parser, Token::RParen, "isIPv6Multicast requires one argument")?;
+            match input {
+                Some(value) => {
+                    let address = value.parse::<std::net::Ipv6Addr>()
+                        .map_err(|_| ParseError("invalid IPv6 address".into()))?;
+                    ConstantValue::Integer(i64::from(address.is_multicast()))
+                }
+                None => ConstantValue::Null,
             }
         }
         "ISIPV6LOOPBACK" => {
