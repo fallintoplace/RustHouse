@@ -10,12 +10,14 @@ import statistics
 from pathlib import Path
 
 
-def part_density(root, *, small_part_rows=8192):
+def part_density(root, *, small_part_rows=8192, target_part_rows=65536):
     root = Path(root)
     if not root.is_dir() or root.is_symlink():
         raise ValueError("expected a frozen snapshot directory")
     if type(small_part_rows) is not int or small_part_rows < 1:
         raise ValueError("small_part_rows must be positive")
+    if type(target_part_rows) is not int or target_part_rows < 1:
+        raise ValueError("target_part_rows must be positive")
     rows = []
     for child in root.iterdir():
         if child.is_symlink():
@@ -48,6 +50,10 @@ def part_density(root, *, small_part_rows=8192):
     small = [value for value in rows if value < small_part_rows]
     p90 = rows[math.ceil(len(rows) * 0.90) - 1]
     p99 = rows[math.ceil(len(rows) * 0.99) - 1]
+    optimistic_part_floor = (total - 1) // target_part_rows + 1
+    # This is a row-count-only lower bound, not a safe merge plan.
+    # Key ordering, schema compatibility and byte budgets can prevent merges.
+    reclaimable = max(0, len(rows) - optimistic_part_floor)
     return {"workload": "part-density-report", "part_count": len(rows),
             "rows": total, "min_rows_per_part": rows[0],
             "median_rows_per_part": statistics.median(rows),
@@ -59,6 +65,9 @@ def part_density(root, *, small_part_rows=8192):
             "small_part_row_share": sum(small) / total,
             "parts_below_8192_rows": sum(value < 8192 for value in rows),
             "part_limit_remaining": 16384 - len(rows),
+            "target_rows_per_part": target_part_rows,
+            "optimistic_parts_after_compaction": optimistic_part_floor,
+            "optimistic_reclaimable_parts": reclaimable,
             "validated_active_set": False}
 
 
@@ -66,10 +75,12 @@ def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--part-dir", type=Path, required=True)
     parser.add_argument("--small-part-rows", type=int, default=8192)
+    parser.add_argument("--target-part-rows", type=int, default=65536)
     parser.add_argument("--output", type=Path)
     args = parser.parse_args(argv)
     try:
-        report = part_density(args.part_dir, small_part_rows=args.small_part_rows)
+        report = part_density(args.part_dir, small_part_rows=args.small_part_rows,
+                              target_part_rows=args.target_part_rows)
         rendered = json.dumps(report, indent=2) + "\n"
         if args.output:
             args.output.parent.mkdir(parents=True, exist_ok=True)

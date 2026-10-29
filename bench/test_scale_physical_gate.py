@@ -56,7 +56,8 @@ class PhysicalGateTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "requires timing samples"):
             validate(report, max_sample_spread_percent=20)
         for key in ("count_even", "sum_even"):
-            report[key]["samples_seconds"] = [0.8, 1.1]
+            report[key]["samples_seconds"] = [0.85, 1.15]
+            report[key]["p90_seconds"] = 1.15
         strict = validate(report, max_sample_spread_percent=20)
         self.assertFalse(strict["all_passed"])
         self.assertAlmostEqual(strict["checks"][0]["sample_spread_percent"], 30)
@@ -64,6 +65,16 @@ class PhysicalGateTests(unittest.TestCase):
         self.assertTrue(relaxed["all_passed"])
         with self.assertRaisesRegex(ValueError, "max_sample_spread_percent"):
             validate(report, max_sample_spread_percent=float("nan"))
+
+    def test_rejects_forged_summary_even_without_spread_budget(self):
+        report = example()
+        for key in ("count_even", "sum_even"):
+            report[key]["samples_seconds"] = [0.8, 1.2]
+        with self.assertRaisesRegex(ValueError, "summary differs"):
+            validate(report)
+        for key in ("count_even", "sum_even"):
+            report[key]["p90_seconds"] = 1.2
+        self.assertTrue(validate(report)["all_passed"])
 
     def test_rejects_corrupt_timing_samples(self):
         broken = example()

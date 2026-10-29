@@ -10,6 +10,18 @@ class CapacityPlanTests(unittest.TestCase):
         self.assertEqual(result["parts_required"], 15259)
         self.assertEqual(result["minimum_rows_per_part_to_fit"], 61036)
 
+    def test_reserved_part_headroom_changes_feasibility(self):
+        plan_without_reserve = plan(100, rows_per_part=10, max_parts=10)
+        self.assertTrue(plan_without_reserve["part_limit_fit"])
+        reserved = plan(100, rows_per_part=10, max_parts=10, reserved_parts=2)
+        self.assertFalse(reserved["part_limit_fit"])
+        self.assertEqual(reserved["parts_available"], 8)
+        self.assertEqual(reserved["parts_reserved"], 2)
+        self.assertEqual(reserved["minimum_rows_per_part_to_fit"], 13)
+        for invalid in (True, -1, 10):
+            with self.assertRaisesRegex(ValueError, "reserved_parts"):
+                plan(100, max_parts=10, reserved_parts=invalid)
+
     def test_flags_excess_parts(self):
         result = plan(1_000_000_000, rows_per_part=4096)
         self.assertFalse(result["part_limit_fit"])
