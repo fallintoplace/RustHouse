@@ -1,0 +1,6 @@
+{
+  "id": "count-between-quarter-half",
+  "kind": "count_between",
+  "lo": "p25",
+  "hi": "p50"
+}
