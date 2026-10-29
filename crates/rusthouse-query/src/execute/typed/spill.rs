@@ -115,8 +115,16 @@ fn write_bytes(output: &mut impl Write, value: &[u8]) -> Result<(), ExecutionErr
     if value.len() > MAX_FIELD_BYTES {
         return Err(invalid("typed sort value exceeds 32 MiB field limit"));
     }
-    output.write_all(&length.to_le_bytes())?;
-    output.write_all(value)?;
+    if value.len() <= 1024 {
+        // Inline small strings with their length prefix for one writer call.
+        let mut encoded = [0u8; 1028];
+        encoded[..4].copy_from_slice(&length.to_le_bytes());
+        encoded[4..4 + value.len()].copy_from_slice(value);
+        output.write_all(&encoded[..4 + value.len()])?;
+    } else {
+        output.write_all(&length.to_le_bytes())?;
+        output.write_all(value)?;
+    }
     Ok(())
 }
 
@@ -447,6 +455,23 @@ mod tests {
         }
     }
 
+    #[test]
+    fn short_typed_spill_string_is_written_in_one_call() {
+        struct Sink { calls: usize, encoded: Vec<u8> }
+        impl Write for Sink {
+            fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
+                self.calls += 1;
+                self.encoded.extend_from_slice(bytes);
+                Ok(bytes.len())
+            }
+            fn flush(&mut self) -> std::io::Result<()> { Ok(()) }
+        }
+        let value = vec![0x7f; 1024];
+        let mut sink = Sink { calls: 0, encoded: Vec::new() };
+        write_bytes(&mut sink, &value).unwrap();
+        assert_eq!(sink.calls, 1);
+        assert_eq!(read_bytes(&mut sink.encoded.as_slice()).unwrap(), value);
+    }
     #[test]
     fn spill_round_trip_retains_nullable_strings_uuids_and_numbers() {
         let mut input = Vec::new();
