@@ -97,6 +97,35 @@ pub fn format_membership(members: &[Member]) -> Result<String, &'static str> {
     Ok(text)
 }
 
+/// Capacity and node count advertised for one failure domain.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ZoneCapacity {
+    pub zone: String,
+    pub nodes: usize,
+    pub weight: u64,
+}
+
+/// Aggregate valid membership weights by zone for placement planning.
+pub fn membership_capacity_by_zone(
+    members: &[Member],
+) -> Result<Vec<ZoneCapacity>, &'static str> {
+    format_membership(members)?;
+    let mut zones = std::collections::BTreeMap::<&str, (usize, u64)>::new();
+    for member in members {
+        let entry = zones.entry(&member.zone).or_insert((0, 0));
+        entry.0 += 1;
+        entry.1 += u64::from(member.weight);
+    }
+    Ok(zones
+        .into_iter()
+        .map(|(zone, (nodes, weight))| ZoneCapacity {
+            zone: zone.to_owned(),
+            nodes,
+            weight,
+        })
+        .collect())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -139,35 +168,6 @@ mod tests {
         assert!(format_membership(&[member.clone(), member]).is_err());
         assert!(format_membership(&[]).is_err());
     }
-}
-
-/// Capacity and node count advertised for one failure domain.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct ZoneCapacity {
-    pub zone: String,
-    pub nodes: usize,
-    pub weight: u64,
-}
-
-/// Aggregate valid membership weights by zone for placement planning.
-pub fn membership_capacity_by_zone(
-    members: &[Member],
-) -> Result<Vec<ZoneCapacity>, &'static str> {
-    format_membership(members)?;
-    let mut zones = std::collections::BTreeMap::<&str, (usize, u64)>::new();
-    for member in members {
-        let entry = zones.entry(&member.zone).or_insert((0, 0));
-        entry.0 += 1;
-        entry.1 += u64::from(member.weight);
-    }
-    Ok(zones
-        .into_iter()
-        .map(|(zone, (nodes, weight))| ZoneCapacity {
-            zone: zone.to_owned(),
-            nodes,
-            weight,
-        })
-        .collect())
 }
 
 #[cfg(test)]
