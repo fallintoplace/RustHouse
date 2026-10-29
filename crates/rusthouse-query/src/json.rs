@@ -64,7 +64,7 @@ impl<'a> Parser<'a> {
     }
 
     fn skip_ws(&mut self) {
-        while self.next().is_some_and(|byte| byte.is_ascii_whitespace()) {
+        while self.next().is_some_and(|byte| matches!(byte, b' ' | b'\t' | b'\r' | b'\n')) {
             self.offset += 1;
         }
     }
@@ -310,6 +310,14 @@ mod tests {
             assert!(parse_json(input).is_err(), "{input}");
         }
         assert!(parse_json(&"[".repeat(40)).is_err());
+    }
+
+    #[test]
+    fn only_json_whitespace_is_accepted_between_tokens() {
+        assert!(parse_json(" \t\r\n true \n").is_ok());
+        for input in ["\\u{000b}true", "true\\u{000c}", "[1,\\u{001f}2]"] {
+            assert!(parse_json(input).is_err(), "{input:?}");
+        }
     }
 
     #[test]
