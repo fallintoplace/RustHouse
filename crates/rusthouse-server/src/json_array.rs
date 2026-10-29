@@ -105,7 +105,7 @@ impl<W: Write> Write for JsonArraySink<W> {
                             "JSON array row exceeds 8 MiB",
                         ));
                     }
-                    validate_complete_object(&row)?;
+                    validate_complete_object(row)?;
                     self.write_row_prefix()?;
                     if self.pretty {
                         write_pretty_json_row(&mut self.output, row)?;
@@ -130,7 +130,7 @@ impl<W: Write> Write for JsonArraySink<W> {
                         "JSON array row exceeds 8 MiB",
                     ));
                 }
-                validate_complete_object(&fragment)?;
+                validate_complete_object(fragment)?;
                 self.write_row_prefix()?;
                 if self.pretty {
                     write_pretty_json_row(&mut self.output, fragment)?;
