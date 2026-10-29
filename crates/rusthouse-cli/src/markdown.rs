@@ -50,19 +50,26 @@ fn decode_markdown_fields(line: &[u8], data_row: bool) -> io::Result<Vec<Cow<'_,
         .collect()
 }
 
+fn write_markdown_cells<'a, W: Write>(
+    output: &mut W,
+    fields: impl Iterator<Item = &'a [u8]>,
+) -> io::Result<()> {
+    output.write_all(b"|")?;
+    for field in fields {
+        output.write_all(b" ")?;
+        write_cell(output, field)?;
+        output.write_all(b" |")?;
+    }
+    output.write_all(b"\n")
+}
+
 fn write_markdown_row<W: Write>(output: &mut W, line: &[u8], data_row: bool) -> io::Result<()> {
     if !data_row || !line.contains(&b'\\') {
         // Validate every field before writing so malformed UTF-8 is atomic.
         std::str::from_utf8(line).map_err(|_| {
             io::Error::new(io::ErrorKind::InvalidData, "Markdown field is not UTF-8")
         })?;
-        output.write_all(b"|")?;
-        for field in line.split(|&byte| byte == b'\t') {
-            output.write_all(b" ")?;
-            write_cell(output, field)?;
-            output.write_all(b" |")?;
-        }
-        return output.write_all(b"\n");
+        return write_markdown_cells(output, line.split(|&byte| byte == b'\t'));
     }
     let fields = decode_markdown_fields(line, data_row)?;
     for field in &fields {
@@ -70,13 +77,7 @@ fn write_markdown_row<W: Write>(output: &mut W, line: &[u8], data_row: bool) -> 
             io::Error::new(io::ErrorKind::InvalidData, "Markdown field is not UTF-8")
         })?;
     }
-    output.write_all(b"|")?;
-    for field in fields {
-        output.write_all(b" ")?;
-        write_cell(output, field.as_ref())?;
-        output.write_all(b" |")?;
-    }
-    output.write_all(b"\n")
+    write_markdown_cells(output, fields.iter().map(|field| field.as_ref()))
 }
 
 fn write_header_separator<W: Write>(output: &mut W, columns: usize) -> io::Result<()> {
