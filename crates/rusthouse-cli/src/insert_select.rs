@@ -52,10 +52,10 @@ fn decode_field(value: &str) -> Result<Option<String>, String> {
             b'r' => decoded.push(b'\r'),
             b'0' => decoded.push(0),
             b'x' => {
-                let hi = bytes
+                let high_hex_digit = bytes
                     .next()
                     .ok_or("incomplete hex escape in SELECT result")?;
-                let lo = bytes
+                let low_hex_digit = bytes
                     .next()
                     .ok_or("incomplete hex escape in SELECT result")?;
                 let digit = |byte: u8| match byte {
@@ -64,9 +64,9 @@ fn decode_field(value: &str) -> Result<Option<String>, String> {
                     b'A'..=b'F' => Some(byte - b'A' + 10),
                     _ => None,
                 };
-                let hi = digit(hi).ok_or("invalid hex escape in SELECT result")?;
-                let lo = digit(lo).ok_or("invalid hex escape in SELECT result")?;
-                decoded.push((hi << 4) | lo);
+                let high_hex_digit = digit(high_hex_digit).ok_or("invalid hex escape in SELECT result")?;
+                let low_hex_digit = digit(low_hex_digit).ok_or("invalid hex escape in SELECT result")?;
+                decoded.push((high_hex_digit << 4) | low_hex_digit);
             }
             _ => return Err("invalid escape in SELECT result".into()),
         }
