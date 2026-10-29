@@ -1349,8 +1349,11 @@ fn parse_select_tokens(tokens: Vec<Token>) -> Result<Select, ParseError> {
                 }
                 let mut values = Vec::new();
                 loop {
-                    if values.len() == 32 {
-                        return Err(ParseError("IN supports at most 32 values".into()));
+                    // A 64 KiB SELECT bounds total literal bytes. Long lists
+                    // are compiled into hash sets by both numeric and typed
+                    // executors instead of doing a linear search per row.
+                    if values.len() == 4_096 {
+                        return Err(ParseError("IN supports at most 4096 values".into()));
                     }
                     values.push(parser.literal()?);
                     if !parser.take(Token::Comma) {
