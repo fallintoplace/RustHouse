@@ -53,9 +53,16 @@ fn join_key(value: &typed::Cell) -> typed::Key {
     }
 }
 
+fn numeric_key_eligible(value: Number) -> bool {
+    !matches!(value, Number::Float(number) if number.is_nan())
+}
+
 fn key_eligible(value: &typed::Cell) -> bool {
-    !matches!(value, typed::Cell::Null)
-        && !matches!(value, typed::Cell::Numeric(Number::Float(number)) if number.is_nan())
+    match value {
+        typed::Cell::Null => false,
+        typed::Cell::Numeric(number) => numeric_key_eligible(*number),
+        _ => true,
+    }
 }
 
 pub(super) fn row_key(row: &[typed::Cell], indices: &[usize]) -> Option<Vec<typed::Key>> {
@@ -132,7 +139,7 @@ pub(super) fn batch_key_into(
             }
             TypedColumn::Numeric(values) | TypedColumn::NullableNumeric { values, .. } => {
                 let value = super::super::number_at(values, row);
-                if matches!(value, Number::Float(number) if number.is_nan()) {
+                if !numeric_key_eligible(value) {
                     result.clear();
                     return false;
                 }
