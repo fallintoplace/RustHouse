@@ -62,5 +62,12 @@ class BenchmarkComparisonTests(unittest.TestCase):
         self.assertEqual(report["incomparable"][0]["reason"], "missing_positive_median")
 
 
+    def test_rejects_metadata_with_equal_but_different_types(self):
+        baseline = {"rows": 1, "results": [result(1, "passed", 0.01)]}
+        candidate = {"rows": True, "results": [result(1, "passed", 0.01)]}
+        with self.assertRaisesRegex(ValueError, "rows"):
+            compare(baseline, candidate)
+
+
 if __name__ == "__main__":
     unittest.main()
