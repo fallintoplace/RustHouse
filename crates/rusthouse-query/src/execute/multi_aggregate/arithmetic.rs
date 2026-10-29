@@ -151,6 +151,21 @@ pub(super) fn apply_unary_math(name: &str, value: Number) -> Result<Number, Exec
             ),
             Number::Float(number) => Number::Float(number * number),
         },
+        "CUBE" => match value {
+            Number::Signed(number) => Number::Signed(
+                number
+                    .checked_mul(number)
+                    .and_then(|square| square.checked_mul(number))
+                    .ok_or_else(|| ExecutionError::Invalid("aggregate cube overflow".into()))?,
+            ),
+            Number::Unsigned(number) => Number::Unsigned(
+                number
+                    .checked_mul(number)
+                    .and_then(|square| square.checked_mul(number))
+                    .ok_or_else(|| ExecutionError::Invalid("aggregate cube overflow".into()))?,
+            ),
+            Number::Float(number) => Number::Float(number * number * number),
+        },
         _ => {
             return Err(ExecutionError::Invalid(format!(
                 "unsupported aggregate numeric function: {name}"
@@ -503,6 +518,21 @@ mod aggregate_unary_math_tests {
         assert!(apply_unary_math("SQUARE", Number::Unsigned(u128::MAX)).is_err());
         assert!(crate::parse_scalar_expression("square(amount)").is_ok());
         assert!(crate::parse_scalar_expression("square(amount, 2)").is_err());
+    }
+
+    #[test]
+    fn cube_preserves_sign_and_rejects_integer_overflow() {
+        assert!(matches!(
+            apply_unary_math("CUBE", Number::Signed(-3)),
+            Ok(Number::Signed(-27))
+        ));
+        assert!(matches!(
+            apply_unary_math("CUBE", Number::Unsigned(5)),
+            Ok(Number::Unsigned(125))
+        ));
+        assert!(apply_unary_math("CUBE", Number::Unsigned(u128::MAX)).is_err());
+        assert!(crate::parse_scalar_expression("cube(amount)").is_ok());
+        assert!(crate::parse_scalar_expression("cube(amount, 2)").is_err());
     }
 
 }
