@@ -64,23 +64,25 @@ pub fn rank_read_replicas_at_least(
     minimum_epoch: u64,
     minimum_generation: u64,
 ) -> Result<Vec<String>, &'static str> {
-    let ranked = rank_read_replicas(replicas)?;
-    let eligible: HashSet<&str> = replicas
-        .iter()
-        .filter(|replica| {
-            replica.healthy
-                && replica.epoch == minimum_epoch
-                && replica.generation >= minimum_generation
-        })
-        .map(|replica| replica.node.as_str())
-        .collect();
+    if replicas.is_empty() || replicas.len() > 64 {
+        return Err("invalid replica status set");
+    }
+    validate_replica_nodes(replicas)?;
+    let mut eligible = replicas.iter().filter(|replica| {
+        replica.healthy
+            && replica.epoch == minimum_epoch
+            && replica.generation >= minimum_generation
+    }).collect::<Vec<_>>();
     if eligible.is_empty() {
+        if !replicas.iter().any(|replica| replica.healthy) {
+            return Err("no healthy storage replica");
+        }
         return Err("no storage replica meets the freshness floor");
     }
-    Ok(ranked
-        .into_iter()
-        .filter(|node| eligible.contains(node.as_str()))
-        .collect())
+    // Only sort candidates that meet the requested freshness floor;
+    // clone node names once, after selecting the final order.
+    eligible.sort_unstable_by(|left, right| newest_first(left, right));
+    Ok(eligible.into_iter().map(|replica| replica.node.clone()).collect())
 }
 
 #[cfg(test)]
@@ -173,6 +175,26 @@ mod tests {
 #[cfg(test)]
 mod freshness_floor_tests {
     use super::*;
+
+    #[test]
+    fn filtered_ranking_matches_the_original_full_ranking() {
+        let mut replicas = (0..64).map(|index| ReplicaStatus {
+            node: format!("node_{index}"),
+            epoch: if index % 2 == 0 { 3 } else { 4 },
+            generation: (index % 7 + 1) as u64,
+            healthy: index % 5 != 0,
+        }).collect::<Vec<_>>();
+        replicas.reverse();
+        let floor = (3, 4);
+        let expected = rank_read_replicas(&replicas).unwrap()
+            .into_iter()
+            .filter(|name| replicas.iter().any(|item| {
+                item.node == *name && item.epoch == floor.0 &&
+                    item.generation >= floor.1
+            }))
+            .collect::<Vec<_>>();
+        assert_eq!(rank_read_replicas_at_least(&replicas, floor.0, floor.1).unwrap(), expected);
+    }
 
     #[test]
     fn rejects_stale_read_replicas() {
