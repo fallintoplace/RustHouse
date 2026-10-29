@@ -3,6 +3,13 @@
 use super::*;
 use rusthouse_query::{ExecutionError, JoinSelect, execute_join, execute_multi_join, explain_join};
 
+fn finish_output<T>(
+    result: Result<(), ExecutionError>,
+    finish: impl FnOnce() -> std::io::Result<T>,
+) -> Result<(), ExecutionError> {
+    result.and_then(|()| finish().map(|_| ()).map_err(ExecutionError::Io))
+}
+
 pub(super) fn handle(
     query: &mut JoinSelect,
     explain: bool,
@@ -15,8 +22,8 @@ pub(super) fn handle(
     let Some(database) = config.database.as_deref() else {
         return Response::text("400 Bad Request", "JOIN requires a database\n");
     };
-    let cap = config.max_rows.min(250_000);
-    query.limit = Some(query.limit.map_or(cap, |limit| limit.min(cap)));
+    let join_row_cap = config.max_rows.min(250_000);
+    query.limit = Some(query.limit.map_or(join_row_cap, |limit| limit.min(join_row_cap)));
     if explain {
         return Response::text(
             "200 OK",
@@ -56,13 +63,11 @@ pub(super) fn handle(
         QueryFormat::Markdown => run(&mut MarkdownWriter::new(&mut writer)),
         QueryFormat::SqlValues => {
             let mut values = SqlValuesWriter::new(&mut writer);
-            run(&mut values)
-                .and_then(|()| values.finish().map_err(ExecutionError::Io))
+            finish_output(run(&mut values), || values.finish())
         }
         QueryFormat::JsonCompactEachRow => {
             let mut compact = JsonCompactEachRowWriter::new(&mut writer);
-            run(&mut compact)
-                .and_then(|()| compact.finish().map(|_| ()).map_err(ExecutionError::Io))
+            finish_output(run(&mut compact), || compact.finish())
         }
         QueryFormat::Json | QueryFormat::JsonPretty => {
             let mut array = if matches!(format, QueryFormat::JsonPretty) {
@@ -71,7 +76,7 @@ pub(super) fn handle(
                 JsonArraySink::new(&mut writer)
             };
             let result = run(&mut JsonlWriter::new(&mut array));
-            result.and_then(|()| array.finish().map(|_| ()).map_err(ExecutionError::Io))
+            finish_output(result, || array.finish())
         }
     };
     if result.is_ok() && matches!(format, QueryFormat::TsvNoHeader) {

@@ -38,7 +38,7 @@ impl<W: Write> MarkdownWriter<W> {
     }
 }
 
-fn decode_markdown_field(field: &[u8], data_row: bool) -> io::Result<Cow<'_, [u8]>> {
+fn decode_tsv_markdown_field(field: &[u8], data_row: bool) -> io::Result<Cow<'_, [u8]>> {
     if data_row && field != b"\\N" && field.contains(&b'\\') {
         let decoded = decode_tsv_field(field)?;
         std::str::from_utf8(&decoded).map_err(|_| {
@@ -66,7 +66,7 @@ fn write_markdown_row<W: Write>(output: &mut W, line: &[u8], data_row: bool) -> 
     }
     let fields = line
         .split(|&byte| byte == b'\t')
-        .map(|field| decode_markdown_field(field, data_row))
+        .map(|field| decode_tsv_markdown_field(field, data_row))
         .collect::<io::Result<Vec<_>>>()?;
     for field in &fields {
         std::str::from_utf8(field.as_ref()).map_err(|_| {
@@ -166,19 +166,19 @@ mod tests {
     #[test]
     fn field_decoder_borrows_plain_and_null_fields() {
         assert!(matches!(
-            decode_markdown_field(b"plain", true).unwrap(),
+            decode_tsv_markdown_field(b"plain", true).unwrap(),
             Cow::Borrowed(_)
         ));
         assert!(matches!(
-            decode_markdown_field(b"\\N", true).unwrap(),
+            decode_tsv_markdown_field(b"\\N", true).unwrap(),
             Cow::Borrowed(_)
         ));
         assert!(matches!(
-            decode_markdown_field(b"a\\tb", false).unwrap(),
+            decode_tsv_markdown_field(b"a\\tb", false).unwrap(),
             Cow::Borrowed(_)
         ));
         assert!(matches!(
-            decode_markdown_field(b"a\\tb", true).unwrap(),
+            decode_tsv_markdown_field(b"a\\tb", true).unwrap(),
             Cow::Owned(_)
         ));
     }
@@ -186,12 +186,12 @@ mod tests {
     #[test]
     fn shared_decoder_validates_unicode_and_bad_bytes() {
         assert_eq!(
-            decode_markdown_field(br"caf\xC3\xA9", true)
+            decode_tsv_markdown_field(br"caf\xC3\xA9", true)
                 .unwrap()
                 .as_ref(),
             "café".as_bytes()
         );
-        assert!(decode_markdown_field(br"\xFF", true).is_err());
+        assert!(decode_tsv_markdown_field(br"\xFF", true).is_err());
     }
 
     #[test]

@@ -24,10 +24,10 @@ impl<W: Write> HtmlWriter<W> {
         let text = std::str::from_utf8(&self.line).map_err(|_| {
             io::Error::new(io::ErrorKind::InvalidData, "HTML field is not valid UTF-8")
         })?;
-        let count = 1 + self.line.iter().filter(|&&byte| byte == b'\t').count();
+        let field_count = 1 + self.line.iter().filter(|&&byte| byte == b'\t').count();
         let header = self.columns.is_none();
         if let Some(columns) = self.columns {
-            if columns != count {
+            if columns != field_count {
                 return Err(io::Error::new(
                     io::ErrorKind::InvalidData,
                     "HTML row does not match header column count",
@@ -55,7 +55,7 @@ impl<W: Write> HtmlWriter<W> {
         }
         if header {
             self.output.write_all(b"</tr></thead>\n<tbody>\n")?;
-            self.columns = Some(count);
+            self.columns = Some(field_count);
         } else {
             self.output.write_all(b"</tr>\n")?;
         }
@@ -76,7 +76,7 @@ impl<W: Write> HtmlWriter<W> {
     }
 }
 
-fn decode_html_field(field: &str, header: bool) -> io::Result<Cow<'_, str>> {
+fn decode_tsv_field_for_html(field: &str, header: bool) -> io::Result<Cow<'_, str>> {
     if header || field == "\\N" || !field.as_bytes().contains(&b'\\') {
         return Ok(Cow::Borrowed(field));
     }
@@ -87,16 +87,20 @@ fn decode_html_field(field: &str, header: bool) -> io::Result<Cow<'_, str>> {
 
 fn decode_html_fields(line: &str, header: bool) -> io::Result<Vec<Cow<'_, str>>> {
     line.split('\t')
-        .map(|field| decode_html_field(field, header))
+        .map(|field| decode_tsv_field_for_html(field, header))
         .collect()
 }
 
-fn write_cells<W: Write>(output: &mut W, fields: &[Cow<'_, str>], header: bool) -> io::Result<()> {
-    let (open, close) = if header {
-        (b"<th>".as_slice(), b"</th>".as_slice())
+fn cell_tags(header: bool) -> (&'static [u8], &'static [u8]) {
+    if header {
+        (b"<th>", b"</th>")
     } else {
-        (b"<td>".as_slice(), b"</td>".as_slice())
-    };
+        (b"<td>", b"</td>")
+    }
+}
+
+fn write_cells<W: Write>(output: &mut W, fields: &[Cow<'_, str>], header: bool) -> io::Result<()> {
+    let (open, close) = cell_tags(header);
     for field in fields {
         output.write_all(open)?;
         write_cell(output, field)?;
@@ -106,11 +110,7 @@ fn write_cells<W: Write>(output: &mut W, fields: &[Cow<'_, str>], header: bool) 
 }
 
 fn write_plain_cells<W: Write>(output: &mut W, line: &str, header: bool) -> io::Result<()> {
-    let (open, close) = if header {
-        (b"<th>".as_slice(), b"</th>".as_slice())
-    } else {
-        (b"<td>".as_slice(), b"</td>".as_slice())
-    };
+    let (open, close) = cell_tags(header);
     for field in line.split('\t') {
         output.write_all(open)?;
         write_cell(output, field)?;
@@ -119,7 +119,7 @@ fn write_plain_cells<W: Write>(output: &mut W, line: &str, header: bool) -> io::
     Ok(())
 }
 
-fn html_entity(ch: char) -> Option<&'static [u8]> {
+fn html_escape_entity(ch: char) -> Option<&'static [u8]> {
     match ch {
         '&' => Some(b"&amp;"),
         '<' => Some(b"&lt;"),
@@ -141,7 +141,7 @@ fn write_cell<W: Write>(output: &mut W, field: &str) -> io::Result<()> {
             start = index + ch.len_utf8();
             continue;
         }
-        if let Some(escape) = html_entity(ch) {
+        if let Some(escape) = html_escape_entity(ch) {
             if start < index {
                 output.write_all(&field.as_bytes()[start..index])?;
             }
@@ -207,19 +207,19 @@ mod tests {
     #[test]
     fn field_decoder_borrows_plain_headers_and_null_markers() {
         assert!(matches!(
-            decode_html_field("plain", false).unwrap(),
+            decode_tsv_field_for_html("plain", false).unwrap(),
             Cow::Borrowed(_)
         ));
         assert!(matches!(
-            decode_html_field("\\N", false).unwrap(),
+            decode_tsv_field_for_html("\\N", false).unwrap(),
             Cow::Borrowed(_)
         ));
         assert!(matches!(
-            decode_html_field("a\\tb", true).unwrap(),
+            decode_tsv_field_for_html("a\\tb", true).unwrap(),
             Cow::Borrowed(_)
         ));
         assert!(matches!(
-            decode_html_field("a\\tb", false).unwrap(),
+            decode_tsv_field_for_html("a\\tb", false).unwrap(),
             Cow::Owned(_)
         ));
     }
