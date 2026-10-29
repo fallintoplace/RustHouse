@@ -48,16 +48,23 @@ pub fn write_quoted_csv_field<W: Write>(output: &mut W, field: &[u8]) -> io::Res
     if field.is_empty() {
         return output.write_all(b"\"\"");
     }
-    // Batch quote-free fields up to 4 KiB into a single write.
-    // This avoids three output writes per medium-sized CSV cell.
-    if field.len() <= 4094 && !field.contains(&b'"') {
-        let mut buffer = [0u8; 4096];
-        buffer[0] = b'"';
-        buffer[1..field.len() + 1].copy_from_slice(field);
-        buffer[field.len() + 1] = b'"';
-        return output.write_all(&buffer[..field.len() + 2]);
-    }
+    // Keep the small 258-byte stack fast path for the most common fields;
+    // medium plain fields use a larger one-write buffer only when needed.
     if !field.contains(&b'"') {
+        if field.len() <= 256 {
+            let mut buffer = [0u8; 258];
+            buffer[0] = b'"';
+            buffer[1..field.len() + 1].copy_from_slice(field);
+            buffer[field.len() + 1] = b'"';
+            return output.write_all(&buffer[..field.len() + 2]);
+        }
+        if field.len() <= 4094 {
+            let mut buffer = [0u8; 4096];
+            buffer[0] = b'"';
+            buffer[1..field.len() + 1].copy_from_slice(field);
+            buffer[field.len() + 1] = b'"';
+            return output.write_all(&buffer[..field.len() + 2]);
+        }
         output.write_all(b"\"")?;
         output.write_all(field)?;
         return output.write_all(b"\"");
