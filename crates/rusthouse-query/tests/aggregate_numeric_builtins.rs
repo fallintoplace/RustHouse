@@ -90,3 +90,8 @@ fn positive_preserves_nullable_numeric_values() {
 fn equals_returns_nullable_integer_truth() {
     assert_eq!(evaluate("equals(x, y)"), "1");
 }
+
+#[test]
+fn not_equals_preserves_three_valued_logic() {
+    assert_eq!(evaluate("notEquals(x, y)"), "2");
+}
