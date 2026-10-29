@@ -1,12 +1,13 @@
 """Hash read-only SQL query output spooled to an OS temporary file.
 
-The output stays off the Python heap. The byte limit is checked after the
-query finishes; ensure enough temporary disk space for the selected max rows.
+The output stays off the Python heap. POSIX children are capped while writing;
+other platforms enforce the byte limit when the query finishes.
 """
 import argparse
 import hashlib
 import json
 import math
+import os
 import re
 import subprocess
 import tempfile
@@ -30,10 +31,23 @@ def query_digest(binary, part, sql, *, expected_sha256=None,
     with tempfile.TemporaryFile(mode="w+b") as output:
         command = [str(binary), "sql", sql, "--part", str(part), "--format",
                    "tsv-no-header", "--max-rows", str(max_rows)]
+        extra = {}
+        if run is None and os.name == "posix":
+            import resource
+            def cap_output_file():
+                _, hard = resource.getrlimit(resource.RLIMIT_FSIZE)
+                limit = (max_output_bytes if hard == resource.RLIM_INFINITY
+                         else min(max_output_bytes, hard))
+                resource.setrlimit(resource.RLIMIT_FSIZE, (limit, hard))
+            extra["preexec_fn"] = cap_output_file
         result = execute(command, stdout=output, stderr=subprocess.PIPE,
-                         check=False, timeout=timeout)
+                         check=False, timeout=timeout, **extra)
         elapsed = time.perf_counter() - started
         if result.returncode:
+            output.flush()
+            output.seek(0, os.SEEK_END)
+            if output.tell() >= max_output_bytes:
+                raise ValueError("SQL output exceeds max_output_bytes")
             raise RuntimeError(f"query failed: {result.stderr.decode('utf-8', 'replace')[-500:]}")
         output.flush()
         output.seek(0)
