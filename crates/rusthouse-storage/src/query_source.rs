@@ -174,77 +174,108 @@ pub(crate) fn inspect_parts_metadata(
     path: &Path,
     paths: &[PathBuf],
 ) -> Result<PartMetadata, PartError> {
-    // Part metadata is immutable for an offline snapshot. For tables with many
-    // parts, inspect independent files in parallel without spawning one thread
-    // per part. Preserve input order so corruption reports stay deterministic.
-    const PARALLEL_THRESHOLD: usize = 32;
     const MAX_WORKERS: usize = 8;
     let workers = std::thread::available_parallelism()
         .map_or(1, |parallelism| parallelism.get())
         .min(MAX_WORKERS);
-    let mut metadata = Vec::with_capacity(paths.len());
-    if paths.len() >= PARALLEL_THRESHOLD && workers > 1 {
-        // A few parts can have much larger metadata than the rest. Claim
-        // part indexes dynamically so one slow range does not hold up the
-        // whole scan. Retain results by input index for stable diagnostics.
+    inspect_parts_metadata_with_workers(path, paths, workers)
+}
+
+/// Bound the number of complete part schemas retained during metadata scans.
+/// Inspecting 16,384 wide parts must not retain 16,384 copies of every column.
+fn inspect_parts_metadata_with_workers(
+    path: &Path,
+    paths: &[PathBuf],
+    workers: usize,
+) -> Result<PartMetadata, PartError> {
+    let first_path = paths.first().ok_or_else(|| {
+        PartError::InvalidScan("snapshot contains no readable parts".into())
+    })?;
+    let first = inspect_part(first_path)?;
+    let mut rows = u128::from(first.rows);
+    let mut first_read_error: Option<(usize, PartError)> = None;
+    let mut first_schema_error: Option<usize> = None;
+    let mut record = |index: usize, result: Result<PartMetadata, PartError>| {
+        match result {
+            Err(error) => {
+                if first_read_error
+                    .as_ref()
+                    .is_none_or(|(previous, _)| index < *previous)
+                {
+                    first_read_error = Some((index, error));
+                }
+            }
+            Ok(item) => {
+                if item.columns != first.columns {
+                    first_schema_error = Some(first_schema_error.map_or(index, |previous| {
+                        previous.min(index)
+                    }));
+                }
+                rows += u128::from(item.rows);
+            }
+        }
+    };
+
+    if paths.len() >= 32 && workers > 1 {
         use std::sync::atomic::{AtomicUsize, Ordering};
-        let cursor = AtomicUsize::new(0);
-        let mut slots: Vec<Option<Result<PartMetadata, PartError>>> =
-            (0..paths.len()).map(|_| None).collect();
+        // Two pending results per worker bound queued schema memory even
+        // when a slow part is encountered among thousands of small parts.
+        let cursor = AtomicUsize::new(1);
         std::thread::scope(|scope| -> Result<(), PartError> {
+            let (sender, receiver) = std::sync::mpsc::sync_channel(workers * 2);
             let handles = (0..workers)
                 .map(|_| {
+                    let sender = sender.clone();
                     let cursor = &cursor;
                     scope.spawn(move || {
-                        let mut completed = Vec::new();
                         loop {
                             let index = cursor.fetch_add(1, Ordering::Relaxed);
                             if index >= paths.len() {
                                 break;
                             }
-                            completed.push((index, inspect_part(&paths[index])));
+                            if sender.send((index, inspect_part(&paths[index]))).is_err() {
+                                break;
+                            }
                         }
-                        completed
                     })
                 })
                 .collect::<Vec<_>>();
+            drop(sender);
+            for _ in 1..paths.len() {
+                let (index, item) = receiver.recv().map_err(|_| {
+                    PartError::InvalidScan("snapshot metadata worker stopped".into())
+                })?;
+                record(index, item);
+            }
             for handle in handles {
-                let completed = handle.join().map_err(|_| {
+                handle.join().map_err(|_| {
                     PartError::InvalidScan("snapshot metadata worker panicked".into())
                 })?;
-                for (index, item) in completed {
-                    slots[index] = Some(item);
-                }
             }
             Ok(())
         })?;
-        for slot in slots {
-            metadata.push(slot.expect("every claimed part has one result")?);
-        }
     } else {
-        for part in paths {
-            metadata.push(inspect_part(part)?);
+        for (index, part) in paths.iter().enumerate().skip(1) {
+            record(index, inspect_part(part));
         }
     }
 
-    let first = metadata
-        .first()
-        .ok_or_else(|| PartError::InvalidScan("snapshot contains no readable parts".into()))?;
-    let mut rows = 0u64;
-    for (part, item) in paths.iter().zip(&metadata) {
-        if item.columns != first.columns {
-            return Err(PartError::InvalidScan(format!(
-                "part schema mismatch in {}",
-                part.display()
-            )));
-        }
-        rows = rows
-            .checked_add(item.rows)
-            .ok_or_else(|| PartError::InvalidScan("table row count overflow".into()))?;
+    // Match the original diagnostics: report the earliest part-read failure
+    // before reporting schema disagreement or accumulated row overflow.
+    if let Some((_, error)) = first_read_error {
+        return Err(error);
     }
+    if let Some(index) = first_schema_error {
+        return Err(PartError::InvalidScan(format!(
+            "part schema mismatch in {}",
+            paths[index].display()
+        )));
+    }
+    let rows = u64::try_from(rows)
+        .map_err(|_| PartError::InvalidScan("table row count overflow".into()))?;
     Ok(PartMetadata {
         path: path.to_owned(),
-        columns: first.columns.clone(),
+        columns: first.columns,
         rows,
     })
 }
@@ -574,6 +605,9 @@ mod tests {
         let metadata = inspect_query_source(&root).unwrap();
         assert_eq!(metadata.rows, 40);
         assert_eq!(metadata.columns, columns);
+        let parts = query_parts(&root).unwrap();
+        let streamed = inspect_parts_metadata_with_workers(&root, &parts, 4).unwrap();
+        assert_eq!(streamed, metadata);
         let mut reader =
             NumericQueryReader::open_with_metadata(&root, &["id".into()], &metadata).unwrap();
         let mut inspected = 0;
@@ -609,6 +643,10 @@ mod tests {
         .unwrap();
         assert!(matches!(
             inspect_query_source(&root),
+            Err(PartError::InvalidScan(message)) if message.contains("schema mismatch")
+        ));
+        assert!(matches!(
+            inspect_parts_metadata_with_workers(&root, &parts, 4),
             Err(PartError::InvalidScan(message)) if message.contains("schema mismatch")
         ));
         fs::remove_dir_all(root).unwrap();
