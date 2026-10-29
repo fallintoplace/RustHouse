@@ -183,6 +183,9 @@ impl<R: Read + Seek> CompressedBlockReader<R> {
         {
             return self.invalid_at(block.offset, "block exceeds the 64 MiB decode limit");
         }
+        if !matches!(block.method, 0x02 | 0x82 | 0x90) {
+            return self.invalid_at(block.offset, "unsupported compression method");
+        }
 
         // LZ4/ZSTD decode into separate output buffers. Reuse the encoded input
         // allocation for later blocks, including across intervening NONE blocks.
@@ -739,6 +742,31 @@ mod tests {
             reader.next_decoded(),
             Some(Err(PartError::InvalidCompressedBlock {
                 reason: "block exceeds the 64 MiB decode limit",
+                ..
+            }))
+        ));
+    }
+}
+
+#[cfg(test)]
+mod unsupported_codec_early_rejection_tests {
+    use super::*;
+    use std::io::Cursor;
+
+    #[test]
+    fn rejects_unsupported_header_before_reading_payload() {
+        let mut bytes = vec![0u8; 16];
+        bytes.push(0xff);
+        bytes.extend_from_slice(&19u32.to_le_bytes());
+        bytes.extend_from_slice(&10u32.to_le_bytes());
+        // A complete but untrusted payload must not be decoded or hashed.
+        bytes.extend_from_slice(&[0u8; 10]);
+        let cursor = Cursor::new(bytes);
+        let mut reader = CompressedBlockReader::new(cursor, "unknown-codec").unwrap();
+        assert!(matches!(
+            reader.next_decoded(),
+            Some(Err(PartError::InvalidCompressedBlock {
+                reason: "unsupported compression method",
                 ..
             }))
         ));
