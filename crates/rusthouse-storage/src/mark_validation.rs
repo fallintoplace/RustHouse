@@ -74,7 +74,7 @@ fn validate_mark_target(
     Ok(())
 }
 
-fn mark_offset(mark: &WideMark) -> (u64, u64) {
+fn mark_stream_offsets(mark: &WideMark) -> (u64, u64) {
     (mark.compressed_offset, mark.decompressed_offset)
 }
 
@@ -88,8 +88,8 @@ fn validate_mark_sequence(
         return Err(invalid_mark(marks, index, "zero-row mark must be last"));
     }
     if let Some(previous) = previous {
-        let current_offset = mark_offset(mark);
-        let previous_offset = mark_offset(previous);
+        let current_offset = mark_stream_offsets(mark);
+        let previous_offset = mark_stream_offsets(previous);
         if current_offset < previous_offset {
             return Err(invalid_mark(marks, index, "mark offsets are not ordered"));
         }
