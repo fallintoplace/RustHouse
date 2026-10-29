@@ -133,6 +133,17 @@ impl<W: Write> Write for VerticalWriter<W> {
                     "vertical row exceeds 1 MiB",
                 ));
             }
+            if has_newline && self.line.is_empty() {
+                if let Some(headers) = self.headers.as_ref() {
+                    validate_row_width(headers, fragment)?;
+                    let row = self.rows.checked_add(1).ok_or_else(|| {
+                        io::Error::new(io::ErrorKind::InvalidData, "too many vertical rows")
+                    })?;
+                    write_row(&mut self.output, row, headers, fragment)?;
+                    self.rows = row;
+                    continue;
+                }
+            }
             self.line.extend_from_slice(fragment);
             if has_newline {
                 self.finish_line()?;
@@ -149,6 +160,18 @@ impl<W: Write> Write for VerticalWriter<W> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn complete_vertical_rows_keep_the_staging_buffer_small() {
+        let mut writer = VerticalWriter::new(Vec::new());
+        writer.write_all(b"value\n").unwrap();
+        let before = writer.line.capacity();
+        let value = "z".repeat(16 * 1024);
+        writer.write_all(format!("{value}\n").as_bytes()).unwrap();
+        assert_eq!(writer.line.capacity(), before);
+        assert_eq!(writer.rows, 1);
+        assert!(writer.output.ends_with(format!("  value: {value}\n\n").as_bytes()));
+    }
 
     #[test]
     fn plain_rows_keep_controls_and_unicode_without_field_collection() {
