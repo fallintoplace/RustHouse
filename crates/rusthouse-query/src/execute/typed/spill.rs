@@ -337,7 +337,7 @@ impl TypedExternalSort {
         paths: &[PathBuf],
         mut emit: F,
     ) -> Result<(), ExecutionError>
-    where F: FnMut(SortEntry) -> Result<(), ExecutionError>,
+    where F: FnMut(SortEntry) -> Result<bool, ExecutionError>,
     {
         let mut sources = paths.iter().map(|path| {
             File::open(path).map(BufReader::new).map_err(ExecutionError::from)
@@ -353,7 +353,10 @@ impl TypedExternalSort {
         }
         while let Some(item) = heap.pop() {
             let source = item.source;
-            emit(item.entry)?;
+            if !emit(item.entry)? {
+                // A globally merged LIMIT needs no further read or decode.
+                return Ok(());
+            }
             if let Some(entry) = read_entry(&mut sources[source])? {
                 heap.push(HeapItem {
                     entry, source, descending: self.descending,
@@ -385,7 +388,10 @@ impl TypedExternalSort {
                 let merged = self.next_path()?;
                 {
                     let mut writer = BufWriter::new(File::create(&merged)?);
-                    self.merge_group(chunk, |entry| write_entry(&mut writer, &entry))?;
+                    self.merge_group(chunk, |entry| {
+                        write_entry(&mut writer, &entry)?;
+                        Ok(true)
+                    })?;
                     writer.flush()?;
                 }
                 self.charge_file(&merged)?;
@@ -424,7 +430,7 @@ impl TypedExternalSort {
             }
             seen = seen.checked_add(1)
                 .ok_or_else(|| invalid("typed sort merge row count overflow"))?;
-            Ok(())
+            Ok(emitted < limit)
         })?;
         Ok(())
     }
@@ -479,6 +485,24 @@ mod tests {
         let text = String::from_utf8(result).unwrap();
         // Equal keys preserve input order, and OFFSET is applied after global sort.
         assert!(text.starts_with("key-000050\t0\nkey-000060\t0\nkey-000070\t0\n"), "{text}");
+    }
+
+    #[test]
+    fn global_limit_stops_merging_before_truncated_unneeded_tail() {
+        use std::fs::OpenOptions;
+        let mut sorter = TypedExternalSort::new(0, 0, 0);
+        for index in 0..(MAX_BUFFER_ROWS + 2) {
+            sorter.push(row("a", index as u64)).unwrap();
+        }
+        sorter.flush().unwrap();
+        // The incomplete final record would fail if a LIMIT 1 query reads
+        // the entire run. Sorted order makes this file's first entry smallest.
+        let first = sorter.runs[0].clone();
+        OpenOptions::new().append(true).open(&first).unwrap()
+            .write_all(&[0x11]).unwrap();
+        let mut result = Vec::new();
+        sorter.write(&mut result, &["String", "UInt64"], 0, 1).unwrap();
+        assert_eq!(String::from_utf8(result).unwrap(), "a\t0\n");
     }
 
     #[test]
