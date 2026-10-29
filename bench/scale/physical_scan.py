@@ -81,8 +81,9 @@ def scan(binary, database, sql, expected, runs, warmups, timeout):
 def benchmark(binary, rows, runs, warmups, timeout, scratch_dir=None, fixture_batch_rows=8192):
     if type(rows) is not int or not 1 <= rows <= 1_000_000_000:
         raise ValueError("rows must be in 1..1000000000")
-    if type(runs) is not int or type(warmups) is not int or runs < 1 or warmups < 0:
-        raise ValueError("invalid physical scan run counts")
+    if (type(runs) is not int or type(warmups) is not int
+            or runs < 1 or warmups < 0 or runs + warmups > 1000):
+        raise ValueError("invalid physical scan run counts (1..1000 total executions)")
     if type(timeout) not in (int, float) or not math.isfinite(timeout) or timeout <= 0:
         raise ValueError("timeout must be finite and positive")
     count, total = even_reference(rows)
