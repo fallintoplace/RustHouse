@@ -101,6 +101,12 @@ def scan(binary, directory, sql, golden, *, runs, warmups, timeout):
 
 
 def benchmark(binary, rows, groups, runs, warmups, timeout, scratch_dir=None):
+    if (type(runs) is not int or type(warmups) is not int
+            or runs < 1 or warmups < 0 or runs + warmups > 1000):
+        raise ValueError("grouped scan executions must total 1..1000")
+    if (type(timeout) not in (int, float)
+            or not math.isfinite(timeout) or timeout <= 0):
+        raise ValueError("grouped scan timeout must be finite and positive")
     counts, amounts = reference(rows, groups)
     with tempfile.TemporaryDirectory(prefix="rusthouse-grouped-analytics-", dir=scratch_dir) as root:
         directory = Path(root) / "db"
