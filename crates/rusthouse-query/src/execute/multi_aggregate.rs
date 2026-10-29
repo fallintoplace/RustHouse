@@ -94,6 +94,7 @@ enum BoundExpr {
     IsNull(Box<Self>, bool),
     Not(Box<Self>),
     Between(Box<Self>, Box<Self>, Box<Self>, bool),
+    In(Box<Self>, Vec<Self>, bool),
     // Fast path for the affine expression family in ClickBench Q30.
     AffineColumn {
         index: usize,
@@ -130,6 +131,12 @@ impl BoundExpr {
                 Self::IsNull(Box::new(Self::bind(inner, indices)?), *negated),
             ScalarExpr::Not(inner) =>
                 Self::Not(Box::new(Self::bind(inner, indices)?)),
+            ScalarExpr::In(value, candidates, negated) => Self::In(
+                Box::new(Self::bind(value, indices)?),
+                candidates.iter().map(|value| Self::bind(value, indices))
+                    .collect::<Result<Vec<_>, _>>()?,
+                *negated,
+            ),
             ScalarExpr::Between(value, lower, upper, negated) => Self::Between(
                 Box::new(Self::bind(value, indices)?),
                 Box::new(Self::bind(lower, indices)?),
@@ -278,6 +285,19 @@ fn eval_number(
         },
         BoundExpr::Integer(value) => Ok(Some(Number::Signed(i128::from(*value)))),
         BoundExpr::Null => Ok(None),
+        BoundExpr::In(value, candidates, negated) => {
+            let Some(value) = eval_number(value, batch, row)? else { return Ok(None); };
+            let mut unknown = false;
+            for candidate in candidates {
+                match eval_number(candidate, batch, row)? {
+                    Some(candidate) if super::compare_numbers(value, candidate).is_eq() =>
+                        return Ok(Some(Number::Unsigned(u128::from(!*negated)))),
+                    None => unknown = true,
+                    _ => {}
+                }
+            }
+            Ok((!unknown).then(|| Number::Unsigned(u128::from(*negated))))
+        },
         BoundExpr::Between(value, lower, upper, negated) => {
             let Some(value) = eval_number(value, batch, row)? else { return Ok(None); };
             let Some(lower) = eval_number(lower, batch, row)? else { return Ok(None); };
