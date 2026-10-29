@@ -98,6 +98,7 @@ enum BoundExpr {
     Coalesce(Vec<Self>),
     NullIf(Box<Self>, Box<Self>),
     Abs(Box<Self>),
+    Extremum(Vec<Self>, bool),
     // Fast path for the affine expression family in ClickBench Q30.
     AffineColumn {
         index: usize,
@@ -134,6 +135,11 @@ impl BoundExpr {
                 Self::IsNull(Box::new(Self::bind(inner, indices)?), *negated),
             ScalarExpr::Not(inner) =>
                 Self::Not(Box::new(Self::bind(inner, indices)?)),
+            ScalarExpr::Extremum(values, maximum) => Self::Extremum(
+                values.iter().map(|value| Self::bind(value, indices))
+                    .collect::<Result<Vec<_>, _>>()?,
+                *maximum,
+            ),
             ScalarExpr::Abs(inner) =>
                 Self::Abs(Box::new(Self::bind(inner, indices)?)),
             ScalarExpr::NullIf(left, right) => Self::NullIf(
@@ -298,6 +304,21 @@ fn eval_number(
         },
         BoundExpr::Integer(value) => Ok(Some(Number::Signed(i128::from(*value)))),
         BoundExpr::Null => Ok(None),
+        BoundExpr::Extremum(values, maximum) => {
+            let mut best: Option<Number> = None;
+            for value in values {
+                if let Some(candidate) = eval_number(value, batch, row)? {
+                    best = Some(match best {
+                        Some(previous) if (*maximum
+                            && super::compare_numbers(previous, candidate).is_ge())
+                            || (!*maximum
+                                && super::compare_numbers(previous, candidate).is_le()) => previous,
+                        _ => candidate,
+                    });
+                }
+            }
+            Ok(best)
+        },
         BoundExpr::Abs(inner) => Ok(eval_number(inner, batch, row)?.map(|value| match value {
             Number::Unsigned(value) => Number::Unsigned(value),
             Number::Signed(value) => Number::Unsigned(value.unsigned_abs()),
