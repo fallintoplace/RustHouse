@@ -8,6 +8,8 @@ import json
 import statistics
 from pathlib import Path
 
+MAX_PARTS = 16_384
+
 
 def part_density(root):
     root = Path(root)
@@ -34,7 +36,7 @@ def part_density(root):
         if count <= 0 or count > (1 << 64) - 1:
             raise ValueError(f"out-of-range part rows in {child.name}")
         rows.append(count)
-        if len(rows) > 16384:
+        if len(rows) > MAX_PARTS:
             raise ValueError("more than 16384 parts")
     if not rows:
         raise ValueError("no wide parts with count.txt")
@@ -48,7 +50,7 @@ def part_density(root):
             "max_rows_per_part": rows[-1],
             "mean_rows_per_part": total / len(rows),
             "parts_below_8192_rows": sum(value < 8192 for value in rows),
-            "part_limit_remaining": 16384 - len(rows),
+            "part_limit_remaining": MAX_PARTS - len(rows),
             "validated_active_set": False}
 
 
