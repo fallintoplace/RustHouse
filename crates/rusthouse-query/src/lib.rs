@@ -398,7 +398,9 @@ impl Parser {
             if !target.eq_ignore_ascii_case("DATE")
                 && !target.eq_ignore_ascii_case("TIMESTAMP")
             {
-                return Err(ParseError("only CAST(... AS DATE/TIMESTAMP) is supported in predicates".into()));
+                return Err(ParseError(
+                    "only CAST(... AS DATE/TIMESTAMP) is supported in predicates".into(),
+                ));
             }
             if !self.take(Token::RParen) {
                 return Err(ParseError("CAST date requires ')'".into()));
@@ -1892,7 +1894,14 @@ mod tpch_cast_date_tests {
             "SELECT count(*) FROM lineitem WHERE l_shipdate >= cast('1994-01-01' as date)",
         ] {
             let selected = parse_select(sql).unwrap();
-            assert!(matches!(&selected.predicates[0], Predicate::Comparison { operator: Operator::Le | Operator::Ge, value, .. } if value.starts_with("199")));
+            assert!(matches!(
+                &selected.predicates[0],
+                Predicate::Comparison {
+                    operator: Operator::Le | Operator::Ge,
+                    value,
+                    ..
+                } if value.starts_with("199")
+            ));
         }
     }
 
