@@ -159,7 +159,45 @@ pub(super) fn execute<W: Write>(
     if stages.iter().any(|stage| stage.rows.is_empty()) {
         return Ok(());
     }
-    let mut reader = TypedQueryReader::open(&paths[0], &relations[0].names)?;
+    // Retain the full logical row width so later join stages can address
+    // their original absolute column indexes. Decode only columns actually
+    // used by join keys, output projections, or the final NULL filter.
+    let fact_width = relations[0].names.len();
+    let mut needed = vec![false; fact_width];
+    for stage in &stages {
+        for &index in &stage.left_keys {
+            if index < fact_width {
+                needed[index] = true;
+            }
+        }
+    }
+    for &(index, _, fallback) in &selected {
+        if index < fact_width {
+            needed[index] = true;
+        }
+        if let Some(index) = fallback.filter(|&index| index < fact_width) {
+            needed[index] = true;
+        }
+    }
+    if let Some((index, _)) = null_filter {
+        if index < fact_width {
+            needed[index] = true;
+        }
+    }
+    let mut projected = needed
+        .iter()
+        .enumerate()
+        .filter_map(|(index, &used)| used.then_some(index))
+        .collect::<Vec<_>>();
+    if projected.is_empty() {
+        // The typed reader requires at least one source stream to count rows.
+        projected.push(0);
+    }
+    let projected_names = projected
+        .iter()
+        .map(|&index| relations[0].names[index].clone())
+        .collect::<Vec<_>>();
+    let mut reader = TypedQueryReader::open(&paths[0], &projected_names)?;
     let mut scanned = 0u64;
     let mut state = OutputState::default();
     while let Some(batch) = reader.next_batch()? {
@@ -167,10 +205,10 @@ pub(super) fn execute<W: Write>(
             scanned = scanned
                 .checked_add(1)
                 .ok_or_else(|| invalid("JOIN input row count overflow"))?;
-            let mut row = batch
-                .iter()
-                .map(|column| typed::cell(column, index))
-                .collect::<Vec<_>>();
+            let mut row = vec![typed::Cell::Null; fact_width];
+            for (position, &column) in projected.iter().enumerate() {
+                row[column] = typed::cell(&batch[position], index);
+            }
             visit(0, &mut row, &stages, &spec, &mut state, output)?;
             if spec.limit.is_some_and(|limit| state.emitted >= limit) {
                 return Ok(());
