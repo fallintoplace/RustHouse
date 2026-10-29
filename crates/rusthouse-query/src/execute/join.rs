@@ -943,9 +943,11 @@ where
             .sum::<usize>()
     });
     let mut probe_key = Vec::with_capacity(right_keys.len());
+    let numeric_bounds = hash_numeric_bounds(hash);
     'scan: while let Some(batch) = reader.next_batch()? {
         for index in 0..batch[0].len() {
-            if batch_key_into(&batch, index, &key_indices, &mut probe_key) {
+            if numeric_key_possible(&batch, index, &key_indices, numeric_bounds)
+                && batch_key_into(&batch, index, &key_indices, &mut probe_key) {
                 if let Some(left_indices) = hash.get(probe_key.as_slice()) {
                     // Most matches may be filtered or already claimed by ANY.
                     // Decode the full probe row only when a match survives.
