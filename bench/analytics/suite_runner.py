@@ -5,6 +5,7 @@ Results are synthetic compatibility/performance observations, not certified scor
 """
 import argparse
 import json
+import math
 import sqlite3
 import subprocess
 import tempfile
@@ -32,7 +33,16 @@ ACCOUNTS_ROWS = 997
 
 
 def load_workload(path):
-    data = json.loads(Path(path).read_text(encoding="utf-8"))
+    def unique_fields(pairs):
+        fields = {}
+        for name, value in pairs:
+            if name in fields:
+                raise ValueError(f"duplicate workload field: {name}")
+            fields[name] = value
+        return fields
+
+    data = json.loads(Path(path).read_text(encoding="utf-8"),
+                      object_pairs_hook=unique_fields)
     if not isinstance(data, dict) or not isinstance(data.get("name"), str) or not data["name"].strip():
         raise ValueError("workload must have a nonempty name")
     max_rows = data.get("max_rows", 200_000)
@@ -94,8 +104,8 @@ def skewed_fact_row(index):
 
 def make_fixture(directory, rows, *, distribution="uniform"):
     """Stream the RustHouse TSV and feed the same typed rows to SQLite."""
-    if not 1 <= rows <= 200_000:
-        raise ValueError("rows must be in 1..200000")
+    if type(rows) is not int or not 1 <= rows <= 200_000:
+        raise ValueError("rows must be an integer in 1..200000")
     if distribution not in ("uniform", "skewed"):
         raise ValueError("distribution must be uniform or skewed")
     source_row = fact_row if distribution == "uniform" else skewed_fact_row
@@ -179,7 +189,10 @@ def run_suite(binary, workload, rows=10_000, runs=3, warmups=1, timeout=120,
               execute=None, distribution="uniform"):
     if rows > workload.get("max_rows", 200_000):
         raise ValueError(f"workload accepts at most {workload['max_rows']} rows")
-    if runs < 1 or warmups < 0 or timeout <= 0:
+    if (type(runs) is not int or runs < 1
+            or type(warmups) is not int or warmups < 0
+            or type(timeout) not in (int, float)
+            or not math.isfinite(timeout) or timeout <= 0):
         raise ValueError("runs and timeout must be positive; warmups must be nonnegative")
     with tempfile.TemporaryDirectory(prefix="rusthouse-analytics-") as directory:
         root = Path(directory)

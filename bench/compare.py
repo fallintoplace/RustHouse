@@ -90,7 +90,9 @@ def classify_query(ident, old, new, slowdown_threshold_percent):
 
 
 def compare(baseline, candidate, slowdown_threshold_percent=10):
-    if not math.isfinite(slowdown_threshold_percent) or slowdown_threshold_percent < 0:
+    if (type(slowdown_threshold_percent) not in (int, float)
+            or not math.isfinite(slowdown_threshold_percent)
+            or slowdown_threshold_percent < 0):
         raise ValueError("slowdown threshold must be nonnegative and finite")
     if not isinstance(baseline, dict) or not isinstance(candidate, dict):
         raise ValueError("baseline and candidate reports must be JSON objects")
