@@ -32,11 +32,12 @@ def inventory(root, *, max_files=1_000_000):
         raise error
 
     for directory, dirs, files in os.walk(root, followlinks=False, onerror=fail_walk):
+        directory_path = Path(directory)
         for name in dirs:
-            if (Path(directory) / name).is_symlink():
+            if (directory_path / name).is_symlink():
                 raise ValueError("symlinked directory is unsafe")
         for name in files:
-            path = Path(directory) / name
+            path = directory_path / name
             info = path.lstat()
             if not stat.S_ISREG(info.st_mode):
                 raise ValueError(f"unsafe snapshot entry: {path}")
