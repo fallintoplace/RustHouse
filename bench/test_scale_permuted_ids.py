@@ -39,6 +39,16 @@ class PermutedFixturesTests(unittest.TestCase):
             with self.assertRaises(FileExistsError):
                 generate(path, 3)
 
+    def test_never_replaces_raced_destination(self):
+        from unittest.mock import patch
+        with tempfile.TemporaryDirectory() as root:
+            path = Path(root) / "ids.tsv"
+            with patch("bench.scale.permuted_ids.os.link", side_effect=FileExistsError):
+                with self.assertRaises(FileExistsError):
+                    generate(path, 3)
+            self.assertFalse(path.exists())
+            self.assertEqual(list(Path(root).iterdir()), [])
+
 
 if __name__ == "__main__":
     unittest.main()
