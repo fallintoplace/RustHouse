@@ -81,7 +81,13 @@ pub(super) fn apply_unary_math(name: &str, value: Number) -> Result<Number, Exec
         "SIGN" => match value {
             Number::Signed(number) => Number::Signed(number.signum()),
             Number::Unsigned(number) => Number::Unsigned(u128::from(number != 0)),
-            Number::Float(number) => Number::Float(number.signum()),
+            Number::Float(number) => {
+                if number == 0.0 {
+                    Number::Float(0.0)
+                } else {
+                    Number::Float(number.signum())
+                }
+            }
         },
         _ => {
             return Err(ExecutionError::Invalid(format!(
@@ -113,6 +119,10 @@ mod aggregate_unary_math_tests {
         ));
         assert!(matches!(
             apply_unary_math("SIGN", Number::Float(0.0)),
+            Ok(Number::Float(value)) if value == 0.0
+        ));
+        assert!(matches!(
+            apply_unary_math("SIGN", Number::Float(-0.0)),
             Ok(Number::Float(value)) if value == 0.0
         ));
         assert!(matches!(
