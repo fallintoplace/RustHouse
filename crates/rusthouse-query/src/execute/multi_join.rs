@@ -15,6 +15,34 @@ use super::join::{
 
 const MAX_CHAIN_BYTES: usize = crate::join::MAX_JOIN_CHAIN_BYTES;
 const MAX_CHAIN_COLUMNS: usize = 128;
+const MAX_CHAIN_HASH_BYTES: usize = MAX_CHAIN_BYTES;
+
+/// Hash table keys are owned again after the build-side rows are decoded.
+/// Include duplicate row index lists, which are separate from row retention.
+fn charge_hash_bytes(used: &mut usize, additional: usize) -> Result<(), ExecutionError> {
+    let next = used.checked_add(additional)
+        .ok_or_else(|| invalid("JOIN hash memory estimate overflow"))?;
+    if next > MAX_CHAIN_HASH_BYTES {
+        return Err(invalid("JOIN hash keys exceed retained memory budget"));
+    }
+    *used = next;
+    Ok(())
+}
+
+fn hash_key_bytes(key: &[typed::Key]) -> Result<usize, ExecutionError> {
+    let fixed = key.len().checked_mul(std::mem::size_of::<typed::Key>())
+        .and_then(|n| n.checked_add(std::mem::size_of::<(Vec<typed::Key>, Bucket)>()))
+        .ok_or_else(|| invalid("JOIN hash memory estimate overflow"))?;
+    key.iter().try_fold(fixed, |bytes, value| {
+        let payload = match value {
+            typed::Key::Text(value) => value.len(),
+            typed::Key::Uuid(value) => value.len(),
+            _ => 0,
+        };
+        bytes.checked_add(payload)
+            .ok_or_else(|| invalid("JOIN hash memory estimate overflow"))
+    })
+}
 
 fn write_join_header<W: Write>(
     output: &mut W,
@@ -386,12 +414,22 @@ pub fn execute_multi_join<W: Write>(
             MAX_INPUT_ROWS,
             MAX_STREAM_BUILD_BYTES,
         )?;
-        let mut hash: HashMap<Vec<typed::Key>, Bucket> = HashMap::with_capacity(right_rows.len());
+        let mut hash: HashMap<Vec<typed::Key>, Bucket> = HashMap::new();
+        let mut hash_bytes = 0usize;
         for (index, row) in right_rows.iter().enumerate() {
             if let Some(key) = row_key(row, &right_keys) {
-                hash.entry(key)
-                    .and_modify(|bucket| bucket.push(index))
-                    .or_insert(Bucket::One(index));
+                use std::collections::hash_map::Entry;
+                match hash.entry(key) {
+                    Entry::Occupied(mut entry) => {
+                        // Duplicate key index lists may grow independently of the rows.
+                        charge_hash_bytes(&mut hash_bytes, std::mem::size_of::<usize>() * 2)?;
+                        entry.get_mut().push(index);
+                    }
+                    Entry::Vacant(entry) => {
+                        charge_hash_bytes(&mut hash_bytes, hash_key_bytes(entry.key())?)?;
+                        entry.insert(Bucket::One(index));
+                    }
+                }
             }
         }
         // Most fact-to-dimension joins preserve the incoming row count.
@@ -512,6 +550,20 @@ pub fn execute_multi_join<W: Write>(
 #[cfg(test)]
 mod bucket_tests {
     use super::*;
+
+    #[test]
+    fn chained_join_hash_keys_include_allocated_text_and_duplicates() {
+        let key = vec![typed::Key::Text(vec![b'x'; 2048])];
+        assert!(hash_key_bytes(&key).unwrap() >= 2048 + std::mem::size_of::<typed::Key>());
+        let mut used = 0usize;
+        charge_hash_bytes(&mut used, hash_key_bytes(&key).unwrap()).unwrap();
+        let charged = used;
+        charge_hash_bytes(&mut used, 2 * std::mem::size_of::<usize>()).unwrap();
+        assert!(used > charged);
+        used = MAX_CHAIN_HASH_BYTES - 1;
+        assert!(charge_hash_bytes(&mut used, hash_key_bytes(&key).unwrap()).is_err());
+        assert_eq!(used, MAX_CHAIN_HASH_BYTES - 1);
+    }
 
     #[test]
     fn singleton_bucket_promotes_to_duplicate_matches_in_input_order() {
