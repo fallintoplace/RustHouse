@@ -146,6 +146,7 @@ pub(super) fn is_function(name: &str) -> bool {
             | "NOTEMPTY"
             | "SPACE"
             | "ENCODEURLFORMCOMPONENT"
+            | "CUTWWW"
             | "DOMAINWITHOUTWWW"
             | "DECODEURLFORMCOMPONENT"
             | "RIGHTPADUTF8"
@@ -2342,6 +2343,36 @@ fn parse_at_depth(parser: &mut Parser, depth: usize) -> Result<ConstantValue, Pa
                 _ => ConstantValue::Null,
             }
         }
+        "CUTWWW" => {
+            let input = text_arg(parser, depth + 1)?;
+            require(parser, Token::RParen, "cutWWW requires one argument")?;
+            match input {
+                Some(input) => {
+                    let authority_start = input.find("://").map(|index| index + 3);
+                    let output = if let Some(start) = authority_start {
+                        let end = input[start..].find(['/', '?', '#'])
+                            .map_or(input.len(), |offset| start + offset);
+                        let host_start = input[start..end].rfind('@')
+                            .map_or(start, |index| start + index + 1);
+                        if host_start + 4 <= end
+                            && input.get(host_start..host_start + 4)
+                                .is_some_and(|prefix| prefix.eq_ignore_ascii_case("www."))
+                        {
+                            let mut output = String::with_capacity(input.len() - 4);
+                            output.push_str(&input[..host_start]);
+                            output.push_str(&input[host_start + 4..]);
+                            output
+                        } else {
+                            input
+                        }
+                    } else {
+                        input
+                    };
+                    ConstantValue::Text(output)
+                }
+                None => ConstantValue::Null,
+            }
+        }
         "DOMAIN" | "DOMAINWITHOUTWWW" => {
             let input = text_arg(parser, depth + 1)?;
             require(parser, Token::RParen, "domain requires one argument")?;
@@ -2981,6 +3012,33 @@ mod ch_domain_without_www_tests {
             assert_eq!(value(sql), expected, "{sql}");
         }
         for sql in ["SELECT domainWithoutWWW()", "SELECT domainWithoutWWW('x','y')"] {
+            assert!(parse_select(sql).is_err(), "{sql}");
+        }
+    }
+}
+
+#[cfg(test)]
+mod ch_cut_www_tests {
+    use crate::{parse_select, ConstantValue, Projection};
+    fn value(sql: &str) -> ConstantValue {
+        match parse_select(sql).unwrap().projection {
+            Projection::Constants(items) if items.len() == 1 => items[0].value.clone(),
+            Projection::Literal(value) => ConstantValue::Integer(value),
+            other => panic!("unexpected projection: {other:?}"),
+        }
+    }
+    #[test]
+    fn clickhouse_url_values() {
+        for (sql, expected) in [
+            ("SELECT cutWWW('https://www.example.com/a')", ConstantValue::Text("https://example.com/a".into())),
+            ("SELECT cutWWW('http://user@WWW.EXAMPLE.com:80/x')", ConstantValue::Text("http://user@EXAMPLE.com:80/x".into())),
+            ("SELECT cutWWW('https://example.com/')", ConstantValue::Text("https://example.com/".into())),
+            ("SELECT cutWWW('http://abcé.com/a')", ConstantValue::Text("http://abcé.com/a".into())),
+            ("SELECT cutWWW(NULL)", ConstantValue::Null),
+        ] {
+            assert_eq!(value(sql), expected, "{sql}");
+        }
+        for sql in ["SELECT cutWWW()", "SELECT cutWWW('a','b')"] {
             assert!(parse_select(sql).is_err(), "{sql}");
         }
     }
