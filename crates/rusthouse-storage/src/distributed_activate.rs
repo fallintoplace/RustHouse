@@ -4,7 +4,7 @@ use crate::{
     PartError, inspect_query_source, query_parts, resolve_active_snapshot, verify_part_file_hashes,
 };
 use std::fs::{self, OpenOptions};
-use std::io::{self, Write};
+use std::io::{self, Read, Write};
 use std::path::Path;
 use std::sync::atomic::{AtomicU64, Ordering};
 
@@ -23,13 +23,26 @@ fn validate_fresh_generation(pointer: &Path, generation: u64) -> Result<(), Part
             if !meta.file_type().is_file() || meta.len() > 64 {
                 return Err(PartError::InvalidScan("invalid active pointer".into()));
             }
-            let current =
-                fs::read_to_string(pointer).map_err(|error| io_error(pointer, error))?;
+            let file = fs::File::open(pointer).map_err(|error| io_error(pointer, error))?;
+            let opened = file.metadata().map_err(|error| io_error(pointer, error))?;
+            if !opened.file_type().is_file() || opened.len() > 64 {
+                return Err(PartError::InvalidScan("active pointer changed".into()));
+            }
+            let mut current = String::new();
+            file.take(65)
+                .read_to_string(&mut current)
+                .map_err(|error| io_error(pointer, error))?;
+            if current.len() > 64 {
+                return Err(PartError::InvalidScan("active pointer too large".into()));
+            }
             let prior = current
                 .strip_prefix('g')
                 .and_then(|text| text.strip_suffix('\n'))
                 .and_then(|text| text.parse::<u64>().ok())
                 .ok_or_else(|| PartError::InvalidScan("invalid active generation".into()))?;
+            if prior == 0 || current != format!("g{prior}\n") {
+                return Err(PartError::InvalidScan("noncanonical active generation".into()));
+            }
             if generation <= prior {
                 return Err(PartError::InvalidScan(
                     "follower generation is not newer".into(),
@@ -222,6 +235,30 @@ mod active_generation_read_tests {
         fs::write(root.join("real"), "g1\n").unwrap();
         symlink("real", root.join(".rusthouse-active")).unwrap();
         assert!(read_active_generation(&root).is_err());
+        fs::remove_dir_all(root).unwrap();
+    }
+}
+
+#[cfg(test)]
+mod prior_pointer_validation_tests {
+    use super::*;
+
+    #[test]
+    fn refuses_zero_and_noncanonical_prior_versions() {
+        let root = std::env::temp_dir().join(format!(
+            "rusthouse-prior-pointer-{}",
+            std::process::id()
+        ));
+        let _ = fs::remove_dir_all(&root);
+        fs::create_dir_all(&root).unwrap();
+        let pointer = root.join(".rusthouse-active");
+        for value in ["g0\n", "g01\n", "g1", "g+1\n", "g1\r\n"] {
+            fs::write(&pointer, value).unwrap();
+            assert!(validate_fresh_generation(&pointer, 2).is_err(), "{value:?}");
+        }
+        fs::write(&pointer, "g1\n").unwrap();
+        assert!(validate_fresh_generation(&pointer, 2).is_ok());
+        assert!(validate_fresh_generation(&pointer, 1).is_err());
         fs::remove_dir_all(root).unwrap();
     }
 }
