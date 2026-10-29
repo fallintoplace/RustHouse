@@ -55,6 +55,21 @@ impl Bucket {
     }
 }
 
+fn insert_chain_build_key(
+    hash: &mut HashMap<Vec<typed::Key>, Bucket>,
+    key: Vec<typed::Key>,
+    index: usize,
+    keep_first: bool,
+) {
+    if keep_first {
+        hash.entry(key).or_insert(Bucket::One(index));
+    } else {
+        hash.entry(key)
+            .and_modify(|bucket| bucket.push(index))
+            .or_insert(Bucket::One(index));
+    }
+}
+
 struct Relation {
     alias: String,
     names: Vec<String>,
@@ -370,12 +385,16 @@ pub fn execute_multi_join<W: Write>(
             MAX_INPUT_ROWS,
             MAX_STREAM_BUILD_BYTES,
         )?;
-        let mut hash: HashMap<Vec<typed::Key>, Bucket> = HashMap::with_capacity(right_rows.len());
+        // Avoid allocating buckets for every input row when dimensions have
+        // many duplicate keys. ANY INNER/LEFT only need the first right match.
+        let mut hash: HashMap<Vec<typed::Key>, Bucket> =
+            HashMap::with_capacity(right_rows.len().min(4096));
         for (index, row) in right_rows.iter().enumerate() {
             if let Some(key) = row_key(row, &right_keys) {
-                hash.entry(key)
-                    .and_modify(|bucket| bucket.push(index))
-                    .or_insert(Bucket::One(index));
+                insert_chain_build_key(
+                    &mut hash, key, index,
+                    step.any && matches!(step.kind, JoinType::Inner | JoinType::Left),
+                );
             }
         }
         // Most fact-to-dimension joins preserve the incoming row count.
@@ -488,6 +507,17 @@ pub fn execute_multi_join<W: Write>(
 #[cfg(test)]
 mod bucket_tests {
     use super::*;
+
+    #[test]
+    fn any_chain_build_keeps_first_right_duplicate_only() {
+        let mut hash = HashMap::new();
+        let key = || vec![typed::Key::Text(b"repeat".to_vec())];
+        insert_chain_build_key(&mut hash, key(), 0, true);
+        insert_chain_build_key(&mut hash, key(), 1, true);
+        assert_eq!(hash.get(&key()).unwrap().iter().copied().collect::<Vec<_>>(), vec![0]);
+        insert_chain_build_key(&mut hash, key(), 2, false);
+        assert_eq!(hash.get(&key()).unwrap().iter().copied().collect::<Vec<_>>(), vec![0, 2]);
+    }
 
     #[test]
     fn singleton_bucket_promotes_to_duplicate_matches_in_input_order() {
