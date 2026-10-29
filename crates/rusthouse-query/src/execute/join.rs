@@ -1195,7 +1195,7 @@ pub fn execute_join<W: Write>(
         right_keys.push(right_index);
     }
 
-    if query.aggregate == Some(JoinAggregate::CountStar) {
+    if query.aggregate == Some(JoinAggregate::CountStar) && query.kind == JoinType::Inner {
         return execute_streaming_inner_count(
             query, left_path, right_path,
             InnerJoinColumns {
@@ -1205,6 +1205,12 @@ pub fn execute_join<W: Write>(
             },
             left_meta.rows, right_meta.rows, output
         );
+    }
+
+    // COUNT LIMIT 0 has the same header-only behavior as streamed INNER COUNT.
+    if query.aggregate == Some(JoinAggregate::CountStar) && query.limit == Some(0) {
+        output.write_all(b"count\n")?;
+        return Ok(());
     }
 
     // LIMIT 0 needs the validated output schema, but not either input scan.
@@ -1229,7 +1235,7 @@ pub fn execute_join<W: Write>(
         return Ok(());
     }
 
-    if query.kind == JoinType::Right && order.is_empty()
+    if query.aggregate.is_none() && query.kind == JoinType::Right && order.is_empty()
         && left_meta.rows <= MAX_STREAM_BUILD_ROWS
         && right_meta.rows > MAX_INPUT_ROWS
     {
@@ -1335,6 +1341,8 @@ pub fn execute_join<W: Write>(
         })
     };
     let mut pairs: Vec<Pair> = Vec::new();
+    let count_only = query.aggregate == Some(JoinAggregate::CountStar);
+    let mut count = 0u64;
     // Reuse JOIN probe storage instead of allocating a fresh key Vec per left row.
     let mut lookup_key = Vec::with_capacity(left_keys.len());
     let mut matched_right = matches!(query.kind, JoinType::Right | JoinType::Full)
@@ -1366,7 +1374,11 @@ pub fn execute_join<W: Write>(
                     }
                     let pair = (Some(left_index), Some(right_index));
                     if keep(&pair) {
-                        add_pair(&mut pairs, pair)?;
+                        if count_only {
+                            count = count.checked_add(1).ok_or_else(|| invalid("JOIN count overflow"))?;
+                        } else {
+                            add_pair(&mut pairs, pair)?;
+                        }
                     }
                 }
             }
@@ -1374,7 +1386,11 @@ pub fn execute_join<W: Write>(
         if !matched && matches!(query.kind, JoinType::Left | JoinType::Full) {
             let pair = (Some(left_index), None);
             if keep(&pair) {
-                add_pair(&mut pairs, pair)?;
+                if count_only {
+                            count = count.checked_add(1).ok_or_else(|| invalid("JOIN count overflow"))?;
+                        } else {
+                            add_pair(&mut pairs, pair)?;
+                        }
             }
         }
     }
@@ -1383,10 +1399,21 @@ pub fn execute_join<W: Write>(
             if !matched {
                 let pair = (None, Some(right_index));
                 if keep(&pair) {
-                    add_pair(&mut pairs, pair)?;
+                    if count_only {
+                            count = count.checked_add(1).ok_or_else(|| invalid("JOIN count overflow"))?;
+                        } else {
+                            add_pair(&mut pairs, pair)?;
+                        }
                 }
             }
         }
+    }
+    if count_only {
+        output.write_all(b"count\n")?;
+        if query.offset == 0 {
+            writeln!(output, "{count}")?;
+        }
+        return Ok(());
     }
     if !order.is_empty() {
         let null = typed::Cell::Null;
