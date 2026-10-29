@@ -72,10 +72,10 @@ pub(super) fn execute<W: Write>(
         .iter()
         .map(|column| (column.name.clone(), column.data_type.clone()))
         .collect();
-    let mut conditions = vec![typed::compile(&query.predicates, &indices, &types)?];
-    for branch in &query.or_predicates {
-        conditions.push(typed::compile(branch, &indices, &types)?);
-    }
+    let conditions = std::iter::once(&query.predicates)
+        .chain(query.or_predicates.iter())
+        .map(|branch| typed::compile(branch, &indices, &types))
+        .collect::<Result<Vec<_>, _>>()?;
 
     if let Some(alias) = query.alias.as_deref() {
         writeln!(output, "{alias}")?;
