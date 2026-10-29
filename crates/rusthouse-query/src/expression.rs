@@ -19,6 +19,7 @@ pub enum ScalarExpr {
     Coalesce(Vec<ScalarExpr>),
     NullIf(Box<ScalarExpr>, Box<ScalarExpr>),
     Abs(Box<ScalarExpr>),
+    Extremum(Vec<ScalarExpr>, bool),
     Add(Box<ScalarExpr>, Box<ScalarExpr>),
     Subtract(Box<ScalarExpr>, Box<ScalarExpr>),
     Multiply(Box<ScalarExpr>, Box<ScalarExpr>),
@@ -45,7 +46,7 @@ impl ScalarExpr {
             Self::Integer(_) | Self::Null => {}
             Self::IsNull(value, _) | Self::Not(value) | Self::Abs(value) =>
                 value.collect_referenced_columns(out, seen),
-            Self::Coalesce(values) => {
+            Self::Coalesce(values) | Self::Extremum(values, _) => {
                 for value in values {
                     value.collect_referenced_columns(out, seen);
                 }
@@ -406,6 +407,17 @@ mod tests {
             ScalarExpr::Abs(..)));
         assert!(parse_scalar_expression("abs()").is_err());
         assert!(parse_scalar_expression("abs(a, b)").is_err());
+    }
+
+    #[test]
+    fn parses_greatest_and_least_over_bounded_numeric_expressions() {
+        assert!(matches!(parse_scalar_expression("greatest(a, b + 1, 0)").unwrap(),
+            ScalarExpr::Extremum(values, true) if values.len() == 3));
+        assert!(matches!(parse_scalar_expression("least(a, b)").unwrap(),
+            ScalarExpr::Extremum(_, false)));
+        assert!(parse_scalar_expression("greatest(a)").is_err());
+        assert!(parse_scalar_expression(&format!("least({})",
+            vec!["1"; 17].join(", "))).is_err());
     }
 
     #[test]
