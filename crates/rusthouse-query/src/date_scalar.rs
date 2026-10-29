@@ -10,6 +10,7 @@ pub(super) fn is_function(name: &str) -> bool {
     matches!(
         name.to_ascii_uppercase().as_str(),
         "ADDDAYS"
+            | "TODAYOFYEAR"
             | "TODAYOFWEEK"
             | "TODAYOFMONTH"
             | "TOLASTDAYOFMONTH"
@@ -99,6 +100,12 @@ pub(super) fn parse_after_open(
         "TODAYOFWEEK" => unary_date(parser, depth, |value| {
             let days = value.seconds.div_euclid(DAY_SECONDS);
             Ok(ConstantValue::Integer((days + 3).rem_euclid(7) + 1))
+        }),
+        "TODAYOFYEAR" => unary_date(parser, depth, |value| {
+            let days = value.seconds.div_euclid(DAY_SECONDS);
+            let (year, _, _) = civil_from_days(days);
+            let ordinal = days - days_from_civil(year, 1, 1) + 1;
+            Ok(ConstantValue::Integer(ordinal))
         }),
         _ => Err(ParseError(format!("unsupported date function: {name}"))),
     }
@@ -716,6 +723,25 @@ mod utc_compat_tests {
             "SELECT toDayOfWeek()",
             "SELECT toDayOfWeek('2023-02-29')",
             "SELECT toDayOfWeek('2024-01-01', 1)",
+        ] {
+            assert!(crate::parse_select(sql).is_err(), "{sql}");
+        }
+    }
+
+    #[test]
+    fn day_of_year_extracts_correct_calendar_values() {
+        for (sql, expected) in [
+            ("SELECT toDayOfYear('2024-12-31')", 366),
+            ("SELECT toDayOfYear('2023-12-31')", 365),
+            ("SELECT toDayOfYear('2024-01-01')", 1),
+        ] {
+            assert_eq!(value(sql), ConstantValue::Integer(expected), "{sql}");
+        }
+        assert_eq!(value("SELECT toDayOfYear(NULL)"), ConstantValue::Null);
+        for sql in [
+            "SELECT toDayOfYear()",
+            "SELECT toDayOfYear('2023-02-29')",
+            "SELECT toDayOfYear('2024-01-01', 1)",
         ] {
             assert!(crate::parse_select(sql).is_err(), "{sql}");
         }
