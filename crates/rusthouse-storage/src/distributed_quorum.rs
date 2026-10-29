@@ -84,16 +84,17 @@ impl QuorumPolicy {
         })
     }
 
-    pub fn can_read(self, unique_acks: usize) -> bool {
+    fn valid_ack_count(self, unique_acks: usize) -> bool {
         Self::new(self.replicas, self.reads, self.writes).is_ok()
-            && unique_acks >= self.reads
             && unique_acks <= self.replicas
     }
 
+    pub fn can_read(self, unique_acks: usize) -> bool {
+        self.valid_ack_count(unique_acks) && unique_acks >= self.reads
+    }
+
     pub fn can_write(self, unique_acks: usize) -> bool {
-        Self::new(self.replicas, self.reads, self.writes).is_ok()
-            && unique_acks >= self.writes
-            && unique_acks <= self.replicas
+        self.valid_ack_count(unique_acks) && unique_acks >= self.writes
     }
 }
 
