@@ -246,7 +246,7 @@ fn run_tsv(database: &Path, statement: &CopyFrom) -> Result<(), String> {
         )
     };
     let mut input = TsvRecords {
-        reader: BufReader::new(reader),
+        reader: BufReader::with_capacity(64 * 1024, reader),
         buffer: Vec::new(),
         first: true,
         delimiter: if statement.format == CopyFormat::Ssv {
