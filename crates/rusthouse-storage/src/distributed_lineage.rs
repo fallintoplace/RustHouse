@@ -36,6 +36,34 @@ pub fn compare_snapshots(local: SnapshotVersion, remote: SnapshotVersion) -> Ver
     }
 }
 
+/// Pick the latest generation from one metadata-consistent epoch.
+/// This does not prove that different generations share a valid history or quorum.
+pub fn newest_consistent_snapshot(
+    versions: &[SnapshotVersion],
+) -> Result<SnapshotVersion, &'static str> {
+    if versions.is_empty() || versions.len() > 4096 {
+        return Err("invalid snapshot candidate count");
+    }
+    let epoch = versions[0].epoch;
+    let mut seen = std::collections::HashMap::with_capacity(versions.len());
+    let mut newest = versions[0];
+    for &version in versions {
+        if version.epoch == 0 || version.generation == 0 || version.epoch != epoch {
+            return Err("invalid or mismatched snapshot epoch");
+        }
+        if seen
+            .insert(version.generation, version.fingerprint)
+            .is_some_and(|previous| previous != version.fingerprint)
+        {
+            return Err("conflicting snapshot fingerprint");
+        }
+        if version.generation > newest.generation {
+            newest = version;
+        }
+    }
+    Ok(newest)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -115,34 +143,6 @@ mod tests {
             }
         }
     }
-}
-
-/// Pick the latest generation from one metadata-consistent epoch.
-/// This does not prove that different generations share a valid history or quorum.
-pub fn newest_consistent_snapshot(
-    versions: &[SnapshotVersion],
-) -> Result<SnapshotVersion, &'static str> {
-    if versions.is_empty() || versions.len() > 4096 {
-        return Err("invalid snapshot candidate count");
-    }
-    let epoch = versions[0].epoch;
-    let mut seen = std::collections::HashMap::with_capacity(versions.len());
-    let mut newest = versions[0];
-    for &version in versions {
-        if version.epoch == 0 || version.generation == 0 || version.epoch != epoch {
-            return Err("invalid or mismatched snapshot epoch");
-        }
-        if seen
-            .insert(version.generation, version.fingerprint)
-            .is_some_and(|previous| previous != version.fingerprint)
-        {
-            return Err("conflicting snapshot fingerprint");
-        }
-        if version.generation > newest.generation {
-            newest = version;
-        }
-    }
-    Ok(newest)
 }
 
 #[cfg(test)]
