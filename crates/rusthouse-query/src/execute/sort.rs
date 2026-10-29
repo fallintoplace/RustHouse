@@ -129,7 +129,7 @@ fn merge_runs(
     mut output: impl FnMut(&SortedRow) -> Result<bool, ExecutionError>,
 ) -> Result<(), ExecutionError> {
     let mut streams = inputs.iter().map(File::open)
-        .map(|source| source.map(BufReader::new))
+        .map(|source| source.map(|file| BufReader::with_capacity(64 * 1024, file)))
         .collect::<Result<Vec<_>, _>>()?;
     let mut heap = BinaryHeap::<Reverse<(SortedRow, usize)>>::new();
     for (index, stream) in streams.iter_mut().enumerate() {
