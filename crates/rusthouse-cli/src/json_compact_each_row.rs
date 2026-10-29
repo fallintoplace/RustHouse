@@ -4,6 +4,7 @@ use crate::jsonl::write_json_value;
 use std::io::{self, Write};
 
 const MAX_LINE_BYTES: usize = 1024 * 1024;
+const MAX_COMPACT_JSON_COLUMNS: usize = 128;
 
 fn field_count(line: &[u8]) -> usize {
     1 + line.iter().filter(|&&byte| byte == b'\t').count()
@@ -40,7 +41,7 @@ impl<W: Write> JsonCompactEachRowWriter<W> {
         std::str::from_utf8(&self.line)
             .map_err(|_| io::Error::new(io::ErrorKind::InvalidData, "invalid UTF-8 header"))?;
         let width = field_count(&self.line);
-        if width > 128 {
+        if width > MAX_COMPACT_JSON_COLUMNS {
             return Err(io::Error::new(
                 io::ErrorKind::InvalidData,
                 "too many columns",
