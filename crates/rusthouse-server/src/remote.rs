@@ -17,8 +17,16 @@ const CONNECT_TIMEOUT: Duration = Duration::from_millis(750);
 const IO_TIMEOUT: Duration = Duration::from_secs(3);
 const QUERY_IO_TIMEOUT: Duration = Duration::from_secs(120);
 
+fn is_query_request(method: &str, path: &str) -> bool {
+    method == "POST" && path == "/"
+}
+
 fn response_timeout(method: &str, path: &str) -> Duration {
-    if method == "POST" && path == "/" { QUERY_IO_TIMEOUT } else { IO_TIMEOUT }
+    if is_query_request(method, path) {
+        QUERY_IO_TIMEOUT
+    } else {
+        IO_TIMEOUT
+    }
 }
 
 #[derive(Debug, PartialEq, Eq)]
@@ -115,7 +123,7 @@ fn request(peer: Peer, method: &str, path: &str, body: &[u8]) -> Result<PeerResp
     stream
         .set_write_timeout(Some(IO_TIMEOUT))
         .map_err(|error| error.to_string())?;
-    let accept_encoding = if method == "POST" && path == "/" {
+    let accept_encoding = if is_query_request(method, path) {
         "Accept-Encoding: x-rusthouse-lz4\r\n"
     } else {
         ""
