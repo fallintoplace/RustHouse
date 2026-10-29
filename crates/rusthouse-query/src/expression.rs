@@ -4,6 +4,7 @@ use self::parser::*;
 
 use crate::lexer::{Token, tokenize};
 use crate::{Operator, ParseError, Parser};
+use std::collections::HashSet;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ScalarExpr {
@@ -19,9 +20,14 @@ pub enum ScalarExpr {
 
 impl ScalarExpr {
     pub fn referenced_columns(&self, out: &mut Vec<String>) {
+        let mut seen = out.iter().cloned().collect::<HashSet<_>>();
+        self.collect_referenced_columns(out, &mut seen);
+    }
+
+    fn collect_referenced_columns(&self, out: &mut Vec<String>, seen: &mut HashSet<String>) {
         match self {
             Self::Column(name) | Self::TextLength(name) => {
-                if !out.contains(name) {
+                if seen.insert(name.clone()) {
                     out.push(name.clone());
                 }
             }
@@ -31,8 +37,8 @@ impl ScalarExpr {
             | Self::Multiply(left, right)
             | Self::Divide(left, right)
             | Self::Compare(left, _, right) => {
-                left.referenced_columns(out);
-                right.referenced_columns(out);
+                left.collect_referenced_columns(out, seen);
+                right.collect_referenced_columns(out, seen);
             }
         }
     }
