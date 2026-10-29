@@ -62,6 +62,8 @@ def export(binary, database, table, output, start, rows, page_rows=8192, timeout
             not isinstance(expected_sha256, str)
             or not re.fullmatch(r"[0-9a-f]{64}", expected_sha256)):
         raise ValueError("expected_sha256 must be lowercase SHA256")
+    identifier(table)
+    identifier(column)
     output = Path(output)
     if output.exists():
         raise ValueError("refusing to overwrite an existing export")
