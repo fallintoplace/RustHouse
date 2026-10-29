@@ -10,6 +10,25 @@ class SparseProbeTests(unittest.TestCase):
         self.assertTrue(all(0 <= value < 1_000_000_000 for value in ids))
         self.assertEqual(ids, choose_ids(0, 1_000_000_000, 100, 1234))
 
+    def test_dense_sampling_uses_no_rejection_retries(self):
+        class DrawCounter:
+            def __init__(self, seed):
+                import random
+                self.original = random.Random(seed)
+                self.draws = 0
+            def randrange(self, stop):
+                self.draws += 1
+                return self.original.randrange(stop)
+        from unittest.mock import patch
+        counter = DrawCounter(7)
+        with patch("bench.scale.sparse_point_probes.random.Random",
+                   return_value=counter):
+            values = choose_ids(10, 10000, 10000, 7)
+        self.assertEqual(len(values), 10000)
+        self.assertEqual(len(set(values)), 10000)
+        self.assertEqual(set(values), set(range(10, 10010)))
+        self.assertEqual(counter.draws, 10000)
+
     def test_verifies_queries_and_detects_missing_id(self):
         calls = []
         def run(statement):
