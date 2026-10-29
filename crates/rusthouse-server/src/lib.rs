@@ -996,10 +996,19 @@ mod tests {
         );
         assert_eq!(get.status, "200 OK");
         assert_eq!(get.content_type, "text/csv; charset=utf-8");
-        assert_eq!(get.body, b"0\n1\n");
-        let post = handle_request("POST", "/", b"SELECT number FROM numbers(2) FORMAT JSONStringsEachRow", &config);
+        assert_eq!(get.body, b"number\r\n0\r\n1\r\n2\r\n");
+
+        let post = handle_request(
+            "POST",
+            "/?format=csv",
+            b"SELECT count(*) FROM numbers(0)",
+            &config(),
+        );
         assert_eq!(post.status, "200 OK");
-        assert_eq!(post.body, b"{\"number\":\"0\"}\n{\"number\":\"1\"}\n");
+        assert_eq!(post.body, b"count\r\n0\r\n");
+
+        let bad = handle_request("POST", "/?format=csv&format=tsv", b"SELECT 1", &config());
+        assert_eq!(bad.status, "400 Bad Request");
     }
 
     #[test]
@@ -1147,10 +1156,10 @@ mod inline_clickhouse_format_tests {
         let config = Config { part: None, database: None, max_rows: 100 };
         let get = handle_request("GET", "/?query=SELECT+number+FROM+numbers%282%29+FORMAT+TabSeparated", b"", &config);
         assert_eq!(get.status, "200 OK");
-        assert_eq!(get.body, b"0\\n1\\n");
+        assert_eq!(get.body, b"0\n1\n");
         let post = handle_request("POST", "/", b"SELECT number FROM numbers(2) FORMAT JSONStringsEachRow", &config);
         assert_eq!(post.status, "200 OK");
-        assert_eq!(post.body, b"{\\\"number\\\":\\\"0\\\"}\\n{\\\"number\\\":\\\"1\\\"}\\n");
+        assert_eq!(post.body, b"{\"number\":\"0\"}\n{\"number\":\"1\"}\n");
     }
 
     #[test]
