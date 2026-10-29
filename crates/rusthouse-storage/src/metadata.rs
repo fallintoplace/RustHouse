@@ -72,7 +72,19 @@ fn read_bounded_file(path: &Path, max_bytes: u64) -> Result<Vec<u8>, PartError> 
     }
     ensure_metadata_size(path, metadata.len(), max_bytes)?;
     let file = fs::File::open(path).map_err(|source| io_error(path, source))?;
-    let mut bytes = Vec::with_capacity(metadata.len() as usize);
+    let opened = file.metadata().map_err(|source| io_error(path, source))?;
+    if !opened.file_type().is_file() {
+        return Err(invalid_metadata(path, "metadata changed before reading"));
+    }
+    ensure_metadata_size(path, opened.len(), max_bytes)?;
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::MetadataExt;
+        if metadata.dev() != opened.dev() || metadata.ino() != opened.ino() {
+            return Err(invalid_metadata(path, "metadata file identity changed"));
+        }
+    }
+    let mut bytes = Vec::with_capacity(opened.len() as usize);
     file.take(max_bytes + 1)
         .read_to_end(&mut bytes)
         .map_err(|source| io_error(path, source))?;
@@ -235,5 +247,24 @@ mod tests {
                 "{input:?}"
             );
         }
+    }
+}
+
+#[cfg(test)]
+mod metadata_open_identity_tests {
+    use super::*;
+
+    #[test]
+    fn metadata_reader_still_reads_bounded_count_files() {
+        let root = std::env::temp_dir().join(format!(
+            "rusthouse-bounded-count-{}", std::process::id()
+        ));
+        let _ = fs::remove_dir_all(&root);
+        fs::create_dir_all(&root).unwrap();
+        let file = root.join("count.txt");
+        fs::write(&file, b"123\n").unwrap();
+        assert_eq!(read_bounded_file(&file, 64).unwrap(), b"123\n");
+        assert!(read_bounded_file(&file, 2).is_err());
+        fs::remove_dir_all(root).unwrap();
     }
 }
