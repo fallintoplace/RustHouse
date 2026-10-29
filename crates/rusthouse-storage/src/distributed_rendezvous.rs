@@ -163,7 +163,7 @@ pub fn zone_aware_replicas_for(
     members: &[crate::distributed_membership::Member],
     replicas: usize,
 ) -> Result<Vec<String>, &'static str> {
-    crate::distributed_membership::format_membership(members)?;
+    crate::distributed_membership::validate_membership(members)?;
     if replicas == 0 || replicas > members.len() {
         return Err("invalid zone-aware replica count");
     }
