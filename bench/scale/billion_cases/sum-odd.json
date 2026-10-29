@@ -1,0 +1,6 @@
+{
+  "id": "sum-odd",
+  "kind": "sum_mod",
+  "modulus": 2,
+  "residue": 1
+}
