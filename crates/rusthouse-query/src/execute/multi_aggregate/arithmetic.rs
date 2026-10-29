@@ -123,6 +123,7 @@ pub(super) fn apply_unary_math(name: &str, value: Number) -> Result<Number, Exec
             Number::Float(number) => Number::Float(number.round_ties_even()),
             integer => integer,
         },
+        "EXP" => Number::Float(number_as_float(value).exp()),
         _ => {
             return Err(ExecutionError::Invalid(format!(
                 "unsupported aggregate numeric function: {name}"
@@ -268,6 +269,17 @@ mod aggregate_unary_math_tests {
         ));
         assert!(crate::parse_scalar_expression("round(amount)").is_ok());
         assert!(crate::parse_scalar_expression("round(amount, 2)").is_err());
+    }
+
+    #[test]
+    fn exp_supports_zero_and_rejects_float_overflow() {
+        assert!(matches!(
+            apply_unary_math("EXP", Number::Signed(0)),
+            Ok(Number::Float(value)) if value == 1.0
+        ));
+        assert!(apply_unary_math("EXP", Number::Signed(1000)).is_err());
+        assert!(crate::parse_scalar_expression("exp(amount)").is_ok());
+        assert!(crate::parse_scalar_expression("exp(amount, 2)").is_err());
     }
 
 }

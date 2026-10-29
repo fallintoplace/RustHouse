@@ -159,6 +159,7 @@ fn is_unary_math(name: &str) -> bool {
         || name.eq_ignore_ascii_case("CEIL")
         || name.eq_ignore_ascii_case("TRUNC")
         || name.eq_ignore_ascii_case("ROUND")
+        || name.eq_ignore_ascii_case("EXP")
 }
 
 fn parse_unary_math(parser: &mut Parser) -> Result<ScalarExpr, ParseError> {
