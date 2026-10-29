@@ -140,3 +140,8 @@ fn max2_selects_maximum_including_nullable_input() {
 fn min2_selects_minimum_including_nullable_input() {
     assert_eq!(evaluate("min2(x, y)"), "4");
 }
+
+#[test]
+fn nullifzero_skips_zero_and_missing_rows() {
+    assert_eq!(evaluate("nullIfZero(x)"), "3");
+}
