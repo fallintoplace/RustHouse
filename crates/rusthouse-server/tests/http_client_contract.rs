@@ -205,3 +205,50 @@ fn clickhouse_sql_format_clause_rejects_bad_syntax() {
         "400 Bad Request"
     );
 }
+
+#[test]
+fn clickhouse_http_typed_query_parameters_bind_strings_and_integers() {
+    let numeric = handle_request(
+        "GET",
+        "/?query=SELECT+%7Bx%3AInt32%7D+%2B+%7By%3AUInt16%7D&param_x=-3&param_y=5",
+        b"",
+        &config(),
+    );
+    assert_eq!(numeric.status, "200 OK");
+    assert_eq!(numeric.body, b"2\n2\n");
+
+    let filter = handle_request(
+        "POST",
+        "/?param_min=2",
+        b"SELECT number FROM numbers(5) WHERE number >= {min:Int32}",
+        &config(),
+    );
+    assert_eq!(filter.status, "200 OK");
+    assert_eq!(filter.body, b"number\n2\n3\n4\n");
+
+    let text = handle_request(
+        "POST",
+        "/?param_author=O%27Reilly",
+        b"SELECT {author:String} AS author",
+        &config(),
+    );
+    assert_eq!(text.status, "200 OK");
+    assert_eq!(text.body, b"author\nO'Reilly\n");
+}
+
+#[test]
+fn clickhouse_http_typed_parameters_reject_injection_and_bad_bindings() {
+    for (target, sql) in [
+        ("/?param_n=1%3BDROP+TABLE+t", "SELECT {n:Int32}"),
+        ("/?param_n=999", "SELECT {n:UInt8}"),
+        ("/?param_n=1", "SELECT {missing:Int32}"),
+        ("/?param_n=1&param_n=2", "SELECT {n:Int32}"),
+        ("/?param_n=1", "SELECT 1"),
+        ("/?param_n=1", "SELECT '{n:Int32}'"),
+        ("/?param_n=1", "DROP TABLE t"),
+        ("/?param_n=1", "SELECT {n:Float64}"),
+    ] {
+        let result = handle_request("POST", target, sql.as_bytes(), &config());
+        assert_eq!(result.status, "400 Bad Request", "{target} {sql}");
+    }
+}

@@ -43,6 +43,13 @@ This works with `GET /?query=SELECT%201&format=jsonl` and `POST /?format=jsonl` 
 JSONL values are strings to preserve 128-bit numeric precision, and TSV NULL markers become JSON null.
 The JSONL converter decodes text escapes, rejects duplicate column names and invalid UTF-8,
 and uses the existing 16 MiB response bound plus a per-row bound.
+Read-only HTTP queries also support typed placeholders such as
+`SELECT {min:Int32} + {offset:UInt8}` with `?param_min=2&param_offset=3`.
+Supported types are `String`, `Int8/16/32/64`, and `UInt8/16/32/64`;
+UInt64 is currently limited to the signed Int64 range by the scalar engine.
+Values are range-checked and SQL-escaped before parsing. Missing, duplicate,
+unused, or unsupported bindings are rejected. This is a bounded subset of
+ClickHouse parameter types and never enables HTTP writes.
 Inputs are limited to 65536-byte statements and 8192-byte HTTP headers.
 Responses are capped at 16 MiB, concurrent requests at 16, and result rows
 at 10000 by default (up to 250000 with --max-rows).

@@ -3,6 +3,7 @@
 
 mod http_encoding;
 mod sql_format;
+mod sql_parameters;
 
 use self::http_encoding::*;
 
@@ -190,7 +191,9 @@ impl QueryFormat {
     }
 }
 
-fn query_parameters(target: &str) -> Result<(String, Option<String>, QueryFormat), &'static str> {
+fn query_parameters(
+    target: &str,
+) -> Result<(String, Option<String>, QueryFormat, Vec<(String, String)>), &'static str> {
     let (path, query) = target.split_once('?').unwrap_or((target, ""));
     if path != "/" && path != "/explain" {
         return Err("unknown SQL endpoint");
@@ -198,6 +201,7 @@ fn query_parameters(target: &str) -> Result<(String, Option<String>, QueryFormat
     let mut statement = None;
     let mut format = None;
     let mut default_format = None;
+    let mut parameters = Vec::new();
     for parameter in query.split('&').filter(|p| !p.is_empty()) {
         let (key, value) = parameter
             .split_once('=')
@@ -224,6 +228,18 @@ fn query_parameters(target: &str) -> Result<(String, Option<String>, QueryFormat
                 }
                 default_format = Some(QueryFormat::parse(&decode_url(value)?)?);
             }
+            name if name.starts_with("param_") => {
+                let name = &name[6..];
+                if !sql_parameters::valid_name(name) {
+                    return Err("invalid typed SQL parameter name");
+                }
+                if parameters.len() >= 128
+                    || parameters.iter().any(|(existing, _)| existing == name)
+                {
+                    return Err("duplicate or too many typed SQL parameters");
+                }
+                parameters.push((name.to_owned(), decode_url(value)?));
+            }
             _ => return Err("unsupported URL query parameter"),
         }
     }
@@ -234,6 +250,7 @@ fn query_parameters(target: &str) -> Result<(String, Option<String>, QueryFormat
         path.to_owned(),
         statement,
         format.or(default_format).unwrap_or(QueryFormat::Tsv),
+        parameters,
     ))
 }
 
@@ -319,7 +336,7 @@ pub fn handle_request(method: &str, target: &str, body: &[u8], config: &Config) 
     if body.len() > MAX_QUERY_BYTES || target.len() > MAX_HEADER_BYTES {
         return Response::text("413 Payload Too Large", "SQL statement too large\n");
     }
-    let (path, query, format) = match query_parameters(target) {
+    let (path, query, format, parameters) = match query_parameters(target) {
         Ok(v) => v,
         Err(message) => return Response::text("400 Bad Request", message),
     };
@@ -357,6 +374,10 @@ pub fn handle_request(method: &str, target: &str, body: &[u8], config: &Config) 
     if sql.is_empty() || sql.len() > MAX_QUERY_BYTES {
         return Response::text("400 Bad Request", "missing or oversized SQL statement\n");
     }
+    let sql = match sql_parameters::bind(&sql, &parameters) {
+        Ok(bound) => bound,
+        Err(message) => return Response::text("400 Bad Request", message),
+    };
     // SQL FORMAT wins over default_format, as it does in ClickHouse. A complete
     // lexical scan prevents string literals or nested SQL from being mistaken
     // for a trailing output-format clause.
