@@ -53,5 +53,16 @@ class DataManifestTests(unittest.TestCase):
                 build_manifest(root, ["region", "region"])
 
 
+class BoundedManifestInputTests(unittest.TestCase):
+    def test_rejects_oversized_physical_record(self):
+        from unittest.mock import patch
+        with tempfile.TemporaryDirectory() as root:
+            path = Path(root) / "region.tsv"
+            path.write_bytes(("\t".join(names("region")) + "\n").encode() +
+                             b"1\tEUROPE\t" + b"x" * 100 + b"\n")
+            with patch("data_manifest.MAX_RECORD_BYTES", 64):
+                with self.assertRaisesRegex(ValueError, "malformed"):
+                    build_manifest(root, ["region"])
+
 if __name__ == "__main__":
     unittest.main()
