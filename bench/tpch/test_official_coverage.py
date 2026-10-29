@@ -22,6 +22,13 @@ class CoverageTests(unittest.TestCase):
                                execute=lambda sql: b"6\n")
             self.assertEqual(checked["results"][5]["status"], "missing_reference")
 
+    def test_rejects_nonfinite_timeouts_and_noninteger_run_counts(self):
+        for options in ({"timeout": float("nan")}, {"timeout": float("inf")},
+                        {"runs": True}, {"warmups": 1.5}):
+            with self.subTest(options=options):
+                with self.assertRaisesRegex(ValueError, "timing"):
+                    coverage("fake", "db", "/unused", execute=lambda _: b"", **options)
+
     def test_query_inventory_matches_cli_64k_statement_limit(self):
         with tempfile.TemporaryDirectory() as root:
             path = Path(root)
