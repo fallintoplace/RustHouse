@@ -10,6 +10,7 @@ pub(super) fn is_function(name: &str) -> bool {
     matches!(
         name.to_ascii_uppercase().as_str(),
         "ADDDAYS"
+            | "SUBTRACTQUARTERS"
             | "ADDQUARTERS"
             | "SUBTRACTYEARS"
             | "ADDYEARS"
@@ -40,6 +41,7 @@ pub(super) fn parse_after_open(
         "ADDYEARS" => offset_months(parser, depth, 12, false),
         "SUBTRACTYEARS" => offset_months(parser, depth, 12, true),
         "ADDQUARTERS" => offset_months(parser, depth, 3, false),
+        "SUBTRACTQUARTERS" => offset_months(parser, depth, 3, true),
         _ => Err(ParseError(format!("unsupported date function: {name}"))),
     }
 }
@@ -435,6 +437,26 @@ mod utc_compat_tests {
             "SELECT addQuarters('2023-02-29', 1)",
             "SELECT addQuarters('2299-11-30', 1)",
             "SELECT addQuarters('2024-01-01', 1, 2)",
+        ] {
+            assert!(crate::parse_select(sql).is_err(), "{sql}");
+        }
+    }
+
+    #[test]
+    fn subtract_quarters_clamps_month_ends_safely() {
+        for (sql, expected) in [
+            ("SELECT subtractQuarters('2024-05-31', 1)", "2024-02-29"),
+            ("SELECT subtractQuarters('2024-02-29', -1)", "2024-05-29"),
+        ] {
+            assert_eq!(value(sql), ConstantValue::Text(expected.into()), "{sql}");
+        }
+        assert_eq!(value("SELECT subtractQuarters(NULL, 1)"), ConstantValue::Null);
+        assert_eq!(value("SELECT subtractQuarters('2024-02-29', NULL)"), ConstantValue::Null);
+        for sql in [
+            "SELECT subtractQuarters()",
+            "SELECT subtractQuarters('2023-02-29', 1)",
+            "SELECT subtractQuarters('1900-02-01', 1)",
+            "SELECT subtractQuarters('2024-01-01', 1, 2)",
         ] {
             assert!(crate::parse_select(sql).is_err(), "{sql}");
         }
