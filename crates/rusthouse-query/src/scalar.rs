@@ -208,6 +208,9 @@ fn parse_div_mod(parser: &mut Parser, depth: usize, divide: bool) -> Result<i64,
         left.checked_div(right)
             .ok_or_else(|| ParseError("DIV divisor is zero or result overflows Int64".into()))
     } else {
+        if right == -1 {
+            return Ok(0); // Int64::MIN % -1 is mathematically zero.
+        }
         left.checked_rem(right)
             .ok_or_else(|| ParseError("MOD divisor is zero or result overflows Int64".into()))
     }
