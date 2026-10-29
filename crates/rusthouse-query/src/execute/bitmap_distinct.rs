@@ -17,7 +17,7 @@ enum Block {
 
 const DENSE_THRESHOLD: usize = 4096;
 
-fn insert_bitmap_bit(bitmap: &mut [u64; WORDS_PER_BLOCK], suffix: u16) -> bool {
+fn set_bitmap_bit_if_unset(bitmap: &mut [u64; WORDS_PER_BLOCK], suffix: u16) -> bool {
     let index = usize::from(suffix);
     let mask = 1u64 << (index % 64);
     let word = &mut bitmap[index / 64];
@@ -81,14 +81,14 @@ impl BitmapDistinct32 {
                     self.dense_blocks += 1;
                     let mut bitmap = Box::new([0u64; WORDS_PER_BLOCK]);
                     for &value in values.iter() {
-                        insert_bitmap_bit(bitmap.as_mut(), value);
+                        set_bitmap_bit_if_unset(bitmap.as_mut(), value);
                     }
                     *block = Block::Dense(bitmap);
                 }
                 fresh
             }
             Block::Dense(bitmap) => {
-                insert_bitmap_bit(bitmap.as_mut(), suffix)
+                set_bitmap_bit_if_unset(bitmap.as_mut(), suffix)
             }
         };
         if inserted {
@@ -143,7 +143,7 @@ impl BitmapDistinct32 {
             let Block::Sparse(values) = current else { unreachable!() };
             let mut bitmap = Box::new([0u64; WORDS_PER_BLOCK]);
             for &suffix in values.iter() {
-                insert_bitmap_bit(bitmap.as_mut(), suffix);
+                set_bitmap_bit_if_unset(bitmap.as_mut(), suffix);
             }
             *current = Block::Dense(bitmap);
         }
@@ -158,7 +158,7 @@ impl BitmapDistinct32 {
             }
             (Block::Dense(left), Block::Sparse(right)) => {
                 right.iter().filter(|&&suffix| {
-                    insert_bitmap_bit(left.as_mut(), suffix)
+                    set_bitmap_bit_if_unset(left.as_mut(), suffix)
                 }).count() as u64
             }
             (Block::Sparse(left), Block::Sparse(right)) => {
@@ -172,7 +172,7 @@ impl BitmapDistinct32 {
             if values.len() >= DENSE_THRESHOLD {
                 let mut bitmap = Box::new([0u64; WORDS_PER_BLOCK]);
                 for &suffix in values.iter() {
-                    insert_bitmap_bit(bitmap.as_mut(), suffix);
+                    set_bitmap_bit_if_unset(bitmap.as_mut(), suffix);
                 }
                 *current = Block::Dense(bitmap);
             }

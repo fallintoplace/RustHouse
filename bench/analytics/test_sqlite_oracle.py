@@ -3,7 +3,7 @@ import unittest
 from pathlib import Path
 import sqlite3
 from contextlib import closing
-from sqlite_oracle import assert_matches, cell_equal, parse_rows, sqlite_query
+from sqlite_oracle import assert_matches, cell_equal, decode_tsv_value, parse_rows, sqlite_query
 
 
 class SqliteOracleTests(unittest.TestCase):
@@ -18,6 +18,31 @@ class SqliteOracleTests(unittest.TestCase):
         self.assertFalse(cell_equal("nan", 100.0))
         with self.assertRaisesRegex(ValueError, "differs"):
             assert_matches(b"1\tno\n", [(1, "yes")])
+
+    def test_tsv_escaped_text_matches_sqlite_typed_string_values(self):
+        self.assertTrue(cell_equal(r"left\tright", "left\tright"))
+        self.assertTrue(cell_equal(r"C:\\data", r"C:\data"))
+        self.assertTrue(cell_equal(r"\xC3\xA9", "é"))
+        self.assertTrue(cell_equal(r"\\N", r"\N"))
+        self.assertFalse(cell_equal(r"\N", r"\N"))
+        self.assertFalse(cell_equal(r"\N", "NULL"))
+        self.assertEqual(decode_tsv_value(r"\N"), None)
+        self.assertEqual(decode_tsv_value(r"\\N"), r"\N")
+        self.assertEqual(decode_tsv_value(r"line\nnext"), "line\nnext")
+        self.assertEqual(decode_tsv_value(r"\xC3\xA9"), "é")
+        assert_matches(
+            b"left\\tright\tC:\\\\data\t\\xC3\\xA9\n",
+            [("left\tright", r"C:\data", "é")],
+        )
+
+    def test_rejects_bad_tsv_escapes_instead_of_accepting_untyped_text(self):
+        for value in [r"\q", r"\x1", r"\xGG", "ends\\", r"\xFF"]:
+            with self.subTest(value=value):
+                self.assertFalse(cell_equal(value, value))
+                with self.assertRaises((ValueError, UnicodeError)):
+                    decode_tsv_value(value)
+        self.assertFalse(cell_equal(r"\0", "0"))
+        self.assertTrue(cell_equal(r"\0", "\x00"))
 
     def test_ties_compare_as_a_multiset(self):
         with self.assertRaisesRegex(ValueError, "row 1"):
