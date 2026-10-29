@@ -72,8 +72,8 @@ class VerifyShardsTests(unittest.TestCase):
             folder = Path(root)
             first = folder / "a.tsv"
             second = folder / "b.tsv"
-            first.write_bytes(b"10\\n13\\n")
-            second.write_bytes(b"16\\n")
+            first.write_bytes(b"10\n13\n")
+            second.write_bytes(b"16\n")
             shards = [
                 {"path": "a.tsv", "start": 10, "rows": 2,
                  "sha256": hashlib.sha256(first.read_bytes()).hexdigest()},
