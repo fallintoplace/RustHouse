@@ -83,18 +83,24 @@ fn parallel_grouped_parts(
     if workers < 2 || parts.len() < 16 {
         return Ok(None);
     }
-    let chunk_size = parts.len().div_ceil(workers);
+    // Static chunks strand workers behind one unusually large MergeTree part.
+    // Assign whole parts dynamically while each worker keeps a private hash table.
+    let cursor = std::sync::atomic::AtomicUsize::new(0);
     let retained = std::sync::atomic::AtomicUsize::new(0);
     let chunks = std::thread::scope(|scope| {
         let retained = &retained;
-        let handles = parts.chunks(chunk_size).map(|paths| {
+        let cursor = &cursor;
+        let paths = &parts;
+        let handles = (0..workers).map(|_| {
             scope.spawn(move || -> Result<Vec<(Vec<Cell>, u64)>, ExecutionError> {
                 let mut rows: Vec<(Vec<Cell>, u64)> = Vec::new();
                 let mut index: HashMap<Vec<Key>, usize> = HashMap::new();
                 // Frequent dimension keys should reuse their probe allocation
                 // instead of allocating a Vec for every fact row.
                 let mut probe = Vec::<Key>::with_capacity(group_indices.len());
-                for path in paths {
+                while let Some(path) = paths.get(
+                    cursor.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+                ) {
                     let mut reader = rusthouse_storage::TypedPartReader::open(path, names)?;
                     while let Some(batch) = reader.next_batch()? {
                         for row in 0..batch[0].len() {
