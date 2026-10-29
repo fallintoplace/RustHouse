@@ -1563,23 +1563,29 @@ fn parse_select_tokens(tokens: Vec<Token>) -> Result<Select, ParseError> {
                     "HAVING must match the selected aggregate".into(),
                 ));
             }
-        } else if let Projection::GroupedAggregates { items, .. }
-        | Projection::GroupedMultiAggregates { items, .. } = &projection {
+        } else if let Projection::GroupedAggregates { items, aliases, .. }
+        | Projection::GroupedMultiAggregates { items, aliases, .. } = &projection {
             let name = parser.word()?;
-            if !parser.take(Token::LParen) {
-                return Err(ParseError("HAVING requires a selected metric".into()));
-            }
-            let column = parser.word()?;
-            if !parser.take(Token::RParen) {
-                return Err(ParseError("expected ')' after HAVING metric".into()));
-            }
-            aggregate_index = Some(items.iter().position(|(function, argument)| {
-                function.name().eq_ignore_ascii_case(&name)
-                    && argument == &column
-                    && matches!(function,
-                        AggregateFunction::Sum | AggregateFunction::Avg
-                        | AggregateFunction::Min | AggregateFunction::Max
-                        | AggregateFunction::Count)
+            // HAVING uses the same aggregate alias resolution as ORDER BY.
+            // Only a projected metric can be filtered, so an alias never
+            // selects a different or previously uncomputed aggregate.
+            let selected = if parser.take(Token::LParen) {
+                let column = parser.word()?;
+                if !parser.take(Token::RParen) {
+                    return Err(ParseError("expected ')' after HAVING metric".into()));
+                }
+                items.iter().position(|(function, argument)| {
+                    function.name().eq_ignore_ascii_case(&name) && argument == &column
+                })
+            } else {
+                aliases.iter().position(|alias| alias.as_ref()
+                    .is_some_and(|alias| alias.eq_ignore_ascii_case(&name)))
+            };
+            aggregate_index = Some(selected.filter(|&index| {
+                matches!(items[index].0,
+                    AggregateFunction::Sum | AggregateFunction::Avg
+                    | AggregateFunction::Min | AggregateFunction::Max
+                    | AggregateFunction::Count)
             }).ok_or_else(|| ParseError("HAVING metric must match SELECT".into()))?);
         } else if let Projection::GroupedDistinctCount { value_column, .. }
         | Projection::GroupedMultiDistinctCount { value_column, .. } = &projection {
