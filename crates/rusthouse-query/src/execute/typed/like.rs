@@ -200,18 +200,19 @@ pub(super) fn like_matches(value: &[u8], pattern: &LikePattern, case_insensitive
             {
                 return false;
             }
-            // ASCII-only ILIKE can search borrowed bytes directly, without
-            // decoding or allocating a Unicode-folded copy of every row.
-            if case_insensitive && value.is_ascii() && bytes.is_ascii() {
-                return value.windows(bytes.len())
-                    .any(|candidate| candidate.eq_ignore_ascii_case(bytes));
-            }
-            // ILIKE '%x%' on ASCII text is a byte scan. Avoid the
-            // overlapping-window comparator for each candidate byte.
+            // Check the one-byte case before the generic ASCII window scan.
+            // The old ordering made this fast path unreachable for ASCII rows.
             if case_insensitive && bytes.len() == 1 && bytes[0].is_ascii() && value.is_ascii() {
                 return value
                     .iter()
                     .any(|byte| byte.eq_ignore_ascii_case(&bytes[0]));
+            }
+            // ASCII-only ILIKE can search borrowed bytes directly, without
+            // decoding or allocating a Unicode-folded copy of every row.
+            if case_insensitive && value.is_ascii() && bytes.is_ascii() {
+                return value
+                    .windows(bytes.len())
+                    .any(|candidate| candidate.eq_ignore_ascii_case(bytes));
             }
             if case_insensitive
                 && bytes.len() == 1
@@ -240,12 +241,6 @@ pub(super) fn like_matches(value: &[u8], pattern: &LikePattern, case_insensitive
                 } else {
                     value.windows(bytes.len()).any(|part| part == bytes)
                 }
-            } else if bytes.len() == 1 && value.is_ascii() && bytes[0].is_ascii() {
-                // The frequent ILIKE '%x%' case needs only a byte scan,
-                // not a one-byte slice and comparison at every position.
-                value
-                    .iter()
-                    .any(|byte| byte.eq_ignore_ascii_case(&bytes[0]))
             } else if value.is_ascii() && bytes.is_ascii() {
                 value
                     .windows(bytes.len())
@@ -428,6 +423,22 @@ pub(super) fn like_matches_wildcards(
         pat += 1;
     }
     pat == pattern.len()
+}
+
+#[cfg(test)]
+mod ascii_single_byte_contains_tests {
+    use super::*;
+
+    #[test]
+    fn case_insensitive_single_byte_contains_handles_ascii_and_unicode() {
+        let pattern = compile_like("%x%").unwrap();
+        assert!(like_matches(b"some XPRESS word", &pattern, true));
+        assert!(like_matches(b"lower x", &pattern, true));
+        assert!(!like_matches(b"missing", &pattern, true));
+        assert!(!like_matches(b"missing", &pattern, false));
+        assert!(like_matches("préfiX".as_bytes(), &pattern, true));
+        assert!(!like_matches("café".as_bytes(), &pattern, true));
+    }
 }
 
 #[cfg(test)]
