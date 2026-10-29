@@ -44,6 +44,15 @@ class SnapshotFingerprintTests(unittest.TestCase):
             with self.assertRaisesRegex(ValueError, "nonregular"):
                 fingerprint(root)
 
+    def test_rejects_file_identity_change_during_open(self):
+        from types import SimpleNamespace
+        with tempfile.TemporaryDirectory() as root:
+            (Path(root) / "data.bin").write_bytes(b"one")
+            with patch("bench.scale.snapshot_fingerprint.os.fstat",
+                       return_value=SimpleNamespace(st_dev=-1, st_ino=-1)):
+                with self.assertRaisesRegex(ValueError, "replaced while opening"):
+                    fingerprint(root)
+
 
 if __name__ == "__main__":
     unittest.main()
