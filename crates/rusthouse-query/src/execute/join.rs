@@ -23,6 +23,13 @@ pub(super) const MAX_STREAM_BUILD_BYTES: usize = crate::join::MAX_JOIN_BUILD_BYT
 
 type Pair = (Option<usize>, Option<usize>);
 
+// A large input row count is not proof that the hash build fits the byte budget.
+const INITIAL_JOIN_ROW_CAPACITY: u64 = 4_096;
+
+fn initial_join_row_capacity(expected_rows: u64) -> usize {
+    expected_rows.min(INITIAL_JOIN_ROW_CAPACITY) as usize
+}
+
 pub(super) fn multi_join_row_key(
     row: &[typed::Cell],
     indices: &[usize],
@@ -53,7 +60,7 @@ pub(super) fn read_rows(
     // Byte-budget validation, not the uncompressed row-count estimate,
     // should determine retained capacity. Avoid eagerly allocating hundreds
     // of thousands of row slots for wide tables that will fail the byte cap.
-    let mut rows = Vec::with_capacity(expected_rows.min(4096) as usize);
+    let mut rows = Vec::with_capacity(initial_join_row_capacity(expected_rows));
     let mut retained_bytes = 0usize;
     while let Some(batch) = reader.next_batch()? {
         for row_index in 0..batch[0].len() {
@@ -146,7 +153,7 @@ fn read_projected_build_rows(
     }
     let projected = indices.iter().map(|&i| names[i].clone()).collect::<Vec<_>>();
     let mut reader = TypedQueryReader::open(path, &projected)?;
-    let mut rows = Vec::with_capacity(expected_rows as usize);
+    let mut rows = Vec::with_capacity(initial_join_row_capacity(expected_rows));
     let mut retained_bytes = 0usize;
     while let Some(batch) = reader.next_batch()? {
         for row_index in 0..batch[0].len() {
@@ -1434,6 +1441,14 @@ pub fn execute_join<W: Write>(
 mod tests {
     use super::*;
     use rusthouse_storage::NumericColumn;
+
+    #[test]
+    fn projected_join_build_initial_capacity_is_bounded() {
+        assert_eq!(initial_join_row_capacity(0), 0);
+        assert_eq!(initial_join_row_capacity(25), 25);
+        assert_eq!(initial_join_row_capacity(262_144), 4_096);
+        assert_eq!(initial_join_row_capacity(u64::MAX), 4_096);
+    }
 
     #[test]
     fn streaming_right_preserves_unmatched_rows_and_key_fallbacks() {
