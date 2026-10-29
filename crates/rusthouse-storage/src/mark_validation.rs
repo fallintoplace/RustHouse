@@ -31,7 +31,7 @@ pub(crate) fn validate_wide_marks_reader<R: Read + Seek>(
             block = reader.next().transpose()?;
         }
 
-        validate_mark_target(marks, index, mark, block, preceding_end)?;
+        validate_wide_mark_target(marks, index, mark, block, preceding_end)?;
         previous = Some(mark);
     }
 
@@ -41,7 +41,7 @@ pub(crate) fn validate_wide_marks_reader<R: Read + Seek>(
     Ok(())
 }
 
-fn validate_mark_target(
+fn validate_wide_mark_target(
     marks: &WideMarks,
     index: usize,
     mark: &WideMark,
