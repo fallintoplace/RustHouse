@@ -8,7 +8,7 @@ use std::path::PathBuf;
 
 use super::join::{
     MAX_INPUT_ROWS, MAX_RESULT_ROWS, MAX_STREAM_BUILD_BYTES, multi_join_row_key as row_key,
-    read_rows,
+    read_projected_build_rows,
 };
 
 const MAX_CHAIN_BYTES: usize = crate::join::MAX_JOIN_CHAIN_BYTES;
@@ -339,9 +339,44 @@ pub fn execute_multi_join<W: Write>(
         return Ok(());
     }
 
-    let mut rows = read_rows(
+
+    // Keep the complete logical row layout for JOIN keys and OUTER NULLs,
+    // but decode only columns referenced by any step or output expression.
+    // This avoids reading and cloning unrelated wide String dimensions.
+    let mut needed = vec![false; width];
+    for (index, join) in std::iter::once(&initial_step)
+        .chain(query.steps.iter())
+        .enumerate()
+    {
+        let right_start = relations[index + 1].start;
+        let (left, right) = step_keys(join, &relations[..=index + 1], right_start)?;
+        for key in left { needed[key] = true; }
+        for key in right { needed[right_start + key] = true; }
+    }
+    let selected = output_columns(query, &relations, &initial_step)?;
+    for (index, _, fallback) in &selected {
+        needed[*index] = true;
+        if let Some(fallback) = fallback { needed[*fallback] = true; }
+    }
+    if let Some((column, _)) = &query.where_null {
+        needed[column_index(&relations, column)?] = true;
+    }
+    for (column, _, _) in &query.order_by {
+        needed[column_index(&relations, column)?] = true;
+    }
+    let projected: Vec<Vec<usize>> = relations.iter().map(|relation| {
+        let mut columns = (0..relation.names.len())
+            .filter(|&local| needed[relation.start + local])
+            .collect::<Vec<_>>();
+        // The reader needs at least one physical column to count rows.
+        if columns.is_empty() && !relation.names.is_empty() { columns.push(0); }
+        columns
+    }).collect();
+
+    let mut rows = read_projected_build_rows(
         &paths[0],
         &relations[0].names,
+        &projected[0],
         relations[0].rows,
         MAX_INPUT_ROWS,
         MAX_STREAM_BUILD_BYTES,
@@ -363,9 +398,10 @@ pub fn execute_multi_join<W: Write>(
             }
             continue;
         }
-        let right_rows = read_rows(
+        let right_rows = read_projected_build_rows(
             &paths[step_index + 1],
             &right_relation.names,
+            &projected[step_index + 1],
             right_relation.rows,
             MAX_INPUT_ROWS,
             MAX_STREAM_BUILD_BYTES,
@@ -462,7 +498,6 @@ pub fn execute_multi_join<W: Write>(
             std::cmp::Ordering::Equal
         });
     }
-    let selected = output_columns(query, &relations, &initial_step)?;
     write_join_header(output, &selected)?;
     for row in rows
         .iter()
