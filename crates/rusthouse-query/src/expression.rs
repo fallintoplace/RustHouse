@@ -13,6 +13,7 @@ pub enum ScalarExpr {
     Integer(i64),
     Null,
     IsNull(Box<ScalarExpr>, bool),
+    Not(Box<ScalarExpr>),
     Add(Box<ScalarExpr>, Box<ScalarExpr>),
     Subtract(Box<ScalarExpr>, Box<ScalarExpr>),
     Multiply(Box<ScalarExpr>, Box<ScalarExpr>),
@@ -37,7 +38,8 @@ impl ScalarExpr {
                 }
             }
             Self::Integer(_) | Self::Null => {}
-            Self::IsNull(value, _) => value.collect_referenced_columns(out, seen),
+            Self::IsNull(value, _) | Self::Not(value) =>
+                value.collect_referenced_columns(out, seen),
             Self::CaseWhen(condition, yes, no) => {
                 condition.collect_referenced_columns(out, seen);
                 yes.collect_referenced_columns(out, seen);
@@ -80,6 +82,18 @@ fn parse_arithmetic_tokens(parser: &mut Parser) -> Result<ScalarExpr, ParseError
 /// Arithmetic binds before comparisons, comparisons before AND, and
 /// AND before OR. CASE WHEN conditions use the same expression parser.
 fn parse_comparison_tokens(parser: &mut Parser) -> Result<ScalarExpr, ParseError> {
+    let mut negations = 0usize;
+    while parser.keyword("NOT") {
+        negations += 1;
+        if negations > 16 {
+            return Err(ParseError("NOT nesting exceeds 16 levels".into()));
+        }
+    }
+    let result = parse_comparison_core(parser)?;
+    Ok(if negations % 2 == 0 { result } else { ScalarExpr::Not(Box::new(result)) })
+}
+
+fn parse_comparison_core(parser: &mut Parser) -> Result<ScalarExpr, ParseError> {
     let left = parse_arithmetic_tokens(parser)?;
     if parser.keyword("IS") {
         let negated = parser.keyword("NOT");
@@ -251,6 +265,17 @@ mod tests {
             assert!(matches!(value, ScalarExpr::IsNull(_, flag) if flag == negated));
         }
         assert!(parse_scalar_expression("amount IS EMPTY").is_err());
+    }
+
+    #[test]
+    fn parses_not_after_comparisons_with_boolean_precedence() {
+        assert!(matches!(parse_scalar_expression("NOT amount > 3").unwrap(),
+            ScalarExpr::Not(value) if matches!(*value, ScalarExpr::Compare(..))));
+        assert!(matches!(parse_scalar_expression("NOT (a = 1 OR b = 2)").unwrap(),
+            ScalarExpr::Not(value) if matches!(*value, ScalarExpr::Or(..))));
+        assert!(matches!(parse_scalar_expression("NOT NOT a IS NULL").unwrap(),
+            ScalarExpr::IsNull(..)));
+        assert!(parse_scalar_expression(&format!("{}a = 1", "NOT ".repeat(17))).is_err());
     }
 
     #[test]
