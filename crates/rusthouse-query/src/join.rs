@@ -59,6 +59,8 @@ pub struct JoinSelect {
     pub using_keys: Vec<String>,
     /// Optional post-join NULL filter (`true` means `IS NOT NULL`).
     pub where_null: Option<(JoinColumn, bool)>,
+    /// Optional single typed comparison after the JOIN (INNER, unordered only).
+    pub where_comparison: Option<(JoinColumn, crate::Operator, String)>,
     /// Ordered key, descending flag, and optional explicit NULL placement.
     pub order_by: Vec<(JoinColumn, bool, Option<bool>)>,
     pub limit: Option<usize>,
@@ -364,22 +366,28 @@ pub fn parse_join(sql: &str) -> Result<Option<JoinSelect>, ParseError> {
             using_keys: step_using,
         });
     }
-    let where_null = if parser.keyword("WHERE") {
+    let (where_null, where_comparison) = if parser.keyword("WHERE") {
         let column = qualified(&mut parser)?;
-        if !parser.keyword("IS") {
-            return Err(ParseError(
-                "JOIN WHERE supports only qualified IS [NOT] NULL".into(),
-            ));
+        if parser.keyword("IS") {
+            let not_null = parser.keyword("NOT");
+            if !parser.keyword("NULL") {
+                return Err(ParseError("JOIN WHERE requires IS [NOT] NULL".into()));
+            }
+            (Some((column, not_null)), None)
+        } else {
+            let operator = parser.operator()?;
+            if !matches!(
+                operator,
+                crate::Operator::Eq | crate::Operator::Ne | crate::Operator::Lt
+                    | crate::Operator::Le | crate::Operator::Gt | crate::Operator::Ge
+            ) {
+                return Err(ParseError("JOIN WHERE requires a comparison operator".into()));
+            }
+            let value = parser.literal()?;
+            (None, Some((column, operator, value)))
         }
-        let not_null = parser.keyword("NOT");
-        if !parser.keyword("NULL") {
-            return Err(ParseError(
-                "JOIN WHERE supports only qualified IS [NOT] NULL".into(),
-            ));
-        }
-        Some((column, not_null))
     } else {
-        None
+        (None, None)
     };
     let order_by = if parser.keyword("ORDER") {
         if !parser.keyword("BY") {
@@ -434,6 +442,13 @@ pub fn parse_join(sql: &str) -> Result<Option<JoinSelect>, ParseError> {
             }
         }
     }
+    if let Some((column, _, _)) = &where_comparison {
+        if !known_qualifier(&column.relation) {
+            return Err(ParseError(format!(
+                "unknown JOIN qualifier: {}", column.relation
+            )));
+        }
+    }
     if let Some((column, _)) = &where_null {
         if !known_qualifier(&column.relation) {
             return Err(ParseError(format!(
@@ -473,6 +488,14 @@ pub fn parse_join(sql: &str) -> Result<Option<JoinSelect>, ParseError> {
             "unexpected JOIN syntax; supported: equi-JOIN, ORDER BY, LIMIT, OFFSET".into(),
         ));
     }
+    if where_comparison.is_some()
+        && (kind != JoinType::Inner || !steps.is_empty()
+            || !order_by.is_empty() || aggregate.is_some())
+    {
+        return Err(ParseError(
+            "JOIN comparison WHERE supports unordered two-table INNER joins".into(),
+        ));
+    }
     if aggregate.is_some() &&
         (kind != JoinType::Inner || !steps.is_empty() || !order_by.is_empty()) {
         return Err(ParseError(
@@ -491,6 +514,7 @@ pub fn parse_join(sql: &str) -> Result<Option<JoinSelect>, ParseError> {
         keys,
         using_keys,
         where_null,
+        where_comparison,
         order_by,
         limit,
         offset,
@@ -585,6 +609,12 @@ pub fn explain_join(query: &JoinSelect) -> String {
             column.relation,
             column.name,
             if *not_null { "NOT " } else { "" }
+        ));
+    }
+    if let Some((column, operator, value)) = &query.where_comparison {
+        plan.push_str(&format!(
+            "\nFilter: {}.{} {:?} literal({})",
+            column.relation, column.name, operator, value
         ));
     }
     if !query.order_by.is_empty() {
