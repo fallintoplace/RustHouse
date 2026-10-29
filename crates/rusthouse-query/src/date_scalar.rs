@@ -181,9 +181,14 @@ impl Temporal {
         {
             return Err(date_error());
         }
-        let year = source[0..4].parse::<i64>().map_err(|_| date_error())?;
-        let month = source[5..7].parse::<u32>().map_err(|_| date_error())?;
-        let day = source[8..10].parse::<u32>().map_err(|_| date_error())?;
+        // Separators and ASCII digits were validated above. Decode each pair
+        // directly instead of calling the generic integer parser repeatedly.
+        let pair = |index: usize| {
+            i64::from(data[index] - b'0') * 10 + i64::from(data[index + 1] - b'0')
+        };
+        let year = pair(0) * 100 + pair(2);
+        let month = pair(5) as u32;
+        let day = pair(8) as u32;
         if !(MIN_YEAR..=MAX_YEAR).contains(&year)
             || !(1..=12).contains(&month)
             || day == 0
@@ -202,11 +207,7 @@ impl Temporal {
             {
                 return Err(date_error());
             }
-            (
-                source[11..13].parse::<i64>().map_err(|_| date_error())?,
-                source[14..16].parse::<i64>().map_err(|_| date_error())?,
-                source[17..19].parse::<i64>().map_err(|_| date_error())?,
-            )
+            (pair(11), pair(14), pair(17))
         } else {
             (0, 0, 0)
         };
@@ -399,6 +400,15 @@ mod utc_compat_tests {
             crate::Projection::Literal(v) => ConstantValue::Integer(v),
             projection => panic!("unexpected projection: {projection:?}"),
         }
+    }
+
+    #[test]
+    fn parses_ascii_temporal_digits_at_calendar_boundaries() {
+        let value = Temporal::parse("2024-02-29 23:59:58").unwrap();
+        assert_eq!(Temporal::render(value.seconds, true).unwrap(),
+            "2024-02-29 23:59:58");
+        assert!(Temporal::parse("2024-02-30").is_err());
+        assert!(Temporal::parse("2024-02-29 24:00:00").is_err());
     }
 
     #[test]
