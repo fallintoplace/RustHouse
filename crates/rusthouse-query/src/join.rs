@@ -37,9 +37,10 @@ pub struct JoinStep {
     pub using_keys: Vec<String>,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum JoinAggregate {
     CountStar,
+    CountColumn(JoinColumn),
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -89,13 +90,18 @@ pub fn parse_join(sql: &str) -> Result<Option<JoinSelect>, ParseError> {
     let mut parser = Parser { tokens, index: 0 };
     parser.keyword("SELECT");
     let aggregate = if parser.keyword("COUNT") {
-        if !parser.take(Token::LParen)
-            || !parser.take(Token::Star)
-            || !parser.take(Token::RParen)
-        {
-            return Err(ParseError("JOIN COUNT requires COUNT(*)".into()));
+        if !parser.take(Token::LParen) {
+            return Err(ParseError("JOIN COUNT requires '('".into()));
         }
-        Some(JoinAggregate::CountStar)
+        let aggregate = if parser.take(Token::Star) {
+            JoinAggregate::CountStar
+        } else {
+            JoinAggregate::CountColumn(qualified(&mut parser)?)
+        };
+        if !parser.take(Token::RParen) {
+            return Err(ParseError("JOIN COUNT requires ')'".into()));
+        }
+        Some(aggregate)
     } else {
         None
     };
@@ -424,6 +430,13 @@ pub fn parse_join(sql: &str) -> Result<Option<JoinSelect>, ParseError> {
             || relation == right_alias
             || steps.iter().any(|step| step.alias == relation)
     };
+    if let Some(JoinAggregate::CountColumn(column)) = &aggregate {
+        if !known_qualifier(&column.relation) {
+            return Err(ParseError(format!(
+                "unknown JOIN qualifier: {}", column.relation
+            )));
+        }
+    }
     if let Some(columns) = &columns {
         for column in columns {
             if !known_qualifier(&column.relation) {
@@ -563,8 +576,13 @@ pub fn explain_join(query: &JoinSelect) -> String {
     }
     plan.push_str(&format!(
         "\nProject: {}\nLimit: {}",
-        if query.aggregate.is_some() {
-            "count(*)".to_owned()
+        if let Some(aggregate) = &query.aggregate {
+            match aggregate {
+                JoinAggregate::CountStar => "count(*)".to_owned(),
+                JoinAggregate::CountColumn(column) => {
+                    format!("count({}.{})", column.relation, column.name)
+                }
+            }
         } else { query.columns.as_ref().map_or("*".to_owned(), |columns| {
             columns
                 .iter()
