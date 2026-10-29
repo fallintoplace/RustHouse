@@ -71,6 +71,11 @@ class SharedWorkloadTests(unittest.TestCase):
             with self.assertRaises(subprocess.TimeoutExpired):
                 cli_sql("rusthouse", "db", "slow", 1)
 
+    def test_json_report_rejects_nonfinite_measurements(self):
+        for value in (float("nan"), float("inf"), float("-inf")):
+            with self.subTest(value=value), self.assertRaises(ValueError):
+                emit_json({"latency_seconds": value})
+
     def test_json_output_matches_saved_file(self):
         with tempfile.TemporaryDirectory() as directory:
             target = Path(directory) / "nested" / "reports" / "report.json"
