@@ -153,5 +153,20 @@ class AnalyticsRunnerTests(unittest.TestCase):
         self.assertEqual(results[1]["seconds"].__len__(), 3)
 
 
+    def test_oversized_reference_is_rejected_before_benchmark_runs(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            (root / "q01.tsv").write_bytes(b"012345")
+            calls = []
+            with mock.patch.object(runner, "MAX_REFERENCE_BYTES", 4):
+                result = runner.run_benchmark(
+                    ["SELECT 1"], [0], 1, 10,
+                    lambda sql, timeout: calls.append(sql), root
+                )[0]
+                self.assertEqual(runner.reference_failure(root / "q01.tsv", b"0\n")[0],
+                                 "reference_too_large")
+            self.assertEqual(result["status"], "reference_too_large")
+            self.assertEqual(calls, [])
+
 if __name__ == "__main__":
     unittest.main()
