@@ -17,6 +17,31 @@ fn io_error(path: &Path, source: io::Error) -> PartError {
     }
 }
 
+fn validate_fresh_generation(pointer: &Path, generation: u64) -> Result<(), PartError> {
+match fs::symlink_metadata(&pointer) {
+    Ok(meta) => {
+        if !meta.file_type().is_file() || meta.len() > 64 {
+            return Err(PartError::InvalidScan("invalid active pointer".into()));
+        }
+        let current =
+            fs::read_to_string(&pointer).map_err(|error| io_error(&pointer, error))?;
+        let prior = current
+            .strip_prefix('g')
+            .and_then(|text| text.strip_suffix('\n'))
+            .and_then(|text| text.parse::<u64>().ok())
+            .ok_or_else(|| PartError::InvalidScan("invalid active generation".into()))?;
+        if generation <= prior {
+            return Err(PartError::InvalidScan(
+                "follower generation is not newer".into(),
+            ));
+        }
+    }
+    Err(error) if error.kind() == io::ErrorKind::NotFound => {}
+    Err(error) => return Err(io_error(&pointer, error)),
+}
+    Ok(())
+}
+
 /// Publish only a complete generation newer than the active local pointer.
 pub fn activate_verified_generation(root: &Path, generation: u64) -> Result<(), PartError> {
     if generation == 0 {
@@ -39,27 +64,7 @@ pub fn activate_verified_generation(root: &Path, generation: u64) -> Result<(), 
         verify_part_file_hashes(&part)?;
     }
     let pointer = root.join(".rusthouse-active");
-    match fs::symlink_metadata(&pointer) {
-        Ok(meta) => {
-            if !meta.file_type().is_file() || meta.len() > 64 {
-                return Err(PartError::InvalidScan("invalid active pointer".into()));
-            }
-            let current =
-                fs::read_to_string(&pointer).map_err(|error| io_error(&pointer, error))?;
-            let prior = current
-                .strip_prefix('g')
-                .and_then(|text| text.strip_suffix('\n'))
-                .and_then(|text| text.parse::<u64>().ok())
-                .ok_or_else(|| PartError::InvalidScan("invalid active generation".into()))?;
-            if generation <= prior {
-                return Err(PartError::InvalidScan(
-                    "follower generation is not newer".into(),
-                ));
-            }
-        }
-        Err(error) if error.kind() == io::ErrorKind::NotFound => {}
-        Err(error) => return Err(io_error(&pointer, error)),
-    }
+    validate_fresh_generation(&pointer, generation)?;
     let pending = root.join(format!(
         ".rusthouse-active.replica-{}-{}",
         std::process::id(),
