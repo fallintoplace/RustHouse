@@ -23,6 +23,8 @@ def inspect_snapshot(binary, path, *, min_rows=1_000_000_000, run=None,
     if result.returncode:
         raise RuntimeError(f"snapshot inspection failed: {result.stderr.decode('utf-8', 'replace')[-600:]}")
     data = json.loads(result.stdout)
+    if not isinstance(data, dict):
+        raise ValueError("snapshot inspector must return a JSON object")
     rows, parts = data.get("rows"), data.get("parts")
     if (type(rows) is not int or type(parts) is not int or rows < 0
             or rows > (1 << 64) - 1 or not 1 <= parts <= 16_384):
