@@ -30,11 +30,15 @@ def same_device(database, watch_dir):
     return os.stat(database).st_dev == os.stat(watch_dir).st_dev
 
 
+def positive_finite(value):
+    return math.isfinite(value) and value > 0
+
+
 def guard(binary, database, table, source, watch_dir, min_free_gib=5,
           timeout=3600, poll_seconds=0.25):
-    if not math.isfinite(min_free_gib) or min_free_gib <= 0:
+    if not positive_finite(min_free_gib):
         raise ValueError("min-free-gib must be positive")
-    if not math.isfinite(timeout) or timeout <= 0:
+    if not positive_finite(timeout):
         raise ValueError("timeout must be positive")
     if not math.isfinite(poll_seconds) or not 0.05 <= poll_seconds <= 10:
         raise ValueError("poll-seconds must be in 0.05..10")
