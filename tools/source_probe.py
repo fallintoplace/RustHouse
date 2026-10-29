@@ -25,12 +25,18 @@ def read_json(url, timeout):
     return json.loads(payload)
 
 
-def probe(base, expected_source, table=None, timeout=5):
+def probe(base, expected_source, table=None, timeout=5, expected_version=None):
     data = read_json(base + "/capabilities", timeout)
     if data.get("read_only") is not True:
         raise ValueError("server is not marked read-only")
     if data.get("source") != expected_source:
         raise ValueError("expected source " + expected_source + ", got " + str(data.get("source")))
+    if expected_version is not None:
+        if not isinstance(expected_version, str) or not expected_version:
+            raise ValueError("expected_version must be a nonempty string")
+        if data.get("version") != expected_version:
+            raise ValueError("expected RustHouse version " + expected_version +
+                             ", got " + str(data.get("version")))
     if table is not None:
         if expected_source != "database":
             raise ValueError("--table requires database mode")
@@ -58,9 +64,11 @@ def main():
     parser.add_argument("--url", default="http://127.0.0.1:8123")
     parser.add_argument("--source", choices=("generated", "part", "database"), required=True)
     parser.add_argument("--table")
+    parser.add_argument("--expected-version", help="Reject unexpected server versions")
     args = parser.parse_args()
     try:
-        info = probe(verify_origin(args.url), args.source, args.table)
+        info = probe(verify_origin(args.url), args.source, args.table,
+                     expected_version=args.expected_version)
     except Exception as exc:
         print("FAIL: " + str(exc), file=sys.stderr)
         return 1
