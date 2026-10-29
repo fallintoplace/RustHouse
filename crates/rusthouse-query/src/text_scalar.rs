@@ -146,6 +146,7 @@ pub(super) fn is_function(name: &str) -> bool {
             | "NOTEMPTY"
             | "SPACE"
             | "ENCODEURLFORMCOMPONENT"
+            | "JSONTYPE"
             | "JSONEXTRACTBOOL"
             | "REGEXPQUOTEMETA"
             | "CUTWWW"
@@ -2714,6 +2715,36 @@ fn parse_at_depth(parser: &mut Parser, depth: usize) -> Result<ConstantValue, Pa
                 _ => ConstantValue::Null,
             }
         }
+        "JSONTYPE" => {
+            let input = text_arg(parser, depth + 1)?;
+            let path = if parser.take(Token::Comma) {
+                text_arg(parser, depth + 1)?
+            } else {
+                Some(String::new())
+            };
+            require(parser, Token::RParen, "JSONType requires one or two arguments")?;
+            match (input, path) {
+                (Some(input), Some(path)) => {
+                    let json = crate::json::parse_json(&input)
+                        .map_err(|error| ParseError(format!("invalid JSON: {error}")))?;
+                    let value = if path.is_empty() { Some(&json) } else { json.at_path(&path) };
+                    let kind = value.map(|value| {
+                        let raw = value.raw();
+                        match raw.as_bytes().first() {
+                            Some(b'{') => "Object",
+                            Some(b'[') => "Array",
+                            Some(b'"') => "String",
+                            Some(b't' | b'f') => "Bool",
+                            Some(b'n') => "Null",
+                            _ if raw.bytes().any(|byte| matches!(byte, b'.' | b'e' | b'E')) => "Float64",
+                            _ => "Int64",
+                        }
+                    }).unwrap_or("");
+                    ConstantValue::Text(kind.to_owned())
+                }
+                _ => ConstantValue::Null,
+            }
+        }
         "JSONEXTRACTINT" => {
             let input = text_arg(parser, depth + 1)?;
             require(parser, Token::Comma, "JSONExtractInt requires a path")?;
@@ -3127,6 +3158,32 @@ mod ch_json_extract_bool_tests {
             assert_eq!(value(sql), expected, "{sql}");
         }
         for sql in ["SELECT JSONExtractBool('{}')", "SELECT JSONExtractBool('{x}', 'x')"] {
+            assert!(parse_select(sql).is_err(), "{sql}");
+        }
+    }
+}
+
+#[cfg(test)]
+mod ch_json_type_tests {
+    use crate::{parse_select, ConstantValue, Projection};
+    fn value(sql: &str) -> ConstantValue {
+        match parse_select(sql).unwrap().projection {
+            Projection::Constants(items) if items.len() == 1 => items[0].value.clone(),
+            Projection::Literal(value) => ConstantValue::Integer(value),
+            other => panic!("unexpected projection: {other:?}"),
+        }
+    }
+    #[test]
+    fn json_types_and_defaults() {
+        for (sql, expected) in [
+            ("SELECT JSONType('{\"flag\":true}', 'flag')", ConstantValue::Text("Bool".into())),
+            ("SELECT JSONType('[1,2]')", ConstantValue::Text("Array".into())),
+            ("SELECT JSONType('{\"x\":\"hi\"}', 'x')", ConstantValue::Text("String".into())),
+            ("SELECT JSONType(NULL)", ConstantValue::Null),
+        ] {
+            assert_eq!(value(sql), expected, "{sql}");
+        }
+        for sql in ["SELECT JSONType()", "SELECT JSONType('{x}')"] {
             assert!(parse_select(sql).is_err(), "{sql}");
         }
     }
