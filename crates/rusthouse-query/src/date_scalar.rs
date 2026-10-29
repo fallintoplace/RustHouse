@@ -17,6 +17,7 @@ pub(super) fn is_function(name: &str) -> bool {
             | "TOISOWEEK"
             | "TOUNIXTIMESTAMP64NANO"
             | "TOUNIXTIMESTAMP64MICRO"
+            | "TOUNIXTIMESTAMP64MILLI"
             | "TOYYYYMMDDHHMMSS"
             | "TOYYYYMMDD"
             | "TOYYYYMM"
@@ -230,6 +231,13 @@ pub(super) fn parse_after_open(
                 .seconds
                 .checked_mul(1_000_000)
                 .ok_or_else(|| ParseError("TOUNIXTIMESTAMP64MICRO overflows Int64".into()))?;
+            Ok(ConstantValue::Integer(scaled))
+        }),
+        "TOUNIXTIMESTAMP64MILLI" => unary_date(parser, depth, |value| {
+            let scaled = value
+                .seconds
+                .checked_mul(1_000)
+                .ok_or_else(|| ParseError("TOUNIXTIMESTAMP64MILLI overflows Int64".into()))?;
             Ok(ConstantValue::Integer(scaled))
         }),
         "TIMEDIFF" => time_difference(parser, depth),
