@@ -31,6 +31,17 @@ class DuckDBGoldensTests(unittest.TestCase):
             self.assertEqual((root / "goldens" / "q22.tsv").read_bytes(), b"1\t2\n")
             self.assertFalse(report["logical_input_equivalence_established"])
 
+    def test_strict_reference_generation_rejects_simplified_queries(self):
+        with tempfile.TemporaryDirectory() as work:
+            root = Path(work)
+            queries = root / "queries"
+            queries.mkdir()
+            self.make_queries(queries)
+            with self.assertRaises(ValueError):
+                generate("duckdb", "db", queries, root / "goldens",
+                         require_canonical=True)
+            self.assertFalse((root / "goldens").exists())
+
     def test_rejects_incomplete_corpus(self):
         with tempfile.TemporaryDirectory() as work:
             root = Path(work)
