@@ -26,6 +26,14 @@ class SourceProbeTests(unittest.TestCase):
             probe("http://127.0.0.1:8123", "generated", expected_version="")
 
     @patch("source_probe.read_json")
+    def test_rejects_nonobject_capabilities(self, read):
+        for payload in (None, [], 123, "unavailable"):
+            with self.subTest(payload=payload):
+                read.return_value = payload
+                with self.assertRaisesRegex(ValueError, "capabilities"):
+                    probe("http://127.0.0.1:8123", "database")
+
+    @patch("source_probe.read_json")
     def test_database_schema_required(self, read):
         read.side_effect = [
             {"source": "database", "read_only": True},

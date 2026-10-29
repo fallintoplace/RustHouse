@@ -45,6 +45,19 @@ class ExactDistinctMemoryFixtureTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             list(distinct_values(5, "bad"))
 
+    def test_invalid_fixture_controls_do_not_create_partial_output(self):
+        with tempfile.TemporaryDirectory() as root:
+            destination = Path(root) / "rows.tsv"
+            for rows, duplicates in ((1.5, 2), (True, 1), (3, True),
+                                     (3, 1.5), (0, 1)):
+                with self.subTest(rows=rows, duplicates=duplicates):
+                    with self.assertRaises(ValueError):
+                        write_tsv(destination, rows, "sparse", duplicates)
+                    self.assertFalse(destination.exists())
+            for rows in (True, 1.5, "4"):
+                with self.assertRaises(ValueError):
+                    list(distinct_values(rows, "dense"))
+
     def test_invalid_memory_benchmark_budgets_fail_before_loading_fixture(self):
         from bench.scale.distinct32_memory import benchmark
         for kwargs in (

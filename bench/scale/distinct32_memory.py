@@ -17,7 +17,7 @@ MAX_ROWS = 200_000
 
 
 def distinct_values(rows, layout):
-    if not 1 <= rows <= MAX_ROWS:
+    if type(rows) is not int or not 1 <= rows <= MAX_ROWS:
         raise ValueError("rows must be in 1..200000")
     if layout not in ("sparse", "dense", "mixed"):
         raise ValueError("layout must be sparse, dense or mixed")
@@ -31,7 +31,9 @@ def distinct_values(rows, layout):
 
 
 def write_tsv(path, rows, layout, duplicates):
-    if not 1 <= duplicates <= 16 or rows * duplicates > 1_000_000:
+    if (type(duplicates) is not int or not 1 <= duplicates <= 16
+            or type(rows) is not int or not 1 <= rows <= MAX_ROWS
+            or rows * duplicates > 1_000_000):
         raise ValueError("duplicates must be 1..16 and total rows <=1000000")
     unique = set()
     with Path(path).open("w", encoding="ascii") as output:
