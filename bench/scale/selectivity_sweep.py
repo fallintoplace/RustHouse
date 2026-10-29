@@ -26,8 +26,9 @@ def run_sweep(binary, part, rows, *, samples=3, timeout=600, execute=None):
     run = execute or subprocess.run
     results = []
     for threshold in thresholds(rows):
+        expected_count = rows - threshold
         sql = f"SELECT count(*) FROM part WHERE id >= {threshold}"
-        expected = f"{rows - threshold}\n".encode()
+        expected = f"{expected_count}\n".encode()
         durations = []
         for _ in range(samples):
             start = time.perf_counter()
@@ -41,7 +42,7 @@ def run_sweep(binary, part, rows, *, samples=3, timeout=600, execute=None):
             if completed.stdout != expected:
                 raise ValueError(f"threshold {threshold}: result differs from sequential-id oracle")
             durations.append(elapsed)
-        results.append({"threshold": threshold, "expected_count": rows - threshold,
+        results.append({"threshold": threshold, "expected_count": expected_count,
                         "median_seconds": statistics.median(durations),
                         "samples_seconds": durations, "verified": True})
     return {"workload": "physical-selectivity-sweep", "rows_assumed": rows,
