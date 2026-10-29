@@ -59,6 +59,28 @@ fn parse_case_when(parser: &mut Parser) -> Result<ScalarExpr, ParseError> {
     }))
 }
 
+fn parse_if(parser: &mut Parser) -> Result<ScalarExpr, ParseError> {
+    parser.index += 1;
+    if !parser.take(Token::LParen) {
+        return Err(ParseError("if requires '('".into()));
+    }
+    let condition = parse_expression_tokens(parser)?;
+    if !parser.take(Token::Comma) {
+        return Err(ParseError("if requires three arguments".into()));
+    }
+    let yes = parse_expression_tokens(parser)?;
+    if !parser.take(Token::Comma) {
+        return Err(ParseError("if requires three arguments".into()));
+    }
+    let no = parse_expression_tokens(parser)?;
+    if !parser.take(Token::RParen) {
+        return Err(ParseError("if requires exactly three arguments".into()));
+    }
+    Ok(ScalarExpr::CaseWhen(
+        Box::new(condition), Box::new(yes), Box::new(no),
+    ))
+}
+
 fn parse_nullif(parser: &mut Parser) -> Result<ScalarExpr, ParseError> {
     parser.index += 1;
     if !parser.take(Token::LParen) {
@@ -122,6 +144,8 @@ pub(super) fn primary(parser: &mut Parser) -> Result<ScalarExpr, ParseError> {
             parse_coalesce(parser),
         Some(Token::Word(name)) if name.eq_ignore_ascii_case("NULLIF") =>
             parse_nullif(parser),
+        Some(Token::Word(name)) if name.eq_ignore_ascii_case("IF") =>
+            parse_if(parser),
         Some(Token::Word(name)) if name.eq_ignore_ascii_case("NULL") => {
             parser.index += 1;
             Ok(ScalarExpr::Null)
