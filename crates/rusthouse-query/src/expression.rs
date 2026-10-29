@@ -391,6 +391,15 @@ mod tests {
     }
 
     #[test]
+    fn if_function_reuses_case_when_short_circuit_expression() {
+        assert!(matches!(parse_scalar_expression("if(a > 0, a, 0)").unwrap(),
+            ScalarExpr::CaseWhen(..)));
+        for sql in ["if(a)", "if(a, 1)", "if(a, 1, 2, 3)", "if()"] {
+            assert!(parse_scalar_expression(sql).is_err(), "{sql}");
+        }
+    }
+
+    #[test]
     fn rejects_invalid_expressions() {
         for value in ["width +", "width,", "(width + 1", "9223372036854775808"] {
             assert!(parse_scalar_expression(value).is_err(), "{value}");
