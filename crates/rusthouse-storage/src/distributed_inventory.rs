@@ -17,6 +17,18 @@ fn io_error(path: &Path, source: io::Error) -> PartError {
     }
 }
 
+fn verified_file_size(path: &Path) -> Result<u64, PartError> {
+    // Do not follow links while determining the file type and size.
+    let metadata = fs::symlink_metadata(path).map_err(|error| io_error(path, error))?;
+    if !metadata.file_type().is_file() {
+        return Err(PartError::InvalidScan(format!(
+            "replication inventory requires regular files: {}",
+            path.display()
+        )));
+    }
+    Ok(metadata.len())
+}
+
 /// Inventory a frozen table root. Paths are relative to its active generation.
 /// Reject links and unexpected directories inside part directories.
 pub fn inventory_snapshot(
@@ -38,15 +50,7 @@ pub fn inventory_snapshot(
         for entry in fs::read_dir(&part).map_err(|error| io_error(&part, error))? {
             let entry = entry.map_err(|error| io_error(&part, error))?;
             let path = entry.path();
-            // A single no-follow stat checks both file type and byte length.
-            let metadata = fs::symlink_metadata(&path).map_err(|error| io_error(&path, error))?;
-            if !metadata.file_type().is_file() {
-                return Err(PartError::InvalidScan(format!(
-                    "replication inventory requires regular files: {}",
-                    path.display()
-                )));
-            }
-            let bytes = metadata.len();
+            let bytes = verified_file_size(&path)?;
             total_bytes = total_bytes
                 .checked_add(bytes)
                 .ok_or_else(|| PartError::InvalidScan("inventory size overflow".into()))?;
