@@ -70,6 +70,27 @@ class DbgenConversionTests(unittest.TestCase):
                 with self.assertRaisesRegex(ValueError, "unique"):
                     convert_directory(Path("missing"), Path("output"), selected)
 
+    def test_parallel_table_conversion_matches_serial_outputs(self):
+        with tempfile.TemporaryDirectory() as root:
+            path = Path(root)
+            for table in ("region", "nation", "supplier"):
+                (path / f"{table}.tbl").write_text(sample(table))
+            parallel = convert_directory(path, path / "parallel",
+                                         ["region", "nation", "supplier"], jobs=3)
+            serial = convert_directory(path, path / "serial",
+                                       ["region", "nation", "supplier"], jobs=1)
+            self.assertEqual(parallel, serial)
+            self.assertEqual(list(parallel), ["region", "nation", "supplier"])
+            for table in parallel:
+                self.assertEqual((path / "parallel" / f"{table}.tsv").read_bytes(),
+                                 (path / "serial" / f"{table}.tsv").read_bytes())
+
+    def test_invalid_parallel_worker_count(self):
+        for jobs in (0, 9, True, 1.5):
+            with self.subTest(jobs=jobs):
+                with self.assertRaisesRegex(ValueError, "jobs"):
+                    convert_directory("/unused", "/unused", ["region"], jobs=jobs)
+
     def test_converts_selected_tables_only(self):
         with tempfile.TemporaryDirectory() as root:
             path = Path(root)
