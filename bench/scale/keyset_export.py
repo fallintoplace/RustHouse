@@ -78,6 +78,9 @@ def export(binary, database, table, output, start, rows, page_rows=8192, timeout
                     raise TimeoutError("total export deadline exceeded")
                 count = min(page_rows, start + rows - first)
                 data = execute(page_sql(table, column, first, count))
+                if (max_total_seconds is not None
+                        and time.monotonic() - started > max_total_seconds):
+                    raise TimeoutError("total export deadline exceeded")
                 # Compare the complete expected page in one operation.
                 # Avoid one Python bytes allocation and one splitline per ID.
                 expected = "".join(f"{number}\n" for number in
