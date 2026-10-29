@@ -112,14 +112,16 @@ pub(super) fn candidate_mark_ranges<T: Ord + Copy>(
     Some(merged)
 }
 
+fn key_bytes(index: &FixedPrimaryIndex, mark: usize, field: usize) -> Option<[u8; 8]> {
+    index.field(mark, field)?.try_into().ok()
+}
+
 pub(super) fn u64_mark_key(index: &FixedPrimaryIndex, mark: usize, field: usize) -> Option<u64> {
-    let bytes: [u8; 8] = index.field(mark, field)?.try_into().ok()?;
-    Some(u64::from_le_bytes(bytes))
+    Some(u64::from_le_bytes(key_bytes(index, mark, field)?))
 }
 
 pub(super) fn i64_mark_key(index: &FixedPrimaryIndex, mark: usize, field: usize) -> Option<i64> {
-    let bytes: [u8; 8] = index.field(mark, field)?.try_into().ok()?;
-    Some(i64::from_le_bytes(bytes))
+    Some(i64::from_le_bytes(key_bytes(index, mark, field)?))
 }
 
 #[cfg(test)]
