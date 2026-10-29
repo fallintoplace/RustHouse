@@ -33,6 +33,8 @@ def validate_existing(path, start, count):
 
 
 def write_shard(path, start, count):
+    if path.is_symlink():
+        raise ValueError(f"refusing symlinked shard: {path}")
     if path.exists():
         return validate_existing(path, start, count), True
     pending = path.with_name("." + path.name + f".{os.getpid()}.pending")
