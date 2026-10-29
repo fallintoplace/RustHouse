@@ -34,7 +34,8 @@ def verify(manifest_path):
         raise ValueError("unsupported shard manifest version")
     start = require_uint(manifest.get("start"), "start", zero=True)
     rows = require_uint(manifest.get("rows"), "rows")
-    if start + rows > 2**64:
+    stop = start + rows
+    if stop > 2**64:
         raise ValueError("UInt64 range overflow")
     shards = manifest.get("shards")
     if not isinstance(shards, list) or not shards:
@@ -59,7 +60,7 @@ def verify(manifest_path):
         if canonical in seen_paths:
             raise ValueError("duplicate shard path")
         seen_paths.add(canonical)
-        if shard_start != position or count > start + rows - position:
+        if shard_start != position or count > stop - position:
             raise ValueError("gap, overlap or unexpected shard row count")
         if not isinstance(expected_hash, str) or len(expected_hash) != 64:
             raise ValueError("missing or invalid shard SHA-256")
@@ -67,7 +68,7 @@ def verify(manifest_path):
         if actual != expected_hash.lower():
             raise ValueError(f"{path}: SHA-256 mismatch")
         position += count
-    if position != start + rows:
+    if position != stop:
         raise ValueError("manifest does not cover all expected rows")
     return {"verified": True, "rows": rows, "shards": len(shards)}
 
