@@ -13,6 +13,7 @@ pub(super) fn is_function(name: &str) -> bool {
             | "DATEDIFF"
             | "DATE_DIFF"
             | "TIMEDIFF"
+            | "FROMDAYSSINCEYEARZERO32"
             | "TOISOYEAR"
             | "TOISOWEEK"
             | "TOUNIXTIMESTAMP64NANO"
@@ -240,6 +241,23 @@ pub(super) fn parse_after_open(
                 .ok_or_else(|| ParseError("TOUNIXTIMESTAMP64MILLI overflows Int64".into()))?;
             Ok(ConstantValue::Integer(scaled))
         }),
+        "FROMDAYSSINCEYEARZERO32" => {
+            let days = super::text_scalar::integer_arg(parser, depth + 1)?;
+            if !parser.take(Token::RParen) {
+                return Err(ParseError("fromDaysSinceYearZero32 requires one argument".into()));
+            }
+            match days {
+                None => Ok(ConstantValue::Null),
+                Some(days) => {
+                    if !(693_961..=840_057).contains(&days) {
+                        return Err(ParseError("Date32 day count is outside 1900..2299".into()));
+                    }
+                    let unix_days = days - 719_528;
+                    let seconds = unix_days * DAY_SECONDS;
+                    Ok(ConstantValue::Text(Temporal::render(seconds, false)?))
+                }
+            }
+        },
         "TIMEDIFF" => time_difference(parser, depth),
         _ => Err(ParseError(format!("unsupported date function: {name}"))),
     }
