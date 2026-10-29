@@ -2,9 +2,21 @@
 """Require independent reference-verified success for all 22 TPC-H queries."""
 import argparse
 import json
+import sys
 from pathlib import Path
 
+sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
+from bench.tpch.canonical_integrity import verify
+from bench.tpch.run import load_queries, query_fingerprint
+
 EXPECTED = set(range(1, 23))
+
+
+def trusted_fingerprint():
+    """Hash the verified pinned full SQL, not a caller-selected query folder."""
+    query_dir = Path(__file__).resolve().parent / "queries"
+    verify(query_dir)
+    return query_fingerprint(load_queries(query_dir))
 
 
 def audit(report):
@@ -12,6 +24,8 @@ def audit(report):
         raise ValueError("benchmark report must be a JSON object")
     if report.get("reference_checked") is not True:
         raise ValueError("all queries need independent expected TSV references")
+    if report.get("query_sha256") != trusted_fingerprint():
+        raise ValueError("benchmark did not run the pinned full canonical TPC-H SQL")
     records = report.get("results")
     if not isinstance(records, list) or len(records) != 22:
         raise ValueError("report must contain exactly 22 query results")
@@ -30,6 +44,8 @@ def audit(report):
     if coverage.get("failed_queries") != 0 or coverage.get("unverified_queries") != 0:
         raise ValueError("coverage summary contains failures or unverified results")
     inventory = report.get("official_22_coverage")
+    if inventory is not None and not isinstance(inventory, dict):
+        raise ValueError("SQL corpus inventory must be an object")
     if inventory is not None and (
         inventory.get("available_queries") != 22
         or inventory.get("missing_query_ids")

@@ -2,7 +2,7 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from bench.scale.csv_stream_to_tsv import convert, escape_field
+from bench.scale.csv_stream_to_tsv import convert, escape_field, utf8_length
 
 
 class CsvToTsvTests(unittest.TestCase):
@@ -15,6 +15,20 @@ class CsvToTsvTests(unittest.TestCase):
             self.assertEqual(stats["data_rows"], 4)
             self.assertEqual(target.read_bytes(),
                              b"id\tvalue\n1\ta,b\n2\tline\\nnext\n3\ta\\tb\n4\t\\\\N\n")
+
+    def test_utf8_sizes_and_unicode_field_budget(self):
+        self.assertEqual(utf8_length("1" * 100000), 100000)
+        self.assertEqual(utf8_length("é🙂"), 6)
+        with tempfile.TemporaryDirectory() as temp:
+            source = Path(temp) / "utf8.csv"
+            target = Path(temp) / "utf8.tsv"
+            source.write_text("é,🙂\n", encoding="utf-8")
+            with self.assertRaisesRegex(ValueError, "oversized"):
+                convert(source, target, max_field_bytes=3)
+            self.assertFalse(target.exists())
+            report = convert(source, target, max_field_bytes=4)
+            self.assertEqual(report["data_rows"], 1)
+            self.assertEqual(target.read_bytes(), "é\t🙂\n".encode("utf-8"))
 
     def test_preserves_real_crlf_inside_quoted_fields(self):
         with tempfile.TemporaryDirectory() as temp:
@@ -49,6 +63,25 @@ class CsvToTsvTests(unittest.TestCase):
             with self.assertRaises(ValueError):
                 convert(source, source)
 
+    def test_can_remove_csv_header_for_copy(self):
+        with tempfile.TemporaryDirectory() as temp:
+            source = Path(temp) / "input.csv"
+            target = Path(temp) / "copy.tsv"
+            source.write_text("id,name\n1,alpha\n2,beta\n")
+            report = convert(source, target, header=True, skip_header=True)
+            self.assertEqual(report["records"], 3)
+            self.assertEqual(report["data_rows"], 2)
+            self.assertEqual(target.read_bytes(), b"1\talpha\n2\tbeta\n")
+        with self.assertRaisesRegex(ValueError, "requires"):
+            convert("input.csv", "output.tsv", skip_header=True)
+
+
+class CSVFieldBudgetTypeTests(unittest.TestCase):
+    def test_rejects_invalid_field_size_before_opening_files(self):
+        for limit in (True, 1.5, float("nan"), float("inf"), "64"):
+            with self.subTest(limit=limit):
+                with self.assertRaisesRegex(ValueError, "positive integer"):
+                    convert("not-present.csv", "out.tsv", max_field_bytes=limit)
 
 if __name__ == "__main__":
     unittest.main()

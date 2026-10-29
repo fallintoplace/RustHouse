@@ -21,8 +21,14 @@ SQL = ("SELECT o.o_orderkey, c.c_custkey FROM orders o "
 def read_table(path, key):
     with Path(path).open(encoding="utf-8", newline="") as handle:
         reader = csv.DictReader(handle, delimiter="\t")
+        fields = reader.fieldnames or []
+        required = ("o_orderkey", "o_custkey") if key == "o_orderkey" else (key,)
+        if len(fields) != len(set(fields)) or any(name not in fields for name in required):
+            raise ValueError(f"{path}: missing or duplicate join columns")
         rows = []
         for row in reader:
+            if None in row or any(row.get(name) is None for name in fields):
+                raise ValueError(f"{path}: missing or extra join fields")
             if len(rows) >= MAX_ROWS:
                 raise ValueError(f"{path}: bounded join supports at most {MAX_ROWS} rows")
             rows.append(row)
