@@ -47,6 +47,9 @@ impl ScalarExpr {
 }
 
 const MAX_EXPRESSION_DEPTH: usize = 64;
+const MAX_ADDITIVE_OPERATORS: usize = 128;
+const MAX_EXPRESSION_TREE_DEPTH: usize = 256;
+const MAX_EXPRESSION_NODES: usize = 4096;
 
 fn parse_arithmetic_tokens(parser: &mut Parser, depth: usize) -> Result<ScalarExpr, ParseError> {
     let mut expr = product(parser, depth)?;
@@ -60,7 +63,7 @@ fn parse_arithmetic_tokens(parser: &mut Parser, depth: usize) -> Result<ScalarEx
             break;
         };
         operators += 1;
-        if operators > 128 {
+        if operators > MAX_ADDITIVE_OPERATORS {
             return Err(ParseError("arithmetic operator chain exceeds 128 terms".into()));
         }
         let right = product(parser, depth)?;
@@ -87,7 +90,7 @@ fn check_expression_budget(root: &ScalarExpr) -> Result<(), ParseError> {
     let mut total = 0usize;
     while let Some((expr, depth)) = pending.pop() {
         total += 1;
-        if depth >= 256 || total > 4096 {
+        if depth >= MAX_EXPRESSION_TREE_DEPTH || total > MAX_EXPRESSION_NODES {
             return Err(ParseError("numeric expression exceeds complexity budget".into()));
         }
         match expr {
