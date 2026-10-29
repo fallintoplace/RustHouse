@@ -18,7 +18,7 @@ def verify_file(path, start, rows, step=1):
     digest = hashlib.sha256()
     with Path(path).open("rb") as source:
         for expected in range(start, start + rows * step, step):
-            actual = source.readline()
+            actual = source.readline(22)
             if actual != f"{expected}\n".encode("ascii"):
                 raise ValueError(f"{path}: incorrect or missing row {expected}")
             digest.update(actual)
