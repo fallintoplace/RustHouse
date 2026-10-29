@@ -973,3 +973,32 @@ mod direct_numeric_argument_tests {
         assert!(matches!(eval_number(&affine, &batch, 0).unwrap(), Some(Number::Unsigned(105)) | Some(Number::Signed(105))));
     }
 }
+
+#[cfg(test)]
+mod null_predicate_expression_tests {
+    use super::*;
+    use rusthouse_storage::NumericColumn;
+
+    #[test]
+    fn nullable_numeric_and_text_conditions_produce_exact_boolean_values() {
+        let batch = [
+            TypedColumn::NullableNumeric {
+                values: NumericColumn::Int64(vec![12, 0]),
+                nulls: vec![0, 1],
+            },
+            TypedColumn::NullableText {
+                values: rusthouse_storage::read_legacy_strings(
+                    &mut b"\x01a\x00".as_slice(), 2).unwrap(),
+                nulls: vec![0, 1],
+            },
+        ];
+        for index in [0usize, 1] {
+            let nullable = BoundExpr::IsNull(Box::new(BoundExpr::Column(index)), false);
+            let present = BoundExpr::IsNull(Box::new(BoundExpr::Column(index)), true);
+            assert!(matches!(eval_number(&nullable, &batch, 0), Ok(Some(Number::Unsigned(0)))));
+            assert!(matches!(eval_number(&nullable, &batch, 1), Ok(Some(Number::Unsigned(1)))));
+            assert!(matches!(eval_number(&present, &batch, 0), Ok(Some(Number::Unsigned(1)))));
+            assert!(matches!(eval_number(&present, &batch, 1), Ok(Some(Number::Unsigned(0)))));
+        }
+    }
+}
