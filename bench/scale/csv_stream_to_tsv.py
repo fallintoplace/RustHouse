@@ -25,9 +25,11 @@ def escape_field(value, empty_as_null=False):
 
 
 def convert(source, destination, *, header=False, empty_as_null=False,
-            max_field_bytes=8 * 1024 * 1024):
+            max_field_bytes=8 * 1024 * 1024, skip_header=False):
     if Path(source).resolve() == Path(destination).resolve():
         raise ValueError("input and output must be different files")
+    if skip_header and not header:
+        raise ValueError("skip_header requires header=True")
     if max_field_bytes < 1:
         raise ValueError("max_field_bytes must be positive")
     old_limit = csv.field_size_limit()
@@ -51,6 +53,9 @@ def convert(source, destination, *, header=False, empty_as_null=False,
                         raise ValueError(f"CSV column count mismatch at record {count + 1}")
                     if any(len(value.encode("utf-8")) > max_field_bytes for value in fields):
                         raise ValueError("CSV record contains an oversized UTF-8 field")
+                    if skip_header and header and count == 0:
+                        count += 1
+                        continue
                     rendered = "\t".join(escape_field(value, empty_as_null)
                                          for value in fields) + "\n"
                     if len(rendered.encode("utf-8")) > 8 * 1024 * 1024:
@@ -75,11 +80,12 @@ def main(argv=None):
     parser.add_argument("source", type=Path)
     parser.add_argument("destination", type=Path)
     parser.add_argument("--header", action="store_true")
+    parser.add_argument("--skip-header", action="store_true", help="omit CSV header from COPY TSV")
     parser.add_argument("--empty-as-null", action="store_true")
     args = parser.parse_args(argv)
     try:
         report = convert(args.source, args.destination, header=args.header,
-                         empty_as_null=args.empty_as_null)
+                         empty_as_null=args.empty_as_null, skip_header=args.skip_header)
     except (OSError, csv.Error, UnicodeError, ValueError) as error:
         parser.exit(1, f"CSV conversion failed: {error}\n")
     print(f"{report['data_rows']} data rows written to {args.destination}")

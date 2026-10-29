@@ -49,6 +49,18 @@ class CsvToTsvTests(unittest.TestCase):
             with self.assertRaises(ValueError):
                 convert(source, source)
 
+    def test_can_remove_csv_header_for_copy(self):
+        with tempfile.TemporaryDirectory() as temp:
+            source = Path(temp) / "input.csv"
+            target = Path(temp) / "copy.tsv"
+            source.write_text("id,name\n1,alpha\n2,beta\n")
+            report = convert(source, target, header=True, skip_header=True)
+            self.assertEqual(report["records"], 3)
+            self.assertEqual(report["data_rows"], 2)
+            self.assertEqual(target.read_bytes(), b"1\talpha\n2\tbeta\n")
+        with self.assertRaisesRegex(ValueError, "requires"):
+            convert("input.csv", "output.tsv", skip_header=True)
+
 
 if __name__ == "__main__":
     unittest.main()
