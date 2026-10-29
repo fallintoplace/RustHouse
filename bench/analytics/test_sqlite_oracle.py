@@ -92,19 +92,19 @@ class SqliteOracleTests(unittest.TestCase):
 
 
     def test_large_unordered_text_rows_use_exact_multiplicity(self):
-        rows = [(f"label-{index % 17}", None if index % 5 == 0 else "a\\tb")
+        rows = [(f"label-{index % 17}", None if index % 5 == 0 else "a\tb")
                 for index in range(3000)]
-        output = "".join(
-            f"{name}\\t{r'\\N' if value is None else r'a\\tb'}\\n"
-            for name, value in reversed(rows)
-        ).encode()
+        def encode(row):
+            name, value = row
+            return name + "\t" + (r"\N" if value is None else r"a\tb") + "\n"
+        output = "".join(encode(row) for row in reversed(rows)).encode()
         assert_matches(output, rows, unordered=True)
-        corrupt = output.replace(b"label-0\\t", b"label-X\\t", 1)
+        corrupt = output.replace(b"label-0\t", b"label-X\t", 1)
         with self.assertRaisesRegex(ValueError, "multiset"):
             assert_matches(corrupt, rows, unordered=True)
-        assert_matches(b"\\\\N\\n", [(r"\\N",)], unordered=True)
+        assert_matches(b"\\\\N\n", [(r"\N",)], unordered=True)
         with self.assertRaisesRegex(ValueError, "multiset"):
-            assert_matches(b"\\N\\n", [(r"\\N",)], unordered=True)
+            assert_matches(b"\\N\n", [(r"\N",)], unordered=True)
 
     def test_large_unordered_integer_rows_use_exact_multiplicity(self):
         rows = [(index % 23, index % 5) for index in range(3000)]
