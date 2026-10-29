@@ -79,7 +79,7 @@ fn parses_tpch_q6_style_date_intervals_and_decimal_bounds() {
 fn rejects_invalid_date_arithmetic_without_accepting_partial_sql() {
     for statement in [
         "SELECT count(*) FROM lineitem WHERE l_shipdate < DATE '1994-01-01' + 1",
-        "SELECT count(*) FROM lineitem WHERE l_shipdate < DATE '1994-01-01' + INTERVAL '1' MONTH",
+        "SELECT count(*) FROM lineitem WHERE l_shipdate < DATE '1994-01-01' + INTERVAL '1' WEEK",
         "SELECT count(*) FROM lineitem WHERE l_shipdate < DATE '1994-01-01' + INTERVAL 'bad' YEAR",
         "SELECT count(*) FROM lineitem WHERE l_discount BETWEEN 0.06 + 'bad' AND 0.07",
     ] {
