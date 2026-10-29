@@ -126,6 +126,7 @@ pub(super) fn apply_unary_math(name: &str, value: Number) -> Result<Number, Exec
         "EXP" => Number::Float(number_as_float(value).exp()),
         "LN" => Number::Float(number_as_float(value).ln()),
         "LOG2" => Number::Float(number_as_float(value).log2()),
+        "LOG10" => Number::Float(number_as_float(value).log10()),
         _ => {
             return Err(ExecutionError::Invalid(format!(
                 "unsupported aggregate numeric function: {name}"
@@ -305,6 +306,17 @@ mod aggregate_unary_math_tests {
         assert!(apply_unary_math("LOG2", Number::Signed(0)).is_err());
         assert!(crate::parse_scalar_expression("log2(amount)").is_ok());
         assert!(crate::parse_scalar_expression("log2(amount, 2)").is_err());
+    }
+
+    #[test]
+    fn log10_supports_decimal_orders_of_magnitude() {
+        assert!(matches!(
+            apply_unary_math("LOG10", Number::Unsigned(1000)),
+            Ok(Number::Float(value)) if value == 3.0
+        ));
+        assert!(apply_unary_math("LOG10", Number::Signed(-10)).is_err());
+        assert!(crate::parse_scalar_expression("log10(amount)").is_ok());
+        assert!(crate::parse_scalar_expression("log10(amount, 2)").is_err());
     }
 
 }
