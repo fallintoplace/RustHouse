@@ -46,6 +46,7 @@ pub(super) fn is_function(name: &str) -> bool {
         || name.eq_ignore_ascii_case("GREATER")
         || name.eq_ignore_ascii_case("GREATEROREQUALS")
         || name.eq_ignore_ascii_case("NOT")
+        || name.eq_ignore_ascii_case("AND")
         || is_saturating(name)
         || name.eq_ignore_ascii_case("BITHAMMINGDISTANCE")
         || name.eq_ignore_ascii_case("ABS")
@@ -1209,6 +1210,21 @@ fn factor(parser: &mut Parser, depth: usize) -> Result<i64, ParseError> {
             require_token(parser, Token::Comma, "greaterOrEquals requires two arguments")?;
             let second = expression(parser, depth + 1)?;
             i64::from(first >= second)
+        } else if name.eq_ignore_ascii_case("AND") {
+            let mut result = first != 0;
+            let mut arguments = 1usize;
+            while parser.take(Token::Comma) {
+                if arguments >= 16 {
+                    return Err(ParseError("and accepts at most 16 values".into()));
+                }
+                let next = expression(parser, depth + 1)?;
+                result = result && next != 0;
+                arguments += 1;
+            }
+            if arguments < 2 {
+                return Err(ParseError("and requires at least two values".into()));
+            }
+            i64::from(result)
         } else if name.eq_ignore_ascii_case("ABS") {
             first.checked_abs().ok_or_else(overflow)?
         } else if name.eq_ignore_ascii_case("DIGIT_SUM") {
