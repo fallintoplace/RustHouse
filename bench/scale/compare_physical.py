@@ -9,6 +9,10 @@ from bench.scale.physical_scan import COUNT_SQL, SUM_SQL, even_reference
 CASES = ("count_even", "sum_even")
 
 
+def valid_median(value):
+    return type(value) in (int, float) and math.isfinite(value) and value > 0
+
+
 def compare(baseline, candidate, *, max_slowdown_percent=10):
     if not math.isfinite(max_slowdown_percent) or max_slowdown_percent < 0:
         raise ValueError("max_slowdown_percent must be finite and nonnegative")
@@ -40,7 +44,7 @@ def compare(baseline, candidate, *, max_slowdown_percent=10):
                 or a["expected"] != oracle or b["expected"] != oracle):
             raise ValueError(f"{name}: incorrect physical SQL or independent oracle")
         old, new = a.get("median_seconds"), b.get("median_seconds")
-        if not all(type(x) in (int, float) and math.isfinite(x) and x > 0 for x in (old, new)):
+        if not all(valid_median(x) for x in (old, new)):
             raise ValueError(f"{name} has invalid median timings")
         slowdown = 100 * (new / old - 1)
         old_p90, new_p90 = a.get("p90_seconds"), b.get("p90_seconds")
