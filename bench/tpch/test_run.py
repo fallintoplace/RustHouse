@@ -1,3 +1,4 @@
+import hashlib
 import subprocess
 import tempfile
 import unittest
@@ -111,6 +112,8 @@ class RunnerTests(unittest.TestCase):
         self.assertEqual(query_fingerprint(first), query_fingerprint(list(reversed(first))))
         self.assertNotEqual(query_fingerprint(first), query_fingerprint([(6, "SELECT 7"), first[1]]))
         self.assertEqual(len(query_fingerprint(first)), 64)
+        canonical = b"q01\x00SELECT 1\x00q06\x00SELECT 6\x00"
+        self.assertEqual(query_fingerprint(first), hashlib.sha256(canonical).hexdigest())
 
     def test_error_and_timeout(self):
         def broken(_):
