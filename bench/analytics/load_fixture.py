@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """Load the synthetic ClickBench fixture and verify source/reference row counts."""
 import argparse
+import math
 import sqlite3
 from contextlib import closing
 import sys
@@ -12,6 +13,9 @@ from fixture import FIELDS
 
 
 def load_fixture(binary, database, fixture_dir, timeout=120, execute=None):
+    if (type(timeout) not in (int, float) or not math.isfinite(timeout)
+            or timeout <= 0):
+        raise ValueError("timeout must be finite and positive")
     root = Path(fixture_dir)
     tsv = root / "hits.tsv"
     with tsv.open(encoding="utf-8") as source:

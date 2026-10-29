@@ -290,6 +290,37 @@ pub(crate) fn parse_json(text: &str) -> Result<JsonValue<'_>, &'static str> {
     Ok(value)
 }
 
+/// Read one bounded JSONEachRow object as named values for SQL ingestion.
+/// The existing JSON parser checks nesting, numeric syntax and UTF-8 escapes.
+pub fn parse_json_each_row_fields(text: &str) -> Result<Vec<(String, Option<String>)>, String> {
+    let value = parse_json(text).map_err(str::to_owned)?;
+    let JsonKind::Object(fields) = value.kind else {
+        return Err("JSONEachRow requires one JSON object per row".into());
+    };
+    if fields.len() > 128 {
+        return Err("JSONEachRow supports at most 128 fields".into());
+    }
+    let mut seen = std::collections::HashSet::with_capacity(fields.len());
+    let mut converted = Vec::with_capacity(fields.len());
+    for (key, cell) in fields {
+        if key.is_empty() || key.len() > 128 {
+            return Err("JSONEachRow field names must be between 1 and 128 bytes".into());
+        }
+        if !seen.insert(key.clone()) {
+            return Err(format!("duplicate JSONEachRow field: {key}"));
+        }
+        let value = match cell.kind {
+            JsonKind::Text(text) => Some(text),
+            JsonKind::Primitive if cell.raw == "null" => None,
+            JsonKind::Primitive | JsonKind::Array(_) | JsonKind::Object(_) => {
+                Some(cell.raw.to_owned())
+            }
+        };
+        converted.push((key, value));
+    }
+    Ok(converted)
+}
+
 #[cfg(test)]
 mod tests {
     use super::parse_json;
