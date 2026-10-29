@@ -107,7 +107,7 @@ fn parse_decimal_component(value: &str) -> Option<u8> {
     value.parse::<u8>().ok()
 }
 
-fn decimal_spec(precision: u8, scale: u8) -> Option<(u8, u8, &'static str)> {
+fn checked_decimal_spec(precision: u8, scale: u8) -> Option<(u8, u8, &'static str)> {
     if precision == 0 || precision > 38 || scale > precision {
         return None;
     }
@@ -123,7 +123,7 @@ fn parse_sized_decimal(data_type: &str) -> Option<(u8, u8, &'static str)> {
         _ => return None,
     };
     let scale = parse_decimal_component(arguments.strip_suffix(')')?)?;
-    decimal_spec(precision, scale)
+    checked_decimal_spec(precision, scale)
 }
 
 fn parse_general_decimal(inner: &str) -> Option<(u8, u8, &'static str)> {
@@ -133,7 +133,7 @@ fn parse_general_decimal(inner: &str) -> Option<(u8, u8, &'static str)> {
     };
     let precision = parse_decimal_component(precision)?;
     let scale = parse_decimal_component(scale)?;
-    decimal_spec(precision, scale)
+    checked_decimal_spec(precision, scale)
 }
 
 fn parse_decimal_type(data_type: &str) -> Option<(u8, u8, &'static str)> {
