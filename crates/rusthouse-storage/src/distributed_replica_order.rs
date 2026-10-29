@@ -124,10 +124,12 @@ pub fn best_read_replica_at_least(
         })
         .min_by(|left, right| newest_first(left, right))
         .map(|replica| replica.node.clone())
-        .ok_or(if replicas.iter().any(|replica| replica.healthy) {
-            "no storage replica meets the freshness floor"
-        } else {
-            "no healthy storage replica"
+        .ok_or_else(|| {
+            if replicas.iter().any(|replica| replica.healthy) {
+                "no storage replica meets the freshness floor"
+            } else {
+                "no healthy storage replica"
+            }
         })
 }
 
