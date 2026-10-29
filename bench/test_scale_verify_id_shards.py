@@ -1,5 +1,6 @@
 import hashlib
 import json
+import sys
 import tempfile
 import unittest
 from pathlib import Path
@@ -43,6 +44,7 @@ class VerifyShardsTests(unittest.TestCase):
             with self.assertRaisesRegex(ValueError, "gap"):
                 verify(manifest)
 
+    @unittest.skipIf(sys.platform == "win32", "Windows CI cannot create symlinks")
     def test_rejects_symlinked_valid_shard(self):
         with tempfile.TemporaryDirectory() as temp:
             root = Path(temp)
