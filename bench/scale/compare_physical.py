@@ -12,6 +12,8 @@ CASES = ("count_even", "sum_even")
 
 def compare(baseline, candidate, *, max_slowdown_percent=10,
             max_tail_slowdown_percent=None):
+    if not isinstance(baseline, dict) or not isinstance(candidate, dict):
+        raise ValueError("physical comparison reports must be objects")
     if not math.isfinite(max_slowdown_percent) or max_slowdown_percent < 0:
         raise ValueError("max_slowdown_percent must be finite and nonnegative")
     if max_tail_slowdown_percent is not None and (
