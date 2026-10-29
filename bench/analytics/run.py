@@ -43,7 +43,9 @@ def http_target(endpoint):
     parsed = urllib.parse.urlsplit(endpoint)
     if parsed.scheme not in ("http", "https") or not parsed.netloc:
         raise ValueError("--url requires an HTTP(S) URL")
-    params = urllib.parse.parse_qsl(parsed.query, keep_blank_values=True)
+    params = [(key, value) for key, value in
+              urllib.parse.parse_qsl(parsed.query, keep_blank_values=True)
+              if key != "format"]
     params.append(("format", "tsv-no-header"))
     return urllib.parse.urlunsplit(
         (parsed.scheme, parsed.netloc, parsed.path or "/", urllib.parse.urlencode(params), "")
