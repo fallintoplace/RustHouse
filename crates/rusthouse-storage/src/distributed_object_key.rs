@@ -25,7 +25,7 @@ fn component(value: &str) -> bool {
         }
         previous_dot = byte == b'.';
     }
-    true
+    !previous_dot
 }
 
 impl ObjectKey {
@@ -189,5 +189,19 @@ mod parse_relative_tests {
         ] {
             assert!(ObjectKey::parse_relative(PathBuf::from(path).as_path()).is_err(), "{path}");
         }
+    }
+}
+
+#[cfg(test)]
+mod trailing_dot_key_tests {
+    use super::*;
+
+    #[test]
+    fn refuses_platform_ambiguous_trailing_dots() {
+        for component in ["part.", "part..", "data.bin."] {
+            assert!(ObjectKey::new("cluster", "s1", 1, component, "data.bin").is_err());
+            assert!(ObjectKey::new("cluster", "s1", 1, "part", component).is_err());
+        }
+        assert!(ObjectKey::new("cluster", "s1", 1, "part", "data.bin").is_ok());
     }
 }
