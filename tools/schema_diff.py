@@ -8,6 +8,9 @@ from urllib.parse import quote, urlsplit
 from urllib.request import urlopen
 
 
+MAX_SCHEMA_BYTES = 1_048_576
+
+
 def validate_url(origin):
     url = urlsplit(origin)
     if (url.scheme != "http" or url.hostname not in ("localhost", "127.0.0.1")
@@ -38,8 +41,8 @@ def columns(payload):
 def fetch(base, table, timeout=5):
     url = base + "/schema?table=" + quote(table, safe="")
     with urlopen(url, timeout=timeout) as response:
-        body = response.read(1_048_577)
-    if len(body) > 1_048_576:
+        body = response.read(MAX_SCHEMA_BYTES + 1)
+    if len(body) > MAX_SCHEMA_BYTES:
         raise ValueError("schema response too large")
     return columns(json.loads(body))
 
