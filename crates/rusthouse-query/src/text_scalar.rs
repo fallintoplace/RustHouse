@@ -2867,7 +2867,13 @@ fn parse_at_depth(parser: &mut Parser, depth: usize) -> Result<ConstantValue, Pa
             require(parser, Token::RParen, "lowerUTF8 requires one argument")?;
             match input {
                 Some(value) => {
-                    let result = value.to_lowercase();
+                    let result = if value.is_ascii() {
+                        let mut ascii = value;
+                        ascii.make_ascii_lowercase();
+                        ascii
+                    } else {
+                        value.to_lowercase()
+                    };
                     if result.len() > MAX_TEXT_BYTES {
                         return Err(ParseError("lowerUTF8 result is too large".into()));
                     }
@@ -3327,6 +3333,28 @@ mod ch_perf_ascii_utf16length_tests {
             ("SELECT utf16_length('Hello')", ConstantValue::Integer(5)),
             ("SELECT utf16_length('A🙂')", ConstantValue::Integer(3)),
             ("SELECT utf16_length(NULL)", ConstantValue::Null),
+        ] {
+            assert_eq!(value(sql), expected, "{sql}");
+        }
+    }
+}
+
+#[cfg(test)]
+mod ch_perf_ascii_lowerutf8_tests {
+    use crate::{parse_select, ConstantValue, Projection};
+    fn value(sql: &str) -> ConstantValue {
+        match parse_select(sql).unwrap().projection {
+            Projection::Constants(items) if items.len() == 1 => items[0].value.clone(),
+            Projection::Literal(value) => ConstantValue::Integer(value),
+            other => panic!("unexpected projection: {other:?}"),
+        }
+    }
+    #[test]
+    fn ascii_and_unicode_keep_the_same_results() {
+        for (sql, expected) in [
+            ("SELECT lowerUTF8('HELLO')", ConstantValue::Text("hello".into())),
+            ("SELECT lowerUTF8('ÄBC')", ConstantValue::Text("äbc".into())),
+            ("SELECT lowerUTF8(NULL)", ConstantValue::Null),
         ] {
             assert_eq!(value(sql), expected, "{sql}");
         }
