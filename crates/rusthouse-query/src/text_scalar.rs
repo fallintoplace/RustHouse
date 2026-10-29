@@ -6,7 +6,8 @@ const MAX_TEXT_BYTES: usize = 1_048_576;
 pub(super) fn is_function(name: &str) -> bool {
     super::date_scalar::is_function(name) || matches!(
         name.to_ascii_uppercase().as_str(),
-        "DOMAINWITHOUTWWW"
+        "CUTWWW"
+            | "DOMAINWITHOUTWWW"
             | "CUTURLPARAMETER"
             | "JSONEXTRACTBOOL"
             | "IPV4NUMTOSTRING"
@@ -446,6 +447,30 @@ fn parse_at_depth(parser: &mut Parser, depth: usize) -> Result<ConstantValue, Pa
                     ConstantValue::Text(
                         host.strip_prefix("www.").unwrap_or(host).to_owned(),
                     )
+                }
+                None => ConstantValue::Null,
+            }
+        }
+        "CUTWWW" => {
+            let input = text_arg(parser, depth + 1)?;
+            require(parser, Token::RParen, "cutWWW requires one argument")?;
+            match input {
+                Some(input) => {
+                    let authority_start = input.find("://").map_or(0, |index| index + 3);
+                    let authority_end = input[authority_start..]
+                        .find(['/', '?', '#'])
+                        .map_or(input.len(), |index| authority_start + index);
+                    let host_start = input[authority_start..authority_end]
+                        .rfind('@')
+                        .map_or(authority_start, |index| authority_start + index + 1);
+                    if input[host_start..authority_end].starts_with("www.") {
+                        let mut output = String::with_capacity(input.len() - 4);
+                        output.push_str(&input[..host_start]);
+                        output.push_str(&input[host_start + 4..]);
+                        ConstantValue::Text(output)
+                    } else {
+                        ConstantValue::Text(input)
+                    }
                 }
                 None => ConstantValue::Null,
             }
@@ -3920,5 +3945,32 @@ mod clickhouse_domain_without_www_tests {
             );
         }
         assert!(parse_select("SELECT domainWithoutWWW('x', 'y')").is_err());
+    }
+}
+
+#[cfg(test)]
+mod clickhouse_cut_www_tests {
+    use crate::{parse_select, ConstantValue, Projection};
+
+    #[test]
+    fn removes_one_www_prefix_without_changing_other_url_components() {
+        for (sql, expected) in [
+            ("SELECT cutWWW('https://www.example.org/a?b=1')",
+                "https://example.org/a?b=1"),
+            ("SELECT cutWWW('www.example.org/path')", "example.org/path"),
+            ("SELECT cutWWW('https://www.www.example.org')",
+                "https://www.example.org"),
+            ("SELECT cutWWW('https://example.org')", "https://example.org"),
+            ("SELECT cutWWW('https://u@www.example.org:80/x')",
+                "https://u@example.org:80/x"),
+        ] {
+            assert!(
+                matches!(parse_select(sql).unwrap().projection, Projection::Constants(values)
+                    if values.len() == 1
+                        && values[0].value == ConstantValue::Text(expected.into())),
+                "{sql}",
+            );
+        }
+        assert!(parse_select("SELECT cutWWW('a', 'b')").is_err());
     }
 }
