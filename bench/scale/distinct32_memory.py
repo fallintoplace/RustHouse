@@ -36,10 +36,15 @@ def write_tsv(path, rows, layout, duplicates):
     unique = set()
     with Path(path).open("w", encoding="ascii") as output:
         output.write("id\n")
+        pending = []
         for value in distinct_values(rows, layout):
             unique.add(value)
-            for _ in range(duplicates):
-                output.write(f"{value}\n")
+            pending.extend([f"{value}\n"] * duplicates)
+            if len(pending) >= 8192:
+                output.write("".join(pending))
+                pending.clear()
+        if pending:
+            output.write("".join(pending))
     return len(unique)
 
 
