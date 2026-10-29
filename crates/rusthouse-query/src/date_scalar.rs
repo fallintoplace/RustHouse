@@ -9,7 +9,8 @@ const MAX_YEAR: i64 = 2299;
 pub(super) fn is_function(name: &str) -> bool {
     matches!(
         name.to_ascii_uppercase().as_str(),
-        "ADDDAYS"
+        "TOSTARTOFHALFHOUR"
+            | "ADDDAYS"
             | "TOHOUR"
             | "TORELATIVEMONTHNUM"
             | "TORELATIVEWEEKNUM"
@@ -76,6 +77,12 @@ pub(super) fn parse_after_open(
     depth: usize,
 ) -> Result<ConstantValue, ParseError> {
     match name {
+        "TOSTARTOFHALFHOUR" => unary_date(parser, depth, |value| {
+            Ok(ConstantValue::Text(Temporal::render(
+                value.seconds.div_euclid(1_800) * 1_800,
+                true,
+            )?))
+        }),
         "TOYEARWEEK" => unary_date(parser, depth, |value| {
             Ok({
                 let days = value.seconds.div_euclid(DAY_SECONDS);
@@ -1232,5 +1239,32 @@ mod utc_compat_tests {
         ] {
             assert!(crate::parse_select(sql).is_err(), "{sql}");
         }
+    }
+}
+
+#[cfg(test)]
+mod clickhouse_start_of_half_hour_tests {
+    use crate::{parse_select, ConstantValue, Projection};
+
+    #[test]
+    fn rounds_utc_timestamps_down_to_half_hour() {
+        for (sql, expected) in [
+            ("SELECT toStartOfHalfHour('2024-01-01 12:29:59')", "2024-01-01 12:00:00"),
+            ("SELECT toStartOfHalfHour('2024-01-01 12:30:00')", "2024-01-01 12:30:00"),
+            ("SELECT toStartOfHalfHour('2024-01-01 23:59:59')", "2024-01-01 23:30:00"),
+            ("SELECT toStartOfHalfHour('2024-02-29')", "2024-02-29 00:00:00"),
+        ] {
+            assert!(
+                matches!(parse_select(sql).unwrap().projection, Projection::Constants(values)
+                    if values.len() == 1
+                        && values[0].value == ConstantValue::Text(expected.into())),
+                "{sql}",
+            );
+        }
+        assert!(
+            matches!(parse_select("SELECT toStartOfHalfHour(NULL)").unwrap().projection,
+                Projection::Constants(values) if values[0].value == ConstantValue::Null)
+        );
+        assert!(parse_select("SELECT toStartOfHalfHour('2024-01-01', 1)").is_err());
     }
 }

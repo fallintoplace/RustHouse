@@ -57,5 +57,14 @@ class CanonicalGateTests(unittest.TestCase):
             audit(bad)
 
 
+class CanonicalInventoryShapeTests(unittest.TestCase):
+    def test_rejects_nonobject_query_inventory(self):
+        for value in ([], 1, True, "22"):
+            with self.subTest(inventory=value):
+                report = complete()
+                report["official_22_coverage"] = value
+                with self.assertRaisesRegex(ValueError, "inventory must be an object"):
+                    audit(report)
+
 if __name__ == "__main__":
     unittest.main()

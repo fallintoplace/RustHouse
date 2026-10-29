@@ -39,6 +39,19 @@ class ShardTests(unittest.TestCase):
             self.assertEqual(b"".join((target / p["path"]).read_bytes()
                                       for p in report["shards"]), source.read_bytes())
 
+    def test_published_shards_and_manifest_are_fsynced(self):
+        import os
+        from unittest.mock import patch
+        with tempfile.TemporaryDirectory() as root:
+            source = Path(root) / "input.tsv"
+            source.write_bytes(b"1\n2\n3\n")
+            target = Path(root) / "shards"
+            with patch("bench.scale.tsv_shards.os.fsync", wraps=os.fsync) as fsync:
+                split_tsv(source, target, rows_per_chunk=2)
+            self.assertGreaterEqual(fsync.call_count, 3)
+            self.assertEqual((target / "part-000000.tsv").read_bytes(), b"1\n2\n")
+            self.assertTrue((target / "manifest.json").is_file())
+
     def test_does_not_publish_malformed_source(self):
         with tempfile.TemporaryDirectory() as root:
             source = Path(root) / "input.tsv"

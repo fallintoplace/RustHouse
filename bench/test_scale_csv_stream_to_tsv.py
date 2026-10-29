@@ -76,5 +76,12 @@ class CsvToTsvTests(unittest.TestCase):
             convert("input.csv", "output.tsv", skip_header=True)
 
 
+class CSVFieldBudgetTypeTests(unittest.TestCase):
+    def test_rejects_invalid_field_size_before_opening_files(self):
+        for limit in (True, 1.5, float("nan"), float("inf"), "64"):
+            with self.subTest(limit=limit):
+                with self.assertRaisesRegex(ValueError, "positive integer"):
+                    convert("not-present.csv", "out.tsv", max_field_bytes=limit)
+
 if __name__ == "__main__":
     unittest.main()

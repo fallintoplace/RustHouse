@@ -9,6 +9,7 @@ pub enum CopyFormat {
     Csv,
     Tsv,
     Ssv,
+    JsonEachRow,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -52,8 +53,10 @@ fn parse_copy_format_option(parser: &mut Parser) -> Result<CopyFormat, ParseErro
         Ok(CopyFormat::Tsv)
     } else if parser.keyword("SSV") {
         Ok(CopyFormat::Ssv)
+    } else if parser.keyword("JSONEACHROW") {
+        Ok(CopyFormat::JsonEachRow)
     } else {
-        Err(ParseError("COPY format must be CSV, TSV or SSV".into()))
+        Err(ParseError("COPY format must be CSV, TSV, SSV or JSONEachRow".into()))
     }
 }
 
@@ -91,6 +94,9 @@ fn parse_copy_options(parser: &mut Parser) -> Result<CopyOptions, ParseError> {
         options.format = parse_copy_format_option(parser)?;
         if parser.take(Token::Comma) {
             options.header = parse_copy_header(parser)?;
+        }
+        if options.format == CopyFormat::JsonEachRow && options.header {
+            return Err(ParseError("JSONEachRow cannot use a CSV-style HEADER".into()));
         }
         if !parser.take(Token::RParen) {
             return Err(ParseError("expected ')' after COPY options".into()));

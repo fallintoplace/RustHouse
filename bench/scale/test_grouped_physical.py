@@ -44,6 +44,16 @@ class GroupedPhysicalReferenceTests(unittest.TestCase):
         self.assertEqual(counts, actual_counts)
         self.assertEqual(sums, actual_sums)
 
+    def test_invalid_execution_budgets_fail_before_creating_fixtures(self):
+        from bench.scale.grouped_physical import benchmark
+        for runs, warmups, timeout in (
+            (0, 0, 60), (True, 1, 60), (1, -1, 60),
+            (900, 101, 60), (1, 0, float("nan")), (1, 0, float("inf")),
+        ):
+            with self.subTest(runs=runs, warmups=warmups, timeout=timeout):
+                with self.assertRaises(ValueError):
+                    benchmark("no-binary", 1_000_000_000, 2, runs, warmups, timeout)
+
     def test_rejects_unbounded_billion_row_fixture_batches(self):
         with self.assertRaisesRegex(ValueError, "batch_rows"):
             emit(io.StringIO(), 1_000_000_000, 4096, batch_rows=1_000_000_000)
