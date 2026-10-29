@@ -356,7 +356,7 @@ fn stream_inner_join_count<W: Write>(
             count_join_combinations(&mut row, &builds, 0, null_filter, &mut total)?;
         }
     }
-    output.write_all(b"count\\n")?;
+    output.write_all(b"count\n")?;
     if query.offset == 0 {
         writeln!(output, "{total}")?;
     }
