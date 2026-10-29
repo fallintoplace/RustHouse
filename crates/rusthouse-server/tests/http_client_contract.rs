@@ -252,3 +252,59 @@ fn clickhouse_http_typed_parameters_reject_injection_and_bad_bindings() {
         assert_eq!(result.status, "400 Bad Request", "{target} {sql}");
     }
 }
+#[test]
+fn clickhouse_http_max_result_rows_limits_generated_results() {
+    let default = handle_request(
+        "POST",
+        "/?max_result_rows=0",
+        b"SELECT number FROM numbers(5)",
+        &config(),
+    );
+    assert_eq!(default.status, "200 OK");
+    assert_eq!(default.body, b"number\n0\n1\n2\n3\n4\n");
+
+    let capped = handle_request(
+        "POST",
+        "/?max_result_rows=2",
+        b"SELECT number FROM numbers(5)",
+        &config(),
+    );
+    assert_eq!(capped.status, "200 OK");
+    assert_eq!(capped.body, b"number\n0\n1\n");
+
+    let explicit_limit = handle_request(
+        "GET",
+        "/?query=SELECT+number+FROM+numbers%285%29+LIMIT+4&max_result_rows=1",
+        b"",
+        &config(),
+    );
+    assert_eq!(explicit_limit.status, "200 OK");
+    assert_eq!(explicit_limit.body, b"number\n0\n");
+
+    let no_relaxation = handle_request(
+        "POST",
+        "/?max_result_rows=500000",
+        b"SELECT number FROM numbers(5)",
+        &Config {
+            max_rows: 3,
+            ..config()
+        },
+    );
+    assert_eq!(no_relaxation.status, "200 OK");
+    assert_eq!(no_relaxation.body, b"number\n0\n1\n2\n");
+}
+
+#[test]
+fn clickhouse_http_max_result_rows_validates_strict_numeric_values() {
+    for target in [
+        "/?max_result_rows=",
+        "/?max_result_rows=-1",
+        "/?max_result_rows=1.5",
+        "/?max_result_rows=1%20",
+        "/?max_result_rows=184467440737095516160",
+        "/?max_result_rows=1&max_result_rows=2",
+    ] {
+        let response = handle_request("POST", target, b"SELECT 1", &config());
+        assert_eq!(response.status, "400 Bad Request", "{target}");
+    }
+}

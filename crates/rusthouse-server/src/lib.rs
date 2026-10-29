@@ -205,7 +205,7 @@ impl QueryFormat {
 
 fn query_parameters(
     target: &str,
-) -> Result<(String, Option<String>, QueryFormat, Vec<(String, String)>), &'static str> {
+) -> Result<(String, Option<String>, QueryFormat, Vec<(String, String)>, Option<usize>), &'static str> {
     let (path, query) = target.split_once('?').unwrap_or((target, ""));
     if path != "/" && path != "/explain" {
         return Err("unknown SQL endpoint");
@@ -214,6 +214,7 @@ fn query_parameters(
     let mut format = None;
     let mut default_format = None;
     let mut parameters = Vec::new();
+    let mut max_result_rows = None;
     for parameter in query.split('&').filter(|p| !p.is_empty()) {
         let (key, value) = parameter
             .split_once('=')
@@ -240,6 +241,21 @@ fn query_parameters(
                 }
                 default_format = Some(QueryFormat::parse(&decode_url(value)?)?);
             }
+            "max_result_rows" => {
+                if max_result_rows.is_some() {
+                    return Err("duplicate max_result_rows setting");
+                }
+                if value.is_empty()
+                    || value.len() > 20
+                    || !value.bytes().all(|byte| byte.is_ascii_digit())
+                {
+                    return Err("invalid max_result_rows setting");
+                }
+                let parsed = value
+                    .parse::<usize>()
+                    .map_err(|_| "max_result_rows exceeds platform limits")?;
+                max_result_rows = Some(parsed);
+            }
             name if name.starts_with("param_") => {
                 let name = &name[6..];
                 if !sql_parameters::valid_name(name) {
@@ -263,6 +279,7 @@ fn query_parameters(
         statement,
         format.or(default_format).unwrap_or(QueryFormat::Tsv),
         parameters,
+        max_result_rows,
     ))
 }
 
@@ -348,10 +365,20 @@ pub fn handle_request(method: &str, target: &str, body: &[u8], config: &Config) 
     if body.len() > MAX_QUERY_BYTES || target.len() > MAX_HEADER_BYTES {
         return Response::text("413 Payload Too Large", "SQL statement too large\n");
     }
-    let (path, query, format, parameters) = match query_parameters(target) {
+    let (path, query, format, parameters, max_result_rows) = match query_parameters(target) {
         Ok(v) => v,
         Err(message) => return Response::text("400 Bad Request", message),
     };
+    // A request can tighten, but never relax, the configured response row cap.
+    // ClickHouse uses zero to mean that no additional max_result_rows limit
+    // is requested. RustHouse still applies its server-side maximum.
+    let effective_config = Config {
+        max_rows: max_result_rows
+            .filter(|value| *value != 0)
+            .map_or(config.max_rows, |value| value.min(config.max_rows)),
+        ..config.clone()
+    };
+    let config = &effective_config;
     let sql = match method {
         "GET" if !body.is_empty() => {
             return Response::text("400 Bad Request", "GET must not contain a request body\n");

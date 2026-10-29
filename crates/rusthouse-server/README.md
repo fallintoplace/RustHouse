@@ -50,6 +50,11 @@ UInt64 is currently limited to the signed Int64 range by the scalar engine.
 Values are range-checked and SQL-escaped before parsing. Missing, duplicate,
 unused, or unsupported bindings are rejected. This is a bounded subset of
 ClickHouse parameter types and never enables HTTP writes.
+ClickHouse's `max_result_rows=N` URL setting can cap individual read-only
+requests. It applies to generated queries, persistent tables, JOINs and SQL
+metadata discovery. A value of zero means no additional request limit.
+Per-request settings never relax the server's configured `--max-rows` cap.
+
 Inputs are limited to 65536-byte statements and 8192-byte HTTP headers.
 Responses are capped at 16 MiB, concurrent requests at 16, and result rows
 at 10000 by default (up to 250000 with --max-rows).
