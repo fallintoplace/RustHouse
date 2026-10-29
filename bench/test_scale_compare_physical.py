@@ -58,6 +58,22 @@ class ComparePhysicalTests(unittest.TestCase):
                         max_tail_slowdown_percent=10)
         self.assertTrue(loose["all_within_budget"])
 
+    def test_raw_timing_samples_must_support_the_reported_summary(self):
+        baseline, candidate = report(), report(1.05)
+        for name in ("count_even", "sum_even"):
+            baseline[name]["samples_seconds"] = [0.9, 1.1]
+            baseline[name]["p90_seconds"] = 1.1
+            candidate[name]["samples_seconds"] = [1.0, 1.1]
+            candidate[name]["p90_seconds"] = 1.1
+        self.assertTrue(compare(baseline, candidate)["all_within_budget"])
+        candidate["count_even"]["median_seconds"] = 1.01
+        with self.assertRaisesRegex(ValueError, "summary differs"):
+            compare(baseline, candidate)
+        candidate["count_even"]["median_seconds"] = 1.05
+        del candidate["count_even"]["samples_seconds"]
+        with self.assertRaisesRegex(ValueError, "samples differ"):
+            compare(baseline, candidate)
+
     def test_tail_regression_fails_even_when_median_is_fast(self):
         baseline, candidate = report(), report(0.95)
         for item in ("count_even", "sum_even"):
