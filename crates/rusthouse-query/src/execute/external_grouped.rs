@@ -70,11 +70,15 @@ fn read_varint(input: &mut impl Read, eof_allowed: bool) -> Result<Option<u64>, 
 }
 
 fn write_varint(output: &mut impl Write, mut value: u64) -> Result<(), ExecutionError> {
+    let mut encoded = [0u8; 10];
+    let mut used = 0;
     while value >= 128 {
-        output.write_all(&[((value as u8) & 0x7f) | 0x80])?;
+        encoded[used] = ((value as u8) & 0x7f) | 0x80;
+        used += 1;
         value >>= 7;
     }
-    output.write_all(&[value as u8])?;
+    encoded[used] = value as u8;
+    output.write_all(&encoded[..used + 1])?;
     Ok(())
 }
 
@@ -333,6 +337,26 @@ mod tests {
         let mut total = 0_u64;
         groups.finish(|_, count| { total += count; Ok(()) }).unwrap();
         assert_eq!(total, RUN_KEYS as u64);
+    }
+
+    #[test]
+    fn spill_varint_uses_one_write_per_number() {
+        struct CountWrites {
+            calls: usize,
+            data: Vec<u8>,
+        }
+        impl Write for CountWrites {
+            fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
+                self.calls += 1;
+                self.data.extend_from_slice(bytes);
+                Ok(bytes.len())
+            }
+            fn flush(&mut self) -> std::io::Result<()> { Ok(()) }
+        }
+        let mut output = CountWrites { calls: 0, data: Vec::new() };
+        write_varint(&mut output, u64::MAX).unwrap();
+        assert_eq!(output.calls, 1);
+        assert_eq!(read_varint(&mut output.data.as_slice(), false).unwrap(), Some(u64::MAX));
     }
 
     #[test]
