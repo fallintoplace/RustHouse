@@ -793,6 +793,29 @@ pub(super) fn execute_grouped_aggregate_numbers<W: Write>(
             return Ok(());
         }
     }
+    if query.limit.is_none()
+        && (!query.predicates.is_empty() || !query.or_predicates.is_empty())
+        && query.having.is_none() && query.order_by.is_none()
+        && query.order_by_extra.is_empty() && step != 0
+    {
+        if let Some((lower, upper)) =
+            monotonic_range_indices(&comparisons, start, rows, step)
+        {
+            if upper - lower > MAX_GROUPS as u64 {
+                return Err(ExecutionError::Invalid(
+                    "GROUP BY supports at most 100000 groups".into(),
+                ));
+            }
+            let begin = lower.saturating_add(query.offset.unwrap_or(0) as u64).min(upper);
+            for index in begin..upper {
+                let number = u128::from(start) + u128::from(index) * u128::from(step);
+                let mut state = AggregateState::new(*function);
+                state.update(Number::Unsigned(number))?;
+                writeln!(output, "{number}\t{}", state.render())?;
+            }
+            return Ok(());
+        }
+    }
     // Each generated key occurs exactly once. For simple filtered ranges,
     // evaluate one-row aggregate states only for the requested page.
     if (!query.predicates.is_empty() || !query.or_predicates.is_empty())
