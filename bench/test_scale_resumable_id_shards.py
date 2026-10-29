@@ -21,6 +21,20 @@ class ResumableShardsTests(unittest.TestCase):
             self.assertEqual([x["sha256"] for x in first["shards"]],
                              [x["sha256"] for x in again["shards"]])
 
+    def test_multi_batch_shard_retains_exact_rows_and_hash(self):
+        import hashlib
+        with tempfile.TemporaryDirectory() as temp:
+            start, count = 2**64 - 8193, 8193
+            manifest = create(temp, start, count, count)
+            shard = Path(manifest["shards"][0]["path"])
+            data = shard.read_bytes()
+            self.assertEqual(data.splitlines()[0], str(start).encode("ascii"))
+            self.assertEqual(data.splitlines()[-1], str(2**64 - 1).encode("ascii"))
+            self.assertEqual(len(data.splitlines()), count)
+            self.assertEqual(manifest["shards"][0]["sha256"],
+                             hashlib.sha256(data).hexdigest())
+            self.assertTrue(create(temp, start, count, count)["shards"][0]["reused"])
+
     def test_rejects_corruption_without_replacing_it(self):
         with tempfile.TemporaryDirectory() as temp:
             first = create(temp, 0, 5, 5)

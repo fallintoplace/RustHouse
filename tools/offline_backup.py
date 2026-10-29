@@ -4,6 +4,7 @@ import argparse
 import os
 from pathlib import Path
 import shutil
+import stat
 import subprocess
 import sys
 
@@ -27,9 +28,12 @@ def preflight(source, destination, max_bytes=None):
         for item in directories + files:
             if (Path(base) / item).is_symlink():
                 raise ValueError("backup refuses symlinks: " + str(Path(base) / item))
-        if max_bytes is not None:
-            for item in files:
-                total_bytes += (Path(base) / item).stat().st_size
+        for item in files:
+            file_stat = (Path(base) / item).stat()
+            if not stat.S_ISREG(file_stat.st_mode):
+                raise ValueError("backup requires regular files: " + str(Path(base) / item))
+            if max_bytes is not None:
+                total_bytes += file_stat.st_size
                 if total_bytes > max_bytes:
                     raise ValueError("backup exceeds max_bytes preflight budget")
     return source, destination, stage

@@ -63,5 +63,16 @@ class DbgenLoadTests(unittest.TestCase):
             load_tables(Path("fake"), Path("db"), Path("input"), ["part", "part"])
 
 
+class BoundedDbgenLoaderTests(unittest.TestCase):
+    def test_rejects_oversized_data_row_before_copying(self):
+        from unittest.mock import patch
+        with tempfile.TemporaryDirectory() as root:
+            path = Path(root) / "region.tsv"
+            path.write_bytes(("\t".join(names("region")) + "\n").encode() +
+                             b"1\tEUROPE\t" + b"x" * 100 + b"\n")
+            with patch("load_dbgen.MAX_RECORD_BYTES", 64):
+                with self.assertRaisesRegex(ValueError, "malformed"):
+                    inspect_tsv(path, "region")
+
 if __name__ == "__main__":
     unittest.main()

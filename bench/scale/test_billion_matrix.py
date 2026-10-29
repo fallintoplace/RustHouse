@@ -60,6 +60,14 @@ class TestBillionMatrix(unittest.TestCase):
                 with self.assertRaises(ValueError):
                     compile_case(case, 100_000)
 
+    def test_case_loader_bounds_json_before_reading(self):
+        with tempfile.TemporaryDirectory() as root:
+            path = Path(root) / "01-big.json"
+            path.write_bytes(b"x" * (64 * 1024 + 1))
+            with self.assertRaisesRegex(ValueError, "64 KiB"):
+                load_cases(root)
+            self.assertFalse(path.is_symlink())
+
     def test_doctor_requires_real_row_count(self):
         def doctor(command, **_):
             return SimpleNamespace(returncode=0, stdout=b'OK events: 100000 rows, 2 parts\n', stderr=b'')
@@ -81,6 +89,16 @@ class TestBillionMatrix(unittest.TestCase):
             self.assertEqual(report['case_count'], 1)
             self.assertEqual(len(calls), 2)
             self.assertEqual(calls[1][-2:], ['--format', 'tsv-no-header'])
+
+    def test_rejects_invalid_benchmark_timings_before_doctor(self):
+        for kwargs in (
+            {"runs": 0}, {"runs": True}, {"warmups": -1},
+            {"timeout": float("nan")}, {"timeout": 0},
+            {"max_p90_seconds": float("inf")},
+        ):
+            with self.subTest(kwargs=kwargs), self.assertRaises(ValueError):
+                benchmark("binary", "database", 100_000,
+                          execute=lambda *a, **k: self.fail("unexpected SQL"), **kwargs)
 
     def test_benchmark_fails_on_wrong_answer(self):
         case = dict(name='mod', kind='modulo', aggregate='count', modulus=2, residue=0)

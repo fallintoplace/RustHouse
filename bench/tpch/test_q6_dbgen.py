@@ -64,5 +64,13 @@ class Q6OracleTests(unittest.TestCase):
             self.assertEqual(report["results"][0]["status"], "mismatch")
 
 
+class Q6TimingValidationTests(unittest.TestCase):
+    def test_rejects_nonfinite_timeout_and_boolean_runs(self):
+        for options in ({"timeout": float("nan")}, {"timeout": float("inf")},
+                        {"runs": True}, {"warmups": False}):
+            with self.subTest(options=options):
+                with self.assertRaisesRegex(ValueError, "invalid runs"):
+                    run_q6(None, None, Path("nonexistent"), **options)
+
 if __name__ == "__main__":
     unittest.main()
