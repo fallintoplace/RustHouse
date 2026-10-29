@@ -33,6 +33,11 @@ fn render_expr(expr: &ScalarExpr) -> String {
         ScalarExpr::IsNull(inner, negated) =>
             format!("({}) IS {}NULL", render_expr(inner), if *negated { "NOT " } else { "" }),
         ScalarExpr::Not(inner) => format!("NOT ({})", render_expr(inner)),
+        ScalarExpr::Between(value, lower, upper, negated) => format!(
+            "({}) {}BETWEEN ({}) AND ({})",
+            render_expr(value), if *negated { "NOT " } else { "" },
+            render_expr(lower), render_expr(upper),
+        ),
         ScalarExpr::Add(left, right) => format!("{} + {}", render_expr(left), render_expr(right)),
         ScalarExpr::Subtract(left, right) => {
             let right = if matches!(
