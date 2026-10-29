@@ -44,6 +44,21 @@ class ComparePhysicalTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "verified"):
             compare(report(), candidate)
 
+    def test_rejects_nonobject_reports_and_fractional_row_metadata(self):
+        for invalid in (None, [], "report"):
+            with self.subTest(invalid=invalid), self.assertRaisesRegex(ValueError, "objects"):
+                compare(report(), invalid)
+        candidate = report()
+        candidate["rows_written_and_verified"] = float(candidate["rows_written_and_verified"])
+        with self.assertRaisesRegex(ValueError, "same positive physical row count"):
+            compare(report(), candidate)
+        candidate = report()
+        candidate["rows_written_and_verified"] = True
+        with self.assertRaisesRegex(ValueError, "same positive physical row count"):
+            compare(report(), candidate)
+        with self.assertRaisesRegex(ValueError, "max_slowdown_percent"):
+            compare(report(), report(), max_slowdown_percent=True)
+
     def test_tail_budget_is_independent_and_requires_p90(self):
         base, candidate = report(), report(1.05)
         with self.assertRaisesRegex(ValueError, "p90"):

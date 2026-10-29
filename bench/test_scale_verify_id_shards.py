@@ -26,6 +26,18 @@ class VerifyShardsTests(unittest.TestCase):
             with self.assertRaisesRegex(ValueError, "incorrect"):
                 verify(manifest)
 
+    def test_multi_block_verification_and_corruption(self):
+        with tempfile.TemporaryDirectory() as temp:
+            path = Path(temp) / "large.tsv"
+            start, count, step = 100, 8193, 3
+            data = "".join(f"{start + i * step}\n" for i in range(count)).encode("ascii")
+            path.write_bytes(data)
+            self.assertEqual(verify_file(path, start, count, step),
+                             hashlib.sha256(data).hexdigest())
+            path.write_bytes(data[:-1])
+            with self.assertRaisesRegex(ValueError, "incorrect|missing"):
+                verify_file(path, start, count, step)
+
     def test_rejects_overlap_and_incomplete_coverage(self):
         with tempfile.TemporaryDirectory() as temp:
             root = Path(temp)

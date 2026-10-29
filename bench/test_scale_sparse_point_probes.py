@@ -30,6 +30,16 @@ class SparseProbeTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             probe("x", "x", "a;drop", 0, 10)
 
+    def test_percentile_rejects_nonfinite_and_negative_timings(self):
+        for samples, percent in (
+            ([0.1, float("nan")], 95), ([float("inf")], 95),
+            ([-0.1, 0.1], 50), ([0.1], float("nan")),
+            ([0.1], float("inf")), ([0.1], True),
+        ):
+            with self.subTest(samples=samples, percent=percent), self.assertRaises(ValueError):
+                percentile(samples, percent)
+        self.assertEqual(percentile([0.0, 0.2, 0.1], 50), 0.1)
+
     def test_sampling_supports_full_uint64_domain(self):
         first = choose_ids(0, 1 << 64, 10, 42)
         self.assertEqual(len(set(first)), 10)

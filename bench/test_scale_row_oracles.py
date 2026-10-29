@@ -39,6 +39,20 @@ class RowOracleTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "rows"):
             make_oracles(0)
 
+    def test_standalone_parity_rejects_invalid_progressions(self):
+        from bench.scale.row_oracles import parity_progression
+        for kwargs in (
+            {"start": 0, "rows": 1, "step": 0, "parity": 0},
+            {"start": 0, "rows": 0, "step": 1, "parity": 0},
+            {"start": 0, "rows": 10, "step": 1, "parity": 2},
+            {"start": 0, "rows": 10, "step": 1, "parity": True},
+            {"start": 2**64 - 1, "rows": 2, "step": 1, "parity": 1},
+        ):
+            with self.subTest(kwargs=kwargs), self.assertRaises(ValueError):
+                parity_progression(**kwargs)
+        self.assertEqual(parity_progression(3, 5, 3, 1),
+                         {"count": 3, "sum": 27})
+
     def test_large_offset_modulo_oracle(self):
         from bench.scale.row_oracles import modulo_interval_reference
         start = (1 << 64) - 5

@@ -16,7 +16,8 @@ from pathlib import Path
 
 
 def percentile(samples, percentile):
-    if not samples or not 0 < percentile <= 100:
+    if (not samples or type(percentile) not in (int, float)
+            or not math.isfinite(percentile) or not 0 < percentile <= 100):
         raise ValueError("invalid sample count or percentile")
     return sorted(samples)[math.ceil(len(samples) * percentile / 100) - 1]
 
@@ -53,7 +54,7 @@ def soak(binary, database, sql, expected_file, runs=20, warmups=2, timeout=120,
     if (type(runs) is not int or type(warmups) is not int or runs < 1
             or warmups < 0 or runs + warmups > 1_000):
         raise ValueError("runs and warmups must total 1..1000 executions")
-    if not math.isfinite(timeout) or timeout <= 0:
+    if type(timeout) not in (int, float) or not math.isfinite(timeout) or timeout <= 0:
         raise ValueError("timeout must be finite and positive")
     with Path(expected_file).open("rb") as source:
         reference, size = digest_file(source)

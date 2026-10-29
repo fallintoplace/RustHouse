@@ -7,6 +7,9 @@ pub(super) fn is_function(name: &str) -> bool {
     super::date_scalar::is_function(name) || matches!(
         name.to_ascii_uppercase().as_str(),
         "IPV4NUMTOSTRING"
+            | "IPV4STRINGTONUM"
+            | "IPV4STRINGTONUMORNULL"
+            | "DECODEURLFORMCOMPONENT"
             | "LENGTH"
             | "TOYEAR"
             | "LENGTHUTF8"
@@ -303,6 +306,40 @@ fn parse_at_depth(parser: &mut Parser, depth: usize) -> Result<ConstantValue, Pa
     }
     let value = match name.as_str() {
 
+        "IPV4STRINGTONUMORNULL" => {
+            let input = text_arg(parser, depth + 1)?;
+            require(
+                parser,
+                Token::RParen,
+                "IPv4StringToNumOrNull requires one argument",
+            )?;
+            match input {
+                Some(input) => input
+                    .parse::<std::net::Ipv4Addr>()
+                    .ok()
+                    .map_or(ConstantValue::Null, |address| {
+                        ConstantValue::Integer(i64::from(u32::from(address)))
+                    }),
+                None => ConstantValue::Null,
+            }
+        }
+        "IPV4STRINGTONUM" => {
+            let input = text_arg(parser, depth + 1)?;
+            require(
+                parser,
+                Token::RParen,
+                "IPv4StringToNum requires one argument",
+            )?;
+            match input {
+                Some(input) => {
+                    let address = input.parse::<std::net::Ipv4Addr>().map_err(|_| {
+                        ParseError("IPv4StringToNum requires a valid IPv4 address".into())
+                    })?;
+                    ConstantValue::Integer(i64::from(u32::from(address)))
+                }
+                None => ConstantValue::Null,
+            }
+        }
         "IPV4NUMTOSTRING" => {
             let value = integer_arg(parser, depth + 1)?;
             require(
@@ -2798,7 +2835,7 @@ fn parse_at_depth(parser: &mut Parser, depth: usize) -> Result<ConstantValue, Pa
                 _ => ConstantValue::Null,
             }
         }
-        "URL_DECODE" | "DECODEURLCOMPONENT" => {
+        "URL_DECODE" | "DECODEURLCOMPONENT" | "DECODEURLFORMCOMPONENT" => {
             let input = text_arg(parser, depth + 1)?;
             require(parser, Token::RParen, "URL_DECODE requires one argument")?;
             match input {
@@ -2822,7 +2859,13 @@ fn parse_at_depth(parser: &mut Parser, depth: usize) -> Result<ConstantValue, Pa
                             result.push(byte);
                             index += 3;
                         } else {
-                            result.push(source[index]);
+                            result.push(if source[index] == b'+'
+                                && name == "DECODEURLFORMCOMPONENT"
+                            {
+                                b' '
+                            } else {
+                                source[index]
+                            });
                             index += 1;
                         }
                     }
@@ -3591,6 +3634,94 @@ mod ch_position_byte_tests {
             assert_eq!(value(sql), expected, "{sql}");
         }
         for sql in ["SELECT position('abc')", "SELECT position('abc','a','x')"] {
+            assert!(parse_select(sql).is_err(), "{sql}");
+        }
+    }
+}
+
+#[cfg(test)]
+mod clickhouse_decode_url_form_tests {
+    use crate::{parse_select, ConstantValue, Projection};
+
+    #[test]
+    fn decodes_plus_and_percent_escaped_form_components() {
+        for (sql, expected) in [
+            ("SELECT decodeURLFormComponent('hello+world')", "hello world"),
+            ("SELECT decodeURLFormComponent('x%2By+z')", "x+y z"),
+            ("SELECT decodeURLFormComponent('a%20b')", "a b"),
+            ("SELECT decodeURLFormComponent('')", ""),
+        ] {
+            assert!(
+                matches!(parse_select(sql).unwrap().projection, Projection::Constants(values)
+                    if values.len() == 1
+                        && values[0].value == ConstantValue::Text(expected.into())),
+                "{sql}",
+            );
+        }
+        for sql in [
+            "SELECT decodeURLFormComponent('%GG')",
+            "SELECT decodeURLFormComponent('%')",
+            "SELECT decodeURLFormComponent('x', 'y')",
+        ] {
+            assert!(parse_select(sql).is_err(), "{sql}");
+        }
+    }
+}
+
+#[cfg(test)]
+mod clickhouse_ipv4_to_num_or_null_tests {
+    use crate::{parse_select, ConstantValue, Projection};
+
+    #[test]
+    fn valid_ipv4_is_numeric_and_invalid_input_is_null() {
+        for (sql, expected) in [
+            ("SELECT IPv4StringToNumOrNull('192.168.0.1')", 3232235521),
+            ("SELECT IPv4StringToNumOrNull('0.0.0.0')", 0),
+        ] {
+            assert!(
+                matches!(parse_select(sql).unwrap().projection, Projection::Constants(values)
+                    if values.len() == 1
+                        && values[0].value == ConstantValue::Integer(expected)),
+                "{sql}",
+            );
+        }
+        for sql in [
+            "SELECT IPv4StringToNumOrNull('invalid')",
+            "SELECT IPv4StringToNumOrNull(NULL)",
+        ] {
+            assert!(
+                matches!(parse_select(sql).unwrap().projection, Projection::Constants(values)
+                    if values.len() == 1 && values[0].value == ConstantValue::Null),
+                "{sql}",
+            );
+        }
+        assert!(parse_select("SELECT IPv4StringToNumOrNull('x', 'y')").is_err());
+    }
+}
+
+#[cfg(test)]
+mod clickhouse_ipv4_string_to_num_tests {
+    use crate::{parse_select, ConstantValue, Projection};
+
+    #[test]
+    fn converts_ipv4_to_network_order_integer() {
+        for (sql, expected) in [
+            ("SELECT IPv4StringToNum('0.0.0.0')", 0),
+            ("SELECT IPv4StringToNum('192.168.0.1')", 3232235521),
+            ("SELECT IPv4StringToNum('255.255.255.255')", 4294967295),
+        ] {
+            assert!(
+                matches!(parse_select(sql).unwrap().projection, Projection::Constants(values)
+                    if values.len() == 1
+                        && values[0].value == ConstantValue::Integer(expected)),
+                "{sql}",
+            );
+        }
+        for sql in [
+            "SELECT IPv4StringToNum('256.1.2.3')",
+            "SELECT IPv4StringToNum('1.2.3')",
+            "SELECT IPv4StringToNum('1.2.3.4', 'x')",
+        ] {
             assert!(parse_select(sql).is_err(), "{sql}");
         }
     }
