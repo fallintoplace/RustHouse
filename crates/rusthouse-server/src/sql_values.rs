@@ -3,6 +3,7 @@ use std::borrow::Cow;
 use std::io::{self, Write};
 
 const MAX_LINE_BYTES: usize = 1024 * 1024;
+const MAX_SQL_VALUES_COLUMNS: usize = 64;
 
 fn invalid(message: &'static str) -> io::Error {
     io::Error::new(io::ErrorKind::InvalidData, message)
@@ -86,7 +87,7 @@ impl<W: Write> SqlValuesWriter<W> {
     fn finish_line(&mut self) -> io::Result<()> {
         let Some(columns) = self.columns else {
             let columns = self.line.split(|&byte| byte == b'\t').count();
-            if columns == 0 || columns > 64 {
+            if columns == 0 || columns > MAX_SQL_VALUES_COLUMNS {
                 return Err(invalid("SQL VALUES supports 1 to 64 columns"));
             }
             self.columns = Some(columns);
