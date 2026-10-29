@@ -138,6 +138,19 @@ pub(super) fn apply_unary_math(name: &str, value: Number) -> Result<Number, Exec
         "TANH" => Number::Float(number_as_float(value).tanh()),
         "RADIANS" => Number::Float(number_as_float(value).to_radians()),
         "DEGREES" => Number::Float(number_as_float(value).to_degrees()),
+        "SQUARE" => match value {
+            Number::Signed(number) => Number::Signed(
+                number
+                    .checked_mul(number)
+                    .ok_or_else(|| ExecutionError::Invalid("aggregate square overflow".into()))?,
+            ),
+            Number::Unsigned(number) => Number::Unsigned(
+                number
+                    .checked_mul(number)
+                    .ok_or_else(|| ExecutionError::Invalid("aggregate square overflow".into()))?,
+            ),
+            Number::Float(number) => Number::Float(number * number),
+        },
         _ => {
             return Err(ExecutionError::Invalid(format!(
                 "unsupported aggregate numeric function: {name}"
@@ -475,6 +488,21 @@ mod aggregate_unary_math_tests {
         ));
         assert!(crate::parse_scalar_expression("degrees(amount)").is_ok());
         assert!(crate::parse_scalar_expression("degrees(amount, 2)").is_err());
+    }
+
+    #[test]
+    fn square_preserves_exact_integer_results_and_rejects_overflow() {
+        assert!(matches!(
+            apply_unary_math("SQUARE", Number::Signed(-9)),
+            Ok(Number::Signed(81))
+        ));
+        assert!(matches!(
+            apply_unary_math("SQUARE", Number::Unsigned(1_u128 << 63)),
+            Ok(Number::Unsigned(value)) if value == 1_u128 << 126
+        ));
+        assert!(apply_unary_math("SQUARE", Number::Unsigned(u128::MAX)).is_err());
+        assert!(crate::parse_scalar_expression("square(amount)").is_ok());
+        assert!(crate::parse_scalar_expression("square(amount, 2)").is_err());
     }
 
 }
