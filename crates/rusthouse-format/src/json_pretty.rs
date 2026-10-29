@@ -164,7 +164,7 @@ mod tests {
             write_pretty_json_row(&mut output, row.as_bytes()).unwrap();
             let wanted = format!("\"{key}\": ");
             assert!(
-                output.0.iter().any(|chunk| chunk == wanted.as_bytes()),
+                output.0.iter().any(|chunk| chunk.as_slice() == wanted.as_bytes()),
                 "medium key was not emitted in one write"
             );
         }
