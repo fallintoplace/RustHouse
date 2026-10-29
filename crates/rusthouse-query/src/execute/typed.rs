@@ -113,6 +113,7 @@ pub(super) fn cell(column: &TypedColumn, row: usize) -> Cell {
 
 fn is_typed(data_type: &str) -> bool {
     matches!(data_type, "String" | "UUID" | "Date" | "DateTime")
+        || data_type.starts_with("DateTime64(")
         || data_type.starts_with("Nullable(")
         || data_type.starts_with("Array(")
         || data_type.starts_with("Map(")
@@ -179,6 +180,16 @@ fn parse_literal(data_type: &str, literal: &str) -> Result<Cell, ExecutionError>
             .or_else(|| literal.parse::<u32>().ok())
             .map(|seconds| Cell::Numeric(Number::Unsigned(u128::from(seconds))))
             .ok_or_else(|| ExecutionError::Invalid("invalid DateTime literal".into())),
+        kind if rusthouse_storage::datetime64_scale(kind).is_some() => {
+            let precision = rusthouse_storage::datetime64_scale(kind)
+                .expect("validated DateTime64 precision");
+            rusthouse_storage::parse_datetime64(literal, precision)
+                .or_else(|| literal.parse::<i64>().ok())
+                .map(|ticks| Cell::Numeric(Number::Signed(i128::from(ticks))))
+                .ok_or_else(|| ExecutionError::Invalid(
+                    "invalid DateTime64 timestamp literal".into()
+                ))
+        }
         "UUID" => {
             let valid = literal.len() == 36
                 && literal.bytes().enumerate().all(|(index, byte)| {
@@ -736,6 +747,17 @@ pub(super) fn write_typed_value<W: Write>(
             if let Ok(days) = u16::try_from(*days) {
                 return write!(output, "{}", rusthouse_storage::format_date(days))
                     .map_err(ExecutionError::Io);
+            }
+        }
+        (kind, Cell::Numeric(Number::Signed(ticks)))
+            if rusthouse_storage::datetime64_scale(kind).is_some() =>
+        {
+            if let Ok(ticks) = i64::try_from(*ticks) {
+                let precision = rusthouse_storage::datetime64_scale(kind)
+                    .expect("validated DateTime64 precision");
+                if let Some(formatted) = rusthouse_storage::format_datetime64(ticks, precision) {
+                    return output.write_all(formatted.as_bytes()).map_err(ExecutionError::Io);
+                }
             }
         }
         ("DateTime", Cell::Numeric(Number::Unsigned(seconds))) => {
