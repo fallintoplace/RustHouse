@@ -21,7 +21,10 @@ def profile(path, *, columns=1, header=False, min_rows=1,
     digest = hashlib.sha256()
     records = 0
     bytes_read = 0
-    with Path(path).open("rb") as stream:
+    path = Path(path)
+    if path.is_symlink():
+        raise ValueError("refusing symlinked TSV input")
+    with path.open("rb") as stream:
         while True:
             raw = stream.readline(MAX_RECORD_BYTES + 1)
             if not raw:
