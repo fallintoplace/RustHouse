@@ -474,10 +474,10 @@ pub fn parse_join(sql: &str) -> Result<Option<JoinSelect>, ParseError> {
         ));
     }
     if aggregate.is_some() &&
-        (!matches!(kind, JoinType::Inner | JoinType::Left | JoinType::Full)
+        (!matches!(kind, JoinType::Inner | JoinType::Left | JoinType::Right | JoinType::Full)
             || !steps.is_empty() || !order_by.is_empty()) {
         return Err(ParseError(
-            "streamed JOIN COUNT requires a two-table INNER, LEFT or FULL JOIN without ORDER BY".into()
+            "streamed JOIN COUNT requires a two-table INNER, LEFT, RIGHT or FULL JOIN without ORDER BY".into()
         ));
     }
     Ok(Some(JoinSelect {
