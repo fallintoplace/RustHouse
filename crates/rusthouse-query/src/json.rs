@@ -290,9 +290,9 @@ mod tests {
 
     #[test]
     fn fast_plain_json_strings_preserve_non_ascii_and_escaped_fallback() {
-        let parsed = parse_json(r#"{"café":"zażółć","escaped":"a\\nb"}"#).unwrap();
-        assert_eq!(parsed.at_path("café").and_then(JsonValue::as_string), Some("zażółć"));
-        assert_eq!(parsed.at_path("escaped").and_then(JsonValue::as_string), Some("a\nb"));
+        let parsed = parse_json(r#"{"café":"zażółć","escaped":"a\nb"}"#).unwrap();
+        assert_eq!(parsed.at_path("café").and_then(|value| value.as_string()), Some("zażółć"));
+        assert_eq!(parsed.at_path("escaped").and_then(|value| value.as_string()), Some("a\nb"));
         assert!(parse_json("{\"bad\":\"unterminated").is_err());
     }
 
