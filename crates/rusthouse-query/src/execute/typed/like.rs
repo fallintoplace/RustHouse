@@ -212,11 +212,112 @@ pub(super) fn like_matches(value: &[u8], pattern: &LikePattern, case_insensitive
     }
 }
 
+/// Preserve '_' as exactly one original Unicode codepoint, even when
+/// lowercasing a character expands it into multiple codepoints.
+enum UnicodeLikeToken {
+    Literal(String),
+    Any,
+    One,
+}
+
+fn unicode_like_tokens(pattern: &[LikeToken]) -> Option<Vec<UnicodeLikeToken>> {
+    let mut result = Vec::new();
+    let mut literal = Vec::new();
+    let flush = |result: &mut Vec<UnicodeLikeToken>, literal: &mut Vec<u8>| -> Option<()> {
+        if !literal.is_empty() {
+            let value = std::str::from_utf8(literal).ok()?;
+            result.push(UnicodeLikeToken::Literal(value.to_lowercase()));
+            literal.clear();
+        }
+        Some(())
+    };
+    for token in pattern {
+        match token {
+            LikeToken::Byte(byte) => literal.push(*byte),
+            LikeToken::Any => {
+                flush(&mut result, &mut literal)?;
+                result.push(UnicodeLikeToken::Any);
+            }
+            LikeToken::One => {
+                flush(&mut result, &mut literal)?;
+                result.push(UnicodeLikeToken::One);
+            }
+        }
+    }
+    flush(&mut result, &mut literal)?;
+    Some(result)
+}
+
+fn folded_literal_prefix(value: &str, literal: &str) -> Option<usize> {
+    let mut matched = 0usize;
+    let mut consumed = 0usize;
+    for character in value.chars() {
+        for lowercase in character.to_lowercase() {
+            let mut encoded = [0u8; 4];
+            let unit = lowercase.encode_utf8(&mut encoded).as_bytes();
+            if literal.as_bytes().get(matched..matched + unit.len())? != unit {
+                return None;
+            }
+            matched += unit.len();
+        }
+        consumed += character.len_utf8();
+        if matched == literal.len() {
+            return Some(consumed);
+        }
+    }
+    None
+}
+
+fn unicode_like_wildcards(value: &str, pattern: &[UnicodeLikeToken]) -> bool {
+    let (mut row, mut pat) = (0usize, 0usize);
+    let mut last_any = None;
+    let mut restart = 0usize;
+    while row < value.len() {
+        match pattern.get(pat) {
+            Some(UnicodeLikeToken::Literal(literal)) => {
+                if let Some(size) = folded_literal_prefix(&value[row..], literal) {
+                    row += size;
+                    pat += 1;
+                    continue;
+                }
+            }
+            Some(UnicodeLikeToken::One) => {
+                row += value[row..].chars().next().expect("valid character boundary").len_utf8();
+                pat += 1;
+                continue;
+            }
+            Some(UnicodeLikeToken::Any) => {
+                last_any = Some(pat);
+                pat += 1;
+                restart = row;
+                continue;
+            }
+            None => {}
+        }
+        let Some(any) = last_any else { return false; };
+        let Some(character) = value[restart..].chars().next() else { return false; };
+        restart += character.len_utf8();
+        row = restart;
+        pat = any + 1;
+    }
+    while matches!(pattern.get(pat), Some(UnicodeLikeToken::Any)) { pat += 1; }
+    pat == pattern.len()
+}
+
 pub(super) fn like_matches_wildcards(
     value: &[u8],
     pattern: &[LikeToken],
     case_insensitive: bool,
 ) -> bool {
+    if case_insensitive && (!value.is_ascii()
+        || pattern.iter().any(|token| matches!(token, LikeToken::Byte(byte) if !byte.is_ascii())))
+    {
+        if let Ok(text) = std::str::from_utf8(value) {
+            if let Some(tokens) = unicode_like_tokens(pattern) {
+                return unicode_like_wildcards(text, &tokens);
+            }
+        }
+    }
     let (mut row, mut pat) = (0, 0);
     let mut last_any = None;
     let mut restart = 0;
@@ -263,6 +364,27 @@ pub(super) fn like_matches_wildcards(
 #[cfg(test)]
 mod perf_tests {
     use super::*;
+
+    #[test]
+    fn unicode_ilike_wildcards_fold_accents_and_keep_codepoint_counts() {
+        for (pattern, input, expected) in [
+            ("C_FÉ", "café", true),
+            ("%É_", "café!", true),
+            ("%É_", "café", false),
+            ("İ_", "i\u{307}x", true),
+            ("_É%", "aéx", true),
+            ("_É%", "aaa", false),
+            ("%日本_", "xx日本語", true),
+            ("_É_", "aéx", true),
+            ("_É_", "aé", false),
+        ] {
+            let pattern = compile_like(pattern).unwrap();
+            assert_eq!(like_matches(input.as_bytes(), &pattern, true), expected,
+                "{input}: {expected}");
+        }
+        let pattern = compile_like("_É_").unwrap();
+        assert!(!like_matches("aéx".as_bytes(), &pattern, false));
+    }
 
     #[test]
     fn exact_unicode_prefixes_and_suffixes_match_without_folding() {
