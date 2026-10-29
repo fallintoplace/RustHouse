@@ -15,10 +15,15 @@ from common import cli_sql, emit_json
 from run import benchmark_one, summarize_coverage, query_fingerprint
 
 MAX_REFERENCE_BYTES = 64 * 1024 * 1024
+MAX_QUERY_FILE_BYTES = 64 * 1024
 
 
 def clean_sql(path):
-    text = "\n".join(line for line in path.read_text(encoding="utf-8").splitlines()
+    with Path(path).open("rb") as source:
+        payload = source.read(MAX_QUERY_FILE_BYTES + 1)
+    if len(payload) > MAX_QUERY_FILE_BYTES:
+        raise ValueError("TPC-H SQL source exceeds 64 KiB")
+    text = "\n".join(line for line in payload.decode("utf-8").splitlines()
                      if not line.lstrip().startswith("--")).strip()
     return text.rstrip(";").strip()
 
@@ -42,7 +47,13 @@ def coverage(binary, database, query_dir, reference_dir=None, runs=3, warmups=1,
             results[number - 1] = {"query": number, "status": "missing_query",
                             "timings_seconds": [], "latency": None, "error": str(path)}
             continue
-        sql = clean_sql(path)
+        try:
+            sql = clean_sql(path)
+        except (OSError, UnicodeError, ValueError) as error:
+            results[number - 1] = {"query": number, "status": "unsupported_query",
+                                    "timings_seconds": [], "latency": None,
+                                    "error": str(error)[:200]}
+            continue
         if not sql or len(sql.encode("utf-8")) > 64 * 1024:
             results[number - 1] = {"query": number, "status": "unsupported_query",
                             "timings_seconds": [], "latency": None,
