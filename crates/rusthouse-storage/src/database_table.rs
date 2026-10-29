@@ -23,9 +23,22 @@ pub fn resolve_database_table(database: &Path, table: &str) -> Result<PathBuf, S
         return Err(format!("invalid database schema for {table}"));
     }
     let mut content = Vec::new();
-    fs::File::open(&schema)
-        .map_err(|error| format!("cannot read database table {table}: {error}"))?
-        .take(32 * 1024 + 1)
+    let file = fs::File::open(&schema)
+        .map_err(|error| format!("cannot read database table {table}: {error}"))?;
+    let opened = file
+        .metadata()
+        .map_err(|error| format!("cannot inspect opened schema for {table}: {error}"))?;
+    if !opened.file_type().is_file() || opened.len() > 32 * 1024 {
+        return Err(format!("database schema changed before read for {table}"));
+    }
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::MetadataExt;
+        if schema_metadata.dev() != opened.dev() || schema_metadata.ino() != opened.ino() {
+            return Err(format!("database schema replaced before read for {table}"));
+        }
+    }
+    file.take(32 * 1024 + 1)
         .read_to_end(&mut content)
         .map_err(|error| format!("cannot read database table {table}: {error}"))?;
     if content.len() > 32 * 1024 {
@@ -85,5 +98,30 @@ mod tests {
                 "invalid database table name"
             );
         }
+    }
+}
+
+#[cfg(all(test, unix))]
+mod schema_identity_tests {
+    use super::*;
+    use std::os::unix::fs::MetadataExt;
+
+    #[test]
+    fn separate_same_size_schema_files_have_distinct_inodes() {
+        let root = std::env::temp_dir().join(format!(
+            "rusthouse-schema-identity-{}",
+            std::process::id()
+        ));
+        let _ = fs::remove_dir_all(&root);
+        fs::create_dir_all(&root).unwrap();
+        let a = root.join("a");
+        let b = root.join("b");
+        fs::write(&a, "schema1").unwrap();
+        fs::write(&b, "schema2").unwrap();
+        let first = fs::symlink_metadata(&a).unwrap();
+        let second = fs::File::open(&b).unwrap().metadata().unwrap();
+        assert_eq!(first.len(), second.len());
+        assert_ne!(first.ino(), second.ino());
+        fs::remove_dir_all(root).unwrap();
     }
 }
