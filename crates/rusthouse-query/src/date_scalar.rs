@@ -10,6 +10,7 @@ pub(super) fn is_function(name: &str) -> bool {
     matches!(
         name.to_ascii_uppercase().as_str(),
         "ADDDAYS"
+            | "TOSTARTOFYEAR"
             | "TOSTARTOFQUARTER"
             | "TOSTARTOFMONTH"
             | "TOMONDAY"
@@ -75,6 +76,11 @@ pub(super) fn parse_after_open(
             let (year, month, _) = civil_from_days(value.seconds.div_euclid(DAY_SECONDS));
             let quarter_month = (month - 1) / 3 * 3 + 1;
             let days = days_from_civil(year, quarter_month, 1);
+            Ok(ConstantValue::Text(Temporal::render(days * DAY_SECONDS, false)?))
+        }),
+        "TOSTARTOFYEAR" => unary_date(parser, depth, |value| {
+            let (year, _, _) = civil_from_days(value.seconds.div_euclid(DAY_SECONDS));
+            let days = days_from_civil(year, 1, 1);
             Ok(ConstantValue::Text(Temporal::render(days * DAY_SECONDS, false)?))
         }),
         _ => Err(ParseError(format!("unsupported date function: {name}"))),
@@ -618,6 +624,24 @@ mod utc_compat_tests {
             "SELECT toStartOfQuarter()",
             "SELECT toStartOfQuarter('2023-02-29')",
             "SELECT toStartOfQuarter('2024-01-01', 1)",
+        ] {
+            assert!(crate::parse_select(sql).is_err(), "{sql}");
+        }
+    }
+
+    #[test]
+    fn start_year_uses_gregorian_calendar() {
+        for (sql, expected) in [
+            ("SELECT toStartOfYear('2024-02-29')", "2024-01-01"),
+            ("SELECT toStartOfYear('2025-12-31 23:59:59')", "2025-01-01"),
+        ] {
+            assert_eq!(value(sql), ConstantValue::Text(expected.into()), "{sql}");
+        }
+        assert_eq!(value("SELECT toStartOfYear(NULL)"), ConstantValue::Null);
+        for sql in [
+            "SELECT toStartOfYear()",
+            "SELECT toStartOfYear('2023-02-29')",
+            "SELECT toStartOfYear('2024-01-01', 1)",
         ] {
             assert!(crate::parse_select(sql).is_err(), "{sql}");
         }
