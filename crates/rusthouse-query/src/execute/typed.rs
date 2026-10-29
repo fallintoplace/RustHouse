@@ -1256,7 +1256,10 @@ pub(super) fn execute_typed<W: Write>(
             Some("UInt8" | "Int8" | "UInt16" | "Int16" | "Nullable(UInt8)" | "Nullable(Int8)" | "Nullable(UInt16)" | "Nullable(Int16)")
         )
     {
-        Some(vec![0u64; 1024])
+        Some(vec![0u64; if matches!(
+            projection_types.first().copied(),
+            Some("UInt8" | "Int8" | "Nullable(UInt8)" | "Nullable(Int8)")
+        ) { 4 } else { 1024 }])
     } else {
         None
     };
@@ -1540,7 +1543,7 @@ pub(super) fn execute_typed<W: Write>(
                         | TypedColumn::NullableNumeric {
                             values: NumericColumn::Int8(values),
                             ..
-                        } => values[index] as u16,
+                        } => u16::from(values[index] as u8),
                         _ => {
                             return Err(ExecutionError::Invalid(
                                 "unexpected 8-bit or 16-bit DISTINCT column type".into(),
@@ -1603,7 +1606,7 @@ pub(super) fn execute_typed<W: Write>(
                                 u16::from(values[index])
                             }
                             TypedColumn::Numeric(NumericColumn::Int8(values)) => {
-                                values[index] as u16
+                                u16::from(values[index] as u8)
                             }
                             TypedColumn::Numeric(NumericColumn::UInt16(values)) => values[index],
                             TypedColumn::Numeric(NumericColumn::Int16(values)) => {
