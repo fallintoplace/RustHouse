@@ -166,6 +166,7 @@ pub(super) fn apply_unary_math(name: &str, value: Number) -> Result<Number, Exec
             ),
             Number::Float(number) => Number::Float(number * number * number),
         },
+        "EXP2" => Number::Float(number_as_float(value).exp2()),
         _ => {
             return Err(ExecutionError::Invalid(format!(
                 "unsupported aggregate numeric function: {name}"
@@ -533,6 +534,17 @@ mod aggregate_unary_math_tests {
         assert!(apply_unary_math("CUBE", Number::Unsigned(u128::MAX)).is_err());
         assert!(crate::parse_scalar_expression("cube(amount)").is_ok());
         assert!(crate::parse_scalar_expression("cube(amount, 2)").is_err());
+    }
+
+    #[test]
+    fn exp2_supports_powers_of_two_and_rejects_overflow() {
+        assert!(matches!(
+            apply_unary_math("EXP2", Number::Unsigned(3)),
+            Ok(Number::Float(value)) if value == 8.0
+        ));
+        assert!(apply_unary_math("EXP2", Number::Unsigned(1024)).is_err());
+        assert!(crate::parse_scalar_expression("exp2(amount)").is_ok());
+        assert!(crate::parse_scalar_expression("exp2(amount, 2)").is_err());
     }
 
 }
