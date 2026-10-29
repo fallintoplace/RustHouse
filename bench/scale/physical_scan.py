@@ -35,10 +35,12 @@ def p90(samples):
     return sorted(samples)[math.ceil(0.9 * len(samples)) - 1]
 
 
-def write_fixture(path, rows):
+def write_fixture(path, rows, *, batch_rows=8192):
+    if type(batch_rows) is not int or not 1 <= batch_rows <= 1_000_000:
+        raise ValueError("fixture batch_rows must be in 1..1000000")
     with path.open("w", encoding="ascii", buffering=1024 * 1024) as output:
-        for start in range(0, rows, 8192):
-            output.write("".join(f"{value}\n" for value in range(start, min(start + 8192, rows))))
+        for start in range(0, rows, batch_rows):
+            output.write("".join(f"{value}\n" for value in range(start, min(start + batch_rows, rows))))
 
 
 def invoke(binary, database, sql, *, timeout, no_header=False):
@@ -76,7 +78,7 @@ def scan(binary, database, sql, expected, runs, warmups, timeout):
     }
 
 
-def benchmark(binary, rows, runs, warmups, timeout, scratch_dir=None):
+def benchmark(binary, rows, runs, warmups, timeout, scratch_dir=None, fixture_batch_rows=8192):
     if type(rows) is not int or not 1 <= rows <= 1_000_000_000:
         raise ValueError("rows must be in 1..1000000000")
     if type(runs) is not int or type(warmups) is not int or runs < 1 or warmups < 0:
@@ -87,7 +89,7 @@ def benchmark(binary, rows, runs, warmups, timeout, scratch_dir=None):
     with tempfile.TemporaryDirectory(prefix="rusthouse-physical-scan-", dir=scratch_dir) as root:
         directory = Path(root) / "db"
         tsv = Path(root) / "input.tsv"
-        write_fixture(tsv, rows)
+        write_fixture(tsv, rows, batch_rows=fixture_batch_rows)
         invoke(binary, directory, "CREATE TABLE events (id UInt64)", timeout=timeout)
         escaped_path = str(tsv).replace("'", "''")
         _, ingestion_seconds = invoke(
@@ -135,6 +137,7 @@ def main(argv=None):
     parser.add_argument("--warmups", type=int, default=2)
     parser.add_argument("--timeout", type=float, default=600)
     parser.add_argument("--scratch-dir", type=Path)
+    parser.add_argument("--fixture-batch-rows", type=int, default=8192)
     parser.add_argument("--require-billion-rows", action="store_true")
     parser.add_argument("--output", type=Path)
     args = parser.parse_args(argv)
@@ -153,7 +156,7 @@ def main(argv=None):
     try:
         report = benchmark(
             args.binary, args.rows, args.runs, args.warmups, args.timeout,
-            args.scratch_dir,
+            args.scratch_dir, args.fixture_batch_rows,
         )
     except (OSError, ValueError, RuntimeError, subprocess.TimeoutExpired) as error:
         parser.exit(1, f"persisted scan benchmark failed: {error}\n")
