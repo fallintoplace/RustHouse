@@ -107,6 +107,77 @@ fn parse_utc_offset(suffix: &str) -> Option<i64> {
 /// Parse a DateTime as UTC, accepting the usual SQL form and RFC 3339
 /// whole-second timestamps. Explicit offsets are normalized to UTC before
 /// checking the unsigned DateTime storage range.
+/// Parse a supported ClickHouse DateTime64 declaration. Local timezone
+/// conversion requires a timezone database and is not accepted for writes.
+pub fn datetime64_scale(kind: &str) -> Option<u8> {
+    let arguments = kind.strip_prefix("DateTime64(")?.strip_suffix(')')?;
+    let (precision, timezone) = match arguments.split_once(',') {
+        Some((precision, timezone)) => (precision.trim(), Some(timezone.trim())),
+        None => (arguments.trim(), None),
+    };
+    if let Some(timezone) = timezone {
+        if !matches!(timezone, "'UTC'" | "'Etc/UTC'") {
+            return None;
+        }
+    }
+    let precision = precision.parse::<u8>().ok()?;
+    (precision <= 9).then_some(precision)
+}
+
+/// Parse DateTime64 ticks with exact fractional seconds. Negative timestamps
+/// use signed epoch arithmetic, including 1969-12-31 23:59:59.999.
+pub fn parse_datetime64(text: &str, precision: u8) -> Option<i64> {
+    if precision > 9 || text.len() < 19 {
+        return None;
+    }
+    let separator = *text.as_bytes().get(10)?;
+    if !matches!(separator, b' ' | b'T' | b't') {
+        return None;
+    }
+    let days = parse_calendar_day(text.get(..10)?)?;
+    let time = i64::try_from(parse_clock_time(text.get(11..19)?)?).ok()?;
+    let mut suffix = text.get(19..)?;
+    let mut fraction = 0i64;
+    if let Some(raw) = suffix.strip_prefix('.') {
+        let count = raw.bytes().take_while(u8::is_ascii_digit).count();
+        if count == 0 || count > usize::from(precision) {
+            return None;
+        }
+        fraction = raw[..count].parse::<i64>().ok()?
+            .checked_mul(10i64.pow(u32::from(precision) - count as u32))?;
+        suffix = &raw[count..];
+    }
+    let offset = parse_utc_offset(suffix)?;
+    let seconds = days.checked_mul(86_400)?.checked_add(time)?
+        .checked_sub(offset)?;
+    seconds.checked_mul(10i64.pow(u32::from(precision)))?
+        .checked_add(fraction)
+}
+
+pub fn format_datetime64(ticks: i64, precision: u8) -> Option<String> {
+    if precision > 9 {
+        return None;
+    }
+    let scale = 10i64.pow(u32::from(precision));
+    let seconds = ticks.div_euclid(scale);
+    let fraction = ticks.rem_euclid(scale);
+    let days = seconds.div_euclid(86_400);
+    let day_seconds = seconds.rem_euclid(86_400);
+    let date = format_calendar_day(days);
+    let time = format!(
+        "{:02}:{:02}:{:02}",
+        day_seconds / 3_600,
+        day_seconds / 60 % 60,
+        day_seconds % 60
+    );
+    if precision == 0 {
+        Some(format!("{date} {time}"))
+    } else {
+        Some(format!("{date} {time}.{fraction:0width$}",
+            width = usize::from(precision)))
+    }
+}
+
 pub fn parse_datetime(text: &str) -> Option<u32> {
     let timestamp = text.get(..19)?;
     let bytes = timestamp.as_bytes();
