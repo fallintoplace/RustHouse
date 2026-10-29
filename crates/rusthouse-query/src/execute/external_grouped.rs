@@ -3,7 +3,7 @@ use super::ExecutionError;
 use std::cmp::Reverse;
 use std::collections::BinaryHeap;
 use std::fs::{self, File, OpenOptions};
-use std::io::{BufReader, BufWriter, Read, Write};
+use std::io::{BufRead, BufReader, BufWriter, Read, Write};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 
@@ -45,7 +45,28 @@ impl Drop for Scratch {
 // Temporary sorted runs are private to a query, so use compact canonical
 // unsigned varints instead of 16-byte fixed-size key/count pairs. This cuts
 // disk bandwidth substantially on high-cardinality 32-bit dimensions.
-fn read_varint(input: &mut impl Read, eof_allowed: bool) -> Result<Option<u64>, ExecutionError> {
+fn read_varint(input: &mut impl BufRead, eof_allowed: bool) -> Result<Option<u64>, ExecutionError> {
+    // In a buffered run, most varints fit entirely in the current slice.
+    // Avoid a virtual read call for every individual encoded byte.
+    let available = input.fill_buf()?;
+    if available.len() >= 10 {
+        let mut result = 0u64;
+        for (index, &byte) in available[..10].iter().enumerate() {
+            let value = byte & 0x7f;
+            if index == 9 && value > 1 {
+                return Err(invalid("GROUP BY spill varint overflow"));
+            }
+            result |= u64::from(value) << (index * 7);
+            if byte & 0x80 == 0 {
+                if index > 0 && value == 0 {
+                    return Err(invalid("noncanonical GROUP BY spill varint"));
+                }
+                input.consume(index + 1);
+                return Ok(Some(result));
+            }
+        }
+        return Err(invalid("GROUP BY spill varint too long"));
+    }
     let mut result = 0_u64;
     for index in 0..10 {
         let mut byte = [0_u8; 1];
@@ -301,6 +322,20 @@ mod tests {
         use std::os::unix::fs::PermissionsExt;
         let scratch = Scratch::create().unwrap();
         assert_eq!(fs::metadata(&scratch.0).unwrap().permissions().mode() & 0o077, 0);
+    }
+
+    #[test]
+    fn buffered_varints_round_trip_across_reader_boundaries() {
+        let mut encoded = Vec::new();
+        for value in [0, 1, 127, 128, 16_384, u64::MAX, 5] {
+            write_varint(&mut encoded, value).unwrap();
+        }
+        let reader = encoded.as_slice();
+        let mut buffered = BufReader::with_capacity(11, reader);
+        for value in [0, 1, 127, 128, 16_384, u64::MAX, 5] {
+            assert_eq!(read_varint(&mut buffered, true).unwrap(), Some(value));
+        }
+        assert_eq!(read_varint(&mut buffered, true).unwrap(), None);
     }
 
     #[test]
