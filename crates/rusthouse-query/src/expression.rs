@@ -23,10 +23,10 @@ pub enum ScalarExpr {
 impl ScalarExpr {
     pub fn referenced_columns(&self, out: &mut Vec<String>) {
         let mut seen = out.iter().cloned().collect::<HashSet<_>>();
-        self.collect_referenced_columns(out, &mut seen);
+        self.collect_unique_referenced_columns(out, &mut seen);
     }
 
-    fn collect_referenced_columns(&self, out: &mut Vec<String>, seen: &mut HashSet<String>) {
+    fn collect_unique_referenced_columns(&self, out: &mut Vec<String>, seen: &mut HashSet<String>) {
         match self {
             Self::Column(name) | Self::TextLength(name) => {
                 if seen.insert(name.clone()) {
@@ -39,8 +39,8 @@ impl ScalarExpr {
             | Self::Multiply(left, right)
             | Self::Divide(left, right)
             | Self::Compare(left, _, right) => {
-                left.collect_referenced_columns(out, seen);
-                right.collect_referenced_columns(out, seen);
+                left.collect_unique_referenced_columns(out, seen);
+                right.collect_unique_referenced_columns(out, seen);
             }
         }
     }
