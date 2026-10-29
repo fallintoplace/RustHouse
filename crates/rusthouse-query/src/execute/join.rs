@@ -270,6 +270,8 @@ fn probe_inner<F>(
     right_rows: &[Vec<typed::Cell>],
     hash: &HashMap<Vec<typed::Key>, Bucket>,
     options: ProbeOptions,
+    right_width: usize,
+    preserve_unmatched_left: bool,
     mut emit: F,
 ) -> Result<usize, ExecutionError>
 where
@@ -302,10 +304,13 @@ where
     let mut reader = TypedQueryReader::open(left_path, &selected)?;
     let mut matches = 0usize;
     let mut probe_key = Vec::with_capacity(left_keys.len());
+    let null_right = vec![typed::Cell::Null; right_width];
     'scan: while let Some(batch) = reader.next_batch()? {
         for index in 0..batch[0].len() {
+            let mut had_match = false;
             if batch_key_into(&batch, index, &key_indices, &mut probe_key) {
                 if let Some(right_indices) = hash.get(probe_key.as_slice()) {
+                    had_match = true;
                     // Materialize only after a row survives the join filter.
                     let mut left_row: Option<Vec<typed::Cell>> = None;
                     for &right_index in
@@ -352,6 +357,32 @@ where
                         matches += 1;
                     }
                 }
+            }
+            // WHERE filters apply after the outer row is NULL-extended.
+            if preserve_unmatched_left && !had_match {
+                if let Some((column, not_null)) = options.null_filter {
+                    let is_null = if column < left_names.len() {
+                        typed::is_null_at(
+                            &batch[retained.binary_search(&column).expect("filter retained")],
+                            index,
+                        )
+                    } else {
+                        true
+                    };
+                    if is_null == not_null { continue; }
+                }
+                if options.stop_after.is_some_and(|end| matches >= end) { break 'scan; }
+                if options.stop_after.is_none() && matches >= MAX_RESULT_ROWS {
+                    return Err(invalid("JOIN produces more than 131072 rows"));
+                }
+                let left_row = if options.materialize_rows
+                    && matches >= options.materialize_after {
+                    batch.iter().map(|column| typed::cell(column, index)).collect::<Vec<_>>()
+                } else {
+                    Vec::new()
+                };
+                emit(&left_row, &null_right)?;
+                matches += 1;
             }
         }
     }
@@ -572,7 +603,7 @@ fn execute_streaming_inner<W: Write>(
             }
         }
     }
-    if hash.is_empty() {
+    if hash.is_empty() && query.kind == JoinType::Inner {
         let header = selected
             .iter()
             .map(|(_, name, _)| name.as_str())
@@ -601,6 +632,7 @@ fn execute_streaming_inner<W: Write>(
             any: query.any,
             null_filter,
         },
+        right_names.len(), query.kind == JoinType::Left,
         |_, _| Ok(()),
     )?;
 
@@ -632,6 +664,7 @@ fn execute_streaming_inner<W: Write>(
             any: query.any,
             null_filter,
         },
+        right_names.len(), query.kind == JoinType::Left,
         |left, right| {
             if position >= query.offset && position < end {
                 for (index, (column, _, _)) in selected.iter().enumerate() {
@@ -976,6 +1009,7 @@ fn execute_streaming_ordered_inner<W: Write>(
             any: query.any,
             null_filter,
         },
+        right_names.len(), false,
         |left, right| {
             let at = |index: usize| -> &typed::Cell {
                 if index < width { &left[index] } else { &right[index - width] }
@@ -1073,7 +1107,7 @@ fn execute_streaming_inner_count<W: Write>(
             ProbeOptions {
                 materialize_rows: false, materialize_after: 0,
                 stop_after: Some(usize::MAX), any: query.any, null_filter,
-            }, |_, _| Ok(())
+            }, right_names.len(), false, |_, _| Ok(())
         )?
     } else {
         let keep = count_build_columns(
@@ -1272,10 +1306,12 @@ pub fn execute_join<W: Write>(
         );
     }
 
-    if query.kind == JoinType::Inner && order.is_empty() {
+    if matches!(query.kind, JoinType::Inner | JoinType::Left) && order.is_empty() {
         // A very large right table can be the streamed side if the left fits
         // the same bounded hash-build budget.
-        if right_meta.rows > MAX_STREAM_BUILD_ROWS && left_meta.rows <= MAX_STREAM_BUILD_ROWS {
+        if query.kind == JoinType::Inner
+            && right_meta.rows > MAX_STREAM_BUILD_ROWS
+            && left_meta.rows <= MAX_STREAM_BUILD_ROWS {
             return execute_streaming_right(
                 query,
                 left_path,
