@@ -6,7 +6,8 @@ const MAX_TEXT_BYTES: usize = 1_048_576;
 pub(super) fn is_function(name: &str) -> bool {
     super::date_scalar::is_function(name) || matches!(
         name.to_ascii_uppercase().as_str(),
-        "IPV4NUMTOSTRINGCLASSC"
+        "MACSTRINGTONUM"
+            | "IPV4NUMTOSTRINGCLASSC"
             | "IPV4STRINGTONUMORDEFAULT"
             | "CUTWWW"
             | "DOMAINWITHOUTWWW"
@@ -192,6 +193,20 @@ pub(super) fn is_function(name: &str) -> bool {
             | "ISIPV6MULTICAST"
             | "NORMALIZEIPV6"
     )
+}
+
+fn parse_mac_address(input: &str) -> Option<u64> {
+    let mut value = 0_u64;
+    let mut count = 0;
+    for group in input.split(':') {
+        if group.len() != 2 || !group.bytes().all(|byte| byte.is_ascii_hexdigit()) {
+            return None;
+        }
+        let byte = u8::from_str_radix(group, 16).ok()?;
+        value = (value << 8) | u64::from(byte);
+        count += 1;
+    }
+    (count == 6).then_some(value)
 }
 
 fn parse_readable_size_bytes(input: &str) -> Option<i64> {
@@ -506,6 +521,17 @@ fn parse_at_depth(parser: &mut Parser, depth: usize) -> Result<ConstantValue, Pa
                     })?;
                     let [a, b, c, _] = numeric.to_be_bytes();
                     ConstantValue::Text(format!("{a}.{b}.{c}.xxx"))
+                }
+                None => ConstantValue::Null,
+            }
+        }
+        "MACSTRINGTONUM" => {
+            let input = text_arg(parser, depth + 1)?;
+            require(parser, Token::RParen, "MACStringToNum requires one argument")?;
+            match input {
+                Some(input) => {
+                    let value = parse_mac_address(&input).unwrap_or(0);
+                    ConstantValue::Integer(value as i64)
                 }
                 None => ConstantValue::Null,
             }
@@ -4053,5 +4079,28 @@ mod clickhouse_ipv4_class_c_tests {
         }
         assert!(parse_select("SELECT IPv4NumToStringClassC(-1)").is_err());
         assert!(parse_select("SELECT IPv4NumToStringClassC(1,2)").is_err());
+    }
+}
+
+#[cfg(test)]
+mod clickhouse_mac_string_to_num_tests {
+    use crate::{parse_select, ConstantValue, Projection};
+
+    #[test]
+    fn parses_six_octets_and_defaults_invalid_formats_to_zero() {
+        for (sql, expected) in [
+            ("SELECT MACStringToNum('01:02:03:04:05:06')", 1108152157446),
+            ("SELECT MACStringToNum('ff:ff:ff:ff:ff:ff')", 281474976710655),
+            ("SELECT MACStringToNum('bad')", 0),
+            ("SELECT MACStringToNum('01:02:03:04:05')", 0),
+        ] {
+            assert!(
+                matches!(parse_select(sql).unwrap().projection, Projection::Constants(values)
+                    if values.len() == 1
+                        && values[0].value == ConstantValue::Integer(expected)),
+                "{sql}",
+            );
+        }
+        assert!(parse_select("SELECT MACStringToNum('x','y')").is_err());
     }
 }
