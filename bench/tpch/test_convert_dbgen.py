@@ -121,5 +121,16 @@ class DbgenConversionTests(unittest.TestCase):
             self.assertTrue((path / "converted" / "nation.tsv").exists())
 
 
+class BoundedDbgenInputTests(unittest.TestCase):
+    def test_rejects_overlong_physical_line_before_decoding(self):
+        from unittest.mock import patch
+        with tempfile.TemporaryDirectory() as root:
+            source, target = Path(root) / "region.tbl", Path(root) / "region.tsv"
+            source.write_bytes(b"x" * 25 + b"\n")
+            with patch("convert_dbgen.MAX_LINE", 20):
+                with self.assertRaisesRegex(ValueError, "exceeds 8 MiB"):
+                    convert_table(source, target, "region")
+            self.assertFalse(target.exists())
+
 if __name__ == "__main__":
     unittest.main()
