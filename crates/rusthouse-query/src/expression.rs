@@ -18,6 +18,7 @@ pub enum ScalarExpr {
     In(Box<ScalarExpr>, Vec<ScalarExpr>, bool),
     Coalesce(Vec<ScalarExpr>),
     NullIf(Box<ScalarExpr>, Box<ScalarExpr>),
+    Abs(Box<ScalarExpr>),
     Add(Box<ScalarExpr>, Box<ScalarExpr>),
     Subtract(Box<ScalarExpr>, Box<ScalarExpr>),
     Multiply(Box<ScalarExpr>, Box<ScalarExpr>),
@@ -42,7 +43,7 @@ impl ScalarExpr {
                 }
             }
             Self::Integer(_) | Self::Null => {}
-            Self::IsNull(value, _) | Self::Not(value) =>
+            Self::IsNull(value, _) | Self::Not(value) | Self::Abs(value) =>
                 value.collect_referenced_columns(out, seen),
             Self::Coalesce(values) => {
                 for value in values {
@@ -397,6 +398,14 @@ mod tests {
         for sql in ["if(a)", "if(a, 1)", "if(a, 1, 2, 3)", "if()"] {
             assert!(parse_scalar_expression(sql).is_err(), "{sql}");
         }
+    }
+
+    #[test]
+    fn absolute_value_is_available_in_computed_aggregates() {
+        assert!(matches!(parse_scalar_expression("abs(amount - 3)").unwrap(),
+            ScalarExpr::Abs(..)));
+        assert!(parse_scalar_expression("abs()").is_err());
+        assert!(parse_scalar_expression("abs(a, b)").is_err());
     }
 
     #[test]
