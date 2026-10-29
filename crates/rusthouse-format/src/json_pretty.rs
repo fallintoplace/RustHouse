@@ -29,23 +29,23 @@ fn is_empty_pair(open: u8, close: u8) -> bool {
 
 /// Pretty-print a validated JSON row, preserving punctuation inside strings.
 pub fn write_pretty_json_row<W: Write>(output: &mut W, row: &[u8]) -> io::Result<()> {
-    let mut quoted = false;
-    let mut escaped = false;
+    let mut inside_json_string = false;
+    let mut previous_byte_was_escape = false;
     let mut depth = 0usize;
     let mut start = 0usize;
     for (index, &byte) in row.iter().enumerate() {
-        if quoted {
-            if escaped {
-                escaped = false;
+        if inside_json_string {
+            if previous_byte_was_escape {
+                previous_byte_was_escape = false;
             } else if byte == b'\\' {
-                escaped = true;
+                previous_byte_was_escape = true;
             } else if byte == b'"' {
-                quoted = false;
+                inside_json_string = false;
             }
             continue;
         }
         match byte {
-            b'"' => quoted = true,
+            b'"' => inside_json_string = true,
             b'{' | b'[' => {
                 output.write_all(&row[start..=index])?;
                 depth += 1;
