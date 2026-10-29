@@ -2,14 +2,16 @@ import copy
 import unittest
 
 from bench.scale.compare_physical import compare
+from bench.scale.physical_scan import COUNT_SQL, SUM_SQL, even_reference
 
 
 def report(median=1.0, rows=1_000_000_000):
+    count, total = even_reference(rows)
     return {"workload": "rusthouse-persisted-wide-part-full-scans",
             "rows_written_and_verified": rows,
-            "count_even": {"query": "count", "expected": 10,
+            "count_even": {"query": COUNT_SQL, "expected": count,
                            "median_seconds": median, "verified": True},
-            "sum_even": {"query": "sum", "expected": 20,
+            "sum_even": {"query": SUM_SQL, "expected": total,
                          "median_seconds": median, "verified": True}}
 
 
@@ -23,6 +25,16 @@ class ComparePhysicalTests(unittest.TestCase):
         result = compare(report(), report(1.5), max_slowdown_percent=10)
         self.assertFalse(result["all_within_budget"])
         self.assertGreater(result["cases"][0]["slowdown_percent"], 49)
+
+    def test_rejects_identically_wrong_oracles_in_both_reports(self):
+        fake = report()
+        fake["count_even"]["expected"] += 1
+        with self.assertRaisesRegex(ValueError, "independent oracle"):
+            compare(fake, copy.deepcopy(fake))
+        fake = report()
+        fake["sum_even"]["query"] = "SELECT sum(id) FROM events"
+        with self.assertRaisesRegex(ValueError, "independent oracle"):
+            compare(fake, copy.deepcopy(fake))
 
     def test_fails_on_mismatched_rows_and_unverified_results(self):
         with self.assertRaisesRegex(ValueError, "same"):
