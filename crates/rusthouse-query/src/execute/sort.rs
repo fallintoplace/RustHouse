@@ -331,7 +331,7 @@ impl SortedRows {
     fn flush_run(&mut self) -> Result<(), ExecutionError> {
         if self.rows.is_empty() { return Ok(()); }
         let path = self.next_path()?;
-        let mut writer = BufWriter::new(OpenOptions::new()
+        let mut writer = BufWriter::with_capacity(64 * 1024, OpenOptions::new()
             .create_new(true).write(true).open(&path)?);
         for row in std::mem::take(&mut self.rows).into_sorted_vec() {
             write_sorted_row(&mut writer, &row)?;
@@ -443,7 +443,7 @@ impl SortedRows {
                 for group in previous.chunks(MERGE_FAN_IN) {
                     self.preflight_merge_run(group)?;
                     let path = self.next_path()?;
-                    let mut writer = BufWriter::new(OpenOptions::new()
+                    let mut writer = BufWriter::with_capacity(64 * 1024, OpenOptions::new()
                         .create_new(true).write(true).open(&path)?);
                     merge_runs(group, self.descending, &self.extra_descending, |row| {
                         write_sorted_row(&mut writer, row)?;
