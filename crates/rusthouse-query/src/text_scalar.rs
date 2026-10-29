@@ -95,6 +95,9 @@ pub(super) fn is_function(name: &str) -> bool {
             | "TOINT16ORDEFAULT"
             | "TOINT32ORDEFAULT"
             | "TOINT64ORDEFAULT"
+            | "PARSEREADABLESIZE"
+            | "PARSEREADABLESIZEORZERO"
+            | "PARSEREADABLESIZEORNULL"
             | "TOINT64ORNULL"
             | "LPAD"
             | "LEFTPADUTF8"
@@ -159,6 +162,46 @@ pub(super) fn is_function(name: &str) -> bool {
             | "MODULOORNULL"
             | "ENCODEURLFORMCOMPONENT"
     )
+}
+
+fn parse_readable_size_bytes(input: &str) -> Option<i64> {
+    let (number, unit) = input.split_once(' ')?;
+    let (whole, fractional) = number.split_once('.').unwrap_or((number, ""));
+    if whole.is_empty()
+        || !whole.bytes().all(|byte| byte.is_ascii_digit())
+        || fractional.len() > 18
+        || !fractional.bytes().all(|byte| byte.is_ascii_digit())
+    {
+        return None;
+    }
+    let (base, exponent) = match unit.to_ascii_lowercase().as_str() {
+        "b" => (1_u128, 0),
+        "kb" => (1_000, 1),
+        "mb" => (1_000, 2),
+        "gb" => (1_000, 3),
+        "tb" => (1_000, 4),
+        "pb" => (1_000, 5),
+        "eb" => (1_000, 6),
+        "kib" => (1_024, 1),
+        "mib" => (1_024, 2),
+        "gib" => (1_024, 3),
+        "tib" => (1_024, 4),
+        "pib" => (1_024, 5),
+        "eib" => (1_024, 6),
+        _ => return None,
+    };
+    let denominator = 10_u128.checked_pow(fractional.len() as u32)?;
+    let whole = whole.parse::<u128>().ok()?;
+    let fractional = if fractional.is_empty() {
+        0
+    } else {
+        fractional.parse::<u128>().ok()?
+    };
+    let numerator = whole.checked_mul(denominator)?.checked_add(fractional)?;
+    let factor = base.checked_pow(exponent)?;
+    let bytes = numerator.checked_mul(factor)?;
+    let rounded = bytes.checked_add(denominator - 1)?.checked_div(denominator)?;
+    i64::try_from(rounded).ok()
 }
 
 pub(super) fn parse(parser: &mut Parser) -> Result<ConstantValue, ParseError> {
@@ -2618,6 +2661,19 @@ fn parse_at_depth(parser: &mut Parser, depth: usize) -> Result<ConstantValue, Pa
                     ConstantValue::Integer(parsed.unwrap_or(fallback))
                 }
                 _ => ConstantValue::Null,
+            }
+        }
+        "PARSEREADABLESIZE" | "PARSEREADABLESIZEORZERO" | "PARSEREADABLESIZEORNULL" => {
+            let input = text_arg(parser, depth + 1)?;
+            require(parser, Token::RParen, "parseReadableSize requires one string")?;
+            match input {
+                None => ConstantValue::Null,
+                Some(input) => match parse_readable_size_bytes(&input) {
+                    Some(bytes) => ConstantValue::Integer(bytes),
+                    None if name == "PARSEREADABLESIZEORZERO" => ConstantValue::Integer(0),
+                    None if name == "PARSEREADABLESIZEORNULL" => ConstantValue::Null,
+                    None => return Err(ParseError("invalid readable byte size".into())),
+                },
             }
         }
         "TRY_TO_INT64" | "TOINT64ORNULL" => {
