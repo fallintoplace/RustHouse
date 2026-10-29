@@ -99,7 +99,7 @@ fn merge_until(
     mut emit: impl FnMut(u64, u64) -> Result<bool, ExecutionError>,
 ) -> Result<(), ExecutionError> {
     let mut streams = files.iter().map(File::open)
-        .map(|reader| reader.map(BufReader::new))
+        .map(|reader| reader.map(|file| BufReader::with_capacity(64 * 1024, file)))
         .collect::<Result<Vec<_>, _>>()?;
     let mut heap = BinaryHeap::<Reverse<(u64, usize, u64)>>::new();
     for (index, stream) in streams.iter_mut().enumerate() {
