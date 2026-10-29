@@ -246,14 +246,12 @@ pub fn plan_chunk_window(
     if start_index > count || requested > count - start_index {
         return Err("transfer chunk window exceeds bounds");
     }
-    let mut page = Vec::with_capacity(requested);
-    for index in start_index..start_index + requested {
-        page.push(IndexedChunk {
+    Ok((start_index..start_index + requested)
+        .map(|index| IndexedChunk {
             index,
             chunk: chunk_at_index(total_bytes, chunk_bytes, index),
-        });
-    }
-    Ok(page)
+        })
+        .collect())
 }
 
 #[cfg(test)]
