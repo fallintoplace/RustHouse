@@ -175,3 +175,8 @@ fn isnotzero_ignores_null_values() {
 fn square_uses_checked_numeric_multiplication() {
     assert_eq!(evaluate("square(x)"), "29");
 }
+
+#[test]
+fn cube_preserves_signed_and_nullable_numeric_inputs() {
+    assert_eq!(evaluate("cube(x)"), "117");
+}

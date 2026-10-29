@@ -285,6 +285,16 @@ fn parse_aggregate_builtin(parser: &mut Parser) -> Result<ScalarExpr, ParseError
                 Box::new(value),
             ))
         }
+        ("CUBE", 1) => {
+            let value = args.remove(0);
+            Ok(ScalarExpr::Multiply(
+                Box::new(ScalarExpr::Multiply(
+                    Box::new(value.clone()),
+                    Box::new(value.clone()),
+                )),
+                Box::new(value),
+            ))
+        }
         _ => Err(ParseError(format!("unsupported aggregate function: {name}"))),
     }
 }
