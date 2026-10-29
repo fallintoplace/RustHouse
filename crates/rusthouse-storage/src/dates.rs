@@ -10,6 +10,13 @@ fn days_in_month(year: i64, month: i64) -> i64 {
     }
 }
 
+// Each caller has already validated the fixed-width ASCII digit slice.
+fn decimal_digits(bytes: &[u8]) -> i64 {
+    bytes
+        .iter()
+        .fold(0i64, |number, &byte| number * 10 + i64::from(byte - b'0'))
+}
+
 fn parse_iso_date_components(text: &str) -> Option<(i64, i64, i64)> {
     let bytes = text.as_bytes();
     if bytes.len() != 10
@@ -22,9 +29,9 @@ fn parse_iso_date_components(text: &str) -> Option<(i64, i64, i64)> {
     {
         return None;
     }
-    let year = text[..4].parse::<i64>().ok()?;
-    let month = text[5..7].parse::<i64>().ok()?;
-    let day = text[8..10].parse::<i64>().ok()?;
+    let year = decimal_digits(&bytes[..4]);
+    let month = decimal_digits(&bytes[5..7]);
+    let day = decimal_digits(&bytes[8..]);
     if !(1..=12).contains(&month) {
         return None;
     }
@@ -85,10 +92,11 @@ fn parse_clock_time(text: &str) -> Option<u64> {
     {
         return None;
     }
-    let hour = text[..2].parse::<u64>().ok()?;
-    let minute = text[3..5].parse::<u64>().ok()?;
-    let second = text[6..].parse::<u64>().ok()?;
-    (hour <= 23 && minute <= 59 && second <= 59).then_some(hour * 3_600 + minute * 60 + second)
+    let hour = decimal_digits(&bytes[..2]);
+    let minute = decimal_digits(&bytes[3..5]);
+    let second = decimal_digits(&bytes[6..]);
+    (hour <= 23 && minute <= 59 && second <= 59)
+        .then_some((hour * 3_600 + minute * 60 + second) as u64)
 }
 
 fn parse_utc_offset(suffix: &str) -> Option<i64> {
@@ -103,8 +111,8 @@ fn parse_utc_offset(suffix: &str) -> Option<i64> {
             {
                 return None;
             }
-            let hours = suffix.get(1..3)?.parse::<i64>().ok()?;
-            let minutes = suffix.get(4..6)?.parse::<i64>().ok()?;
+            let hours = decimal_digits(&bytes[1..3]);
+            let minutes = decimal_digits(&bytes[4..6]);
             if hours > 23 || minutes > 59 {
                 return None;
             }
@@ -226,6 +234,24 @@ mod tests {
                 remainder % 60,
             );
             assert_eq!(format_datetime(seconds), expected);
+        }
+    }
+
+    #[test]
+    fn fixed_ascii_digit_parsing_roundtrips_timestamp_range() {
+        for seconds in (0..=u32::MAX).step_by(1_345_679) {
+            let timestamp = format_datetime(seconds);
+            assert_eq!(parse_datetime(&timestamp), Some(seconds), "{seconds}");
+        }
+        for invalid in [
+            "2026-13-01 00:00:00",
+            "2026-01-00 00:00:00",
+            "2026-01-01 24:00:00",
+            "2026-01-01 23:60:00",
+            "2026-01-01 23:59:60",
+            "2026-01-01T23:59:59+00:60",
+        ] {
+            assert!(parse_datetime(invalid).is_none(), "{invalid}");
         }
     }
 

@@ -92,6 +92,25 @@ pub fn plan_replica_copy_batch(
     // the bounded batch rather than the entire changed inventory.
     let source_index = index(source)?;
     let destination_index = index(destination)?;
+    if max_objects == 0 {
+        return Ok(Vec::new());
+    }
+    if max_objects == 1 {
+        // A scheduler requesting one copy only needs the smallest eligible
+        // object key, not a sorted list of the entire changed inventory.
+        return Ok(source_index
+            .into_values()
+            .filter(|meta| meta.bytes <= max_bytes)
+            .filter(|meta| {
+                destination_index
+                    .get(meta.key.as_str())
+                    .is_none_or(|existing| !meta.same_contents(existing))
+            })
+            .min_by(|left, right| left.key.cmp(&right.key))
+            .cloned()
+            .into_iter()
+            .collect());
+    }
     let mut needed = source_index
         .into_values()
         .filter(|meta| {
@@ -250,6 +269,32 @@ mod copy_batch_tests {
             .take(12)
             .collect::<Vec<_>>();
         assert_eq!(plan_replica_copy_batch(&source, &[], 12, 12).unwrap(), selected);
+    }
+
+    #[test]
+    fn one_copy_batch_matches_the_sorted_plan_without_a_full_sort() {
+        let source = (0..512).rev().map(|index| ObjectMetadata {
+            key: format!("part/{index:04}.bin"),
+            bytes: 1 + (index % 9) as u64,
+            crc32c: index,
+        }).collect::<Vec<_>>();
+        let destination = source.iter().filter(|object| object.key.ends_with('0'))
+            .cloned().collect::<Vec<_>>();
+        let all = plan_replica_copies(&source, &destination).unwrap();
+        for budget in [0u64, 1, 3, 5, 12] {
+            let expected = all.iter().find(|object| object.bytes <= budget).cloned();
+            assert_eq!(
+                plan_replica_copy_batch(&source, &destination, budget, 1)
+                    .unwrap()
+                    .into_iter()
+                    .next(),
+                expected,
+            );
+        }
+        assert!(plan_replica_copy_batch(&source, &destination, u64::MAX, 0)
+            .unwrap().is_empty());
+        let invalid = [ObjectMetadata { key: "../bad".into(), bytes: 0, crc32c: 0 }];
+        assert!(plan_replica_copy_batch(&invalid, &[], 0, 0).is_err());
     }
 
     #[test]
