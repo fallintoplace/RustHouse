@@ -179,6 +179,12 @@ impl<W: Write> Write for HtmlWriter<W> {
                 render_complete_row(&mut self.output, &mut self.columns, fragment)?;
                 continue;
             }
+            if complete && self.line.is_empty() {
+                // Most executor writes already contain complete rows. Avoid
+                // copying them into a staging Vec before rendering.
+                render_complete_row(&mut self.output, &mut self.columns, fragment)?;
+                continue;
+            }
             self.line.extend_from_slice(fragment);
             if complete {
                 self.finish_line()?;
@@ -195,6 +201,18 @@ impl<W: Write> Write for HtmlWriter<W> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn complete_rows_after_a_fragment_still_render_correctly() {
+        let mut writer = HtmlWriter::new(Vec::new());
+        writer.write_all(b"name\nfir").unwrap();
+        assert!(!writer.line.is_empty());
+        writer.write_all(b"st\nsecond\n").unwrap();
+        assert!(writer.line.is_empty());
+        let html = String::from_utf8(writer.finish().unwrap()).unwrap();
+        assert!(html.contains("<td>first</td>"));
+        assert!(html.contains("<td>second</td>"));
+    }
 
     #[test]
     fn full_html_rows_bypass_input_staging() {
