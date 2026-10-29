@@ -1,5 +1,7 @@
 use super::*;
 
+const MAX_MULTIPLICATIVE_OPERATORS: usize = 128;
+
 fn parse_length_column(parser: &mut Parser) -> Result<ScalarExpr, ParseError> {
     parser.index += 2;
     let column = parser.word()?;
@@ -78,7 +80,7 @@ pub(super) fn product(parser: &mut Parser, depth: usize) -> Result<ScalarExpr, P
             break;
         };
         operators += 1;
-        if operators > 128 {
+        if operators > MAX_MULTIPLICATIVE_OPERATORS {
             return Err(ParseError("multiplicative operator chain exceeds 128 terms".into()));
         }
         let right = Box::new(primary(parser, depth)?);
