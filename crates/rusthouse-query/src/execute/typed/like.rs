@@ -83,7 +83,14 @@ pub(super) fn compile_like(pattern: &str) -> Result<LikePattern, ExecutionError>
         }
     }
     let folded_percent = folded_multisegment_pattern(&tokens);
-    Ok(LikePattern::Wildcard { tokens, folded_percent })
+    // Unicode underscore patterns can be applied to many rows. Compile the
+    // folded literals once instead of rebuilding them for every match.
+    let unicode_tokens = if folded_percent.is_none() {
+        unicode_like_tokens(&tokens)
+    } else {
+        None
+    };
+    Ok(LikePattern::Wildcard { tokens, folded_percent, unicode_tokens })
 }
 
 pub(super) fn next_utf8_boundary(value: &[u8], index: usize) -> Option<usize> {
@@ -279,7 +286,7 @@ pub(super) fn like_matches(value: &[u8], pattern: &LikePattern, case_insensitive
                     .any(|part| equal_like_bytes(part, bytes, true))
             }
         }
-        LikePattern::Wildcard { tokens, folded_percent } => {
+        LikePattern::Wildcard { tokens, folded_percent, unicode_tokens } => {
             // Multi-segment ILIKE patterns must fold Unicode as a whole.
             // ASCII and '_' patterns keep the allocation-free scan.
             if case_insensitive
@@ -299,6 +306,17 @@ pub(super) fn like_matches(value: &[u8], pattern: &LikePattern, case_insensitive
                     );
                 }
             }
+            if case_insensitive
+                && (!value.is_ascii() || tokens.iter().any(|token| {
+                    matches!(token, LikeToken::Byte(byte) if !byte.is_ascii())
+                }))
+            {
+                if let (Ok(text), Some(cached)) =
+                    (std::str::from_utf8(value), unicode_tokens.as_deref())
+                {
+                    return unicode_like_wildcards(text, cached);
+                }
+            }
             like_matches_wildcards(value, tokens, case_insensitive)
         },
     }
@@ -306,7 +324,7 @@ pub(super) fn like_matches(value: &[u8], pattern: &LikePattern, case_insensitive
 
 /// Preserve '_' as exactly one original Unicode codepoint, even when
 /// lowercasing a character expands it into multiple codepoints.
-enum UnicodeLikeToken {
+pub(super) enum UnicodeLikeToken {
     Literal(String),
     Any,
     One,
@@ -502,6 +520,25 @@ mod simple_like_compile_tests {
         assert!(like_matches(b"hello WORLD", &compile_like("%world").unwrap(), true));
         assert!(!like_matches(b"hello WORLD", &compile_like("%world").unwrap(), false));
         assert!(like_matches(b"hello WORLD", &compile_like("hello%").unwrap(), true));
+    }
+}
+
+#[cfg(test)]
+mod precompiled_unicode_wildcard_tests {
+    use super::*;
+
+    #[test]
+    fn unicode_underscore_patterns_reuse_their_folded_literal_tokens() {
+        let pattern = compile_like("MÜN_HEN").unwrap();
+        assert!(matches!(&pattern, LikePattern::Wildcard {
+            unicode_tokens: Some(tokens), ..
+        } if !tokens.is_empty()));
+        assert!(like_matches("münchen".as_bytes(), &pattern, true));
+        assert!(!like_matches("münchen".as_bytes(), &pattern, false));
+
+        let one = compile_like("STRA_E").unwrap();
+        assert!(like_matches("straße".as_bytes(), &one, true));
+        assert!(!like_matches("strasse".as_bytes(), &one, true));
     }
 }
 
