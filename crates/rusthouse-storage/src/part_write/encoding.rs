@@ -78,6 +78,13 @@ pub(super) fn push_cell(
                 .ok_or_else(|| invalid(format!("invalid DateTime value: {value}")))?;
             output.extend_from_slice(&seconds.to_le_bytes());
         }
+        kind if crate::datetime64_scale(kind).is_some() => {
+            let precision = crate::datetime64_scale(kind).expect("validated DateTime64 kind");
+            let ticks = crate::parse_datetime64(value, precision)
+                .or_else(|| value.parse::<i64>().ok())
+                .ok_or_else(|| invalid(format!("invalid DateTime64 value: {value}")))?;
+            output.extend_from_slice(&ticks.to_le_bytes());
+        }
         "UInt8" => numeric!(u8),
         "UInt16" => numeric!(u16),
         "UInt32" => numeric!(u32),
