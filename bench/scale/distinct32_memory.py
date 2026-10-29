@@ -21,13 +21,18 @@ def distinct_values(rows, layout):
         raise ValueError("rows must be in 1..200000")
     if layout not in ("sparse", "dense", "mixed"):
         raise ValueError("layout must be sparse, dense or mixed")
-    for index in range(rows):
-        if layout == "sparse":
+    if layout == "sparse":
+        for index in range(rows):
             yield ((index % 32768) << 16) | (index // 32768)
-        elif layout == "dense":
+    elif layout == "dense":
+        for index in range(rows):
             yield index % 65536
-        else:
-            yield ((index % 32768) << 16) | (index // 32768) if index % 2 == 0 else index % 65536
+    else:
+        for index in range(rows):
+            if index % 2 == 0:
+                yield ((index % 32768) << 16) | (index // 32768)
+            else:
+                yield index % 65536
 
 
 def write_tsv(path, rows, layout, duplicates):
