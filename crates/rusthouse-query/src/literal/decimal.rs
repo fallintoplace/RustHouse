@@ -12,9 +12,14 @@ pub(super) fn fixed_decimal(value: &str) -> Result<(i128, usize), ParseError> {
     } else {
         (digits, 0)
     };
-    let (whole, fraction) = mantissa.split_once('.').unwrap_or((mantissa, ""));
+    let (whole, original_fraction) = mantissa.split_once('.').unwrap_or((mantissa, ""));
     // Redundant fractional zeros should not consume scale or Int128 capacity.
-    let fraction = fraction.trim_end_matches('0');
+    let fraction = original_fraction.trim_end_matches('0');
+    let whole = if whole.is_empty() && fraction.is_empty() && !original_fraction.is_empty() {
+        "0"
+    } else {
+        whole
+    };
     if (whole.is_empty() && fraction.is_empty())
         || fraction.len() > 18
         || !whole.bytes().all(|byte| byte.is_ascii_digit())
@@ -104,6 +109,8 @@ mod tests {
         assert_eq!(fixed_decimal("-0.000e-500").unwrap(), (0, 0));
         assert!(fixed_decimal("1e500").is_err());
         assert_eq!(fixed_decimal("1.000000000000000000000000").unwrap(), (1, 0));
+        assert_eq!(fixed_decimal(".000000000").unwrap(), (0, 0));
+        assert_eq!(fixed_decimal("-.000e-500").unwrap(), (0, 0));
         assert_eq!(fixed_decimal("1.230000000000000000000").unwrap(), (123, 2));
         assert_eq!(fixed_decimal("-0.001000000000000000000").unwrap(), (-1, 3));
         assert_eq!(fixed_decimal("1.23000000e-2").unwrap(), (123, 4));
