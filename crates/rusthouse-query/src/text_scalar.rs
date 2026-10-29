@@ -6,7 +6,8 @@ const MAX_TEXT_BYTES: usize = 1_048_576;
 pub(super) fn is_function(name: &str) -> bool {
     super::date_scalar::is_function(name) || matches!(
         name.to_ascii_uppercase().as_str(),
-        "LENGTH"
+        "IPV4STRINGTONUMORDEFAULT"
+            | "LENGTH"
             | "TOYEAR"
             | "LENGTHUTF8"
             | "TOSTARTOFFIVEMINUTES"
@@ -302,6 +303,21 @@ fn parse_at_depth(parser: &mut Parser, depth: usize) -> Result<ConstantValue, Pa
     }
     let value = match name.as_str() {
 
+        "IPV4STRINGTONUMORDEFAULT" => {
+            let input = text_arg(parser, depth + 1)?;
+            require(
+                parser,
+                Token::RParen,
+                "IPv4StringToNumOrDefault requires one argument",
+            )?;
+            match input {
+                Some(input) => {
+                    let address = input.parse::<std::net::Ipv4Addr>().ok();
+                    ConstantValue::Integer(address.map_or(0, |ip| i64::from(u32::from(ip))))
+                }
+                None => ConstantValue::Null,
+            }
+        }
         "PORT" => {
             let input = text_arg(parser, depth + 1)?;
             let fallback = if parser.take(Token::Comma) {
@@ -3575,5 +3591,28 @@ mod ch_position_byte_tests {
         for sql in ["SELECT position('abc')", "SELECT position('abc','a','x')"] {
             assert!(parse_select(sql).is_err(), "{sql}");
         }
+    }
+}
+
+#[cfg(test)]
+mod clickhouse_ipv4_string_default_tests {
+    use crate::{parse_select, ConstantValue, Projection};
+
+    #[test]
+    fn invalid_ipv4_strings_return_zero() {
+        for (sql, expected) in [
+            ("SELECT IPv4StringToNumOrDefault('127.0.0.1')", 2130706433),
+            ("SELECT IPv4StringToNumOrDefault('invalid')", 0),
+            ("SELECT IPv4StringToNumOrDefault('256.0.0.1')", 0),
+            ("SELECT IPv4StringToNumOrDefault('0.0.0.0')", 0),
+        ] {
+            assert!(
+                matches!(parse_select(sql).unwrap().projection, Projection::Constants(values)
+                    if values.len() == 1
+                        && values[0].value == ConstantValue::Integer(expected)),
+                "{sql}",
+            );
+        }
+        assert!(parse_select("SELECT IPv4StringToNumOrDefault('a', 0)").is_err());
     }
 }
