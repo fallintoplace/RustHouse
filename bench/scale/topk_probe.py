@@ -22,10 +22,11 @@ def probe(binary, part, rows, *, column="id", limit=10, timeout=600, execute=Non
         raise ValueError("timeout must be finite and positive")
     run = execute or subprocess.run
     results = []
-    for descending in (False, True):
-        direction = "DESC" if descending else "ASC"
+    for direction, expected_values in (
+        ("ASC", range(limit)),
+        ("DESC", range(rows - 1, rows - 1 - limit, -1)),
+    ):
         sql = f"SELECT {column} FROM part ORDER BY {column} {direction} LIMIT {limit}"
-        expected_values = range(rows - 1, rows - 1 - limit, -1) if descending else range(limit)
         expected = "".join(f"{value}\n" for value in expected_values).encode()
         start = time.perf_counter()
         completed = run([str(binary), "sql", sql, "--part", str(part),
