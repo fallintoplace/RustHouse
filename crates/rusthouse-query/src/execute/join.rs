@@ -404,6 +404,7 @@ fn probe_right_outer<F>(
     left_width: usize,
     hash: &HashMap<Vec<typed::Key>, Bucket>,
     options: ProbeOptions,
+    mut matched_left: Option<&mut [bool]>,
     mut emit: F,
 ) -> Result<usize, ExecutionError>
 where
@@ -446,6 +447,10 @@ where
                     .map(Some)
             });
             for left_index in matches.chain((!matched).then_some(None)) {
+                if let (Some(&index), Some(flags)) =
+                    (left_index, matched_left.as_deref_mut()) {
+                    flags[index] = true;
+                }
                 let left = left_index.map_or(null_left.as_slice(),
                     |&index| left_rows[index].as_slice());
                 if let Some((column, not_null)) = options.null_filter {
@@ -508,19 +513,38 @@ fn execute_streaming_right_outer<W: Write>(
     }
     let stop_after = query.limit.filter(|&limit| limit <= MAX_RESULT_ROWS)
         .and_then(|limit| query.offset.checked_add(limit));
+    let mut preflight_left_matched =
+        (query.kind == JoinType::Full).then(|| vec![false; left_rows.len()]);
     let preflight = probe_right_outer(
         right_path, right_names, right_keys, &left_rows, left_names.len(), &hash,
         ProbeOptions {
             materialize_rows: false, materialize_after: 0, stop_after,
             any: query.any, null_filter,
-        }, |_, _| Ok(()),
+        }, preflight_left_matched.as_deref_mut(), |_, _| Ok(()),
     )?;
+    let unmatched_left = if stop_after.is_some_and(|end| preflight >= end) {
+        0
+    } else {
+        preflight_left_matched.as_ref().map_or(0, |matched| {
+            left_rows.iter().zip(matched)
+                .filter(|(row, was_matched)| !**was_matched
+                    && keep_unmatched_left(null_filter, left_names.len(), row))
+                .count()
+        })
+    };
+    let total = preflight.checked_add(unmatched_left)
+        .ok_or_else(|| invalid("FULL JOIN output count overflow"))?;
+    if stop_after.is_none() && total > MAX_RESULT_ROWS {
+        return Err(invalid("JOIN produces more than 131072 rows"));
+    }
     let header = selected.iter().map(|(_, name, _)| name.as_str())
         .collect::<Vec<_>>().join("\t");
     writeln!(output, "{header}")?;
-    if preflight <= query.offset { return Ok(()); }
+    if total <= query.offset { return Ok(()); }
     let end = query.offset.saturating_add(query.limit.unwrap_or(usize::MAX));
     let mut seen = 0usize;
+    let mut emitted_left_matched =
+        (query.kind == JoinType::Full).then(|| vec![false; left_rows.len()]);
     probe_right_outer(
         right_path, right_names, right_keys, &left_rows, left_names.len(), &hash,
         ProbeOptions {
@@ -529,6 +553,7 @@ fn execute_streaming_right_outer<W: Write>(
             }),
             materialize_after: query.offset, stop_after, any: query.any, null_filter,
         },
+        emitted_left_matched.as_deref_mut(),
         |left, right| {
             if seen >= query.offset && seen < end {
                 for (pos, (column, _, fallback)) in selected.iter().enumerate() {
@@ -552,12 +577,55 @@ fn execute_streaming_right_outer<W: Write>(
             Ok(())
         },
     )?;
+    if let Some(matched) = emitted_left_matched {
+        let null_right = vec![typed::Cell::Null; right_names.len()];
+        let width = left_names.len();
+        for (left_index, left) in left_rows.iter().enumerate() {
+            if matched[left_index] || !keep_unmatched_left(null_filter, width, left) {
+                continue;
+            }
+            if seen >= end { break; }
+            if seen >= query.offset {
+                for (pos, (column, _, fallback)) in selected.iter().enumerate() {
+                    if pos > 0 { output.write_all(b"\t")?; }
+                    let value = if *column < width {
+                        &left[*column]
+                    } else {
+                        &null_right[*column - width]
+                    };
+                    let value = if matches!(value, typed::Cell::Null) {
+                        fallback.map(|other| if other < width {
+                            &left[other]
+                        } else {
+                            &null_right[other - width]
+                        }).unwrap_or(value)
+                    } else { value };
+                    typed::write_value(output, value)?;
+                }
+                output.write_all(b"\n")?;
+            }
+            seen = seen.checked_add(1)
+                .ok_or_else(|| invalid("FULL JOIN output count overflow"))?;
+        }
+    }
     Ok(())
 }
 
 /// For unordered INNER joins, build only the small right side and stream the
 /// left side twice. A bounded page needs only its prefix; unbounded or
 /// oversized requests still validate the 131,072-result limit before output.
+fn keep_unmatched_left(
+    filter: Option<(usize, bool)>,
+    left_width: usize,
+    row: &[typed::Cell],
+) -> bool {
+    filter.is_none_or(|(column, not_null)| {
+        let is_null = column >= left_width
+            || matches!(row[column], typed::Cell::Null);
+        is_null != not_null
+    })
+}
+
 struct InnerJoinColumns<'a> {
     left_names: &'a [String],
     right_names: &'a [String],
@@ -1181,7 +1249,7 @@ fn execute_streaming_inner_count<W: Write>(
                 materialize_rows: false, materialize_after: 0,
                 stop_after: Some(usize::MAX), any: query.any, null_filter,
             },
-            |_, _| Ok(()),
+            None, |_, _| Ok(()),
         )?
     } else if right_count <= MAX_STREAM_BUILD_ROWS &&
         (matches!(query.kind, JoinType::Left | JoinType::Full)
@@ -1407,9 +1475,14 @@ pub fn execute_join<W: Write>(
         return Ok(());
     }
 
-    if query.kind == JoinType::Right && order.is_empty()
+    if matches!(query.kind, JoinType::Right | JoinType::Full)
+        && order.is_empty()
         && left_meta.rows <= MAX_STREAM_BUILD_ROWS
-        && right_meta.rows > MAX_INPUT_ROWS
+        && right_meta.rows > if query.kind == JoinType::Full {
+            MAX_STREAM_BUILD_ROWS
+        } else {
+            MAX_INPUT_ROWS
+        }
     {
         return execute_streaming_right_outer(
             query, left_path, right_path,
