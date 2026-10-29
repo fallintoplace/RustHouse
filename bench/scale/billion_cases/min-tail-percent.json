@@ -1,0 +1,6 @@
+{
+  "id": "min-tail-percent",
+  "kind": "min_range",
+  "lo": "p99",
+  "hi": "end"
+}
