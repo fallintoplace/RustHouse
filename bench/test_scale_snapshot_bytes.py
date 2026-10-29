@@ -1,5 +1,6 @@
 import tempfile
 import unittest
+from unittest.mock import patch
 from pathlib import Path
 
 from bench.scale.snapshot_bytes import classify, inventory
@@ -24,6 +25,18 @@ class SnapshotBytesTests(unittest.TestCase):
             (Path(root) / "x.bin").write_bytes(b"a")
             with self.assertRaisesRegex(ValueError, "max_files"):
                 inventory(root, max_files=0)
+
+    def test_rejects_unreadable_subdirectories(self):
+        with tempfile.TemporaryDirectory() as root:
+            (Path(root) / "data.bin").write_bytes(b"123")
+
+            def unreadable(_root, *, followlinks, onerror):
+                onerror(PermissionError("unreadable nested part"))
+                return iter(())
+
+            with patch("bench.scale.snapshot_bytes.os.walk", side_effect=unreadable):
+                with self.assertRaisesRegex(PermissionError, "unreadable"):
+                    inventory(root)
 
     def test_classifies_unknown_files_as_metadata(self):
         self.assertEqual(classify("columns.txt"), "metadata_bytes")
