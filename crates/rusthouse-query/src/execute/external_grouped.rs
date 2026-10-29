@@ -94,8 +94,12 @@ fn read_group(reader: &mut BufReader<File>)
 
 fn write_group(output: &mut impl Write, key: u64, count: u64)
     -> Result<(), ExecutionError> {
-    write_varint(output, key)?;
-    write_varint(output, count)?;
+    let mut encoded = [0u8; 20];
+    let mut remaining = &mut encoded[..];
+    write_varint(&mut remaining, key)?;
+    write_varint(&mut remaining, count)?;
+    let used = 20 - remaining.len();
+    output.write_all(&encoded[..used])?;
     Ok(())
 }
 
@@ -323,6 +327,28 @@ mod tests {
         assert!(values.windows(2).all(|pair| pair[0].0 < pair[1].0));
         assert_eq!(values.iter().map(|(_, count)| *count).sum::<u64>(),
             (RUN_KEYS * 35) as u64);
+    }
+
+    #[test]
+    fn grouped_spill_entry_uses_one_output_write() {
+        struct CountWrites {
+            calls: usize,
+            bytes: Vec<u8>,
+        }
+        impl Write for CountWrites {
+            fn write(&mut self, data: &[u8]) -> std::io::Result<usize> {
+                self.calls += 1;
+                self.bytes.extend_from_slice(data);
+                Ok(data.len())
+            }
+            fn flush(&mut self) -> std::io::Result<()> { Ok(()) }
+        }
+        let mut output = CountWrites { calls: 0, bytes: Vec::new() };
+        write_group(&mut output, u64::MAX, 12_345).unwrap();
+        assert_eq!(output.calls, 1);
+        let mut encoded = output.bytes.as_slice();
+        assert_eq!(read_varint(&mut encoded, true).unwrap(), Some(u64::MAX));
+        assert_eq!(read_varint(&mut encoded, false).unwrap(), Some(12_345));
     }
 
     #[test]
