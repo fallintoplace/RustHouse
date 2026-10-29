@@ -26,6 +26,17 @@ class CapacityPlanTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "max_parts"):
             plan(5, max_parts=16385)
 
+    def test_peak_ingest_budget_includes_staging_data(self):
+        insufficient = plan(100, bytes_per_row=20, disk_budget_bytes=3000)
+        self.assertEqual(insufficient["estimated_uncompressed_bytes"], 2000)
+        self.assertEqual(insufficient["estimated_peak_disk_bytes"], 4000)
+        self.assertFalse(insufficient["disk_budget_fit"])
+        enough = plan(100, bytes_per_row=20, disk_budget_bytes=3000,
+                      disk_copies=1)
+        self.assertTrue(enough["disk_budget_fit"])
+        with self.assertRaisesRegex(ValueError, "disk_copies"):
+            plan(100, disk_copies=0)
+
 
 if __name__ == "__main__":
     unittest.main()
