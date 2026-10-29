@@ -80,11 +80,19 @@ fn output_bins<W: Write>(
         return Ok(());
     }
     output.write_all(b"[")?;
+    // Formatting directly into a writer emits several tiny writes per bin.
+    // Reuse one short String so each result tuple is written in one call.
+    let mut formatted = String::with_capacity(96);
     for (index, bin) in result.iter().enumerate() {
+        formatted.clear();
         if index > 0 {
-            output.write_all(b",")?;
+            formatted.push(',');
         }
-        write!(output, "({},{},{})", bin.min, bin.max, bin.count)?;
+        std::fmt::Write::write_fmt(
+            &mut formatted,
+            format_args!("({},{},{})", bin.min, bin.max, bin.count),
+        ).expect("writing to String cannot fail");
+        output.write_all(formatted.as_bytes())?;
     }
     output.write_all(b"]\n")?;
     Ok(())
@@ -316,6 +324,34 @@ pub(super) fn execute_numbers<W: Write>(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn formats_histogram_rows_with_one_output_write_per_bin() {
+        use std::io;
+        struct Counting {
+            calls: usize,
+            bytes: Vec<u8>,
+        }
+        impl Write for Counting {
+            fn write(&mut self, bytes: &[u8]) -> io::Result<usize> {
+                self.calls += 1;
+                self.bytes.extend_from_slice(bytes);
+                Ok(bytes.len())
+            }
+            fn flush(&mut self) -> io::Result<()> { Ok(()) }
+        }
+        let query = crate::parse_select("SELECT histogram(3)(number) FROM numbers(10)").unwrap();
+        let bins = [
+            Bin { min: 0.0, max: 3.0, count: 3 },
+            Bin { min: 3.0, max: 6.0, count: 3 },
+            Bin { min: 6.0, max: 9.0, count: 4 },
+        ];
+        let mut writer = Counting { calls: 0, bytes: Vec::new() };
+        output_bins(&query, &mut writer, "number", 3, &bins).unwrap();
+        assert!(writer.bytes.ends_with(b"[(0,3,3),(3,6,3),(6,9,4)]\n"));
+        // Header, brackets and the three bins need a bounded number of writes.
+        assert!(writer.calls <= 12, "too many writes: {}", writer.calls);
+    }
 
     #[test]
     fn equal_width_boundaries_include_maximum_and_empty() {
