@@ -109,6 +109,7 @@ class AnalyticsRunnerTests(unittest.TestCase):
             clock[0] += 5_000_000_000
             return None
         with tempfile.TemporaryDirectory() as temp:
+            (Path(temp) / "q01.tsv").write_bytes(b"ok\n")
             with mock.patch.object(runner.time, "perf_counter_ns", side_effect=lambda: clock[0]), \
                  mock.patch.object(runner, "reference_failure", side_effect=verify):
                 item = runner.run_benchmark(
