@@ -18,6 +18,39 @@ fn parse_parenthesized(parser: &mut Parser) -> Result<ScalarExpr, ParseError> {
     Ok(result)
 }
 
+fn parse_case(parser: &mut Parser) -> Result<ScalarExpr, ParseError> {
+    if !parser.keyword("CASE") {
+        return Err(ParseError("CASE expression requires CASE".into()));
+    }
+    let mut branches = Vec::new();
+    while parser.keyword("WHEN") {
+        if branches.len() >= 16 {
+            return Err(ParseError("CASE supports at most 16 WHEN branches".into()));
+        }
+        let condition = parse_expression_tokens(parser)?;
+        if !parser.keyword("THEN") {
+            return Err(ParseError("CASE WHEN requires THEN".into()));
+        }
+        let value = parse_expression_tokens(parser)?;
+        branches.push((condition, value));
+    }
+    if branches.is_empty() {
+        return Err(ParseError("CASE requires WHEN".into()));
+    }
+    let else_expr = if parser.keyword("ELSE") {
+        Some(Box::new(parse_expression_tokens(parser)?))
+    } else {
+        None
+    };
+    if !parser.keyword("END") {
+        return Err(ParseError("CASE expression requires END".into()));
+    }
+    Ok(ScalarExpr::Case {
+        branches,
+        else_expr,
+    })
+}
+
 pub(super) fn primary(parser: &mut Parser) -> Result<ScalarExpr, ParseError> {
     match parser.tokens.get(parser.index) {
         Some(Token::Plus) => {
@@ -30,6 +63,9 @@ pub(super) fn primary(parser: &mut Parser) -> Result<ScalarExpr, ParseError> {
                 Box::new(ScalarExpr::Integer(0)),
                 Box::new(primary(parser)?),
             ))
+        }
+        Some(Token::Word(name)) if name.eq_ignore_ascii_case("CASE") => {
+            parse_case(parser)
         }
         Some(Token::Word(name))
             if name.eq_ignore_ascii_case("length")
