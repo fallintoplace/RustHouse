@@ -229,6 +229,48 @@ fn validate_part_columns(columns: &[Column]) -> Result<(), PartError> {
     Ok(())
 }
 
+/// Encode and publish one physical stream before constructing the next column.
+/// Marks retain the exact block offsets and CHECKSUMS uses original file bytes.
+fn write_granules(
+    part: &Path,
+    name: &str,
+    granules: &[Vec<u8>],
+    row_count: usize,
+    compression: PartCompression,
+    files: &mut Vec<FileChecksum>,
+) -> Result<(), PartError> {
+    let mut encoded = Vec::new();
+    let mut uncompressed = Vec::new();
+    let mut marks = Vec::with_capacity(24 * granules.len());
+    const PACKED_BLOCK_BYTES: usize = 64 * 1024;
+    let mut pending = Vec::new();
+    for (index, data) in granules.iter().enumerate() {
+        // Empty Array and Map streams retain the historical pad byte.
+        let data: &[u8] = if data.is_empty() { &[0] } else { data };
+        if data.len() > MAX_STREAM_BYTES - uncompressed.len() {
+            return Err(invalid("part column exceeds 8 MiB"));
+        }
+        if !pending.is_empty()
+            && data.len() > PACKED_BLOCK_BYTES.saturating_sub(pending.len())
+        {
+            encoded.extend_from_slice(&block(&pending, compression)?);
+            pending.clear();
+        }
+        marks.extend_from_slice(&(encoded.len() as u64).to_le_bytes());
+        marks.extend_from_slice(&(pending.len() as u64).to_le_bytes());
+        let count = (row_count - index * GRANULE_ROWS).min(GRANULE_ROWS);
+        marks.extend_from_slice(&(count as u64).to_le_bytes());
+        pending.extend_from_slice(data);
+        uncompressed.extend_from_slice(data);
+    }
+    if !pending.is_empty() {
+        encoded.extend_from_slice(&block(&pending, compression)?);
+    }
+    write_tracked_file(part, &format!("{name}.bin"), &encoded, Some(&uncompressed), files)?;
+    write_tracked_file(part, &format!("{name}.mrk2"), &marks, None, files)?;
+    Ok(())
+}
+
 /// Write a new immutable wide part. This function never replaces an existing path.
 /// Each row contains one value per column; None denotes SQL NULL.
 /// Empty tables have no data streams but still include a checksums manifest.
@@ -259,7 +301,30 @@ pub fn write_wide_part_with_compression(
         return Err(invalid("INSERT row width does not match table schema"));
     }
     let granule_count = rows.len().div_ceil(GRANULE_ROWS);
-    let mut streams = Vec::with_capacity(columns.len() * 2);
+    // All input metadata is validated before creating this new directory.
+    // If encoding or syncing fails, never expose a partially written part.
+    fs::create_dir(part).map_err(|error| io_error(part, error))?;
+    let result = (|| -> Result<(), PartError> {
+    let mut files = Vec::new();
+    let mut definitions = format!("columns format version: 1\n{} columns:\n", columns.len());
+    for col in columns {
+        definitions.push('`');
+        definitions.push_str(&col.name);
+        definitions.push_str("` ");
+        definitions.push_str(&col.data_type);
+        definitions.push('\n');
+    }
+    write_tracked_file(
+        part,
+        "columns.txt",
+        definitions.as_bytes(),
+        None,
+        &mut files,
+    )?;
+    let count = format!("{}\n", rows.len());
+    write_tracked_file(part, "count.txt", count.as_bytes(), None, &mut files)?;
+
+
     if !rows.is_empty() {
         for (index, col) in columns.iter().enumerate() {
             let (_, nullable) = base_type(&col.data_type);
@@ -275,8 +340,8 @@ pub fn write_wide_part_with_compression(
                     data_granules.push(data);
                     size_granules.push(sizes);
                 }
-                streams.push((col.name.clone(), data_granules));
-                streams.push((format!("{}.size0", col.name), size_granules));
+                write_granules(part, &col.name, &data_granules, rows.len(), compression, &mut files)?;
+                write_granules(part, &format!("{}.size0", col.name), &size_granules, rows.len(), compression, &mut files)?;
                 continue;
             }
             if let Some(value_type) = map_string_value_type(&col.data_type) {
@@ -300,9 +365,9 @@ pub fn write_wide_part_with_compression(
                     value_granules.push(values);
                     size_granules.push(sizes);
                 }
-                streams.push((format!("{}.keys", col.name), key_granules));
-                streams.push((format!("{}.values", col.name), value_granules));
-                streams.push((format!("{}.size0", col.name), size_granules));
+                write_granules(part, &format!("{}.keys", col.name), &key_granules, rows.len(), compression, &mut files)?;
+                write_granules(part, &format!("{}.values", col.name), &value_granules, rows.len(), compression, &mut files)?;
+                write_granules(part, &format!("{}.size0", col.name), &size_granules, rows.len(), compression, &mut files)?;
                 continue;
             }
             let mut data_granules = Vec::with_capacity(granule_count);
@@ -325,80 +390,22 @@ pub fn write_wide_part_with_compression(
                     null_granules.push(nulls);
                 }
             }
-            streams.push((col.name.clone(), data_granules));
+            write_granules(part, &col.name, &data_granules, rows.len(), compression, &mut files)?;
             if nullable {
-                streams.push((format!("{}.null", col.name), null_granules));
+                write_granules(part, &format!("{}.null", col.name), &null_granules, rows.len(), compression, &mut files)?;
             }
         }
     }
-
-    fs::create_dir(part).map_err(|error| io_error(part, error))?;
-    let mut files = Vec::new();
-    let mut definitions = format!("columns format version: 1\n{} columns:\n", columns.len());
-    for col in columns {
-        definitions.push('`');
-        definitions.push_str(&col.name);
-        definitions.push_str("` ");
-        definitions.push_str(&col.data_type);
-        definitions.push('\n');
-    }
-    write_tracked_file(
-        part,
-        "columns.txt",
-        definitions.as_bytes(),
-        None,
-        &mut files,
-    )?;
-    let count = format!("{}\n", rows.len());
-    write_tracked_file(part, "count.txt", count.as_bytes(), None, &mut files)?;
-
-    if !rows.is_empty() {
-        for (name, granules) in streams {
-            let mut encoded = Vec::new();
-            let mut uncompressed = Vec::new();
-            let mut marks = Vec::with_capacity(24 * granules.len());
-            // Pack adjacent marks into larger compressed blocks, while each
-            // mark retains its exact intra-block decompressed byte offset.
-            const PACKED_BLOCK_BYTES: usize = 64 * 1024;
-            let mut pending = Vec::new();
-            for (index, data) in granules.iter().enumerate() {
-                // Empty Array and Map streams retain an unexposed pad byte.
-                let data: &[u8] = if data.is_empty() { &[0] } else { data };
-                if data.len() > MAX_STREAM_BYTES - uncompressed.len() {
-                    return Err(invalid("part column exceeds 8 MiB"));
-                }
-                if !pending.is_empty()
-                    && data.len() > PACKED_BLOCK_BYTES.saturating_sub(pending.len())
-                {
-                    encoded.extend_from_slice(&block(&pending, compression)?);
-                    pending.clear();
-                }
-                marks.extend_from_slice(&(encoded.len() as u64).to_le_bytes());
-                marks.extend_from_slice(&(pending.len() as u64).to_le_bytes());
-                let row_count = (rows.len() - index * GRANULE_ROWS).min(GRANULE_ROWS);
-                marks.extend_from_slice(&(row_count as u64).to_le_bytes());
-                pending.extend_from_slice(data);
-                uncompressed.extend_from_slice(data);
-            }
-            if !pending.is_empty() {
-                encoded.extend_from_slice(&block(&pending, compression)?);
-            }
-            write_tracked_file(
-                part,
-                &format!("{name}.bin"),
-                &encoded,
-                Some(&uncompressed),
-                &mut files,
-            )?;
-            write_tracked_file(part, &format!("{name}.mrk2"), &marks, None, &mut files)?;
-        }
-    }
-
     // Write the manifest only after all listed files have been synced.
     write_file(&part.join("checksums.txt"), &encode_checksums(&files))?;
     fs::File::open(part)
         .and_then(|dir| dir.sync_all())
         .map_err(|error| io_error(part, error))
+    })();
+    if result.is_err() {
+        let _ = fs::remove_dir_all(part);
+    }
+    result
 }
 
 #[cfg(test)]
