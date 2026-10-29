@@ -15,7 +15,7 @@ pub struct VerticalWriter<W: Write> {
     rows: usize,
 }
 
-fn write_visible<W: Write>(output: &mut W, bytes: &[u8]) -> io::Result<()> {
+fn write_terminal_safe<W: Write>(output: &mut W, bytes: &[u8]) -> io::Result<()> {
     let mut start = 0;
     for (index, &byte) in bytes.iter().enumerate() {
         if byte.is_ascii_control() {
@@ -60,9 +60,9 @@ fn write_row<W: Write>(
         writeln!(output, "Row {row}:")?;
         for (header, field) in headers.iter().zip(line.split(|&byte| byte == b'\t')) {
             output.write_all(b"  ")?;
-            write_visible(output, header)?;
+            write_terminal_safe(output, header)?;
             output.write_all(b": ")?;
-            write_visible(output, field)?;
+            write_terminal_safe(output, field)?;
             output.write_all(b"\n")?;
         }
         return output.write_all(b"\n");
@@ -71,9 +71,9 @@ fn write_row<W: Write>(
     writeln!(output, "Row {row}:")?;
     for (header, field) in headers.iter().zip(&fields) {
         output.write_all(b"  ")?;
-        write_visible(output, header)?;
+        write_terminal_safe(output, header)?;
         output.write_all(b": ")?;
-        write_visible(output, field)?;
+        write_terminal_safe(output, field)?;
         output.write_all(b"\n")?;
     }
     output.write_all(b"\n")
