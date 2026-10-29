@@ -80,5 +80,16 @@ class PairedDuckDbTests(unittest.TestCase):
         self.assertEqual(report["results"][0]["status"], "error")
 
 
+class PairedDuckDBReferenceBudgetTests(unittest.TestCase):
+    def test_oversized_reference_does_not_run_pair(self):
+        from unittest.mock import patch
+        with tempfile.TemporaryDirectory() as root:
+            (Path(root) / "q01.tsv").write_bytes(b"123456789\n")
+            with patch("bench.tpch.paired_duckdb.MAX_REFERENCE_BYTES", 4):
+                result = compare("unused", "db", "duckdb", "db",
+                                 [(1, "SELECT 1")], Path(root), 1, 0, 10)
+            self.assertFalse(result["all_queries_verified"])
+            self.assertIn("oversized", result["results"][0]["error"])
+
 if __name__ == "__main__":
     unittest.main()
