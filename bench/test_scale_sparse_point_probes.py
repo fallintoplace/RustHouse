@@ -30,11 +30,40 @@ class SparseProbeTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             probe("x", "x", "a;drop", 0, 10)
 
+    def test_percentile_rejects_nonfinite_and_negative_timings(self):
+        for samples, percent in (
+            ([0.1, float("nan")], 95), ([float("inf")], 95),
+            ([-0.1, 0.1], 50), ([0.1], float("nan")),
+            ([0.1], float("inf")), ([0.1], True),
+        ):
+            with self.subTest(samples=samples, percent=percent), self.assertRaises(ValueError):
+                percentile(samples, percent)
+        self.assertEqual(percentile([0.0, 0.2, 0.1], 50), 0.1)
+
     def test_sampling_supports_full_uint64_domain(self):
         first = choose_ids(0, 1 << 64, 10, 42)
         self.assertEqual(len(set(first)), 10)
         self.assertEqual(first, choose_ids(0, 1 << 64, 10, 42))
         self.assertTrue(all(0 <= value < (1 << 64) for value in first))
+
+
+    def test_dense_samples_have_no_rejection_retries(self):
+        class DrawCounter:
+            def __init__(self, seed):
+                import random
+                self.original = random.Random(seed)
+                self.draws = 0
+            def randrange(self, stop):
+                self.draws += 1
+                return self.original.randrange(stop)
+        from unittest.mock import patch
+        counter = DrawCounter(7)
+        with patch("bench.scale.sparse_point_probes.random.Random",
+                   return_value=counter):
+            values = choose_ids(10, 10000, 10000, 7)
+        self.assertEqual(len(set(values)), 10000)
+        self.assertEqual(set(values), set(range(10, 10010)))
+        self.assertEqual(counter.draws, 10000)
 
 
 if __name__ == "__main__":

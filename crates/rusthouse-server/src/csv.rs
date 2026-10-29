@@ -25,30 +25,44 @@ impl<W: Write> CsvWriter<W> {
     }
 
     fn finish_row(&mut self) -> io::Result<()> {
-        // Encode into a temporary buffer before publishing anything, so
-        // malformed rows never leak partially written CSV to the client.
-        self.encoded.clear();
-        self.encoded.reserve(self.line.len().saturating_add(4));
-        let mut field_count = 0usize;
-        for field in self.line.split(|byte| *byte == b'\t') {
-            if field_count != 0 {
-                self.encoded.write_all(b",")?;
-            }
-            write_csv_field_from_tsv(&mut self.encoded, field)?;
-            field_count += 1;
-        }
-        if self.columns.is_some_and(|columns| columns != field_count) {
-            return Err(io::Error::new(
-                io::ErrorKind::InvalidData,
-                "CSV row has a different column count",
-            ));
-        }
-        self.encoded.write_all(b"\r\n")?;
-        self.output.write_all(&self.encoded)?;
-        self.columns = Some(field_count);
+        encode_complete_row(
+            &mut self.output,
+            &mut self.encoded,
+            &mut self.columns,
+            &self.line,
+        )?;
         self.line.clear();
         Ok(())
     }
+}
+
+fn encode_complete_row<W: Write>(
+    output: &mut W,
+    encoded: &mut Vec<u8>,
+    columns: &mut Option<usize>,
+    line: &[u8],
+) -> io::Result<()> {
+    // Keep the encoded buffer: malformed CSV must never emit a partial row.
+    encoded.clear();
+    encoded.reserve(line.len().saturating_add(4));
+    let mut field_count = 0usize;
+    for field in line.split(|byte| *byte == b'\t') {
+        if field_count != 0 {
+            encoded.write_all(b",")?;
+        }
+        write_csv_field_from_tsv(encoded, field)?;
+        field_count += 1;
+    }
+    if columns.is_some_and(|expected| expected != field_count) {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            "CSV row has a different column count",
+        ));
+    }
+    encoded.write_all(b"\r\n")?;
+    output.write_all(encoded)?;
+    *columns = Some(field_count);
+    Ok(())
 }
 
 fn write_csv_field_from_tsv<W: Write>(output: &mut W, field: &[u8]) -> io::Result<()> {
@@ -88,6 +102,15 @@ impl<W: Write> Write for CsvWriter<W> {
                     "CSV row exceeds 1 MiB",
                 ));
             }
+            if complete && self.line.is_empty() {
+                encode_complete_row(
+                    &mut self.output,
+                    &mut self.encoded,
+                    &mut self.columns,
+                    data,
+                )?;
+                continue;
+            }
             self.line.extend_from_slice(data);
             if complete {
                 self.finish_row()?;
@@ -104,6 +127,17 @@ impl<W: Write> Write for CsvWriter<W> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn contiguous_csv_rows_do_not_allocate_an_input_staging_buffer() {
+        let mut writer = CsvWriter::new(Vec::new());
+        writer.write_all(b"value\n").unwrap();
+        assert_eq!(writer.line.capacity(), 0);
+        let value = "x".repeat(16 * 1024);
+        writer.write_all(format!("{value}\n").as_bytes()).unwrap();
+        assert_eq!(writer.line.capacity(), 0);
+        assert!(writer.output.ends_with(format!("{value}\r\n").as_bytes()));
+    }
 
     #[test]
     fn doubles_adjacent_quotes_in_quoted_csv_fields() {

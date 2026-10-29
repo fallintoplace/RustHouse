@@ -908,6 +908,11 @@ impl TypedQueryReader {
     // Schedule one validated part open on the persistent worker. When a
     // receiver fails, fall back to synchronous opens without losing a part.
     fn prefetch_next(&mut self) {
+        // A two or three part snapshot usually completes its I/O faster
+        // than a fresh channel-backed thread can start and join.
+        if self.parts.len() < 4 {
+            return;
+        }
         if self.prefetched || self.next_part >= self.parts.len() {
             return;
         }
@@ -1033,6 +1038,38 @@ impl Drop for TypedQueryReader {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn tiny_typed_snapshot_opens_parts_without_a_prefetch_thread() {
+        use crate::{Column, write_wide_part};
+        use std::fs;
+        let root = std::env::temp_dir().join(format!(
+            "rusthouse-tiny-prefetch-{}", std::process::id(),
+        ));
+        let _ = fs::remove_dir_all(&root);
+        fs::create_dir_all(&root).unwrap();
+        let columns = [Column {
+            name: "value".into(), data_type: "UInt64".into(),
+        }];
+        for index in 0..2u64 {
+            write_wide_part(
+                &root.join(format!("all_{index}_{index}_0")),
+                &columns, &[vec![Some(index.to_string())]],
+            ).unwrap();
+        }
+        let mut scan = TypedQueryReader::open(&root, &["value".into()]).unwrap();
+        let mut seen = Vec::new();
+        while let Some(batch) = scan.next_batch().unwrap() {
+            let TypedColumn::Numeric(crate::NumericColumn::UInt64(values)) = &batch[0] else {
+                panic!("expected UInt64 data");
+            };
+            seen.extend_from_slice(values);
+        }
+        assert_eq!(seen, [0, 1]);
+        assert_eq!(scan.prefetch_worker_starts, 0);
+        drop(scan);
+        fs::remove_dir_all(root).unwrap();
+    }
 
     #[test]
     fn typed_part_prefetch_keeps_physical_row_order_and_offset() {

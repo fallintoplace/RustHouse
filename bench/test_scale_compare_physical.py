@@ -44,6 +44,51 @@ class ComparePhysicalTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "verified"):
             compare(report(), candidate)
 
+    def test_rejects_nonobject_reports_and_fractional_row_metadata(self):
+        for invalid in (None, [], "report"):
+            with self.subTest(invalid=invalid), self.assertRaisesRegex(ValueError, "objects"):
+                compare(report(), invalid)
+        candidate = report()
+        candidate["rows_written_and_verified"] = float(candidate["rows_written_and_verified"])
+        with self.assertRaisesRegex(ValueError, "same positive physical row count"):
+            compare(report(), candidate)
+        candidate = report()
+        candidate["rows_written_and_verified"] = True
+        with self.assertRaisesRegex(ValueError, "same positive physical row count"):
+            compare(report(), candidate)
+        with self.assertRaisesRegex(ValueError, "max_slowdown_percent"):
+            compare(report(), report(), max_slowdown_percent=True)
+
+    def test_tail_budget_is_independent_and_requires_p90(self):
+        base, candidate = report(), report(1.05)
+        with self.assertRaisesRegex(ValueError, "p90"):
+            compare(base, candidate, max_tail_slowdown_percent=5)
+        for key in ("count_even", "sum_even"):
+            base[key]["p90_seconds"] = 1.10
+            candidate[key]["p90_seconds"] = 1.20
+        result = compare(base, candidate, max_slowdown_percent=10,
+                         max_tail_slowdown_percent=5)
+        self.assertFalse(result["all_within_budget"])
+        loose = compare(base, candidate, max_slowdown_percent=10,
+                        max_tail_slowdown_percent=10)
+        self.assertTrue(loose["all_within_budget"])
+
+    def test_raw_timing_samples_must_support_the_reported_summary(self):
+        baseline, candidate = report(), report(1.05)
+        for name in ("count_even", "sum_even"):
+            baseline[name]["samples_seconds"] = [0.9, 1.1]
+            baseline[name]["p90_seconds"] = 1.1
+            candidate[name]["samples_seconds"] = [1.0, 1.1]
+            candidate[name]["p90_seconds"] = 1.1
+        self.assertTrue(compare(baseline, candidate)["all_within_budget"])
+        candidate["count_even"]["median_seconds"] = 1.01
+        with self.assertRaisesRegex(ValueError, "summary differs"):
+            compare(baseline, candidate)
+        candidate["count_even"]["median_seconds"] = 1.05
+        del candidate["count_even"]["samples_seconds"]
+        with self.assertRaisesRegex(ValueError, "samples differ"):
+            compare(baseline, candidate)
+
     def test_tail_regression_fails_even_when_median_is_fast(self):
         baseline, candidate = report(), report(0.95)
         for item in ("count_even", "sum_even"):

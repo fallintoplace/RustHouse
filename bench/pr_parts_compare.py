@@ -59,7 +59,8 @@ def compare_text(baseline, candidate):
         previous, _ = before[name]
         current, _ = after[name]
         change = 100 * (current / previous - 1)
-        lines.append(f"| {name} | {previous:.3f} | {current:.3f} | {change:+.1f}% |")
+        label = f"{change:+.1f}%" if math.isfinite(change) else "N/A (ratio overflow)"
+        lines.append(f"| {name} | {previous:.3f} | {current:.3f} | {label} |")
     lines.extend(["", "Negative change means faster. Re-run on a dedicated machine "
                   "before claiming a performance win.", ""])
     return "\n".join(lines)

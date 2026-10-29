@@ -186,5 +186,38 @@ class ClickHouseDifferentialTests(unittest.TestCase):
             self.assertIn("--query", run.call_args.args[0])
 
 
+    def test_unordered_json_string_multisets_scale_and_preserve_duplicates(self):
+        reference_rows = [
+            {"region": f"r-{index % 100}", "coupon": None if index % 2 else "promo"}
+            for index in range(3000)
+        ]
+        def encode(rows):
+            return ("".join(json.dumps(row, separators=(",", ":")) + "\n" for row in rows)).encode()
+        reference = encode(reference_rows)
+        actual = encode(reversed(reference_rows))
+        self.assertEqual(assert_clickhouse_json_parity(actual, reference, unordered=True), 3000)
+        wrong = encode(list(reference_rows[:-1]) + [{"region": "unexpected", "coupon": "promo"}])
+        with self.assertRaisesRegex(ValueError, "multiset"):
+            assert_clickhouse_json_parity(wrong, reference, unordered=True)
+
+    def test_clickhouse_reference_output_is_bounded_during_capture(self):
+        def fake_run(command, **kwargs):
+            kwargs["stdout"].write(b"abcdef")
+            return mock.Mock(returncode=0, stderr=b"")
+        with mock.patch("bench.analytics.clickhouse_parity.subprocess.run",
+                        side_effect=fake_run):
+            self.assertEqual(
+                cli_clickhouse("clickhouse-client", "localhost", 9000, "SELECT 1", 10),
+                b"abcdef")
+
+        def oversized_run(command, **kwargs):
+            kwargs["stdout"].write(b"x" * 4_000_001)
+            return mock.Mock(returncode=0, stderr=b"")
+        with mock.patch("bench.analytics.clickhouse_parity.subprocess.run",
+                        side_effect=oversized_run):
+            with self.assertRaisesRegex(ValueError, "4 MB"):
+                cli_clickhouse("clickhouse-client", "localhost", 9000, "SELECT 1", 10)
+
+
 if __name__ == "__main__":
     unittest.main()
