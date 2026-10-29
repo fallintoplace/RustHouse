@@ -153,5 +153,19 @@ class AnalyticsRunnerTests(unittest.TestCase):
         self.assertEqual(results[1]["seconds"].__len__(), 3)
 
 
+    def test_http_response_rejects_oversized_payload(self):
+        with mock.patch.object(runner.urllib.request, "urlopen") as open_url:
+            response = open_url.return_value.__enter__.return_value
+            response.read.return_value = b"x" * 16_777_217
+            with self.assertRaisesRegex(ValueError, "16 MiB"):
+                runner.execute_http("http://127.0.0.1:8123", "SELECT 1", 2)
+            response.read.assert_called_once_with(16_777_217)
+
+    def test_http_response_accepts_bounded_bytes(self):
+        with mock.patch.object(runner.urllib.request, "urlopen") as open_url:
+            response = open_url.return_value.__enter__.return_value
+            response.read.return_value = b"1\n"
+            self.assertEqual(runner.execute_http("http://127.0.0.1:8123", "SELECT 1", 2), b"1\n")
+
 if __name__ == "__main__":
     unittest.main()
