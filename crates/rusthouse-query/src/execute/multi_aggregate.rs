@@ -3,9 +3,9 @@ mod arithmetic;
 use self::arithmetic::*;
 
 use super::typed::{self, Cell};
-use super::{AggregateState, ExecutionError, Number, NumberKey, number_at};
+use super::{AggregateState, BitmapDistinct32, ExecutionError, Number, NumberKey, number_at};
 use crate::{AggregateItem, ScalarExpr, Select};
-use rusthouse_storage::{TypedColumn, TypedQueryReader, inspect_query_source};
+use rusthouse_storage::{NumericColumn, TypedColumn, TypedQueryReader, inspect_query_source};
 use std::collections::{HashMap, HashSet};
 use std::io::Write;
 use std::path::Path;
@@ -17,11 +17,14 @@ struct DistinctValues {
     other: HashSet<typed::Key>,
     text: HashSet<Vec<u8>>,
     uuids: HashSet<[u8; 16]>,
+    // Multi-metric queries share the exact UInt32/Int32 bitmap fast path.
+    bitmap32: Option<BitmapDistinct32>,
 }
 
 impl DistinctValues {
     fn len(&self) -> usize {
         self.other.len() + self.text.len() + self.uuids.len()
+            + self.bitmap32.as_ref().map_or(0, |bitmap| bitmap.len() as usize)
     }
 
     fn insert_key(&mut self, key: typed::Key) -> Result<(), ExecutionError> {
@@ -59,6 +62,26 @@ impl DistinctValues {
     }
 
     fn insert_column(&mut self, column: &TypedColumn, row: usize) -> Result<bool, ExecutionError> {
+        if let Some(bitmap) = self.bitmap32.as_mut() {
+            let value = match column {
+                TypedColumn::Numeric(NumericColumn::UInt32(values)) => Some(values[row]),
+                TypedColumn::Numeric(NumericColumn::Int32(values)) =>
+                    Some(values[row] as u32),
+                TypedColumn::NullableNumeric {
+                    values: NumericColumn::UInt32(values), nulls,
+                } => (nulls[row] == 0).then_some(values[row]),
+                TypedColumn::NullableNumeric {
+                    values: NumericColumn::Int32(values), nulls,
+                } => (nulls[row] == 0).then_some(values[row] as u32),
+                _ => return Err(ExecutionError::Invalid(
+                    "32-bit distinct bitmap requires a 32-bit integer column".into(),
+                )),
+            };
+            if let Some(key) = value {
+                bitmap.insert(key)?;
+            }
+            return Ok(true);
+        }
         match column {
             TypedColumn::Text(values) => {
                 if let Some(value) = values.get(row) {
@@ -567,7 +590,17 @@ pub(super) fn execute<W: Write>(
         .iter()
         .map(|item| match item.function {
             Some(function) => State::Numeric(AggregateState::new(function)),
-            None if item.distinct => State::Distinct(DistinctValues::default()),
+            None if item.distinct => {
+                let bitmap32 = match item.argument.as_ref() {
+                    Some(ScalarExpr::Column(column)) if types.get(column).is_some_and(|kind| {
+                        matches!(typed::base_type(kind), "UInt32" | "Int32")
+                    }) => Some(BitmapDistinct32::new()),
+                    _ => None,
+                };
+                State::Distinct(DistinctValues {
+                    bitmap32, ..DistinctValues::default()
+                })
+            },
             None => State::Count(0),
         })
         .collect::<Vec<_>>();
