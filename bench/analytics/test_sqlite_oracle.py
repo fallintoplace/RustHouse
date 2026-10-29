@@ -57,6 +57,13 @@ class SqliteOracleTests(unittest.TestCase):
         self.assertEqual(parse_rows(b"a\t1\r\nb\t2\r\n"),
                          [["a", "1"], ["b", "2"]])
 
+    def test_sqlite_reference_cannot_be_created_by_query(self):
+        with tempfile.TemporaryDirectory() as root:
+            missing = Path(root) / "missing-reference.sqlite"
+            with self.assertRaises(sqlite3.OperationalError):
+                sqlite_query(missing, "SELECT 1")
+            self.assertFalse(missing.exists())
+
     def test_sqlite_query(self):
         with tempfile.TemporaryDirectory() as root:
             path = Path(root) / "db.sqlite"
