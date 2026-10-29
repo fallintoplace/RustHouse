@@ -82,6 +82,12 @@ pub fn read_null_map<R: Read>(reader: &mut R, rows: usize) -> Result<Vec<u8>, Nu
     reader
         .read_exact(&mut null_map)
         .map_err(NullableReadError::Io)?;
+    if null_map.iter().any(|&value| value > 1) {
+        return Err(NullableReadError::Io(io::Error::new(
+            io::ErrorKind::InvalidData,
+            "Nullable null map must contain only 0 or 1",
+        )));
+    }
     Ok(null_map)
 }
 
@@ -487,5 +493,22 @@ mod tests {
         assert_eq!(trailing, [99]);
         data.read_exact(&mut trailing).unwrap();
         assert_eq!(trailing, [88]);
+    }
+}
+
+#[cfg(test)]
+mod null_map_value_validation_tests {
+    use super::*;
+    use std::io::Cursor;
+
+    #[test]
+    fn accepts_binary_flags_and_rejects_corruption() {
+        let mut valid = Cursor::new([0u8, 1, 0, 1]);
+        assert_eq!(read_null_map(&mut valid, 4).unwrap(), vec![0, 1, 0, 1]);
+
+        for invalid in [2u8, 3, 255] {
+            let mut corrupt = Cursor::new([0u8, invalid, 1]);
+            assert!(read_null_map(&mut corrupt, 3).is_err());
+        }
     }
 }
