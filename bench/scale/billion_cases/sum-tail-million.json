@@ -1,0 +1,6 @@
+{
+  "id": "sum-tail-million",
+  "kind": "sum_range",
+  "lo": "tail1m",
+  "hi": "end"
+}
