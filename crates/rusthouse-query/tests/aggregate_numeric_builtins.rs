@@ -35,3 +35,8 @@ fn evaluate(expression: &str) -> String {
 fn ifnull_substitutes_null_aggregate_inputs() {
     assert_eq!(evaluate("ifNull(x, y)"), "10");
 }
+
+#[test]
+fn nvl_matches_ifnull() {
+    assert_eq!(evaluate("nvl(x, y)"), "10");
+}
