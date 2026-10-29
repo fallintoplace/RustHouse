@@ -3,6 +3,16 @@ use super::MAX_RESPONSE_BYTES;
 use rusthouse_format::write_pretty_json_row;
 use std::io::{self, Write};
 
+fn validate_complete_object(row: &[u8]) -> io::Result<()> {
+    if !row.starts_with(b"{") || !row.ends_with(b"}") {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            "expected a complete JSON object",
+        ));
+    }
+    Ok(())
+}
+
 pub(super) struct JsonArraySink<W: Write> {
     output: W,
     row: Vec<u8>,
@@ -52,12 +62,7 @@ impl<W: Write> JsonArraySink<W> {
     }
 
     fn finish_row(&mut self) -> io::Result<()> {
-        if !self.row.starts_with(b"{") || !self.row.ends_with(b"}") {
-            return Err(io::Error::new(
-                io::ErrorKind::InvalidData,
-                "expected a complete JSON object",
-            ));
-        }
+        validate_complete_object(&self.row)?;
         self.write_row_prefix()?;
         if self.pretty {
             write_pretty_json_row(&mut self.output, &self.row)?;
@@ -100,12 +105,7 @@ impl<W: Write> Write for JsonArraySink<W> {
                             "JSON array row exceeds 8 MiB",
                         ));
                     }
-                    if !row.starts_with(b"{") || !row.ends_with(b"}") {
-                        return Err(io::Error::new(
-                            io::ErrorKind::InvalidData,
-                            "expected a complete JSON object",
-                        ));
-                    }
+                    validate_complete_object(&row)?;
                     self.write_row_prefix()?;
                     if self.pretty {
                         write_pretty_json_row(&mut self.output, row)?;
@@ -130,12 +130,7 @@ impl<W: Write> Write for JsonArraySink<W> {
                         "JSON array row exceeds 8 MiB",
                     ));
                 }
-                if !fragment.starts_with(b"{") || !fragment.ends_with(b"}") {
-                    return Err(io::Error::new(
-                        io::ErrorKind::InvalidData,
-                        "expected a complete JSON object",
-                    ));
-                }
+                validate_complete_object(&fragment)?;
                 self.write_row_prefix()?;
                 if self.pretty {
                     write_pretty_json_row(&mut self.output, fragment)?;
