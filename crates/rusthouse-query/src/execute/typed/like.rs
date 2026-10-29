@@ -107,6 +107,32 @@ fn unicode_folded_match(
     Some(compare(&value.to_lowercase(), &literal.to_lowercase()))
 }
 
+/// Rebuild literal runs after Unicode case folding while keeping LIKE wildcards.
+/// The pure-% variant is safe because it does not change underscore's
+/// one-original-character semantics when lowercasing expands a character.
+fn folded_multisegment_pattern(pattern: &[LikeToken]) -> Option<Vec<LikeToken>> {
+    let mut folded = Vec::with_capacity(pattern.len());
+    let mut literal = Vec::new();
+    let flush = |literal: &mut Vec<u8>, folded: &mut Vec<LikeToken>| -> Option<()> {
+        let text = std::str::from_utf8(literal).ok()?;
+        folded.extend(text.to_lowercase().bytes().map(LikeToken::Byte));
+        literal.clear();
+        Some(())
+    };
+    for token in pattern {
+        match token {
+            LikeToken::Byte(byte) => literal.push(*byte),
+            LikeToken::Any => {
+                flush(&mut literal, &mut folded)?;
+                folded.push(LikeToken::Any);
+            }
+            LikeToken::One => return None,
+        }
+    }
+    flush(&mut literal, &mut folded)?;
+    Some(folded)
+}
+
 pub(super) fn like_matches(value: &[u8], pattern: &LikePattern, case_insensitive: bool) -> bool {
     match pattern {
         LikePattern::Exact(bytes) => equal_like_bytes(value, bytes, case_insensitive),
@@ -208,7 +234,28 @@ pub(super) fn like_matches(value: &[u8], pattern: &LikePattern, case_insensitive
                     .any(|part| equal_like_bytes(part, bytes, true))
             }
         }
-        LikePattern::Wildcard(tokens) => like_matches_wildcards(value, tokens, case_insensitive),
+        LikePattern::Wildcard(tokens) => {
+            // Multi-segment ILIKE patterns must fold Unicode as a whole.
+            // ASCII and '_' patterns keep the allocation-free scan.
+            if case_insensitive
+                && (!value.is_ascii() || tokens.iter().any(|token| {
+                    matches!(token, LikeToken::Byte(byte) if !byte.is_ascii())
+                }))
+                && !tokens.iter().any(|token| matches!(token, LikeToken::One))
+            {
+                if let (Ok(text), Some(pattern)) = (
+                    std::str::from_utf8(value),
+                    folded_multisegment_pattern(tokens),
+                ) {
+                    return like_matches_wildcards(
+                        text.to_lowercase().as_bytes(),
+                        &pattern,
+                        false,
+                    );
+                }
+            }
+            like_matches_wildcards(value, tokens, case_insensitive)
+        },
     }
 }
 
@@ -553,5 +600,27 @@ mod single_byte_contains_tests {
             assert_eq!(like_matches(value.as_bytes(), &pattern, true), expected, "{value}");
         }
         assert!(!like_matches(b"zzAzz", &pattern, false));
+    }
+}
+
+#[cfg(test)]
+mod unicode_multisegment_ilike_tests {
+    use super::*;
+
+    #[test]
+    fn multi_percent_patterns_fold_non_ascii_literals() {
+        let pattern = compile_like("%É%FIN").unwrap();
+        assert!(like_matches("café au FIN".as_bytes(), &pattern, true));
+        assert!(like_matches("Café au fin".as_bytes(), &pattern, true));
+        assert!(!like_matches("café au FIN".as_bytes(), &pattern, false));
+        assert!(!like_matches("cafe au fin".as_bytes(), &pattern, true));
+    }
+
+    #[test]
+    fn unicode_expansion_with_multiple_percent_segments() {
+        let pattern = compile_like("%İ%LAND").unwrap();
+        assert!(like_matches("city i\u{307} island".as_bytes(), &pattern, true));
+        assert!(like_matches("city İ island".as_bytes(), &pattern, true));
+        assert!(!like_matches("city izland".as_bytes(), &pattern, true));
     }
 }
