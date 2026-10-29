@@ -85,3 +85,8 @@ fn negate_propagates_null_and_signed_values() {
 fn positive_preserves_nullable_numeric_values() {
     assert_eq!(evaluate("positive(x)"), "3");
 }
+
+#[test]
+fn equals_returns_nullable_integer_truth() {
+    assert_eq!(evaluate("equals(x, y)"), "1");
+}

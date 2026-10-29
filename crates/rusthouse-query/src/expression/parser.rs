@@ -210,6 +210,11 @@ fn parse_aggregate_builtin(parser: &mut Parser) -> Result<ScalarExpr, ParseError
             Box::new(args.remove(0)),
         )),
         ("POSITIVE", 1) => Ok(args.remove(0)),
+        ("EQUALS", 2) => {
+            let left = Box::new(args.remove(0));
+            let right = Box::new(args.remove(0));
+            Ok(ScalarExpr::Compare(left, crate::Operator::Eq, right))
+        }
         _ => Err(ParseError(format!("unsupported aggregate function: {name}"))),
     }
 }
