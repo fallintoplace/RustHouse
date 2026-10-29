@@ -32,7 +32,8 @@ pub(super) fn is_function(name: &str) -> bool {
     if name.eq_ignore_ascii_case("DIGIT_SUM") {
         return true;
     }
-    is_saturating(name)
+    name.eq_ignore_ascii_case("INTDIVORZERO")
+        || is_saturating(name)
         || name.eq_ignore_ascii_case("BITHAMMINGDISTANCE")
         || name.eq_ignore_ascii_case("ABS")
         || name.eq_ignore_ascii_case("NEGATE")
@@ -1155,6 +1156,10 @@ fn factor(parser: &mut Parser, depth: usize) -> Result<i64, ParseError> {
                 (current, next) = (next, current + next);
             }
             i64::try_from(current).map_err(|_| overflow())?
+        } else if name.eq_ignore_ascii_case("INTDIVORZERO") {
+            require_token(parser, Token::Comma, "intDivOrZero requires two arguments")?;
+            let second = expression(parser, depth + 1)?;
+            first.checked_div(second).unwrap_or(0)
         } else if name.eq_ignore_ascii_case("ABS") {
             first.checked_abs().ok_or_else(overflow)?
         } else if name.eq_ignore_ascii_case("DIGIT_SUM") {
