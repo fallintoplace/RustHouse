@@ -17,7 +17,7 @@ MAX_ROWS = 200_000
 
 
 def distinct_values(rows, layout):
-    if not 1 <= rows <= MAX_ROWS:
+    if type(rows) is not int or not 1 <= rows <= MAX_ROWS:
         raise ValueError("rows must be in 1..200000")
     if layout not in ("sparse", "dense", "mixed"):
         raise ValueError("layout must be sparse, dense or mixed")
@@ -31,8 +31,12 @@ def distinct_values(rows, layout):
 
 
 def write_tsv(path, rows, layout, duplicates):
-    if not 1 <= duplicates <= 16 or rows * duplicates > 1_000_000:
+    if (type(duplicates) is not int or not 1 <= duplicates <= 16
+            or type(rows) is not int or not 1 <= rows <= MAX_ROWS
+            or rows * duplicates > 1_000_000):
         raise ValueError("duplicates must be 1..16 and total rows <=1000000")
+    if layout not in ("sparse", "dense", "mixed"):
+        raise ValueError("layout must be sparse, dense or mixed")
     unique = set()
     with Path(path).open("w", encoding="ascii") as output:
         output.write("id\n")
@@ -50,8 +54,15 @@ def write_tsv(path, rows, layout, duplicates):
 
 def benchmark(binary, rows=32768, layout="sparse", duplicates=2,
               runs=3, timeout=120, max_rss_mib=None, sample_ms=25):
-    if runs < 1 or not math.isfinite(timeout) or timeout <= 0:
-        raise ValueError("runs must be positive and timeout finite")
+    if type(runs) is not int or not 1 <= runs <= 100:
+        raise ValueError("runs must be in 1..100")
+    if type(timeout) not in (int, float) or not math.isfinite(timeout) or timeout <= 0:
+        raise ValueError("timeout must be finite and positive")
+    if (type(sample_ms) is not int or not 1 <= sample_ms <= 1000
+            or (max_rss_mib is not None
+                and (type(max_rss_mib) not in (int, float)
+                     or not math.isfinite(max_rss_mib) or max_rss_mib <= 0))):
+        raise ValueError("invalid process sampling budget")
     with tempfile.TemporaryDirectory(prefix="rusthouse-distinct32-memory-") as temp:
         root = Path(temp)
         fixture = root / "events.tsv"

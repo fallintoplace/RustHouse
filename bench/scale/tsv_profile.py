@@ -7,17 +7,24 @@ from pathlib import Path
 MAX_RECORD_BYTES = 8 * 1024 * 1024
 
 
-def profile(path, *, columns=1, header=False, min_rows=1):
+def profile(path, *, columns=1, header=False, min_rows=1,
+            verify_sorted_uint64=False):
     if type(columns) is not int or not 1 <= columns <= 1024:
         raise ValueError("columns must be in 1..1024")
     if type(min_rows) is not int or min_rows < 1:
         raise ValueError("min_rows must be positive")
     if type(header) is not bool:
         raise ValueError("header must be a boolean")
+    if type(verify_sorted_uint64) is not bool or (verify_sorted_uint64 and columns != 1):
+        raise ValueError("sorted UInt64 verification requires one column")
+    previous = None
     digest = hashlib.sha256()
     records = 0
     bytes_read = 0
-    with Path(path).open("rb") as stream:
+    source = Path(path)
+    if not source.is_file() or source.is_symlink():
+        raise ValueError("expected a regular, non-symlinked TSV file")
+    with source.open("rb") as stream:
         while True:
             raw = stream.readline(MAX_RECORD_BYTES + 1)
             if not raw:
@@ -29,7 +36,20 @@ def profile(path, *, columns=1, header=False, min_rows=1):
                 raise ValueError(f"record {records + 1}: invalid column count or empty row")
             if b"\x00" in row:
                 raise ValueError(f"record {records + 1}: raw NUL byte")
-            row.decode("utf-8", errors="strict")
+            # Sorted numeric records are validated as ASCII bytes below.
+            # Skip a redundant Unicode allocation per row in large fixtures.
+            if not (verify_sorted_uint64 and not (header and records == 0)):
+                row.decode("utf-8", errors="strict")
+            if verify_sorted_uint64 and not (header and records == 0):
+                if (not row.isascii() or not row.isdigit() or len(row) > 20
+                        or (len(row) > 1 and row[0] == b'0'[0])):
+                    raise ValueError(f"record {records + 1}: invalid UInt64 key")
+                value = int(row)
+                if value > (1 << 64) - 1:
+                    raise ValueError(f"record {records + 1}: UInt64 overflow")
+                if previous is not None and value <= previous:
+                    raise ValueError(f"record {records + 1}: keys are not strictly increasing")
+                previous = value
             digest.update(raw)
             bytes_read += len(raw)
             records += 1
@@ -46,11 +66,13 @@ def main(argv=None):
     parser.add_argument("--columns", type=int, default=1)
     parser.add_argument("--header", action="store_true")
     parser.add_argument("--min-rows", type=int, default=1)
+    parser.add_argument("--verify-sorted-uint64", action="store_true")
     parser.add_argument("--output", type=Path)
     args = parser.parse_args(argv)
     try:
         result = profile(args.input, columns=args.columns, header=args.header,
-                         min_rows=args.min_rows)
+                         min_rows=args.min_rows,
+                         verify_sorted_uint64=args.verify_sorted_uint64)
         content = json.dumps(result, indent=2) + "\n"
         if args.output:
             args.output.parent.mkdir(parents=True, exist_ok=True)

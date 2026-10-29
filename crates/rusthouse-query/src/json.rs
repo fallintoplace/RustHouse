@@ -29,6 +29,14 @@ impl<'a> JsonValue<'a> {
         }
     }
 
+    pub(crate) fn container_len(&self) -> usize {
+        match &self.kind {
+            JsonKind::Array(items) => items.len(),
+            JsonKind::Object(fields) => fields.len(),
+            _ => 0,
+        }
+    }
+
     pub(crate) fn at_path(&self, path: &str) -> Option<&JsonValue<'a>> {
         if path.is_empty() {
             return None;
@@ -102,6 +110,16 @@ impl<'a> Parser<'a> {
 
     fn string(&mut self) -> Result<String, &'static str> {
         self.expect(b'"')?;
+        // Parse the common escape-free string without byte-by-byte dispatch.
+        if let Some(end) = self.bytes()[self.offset..]
+            .iter().position(|&byte| byte == b'"' || byte == b'\\' || byte < 0x20)
+        {
+            if self.bytes()[self.offset + end] == b'"' {
+                let begin = self.offset;
+                self.offset += end + 1;
+                return Ok(self.text[begin..begin + end].to_owned());
+            }
+        }
         let mut output = String::new();
         let mut start = self.offset;
         loop {
@@ -272,9 +290,49 @@ pub(crate) fn parse_json(text: &str) -> Result<JsonValue<'_>, &'static str> {
     Ok(value)
 }
 
+/// Read one bounded JSONEachRow object as named values for SQL ingestion.
+/// The existing JSON parser checks nesting, numeric syntax and UTF-8 escapes.
+pub fn parse_json_each_row_fields(text: &str) -> Result<Vec<(String, Option<String>)>, String> {
+    let value = parse_json(text).map_err(str::to_owned)?;
+    let JsonKind::Object(fields) = value.kind else {
+        return Err("JSONEachRow requires one JSON object per row".into());
+    };
+    if fields.len() > 128 {
+        return Err("JSONEachRow supports at most 128 fields".into());
+    }
+    let mut seen = std::collections::HashSet::with_capacity(fields.len());
+    let mut converted = Vec::with_capacity(fields.len());
+    for (key, cell) in fields {
+        if key.is_empty() || key.len() > 128 {
+            return Err("JSONEachRow field names must be between 1 and 128 bytes".into());
+        }
+        if !seen.insert(key.clone()) {
+            return Err(format!("duplicate JSONEachRow field: {key}"));
+        }
+        let value = match cell.kind {
+            JsonKind::Text(text) => Some(text),
+            JsonKind::Primitive if cell.raw == "null" => None,
+            JsonKind::Primitive | JsonKind::Array(_) | JsonKind::Object(_) => {
+                Some(cell.raw.to_owned())
+            }
+        };
+        converted.push((key, value));
+    }
+    Ok(converted)
+}
+
 #[cfg(test)]
 mod tests {
     use super::parse_json;
+
+    #[test]
+    fn plain_json_string_fast_path_preserves_utf8_and_escaped_fallback() {
+        let parsed = parse_json(r#"{"café":"zażółć","escaped":"a\nb"}"#).unwrap();
+        assert_eq!(parsed.at_path("café").and_then(|v| v.as_string()), Some("zażółć"));
+        assert_eq!(parsed.at_path("escaped").and_then(|v| v.as_string()), Some("a\nb"));
+        assert!(parse_json("{\"bad\":\"unterminated").is_err());
+        assert!(parse_json("{\"bad\":\"unescaped\ncontrol\"}").is_err());
+    }
 
     #[test]
     fn parses_nested_objects_arrays_and_escapes() {

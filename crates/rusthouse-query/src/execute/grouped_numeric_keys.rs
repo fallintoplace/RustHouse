@@ -419,13 +419,19 @@ pub(super) fn execute<W: Write>(
             let compare_cached = |left: &usize, right: &usize| {
                 for &(group, metric, descending, nulls_first) in &terms {
                     let order = if let Some(index) = metric {
-                        let (left_cell, right_cell) = if let Some(keys) = cached_medians.get(&index) {
-                            (keys[*left].clone(), keys[*right].clone())
+                        if let Some(keys) = cached_medians.get(&index) {
+                            // Median sort cells were materialized once; borrow
+                            // them instead of cloning on every comparison.
+                            typed::compare_order_cells(
+                                &keys[*left], &keys[*right], descending, nulls_first,
+                            )
                         } else {
-                            (groups[*left].1[index].sort_cell(),
-                             groups[*right].1[index].sort_cell())
-                        };
-                        typed::compare_order_cells(&left_cell, &right_cell, descending, nulls_first)
+                            let left_cell = groups[*left].1[index].sort_cell();
+                            let right_cell = groups[*right].1[index].sort_cell();
+                            typed::compare_order_cells(
+                                &left_cell, &right_cell, descending, nulls_first,
+                            )
+                        }
                     } else {
                         let index = group.expect("GROUP BY ORDER BY validated by parser");
                         typed::compare_order_cells(&groups[*left].0[index], &groups[*right].0[index],
@@ -590,6 +596,21 @@ mod composite_group_median_retention_tests {
 #[cfg(test)]
 mod cached_composite_group_median_order_tests {
     use super::*;
+    #[test]
+    fn cached_composite_median_sort_compares_borrowed_cells() {
+        let mut numeric = Vec::new();
+        for n in [5u128, 2, 8] {
+            let mut state = AggregateState::new(AggregateFunction::Median);
+            state.update(Number::Unsigned(n)).unwrap();
+            numeric.push(state.sort_cell());
+        }
+        let mut positions = vec![0usize, 1, 2];
+        positions.sort_unstable_by(|&left, &right| {
+            typed::compare_order_cells(&numeric[left], &numeric[right], false, false)
+        });
+        assert_eq!(positions, vec![1, 0, 2]);
+    }
+
     #[test]
     fn preselected_median_cells_preserve_composite_group_metric_order() {
         let groups = [(30_u128, 40_u128), (4, 6), (20, 22)].map(|(first, second)| {

@@ -29,6 +29,16 @@ fn checked_text_length_at_row(
     values.byte_length(row).map(Some).ok_or_else(missing)
 }
 
+const OUTPUT_BATCH_BYTES: usize = 64 * 1024;
+
+fn append_length_line(buffer: &mut Vec<u8>, length: Option<usize>) -> std::io::Result<()> {
+    match length {
+        Some(length) => writeln!(buffer, "{length}")?,
+        None => buffer.extend_from_slice(b"\\N\n"),
+    }
+    Ok(())
+}
+
 fn projection_columns(query: &Select, column: &str) -> Vec<String> {
     let mut names = vec![column.to_owned()];
     let mut seen = HashSet::from([column]);
@@ -93,6 +103,7 @@ pub(super) fn execute<W: Write>(
     let offset = query.offset.unwrap_or(0);
     let limit = query.limit.unwrap_or(usize::MAX);
     let is_unfiltered = query.predicates.is_empty() && query.or_predicates.is_empty();
+    let mut output_batch = Vec::with_capacity(OUTPUT_BATCH_BYTES);
     // Reuse typed mark skipping: LENGTH only needs rows after OFFSET when
     // neither filtering, sorting nor deduplication changes row positions.
     if is_unfiltered && query.order_by.is_none() && query.order_by_extra.is_empty() && !query.distinct
@@ -112,13 +123,14 @@ pub(super) fn execute<W: Write>(
             TypedColumn::NullableText { values, nulls } => {
                 (values.offsets(), Some(nulls.as_slice()))
             }
-            _ => {
-                return Err(ExecutionError::Invalid(
-                    "LENGTH read unexpected column type".into(),
-                ));
-            }
+            _ => return Err(ExecutionError::Invalid(
+                "LENGTH read unexpected column type".into(),
+            )),
         };
-        if offsets.len() != rows + 1 || nulls.is_some_and(|map| map.len() != rows) {
+        if offsets.len() != rows + 1
+            || nulls.is_some_and(|map| map.len() != rows)
+            || offsets.windows(2).any(|pair| pair[1] < pair[0])
+        {
             return Err(ExecutionError::Invalid("invalid LENGTH batch boundaries".into()));
         }
         for row in 0..rows {
@@ -129,17 +141,24 @@ pub(super) fn execute<W: Write>(
                 skipped += 1;
                 continue;
             }
-            if nulls.is_some_and(|map| map[row] != 0) {
-                writeln!(output, "\\N")?;
+            let length = if nulls.is_some_and(|map| map[row] != 0) {
+                None
             } else {
-                writeln!(output, "{}", offsets[row + 1] - offsets[row])?;
+                Some(offsets[row + 1] - offsets[row])
+            };
+            append_length_line(&mut output_batch, length)?;
+            if output_batch.len() >= OUTPUT_BATCH_BYTES {
+                output.write_all(&output_batch)?;
+                output_batch.clear();
             }
             written += 1;
             if written == limit {
+                output.write_all(&output_batch)?;
                 return Ok(());
             }
         }
     }
+    output.write_all(&output_batch)?;
     Ok(())
 }
 
@@ -147,6 +166,16 @@ pub(super) fn execute<W: Write>(
 mod tests {
     use super::*;
     use rusthouse_storage::read_legacy_strings;
+
+    #[test]
+    fn batched_length_output_preserves_nulls_and_integer_extremes() {
+        let mut bytes = Vec::new();
+        for value in [Some(0), None, Some(17), Some(usize::MAX)] {
+            append_length_line(&mut bytes, value).unwrap();
+        }
+        assert_eq!(String::from_utf8(bytes).unwrap(),
+            format!("0\n\\N\n17\n{}\n", usize::MAX));
+    }
 
     #[test]
     fn checks_nullable_and_empty_string_batches() {

@@ -14,6 +14,9 @@ RULES = (
     ("join_syntax", re.compile(r"JOIN columns must|unknown JOIN qualifier|JOIN key types differ", re.I)),
     ("sql_size", re.compile(r"(?:SQL|statement).*(?:4096|4.?KiB|size limit|too long|exceeds)", re.I)),
     ("grouping", re.compile(r"GROUP BY (?:supports|requires|cannot|must)", re.I)),
+    ("resource_limit", re.compile(
+        r"(?:exceeds|too many|more than|limited to|at most).{0,80}"
+        r"(?:rows|bytes|MiB|GiB|memory|spill|budget|parts)", re.I)),
     ("unimplemented_operator", re.compile(r"(?:unsupported|not implemented|not supported)", re.I)),
     ("missing_column", re.compile(r"(?:unknown|missing|undefined) column", re.I)),
 )
@@ -34,14 +37,18 @@ def classify_error(message):
 
 def classify(result):
     status = result.get("status", "unknown")
+    if not isinstance(status, str):
+        return "unexpected_status"
     if status in KNOWN_STATUSES:
         return status
     if status != "error":
         return "unexpected_status"
-    return classify_error(result.get("error") or "")
+    return classify_error(str(result.get("error") or ""))
 
 
 def analyze(report, require_all_22=False):
+    if not isinstance(report, dict):
+        raise ValueError("report must be an object")
     records = report.get("results")
     if not isinstance(records, list):
         raise ValueError("report must contain a results array")
@@ -53,6 +60,8 @@ def analyze(report, require_all_22=False):
         number = item.get("query")
         if type(number) is not int or not 1 <= number <= 22 or number in seen:
             raise ValueError("query IDs must be unique integers in 1..22")
+        if "status" in item and not isinstance(item["status"], str):
+            raise ValueError("query result status must be a string")
         seen.add(number)
         groups[classify(item)].append(number)
     if require_all_22 and seen != set(range(1, 23)):
