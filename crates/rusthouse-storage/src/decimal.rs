@@ -37,6 +37,7 @@ impl DecimalColumn {
 #[derive(Debug)]
 pub enum DecimalReadError {
     InvalidType(String),
+    ValueExceedsPrecision { row: usize, precision: u8 },
     Numeric(NumericReadError),
 }
 
@@ -45,6 +46,9 @@ impl fmt::Display for DecimalReadError {
         match self {
             Self::InvalidType(value) => write!(f, "unsupported Decimal type: {value}"),
             Self::Numeric(source) => write!(f, "unable to read Decimal values: {source}"),
+            Self::ValueExceedsPrecision { row, precision } => {
+                write!(f, "Decimal value at row {row} exceeds precision {precision}")
+            }
         }
     }
 }
@@ -52,7 +56,7 @@ impl fmt::Display for DecimalReadError {
 impl Error for DecimalReadError {
     fn source(&self) -> Option<&(dyn Error + 'static)> {
         match self {
-            Self::InvalidType(_) => None,
+            Self::InvalidType(_) | Self::ValueExceedsPrecision { .. } => None,
             Self::Numeric(source) => Some(source),
         }
     }
@@ -68,6 +72,17 @@ pub fn read_decimal_column<R: Read>(
     let (precision, scale, storage) = parse_decimal_type(data_type)
         .ok_or_else(|| DecimalReadError::InvalidType(data_type.to_owned()))?;
     let unscaled = read_numeric_column(reader, storage, rows).map_err(DecimalReadError::Numeric)?;
+    let limit = 10i128.pow(u32::from(precision));
+    let outside = |value: i128| value <= -limit || value >= limit;
+    let invalid_row = match &unscaled {
+        NumericColumn::Int32(values) => values.iter().position(|&v| outside(i128::from(v))),
+        NumericColumn::Int64(values) => values.iter().position(|&v| outside(i128::from(v))),
+        NumericColumn::Int128(values) => values.iter().position(|&v| outside(v)),
+        _ => None,
+    };
+    if let Some(row) = invalid_row {
+        return Err(DecimalReadError::ValueExceedsPrecision { row, precision });
+    }
     Ok(DecimalColumn {
         precision,
         scale,
@@ -281,5 +296,36 @@ mod tests {
         let column = read_decimal_column(&mut NoRead, "Decimal(38, 0)", 0).unwrap();
         assert!(column.is_empty());
         assert_eq!(column.unscaled_values(), &NumericColumn::Int128(Vec::new()));
+    }
+}
+
+#[cfg(test)]
+mod precision_validation_tests {
+    use super::*;
+
+    #[test]
+    fn enforces_declared_decimal_precision_without_float_conversion() {
+        let good = [99i32, -99i32, 0i32]
+            .into_iter()
+            .flat_map(i32::to_le_bytes)
+            .collect::<Vec<_>>();
+        assert_eq!(read_decimal_column(&mut good.as_slice(), "Decimal(2,0)", 3).unwrap().len(), 3);
+        for invalid in [100i32, -100i32] {
+            assert!(matches!(
+                read_decimal_column(&mut invalid.to_le_bytes().as_slice(), "Decimal(2,0)", 1),
+                Err(DecimalReadError::ValueExceedsPrecision { row: 0, precision: 2 })
+            ));
+        }
+    }
+
+    #[test]
+    fn validates_large_decimal_128_values() {
+        let valid = 10i128.pow(19) - 1;
+        assert!(read_decimal_column(&mut valid.to_le_bytes().as_slice(), "Decimal(19,0)", 1).is_ok());
+        let invalid = 10i128.pow(19);
+        assert!(matches!(
+            read_decimal_column(&mut invalid.to_le_bytes().as_slice(), "Decimal(19,0)", 1),
+            Err(DecimalReadError::ValueExceedsPrecision { row: 0, precision: 19 })
+        ));
     }
 }
