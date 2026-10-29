@@ -11,6 +11,25 @@ fn validated_generations(generations: &[u64], active: u64) -> Result<Vec<u64>, &
     Ok(sorted)
 }
 
+fn planned_retention(
+    generations: &[u64],
+    active: u64,
+    keep_latest: usize,
+) -> Result<(Vec<u64>, Vec<u64>), &'static str> {
+    if generations.is_empty() || generations.len() > 16_384 || keep_latest == 0 || active == 0 {
+        return Err("invalid generation retention configuration");
+    }
+    let sorted = validated_generations(generations, active)?;
+    let candidate_count = sorted.len().saturating_sub(keep_latest);
+    let candidates = sorted
+        .iter()
+        .take(candidate_count)
+        .copied()
+        .filter(|&generation| generation != active)
+        .collect();
+    Ok((candidates, sorted))
+}
+
 /// List old generations eligible for review by a caller with exclusive ownership.
 /// Always preserve the active generation and the newest keep_latest generations.
 pub fn retention_candidates(
@@ -18,16 +37,7 @@ pub fn retention_candidates(
     active: u64,
     keep_latest: usize,
 ) -> Result<Vec<u64>, &'static str> {
-    if generations.is_empty() || generations.len() > 16_384 || keep_latest == 0 || active == 0 {
-        return Err("invalid generation retention configuration");
-    }
-    let sorted = validated_generations(generations, active)?;
-    let candidate_count = sorted.len().saturating_sub(keep_latest);
-    Ok(sorted
-        .into_iter()
-        .take(candidate_count)
-        .filter(|&generation| generation != active)
-        .collect())
+    planned_retention(generations, active, keep_latest).map(|(candidates, _)| candidates)
 }
 
 #[cfg(test)]
@@ -84,8 +94,7 @@ pub fn retention_candidates_with_pins(
     if pinned.len() > 16_384 {
         return Err("too many pinned generations");
     }
-    let candidates = retention_candidates(generations, active, keep_latest)?;
-    let known = validated_generations(generations, active)?;
+    let (candidates, known) = planned_retention(generations, active, keep_latest)?;
     let mut pins = std::collections::HashSet::with_capacity(pinned.len());
     for &generation in pinned {
         if !pins.insert(generation) || known.binary_search(&generation).is_err() {
