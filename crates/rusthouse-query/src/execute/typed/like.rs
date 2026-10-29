@@ -57,7 +57,8 @@ pub(super) fn compile_like(pattern: &str) -> Result<LikePattern, ExecutionError>
             return Ok(LikePattern::Suffix(bytes));
         }
     }
-    Ok(LikePattern::Wildcard(tokens))
+    let folded_percent = folded_multisegment_pattern(&tokens);
+    Ok(LikePattern::Wildcard { tokens, folded_percent })
 }
 
 pub(super) fn next_utf8_boundary(value: &[u8], index: usize) -> Option<usize> {
@@ -234,7 +235,7 @@ pub(super) fn like_matches(value: &[u8], pattern: &LikePattern, case_insensitive
                     .any(|part| equal_like_bytes(part, bytes, true))
             }
         }
-        LikePattern::Wildcard(tokens) => {
+        LikePattern::Wildcard { tokens, folded_percent } => {
             // Multi-segment ILIKE patterns must fold Unicode as a whole.
             // ASCII and '_' patterns keep the allocation-free scan.
             if case_insensitive
@@ -245,7 +246,7 @@ pub(super) fn like_matches(value: &[u8], pattern: &LikePattern, case_insensitive
             {
                 if let (Ok(text), Some(pattern)) = (
                     std::str::from_utf8(value),
-                    folded_multisegment_pattern(tokens),
+                    folded_percent.as_ref(),
                 ) {
                     return like_matches_wildcards(
                         text.to_lowercase().as_bytes(),
