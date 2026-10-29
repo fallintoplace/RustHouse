@@ -57,6 +57,32 @@ pub fn rank_read_replicas(replicas: &[ReplicaStatus]) -> Result<Vec<String>, &'s
         .collect())
 }
 
+/// Rank healthy replicas at or above a required snapshot version.
+/// A different epoch is a different lineage and is never considered fresh.
+pub fn rank_read_replicas_at_least(
+    replicas: &[ReplicaStatus],
+    minimum_epoch: u64,
+    minimum_generation: u64,
+) -> Result<Vec<String>, &'static str> {
+    let ranked = rank_read_replicas(replicas)?;
+    let eligible: HashSet<&str> = replicas
+        .iter()
+        .filter(|replica| {
+            replica.healthy
+                && replica.epoch == minimum_epoch
+                && replica.generation >= minimum_generation
+        })
+        .map(|replica| replica.node.as_str())
+        .collect();
+    if eligible.is_empty() {
+        return Err("no storage replica meets the freshness floor");
+    }
+    Ok(ranked
+        .into_iter()
+        .filter(|node| eligible.contains(node.as_str()))
+        .collect())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -142,32 +168,6 @@ mod tests {
             .is_err()
         );
     }
-}
-
-/// Rank healthy replicas at or above a required snapshot version.
-/// A different epoch is a different lineage and is never considered fresh.
-pub fn rank_read_replicas_at_least(
-    replicas: &[ReplicaStatus],
-    minimum_epoch: u64,
-    minimum_generation: u64,
-) -> Result<Vec<String>, &'static str> {
-    let ranked = rank_read_replicas(replicas)?;
-    let eligible: HashSet<&str> = replicas
-        .iter()
-        .filter(|replica| {
-            replica.healthy
-                && replica.epoch == minimum_epoch
-                && replica.generation >= minimum_generation
-        })
-        .map(|replica| replica.node.as_str())
-        .collect();
-    if eligible.is_empty() {
-        return Err("no storage replica meets the freshness floor");
-    }
-    Ok(ranked
-        .into_iter()
-        .filter(|node| eligible.contains(node.as_str()))
-        .collect())
 }
 
 #[cfg(test)]

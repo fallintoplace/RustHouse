@@ -24,7 +24,7 @@ fn describe_source(source: Option<&Source>) -> String {
     }
 }
 
-fn join_labels(labels: impl Iterator<Item = String>) -> String {
+fn format_comma_separated_labels(labels: impl Iterator<Item = String>) -> String {
     labels.collect::<Vec<_>>().join(", ")
 }
 
@@ -33,7 +33,7 @@ fn describe_projection(projection: &Projection) -> String {
         Projection::Literal(value) => format!("Project: {value}"),
         Projection::Constants(columns) => format!(
             "Project: {}",
-            join_labels(columns.iter().map(crate::Constant::header))
+            format_comma_separated_labels(columns.iter().map(crate::Constant::header))
         ),
         Projection::All => "Project: *".to_owned(),
         Projection::Columns(columns) => format!("Project: {}", columns.join(", ")),
@@ -75,24 +75,28 @@ fn describe_projection(projection: &Projection) -> String {
         ),
         Projection::GroupedAggregates { column, items, filters, .. } => format!(
             "Aggregate: GROUP BY {column}, {}",
-            join_labels(items.iter().enumerate().map(|(index, (function, value))| {
-                if let Some(filter) = filters[index].as_deref() {
-                    format!("{}If({value}, {filter})", function.name())
-                } else {
-                    format!("{}({value})", function.name())
-                }
-            }))
+            format_comma_separated_labels(
+                items.iter().enumerate().map(|(index, (function, value))| {
+                    if let Some(filter) = filters[index].as_deref() {
+                        format!("{}If({value}, {filter})", function.name())
+                    } else {
+                        format!("{}({value})", function.name())
+                    }
+                }),
+            )
         ),
         Projection::GroupedMultiAggregates { columns, items, filters, .. } => format!(
             "Aggregate: GROUP BY {}, {}",
             columns.join(", "),
-            join_labels(items.iter().enumerate().map(|(index, (function, value))| {
-                if let Some(filter) = filters[index].as_deref() {
-                    format!("{}If({value}, {filter})", function.name())
-                } else {
-                    format!("{}({value})", function.name())
-                }
-            }))
+            format_comma_separated_labels(
+                items.iter().enumerate().map(|(index, (function, value))| {
+                    if let Some(filter) = filters[index].as_deref() {
+                        format!("{}If({value}, {filter})", function.name())
+                    } else {
+                        format!("{}({value})", function.name())
+                    }
+                }),
+            )
         ),
         Projection::Aggregate { function, column } => {
             format!("Aggregate: {}({column})", function.name())
@@ -103,7 +107,7 @@ fn describe_projection(projection: &Projection) -> String {
         Projection::MultipleAggregates(items) => {
             format!(
                 "Aggregate: {}",
-                join_labels(items.iter().map(AggregateItem::header))
+                format_comma_separated_labels(items.iter().map(AggregateItem::header))
             )
         }
     }
