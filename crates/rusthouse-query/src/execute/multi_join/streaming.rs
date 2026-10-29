@@ -263,12 +263,14 @@ pub(super) fn execute<W: Write>(
     let mut reader = TypedQueryReader::open(&paths[0], &projected_names)?;
     let mut scanned = 0u64;
     let mut state = OutputState::default();
+    // The recursive visitor restores fact row length after each match.
+    // Retain this allocation across the entire scan.
+    let mut row = vec![typed::Cell::Null; fact_width];
     while let Some(batch) = reader.next_batch()? {
         for index in 0..batch[0].len() {
             scanned = scanned
                 .checked_add(1)
                 .ok_or_else(|| invalid("JOIN input row count overflow"))?;
-            let mut row = vec![typed::Cell::Null; fact_width];
             for (position, &column) in projected.iter().enumerate() {
                 row[column] = typed::cell(&batch[position], index);
             }
