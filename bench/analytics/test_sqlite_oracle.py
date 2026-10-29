@@ -21,10 +21,10 @@ class SqliteOracleTests(unittest.TestCase):
 
     def test_literal_null_text_is_not_a_null_cell(self):
         self.assertFalse(cell_equal("NULL", None))
-        self.assertTrue(cell_equal(r"\\N", None))
+        self.assertTrue(cell_equal(r"\N", None))
         self.assertTrue(cell_equal("NULL", "NULL"))
         with self.assertRaisesRegex(ValueError, "row 1"):
-            assert_matches(b"NULL\\n", [(None,)])
+            assert_matches(b"NULL\n", [(None,)])
 
     def test_tsv_escaped_text_matches_sqlite_typed_string_values(self):
         self.assertTrue(cell_equal(r"left\tright", "left\tright"))
