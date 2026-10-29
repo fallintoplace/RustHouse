@@ -30,6 +30,8 @@ fn render_expr(expr: &ScalarExpr) -> String {
         ScalarExpr::Column(name) => name.clone(),
         ScalarExpr::TextLength(name) => format!("length({name})"),
         ScalarExpr::Integer(number) => number.to_string(),
+        ScalarExpr::IsNull(inner, negated) =>
+            format!("({}) IS {}NULL", render_expr(inner), if *negated { "NOT " } else { "" }),
         ScalarExpr::Add(left, right) => format!("{} + {}", render_expr(left), render_expr(right)),
         ScalarExpr::Subtract(left, right) => {
             let right = if matches!(
