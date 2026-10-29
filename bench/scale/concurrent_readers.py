@@ -9,6 +9,7 @@ import math
 import re
 import statistics
 import subprocess
+import tempfile
 import time
 from pathlib import Path
 
@@ -37,14 +38,25 @@ def run_readers(binary, part, sql, expected, *, clients=4, rounds=3,
     def one(_):
         start = time.perf_counter()
         try:
-            result = run(cmd, capture_output=True, check=False, timeout=timeout)
+            if execute is None:
+                # Stream to disk so a runaway result cannot fill worker memory.
+                with tempfile.TemporaryFile() as sink:
+                    result = run(cmd, stdout=sink, stderr=subprocess.DEVNULL,
+                                 check=False, timeout=timeout)
+                    sink.seek(0)
+                    output = sink.read(len(expected) + 1)
+            else:
+                # Preserve the injected runner contract used by workload tests.
+                result = run(cmd, capture_output=True, check=False, timeout=timeout)
+                output = result.stdout
         except (OSError, subprocess.TimeoutExpired) as error:
             return {"ok": False, "seconds": time.perf_counter() - start, "error": str(error)}
         duration = time.perf_counter() - start
         if result.returncode:
             return {"ok": False, "seconds": duration, "error": "SQL process failed"}
-        return {"ok": result.stdout == expected, "seconds": duration,
-                "error": None if result.stdout == expected else "result differs from reference"}
+        matched = output == expected
+        return {"ok": matched, "seconds": duration,
+                "error": None if matched else "result differs from reference"}
 
     started = time.perf_counter()
     with concurrent.futures.ThreadPoolExecutor(max_workers=clients) as pool:

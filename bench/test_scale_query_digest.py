@@ -17,6 +17,21 @@ class QueryDigestTests(unittest.TestCase):
         self.assertEqual(report["bytes"], len(raw))
         self.assertTrue(report["verified"])
 
+    def test_rejects_wrong_output_size_and_accepts_exact_size(self):
+        def execute(command, **kwargs):
+            kwargs["stdout"].write(b"123\n")
+            return SimpleNamespace(returncode=0, stderr=b"")
+        correct = query_digest("binary", "part", "SELECT 123",
+                               expected_bytes=4, run=execute)
+        self.assertTrue(correct["bytes_verified"])
+        self.assertFalse(correct["verified"])
+        with self.assertRaisesRegex(ValueError, "byte count differs"):
+            query_digest("binary", "part", "SELECT 123", expected_bytes=3,
+                         run=execute)
+        with self.assertRaisesRegex(ValueError, "expected_bytes"):
+            query_digest("binary", "part", "SELECT 123", expected_bytes=True,
+                         run=execute)
+
     def test_rejects_wrong_reference(self):
         def execute(command, **kwargs):
             kwargs["stdout"].write(b"1\n")

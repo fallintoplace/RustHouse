@@ -1,4 +1,5 @@
 use super::*;
+use super::predicates::CompiledPredicate;
 
 struct DenseGroupChunk {
     counts: Vec<u64>,
@@ -623,6 +624,94 @@ pub(super) fn execute_grouped_numbers<W: Write>(
     if query.limit == Some(0) {
         return groups.write(query, column, output);
     }
+    // Unique generated keys need neither a hash table nor retained rows
+    // when there is no grouping filter or sort. Preserve the group cap.
+    if query.limit.is_none() && query.predicates.is_empty()
+        && query.or_predicates.is_empty() && query.having.is_none()
+        && query.order_by.is_none() && query.order_by_extra.is_empty()
+        && step != 0
+    {
+        if rows > MAX_GROUPS as u64 {
+            return Err(ExecutionError::Invalid(
+                "GROUP BY supports at most 200000 groups".into(),
+            ));
+        }
+        writeln!(
+            output, "{column}\t{}", query.alias.as_deref().unwrap_or("count")
+        )?;
+        for index in query.offset.unwrap_or(0) as u64..rows {
+            let number = u128::from(start) + u128::from(index) * u128::from(step);
+            writeln!(output, "{number}\t1")?;
+        }
+        return Ok(());
+    }
+    // Key order already follows (or reverses) the generated arithmetic
+    // progression. No per-key hash state or full result sort is needed.
+    if query.limit.is_none() && query.having.is_none()
+        && query.order_by_extra.is_empty() && step != 0
+    {
+        if let Some(order) = query.order_by.as_ref().filter(|order| order.column == "number") {
+            let bounds = if query.predicates.is_empty() && query.or_predicates.is_empty() {
+                Some((0, rows))
+            } else {
+                monotonic_range_indices(&comparisons, start, rows, step)
+            };
+            if let Some((lower, upper)) = bounds {
+                let selected = upper - lower;
+                if selected > MAX_GROUPS as u64 {
+                    return Err(ExecutionError::Invalid(
+                        "GROUP BY supports at most 200000 groups".into(),
+                    ));
+                }
+                writeln!(output, "{column}\t{}", query.alias.as_deref().unwrap_or("count"))?;
+                let begin = (query.offset.unwrap_or(0) as u64).min(selected);
+                for position in begin..selected {
+                    let index = if order.descending {
+                        upper - 1 - position
+                    } else {
+                        lower + position
+                    };
+                    let value = u128::from(start) + u128::from(index) * u128::from(step);
+                    writeln!(output, "{value}\t1")?;
+                }
+                return Ok(());
+            }
+        }
+    }
+    // Group keys generated with a positive step are already sorted.
+    // ORDER BY number can address any bounded ASC/DESC page without
+    // constructing or sorting a group map, even at billion-row scale.
+    if query.having.is_none() && query.order_by_extra.is_empty() {
+        if let (Some(order), Some(limit)) = (query.order_by.as_ref(), query.limit) {
+            if order.column == "number" {
+                let range = if query.predicates.is_empty() && query.or_predicates.is_empty() {
+                    Some((0, rows))
+                } else {
+                    monotonic_range_indices(&comparisons, start, rows, step)
+                };
+                if let Some((lower, upper)) = range {
+                    let available = upper - lower;
+                    let skip = (query.offset.unwrap_or(0) as u64).min(available);
+                    let length = (limit as u64).min(available - skip);
+                    writeln!(
+                        output,
+                        "{column}\t{}",
+                        query.alias.as_deref().unwrap_or("count")
+                    )?;
+                    for position in skip..skip + length {
+                        let index = if order.descending {
+                            upper - 1 - position
+                        } else {
+                            lower + position
+                        };
+                        let number = u128::from(start) + u128::from(index) * u128::from(step);
+                        writeln!(output, "{number}\t1")?;
+                    }
+                    return Ok(());
+                }
+            }
+        }
+    }
     // GROUP BY number contains exactly one row per generated key. If the
     // client requests a bounded unordered page, jump directly to its keys.
     if query.predicates.is_empty()
@@ -640,6 +729,30 @@ pub(super) fn execute_grouped_numbers<W: Write>(
                 query.alias.as_deref().unwrap_or("count")
             )?;
             for index in begin..begin + length {
+                let number = u128::from(start) + u128::from(index) * u128::from(step);
+                writeln!(output, "{number}\t1")?;
+            }
+            return Ok(());
+        }
+    }
+    if query.limit.is_none()
+        && (!query.predicates.is_empty() || !query.or_predicates.is_empty())
+        && query.having.is_none() && query.order_by.is_none()
+        && query.order_by_extra.is_empty() && step != 0
+    {
+        if let Some((lower, upper)) =
+            monotonic_range_indices(&comparisons, start, rows, step)
+        {
+            if upper - lower > MAX_GROUPS as u64 {
+                return Err(ExecutionError::Invalid(
+                    "GROUP BY supports at most 200000 groups".into(),
+                ));
+            }
+            writeln!(
+                output, "{column}\t{}", query.alias.as_deref().unwrap_or("count")
+            )?;
+            let begin = lower.saturating_add(query.offset.unwrap_or(0) as u64).min(upper);
+            for index in begin..upper {
                 let number = u128::from(start) + u128::from(index) * u128::from(step);
                 writeln!(output, "{number}\t1")?;
             }
@@ -708,7 +821,7 @@ pub(super) fn execute_grouped_aggregate_numbers<W: Write>(
     }
     // Generated GROUP BY keys are unique and monotone, so paging by the
     // grouping key needs no hash table or full sort.
-    if query.having.is_none() && query.order_by_extra.is_empty() {
+    if query.having.is_none() && query.order_by_extra.is_empty() && step != 0 {
         if let (Some(order), Some(limit)) = (query.order_by.as_ref(), query.limit) {
             if order.column == "number" {
                 let range = if query.predicates.is_empty() && query.or_predicates.is_empty() {
@@ -736,6 +849,58 @@ pub(super) fn execute_grouped_aggregate_numbers<W: Write>(
             }
         }
     }
+    // Unique generated keys do not need per-key hash entries when the
+    // result is emitted in source order. Reject oversized groups up front.
+    if query.limit.is_none() && query.predicates.is_empty()
+        && query.or_predicates.is_empty() && query.having.is_none()
+        && query.order_by.is_none() && query.order_by_extra.is_empty()
+        && step != 0
+    {
+        if rows > MAX_GROUPS as u64 {
+            return Err(ExecutionError::Invalid(
+                "GROUP BY supports at most 100000 groups".into(),
+            ));
+        }
+        for index in query.offset.unwrap_or(0) as u64..rows {
+            let number = u128::from(start) + u128::from(index) * u128::from(step);
+            let mut state = AggregateState::new(*function);
+            state.update(Number::Unsigned(number))?;
+            writeln!(output, "{number}\t{}", state.render())?;
+        }
+        return Ok(());
+    }
+    if query.limit.is_none() && query.having.is_none()
+        && query.order_by_extra.is_empty() && step != 0
+    {
+        if let Some(order) = query.order_by.as_ref().filter(|order| order.column == "number") {
+            let bounds = if query.predicates.is_empty() && query.or_predicates.is_empty() {
+                Some((0, rows))
+            } else {
+                monotonic_range_indices(&comparisons, start, rows, step)
+            };
+            if let Some((lower, upper)) = bounds {
+                let selected = upper - lower;
+                if selected > MAX_GROUPS as u64 {
+                    return Err(ExecutionError::Invalid(
+                        "GROUP BY supports at most 100000 groups".into(),
+                    ));
+                }
+                let begin = (query.offset.unwrap_or(0) as u64).min(selected);
+                for position in begin..selected {
+                    let index = if order.descending {
+                        upper - 1 - position
+                    } else {
+                        lower + position
+                    };
+                    let value = u128::from(start) + u128::from(index) * u128::from(step);
+                    let mut state = AggregateState::new(*function);
+                    state.update(Number::Unsigned(value))?;
+                    writeln!(output, "{value}\t{}", state.render())?;
+                }
+                return Ok(());
+            }
+        }
+    }
     // A generated number is a unique group key. Each unfiltered group
     // contains one row, so a bounded page needs only its requested keys.
     if query.predicates.is_empty()
@@ -748,6 +913,29 @@ pub(super) fn execute_grouped_aggregate_numbers<W: Write>(
             let begin = (query.offset.unwrap_or(0) as u64).min(rows);
             let length = (limit as u64).min(rows - begin);
             for index in begin..begin + length {
+                let number = u128::from(start) + u128::from(index) * u128::from(step);
+                let mut state = AggregateState::new(*function);
+                state.update(Number::Unsigned(number))?;
+                writeln!(output, "{number}\t{}", state.render())?;
+            }
+            return Ok(());
+        }
+    }
+    if query.limit.is_none()
+        && (!query.predicates.is_empty() || !query.or_predicates.is_empty())
+        && query.having.is_none() && query.order_by.is_none()
+        && query.order_by_extra.is_empty() && step != 0
+    {
+        if let Some((lower, upper)) =
+            monotonic_range_indices(&comparisons, start, rows, step)
+        {
+            if upper - lower > MAX_GROUPS as u64 {
+                return Err(ExecutionError::Invalid(
+                    "GROUP BY supports at most 100000 groups".into(),
+                ));
+            }
+            let begin = lower.saturating_add(query.offset.unwrap_or(0) as u64).min(upper);
+            for index in begin..upper {
                 let number = u128::from(start) + u128::from(index) * u128::from(step);
                 let mut state = AggregateState::new(*function);
                 state.update(Number::Unsigned(number))?;

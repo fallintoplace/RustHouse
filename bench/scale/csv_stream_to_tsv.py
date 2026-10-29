@@ -24,14 +24,19 @@ def escape_field(value, empty_as_null=False):
     return value.translate(ESCAPE_TRANSLATION)
 
 
+def utf8_length(value):
+    """Exact encoded byte length without allocating for ASCII fields."""
+    return len(value) if value.isascii() else len(value.encode("utf-8"))
+
+
 def convert(source, destination, *, header=False, empty_as_null=False,
             max_field_bytes=8 * 1024 * 1024, skip_header=False):
     if Path(source).resolve() == Path(destination).resolve():
         raise ValueError("input and output must be different files")
     if skip_header and not header:
         raise ValueError("skip_header requires header=True")
-    if max_field_bytes < 1:
-        raise ValueError("max_field_bytes must be positive")
+    if type(max_field_bytes) is not int or max_field_bytes < 1:
+        raise ValueError("max_field_bytes must be a positive integer")
     old_limit = csv.field_size_limit()
     csv.field_size_limit(max_field_bytes)
     count = 0
@@ -51,14 +56,14 @@ def convert(source, destination, *, header=False, empty_as_null=False,
                             raise ValueError("CSV must contain 1..128 columns")
                     elif len(fields) != width:
                         raise ValueError(f"CSV column count mismatch at record {count + 1}")
-                    if any(len(value.encode("utf-8")) > max_field_bytes for value in fields):
+                    if any(utf8_length(value) > max_field_bytes for value in fields):
                         raise ValueError("CSV record contains an oversized UTF-8 field")
                     if skip_header and header and count == 0:
                         count += 1
                         continue
                     rendered = "\t".join(escape_field(value, empty_as_null)
                                          for value in fields) + "\n"
-                    if len(rendered.encode("utf-8")) > 8 * 1024 * 1024:
+                    if utf8_length(rendered) > 8 * 1024 * 1024:
                         raise ValueError("COPY TSV record exceeds 8 MiB")
                     output_file.write(rendered)
                     count += 1
