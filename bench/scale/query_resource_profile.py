@@ -9,6 +9,7 @@ import math
 import os
 import subprocess
 import sys
+import tempfile
 import time
 from pathlib import Path
 
@@ -39,10 +40,15 @@ def profile(binary, database, sql, timeout=120, max_rss_mib=None, sample_ms=25):
     if max_rss_mib is not None and (not math.isfinite(max_rss_mib) or max_rss_mib <= 0):
         raise ValueError("max RSS budget must be positive")
     started = time.perf_counter()
-    process = subprocess.Popen(
-        [str(binary), "sql", sql, "--database", str(database)],
-        stdout=subprocess.DEVNULL, stderr=subprocess.PIPE,
-    )
+    stderr_file = tempfile.TemporaryFile(mode="w+b")
+    try:
+        process = subprocess.Popen(
+            [str(binary), "sql", sql, "--database", str(database)],
+            stdout=subprocess.DEVNULL, stderr=stderr_file,
+        )
+    except BaseException:
+        stderr_file.close()
+        raise
     peak = 0
     disk = {"read_bytes": 0, "write_bytes": 0}
     failed_budget = False
@@ -64,11 +70,16 @@ def profile(binary, database, sql, timeout=120, max_rss_mib=None, sample_ms=25):
                 process.kill()
                 break
             time.sleep(sample_ms / 1000)
-        stderr = process.communicate(timeout=5)[1]
+        process.wait(timeout=5)
+        stderr_file.seek(0, os.SEEK_END)
+        stderr_file.seek(max(0, stderr_file.tell() - 500))
+        stderr = stderr_file.read()
     except BaseException:
         process.kill()
-        process.communicate()
+        process.wait()
         raise
+    finally:
+        stderr_file.close()
     elapsed = time.perf_counter() - started
     if failed_budget:
         raise RuntimeError(f"query exceeded sampled RSS budget: {peak} bytes")
