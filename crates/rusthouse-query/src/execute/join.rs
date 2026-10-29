@@ -988,6 +988,28 @@ fn execute_streaming_ordered_inner<W: Write>(
             let at = |index: usize| -> &typed::Cell {
                 if index < width { &left[index] } else { &right[index - width] }
             };
+            let ordinal = sequence;
+            sequence = sequence.checked_add(1)
+                .ok_or_else(|| invalid("ordered JOIN row count overflow"))?;
+            // Once the heap has K winners, compare borrowed cells first.
+            // Most remaining rows need no String clones or Vec allocations.
+            if heap.len() == requested {
+                if let Some(worst) = heap.peek() {
+                    let mut comparison = Ordering::Equal;
+                    for (position, &(index, descending, nulls_first)) in order.iter().enumerate() {
+                        comparison = typed::compare_order_cells(
+                            at(index), &worst.keys[position], descending, nulls_first,
+                        );
+                        if comparison != Ordering::Equal {
+                            break;
+                        }
+                    }
+                    // Equal keys lose because this row's ordinal is later.
+                    if comparison != Ordering::Less {
+                        return Ok(());
+                    }
+                }
+            }
             let keys: Vec<typed::Cell> = order.iter().map(|(index, _, _)| at(*index).clone()).collect();
             let values: Vec<typed::Cell> = selected
                 .iter().map(|(index, _, _)| at(*index).clone()).collect();
@@ -995,11 +1017,9 @@ fn execute_streaming_ordered_inner<W: Write>(
                 .checked_add(ordered_join_retained_bytes(&values)?)
                 .ok_or_else(|| invalid("ordered JOIN output size overflow"))?;
             let candidate = OrderedJoinRow {
-                values, keys, directions: directions.clone(), sequence,
+                values, keys, directions: directions.clone(), sequence: ordinal,
                 retained_bytes: bytes,
             };
-            sequence = sequence.checked_add(1)
-                .ok_or_else(|| invalid("ordered JOIN row count overflow"))?;
             if heap.len() == requested &&
                 heap.peek().is_some_and(|worst| candidate >= *worst) {
                 return Ok(());
