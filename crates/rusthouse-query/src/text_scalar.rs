@@ -145,6 +145,7 @@ pub(super) fn is_function(name: &str) -> bool {
             | "RPAD"
             | "NOTEMPTY"
             | "SPACE"
+            | "INTDIVORNULL"
             | "ENCODEURLFORMCOMPONENT"
     )
 }
@@ -164,6 +165,18 @@ fn parse_at_depth(parser: &mut Parser, depth: usize) -> Result<ConstantValue, Pa
     }
     let value = match name.as_str() {
 
+        "INTDIVORNULL" => {
+            let dividend = integer_arg(parser, depth + 1)?;
+            require(parser, Token::Comma, "intDivOrNull requires two arguments")?;
+            let divisor = integer_arg(parser, depth + 1)?;
+            require(parser, Token::RParen, "intDivOrNull requires two arguments")?;
+            match (dividend, divisor) {
+                (Some(left), Some(right)) => left
+                    .checked_div(right)
+                    .map_or(ConstantValue::Null, ConstantValue::Integer),
+                _ => ConstantValue::Null,
+            }
+        }
         "LENGTHUTF8" => {
             let input = text_arg(parser, depth + 1)?;
             require(parser, Token::RParen, "lengthUTF8 requires one argument")?;
