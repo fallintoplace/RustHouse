@@ -44,6 +44,10 @@ def query(binary, database, statement, timeout):
     return result.stdout
 
 
+def expected_page(first, count):
+    return "".join(f"{number}\n" for number in range(first, first + count)).encode("ascii")
+
+
 def export(binary, database, table, output, start, rows, page_rows=8192, timeout=300,
            column="id", execute=None, max_total_seconds=None):
     if type(start) is not int or type(rows) is not int or start < 0 or rows < 1:
@@ -75,8 +79,7 @@ def export(binary, database, table, output, start, rows, page_rows=8192, timeout
                 data = execute(page_sql(table, column, first, count))
                 # Compare the complete expected page in one operation.
                 # Avoid one Python bytes allocation and one splitline per ID.
-                expected = "".join(f"{number}\n" for number in
-                                   range(first, first + count)).encode("ascii")
+                expected = expected_page(first, count)
                 if data != expected:
                     raise ValueError(f"missing, duplicated or unordered ID near {first}")
                 sink.write(data)
