@@ -57,8 +57,10 @@ pub(super) fn write_json_string<W: Write>(writer: &mut W, value: &str) -> io::Re
     let bytes = value.as_bytes();
     // Plain UTF-8 fields are copied without transformation.
     if !bytes.iter().any(|&byte| byte < 0x20 || byte == b'"' || byte == b'\\') {
-        if bytes.len() <= 256 {
-            let mut quoted = [0u8; 258];
+        if bytes.len() <= 2048 {
+            // Quote-free fields frequently exceed 256 bytes. Avoid three
+            // buffered writes when they still fit in a small stack array.
+            let mut quoted = [0u8; 2050];
             quoted[0] = b'"';
             quoted[1..bytes.len() + 1].copy_from_slice(bytes);
             quoted[bytes.len() + 1] = b'"';
@@ -121,3 +123,41 @@ mod tests;
 #[cfg(test)]
 #[path = "http_encoding/batched_json_escape_tests.rs"]
 mod batched_json_escape_tests;
+
+#[cfg(test)]
+mod medium_json_string_write_tests {
+    use super::*;
+
+    struct Counted {
+        calls: usize,
+        bytes: Vec<u8>,
+    }
+    impl Write for Counted {
+        fn write(&mut self, bytes: &[u8]) -> io::Result<usize> {
+            self.calls += 1;
+            self.bytes.extend_from_slice(bytes);
+            Ok(bytes.len())
+        }
+        fn flush(&mut self) -> io::Result<()> { Ok(()) }
+    }
+
+    #[test]
+    fn plain_json_strings_up_to_two_kibibytes_need_one_write() {
+        for length in [257, 512, 2048] {
+            let value = "q".repeat(length);
+            let mut out = Counted { calls: 0, bytes: Vec::new() };
+            write_json_string(&mut out, &value).unwrap();
+            assert_eq!(out.calls, 1);
+            assert_eq!(out.bytes.len(), length + 2);
+            assert_eq!(out.bytes[0], b'"');
+            assert_eq!(out.bytes[length + 1], b'"');
+        }
+    }
+
+    #[test]
+    fn json_special_characters_still_use_correct_escaping() {
+        let mut out = Vec::new();
+        write_json_string(&mut out, "start\n\"quoted\"").unwrap();
+        assert_eq!(out, b"\"start\\n\\\"quoted\\\"\"");
+    }
+}
