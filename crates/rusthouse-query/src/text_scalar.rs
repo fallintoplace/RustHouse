@@ -146,6 +146,7 @@ pub(super) fn is_function(name: &str) -> bool {
             | "NOTEMPTY"
             | "SPACE"
             | "ENCODEURLFORMCOMPONENT"
+            | "DOMAINWITHOUTWWW"
             | "DECODEURLFORMCOMPONENT"
             | "RIGHTPADUTF8"
             | "ENCODEURLCOMPONENT"
@@ -2341,7 +2342,7 @@ fn parse_at_depth(parser: &mut Parser, depth: usize) -> Result<ConstantValue, Pa
                 _ => ConstantValue::Null,
             }
         }
-        "DOMAIN" => {
+        "DOMAIN" | "DOMAINWITHOUTWWW" => {
             let input = text_arg(parser, depth + 1)?;
             require(parser, Token::RParen, "domain requires one argument")?;
             match input {
@@ -2358,6 +2359,13 @@ fn parse_at_depth(parser: &mut Parser, depth: usize) -> Result<ConstantValue, Pa
                             .unwrap_or("")
                     } else {
                         host_port.split(':').next().unwrap_or("")
+                    };
+                    let host = if name == "DOMAINWITHOUTWWW"
+                        && host.get(..4).is_some_and(|prefix| prefix.eq_ignore_ascii_case("www."))
+                    {
+                        &host[4..]
+                    } else {
+                        host
                     };
                     ConstantValue::Text(host.to_owned())
                 }
@@ -2948,6 +2956,31 @@ mod ch_decode_url_form_tests {
             assert_eq!(value(sql), expected, "{sql}");
         }
         for sql in ["SELECT decodeURLFormComponent()", "SELECT decodeURLFormComponent('%GG')"] {
+            assert!(parse_select(sql).is_err(), "{sql}");
+        }
+    }
+}
+
+#[cfg(test)]
+mod ch_domain_without_www_tests {
+    use crate::{parse_select, ConstantValue, Projection};
+    fn value(sql: &str) -> ConstantValue {
+        match parse_select(sql).unwrap().projection {
+            Projection::Constants(items) if items.len() == 1 => items[0].value.clone(),
+            Projection::Literal(value) => ConstantValue::Integer(value),
+            other => panic!("unexpected projection: {other:?}"),
+        }
+    }
+    #[test]
+    fn clickhouse_url_values() {
+        for (sql, expected) in [
+            ("SELECT domainWithoutWWW('https://www.example.com:443/a')", ConstantValue::Text("example.com".into())),
+            ("SELECT domainWithoutWWW('https://EXAMPLE.com/path')", ConstantValue::Text("EXAMPLE.com".into())),
+            ("SELECT domainWithoutWWW(NULL)", ConstantValue::Null),
+        ] {
+            assert_eq!(value(sql), expected, "{sql}");
+        }
+        for sql in ["SELECT domainWithoutWWW()", "SELECT domainWithoutWWW('x','y')"] {
             assert!(parse_select(sql).is_err(), "{sql}");
         }
     }
