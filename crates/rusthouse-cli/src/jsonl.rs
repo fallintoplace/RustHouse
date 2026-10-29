@@ -3,6 +3,7 @@ use std::collections::HashSet;
 use std::io::{self, Write};
 
 const MAX_LINE_BYTES: usize = 1024 * 1024;
+const MAX_JSONL_COLUMNS: usize = 64;
 
 /// Convert tab-separated numeric query output to one JSON object per row.
 /// Values are strings to preserve UInt128/Int128 precision. NULL becomes JSON null.
@@ -55,7 +56,7 @@ fn parse_headers(line: &[u8]) -> io::Result<Vec<Vec<u8>>> {
     let mut seen = HashSet::new();
     let mut headers = Vec::new();
     for header in line.split(|byte| *byte == b'\t') {
-        if headers.len() >= 64 {
+        if headers.len() >= MAX_JSONL_COLUMNS {
             return Err(io::Error::new(
                 io::ErrorKind::InvalidData,
                 "JSONL supports at most 64 columns",
