@@ -50,6 +50,16 @@ class ReportCSVTests(unittest.TestCase):
                         "timings_seconds": values, "latency": latency,
                     }]})
 
+    def test_rejects_incorrect_successful_latency_summary(self):
+        payload = {"results": [{"query": 1, "status": "passed",
+                   "timings_seconds": [1.0, 2.0, 3.0],
+                   "latency": {"median_seconds": 1.0, "p90_seconds": 3.0}}]}
+        with self.assertRaisesRegex(ValueError, "inconsistent"):
+            rows_from_report(payload)
+        payload["results"][0]["latency"] = {
+            "median_seconds": 2.0, "p90_seconds": 3.0}
+        self.assertEqual(rows_from_report(payload)[0]["median_ms"], "2000.000000")
+
     def test_rejects_incomplete_json(self):
         for payload in ({}, {"results": None}, {"results": [{}]}):
             with self.assertRaises(ValueError):
