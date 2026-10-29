@@ -19,6 +19,7 @@ pub(super) fn is_function(name: &str) -> bool {
             | "TOYYYYMMDD"
             | "TOYYYYMM"
             | "TOQUARTER"
+            | "MONTHNAME"
             | "TOMONTH"
             | "TODAYOFYEAR"
             | "TODAYOFWEEK"
@@ -206,6 +207,15 @@ pub(super) fn parse_after_open(
             };
             Ok(ConstantValue::Integer(difference))
         },
+        "MONTHNAME" => unary_date(parser, depth, |value| {
+            let (_, month, _) = civil_from_days(value.seconds.div_euclid(DAY_SECONDS));
+            const MONTHS: &[&str; 12] = &[
+                "January", "February", "March", "April",
+                "May", "June", "July", "August",
+                "September", "October", "November", "December",
+            ];
+            Ok(ConstantValue::Text(MONTHS[(month - 1) as usize].to_owned()))
+        }),
         "TIMEDIFF" => time_difference(parser, depth),
         _ => Err(ParseError(format!("unsupported date function: {name}"))),
     }
