@@ -11,6 +11,10 @@ from pathlib import Path
 MAX_UINT64 = (1 << 64) - 1
 
 
+def format_batch(first, stop):
+    return "".join(f"{number}\n" for number in range(first, stop))
+
+
 def emit_rows(stream, rows, *, start=0, batch_rows=8192, header=False):
     if not isinstance(rows, int) or rows < 1:
         raise ValueError("rows must be positive")
@@ -25,7 +29,7 @@ def emit_rows(stream, rows, *, start=0, batch_rows=8192, header=False):
     stop = start + rows
     for index in range(start, stop, batch_rows):
         end = min(index + batch_rows, stop)
-        stream.write("".join(f"{number}\n" for number in range(index, end)))
+        stream.write(format_batch(index, end))
     return rows
 
 
