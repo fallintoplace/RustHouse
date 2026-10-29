@@ -55,17 +55,20 @@ fn write_number(writer: &mut impl Write, number: Number) -> Result<(), Execution
         Number::Signed(v) => (1u8, v.to_le_bytes()),
         Number::Float(v) => (2u8, (v.to_bits() as u128).to_le_bytes()),
     };
-    writer.write_all(&[tag])?;
-    writer.write_all(&payload)?;
+    let mut record = [0u8; 17];
+    record[0] = tag;
+    record[1..].copy_from_slice(&payload);
+    writer.write_all(&record)?;
     Ok(())
 }
 
 fn read_number(reader: &mut impl Read) -> Result<Number, ExecutionError> {
-    let mut tag = [0u8; 1];
-    let mut payload = [0u8; 16];
-    reader.read_exact(&mut tag)?;
-    reader.read_exact(&mut payload)?;
-    match tag[0] {
+    let mut record = [0u8; 17];
+    reader.read_exact(&mut record)?;
+    let payload: [u8; 16] = record[1..]
+        .try_into()
+        .expect("numeric spill payload is 16 bytes");
+    match record[0] {
         0 => Ok(Number::Unsigned(u128::from_le_bytes(payload))),
         1 => Ok(Number::Signed(i128::from_le_bytes(payload))),
         2 => {
@@ -505,3 +508,51 @@ mod preflight_external_merge_budget_tests;
 #[cfg(test)]
 #[path = "sort/sort_memory_budget_tests.rs"]
 mod sort_memory_budget_tests;
+
+#[cfg(test)]
+mod packed_number_io_tests {
+    use super::*;
+
+    #[test]
+    fn reads_and_writes_one_complete_record_per_call() {
+        struct CountedWriter {
+            calls: usize,
+            bytes: Vec<u8>,
+        }
+        impl Write for CountedWriter {
+            fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
+                self.calls += 1;
+                self.bytes.extend_from_slice(bytes);
+                Ok(bytes.len())
+            }
+            fn flush(&mut self) -> std::io::Result<()> {
+                Ok(())
+            }
+        }
+
+        let mut writer = CountedWriter {
+            calls: 0,
+            bytes: Vec::new(),
+        };
+        write_number(&mut writer, Number::Unsigned(u128::MAX)).unwrap();
+        write_number(&mut writer, Number::Signed(i128::MIN)).unwrap();
+        write_number(&mut writer, Number::Float(-0.0)).unwrap();
+        assert_eq!(writer.calls, 3);
+        assert_eq!(writer.bytes.len(), 3 * 17);
+
+        let mut input = writer.bytes.as_slice();
+        assert!(matches!(
+            read_number(&mut input).unwrap(),
+            Number::Unsigned(u128::MAX)
+        ));
+        assert!(matches!(
+            read_number(&mut input).unwrap(),
+            Number::Signed(i128::MIN)
+        ));
+        let Number::Float(value) = read_number(&mut input).unwrap() else {
+            panic!("expected Float64");
+        };
+        assert_eq!(value.to_bits(), (-0.0f64).to_bits());
+        assert!(input.is_empty());
+    }
+}
