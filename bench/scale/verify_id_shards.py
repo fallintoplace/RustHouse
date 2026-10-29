@@ -5,6 +5,7 @@ Usage: python -m bench.scale.verify_id_shards /data/shards/manifest.json
 import argparse
 import hashlib
 import json
+import re
 from pathlib import Path
 
 
@@ -47,8 +48,8 @@ def verify(manifest_path):
     if step > (1 << 64) - 1 or (rows - 1) > ((1 << 64) - 1 - start) // step:
         raise ValueError("UInt64 range overflow")
     shards = manifest.get("shards")
-    if not isinstance(shards, list) or not shards:
-        raise ValueError("manifest needs nonempty shards")
+    if not isinstance(shards, list) or not 1 <= len(shards) <= 16_384:
+        raise ValueError("manifest needs 1..16384 shards")
     position = 0
     seen_paths = set()
     for shard in shards:
@@ -71,7 +72,7 @@ def verify(manifest_path):
         seen_paths.add(canonical)
         if shard_start != start + position * step or count > rows - position:
             raise ValueError("gap, overlap or unexpected shard row count")
-        if not isinstance(expected_hash, str) or len(expected_hash) != 64:
+        if not isinstance(expected_hash, str) or not re.fullmatch(r"[0-9a-fA-F]{64}", expected_hash):
             raise ValueError("missing or invalid shard SHA-256")
         actual = verify_file(shard_file, shard_start, count, step)
         if actual != expected_hash.lower():
