@@ -169,6 +169,10 @@ pub(super) fn apply_unary_math(name: &str, value: Number) -> Result<Number, Exec
         "EXP2" => Number::Float(number_as_float(value).exp2()),
         "LOG1P" => Number::Float(number_as_float(value).ln_1p()),
         "EXPM1" => Number::Float(number_as_float(value).exp_m1()),
+        "IS_FINITE" => Number::Unsigned(u128::from(match value {
+            Number::Float(number) => number.is_finite(),
+            Number::Signed(_) | Number::Unsigned(_) => true,
+        })),
         _ => {
             return Err(ExecutionError::Invalid(format!(
                 "unsupported aggregate numeric function: {name}"
@@ -574,6 +578,24 @@ mod aggregate_unary_math_tests {
         assert!(apply_unary_math("EXPM1", Number::Signed(1000)).is_err());
         assert!(crate::parse_scalar_expression("expm1(amount)").is_ok());
         assert!(crate::parse_scalar_expression("expm1(amount, 2)").is_err());
+    }
+
+    #[test]
+    fn is_finite_classifies_infinite_and_exact_integer_values() {
+        assert!(matches!(
+            apply_unary_math("IS_FINITE", Number::Float(f64::INFINITY)),
+            Ok(Number::Unsigned(0))
+        ));
+        assert!(matches!(
+            apply_unary_math("IS_FINITE", Number::Float(f64::NEG_INFINITY)),
+            Ok(Number::Unsigned(0))
+        ));
+        assert!(matches!(
+            apply_unary_math("IS_FINITE", Number::Unsigned(u128::MAX)),
+            Ok(Number::Unsigned(1))
+        ));
+        assert!(crate::parse_scalar_expression("is_finite(amount)").is_ok());
+        assert!(crate::parse_scalar_expression("is_finite(amount, 2)").is_err());
     }
 
 }
