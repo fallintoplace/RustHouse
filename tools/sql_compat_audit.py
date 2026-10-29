@@ -9,6 +9,10 @@ import sys
 import tempfile
 
 
+MAX_QUERY_BYTES = 4096
+MAX_AUDIT_QUERIES = 200
+
+
 def parse_lines(content):
     queries = []
     for number, line in enumerate(content.splitlines(), 1):
@@ -18,9 +22,9 @@ def parse_lines(content):
         if value.endswith(";"):
             value = value[:-1].rstrip()
         if (not re.match(r"(?i)^SELECT\s", value) or ";" in value
-                or len(value.encode("utf-8")) > 4096):
+                or len(value.encode("utf-8")) > MAX_QUERY_BYTES):
             raise ValueError("line " + str(number) + ": one bounded SELECT is required")
-        if len(queries) >= 200:
+        if len(queries) >= MAX_AUDIT_QUERIES:
             raise ValueError("at most 200 SELECT queries per audit")
         queries.append((number, value))
     if not queries:
