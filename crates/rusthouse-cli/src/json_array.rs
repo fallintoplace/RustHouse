@@ -92,8 +92,8 @@ impl<W: Write> Write for JsonArraySink<W> {
             }
         }
         for chunk in bytes.split_inclusive(|&byte| byte == b'\n') {
-            let complete = chunk.last() == Some(&b'\n');
-            let fragment = if complete {
+            let has_newline = chunk.last() == Some(&b'\n');
+            let fragment = if has_newline {
                 &chunk[..chunk.len() - 1]
             } else {
                 chunk
@@ -104,7 +104,7 @@ impl<W: Write> Write for JsonArraySink<W> {
                     "JSON object exceeds 4 MiB",
                 ));
             }
-            if complete && self.row.is_empty() {
+            if has_newline && self.row.is_empty() {
                 self.output
                     .write_all(array_prefix(self.first, self.pretty))?;
                 if self.pretty {
@@ -116,7 +116,7 @@ impl<W: Write> Write for JsonArraySink<W> {
                 continue;
             }
             self.row.extend_from_slice(fragment);
-            if complete {
+            if has_newline {
                 self.finish_row()?;
             }
         }
