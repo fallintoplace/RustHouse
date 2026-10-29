@@ -89,7 +89,34 @@ pub(super) fn scan_string(sql: &str, index: &mut usize) -> Result<Token, ParseEr
 pub(super) fn scan_quoted_identifier(sql: &str, index: &mut usize) -> Result<Token, ParseError> {
     let bytes = sql.as_bytes();
     let delimiter = bytes[*index];
-    let mut cursor = *index + 1;
+    let start = *index + 1;
+    // The common case has no quoted-identifier escapes. Validate directly
+    // from the SQL slice and allocate only the returned identifier String.
+    if let Some(offset) = bytes[start..]
+        .iter()
+        .position(|&byte| byte == delimiter || byte == b'\\')
+    {
+        let end = start + offset;
+        if bytes[end] == delimiter && bytes.get(end + 1) != Some(&delimiter) {
+            let candidate = &bytes[start..end];
+            if candidate.len() > 128 {
+                return Err(ParseError("quoted identifier exceeds 128 bytes".into()));
+            }
+            let mut characters = candidate.iter().copied();
+            let valid = matches!(
+                characters.next(),
+                Some(b'a'..=b'z' | b'A'..=b'Z' | b'_')
+            ) && characters.all(|byte| byte.is_ascii_alphanumeric() || byte == b'_');
+            if !valid {
+                return Err(ParseError(
+                    "quoted identifiers require a simple ASCII identifier".into(),
+                ));
+            }
+            *index = end + 1;
+            return Ok(Token::QuotedWord(sql[start..end].into()));
+        }
+    }
+    let mut cursor = start;
     let mut decoded = Vec::new();
     loop {
         let Some(&byte) = bytes.get(cursor) else {
@@ -211,5 +238,36 @@ mod exponent_tests {
         for invalid in ["2e", "2e+", "2e-"] {
             assert!(scan_number(invalid, &mut 0).is_err());
         }
+    }
+}
+
+#[cfg(test)]
+mod quoted_identifier_fast_path_tests {
+    use super::*;
+
+    #[test]
+    fn reads_long_plain_identifier_without_changing_offsets() {
+        for delimiter in ['`', '"'] {
+            let source = format!("{delimiter}{}{} SELECT", "a", "_9".repeat(60), delimiter);
+            let mut cursor = 0;
+            assert_eq!(
+                scan_quoted_identifier(&source, &mut cursor).unwrap(),
+                Token::QuotedWord(format!("a{}", "_9".repeat(60)))
+            );
+            assert_eq!(cursor, source.len() - " SELECT".len());
+        }
+    }
+
+    #[test]
+    fn escaped_and_invalid_identifiers_keep_existing_validation() {
+        for source in ["`bad-name`", "`a``b`", "`a\\`b`", "`1bad`", "`café`", "`unterminated"] {
+            assert!(scan_quoted_identifier(source, &mut 0).is_err(), "{source}");
+        }
+        let long = format!("`{}`", "x".repeat(129));
+        assert!(scan_quoted_identifier(&long, &mut 0).is_err());
+        assert_eq!(
+            scan_quoted_identifier("`ok_42`", &mut 0).unwrap(),
+            Token::QuotedWord("ok_42".into())
+        );
     }
 }
