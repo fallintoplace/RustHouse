@@ -6,7 +6,7 @@ use std::collections::HashMap;
 
 const WORDS_PER_BLOCK: usize = 1024;
 const MAX_BLOCKS: usize = 65_536; // Every UInt16 prefix can be represented exactly.
-const MAX_DENSE_BLOCKS: usize = 16_384; // Cap dense bitmap payloads at 128 MiB.
+const MAX_PAYLOAD_BYTES: usize = 128 * 1024 * 1024; // Combined sparse and dense payload budget.
 
 enum Block {
     Sparse(Vec<u16>),
@@ -14,6 +14,16 @@ enum Block {
 }
 
 const DENSE_THRESHOLD: usize = 4096;
+
+/// Approximate owned payload bytes. HashMap and Vec capacity add overhead,
+/// so this is a conservative payload guard rather than an RSS guarantee.
+fn within_payload_budget(dense_blocks: usize, sparse_entries: usize) -> bool {
+    dense_blocks.checked_mul(WORDS_PER_BLOCK * std::mem::size_of::<u64>())
+        .and_then(|used| sparse_entries.checked_mul(std::mem::size_of::<u16>())
+            .and_then(|sparse| used.checked_add(sparse)))
+        .is_some_and(|used| used <= MAX_PAYLOAD_BYTES)
+}
+
 
 fn insert_bitmap_bit(bitmap: &mut [u64; WORDS_PER_BLOCK], suffix: u16) -> bool {
     let index = usize::from(suffix);
@@ -29,6 +39,7 @@ pub(super) struct BitmapDistinct32 {
     blocks: HashMap<u16, Block>,
     count: u64,
     dense_blocks: usize,
+    sparse_entries: usize,
 }
 
 impl BitmapDistinct32 {
@@ -53,9 +64,10 @@ impl BitmapDistinct32 {
                 Ok(_) => false,
                 Err(position) => {
                     if values.len() + 1 == DENSE_THRESHOLD {
-                        if self.dense_blocks >= MAX_DENSE_BLOCKS {
+                        let new_sparse = self.sparse_entries - values.len();
+                        if !within_payload_budget(self.dense_blocks + 1, new_sparse) {
                             return Err(ExecutionError::Invalid(
-                                "COUNT(DISTINCT) exceeded its 128 MiB dense bitmap budget".into(),
+                                "COUNT(DISTINCT) exceeded its 128 MiB payload budget".into(),
                             ));
                         }
                         let mut bitmap = Box::new([0u64; WORDS_PER_BLOCK]);
@@ -65,8 +77,15 @@ impl BitmapDistinct32 {
                         insert_bitmap_bit(bitmap.as_mut(), suffix);
                         *block = Block::Dense(bitmap);
                         self.dense_blocks += 1;
+                        self.sparse_entries = new_sparse;
                     } else {
+                        if !within_payload_budget(self.dense_blocks, self.sparse_entries + 1) {
+                            return Err(ExecutionError::Invalid(
+                                "COUNT(DISTINCT) exceeded its 128 MiB payload budget".into(),
+                            ));
+                        }
                         values.insert(position, suffix);
+                        self.sparse_entries += 1;
                     }
                     true
                 }
@@ -171,5 +190,31 @@ mod full_domain_sparse_tests {
         }
         assert_eq!(state.len(), 5000);
         assert_eq!(state.dense_blocks, 1);
+    }
+}
+
+#[cfg(test)]
+mod memory_budget_tests {
+    use super::*;
+
+    #[test]
+    fn sparse_and_dense_payload_share_one_budget() {
+        let dense_bytes = WORDS_PER_BLOCK * std::mem::size_of::<u64>();
+        let max_dense = MAX_PAYLOAD_BYTES / dense_bytes;
+        assert!(within_payload_budget(max_dense, 0));
+        assert!(!within_payload_budget(max_dense, 1));
+        assert!(within_payload_budget(0, MAX_PAYLOAD_BYTES / 2));
+        assert!(!within_payload_budget(0, MAX_PAYLOAD_BYTES / 2 + 1));
+    }
+
+    #[test]
+    fn promotion_accounts_for_previous_sparse_entries() {
+        let mut state = BitmapDistinct32::new();
+        for value in 0..DENSE_THRESHOLD as u32 {
+            state.insert((19 << 16) | value).unwrap();
+        }
+        assert_eq!(state.dense_blocks, 1);
+        assert_eq!(state.sparse_entries, 0);
+        assert_eq!(state.len(), DENSE_THRESHOLD as u64);
     }
 }
