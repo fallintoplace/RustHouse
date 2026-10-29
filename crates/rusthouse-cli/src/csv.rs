@@ -75,7 +75,7 @@ impl<W: Write> CsvWriter<W> {
     }
 }
 
-fn needs_csv_quotes(value: &[u8]) -> bool {
+fn requires_csv_quoting(value: &[u8]) -> bool {
     value == b"\\N"
         || value
             .iter()
@@ -92,7 +92,7 @@ fn write_csv_field<W: Write>(output: &mut W, field: &[u8]) -> io::Result<()> {
         Cow::Borrowed(field)
     };
     let value = decoded.as_ref();
-    if !needs_csv_quotes(value) {
+    if !requires_csv_quoting(value) {
         return output.write_all(value);
     }
     write_quoted_field(output, value)

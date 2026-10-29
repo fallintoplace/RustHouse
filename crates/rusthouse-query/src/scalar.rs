@@ -32,7 +32,15 @@ pub(super) fn is_function(name: &str) -> bool {
     if name.eq_ignore_ascii_case("DIGIT_SUM") {
         return true;
     }
-    name.eq_ignore_ascii_case("NOTEQUALS")
+    name.eq_ignore_ascii_case("TOINT16")
+        || name.eq_ignore_ascii_case("POSITIVE")
+        || name.eq_ignore_ascii_case("ISZERO")
+        || name.eq_ignore_ascii_case("MODULOORZERO")
+        || name.eq_ignore_ascii_case("INTDIVORZERO")
+        || name.eq_ignore_ascii_case("PLUS")
+        || name.eq_ignore_ascii_case("MINUS")
+        || name.eq_ignore_ascii_case("EQUALS")
+        || name.eq_ignore_ascii_case("NOTEQUALS")
         || is_saturating(name)
         || name.eq_ignore_ascii_case("BITHAMMINGDISTANCE")
         || name.eq_ignore_ascii_case("ABS")
@@ -1156,6 +1164,26 @@ fn factor(parser: &mut Parser, depth: usize) -> Result<i64, ParseError> {
                 (current, next) = (next, current + next);
             }
             i64::try_from(current).map_err(|_| overflow())?
+        } else if name.eq_ignore_ascii_case("MODULOORZERO") {
+            require_token(parser, Token::Comma, "moduloOrZero requires two arguments")?;
+            let second = expression(parser, depth + 1)?;
+            first.checked_rem(second).unwrap_or(0)
+        } else if name.eq_ignore_ascii_case("INTDIVORZERO") {
+            require_token(parser, Token::Comma, "intDivOrZero requires two arguments")?;
+            let second = expression(parser, depth + 1)?;
+            first.checked_div(second).unwrap_or(0)
+        } else if name.eq_ignore_ascii_case("PLUS") {
+            require_token(parser, Token::Comma, "plus requires two arguments")?;
+            let second = expression(parser, depth + 1)?;
+            first.checked_add(second).ok_or_else(overflow)?
+        } else if name.eq_ignore_ascii_case("MINUS") {
+            require_token(parser, Token::Comma, "minus requires two arguments")?;
+            let second = expression(parser, depth + 1)?;
+            first.checked_sub(second).ok_or_else(overflow)?
+        } else if name.eq_ignore_ascii_case("EQUALS") {
+            require_token(parser, Token::Comma, "equals requires two arguments")?;
+            let second = expression(parser, depth + 1)?;
+            i64::from(first == second)
         } else if name.eq_ignore_ascii_case("NOTEQUALS") {
             require_token(parser, Token::Comma, "notEquals requires two arguments")?;
             let second = expression(parser, depth + 1)?;
@@ -1193,6 +1221,9 @@ fn factor(parser: &mut Parser, depth: usize) -> Result<i64, ParseError> {
             match name.to_ascii_uppercase().as_str() {
                 "TRAILING_ONES" => i64::from(first.trailing_ones()),
                 "TOINT8" => first as i8 as i64,
+                "TOINT16" => first as i16 as i64,
+                "POSITIVE" => first,
+                "ISZERO" => i64::from(first == 0),
                 _ => first.signum(),
             }
         };

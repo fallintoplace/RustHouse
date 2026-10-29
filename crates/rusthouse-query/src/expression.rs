@@ -23,10 +23,10 @@ pub enum ScalarExpr {
 impl ScalarExpr {
     pub fn referenced_columns(&self, out: &mut Vec<String>) {
         let mut seen = out.iter().cloned().collect::<HashSet<_>>();
-        self.collect_referenced_columns(out, &mut seen);
+        self.collect_unique_referenced_columns(out, &mut seen);
     }
 
-    fn collect_referenced_columns(&self, out: &mut Vec<String>, seen: &mut HashSet<String>) {
+    fn collect_unique_referenced_columns(&self, out: &mut Vec<String>, seen: &mut HashSet<String>) {
         match self {
             Self::Column(name) | Self::TextLength(name) => {
                 if seen.insert(name.clone()) {
@@ -39,8 +39,8 @@ impl ScalarExpr {
             | Self::Multiply(left, right)
             | Self::Divide(left, right)
             | Self::Compare(left, _, right) => {
-                left.collect_referenced_columns(out, seen);
-                right.collect_referenced_columns(out, seen);
+                left.collect_unique_referenced_columns(out, seen);
+                right.collect_unique_referenced_columns(out, seen);
             }
         }
     }
@@ -50,7 +50,7 @@ const MAX_EXPRESSION_DEPTH: usize = 64;
 
 fn parse_arithmetic_tokens(parser: &mut Parser, depth: usize) -> Result<ScalarExpr, ParseError> {
     let mut expr = product(parser, depth)?;
-    let mut operators = 0usize;
+    let mut operator_count = 0usize;
     loop {
         let addition = if parser.take(Token::Plus) {
             true
@@ -59,8 +59,8 @@ fn parse_arithmetic_tokens(parser: &mut Parser, depth: usize) -> Result<ScalarEx
         } else {
             break;
         };
-        operators += 1;
-        if operators > 128 {
+        operator_count += 1;
+        if operator_count > 128 {
             return Err(ParseError("arithmetic operator chain exceeds 128 terms".into()));
         }
         let right = product(parser, depth)?;
