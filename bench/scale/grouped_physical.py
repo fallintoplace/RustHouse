@@ -30,7 +30,8 @@ def region_at(index, groups):
 
 
 def emit(stream, rows, groups, batch_rows=8192):
-    if not 1 <= rows <= 1_000_000_000 or not 2 <= groups <= 65_536:
+    if (type(rows) is not int or type(groups) is not int
+            or not 1 <= rows <= 1_000_000_000 or not 2 <= groups <= 65_536):
         raise ValueError("unsupported row count or UInt16 group domain")
     if type(batch_rows) is not int or not 1 <= batch_rows <= 1_000_000:
         raise ValueError("batch_rows must be in 1..1000000")
@@ -48,7 +49,8 @@ def reference(rows, groups):
     Cold bucket b appears at block b-1 + k*(groups-1). Its amount is
     1 + (10*block + 9) % 97. Evaluate only one residue cycle per bucket.
     """
-    if not 1 <= rows <= 1_000_000_000 or not 2 <= groups <= 65_536:
+    if (type(rows) is not int or type(groups) is not int
+            or not 1 <= rows <= 1_000_000_000 or not 2 <= groups <= 65_536):
         raise ValueError("unsupported row count or UInt16 group domain")
     counts = [0] * groups
     sums = [0] * groups
