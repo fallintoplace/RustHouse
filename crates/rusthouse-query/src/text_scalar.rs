@@ -146,6 +146,7 @@ pub(super) fn is_function(name: &str) -> bool {
             | "NOTEMPTY"
             | "SPACE"
             | "ENCODEURLFORMCOMPONENT"
+            | "DECODEURLFORMCOMPONENT"
             | "RIGHTPADUTF8"
             | "ENCODEURLCOMPONENT"
             | "POSITION"
@@ -2241,7 +2242,7 @@ fn parse_at_depth(parser: &mut Parser, depth: usize) -> Result<ConstantValue, Pa
                 _ => ConstantValue::Null,
             }
         }
-        "URL_DECODE" | "DECODEURLCOMPONENT" => {
+        "URL_DECODE" | "DECODEURLCOMPONENT" | "DECODEURLFORMCOMPONENT" => {
             let input = text_arg(parser, depth + 1)?;
             require(parser, Token::RParen, "URL_DECODE requires one argument")?;
             match input {
@@ -2265,7 +2266,8 @@ fn parse_at_depth(parser: &mut Parser, depth: usize) -> Result<ConstantValue, Pa
                             result.push(byte);
                             index += 3;
                         } else {
-                            result.push(source[index]);
+                            let byte = if name == "DECODEURLFORMCOMPONENT" && source[index] == b'+' { b' ' } else { source[index] };
+                            result.push(byte);
                             index += 1;
                         }
                     }
@@ -2921,6 +2923,31 @@ mod ch_right_pad_utf8_tests {
             assert_eq!(value(sql), expected, "{sql}");
         }
         for sql in ["SELECT rightPadUTF8('a')", "SELECT rightPadUTF8('a', -1)"] {
+            assert!(parse_select(sql).is_err(), "{sql}");
+        }
+    }
+}
+
+#[cfg(test)]
+mod ch_decode_url_form_tests {
+    use crate::{parse_select, ConstantValue, Projection};
+    fn value(sql: &str) -> ConstantValue {
+        match parse_select(sql).unwrap().projection {
+            Projection::Constants(items) if items.len() == 1 => items[0].value.clone(),
+            Projection::Literal(value) => ConstantValue::Integer(value),
+            other => panic!("unexpected projection: {other:?}"),
+        }
+    }
+    #[test]
+    fn form_decodes_plus_percent_and_null() {
+        for (sql, expected) in [
+            ("SELECT decodeURLFormComponent('a+b%20c')", ConstantValue::Text("a b c".into())),
+            ("SELECT decodeURLFormComponent('x%2By')", ConstantValue::Text("x+y".into())),
+            ("SELECT decodeURLFormComponent(NULL)", ConstantValue::Null),
+        ] {
+            assert_eq!(value(sql), expected, "{sql}");
+        }
+        for sql in ["SELECT decodeURLFormComponent()", "SELECT decodeURLFormComponent('%GG')"] {
             assert!(parse_select(sql).is_err(), "{sql}");
         }
     }
