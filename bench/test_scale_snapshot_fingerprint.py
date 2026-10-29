@@ -1,5 +1,6 @@
 import tempfile
 import unittest
+from unittest.mock import patch
 from pathlib import Path
 
 from bench.scale.snapshot_fingerprint import fingerprint
@@ -22,6 +23,18 @@ class SnapshotFingerprintTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as root:
             with self.assertRaisesRegex(ValueError, "no files"):
                 fingerprint(root)
+
+    def test_unreadable_subtree_aborts_fingerprint(self):
+        with tempfile.TemporaryDirectory() as root:
+            (Path(root) / "root.txt").write_bytes(b"present")
+
+            def fail(directory, *, followlinks, onerror):
+                onerror(PermissionError("cannot read nested directory"))
+                return iter(())
+
+            with patch("bench.scale.snapshot_fingerprint.os.walk", side_effect=fail):
+                with self.assertRaisesRegex(PermissionError, "cannot read"):
+                    fingerprint(root)
 
     def test_rejects_symlinks(self):
         with tempfile.TemporaryDirectory() as root:
