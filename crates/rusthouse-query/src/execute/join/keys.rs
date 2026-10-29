@@ -68,13 +68,13 @@ pub(super) fn row_key_into(
     indices: &[usize],
     result: &mut Vec<typed::Key>,
 ) -> bool {
-    if indices.iter().any(|&index| !key_eligible(&row[index])) {
-        result.clear();
-        return false;
-    }
     // Preserve the backing allocation of repeated text probe keys. Rebuilding
     // the key vector for every fact row is especially costly in skewed joins.
     for (position, &index) in indices.iter().enumerate() {
+        if !key_eligible(&row[index]) {
+            result.clear();
+            return false;
+        }
         match &row[index] {
             typed::Cell::Text(value) => put_text_key(result, position, value),
             value => put_key(result, position, join_key(value)),
