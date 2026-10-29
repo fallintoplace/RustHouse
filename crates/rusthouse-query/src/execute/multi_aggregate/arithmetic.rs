@@ -107,6 +107,10 @@ pub(super) fn apply_unary_math(name: &str, value: Number) -> Result<Number, Exec
         },
         "SQRT" => Number::Float(number_as_float(value).sqrt()),
         "CBRT" => Number::Float(number_as_float(value).cbrt()),
+        "FLOOR" => match value {
+            Number::Float(number) => Number::Float(number.floor()),
+            integer => integer,
+        },
         _ => {
             return Err(ExecutionError::Invalid(format!(
                 "unsupported aggregate numeric function: {name}"
@@ -192,6 +196,20 @@ mod aggregate_unary_math_tests {
         ));
         assert!(crate::parse_scalar_expression("cbrt(amount)").is_ok());
         assert!(crate::parse_scalar_expression("cbrt(amount, 2)").is_err());
+    }
+
+    #[test]
+    fn floor_rounds_negative_floats_down_without_losing_integer_precision() {
+        assert!(matches!(
+            apply_unary_math("FLOOR", Number::Float(-1.2)),
+            Ok(Number::Float(value)) if value == -2.0
+        ));
+        assert!(matches!(
+            apply_unary_math("FLOOR", Number::Unsigned(u128::MAX)),
+            Ok(Number::Unsigned(u128::MAX))
+        ));
+        assert!(crate::parse_scalar_expression("floor(amount)").is_ok());
+        assert!(crate::parse_scalar_expression("floor(amount, 2)").is_err());
     }
 
 }
