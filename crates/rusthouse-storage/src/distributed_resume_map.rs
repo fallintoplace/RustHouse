@@ -40,6 +40,32 @@ impl ResumeMap {
         Ok(())
     }
 
+    /// Mark a half-open range of verified chunks complete in one operation.
+    /// Fully covered bytes are updated in bulk instead of one bit at a time.
+    pub fn mark_complete_range(
+        &mut self,
+        start: usize,
+        end: usize,
+    ) -> Result<(), &'static str> {
+        if start > end || end > self.chunks {
+            return Err("chunk range out of bounds");
+        }
+        let prefix_end = start.div_ceil(8).saturating_mul(8).min(end);
+        for index in start..prefix_end {
+            let (byte, mask) = Self::bit_position(index);
+            self.completed[byte] |= mask;
+        }
+        let full_end = (end / 8) * 8;
+        if prefix_end < full_end {
+            self.completed[prefix_end / 8..full_end / 8].fill(u8::MAX);
+        }
+        for index in prefix_end.max(full_end)..end {
+            let (byte, mask) = Self::bit_position(index);
+            self.completed[byte] |= mask;
+        }
+        Ok(())
+    }
+
     pub fn remaining(&self) -> Vec<usize> {
         // Fresh transfers have no completed bits: construct the complete
         // index range with its final allocation size in one pass.
@@ -174,6 +200,29 @@ mod tests {
         let recovered = ResumeMap::decode(&map.encode()).unwrap();
         assert_eq!(recovered.remaining(), vec![1, 3]);
         assert!(!recovered.complete());
+    }
+
+    #[test]
+    fn range_completion_matches_individual_marks_at_byte_boundaries() {
+        for len in [0usize, 1, 7, 8, 9, 16, 17, 31] {
+            for start in 0..=len {
+                for end in start..=len {
+                    let mut bulk = ResumeMap::new(len).unwrap();
+                    let mut separate = ResumeMap::new(len).unwrap();
+                    bulk.mark_complete_range(start, end).unwrap();
+                    for index in start..end {
+                        separate.mark_complete(index).unwrap();
+                    }
+                    assert_eq!(bulk, separate, "{len} {start} {end}");
+                }
+            }
+        }
+        let mut map = ResumeMap::new(17).unwrap();
+        assert!(map.mark_complete_range(1, 18).is_err());
+        assert!(map.mark_complete_range(10, 9).is_err());
+        assert_eq!(map.remaining(), (0..17).collect::<Vec<_>>());
+        map.mark_complete_range(0, 17).unwrap();
+        assert!(map.complete());
     }
 
     #[test]
