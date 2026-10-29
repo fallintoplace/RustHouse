@@ -131,12 +131,12 @@ impl ObjectKey {
         if segments.len() != 5 {
             return Err("distributed object key must have five components");
         }
-        let mut fields = Vec::with_capacity(5);
-        for segment in segments {
+        let mut fields = [""; 5];
+        for (index, segment) in segments.into_iter().enumerate() {
             let Component::Normal(value) = segment else {
                 return Err("distributed object key must be relative");
             };
-            fields.push(value.to_str().ok_or("non-UTF8 distributed object key")?);
+            fields[index] = value.to_str().ok_or("non-UTF8 distributed object key")?;
         }
         let generation_text = fields[2]
             .strip_prefix('g')
