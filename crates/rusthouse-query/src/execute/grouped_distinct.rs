@@ -62,20 +62,24 @@ struct Group {
     // Exact bounded 8-bit cardinality uses 32 bytes per group, regardless
     // of the number of rows or repeated distinct pairs.
     byte_values: [u64; 4],
+    // Keep exact cardinality incrementally. ORDER BY count does not need to
+    // re-count four bitmap words on every group comparison.
+    distinct_count: usize,
 }
 
 impl Group {
     fn distinct_len(&self) -> usize {
-        self.distinct.len()
-            + self.distinct_text.len()
-            + self.distinct_uuids.len()
-            + self.byte_values.iter().map(|word| word.count_ones() as usize).sum::<usize>()
+        self.distinct_count
     }
 }
 
 fn mark_distinct_byte(group: &mut Group, value: u8) {
     let slot = usize::from(value) / 64;
-    group.byte_values[slot] |= 1u64 << (usize::from(value) % 64);
+    let bit = 1u64 << (usize::from(value) % 64);
+    if group.byte_values[slot] & bit == 0 {
+        group.byte_values[slot] |= bit;
+        group.distinct_count += 1;
+    }
 }
 
 pub(super) fn execute<W: Write>(
@@ -192,6 +196,7 @@ pub(super) fn execute<W: Write>(
                         distinct_text: HashSet::new(),
                         distinct_uuids: HashSet::new(),
                         byte_values: [0; 4],
+                        distinct_count: 0,
                     });
                 }
                 *slot
@@ -222,6 +227,7 @@ pub(super) fn execute<W: Write>(
                         distinct_text: HashSet::new(),
                         distinct_uuids: HashSet::new(),
                         byte_values: [0; 4],
+                        distinct_count: 0,
                     });
                     id
                 }
@@ -241,6 +247,7 @@ pub(super) fn execute<W: Write>(
                         distinct_text: HashSet::new(),
                         distinct_uuids: HashSet::new(),
                         byte_values: [0; 4],
+                        distinct_count: 0,
                     });
                     id
                 }
@@ -261,6 +268,7 @@ pub(super) fn execute<W: Write>(
                         distinct_text: HashSet::new(),
                         distinct_uuids: HashSet::new(),
                         byte_values: [0; 4],
+                        distinct_count: 0,
                     });
                     id
                 }
@@ -281,6 +289,7 @@ pub(super) fn execute<W: Write>(
                             distinct_text: HashSet::new(),
                             distinct_uuids: HashSet::new(),
                         byte_values: [0; 4],
+                        distinct_count: 0,
                         });
                         id
                     }
@@ -325,6 +334,7 @@ pub(super) fn execute<W: Write>(
                     }
                 } else if groups[id].distinct_uuids.insert(key) {
                     total_pairs += 1;
+                    groups[id].distinct_count += 1;
                 }
                 continue;
             }
@@ -342,6 +352,7 @@ pub(super) fn execute<W: Write>(
                     charge_text(&mut retained_text_bytes, text.len(), 1)?;
                     groups[id].distinct_text.insert(text.to_vec());
                     total_pairs += 1;
+                    groups[id].distinct_count += 1;
                 }
                 continue;
             }
@@ -356,6 +367,7 @@ pub(super) fn execute<W: Write>(
                 }
             } else if groups[id].distinct.insert(key) {
                 total_pairs += 1;
+                groups[id].distinct_count += 1;
             }
         }
     }
@@ -445,6 +457,7 @@ mod grouped_byte_distinct_tests {
             distinct_text: HashSet::new(),
             distinct_uuids: HashSet::new(),
             byte_values: [0; 4],
+                        distinct_count: 0,
         };
         for value in 0u8..=255 {
             mark_distinct_byte(&mut group, value);
@@ -456,6 +469,23 @@ mod grouped_byte_distinct_tests {
     }
 
     #[test]
+    fn duplicate_byte_values_do_not_increase_cached_count() {
+        let mut group = Group {
+            key: Cell::Null,
+            distinct: HashSet::new(),
+            distinct_text: HashSet::new(),
+            distinct_uuids: HashSet::new(),
+            byte_values: [0; 4],
+            distinct_count: 0,
+        };
+        for value in [0, 255, 64, 255, 0, 64, 1] {
+            mark_distinct_byte(&mut group, value);
+        }
+        assert_eq!(group.distinct_len(), 4);
+        assert_eq!(group.byte_values.iter().map(|bits| bits.count_ones()).sum::<u32>(), 4);
+    }
+
+    #[test]
     fn bitmap_keeps_high_bit_and_zero_in_separate_slots() {
         let mut group = Group {
             key: Cell::Null,
@@ -463,6 +493,7 @@ mod grouped_byte_distinct_tests {
             distinct_text: HashSet::new(),
             distinct_uuids: HashSet::new(),
             byte_values: [0; 4],
+                        distinct_count: 0,
         };
         mark_distinct_byte(&mut group, 0);
         mark_distinct_byte(&mut group, 128);
