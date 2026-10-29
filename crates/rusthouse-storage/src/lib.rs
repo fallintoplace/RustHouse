@@ -96,7 +96,8 @@ pub use primary_index::{
     candidate_u64_mark_range, candidate_u64_mark_ranges, read_fixed_primary_index,
 };
 pub use query_source::{
-    NumericQueryReader, inspect_query_source, query_parts, resolve_active_snapshot,
+    NumericQueryReader, inspect_query_source, query_parts, query_parts_with_metadata,
+    resolve_active_snapshot,
 };
 pub use stream::UInt64ColumnReader;
 pub use string_arrays::{
