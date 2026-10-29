@@ -1507,6 +1507,11 @@ fn execute_numbers<W: Write>(
             &query.projection,
             Projection::GroupedAggregate { column, value_column, .. }
                 if column == "number" && value_column == "number"
+        ) || matches!(
+            &query.projection,
+            Projection::GroupedAggregates { column, items, filters, .. }
+                if column == "number" && items.iter().all(|(_, key)| key == "number")
+                    && filters.iter().all(Option::is_none)
         )) && query.limit.is_some_and(|limit| limit <= MAX_SORTED_ROWS)
             && query.order_by.is_none()
             && simple_result
