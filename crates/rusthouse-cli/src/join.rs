@@ -12,8 +12,8 @@ fn execute_selected_join<W: std::io::Write>(
     paths: &[PathBuf],
     output: &mut W,
 ) -> Result<(), rusthouse_query::ExecutionError> {
-    if paths.len() == 2 {
-        execute_join(query, &paths[0], &paths[1], output)
+    if let [left, right] = paths {
+        execute_join(query, left, right, output)
     } else {
         execute_multi_join(query, paths, output)
     }
