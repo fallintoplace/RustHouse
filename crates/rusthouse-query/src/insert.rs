@@ -10,7 +10,7 @@ pub struct Insert {
     pub rows: Vec<Vec<Option<String>>>,
 }
 
-fn identifier(parser: &mut Parser) -> Result<String, ParseError> {
+fn parse_insert_identifier(parser: &mut Parser) -> Result<String, ParseError> {
     let name = parser.word()?;
     if name.len() > 128 {
         return Err(ParseError("identifiers cannot exceed 128 bytes".into()));
@@ -53,7 +53,7 @@ fn parse_insert_columns(parser: &mut Parser) -> Result<Option<Vec<String>>, Pars
         if result.len() >= 128 {
             return Err(ParseError("INSERT supports at most 128 columns".into()));
         }
-        let column = identifier(parser)?;
+        let column = parse_insert_identifier(parser)?;
         if !seen.insert(column.clone()) {
             return Err(ParseError(format!("duplicate INSERT column: {column}")));
         }
@@ -81,7 +81,7 @@ pub fn parse_insert(sql: &str) -> Result<Option<Insert>, ParseError> {
     if !parser.keyword("INTO") {
         return Err(ParseError("expected INTO after INSERT".into()));
     }
-    let table = identifier(&mut parser)?;
+    let table = parse_insert_identifier(&mut parser)?;
     let columns = parse_insert_columns(&mut parser)?;
     // DEFAULT VALUES inserts one row with no explicit column values.
     // The database writer validates that every omitted column is nullable.
