@@ -35,7 +35,13 @@ impl SortScratch {
         let path = std::env::temp_dir().join(format!(
             "rusthouse-external-sort-{}-{nanos}-{}",
             std::process::id(), NEXT_SORT.fetch_add(1, AtomicOrdering::Relaxed)));
-        fs::create_dir(&path)?;
+        let mut dir = fs::DirBuilder::new();
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::DirBuilderExt;
+            dir.mode(0o700);
+        }
+        dir.create(&path)?;
         Ok(Self(path))
     }
 }
@@ -495,6 +501,14 @@ mod tests {
         }
         encoded[9] = 1;
         assert!(read_number(&mut encoded.as_slice()).is_err());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn scratch_directory_is_private() {
+        use std::os::unix::fs::PermissionsExt;
+        let scratch = SortScratch::new().unwrap();
+        assert_eq!(fs::metadata(&scratch.0).unwrap().permissions().mode() & 0o077, 0);
     }
 
     #[test]
