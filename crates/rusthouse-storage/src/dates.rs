@@ -60,6 +60,16 @@ fn parse_calendar_day(text: &str) -> Option<i64> {
     Some(to_days(year, month, day))
 }
 
+/// Signed Gregorian day count used by ClickHouse Date32, including dates
+/// before the Unix epoch. No timezone or floating-point conversion.
+pub fn parse_date32(text: &str) -> Option<i32> {
+    i32::try_from(parse_calendar_day(text)?).ok()
+}
+
+pub fn format_date32(days: i32) -> String {
+    format_calendar_day(i64::from(days))
+}
+
 pub fn parse_date(text: &str) -> Option<u16> {
     u16::try_from(parse_calendar_day(text)?).ok()
 }
