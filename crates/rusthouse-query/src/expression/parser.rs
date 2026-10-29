@@ -205,6 +205,10 @@ fn parse_aggregate_builtin(parser: &mut Parser) -> Result<ScalarExpr, ParseError
             let right = Box::new(args.remove(0));
             Ok(ScalarExpr::Modulo(left, right))
         }
+        ("NEGATE", 1) => Ok(ScalarExpr::Subtract(
+            Box::new(ScalarExpr::Integer(0)),
+            Box::new(args.remove(0)),
+        )),
         _ => Err(ParseError(format!("unsupported aggregate function: {name}"))),
     }
 }

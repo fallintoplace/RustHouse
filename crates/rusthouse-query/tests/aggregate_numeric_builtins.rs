@@ -75,3 +75,8 @@ fn divide_uses_infix_numeric_semantics() {
 fn modulo_preserves_signed_remainder() {
     assert_eq!(evaluate("modulo(x, if(y = 0, 1, y))"), "-2");
 }
+
+#[test]
+fn negate_propagates_null_and_signed_values() {
+    assert_eq!(evaluate("negate(x)"), "-3");
+}
