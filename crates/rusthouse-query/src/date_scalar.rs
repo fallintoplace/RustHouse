@@ -15,6 +15,7 @@ pub(super) fn is_function(name: &str) -> bool {
             | "TIMEDIFF"
             | "TOISOYEAR"
             | "TOISOWEEK"
+            | "TOUNIXTIMESTAMP64NANO"
             | "TOYYYYMMDDHHMMSS"
             | "TOYYYYMMDD"
             | "TOYYYYMM"
@@ -215,6 +216,13 @@ pub(super) fn parse_after_open(
                 "September", "October", "November", "December",
             ];
             Ok(ConstantValue::Text(MONTHS[(month - 1) as usize].to_owned()))
+        }),
+        "TOUNIXTIMESTAMP64NANO" => unary_date(parser, depth, |value| {
+            let scaled = value
+                .seconds
+                .checked_mul(1_000_000_000)
+                .ok_or_else(|| ParseError("TOUNIXTIMESTAMP64NANO overflows Int64".into()))?;
+            Ok(ConstantValue::Integer(scaled))
         }),
         "TIMEDIFF" => time_difference(parser, depth),
         _ => Err(ParseError(format!("unsupported date function: {name}"))),
