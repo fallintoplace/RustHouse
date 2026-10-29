@@ -32,11 +32,11 @@ def probe(binary, part, rows, *, column="id", limit=10, timeout=600,
         expected_values = (range(start + rows - 1, start + rows - 1 - limit, -1)
                            if descending else range(start, start + limit))
         expected = "".join(f"{value}\n" for value in expected_values).encode()
-        start = time.perf_counter()
+        begun = time.perf_counter()
         completed = run([str(binary), "sql", sql, "--part", str(part),
                          "--format", "tsv-no-header"],
                         capture_output=True, check=False, timeout=timeout)
-        elapsed = time.perf_counter() - start
+        elapsed = time.perf_counter() - begun
         if completed.returncode:
             raise RuntimeError(f"{direction} top-K failed: {completed.stderr!r}")
         if completed.stdout != expected:
