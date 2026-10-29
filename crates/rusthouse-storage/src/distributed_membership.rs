@@ -17,6 +17,10 @@ fn identifier(value: &str) -> bool {
             .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_'))
 }
 
+fn valid_weight(weight: u16) -> bool {
+    (1..=1000).contains(&weight)
+}
+
 fn parse_member(line: &str) -> Result<Member, &'static str> {
     if line.is_empty() {
         return Err("empty membership record");
@@ -33,7 +37,7 @@ fn parse_member(line: &str) -> Result<Member, &'static str> {
     let weight = weight_text
         .parse::<u16>()
         .map_err(|_| "invalid member weight")?;
-    if !(1..=1000).contains(&weight) {
+    if !valid_weight(weight) {
         return Err("duplicate member or invalid weight");
     }
     Ok(Member {
@@ -76,7 +80,7 @@ pub fn format_membership(members: &[Member]) -> Result<String, &'static str> {
     for member in members {
         if !identifier(&member.node)
             || !identifier(&member.zone)
-            || !(1..=1000).contains(&member.weight)
+            || !valid_weight(member.weight)
             || !seen.insert(member.node.as_str())
         {
             return Err("invalid or duplicate membership record");
