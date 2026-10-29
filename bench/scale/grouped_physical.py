@@ -32,6 +32,8 @@ def region_at(index, groups):
 def emit(stream, rows, groups, batch_rows=8192):
     if not 1 <= rows <= 1_000_000_000 or not 2 <= groups <= 65_536:
         raise ValueError("unsupported row count or UInt16 group domain")
+    if type(batch_rows) is not int or not 1 <= batch_rows <= 1_000_000:
+        raise ValueError("batch_rows must be in 1..1000000")
     for start in range(0, rows, batch_rows):
         stream.write("".join(
             f"{region_at(index, groups)}\t{1 + index % 97}\n"
