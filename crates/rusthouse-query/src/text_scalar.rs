@@ -146,6 +146,7 @@ pub(super) fn is_function(name: &str) -> bool {
             | "NOTEMPTY"
             | "SPACE"
             | "ENCODEURLFORMCOMPONENT"
+            | "CUTWWW"
             | "DOMAINWITHOUTWWW"
             | "ZEROIFNULL"
             | "NULLIFZERO"
@@ -219,6 +220,26 @@ fn parse_at_depth(parser: &mut Parser, depth: usize) -> Result<ConstantValue, Pa
                         host_port.split(':').next().unwrap_or("")
                     };
                     ConstantValue::Text(host.strip_prefix("www.").unwrap_or(host).to_owned())
+                }
+                None => ConstantValue::Null,
+            }
+        }
+        "CUTWWW" => {
+            let input = text_arg(parser, depth + 1)?;
+            require(parser, Token::RParen, "cutWWW requires one argument")?;
+            match input {
+                Some(input) => {
+                    let authority_start = input.find("://").map_or(0, |index| index + 3);
+                    let rest = &input[authority_start..];
+                    let authority_end = rest.find(['/', '?', '#']).unwrap_or(rest.len());
+                    let hostname_start = rest[..authority_end].rfind('@').map_or(0, |index| index + 1);
+                    let hostname_start = authority_start + hostname_start;
+                    let output = if input[hostname_start..].starts_with("www.") {
+                        format!("{}{}", &input[..hostname_start], &input[hostname_start + 4..])
+                    } else {
+                        input
+                    };
+                    ConstantValue::Text(output)
                 }
                 None => ConstantValue::Null,
             }
