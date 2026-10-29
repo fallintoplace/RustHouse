@@ -9,6 +9,10 @@ import sys
 from pathlib import Path
 
 FIELDS = ("query", "status", "samples", "median_ms", "p90_ms", "error")
+KNOWN_STATUSES = frozenset((
+    "passed", "unverified", "missing_query", "missing_reference",
+    "unsupported_query", "mismatch", "timeout", "reference_error", "error",
+))
 
 
 def rows_from_report(report):
@@ -21,6 +25,9 @@ def rows_from_report(report):
     for result in report["results"]:
         if not isinstance(result, dict) or "query" not in result or "status" not in result:
             raise ValueError("each result needs query and status")
+        if (not isinstance(result["status"], str)
+                or result["status"] not in KNOWN_STATUSES):
+            raise ValueError("unknown benchmark query status")
         number = result["query"]
         if type(number) is not int or number < 1 or number in seen:
             raise ValueError("query IDs must be distinct positive integers")
