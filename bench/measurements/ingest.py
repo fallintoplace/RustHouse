@@ -73,9 +73,12 @@ def verify(binary, database, rows, stations, minimum, maximum, total, timeout):
 
 def benchmark(binary, rows, stations, runs, warmups, timeout, format_name,
               fixture_batch_rows=4096):
-    if rows < 1 or stations < 1 or stations > rows:
+    if (type(rows) is not int or type(stations) is not int
+            or rows < 1 or stations < 1 or stations > rows):
         raise ValueError("rows must be positive and stations must be within 1..rows")
-    if runs < 1 or warmups < 0 or timeout <= 0:
+    if (type(runs) is not int or type(warmups) is not int
+            or runs < 1 or warmups < 0 or type(timeout) not in (float, int)
+            or not math.isfinite(timeout) or timeout <= 0):
         raise ValueError("runs and timeout must be positive; warmups must be nonnegative")
     if format_name not in ("TSV", "SSV"):
         raise ValueError("format must be TSV or SSV")

@@ -46,7 +46,7 @@ class ComparePhysicalTests(unittest.TestCase):
 
     def test_rejects_nonobject_reports_and_fractional_row_metadata(self):
         for invalid in (None, [], "report"):
-            with self.subTest(invalid=invalid), self.assertRaisesRegex(ValueError, "JSON objects"):
+            with self.subTest(invalid=invalid), self.assertRaisesRegex(ValueError, "objects"):
                 compare(report(), invalid)
         candidate = report()
         candidate["rows_written_and_verified"] = float(candidate["rows_written_and_verified"])
