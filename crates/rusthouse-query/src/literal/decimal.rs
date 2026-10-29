@@ -1,5 +1,7 @@
 use super::*;
 
+const MAX_DECIMAL_SCALE: usize = 18;
+
 pub(super) fn fixed_decimal(value: &str) -> Result<(i128, usize), ParseError> {
     let (negative, digits) = match value.strip_prefix('-') {
         Some(rest) => (true, rest),
@@ -21,7 +23,7 @@ pub(super) fn fixed_decimal(value: &str) -> Result<(i128, usize), ParseError> {
         whole
     };
     if (whole.is_empty() && fraction.is_empty())
-        || fraction.len() > 18
+        || fraction.len() > MAX_DECIMAL_SCALE
         || !whole.bytes().all(|byte| byte.is_ascii_digit())
         || !fraction.bytes().all(|byte| byte.is_ascii_digit())
     {
@@ -43,7 +45,7 @@ pub(super) fn fixed_decimal(value: &str) -> Result<(i128, usize), ParseError> {
     if remaining_scale >= 0 {
         let scale = usize::try_from(remaining_scale)
             .map_err(|_| ParseError("decimal constant scale is too large".into()))?;
-        if scale > 18 {
+        if scale > MAX_DECIMAL_SCALE {
             return Err(ParseError("decimal constant scale is too large".into()));
         }
         Ok((signed, scale))
@@ -88,6 +90,8 @@ pub(super) fn format_decimal(value: i128, scale: usize) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+const MAX_DECIMAL_SCALE: usize = 18;
 
     #[test]
     fn accepts_leading_and_trailing_decimal_points() {
