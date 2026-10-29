@@ -5,6 +5,7 @@ use super::ExecutionError;
 use std::collections::HashMap;
 
 const WORDS_PER_BLOCK: usize = 1024;
+const BITS_PER_WORD: usize = u64::BITS as usize;
 const MAX_BLOCKS: usize = 32_768; // Limit occupied prefixes independently of representation.
 const MAX_SPARSE_KEYS: usize = 131_072; // Bound HashSet memory across all prefixes.
 const MAX_DENSE_BLOCKS: usize = 8_192; // 64 MiB of 8 KiB bitmaps.
@@ -19,8 +20,8 @@ const DENSE_THRESHOLD: usize = 4096;
 
 fn insert_bitmap_bit(bitmap: &mut [u64; WORDS_PER_BLOCK], suffix: u16) -> bool {
     let index = usize::from(suffix);
-    let mask = 1u64 << (index % 64);
-    let word = &mut bitmap[index / 64];
+    let mask = 1u64 << (index % BITS_PER_WORD);
+    let word = &mut bitmap[index / BITS_PER_WORD];
     let fresh = *word & mask == 0;
     *word |= mask;
     fresh
