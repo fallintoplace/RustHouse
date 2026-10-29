@@ -2,8 +2,9 @@
 use super::{ExecutionError, typed};
 use crate::{JoinColumn, JoinSelect, JoinStep, JoinType};
 use rusthouse_storage::{TypedQueryReader, inspect_query_source};
-use std::collections::HashMap;
+use std::collections::{BinaryHeap, HashMap};
 use std::io::Write;
+use std::sync::Arc;
 use std::path::PathBuf;
 
 use super::join::{
@@ -473,6 +474,139 @@ fn stream_selected_inner_chain<W: Write>(
     Ok(())
 }
 
+/// Keep only the globally winning joined rows in a bounded max-heap.
+struct TopChainedJoinRow {
+    row: Vec<typed::Cell>,
+    sequence: usize,
+    retained_bytes: usize,
+    order: Arc<[(usize, bool, Option<bool>)]>,
+}
+
+impl TopChainedJoinRow {
+    fn compare_rows(
+        left: &[typed::Cell],
+        left_sequence: usize,
+        right: &[typed::Cell],
+        right_sequence: usize,
+        order: &[(usize, bool, Option<bool>)],
+    ) -> std::cmp::Ordering {
+        for &(index, descending, nulls_first) in order {
+            let ordering = typed::compare_order_cells(
+                &left[index], &right[index], descending, nulls_first,
+            );
+            if !ordering.is_eq() {
+                return ordering;
+            }
+        }
+        left_sequence.cmp(&right_sequence)
+    }
+}
+
+impl PartialEq for TopChainedJoinRow {
+    fn eq(&self, other: &Self) -> bool { self.cmp(other).is_eq() }
+}
+impl Eq for TopChainedJoinRow {}
+impl PartialOrd for TopChainedJoinRow {
+    fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> {
+        Some(self.cmp(other))
+    }
+}
+impl Ord for TopChainedJoinRow {
+    fn cmp(&self, other: &Self) -> std::cmp::Ordering {
+        Self::compare_rows(
+            &self.row, self.sequence, &other.row, other.sequence, &self.order,
+        )
+    }
+}
+
+/// Stream large fact inputs while retaining only LIMIT+OFFSET sorted winners.
+/// This path is for bounded result pages over all-INNER chains.
+fn stream_ordered_inner_chain<W: Write>(
+    query: &JoinSelect,
+    paths: &[PathBuf],
+    relations: &[Relation],
+    initial_step: &JoinStep,
+    output: &mut W,
+) -> Result<(), ExecutionError> {
+    let selected = output_columns(query, relations, initial_step)?;
+    let orders = query.order_by.iter().map(|(column, descending, nulls_first)| {
+        column_index(relations, column).map(|index| (index, *descending, *nulls_first))
+    }).collect::<Result<Vec<_>, _>>()?;
+    let directions: Arc<[(usize, bool, Option<bool>)]> = orders.into();
+    let requested = query.limit.unwrap_or(0)
+        .checked_add(query.offset).ok_or_else(|| invalid("JOIN LIMIT+OFFSET overflow"))?;
+    let fact_width = relations[0].names.len();
+    let mut extras = selected.iter().flat_map(|(index, _, fallback)| {
+        std::iter::once(*index).chain(fallback.iter().copied())
+    }).filter(|&index| index < fact_width).collect::<Vec<_>>();
+    extras.extend(directions.iter().filter_map(|&(index, _, _)| {
+        (index < fact_width).then_some(index)
+    }));
+    let (steps, indices) = prepare_stream_probe_steps(
+        paths, relations, initial_step, &query.steps, &extras
+    )?;
+    let names = indices.iter().map(|&index| relations[0].names[index].clone())
+        .collect::<Vec<_>>();
+    let mut scan = TypedQueryReader::open(&paths[0], &names)?;
+    let mut heap = BinaryHeap::<TopChainedJoinRow>::with_capacity(requested.min(1024));
+    let mut retained = 0usize;
+    let mut sequence = 0usize;
+    while let Some(batch) = scan.next_batch()? {
+        for row_index in 0..batch[0].len() {
+            let mut row = vec![typed::Cell::Null; fact_width];
+            for (read_index, &index) in indices.iter().enumerate() {
+                row[index] = typed::cell(&batch[read_index], row_index);
+            }
+            let mut visit = |joined: &[typed::Cell]| -> Result<bool, ExecutionError> {
+                let current = sequence;
+                sequence = sequence.checked_add(1)
+                    .ok_or_else(|| invalid("JOIN ordered sequence overflow"))?;
+                if let Some(worst) = heap.peek().filter(|_| heap.len() == requested) {
+                    if !TopChainedJoinRow::compare_rows(
+                        joined, current, &worst.row, worst.sequence, &directions
+                    ).is_lt() {
+                        return Ok(true);
+                    }
+                }
+                let bytes = retained_row_bytes(joined)?;
+                if heap.len() == requested {
+                    let previous = heap.pop().expect("heap at capacity");
+                    retained = retained.saturating_sub(previous.retained_bytes);
+                }
+                retained = retained.checked_add(bytes)
+                    .ok_or_else(|| invalid("JOIN top-k retained size overflow"))?;
+                if retained > MAX_CHAIN_BYTES {
+                    return Err(invalid("JOIN ordered top-k exceeds 64 MiB retained budget"));
+                }
+                heap.push(TopChainedJoinRow {
+                    row: joined.to_vec(),
+                    sequence: current,
+                    retained_bytes: bytes,
+                    order: Arc::clone(&directions),
+                });
+                Ok(true)
+            };
+            visit_probe_chain(&mut row, &steps, 0, &mut visit)?;
+        }
+    }
+    write_join_header(output, &selected)?;
+    for winning in heap.into_sorted_vec().into_iter()
+        .skip(query.offset).take(query.limit.unwrap_or(0))
+    {
+        for (position, (index, _, fallback)) in selected.iter().enumerate() {
+            if position != 0 {
+                output.write_all(b"\t")?;
+            }
+            let value = if matches!(&winning.row[*index], typed::Cell::Null) {
+                fallback.map_or(&winning.row[*index], |other| &winning.row[other])
+            } else { &winning.row[*index] };
+            typed::write_value(output, value)?;
+        }
+        output.write_all(b"\n")?;
+    }
+    Ok(())
+}
+
 /// Execute a chain of three or more bounded joins. No output is written before
 /// all input validation, row-limit checks, and final ordering have succeeded.
 pub fn execute_multi_join<W: Write>(
@@ -551,6 +685,16 @@ pub fn execute_multi_join<W: Write>(
 
     if query.aggregate.is_some() {
         return count_streaming_inner_chain(query, paths, &relations, &initial_step, output);
+    }
+    if query.limit.is_some()
+        && !query.order_by.is_empty()
+        && query.limit.and_then(|limit| limit.checked_add(query.offset))
+            .is_some_and(|requested| requested <= MAX_RESULT_ROWS)
+        && query.where_null.is_none()
+        && query.kind == JoinType::Inner
+        && query.steps.iter().all(|step| step.kind == JoinType::Inner)
+    {
+        return stream_ordered_inner_chain(query, paths, &relations, &initial_step, output);
     }
     if query.limit.is_some_and(|limit| limit <= MAX_RESULT_ROWS)
         && query.order_by.is_empty()
