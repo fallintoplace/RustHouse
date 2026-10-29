@@ -224,6 +224,26 @@ fn update_group_numeric(
 }
 
 const MAX_GROUPS: usize = 100_000;
+const MAX_GROUPED_TEXT_BYTES: usize = 64 * 1024 * 1024;
+
+/// A new String GROUP BY key is owned by the lookup map and output Cell.
+fn charge_grouped_text(used: &mut usize, text_len: usize) -> Result<(), ExecutionError> {
+    let added = text_len.checked_mul(2)
+        .and_then(|bytes| bytes.checked_add(
+            std::mem::size_of::<(Vec<u8>, usize)>()
+                + std::mem::size_of::<(Cell, AggregateState)>()
+        ))
+        .ok_or_else(|| ExecutionError::Invalid("GROUP BY String key bytes overflow".into()))?;
+    let next = used.checked_add(added)
+        .ok_or_else(|| ExecutionError::Invalid("GROUP BY String key bytes overflow".into()))?;
+    if next > MAX_GROUPED_TEXT_BYTES {
+        return Err(ExecutionError::Invalid(
+            "GROUP BY String keys exceed 64 MiB retained memory".into()
+        ));
+    }
+    *used = next;
+    Ok(())
+}
  
 /// Encode a narrow integer dimension directly into its dense bucket.
 /// Nullable dimensions reserve the final bucket for NULL rather than
@@ -433,6 +453,7 @@ pub(super) fn execute_grouped_aggregate<W: Write>(
     // Keep String keys in an owned map and probe with borrowed bytes.
     // Repeated station names no longer allocate a new key on every row.
     let mut text_groups = HashMap::<Vec<u8>, usize>::new();
+    let mut retained_text_bytes = 0usize;
     let mut uuid_groups = HashMap::<[u8; 16], usize>::new();
     let mut groups = partial.unwrap_or_default();
     // Direct numeric buckets also include nullable dimensions. Reserve a
@@ -505,6 +526,7 @@ pub(super) fn execute_grouped_aggregate<W: Write>(
                                 "GROUP BY supports at most 100000 groups".into(),
                             ));
                         }
+                        charge_grouped_text(&mut retained_text_bytes, key.len())?;
                         let index = groups.len();
                         text_groups.insert(key.to_vec(), index);
                         groups.push((Cell::Text(key.to_vec()), AggregateState::new(*function)));
@@ -711,5 +733,20 @@ mod nullable_numeric_aggregate_bucket_tests {
         assert_eq!(groups[slots[2]].1.render(), "30");
         assert_eq!(groups[slots[256]].1.render(), "90");
         assert!(matches!(groups[slots[256]].0, Cell::Null));
+    }
+}
+
+#[cfg(test)]
+mod grouped_text_budget_tests {
+    use super::*;
+    #[test]
+    fn repeated_text_keys_are_only_charged_once_by_the_caller() {
+        let mut used = 0usize;
+        charge_grouped_text(&mut used, 4096).unwrap();
+        assert!(used >= 8192);
+        let previous = used;
+        assert!(charge_grouped_text(&mut used, MAX_GROUPED_TEXT_BYTES).is_err());
+        assert_eq!(used, previous);
+        assert!(charge_grouped_text(&mut used, usize::MAX).is_err());
     }
 }
