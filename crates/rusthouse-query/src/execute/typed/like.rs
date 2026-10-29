@@ -192,6 +192,12 @@ pub(super) fn like_matches(value: &[u8], pattern: &LikePattern, case_insensitive
             if bytes.is_empty() {
                 return true;
             }
+            // ASCII-only ILIKE can search borrowed bytes directly, without
+            // decoding or allocating a Unicode-folded copy of every row.
+            if case_insensitive && value.is_ascii() && bytes.is_ascii() {
+                return value.windows(bytes.len())
+                    .any(|candidate| candidate.eq_ignore_ascii_case(bytes));
+            }
             // ILIKE '%x%' on ASCII text is a byte scan. Avoid the
             // overlapping-window comparator for each candidate byte.
             if case_insensitive && bytes.len() == 1 && bytes[0].is_ascii() && value.is_ascii() {
@@ -442,3 +448,24 @@ mod single_byte_contains_tests;
 #[cfg(test)]
 #[path = "like/unicode_multisegment_ilike_tests.rs"]
 mod unicode_multisegment_ilike_tests;
+
+#[cfg(test)]
+mod ascii_contains_fast_path_tests {
+    use super::*;
+
+    #[test]
+    fn borrowed_ascii_substring_comparison_preserves_ilike() {
+        let pattern = compile_like("%AbC%").unwrap();
+        assert!(like_matches(b"zabcZ", &pattern, true));
+        assert!(like_matches(b"ABC", &pattern, true));
+        assert!(!like_matches(b"AB", &pattern, true));
+        assert!(!like_matches(b"zzzzzz", &pattern, true));
+        assert!(!like_matches(b"zabcZ", &pattern, false));
+    }
+
+    #[test]
+    fn non_ascii_values_still_use_unicode_case_folding() {
+        let pattern = compile_like("%CAFÉ%").unwrap();
+        assert!(like_matches("un café au lait".as_bytes(), &pattern, true));
+    }
+}
