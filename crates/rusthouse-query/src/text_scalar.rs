@@ -35,6 +35,7 @@ pub(super) fn is_function(name: &str) -> bool {
             | "LOWER"
             | "LOWERUTF8"
             | "HEX_ENCODE"
+            | "DECODEXMLCOMPONENT"
             | "ENCODEXMLCOMPONENT"
             | "HEX"
             | "IS_ASCII"
@@ -352,6 +353,64 @@ fn parse_at_depth(parser: &mut Parser, depth: usize) -> Result<ConstantValue, Pa
                     if let Some(fragment) = fragment {
                         output.push('#');
                         output.push_str(fragment);
+                    }
+                    ConstantValue::Text(output)
+                }
+                None => ConstantValue::Null,
+            }
+        }
+        "DECODEXMLCOMPONENT" => {
+            let input = text_arg(parser, depth + 1)?;
+            require(parser, Token::RParen, "decodeXMLComponent requires one string")?;
+            match input {
+                Some(input) => {
+                    let mut output = String::with_capacity(input.len());
+                    let mut remaining = input.as_str();
+                    while let Some(offset) = remaining.find('&') {
+                        output.push_str(&remaining[..offset]);
+                        remaining = &remaining[offset..];
+                        let Some(end) = remaining.find(';') else {
+                            break;
+                        };
+                        if end > 12 {
+                            output.push('&');
+                            remaining = &remaining[1..];
+                            continue;
+                        }
+                        let entity = &remaining[1..end];
+                        let decoded = match entity {
+                            "amp" => Some('&'),
+                            "lt" => Some('<'),
+                            "gt" => Some('>'),
+                            "quot" => Some('"'),
+                            "apos" => Some(char::from(39)),
+                            _ if entity.starts_with("#x") || entity.starts_with("#X") => {
+                                u32::from_str_radix(&entity[2..], 16)
+                                    .ok()
+                                    .and_then(char::from_u32)
+                            }
+                            _ if entity.starts_with('#') => {
+                                entity[1..].parse::<u32>().ok().and_then(char::from_u32)
+                            }
+                            _ => None,
+                        };
+                        match decoded {
+                            Some(character) => {
+                                output.push(character);
+                                remaining = &remaining[end + 1..];
+                            }
+                            None => {
+                                output.push('&');
+                                remaining = &remaining[1..];
+                            }
+                        }
+                        if output.len() > MAX_TEXT_BYTES {
+                            return Err(ParseError("decodeXMLComponent result is too large".into()));
+                        }
+                    }
+                    output.push_str(remaining);
+                    if output.len() > MAX_TEXT_BYTES {
+                        return Err(ParseError("decodeXMLComponent result is too large".into()));
                     }
                     ConstantValue::Text(output)
                 }
