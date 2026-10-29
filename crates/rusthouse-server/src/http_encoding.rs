@@ -35,7 +35,9 @@ pub(super) fn decode_url(value: &str) -> Result<String, &'static str> {
             value.to_owned()
         });
     }
-    let mut decoded = Vec::with_capacity(bytes.len());
+    // Percent escapes can triple the encoded length. Bound allocation by
+    // the maximum decoded query size instead of the wire-size buffer.
+    let mut decoded = Vec::with_capacity(bytes.len().min(MAX_QUERY_BYTES));
     let mut index = 0;
     while index < bytes.len() {
         let ch = bytes[index];
@@ -57,8 +59,17 @@ pub(super) fn write_json_string<W: Write>(writer: &mut W, value: &str) -> io::Re
     let bytes = value.as_bytes();
     // Plain UTF-8 fields are copied without transformation.
     if !bytes.iter().any(|&byte| byte < 0x20 || byte == b'"' || byte == b'\\') {
-        if bytes.len() <= 256 {
-            let mut quoted = [0u8; 258];
+        if bytes.len() <= 2048 {
+            // Quote-free fields frequently exceed 256 bytes. Avoid three
+            // buffered writes when they still fit in a small stack array.
+            let mut quoted = [0u8; 2050];
+            quoted[0] = b'"';
+            quoted[1..bytes.len() + 1].copy_from_slice(bytes);
+            quoted[bytes.len() + 1] = b'"';
+            return writer.write_all(&quoted[..bytes.len() + 2]);
+        }
+        if bytes.len() <= 4094 {
+            let mut quoted = [0u8; 4096];
             quoted[0] = b'"';
             quoted[1..bytes.len() + 1].copy_from_slice(bytes);
             quoted[bytes.len() + 1] = b'"';
@@ -115,131 +126,62 @@ pub(super) fn write_json_string<W: Write>(writer: &mut W, value: &str) -> io::Re
 }
 
 #[cfg(test)]
-mod tests {
+mod percent_decoding_allocation_tests {
     use super::*;
 
     #[test]
-    fn short_plain_json_fields_use_one_write() {
-        struct CountingWriter {
-            calls: usize,
-            bytes: Vec<u8>,
-        }
-
-        impl Write for CountingWriter {
-            fn write(&mut self, bytes: &[u8]) -> io::Result<usize> {
-                self.calls += 1;
-                self.bytes.extend_from_slice(bytes);
-                Ok(bytes.len())
-            }
-
-            fn flush(&mut self) -> io::Result<()> {
-                Ok(())
-            }
-        }
-
-        let mut writer = CountingWriter {
-            calls: 0,
-            bytes: Vec::new(),
-        };
-        write_json_string(&mut writer, "hello").unwrap();
-        assert_eq!(writer.calls, 1);
-        assert_eq!(writer.bytes, br#""hello""#);
-    }
-
-    #[test]
-    fn medium_json_string_uses_single_write() {
-        struct Count {
-            calls: usize,
-            bytes: Vec<u8>,
-        }
-        impl Write for Count {
-            fn write(&mut self, bytes: &[u8]) -> io::Result<usize> {
-                self.calls += 1;
-                self.bytes.extend_from_slice(bytes);
-                Ok(bytes.len())
-            }
-            fn flush(&mut self) -> io::Result<()> {
-                Ok(())
-            }
-        }
-        let value = "é".repeat(100);
-        let mut sink = Count {
-            calls: 0,
-            bytes: Vec::new(),
-        };
-        write_json_string(&mut sink, &value).unwrap();
-        assert_eq!(sink.calls, 1);
-        assert_eq!(sink.bytes, format!("\"{value}\"").as_bytes());
-    }
-
-    #[test]
-    fn parses_only_ascii_hex_digits() {
-        assert_eq!(hex_digit(b'0'), Some(0));
-        assert_eq!(hex_digit(b'9'), Some(9));
-        assert_eq!(hex_digit(b'a'), Some(10));
-        assert_eq!(hex_digit(b'F'), Some(15));
-        assert_eq!(hex_digit(b'G'), None);
-        assert_eq!(hex_digit(0xff), None);
-        assert_eq!(decode_url("%4f%4A").unwrap(), "OJ");
-    }
-
-    #[test]
-    fn plus_only_queries_keep_utf8_without_percent_decoding() {
-        assert_eq!(
-            decode_url("SELECT+café+FROM+items").unwrap(),
-            "SELECT café FROM items"
-        );
-        assert_eq!(decode_url("a+b%2Bc").unwrap(), "a b+c");
-        assert!(decode_url(&"a+".repeat(MAX_QUERY_BYTES)).is_err());
-    }
-
-    #[test]
-    fn bounds_encoded_query_size_before_allocation() {
-        let maximum = "%41".repeat(MAX_QUERY_BYTES);
-        assert_eq!(decode_url(&maximum).unwrap().len(), MAX_QUERY_BYTES);
-        assert!(decode_url(&format!("{maximum}%41")).is_err());
-        assert!(decode_url(&("a".repeat(MAX_QUERY_BYTES * 4))).is_err());
+    fn decodes_maximum_percent_encoded_sql_without_overallocating() {
+        let encoded = "%41".repeat(MAX_QUERY_BYTES);
+        let value = decode_url(&encoded).unwrap();
+        assert_eq!(value.len(), MAX_QUERY_BYTES);
+        assert!(value.bytes().all(|byte| byte == b'A'));
+        assert_eq!(decode_url("SELECT+1%2B2").unwrap(), "SELECT 1+2");
+        assert!(decode_url("%ZZ").is_err());
     }
 }
 
 #[cfg(test)]
-mod batched_json_escape_tests {
+#[path = "http_encoding/tests.rs"]
+mod tests;
+
+#[cfg(test)]
+#[path = "http_encoding/batched_json_escape_tests.rs"]
+mod batched_json_escape_tests;
+
+#[cfg(test)]
+mod medium_json_string_write_tests {
     use super::*;
 
-    struct Count {
+    struct Counted {
         calls: usize,
-        data: Vec<u8>,
+        bytes: Vec<u8>,
     }
-    impl Write for Count {
+    impl Write for Counted {
         fn write(&mut self, bytes: &[u8]) -> io::Result<usize> {
             self.calls += 1;
-            self.data.extend_from_slice(bytes);
+            self.bytes.extend_from_slice(bytes);
             Ok(bytes.len())
         }
-        fn flush(&mut self) -> io::Result<()> {
-            Ok(())
+        fn flush(&mut self) -> io::Result<()> { Ok(()) }
+    }
+
+    #[test]
+    fn plain_json_strings_up_to_two_kibibytes_need_one_write() {
+        for length in [257, 512, 2048] {
+            let value = "q".repeat(length);
+            let mut out = Counted { calls: 0, bytes: Vec::new() };
+            write_json_string(&mut out, &value).unwrap();
+            assert_eq!(out.calls, 1);
+            assert_eq!(out.bytes.len(), length + 2);
+            assert_eq!(out.bytes[0], b'"');
+            assert_eq!(out.bytes[length + 1], b'"');
         }
     }
+
     #[test]
-    fn large_quote_heavy_json_uses_bounded_writes() {
-        let mut writer = Count {
-            calls: 0,
-            data: Vec::new(),
-        };
-        write_json_string(&mut writer, &"\"".repeat(10_000)).unwrap();
-        assert_eq!(writer.data.len(), 20_002);
-        assert!(writer.data.starts_with(br#""\""#));
-        assert!(writer.data.ends_with(br#"\"""#));
-        assert!(writer.calls <= 6, "{} writes", writer.calls);
-    }
-    #[test]
-    fn escapes_controls_without_changing_unicode_or_utf8_bytes() {
-        let value = "caf\u{e9}\n\t\r\\\"\u{0000}\u{001f}\u{0008}\u{000c}";
-        let mut output = Vec::new();
-        write_json_string(&mut output, value).unwrap();
-        assert_eq!(
-            String::from_utf8(output).unwrap(),
-            "\"caf\u{e9}\\n\\t\\r\\\\\\\"\\u0000\\u001f\\b\\f\""
-        );
+    fn json_special_characters_still_use_correct_escaping() {
+        let mut out = Vec::new();
+        write_json_string(&mut out, "start\n\"quoted\"").unwrap();
+        assert_eq!(out, b"\"start\\n\\\"quoted\\\"\"");
     }
 }

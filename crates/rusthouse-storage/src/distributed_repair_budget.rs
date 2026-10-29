@@ -1,6 +1,8 @@
 //! Bounded under-replication repair planning without network side effects.
 use std::collections::HashSet;
 
+const MAX_REPAIR_JOBS: usize = 4096;
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct RepairJob {
     pub shard: String,
@@ -38,32 +40,27 @@ fn validate_repair_jobs(jobs: &[RepairJob]) -> Result<(), &'static str> {
     Ok(())
 }
 
-/// Prioritize severe under-replication, then smaller objects, then shard ID.
-/// The result is a schedule only; a transfer engine must execute it.
-pub fn plan_repairs(
-    jobs: &[RepairJob],
+// Work with borrowed jobs until the scheduler knows which ones fit.
+// This avoids cloning every pending job when only a small batch is selected.
+fn plan_ranked_repairs<'a>(
+    jobs: impl Iterator<Item = &'a RepairJob>,
     byte_budget: u64,
     job_limit: usize,
-) -> Result<Vec<RepairJob>, &'static str> {
-    if jobs.len() > 4096 || job_limit > 4096 {
-        return Err("repair job count exceeds bound");
-    }
-    validate_repair_jobs(jobs)?;
+) -> Vec<RepairJob> {
     if job_limit == 0 {
-        return Ok(Vec::new());
+        return Vec::new();
     }
+    let eligible = jobs.filter(|job| job.bytes <= byte_budget);
     if job_limit == 1 {
-        return Ok(jobs
-            .iter()
-            .filter(|job| job.bytes <= byte_budget)
+        return eligible
             .min_by(|left, right| repair_priority(left, right))
             .cloned()
             .into_iter()
-            .collect());
+            .collect();
     }
-    let mut ranked: Vec<&RepairJob> = jobs.iter().collect();
+    let mut ranked: Vec<&RepairJob> = eligible.collect();
     ranked.sort_unstable_by(|left, right| repair_priority(left, right));
-    let mut selected = Vec::with_capacity(jobs.len().min(job_limit));
+    let mut selected = Vec::with_capacity(ranked.len().min(job_limit));
     let mut remaining = byte_budget;
     for job in ranked {
         if selected.len() == job_limit {
@@ -71,10 +68,24 @@ pub fn plan_repairs(
         }
         if job.bytes <= remaining {
             remaining -= job.bytes;
-            selected.push((*job).clone());
+            selected.push(job.clone());
         }
     }
-    Ok(selected)
+    selected
+}
+
+/// Prioritize severe under-replication, then smaller objects, then shard ID.
+/// The result is a schedule only; a transfer engine must execute it.
+pub fn plan_repairs(
+    jobs: &[RepairJob],
+    byte_budget: u64,
+    job_limit: usize,
+) -> Result<Vec<RepairJob>, &'static str> {
+    if jobs.len() > MAX_REPAIR_JOBS || job_limit > MAX_REPAIR_JOBS {
+        return Err("repair job count exceeds bound");
+    }
+    validate_repair_jobs(jobs)?;
+    Ok(plan_ranked_repairs(jobs.iter(), byte_budget, job_limit))
 }
 
 #[cfg(test)]
@@ -152,7 +163,10 @@ pub fn plan_repairs_excluding(
     byte_budget: u64,
     job_limit: usize,
 ) -> Result<Vec<RepairJob>, &'static str> {
-    if in_flight.len() > 4096 {
+    if jobs.len() > MAX_REPAIR_JOBS || job_limit > MAX_REPAIR_JOBS {
+        return Err("repair job count exceeds bound");
+    }
+    if in_flight.len() > MAX_REPAIR_JOBS {
         return Err("too many in-flight repair shards");
     }
     validate_repair_jobs(jobs)?;
@@ -162,17 +176,38 @@ pub fn plan_repairs_excluding(
             return Err("invalid or duplicate in-flight repair shard");
         }
     }
-    let pending = jobs
-        .iter()
-        .filter(|job| !excluded.contains(job.shard.as_str()))
-        .cloned()
-        .collect::<Vec<_>>();
-    plan_repairs(&pending, byte_budget, job_limit)
+    Ok(plan_ranked_repairs(
+        jobs.iter().filter(|job| !excluded.contains(job.shard.as_str())),
+        byte_budget,
+        job_limit,
+    ))
 }
 
 #[cfg(test)]
 mod in_flight_repair_tests {
     use super::*;
+
+    #[test]
+    fn borrowed_plan_matches_full_plan_when_nothing_is_in_flight() {
+        let jobs = (0..1024)
+            .map(|index| RepairJob {
+                shard: format!("shard_{index:04}"),
+                bytes: 1 + index % 17,
+                missing_replicas: 1 + (index % 3) as u8,
+            })
+            .collect::<Vec<_>>();
+        for limit in [0, 1, 2, 8, 100, 1024] {
+            for budget in [0, 1, 13, 128, 1024] {
+                assert_eq!(
+                    plan_repairs_excluding(&jobs, &[], budget, limit).unwrap(),
+                    plan_repairs(&jobs, budget, limit).unwrap(),
+                );
+            }
+        }
+        let selected = plan_repairs_excluding(&jobs, &["shard_0001"], 256, 3).unwrap();
+        assert!(selected.iter().all(|job| job.shard != "shard_0001"));
+        assert!(plan_repairs_excluding(&jobs, &[], 100, MAX_REPAIR_JOBS + 1).is_err());
+    }
 
     #[test]
     fn avoids_duplicate_urgent_repairs() {

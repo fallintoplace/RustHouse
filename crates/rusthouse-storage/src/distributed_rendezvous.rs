@@ -1,5 +1,5 @@
 //! Deterministic experimental shard-to-replica placement.
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 
 const MAX_PLACEMENT_NODES: usize = 64;
 
@@ -156,6 +156,54 @@ pub fn weighted_replicas_for(
         .collect())
 }
 
+/// Place replicas across distinct failure zones before reusing any zone.
+/// This is deterministic placement only; it does not establish consensus.
+pub fn zone_aware_replicas_for(
+    shard: &str,
+    members: &[crate::distributed_membership::Member],
+    replicas: usize,
+) -> Result<Vec<String>, &'static str> {
+    crate::distributed_membership::validate_membership(members)?;
+    if replicas == 0 || replicas > members.len() {
+        return Err("invalid zone-aware replica count");
+    }
+    let nodes = members
+        .iter()
+        .map(|member| (member.node.as_str(), member.weight))
+        .collect::<Vec<_>>();
+    let ranked = weighted_replicas_for(shard, &nodes, members.len())?;
+    // The placement loop can inspect every member. Resolve each node's zone
+    // once instead of linearly searching membership for every ranked node.
+    let zones_by_node: HashMap<&str, &str> = members
+        .iter()
+        .map(|member| (member.node.as_str(), member.zone.as_str()))
+        .collect();
+    let mut zones = HashSet::new();
+    let mut selected = Vec::with_capacity(replicas);
+    // Track first-pass selections by ranking position. This avoids scanning
+    // selected names repeatedly and lets the second pass move owned Strings.
+    let mut first_pass = [false; MAX_PLACEMENT_NODES];
+    for (index, node) in ranked.iter().enumerate() {
+        let zone = zones_by_node[node.as_str()];
+        if zones.insert(zone) {
+            first_pass[index] = true;
+            selected.push(node.clone());
+            if selected.len() == replicas {
+                return Ok(selected);
+            }
+        }
+    }
+    for (index, node) in ranked.into_iter().enumerate() {
+        if !first_pass[index] {
+            selected.push(node);
+            if selected.len() == replicas {
+                break;
+            }
+        }
+    }
+    Ok(selected)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -284,53 +332,44 @@ mod tests {
     }
 }
 
-/// Place replicas across distinct failure zones before reusing any zone.
-/// This is deterministic placement only; it does not establish consensus.
-pub fn zone_aware_replicas_for(
-    shard: &str,
-    members: &[crate::distributed_membership::Member],
-    replicas: usize,
-) -> Result<Vec<String>, &'static str> {
-    crate::distributed_membership::format_membership(members)?;
-    if replicas == 0 || replicas > members.len() {
-        return Err("invalid zone-aware replica count");
-    }
-    let nodes = members
-        .iter()
-        .map(|member| (member.node.as_str(), member.weight))
-        .collect::<Vec<_>>();
-    let ranked = weighted_replicas_for(shard, &nodes, members.len())?;
-    let mut zones = HashSet::new();
-    let mut selected = Vec::with_capacity(replicas);
-    for node in &ranked {
-        let zone = members
-            .iter()
-            .find(|member| member.node == *node)
-            .expect("ranked node belongs to validated membership")
-            .zone
-            .as_str();
-        if zones.insert(zone) {
-            selected.push(node.clone());
-            if selected.len() == replicas {
-                return Ok(selected);
-            }
-        }
-    }
-    for node in ranked {
-        if !selected.contains(&node) {
-            selected.push(node);
-            if selected.len() == replicas {
-                break;
-            }
-        }
-    }
-    Ok(selected)
-}
-
 #[cfg(test)]
 mod zone_aware_tests {
     use super::*;
     use crate::distributed_membership::parse_membership;
+
+    #[test]
+    fn large_zone_membership_stays_deterministic_when_reversed() {
+        let input = (0..64).map(|index| {
+            format!("node_{index} zone_{} {}\n", index % 8, 1 + index % 4)
+        }).collect::<String>();
+        let members = parse_membership(&input).unwrap();
+        let reversed = members.iter().rev().cloned().collect::<Vec<_>>();
+        for shard in 0..16 {
+            let name = format!("zone_test_{shard}");
+            let expected = zone_aware_replicas_for(&name, &members, 8).unwrap();
+            assert_eq!(expected, zone_aware_replicas_for(&name, &reversed, 8).unwrap());
+            assert_eq!(expected.len(), 8);
+        }
+    }
+
+    #[test]
+    fn single_zone_fallback_matches_weighted_ranking_without_duplicates() {
+        let membership = (0..64)
+            .map(|index| format!("node_{index} same_zone {}\n", 1 + index % 4))
+            .collect::<String>();
+        let members = parse_membership(&membership).unwrap();
+        let weighted = members
+            .iter()
+            .map(|member| (member.node.as_str(), member.weight))
+            .collect::<Vec<_>>();
+        let expected = weighted_replicas_for("fallback", &weighted, 64).unwrap();
+        for replicas in [1, 2, 8, 32, 64] {
+            assert_eq!(
+                zone_aware_replicas_for("fallback", &members, replicas).unwrap(),
+                expected[..replicas]
+            );
+        }
+    }
 
     #[test]
     fn places_two_replicas_in_different_zones() {

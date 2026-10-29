@@ -9,6 +9,7 @@ const MAX_CONDITIONS: usize = 16;
 const MAX_BRANCHES: usize = 64;
 const MAX_EXPANDED_CONDITIONS: usize = 256;
 const MAX_DEPTH: usize = 16;
+const MAX_IN_LIST_VALUES: usize = 32;
 
 fn bad_expansion() -> ParseError {
     ParseError("WHERE boolean expression expands beyond bounded predicate limits".into())
@@ -24,7 +25,7 @@ fn check_expansion(branches: &Branches) -> Result<(), ParseError> {
     Ok(())
 }
 
-fn combine_and(left: Branches, right: Branches) -> Result<Branches, ParseError> {
+pub(super) fn combine_and(left: Branches, right: Branches) -> Result<Branches, ParseError> {
     if left.len().checked_mul(right.len()).is_none_or(|n| n > MAX_BRANCHES) {
         return Err(bad_expansion());
     }
@@ -200,7 +201,7 @@ fn parse_atom(parser: &mut Parser, conditions: &mut usize, depth: usize) -> Resu
         }
         let mut values = Vec::new();
         loop {
-            if values.len() == 32 {
+            if values.len() == MAX_IN_LIST_VALUES {
                 return Err(ParseError("IN supports at most 32 values".into()));
             }
             values.push(parser.literal()?);

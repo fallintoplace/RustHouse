@@ -319,15 +319,29 @@ pub fn handle_request(method: &str, target: &str, body: &[u8], config: &Config) 
             return Response::text("400 Bad Request", "GET must not contain a request body\n");
         }
         "GET" => query.unwrap_or_default(),
-        "POST" if query.is_some() => {
-            return Response::text(
-                "400 Bad Request",
-                "do not combine query URL and POST body\n",
-            );
-        }
-        "POST" => match std::str::from_utf8(body) {
-            Ok(statement) => statement.to_owned(),
-            Err(_) => return Response::text("400 Bad Request", "SQL body is not UTF-8\n"),
+        // ClickHouse clients may place the beginning of the statement in the
+        // query URL parameter and the remainder in the POST body. The separator
+        // is a newline, not an empty string: "SEL" + "ECT" must not turn
+        // into "SELECT". Validate the combined limit before allocating.
+        "POST" => {
+            let tail = match std::str::from_utf8(body) {
+                Ok(statement) => statement,
+                Err(_) => return Response::text("400 Bad Request", "SQL body is not UTF-8\n"),
+            };
+            match query {
+                Some(head) if !head.is_empty() && !tail.is_empty() => {
+                    let combined_bytes = head
+                        .len()
+                        .checked_add(tail.len())
+                        .and_then(|size| size.checked_add(1));
+                    if combined_bytes.is_none_or(|size| size > MAX_QUERY_BYTES) {
+                        return Response::text("413 Payload Too Large", "SQL statement too large\n");
+                    }
+                    format!("{head}\n{tail}")
+                }
+                Some(head) if !head.is_empty() => head,
+                _ => tail.to_owned(),
+            }
         },
         _ => unreachable!(),
     };

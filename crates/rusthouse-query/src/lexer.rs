@@ -11,6 +11,7 @@ const MAX_SMALL_STATEMENT_TOKENS: usize = 32_768;
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(super) enum Token {
     Word(String),
+    QuotedWord(String),
     Number(String),
     String(String),
     Star,
@@ -65,6 +66,7 @@ fn tokenize_with_limit(sql: &str, max_bytes: usize) -> Result<Vec<Token>, ParseE
                 continue;
             }
             b'\'' => scan_string(sql, &mut index)?,
+            b'`' | b'"' => scan_quoted_identifier(sql, &mut index)?,
             b'.' if is_ascii_digit_at(bytes, index + 1) => scan_number(sql, &mut index)?,
             b'/' if bytes.get(index + 1) == Some(&b'*') => {
                 index += 2;
@@ -132,6 +134,33 @@ fn tokenize_with_limit(sql: &str, max_bytes: usize) -> Result<Vec<Token>, ParseE
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn tokenizes_backtick_and_double_quoted_identifiers_without_keywords() {
+        assert_eq!(
+            tokenize("SELECT `order`, \"select\" FROM `events`").unwrap(),
+            vec![
+                Token::Word("SELECT".into()),
+                Token::QuotedWord("order".into()),
+                Token::Comma,
+                Token::QuotedWord("select".into()),
+                Token::Word("FROM".into()),
+                Token::QuotedWord("events".into()),
+            ]
+        );
+        for sql in [
+            "SELECT `unterminated",
+            "SELECT \"unterminated",
+            "SELECT ``",
+            "SELECT \"a b\"",
+            "SELECT `../db`",
+            "SELECT `some``thing`",
+            "SELECT `1bad`",
+            "SELECT `xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx`",
+        ] {
+            assert!(tokenize(sql).is_err(), "{sql}");
+        }
+    }
 
     #[test]
     fn token_limits_bound_adversarial_punctuation_statements() {

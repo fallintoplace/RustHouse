@@ -27,5 +27,19 @@ class JoinProbeTests(unittest.TestCase):
                 oracle(path / "orders.tsv", path / "customer.tsv")
 
 
+class Q3InputShapeTests(unittest.TestCase):
+    def test_rejects_missing_join_columns_and_extra_values(self):
+        with tempfile.TemporaryDirectory() as root:
+            path = Path(root)
+            orders = path / "orders.tsv"
+            customers = path / "customer.tsv"
+            customers.write_text("c_custkey\n1\n")
+            orders.write_text("o_orderkey\n1\n")
+            with self.assertRaisesRegex(ValueError, "join columns"):
+                oracle(orders, customers)
+            orders.write_text("o_orderkey\to_custkey\n1\t1\textra\n")
+            with self.assertRaisesRegex(ValueError, "join fields"):
+                oracle(orders, customers)
+
 if __name__ == "__main__":
     unittest.main()

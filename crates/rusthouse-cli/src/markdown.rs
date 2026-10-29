@@ -4,6 +4,26 @@ use std::io::{self, Write};
 
 const MAX_LINE_BYTES: usize = 1024 * 1024;
 
+fn finish_complete_line<W: Write>(
+    output: &mut W,
+    columns: &mut Option<usize>,
+    line: &[u8],
+) -> io::Result<()> {
+    let width = 1 + line.iter().filter(|&&byte| byte == b'\t').count();
+    if columns.is_some_and(|expected| expected != width) {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            "Markdown row does not match header column count",
+        ));
+    }
+    write_tsv_markdown_row(output, line, columns.is_some())?;
+    if columns.is_none() {
+        write_header_separator(output, width)?;
+        *columns = Some(width);
+    }
+    Ok(())
+}
+
 /// Turn the SQL executor's TSV rows into a streaming Markdown table.
 pub struct MarkdownWriter<W: Write> {
     output: W,
@@ -21,18 +41,7 @@ impl<W: Write> MarkdownWriter<W> {
     }
 
     fn finish_line(&mut self) -> io::Result<()> {
-        let width = 1 + self.line.iter().filter(|&&byte| byte == b'\t').count();
-        if self.columns.is_some_and(|expected| expected != width) {
-            return Err(io::Error::new(
-                io::ErrorKind::InvalidData,
-                "Markdown row does not match header column count",
-            ));
-        }
-        write_tsv_markdown_row(&mut self.output, &self.line, self.columns.is_some())?;
-        if self.columns.is_none() {
-            write_header_separator(&mut self.output, width)?;
-            self.columns = Some(width);
-        }
+        finish_complete_line(&mut self.output, &mut self.columns, &self.line)?;
         self.line.clear();
         Ok(())
     }
@@ -136,6 +145,12 @@ impl<W: Write> Write for MarkdownWriter<W> {
                     "Markdown row exceeds 1 MiB",
                 ));
             }
+            if complete && self.line.is_empty() {
+                // SQL output commonly delivers several complete rows in one write.
+                // Format them in place; buffer only a fragmented trailing row.
+                finish_complete_line(&mut self.output, &mut self.columns, fragment)?;
+                continue;
+            }
             self.line.extend_from_slice(fragment);
             if complete {
                 self.finish_line()?;
@@ -152,6 +167,17 @@ impl<W: Write> Write for MarkdownWriter<W> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn complete_large_rows_do_not_fill_the_line_buffer() {
+        let mut writer = MarkdownWriter::new(Vec::new());
+        writer.write_all(b"item\n").unwrap();
+        let before = writer.line.capacity();
+        let item = "x".repeat(16 * 1024);
+        writer.write_all(format!("{item}\n").as_bytes()).unwrap();
+        assert_eq!(writer.line.capacity(), before);
+        assert!(writer.output.ends_with(format!("| {item} |\n").as_bytes()));
+    }
 
     #[test]
     fn writes_plain_rows_without_decoding_field_allocations() {
