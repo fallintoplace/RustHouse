@@ -305,6 +305,62 @@ fn count_join_combinations(
     Ok(())
 }
 
+/// Count independent immutable fact parts concurrently against shared,
+/// read-only dimension hash tables. No joined row or global result vector is
+/// retained, and worker totals merge with checked arithmetic.
+fn parallel_count_fact_parts(
+    parts: &[PathBuf],
+    names: &[String],
+    builds: &[CountBuild],
+    null_filter: Option<(usize, bool)>,
+    workers: usize,
+) -> Result<u64, ExecutionError> {
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
+    let cursor = AtomicUsize::new(0);
+    let partials = std::thread::scope(|scope| {
+        let handles = (0..workers)
+            .map(|_| {
+                let cursor = &cursor;
+                scope.spawn(move || -> Result<u64, ExecutionError> {
+                    let mut subtotal = 0u64;
+                    while let Some(path) = parts.get(cursor.fetch_add(1, Ordering::Relaxed)) {
+                        let mut reader = rusthouse_storage::TypedPartReader::open(path, names)?;
+                        while let Some(batch) = reader.next_batch()? {
+                            for index in 0..batch[0].len() {
+                                let mut row = batch
+                                    .iter()
+                                    .map(|column| typed::cell(column, index))
+                                    .collect::<Vec<_>>();
+                                count_join_combinations(
+                                    &mut row,
+                                    builds,
+                                    0,
+                                    null_filter,
+                                    &mut subtotal,
+                                )?;
+                            }
+                        }
+                    }
+                    Ok(subtotal)
+                })
+            })
+            .collect::<Vec<_>>();
+        handles
+            .into_iter()
+            .map(|handle| {
+                handle.join().unwrap_or_else(|_| {
+                    Err(invalid("parallel JOIN COUNT worker panicked"))
+                })
+            })
+            .collect::<Vec<_>>()
+    });
+    partials.into_iter().try_fold(0u64, |sum, partial| {
+        sum.checked_add(partial?)
+            .ok_or_else(|| invalid("parallel JOIN COUNT overflow"))
+    })
+}
+
 fn stream_inner_join_count<W: Write>(
     query: &JoinSelect,
     relations: &[Relation],
@@ -347,15 +403,36 @@ fn stream_inner_join_count<W: Write>(
         .map(|(column, not_null)| {
             column_index(relations, column).map(|index| (index, *not_null))
         }).transpose()?;
-    let mut reader = TypedQueryReader::open(&paths[0], &relations[0].names)?;
-    let mut total = 0u64;
-    while let Some(batch) = reader.next_batch()? {
-        for index in 0..batch[0].len() {
-            let mut row = batch.iter().map(|column| typed::cell(column, index))
-                .collect::<Vec<_>>();
-            count_join_combinations(&mut row, &builds, 0, null_filter, &mut total)?;
+    let workers = std::thread::available_parallelism()
+        .map_or(1, |available| available.get())
+        .min(8);
+    let parts = if workers >= 2 {
+        Some(rusthouse_storage::query_parts(&paths[0])?)
+    } else {
+        None
+    };
+    let total = if let Some(parts) = parts.as_ref().filter(|parts| parts.len() >= 16) {
+        parallel_count_fact_parts(
+            parts,
+            &relations[0].names,
+            &builds,
+            null_filter,
+            workers,
+        )?
+    } else {
+        let mut reader = TypedQueryReader::open(&paths[0], &relations[0].names)?;
+        let mut total = 0u64;
+        while let Some(batch) = reader.next_batch()? {
+            for index in 0..batch[0].len() {
+                let mut row = batch
+                    .iter()
+                    .map(|column| typed::cell(column, index))
+                    .collect::<Vec<_>>();
+                count_join_combinations(&mut row, &builds, 0, null_filter, &mut total)?;
+            }
         }
-    }
+        total
+    };
     output.write_all(b"count\n")?;
     if query.offset == 0 {
         writeln!(output, "{total}")?;
