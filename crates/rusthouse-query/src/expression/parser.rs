@@ -1,20 +1,24 @@
 use super::*;
 
+fn require_close(parser: &mut Parser, message: &'static str) -> Result<(), ParseError> {
+    if parser.take(Token::RParen) {
+        Ok(())
+    } else {
+        Err(ParseError(message.into()))
+    }
+}
+
 fn parse_length_column(parser: &mut Parser) -> Result<ScalarExpr, ParseError> {
     parser.index += 2;
     let column = parser.word()?;
-    if !parser.take(Token::RParen) {
-        return Err(ParseError("length requires a single column".into()));
-    }
+    require_close(parser, "length requires a single column")?;
     Ok(ScalarExpr::TextLength(column))
 }
 
 fn parse_parenthesized(parser: &mut Parser, depth: usize) -> Result<ScalarExpr, ParseError> {
     parser.index += 1;
     let result = parse_expression_tokens_at_depth(parser, depth + 1)?;
-    if !parser.take(Token::RParen) {
-        return Err(ParseError("expected ')' in scalar expression".into()));
-    }
+    require_close(parser, "expected ')' in scalar expression")?;
     Ok(result)
 }
 
