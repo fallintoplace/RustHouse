@@ -1,5 +1,8 @@
+import subprocess
+import sys
 import tempfile
 import unittest
+from unittest.mock import patch
 from pathlib import Path
 
 from bench.scale.copy_disk_pressure_guard import guard, sql_for
@@ -13,6 +16,21 @@ class DiskGuardTests(unittest.TestCase):
             self.assertIn("o''brien.tsv", sql_for("events", path))
             with self.assertRaises(ValueError):
                 sql_for("events; DROP TABLE", path)
+
+    def test_large_stderr_does_not_deadlock_copy_guard(self):
+        with tempfile.TemporaryDirectory() as temp:
+            source = Path(temp) / "data.tsv"
+            source.write_text("1\n")
+            real_popen = subprocess.Popen
+            script = "import sys; sys.stderr.write('X' * 262144); sys.exit(17)"
+
+            def launch(_command, **kwargs):
+                return real_popen([sys.executable, "-c", script], **kwargs)
+
+            with patch("bench.scale.copy_disk_pressure_guard.subprocess.Popen", side_effect=launch):
+                with self.assertRaisesRegex(RuntimeError, "COPY failed"):
+                    guard("fake", "db", "events", source, temp,
+                          min_free_gib=0.000001, timeout=3, poll_seconds=0.05)
 
     def test_refuses_missing_input_and_bad_budgets(self):
         with tempfile.TemporaryDirectory() as temp:
