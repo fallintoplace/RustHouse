@@ -33,6 +33,14 @@ class NoiseReportTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "invalid TPC-H report"):
             assess_report({"results": []})
 
+    def test_rejects_fractional_sample_counts_and_boolean_thresholds(self):
+        for samples in (True, 2.5):
+            with self.assertRaisesRegex(ValueError, "thresholds"):
+                assess_query({"query": 1}, min_samples=samples)
+        for threshold in (True, float("nan"), float("inf")):
+            with self.assertRaisesRegex(ValueError, "thresholds"):
+                assess_query({"query": 1}, max_cv_percent=threshold)
+
     def test_rejects_invalid_thresholds_and_samples(self):
         with self.assertRaises(ValueError):
             assess_query({"query": 1}, min_samples=1)
