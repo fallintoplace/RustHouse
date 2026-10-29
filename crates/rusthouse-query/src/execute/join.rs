@@ -498,9 +498,11 @@ where
     let null_left = vec![typed::Cell::Null; left_width];
     let mut total = 0usize;
     let mut probe_key = Vec::with_capacity(right_keys.len());
+    let numeric_bounds = hash_numeric_bounds(hash);
     'scan: while let Some(batch) = reader.next_batch()? {
         for row in 0..batch[0].len() {
-            let candidates = if batch_key_into(&batch, row, &key_indices, &mut probe_key) {
+            let candidates = if numeric_key_possible(&batch, row, &key_indices, numeric_bounds)
+                && batch_key_into(&batch, row, &key_indices, &mut probe_key) {
                 hash.get(probe_key.as_slice())
             } else { None };
             let matched = candidates.is_some();
