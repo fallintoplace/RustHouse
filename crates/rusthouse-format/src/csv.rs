@@ -1,26 +1,10 @@
 use std::io::{self, Write};
 
-fn write_short_escaped_field<W: Write>(output: &mut W, field: &[u8]) -> io::Result<()> {
-    // Worst case: every byte is a doubled quote plus two delimiters.
-    let mut buffer = [0u8; 130];
-    let mut used = 1;
-    buffer[0] = b'"';
-    for &byte in field {
-        buffer[used] = byte;
-        used += 1;
-        if byte == b'"' {
-            buffer[used] = b'"';
-            used += 1;
-        }
-    }
-    buffer[used] = b'"';
-    output.write_all(&buffer[..used + 1])
-}
-
-fn write_long_escaped_field<W: Write>(output: &mut W, field: &[u8]) -> io::Result<()> {
-    // Streaming a quote-heavy value one segment at a time can cause thousands
-    // of tiny writes. Batch escaping on the stack without growing a String.
-    let mut buffer = [0u8; 4096];
+fn write_escaped_field<W: Write, const N: usize>(
+    output: &mut W,
+    field: &[u8],
+) -> io::Result<()> {
+    let mut buffer = [0u8; N];
     let mut used = 1;
     buffer[0] = b'"';
     for &byte in field {
@@ -63,9 +47,9 @@ pub fn write_quoted_csv_field<W: Write>(output: &mut W, field: &[u8]) -> io::Res
         return output.write_all(b"\"");
     }
     if field.len() <= 64 {
-        write_short_escaped_field(output, field)
+        write_escaped_field::<W, 130>(output, field)
     } else {
-        write_long_escaped_field(output, field)
+        write_escaped_field::<W, 4096>(output, field)
     }
 }
 
