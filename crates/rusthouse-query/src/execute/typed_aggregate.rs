@@ -621,7 +621,34 @@ pub(super) fn execute_grouped_aggregate<W: Write>(
         let end = query
             .limit
             .and_then(|limit| query.offset.unwrap_or(0).checked_add(limit));
-        if let Some(end) = end.filter(|&end| end < groups.len()) {
+        if *function == AggregateFunction::Median
+            && order_terms.iter().any(|(aggregate, _, _)| *aggregate)
+        {
+            // Median sort_cell selects over and clones its value vector.
+            // Compute each group median once, not on every sort comparison.
+            let medians = groups.iter().map(|(_, state)| state.sort_cell())
+                .collect::<Vec<_>>();
+            let mut indices = (0..groups.len()).collect::<Vec<_>>();
+            let compare_cached = |left: &usize, right: &usize| {
+                for &(aggregate, descending, nulls_first) in &order_terms {
+                    let order = if aggregate {
+                        typed::compare_order_cells(&medians[*left], &medians[*right],
+                            descending, nulls_first)
+                    } else {
+                        typed::compare_order_cells(&groups[*left].0, &groups[*right].0,
+                            descending, nulls_first)
+                    };
+                    if order != std::cmp::Ordering::Equal { return order; }
+                }
+                left.cmp(right)
+            };
+            if let Some(end) = end.filter(|&end| end < indices.len()) {
+                indices.select_nth_unstable_by(end, &compare_cached);
+                indices.truncate(end);
+            }
+            indices.sort_unstable_by(compare_cached);
+            bounded_order = Some(indices);
+        } else if let Some(end) = end.filter(|&end| end < groups.len()) {
             let mut indices = (0..groups.len()).collect::<Vec<_>>();
             let compare_index = |left: &usize, right: &usize| {
                 compare(&groups[*left], &groups[*right]).then_with(|| left.cmp(right))
@@ -786,5 +813,27 @@ mod grouped_median_retention_tests {
         bytes = MAX_GROUPED_MEDIAN_BYTES - 1;
         assert!(reserve_grouped_median_value(&mut bytes).is_err());
         assert_eq!(bytes, MAX_GROUPED_MEDIAN_BYTES - 1);
+    }
+}
+
+#[cfg(test)]
+mod cached_grouped_median_sort_tests {
+    use super::*;
+
+    #[test]
+    fn median_sort_keys_can_be_selected_once_and_reordered_by_index() {
+        let groups = [
+            [20_u128, 30],
+            [1, 2],
+            [10, 12],
+        ].map(|values| {
+            let mut state = AggregateState::new(AggregateFunction::Median);
+            for value in values { state.update(Number::Unsigned(value)).unwrap(); }
+            state
+        });
+        let keys = groups.iter().map(AggregateState::sort_cell).collect::<Vec<_>>();
+        let mut order = (0..groups.len()).collect::<Vec<_>>();
+        order.sort_by(|&a, &b| typed::compare_order_cells(&keys[a], &keys[b], false, None));
+        assert_eq!(order, [1, 2, 0]);
     }
 }
