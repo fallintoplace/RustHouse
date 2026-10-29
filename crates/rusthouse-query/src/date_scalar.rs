@@ -10,6 +10,7 @@ pub(super) fn is_function(name: &str) -> bool {
     matches!(
         name.to_ascii_uppercase().as_str(),
         "ADDDAYS"
+            | "TOSTARTOFQUARTER"
             | "TOSTARTOFMONTH"
             | "TOMONDAY"
             | "TOSTARTOFWEEK"
@@ -68,6 +69,12 @@ pub(super) fn parse_after_open(
         "TOSTARTOFMONTH" => unary_date(parser, depth, |value| {
             let (year, month, _) = civil_from_days(value.seconds.div_euclid(DAY_SECONDS));
             let days = days_from_civil(year, month, 1);
+            Ok(ConstantValue::Text(Temporal::render(days * DAY_SECONDS, false)?))
+        }),
+        "TOSTARTOFQUARTER" => unary_date(parser, depth, |value| {
+            let (year, month, _) = civil_from_days(value.seconds.div_euclid(DAY_SECONDS));
+            let quarter_month = (month - 1) / 3 * 3 + 1;
+            let days = days_from_civil(year, quarter_month, 1);
             Ok(ConstantValue::Text(Temporal::render(days * DAY_SECONDS, false)?))
         }),
         _ => Err(ParseError(format!("unsupported date function: {name}"))),
@@ -592,6 +599,25 @@ mod utc_compat_tests {
             "SELECT toStartOfMonth()",
             "SELECT toStartOfMonth('2023-02-29')",
             "SELECT toStartOfMonth('2024-01-01', 1)",
+        ] {
+            assert!(crate::parse_select(sql).is_err(), "{sql}");
+        }
+    }
+
+    #[test]
+    fn start_quarter_uses_gregorian_calendar() {
+        for (sql, expected) in [
+            ("SELECT toStartOfQuarter('2024-05-31')", "2024-04-01"),
+            ("SELECT toStartOfQuarter('2024-01-01')", "2024-01-01"),
+            ("SELECT toStartOfQuarter('2024-12-31')", "2024-10-01"),
+        ] {
+            assert_eq!(value(sql), ConstantValue::Text(expected.into()), "{sql}");
+        }
+        assert_eq!(value("SELECT toStartOfQuarter(NULL)"), ConstantValue::Null);
+        for sql in [
+            "SELECT toStartOfQuarter()",
+            "SELECT toStartOfQuarter('2023-02-29')",
+            "SELECT toStartOfQuarter('2024-01-01', 1)",
         ] {
             assert!(crate::parse_select(sql).is_err(), "{sql}");
         }
