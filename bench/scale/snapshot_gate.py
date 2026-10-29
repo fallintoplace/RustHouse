@@ -8,9 +8,13 @@ import subprocess
 from pathlib import Path
 
 
-def inspect_snapshot(binary, path, *, min_rows=1_000_000_000, run=None):
-    if min_rows < 1:
-        raise ValueError("min_rows must be positive")
+def inspect_snapshot(binary, path, *, min_rows=1_000_000_000, run=None,
+                     max_parts=None):
+    if type(min_rows) is not int or not 1 <= min_rows <= (1 << 64) - 1:
+        raise ValueError("min_rows must be a positive UInt64 integer")
+    if max_parts is not None and (
+            type(max_parts) is not int or not 1 <= max_parts <= 16_384):
+        raise ValueError("max_parts must be in 1..16384")
     execute = run or subprocess.run
     result = execute(
         [str(binary), "inspect-snapshot", str(path), "--json"],
@@ -20,8 +24,11 @@ def inspect_snapshot(binary, path, *, min_rows=1_000_000_000, run=None):
         raise RuntimeError(f"snapshot inspection failed: {result.stderr.decode('utf-8', 'replace')[-600:]}")
     data = json.loads(result.stdout)
     rows, parts = data.get("rows"), data.get("parts")
-    if type(rows) is not int or type(parts) is not int or rows < 0 or parts < 1:
+    if (type(rows) is not int or type(parts) is not int or rows < 0
+            or rows > (1 << 64) - 1 or not 1 <= parts <= 16_384):
         raise ValueError("snapshot report has invalid rows or parts")
+    if max_parts is not None and parts > max_parts:
+        raise ValueError(f"snapshot parts {parts} above max_parts {max_parts}")
     columns = data.get("columns")
     if (not isinstance(columns, list) or not columns or any(
         not isinstance(column, dict)
@@ -36,6 +43,7 @@ def inspect_snapshot(binary, path, *, min_rows=1_000_000_000, run=None):
         raise ValueError(f"physical rows {rows} below required {min_rows}")
     return {"workload": "physical-snapshot-gate", "physical_rows": rows,
             "parts": parts, "columns": data["columns"], "minimum_rows": min_rows,
+            "maximum_parts": max_parts,
             "verified_by": "rusthouse inspect-snapshot metadata", "physical_scan_timed": False}
 
 
@@ -44,10 +52,12 @@ def main(argv=None):
     parser.add_argument("--binary", type=Path, required=True)
     parser.add_argument("--part", type=Path, required=True)
     parser.add_argument("--min-rows", type=int, default=1_000_000_000)
+    parser.add_argument("--max-parts", type=int)
     parser.add_argument("--output", type=Path)
     args = parser.parse_args(argv)
     try:
-        report = inspect_snapshot(args.binary, args.part, min_rows=args.min_rows)
+        report = inspect_snapshot(args.binary, args.part, min_rows=args.min_rows,
+                                  max_parts=args.max_parts)
         rendered = json.dumps(report, indent=2) + "\n"
         if args.output:
             args.output.parent.mkdir(parents=True, exist_ok=True)

@@ -44,6 +44,12 @@ class GroupedPhysicalReferenceTests(unittest.TestCase):
         self.assertEqual(counts, actual_counts)
         self.assertEqual(sums, actual_sums)
 
+    def test_rejects_unbounded_billion_row_fixture_batches(self):
+        with self.assertRaisesRegex(ValueError, "batch_rows"):
+            emit(io.StringIO(), 1_000_000_000, 4096, batch_rows=1_000_000_000)
+        with self.assertRaisesRegex(ValueError, "batch_rows"):
+            emit(io.StringIO(), 5, 2, batch_rows=0)
+
 
 if __name__ == "__main__":
     unittest.main()

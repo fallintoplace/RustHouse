@@ -42,10 +42,17 @@ fn validate_part_directory(path: &Path) -> Result<(), PartError> {
     Ok(())
 }
 
-pub fn inspect_part(path: impl AsRef<Path>) -> Result<PartMetadata, PartError> {
+/// Read only the bounded row-count file for a previously validated part.
+/// OFFSET skipping does not need to reparse the complete columns.txt schema.
+pub fn read_part_row_count(path: impl AsRef<Path>) -> Result<u64, PartError> {
     let path = path.as_ref();
     validate_part_directory(path)?;
-    let rows = parse_count(&read_metadata(&path.join("count.txt"), MAX_COUNT_BYTES)?)?;
+    parse_count(&read_metadata(&path.join("count.txt"), MAX_COUNT_BYTES)?)
+}
+
+pub fn inspect_part(path: impl AsRef<Path>) -> Result<PartMetadata, PartError> {
+    let path = path.as_ref();
+    let rows = read_part_row_count(path)?;
     let columns = parse_columns(&read_metadata(
         &path.join("columns.txt"),
         MAX_COLUMNS_BYTES,
@@ -65,14 +72,25 @@ fn ensure_metadata_size(path: &Path, size: u64, max_bytes: u64) -> Result<(), Pa
     Ok(())
 }
 
-fn read_bounded_file(path: &Path, max_bytes: u64) -> Result<Vec<u8>, PartError> {
+fn read_bounded_metadata_file(path: &Path, max_bytes: u64) -> Result<Vec<u8>, PartError> {
     let metadata = fs::symlink_metadata(path).map_err(|source| io_error(path, source))?;
     if !metadata.file_type().is_file() {
         return Err(invalid_metadata(path, "metadata must be a regular file"));
     }
     ensure_metadata_size(path, metadata.len(), max_bytes)?;
     let file = fs::File::open(path).map_err(|source| io_error(path, source))?;
-    let mut bytes = Vec::with_capacity(metadata.len() as usize);
+    let opened = file.metadata().map_err(|source| io_error(path, source))?;
+    if !opened.file_type().is_file() || opened.len() > max_bytes {
+        return Err(invalid_metadata(path, "metadata changed before read"));
+    }
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::MetadataExt;
+        if metadata.dev() != opened.dev() || metadata.ino() != opened.ino() {
+            return Err(invalid_metadata(path, "metadata file replaced before read"));
+        }
+    }
+    let mut bytes = Vec::with_capacity(opened.len() as usize);
     file.take(max_bytes + 1)
         .read_to_end(&mut bytes)
         .map_err(|source| io_error(path, source))?;
@@ -81,7 +99,7 @@ fn read_bounded_file(path: &Path, max_bytes: u64) -> Result<Vec<u8>, PartError> 
 }
 
 fn read_metadata(path: &Path, max_bytes: u64) -> Result<String, PartError> {
-    String::from_utf8(read_bounded_file(path, max_bytes)?)
+    String::from_utf8(read_bounded_metadata_file(path, max_bytes)?)
         .map_err(|source| io_error(path, io::Error::new(io::ErrorKind::InvalidData, source)))
 }
 
@@ -145,9 +163,24 @@ mod tests {
         let metadata = inspect_part(&path).unwrap();
         assert_eq!(metadata.path, path);
         assert_eq!(metadata.rows, 42);
+        assert_eq!(read_part_row_count(&path).unwrap(), 42);
         assert_eq!(metadata.columns.len(), 2);
         assert_eq!(metadata.columns[0].name, "id");
         assert_eq!(metadata.columns[1].data_type, "LowCardinality(String)");
+    }
+
+    #[test]
+    fn reads_part_counts_without_parsing_a_wide_schema() {
+        let root = std::env::temp_dir().join(format!(
+            "rusthouse-count-only-{}", std::process::id()
+        ));
+        let _ = fs::remove_dir_all(&root);
+        fs::create_dir(&root).unwrap();
+        fs::write(root.join("count.txt"), "4096\n").unwrap();
+        fs::write(root.join("columns.txt"), "not a valid schema\n").unwrap();
+        assert_eq!(read_part_row_count(&root).unwrap(), 4096);
+        assert!(inspect_part(&root).is_err());
+        fs::remove_dir_all(root).unwrap();
     }
 
     #[test]
@@ -235,5 +268,30 @@ mod tests {
                 "{input:?}"
             );
         }
+    }
+}
+
+#[cfg(all(test, unix))]
+mod metadata_identity_tests {
+    use super::*;
+    use std::os::unix::fs::MetadataExt;
+
+    #[test]
+    fn same_size_file_substitution_changes_inode_identity() {
+        let root = std::env::temp_dir().join(format!(
+            "rusthouse-metadata-identity-{}",
+            std::process::id()
+        ));
+        let _ = fs::remove_dir_all(&root);
+        fs::create_dir_all(&root).unwrap();
+        let first = root.join("first");
+        let second = root.join("second");
+        fs::write(&first, "123").unwrap();
+        fs::write(&second, "456").unwrap();
+        let original = fs::symlink_metadata(&first).unwrap();
+        let replacement = fs::File::open(&second).unwrap().metadata().unwrap();
+        assert_eq!(original.len(), replacement.len());
+        assert_ne!(original.ino(), replacement.ino());
+        fs::remove_dir_all(root).unwrap();
     }
 }
