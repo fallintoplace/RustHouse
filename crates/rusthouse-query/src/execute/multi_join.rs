@@ -8,7 +8,7 @@ use std::path::PathBuf;
 
 use super::join::{
     MAX_INPUT_ROWS, MAX_RESULT_ROWS, MAX_STREAM_BUILD_BYTES, multi_join_row_key as row_key,
-    read_rows,
+    read_projected_build_rows,
 };
 
 const MAX_CHAIN_BYTES: usize = crate::join::MAX_JOIN_CHAIN_BYTES;
@@ -267,6 +267,70 @@ fn output_columns(
     Ok(selected)
 }
 
+/// Identify the physical columns needed by all join keys and downstream consumers.
+/// Keep logical slots intact, but skip disk reads and String allocations for
+/// payload columns that cannot influence the final result.
+fn required_columns(
+    query: &JoinSelect,
+    relations: &[Relation],
+    initial_step: &JoinStep,
+    selected: &[(usize, String, Option<usize>)],
+) -> Result<Vec<Vec<usize>>, ExecutionError> {
+    let mut required: Vec<Vec<bool>> = relations
+        .iter()
+        .map(|relation| vec![false; relation.names.len()])
+        .collect();
+    let mut mark = |absolute: usize| {
+        for (relation, flags) in relations.iter().zip(&mut required) {
+            if absolute >= relation.start && absolute - relation.start < flags.len() {
+                flags[absolute - relation.start] = true;
+                return;
+            }
+        }
+    };
+    for (column, _, fallback) in selected {
+        mark(*column);
+        if let Some(other) = fallback {
+            mark(*other);
+        }
+    }
+    if let Some((column, _)) = &query.where_null {
+        mark(column_index(relations, column)?);
+    }
+    for (column, _, _) in &query.order_by {
+        mark(column_index(relations, column)?);
+    }
+    for (index, step) in std::iter::once(initial_step)
+        .chain(query.steps.iter())
+        .enumerate()
+    {
+        let left_width = relations[index + 1].start;
+        let (left, right) = step_keys(step, &relations[..=index + 1], left_width)?;
+        for column in left {
+            mark(column);
+        }
+        for column in right {
+            mark(left_width + column);
+        }
+    }
+    Ok(required
+        .into_iter()
+        .map(|flags| {
+            let mut indices = flags
+                .iter()
+                .enumerate()
+                .filter_map(|(index, used)| used.then_some(index))
+                .collect::<Vec<_>>();
+            // Preserve row cardinality for COUNT(*) and similar queries even
+            // when no user-visible payload column is required.
+            if indices.is_empty() {
+                indices.push(0);
+            }
+            indices
+        })
+        .collect())
+}
+
 /// Execute a chain of three or more bounded joins. No output is written before
 /// all input validation, row-limit checks, and final ordering have succeeded.
 pub fn execute_multi_join<W: Write>(
@@ -339,9 +403,12 @@ pub fn execute_multi_join<W: Write>(
         return Ok(());
     }
 
-    let mut rows = read_rows(
+    let selected = output_columns(query, &relations, &initial_step)?;
+    let projected = required_columns(query, &relations, &initial_step, &selected)?;
+    let mut rows = read_projected_build_rows(
         &paths[0],
         &relations[0].names,
+        &projected[0],
         relations[0].rows,
         MAX_INPUT_ROWS,
         MAX_STREAM_BUILD_BYTES,
@@ -363,9 +430,10 @@ pub fn execute_multi_join<W: Write>(
             }
             continue;
         }
-        let right_rows = read_rows(
+        let right_rows = read_projected_build_rows(
             &paths[step_index + 1],
             &right_relation.names,
+            &projected[step_index + 1],
             right_relation.rows,
             MAX_INPUT_ROWS,
             MAX_STREAM_BUILD_BYTES,
@@ -462,7 +530,6 @@ pub fn execute_multi_join<W: Write>(
             std::cmp::Ordering::Equal
         });
     }
-    let selected = output_columns(query, &relations, &initial_step)?;
     write_join_header(output, &selected)?;
     for row in rows
         .iter()
@@ -496,5 +563,30 @@ mod bucket_tests {
         bucket.push(7);
         bucket.push(9);
         assert_eq!(bucket.iter().copied().collect::<Vec<_>>(), vec![3, 7, 9]);
+    }
+}
+
+#[cfg(test)]
+mod physical_projection_tests {
+    use super::*;
+
+    #[test]
+    fn chained_join_reads_only_keys_output_and_order_columns() {
+        let query = crate::parse_join(
+            "SELECT a.id, c.caption FROM a JOIN b ON a.id = b.a_id JOIN c ON b.c_id = c.id ORDER BY a.id LIMIT 10"
+        ).unwrap().unwrap();
+        let relations = vec![
+            Relation { alias: "a".into(), names: vec!["id".into(), "unused".into()],
+                types: vec!["UInt64".into(), "String".into()], start: 0, rows: 3 },
+            Relation { alias: "b".into(), names: vec!["a_id".into(), "c_id".into(), "unused".into()],
+                types: vec!["UInt64".into(), "UInt64".into(), "String".into()], start: 2, rows: 3 },
+            Relation { alias: "c".into(), names: vec!["id".into(), "caption".into(), "unused".into()],
+                types: vec!["UInt64".into(), "String".into(), "String".into()], start: 5, rows: 3 },
+        ];
+        let first = JoinStep { table: query.right.clone(), alias: query.right_alias.clone(),
+            kind: query.kind, any: query.any, keys: query.keys.clone(), using_keys: query.using_keys.clone() };
+        let selected = output_columns(&query, &relations, &first).unwrap();
+        let projected = required_columns(&query, &relations, &first, &selected).unwrap();
+        assert_eq!(projected, vec![vec![0], vec![0, 1], vec![0, 1]]);
     }
 }
