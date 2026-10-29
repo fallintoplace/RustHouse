@@ -63,6 +63,12 @@ def classify_query(ident, old, new, slowdown_threshold_percent):
             "query": ident, "reason": "missing_positive_median",
         }, False
     change = 100 * (current / previous - 1)
+    if not math.isfinite(change):
+        return "regression", {
+            "query": ident, "reason": "latency_regression",
+            "baseline_seconds": previous, "candidate_seconds": current,
+            "change_percent": None,
+        }, True
     item = {
         "query": ident,
         "baseline_ms": round(previous * 1000, 6),
