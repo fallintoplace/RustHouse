@@ -36,6 +36,8 @@ def p90(samples):
 
 
 def write_fixture(path, rows, *, batch_rows=8192):
+    if type(rows) is not int or not 1 <= rows <= 1_000_000_000:
+        raise ValueError("fixture rows must be in 1..1000000000")
     if type(batch_rows) is not int or not 1 <= batch_rows <= 1_000_000:
         raise ValueError("fixture batch_rows must be in 1..1000000")
     with path.open("w", encoding="ascii", buffering=1024 * 1024) as output:
