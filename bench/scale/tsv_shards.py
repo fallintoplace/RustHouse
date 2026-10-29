@@ -11,6 +11,7 @@ import tempfile
 from pathlib import Path
 
 MAX_RECORD_BYTES = 8 * 1024 * 1024
+MAX_SHARDS = 16_384
 
 
 def split_tsv(source, output_dir, *, rows_per_chunk=65536):
@@ -46,6 +47,8 @@ def split_tsv(source, output_dir, *, rows_per_chunk=65536):
                         flush_pending()
                         current["file"].close()
                         del current["file"]
+                    if len(shards) >= MAX_SHARDS:
+                        raise ValueError("shard count exceeds RustHouse's 16384-part limit")
                     filename = f"part-{len(shards):06}.tsv"
                     handle = (temporary / filename).open("wb")
                     current = {"path": filename, "rows": 0, "bytes": 0,
