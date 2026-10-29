@@ -3,6 +3,10 @@ use super::{ParseError, Parser, Token};
 use crate::lexer::tokenize_insert;
 use std::collections::HashSet;
 
+const MAX_INSERT_COLUMNS: usize = 128;
+const MAX_INSERT_ROWS: usize = 8192;
+const MAX_IDENTIFIER_BYTES: usize = 128;
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Insert {
     pub table: String,
@@ -12,7 +16,7 @@ pub struct Insert {
 
 fn identifier(parser: &mut Parser) -> Result<String, ParseError> {
     let name = parser.word()?;
-    if name.len() > 128 {
+    if name.len() > MAX_IDENTIFIER_BYTES {
         return Err(ParseError("identifiers cannot exceed 128 bytes".into()));
     }
     Ok(name)
@@ -50,7 +54,7 @@ fn parse_insert_columns(parser: &mut Parser) -> Result<Option<Vec<String>>, Pars
     let mut result = Vec::new();
     let mut seen = HashSet::new();
     loop {
-        if result.len() >= 128 {
+        if result.len() >= MAX_INSERT_COLUMNS {
             return Err(ParseError("INSERT supports at most 128 columns".into()));
         }
         let column = identifier(parser)?;
@@ -109,7 +113,7 @@ pub fn parse_insert(sql: &str) -> Result<Option<Insert>, ParseError> {
     }
     let mut rows = Vec::new();
     loop {
-        if rows.len() >= 8192 {
+        if rows.len() >= MAX_INSERT_ROWS {
             return Err(ParseError("INSERT supports at most 8192 rows".into()));
         }
         if !parser.take(Token::LParen) {
@@ -117,7 +121,7 @@ pub fn parse_insert(sql: &str) -> Result<Option<Insert>, ParseError> {
         }
         let mut row = Vec::new();
         loop {
-            if row.len() >= 128 {
+            if row.len() >= MAX_INSERT_COLUMNS {
                 return Err(ParseError(
                     "INSERT supports at most 128 values per row".into(),
                 ));
