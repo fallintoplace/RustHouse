@@ -190,10 +190,10 @@ fn spill_unordered_groups<W: Write>(
 /// Parallel hash GROUP BY over Int32/UInt32 dimensions. Worker group counts
 /// share a global budget; excessive cardinality returns None so the serial
 /// path can adapt to external spill instead of failing on worker memory.
-fn parallel_u32_grouped_count(
+fn parallel_integer_grouped_count(
     part: &Path,
     column: &str,
-    signed: bool,
+    kind: &str,
 ) -> Result<Option<GroupedCounts>, ExecutionError> {
     use std::collections::HashMap;
     use std::sync::atomic::{AtomicUsize, Ordering as AtomicOrdering};
@@ -212,13 +212,13 @@ fn parallel_u32_grouped_count(
             let names = &names;
             let retained = &retained;
             scope.spawn(move || -> Result<Option<Vec<(u32, u64)>>, ExecutionError> {
-                let mut keys = HashMap::<u32, usize>::new();
-                let mut counts = Vec::<(u32, u64)>::new();
+                let mut keys = HashMap::<u64, usize>::new();
+                let mut counts = Vec::<(u64, u64)>::new();
                 for path in paths {
                     let mut reader = rusthouse_storage::NumericPartReader::open(path, names)?;
                     while let Some(batch) = reader.next_batch()? {
                         let index = &batch[0];
-                        let mut visit = |key: u32| -> Result<bool, ExecutionError> {
+                        let mut visit = |key: u64| -> Result<bool, ExecutionError> {
                             match keys.entry(key) {
                                 std::collections::hash_map::Entry::Occupied(entry) => {
                                     let count = &mut counts[*entry.get()].1;
@@ -240,19 +240,29 @@ fn parallel_u32_grouped_count(
                             }
                             Ok(true)
                         };
-                        match (index, signed) {
-                            (NumericColumn::UInt32(values), false) => {
+                        match (index, kind) {
+                            (NumericColumn::UInt32(values), "UInt32") => {
+                                for &value in values {
+                                    if !visit(u64::from(value))? { return Ok(None); }
+                                }
+                            }
+                            (NumericColumn::Int32(values), "Int32") => {
+                                for &value in values {
+                                    if !visit(value as i64 as u64)? { return Ok(None); }
+                                }
+                            }
+                            (NumericColumn::UInt64(values), "UInt64") => {
                                 for &value in values {
                                     if !visit(value)? { return Ok(None); }
                                 }
                             }
-                            (NumericColumn::Int32(values), true) => {
+                            (NumericColumn::Int64(values), "Int64") => {
                                 for &value in values {
-                                    if !visit(value as u32)? { return Ok(None); }
+                                    if !visit(value as u64)? { return Ok(None); }
                                 }
                             }
                             _ => return Err(ExecutionError::Invalid(
-                                "parallel 32-bit grouping encountered unexpected column".into(),
+                                "parallel integer grouping encountered unexpected column".into(),
                             )),
                         }
                     }
@@ -264,8 +274,8 @@ fn parallel_u32_grouped_count(
             Err(ExecutionError::Invalid("parallel grouped worker panicked".into()))
         })).collect::<Vec<_>>()
     });
-    let mut keys = HashMap::<u32, usize>::new();
-    let mut counts = Vec::<(u32, u64)>::new();
+    let mut keys = HashMap::<u64, usize>::new();
+    let mut counts = Vec::<(u64, u64)>::new();
     for chunk in chunks {
         let Some(chunk) = chunk? else { return Ok(None); };
         for (key, count) in chunk {
@@ -289,8 +299,8 @@ fn parallel_u32_grouped_count(
     }
     let mut result = GroupedCounts::default();
     for (key, count) in counts {
-        let value = if signed {
-            Number::Signed(i128::from(key as i32))
+        let value = if matches!(kind, "Int32" | "Int64") {
+            Number::Signed(i128::from(key as i64))
         } else {
             Number::Unsigned(u128::from(key))
         };
@@ -470,9 +480,11 @@ pub(super) fn execute_grouped_part<W: Write>(
         }
         return groups.write(query, column, output);
     }
-    if no_filters && matches!(narrow, Some("UInt32" | "Int32")) {
-        if let Some(result) = parallel_u32_grouped_count(
-            part, column, narrow == Some("Int32")
+    if no_filters
+        && matches!(narrow, Some("UInt32" | "Int32" | "UInt64" | "Int64"))
+    {
+        if let Some(result) = parallel_integer_grouped_count(
+            part, column, narrow.expect("integer group kind was validated"),
         )? {
             return result.write(query, column, output);
         }
