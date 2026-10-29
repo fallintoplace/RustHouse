@@ -536,6 +536,7 @@ fn probe_right_outer<F>(
     hash: &HashMap<Vec<typed::Key>, Bucket>,
     options: ProbeOptions,
     mut matched_left: Option<&mut [bool]>,
+    projection: Option<&[usize]>,
     mut emit: F,
 ) -> Result<usize, ExecutionError>
 where
@@ -543,10 +544,12 @@ where
 {
     if options.stop_after == Some(0) { return Ok(0); }
     let mut retained = if options.materialize_rows {
-        (0..right_names.len()).collect::<Vec<_>>()
+        projection.map_or_else(|| (0..right_names.len()).collect::<Vec<_>>(),
+            |indices| indices.to_vec())
     } else {
-        right_keys.to_vec()
+        Vec::new()
     };
+    retained.extend_from_slice(right_keys);
     if let Some((column, _)) = options.null_filter {
         if let Some(local) = column.checked_sub(left_width)
             .filter(|&local| local < right_names.len()) {
@@ -606,7 +609,9 @@ where
                 let right = if options.materialize_rows
                     && total >= options.materialize_after {
                     right_row.get_or_insert_with(|| {
-                        batch.iter().map(|column| typed::cell(column, row)).collect()
+                        materialize_join_probe_row(
+                            &batch, &retained, row, right_names.len(),
+                        )
                     }).as_slice()
                 } else { &[] };
                 emit(left, right)?;
@@ -643,7 +648,7 @@ fn execute_streaming_right_outer<W: Write>(
         ProbeOptions {
             materialize_rows: false, materialize_after: 0, stop_after,
             any: query.any, null_filter,
-        }, preflight_left_matched.as_deref_mut(), |_, _| Ok(()),
+        }, preflight_left_matched.as_deref_mut(), None, |_, _| Ok(()),
     )?;
     let unmatched_left = if stop_after.is_some_and(|end| preflight >= end) {
         0
@@ -668,15 +673,16 @@ fn execute_streaming_right_outer<W: Write>(
     let mut seen = 0usize;
     let mut emitted_left_matched =
         (query.kind == JoinType::Full).then(|| vec![false; left_rows.len()]);
+    let probe_columns = join_probe_projection(
+        selected, left_names.len(), right_names.len(),
+    );
     probe_right_outer(
         right_path, right_names, right_keys, &left_rows, left_names.len(), &hash,
         ProbeOptions {
-            materialize_rows: selected.iter().any(|(column, _, fallback)| {
-                *column >= left_names.len() || fallback.is_some()
-            }),
+            materialize_rows: !probe_columns.is_empty(),
             materialize_after: query.offset, stop_after, any: query.any, null_filter,
         },
-        emitted_left_matched.as_deref_mut(),
+        emitted_left_matched.as_deref_mut(), Some(&probe_columns),
         |left, right| {
             if seen >= query.offset && seen < end {
                 for (pos, (column, _, fallback)) in selected.iter().enumerate() {
@@ -1343,7 +1349,7 @@ fn execute_streaming_inner_count<W: Write>(
                 materialize_rows: false, materialize_after: 0,
                 stop_after: Some(usize::MAX), any: query.any, null_filter,
             },
-            None, |_, _| Ok(()),
+            None, None, |_, _| Ok(()),
         )?
     } else if right_count <= MAX_STREAM_BUILD_ROWS &&
         (matches!(query.kind, JoinType::Left | JoinType::Full)
@@ -1873,7 +1879,7 @@ mod tests {
             &right, &["id".into()], &[0], &left_rows, 1, &hash,
             ProbeOptions { materialize_rows: true, materialize_after: 0,
                 stop_after: None, any: false, null_filter: None },
-            None, |left, right| {
+            None, None, |left, right| {
                 let id = match &right[0] {
                     typed::Cell::Numeric(Number::Unsigned(id)) => *id,
                     _ => panic!("expected right id"),
