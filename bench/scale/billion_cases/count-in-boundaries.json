@@ -1,0 +1,10 @@
+{
+  "id": "count-in-boundaries",
+  "kind": "count_in",
+  "values": [
+    "start",
+    "p25",
+    "p50",
+    "last"
+  ]
+}
