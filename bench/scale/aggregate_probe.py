@@ -12,7 +12,7 @@ from pathlib import Path
 
 
 def aggregates(rows):
-    if not 1 <= rows <= (1 << 64) - 1:
+    if type(rows) is not int or not 1 <= rows <= (1 << 64) - 1:
         raise ValueError("rows must be positive UInt64")
     return (("count(*)", rows), ("sum(id)", rows * (rows - 1) // 2),
             ("min(id)", 0), ("max(id)", rows - 1))
