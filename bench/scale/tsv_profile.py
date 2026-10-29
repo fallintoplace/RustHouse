@@ -33,7 +33,10 @@ def profile(path, *, columns=1, header=False, min_rows=1,
                 raise ValueError(f"record {records + 1}: invalid column count or empty row")
             if b"\x00" in row:
                 raise ValueError(f"record {records + 1}: raw NUL byte")
-            row.decode("utf-8", errors="strict")
+            # Sorted numeric records are validated as ASCII bytes below.
+            # Skip a redundant Unicode allocation per row in large fixtures.
+            if not (verify_sorted_uint64 and not (header and records == 0)):
+                row.decode("utf-8", errors="strict")
             if verify_sorted_uint64 and not (header and records == 0):
                 if not row.isascii() or not row.isdigit() or len(row) > 20:
                     raise ValueError(f"record {records + 1}: invalid UInt64 key")
