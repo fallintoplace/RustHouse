@@ -5,6 +5,16 @@ use std::path::Path;
 
 const ABSOLUTE_MAX_RANGE: usize = 8 * 1024 * 1024;
 
+fn validate_range(offset: u64, length: usize, file_length: u64) -> io::Result<()> {
+    let end = offset
+        .checked_add(length as u64)
+        .ok_or_else(|| io::Error::other("object range overflow"))?;
+    if end > file_length {
+        return Err(io::Error::other("object range exceeds file length"));
+    }
+    Ok(())
+}
+
 fn open_verified_object(path: &Path) -> io::Result<(File, u64)> {
     let meta = fs::symlink_metadata(path)?;
     if !meta.file_type().is_file() {
@@ -29,12 +39,7 @@ pub fn read_object_range(
         return Err(io::Error::other("object byte range exceeds limit"));
     }
     let (mut file, file_length) = open_verified_object(path)?;
-    let end = offset
-        .checked_add(length as u64)
-        .ok_or_else(|| io::Error::other("object range overflow"))?;
-    if end > file_length {
-        return Err(io::Error::other("object range exceeds file length"));
-    }
+    validate_range(offset, length, file_length)?;
     file.seek(SeekFrom::Start(offset))?;
     let mut bytes = vec![0; length];
     file.read_exact(&mut bytes)?;
@@ -93,12 +98,7 @@ pub fn read_object_ranges(
     }
     let (mut file, file_length) = open_verified_object(path)?;
     for &(offset, length) in ranges {
-        let end = offset
-            .checked_add(length as u64)
-            .ok_or_else(|| io::Error::other("object range overflow"))?;
-        if end > file_length {
-            return Err(io::Error::other("object range exceeds file length"));
-        }
+        validate_range(offset, length, file_length)?;
     }
     // Adjacent or overlapping logical ranges share one physical read.
     // This reduces seeks and small I/O operations for mark-driven scans.
