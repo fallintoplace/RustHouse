@@ -8,6 +8,9 @@ import sys
 import time
 
 
+OUTPUT_PREVIEW_CHARS = 32_768
+
+
 def report(returncode, stdout, stderr, elapsed, full_hashes):
     return {
         "schema_version": 1,
@@ -15,9 +18,9 @@ def report(returncode, stdout, stderr, elapsed, full_hashes):
         "exit_code": returncode,
         "elapsed_seconds": round(elapsed, 3),
         "full_hashes": full_hashes,
-        "stdout": stdout[:32768],
-        "stderr": stderr[:32768],
-        "truncated": len(stdout) > 32768 or len(stderr) > 32768,
+        "stdout": stdout[:OUTPUT_PREVIEW_CHARS],
+        "stderr": stderr[:OUTPUT_PREVIEW_CHARS],
+        "truncated": len(stdout) > OUTPUT_PREVIEW_CHARS or len(stderr) > OUTPUT_PREVIEW_CHARS,
     }
 
 
