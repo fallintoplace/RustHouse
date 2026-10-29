@@ -45,7 +45,9 @@ def generate(output, rows, *, seed=0, batch_rows=8192):
         ) as stream:
             temporary = Path(stream.name)
             emit(stream, rows, seed=seed, batch_rows=batch_rows)
-        os.replace(temporary, output)
+            stream.flush()
+            os.fsync(stream.fileno())
+        os.link(temporary, output)
     finally:
         if temporary:
             temporary.unlink(missing_ok=True)
