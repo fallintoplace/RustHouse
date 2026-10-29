@@ -544,6 +544,8 @@ fn parse_euclidean_division(
     require_token(parser, Token::RParen, "Euclidean division requires ')'")?;
     let result = if quotient {
         left.checked_div_euclid(right)
+    } else if right == -1 {
+        Some(0) // The Euclidean remainder is representable for Int64::MIN.
     } else {
         left.checked_rem_euclid(right)
     };
