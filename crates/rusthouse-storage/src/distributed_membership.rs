@@ -2,6 +2,9 @@
 use std::collections::HashSet;
 use std::fmt::Write;
 
+const MAX_MEMBERS: usize = 64;
+const MAX_MANIFEST_BYTES: usize = 8192;
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Member {
     pub node: String,
@@ -46,7 +49,7 @@ fn parse_member(line: &str) -> Result<Member, &'static str> {
 /// Format: one `node zone weight` record per line, at most 64 records.
 /// Membership is a configuration snapshot, not automatic discovery or consensus.
 pub fn parse_membership(text: &str) -> Result<Vec<Member>, &'static str> {
-    if text.len() > 8192 {
+    if text.len() > MAX_MANIFEST_BYTES {
         return Err("membership manifest too large");
     }
     let mut members = Vec::new();
@@ -57,7 +60,7 @@ pub fn parse_membership(text: &str) -> Result<Vec<Member>, &'static str> {
             return Err("duplicate member or invalid weight");
         }
         members.push(member);
-        if members.len() > 64 {
+        if members.len() > MAX_MEMBERS {
             return Err("too many cluster members");
         }
     }
@@ -69,7 +72,7 @@ pub fn parse_membership(text: &str) -> Result<Vec<Member>, &'static str> {
 
 /// Stable on-disk representation of an already validated member set.
 pub fn format_membership(members: &[Member]) -> Result<String, &'static str> {
-    if members.is_empty() || members.len() > 64 {
+    if members.is_empty() || members.len() > MAX_MEMBERS {
         return Err("invalid membership record count");
     }
     let mut seen = HashSet::new();
@@ -82,7 +85,7 @@ pub fn format_membership(members: &[Member]) -> Result<String, &'static str> {
             return Err("invalid or duplicate membership record");
         }
     }
-    let mut text = String::with_capacity((members.len() * 64).min(8192));
+    let mut text = String::with_capacity((members.len() * 64).min(MAX_MANIFEST_BYTES));
     for member in members {
         writeln!(
             &mut text,
@@ -90,7 +93,7 @@ pub fn format_membership(members: &[Member]) -> Result<String, &'static str> {
             member.node, member.zone, member.weight
         )
         .expect("writing to String is infallible");
-        if text.len() > 8192 {
+        if text.len() > MAX_MANIFEST_BYTES {
             return Err("membership manifest too large");
         }
     }
