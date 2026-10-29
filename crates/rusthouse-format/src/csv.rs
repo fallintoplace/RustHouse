@@ -50,7 +50,8 @@ pub fn write_quoted_csv_field<W: Write>(output: &mut W, field: &[u8]) -> io::Res
     }
     // Short quote-free fields dominate tabular output. Emit both quotes and
     // the payload in a single write without a heap allocation.
-    if field.len() <= 2048 && !field.contains(&b'"') {
+    let has_quote = field.contains(&b'"');
+    if field.len() <= 2048 && !has_quote {
         // Medium-size quote-free strings are frequent in JSON and text
         // exports. Keep quote + payload + quote in one buffered write.
         let mut buffer = [0u8; 2050];
@@ -59,7 +60,7 @@ pub fn write_quoted_csv_field<W: Write>(output: &mut W, field: &[u8]) -> io::Res
         buffer[field.len() + 1] = b'"';
         return output.write_all(&buffer[..field.len() + 2]);
     }
-    if !field.contains(&b'"') {
+    if !has_quote {
         if field.len() <= 4094 {
             let mut buffer = [0u8; 4096];
             buffer[0] = b'"';
@@ -81,6 +82,22 @@ pub fn write_quoted_csv_field<W: Write>(output: &mut W, field: &[u8]) -> io::Res
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn quote_heavy_fields_preserve_all_buffer_thresholds() {
+        for len in [1, 64, 65, 2048, 4094, 4095] {
+            let input = vec![b'"'; len];
+            let mut output = Vec::new();
+            write_quoted_csv_field(&mut output, &input).unwrap();
+            let mut expected = Vec::with_capacity(len * 2 + 2);
+            expected.push(b'"');
+            for _ in 0..len {
+                expected.extend_from_slice(b"\"\"");
+            }
+            expected.push(b'"');
+            assert_eq!(output, expected, "length {len}");
+        }
+    }
 
     #[test]
     fn doubles_embedded_and_adjacent_quotes() {
