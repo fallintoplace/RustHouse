@@ -15,7 +15,7 @@ import time
 from pathlib import Path
 
 
-def query_digest(binary, part, sql, *, expected_sha256=None,
+def query_digest(binary, part, sql, *, expected_sha256=None, expected_bytes=None,
                  max_rows=10000, max_output_bytes=100_000_000,
                  timeout=600, run=None):
     if not 1 <= max_rows <= 250_000:
@@ -24,6 +24,9 @@ def query_digest(binary, part, sql, *, expected_sha256=None,
             or type(timeout) not in (int, float) or not math.isfinite(timeout)
             or timeout <= 0):
         raise ValueError("output limit and timeout must be positive and finite")
+    if (expected_bytes is not None and
+            (type(expected_bytes) is not int or not 0 <= expected_bytes <= max_output_bytes)):
+        raise ValueError("expected_bytes must be within max_output_bytes")
     if expected_sha256 is not None and not re.fullmatch(r"[0-9a-f]{64}", expected_sha256):
         raise ValueError("expected_sha256 must be lowercase SHA256 hex")
     execute = run or subprocess.run
@@ -61,12 +64,15 @@ def query_digest(binary, part, sql, *, expected_sha256=None,
             if size > max_output_bytes:
                 raise ValueError("SQL output exceeds max_output_bytes")
             digest.update(block)
+    if expected_bytes is not None and size != expected_bytes:
+        raise ValueError("SQL output byte count differs from expected_bytes")
     sha = digest.hexdigest()
     if expected_sha256 is not None and sha != expected_sha256:
         raise ValueError("SQL output SHA256 differs from reference")
     return {"workload": "sql-output-digest", "seconds": elapsed,
             "bytes": size, "sha256": sha,
             "verified": expected_sha256 is not None,
+            "bytes_verified": expected_bytes is not None,
             "timing_scope": "fresh CLI query process; OS cache may be warm"}
 
 
@@ -76,6 +82,7 @@ def main(argv=None):
     parser.add_argument("--part", type=Path, required=True)
     parser.add_argument("--sql", required=True)
     parser.add_argument("--expected-sha256")
+    parser.add_argument("--expected-bytes", type=int)
     parser.add_argument("--max-rows", type=int, default=10000)
     parser.add_argument("--max-output-bytes", type=int, default=100_000_000)
     parser.add_argument("--timeout", type=float, default=600)
@@ -83,7 +90,7 @@ def main(argv=None):
     args = parser.parse_args(argv)
     try:
         report = query_digest(args.binary, args.part, args.sql,
-                              expected_sha256=args.expected_sha256,
+                              expected_sha256=args.expected_sha256, expected_bytes=args.expected_bytes,
                               max_rows=args.max_rows, max_output_bytes=args.max_output_bytes,
                               timeout=args.timeout)
         rendered = json.dumps(report, indent=2) + "\n"
