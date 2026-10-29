@@ -23,6 +23,27 @@ class ShardTests(unittest.TestCase):
                                  shard["sha256"])
             self.assertTrue((target / "manifest.json").is_file())
 
+    def test_byte_limit_splits_at_record_boundaries(self):
+        with tempfile.TemporaryDirectory() as root:
+            source = Path(root) / "input.tsv"
+            source.write_bytes(b"a\nbb\ncccc\n")
+            target = Path(root) / "shards"
+            result = split_tsv(source, target, rows_per_chunk=100,
+                               max_bytes_per_chunk=5)
+            self.assertEqual([part["rows"] for part in result["shards"]], [2, 1])
+            self.assertEqual([part["bytes"] for part in result["shards"]], [5, 5])
+            self.assertEqual(b"".join((target / p["path"]).read_bytes()
+                                      for p in result["shards"]), source.read_bytes())
+
+    def test_oversized_single_record_has_no_published_shards(self):
+        with tempfile.TemporaryDirectory() as root:
+            source = Path(root) / "input.tsv"
+            source.write_bytes(b"0123456789\n")
+            target = Path(root) / "shards"
+            with self.assertRaisesRegex(ValueError, "max_bytes_per_chunk"):
+                split_tsv(source, target, max_bytes_per_chunk=10)
+            self.assertFalse(target.exists())
+
     def test_large_shard_batches_preserve_hashes_across_flushes(self):
         with tempfile.TemporaryDirectory() as root:
             source = Path(root) / "big.tsv"
