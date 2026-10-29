@@ -26,6 +26,21 @@ class PartDensityTests(unittest.TestCase):
             with self.assertRaisesRegex(ValueError, "invalid"):
                 part_density(root)
 
+    def test_rejects_noncanonical_counts_and_total_overflow(self):
+        with tempfile.TemporaryDirectory() as root:
+            part = Path(root) / "all_1_1_0"
+            part.mkdir()
+            for payload in ("١٢\n", "10\n\n", " 10\n"):
+                (part / "count.txt").write_text(payload)
+                with self.assertRaisesRegex(ValueError, "invalid"):
+                    part_density(root)
+            (part / "count.txt").write_text(f"{2**64 - 1}\n")
+            second = Path(root) / "all_2_2_0"
+            second.mkdir()
+            (second / "count.txt").write_text("1\n")
+            with self.assertRaisesRegex(ValueError, "UInt64"):
+                part_density(root)
+
     def test_rejects_empty_snapshot(self):
         with tempfile.TemporaryDirectory() as root:
             with self.assertRaisesRegex(ValueError, "no wide parts"):
