@@ -33,6 +33,16 @@ class Q6OracleTests(unittest.TestCase):
                     with self.assertRaisesRegex(ValueError, "columns"):
                         expected_revenue(path)
 
+    def test_rejects_extra_q6_data_fields(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "lineitem.tsv"
+            path.write_text(
+                "l_shipdate\tl_discount\tl_quantity\tl_extendedprice\n"
+                "1994-01-01\t500\t2300\t100\textra\n"
+            )
+            with self.assertRaisesRegex(ValueError, "extra"):
+                expected_revenue(path)
+
     def test_zero_revenue_from_qualifying_row_is_not_null(self):
         with tempfile.TemporaryDirectory() as directory:
             path = Path(directory) / "lineitem.tsv"

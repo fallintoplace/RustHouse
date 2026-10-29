@@ -32,8 +32,8 @@ def expected_revenue_details(path):
         if len(set(fields)) != len(fields) or any(name not in fields for name in required):
             raise ValueError("Q6 input has missing or duplicate required columns")
         for row in reader:
-            if any(row[name] is None for name in required):
-                raise ValueError("Q6 input contains a truncated data row")
+            if None in row or any(row[name] is None for name in fields):
+                raise ValueError("Q6 input contains missing or extra data fields")
             if ("1994-01-01" <= row["l_shipdate"] < "1995-01-01"
                     and 500 <= int(row["l_discount"]) <= 700
                     and int(row["l_quantity"]) < 2400):
