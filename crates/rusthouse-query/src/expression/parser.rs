@@ -59,6 +59,22 @@ fn parse_case_when(parser: &mut Parser) -> Result<ScalarExpr, ParseError> {
     }))
 }
 
+fn parse_nullif(parser: &mut Parser) -> Result<ScalarExpr, ParseError> {
+    parser.index += 1;
+    if !parser.take(Token::LParen) {
+        return Err(ParseError("nullIf requires '('".into()));
+    }
+    let left = parse_expression_tokens(parser)?;
+    if !parser.take(Token::Comma) {
+        return Err(ParseError("nullIf requires a second value".into()));
+    }
+    let right = parse_expression_tokens(parser)?;
+    if !parser.take(Token::RParen) {
+        return Err(ParseError("nullIf requires exactly two values".into()));
+    }
+    Ok(ScalarExpr::NullIf(Box::new(left), Box::new(right)))
+}
+
 fn parse_coalesce(parser: &mut Parser) -> Result<ScalarExpr, ParseError> {
     parser.index += 1;
     if !parser.take(Token::LParen) {
@@ -104,6 +120,8 @@ pub(super) fn primary(parser: &mut Parser) -> Result<ScalarExpr, ParseError> {
         }
         Some(Token::Word(name)) if name.eq_ignore_ascii_case("COALESCE") =>
             parse_coalesce(parser),
+        Some(Token::Word(name)) if name.eq_ignore_ascii_case("NULLIF") =>
+            parse_nullif(parser),
         Some(Token::Word(name)) if name.eq_ignore_ascii_case("NULL") => {
             parser.index += 1;
             Ok(ScalarExpr::Null)
