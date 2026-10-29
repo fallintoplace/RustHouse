@@ -133,6 +133,28 @@ fn push_row(
     Ok(())
 }
 
+/// The final COUNT stage can count qualifying matches without allocating
+/// output rows. Intermediate stages still honor their existing row budgets.
+fn accumulate_or_retain(
+    rows: &mut Vec<Vec<typed::Cell>>,
+    row: Vec<typed::Cell>,
+    retained: &mut usize,
+    count: &mut u64,
+    final_count: bool,
+    filter: Option<(usize, bool)>,
+) -> Result<(), ExecutionError> {
+    if final_count {
+        if filter.is_none_or(|(index, not_null)| {
+            matches!(row[index], typed::Cell::Null) != not_null
+        }) {
+            *count = count.checked_add(1)
+                .ok_or_else(|| invalid("JOIN count overflow"))?;
+        }
+        return Ok(());
+    }
+    push_row(rows, row, retained)
+}
+
 /// Resolve USING only when exactly one existing input supplies that key.
 /// Ambiguous names must use qualified ON instead.
 fn using_column_pair(relations: &[Relation], name: &str) -> Result<(usize, usize), ExecutionError> {
@@ -343,6 +365,10 @@ pub fn execute_multi_join<W: Write>(
         return Ok(());
     }
 
+    let count_filter = query.where_null.as_ref()
+        .map(|(column, not_null)| {
+            column_index(&relations, column).map(|index| (index, *not_null))
+        }).transpose()?;
     let mut rows = read_rows(
         &paths[0],
         &relations[0].names,
@@ -387,6 +413,9 @@ pub fn execute_multi_join<W: Write>(
         let mut retained = 0usize;
         let mut matched_right = matches!(step.kind, JoinType::Right | JoinType::Full)
             .then(|| vec![false; right_rows.len()]);
+        let final_count = step_index == query.steps.len()
+            && query.aggregate == Some(crate::JoinAggregate::CountStar);
+        let mut count = 0u64;
         for row in &rows {
             let mut matched = false;
             if let Some(key) = row_key(row, &left_keys) {
@@ -416,7 +445,7 @@ pub fn execute_multi_join<W: Write>(
                             Vec::with_capacity(left_width + right_relation.names.len());
                         joined.extend_from_slice(row);
                         joined.extend_from_slice(&right_rows[match_index]);
-                        push_row(&mut next, joined, &mut retained)?;
+                        accumulate_or_retain(&mut next, joined, &mut retained, &mut count, final_count, count_filter)?;
                     }
                 }
             }
@@ -424,7 +453,7 @@ pub fn execute_multi_join<W: Write>(
                 let mut joined = Vec::with_capacity(left_width + right_relation.names.len());
                 joined.extend_from_slice(row);
                 joined.resize(left_width + right_relation.names.len(), typed::Cell::Null);
-                push_row(&mut next, joined, &mut retained)?;
+                accumulate_or_retain(&mut next, joined, &mut retained, &mut count, final_count, count_filter)?;
             }
         }
         if let Some(matched_right) = matched_right {
@@ -432,9 +461,16 @@ pub fn execute_multi_join<W: Write>(
                 if !matched {
                     let mut joined = vec![typed::Cell::Null; left_width];
                     joined.extend_from_slice(&right_rows[right_index]);
-                    push_row(&mut next, joined, &mut retained)?;
+                    accumulate_or_retain(&mut next, joined, &mut retained, &mut count, final_count, count_filter)?;
                 }
             }
+        }
+        if final_count {
+            output.write_all(b"count\\n")?;
+            if query.offset == 0 {
+                writeln!(output, "{count}")?;
+            }
+            return Ok(());
         }
         rows = next;
     }
