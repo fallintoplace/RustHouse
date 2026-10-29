@@ -171,3 +171,31 @@ mod batch_reservation_tests {
         assert_eq!(capacity.reserve_many(&[]).unwrap(), capacity);
     }
 }
+
+impl Capacity {
+    /// Release committed storage usage after verified object deletion.
+    /// The caller is responsible for ensuring the physical deletion succeeded.
+    pub fn reclaim_used(self, bytes: u64) -> Result<Self, &'static str> {
+        self.available()?;
+        Ok(Self {
+            used: self.used.checked_sub(bytes).ok_or("cannot reclaim unused bytes")?,
+            ..self
+        })
+    }
+}
+
+#[cfg(test)]
+mod reclaim_used_tests {
+    use super::*;
+
+    #[test]
+    fn reclaim_frees_only_committed_bytes_and_preserves_reservations() {
+        let initial = Capacity { total: 100, used: 60, reserved: 20 };
+        let after = initial.reclaim_used(30).unwrap();
+        assert_eq!(after, Capacity { total: 100, used: 30, reserved: 20 });
+        assert_eq!(after.available().unwrap(), 50);
+        assert!(initial.reclaim_used(61).is_err());
+        assert_eq!(initial.reclaim_used(0).unwrap(), initial);
+        assert!(Capacity { total: 1, used: 2, reserved: 0 }.reclaim_used(1).is_err());
+    }
+}
