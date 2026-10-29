@@ -17,6 +17,21 @@ def parse_scaled_number(raw, scale):
     if scale != 1:
         if not DECIMAL.fullmatch(raw):
             raise ValueError("invalid fixed-point decimal")
+        # dbgen uses decimal scales of 100 and 10000. Keep their exact
+        # conversion in integer arithmetic instead of building millions of
+        # Decimal objects during SF1 and larger imports.
+        digits = str(scale)
+        if scale > 0 and digits.startswith("1") and set(digits[1:]) <= {"0"}:
+            precision = len(digits) - 1
+            negative = raw.startswith("-")
+            magnitude = raw[1:] if negative else raw
+            whole, _, fraction = magnitude.partition(".")
+            if len(fraction) > precision:
+                if any(char != "0" for char in fraction[precision:]):
+                    raise ValueError("decimal precision exceeds supported fixed-point scale")
+                fraction = fraction[:precision]
+            value = int(whole) * scale + int(fraction.ljust(precision, "0") or "0")
+            return -value if negative else value
         try:
             scaled = Decimal(raw) * scale
         except InvalidOperation as error:
