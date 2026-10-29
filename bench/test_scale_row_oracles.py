@@ -22,6 +22,14 @@ class RowOracleTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "rows"):
             make_oracles(0)
 
+    def test_large_offset_modulo_oracle(self):
+        from bench.scale.row_oracles import modulo_interval_reference
+        start = (1 << 64) - 5
+        actual = modulo_interval_reference(start, 1 << 64, 2, 0)
+        self.assertEqual(actual, {"count": 2, "sum": 2 * (1 << 64) - 6})
+        self.assertEqual(modulo_interval_reference(start, start, 2, 1),
+                         {"count": 0, "sum": 0})
+
 
 if __name__ == "__main__":
     unittest.main()
