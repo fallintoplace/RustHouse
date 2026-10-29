@@ -14,6 +14,16 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from common import cli_sql, emit_json, latency_summary
 from run import load_queries, select_queries
 
+MAX_REFERENCE_BYTES = 16 * 1024 * 1024
+
+
+def read_reference(path):
+    with Path(path).open("rb") as source:
+        payload = source.read(MAX_REFERENCE_BYTES + 1)
+    if len(payload) > MAX_REFERENCE_BYTES:
+        raise ValueError("TPC-H throughput reference exceeds 16 MiB")
+    return payload
+
 
 def run_throughput(queries, execute, clients=2, rounds=2, references=None,
                    require_verified=False):
@@ -104,7 +114,7 @@ def main(argv=None):
                 path = args.reference_dir / f"q{number:02}.tsv"
                 if not path.is_file():
                     raise ValueError(f"missing reference file {path}")
-                references[number] = path.read_bytes()
+                references[number] = read_reference(path)
         report = run_throughput(
             queries,
             lambda sql: cli_sql(args.binary, args.database, sql, args.timeout),
