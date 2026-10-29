@@ -18,6 +18,19 @@ class PartDensityTests(unittest.TestCase):
             self.assertEqual(result["median_rows_per_part"], 6)
             self.assertEqual(result["parts_below_8192_rows"], 2)
 
+    def test_estimates_compaction_pressure_without_pretending_to_plan_merges(self):
+        with tempfile.TemporaryDirectory() as root:
+            for index, size in enumerate((10, 10, 10, 10)):
+                part = Path(root) / f"all_{index}_{index}_0"
+                part.mkdir()
+                (part / "count.txt").write_text(f"{size}\\n")
+            result = part_density(root, target_part_rows=25)
+            self.assertEqual(result["optimistic_parts_after_compaction"], 2)
+            self.assertEqual(result["optimistic_reclaimable_parts"], 2)
+            self.assertEqual(result["target_rows_per_part"], 25)
+            with self.assertRaisesRegex(ValueError, "target_part_rows"):
+                part_density(root, target_part_rows=True)
+
     def test_percentiles_and_small_part_pressure(self):
         with tempfile.TemporaryDirectory() as root:
             for index, size in enumerate((1, 100, 10000)):
