@@ -27,6 +27,11 @@ pub(super) fn fixed_decimal(value: &str) -> Result<(i128, usize), ParseError> {
         digits.parse::<i128>()
     }
     .map_err(|_| ParseError("decimal constant exceeds Int128".into()))?;
+    // Zero remains exact under any finite decimal exponent. Avoid rejecting
+    // it merely because a redundant power of ten exceeds Int128.
+    if signed == 0 {
+        return Ok((0, 0));
+    }
     let remaining_scale = fraction.len() as i64 - i64::from(exponent);
     if remaining_scale >= 0 {
         let scale = usize::try_from(remaining_scale)
@@ -93,5 +98,8 @@ mod tests {
         assert!(fixed_decimal("1e-19").is_err());
         assert!(fixed_decimal("1e100").is_err());
         assert!(fixed_decimal("1e+").is_err());
+        assert_eq!(fixed_decimal("0e500").unwrap(), (0, 0));
+        assert_eq!(fixed_decimal("-0.000e-500").unwrap(), (0, 0));
+        assert!(fixed_decimal("1e500").is_err());
     }
 }
