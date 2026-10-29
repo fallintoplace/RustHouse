@@ -38,7 +38,8 @@ def profile(path, *, columns=1, header=False, min_rows=1,
             if not (verify_sorted_uint64 and not (header and records == 0)):
                 row.decode("utf-8", errors="strict")
             if verify_sorted_uint64 and not (header and records == 0):
-                if not row.isascii() or not row.isdigit() or len(row) > 20:
+                if (not row.isascii() or not row.isdigit() or len(row) > 20
+                        or (len(row) > 1 and row[0] == b'0'[0])):
                     raise ValueError(f"record {records + 1}: invalid UInt64 key")
                 value = int(row)
                 if value > (1 << 64) - 1:
