@@ -36,6 +36,11 @@ struct Cursor {
     next_position: usize,
     descending: bool,
 }
+impl Cursor {
+    fn new(key: IntegerKey, shard: usize, position: usize, next_position: usize, descending: bool) -> Self {
+        Self { key, shard, position, next_position, descending }
+    }
+}
 impl Ord for Cursor {
     fn cmp(&self, other: &Self) -> Ordering {
         let cmp = self.key.cmp(&other.key);
@@ -117,9 +122,7 @@ pub(super) fn merge_sorted_integer_page(
     let mut heap = BinaryHeap::new();
     for (shard, first) in first_keys.into_iter().enumerate() {
         if let Some((key, next_position)) = first {
-            heap.push(Cursor {
-                key, shard, position: 0, next_position, descending,
-            });
+            heap.push(Cursor::new(key, shard, 0, next_position, descending));
         }
     }
     let mut output = header.into_bytes();
@@ -144,13 +147,7 @@ pub(super) fn merge_sorted_integer_page(
             break;
         }
         if let Some((key, next_position)) = next_row(body, end, unsigned)? {
-            heap.push(Cursor {
-                key,
-                shard: cursor.shard,
-                position: end,
-                next_position,
-                descending,
-            });
+            heap.push(Cursor::new(key, cursor.shard, end, next_position, descending));
         }
     }
     Ok(output)
