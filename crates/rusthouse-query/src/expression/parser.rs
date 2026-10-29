@@ -154,6 +154,7 @@ fn is_unary_math(name: &str) -> bool {
     name.eq_ignore_ascii_case("SIGN")
         || name.eq_ignore_ascii_case("NEGATE")
         || name.eq_ignore_ascii_case("SQRT")
+        || name.eq_ignore_ascii_case("CBRT")
 }
 
 fn parse_unary_math(parser: &mut Parser) -> Result<ScalarExpr, ParseError> {
