@@ -106,6 +106,7 @@ pub(super) fn is_function(name: &str) -> bool {
         || name.eq_ignore_ascii_case("BITTESTANY")
         || name.eq_ignore_ascii_case("INTDIVORZERO")
         || name.eq_ignore_ascii_case("MODULOORZERO")
+        || name.eq_ignore_ascii_case("POSITIVEMODULO")
         || name.eq_ignore_ascii_case("TOINT8")
         || name.eq_ignore_ascii_case("TOINT16")
 }
@@ -1007,6 +1008,20 @@ fn parse_compat_moduloorzero(parser: &mut Parser, depth: usize) -> Result<i64, P
     Ok(if divisor == 0 || divisor == -1 { 0 } else { numerator % divisor })
 }
 
+/// ClickHouse-compatible compute nonnegative Euclidean remainder for constant Int64 expressions.
+fn parse_compat_positivemodulo(parser: &mut Parser, depth: usize) -> Result<i64, ParseError> {
+    require_token(parser, Token::LParen, "positiveModulo requires '('")?;
+    let value = expression(parser, depth + 1)?;
+    require_token(parser, Token::Comma, "positiveModulo requires two arguments")?;
+    let divisor = expression(parser, depth + 1)?;
+    require_token(parser, Token::RParen, "positiveModulo requires ')'")?;
+    if divisor == 0 {
+        return Err(ParseError("positiveModulo divisor must not be zero".into()));
+    }
+    let result = i128::from(value).rem_euclid(i128::from(divisor).abs());
+    i64::try_from(result).map_err(|_| overflow())
+}
+
 fn factor(parser: &mut Parser, depth: usize) -> Result<i64, ParseError> {
     if depth >= MAX_DEPTH {
         return Err(ParseError(
@@ -1183,6 +1198,9 @@ fn factor(parser: &mut Parser, depth: usize) -> Result<i64, ParseError> {
     }
     if parser.keyword("MODULOORZERO") {
         return parse_compat_moduloorzero(parser, depth);
+    }
+    if parser.keyword("POSITIVEMODULO") {
+        return parse_compat_positivemodulo(parser, depth);
     }
     if matches!(parser.tokens.get(parser.index), Some(Token::Word(name)) if is_function(name)) {
         let name = parser.word()?;
@@ -1436,6 +1454,25 @@ mod ch_moduloorzero_tests {
             assert_eq!(parse_select(sql).unwrap().projection, Projection::Literal(expected), "{sql}");
         }
         for sql in ["SELECT moduloOrZero(1)", "SELECT moduloOrZero(1,2,3)"] {
+            assert!(parse_select(sql).is_err(), "{sql}");
+        }
+    }
+}
+
+#[cfg(test)]
+mod ch_positivemodulo_tests {
+    use crate::{parse_select, Projection};
+    #[test]
+    fn integer_remainder_boundaries() {
+        for (sql, expected) in [
+            ("SELECT positiveModulo(9, 4)", 1),
+            ("SELECT positiveModulo(-9, 4)", 3),
+            ("SELECT positiveModulo(-9, -4)", 3),
+            ("SELECT positiveModulo(0, 3)", 0),
+        ] {
+            assert_eq!(parse_select(sql).unwrap().projection, Projection::Literal(expected), "{sql}");
+        }
+        for sql in ["SELECT positiveModulo(1)", "SELECT positiveModulo(1,2,3)", "SELECT positiveModulo(1,0)"] {
             assert!(parse_select(sql).is_err(), "{sql}");
         }
     }
