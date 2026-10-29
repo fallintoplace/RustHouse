@@ -16,7 +16,7 @@ from pathlib import Path
 
 from bench.analytics.sqlite_oracle import assert_matches, parse_rows
 from bench.analytics.suite_runner import (
-    ACCOUNTS_ROWS, ACCOUNTS_SCHEMA, COLUMNS, SCHEMA, fact_row,
+    ACCOUNTS_ROWS, ACCOUNTS_SCHEMA, COLUMNS, SCHEMA,
     load_workload, make_fixture,
 )
 from bench.common import cli_sql, emit_json
@@ -108,7 +108,10 @@ def _copy_fixture_to_json(source, target, names, numeric, nullable, expected_cou
         header = reader.readline(MAX_FIXTURE_LINE_BYTES + 1)
         if header != ("\t".join(names) + "\n").encode():
             raise ValueError(f"{source.name}: unexpected TSV column header")
-        for line in reader:
+        while True:
+            line = reader.readline(MAX_FIXTURE_LINE_BYTES + 1)
+            if not line:
+                break
             seen += 1
             if seen > expected_count or len(line) > MAX_FIXTURE_LINE_BYTES:
                 raise ValueError(f"{source.name}: too many or oversized fixture rows")
